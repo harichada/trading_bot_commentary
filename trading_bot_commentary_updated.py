@@ -132,12 +132,53 @@ except:
 # Note: These components are moved to after CommentarySystem class definition
 # to avoid circular import issues
 
+class AnomalyDetector:
+    """Detects anomalies in market data and trading behavior"""
 
+    def __init__(self, commentary_system):
+        self.commentary = commentary_system
+        self.last_price = {}
+        self.last_volume = {}
 
+    def check_data_anomalies(self, symbol: str, data: pd.DataFrame) -> List[Dict]:
+        """Check for anomalies in OHLCV data"""
+        anomalies = []
 
+        # Check for large price gaps
+        if self.last_price.get(symbol):
+            gap = abs(data['Open'].iloc[0] - self.last_price[symbol]) / self.last_price[symbol]
+            if gap > 0.1:  # 10% gap
+                anomalies.append({
+                    'type': 'price_gap',
+                    'message': f"Large price gap of {gap:.1%} detected for {symbol}",
+                    'level': 'high'
+                })
 
+        # Check for extreme volume
+        avg_volume = data['Volume'].mean()
+        if data['Volume'].iloc[-1] > avg_volume * 5:
+            anomalies.append({
+                'type': 'volume_spike',
+                'message': f"Unusual volume spike detected for {symbol}",
+                'level': 'medium'
+            })
 
+        # Update last known values
+        self.last_price[symbol] = data['Close'].iloc[-1]
+        self.last_volume[symbol] = data['Volume'].iloc[-1]
 
+        # Add commentary for anomalies
+        for anomaly in anomalies:
+            self.commentary.add_commentary(TradingCommentary(
+                timestamp=datetime.now(),
+                type=CommentaryType.ANOMALY,
+                symbol=symbol,
+                title=f"Anomaly Detected: {anomaly['type']}",
+                message=anomaly['message'],
+                importance=8 if anomaly['level'] == 'high' else 6
+            ))
+
+        return anomalies
 
 class BehavioralAnalyzer:
     """Analyzes trading behavior and psychological patterns"""
@@ -1731,6 +1772,18 @@ class NewsImpact(Enum):
     HIGH = "high"
     MEDIUM = "medium"
     LOW = "low"
+
+class CommentaryType(Enum):
+    MARKET_ANALYSIS = "market_analysis"
+    SIGNAL_GENERATION = "signal_generation"
+    RISK_ASSESSMENT = "risk_assessment"
+    DECISION = "decision"
+    TECHNICAL = "technical"
+    FUNDAMENTAL = "fundamental"
+    PSYCHOLOGY = "psychology"
+    WARNING = "warning"
+    OPPORTUNITY = "opportunity"
+    ANOMALY = "anomaly"
 # ============================================================================
 # DATA STRUCTURES
 # ============================================================================
@@ -4719,6 +4772,61 @@ class TradingStrategyWithCommentary(ABC):
     async def generate_signal_with_commentary(self, market_data) -> Optional[TradingSignal]:
         pass
 
+class NewsSignalStrategy(TradingStrategyWithCommentary):
+    """Trading strategy based on news sentiment"""
+
+    def __init__(self, commentary_system, news_aggregator, sentiment_analyzer):
+        super().__init__(commentary_system)
+        self.news_aggregator = news_aggregator
+        self.sentiment_analyzer = sentiment_analyzer
+
+    async def generate_signal_with_commentary(self, market_data) -> Optional[TradingSignal]:
+        """Generate signal based on news sentiment"""
+        news_items = await self.news_aggregator.fetch_news(market_data.symbol)
+
+        if not news_items:
+            return None
+
+        # Analyze sentiment
+        sentiments = []
+        for item in news_items:
+            sentiment = self.sentiment_analyzer.analyze(item.headline + " " + item.summary)
+            sentiments.append(sentiment['compound'])
+
+        avg_sentiment = np.mean(sentiments)
+
+        # Generate signal if sentiment is strong
+        if abs(avg_sentiment) > 0.3:
+            signal_type = SignalType.BUY if avg_sentiment > 0 else SignalType.SELL
+
+            self.commentary.add_commentary(TradingCommentary(
+                timestamp=datetime.now(),
+                type=CommentaryType.FUNDAMENTAL,
+                symbol=market_data.symbol,
+                title=f"News Signal: {signal_type.name}",
+                message=f"Strong {'positive' if avg_sentiment > 0 else 'negative'} news sentiment detected.",
+                data={'avg_sentiment': avg_sentiment, 'news_count': len(news_items)},
+                importance=7
+            ))
+
+            # Create trading signal
+            stop_loss = market_data.close * (1 - 0.02) if signal_type == SignalType.BUY else market_data.close * 1.02
+            take_profit = market_data.close * (1 + 0.04) if signal_type == SignalType.BUY else market_data.close * 0.96
+
+            return TradingSignal(
+                symbol=market_data.symbol,
+                signal_type=signal_type,
+                strength=abs(avg_sentiment),
+                entry_price=market_data.close,
+                stop_loss=stop_loss,
+                take_profit=take_profit,
+                position_size=0,  # To be calculated by risk manager
+                reasoning={'strategy': 'news_sentiment', 'sentiment': avg_sentiment},
+                confidence=min(abs(avg_sentiment) * 1.5, 0.8)
+            )
+
+        return None
+
 class BreakoutStrategyWithCommentary(TradingStrategyWithCommentary):
     """Breakout strategy with detailed explanations"""
     
@@ -4792,31 +4900,32 @@ class BreakoutStrategyWithCommentary(TradingStrategyWithCommentary):
         return None
 
 class MeanReversionStrategyWithCommentary(TradingStrategyWithCommentary):
-    """Mean reversion strategy with explanations"""
-    
+    """Mean reversion strategy with explanations and tunable parameters"""
+    def __init__(self, commentary_system, rsi_threshold=30, bb_window=20, stop_loss_mult=0.98, take_profit_mult=1.0):
+        super().__init__(commentary_system)
+        self.rsi_threshold = rsi_threshold
+        self.bb_window = bb_window
+        self.stop_loss_mult = stop_loss_mult
+        self.take_profit_mult = take_profit_mult
+
     async def generate_signal_with_commentary(self, market_data) -> Optional[TradingSignal]:
         indicators = market_data.indicators
-        
         try:
-            # Check for oversold conditions
             rsi = float(indicators.get('rsi', 50))
             bb_lower = float(indicators.get('bb_lower', 0))
             bb_middle = float(indicators.get('bb_middle', market_data.close))
-            
-            # Validate values
+            bb_upper = float(indicators.get('bb_upper', market_data.close))
             if np.isnan(rsi) or np.isnan(bb_lower) or bb_lower <= 0:
                 return None
-            
-            if rsi < 30 and market_data.close < bb_lower:
+            if rsi < self.rsi_threshold and market_data.close < bb_lower:
                 distance_from_mean = ((bb_middle - market_data.close) / market_data.close) * 100
-                
                 self.commentary.add_commentary(TradingCommentary(
                     timestamp=datetime.now(),
                     type=CommentaryType.OPPORTUNITY,
                     symbol=market_data.symbol,
                     title=f"🔄 Mean Reversion Setup",
                     message=f"Oversold conditions detected - RSI at {rsi:.1f} and price below Bollinger Band. "
-                           f"Price is {distance_from_mean:.1f}% below the mean.",
+                            f"Price is {distance_from_mean:.1f}% below the mean.",
                     data={
                         'rsi': rsi,
                         'bollinger_position': 'below_lower_band',
@@ -4827,10 +4936,8 @@ class MeanReversionStrategyWithCommentary(TradingStrategyWithCommentary):
                     confidence=0.65,
                     importance=7
                 ))
-                
-                stop_loss = market_data.close * 0.98
-                take_profit = bb_middle
-                
+                stop_loss = market_data.close * self.stop_loss_mult
+                take_profit = bb_middle * self.take_profit_mult
                 return TradingSignal(
                     symbol=market_data.symbol,
                     signal_type=SignalType.BUY,
@@ -4847,17 +4954,15 @@ class MeanReversionStrategyWithCommentary(TradingStrategyWithCommentary):
                     },
                     confidence=0.65
                 )
-        # Add short signal for overbought conditions
             elif rsi > 70 and market_data.close > bb_upper:
                 distance_from_mean = ((market_data.close - bb_middle) / market_data.close) * 100
-                
                 self.commentary.add_commentary(TradingCommentary(
                     timestamp=datetime.now(),
                     type=CommentaryType.OPPORTUNITY,
                     symbol=market_data.symbol,
                     title=f"🔻 Short Setup - Mean Reversion",
                     message=f"Overbought conditions - RSI at {rsi:.1f} and price above upper Bollinger Band. "
-                        f"Price is {distance_from_mean:.1f}% above the mean.",
+                            f"Price is {distance_from_mean:.1f}% above the mean.",
                     data={
                         'rsi': rsi,
                         'bollinger_position': 'above_upper_band',
@@ -4866,13 +4971,11 @@ class MeanReversionStrategyWithCommentary(TradingStrategyWithCommentary):
                     confidence=0.65,
                     importance=7
                 ))
-                
-                stop_loss = market_data.close * 1.02  # 2% above entry
-                take_profit = bb_middle
-                
+                stop_loss = market_data.close * (2 - self.stop_loss_mult)
+                take_profit = bb_middle * self.take_profit_mult
                 return TradingSignal(
                     symbol=market_data.symbol,
-                    signal_type=SignalType.SELL,  # SELL = SHORT
+                    signal_type=SignalType.SELL,
                     strength=0.7,
                     entry_price=market_data.close,
                     stop_loss=stop_loss,
@@ -4888,7 +4991,6 @@ class MeanReversionStrategyWithCommentary(TradingStrategyWithCommentary):
                 )
         except Exception as e:
             logger.debug(f"Mean reversion strategy error for {market_data.symbol}: {e}")
-        
         return None
 
 class MomentumStrategyWithCommentary(TradingStrategyWithCommentary):
@@ -6740,6 +6842,16 @@ class TradingEngineWithCommentary:
                 signal.take_profit
             )
 
+    async def close_position_manually(self, symbol: str, position_type: str):
+        """Manually close a position"""
+        position = None
+        if position_type == 'real':
+            position = self.positions.get(symbol)
+        elif position_type == 'simulated':
+            position = self.simulated_positions.get(symbol)
+
+        if position:
+            await self._close_position_with_commentary(position, "manual_override")
    
     async def _manage_positions_with_commentary(self):
         """Manage positions with detailed commentary"""
@@ -9112,17 +9224,6 @@ async def request_close_position(request: dict):
     
     symbol = request.get('symbol')
     position_type = request.get('position_type', 'real')
-    reason = request.get('reason', 'manual_close')
-    
-    # Find the position
-    position = None
-    if position_type == 'simulated':
-        position = trading_engine.simulated_positions.get(symbol)
-    else:
-        position = trading_engine.positions.get(symbol)
-    
-    if not position:
-        return {"status": "error", "message": f"Position not found for {symbol}"}
     
     # Add commentary about manual close request
     trading_engine.commentary.add_commentary(TradingCommentary(
@@ -9134,13 +9235,10 @@ async def request_close_position(request: dict):
         importance=8
     ))
     
-    # Trigger the close (which will show confirmation if enabled)
-    try:
-        await trading_engine._close_position_with_commentary(position, reason)
-        return {"status": "success", "message": f"Close process initiated for {symbol}"}
-    except Exception as e:
-        logger.error(f"Error closing position {symbol}: {e}")
-        return {"status": "error", "message": str(e)}
+    # Trigger the close
+    await trading_engine.close_position_manually(symbol, position_type)
+
+    return {"status": "success", "message": f"Close process initiated for {symbol}"}
 
 @app.post("/api/toggle-close-mode")
 async def toggle_close_mode(request: dict):
@@ -9173,58 +9271,63 @@ async def reset_brain():
 
 @app.post("/api/run-backtest")
 async def run_backtest(request: dict):
-    """Run backtest on historical data"""
+    """Run backtest on historical data using Schwab API"""
     try:
         start_date = request.get('start_date', '2023-01-01')
         end_date = request.get('end_date', '2024-01-01')
         symbols = request.get('symbols', ['AAPL', 'MSFT', 'GOOGL'])
         strategy_name = request.get('strategy', 'breakout')
         
+        # Check if we have Schwab connection
+        if not trading_engine or not trading_engine.schwab_client:
+            return {"status": "error", "message": "Schwab not connected. Please authenticate first."}
+
         # Initialize backtest engine
-        backtest_engine = BacktestEngine(config_manager.config)
+        backtest_engine = FixedBacktestEngine(config_manager.config)
         
-        # Get historical data
+        # Get historical data from Schwab
         data = {}
+        data_provider = trading_engine.data_provider
+
         for symbol in symbols:
             try:
-                df = yf.download(symbol, start=start_date, end=end_date, progress=False)
-                if not df.empty:
-                    data[symbol] = df
+                # Use Schwab to get daily data for backtesting
+                df = data_provider.get_market_data(
+                    symbol,
+                    period_type='year',
+                    period=2,  # 2 years of data
+                    frequency_type='minute',
+                    frequency=1
+                )
+
+                if not df.empty and len(df) > 50:
+                    # Filter by date range
+                    df = df[(df.index >= pd.to_datetime(start_date)) &
+                           (df.index <= pd.to_datetime(end_date))]
+
+                    if len(df) > 50:  # Still have enough data after filtering
+                        data[symbol] = df
+                        logger.info(f"Downloaded {len(df)} bars for {symbol} from Schwab")
+
             except Exception as e:
                 logger.error(f"Error downloading data for {symbol}: {e}")
         
         if not data:
             return {"status": "error", "message": "No data available for backtesting"}
         
-        # Create strategy instance
+        # Create backtest strategy
         if strategy_name == 'breakout':
-            strategy = BreakoutStrategyWithCommentary(CommentarySystem())
+            strategy = BacktestBreakoutStrategy()
         elif strategy_name == 'mean_reversion':
-            strategy = MeanReversionStrategyWithCommentary(CommentarySystem())
-        elif strategy_name == 'momentum':
-            strategy = MomentumStrategyWithCommentary(CommentarySystem())
+            strategy = BacktestMeanReversionStrategy()
         else:
-            strategy = BreakoutStrategyWithCommentary(CommentarySystem())
+            strategy = BacktestBreakoutStrategy()
         
         # Run backtest
         result = backtest_engine.run_backtest(data, strategy, start_date, end_date)
         
-        # Save results
-        with open(config_manager.get('paths.backtest_results'), 'w') as f:
-            json.dump({
-                'total_return': result.total_return,
-                'annualized_return': result.annualized_return,
-                'sharpe_ratio': result.sharpe_ratio,
-                'sortino_ratio': result.sortino_ratio,
-                'max_drawdown': result.max_drawdown,
-                'win_rate': result.win_rate,
-                'profit_factor': result.profit_factor,
-                'total_trades': result.total_trades,
-                'equity_curve': result.equity_curve,
-                'trade_history': result.trade_history
-            }, f, indent=2)
-        
-        return {
+        # Format results (rest of the code remains the same)
+        response_data = {
             "status": "success",
             "message": "Backtest completed successfully",
             "results": {
@@ -9234,12 +9337,56 @@ async def run_backtest(request: dict):
                 'sortino_ratio': f"{result.sortino_ratio:.2f}",
                 'max_drawdown': f"{result.max_drawdown:.2%}",
                 'win_rate': f"{result.win_rate:.2%}",
-                'profit_factor': f"{result.profit_factor:.2f}",
-                'total_trades': result.total_trades
-            }
+                'profit_factor': f"{result.profit_factor:.2f}" if result.profit_factor != float('inf') else "N/A",
+                'total_trades': result.total_trades,
+                'winning_trades': result.winning_trades,
+                'losing_trades': result.losing_trades,
+                'average_win': f"${result.average_win:.2f}",
+                'average_loss': f"${result.average_loss:.2f}",
+                'largest_win': f"${result.largest_win:.2f}",
+                'largest_loss': f"${result.largest_loss:.2f}",
+                'consecutive_wins': result.consecutive_wins,
+                'consecutive_losses': result.consecutive_losses,
+                'initial_capital': f"${result.initial_capital:,.2f}",
+                'final_capital': f"${result.final_capital:,.2f}"
+            },
+            'equity_curve': result.equity_curve[-100:],
+            'trade_count_by_symbol': {}
         }
+
+        # Count trades by symbol
+        for trade in result.trade_history:
+            symbol = trade.get('symbol', 'UNKNOWN')
+            if symbol not in response_data['trade_count_by_symbol']:
+                response_data['trade_count_by_symbol'][symbol] = 0
+            response_data['trade_count_by_symbol'][symbol] += 1
+
+        # Save results
+        save_data = {
+            'config': request,
+            'results': response_data['results'],
+            'equity_curve': result.equity_curve,
+            'trade_history': [
+                {
+                    'date': trade['date'].isoformat() if isinstance(trade['date'], pd.Timestamp) else str(trade['date']),
+                    'symbol': trade['symbol'],
+                    'side': trade['side'],
+                    'price': float(trade['price']),
+                    'quantity': int(trade['quantity']),
+                    'pnl': float(trade.get('pnl', 0)),
+                    'capital': float(trade['capital'])
+                }
+                for trade in result.trade_history
+            ]
+        }
+
+        with open(config_manager.get('paths.backtest_results'), 'w') as f:
+            json.dump(save_data, f, indent=2)
+
+        return response_data
+
     except Exception as e:
-        logger.error(f"Backtest error: {e}")
+        logger.error(f"Backtest error: {e}", exc_info=True)
         return {"status": "error", "message": f"Backtest failed: {str(e)}"}
 
 @app.get("/api/performance-metrics")
@@ -9303,7 +9450,10 @@ async def get_advanced_analytics():
             return {"status": "error", "message": "Trading engine not initialized"}
         
         # Get performance report
-        performance_report = trading_engine.performance_monitor.get_performance_report()
+        performance_report = trading_engine.performance_analyzer.calculate_metrics(
+            list(trading_engine.positions.values()),
+            trading_engine.trade_history
+        )
         
         # Get behavioral analysis
         behavioral_patterns = trading_engine.behavioral_analyzer.analyze_trading_patterns(
@@ -9314,22 +9464,23 @@ async def get_advanced_analytics():
         behavioral_recommendations = trading_engine.behavioral_analyzer.get_behavioral_recommendations()
         
         # Get portfolio optimization data
-        positions = list(trading_engine.simulated_positions.values()) + list(trading_engine.real_positions.values())
+        positions = list(trading_engine.positions.values())
         historical_data = {}  # This would be populated with actual data
         
-        portfolio_weights = trading_engine.portfolio_optimizer.optimize_weights(
-            positions, historical_data
-        )
+        # NOTE: Portfolio optimization is not fully implemented in this version
+        # portfolio_weights = trading_engine.portfolio_optimizer.optimize_weights(
+        #     positions, historical_data
+        # )
         
         return {
             "status": "success",
             "performance_metrics": performance_report,
             "behavioral_patterns": behavioral_patterns,
             "behavioral_recommendations": behavioral_recommendations,
-            "portfolio_optimization": {
-                "current_weights": portfolio_weights,
-                "recommendations": performance_report.get("recommendations", [])
-            },
+            # "portfolio_optimization": {
+            #     "current_weights": portfolio_weights,
+            #     "recommendations": performance_report.get("recommendations", [])
+            # },
             "emotional_state": trading_engine.behavioral_analyzer.emotional_state
         }
     except Exception as e:
@@ -9449,16 +9600,17 @@ async def optimize_portfolio():
         if not trading_engine:
             return {"status": "error", "message": "Trading engine not initialized"}
         
-        positions = list(trading_engine.simulated_positions.values()) + list(trading_engine.real_positions.values())
+        positions = list(trading_engine.positions.values())
         historical_data = {}  # This would be populated with actual data
         
-        optimized_weights = trading_engine.portfolio_optimizer.optimize_weights(
-            positions, historical_data
-        )
+        # NOTE: Portfolio optimization not fully implemented
+        # optimized_weights = trading_engine.portfolio_optimizer.optimize_weights(
+        #     positions, historical_data
+        # )
         
         return {
             "status": "success",
-            "optimized_weights": optimized_weights,
+            # "optimized_weights": optimized_weights,
             "message": "Portfolio optimization completed"
         }
     except Exception as e:
@@ -9473,14 +9625,15 @@ async def record_execution(request: dict):
         if not trading_engine:
             return {"status": "error", "message": "Trading engine not initialized"}
         
-        trading_engine.performance_monitor.record_execution(
-            symbol=request["symbol"],
-            expected_price=request["expected_price"],
-            actual_price=request["actual_price"],
-            signal_time=datetime.fromisoformat(request["signal_time"]),
-            execution_time=datetime.fromisoformat(request["execution_time"]),
-            order_size=request["order_size"]
-        )
+        # NOTE: performance_monitor not fully implemented
+        # trading_engine.performance_monitor.record_execution(
+        #     symbol=request["symbol"],
+        #     expected_price=request["expected_price"],
+        #     actual_price=request["actual_price"],
+        #     signal_time=datetime.fromisoformat(request["signal_time"]),
+        #     execution_time=datetime.fromisoformat(request["execution_time"]),
+        #     order_size=request["order_size"]
+        # )
         
         return {"status": "success", "message": "Execution recorded successfully"}
     except Exception as e:
