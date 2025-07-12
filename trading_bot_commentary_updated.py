@@ -8673,14 +8673,14 @@ DASHBOARD_HTML_WITH_COMMENTARY = """
                         <tr>
                             <td style="font-weight: bold;">${pos.symbol}</td>
                             <td>${pos.quantity > 0 ? pos.quantity : Math.abs(pos.quantity)} ${pos.quantity < 0 ? '(short)' : ''}</td>
-                            <td>$${pos.entry_price.toFixed(2)}</td>
+                            <td>$${pos.average_price.toFixed(2)}</td>
                             <td>$${pos.current_price.toFixed(2)}</td>
                             <td>$${pos.market_value.toLocaleString()}</td>
                             <td class="${pos.day_pnl >= 0 ? 'positive' : 'negative'}">
                                 $${pos.day_pnl.toFixed(2)}
                             </td>
-                            <td class="${pos.unrealized_pnl >= 0 ? 'positive' : 'negative'}">
-                                $${pos.unrealized_pnl.toFixed(2)}
+                            <td class="${pos.total_pnl >= 0 ? 'positive' : 'negative'}">
+                                $${pos.total_pnl.toFixed(2)}
                             </td>
                             <td class="${pos.pnl_percent >= 0 ? 'positive' : 'negative'}">
                                 ${pos.pnl_percent >= 0 ? '+' : ''}${pos.pnl_percent.toFixed(2)}%
@@ -8699,7 +8699,7 @@ DASHBOARD_HTML_WITH_COMMENTARY = """
             if (data.simulated_positions) {
                 const tbody = document.getElementById('simulated-positions-body');
                 if (data.simulated_positions.length === 0) {
-                    tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; color: #666;">No simulated positions</td></tr>';
+                    tbody.innerHTML = '<tr><td colspan="8" style="text-align: center; color: #666;">No simulated positions</td></tr>';
                 } else {
                     tbody.innerHTML = data.simulated_positions.map(pos => `
                         <tr>
@@ -8711,6 +8711,11 @@ DASHBOARD_HTML_WITH_COMMENTARY = """
                             <td>$${pos.take_profit ? pos.take_profit.toFixed(2) : 'N/A'}</td>
                             <td class="${pos.unrealized_pnl >= 0 ? 'positive' : 'negative'}">
                                 $${pos.unrealized_pnl.toFixed(2)}
+                            </td>
+                            <td>
+                                <button class="close-button" onclick="requestClosePosition('${pos.symbol}', 'simulated')">
+                                    Close
+                                </button>
                             </td>
                         </tr>
                     `).join('');
@@ -8745,7 +8750,13 @@ DASHBOARD_HTML_WITH_COMMENTARY = """
             }
             if (data.screener) {
                 updateTickerTape(data.screener);
-            }   
+            }
+
+            if (data.real_positions) {
+                updateTickerTape(data.real_positions);
+            } else if (data.simulated_positions) {
+                updateTickerTape(data.simulated_positions);
+            }
         }
         
         async function requestClosePosition(symbol, positionType) {
@@ -8966,32 +8977,42 @@ DASHBOARD_HTML_WITH_COMMENTARY = """
             }
         }
         // Add this function to update the ticker tape
-        function updateTickerTape(screenerData) {
-            if (!screenerData || screenerData.length === 0) return;
+        function updateTickerTape(data) {
+            if (!data || data.length === 0) return;
             
             const tickerContent = document.getElementById('ticker-content');
             
-            // Create ticker HTML
-            let tickerHTML = '';
-            
-            // Duplicate the list for seamless scrolling
-            //const items = [...screenerData, ...screenerData];
-            
-            screenerData.forEach(stock => {
-                const changeClass = stock.change >= 0 ? 'positive' : 'negative';
-                const changeSymbol = stock.change >= 0 ? '+' : '';
+            data.forEach(stock => {
+                const existingEl = document.getElementById(`ticker-${stock.symbol}`);
+                const pnl_percent = stock.pnl_percent || stock.unrealized_pnl / (stock.entry_price * stock.quantity) * 100 || 0;
+                const current_price = stock.current_price || stock.last || 0;
+                const volatility = stock.volatility || 'N/A';
+                const changeClass = pnl_percent >= 0 ? 'positive' : 'negative';
+                const changeSymbol = pnl_percent >= 0 ? '+' : '';
                 
-                tickerHTML += `
-                    <div class="ticker-item">
-                        <span class="ticker-symbol">${stock.symbol}</span>
-                        <span class="ticker-price">$${stock.last.toFixed(2)}</span>
-                        <span class="ticker-change ${changeClass}">${changeSymbol}${stock.change.toFixed(2)}%</span>
-                        <span class="ticker-volatility">⚡${stock.volatility.toFixed(1)}%</span>
-                    </div>
-                `;
+                if (existingEl) {
+                    // Update existing element
+                    existingEl.querySelector('.ticker-price').textContent = `$${current_price.toFixed(2)}`;
+                    const changeEl = existingEl.querySelector('.ticker-change');
+                    changeEl.textContent = `${changeSymbol}${pnl_percent.toFixed(2)}%`;
+                    changeEl.className = `ticker-change ${changeClass}`;
+
+                    // Add animation
+                    existingEl.classList.add('price-updated');
+                    setTimeout(() => existingEl.classList.remove('price-updated'), 500);
+                } else {
+                    // Add new element
+                    const tickerHTML = `
+                        <div class="ticker-item" id="ticker-${stock.symbol}">
+                            <span class="ticker-symbol">${stock.symbol}</span>
+                            <span class="ticker-price">$${current_price.toFixed(2)}</span>
+                            <span class="ticker-change ${changeClass}">${changeSymbol}${pnl_percent.toFixed(2)}%</span>
+                            <span class="ticker-volatility">⚡${volatility}%</span>
+                        </div>
+                    `;
+                    tickerContent.insertAdjacentHTML('beforeend', tickerHTML);
+                }
             });
-            
-            tickerContent.innerHTML = tickerHTML;
         }
 
         // Connect on load
