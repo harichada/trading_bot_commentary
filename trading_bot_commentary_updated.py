@@ -928,7 +928,7 @@ class MarketNeutralStrategies:
 class ConfigManager:
     """Manages configuration loading and validation"""
     
-    def __init__(self, config_path: str = "Config().yaml"):
+    def __init__(self, config_path: str = "Config.yaml"):
         self.config_path = Path(config_path)
         self.config = self._load_config()
         self._validate_config()
