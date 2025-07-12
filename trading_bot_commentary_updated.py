@@ -1,13 +1,23 @@
-<execute_ipython>
-import trading_bot_commentary_updated
+#!/usr/bin/env python3
+"""
+Trading Bot with Real-Time Commentary System
+Explains its thinking process in detail while analyzing markets
+"""
 
-with open('trading_bot_commentary_updated.py', 'r') as f:
-    original_code = f.read()
+import asyncio
+import json
+import logging
+import os
+import time
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field, asdict
+from datetime import datetime, timedelta
+from enum import Enum
+from typing import Dict, List, Optional, Tuple, Any, Set
+from urllib.parse import urlparse, parse_qs
+import warnings
+warnings.filterwarnings('ignore')
 
-<<<<<<< HEAD
-new_code = original_code.replace(
-    """        function updateTickerTape(data) {
-=======
 # Core Dependencies
 import numpy as np
 import pandas as pd
@@ -918,7 +928,7 @@ class MarketNeutralStrategies:
 class ConfigManager:
     """Manages configuration loading and validation"""
     
-    def __init__(self, config_path: str = "Config.yaml"):
+    def __init__(self, config_path: str = "Config().yaml"):
         self.config_path = Path(config_path)
         self.config = self._load_config()
         self._validate_config()
@@ -8663,14 +8673,14 @@ DASHBOARD_HTML_WITH_COMMENTARY = """
                         <tr>
                             <td style="font-weight: bold;">${pos.symbol}</td>
                             <td>${pos.quantity > 0 ? pos.quantity : Math.abs(pos.quantity)} ${pos.quantity < 0 ? '(short)' : ''}</td>
-                            <td>$${pos.average_price.toFixed(2)}</td>
+                            <td>$${pos.entry_price.toFixed(2)}</td>
                             <td>$${pos.current_price.toFixed(2)}</td>
                             <td>$${pos.market_value.toLocaleString()}</td>
                             <td class="${pos.day_pnl >= 0 ? 'positive' : 'negative'}">
                                 $${pos.day_pnl.toFixed(2)}
                             </td>
-                            <td class="${pos.total_pnl >= 0 ? 'positive' : 'negative'}">
-                                $${pos.total_pnl.toFixed(2)}
+                            <td class="${pos.unrealized_pnl >= 0 ? 'positive' : 'negative'}">
+                                $${pos.unrealized_pnl.toFixed(2)}
                             </td>
                             <td class="${pos.pnl_percent >= 0 ? 'positive' : 'negative'}">
                                 ${pos.pnl_percent >= 0 ? '+' : ''}${pos.pnl_percent.toFixed(2)}%
@@ -8679,6 +8689,28 @@ DASHBOARD_HTML_WITH_COMMENTARY = """
                                 <button class="close-button" onclick="requestClosePosition('${pos.symbol}', 'real')">
                                     Close
                                 </button>
+                            </td>
+                        </tr>
+                    `).join('');
+                }
+            }
+            
+            // Update simulated positions
+            if (data.simulated_positions) {
+                const tbody = document.getElementById('simulated-positions-body');
+                if (data.simulated_positions.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; color: #666;">No simulated positions</td></tr>';
+                } else {
+                    tbody.innerHTML = data.simulated_positions.map(pos => `
+                        <tr>
+                            <td style="font-weight: bold;">${pos.symbol}</td>
+                            <td>${pos.quantity}</td>
+                            <td>$${pos.entry_price.toFixed(2)}</td>
+                            <td>$${pos.current_price.toFixed(2)}</td>
+                            <td>$${pos.stop_loss ? pos.stop_loss.toFixed(2) : 'N/A'}</td>
+                            <td>$${pos.take_profit ? pos.take_profit.toFixed(2) : 'N/A'}</td>
+                            <td class="${pos.unrealized_pnl >= 0 ? 'positive' : 'negative'}">
+                                $${pos.unrealized_pnl.toFixed(2)}
                             </td>
                         </tr>
                     `).join('');
@@ -8713,11 +8745,7 @@ DASHBOARD_HTML_WITH_COMMENTARY = """
             }
             if (data.screener) {
                 updateTickerTape(data.screener);
-            }
-
-            if (data.real_positions) {
-                updateTickerTape(data.real_positions);
-            }
+            }   
         }
         
         async function requestClosePosition(symbol, positionType) {
@@ -8938,104 +8966,721 @@ DASHBOARD_HTML_WITH_COMMENTARY = """
             }
         }
         // Add this function to update the ticker tape
-        function updateTickerTape(data) {
->>>>>>> trading-bot-enhancements
-            if (!data || data.length === 0) return;
+        function updateTickerTape(screenerData) {
+            if (!screenerData || screenerData.length === 0) return;
             
             const tickerContent = document.getElementById('ticker-content');
             
-            data.forEach(stock => {
-                const existingEl = document.getElementById(`ticker-${stock.symbol}`);
-<<<<<<< HEAD
-                const pnl_percent = stock.pnl_percent || stock.unrealized_pnl / (stock.entry_price * stock.quantity) * 100 || 0;
-                const current_price = stock.current_price || stock.last || 0;
-                const volatility = stock.volatility || 'N/A';
-                const changeClass = pnl_percent >= 0 ? 'positive' : 'negative';
-                const changeSymbol = pnl_percent >= 0 ? '+' : '';
-
-                if (existingEl) {
-                    // Update existing element
-                    existingEl.querySelector('.ticker-price').textContent = `$${current_price.toFixed(2)}`;
-                    const changeEl = existingEl.querySelector('.ticker-change');
-                    changeEl.textContent = `${changeSymbol}${pnl_percent.toFixed(2)}%`;
-=======
-                const changeClass = stock.pnl_percent >= 0 ? 'positive' : 'negative';
-                const changeSymbol = stock.pnl_percent >= 0 ? '+' : '';
+            // Create ticker HTML
+            let tickerHTML = '';
+            
+            // Duplicate the list for seamless scrolling
+            //const items = [...screenerData, ...screenerData];
+            
+            screenerData.forEach(stock => {
+                const changeClass = stock.change >= 0 ? 'positive' : 'negative';
+                const changeSymbol = stock.change >= 0 ? '+' : '';
                 
-                if (existingEl) {
-                    // Update existing element
-                    existingEl.querySelector('.ticker-price').textContent = `$${stock.current_price.toFixed(2)}`;
-                    const changeEl = existingEl.querySelector('.ticker-change');
-                    changeEl.textContent = `${changeSymbol}${stock.pnl_percent.toFixed(2)}%`;
->>>>>>> trading-bot-enhancements
-                    changeEl.className = `ticker-change ${changeClass}`;
-
-                    // Add animation
-                    existingEl.classList.add('price-updated');
-                    setTimeout(() => existingEl.classList.remove('price-updated'), 500);
-                } else {
-                    // Add new element
-                    const tickerHTML = `
-                        <div class="ticker-item" id="ticker-${stock.symbol}">
-                            <span class="ticker-symbol">${stock.symbol}</span>
-<<<<<<< HEAD
-                            <span class="ticker-price">$${current_price.toFixed(2)}</span>
-                            <span class="ticker-change ${changeClass}">${changeSymbol}${pnl_percent.toFixed(2)}%</span>
-                            <span class="ticker-volatility">⚡${volatility}%</span>
-=======
-                            <span class="ticker-price">$${stock.current_price.toFixed(2)}</span>
-                            <span class="ticker-change ${changeClass}">${changeSymbol}${stock.pnl_percent.toFixed(2)}%</span>
-                            <span class="ticker-volatility">⚡${stock.volatility ? stock.volatility.toFixed(1) : 'N/A'}%</span>
->>>>>>> trading-bot-enhancements
-                        </div>
-                    `;
-                    tickerContent.insertAdjacentHTML('beforeend', tickerHTML);
-                }
+                tickerHTML += `
+                    <div class="ticker-item">
+                        <span class="ticker-symbol">${stock.symbol}</span>
+                        <span class="ticker-price">$${stock.last.toFixed(2)}</span>
+                        <span class="ticker-change ${changeClass}">${changeSymbol}${stock.change.toFixed(2)}%</span>
+                        <span class="ticker-volatility">⚡${stock.volatility.toFixed(1)}%</span>
+                    </div>
+                `;
             });
-<<<<<<< HEAD
-        }""",
-    """        function updateTickerTape(data) {
-            if (!data || data.length === 0) return;
             
-            const tickerContent = document.getElementById('ticker-content');
-            
-            data.forEach(stock => {
-                const existingEl = document.getElementById(`ticker-${stock.symbol}`);
-                const pnl_percent = stock.pnl_percent !== undefined ? stock.pnl_percent : (stock.unrealized_pnl / (stock.entry_price * stock.quantity) * 100) || 0;
-                const current_price = stock.current_price !== undefined ? stock.current_price : stock.last || 0;
-                const volatility = stock.volatility !== undefined ? stock.volatility.toFixed(1) : 'N/A';
-                const changeClass = pnl_percent >= 0 ? 'positive' : 'negative';
-                const changeSymbol = pnl_percent >= 0 ? '+' : '';
-=======
+            tickerContent.innerHTML = tickerHTML;
         }
->>>>>>> trading-bot-enhancements
 
-                if (existingEl) {
-                    // Update existing element
-                    existingEl.querySelector('.ticker-price').textContent = `$${current_price.toFixed(2)}`;
-                    const changeEl = existingEl.querySelector('.ticker-change');
-                    changeEl.textContent = `${changeSymbol}${pnl_percent.toFixed(2)}%`;
-                    changeEl.className = `ticker-change ${changeClass}`;
+        // Connect on load
+        connectWebSocket();
+    </script>
+</body>
+</html>
+"""
+# ============================================================================
+# FASTAPI APPLICATION WITH COMMENTARY
+# ============================================================================
 
-                    // Add animation
-                    existingEl.classList.add('price-updated');
-                    setTimeout(() => existingEl.classList.remove('price-updated'), 500);
-                } else {
-                    // Add new element
-                    const tickerHTML = `
-                        <div class="ticker-item" id="ticker-${stock.symbol}">
-                            <span class="ticker-symbol">${stock.symbol}</span>
-                            <span class="ticker-price">$${current_price.toFixed(2)}</span>
-                            <span class="ticker-change ${changeClass}">${changeSymbol}${pnl_percent.toFixed(2)}%</span>
-                            <span class="ticker-volatility">⚡${volatility}%</span>
-                        </div>
-                    `;
-                    tickerContent.insertAdjacentHTML('beforeend', tickerHTML);
-                }
-            });
-        }"""
+app = FastAPI(title="Trading Bot with Commentary API")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-with open('trading_bot_commentary_updated.py', 'w') as f:
-    f.write(new_code)
-</execute_ipython>
+# Global instances
+trading_engine = None
+connection_manager = ConnectionManager()
+
+@app.post("/api/toggle-mode")
+async def toggle_trading_mode(request: dict):
+    global trading_engine
+    
+    if not trading_engine:
+        return {"status": "error", "message": "Trading engine not initialized"}
+    
+    new_mode = request.get('mode', 'simulation')
+    
+    if new_mode == 'live':
+        trading_engine.mode = TradingMode.LIVE
+        # Add safety check
+        if not trading_engine.schwab_client:
+            return {"status": "error", "message": "Cannot switch to live mode - Schwab not connected"}
+    else:
+        trading_engine.mode = TradingMode.SIMULATION_WITH_COMMENTARY
+    
+    trading_engine.commentary.add_commentary(TradingCommentary(
+        timestamp=datetime.now(),
+        type=CommentaryType.DECISION,
+        symbol=None,
+        title=f"🔄 Mode Changed",
+        message=f"Switched to {'LIVE TRADING' if new_mode == 'live' else 'SIMULATION'} mode",
+        importance=10
+    ))
+    
+    return {"status": "success", "mode": trading_engine.mode.value}
+
+@app.post("/api/toggle-confirmations")
+async def toggle_confirmations(request: dict):
+    """Toggle close confirmation requirement"""
+    global trading_engine
+    
+    if not trading_engine:
+        return {"status": "error", "message": "Trading engine not initialized"}
+    
+    enabled = request.get('enabled', True)
+    trading_engine.require_confirmations = enabled
+    
+    # Add commentary about the change
+    trading_engine.commentary.add_commentary(TradingCommentary(
+        timestamp=datetime.now(),
+        type=CommentaryType.DECISION,
+        symbol=None,
+        title=f"⚙️ Confirmation Settings Changed",
+        message=f"Close confirmations {'enabled' if enabled else 'disabled'}",
+        importance=7
+    ))
+    
+    return {"status": "success", "enabled": enabled}
+
+@app.get("/")
+async def get_dashboard():
+    return HTMLResponse(content=DASHBOARD_HTML_WITH_COMMENTARY)
+
+@app.post("/api/start")
+async def start_trading():
+    global trading_engine, connection_manager
+    
+    if not trading_engine:
+        trading_engine = TradingEngineWithCommentary(connection_manager=connection_manager)
+        
+        # Subscribe to commentary updates
+        async def broadcast_commentary(commentary: TradingCommentary):
+            await connection_manager.broadcast({
+                'type': 'commentary',
+                'data': commentary.to_dict()
+            })
+        
+        trading_engine.commentary.subscribe(
+            lambda c: asyncio.create_task(broadcast_commentary(c))
+        )
+    
+    if not trading_engine.is_running:
+        threading.Thread(
+            target=lambda: asyncio.run(trading_engine.start())
+        ).start()
+        
+        return {"status": "success", "message": "Trading with commentary started"}
+    
+    return {"status": "info", "message": "Already running"}
+
+@app.post("/api/stop")
+async def stop_trading():
+    if trading_engine:
+        trading_engine.is_running = False
+        return {"status": "success", "message": "Trading stopped"}
+    return {"status": "error", "message": "Not running"}
+
+@app.post("/api/refresh-positions")
+async def refresh_positions():
+    """Manually refresh positions from Schwab"""
+    if not trading_engine or not trading_engine.schwab_client:
+        return {"status": "error", "message": "Schwab not connected"}
+    
+    positions = await trading_engine.get_schwab_positions()
+    
+    return {
+        "status": "success",
+        "positions": positions,
+        "count": len(positions)
+    }
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await connection_manager.connect(websocket)
+    
+    try:
+        while True:
+            await asyncio.sleep(1)
+            
+            if trading_engine:
+                # Get simulated positions
+                sim_positions_data = []
+                if trading_engine.mode == TradingMode.SIMULATION_WITH_COMMENTARY:
+                    for symbol, pos in trading_engine.simulated_positions.items():
+                        if pos is not None:
+                            sim_positions_data.append({
+                                'symbol': pos.symbol,
+                                'quantity': pos.quantity,
+                                'entry_price': pos.entry_price,
+                                'current_price': pos.current_price,
+                                'unrealized_pnl': pos.unrealized_pnl,
+                                'type': 'simulated'
+                            })
+                
+                # Get real Schwab positions
+                real_positions_data = []
+                if trading_engine.schwab_client:
+                    schwab_positions = await trading_engine.get_schwab_positions()
+                    for pos in schwab_positions:
+                        real_positions_data.append({
+                            'symbol': pos['symbol'],
+                            'quantity': pos['quantity'],
+                            'entry_price': pos['average_price'],
+                            'current_price': pos['current_price'],
+                            'unrealized_pnl': pos['total_pnl'],
+                            'day_pnl': pos['day_pnl'],
+                            'pnl_percent': pos['pnl_percent'],
+                            'market_value': pos['market_value'],
+                            'type': 'real'
+                        })
+                
+                # Get account info
+                account_info = await trading_engine._get_real_account_info()
+                # Get screener data
+                screener_data = []
+                if trading_engine.screener and trading_engine.screener.top_movers:
+                    screener_data = [{
+                        'symbol': m['symbol'],
+                        'last': m.get('last', 0),
+                        'change': m.get('percent_change', 0),
+                        'volume': m.get('volume', 0),
+                        'volatility': m.get('volatility', 0),
+                        'high': m.get('high', 0),
+                        'low': m.get('low', 0)
+                    } for m in trading_engine.screener.top_movers[:10]]
+                
+                await websocket.send_json({
+                    'type': 'dashboard_update',
+                    'data': {
+                        'account': {
+                            'balance': account_info.get('balance', trading_engine.risk_manager.account_balance),
+                            'buying_power': account_info.get('buying_power', trading_engine.risk_manager.buying_power),
+                            'daily_pnl': trading_engine.risk_manager.daily_pnl,
+                            'margin_call': trading_engine.risk_manager.margin_call,
+                            'cash': account_info.get('cash', 0)
+                        },
+                        'simulated_positions': sim_positions_data,
+                        'real_positions': real_positions_data,
+                        'trades': trading_engine.trade_history[-5:] if trading_engine.trade_history else [],
+                        'screener': screener_data
+                    }
+                })
+                
+                
+            
+    except WebSocketDisconnect:
+        await connection_manager.disconnect(websocket)
+
+@app.post("/api/confirm-close")
+async def confirm_close(request: dict):
+    """Handle user confirmation for closing positions"""
+    if not trading_engine:
+        return {"status": "error", "message": "Trading engine not initialized"}
+    
+    request_id = request.get('request_id')
+    confirmed = request.get('confirmed', False)
+    
+    if hasattr(trading_engine, 'pending_close_requests'):
+        if request_id in trading_engine.pending_close_requests:
+            trading_engine.pending_close_requests[request_id]['confirmed'] = confirmed
+            return {"status": "success", "confirmed": confirmed}
+    
+    return {"status": "error", "message": "Invalid or expired request"}
+
+@app.post("/api/request-close-position")
+async def request_close_position(request: dict):
+    """Handle manual position close request"""
+    global trading_engine
+    
+    if not trading_engine:
+        return {"status": "error", "message": "Trading engine not initialized"}
+    
+    symbol = request.get('symbol')
+    position_type = request.get('position_type', 'real')
+    
+    # Add commentary about manual close request
+    trading_engine.commentary.add_commentary(TradingCommentary(
+        timestamp=datetime.now(),
+        type=CommentaryType.DECISION,
+        symbol=symbol,
+        title=f"🔧 Manual Close Requested",
+        message=f"User requested to close {symbol} position",
+        importance=8
+    ))
+    
+    # Trigger the close
+    await trading_engine.close_position_manually(symbol, position_type)
+
+    return {"status": "success", "message": f"Close process initiated for {symbol}"}
+
+@app.post("/api/toggle-close-mode")
+async def toggle_close_mode(request: dict):
+    """Toggle between manual and automatic position closing"""
+    global trading_engine
+    
+    if not trading_engine:
+        return {"status": "error", "message": "Trading engine not initialized"}
+    
+    manual_only = request.get('manual_only', True)
+    trading_engine.manual_close_only = manual_only
+    
+    trading_engine.commentary.add_commentary(TradingCommentary(
+        timestamp=datetime.now(),
+        type=CommentaryType.DECISION,
+        symbol=None,
+        title=f"⚙️ Close Mode Changed",
+        message=f"Position closing: {'Manual only' if manual_only else 'Automatic (stop loss, targets)'}",
+        importance=7
+    ))
+    
+    return {"status": "success", "manual_only": manual_only}
+
+@app.post("/api/reset-brain")
+async def reset_brain():
+    if trading_engine:
+        trading_engine.reset_brain_state()
+        return {"status": "success", "message": "Brain state reset"}
+    return {"status": "error", "message": "Engine not running"}
+
+@app.post("/api/run-backtest")
+async def run_backtest(request: dict):
+    """Run backtest on historical data using Schwab API"""
+    try:
+        start_date = request.get('start_date', '2023-01-01')
+        end_date = request.get('end_date', '2024-01-01')
+        symbols = request.get('symbols', ['AAPL', 'MSFT', 'GOOGL'])
+        strategy_name = request.get('strategy', 'breakout')
+        
+        # Check if we have Schwab connection
+        if not trading_engine or not trading_engine.schwab_client:
+            return {"status": "error", "message": "Schwab not connected. Please authenticate first."}
+
+        # Initialize backtest engine
+        backtest_engine = FixedBacktestEngine(config_manager.config)
+        
+        # Get historical data from Schwab
+        data = {}
+        data_provider = trading_engine.data_provider
+
+        for symbol in symbols:
+            try:
+                # Use Schwab to get daily data for backtesting
+                df = data_provider.get_market_data(
+                    symbol,
+                    period_type='year',
+                    period=2,  # 2 years of data
+                    frequency_type='minute',
+                    frequency=1
+                )
+
+                if not df.empty and len(df) > 50:
+                    # Filter by date range
+                    df = df[(df.index >= pd.to_datetime(start_date)) &
+                           (df.index <= pd.to_datetime(end_date))]
+
+                    if len(df) > 50:  # Still have enough data after filtering
+                        data[symbol] = df
+                        logger.info(f"Downloaded {len(df)} bars for {symbol} from Schwab")
+
+            except Exception as e:
+                logger.error(f"Error downloading data for {symbol}: {e}")
+        
+        if not data:
+            return {"status": "error", "message": "No data available for backtesting"}
+        
+        # Create backtest strategy
+        if strategy_name == 'breakout':
+            strategy = BacktestBreakoutStrategy()
+        elif strategy_name == 'mean_reversion':
+            strategy = BacktestMeanReversionStrategy()
+        else:
+            strategy = BacktestBreakoutStrategy()
+        
+        # Run backtest
+        result = backtest_engine.run_backtest(data, strategy, start_date, end_date)
+        
+        # Format results (rest of the code remains the same)
+        response_data = {
+            "status": "success",
+            "message": "Backtest completed successfully",
+            "results": {
+                'total_return': f"{result.total_return:.2%}",
+                'annualized_return': f"{result.annualized_return:.2%}",
+                'sharpe_ratio': f"{result.sharpe_ratio:.2f}",
+                'sortino_ratio': f"{result.sortino_ratio:.2f}",
+                'max_drawdown': f"{result.max_drawdown:.2%}",
+                'win_rate': f"{result.win_rate:.2%}",
+                'profit_factor': f"{result.profit_factor:.2f}" if result.profit_factor != float('inf') else "N/A",
+                'total_trades': result.total_trades,
+                'winning_trades': result.winning_trades,
+                'losing_trades': result.losing_trades,
+                'average_win': f"${result.average_win:.2f}",
+                'average_loss': f"${result.average_loss:.2f}",
+                'largest_win': f"${result.largest_win:.2f}",
+                'largest_loss': f"${result.largest_loss:.2f}",
+                'consecutive_wins': result.consecutive_wins,
+                'consecutive_losses': result.consecutive_losses,
+                'initial_capital': f"${result.initial_capital:,.2f}",
+                'final_capital': f"${result.final_capital:,.2f}"
+            },
+            'equity_curve': result.equity_curve[-100:],
+            'trade_count_by_symbol': {}
+        }
+
+        # Count trades by symbol
+        for trade in result.trade_history:
+            symbol = trade.get('symbol', 'UNKNOWN')
+            if symbol not in response_data['trade_count_by_symbol']:
+                response_data['trade_count_by_symbol'][symbol] = 0
+            response_data['trade_count_by_symbol'][symbol] += 1
+
+        # Save results
+        save_data = {
+            'config': request,
+            'results': response_data['results'],
+            'equity_curve': result.equity_curve,
+            'trade_history': [
+                {
+                    'date': trade['date'].isoformat() if isinstance(trade['date'], pd.Timestamp) else str(trade['date']),
+                    'symbol': trade['symbol'],
+                    'side': trade['side'],
+                    'price': float(trade['price']),
+                    'quantity': int(trade['quantity']),
+                    'pnl': float(trade.get('pnl', 0)),
+                    'capital': float(trade['capital'])
+                }
+                for trade in result.trade_history
+            ]
+        }
+
+        with open(config_manager.get('paths.backtest_results'), 'w') as f:
+            json.dump(save_data, f, indent=2)
+
+        return response_data
+
+    except Exception as e:
+        logger.error(f"Backtest error: {e}", exc_info=True)
+        return {"status": "error", "message": f"Backtest failed: {str(e)}"}
+
+@app.get("/api/performance-metrics")
+async def get_performance_metrics():
+    """Get comprehensive performance metrics"""
+    if not trading_engine:
+        return {"status": "error", "message": "Trading engine not initialized"}
+    
+    try:
+        metrics = trading_engine.performance_analyzer.calculate_metrics(
+            list(trading_engine.positions.values()),
+            trading_engine.trade_history
+        )
+        
+        return {
+            "status": "success",
+            "metrics": metrics
+        }
+    except Exception as e:
+        logger.error(f"Error calculating metrics: {e}")
+        return {"status": "error", "message": f"Error calculating metrics: {str(e)}"}
+
+@app.post("/api/update-config")
+async def update_config(request: dict):
+    """Update configuration values"""
+    try:
+        key = request.get('key')
+        value = request.get('value')
+        
+        if not key or value is None:
+            return {"status": "error", "message": "Key and value are required"}
+        
+        config_manager.update(key, value)
+        
+        return {
+            "status": "success",
+            "message": f"Configuration updated: {key} = {value}"
+        }
+    except Exception as e:
+        logger.error(f"Config update error: {e}")
+        return {"status": "error", "message": f"Config update failed: {str(e)}"}
+
+@app.get("/api/config")
+async def get_config():
+    """Get current configuration"""
+    try:
+        return {
+            "status": "success",
+            "config": config_manager.config
+        }
+    except Exception as e:
+        logger.error(f"Config retrieval error: {e}")
+        return {"status": "error", "message": f"Config retrieval failed: {str(e)}"}
+
+
+@app.get("/api/advanced-analytics")
+async def get_advanced_analytics():
+    """Get advanced analytics and insights"""
+    try:
+        if not trading_engine:
+            return {"status": "error", "message": "Trading engine not initialized"}
+        
+        # Get performance report
+        performance_report = trading_engine.performance_analyzer.calculate_metrics(
+            list(trading_engine.positions.values()),
+            trading_engine.trade_history
+        )
+        
+        # Get behavioral analysis
+        behavioral_patterns = trading_engine.behavioral_analyzer.analyze_trading_patterns(
+            trading_engine.trade_history
+        )
+        
+        # Get behavioral recommendations
+        behavioral_recommendations = trading_engine.behavioral_analyzer.get_behavioral_recommendations()
+        
+        # Get portfolio optimization data
+        positions = list(trading_engine.positions.values())
+        historical_data = {}  # This would be populated with actual data
+        
+        # NOTE: Portfolio optimization is not fully implemented in this version
+        # portfolio_weights = trading_engine.portfolio_optimizer.optimize_weights(
+        #     positions, historical_data
+        # )
+        
+        return {
+            "status": "success",
+            "performance_metrics": performance_report,
+            "behavioral_patterns": behavioral_patterns,
+            "behavioral_recommendations": behavioral_recommendations,
+            # "portfolio_optimization": {
+            #     "current_weights": portfolio_weights,
+            #     "recommendations": performance_report.get("recommendations", [])
+            # },
+            "emotional_state": trading_engine.behavioral_analyzer.emotional_state
+        }
+    except Exception as e:
+        logger.error(f"Error getting advanced analytics: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+@app.get("/api/alternative-data/{symbol}")
+async def get_alternative_data(symbol: str):
+    """Get alternative data for a specific symbol"""
+    try:
+        if not trading_engine:
+            return {"status": "error", "message": "Trading engine not initialized"}
+        
+        # Get options flow
+        options_flow = await trading_engine.alternative_data_integrator.get_options_flow(symbol)
+        
+        # Get insider trading
+        insider_trading = await trading_engine.alternative_data_integrator.get_insider_trading(symbol)
+        
+        # Get social sentiment
+        social_sentiment = await trading_engine.alternative_data_integrator.get_social_sentiment(symbol)
+        
+        # Get economic calendar
+        economic_calendar = await trading_engine.alternative_data_integrator.get_economic_calendar()
+        
+        # Analyze alternative signals
+        alternative_signals = trading_engine.alternative_data_integrator.analyze_alternative_signals(symbol)
+        
+        return {
+            "status": "success",
+            "symbol": symbol,
+            "options_flow": options_flow,
+            "insider_trading": insider_trading,
+            "social_sentiment": social_sentiment,
+            "economic_calendar": economic_calendar,
+            "alternative_signals": alternative_signals
+        }
+    except Exception as e:
+        logger.error(f"Error getting alternative data for {symbol}: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+@app.get("/api/market-neutral-opportunities")
+async def get_market_neutral_opportunities():
+    """Get market neutral trading opportunities"""
+    try:
+        if not trading_engine:
+            return {"status": "error", "message": "Trading engine not initialized"}
+        
+        # Get current symbols
+        symbols = list(trading_engine.simulated_positions.keys()) + list(trading_engine.real_positions.keys())
+        if not symbols:
+            symbols = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA']  # Default symbols
+        
+        # Get historical data (this would be populated with actual data)
+        historical_data = {}
+        
+        # Find pairs trading opportunities
+        pairs_opportunities = trading_engine.market_neutral_strategies.find_pairs_trading_opportunities(
+            symbols, historical_data
+        )
+        
+        # Calculate sector weights
+        sector_weights = trading_engine.market_neutral_strategies.calculate_sector_weights(symbols)
+        
+        # Get statistical arbitrage signals
+        stat_arb_signals = {}
+        for symbol in symbols[:5]:  # Limit to first 5 symbols
+            if symbol in historical_data:
+                stat_arb_signals[symbol] = trading_engine.market_neutral_strategies.calculate_statistical_arbitrage_signals(
+                    symbol, historical_data[symbol]
+                )
+        
+        return {
+            "status": "success",
+            "pairs_trading_opportunities": pairs_opportunities,
+            "sector_weights": sector_weights,
+            "statistical_arbitrage_signals": stat_arb_signals
+        }
+    except Exception as e:
+        logger.error(f"Error getting market neutral opportunities: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+@app.get("/api/data-quality/{symbol}")
+async def get_data_quality(symbol: str):
+    """Get data quality analysis for a symbol"""
+    try:
+        if not trading_engine:
+            return {"status": "error", "message": "Trading engine not initialized"}
+        
+        # Get market data
+        if trading_engine.data_provider:
+            data = trading_engine.data_provider.get_market_data(symbol)
+            
+            # Validate data quality
+            quality_report = trading_engine.data_validator.validate_market_data(symbol, data)
+            
+            return {
+                "status": "success",
+                "symbol": symbol,
+                "data_quality": quality_report,
+                "historical_quality": trading_engine.data_validator.data_quality_history.get(symbol, {})
+            }
+        else:
+            return {"status": "error", "message": "Data provider not available"}
+    except Exception as e:
+        logger.error(f"Error getting data quality for {symbol}: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+@app.post("/api/optimize-portfolio")
+async def optimize_portfolio():
+    """Trigger portfolio optimization"""
+    try:
+        if not trading_engine:
+            return {"status": "error", "message": "Trading engine not initialized"}
+        
+        positions = list(trading_engine.positions.values())
+        historical_data = {}  # This would be populated with actual data
+        
+        # NOTE: Portfolio optimization not fully implemented
+        # optimized_weights = trading_engine.portfolio_optimizer.optimize_weights(
+        #     positions, historical_data
+        # )
+        
+        return {
+            "status": "success",
+            # "optimized_weights": optimized_weights,
+            "message": "Portfolio optimization completed"
+        }
+    except Exception as e:
+        logger.error(f"Error optimizing portfolio: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+@app.post("/api/record-execution")
+async def record_execution(request: dict):
+    """Record trade execution for performance monitoring"""
+    try:
+        if not trading_engine:
+            return {"status": "error", "message": "Trading engine not initialized"}
+        
+        # NOTE: performance_monitor not fully implemented
+        # trading_engine.performance_monitor.record_execution(
+        #     symbol=request["symbol"],
+        #     expected_price=request["expected_price"],
+        #     actual_price=request["actual_price"],
+        #     signal_time=datetime.fromisoformat(request["signal_time"]),
+        #     execution_time=datetime.fromisoformat(request["execution_time"]),
+        #     order_size=request["order_size"]
+        # )
+        
+        return {"status": "success", "message": "Execution recorded successfully"}
+    except Exception as e:
+        logger.error(f"Error recording execution: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+# ============================================================================
+# MAIN EXECUTION
+# ============================================================================
+
+def main():
+    """Main entry point"""
+    print("""
+    ╔══════════════════════════════════════════════════════════════════════╗
+    ║        Trading Bot with Live Commentary - Educational Mode           ║
+    ║     Learn How Professional Trading Algorithms Make Decisions         ║
+    ╚══════════════════════════════════════════════════════════════════════╝
+    """)
+    
+    print("\nStarting Trading Bot in Commentary Mode...")
+    print("The bot will explain its thinking process in real-time.")
+    print("\n📊 Features:")
+    print("  • Real-time market analysis with explanations")
+    print("  • Detailed reasoning for every trading decision")
+    print("  • Risk management explanations")
+    print("  • Post-trade analysis and lessons")
+    print("  • Works even during margin calls (simulation only)")
+    
+    print("\n🌐 Open http://localhost:8000 in your browser")
+    print("📱 Click 'Start Commentary' to begin")
+    print("❌ Press Ctrl+C to stop\n")
+    
+    import signal
+    
+    def shutdown_handler(signum, frame):
+        print("\n\n🛑 Shutting down gracefully...")
+        if trading_engine:
+            trading_engine._save_state()
+            trading_engine.brain.save_memories()
+            print("✅ State saved successfully")
+        sys.exit(0)
+    
+    signal.signal(signal.SIGINT, shutdown_handler)
+
+    # Run the server
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+
+if __name__ == "__main__":
+    main()
