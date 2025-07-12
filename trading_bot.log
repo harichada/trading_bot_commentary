@@ -1,0 +1,18 @@
+2025-07-12 13:27:56,085 - TradingBot - INFO - WebSocket connected. Total connections: 1
+2025-07-12 13:27:58,512 - TradingBot - INFO - WebSocket connected. Total connections: 2
+2025-07-12 13:28:01,185 - TradingBot - INFO - Loaded ML model v2.0 trained on 11421 samples
+2025-07-12 13:28:08,117 - TradingBot - INFO - Attempting to close position: TSLA, mode: TradingMode.SIMULATION_WITH_COMMENTARY
+2025-07-12 13:28:35,053 - TradingBot - INFO - WebSocket connected. Total connections: 1
+2025-07-12 13:28:36,631 - TradingBot - INFO - WebSocket connected. Total connections: 2
+2025-07-12 13:28:38,656 - TradingBot - INFO - Loaded 1 trading memories
+2025-07-12 13:28:39,378 - TradingBot - INFO - Loaded ML model v2.0 trained on 11421 samples
+2025-07-12 13:28:39,384 - TradingBot - INFO - Loaded 1 trading memories
+2025-07-12 13:28:42,118 - TradingBot - INFO - WebSocket disconnected. Total connections: 1
+2025-07-12 13:29:13,206 - TradingBot - INFO - Attempting to close position: RIOT, mode: TradingMode.SIMULATION_WITH_COMMENTARY
+2025-07-12 13:32:36,769 - TradingBot - INFO - WebSocket connected. Total connections: 1
+2025-07-12 13:32:38,613 - TradingBot - INFO - WebSocket connected. Total connections: 2
+2025-07-12 13:32:39,712 - TradingBot - INFO - Loaded 2 trading memories
+2025-07-12 13:32:40,176 - TradingBot - INFO - Loaded ML model v2.0 trained on 11421 samples
+2025-07-12 13:32:40,182 - TradingBot - INFO - Loaded 2 trading memories
+2025-07-12 13:32:40,596 - TradingBot - INFO - WebSocket disconnected. Total connections: 1
+2025-07-12 13:33:14,329 - TradingBot - INFO - Attempting to close position: RIOT, mode: TradingMode.SIMULATION_WITH_COMMENTARY

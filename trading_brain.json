@@ -1,0 +1,141 @@
+{
+  "memories": [
+    {
+      "timestamp": "2025-07-12T13:28:08.119189",
+      "symbol": "TSLA",
+      "pattern": "free_news_sentiment",
+      "outcome": "loss",
+      "lesson": "Ouch. TSLA completely reversed. Need to respect the trend more.",
+      "confidence_adjustment": -0.02,
+      "context": {
+        "exit_reason": "stop_loss",
+        "holding_time": 0.060184433333333336,
+        "max_profit": -845.2318766401132,
+        "market_conditions": {
+          "vix": 13.785744860435553,
+          "market_trend": "neutral",
+          "breadth": {
+            "advance_decline": -0.8448138984410516,
+            "new_highs": 158,
+            "new_lows": 99,
+            "vix": 13.785744860435553,
+            "put_call_ratio": 1.1834349726889382
+          },
+          "economic_events": [],
+          "gaps": {}
+        }
+      }
+    },
+    {
+      "timestamp": "2025-07-12T13:29:13.209770",
+      "symbol": "RIOT",
+      "pattern": "free_news_sentiment",
+      "outcome": "loss",
+      "lesson": "RIOT didn't follow through. Need to watch for false breakouts here.",
+      "confidence_adjustment": -0.01,
+      "context": {
+        "exit_reason": "stop_loss",
+        "holding_time": 0.018917866666666668,
+        "max_profit": 0.0,
+        "market_conditions": {
+          "vix": 16.4,
+          "market_trend": "neutral",
+          "breadth": {
+            "advance_decline": 0,
+            "new_highs": 0,
+            "new_lows": 0,
+            "vix": 16.4,
+            "put_call_ratio": 1.0
+          },
+          "economic_events": [],
+          "gaps": {
+            "MARA": {
+              "percent": 2.631578947368421,
+              "direction": "up",
+              "fade_probability": 0.45,
+              "open": 19.5,
+              "prev_close": 19.0
+            },
+            "RIOT": {
+              "percent": 2.7799841143764863,
+              "direction": "up",
+              "fade_probability": 0.45,
+              "open": 12.94,
+              "prev_close": 12.59
+            }
+          }
+        }
+      }
+    },
+    {
+      "timestamp": "2025-07-12T13:33:14.333675",
+      "symbol": "RIOT",
+      "pattern": "free_news_sentiment",
+      "outcome": "loss",
+      "lesson": "Small loss on RIOT. The setup was right but timing was off.",
+      "confidence_adjustment": -0.01,
+      "context": {
+        "exit_reason": "stop_loss",
+        "holding_time": 0.39817078333333333,
+        "max_profit": 0.0,
+        "market_conditions": {
+          "vix": 16.4,
+          "market_trend": "neutral",
+          "breadth": {
+            "advance_decline": 0,
+            "new_highs": 0,
+            "new_lows": 0,
+            "vix": 16.4,
+            "put_call_ratio": 1.0
+          },
+          "economic_events": [],
+          "gaps": {
+            "RIOT": {
+              "percent": 2.7799841143764863,
+              "direction": "up",
+              "fade_probability": 0.45,
+              "open": 12.94,
+              "prev_close": 12.59
+            },
+            "MARA": {
+              "percent": 2.631578947368421,
+              "direction": "up",
+              "fade_probability": 0.45,
+              "open": 19.5,
+              "prev_close": 19.0
+            }
+          }
+        }
+      }
+    }
+  ],
+  "pattern_success_rates": {
+    "free_news_sentiment": {
+      "wins": 0,
+      "losses": 3,
+      "total": 3
+    }
+  },
+  "symbol_behaviors": {
+    "TSLA": {
+      "avg_holding_time": 0,
+      "best_exit_timing": {},
+      "volatility_profile": {},
+      "success_rate": 0.5
+    },
+    "RIOT": {
+      "avg_holding_time": 0,
+      "best_exit_timing": {},
+      "volatility_profile": {},
+      "success_rate": 0.5
+    }
+  },
+  "emotional_state": {
+    "confidence": 0.6099999999999999,
+    "risk_appetite": 0.5,
+    "patience": 0.8,
+    "fear_level": 0.35,
+    "greed_level": 0.3,
+    "last_update": "2025-07-12T13:33:14.333674"
+  }
+}
