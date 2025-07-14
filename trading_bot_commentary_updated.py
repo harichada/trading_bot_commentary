@@ -22,7 +22,7 @@ warnings.filterwarnings('ignore')
 import numpy as np
 import pandas as pd
 from scipy import stats
-import talib
+import ta
 
 # Make sure pandas is configured to handle the fillna deprecation warning
 pd.set_option('mode.copy_on_write', True)
@@ -954,6 +954,7 @@ class ConfigManager:
                 'account_number': os.getenv("SCHWAB_ACCOUNT_NUMBER", "")
             },
             'trading': {
+                'ml_prediction_enabled': True,
                 'max_risk_per_trade': 0.02,
                 'min_risk_reward_ratio': 2.0,
                 'max_daily_loss': 0.05,
@@ -1273,6 +1274,10 @@ class Config:
     @property
     def CONFIRM_THRESHOLD_PERCENT(self):
         return self.manager.get('order_management.confirm_threshold_percent')
+
+    @property
+    def ML_PREDICTION_ENABLED(self):
+        return self.manager.get('trading.ml_prediction_enabled')
 
 # Initialize configuration
 config = Config()
@@ -3044,89 +3049,34 @@ class TechnicalAnalyzerWithCommentary:
             volume = data['Volume'].values.astype(np.float64)
             
             # Moving averages
-            try:
-                indicators['sma_20'] = float(talib.SMA(close, timeperiod=20)[-1])
-                indicators['sma_50'] = float(talib.SMA(close, timeperiod=50)[-1])
-                indicators['ema_20'] = float(talib.EMA(close, timeperiod=20)[-1])
-            except Exception as e:
-                logger.debug(f"MA calculation error for {symbol}: {e}")
-                indicators['sma_20'] = float(np.mean(close[-20:]))
-                indicators['sma_50'] = float(np.mean(close[-50:])) if len(close) >= 50 else float(np.mean(close))
-                indicators['ema_20'] = indicators['sma_20']  # Fallback to SMA
-            
+            indicators['sma_20'] = ta.trend.sma_indicator(data['Close'], window=20).iloc[-1]
+            indicators['sma_50'] = ta.trend.sma_indicator(data['Close'], window=50).iloc[-1]
+            indicators['ema_20'] = ta.trend.ema_indicator(data['Close'], window=20).iloc[-1]
+
             # RSI
-            try:
-                rsi_values = talib.RSI(close, timeperiod=14)
-                indicators['rsi'] = float(rsi_values[-1]) if not np.isnan(rsi_values[-1]) else 50.0
-            except Exception as e:
-                logger.debug(f"RSI calculation error for {symbol}: {e}")
-                indicators['rsi'] = 50.0  # Neutral default
-            
+            indicators['rsi'] = ta.momentum.rsi(data['Close'], window=14).iloc[-1]
+
             # MACD
-            try:
-                macd, macd_signal, macd_hist = talib.MACD(close)
-                indicators['macd'] = float(macd[-1]) if not np.isnan(macd[-1]) else 0.0
-                indicators['macd_signal'] = float(macd_signal[-1]) if not np.isnan(macd_signal[-1]) else 0.0
-                indicators['macd_histogram'] = float(macd_hist[-1]) if not np.isnan(macd_hist[-1]) else 0.0
-            except Exception as e:
-                logger.debug(f"MACD calculation error for {symbol}: {e}")
-                indicators['macd'] = 0.0
-                indicators['macd_signal'] = 0.0
-                indicators['macd_histogram'] = 0.0
-            
+            macd = ta.trend.MACD(data['Close'])
+            indicators['macd'] = macd.macd().iloc[-1]
+            indicators['macd_signal'] = macd.macd_signal().iloc[-1]
+            indicators['macd_histogram'] = macd.macd_diff().iloc[-1]
+
             # Bollinger Bands
-            try:
-                upper, middle, lower = talib.BBANDS(close, timeperiod=20)
-                indicators['bb_upper'] = float(upper[-1]) if not np.isnan(upper[-1]) else close[-1] * 1.02
-                indicators['bb_middle'] = float(middle[-1]) if not np.isnan(middle[-1]) else close[-1]
-                indicators['bb_lower'] = float(lower[-1]) if not np.isnan(lower[-1]) else close[-1] * 0.98
-            except Exception as e:
-                logger.debug(f"BB calculation error for {symbol}: {e}")
-                mean_price = float(np.mean(close[-20:]))
-                std_price = float(np.std(close[-20:]))
-                indicators['bb_middle'] = mean_price
-                indicators['bb_upper'] = mean_price + (2 * std_price)
-                indicators['bb_lower'] = mean_price - (2 * std_price)
-            
+            bollinger = ta.volatility.BollingerBands(data['Close'], window=20, window_dev=2)
+            indicators['bb_upper'] = bollinger.bollinger_hband().iloc[-1]
+            indicators['bb_middle'] = bollinger.bollinger_mavg().iloc[-1]
+            indicators['bb_lower'] = bollinger.bollinger_lband().iloc[-1]
+
             # ATR
-            try:
-                atr_values = talib.ATR(high, low, close, timeperiod=14)
-                indicators['atr'] = float(atr_values[-1]) if not np.isnan(atr_values[-1]) else 0.0
-            except Exception as e:
-                logger.debug(f"ATR calculation error for {symbol}: {e}")
-                # Simple ATR approximation
-                tr = np.maximum(high[-14:] - low[-14:], np.abs(high[-14:] - close[-15:-1]))
-                indicators['atr'] = float(np.mean(tr))
-            
-            # Volume indicators - handle potential issues
-            try:
-                # OBV can be problematic with large volumes, use relative OBV
-                if len(close) > 0 and len(volume) > 0:
-                    obv_values = talib.OBV(close, volume)
-                    if len(obv_values) > 0 and not np.isnan(obv_values[-1]):
-                        indicators['obv'] = float(obv_values[-1])
-                    else:
-                        # Calculate simple OBV manually
-                        obv = 0
-                        for i in range(1, len(close)):
-                            if close[i] > close[i-1]:
-                                obv += volume[i]
-                            elif close[i] < close[i-1]:
-                                obv -= volume[i]
-                        indicators['obv'] = float(obv)
-                else:
-                    indicators['obv'] = 0.0
-            except Exception as e:
-                logger.debug(f"OBV calculation error for {symbol}: {e}")
-                indicators['obv'] = float(np.sum(volume[-20:])) if len(volume) > 0 else 0.0
-            
+            indicators['atr'] = ta.volatility.average_true_range(data['High'], data['Low'], data['Close'], window=14).iloc[-1]
+
+            # Volume indicators
+            indicators['obv'] = ta.volume.on_balance_volume(data['Close'], data['Volume']).iloc[-1]
+
             # ADX
-            try:
-                adx_values = talib.ADX(high, low, close, timeperiod=14)
-                indicators['adx'] = float(adx_values[-1]) if not np.isnan(adx_values[-1]) else 0.0
-            except Exception as e:
-                logger.debug(f"ADX calculation error for {symbol}: {e}")
-                indicators['adx'] = 25.0  # Neutral trend strength
+            adx = ta.trend.ADXIndicator(data['High'], data['Low'], data['Close'], window=14)
+            indicators['adx'] = adx.adx().iloc[-1]
             
             # Support/Resistance
             pivot = (high[-1] + low[-1] + close[-1]) / 3
@@ -3496,18 +3446,11 @@ class AdvancedFeatureEngineer:
         
         return np.mean(tr[-period:])
     
-    def _calculate_bollinger_bands(self, prices: np.ndarray, 
+    def _calculate_bollinger_bands(self, prices: pd.Series,
                                   period: int = 20, std_dev: int = 2) -> Tuple[float, float, float]:
         """Calculate Bollinger Bands"""
-        if len(prices) < period:
-            return prices[-1], prices[-1], prices[-1]
-            
-        middle = np.mean(prices[-period:])
-        std = np.std(prices[-period:])
-        upper = middle + (std * std_dev)
-        lower = middle - (std * std_dev)
-        
-        return upper, middle, lower
+        bollinger = ta.volatility.BollingerBands(prices, window=period, window_dev=std_dev)
+        return bollinger.bollinger_hband().iloc[-1], bollinger.bollinger_mavg().iloc[-1], bollinger.bollinger_lband().iloc[-1]
 
 class HybridTradingModel:
     """Production-ready hybrid ML model with adaptive retraining"""
@@ -4011,45 +3954,18 @@ class MLFeatureExtractor:
         
         return features
     
-    def _calculate_rsi(self, prices: np.ndarray, period: int = 14) -> float:
+    def _calculate_rsi(self, prices: pd.Series, period: int = 14) -> float:
         """Calculate RSI - matches TechnicalAnalyzer implementation"""
-        if len(prices) < period + 1:
-            return 50.0
-        
-        deltas = np.diff(prices)
-        seed = deltas[:period]
-        up = seed[seed >= 0].sum() / period
-        down = -seed[seed < 0].sum() / period
-        
-        if down == 0:
-            return 100.0
-        
-        rs = up / down
-        return 100 - (100 / (1 + rs))
-    
-    def _calculate_macd(self, prices: np.ndarray) -> Tuple[float, float, float]:
+        return ta.momentum.rsi(prices, window=period).iloc[-1]
+
+    def _calculate_macd(self, prices: pd.Series) -> Tuple[float, float, float]:
         """Calculate MACD - matches TechnicalAnalyzer implementation"""
-        if len(prices) < 26:
-            return 0.0, 0.0, 0.0
-        
-        exp1 = pd.Series(prices).ewm(span=12, adjust=False).mean()
-        exp2 = pd.Series(prices).ewm(span=26, adjust=False).mean()
-        macd = exp1 - exp2
-        signal = macd.ewm(span=9, adjust=False).mean()
-        hist = macd - signal
-        
-        return macd.iloc[-1], signal.iloc[-1], hist.iloc[-1]
-    
-    def _calculate_atr(self, high: np.ndarray, low: np.ndarray, close: np.ndarray, period: int = 14) -> float:
+        macd = ta.trend.MACD(prices)
+        return macd.macd().iloc[-1], macd.macd_signal().iloc[-1], macd.macd_diff().iloc[-1]
+
+    def _calculate_atr(self, high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) -> float:
         """Calculate ATR"""
-        if len(high) < period:
-            return 0.0
-        
-        tr = np.maximum(high - low, 
-                       np.abs(high - np.roll(close, 1)),
-                       np.abs(low - np.roll(close, 1)))[1:]
-        
-        return np.mean(tr[-period:])
+        return ta.volatility.average_true_range(high, low, close, window=period).iloc[-1]
 
 # ============================================================================
 # PRODUCTION ML MODEL WITH PROPER INTEGRATION
@@ -6522,9 +6438,11 @@ class TradingEngineWithCommentary:
                         ))
                         continue
                     
-                    ml_signal, ml_explanation = await self.ml_predictor.predict_with_commentary(
-                        indicators, symbol, data
-)
+                    ml_signal, ml_explanation = (0, {})
+                    if Config().ML_PREDICTION_ENABLED:
+                        ml_signal, ml_explanation = await self.ml_predictor.predict_with_commentary(
+                            indicators, symbol, data
+                        )
                     
                     # Check each strategy
                     for strategy in self.strategies:
@@ -8444,6 +8362,13 @@ DASHBOARD_HTML_WITH_COMMENTARY = """
                             <span class="toggle-slider"></span>
                         </label>
                     </div>
+                    <div class="toggle-group">
+                        <label class="toggle-container">
+                            <span id="ml-prediction-label">ML Prediction ON</span>
+                            <input type="checkbox" id="ml-prediction-toggle" checked onchange="toggleMLPrediction()">
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </div>
                     <button class="button button-secondary" onclick="refreshPositions()">🔄 Refresh</button>
                     <button class="button button-primary" onclick="startTrading()">Start Commentary</button>
                     <button class="button button-danger" onclick="stopTrading()">Stop</button>
@@ -8866,6 +8791,24 @@ DASHBOARD_HTML_WITH_COMMENTARY = """
                 console.log('Close mode:', isManualOnly ? 'manual' : 'auto');
             }
         }
+
+        async function toggleMLPrediction() {
+            const toggle = document.getElementById('ml-prediction-toggle');
+            const label = document.getElementById('ml-prediction-label');
+            const isEnabled = toggle.checked;
+
+            label.textContent = isEnabled ? 'ML Prediction ON' : 'ML Prediction OFF';
+
+            const response = await fetch('/api/toggle-ml-prediction', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({enabled: isEnabled})
+            });
+
+            if (response.ok) {
+                console.log('ML Prediction:', isEnabled ? 'enabled' : 'disabled');
+            }
+        }
         // Close confirmation functions
         function showCloseConfirmation(request) {
             const modalHTML = `
@@ -9261,6 +9204,28 @@ async def toggle_close_mode(request: dict):
     ))
     
     return {"status": "success", "manual_only": manual_only}
+
+@app.post("/api/toggle-ml-prediction")
+async def toggle_ml_prediction(request: dict):
+    """Toggle ML prediction"""
+    global trading_engine
+
+    if not trading_engine:
+        return {"status": "error", "message": "Trading engine not initialized"}
+
+    enabled = request.get('enabled', True)
+    config_manager.update('trading.ml_prediction_enabled', enabled)
+
+    trading_engine.commentary.add_commentary(TradingCommentary(
+        timestamp=datetime.now(),
+        type=CommentaryType.DECISION,
+        symbol=None,
+        title=f"🤖 ML Prediction Changed",
+        message=f"ML prediction has been {'enabled' if enabled else 'disabled'}",
+        importance=8
+    ))
+
+    return {"status": "success", "enabled": enabled}
 
 @app.post("/api/reset-brain")
 async def reset_brain():
