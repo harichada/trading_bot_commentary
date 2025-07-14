@@ -6619,7 +6619,7 @@ class TradingEngineWithCommentary:
         # Check ML confirmation
         # Check ML confirmation (1 for BUY, -1 for SELL)
         expected_ml_signal = 1 if signal.signal_type == SignalType.BUY else -1
-        if ml_signal != expected_ml_signal:
+        if ml_signal != expected_ml_signal and Config().ML_PREDICTION_ENABLED:
             self.commentary.add_commentary(TradingCommentary(
                 timestamp=datetime.now(),
                 type=CommentaryType.DECISION,
