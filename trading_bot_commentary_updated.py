@@ -3376,12 +3376,12 @@ class AdvancedFeatureEngineer:
         ])
         
         # Order flow imbalance proxy (using volume and price direction)
-        price_direction = np.sign(df['Close'].diff())
-        signed_volume = df['Volume'] * price_direction
+        price_direction = np.sign(np.diff(df['Close'].values))
+        signed_volume = df['Volume'].values[1:] * price_direction
         
         features.extend([
-            signed_volume.iloc[-20:].sum() / (df['Volume'].iloc[-20:].sum() + 1e-10),
-            signed_volume.iloc[-5:].sum() / (df['Volume'].iloc[-5:].sum() + 1e-10)
+            signed_volume[-20:].sum() / (df['Volume'].iloc[-20:].sum() + 1e-10),
+            signed_volume[-5:].sum() / (df['Volume'].iloc[-5:].sum() + 1e-10)
         ])
         
         return features
