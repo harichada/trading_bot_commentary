@@ -922,6 +922,7 @@ class ConfigManager:
                 'reserve_cash_percent': 0.1,
                 'min_position_size': 1,
                 'max_position_value': 10000,
+                'max_position_percentage_of_account': 0.1,
                 'min_buying_power': 100
             },
             'commentary': {
@@ -1220,6 +1221,10 @@ class Config:
     @property
     def MIN_BUYING_POWER(self):
         return self.manager.get('trading.min_buying_power')
+
+    @property
+    def MAX_POSITION_PERCENTAGE_OF_ACCOUNT(self):
+        return self.manager.get('trading.max_position_percentage_of_account')
     
     @property
     def REQUIRE_CLOSE_CONFIRMATION(self):
@@ -4622,18 +4627,21 @@ class RiskManagerWithCommentary:
         # Calculate position size
         position_size = int(max_risk_amount / risk_per_share)
         
-        # Check against max position value
+        # Check against max position value and percentage of account
         position_value = position_size * current_price
-        if position_value > Config().MAX_POSITION_VALUE:
+        max_value_by_percentage = self.account_balance * Config().MAX_POSITION_PERCENTAGE_OF_ACCOUNT
+
+        if position_value > Config().MAX_POSITION_VALUE or position_value > max_value_by_percentage:
             old_size = position_size
-            position_size = int(Config().MAX_POSITION_VALUE / current_price)
+            capped_value = min(Config().MAX_POSITION_VALUE, max_value_by_percentage)
+            position_size = int(capped_value / current_price)
             
             self.commentary.add_commentary(TradingCommentary(
                 timestamp=datetime.now(),
                 type=CommentaryType.RISK_ASSESSMENT,
                 symbol=signal.symbol,
                 title=f"⚠️ Position Size Capped",
-                message=f"Reduced from {old_size} to {position_size} shares (max ${Config().MAX_POSITION_VALUE})",
+                message=f"Reduced from {old_size} to {position_size} shares (max value ${capped_value:,.2f})",
                 importance=7
             ))
         
@@ -5362,15 +5370,15 @@ class TradingEngineWithCommentary:
             cache_age = (datetime.now() - self._last_bp_check).total_seconds()
         
             # Only use cache if we have a valid cached value AND it's recent
-            if self._cached_buying_power > 0 and cache_age < 30:
+            if hasattr(self, '_cached_buying_power') and self._cached_buying_power > 0 and cache_age < 30:
                 logger.debug(f"Using cached buying power: ${self._cached_buying_power:,.2f} (age: {cache_age:.1f}s)")
                 return self._cached_buying_power >= required_amount, self._cached_buying_power
             
             # Fetch fresh data
-            response = self.schwab_client.get_account(self.account_hash)
+            response = self.schwab_client.get_account(self.account_hash, fields=['positions', 'orders'])
             logger.info(f" Buying power check: {response.json()}")
             if response.status_code != 200:
-                logger.error(f"Failed to get account data: {response.status_code}")
+                logger.error(f"Failed to get account data: {response.status_code} - {response.text}")
                 return False, 0
             
             data = response.json()
@@ -5389,45 +5397,22 @@ class TradingEngineWithCommentary:
                 balances = account_data['currentBalances']
                 logger.debug(f"Balance fields available: {list(balances.keys())}")
                 
-                # Try different field names
-                buying_power = (
-                    balances.get('buyingPower', 0) or
-                    balances.get('availableFunds', 0) or
-                    balances.get('availableFundsNonMarginableTrade', 0) or
-                    balances.get('buyingPowerNonMarginableTrade', 0)
-                )
+                # Try different field names, prioritizing the most reliable ones
+                buying_power = balances.get('buyingPower', 0)
                 
-                # For margin accounts, check day trading buying power
+                # For margin accounts, day trading buying power is the most restrictive
                 if 'dayTradingBuyingPower' in balances:
                     day_trading_bp = balances.get('dayTradingBuyingPower', 0)
                     if day_trading_bp > 0:
                         buying_power = min(buying_power, day_trading_bp)
-            
-            # Method 2: Check projectedBalances if currentBalances didn't work
-            if buying_power == 0 and 'projectedBalances' in account_data:
-                projected = account_data['projectedBalances']
-                buying_power = (
-                    projected.get('buyingPower', 0) or
-                    projected.get('availableFunds', 0) or
-                    projected.get('availableFundsNonMarginableTrade', 0)
-                )
-            
-            # Method 3: Calculate from cash and margin if still 0
-            if buying_power == 0 and 'currentBalances' in account_data:
-                balances = account_data['currentBalances']
-                cash = balances.get('cashBalance', 0) or balances.get('totalCash', 0)
-                margin = balances.get('marginBalance', 0)
-                
-                # For cash accounts, buying power is usually just cash
-                # For margin accounts, it could be cash + margin available
-                account_type = account_data.get('type', 'CASH')
-                if account_type == 'MARGIN':
-                    buying_power = cash + margin
-                else:
-                    buying_power = cash
-            
+
+            # If buying power is still 0, something is wrong, so we fail safely
+            if buying_power <= 0:
+                logger.error("Could not determine a valid buying power from the API response.")
+                return False, 0
+
             # Log what we found
-            logger.info(f"Buying power found: ${buying_power:,.2f} (required: ${required_amount:,.2f})")
+            logger.info(f"Buying power determined: ${buying_power:,.2f} (required: ${required_amount:,.2f})")
             
             # Cache the result
             self._cached_buying_power = buying_power
@@ -5440,12 +5425,8 @@ class TradingEngineWithCommentary:
             
         except Exception as e:
             logger.error(f"Error checking buying power: {e}", exc_info=True)
-            # Return cached value if available
-            if hasattr(self, '_cached_buying_power') and self._cached_buying_power > 0:
-                logger.warning(f"Using last known buying power: ${self._cached_buying_power:,.2f}")
-                return self._cached_buying_power >= required_amount, self._cached_buying_power
-        
-        return False, 0
+            # Fail safely if any exception occurs
+            return False, 0
     def _parse_order_rejection(self, response) -> Dict[str, Any]:
         """Parse Schwab order rejection reasons"""
         try:
@@ -6501,24 +6482,19 @@ class TradingEngineWithCommentary:
                 
                 return
         
-        # EARLY BUYING POWER CHECK for LIVE mode
+        # Pre-trade validation for LIVE mode
         if self.mode == TradingMode.LIVE:
-            # First check if we have ANY buying power before doing calculations
-            has_power, available_bp = await self._check_buying_power(Config().MIN_BUYING_POWER)
-            logger.info(f"Has buying power or not: {has_power} {available_bp}")
-            if not has_power or available_bp < Config().MIN_BUYING_POWER:
+            is_valid, validation_reason = await self._validate_trade_impact(signal)
+            if not is_valid:
                 self.commentary.add_commentary(TradingCommentary(
                     timestamp=datetime.now(),
                     type=CommentaryType.WARNING,
                     symbol=signal.symbol,
-                    title=f"❌ No Buying Power",
-                    message=f"Cannot trade - buying power is ${available_bp:.2f} (need at least ${Config().MIN_BUYING_POWER})",
+                    title=f"❌ Trade Validation Failed",
+                    message=validation_reason,
                     importance=9
                 ))
                 return
-            
-            # Update risk manager with current buying power
-            self.risk_manager.buying_power = available_bp
             # Check for existing orders
             if self.mode == TradingMode.LIVE:
                 existing_orders = await self._check_existing_orders(signal.symbol)
@@ -7127,17 +7103,21 @@ class TradingEngineWithCommentary:
             return {}
     
         try:
-            response = self.schwab_client.get_account(self.account_hash)
+            response = self.schwab_client.get_account(self.account_hash, fields=['positions', 'orders'])
             if response.status_code == 200:
                 data = response.json()
                 account = data.get('securitiesAccount', {})
                 balances = account.get('currentBalances', {})
-            
+
+                # Update margin call status in risk manager
+                self.risk_manager.margin_call = balances.get('isInCall', False)
+
                 return {
                     'balance': balances.get('liquidationValue', 0),
                     'buying_power': balances.get('buyingPower', 0),
                     'day_trades_remaining': account.get('roundTrips', 3),
-                    'cash': balances.get('cashBalance', 0)
+                    'cash': balances.get('cashBalance', 0),
+                    'margin_call': self.risk_manager.margin_call
                 }
         except Exception as e:
             logger.error(f"Account info error: {e}")
@@ -7326,6 +7306,25 @@ class TradingEngineWithCommentary:
         except Exception as e:
             logger.error(f"Error updating real positions: {e}")
     
+    async def _validate_trade_impact(self, signal: TradingSignal) -> Tuple[bool, str]:
+        """Validate the impact of a potential trade on the account."""
+
+        # 1. Check buying power
+        required_capital = signal.position_size * signal.entry_price
+        has_power, available_bp = await self._check_buying_power(required_capital)
+
+        if not has_power:
+            return False, f"Insufficient buying power. Required: ${required_capital:,.2f}, Available: ${available_bp:,.2f}"
+
+        # 2. Check max position value
+        if required_capital > Config().MAX_POSITION_VALUE:
+            return False, f"Position value (${required_capital:,.2f}) exceeds max limit of ${Config().MAX_POSITION_VALUE:,.2f}"
+
+        # 3. (Future) Check margin impact for short sales or leveraged trades
+        # This would require more detailed account info and calculations.
+
+        return True, "Trade validation passed"
+
     def _is_news_blackout(self) -> bool:
         """Check if we're in news blackout period"""
         now = datetime.now()
