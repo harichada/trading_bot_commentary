@@ -6138,6 +6138,8 @@ class TradingEngineWithCommentary:
                 if self.mode == TradingMode.LIVE:
                     await self._check_order_status()
                     await self._update_real_positions()
+                    if (datetime.now() - self._last_bp_check).total_seconds() > 300:
+                        await self._check_buying_power(0)
                 
                 # After the position management section
                 if analysis_count % 100 == 0:  # Every 100 cycles
