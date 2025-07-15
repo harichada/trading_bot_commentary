@@ -4610,9 +4610,6 @@ class RiskManagerWithCommentary:
         if position_value > self.buying_power:
             old_size = position_size
             position_size = int(self.buying_power * 0.95 / current_price)
-            logger.info(f"Position size adjusted due to buying power. "
-                        f"Original size: {old_size}, New size: {position_size}, "
-                        f"Buying power: {self.buying_power}, Position value: {position_value}")
             
             self.commentary.add_commentary(TradingCommentary(
                 timestamp=datetime.now(),
@@ -5229,12 +5226,10 @@ class TradingEngineWithCommentary:
                 await asyncio.sleep(2)
                 # Wait for fill verification
                 if await self._verify_order_fill(order_id, signal):
-                    # Invalidate buying power cache
-                    self._last_bp_check = datetime.now() - timedelta(minutes=1)
                     await self._place_bracket_orders(signal, order_id)
                     return True
                 else:
-                    return False
+                    return False                
             else:
                 # Parse rejection reason
                 rejection = self._parse_order_rejection(response)
@@ -5385,7 +5380,7 @@ class TradingEngineWithCommentary:
             cache_age = (datetime.now() - self._last_bp_check).total_seconds()
         
             # Only use cache if we have a valid cached value AND it's recent
-            if self._cached_buying_power > 0 and cache_age < 5:
+            if self._cached_buying_power > 0 and cache_age < 30:
                 logger.debug(f"Using cached buying power: ${self._cached_buying_power:,.2f} (age: {cache_age:.1f}s)")
                 return self._cached_buying_power >= required_amount, self._cached_buying_power
             
@@ -5452,10 +5447,6 @@ class TradingEngineWithCommentary:
             # Log what we found
             logger.info(f"Buying power found: ${buying_power:,.2f} (required: ${required_amount:,.2f})")
             
-            # Detailed log of all balance fields for debugging
-            if 'currentBalances' in account_data:
-                logger.debug(f"Full balance details: {account_data['currentBalances']}")
-
             # Cache the result
             self._cached_buying_power = buying_power
             self._last_bp_check = datetime.now()
@@ -6534,8 +6525,7 @@ class TradingEngineWithCommentary:
         
         # EARLY BUYING POWER CHECK for LIVE mode
         if self.mode == TradingMode.LIVE:
-            # Force a buying power check before every trade
-            self._last_bp_check = datetime.now() - timedelta(minutes=1)
+            # First check if we have ANY buying power before doing calculations
             has_power, available_bp = await self._check_buying_power(Config().MIN_BUYING_POWER)
             logger.info(f"Has buying power or not: {has_power} {available_bp}")
             if not has_power or available_bp < Config().MIN_BUYING_POWER:
@@ -6629,7 +6619,7 @@ class TradingEngineWithCommentary:
         # Check ML confirmation
         # Check ML confirmation (1 for BUY, -1 for SELL)
         expected_ml_signal = 1 if signal.signal_type == SignalType.BUY else -1
-        if ml_signal != expected_ml_signal and Config().ML_PREDICTION_ENABLED:
+        if ml_signal != expected_ml_signal:
             self.commentary.add_commentary(TradingCommentary(
                 timestamp=datetime.now(),
                 type=CommentaryType.DECISION,
