@@ -5558,91 +5558,76 @@ class TradingEngineWithCommentary:
             logger.error(f"Price validation error: {e}")
             return True  # Allow order if validation fails
     
-    async def _place_bracket_orders(self, signal):
+    async def _place_bracket_orders(self, signal, parent_order_id: str):
         """Place stop loss and take profit orders as OCO"""
         try:
-            from schwab.orders.common import (
-                one_cancels_other,
-                Duration,
-                Session,
-                OrderType,
-                ComplexOrderStrategyType,
-            )
-            from schwab.orders.equities import equity_sell_limit, equity_sell_stop
+            from schwab.orders.common import one_cancels_other, Duration, Session, OrderType
+            from schwab.orders.equities import equity_sell_limit
 
             # Create take profit order (limit sell)
-            take_profit_order = (
-                equity_sell_limit(
-                    signal.symbol, signal.position_size, signal.take_profit
-                )
-                .set_duration(Duration.GOOD_TILL_CANCEL)
-                .set_session(Session.NORMAL)
-            )
+            take_profit_order = equity_sell_limit(
+                signal.symbol,
+                signal.position_size,
+                signal.take_profit
+            ).set_duration(Duration.GOOD_TILL_CANCEL).set_session(Session.NORMAL)
 
-            # Create stop loss order (stop sell)
-            stop_loss_order = (
-                equity_sell_stop(
-                    signal.symbol, signal.position_size, signal.stop_loss
-                )
-                .set_duration(Duration.GOOD_TILL_CANCEL)
-                .set_session(Session.NORMAL)
-            )
+            # Create stop loss order (stop limit - using stop price slightly below limit)
+            # For stop limit, we set both stop price and limit price
+            stop_loss_order = (equity_sell_limit(
+                signal.symbol,
+                signal.position_size,
+                signal.stop_loss * 0.995  # Limit price slightly below stop
+            ).set_order_type(OrderType.STOP_LIMIT)
+            .set_stop_price(signal.stop_loss)
+            .set_duration(Duration.GOOD_TILL_CANCEL)
+            .set_session(Session.NORMAL))
 
             # Create OCO order using helper function
-            oco_order = one_cancels_other(take_profit_order, stop_loss_order).set_complex_order_strategy_type(ComplexOrderStrategyType.OCO)
+            oco_order = one_cancels_other(take_profit_order, stop_loss_order)
 
             # Build and place the OCO order
-            logger.info(f"Placing OCO order for {signal.symbol}: SL={signal.stop_loss}, TP={signal.take_profit}")
-            response = self.schwab_client.place_order(
-                self.account_hash, oco_order.build()
-            )
+            response = self.schwab_client.place_order(self.account_hash, oco_order.build())
 
             if response.status_code in [200, 201]:
                 # Extract order ID from response
-                order_id = response.headers.get("Location", "").split("/")[-1]
+                order_id = response.headers.get('Location', '').split('/')[-1]
 
-                self.commentary.add_commentary(
-                    TradingCommentary(
-                        timestamp=datetime.now(),
-                        type=CommentaryType.RISK_ASSESSMENT,
-                        symbol=signal.symbol,
-                        title="✅ OCO Bracket Order Placed",
-                        message=f"Stop Loss: ${signal.stop_loss:.2f} | Take Profit: ${signal.take_profit:.2f}",
-                        data={
-                            "stop_loss": signal.stop_loss,
-                            "take_profit": signal.take_profit,
-                            "order_type": "OCO",
-                            "order_id": order_id,
-                        },
-                        importance=7,
-                    )
-                )
+                self.commentary.add_commentary(TradingCommentary(
+                    timestamp=datetime.now(),
+                    type=CommentaryType.RISK_ASSESSMENT,
+                    symbol=signal.symbol,
+                    title=f"✅ OCO Bracket Order Placed",
+                    message=f"Stop Loss: ${signal.stop_loss:.2f} | Take Profit: ${signal.take_profit:.2f}",
+                    data={
+                        'stop_loss': signal.stop_loss,
+                        'take_profit': signal.take_profit,
+                        'order_type': 'OCO',
+                        'order_id': order_id
+                    },
+                    importance=7
+                ))
             else:
                 rejection = self._parse_order_rejection(response)
-                self.commentary.add_commentary(
-                    TradingCommentary(
-                        timestamp=datetime.now(),
-                        type=CommentaryType.WARNING,
-                        symbol=signal.symbol,
-                        title=f"⚠️ OCO Order Failed: {rejection['reason']}",
-                        message=rejection["message"],
-                        data={"details": rejection["details"]},
-                        importance=7,
-                    )
-                )
-
-        except Exception as e:
-            logger.error(f"Bracket order error: {e}", exc_info=True)
-            self.commentary.add_commentary(
-                TradingCommentary(
+                self.commentary.add_commentary(TradingCommentary(
                     timestamp=datetime.now(),
                     type=CommentaryType.WARNING,
                     symbol=signal.symbol,
-                    title="⚠️ Bracket Order Error",
-                    message=f"Could not place stop/target orders: {str(e)}",
-                    importance=7,
-                )
-            )
+                    title=f"⚠️ OCO Order Failed: {rejection['reason']}",
+                    message=rejection['message'],
+                    data={'details': rejection['details']},
+                    importance=7
+                ))
+
+        except Exception as e:
+            logger.error(f"Bracket order error: {e}", exc_info=True)
+            self.commentary.add_commentary(TradingCommentary(
+                timestamp=datetime.now(),
+                type=CommentaryType.WARNING,
+                symbol=signal.symbol,
+                title=f"⚠️ Bracket Order Error",
+                message=f"Could not place stop/target orders: {str(e)}",
+                importance=7
+            ))
     def _validate_oco_prices(self, symbol: str, stop_price: float, take_profit: float) -> bool:
         """Validate OCO order prices before submission"""
         try:
