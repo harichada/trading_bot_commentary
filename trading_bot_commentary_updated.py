@@ -4618,9 +4618,6 @@ class RiskManagerWithCommentary:
         if position_value > self.buying_power:
             old_size = position_size
             position_size = int(self.buying_power * 0.95 / current_price)
-            logger.info(f"Position size adjusted due to buying power. "
-                        f"Original size: {old_size}, New size: {position_size}, "
-                        f"Buying power: {self.buying_power}, Position value: {position_value}")
             
             self.commentary.add_commentary(TradingCommentary(
                 timestamp=datetime.now(),
@@ -5237,12 +5234,10 @@ class TradingEngineWithCommentary:
                 await asyncio.sleep(2)
                 # Wait for fill verification
                 if await self._verify_order_fill(order_id, signal):
-                    # Invalidate buying power cache
-                    self._last_bp_check = datetime.now() - timedelta(minutes=1)
                     await self._place_bracket_orders(signal, order_id)
                     return True
                 else:
-                    return False
+                    return False                
             else:
                 # Parse rejection reason
                 rejection = self._parse_order_rejection(response)
@@ -5437,10 +5432,6 @@ class TradingEngineWithCommentary:
             # Log what we found
             logger.info(f"Buying power determined: ${buying_power:,.2f} (required: ${required_amount:,.2f})")
             
-            # Detailed log of all balance fields for debugging
-            if 'currentBalances' in account_data:
-                logger.debug(f"Full balance details: {account_data['currentBalances']}")
-
             # Cache the result
             self._cached_buying_power = buying_power
             self._last_bp_check = datetime.now()
@@ -6604,7 +6595,7 @@ class TradingEngineWithCommentary:
         # Check ML confirmation
         # Check ML confirmation (1 for BUY, -1 for SELL)
         expected_ml_signal = 1 if signal.signal_type == SignalType.BUY else -1
-        if ml_signal != expected_ml_signal and Config().ML_PREDICTION_ENABLED:
+        if ml_signal != expected_ml_signal:
             self.commentary.add_commentary(TradingCommentary(
                 timestamp=datetime.now(),
                 type=CommentaryType.DECISION,
