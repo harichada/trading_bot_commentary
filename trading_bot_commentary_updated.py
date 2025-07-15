@@ -4592,17 +4592,18 @@ class RiskManagerWithCommentary:
         position_size = int(max_risk_amount / risk_per_share)
         
         # Check against max position value
+        max_position_value = self.account_balance * Config().MAX_POSITION_VALUE
         position_value = position_size * current_price
-        if position_value > Config().MAX_POSITION_VALUE:
+        if position_value > max_position_value:
             old_size = position_size
-            position_size = int(Config().MAX_POSITION_VALUE / current_price)
+            position_size = int(max_position_value / current_price)
             
             self.commentary.add_commentary(TradingCommentary(
                 timestamp=datetime.now(),
                 type=CommentaryType.RISK_ASSESSMENT,
                 symbol=signal.symbol,
                 title=f"⚠️ Position Size Capped",
-                message=f"Reduced from {old_size} to {position_size} shares (max ${Config().MAX_POSITION_VALUE})",
+                message=f"Reduced from {old_size} to {position_size} shares (max ${max_position_value})",
                 importance=7
             ))
         
@@ -4639,6 +4640,25 @@ class RiskManagerWithCommentary:
         
         # Final position size
         if position_size > 0:
+            # Check portfolio heat
+            current_heat = sum(
+                (pos.current_price - pos.stop_loss) * pos.quantity
+                for pos in self.positions.values()
+            ) / self.account_balance
+
+            new_trade_heat = (position_size * risk_per_share) / self.account_balance
+
+            if current_heat + new_trade_heat > self.max_portfolio_heat:
+                self.commentary.add_commentary(TradingCommentary(
+                    timestamp=datetime.now(),
+                    type=CommentaryType.RISK_ASSESSMENT,
+                    symbol=signal.symbol,
+                    title=f"🔥 Portfolio Heat Too High",
+                    message=f"Cannot open new position, portfolio risk would exceed {self.max_portfolio_heat:.1%}",
+                    importance=8
+                ))
+                return 0
+
             self.commentary.add_commentary(TradingCommentary(
                 timestamp=datetime.now(),
                 type=CommentaryType.RISK_ASSESSMENT,
