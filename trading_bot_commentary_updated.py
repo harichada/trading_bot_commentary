@@ -5226,7 +5226,7 @@ class TradingEngineWithCommentary:
                 await asyncio.sleep(2)
                 # Wait for fill verification
                 if await self._verify_order_fill(order_id, signal):
-                    await self._place_bracket_orders(signal, order_id)
+                    await self._place_bracket_orders(signal)
                     return True
                 else:
                     return False                
@@ -5563,14 +5563,14 @@ class TradingEngineWithCommentary:
         try:
             from schwab.orders.common import one_cancels_other, Duration, Session, OrderType
             from schwab.orders.equities import equity_sell_limit
-            
+
             # Create take profit order (limit sell)
             take_profit_order = equity_sell_limit(
-                signal.symbol, 
-                signal.position_size, 
+                signal.symbol,
+                signal.position_size,
                 signal.take_profit
             ).set_duration(Duration.GOOD_TILL_CANCEL).set_session(Session.NORMAL)
-            
+
             # Create stop loss order (stop limit - using stop price slightly below limit)
             # For stop limit, we set both stop price and limit price
             stop_loss_order = (equity_sell_limit(
@@ -5581,17 +5581,17 @@ class TradingEngineWithCommentary:
             .set_stop_price(signal.stop_loss)
             .set_duration(Duration.GOOD_TILL_CANCEL)
             .set_session(Session.NORMAL))
-            
+
             # Create OCO order using helper function
             oco_order = one_cancels_other(take_profit_order, stop_loss_order)
-            
+
             # Build and place the OCO order
             response = self.schwab_client.place_order(self.account_hash, oco_order.build())
-            
+
             if response.status_code in [200, 201]:
                 # Extract order ID from response
                 order_id = response.headers.get('Location', '').split('/')[-1]
-                
+
                 self.commentary.add_commentary(TradingCommentary(
                     timestamp=datetime.now(),
                     type=CommentaryType.RISK_ASSESSMENT,
@@ -5617,14 +5617,14 @@ class TradingEngineWithCommentary:
                     data={'details': rejection['details']},
                     importance=7
                 ))
-                
+
         except Exception as e:
             logger.error(f"Bracket order error: {e}", exc_info=True)
             self.commentary.add_commentary(TradingCommentary(
                 timestamp=datetime.now(),
                 type=CommentaryType.WARNING,
                 symbol=signal.symbol,
-                title=f"⚠️ Bracket Order Error", 
+                title=f"⚠️ Bracket Order Error",
                 message=f"Could not place stop/target orders: {str(e)}",
                 importance=7
             ))
