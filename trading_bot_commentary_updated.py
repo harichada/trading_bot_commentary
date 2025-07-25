@@ -18,6 +18,11 @@ from urllib.parse import urlparse, parse_qs
 import warnings
 warnings.filterwarnings('ignore')
 
+# Custom exception handling
+from trading_exceptions import *
+from circuit_breaker import api_circuit_breaker, order_circuit_breaker
+from error_recovery import ErrorRecoveryManager
+
 # Core Dependencies
 import numpy as np
 import pandas as pd
@@ -947,11 +952,8 @@ class ConfigManager:
         """Get default configuration"""
         return {
             'schwab': {
-                'api_key': os.getenv("SCHWAB_API_KEY", "your_api_key"),
-                'app_secret': os.getenv("SCHWAB_APP_SECRET", "your_app_secret"),
                 'callback_url': "https://127.0.0.1",
-                'token_path': "token_1.json",
-                'account_number': os.getenv("SCHWAB_ACCOUNT_NUMBER", "")
+                'token_path': "token_1.json"
             },
             'trading': {
                 'ml_prediction_enabled': True,
@@ -1165,23 +1167,24 @@ class Config:
     
     @property
     def SCHWAB_API_KEY(self):
-        return self.manager.get('schwab.api_key')
+        return os.getenv("SCHWAB_API_KEY")
     
     @property
     def SCHWAB_APP_SECRET(self):
-        return self.manager.get('schwab.app_secret')
+        # Support both SCHWAB_SECRET and SCHWAB_APP_SECRET for compatibility
+        return os.getenv("SCHWAB_SECRET") or os.getenv("SCHWAB_APP_SECRET")
     
     @property
     def SCHWAB_CALLBACK_URL(self):
-        return self.manager.get('schwab.callback_url')
+        return self.manager.get('schwab.callback_url', 'https://127.0.0.1')
     
     @property
     def SCHWAB_TOKEN_PATH(self):
-        return Path(self.manager.get('schwab.token_path'))
+        return Path(self.manager.get('schwab.token_path', 'token_1.json'))
     
     @property
     def SCHWAB_ACCOUNT_NUMBER(self):
-        return self.manager.get('schwab.account_number')
+        return os.getenv("SCHWAB_ACCOUNT_NUMBER")
     
     @property
     def MAX_RISK_PER_TRADE(self):
@@ -1906,14 +1909,34 @@ class TradingCommentary:
     importance: int = 5
     
     def to_dict(self):
+        """Convert commentary to dictionary with proper type handling"""
+        def make_serializable(obj):
+            """Convert non-serializable objects to serializable format"""
+            if isinstance(obj, np.ndarray):
+                return obj.tolist()
+            elif isinstance(obj, np.generic):
+                return obj.item()
+            elif isinstance(obj, pd.Series):
+                return obj.to_dict()
+            elif isinstance(obj, pd.DataFrame):
+                return obj.to_dict('records')
+            elif hasattr(obj, '__dict__'):
+                return str(obj)
+            elif isinstance(obj, dict):
+                return {k: make_serializable(v) for k, v in obj.items()}
+            elif isinstance(obj, (list, tuple)):
+                return [make_serializable(item) for item in obj]
+            else:
+                return obj
+        
         return {
             'timestamp': self.timestamp.isoformat(),
             'type': self.type.value,
             'symbol': self.symbol,
             'title': self.title,
             'message': self.message,
-            'data': self.data,
-            'confidence': self.confidence,
+            'data': make_serializable(self.data) if self.data else None,
+            'confidence': float(self.confidence) if self.confidence is not None else None,
             'importance': self.importance
         }
 
@@ -2010,26 +2033,130 @@ class CommentarySystem:
                 subscriber(commentary)
             except Exception as e:
                 logger.error(f"Error notifying subscriber: {e}")
+                # Log more details for debugging
+                import traceback
+                logger.debug(f"Subscriber error traceback: {traceback.format_exc()}")
     
     def _save_to_file(self, commentary: TradingCommentary):
-        """Save commentary to file for later analysis"""
+        """Save commentary to file for later analysis with robust error handling"""
         try:
             commentary_path = str(Config().COMMENTARY_LOG_PATH)
+            all_commentary = []
+            
+            # Try to load existing commentary with error recovery
             if Path(commentary_path).exists():
-                with open(commentary_path, 'r') as f:
-                    all_commentary = json.load(f)
-            else:
-                all_commentary = []
+                try:
+                    with open(commentary_path, 'r') as f:
+                        all_commentary = json.load(f)
+                except json.JSONDecodeError as e:
+                    logger.error(f"Corrupted commentary file, attempting recovery: {e}")
+                    # Try to recover valid JSON objects
+                    try:
+                        self._recover_commentary_file(commentary_path)
+                        # Try loading again after recovery
+                        with open(commentary_path, 'r') as f:
+                            all_commentary = json.load(f)
+                    except Exception as recovery_error:
+                        logger.error(f"Recovery failed: {recovery_error}")
+                        # Start fresh with backup
+                        backup_path = Path(commentary_path).with_suffix('.json.corrupted')
+                        Path(commentary_path).rename(backup_path)
+                        logger.info(f"Backed up corrupted file to {backup_path}")
+                        all_commentary = []
             
-            all_commentary.append(commentary.to_dict())
+            # Ensure commentary can be serialized
+            try:
+                commentary_dict = commentary.to_dict()
+                # Test serialization before adding
+                json.dumps(commentary_dict)
+                all_commentary.append(commentary_dict)
+            except (TypeError, ValueError) as e:
+                logger.error(f"Commentary serialization error: {e}")
+                # Create a simplified version
+                commentary_dict = {
+                    'timestamp': str(commentary.timestamp),
+                    'type': str(commentary.type),
+                    'symbol': str(commentary.symbol),
+                    'title': str(commentary.title),
+                    'message': str(commentary.message),
+                    'importance': commentary.importance
+                }
+                all_commentary.append(commentary_dict)
             
+            # Maintain size limit
             if len(all_commentary) > 1000:
                 all_commentary = all_commentary[-1000:]
             
-            with open(commentary_path, 'w') as f:
-                json.dump(all_commentary, f, indent=2)
+            # Write with atomic operation
+            commentary_path_obj = Path(commentary_path).resolve()
+            temp_path = commentary_path_obj.with_name(f"{commentary_path_obj.stem}_tmp{commentary_path_obj.suffix}")
+            
+            try:
+                with open(temp_path, 'w') as f:
+                    json.dump(all_commentary, f, indent=2, default=str)
+                
+                # Atomic rename
+                temp_path.replace(commentary_path_obj)
+            finally:
+                # Clean up temp file if it exists
+                if temp_path.exists():
+                    try:
+                        temp_path.unlink()
+                    except:
+                        pass
+            
         except Exception as e:
             logger.error(f"Error saving commentary: {e}")
+            # Don't let save errors crash the system
+    
+    def _recover_commentary_file(self, filepath):
+        """Attempt to recover corrupted commentary JSON file"""
+        with open(filepath, 'r') as f:
+            content = f.read()
+        
+        valid_objects = []
+        lines = content.split('\n')
+        current_obj = ""
+        depth = 0
+        
+        i = 0
+        while i < len(lines):
+            line = lines[i]
+            
+            if line.strip() == '[':
+                i += 1
+                continue
+                
+            if line.strip() == '{':
+                current_obj = line
+                depth = 1
+                i += 1
+                
+                while i < len(lines) and depth > 0:
+                    line = lines[i]
+                    current_obj += '\n' + line
+                    
+                    # Simple depth tracking
+                    depth += line.count('{') - line.count('}')
+                    i += 1
+                    
+                    if depth == 0:
+                        try:
+                            obj_str = current_obj.rstrip()
+                            if obj_str.endswith(','):
+                                obj_str = obj_str[:-1]
+                            obj = json.loads(obj_str)
+                            valid_objects.append(obj)
+                        except:
+                            pass
+                        break
+            else:
+                i += 1
+        
+        if valid_objects:
+            with open(filepath, 'w') as f:
+                json.dump(valid_objects, f, indent=2)
+            logger.info(f"Recovered {len(valid_objects)} commentary entries")
     
     def subscribe(self, callback: callable):
         """Subscribe to commentary updates"""
@@ -2511,10 +2638,11 @@ class SchwabDataProvider:
         self.commentary = commentary_system
         self.market_hours_cache = {}
         
+    @api_circuit_breaker
     def get_market_data(self, symbol: str, period_type: str = 'day', 
                        period: int = 1, frequency_type: str = 'minute', 
                        frequency: int = 5) -> pd.DataFrame:
-        """Get market data using Schwab API"""
+        """Get market data using Schwab API with circuit breaker protection"""
         cache_key = f"{symbol}_{period_type}_{frequency_type}_{frequency}"
         
         # Check cache
@@ -2643,8 +2771,9 @@ class SchwabDataProvider:
             ))
             return pd.DataFrame()
     
+    @api_circuit_breaker
     def get_quote(self, symbol: str) -> Dict[str, float]:
-        """Get real-time quote"""
+        """Get real-time quote with circuit breaker protection"""
         try:
             response = self.client.get_quote(symbol)
             assert response.status_code == 200, response.text
@@ -3353,7 +3482,7 @@ class AdvancedFeatureEngineer:
         features.append(atr)
         
         # Bollinger Bands
-        bb_upper, bb_middle, bb_lower = self._calculate_bollinger_bands(close)
+        bb_upper, bb_middle, bb_lower = self._calculate_bollinger_bands(pd.Series(close))
         features.extend([
             (close[-1] - bb_lower) / (bb_upper - bb_lower + 1e-10),
             (bb_upper - bb_lower) / (bb_middle + 1e-10)  # BB width
@@ -3867,10 +3996,10 @@ class MLFeatureExtractor:
             features['price_vs_sma50'] = close[-1] / np.mean(close[-50:]) - 1 if len(close) >= 50 else features['price_vs_sma20']
             
             # Technical indicators (matching TechnicalAnalyzer calculations)
-            features['rsi'] = self._calculate_rsi(close) / 100.0  # Normalize to 0-1
+            features['rsi'] = self._calculate_rsi(pd.Series(close)) / 100.0  # Normalize to 0-1
             
             # MACD
-            macd, signal, hist = self._calculate_macd(close)
+            macd, signal, hist = self._calculate_macd(pd.Series(close))
             features['macd'] = macd / close[-1] if close[-1] != 0 else 0  # Normalize by price
             features['macd_signal'] = signal / close[-1] if close[-1] != 0 else 0
             features['macd_hist'] = hist / close[-1] if close[-1] != 0 else 0
@@ -3889,7 +4018,7 @@ class MLFeatureExtractor:
             features['volume_trend'] = (np.mean(volume[-5:]) - np.mean(volume[-20:])) / (np.mean(volume[-20:]) + 1e-10)
             
             # Volatility features
-            atr = self._calculate_atr(high, low, close)
+            atr = self._calculate_atr(pd.Series(high), pd.Series(low), pd.Series(close))
             features['atr_ratio'] = atr / close[-1] if close[-1] != 0 else 0
             features['high_low_ratio'] = (high[-1] - low[-1]) / close[-1] if close[-1] != 0 else 0
             features['std_dev_ratio'] = np.std(close[-20:]) / np.mean(close[-20:])
@@ -4323,7 +4452,7 @@ class MLPredictorWithCommentary:
         if not self.model.is_trained:
             logger.info("ML model not trained, will use fallback rules until training")
     
-    async def predict_with_commentary(self, indicators: Dict[str, float], 
+    def predict_with_commentary(self, indicators: Dict[str, float], 
                                     symbol: str, 
                                     market_data: Optional[pd.DataFrame] = None) -> Tuple[int, Dict]:
         """
@@ -4887,8 +5016,10 @@ class MeanReversionStrategyWithCommentary(TradingStrategyWithCommentary):
                     confidence=0.65,
                     importance=7
                 ))
-                stop_loss = market_data.close * (2 - self.stop_loss_mult)
-                take_profit = bb_middle * self.take_profit_mult
+                # For short positions: stop loss above entry, take profit below entry
+                # Convert stop_loss_mult (e.g., 0.98) to above price multiplier (e.g., 1.02)
+                stop_loss = market_data.close * (2 - self.stop_loss_mult)  # Stop above entry
+                take_profit = bb_middle  # Target at middle Bollinger Band
                 return TradingSignal(
                     symbol=market_data.symbol,
                     signal_type=SignalType.SELL,
@@ -4993,6 +5124,8 @@ class TradingEngineWithCommentary:
         self.commentary = CommentarySystem()
         # Initialize brain BEFORE ml_predictor
         self.brain = TradingBrain()
+        # Error recovery manager
+        self.error_recovery = ErrorRecoveryManager()
         # Initialize components
         self._init_schwab_client()
         # Order tracking
@@ -5010,8 +5143,9 @@ class TradingEngineWithCommentary:
         self.technical_analyzer = TechnicalAnalyzerWithCommentary(
             commentary_system=self.commentary
         )
-        # ML predictor
-        self.ml_predictor = MLPredictorWithCommentary(
+        # ML predictor - Using advanced scalping ML model
+        from scalping_ml_integration import create_scalping_ml_predictor
+        self.ml_predictor = create_scalping_ml_predictor(
             commentary_system=self.commentary
         )
         self.ml_predictor.set_brain(self.brain)
@@ -5083,6 +5217,9 @@ class TradingEngineWithCommentary:
             importance=10
         ))
         self._cached_buying_power = 0
+        
+        # Track loss alerts to avoid spamming
+        self.loss_alert_tracker = {}  # {symbol: {'last_alert_time': datetime, 'last_loss_pct': float}}
         self._last_bp_check = datetime.now()
         self.day_trades_count = 0
         self.performance_metrics = {
@@ -5138,8 +5275,9 @@ class TradingEngineWithCommentary:
             except Exception as e:
                 logger.error(f"Error loading state: {e}")
     
+    @order_circuit_breaker
     async def _execute_real_trade(self, signal) -> bool:
-        """Execute real trade through Schwab"""
+        """Execute real trade through Schwab with proper error handling"""
         
         if not self.schwab_client or not self.account_id:
             self.commentary.add_commentary(TradingCommentary(
@@ -5150,17 +5288,26 @@ class TradingEngineWithCommentary:
                 message="Schwab client not properly initialized",
                 importance=10
             ))
-            return False
+            raise AuthenticationException("Schwab client not initialized - check credentials")
         
         try:
             # Validate OCO prices first
-            if not self._validate_oco_prices(signal.symbol, signal.stop_loss, signal.take_profit):
+            # Check if this is a short position (SELL signal without existing position)
+            is_short = signal.signal_type == SignalType.SELL and signal.symbol not in self.positions
+            if not self._validate_oco_prices(signal.symbol, signal.stop_loss, signal.take_profit, is_short):
                 return False
             
             # Check buying power
             quote = self.data_provider.get_quote(signal.symbol)
+            if not quote:
+                raise StaleDataException(60, 60)
+                
             price = quote.get('ask', signal.entry_price) if signal.signal_type == SignalType.BUY else quote.get('bid', signal.entry_price)
             required = signal.position_size * price
+            
+            # Check available funds
+            if self.risk_manager.buying_power < required:
+                raise InsufficientFundsException(required, self.risk_manager.buying_power)
                                     
             from schwab.orders.equities import equity_buy_market, equity_sell_market, equity_sell_short_market
             from schwab.orders.common import Duration, Session
@@ -5245,17 +5392,136 @@ class TradingEngineWithCommentary:
                 ))
                 return False
                 
-        except Exception as e:
+        except InsufficientFundsException as e:
             self.commentary.add_commentary(TradingCommentary(
                 timestamp=datetime.now(),
                 type=CommentaryType.WARNING,
                 symbol=signal.symbol,
-                title=f"❌ Order Exception",
-                message=str(e),
+                title=f"💸 Insufficient Funds",
+                message=e.args[0],
+                data=e.details,
+                importance=9
+            ))
+            logger.warning(f"Insufficient funds for {signal.symbol}: {e}")
+            self.error_recovery.increment_error_count('InsufficientFunds', signal.symbol)
+            action = self.error_recovery.suggest_recovery_action(e)
+            if action:
+                self.commentary.add_commentary(TradingCommentary(
+                    timestamp=datetime.now(),
+                    type=CommentaryType.INFO,
+                    symbol=signal.symbol,
+                    title="💡 Suggested Action",
+                    message=action,
+                    importance=7
+                ))
+            return False
+            
+        except RateLimitException as e:
+            self.commentary.add_commentary(TradingCommentary(
+                timestamp=datetime.now(),
+                type=CommentaryType.WARNING,
+                symbol=signal.symbol,
+                title=f"⏳ Rate Limited",
+                message=f"API rate limit hit. Retry after {e.retry_after}s",
+                importance=8
+            ))
+            logger.warning(f"Rate limited: {e}")
+            # Schedule retry
+            asyncio.create_task(self._retry_order_after_delay(signal, e.retry_after))
+            return False
+            
+        except (NetworkException, requests.exceptions.RequestException) as e:
+            self.commentary.add_commentary(TradingCommentary(
+                timestamp=datetime.now(),
+                type=CommentaryType.WARNING,
+                symbol=signal.symbol,
+                title=f"🌐 Network Error",
+                message="Connection issue - will retry",
+                importance=7
+            ))
+            logger.error(f"Network error: {e}")
+            # Retry with exponential backoff
+            asyncio.create_task(self._retry_order_with_backoff(signal))
+            return False
+            
+        except StaleDataException as e:
+            self.commentary.add_commentary(TradingCommentary(
+                timestamp=datetime.now(),
+                type=CommentaryType.WARNING,
+                symbol=signal.symbol,
+                title=f"📊 Stale Data",
+                message="Market data too old - refreshing",
+                importance=6
+            ))
+            logger.warning(f"Stale data for {signal.symbol}")
+            return False
+            
+        except CircuitBreakerException as e:
+            self.commentary.add_commentary(TradingCommentary(
+                timestamp=datetime.now(),
+                type=CommentaryType.WARNING,
+                symbol=signal.symbol,
+                title=f"🔌 Circuit Breaker Activated",
+                message=f"Too many failures - pausing for {e.cooldown_minutes} minutes",
+                importance=9
+            ))
+            logger.warning(f"Circuit breaker activated: {e}")
+            self.error_recovery.record_circuit_breaker_open('order_placement', str(e))
+            return False
+            
+        except AuthenticationException as e:
+            # Fatal - stop trading
+            self.commentary.add_commentary(TradingCommentary(
+                timestamp=datetime.now(),
+                type=CommentaryType.WARNING,
+                symbol=signal.symbol,
+                title=f"🔐 Authentication Failed",
+                message="Invalid credentials - stopping bot",
                 importance=10
             ))
-            logger.error(f"Order execution error: {e}", exc_info=True)
+            logger.critical(f"Authentication failed: {e}")
+            self.stop_trading = True
+            raise
+            
+        except Exception as e:
+            # Unknown error - log details for debugging
+            self.commentary.add_commentary(TradingCommentary(
+                timestamp=datetime.now(),
+                type=CommentaryType.WARNING,
+                symbol=signal.symbol,
+                title=f"❌ Unexpected Error",
+                message=f"Unknown error: {type(e).__name__}",
+                data={'error': str(e), 'traceback': traceback.format_exc()},
+                importance=10
+            ))
+            logger.error(f"Unexpected order error: {e}", exc_info=True)
             return False
+    async def _retry_order_after_delay(self, signal, delay: float):
+        """Retry order after specified delay"""
+        await asyncio.sleep(delay)
+        await self._execute_real_trade(signal)
+    
+    async def _retry_order_with_backoff(self, signal, attempt: int = 0, max_attempts: int = 3):
+        """Retry order with exponential backoff"""
+        if attempt >= max_attempts:
+            self.commentary.add_commentary(TradingCommentary(
+                timestamp=datetime.now(),
+                type=CommentaryType.WARNING,
+                symbol=signal.symbol,
+                title=f"❌ Max Retries Exceeded",
+                message=f"Failed after {max_attempts} attempts",
+                importance=9
+            ))
+            return
+        
+        delay = get_retry_delay(NetworkException("Network error"), attempt)
+        await asyncio.sleep(delay)
+        
+        try:
+            await self._execute_real_trade(signal)
+        except (NetworkException, requests.exceptions.RequestException):
+            await self._retry_order_with_backoff(signal, attempt + 1, max_attempts)
+    
     # Add these methods after _execute_real_trade in TradingEngineWithCommentary class:
 
     async def _check_existing_orders(self, symbol: str) -> Dict[str, Any]:
@@ -5517,8 +5783,8 @@ class TradingEngineWithCommentary:
             'details': response.text if hasattr(response, 'text') else None
         }
 
-    def _validate_oco_prices(self, symbol: str, stop_price: float, take_profit: float) -> bool:
-        """Validate OCO order prices before submission"""
+    def _validate_oco_prices(self, symbol: str, stop_price: float, take_profit: float, is_short: bool = False) -> bool:
+        """Validate OCO order prices before submission for both long and short positions"""
         try:
             # Get current quote
             quote = self.data_provider.get_quote(symbol)
@@ -5527,30 +5793,60 @@ class TradingEngineWithCommentary:
             
             current_price = quote.get('last', 0)
             bid = quote.get('bid', current_price)
+            ask = quote.get('ask', current_price)
             
-            # For sell orders: stop must be below current bid
-            if stop_price >= bid:
-                self.commentary.add_commentary(TradingCommentary(
-                    timestamp=datetime.now(),
-                    type=CommentaryType.WARNING,
-                    symbol=symbol,
-                    title=f"⚠️ Invalid Stop Price",
-                    message=f"Stop ${stop_price:.2f} must be below bid ${bid:.2f}",
-                    importance=8
-                ))
-                return False
-            
-            # Take profit should be above current price
-            if take_profit <= current_price:
-                self.commentary.add_commentary(TradingCommentary(
-                    timestamp=datetime.now(),
-                    type=CommentaryType.WARNING,
-                    symbol=symbol,
-                    title=f"⚠️ Invalid Target Price",
-                    message=f"Target ${take_profit:.2f} should be above current ${current_price:.2f}",
-                    importance=8
-                ))
-                return False
+            if is_short:
+                # For short positions (sell to open):
+                # - Stop loss must be ABOVE current ask (we're buying back at a loss)
+                # - Take profit must be BELOW current bid (we're buying back at a profit)
+                
+                if stop_price <= ask:
+                    self.commentary.add_commentary(TradingCommentary(
+                        timestamp=datetime.now(),
+                        type=CommentaryType.WARNING,
+                        symbol=symbol,
+                        title=f"⚠️ Invalid Stop Price for Short",
+                        message=f"Stop ${stop_price:.2f} must be above ask ${ask:.2f} for short position",
+                        importance=8
+                    ))
+                    return False
+                
+                if take_profit >= bid:
+                    self.commentary.add_commentary(TradingCommentary(
+                        timestamp=datetime.now(),
+                        type=CommentaryType.WARNING,
+                        symbol=symbol,
+                        title=f"⚠️ Invalid Target Price for Short",
+                        message=f"Target ${take_profit:.2f} must be below bid ${bid:.2f} for short position",
+                        importance=8
+                    ))
+                    return False
+            else:
+                # For long positions (existing logic):
+                # - Stop loss must be below current bid
+                # - Take profit must be above current ask
+                
+                if stop_price >= bid:
+                    self.commentary.add_commentary(TradingCommentary(
+                        timestamp=datetime.now(),
+                        type=CommentaryType.WARNING,
+                        symbol=symbol,
+                        title=f"⚠️ Invalid Stop Price",
+                        message=f"Stop ${stop_price:.2f} must be below bid ${bid:.2f}",
+                        importance=8
+                    ))
+                    return False
+                
+                if take_profit <= ask:
+                    self.commentary.add_commentary(TradingCommentary(
+                        timestamp=datetime.now(),
+                        type=CommentaryType.WARNING,
+                        symbol=symbol,
+                        title=f"⚠️ Invalid Target Price",
+                        message=f"Target ${take_profit:.2f} should be above ask ${ask:.2f}",
+                        importance=8
+                    ))
+                    return False
             
             return True
             
@@ -5628,8 +5924,8 @@ class TradingEngineWithCommentary:
                 message=f"Could not place stop/target orders: {str(e)}",
                 importance=7
             ))
-    def _validate_oco_prices(self, symbol: str, stop_price: float, take_profit: float) -> bool:
-        """Validate OCO order prices before submission"""
+    def _validate_oco_prices(self, symbol: str, stop_price: float, take_profit: float, is_short: bool = False) -> bool:
+        """Validate OCO order prices before submission for both long and short positions"""
         try:
             # Get current quote
             quote = self.data_provider.get_quote(symbol)
@@ -5638,30 +5934,60 @@ class TradingEngineWithCommentary:
             
             current_price = quote.get('last', 0)
             bid = quote.get('bid', current_price)
+            ask = quote.get('ask', current_price)
             
-            # For sell orders: stop must be below current bid
-            if stop_price >= bid:
-                self.commentary.add_commentary(TradingCommentary(
-                    timestamp=datetime.now(),
-                    type=CommentaryType.WARNING,
-                    symbol=symbol,
-                    title=f"⚠️ Invalid Stop Price",
-                    message=f"Stop ${stop_price:.2f} must be below bid ${bid:.2f}",
-                    importance=8
-                ))
-                return False
-            
-            # Take profit should be above current price
-            if take_profit <= current_price:
-                self.commentary.add_commentary(TradingCommentary(
-                    timestamp=datetime.now(),
-                    type=CommentaryType.WARNING,
-                    symbol=symbol,
-                    title=f"⚠️ Invalid Target Price",
-                    message=f"Target ${take_profit:.2f} should be above current ${current_price:.2f}",
-                    importance=8
-                ))
-                return False
+            if is_short:
+                # For short positions (sell to open):
+                # - Stop loss must be ABOVE current ask (we're buying back at a loss)
+                # - Take profit must be BELOW current bid (we're buying back at a profit)
+                
+                if stop_price <= ask:
+                    self.commentary.add_commentary(TradingCommentary(
+                        timestamp=datetime.now(),
+                        type=CommentaryType.WARNING,
+                        symbol=symbol,
+                        title=f"⚠️ Invalid Stop Price for Short",
+                        message=f"Stop ${stop_price:.2f} must be above ask ${ask:.2f} for short position",
+                        importance=8
+                    ))
+                    return False
+                
+                if take_profit >= bid:
+                    self.commentary.add_commentary(TradingCommentary(
+                        timestamp=datetime.now(),
+                        type=CommentaryType.WARNING,
+                        symbol=symbol,
+                        title=f"⚠️ Invalid Target Price for Short",
+                        message=f"Target ${take_profit:.2f} must be below bid ${bid:.2f} for short position",
+                        importance=8
+                    ))
+                    return False
+            else:
+                # For long positions (existing logic):
+                # - Stop loss must be below current bid
+                # - Take profit must be above current ask
+                
+                if stop_price >= bid:
+                    self.commentary.add_commentary(TradingCommentary(
+                        timestamp=datetime.now(),
+                        type=CommentaryType.WARNING,
+                        symbol=symbol,
+                        title=f"⚠️ Invalid Stop Price",
+                        message=f"Stop ${stop_price:.2f} must be below bid ${bid:.2f}",
+                        importance=8
+                    ))
+                    return False
+                
+                if take_profit <= ask:
+                    self.commentary.add_commentary(TradingCommentary(
+                        timestamp=datetime.now(),
+                        type=CommentaryType.WARNING,
+                        symbol=symbol,
+                        title=f"⚠️ Invalid Target Price",
+                        message=f"Target ${take_profit:.2f} should be above ask ${ask:.2f}",
+                        importance=8
+                    ))
+                    return False
             
             return True
             
@@ -5890,28 +6216,72 @@ class TradingEngineWithCommentary:
             logger.error(f"Position close error: {e}")
             return False
     async def _update_real_positions(self):
-        """Update real positions from account"""
+        """Update real positions from account - syncs ALL Schwab positions"""
         if not self.schwab_client or self.mode != TradingMode.LIVE:
             return
         
         try:
-            # Get account positions
-            response = self.schwab_client.get_account(
-                self.account_hash
-                #fields=[schwab_client.Account.Fields.POSITIONS]
-            )
+            # Get all Schwab positions
+            schwab_positions = await self.get_schwab_positions()
             
-            if response.status_code == 200:
-                account_data = response.json()
-                positions_data = account_data.get('securitiesAccount', {}).get('positions', [])
+            # Create a set of symbols from Schwab
+            schwab_symbols = {pos['symbol'] for pos in schwab_positions}
+            
+            # Add or update positions from Schwab
+            for pos_data in schwab_positions:
+                symbol = pos_data['symbol']
                 
-                # Update existing positions
-                for pos_data in positions_data:
-                    symbol = pos_data.get('instrument', {}).get('symbol')
-                    if symbol and symbol in self.positions:
-                        position = self.positions[symbol]
-                        position.current_price = pos_data.get('marketValue', 0) / pos_data.get('longQuantity', 1)
-                        position.unrealized_pnl = pos_data.get('unrealizedProfitLoss', 0)
+                if symbol not in self.positions:
+                    # Create new position for externally opened position
+                    position = Position(
+                        symbol=symbol,
+                        quantity=abs(pos_data['quantity']),
+                        entry_price=pos_data['average_price'],
+                        current_price=pos_data['current_price'],
+                        stop_loss=pos_data['average_price'] * 0.95,  # Default 5% stop
+                        take_profit=pos_data['average_price'] * 1.10,  # Default 10% target
+                        entry_time=datetime.now(),
+                        side='long' if pos_data['quantity'] > 0 else 'short',
+                        reasoning={'source': 'external', 'strategy': 'manual_entry'}
+                    )
+                    position.unrealized_pnl = pos_data['total_pnl']
+                    self.positions[symbol] = position
+                    
+                    # Log that we found an external position
+                    self.commentary.add_commentary(TradingCommentary(
+                        timestamp=datetime.now(),
+                        type=CommentaryType.MARKET_ANALYSIS,
+                        symbol=symbol,
+                        title=f"📥 External Position Detected",
+                        message=f"Found {abs(pos_data['quantity'])} shares of {symbol} "
+                                f"({'long' if pos_data['quantity'] > 0 else 'short'})\n"
+                                f"Entry: ${pos_data['average_price']:.2f}, "
+                                f"Current: ${pos_data['current_price']:.2f}",
+                        data=pos_data,
+                        importance=7
+                    ))
+                else:
+                    # Update existing position
+                    position = self.positions[symbol]
+                    position.current_price = pos_data['current_price']
+                    position.unrealized_pnl = pos_data['total_pnl']
+            
+            # Remove positions that no longer exist in Schwab
+            positions_to_remove = []
+            for symbol in self.positions:
+                if symbol not in schwab_symbols:
+                    positions_to_remove.append(symbol)
+            
+            for symbol in positions_to_remove:
+                del self.positions[symbol]
+                self.commentary.add_commentary(TradingCommentary(
+                    timestamp=datetime.now(),
+                    type=CommentaryType.DECISION,
+                    symbol=symbol,
+                    title=f"📤 Position Closed Externally",
+                    message=f"{symbol} position was closed outside the bot",
+                    importance=6
+                ))
                         
         except Exception as e:
             logger.error(f"Position update error: {e}")
@@ -5940,10 +6310,10 @@ class TradingEngineWithCommentary:
             ))
             
             # Check credentials
-            if not Config().SCHWAB_API_KEY or Config().SCHWAB_API_KEY == "your_api_key":
+            if not Config().SCHWAB_API_KEY:
                 raise ValueError("SCHWAB_API_KEY not set")
-            if not Config().SCHWAB_APP_SECRET or Config().SCHWAB_APP_SECRET == "your_app_secret":
-                raise ValueError("SCHWAB_APP_SECRET not set")
+            if not Config().SCHWAB_APP_SECRET:
+                raise ValueError("SCHWAB_SECRET not set")
             
             # Check if token exists
             if Config().SCHWAB_TOKEN_PATH.exists():
@@ -6046,7 +6416,7 @@ class TradingEngineWithCommentary:
                 importance=9
             ))
             # Train on initial symbols
-            await self.ml_predictor.retrain_model(
+            self.ml_predictor.retrain_model(
                 self.data_provider,
                 ['PLTR', 'NVDA', 'TSLA']
             )
@@ -6117,7 +6487,7 @@ class TradingEngineWithCommentary:
                 # Manage existing positions with commentary
                 await self._manage_positions_with_commentary()
                 # Emergency stop check
-                if self.risk_manager.daily_pnl < -self.risk_manager.account_balance * 0.03:
+                if self.risk_manager.daily_pnl < -self.risk_manager.account_balance * 0.05:
                     self.commentary.add_commentary(TradingCommentary(
                         timestamp=datetime.now(),
                         type=CommentaryType.WARNING,
@@ -6442,7 +6812,7 @@ class TradingEngineWithCommentary:
                     
                     ml_signal, ml_explanation = (0, {})
                     if Config().ML_PREDICTION_ENABLED:
-                        ml_signal, ml_explanation = await self.ml_predictor.predict_with_commentary(
+                        ml_signal, ml_explanation = self.ml_predictor.predict_with_commentary(
                             indicators, symbol, data
                         )
                     
@@ -6805,11 +7175,75 @@ class TradingEngineWithCommentary:
                     else:  # long
                         position.unrealized_pnl = (current_price - position.entry_price) * position.quantity
                     
-                    # Commentary on position status (only if significant change)
-                    price_change_pct = ((current_price - old_price) / old_price) * 100
-                    if abs(price_change_pct) > 0.1:  # Only comment on >0.1% moves
+                    # Calculate P&L percentage
+                    if position.side == 'short':
+                        pnl_pct = ((position.entry_price - current_price) / position.entry_price) * 100
+                    else:
                         pnl_pct = ((current_price - position.entry_price) / position.entry_price) * 100
+                    
+                    # Alert on significant losses
+                    if position.unrealized_pnl < 0:
+                        loss_pct = abs(pnl_pct)
                         
+                        # Check if we should alert (avoid spamming)
+                        should_alert = False
+                        alert_info = self.loss_alert_tracker.get(symbol, {})
+                        last_alert_time = alert_info.get('last_alert_time')
+                        last_loss_pct = alert_info.get('last_loss_pct', 0)
+                        
+                        # Alert if: first time, or loss increased by 0.5%, or 5 minutes passed
+                        if (not last_alert_time or 
+                            loss_pct >= last_loss_pct + 0.5 or
+                            (datetime.now() - last_alert_time).total_seconds() > 300):
+                            should_alert = True
+                        
+                        if should_alert:
+                            # Critical alert for large losses
+                            if loss_pct >= 3.0:  # 3% or more loss
+                                self.commentary.add_commentary(TradingCommentary(
+                                    timestamp=datetime.now(),
+                                    type=CommentaryType.WARNING,
+                                    symbol=symbol,
+                                    title=f"🚨 CRITICAL LOSS: {symbol}",
+                                    message=f"Position down {loss_pct:.1f}% (${abs(position.unrealized_pnl):.2f})\n"
+                                            f"IMMEDIATE ACTION REQUIRED!\n"
+                                            f"Stop loss: ${position.stop_loss:.2f}",
+                                    data={
+                                        'current_price': current_price,
+                                        'entry_price': position.entry_price,
+                                        'unrealized_pnl': position.unrealized_pnl,
+                                        'pnl_percentage': pnl_pct,
+                                        'distance_to_stop': abs((current_price - position.stop_loss) / current_price * 100)
+                                    },
+                                    importance=10
+                                ))
+                            elif loss_pct >= 1.0:  # 1% or more loss
+                                self.commentary.add_commentary(TradingCommentary(
+                                    timestamp=datetime.now(),
+                                    type=CommentaryType.WARNING,
+                                    symbol=symbol,
+                                    title=f"⚠️ Position Losing: {symbol}",
+                                    message=f"Down {loss_pct:.1f}% (${abs(position.unrealized_pnl):.2f})\n"
+                                            f"Stop loss at ${position.stop_loss:.2f}",
+                                    data={
+                                        'current_price': current_price,
+                                        'entry_price': position.entry_price,
+                                        'unrealized_pnl': position.unrealized_pnl,
+                                        'pnl_percentage': pnl_pct,
+                                        'distance_to_stop': abs((current_price - position.stop_loss) / current_price * 100)
+                                    },
+                                    importance=7 if loss_pct < 2 else 9
+                                ))
+                            
+                            # Update tracker
+                            self.loss_alert_tracker[symbol] = {
+                                'last_alert_time': datetime.now(),
+                                'last_loss_pct': loss_pct
+                            }
+                    
+                    # Regular position updates for smaller moves
+                    price_change_pct = ((current_price - old_price) / old_price) * 100
+                    if abs(price_change_pct) > 0.05 and abs(pnl_pct) >= 0.5:  # Lower threshold
                         self.commentary.add_commentary(TradingCommentary(
                             timestamp=datetime.now(),
                             type=CommentaryType.MARKET_ANALYSIS,
@@ -6845,10 +7279,17 @@ class TradingEngineWithCommentary:
                 ))
     async def _evaluate_exit_conditions(self, position, current_price: float) -> Tuple[bool, str]:
         """Evaluate exit conditions with detailed reasoning"""
+        # Check if stop loss is hit based on position side
+        stop_loss_hit = False
+        if position.side == 'short':
+            stop_loss_hit = current_price >= position.stop_loss
+        else:  # long
+            stop_loss_hit = current_price <= position.stop_loss
+            
         # If manual close only mode, only check hard stops
         if self.manual_close_only and self.mode == TradingMode.LIVE:
             # Still check stop loss for safety
-            if current_price <= position.stop_loss:
+            if stop_loss_hit:
                 self.commentary.add_commentary(TradingCommentary(
                     timestamp=datetime.now(),
                     type=CommentaryType.WARNING,
@@ -6861,7 +7302,7 @@ class TradingEngineWithCommentary:
                 return False, ""
             return False, ""
         # First check hard stops
-        if current_price <= position.stop_loss:
+        if stop_loss_hit:
             self.commentary.add_commentary(TradingCommentary(
                 timestamp=datetime.now(),
                 type=CommentaryType.RISK_ASSESSMENT,
@@ -8977,6 +9418,10 @@ async def toggle_trading_mode(request: dict):
         # Add safety check
         if not trading_engine.schwab_client:
             return {"status": "error", "message": "Cannot switch to live mode - Schwab not connected"}
+        
+        # Sync external positions when switching to live mode
+        await trading_engine._update_real_positions()
+        
     else:
         trading_engine.mode = TradingMode.SIMULATION_WITH_COMMENTARY
     
@@ -9020,21 +9465,59 @@ async def get_dashboard():
 
 @app.post("/api/start")
 async def start_trading():
-    global trading_engine, connection_manager
+    global trading_engine, connection_manager, trading_task
     
     if not trading_engine:
         trading_engine = TradingEngineWithCommentary(connection_manager=connection_manager)
         
         # Subscribe to commentary updates
-        async def broadcast_commentary(commentary: TradingCommentary):
+        async def broadcast_commentary(commentary):
+            # Handle both TradingCommentary objects and dicts
+            if hasattr(commentary, 'to_dict'):
+                data = commentary.to_dict()
+            elif isinstance(commentary, dict):
+                data = commentary
+            else:
+                logger.error(f"Unexpected commentary type: {type(commentary)}")
+                return
+                
             await connection_manager.broadcast({
                 'type': 'commentary',
-                'data': commentary.to_dict()
+                'data': data
             })
         
-        trading_engine.commentary.subscribe(
-            lambda c: asyncio.create_task(broadcast_commentary(c))
-        )
+        # Create a thread-safe queue for commentary updates
+        commentary_queue = asyncio.Queue()
+        
+        # Get the current event loop for cross-thread communication
+        main_loop = asyncio.get_event_loop()
+        
+        # Background task to process commentary broadcasts
+        async def commentary_broadcaster():
+            while True:
+                try:
+                    commentary = await commentary_queue.get()
+                    await broadcast_commentary(commentary)
+                except Exception as e:
+                    logger.error(f"Error broadcasting commentary: {e}")
+        
+        # Start the broadcaster task
+        asyncio.create_task(commentary_broadcaster())
+        
+        def queue_commentary(commentary):
+            try:
+                # Get the main event loop (not the one from the thread)
+                # Use asyncio.run_coroutine_threadsafe for cross-thread communication
+                future = asyncio.run_coroutine_threadsafe(
+                    commentary_queue.put(commentary), 
+                    main_loop
+                )
+                # Optional: wait for completion with timeout
+                future.result(timeout=1.0)
+            except Exception as e:
+                logger.error(f"Error queuing commentary: {e}")
+        
+        trading_engine.commentary.subscribe(queue_commentary)
     
     if not trading_engine.is_running:
         threading.Thread(
