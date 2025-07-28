@@ -1,0 +1,252 @@
+COMPREHENSIVE FEATURE SET FOR ROBUST ML TRADING MODEL
+=====================================================
+
+1. PRICE-BASED FEATURES
+-----------------------
+- returns_1min: 1-minute price return
+- returns_5min: 5-minute price return  
+- returns_15min: 15-minute price return
+- returns_30min: 30-minute price return
+- returns_1h: 1-hour price return
+- returns_4h: 4-hour price return
+- returns_1d: 1-day price return
+- log_returns_5min: Log returns for better statistical properties
+- log_returns_1h: Hourly log returns
+- price_open_close_ratio: Open/Close ratio
+- price_high_low_ratio: High/Low ratio  
+- price_close_vwap_ratio: Close/VWAP ratio
+- price_position_daily: % of daily range
+- price_position_weekly: % of weekly range
+- gap_overnight: Overnight gap size
+- gap_intraday: Intraday gap indicator
+- higher_highs: Higher highs pattern
+- lower_lows: Lower lows pattern
+- candlestick_pattern: Encoded candlestick patterns
+
+2. TECHNICAL INDICATORS
+-----------------------
+# Momentum
+- rsi_14: RSI with 14 period
+- rsi_30: RSI with 30 period
+- stochastic_k: Stochastic %K
+- stochastic_d: Stochastic %D
+- williams_r: Williams %R
+- roc_10: Rate of Change (10 period)
+- roc_20: Rate of Change (20 period)
+
+# Trend
+- ema_9: 9-period EMA
+- ema_21: 21-period EMA
+- ema_50: 50-period EMA
+- ema_200: 200-period EMA
+- macd_line: MACD line
+- macd_signal: MACD signal
+- macd_histogram: MACD histogram
+- adx: Average Directional Index
+- dmi_plus: +DI (Positive Directional Indicator)
+- dmi_minus: -DI (Negative Directional Indicator)
+
+# Volatility
+- atr_14: Average True Range (14)
+- bollinger_upper: Upper Bollinger Band
+- bollinger_lower: Lower Bollinger Band
+- bollinger_width: Bollinger Band width
+- keltner_upper: Upper Keltner Channel
+- keltner_lower: Lower Keltner Channel
+- historical_volatility_20: 20-period historical volatility
+- historical_volatility_60: 60-period historical volatility
+
+# Volume Indicators
+- obv: On Balance Volume
+- cmf: Chaikin Money Flow
+- mfi: Money Flow Index
+- volume_sma_ratio: Volume/SMA ratio
+- accumulation_distribution: A/D Line
+
+# Mean Reversion
+- zscore_20: 20-period Z-score
+- zscore_50: 50-period Z-score
+- mean_reversion_speed: Speed of mean reversion
+
+3. MARKET MICROSTRUCTURE
+------------------------
+- bid_ask_spread: Current bid-ask spread
+- effective_spread: Effective spread
+- quoted_spread: Quoted spread
+- order_book_imbalance: Bid/ask size imbalance
+- order_book_pressure: Net order book pressure
+- level2_depth_ratio: Level 2 depth ratio
+- buy_sell_volume_ratio: Buy/sell volume ratio
+- large_trade_indicator: Large trade detection
+- uptick_downtick_ratio: Uptick/downtick ratio
+- tick_velocity: Speed of tick changes
+
+4. VOLUME ANALYSIS
+------------------
+- vwap: Volume Weighted Average Price
+- price_vwap_deviation: Price deviation from VWAP
+- vwap_upper_band: Upper VWAP band
+- vwap_lower_band: Lower VWAP band
+- relative_volume: Volume vs average
+- volume_spike: Volume spike indicator
+- volume_dry_up: Low volume indicator
+- dollar_volume: Total dollar volume
+- money_flow_index: Money flow indicator
+- smart_money_flow: Smart money indicator
+- volume_at_price: Volume at price levels
+- poc: Point of Control
+
+5. VOLATILITY FEATURES
+----------------------
+- realized_volatility_5min: 5-min realized volatility
+- realized_volatility_30min: 30-min realized volatility
+- realized_volatility_daily: Daily realized volatility
+- garch_volatility: GARCH conditional volatility
+- volatility_ratio_short_long: Short/long term vol ratio
+- volatility_regime: Low/normal/high classification
+- volatility_percentile: Historical volatility percentile
+
+6. MARKET CONTEXT
+-----------------
+- spy_correlation: Correlation with SPY
+- qqq_correlation: Correlation with QQQ
+- vix_level: Current VIX level
+- vix_change: VIX daily change
+- sector_relative_strength: Sector RS ranking
+- market_breadth: Advance/decline ratio
+- new_highs_lows: New 52-week highs/lows ratio
+- put_call_ratio: Put/call ratio
+- term_structure: VIX term structure
+- dxy_correlation: Dollar index correlation
+
+7. TEMPORAL FEATURES
+--------------------
+- hour_of_day: Trading hour (0-23)
+- minute_of_hour: Minute (0-59)
+- trading_session: Pre/regular/after hours
+- day_of_week: Monday=1, Friday=5
+- day_of_month: 1-31
+- week_of_month: 1-5
+- month_of_year: 1-12
+- quarter: Q1-Q4
+- is_month_start: First 3 days of month
+- is_month_end: Last 3 days of month
+- is_quarter_end: Quarter end indicator
+- time_to_close: Minutes to market close
+- time_from_open: Minutes from market open
+- is_fed_day: Fed announcement day
+- is_opex: Options expiration
+- days_to_earnings: Days until earnings
+- days_from_earnings: Days since earnings
+
+8. SENTIMENT INDICATORS
+-----------------------
+- options_put_call: Options put/call ratio
+- gamma_exposure: Net gamma exposure
+- news_sentiment_score: Aggregate news sentiment
+- news_volume: Number of news articles
+- social_sentiment: Social media sentiment
+- wsb_mentions: WallStreetBets mentions
+- twitter_volume: Twitter mention volume
+- insider_buying: Insider buying activity
+- insider_selling: Insider selling activity
+- analyst_upgrades: Recent upgrades
+- analyst_downgrades: Recent downgrades
+
+9. FUNDAMENTAL CONTEXT
+----------------------
+- pe_ratio: Price/Earnings ratio
+- pe_relative_sector: P/E vs sector average
+- peg_ratio: Price/Earnings/Growth
+- price_to_book: P/B ratio
+- earnings_surprise_history: Past surprises
+- revenue_growth: Revenue growth rate
+- profit_margin: Net profit margin
+- debt_to_equity: D/E ratio
+- analyst_consensus: Buy/hold/sell consensus
+- analyst_price_target: Distance to target
+
+10. RISK MANAGEMENT FEATURES
+----------------------------
+- current_drawdown: Drawdown from recent high
+- max_drawdown_20d: 20-day max drawdown
+- sharpe_ratio_20d: 20-day Sharpe ratio
+- sortino_ratio_20d: 20-day Sortino ratio
+- calmar_ratio: Return/max drawdown
+- correlation_stability: Correlation consistency
+- beta_spy: Beta to SPY
+- beta_sector: Beta to sector
+- var_95: 95% Value at Risk
+- expected_shortfall: CVaR/Expected shortfall
+
+11. ADVANCED STATISTICAL FEATURES
+---------------------------------
+- autocorrelation_returns_5: 5-period return autocorr
+- autocorrelation_volume_5: 5-period volume autocorr
+- price_entropy: Shannon entropy of prices
+- volume_entropy: Shannon entropy of volume
+- hurst_exponent: Long-term memory measure
+- fractal_dimension: Price fractal dimension
+- cointegration_spy: Cointegration with SPY
+- cointegration_sector: Cointegration with sector
+- information_ratio: Active return/tracking error
+- kurtosis_returns: Return distribution kurtosis
+- skewness_returns: Return distribution skewness
+
+12. MACHINE LEARNING DERIVED FEATURES
+-------------------------------------
+- price_embedding_1: Autoencoder feature 1
+- price_embedding_2: Autoencoder feature 2
+- price_embedding_3: Autoencoder feature 3
+- market_regime_cluster: K-means regime cluster
+- pca_component_1: First principal component
+- pca_component_2: Second principal component
+- pca_component_3: Third principal component
+- interaction_rsi_volume: RSI * Volume interaction
+- interaction_macd_atr: MACD * ATR interaction
+- polynomial_price_volume: Price^2 * Volume
+
+FEATURE ENGINEERING GUIDELINES
+==============================
+
+1. Stationarity
+   - Use returns instead of prices
+   - Difference non-stationary series
+   - Apply appropriate transformations
+
+2. Normalization
+   - Z-score normalization for continuous features
+   - Rank-based normalization for robust scaling
+   - Min-max scaling for bounded indicators
+
+3. Missing Data Handling
+   - Forward fill for prices (max 2 periods)
+   - Interpolation for indicators
+   - Separate indicator for missing data
+
+4. Lookahead Bias Prevention
+   - Strict point-in-time calculations
+   - No future information leakage
+   - Proper alignment of features and labels
+
+5. Feature Selection
+   - Regular SHAP value analysis
+   - Recursive feature elimination
+   - Cross-validation based selection
+
+6. Feature Categories Priority
+   - ESSENTIAL: Price returns, basic TA, volume, time features
+   - HIGH VALUE: Microstructure, market context, volatility
+   - ADVANCED: ML-derived, statistical, fundamental
+
+RECOMMENDED FEATURE COUNT
+=========================
+- Minimum viable: 30-50 features
+- Optimal range: 100-150 features
+- Maximum practical: 200-250 features
+
+Note: More features isn't always better. Focus on:
+- Feature quality over quantity
+- Low correlation between features
+- Strong predictive power
+- Computational efficiency

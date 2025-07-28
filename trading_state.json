@@ -1,0 +1,859 @@
+{
+  "trade_history": [
+    {
+      "symbol": "PENN",
+      "entry_time": "2025-07-26T15:45:42.513477",
+      "exit_time": "2025-07-26T15:47:49.809966",
+      "entry_price": 19.25,
+      "exit_price": 19.25,
+      "quantity": 2467,
+      "pnl": 0.0,
+      "exit_reason": "time_decay",
+      "reasoning": {
+        "strategy": "momentum",
+        "macd_bullish": true,
+        "rsi_healthy": true,
+        "trend_strong": true
+      }
+    },
+    {
+      "symbol": "TSLA",
+      "entry_time": "2025-07-26T15:45:35.294066",
+      "exit_time": "2025-07-26T19:56:54.308771",
+      "entry_price": 317.7,
+      "exit_price": 317.7,
+      "quantity": 149,
+      "pnl": 0.0,
+      "exit_reason": "time_decay",
+      "reasoning": {
+        "strategy": "free_news_sentiment",
+        "sentiment": 0.26393636363636364,
+        "news_count": 11,
+        "sources": [
+          "Yahoo Finance RSS",
+          "Yahoo Finance RSS",
+          "Yahoo Finance RSS"
+        ]
+      }
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2025-07-26T15:45:31.406400",
+      "exit_time": "2025-07-26T16:00:24.981834",
+      "entry_price": 173.4001,
+      "exit_price": 173.4001,
+      "quantity": 273,
+      "pnl": 0.0,
+      "exit_reason": "time_decay",
+      "reasoning": {
+        "strategy": "free_news_sentiment",
+        "sentiment": 0.53871,
+        "news_count": 10,
+        "sources": [
+          "Yahoo Finance RSS",
+          "Yahoo Finance RSS",
+          "Yahoo Finance RSS"
+        ]
+      }
+    },
+    {
+      "symbol": "RIVN",
+      "entry_time": "2025-07-26T16:03:42.591038",
+      "exit_time": "2025-07-26T16:03:46.499683",
+      "entry_price": 14.0002,
+      "exit_price": 14.0002,
+      "quantity": 3392,
+      "pnl": 0.0,
+      "exit_reason": "trailing_stop",
+      "reasoning": {
+        "strategy": "free_news_sentiment",
+        "sentiment": -0.0332,
+        "news_count": 3,
+        "sources": [
+          "Yahoo Finance RSS",
+          "Yahoo Finance RSS",
+          "simplywall.st"
+        ]
+      }
+    },
+    {
+      "symbol": "PLTR",
+      "entry_time": "2025-07-26T15:45:40.099974",
+      "exit_time": "2025-07-26T16:07:05.688963",
+      "entry_price": 159.32,
+      "exit_price": 159.32,
+      "quantity": 298,
+      "pnl": 0.0,
+      "exit_reason": "time_decay",
+      "reasoning": {
+        "strategy": "free_news_sentiment",
+        "sentiment": 0.34108,
+        "news_count": 10,
+        "sources": [
+          "Yahoo Finance RSS",
+          "Yahoo Finance RSS",
+          "Yahoo Finance RSS"
+        ]
+      }
+    },
+    {
+      "symbol": "PENN",
+      "entry_time": "2025-07-26T15:48:33.919177",
+      "exit_time": "2025-07-26T20:16:01.285515",
+      "entry_price": 19.25,
+      "exit_price": 19.25,
+      "quantity": 2467,
+      "pnl": 0.0,
+      "exit_reason": "time_decay",
+      "reasoning": {
+        "strategy": "momentum",
+        "macd_bullish": true,
+        "rsi_healthy": true,
+        "trend_strong": true
+      }
+    },
+    {
+      "symbol": "TSLA",
+      "entry_time": "2025-07-26T16:02:41.488814",
+      "exit_time": "2025-07-26T20:16:46.346073",
+      "entry_price": 317.7,
+      "exit_price": 317.7,
+      "quantity": 149,
+      "pnl": 0.0,
+      "exit_reason": "time_decay",
+      "reasoning": {
+        "strategy": "free_news_sentiment",
+        "sentiment": 0.26393636363636364,
+        "news_count": 11,
+        "sources": [
+          "Yahoo Finance RSS",
+          "Yahoo Finance RSS",
+          "Yahoo Finance RSS"
+        ]
+      }
+    },
+    {
+      "symbol": "PENN",
+      "entry_time": "2025-07-26T16:16:40.900901",
+      "exit_time": "2025-07-26T16:46:51.140313",
+      "entry_price": 19.25,
+      "exit_price": 19.25,
+      "quantity": 2467,
+      "pnl": 0.0,
+      "exit_reason": "time_decay",
+      "reasoning": {
+        "strategy": "momentum",
+        "macd_bullish": true,
+        "rsi_healthy": true,
+        "trend_strong": true
+      }
+    },
+    {
+      "symbol": "TSLA",
+      "entry_time": "2025-07-28T10:19:20.099370",
+      "exit_time": "2025-07-28T10:19:33.362268",
+      "entry_price": 325.5656,
+      "exit_price": 325.35,
+      "quantity": 145,
+      "pnl": 31.26199999999926,
+      "exit_reason": "trailing_stop",
+      "reasoning": {
+        "strategy": "mean_reversion_short",
+        "rsi": 71.8069894375584,
+        "bb_position": "above_upper_band",
+        "distance_from_mean": 1.5730995227997122
+      }
+    },
+    {
+      "symbol": "TSLA",
+      "entry_time": "2025-07-28T10:20:23.159790",
+      "exit_time": "2025-07-28T10:23:21.236681",
+      "entry_price": 325.825,
+      "exit_price": 324.4256,
+      "quantity": 30.0,
+      "pnl": 41.982000000000426,
+      "exit_reason": "stop_loss",
+      "reasoning": {
+        "source": "external",
+        "strategy": "manual_entry"
+      }
+    },
+    {
+      "symbol": "HQGE",
+      "entry_time": "2025-07-28T10:19:48.511747",
+      "exit_time": "2025-07-28T10:29:42.335694",
+      "entry_price": 0.0190313725,
+      "exit_price": 0.0001,
+      "quantity": 5100.0,
+      "pnl": -96.54999975000001,
+      "exit_reason": "stop_loss",
+      "reasoning": {
+        "source": "external",
+        "strategy": "manual_entry"
+      }
+    },
+    {
+      "symbol": "HQGE",
+      "entry_time": "2025-07-28T10:29:42.557678",
+      "exit_time": "2025-07-28T10:30:30.198034",
+      "entry_price": 0.0190313725,
+      "exit_price": 0.0001,
+      "quantity": 5100.0,
+      "pnl": -96.54999975000001,
+      "exit_reason": "stop_loss",
+      "reasoning": {
+        "source": "external",
+        "strategy": "manual_entry"
+      }
+    },
+    {
+      "symbol": "HQGE",
+      "entry_time": "2025-07-28T10:30:30.379804",
+      "exit_time": "2025-07-28T10:31:15.737921",
+      "entry_price": 0.0190313725,
+      "exit_price": 0.0001,
+      "quantity": 5100.0,
+      "pnl": -96.54999975000001,
+      "exit_reason": "stop_loss",
+      "reasoning": {
+        "source": "external",
+        "strategy": "manual_entry"
+      }
+    },
+    {
+      "symbol": "HQGE",
+      "entry_time": "2025-07-28T10:31:15.908286",
+      "exit_time": "2025-07-28T10:31:48.439863",
+      "entry_price": 0.0190313725,
+      "exit_price": 0.0001,
+      "quantity": 5100.0,
+      "pnl": -96.54999975000001,
+      "exit_reason": "stop_loss",
+      "reasoning": {
+        "source": "external",
+        "strategy": "manual_entry"
+      }
+    },
+    {
+      "symbol": "HQGE",
+      "entry_time": "2025-07-28T10:31:48.624674",
+      "exit_time": "2025-07-28T10:32:20.844072",
+      "entry_price": 0.0190313725,
+      "exit_price": 0.0001,
+      "quantity": 5100.0,
+      "pnl": -96.54999975000001,
+      "exit_reason": "stop_loss",
+      "reasoning": {
+        "source": "external",
+        "strategy": "manual_entry"
+      }
+    },
+    {
+      "symbol": "HQGE",
+      "entry_time": "2025-07-28T10:32:21.009613",
+      "exit_time": "2025-07-28T10:32:53.812609",
+      "entry_price": 0.0190313725,
+      "exit_price": 0.0001,
+      "quantity": 5100.0,
+      "pnl": -96.54999975000001,
+      "exit_reason": "stop_loss",
+      "reasoning": {
+        "source": "external",
+        "strategy": "manual_entry"
+      }
+    },
+    {
+      "symbol": "HQGE",
+      "entry_time": "2025-07-28T10:32:54.010778",
+      "exit_time": "2025-07-28T10:33:26.501889",
+      "entry_price": 0.0190313725,
+      "exit_price": 0.0001,
+      "quantity": 5100.0,
+      "pnl": -96.54999975000001,
+      "exit_reason": "stop_loss",
+      "reasoning": {
+        "source": "external",
+        "strategy": "manual_entry"
+      }
+    },
+    {
+      "symbol": "HQGE",
+      "entry_time": "2025-07-28T10:33:26.683305",
+      "exit_time": "2025-07-28T10:33:59.206056",
+      "entry_price": 0.0190313725,
+      "exit_price": 0.0001,
+      "quantity": 5100.0,
+      "pnl": -96.54999975000001,
+      "exit_reason": "stop_loss",
+      "reasoning": {
+        "source": "external",
+        "strategy": "manual_entry"
+      }
+    },
+    {
+      "symbol": "HQGE",
+      "entry_time": "2025-07-28T10:33:59.397476",
+      "exit_time": "2025-07-28T10:34:31.201457",
+      "entry_price": 0.0190313725,
+      "exit_price": 0.0001,
+      "quantity": 5100.0,
+      "pnl": -96.54999975000001,
+      "exit_reason": "stop_loss",
+      "reasoning": {
+        "source": "external",
+        "strategy": "manual_entry"
+      }
+    },
+    {
+      "symbol": "HQGE",
+      "entry_time": "2025-07-28T10:34:31.408197",
+      "exit_time": "2025-07-28T10:35:04.611431",
+      "entry_price": 0.0190313725,
+      "exit_price": 0.0001,
+      "quantity": 5100.0,
+      "pnl": -96.54999975000001,
+      "exit_reason": "stop_loss",
+      "reasoning": {
+        "source": "external",
+        "strategy": "manual_entry"
+      }
+    },
+    {
+      "symbol": "HQGE",
+      "entry_time": "2025-07-28T10:35:05.163161",
+      "exit_time": "2025-07-28T10:35:36.980645",
+      "entry_price": 0.0190313725,
+      "exit_price": 0.0001,
+      "quantity": 5100.0,
+      "pnl": -96.54999975000001,
+      "exit_reason": "stop_loss",
+      "reasoning": {
+        "source": "external",
+        "strategy": "manual_entry"
+      }
+    },
+    {
+      "symbol": "HQGE",
+      "entry_time": "2025-07-28T10:35:37.205535",
+      "exit_time": "2025-07-28T10:36:10.201654",
+      "entry_price": 0.0190313725,
+      "exit_price": 0.0001,
+      "quantity": 5100.0,
+      "pnl": -96.54999975000001,
+      "exit_reason": "stop_loss",
+      "reasoning": {
+        "source": "external",
+        "strategy": "manual_entry"
+      }
+    },
+    {
+      "symbol": "HQGE",
+      "entry_time": "2025-07-28T10:36:10.370716",
+      "exit_time": "2025-07-28T10:36:43.031216",
+      "entry_price": 0.0190313725,
+      "exit_price": 0.0001,
+      "quantity": 5100.0,
+      "pnl": -96.54999975000001,
+      "exit_reason": "stop_loss",
+      "reasoning": {
+        "source": "external",
+        "strategy": "manual_entry"
+      }
+    },
+    {
+      "symbol": "HQGE",
+      "entry_time": "2025-07-28T10:36:43.230852",
+      "exit_time": "2025-07-28T10:37:15.469802",
+      "entry_price": 0.0190313725,
+      "exit_price": 0.0001,
+      "quantity": 5100.0,
+      "pnl": -96.54999975000001,
+      "exit_reason": "stop_loss",
+      "reasoning": {
+        "source": "external",
+        "strategy": "manual_entry"
+      }
+    },
+    {
+      "symbol": "HQGE",
+      "entry_time": "2025-07-28T10:37:15.791661",
+      "exit_time": "2025-07-28T10:37:49.184134",
+      "entry_price": 0.0190313725,
+      "exit_price": 0.0001,
+      "quantity": 5100.0,
+      "pnl": -96.54999975000001,
+      "exit_reason": "stop_loss",
+      "reasoning": {
+        "source": "external",
+        "strategy": "manual_entry"
+      }
+    },
+    {
+      "symbol": "HQGE",
+      "entry_time": "2025-07-28T10:37:49.417446",
+      "exit_time": "2025-07-28T10:38:23.927934",
+      "entry_price": 0.0190313725,
+      "exit_price": 0.0001,
+      "quantity": 5100.0,
+      "pnl": -96.54999975000001,
+      "exit_reason": "stop_loss",
+      "reasoning": {
+        "source": "external",
+        "strategy": "manual_entry"
+      }
+    },
+    {
+      "symbol": "HQGE",
+      "entry_time": "2025-07-28T10:38:24.172129",
+      "exit_time": "2025-07-28T10:38:58.026900",
+      "entry_price": 0.0190313725,
+      "exit_price": 0.0001,
+      "quantity": 5100.0,
+      "pnl": -96.54999975000001,
+      "exit_reason": "stop_loss",
+      "reasoning": {
+        "source": "external",
+        "strategy": "manual_entry"
+      }
+    },
+    {
+      "symbol": "HQGE",
+      "entry_time": "2025-07-28T10:38:58.291979",
+      "exit_time": "2025-07-28T10:39:32.915944",
+      "entry_price": 0.0190313725,
+      "exit_price": 0.0001,
+      "quantity": 5100.0,
+      "pnl": -96.54999975000001,
+      "exit_reason": "stop_loss",
+      "reasoning": {
+        "source": "external",
+        "strategy": "manual_entry"
+      }
+    },
+    {
+      "symbol": "HQGE",
+      "entry_time": "2025-07-28T10:39:33.162884",
+      "exit_time": "2025-07-28T10:40:09.963569",
+      "entry_price": 0.0190313725,
+      "exit_price": 0.0001,
+      "quantity": 5100.0,
+      "pnl": -96.54999975000001,
+      "exit_reason": "stop_loss",
+      "reasoning": {
+        "source": "external",
+        "strategy": "manual_entry"
+      }
+    },
+    {
+      "symbol": "HQGE",
+      "entry_time": "2025-07-28T10:40:10.152003",
+      "exit_time": "2025-07-28T10:40:48.650577",
+      "entry_price": 0.0190313725,
+      "exit_price": 0.0001,
+      "quantity": 5100.0,
+      "pnl": -96.54999975000001,
+      "exit_reason": "stop_loss",
+      "reasoning": {
+        "source": "external",
+        "strategy": "manual_entry"
+      }
+    },
+    {
+      "symbol": "HQGE",
+      "entry_time": "2025-07-28T10:40:48.908212",
+      "exit_time": "2025-07-28T10:41:23.867717",
+      "entry_price": 0.0190313725,
+      "exit_price": 0.0001,
+      "quantity": 5100.0,
+      "pnl": -96.54999975000001,
+      "exit_reason": "stop_loss",
+      "reasoning": {
+        "source": "external",
+        "strategy": "manual_entry"
+      }
+    },
+    {
+      "symbol": "HQGE",
+      "entry_time": "2025-07-28T10:41:24.164444",
+      "exit_time": "2025-07-28T10:41:58.385663",
+      "entry_price": 0.0190313725,
+      "exit_price": 0.0001,
+      "quantity": 5100.0,
+      "pnl": -96.54999975000001,
+      "exit_reason": "stop_loss",
+      "reasoning": {
+        "source": "external",
+        "strategy": "manual_entry"
+      }
+    },
+    {
+      "symbol": "HQGE",
+      "entry_time": "2025-07-28T10:41:58.863489",
+      "exit_time": "2025-07-28T14:42:32.814497",
+      "entry_price": 0.0190313725,
+      "exit_price": 0.0001,
+      "quantity": 5100.0,
+      "pnl": -96.54999975000001,
+      "exit_reason": "stop_loss",
+      "reasoning": {
+        "source": "external",
+        "strategy": "manual_entry"
+      }
+    },
+    {
+      "symbol": "HQGE",
+      "entry_time": "2025-07-28T10:43:10.262393",
+      "exit_time": "2025-07-28T10:44:53.612006",
+      "entry_price": 0.0190313725,
+      "exit_price": 0.0003,
+      "quantity": 5100.0,
+      "pnl": -95.52999975,
+      "exit_reason": "stop_loss",
+      "reasoning": {
+        "source": "external",
+        "strategy": "manual_entry"
+      }
+    },
+    {
+      "symbol": "HQGE",
+      "entry_time": "2025-07-28T10:44:55.951048",
+      "exit_time": "2025-07-28T10:45:28.944628",
+      "entry_price": 0.0190313725,
+      "exit_price": 0.0003,
+      "quantity": 5100.0,
+      "pnl": -95.52999975,
+      "exit_reason": "stop_loss",
+      "reasoning": {
+        "source": "external",
+        "strategy": "manual_entry"
+      }
+    },
+    {
+      "symbol": "HQGE",
+      "entry_time": "2025-07-28T10:45:31.443656",
+      "exit_time": "2025-07-28T10:46:06.549594",
+      "entry_price": 0.0190313725,
+      "exit_price": 0.0003,
+      "quantity": 5100.0,
+      "pnl": -95.52999975,
+      "exit_reason": "stop_loss",
+      "reasoning": {
+        "source": "external",
+        "strategy": "manual_entry"
+      }
+    },
+    {
+      "symbol": "HQGE",
+      "entry_time": "2025-07-28T10:46:07.208748",
+      "exit_time": "2025-07-28T10:46:42.149447",
+      "entry_price": 0.0190313725,
+      "exit_price": 0.0003,
+      "quantity": 5100.0,
+      "pnl": -95.52999975,
+      "exit_reason": "stop_loss",
+      "reasoning": {
+        "source": "external",
+        "strategy": "manual_entry"
+      }
+    },
+    {
+      "symbol": "HQGE",
+      "entry_time": "2025-07-28T14:46:43.308228",
+      "exit_time": "2025-07-28T10:47:19.346825",
+      "entry_price": 0.0190313725,
+      "exit_price": 0.0003,
+      "quantity": 5100.0,
+      "pnl": -95.52999975,
+      "exit_reason": "stop_loss",
+      "reasoning": {
+        "source": "external",
+        "strategy": "manual_entry"
+      }
+    },
+    {
+      "symbol": "HQGE",
+      "entry_time": "2025-07-28T10:47:20.466880",
+      "exit_time": "2025-07-28T10:47:57.995328",
+      "entry_price": 0.0190313725,
+      "exit_price": 0.0003,
+      "quantity": 5100.0,
+      "pnl": -95.52999975,
+      "exit_reason": "stop_loss",
+      "reasoning": {
+        "source": "external",
+        "strategy": "manual_entry"
+      }
+    },
+    {
+      "symbol": "HQGE",
+      "entry_time": "2025-07-28T10:47:59.478104",
+      "exit_time": "2025-07-28T10:48:32.967889",
+      "entry_price": 0.0190313725,
+      "exit_price": 0.0003,
+      "quantity": 5100.0,
+      "pnl": -95.52999975,
+      "exit_reason": "stop_loss",
+      "reasoning": {
+        "source": "external",
+        "strategy": "manual_entry"
+      }
+    },
+    {
+      "symbol": "HQGE",
+      "entry_time": "2025-07-28T10:48:34.199790",
+      "exit_time": "2025-07-28T10:49:11.719205",
+      "entry_price": 0.0190313725,
+      "exit_price": 0.0003,
+      "quantity": 5100.0,
+      "pnl": -95.52999975,
+      "exit_reason": "stop_loss",
+      "reasoning": {
+        "source": "external",
+        "strategy": "manual_entry"
+      }
+    },
+    {
+      "symbol": "HQGE",
+      "entry_time": "2025-07-28T10:49:13.302623",
+      "exit_time": "2025-07-28T10:49:47.293294",
+      "entry_price": 0.0190313725,
+      "exit_price": 0.0003,
+      "quantity": 5100.0,
+      "pnl": -95.52999975,
+      "exit_reason": "stop_loss",
+      "reasoning": {
+        "source": "external",
+        "strategy": "manual_entry"
+      }
+    },
+    {
+      "symbol": "HQGE",
+      "entry_time": "2025-07-28T10:49:49.198244",
+      "exit_time": "2025-07-28T10:50:24.289620",
+      "entry_price": 0.0190313725,
+      "exit_price": 0.0003,
+      "quantity": 5100.0,
+      "pnl": -95.52999975,
+      "exit_reason": "stop_loss",
+      "reasoning": {
+        "source": "external",
+        "strategy": "manual_entry"
+      }
+    },
+    {
+      "symbol": "HQGE",
+      "entry_time": "2025-07-28T10:50:26.001530",
+      "exit_time": "2025-07-28T10:51:01.483333",
+      "entry_price": 0.0190313725,
+      "exit_price": 0.0003,
+      "quantity": 5100.0,
+      "pnl": -95.52999975,
+      "exit_reason": "stop_loss",
+      "reasoning": {
+        "source": "external",
+        "strategy": "manual_entry"
+      }
+    },
+    {
+      "symbol": "HQGE",
+      "entry_time": "2025-07-28T10:51:03.490528",
+      "exit_time": "2025-07-28T10:51:37.625610",
+      "entry_price": 0.0190313725,
+      "exit_price": 0.0003,
+      "quantity": 5100.0,
+      "pnl": -95.52999975,
+      "exit_reason": "stop_loss",
+      "reasoning": {
+        "source": "external",
+        "strategy": "manual_entry"
+      }
+    },
+    {
+      "symbol": "HQGE",
+      "entry_time": "2025-07-28T10:51:40.257292",
+      "exit_time": "2025-07-28T10:52:15.254017",
+      "entry_price": 0.0190313725,
+      "exit_price": 0.0003,
+      "quantity": 5100.0,
+      "pnl": -95.52999975,
+      "exit_reason": "stop_loss",
+      "reasoning": {
+        "source": "external",
+        "strategy": "manual_entry"
+      }
+    },
+    {
+      "symbol": "HQGE",
+      "entry_time": "2025-07-28T10:52:17.729731",
+      "exit_time": "2025-07-28T10:52:52.945829",
+      "entry_price": 0.0190313725,
+      "exit_price": 0.0003,
+      "quantity": 5100.0,
+      "pnl": -95.52999975,
+      "exit_reason": "stop_loss",
+      "reasoning": {
+        "source": "external",
+        "strategy": "manual_entry"
+      }
+    },
+    {
+      "symbol": "HQGE",
+      "entry_time": "2025-07-28T10:52:55.835159",
+      "exit_time": "2025-07-28T10:53:31.287096",
+      "entry_price": 0.0190313725,
+      "exit_price": 0.0003,
+      "quantity": 5100.0,
+      "pnl": -95.52999975,
+      "exit_reason": "stop_loss",
+      "reasoning": {
+        "source": "external",
+        "strategy": "manual_entry"
+      }
+    },
+    {
+      "symbol": "HQGE",
+      "entry_time": "2025-07-28T10:53:34.218602",
+      "exit_time": "2025-07-28T10:54:08.549001",
+      "entry_price": 0.0190313725,
+      "exit_price": 0.0003,
+      "quantity": 5100.0,
+      "pnl": -95.52999975,
+      "exit_reason": "stop_loss",
+      "reasoning": {
+        "source": "external",
+        "strategy": "manual_entry"
+      }
+    },
+    {
+      "symbol": "HQGE",
+      "entry_time": "2025-07-28T10:54:11.572265",
+      "exit_time": "2025-07-28T10:54:47.329914",
+      "entry_price": 0.0190313725,
+      "exit_price": 0.0003,
+      "quantity": 5100.0,
+      "pnl": -95.52999975,
+      "exit_reason": "stop_loss",
+      "reasoning": {
+        "source": "external",
+        "strategy": "manual_entry"
+      }
+    },
+    {
+      "symbol": "HQGE",
+      "entry_time": "2025-07-28T10:54:50.491268",
+      "exit_time": "2025-07-28T10:55:23.757971",
+      "entry_price": 0.0190313725,
+      "exit_price": 0.0003,
+      "quantity": 5100.0,
+      "pnl": -95.52999975,
+      "exit_reason": "stop_loss",
+      "reasoning": {
+        "source": "external",
+        "strategy": "manual_entry"
+      }
+    },
+    {
+      "symbol": "HQGE",
+      "entry_time": "2025-07-28T10:55:27.023385",
+      "exit_time": "2025-07-28T10:56:02.666001",
+      "entry_price": 0.0190313725,
+      "exit_price": 0.0003,
+      "quantity": 5100.0,
+      "pnl": -95.52999975,
+      "exit_reason": "stop_loss",
+      "reasoning": {
+        "source": "external",
+        "strategy": "manual_entry"
+      }
+    },
+    {
+      "symbol": "HQGE",
+      "entry_time": "2025-07-28T10:56:06.063503",
+      "exit_time": "2025-07-28T10:56:40.748110",
+      "entry_price": 0.0190313725,
+      "exit_price": 0.0003,
+      "quantity": 5100.0,
+      "pnl": -95.52999975,
+      "exit_reason": "stop_loss",
+      "reasoning": {
+        "source": "external",
+        "strategy": "manual_entry"
+      }
+    },
+    {
+      "symbol": "HQGE",
+      "entry_time": "2025-07-28T10:56:44.112120",
+      "exit_time": "2025-07-28T10:57:19.782395",
+      "entry_price": 0.0190313725,
+      "exit_price": 0.0003,
+      "quantity": 5100.0,
+      "pnl": -95.52999975,
+      "exit_reason": "stop_loss",
+      "reasoning": {
+        "source": "external",
+        "strategy": "manual_entry"
+      }
+    },
+    {
+      "symbol": "HQGE",
+      "entry_time": "2025-07-28T10:57:46.007790",
+      "exit_time": "2025-07-28T10:58:13.580188",
+      "entry_price": 0.0190313725,
+      "exit_price": 0.0003,
+      "quantity": 5100.0,
+      "pnl": -95.52999975,
+      "exit_reason": "stop_loss",
+      "reasoning": {
+        "source": "external",
+        "strategy": "manual_entry"
+      }
+    },
+    {
+      "symbol": "TSLA",
+      "entry_time": "2025-07-28T10:57:45.502378",
+      "exit_time": "2025-07-28T10:58:28.056862",
+      "entry_price": 324.4,
+      "exit_price": 327.3,
+      "quantity": 30.0,
+      "pnl": 0,
+      "exit_reason": "manual_override",
+      "reasoning": {
+        "source": "external",
+        "strategy": "manual_entry"
+      }
+    },
+    {
+      "symbol": "HQGE",
+      "entry_time": "2025-07-28T11:45:06.329183",
+      "exit_time": "2025-07-28T11:45:36.499149",
+      "entry_price": 0.0190313725,
+      "exit_price": 0.0003,
+      "quantity": 5100.0,
+      "pnl": -95.52999975,
+      "exit_reason": "stop_loss",
+      "reasoning": {
+        "source": "external",
+        "strategy": "manual_entry"
+      }
+    }
+  ],
+  "daily_pnl": -4344.595988500003,
+  "consecutive_losses": 1,
+  "positions_data": {
+    "NVDA": {
+      "is_long_term": false,
+      "entry_price": 175.145,
+      "quantity": 679.0,
+      "side": "long",
+      "entry_time": "2025-07-28T11:45:06.831438"
+    },
+    "HQGE": {
+      "is_long_term": true,
+      "entry_price": 0.0190313725,
+      "quantity": 5100.0,
+      "side": "long",
+      "entry_time": "2025-07-28T11:45:38.878563"
+    }
+  },
+  "last_save": "2025-07-28T12:01:57.230363"
+}

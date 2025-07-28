@@ -1,0 +1,33 @@
+{
+  "professional_mode": true,
+  "paper_trading": true,
+  "starting_capital": 100000,
+  "risk_management": {
+    "position_sizing_method": "VOLATILITY_BASED",
+    "max_portfolio_risk": 0.02,
+    "max_position_size": 0.1,
+    "max_daily_loss": 0.02,
+    "use_circuit_breakers": true
+  },
+  "strategies": {
+    "enabled": [
+      "ma_cross",
+      "rsi_momentum"
+    ],
+    "use_consensus": true,
+    "min_consensus_strategies": 2
+  },
+  "ml_models": {
+    "enabled": [
+      "random_forest",
+      "gradient_boosting"
+    ],
+    "use_ensemble": true
+  },
+  "advanced_orders": {
+    "use_bracket_orders": true,
+    "use_trailing_stops": true,
+    "default_stop_loss_pct": 2.0,
+    "default_take_profit_pct": 5.0
+  }
+}

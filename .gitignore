@@ -1,0 +1,30 @@
+# Sensitive files
+Config().yaml
+config.yaml
+*.env
+.env.*
+
+# Authentication tokens
+token_*.json
+
+# Logs
+*.log
+*.log.*
+
+# State files (optional - you may want to track these)
+# trading_state.json
+# trading_brain.json
+# trading_commentary.json
+
+# ML models
+*.pkl
+*.pickle
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/

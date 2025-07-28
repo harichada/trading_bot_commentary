@@ -1,0 +1,1946 @@
+{
+  "memories": [
+    {
+      "timestamp": "2025-07-26T15:47:49.808220",
+      "symbol": "PENN",
+      "pattern": "momentum",
+      "outcome": "loss",
+      "lesson": "Small loss on PENN. The setup was right but timing was off.",
+      "confidence_adjustment": -0.01,
+      "context": {
+        "exit_reason": "time_decay",
+        "holding_time": 2.1215774333333335,
+        "max_profit": 0.0,
+        "market_conditions": {
+          "vix": 14.93,
+          "market_trend": "neutral",
+          "breadth": {
+            "advance_decline": 0,
+            "new_highs": 0,
+            "new_lows": 0,
+            "vix": 14.93,
+            "put_call_ratio": 1.0
+          },
+          "economic_events": [],
+          "gaps": {}
+        }
+      }
+    },
+    {
+      "timestamp": "2025-07-26T19:56:54.307170",
+      "symbol": "TSLA",
+      "pattern": "free_news_sentiment",
+      "outcome": "loss",
+      "lesson": "Small loss on TSLA. The setup was right but timing was off.",
+      "confidence_adjustment": -0.01,
+      "context": {
+        "exit_reason": "time_decay",
+        "holding_time": 251.31688226666665,
+        "max_profit": 0.0,
+        "market_conditions": {
+          "vix": 14.93,
+          "market_trend": "neutral",
+          "breadth": {
+            "advance_decline": 0,
+            "new_highs": 0,
+            "new_lows": 0,
+            "vix": 14.93,
+            "put_call_ratio": 1.0
+          },
+          "economic_events": [],
+          "gaps": {}
+        }
+      }
+    },
+    {
+      "timestamp": "2025-07-26T16:00:24.979481",
+      "symbol": "NVDA",
+      "pattern": "free_news_sentiment",
+      "outcome": "loss",
+      "lesson": "NVDA didn't follow through. Need to watch for false breakouts here.",
+      "confidence_adjustment": -0.01,
+      "context": {
+        "exit_reason": "time_decay",
+        "holding_time": 14.892880183333334,
+        "max_profit": 0.0,
+        "market_conditions": {
+          "vix": 14.93,
+          "market_trend": "neutral",
+          "breadth": {
+            "advance_decline": 0,
+            "new_highs": 0,
+            "new_lows": 0,
+            "vix": 14.93,
+            "put_call_ratio": 1.0
+          },
+          "economic_events": [],
+          "gaps": {}
+        }
+      }
+    },
+    {
+      "timestamp": "2025-07-26T16:03:46.497758",
+      "symbol": "RIVN",
+      "pattern": "free_news_sentiment",
+      "outcome": "loss",
+      "lesson": "Small loss on RIVN. The setup was right but timing was off.",
+      "confidence_adjustment": -0.01,
+      "context": {
+        "exit_reason": "trailing_stop",
+        "holding_time": 0.06511068333333334,
+        "max_profit": 0.0,
+        "market_conditions": {
+          "vix": 14.93,
+          "market_trend": "neutral",
+          "breadth": {
+            "advance_decline": 0,
+            "new_highs": 0,
+            "new_lows": 0,
+            "vix": 14.93,
+            "put_call_ratio": 1.0
+          },
+          "economic_events": [],
+          "gaps": {}
+        }
+      }
+    },
+    {
+      "timestamp": "2025-07-26T16:07:05.687185",
+      "symbol": "PLTR",
+      "pattern": "free_news_sentiment",
+      "outcome": "loss",
+      "lesson": "Stopped out for a small loss. Good risk management, bad entry timing.",
+      "confidence_adjustment": -0.01,
+      "context": {
+        "exit_reason": "time_decay",
+        "holding_time": 21.4264516,
+        "max_profit": 0.0,
+        "market_conditions": {
+          "vix": 14.93,
+          "market_trend": "neutral",
+          "breadth": {
+            "advance_decline": 0,
+            "new_highs": 0,
+            "new_lows": 0,
+            "vix": 14.93,
+            "put_call_ratio": 1.0
+          },
+          "economic_events": [],
+          "gaps": {}
+        }
+      }
+    },
+    {
+      "timestamp": "2025-07-26T20:16:01.283541",
+      "symbol": "PENN",
+      "pattern": "momentum",
+      "outcome": "loss",
+      "lesson": "PENN didn't follow through. Need to watch for false breakouts here.",
+      "confidence_adjustment": -0.01,
+      "context": {
+        "exit_reason": "time_decay",
+        "holding_time": 267.45607071666666,
+        "max_profit": 0.0,
+        "market_conditions": {
+          "vix": 14.93,
+          "market_trend": "neutral",
+          "breadth": {
+            "advance_decline": 0,
+            "new_highs": 0,
+            "new_lows": 0,
+            "vix": 14.93,
+            "put_call_ratio": 1.0
+          },
+          "economic_events": [],
+          "gaps": {}
+        }
+      }
+    },
+    {
+      "timestamp": "2025-07-26T20:16:46.344413",
+      "symbol": "TSLA",
+      "pattern": "free_news_sentiment",
+      "outcome": "loss",
+      "lesson": "Small loss on TSLA. The setup was right but timing was off.",
+      "confidence_adjustment": -0.01,
+      "context": {
+        "exit_reason": "time_decay",
+        "holding_time": 254.08092513333335,
+        "max_profit": 0.0,
+        "market_conditions": {
+          "vix": 14.93,
+          "market_trend": "neutral",
+          "breadth": {
+            "advance_decline": 0,
+            "new_highs": 0,
+            "new_lows": 0,
+            "vix": 14.93,
+            "put_call_ratio": 1.0
+          },
+          "economic_events": [],
+          "gaps": {}
+        }
+      }
+    },
+    {
+      "timestamp": "2025-07-26T16:46:51.138323",
+      "symbol": "PENN",
+      "pattern": "momentum",
+      "outcome": "loss",
+      "lesson": "Stopped out for a small loss. Good risk management, bad entry timing.",
+      "confidence_adjustment": -0.01,
+      "context": {
+        "exit_reason": "time_decay",
+        "holding_time": 30.170621566666668,
+        "max_profit": 0.0,
+        "market_conditions": {
+          "vix": 14.93,
+          "market_trend": "neutral",
+          "breadth": {
+            "advance_decline": 0,
+            "new_highs": 0,
+            "new_lows": 0,
+            "vix": 14.93,
+            "put_call_ratio": 1.0
+          },
+          "economic_events": [],
+          "gaps": {}
+        }
+      }
+    },
+    {
+      "timestamp": "2025-07-28T10:19:33.360186",
+      "symbol": "TSLA",
+      "pattern": "mean_reversion_short",
+      "outcome": "win",
+      "lesson": "Profitable, but left money on the table. TSLA had more room to run.",
+      "confidence_adjustment": 0.01,
+      "context": {
+        "exit_reason": "trailing_stop",
+        "holding_time": 0.22101181666666667,
+        "max_profit": 31.26199999999926,
+        "market_conditions": {
+          "vix": 15.26,
+          "market_trend": "neutral",
+          "breadth": {
+            "advance_decline": 0,
+            "new_highs": 0,
+            "new_lows": 0,
+            "vix": 15.26,
+            "put_call_ratio": 1.0
+          },
+          "economic_events": [],
+          "gaps": {
+            "MARA": {
+              "percent": 2.2608695652173947,
+              "direction": "up",
+              "fade_probability": 0.45,
+              "open": 17.64,
+              "prev_close": 17.25
+            }
+          }
+        }
+      }
+    },
+    {
+      "timestamp": "2025-07-28T10:23:20.963017",
+      "symbol": "TSLA",
+      "pattern": "manual_entry",
+      "outcome": "win",
+      "lesson": "Profitable, but left money on the table. TSLA had more room to run.",
+      "confidence_adjustment": 0.01,
+      "context": {
+        "exit_reason": "stop_loss",
+        "holding_time": 2.9633843,
+        "max_profit": 41.982000000000426,
+        "market_conditions": {
+          "vix": 15.26,
+          "market_trend": "neutral",
+          "breadth": {
+            "advance_decline": 0,
+            "new_highs": 0,
+            "new_lows": 0,
+            "vix": 15.26,
+            "put_call_ratio": 1.0
+          },
+          "economic_events": [],
+          "gaps": {
+            "MARA": {
+              "percent": 2.2608695652173947,
+              "direction": "up",
+              "fade_probability": 0.45,
+              "open": 17.64,
+              "prev_close": 17.25
+            }
+          }
+        }
+      }
+    },
+    {
+      "timestamp": "2025-07-28T10:29:42.090638",
+      "symbol": "HQGE",
+      "pattern": "manual_entry",
+      "outcome": "loss",
+      "lesson": "Ouch. HQGE completely reversed. Need to respect the trend more.",
+      "confidence_adjustment": -0.05,
+      "context": {
+        "exit_reason": "stop_loss",
+        "holding_time": 9.892978783333332,
+        "max_profit": -96.54999975000001,
+        "market_conditions": {
+          "vix": 15.26,
+          "market_trend": "neutral",
+          "breadth": {
+            "advance_decline": 0,
+            "new_highs": 0,
+            "new_lows": 0,
+            "vix": 15.26,
+            "put_call_ratio": 1.0
+          },
+          "economic_events": [],
+          "gaps": {
+            "MARA": {
+              "percent": 2.2608695652173947,
+              "direction": "up",
+              "fade_probability": 0.45,
+              "open": 17.64,
+              "prev_close": 17.25
+            }
+          }
+        }
+      }
+    },
+    {
+      "timestamp": "2025-07-28T10:30:29.942597",
+      "symbol": "HQGE",
+      "pattern": "manual_entry",
+      "outcome": "loss",
+      "lesson": "Ouch. HQGE completely reversed. Need to respect the trend more.",
+      "confidence_adjustment": -0.05,
+      "context": {
+        "exit_reason": "stop_loss",
+        "holding_time": 0.78974665,
+        "max_profit": -96.54999975000001,
+        "market_conditions": {
+          "vix": 15.26,
+          "market_trend": "neutral",
+          "breadth": {
+            "advance_decline": 0,
+            "new_highs": 0,
+            "new_lows": 0,
+            "vix": 15.26,
+            "put_call_ratio": 1.0
+          },
+          "economic_events": [],
+          "gaps": {
+            "MARA": {
+              "percent": 2.2608695652173947,
+              "direction": "up",
+              "fade_probability": 0.45,
+              "open": 17.64,
+              "prev_close": 17.25
+            }
+          }
+        }
+      }
+    },
+    {
+      "timestamp": "2025-07-28T10:31:15.491366",
+      "symbol": "HQGE",
+      "pattern": "manual_entry",
+      "outcome": "loss",
+      "lesson": "Ouch. HQGE completely reversed. Need to respect the trend more.",
+      "confidence_adjustment": -0.05,
+      "context": {
+        "exit_reason": "stop_loss",
+        "holding_time": 0.7518569,
+        "max_profit": -96.54999975000001,
+        "market_conditions": {
+          "vix": 15.26,
+          "market_trend": "neutral",
+          "breadth": {
+            "advance_decline": 0,
+            "new_highs": 0,
+            "new_lows": 0,
+            "vix": 15.26,
+            "put_call_ratio": 1.0
+          },
+          "economic_events": [],
+          "gaps": {
+            "MARA": {
+              "percent": 2.2608695652173947,
+              "direction": "up",
+              "fade_probability": 0.45,
+              "open": 17.64,
+              "prev_close": 17.25
+            }
+          }
+        }
+      }
+    },
+    {
+      "timestamp": "2025-07-28T10:31:48.132950",
+      "symbol": "HQGE",
+      "pattern": "manual_entry",
+      "outcome": "loss",
+      "lesson": "Bad read on HQGE. Market conditions changed - should've adapted.",
+      "confidence_adjustment": -0.05,
+      "context": {
+        "exit_reason": "stop_loss",
+        "holding_time": 0.5370758666666667,
+        "max_profit": -96.54999975000001,
+        "market_conditions": {
+          "vix": 15.26,
+          "market_trend": "neutral",
+          "breadth": {
+            "advance_decline": 0,
+            "new_highs": 0,
+            "new_lows": 0,
+            "vix": 15.26,
+            "put_call_ratio": 1.0
+          },
+          "economic_events": [],
+          "gaps": {
+            "MARA": {
+              "percent": 2.2608695652173947,
+              "direction": "up",
+              "fade_probability": 0.45,
+              "open": 17.64,
+              "prev_close": 17.25
+            }
+          }
+        }
+      }
+    },
+    {
+      "timestamp": "2025-07-28T10:32:20.580758",
+      "symbol": "HQGE",
+      "pattern": "manual_entry",
+      "outcome": "loss",
+      "lesson": "Ouch. HQGE completely reversed. Need to respect the trend more.",
+      "confidence_adjustment": -0.05,
+      "context": {
+        "exit_reason": "stop_loss",
+        "holding_time": 0.5325992666666667,
+        "max_profit": -96.54999975000001,
+        "market_conditions": {
+          "vix": 15.26,
+          "market_trend": "neutral",
+          "breadth": {
+            "advance_decline": 0,
+            "new_highs": 0,
+            "new_lows": 0,
+            "vix": 15.26,
+            "put_call_ratio": 1.0
+          },
+          "economic_events": [],
+          "gaps": {
+            "MARA": {
+              "percent": 2.2608695652173947,
+              "direction": "up",
+              "fade_probability": 0.45,
+              "open": 17.64,
+              "prev_close": 17.25
+            }
+          }
+        }
+      }
+    },
+    {
+      "timestamp": "2025-07-28T10:32:53.573072",
+      "symbol": "HQGE",
+      "pattern": "manual_entry",
+      "outcome": "loss",
+      "lesson": "Lesson learned: don't fight the tape on HQGE when volume is weak.",
+      "confidence_adjustment": -0.05,
+      "context": {
+        "exit_reason": "stop_loss",
+        "holding_time": 0.5427220333333334,
+        "max_profit": -96.54999975000001,
+        "market_conditions": {
+          "vix": 15.26,
+          "market_trend": "neutral",
+          "breadth": {
+            "advance_decline": 0,
+            "new_highs": 0,
+            "new_lows": 0,
+            "vix": 15.26,
+            "put_call_ratio": 1.0
+          },
+          "economic_events": [],
+          "gaps": {
+            "MARA": {
+              "percent": 2.2608695652173947,
+              "direction": "up",
+              "fade_probability": 0.45,
+              "open": 17.64,
+              "prev_close": 17.25
+            }
+          }
+        }
+      }
+    },
+    {
+      "timestamp": "2025-07-28T10:33:26.250559",
+      "symbol": "HQGE",
+      "pattern": "manual_entry",
+      "outcome": "loss",
+      "lesson": "Lesson learned: don't fight the tape on HQGE when volume is weak.",
+      "confidence_adjustment": -0.05,
+      "context": {
+        "exit_reason": "stop_loss",
+        "holding_time": 0.5373276666666666,
+        "max_profit": -96.54999975000001,
+        "market_conditions": {
+          "vix": 15.26,
+          "market_trend": "neutral",
+          "breadth": {
+            "advance_decline": 0,
+            "new_highs": 0,
+            "new_lows": 0,
+            "vix": 15.26,
+            "put_call_ratio": 1.0
+          },
+          "economic_events": [],
+          "gaps": {
+            "MARA": {
+              "percent": 2.2608695652173947,
+              "direction": "up",
+              "fade_probability": 0.45,
+              "open": 17.64,
+              "prev_close": 17.25
+            }
+          }
+        }
+      }
+    },
+    {
+      "timestamp": "2025-07-28T10:33:58.963719",
+      "symbol": "HQGE",
+      "pattern": "manual_entry",
+      "outcome": "loss",
+      "lesson": "Lesson learned: don't fight the tape on HQGE when volume is weak.",
+      "confidence_adjustment": -0.05,
+      "context": {
+        "exit_reason": "stop_loss",
+        "holding_time": 0.5380049833333334,
+        "max_profit": -96.54999975000001,
+        "market_conditions": {
+          "vix": 15.26,
+          "market_trend": "neutral",
+          "breadth": {
+            "advance_decline": 0,
+            "new_highs": 0,
+            "new_lows": 0,
+            "vix": 15.26,
+            "put_call_ratio": 1.0
+          },
+          "economic_events": [],
+          "gaps": {
+            "MARA": {
+              "percent": 2.2608695652173947,
+              "direction": "up",
+              "fade_probability": 0.45,
+              "open": 17.64,
+              "prev_close": 17.25
+            }
+          }
+        }
+      }
+    },
+    {
+      "timestamp": "2025-07-28T10:34:30.964342",
+      "symbol": "HQGE",
+      "pattern": "manual_entry",
+      "outcome": "loss",
+      "lesson": "Lesson learned: don't fight the tape on HQGE when volume is weak.",
+      "confidence_adjustment": -0.05,
+      "context": {
+        "exit_reason": "stop_loss",
+        "holding_time": 0.52611245,
+        "max_profit": -96.54999975000001,
+        "market_conditions": {
+          "vix": 15.26,
+          "market_trend": "neutral",
+          "breadth": {
+            "advance_decline": 0,
+            "new_highs": 0,
+            "new_lows": 0,
+            "vix": 15.26,
+            "put_call_ratio": 1.0
+          },
+          "economic_events": [],
+          "gaps": {
+            "MARA": {
+              "percent": 2.2608695652173947,
+              "direction": "up",
+              "fade_probability": 0.45,
+              "open": 17.64,
+              "prev_close": 17.25
+            }
+          }
+        }
+      }
+    },
+    {
+      "timestamp": "2025-07-28T10:35:04.349325",
+      "symbol": "HQGE",
+      "pattern": "manual_entry",
+      "outcome": "loss",
+      "lesson": "Lesson learned: don't fight the tape on HQGE when volume is weak.",
+      "confidence_adjustment": -0.05,
+      "context": {
+        "exit_reason": "stop_loss",
+        "holding_time": 0.5490162666666667,
+        "max_profit": -96.54999975000001,
+        "market_conditions": {
+          "vix": 15.26,
+          "market_trend": "neutral",
+          "breadth": {
+            "advance_decline": 0,
+            "new_highs": 0,
+            "new_lows": 0,
+            "vix": 15.26,
+            "put_call_ratio": 1.0
+          },
+          "economic_events": [],
+          "gaps": {
+            "MARA": {
+              "percent": 2.2608695652173947,
+              "direction": "up",
+              "fade_probability": 0.45,
+              "open": 17.64,
+              "prev_close": 17.25
+            }
+          }
+        }
+      }
+    },
+    {
+      "timestamp": "2025-07-28T10:35:36.711405",
+      "symbol": "HQGE",
+      "pattern": "manual_entry",
+      "outcome": "loss",
+      "lesson": "Ouch. HQGE completely reversed. Need to respect the trend more.",
+      "confidence_adjustment": -0.05,
+      "context": {
+        "exit_reason": "stop_loss",
+        "holding_time": 0.5258023000000001,
+        "max_profit": -96.54999975000001,
+        "market_conditions": {
+          "vix": 15.26,
+          "market_trend": "neutral",
+          "breadth": {
+            "advance_decline": 0,
+            "new_highs": 0,
+            "new_lows": 0,
+            "vix": 15.26,
+            "put_call_ratio": 1.0
+          },
+          "economic_events": [],
+          "gaps": {
+            "MARA": {
+              "percent": 2.2608695652173947,
+              "direction": "up",
+              "fade_probability": 0.45,
+              "open": 17.64,
+              "prev_close": 17.25
+            }
+          }
+        }
+      }
+    },
+    {
+      "timestamp": "2025-07-28T10:36:09.941847",
+      "symbol": "HQGE",
+      "pattern": "manual_entry",
+      "outcome": "loss",
+      "lesson": "Bad read on HQGE. Market conditions changed - should've adapted.",
+      "confidence_adjustment": -0.05,
+      "context": {
+        "exit_reason": "stop_loss",
+        "holding_time": 0.5456033166666666,
+        "max_profit": -96.54999975000001,
+        "market_conditions": {
+          "vix": 15.26,
+          "market_trend": "neutral",
+          "breadth": {
+            "advance_decline": 0,
+            "new_highs": 0,
+            "new_lows": 0,
+            "vix": 15.26,
+            "put_call_ratio": 1.0
+          },
+          "economic_events": [],
+          "gaps": {
+            "MARA": {
+              "percent": 2.2608695652173947,
+              "direction": "up",
+              "fade_probability": 0.45,
+              "open": 17.64,
+              "prev_close": 17.25
+            }
+          }
+        }
+      }
+    },
+    {
+      "timestamp": "2025-07-28T10:36:42.786987",
+      "symbol": "HQGE",
+      "pattern": "manual_entry",
+      "outcome": "loss",
+      "lesson": "Ouch. HQGE completely reversed. Need to respect the trend more.",
+      "confidence_adjustment": -0.05,
+      "context": {
+        "exit_reason": "stop_loss",
+        "holding_time": 0.5402691,
+        "max_profit": -96.54999975000001,
+        "market_conditions": {
+          "vix": 15.26,
+          "market_trend": "neutral",
+          "breadth": {
+            "advance_decline": 0,
+            "new_highs": 0,
+            "new_lows": 0,
+            "vix": 15.26,
+            "put_call_ratio": 1.0
+          },
+          "economic_events": [],
+          "gaps": {
+            "MARA": {
+              "percent": 2.2608695652173947,
+              "direction": "up",
+              "fade_probability": 0.45,
+              "open": 17.64,
+              "prev_close": 17.25
+            }
+          }
+        }
+      }
+    },
+    {
+      "timestamp": "2025-07-28T10:37:15.197257",
+      "symbol": "HQGE",
+      "pattern": "manual_entry",
+      "outcome": "loss",
+      "lesson": "Ouch. HQGE completely reversed. Need to respect the trend more.",
+      "confidence_adjustment": -0.05,
+      "context": {
+        "exit_reason": "stop_loss",
+        "holding_time": 0.53277135,
+        "max_profit": -96.54999975000001,
+        "market_conditions": {
+          "vix": 15.26,
+          "market_trend": "neutral",
+          "breadth": {
+            "advance_decline": 0,
+            "new_highs": 0,
+            "new_lows": 0,
+            "vix": 15.26,
+            "put_call_ratio": 1.0
+          },
+          "economic_events": [],
+          "gaps": {
+            "MARA": {
+              "percent": 2.2608695652173947,
+              "direction": "up",
+              "fade_probability": 0.45,
+              "open": 17.64,
+              "prev_close": 17.25
+            }
+          }
+        }
+      }
+    },
+    {
+      "timestamp": "2025-07-28T10:37:48.879725",
+      "symbol": "HQGE",
+      "pattern": "manual_entry",
+      "outcome": "loss",
+      "lesson": "Bad read on HQGE. Market conditions changed - should've adapted.",
+      "confidence_adjustment": -0.05,
+      "context": {
+        "exit_reason": "stop_loss",
+        "holding_time": 0.5514649166666667,
+        "max_profit": -96.54999975000001,
+        "market_conditions": {
+          "vix": 15.26,
+          "market_trend": "neutral",
+          "breadth": {
+            "advance_decline": 0,
+            "new_highs": 0,
+            "new_lows": 0,
+            "vix": 15.26,
+            "put_call_ratio": 1.0
+          },
+          "economic_events": [],
+          "gaps": {
+            "MARA": {
+              "percent": 2.2608695652173947,
+              "direction": "up",
+              "fade_probability": 0.45,
+              "open": 17.64,
+              "prev_close": 17.25
+            }
+          }
+        }
+      }
+    },
+    {
+      "timestamp": "2025-07-28T10:38:23.605267",
+      "symbol": "HQGE",
+      "pattern": "manual_entry",
+      "outcome": "loss",
+      "lesson": "Bad read on HQGE. Market conditions changed - should've adapted.",
+      "confidence_adjustment": -0.05,
+      "context": {
+        "exit_reason": "stop_loss",
+        "holding_time": 0.5697946166666666,
+        "max_profit": -96.54999975000001,
+        "market_conditions": {
+          "vix": 15.26,
+          "market_trend": "neutral",
+          "breadth": {
+            "advance_decline": 0,
+            "new_highs": 0,
+            "new_lows": 0,
+            "vix": 15.26,
+            "put_call_ratio": 1.0
+          },
+          "economic_events": [],
+          "gaps": {
+            "MARA": {
+              "percent": 2.2608695652173947,
+              "direction": "up",
+              "fade_probability": 0.45,
+              "open": 17.64,
+              "prev_close": 17.25
+            }
+          }
+        }
+      }
+    },
+    {
+      "timestamp": "2025-07-28T10:38:57.719156",
+      "symbol": "HQGE",
+      "pattern": "manual_entry",
+      "outcome": "loss",
+      "lesson": "Bad read on HQGE. Market conditions changed - should've adapted.",
+      "confidence_adjustment": -0.05,
+      "context": {
+        "exit_reason": "stop_loss",
+        "holding_time": 0.5591142833333334,
+        "max_profit": -96.54999975000001,
+        "market_conditions": {
+          "vix": 15.26,
+          "market_trend": "neutral",
+          "breadth": {
+            "advance_decline": 0,
+            "new_highs": 0,
+            "new_lows": 0,
+            "vix": 15.26,
+            "put_call_ratio": 1.0
+          },
+          "economic_events": [],
+          "gaps": {
+            "MARA": {
+              "percent": 2.2608695652173947,
+              "direction": "up",
+              "fade_probability": 0.45,
+              "open": 17.64,
+              "prev_close": 17.25
+            }
+          }
+        }
+      }
+    },
+    {
+      "timestamp": "2025-07-28T10:39:31.906069",
+      "symbol": "HQGE",
+      "pattern": "manual_entry",
+      "outcome": "loss",
+      "lesson": "Bad read on HQGE. Market conditions changed - should've adapted.",
+      "confidence_adjustment": -0.05,
+      "context": {
+        "exit_reason": "stop_loss",
+        "holding_time": 0.5602301,
+        "max_profit": -96.54999975000001,
+        "market_conditions": {
+          "vix": 15.26,
+          "market_trend": "neutral",
+          "breadth": {
+            "advance_decline": 0,
+            "new_highs": 0,
+            "new_lows": 0,
+            "vix": 15.26,
+            "put_call_ratio": 1.0
+          },
+          "economic_events": [],
+          "gaps": {
+            "MARA": {
+              "percent": 2.2608695652173947,
+              "direction": "up",
+              "fade_probability": 0.45,
+              "open": 17.64,
+              "prev_close": 17.25
+            }
+          }
+        }
+      }
+    },
+    {
+      "timestamp": "2025-07-28T10:40:08.873520",
+      "symbol": "HQGE",
+      "pattern": "manual_entry",
+      "outcome": "loss",
+      "lesson": "Bad read on HQGE. Market conditions changed - should've adapted.",
+      "confidence_adjustment": -0.05,
+      "context": {
+        "exit_reason": "stop_loss",
+        "holding_time": 0.5951746666666666,
+        "max_profit": -96.54999975000001,
+        "market_conditions": {
+          "vix": 15.26,
+          "market_trend": "neutral",
+          "breadth": {
+            "advance_decline": 0,
+            "new_highs": 0,
+            "new_lows": 0,
+            "vix": 15.26,
+            "put_call_ratio": 1.0
+          },
+          "economic_events": [],
+          "gaps": {
+            "MARA": {
+              "percent": 2.2608695652173947,
+              "direction": "up",
+              "fade_probability": 0.45,
+              "open": 17.64,
+              "prev_close": 17.25
+            }
+          }
+        }
+      }
+    },
+    {
+      "timestamp": "2025-07-28T10:40:48.357691",
+      "symbol": "HQGE",
+      "pattern": "manual_entry",
+      "outcome": "loss",
+      "lesson": "Lesson learned: don't fight the tape on HQGE when volume is weak.",
+      "confidence_adjustment": -0.05,
+      "context": {
+        "exit_reason": "stop_loss",
+        "holding_time": 0.63675975,
+        "max_profit": -96.54999975000001,
+        "market_conditions": {
+          "vix": 15.26,
+          "market_trend": "neutral",
+          "breadth": {
+            "advance_decline": 0,
+            "new_highs": 0,
+            "new_lows": 0,
+            "vix": 15.26,
+            "put_call_ratio": 1.0
+          },
+          "economic_events": [],
+          "gaps": {
+            "MARA": {
+              "percent": 2.2608695652173947,
+              "direction": "up",
+              "fade_probability": 0.45,
+              "open": 17.64,
+              "prev_close": 17.25
+            }
+          }
+        }
+      }
+    },
+    {
+      "timestamp": "2025-07-28T10:41:23.512970",
+      "symbol": "HQGE",
+      "pattern": "manual_entry",
+      "outcome": "loss",
+      "lesson": "Bad read on HQGE. Market conditions changed - should've adapted.",
+      "confidence_adjustment": -0.05,
+      "context": {
+        "exit_reason": "stop_loss",
+        "holding_time": 0.5767440666666667,
+        "max_profit": -96.54999975000001,
+        "market_conditions": {
+          "vix": 15.26,
+          "market_trend": "neutral",
+          "breadth": {
+            "advance_decline": 0,
+            "new_highs": 0,
+            "new_lows": 0,
+            "vix": 15.26,
+            "put_call_ratio": 1.0
+          },
+          "economic_events": [],
+          "gaps": {
+            "MARA": {
+              "percent": 2.2608695652173947,
+              "direction": "up",
+              "fade_probability": 0.45,
+              "open": 17.64,
+              "prev_close": 17.25
+            }
+          }
+        }
+      }
+    },
+    {
+      "timestamp": "2025-07-28T10:41:58.054115",
+      "symbol": "HQGE",
+      "pattern": "manual_entry",
+      "outcome": "loss",
+      "lesson": "Bad read on HQGE. Market conditions changed - should've adapted.",
+      "confidence_adjustment": -0.05,
+      "context": {
+        "exit_reason": "stop_loss",
+        "holding_time": 0.5648256,
+        "max_profit": -96.54999975000001,
+        "market_conditions": {
+          "vix": 15.26,
+          "market_trend": "neutral",
+          "breadth": {
+            "advance_decline": 0,
+            "new_highs": 0,
+            "new_lows": 0,
+            "vix": 15.26,
+            "put_call_ratio": 1.0
+          },
+          "economic_events": [],
+          "gaps": {
+            "MARA": {
+              "percent": 2.2608695652173947,
+              "direction": "up",
+              "fade_probability": 0.45,
+              "open": 17.64,
+              "prev_close": 17.25
+            }
+          }
+        }
+      }
+    },
+    {
+      "timestamp": "2025-07-28T10:42:32.155845",
+      "symbol": "HQGE",
+      "pattern": "manual_entry",
+      "outcome": "loss",
+      "lesson": "Ouch. HQGE completely reversed. Need to respect the trend more.",
+      "confidence_adjustment": -0.05,
+      "context": {
+        "exit_reason": "stop_loss",
+        "holding_time": 0.5548709166666667,
+        "max_profit": -96.54999975000001,
+        "market_conditions": {
+          "vix": 15.26,
+          "market_trend": "neutral",
+          "breadth": {
+            "advance_decline": 0,
+            "new_highs": 0,
+            "new_lows": 0,
+            "vix": 15.26,
+            "put_call_ratio": 1.0
+          },
+          "economic_events": [],
+          "gaps": {
+            "MARA": {
+              "percent": 2.2608695652173947,
+              "direction": "up",
+              "fade_probability": 0.45,
+              "open": 17.64,
+              "prev_close": 17.25
+            }
+          }
+        }
+      }
+    },
+    {
+      "timestamp": "2025-07-28T10:44:53.359734",
+      "symbol": "HQGE",
+      "pattern": "manual_entry",
+      "outcome": "loss",
+      "lesson": "Lesson learned: don't fight the tape on HQGE when volume is weak.",
+      "confidence_adjustment": -0.05,
+      "context": {
+        "exit_reason": "stop_loss",
+        "holding_time": 1.7182859833333335,
+        "max_profit": -95.52999975,
+        "market_conditions": {
+          "vix": 15.26,
+          "market_trend": "neutral",
+          "breadth": {
+            "advance_decline": 0,
+            "new_highs": 0,
+            "new_lows": 0,
+            "vix": 15.26,
+            "put_call_ratio": 1.0
+          },
+          "economic_events": [],
+          "gaps": {
+            "MARA": {
+              "percent": 2.2608695652173947,
+              "direction": "up",
+              "fade_probability": 0.45,
+              "open": 17.64,
+              "prev_close": 17.25
+            }
+          }
+        }
+      }
+    },
+    {
+      "timestamp": "2025-07-28T10:45:28.708232",
+      "symbol": "HQGE",
+      "pattern": "manual_entry",
+      "outcome": "loss",
+      "lesson": "Lesson learned: don't fight the tape on HQGE when volume is weak.",
+      "confidence_adjustment": -0.05,
+      "context": {
+        "exit_reason": "stop_loss",
+        "holding_time": 0.5459509666666666,
+        "max_profit": -95.52999975,
+        "market_conditions": {
+          "vix": 15.26,
+          "market_trend": "neutral",
+          "breadth": {
+            "advance_decline": 0,
+            "new_highs": 0,
+            "new_lows": 0,
+            "vix": 15.26,
+            "put_call_ratio": 1.0
+          },
+          "economic_events": [],
+          "gaps": {
+            "MARA": {
+              "percent": 2.2608695652173947,
+              "direction": "up",
+              "fade_probability": 0.45,
+              "open": 17.64,
+              "prev_close": 17.25
+            }
+          }
+        }
+      }
+    },
+    {
+      "timestamp": "2025-07-28T10:46:05.996519",
+      "symbol": "HQGE",
+      "pattern": "manual_entry",
+      "outcome": "loss",
+      "lesson": "Bad read on HQGE. Market conditions changed - should've adapted.",
+      "confidence_adjustment": -0.05,
+      "context": {
+        "exit_reason": "stop_loss",
+        "holding_time": 0.5758792166666667,
+        "max_profit": -95.52999975,
+        "market_conditions": {
+          "vix": 15.26,
+          "market_trend": "neutral",
+          "breadth": {
+            "advance_decline": 0,
+            "new_highs": 0,
+            "new_lows": 0,
+            "vix": 15.26,
+            "put_call_ratio": 1.0
+          },
+          "economic_events": [],
+          "gaps": {
+            "MARA": {
+              "percent": 2.2608695652173947,
+              "direction": "up",
+              "fade_probability": 0.45,
+              "open": 17.64,
+              "prev_close": 17.25
+            }
+          }
+        }
+      }
+    },
+    {
+      "timestamp": "2025-07-28T10:46:41.885371",
+      "symbol": "HQGE",
+      "pattern": "manual_entry",
+      "outcome": "loss",
+      "lesson": "Ouch. HQGE completely reversed. Need to respect the trend more.",
+      "confidence_adjustment": -0.05,
+      "context": {
+        "exit_reason": "stop_loss",
+        "holding_time": 0.5779417833333333,
+        "max_profit": -95.52999975,
+        "market_conditions": {
+          "vix": 15.26,
+          "market_trend": "neutral",
+          "breadth": {
+            "advance_decline": 0,
+            "new_highs": 0,
+            "new_lows": 0,
+            "vix": 15.26,
+            "put_call_ratio": 1.0
+          },
+          "economic_events": [],
+          "gaps": {
+            "MARA": {
+              "percent": 2.2608695652173947,
+              "direction": "up",
+              "fade_probability": 0.45,
+              "open": 17.64,
+              "prev_close": 17.25
+            }
+          }
+        }
+      }
+    },
+    {
+      "timestamp": "2025-07-28T10:47:19.065750",
+      "symbol": "HQGE",
+      "pattern": "manual_entry",
+      "outcome": "loss",
+      "lesson": "Ouch. HQGE completely reversed. Need to respect the trend more.",
+      "confidence_adjustment": -0.05,
+      "context": {
+        "exit_reason": "stop_loss",
+        "holding_time": -239.40404395,
+        "max_profit": -95.52999975,
+        "market_conditions": {
+          "vix": 15.26,
+          "market_trend": "neutral",
+          "breadth": {
+            "advance_decline": 0,
+            "new_highs": 0,
+            "new_lows": 0,
+            "vix": 15.26,
+            "put_call_ratio": 1.0
+          },
+          "economic_events": [],
+          "gaps": {
+            "MARA": {
+              "percent": 2.2608695652173947,
+              "direction": "up",
+              "fade_probability": 0.45,
+              "open": 17.64,
+              "prev_close": 17.25
+            }
+          }
+        }
+      }
+    },
+    {
+      "timestamp": "2025-07-28T10:47:57.742980",
+      "symbol": "HQGE",
+      "pattern": "manual_entry",
+      "outcome": "loss",
+      "lesson": "Lesson learned: don't fight the tape on HQGE when volume is weak.",
+      "confidence_adjustment": -0.05,
+      "context": {
+        "exit_reason": "stop_loss",
+        "holding_time": 0.62126575,
+        "max_profit": -95.52999975,
+        "market_conditions": {
+          "vix": 15.26,
+          "market_trend": "neutral",
+          "breadth": {
+            "advance_decline": 0,
+            "new_highs": 0,
+            "new_lows": 0,
+            "vix": 15.26,
+            "put_call_ratio": 1.0
+          },
+          "economic_events": [],
+          "gaps": {
+            "MARA": {
+              "percent": 2.2608695652173947,
+              "direction": "up",
+              "fade_probability": 0.45,
+              "open": 17.64,
+              "prev_close": 17.25
+            }
+          }
+        }
+      }
+    },
+    {
+      "timestamp": "2025-07-28T10:48:32.466875",
+      "symbol": "HQGE",
+      "pattern": "manual_entry",
+      "outcome": "loss",
+      "lesson": "Ouch. HQGE completely reversed. Need to respect the trend more.",
+      "confidence_adjustment": -0.05,
+      "context": {
+        "exit_reason": "stop_loss",
+        "holding_time": 0.5498108666666667,
+        "max_profit": -95.52999975,
+        "market_conditions": {
+          "vix": 15.26,
+          "market_trend": "neutral",
+          "breadth": {
+            "advance_decline": 0,
+            "new_highs": 0,
+            "new_lows": 0,
+            "vix": 15.26,
+            "put_call_ratio": 1.0
+          },
+          "economic_events": [],
+          "gaps": {
+            "MARA": {
+              "percent": 2.2608695652173947,
+              "direction": "up",
+              "fade_probability": 0.45,
+              "open": 17.64,
+              "prev_close": 17.25
+            }
+          }
+        }
+      }
+    },
+    {
+      "timestamp": "2025-07-28T10:49:11.407171",
+      "symbol": "HQGE",
+      "pattern": "manual_entry",
+      "outcome": "loss",
+      "lesson": "Bad read on HQGE. Market conditions changed - should've adapted.",
+      "confidence_adjustment": -0.05,
+      "context": {
+        "exit_reason": "stop_loss",
+        "holding_time": 0.6201210333333333,
+        "max_profit": -95.52999975,
+        "market_conditions": {
+          "vix": 15.26,
+          "market_trend": "neutral",
+          "breadth": {
+            "advance_decline": 0,
+            "new_highs": 0,
+            "new_lows": 0,
+            "vix": 15.26,
+            "put_call_ratio": 1.0
+          },
+          "economic_events": [],
+          "gaps": {
+            "MARA": {
+              "percent": 2.2608695652173947,
+              "direction": "up",
+              "fade_probability": 0.45,
+              "open": 17.64,
+              "prev_close": 17.25
+            }
+          }
+        }
+      }
+    },
+    {
+      "timestamp": "2025-07-28T10:49:46.965334",
+      "symbol": "HQGE",
+      "pattern": "manual_entry",
+      "outcome": "loss",
+      "lesson": "Lesson learned: don't fight the tape on HQGE when volume is weak.",
+      "confidence_adjustment": -0.05,
+      "context": {
+        "exit_reason": "stop_loss",
+        "holding_time": 0.56104335,
+        "max_profit": -95.52999975,
+        "market_conditions": {
+          "vix": 15.26,
+          "market_trend": "neutral",
+          "breadth": {
+            "advance_decline": 0,
+            "new_highs": 0,
+            "new_lows": 0,
+            "vix": 15.26,
+            "put_call_ratio": 1.0
+          },
+          "economic_events": [],
+          "gaps": {
+            "MARA": {
+              "percent": 2.2608695652173947,
+              "direction": "up",
+              "fade_probability": 0.45,
+              "open": 17.64,
+              "prev_close": 17.25
+            }
+          }
+        }
+      }
+    },
+    {
+      "timestamp": "2025-07-28T10:50:24.057668",
+      "symbol": "HQGE",
+      "pattern": "manual_entry",
+      "outcome": "loss",
+      "lesson": "Lesson learned: don't fight the tape on HQGE when volume is weak.",
+      "confidence_adjustment": -0.05,
+      "context": {
+        "exit_reason": "stop_loss",
+        "holding_time": 0.5809886333333334,
+        "max_profit": -95.52999975,
+        "market_conditions": {
+          "vix": 15.26,
+          "market_trend": "neutral",
+          "breadth": {
+            "advance_decline": 0,
+            "new_highs": 0,
+            "new_lows": 0,
+            "vix": 15.26,
+            "put_call_ratio": 1.0
+          },
+          "economic_events": [],
+          "gaps": {
+            "MARA": {
+              "percent": 2.2608695652173947,
+              "direction": "up",
+              "fade_probability": 0.45,
+              "open": 17.64,
+              "prev_close": 17.25
+            }
+          }
+        }
+      }
+    },
+    {
+      "timestamp": "2025-07-28T10:51:01.205614",
+      "symbol": "HQGE",
+      "pattern": "manual_entry",
+      "outcome": "loss",
+      "lesson": "Ouch. HQGE completely reversed. Need to respect the trend more.",
+      "confidence_adjustment": -0.05,
+      "context": {
+        "exit_reason": "stop_loss",
+        "holding_time": 0.5867328,
+        "max_profit": -95.52999975,
+        "market_conditions": {
+          "vix": 15.26,
+          "market_trend": "neutral",
+          "breadth": {
+            "advance_decline": 0,
+            "new_highs": 0,
+            "new_lows": 0,
+            "vix": 15.26,
+            "put_call_ratio": 1.0
+          },
+          "economic_events": [],
+          "gaps": {
+            "MARA": {
+              "percent": 2.2608695652173947,
+              "direction": "up",
+              "fade_probability": 0.45,
+              "open": 17.64,
+              "prev_close": 17.25
+            }
+          }
+        }
+      }
+    },
+    {
+      "timestamp": "2025-07-28T10:51:37.386166",
+      "symbol": "HQGE",
+      "pattern": "manual_entry",
+      "outcome": "loss",
+      "lesson": "Bad read on HQGE. Market conditions changed - should've adapted.",
+      "confidence_adjustment": -0.05,
+      "context": {
+        "exit_reason": "stop_loss",
+        "holding_time": 0.5649253833333333,
+        "max_profit": -95.52999975,
+        "market_conditions": {
+          "vix": 15.26,
+          "market_trend": "neutral",
+          "breadth": {
+            "advance_decline": 0,
+            "new_highs": 0,
+            "new_lows": 0,
+            "vix": 15.26,
+            "put_call_ratio": 1.0
+          },
+          "economic_events": [],
+          "gaps": {
+            "MARA": {
+              "percent": 2.2608695652173947,
+              "direction": "up",
+              "fade_probability": 0.45,
+              "open": 17.64,
+              "prev_close": 17.25
+            }
+          }
+        }
+      }
+    },
+    {
+      "timestamp": "2025-07-28T10:52:14.985268",
+      "symbol": "HQGE",
+      "pattern": "manual_entry",
+      "outcome": "loss",
+      "lesson": "Ouch. HQGE completely reversed. Need to respect the trend more.",
+      "confidence_adjustment": -0.05,
+      "context": {
+        "exit_reason": "stop_loss",
+        "holding_time": 0.57879795,
+        "max_profit": -95.52999975,
+        "market_conditions": {
+          "vix": 15.26,
+          "market_trend": "neutral",
+          "breadth": {
+            "advance_decline": 0,
+            "new_highs": 0,
+            "new_lows": 0,
+            "vix": 15.26,
+            "put_call_ratio": 1.0
+          },
+          "economic_events": [],
+          "gaps": {
+            "MARA": {
+              "percent": 2.2608695652173947,
+              "direction": "up",
+              "fade_probability": 0.45,
+              "open": 17.64,
+              "prev_close": 17.25
+            }
+          }
+        }
+      }
+    },
+    {
+      "timestamp": "2025-07-28T10:52:52.417093",
+      "symbol": "HQGE",
+      "pattern": "manual_entry",
+      "outcome": "loss",
+      "lesson": "Bad read on HQGE. Market conditions changed - should've adapted.",
+      "confidence_adjustment": -0.05,
+      "context": {
+        "exit_reason": "stop_loss",
+        "holding_time": 0.5781200833333333,
+        "max_profit": -95.52999975,
+        "market_conditions": {
+          "vix": 15.26,
+          "market_trend": "neutral",
+          "breadth": {
+            "advance_decline": 0,
+            "new_highs": 0,
+            "new_lows": 0,
+            "vix": 15.26,
+            "put_call_ratio": 1.0
+          },
+          "economic_events": [],
+          "gaps": {
+            "MARA": {
+              "percent": 2.2608695652173947,
+              "direction": "up",
+              "fade_probability": 0.45,
+              "open": 17.64,
+              "prev_close": 17.25
+            }
+          }
+        }
+      }
+    },
+    {
+      "timestamp": "2025-07-28T10:53:30.659252",
+      "symbol": "HQGE",
+      "pattern": "manual_entry",
+      "outcome": "loss",
+      "lesson": "Ouch. HQGE completely reversed. Need to respect the trend more.",
+      "confidence_adjustment": -0.05,
+      "context": {
+        "exit_reason": "stop_loss",
+        "holding_time": 0.5803998499999999,
+        "max_profit": -95.52999975,
+        "market_conditions": {
+          "vix": 15.26,
+          "market_trend": "neutral",
+          "breadth": {
+            "advance_decline": 0,
+            "new_highs": 0,
+            "new_lows": 0,
+            "vix": 15.26,
+            "put_call_ratio": 1.0
+          },
+          "economic_events": [],
+          "gaps": {
+            "MARA": {
+              "percent": 2.2608695652173947,
+              "direction": "up",
+              "fade_probability": 0.45,
+              "open": 17.64,
+              "prev_close": 17.25
+            }
+          }
+        }
+      }
+    },
+    {
+      "timestamp": "2025-07-28T10:54:07.783457",
+      "symbol": "HQGE",
+      "pattern": "manual_entry",
+      "outcome": "loss",
+      "lesson": "Bad read on HQGE. Market conditions changed - should've adapted.",
+      "confidence_adjustment": -0.05,
+      "context": {
+        "exit_reason": "stop_loss",
+        "holding_time": 0.559412,
+        "max_profit": -95.52999975,
+        "market_conditions": {
+          "vix": 15.26,
+          "market_trend": "neutral",
+          "breadth": {
+            "advance_decline": 0,
+            "new_highs": 0,
+            "new_lows": 0,
+            "vix": 15.26,
+            "put_call_ratio": 1.0
+          },
+          "economic_events": [],
+          "gaps": {
+            "MARA": {
+              "percent": 2.2608695652173947,
+              "direction": "up",
+              "fade_probability": 0.45,
+              "open": 17.64,
+              "prev_close": 17.25
+            }
+          }
+        }
+      }
+    },
+    {
+      "timestamp": "2025-07-28T10:54:46.697932",
+      "symbol": "HQGE",
+      "pattern": "manual_entry",
+      "outcome": "loss",
+      "lesson": "Ouch. HQGE completely reversed. Need to respect the trend more.",
+      "confidence_adjustment": -0.05,
+      "context": {
+        "exit_reason": "stop_loss",
+        "holding_time": 0.5854234833333333,
+        "max_profit": -95.52999975,
+        "market_conditions": {
+          "vix": 15.26,
+          "market_trend": "neutral",
+          "breadth": {
+            "advance_decline": 0,
+            "new_highs": 0,
+            "new_lows": 0,
+            "vix": 15.26,
+            "put_call_ratio": 1.0
+          },
+          "economic_events": [],
+          "gaps": {
+            "MARA": {
+              "percent": 2.2608695652173947,
+              "direction": "up",
+              "fade_probability": 0.45,
+              "open": 17.64,
+              "prev_close": 17.25
+            }
+          }
+        }
+      }
+    },
+    {
+      "timestamp": "2025-07-28T10:55:23.241854",
+      "symbol": "HQGE",
+      "pattern": "manual_entry",
+      "outcome": "loss",
+      "lesson": "Bad read on HQGE. Market conditions changed - should've adapted.",
+      "confidence_adjustment": -0.05,
+      "context": {
+        "exit_reason": "stop_loss",
+        "holding_time": 0.5458388166666667,
+        "max_profit": -95.52999975,
+        "market_conditions": {
+          "vix": 15.26,
+          "market_trend": "neutral",
+          "breadth": {
+            "advance_decline": 0,
+            "new_highs": 0,
+            "new_lows": 0,
+            "vix": 15.26,
+            "put_call_ratio": 1.0
+          },
+          "economic_events": [],
+          "gaps": {
+            "MARA": {
+              "percent": 2.2608695652173947,
+              "direction": "up",
+              "fade_probability": 0.45,
+              "open": 17.64,
+              "prev_close": 17.25
+            }
+          }
+        }
+      }
+    },
+    {
+      "timestamp": "2025-07-28T10:56:02.325731",
+      "symbol": "HQGE",
+      "pattern": "manual_entry",
+      "outcome": "loss",
+      "lesson": "Lesson learned: don't fight the tape on HQGE when volume is weak.",
+      "confidence_adjustment": -0.05,
+      "context": {
+        "exit_reason": "stop_loss",
+        "holding_time": 0.5883700166666667,
+        "max_profit": -95.52999975,
+        "market_conditions": {
+          "vix": 15.26,
+          "market_trend": "neutral",
+          "breadth": {
+            "advance_decline": 0,
+            "new_highs": 0,
+            "new_lows": 0,
+            "vix": 15.26,
+            "put_call_ratio": 1.0
+          },
+          "economic_events": [],
+          "gaps": {
+            "MARA": {
+              "percent": 2.2608695652173947,
+              "direction": "up",
+              "fade_probability": 0.45,
+              "open": 17.64,
+              "prev_close": 17.25
+            }
+          }
+        }
+      }
+    },
+    {
+      "timestamp": "2025-07-28T10:56:40.493516",
+      "symbol": "HQGE",
+      "pattern": "manual_entry",
+      "outcome": "loss",
+      "lesson": "Lesson learned: don't fight the tape on HQGE when volume is weak.",
+      "confidence_adjustment": -0.05,
+      "context": {
+        "exit_reason": "stop_loss",
+        "holding_time": 0.5738303333333333,
+        "max_profit": -95.52999975,
+        "market_conditions": {
+          "vix": 15.26,
+          "market_trend": "neutral",
+          "breadth": {
+            "advance_decline": 0,
+            "new_highs": 0,
+            "new_lows": 0,
+            "vix": 15.26,
+            "put_call_ratio": 1.0
+          },
+          "economic_events": [],
+          "gaps": {
+            "MARA": {
+              "percent": 2.2608695652173947,
+              "direction": "up",
+              "fade_probability": 0.45,
+              "open": 17.64,
+              "prev_close": 17.25
+            }
+          }
+        }
+      }
+    },
+    {
+      "timestamp": "2025-07-28T10:57:19.359852",
+      "symbol": "HQGE",
+      "pattern": "manual_entry",
+      "outcome": "loss",
+      "lesson": "Lesson learned: don't fight the tape on HQGE when volume is weak.",
+      "confidence_adjustment": -0.05,
+      "context": {
+        "exit_reason": "stop_loss",
+        "holding_time": 0.5874578666666667,
+        "max_profit": -95.52999975,
+        "market_conditions": {
+          "vix": 15.26,
+          "market_trend": "neutral",
+          "breadth": {
+            "advance_decline": 0,
+            "new_highs": 0,
+            "new_lows": 0,
+            "vix": 15.26,
+            "put_call_ratio": 1.0
+          },
+          "economic_events": [],
+          "gaps": {
+            "MARA": {
+              "percent": 2.2608695652173947,
+              "direction": "up",
+              "fade_probability": 0.45,
+              "open": 17.64,
+              "prev_close": 17.25
+            }
+          }
+        }
+      }
+    },
+    {
+      "timestamp": "2025-07-28T10:58:13.322143",
+      "symbol": "HQGE",
+      "pattern": "manual_entry",
+      "outcome": "loss",
+      "lesson": "Lesson learned: don't fight the tape on HQGE when volume is weak.",
+      "confidence_adjustment": -0.05,
+      "context": {
+        "exit_reason": "stop_loss",
+        "holding_time": 0.45523631666666664,
+        "max_profit": -95.52999975,
+        "market_conditions": {
+          "vix": 15.22,
+          "market_trend": "neutral",
+          "breadth": {
+            "advance_decline": 0,
+            "new_highs": 0,
+            "new_lows": 0,
+            "vix": 15.22,
+            "put_call_ratio": 1.0
+          },
+          "economic_events": [],
+          "gaps": {
+            "MARA": {
+              "percent": 2.2608695652173947,
+              "direction": "up",
+              "fade_probability": 0.45,
+              "open": 17.64,
+              "prev_close": 17.25
+            }
+          }
+        }
+      }
+    },
+    {
+      "timestamp": "2025-07-28T10:58:26.308769",
+      "symbol": "TSLA",
+      "pattern": "manual_entry",
+      "outcome": "loss",
+      "lesson": "Stopped out for a small loss. Good risk management, bad entry timing.",
+      "confidence_adjustment": -0.01,
+      "context": {
+        "exit_reason": "manual_override",
+        "holding_time": 0.6801013666666668,
+        "max_profit": 0,
+        "market_conditions": {
+          "vix": 15.22,
+          "market_trend": "neutral",
+          "breadth": {
+            "advance_decline": 0,
+            "new_highs": 0,
+            "new_lows": 0,
+            "vix": 15.22,
+            "put_call_ratio": 1.0
+          },
+          "economic_events": [],
+          "gaps": {
+            "MARA": {
+              "percent": 2.2608695652173947,
+              "direction": "up",
+              "fade_probability": 0.45,
+              "open": 17.64,
+              "prev_close": 17.25
+            }
+          }
+        }
+      }
+    },
+    {
+      "timestamp": "2025-07-28T11:45:36.234558",
+      "symbol": "HQGE",
+      "pattern": "manual_entry",
+      "outcome": "loss",
+      "lesson": "Bad read on HQGE. Market conditions changed - should've adapted.",
+      "confidence_adjustment": -0.05,
+      "context": {
+        "exit_reason": "stop_loss",
+        "holding_time": 0.4984207333333333,
+        "max_profit": -95.52999975,
+        "market_conditions": {
+          "vix": 15.13,
+          "market_trend": "neutral",
+          "breadth": {
+            "advance_decline": 0,
+            "new_highs": 0,
+            "new_lows": 0,
+            "vix": 15.13,
+            "put_call_ratio": 1.0
+          },
+          "economic_events": [],
+          "gaps": {
+            "MARA": {
+              "percent": 2.2608695652173947,
+              "direction": "up",
+              "fade_probability": 0.45,
+              "open": 17.64,
+              "prev_close": 17.25
+            }
+          }
+        }
+      }
+    }
+  ],
+  "pattern_success_rates": {
+    "momentum": {
+      "wins": 0,
+      "losses": 3,
+      "total": 3
+    },
+    "free_news_sentiment": {
+      "wins": 0,
+      "losses": 5,
+      "total": 5
+    },
+    "mean_reversion_short": {
+      "wins": 1,
+      "losses": 0,
+      "total": 1
+    },
+    "manual_entry": {
+      "wins": 1,
+      "losses": 47,
+      "total": 48
+    }
+  },
+  "symbol_behaviors": {
+    "PENN": {
+      "avg_holding_time": 0,
+      "best_exit_timing": {},
+      "volatility_profile": {},
+      "success_rate": 0.5
+    },
+    "TSLA": {
+      "avg_holding_time": 0,
+      "best_exit_timing": {},
+      "volatility_profile": {},
+      "success_rate": 0.5
+    },
+    "NVDA": {
+      "avg_holding_time": 0,
+      "best_exit_timing": {},
+      "volatility_profile": {},
+      "success_rate": 0.5
+    },
+    "RIVN": {
+      "avg_holding_time": 0,
+      "best_exit_timing": {},
+      "volatility_profile": {},
+      "success_rate": 0.5
+    },
+    "PLTR": {
+      "avg_holding_time": 0,
+      "best_exit_timing": {},
+      "volatility_profile": {},
+      "success_rate": 0.5
+    },
+    "HQGE": {
+      "avg_holding_time": 0,
+      "best_exit_timing": {},
+      "volatility_profile": {},
+      "success_rate": 0.5
+    }
+  },
+  "emotional_state": {
+    "confidence": 0.3,
+    "risk_appetite": 0.2,
+    "patience": 0.95,
+    "fear_level": 0.8,
+    "greed_level": 0.39999999999999997,
+    "last_update": "2025-07-28T11:45:36.234557"
+  }
+}

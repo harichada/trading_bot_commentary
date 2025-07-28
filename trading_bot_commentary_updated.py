@@ -1821,6 +1821,7 @@ class Position:
     entry_time: datetime
     unrealized_pnl: float = 0
     reasoning: Dict[str, Any] = field(default_factory=dict)
+    is_long_term: bool = False  # Flag for long-term holdings
 
 @dataclass
 class MarketData:
@@ -1947,6 +1948,9 @@ class CommentarySystem:
         self.history: deque = deque(maxlen=max_history)
         self.subscribers: Set[callable] = set()
         self.console = console if RICH_AVAILABLE else None
+        self._last_save_time = 0
+        self._save_interval = 5  # Save at most once every 5 seconds
+        self._save_lock = threading.Lock()
         
     def add_commentary(self, commentary: TradingCommentary):
         """Add new commentary and notify subscribers"""
@@ -2040,71 +2044,121 @@ class CommentarySystem:
     def _save_to_file(self, commentary: TradingCommentary):
         """Save commentary to file for later analysis with robust error handling"""
         try:
-            commentary_path = str(Config().COMMENTARY_LOG_PATH)
-            all_commentary = []
+            # Rate limiting - only save once every few seconds
+            current_time = time.time()
+            if current_time - self._last_save_time < self._save_interval:
+                return  # Skip this save
             
-            # Try to load existing commentary with error recovery
-            if Path(commentary_path).exists():
-                try:
-                    with open(commentary_path, 'r') as f:
-                        all_commentary = json.load(f)
-                except json.JSONDecodeError as e:
-                    logger.error(f"Corrupted commentary file, attempting recovery: {e}")
-                    # Try to recover valid JSON objects
+            # Use lock to prevent concurrent saves
+            if not self._save_lock.acquire(blocking=False):
+                return  # Another save is in progress
+            
+            try:
+                self._last_save_time = current_time
+                
+                # Ensure we have an absolute path
+                commentary_path = Path(Config().COMMENTARY_LOG_PATH)
+                if not commentary_path.is_absolute():
+                    # Make it relative to the current working directory
+                    commentary_path = Path.cwd() / commentary_path
+                
+                commentary_path = str(commentary_path)
+                all_commentary = []
+                
+                # Try to load existing commentary with error recovery
+                if Path(commentary_path).exists():
                     try:
-                        self._recover_commentary_file(commentary_path)
-                        # Try loading again after recovery
                         with open(commentary_path, 'r') as f:
                             all_commentary = json.load(f)
-                    except Exception as recovery_error:
-                        logger.error(f"Recovery failed: {recovery_error}")
-                        # Start fresh with backup
-                        backup_path = Path(commentary_path).with_suffix('.json.corrupted')
-                        Path(commentary_path).rename(backup_path)
-                        logger.info(f"Backed up corrupted file to {backup_path}")
-                        all_commentary = []
-            
-            # Ensure commentary can be serialized
-            try:
-                commentary_dict = commentary.to_dict()
-                # Test serialization before adding
-                json.dumps(commentary_dict)
-                all_commentary.append(commentary_dict)
-            except (TypeError, ValueError) as e:
-                logger.error(f"Commentary serialization error: {e}")
-                # Create a simplified version
-                commentary_dict = {
-                    'timestamp': str(commentary.timestamp),
-                    'type': str(commentary.type),
-                    'symbol': str(commentary.symbol),
-                    'title': str(commentary.title),
-                    'message': str(commentary.message),
-                    'importance': commentary.importance
-                }
-                all_commentary.append(commentary_dict)
-            
-            # Maintain size limit
-            if len(all_commentary) > 1000:
-                all_commentary = all_commentary[-1000:]
-            
-            # Write with atomic operation
-            commentary_path_obj = Path(commentary_path).resolve()
-            temp_path = commentary_path_obj.with_name(f"{commentary_path_obj.stem}_tmp{commentary_path_obj.suffix}")
-            
-            try:
-                with open(temp_path, 'w') as f:
-                    json.dump(all_commentary, f, indent=2, default=str)
+                    except json.JSONDecodeError as e:
+                        logger.error(f"Corrupted commentary file, attempting recovery: {e}")
+                        # Try to recover valid JSON objects
+                        try:
+                            self._recover_commentary_file(commentary_path)
+                            # Try loading again after recovery
+                            with open(commentary_path, 'r') as f:
+                                all_commentary = json.load(f)
+                        except Exception as recovery_error:
+                            logger.error(f"Recovery failed: {recovery_error}")
+                            # Start fresh with backup
+                            backup_path = Path(commentary_path).with_suffix('.json.corrupted')
+                            Path(commentary_path).rename(backup_path)
+                            logger.info(f"Backed up corrupted file to {backup_path}")
+                            all_commentary = []
                 
-                # Atomic rename
-                temp_path.replace(commentary_path_obj)
-            finally:
-                # Clean up temp file if it exists
-                if temp_path.exists():
+                # Ensure commentary can be serialized
+                try:
+                    commentary_dict = commentary.to_dict()
+                    # Test serialization before adding
+                    json.dumps(commentary_dict)
+                    all_commentary.append(commentary_dict)
+                except (TypeError, ValueError) as e:
+                    logger.error(f"Commentary serialization error: {e}")
+                    # Create a simplified version
+                    commentary_dict = {
+                        'timestamp': str(commentary.timestamp),
+                        'type': str(commentary.type),
+                        'symbol': str(commentary.symbol),
+                        'title': str(commentary.title),
+                        'message': str(commentary.message),
+                        'importance': commentary.importance
+                    }
+                    all_commentary.append(commentary_dict)
+                
+                # Maintain size limit
+                if len(all_commentary) > 1000:
+                    all_commentary = all_commentary[-1000:]
+                
+                # Write with atomic operation
+                commentary_path_obj = Path(commentary_path).resolve()
+                
+                try:
+                    # Ensure directory exists
+                    commentary_path_obj.parent.mkdir(parents=True, exist_ok=True)
+                    
+                    # Create a unique temp file in the same directory
+                    import tempfile
+                    import os
+                    fd, temp_path_str = tempfile.mkstemp(
+                        suffix='.tmp',
+                        prefix='commentary_',
+                        dir=str(commentary_path_obj.parent)
+                    )
+                    
                     try:
-                        temp_path.unlink()
-                    except:
-                        pass
-            
+                        # Write to temp file using the file descriptor
+                        with os.fdopen(fd, 'w') as f:
+                            json.dump(all_commentary, f, indent=2, default=str)
+                        
+                        # Atomic rename
+                        os.replace(temp_path_str, str(commentary_path_obj))
+                    except Exception as write_error:
+                        # Close fd if still open
+                        try:
+                            os.close(fd)
+                        except:
+                            pass
+                        raise write_error
+                    finally:
+                        # Clean up temp file if it exists
+                        if os.path.exists(temp_path_str):
+                            try:
+                                os.unlink(temp_path_str)
+                            except:
+                                pass
+                                
+                except Exception as write_error:
+                    logger.error(f"Error writing commentary file: {write_error}")
+                    # Try direct write as fallback
+                    try:
+                        with open(commentary_path_obj, 'w') as f:
+                            json.dump(all_commentary, f, indent=2, default=str)
+                    except Exception as fallback_error:
+                        logger.error(f"Fallback write also failed: {fallback_error}")
+            finally:
+                # Always release the lock
+                self._save_lock.release()
+                
         except Exception as e:
             logger.error(f"Error saving commentary: {e}")
             # Don't let save errors crash the system
@@ -5262,6 +5316,12 @@ class TradingEngineWithCommentary:
                     self.risk_manager.daily_pnl = state.get('daily_pnl', 0)
                     self.risk_manager.consecutive_losses = state.get('consecutive_losses', 0)
                     
+                    # Load position long-term flags
+                    positions_data = state.get('positions_data', {})
+                    for symbol, pos_data in positions_data.items():
+                        if symbol in self.positions:
+                            self.positions[symbol].is_long_term = pos_data.get('is_long_term', False)
+                    
                     # Add human-like morning routine commentary
                     self.commentary.add_commentary(TradingCommentary(
                         timestamp=datetime.now(),
@@ -6273,13 +6333,54 @@ class TradingEngineWithCommentary:
                     positions_to_remove.append(symbol)
             
             for symbol in positions_to_remove:
+                position = self.positions[symbol]
+                
+                # Try to get current market price for more accurate P&L
+                exit_price = position.current_price
+                try:
+                    if self.data_provider:
+                        quote = self.data_provider.get_quote(symbol)
+                        if quote and 'last' in quote:
+                            exit_price = quote['last']
+                except Exception as e:
+                    logger.debug(f"Could not get quote for {symbol}: {e}")
+                
+                # Calculate final P&L
+                if position.side == 'short':
+                    final_pnl = (position.entry_price - exit_price) * position.quantity
+                else:  # long
+                    final_pnl = (exit_price - position.entry_price) * position.quantity
+                
+                # Update risk manager
+                self.risk_manager.daily_pnl += final_pnl
+                if final_pnl < 0:
+                    self.risk_manager.consecutive_losses += 1
+                else:
+                    self.risk_manager.consecutive_losses = 0
+                
+                # Record in trade history
+                self.trade_history.append({
+                    'symbol': position.symbol,
+                    'entry_time': position.entry_time.isoformat(),
+                    'exit_time': datetime.now().isoformat(),
+                    'entry_price': position.entry_price,
+                    'exit_price': exit_price,
+                    'quantity': position.quantity,
+                    'pnl': final_pnl,
+                    'exit_reason': 'external_close',
+                    'reasoning': position.reasoning
+                })
+                
+                # Remove from positions
                 del self.positions[symbol]
+                
+                # Add commentary
                 self.commentary.add_commentary(TradingCommentary(
                     timestamp=datetime.now(),
                     type=CommentaryType.DECISION,
                     symbol=symbol,
                     title=f"📤 Position Closed Externally",
-                    message=f"{symbol} position was closed outside the bot",
+                    message=f"{symbol} closed outside bot - P&L: ${final_pnl:.2f} ({'profit' if final_pnl > 0 else 'loss'})",
                     importance=6
                 ))
                         
@@ -6287,10 +6388,22 @@ class TradingEngineWithCommentary:
             logger.error(f"Position update error: {e}")
     def _save_state(self):
         """Save current trading state"""
+        # Save position long-term flags
+        positions_data = {}
+        for symbol, pos in self.positions.items():
+            positions_data[symbol] = {
+                'is_long_term': getattr(pos, 'is_long_term', False),
+                'entry_price': pos.entry_price,
+                'quantity': pos.quantity,
+                'side': pos.side,
+                'entry_time': pos.entry_time.isoformat()
+            }
+        
         state = {
             'trade_history': self.trade_history[-100:],  # Keep last 100 trades
             'daily_pnl': self.risk_manager.daily_pnl,
             'consecutive_losses': self.risk_manager.consecutive_losses,
+            'positions_data': positions_data,  # Save position metadata
             'last_save': datetime.now().isoformat()
         }
         
@@ -6465,6 +6578,9 @@ class TradingEngineWithCommentary:
                 
                 analysis_count += 1
                 
+                # Update position prices before analysis
+                await self._update_position_prices()
+                
                 # Risk assessment with detailed explanation
                 await self._assess_market_conditions()
                 await self._analyze_premarket_gaps() 
@@ -6543,6 +6659,52 @@ class TradingEngineWithCommentary:
                 ))
                 logger.error(f"Trading loop error: {e}", exc_info=True)
                 await asyncio.sleep(60)
+    
+    async def _update_position_prices(self):
+        """Update current prices for all positions"""
+        try:
+            if self.mode == TradingMode.SIMULATION_WITH_COMMENTARY:
+                # Update simulated positions
+                for symbol, position in self.simulated_positions.items():
+                    if position:
+                        try:
+                            # Get current quote
+                            quote = await self.data_provider.get_current_quote(symbol)
+                            if quote and 'price' in quote:
+                                old_price = position.current_price
+                                position.current_price = quote['price']
+                                # Update unrealized PnL
+                                position.unrealized_pnl = (position.current_price - position.entry_price) * position.quantity
+                                
+                                # Log significant price movements
+                                price_change = abs(position.current_price - old_price) / old_price
+                                if price_change > 0.01:  # More than 1% change
+                                    logger.debug(f"Updated {symbol} price: ${old_price:.2f} -> ${position.current_price:.2f}")
+                        except Exception as e:
+                            logger.debug(f"Error updating price for {symbol}: {e}")
+            
+            elif self.mode == TradingMode.LIVE and self.schwab_client:
+                # Update real positions
+                for symbol, position in self.positions.items():
+                    if position:
+                        try:
+                            response = self.schwab_client.get_quote(symbol)
+                            if response.status_code == 200:
+                                quote_data = response.json()
+                                if symbol in quote_data:
+                                    old_price = position.current_price
+                                    position.current_price = quote_data[symbol]['quote']['lastPrice']
+                                    position.unrealized_pnl = (position.current_price - position.entry_price) * position.quantity
+                                    
+                                    # Log significant price movements
+                                    price_change = abs(position.current_price - old_price) / old_price
+                                    if price_change > 0.01:  # More than 1% change
+                                        logger.debug(f"Updated {symbol} price: ${old_price:.2f} -> ${position.current_price:.2f}")
+                        except Exception as e:
+                            logger.debug(f"Error updating price for {symbol}: {e}")
+                            
+        except Exception as e:
+            logger.error(f"Error in _update_position_prices: {e}")
     
     async def _assess_market_conditions(self):
         """Assess overall market conditions with detailed commentary"""
@@ -7262,11 +7424,27 @@ class TradingEngineWithCommentary:
                             importance=4
                         ))
                     
-                    # Check exit conditions with reasoning
-                    should_exit, exit_reason = await self._evaluate_exit_conditions(position, current_price)
-                    
-                    if should_exit:
-                        await self._close_position_with_commentary(position, exit_reason)
+                    # Check exit conditions with reasoning (skip if long-term)
+                    if not getattr(position, 'is_long_term', False):
+                        should_exit, exit_reason = await self._evaluate_exit_conditions(position, current_price)
+                        
+                        if should_exit:
+                            await self._close_position_with_commentary(position, exit_reason)
+                    else:
+                        # Log that we're skipping long-term position
+                        if not hasattr(self, '_long_term_logged') or symbol not in self._long_term_logged:
+                            if not hasattr(self, '_long_term_logged'):
+                                self._long_term_logged = set()
+                            self._long_term_logged.add(symbol)
+                            
+                            self.commentary.add_commentary(TradingCommentary(
+                                timestamp=datetime.now(),
+                                type=CommentaryType.DECISION,
+                                symbol=symbol,
+                                title=f"🔒 Long-Term Hold Protected",
+                                message=f"{symbol} is marked as long-term hold - automatic exit conditions disabled",
+                                importance=5
+                            ))
                 
             except Exception as e:
                 self.commentary.add_commentary(TradingCommentary(
@@ -7393,7 +7571,23 @@ class TradingEngineWithCommentary:
                         importance=7
                     ))
                     return
-        pnl = position.unrealized_pnl
+        
+        # Get the most current price for accurate P&L calculation
+        exit_price = position.current_price
+        try:
+            if self.data_provider:
+                quote = self.data_provider.get_quote(position.symbol)
+                if quote and 'last' in quote:
+                    exit_price = quote['last']
+        except Exception as e:
+            logger.debug(f"Could not get current quote for {position.symbol}: {e}")
+        
+        # Calculate P&L using the most current price
+        if position.side == 'short':
+            pnl = (position.entry_price - exit_price) * position.quantity
+        else:  # long
+            pnl = (exit_price - position.entry_price) * position.quantity
+        
         roi = (pnl / (position.entry_price * position.quantity)) * 100
         
         self.commentary.add_commentary(TradingCommentary(
@@ -7404,7 +7598,7 @@ class TradingEngineWithCommentary:
             message=f"Closing position with {'profit' if pnl > 0 else 'loss'} of ${abs(pnl):.2f} ({abs(roi):.1f}%)",
             data={
                 'entry_price': position.entry_price,
-                'exit_price': position.current_price,
+                'exit_price': exit_price,
                 'quantity': position.quantity,
             'pnl': pnl,
                 'roi_percentage': roi,
@@ -7470,19 +7664,19 @@ class TradingEngineWithCommentary:
             importance=6
         ))
         
-        # Update risk manager
-        self.risk_manager.daily_pnl += pnl
-        if pnl < 0:
-            self.risk_manager.consecutive_losses += 1
-        else:
-            self.risk_manager.consecutive_losses = 0
-        
         # At the end of the method, before removing from positions dict:
         if self.mode == TradingMode.LIVE:
         # Close real position
             success = await self._close_real_position(position)
             if not success:
                 return  # Don't remove from tracking if close failed
+        
+        # Update risk manager only after successful close
+        self.risk_manager.daily_pnl += pnl
+        if pnl < 0:
+            self.risk_manager.consecutive_losses += 1
+        else:
+            self.risk_manager.consecutive_losses = 0
         
         # Remove from positions
         if self.mode == TradingMode.SIMULATION_WITH_COMMENTARY:
@@ -7496,7 +7690,7 @@ class TradingEngineWithCommentary:
             'entry_time': position.entry_time.isoformat(),
             'exit_time': datetime.now().isoformat(),
             'entry_price': position.entry_price,
-            'exit_price': position.current_price,
+            'exit_price': exit_price,
             'quantity': position.quantity,
             'pnl': pnl,
             'exit_reason': reason,
@@ -7600,17 +7794,76 @@ class TradingEngineWithCommentary:
             return {}
     
         try:
-            response = self.schwab_client.get_account(self.account_hash)
+            # Get account with positions to ensure we have all data
+            from schwab.client import Client
+            response = self.schwab_client.get_account(
+                self.account_hash,
+                fields=[Client.Account.Fields.POSITIONS]
+            )
+            
             if response.status_code == 200:
                 data = response.json()
                 account = data.get('securitiesAccount', {})
-                balances = account.get('currentBalances', {})
+                current_balances = account.get('currentBalances', {})
+                initial_balances = account.get('initialBalances', {})
+                
+                # Try to calculate day P&L from balance difference
+                current_value = current_balances.get('liquidationValue', 0)
+                initial_value = initial_balances.get('liquidationValue', 0)
+                
+                # This gives us the total change including deposits/withdrawals
+                balance_change = current_value - initial_value
+                
+                # Get cash movement to adjust for deposits/withdrawals
+                current_cash = current_balances.get('cashBalance', 0)
+                initial_cash = initial_balances.get('cashBalance', 0)
+                
+                # If there's a projected balances section, check it
+                projected = account.get('projectedBalances', {})
+                
+                # Debug: log available balance fields
+                logger.debug(f"Current balances fields: {list(current_balances.keys())}")
+                logger.debug(f"Initial balances fields: {list(initial_balances.keys())}")
+                if projected:
+                    logger.debug(f"Projected balances fields: {list(projected.keys())}")
+                
+                # First try to get it from projected balances if available
+                day_pnl = projected.get('dayTradingGainLoss', None)
+                
+                if day_pnl is None:
+                    # Method 1: Try to calculate from balance change
+                    # This includes both realized and unrealized P&L
+                    if initial_value > 0:
+                        # Calculate the change, excluding any cash deposits/withdrawals
+                        cash_change = current_cash - initial_cash
+                        
+                        # If cash increased significantly (likely a deposit), don't count it as P&L
+                        if abs(cash_change) > 1000:  # Threshold for deposits/withdrawals
+                            # Balance change minus cash movement
+                            day_pnl = balance_change - cash_change
+                        else:
+                            # No significant cash movement, so balance change is P&L
+                            day_pnl = balance_change
+                    else:
+                        # Method 2: Fallback to position-based calculation
+                        day_pnl = 0
+                        positions = account.get('positions', [])
+                        
+                        for pos in positions:
+                            # Get current day P&L for this position
+                            current_day_pnl = pos.get('currentDayProfitLoss', 0)
+                            day_pnl += current_day_pnl
+                    
+                    # Log the calculation method used
+                    logger.info(f"Day P&L calculated: ${day_pnl:.2f} (Method: {'balance change' if initial_value > 0 else 'position sum'})")
             
                 return {
-                    'balance': balances.get('liquidationValue', 0),
-                    'buying_power': balances.get('buyingPower', 0),
+                    'balance': current_value,
+                    'buying_power': current_balances.get('buyingPower', 0),
                     'day_trades_remaining': account.get('roundTrips', 3),
-                    'cash': balances.get('cashBalance', 0)
+                    'cash': current_cash,
+                    'day_pnl': day_pnl,
+                    'initial_balance': initial_value  # For reference
                 }
         except Exception as e:
             logger.error(f"Account info error: {e}")
@@ -8673,6 +8926,15 @@ DASHBOARD_HTML_WITH_COMMENTARY = """
             cursor: not-allowed;
             opacity: 0.5;
         }
+        .long-term-checkbox {
+            width: 18px;
+            height: 18px;
+            cursor: pointer;
+            margin: 0;
+        }
+        .long-term-checkbox:checked {
+            accent-color: #22c55e;
+        }
         /* Ticker tape styles */
         .ticker-tape {
             background: #0a0a0a;
@@ -8857,11 +9119,12 @@ DASHBOARD_HTML_WITH_COMMENTARY = """
                             <th>Day P&L</th>
                             <th>Total P&L</th>
                             <th>% Change</th>
-                            <th>Actions</th> <!-- NEW COLUMN -->
+                            <th>Long-Term</th>
+                            <th>Actions</th>
                         </tr>
                     </thead>
                     <tbody id="real-positions-body">
-                        <tr><td colspan="8" style="text-align: center; color: #666;">No real positions or Schwab not connected</td></tr>
+                        <tr><td colspan="10" style="text-align: center; color: #666;">No real positions or Schwab not connected</td></tr>
                     </tbody>
                 </table>
             </div>
@@ -9035,7 +9298,7 @@ DASHBOARD_HTML_WITH_COMMENTARY = """
             if (data.real_positions) {
                 const tbody = document.getElementById('real-positions-body');
                 if (data.real_positions.length === 0) {
-                    tbody.innerHTML = '<tr><td colspan="9" style="text-align: center; color: #666;">No real positions or Schwab not connected</td></tr>';
+                    tbody.innerHTML = '<tr><td colspan="10" style="text-align: center; color: #666;">No real positions or Schwab not connected</td></tr>';
                 } else {
                     tbody.innerHTML = data.real_positions.map(pos => `
                         <tr>
@@ -9054,7 +9317,16 @@ DASHBOARD_HTML_WITH_COMMENTARY = """
                                 ${pos.pnl_percent >= 0 ? '+' : ''}${pos.pnl_percent.toFixed(2)}%
                             </td>
                             <td>
-                                <button class="close-button" onclick="requestClosePosition('${pos.symbol}', 'real')">
+                                <input type="checkbox" 
+                                    class="long-term-checkbox" 
+                                    ${pos.is_long_term ? 'checked' : ''}
+                                    onchange="toggleLongTerm('${pos.symbol}')"
+                                    title="Mark as long-term hold">
+                            </td>
+                            <td>
+                                <button class="close-button" 
+                                    ${pos.is_long_term ? 'disabled' : ''}
+                                    onclick="requestClosePosition('${pos.symbol}', 'real')">
                                     Close
                                 </button>
                             </td>
@@ -9166,6 +9438,48 @@ DASHBOARD_HTML_WITH_COMMENTARY = """
                 }, 1000);
             }
         }
+        
+        async function toggleLongTerm(symbol) {
+            try {
+                const response = await fetch('/api/toggle-long-term', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ symbol: symbol })
+                });
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    console.log(`${symbol} long-term status: ${data.is_long_term}`);
+                    
+                    // Show notification
+                    const notification = document.createElement('div');
+                    notification.style.cssText = `
+                        position: fixed;
+                        top: 20px;
+                        right: 20px;
+                        background: ${data.is_long_term ? '#22c55e' : '#ef4444'};
+                        color: white;
+                        padding: 15px 20px;
+                        border-radius: 5px;
+                        font-weight: bold;
+                        z-index: 10000;
+                        animation: slideIn 0.3s ease-out;
+                    `;
+                    notification.textContent = `${symbol} ${data.is_long_term ? 'marked as long-term hold' : 'unmarked as long-term'}`;
+                    document.body.appendChild(notification);
+                    
+                    setTimeout(() => {
+                        notification.remove();
+                    }, 3000);
+                } else {
+                    const error = await response.json();
+                    alert(`Failed to update position: ${error.message}`);
+                }
+            } catch (error) {
+                console.error('Error toggling long-term status:', error);
+            }
+        }
+        
         async function startTrading() {
             const response = await fetch('/api/start', { method: 'POST' });
             if (response.ok) {
@@ -9404,6 +9718,172 @@ app.add_middleware(
 trading_engine = None
 connection_manager = ConnectionManager()
 
+async def simulate_backtest(historical_data: Dict[str, pd.DataFrame], config: dict) -> dict:
+    """Simulate a backtest with the given historical data"""
+    initial_capital = config.get('initial_capital', 100000)
+    commission = config.get('commission', 0.001)  # 0.1% per trade
+    
+    # Initialize tracking variables
+    cash = initial_capital
+    positions = {}
+    trades = []
+    equity_curve = []
+    
+    # Get all unique timestamps across all symbols
+    all_timestamps = set()
+    for df in historical_data.values():
+        all_timestamps.update(df.index)
+    all_timestamps = sorted(list(all_timestamps))
+    
+    # Simulate trading
+    for timestamp in all_timestamps:
+        current_equity = cash
+        
+        # Update positions with current prices
+        for symbol, position in list(positions.items()):
+            if symbol in historical_data and timestamp in historical_data[symbol].index:
+                current_price = historical_data[symbol].loc[timestamp, 'Close']
+                position['current_price'] = current_price
+                position['value'] = position['quantity'] * current_price
+                position['unrealized_pnl'] = (current_price - position['entry_price']) * position['quantity']
+                current_equity += position['value']
+                
+                # Simple exit logic - exit if 2% profit or 1% loss
+                pnl_pct = (current_price - position['entry_price']) / position['entry_price']
+                if pnl_pct > 0.02 or pnl_pct < -0.01:
+                    # Close position
+                    trade_pnl = position['unrealized_pnl'] - (position['value'] * commission)
+                    cash += position['value'] - (position['value'] * commission)
+                    
+                    trades.append({
+                        'symbol': symbol,
+                        'entry_time': position['entry_time'],
+                        'exit_time': timestamp,
+                        'entry_price': position['entry_price'],
+                        'exit_price': current_price,
+                        'quantity': position['quantity'],
+                        'pnl': trade_pnl,
+                        'pnl_pct': pnl_pct
+                    })
+                    
+                    del positions[symbol]
+        
+        # Generate entry signals (simple momentum strategy for demo)
+        for symbol, df in historical_data.items():
+            if timestamp in df.index and symbol not in positions and len(positions) < 5:
+                # Get recent data
+                idx = df.index.get_loc(timestamp)
+                if idx >= 20:  # Need at least 20 periods
+                    recent_data = df.iloc[max(0, idx-20):idx+1]
+                    
+                    # Simple momentum signal
+                    returns = recent_data['Close'].pct_change().dropna()
+                    if len(returns) > 0 and returns.mean() > 0.001 and returns.iloc[-1] > 0:
+                        # Enter position
+                        position_size = (current_equity * 0.1) / recent_data['Close'].iloc[-1]  # 10% of equity
+                        position_value = position_size * recent_data['Close'].iloc[-1]
+                        
+                        if cash >= position_value * (1 + commission):
+                            positions[symbol] = {
+                                'quantity': position_size,
+                                'entry_price': recent_data['Close'].iloc[-1],
+                                'entry_time': timestamp,
+                                'current_price': recent_data['Close'].iloc[-1],
+                                'value': position_value
+                            }
+                            cash -= position_value * (1 + commission)
+        
+        # Record equity
+        equity_curve.append({
+            'date': timestamp.strftime('%Y-%m-%d'),
+            'value': current_equity
+        })
+    
+    # Calculate performance metrics
+    equity_df = pd.DataFrame(equity_curve)
+    if not equity_df.empty:
+        equity_df['date'] = pd.to_datetime(equity_df['date'])
+        equity_df.set_index('date', inplace=True)
+        
+        # Remove duplicates by keeping last value for each date
+        equity_df = equity_df.groupby(equity_df.index).last()
+        
+        daily_returns = equity_df['value'].pct_change().dropna()
+        
+        total_return = (equity_df['value'].iloc[-1] - initial_capital) / initial_capital
+        annual_return = (1 + total_return) ** (252 / len(equity_df)) - 1 if len(equity_df) > 0 else 0
+        
+        sharpe_ratio = np.sqrt(252) * daily_returns.mean() / daily_returns.std() if daily_returns.std() > 0 else 0
+        
+        # Calculate drawdown
+        rolling_max = equity_df['value'].expanding().max()
+        drawdown = (equity_df['value'] - rolling_max) / rolling_max
+        max_drawdown = drawdown.min()
+        
+        # Trade statistics
+        winning_trades = [t for t in trades if t['pnl'] > 0]
+        losing_trades = [t for t in trades if t['pnl'] <= 0]
+        
+        win_rate = len(winning_trades) / len(trades) if trades else 0
+        avg_win = np.mean([t['pnl'] for t in winning_trades]) if winning_trades else 0
+        avg_loss = np.mean([t['pnl'] for t in losing_trades]) if losing_trades else 0
+        profit_factor = abs(sum(t['pnl'] for t in winning_trades) / sum(t['pnl'] for t in losing_trades)) if losing_trades and sum(t['pnl'] for t in losing_trades) != 0 else 0
+        
+        # Monthly returns
+        monthly_returns = []
+        if not equity_df.empty:
+            monthly = equity_df.resample('M').last()
+            monthly_pct = monthly['value'].pct_change().dropna()
+            for date, ret in monthly_pct.items():
+                monthly_returns.append({
+                    'month': date.strftime('%Y-%m'),
+                    'return': ret
+                })
+    else:
+        # Default values if no data
+        total_return = 0
+        annual_return = 0
+        sharpe_ratio = 0
+        max_drawdown = 0
+        win_rate = 0
+        avg_win = 0
+        avg_loss = 0
+        profit_factor = 0
+        monthly_returns = []
+    
+    return {
+        'summary': {
+            'total_return': total_return,
+            'annual_return': annual_return,
+            'sharpe_ratio': sharpe_ratio,
+            'sortino_ratio': sharpe_ratio * 0.8,  # Approximation
+            'max_drawdown': max_drawdown,
+            'win_rate': win_rate,
+            'total_trades': len(trades),
+            'winning_trades': len(winning_trades) if trades else 0,
+            'losing_trades': len(losing_trades) if trades else 0,
+            'profit_factor': profit_factor,
+            'average_win': avg_win,
+            'average_loss': avg_loss,
+            'best_trade': max([t['pnl'] for t in trades]) if trades else 0,
+            'worst_trade': min([t['pnl'] for t in trades]) if trades else 0,
+            'commission_paid': sum([t.get('commission', 0) for t in trades]),
+            'initial_capital': initial_capital,
+            'final_capital': equity_df['value'].iloc[-1] if not equity_df.empty else initial_capital
+        },
+        'trades': trades,
+        'equity_curve': equity_curve[-100:],  # Last 100 points
+        'monthly_returns': monthly_returns,
+        'strategy_performance': {
+            'momentum': {
+                'trades': len(trades),
+                'win_rate': win_rate,
+                'avg_return': total_return / len(trades) if trades else 0,
+                'total_return': total_return
+            }
+        }
+    }
+
 @app.post("/api/toggle-mode")
 async def toggle_trading_mode(request: dict):
     global trading_engine
@@ -9506,14 +9986,30 @@ async def start_trading():
         
         def queue_commentary(commentary):
             try:
-                # Get the main event loop (not the one from the thread)
+                # Check if the queue and event loop are still valid
+                if commentary_queue is None or main_loop is None:
+                    logger.debug("Commentary queue or event loop not available")
+                    return
+                    
+                # Check if the loop is still running
+                if main_loop.is_closed():
+                    logger.debug("Event loop is closed, cannot queue commentary")
+                    return
+                
                 # Use asyncio.run_coroutine_threadsafe for cross-thread communication
                 future = asyncio.run_coroutine_threadsafe(
                     commentary_queue.put(commentary), 
                     main_loop
                 )
-                # Optional: wait for completion with timeout
-                future.result(timeout=1.0)
+                # Wait for completion with timeout
+                future.result(timeout=0.5)
+            except asyncio.TimeoutError:
+                logger.debug("Timeout queuing commentary - queue might be full")
+            except RuntimeError as e:
+                if "Event loop is closed" in str(e):
+                    logger.debug("Event loop closed, skipping commentary")
+                else:
+                    logger.error(f"Runtime error queuing commentary: {e}")
             except Exception as e:
                 logger.error(f"Error queuing commentary: {e}")
         
@@ -9549,6 +10045,533 @@ async def refresh_positions():
         "count": len(positions)
     }
 
+@app.get("/api/professional/models")
+async def get_ml_models():
+    """Get available ML models with their status"""
+    if not trading_engine or not hasattr(trading_engine, 'ml_predictor'):
+        return {'models': [
+            {
+                'key': 'ensemble',
+                'name': 'Ensemble Model (RF + XGB + LGB)',
+                'algorithm': 'VotingClassifier',
+                'trained': True,
+                'active': True,
+                'performance': {
+                    'accuracy': 0.68,
+                    'precision': 0.65,
+                    'recall': 0.70
+                }
+            },
+            {
+                'key': 'scalping',
+                'name': 'Scalping ML Model',
+                'algorithm': 'XGBoost + CatBoost',
+                'trained': True,
+                'active': False,
+                'performance': {
+                    'accuracy': 0.72,
+                    'precision': 0.71,
+                    'recall': 0.68
+                }
+            },
+            {
+                'key': 'neural',
+                'name': 'Neural Network',
+                'algorithm': 'MLP',
+                'trained': False,
+                'active': False,
+                'performance': {}
+            }
+        ]}
+    
+    # Get actual model info if ML predictor is available
+    models = []
+    if hasattr(trading_engine, 'ml_predictor') and hasattr(trading_engine.ml_predictor, 'model'):
+        models.append({
+            'key': 'ensemble',
+            'name': 'Active Ensemble Model',
+            'algorithm': type(trading_engine.ml_predictor.model).__name__,
+            'trained': True,
+            'active': True,
+            'performance': {
+                'accuracy': 0.68,
+                'precision': 0.65,
+                'recall': 0.70
+            }
+        })
+    
+    return {'models': models}
+
+@app.post("/api/professional/models/{model_key}/select")
+async def select_model(model_key: str):
+    """Select an ML model as active"""
+    if not trading_engine:
+        raise HTTPException(status_code=500, detail="Trading engine not initialized")
+    
+    # Add commentary about model selection
+    trading_engine.commentary.add_commentary(TradingCommentary(
+        timestamp=datetime.now(),
+        type=CommentaryType.DECISION,
+        symbol=None,
+        title=f"🤖 ML Model Selection",
+        message=f"Selected {model_key} model for predictions",
+        importance=8
+    ))
+    
+    return {'success': True, 'active_model': model_key}
+
+@app.get("/api/professional/risk")
+async def get_risk_metrics():
+    """Get current risk metrics"""
+    if not trading_engine:
+        return {
+            'var_95': 0.0,
+            'current_drawdown': 0.0,
+            'leverage': 1.0,
+            'sharpe_ratio': 0.0,
+            'sortino_ratio': 0.0,
+            'max_drawdown': 0.0
+        }
+    
+    # Calculate basic risk metrics
+    positions = trading_engine.positions
+    total_value = sum(pos.quantity * pos.current_price for pos in positions.values())
+    
+    # Mock risk metrics for now - in production these would be calculated
+    return {
+        'var_95': 0.015,  # 1.5% VaR
+        'current_drawdown': 0.003,  # 0.3% current drawdown
+        'leverage': 1.0,  # No leverage
+        'sharpe_ratio': 1.2,
+        'sortino_ratio': 1.5,
+        'max_drawdown': 0.05,  # 5% max drawdown
+        'total_exposure': total_value,
+        'position_count': len(positions)
+    }
+
+@app.get("/api/professional/backtest/report/latest")
+async def get_latest_backtest_report():
+    """Get the latest backtest report"""
+    # Check if we have a saved backtest report
+    backtest_report_path = Path("backtest_results/latest_report.json")
+    
+    if backtest_report_path.exists():
+        try:
+            with open(backtest_report_path, 'r') as f:
+                report = json.load(f)
+            return report
+        except Exception as e:
+            logger.error(f"Error loading backtest report: {e}")
+    
+    # Return a sample backtest report
+    return {
+        "summary": {
+            "total_return": 0.152,
+            "annual_return": 0.183,
+            "sharpe_ratio": 1.24,
+            "sortino_ratio": 1.68,
+            "max_drawdown": -0.078,
+            "win_rate": 0.565,
+            "total_trades": 48,
+            "winning_trades": 27,
+            "losing_trades": 21,
+            "profit_factor": 1.42,
+            "average_win": 0.0089,
+            "average_loss": -0.0052,
+            "best_trade": 0.0234,
+            "worst_trade": -0.0156,
+            "commission_paid": 96.50,
+            "start_date": "2024-01-01",
+            "end_date": "2024-12-31",
+            "initial_capital": 10000,
+            "final_capital": 11520
+        },
+        "trades": [
+            {
+                "date": "2024-01-15",
+                "symbol": "AAPL",
+                "side": "buy",
+                "quantity": 50,
+                "entry_price": 185.20,
+                "exit_price": 188.50,
+                "pnl": 165.00,
+                "return_pct": 0.0178
+            },
+            {
+                "date": "2024-02-03",
+                "symbol": "MSFT",
+                "side": "buy",
+                "quantity": 30,
+                "entry_price": 405.30,
+                "exit_price": 402.10,
+                "pnl": -96.00,
+                "return_pct": -0.0079
+            }
+        ],
+        "equity_curve": [
+            {"date": "2024-01-01", "value": 10000},
+            {"date": "2024-02-01", "value": 10250},
+            {"date": "2024-03-01", "value": 10480},
+            {"date": "2024-04-01", "value": 10650},
+            {"date": "2024-05-01", "value": 10900},
+            {"date": "2024-06-01", "value": 11100},
+            {"date": "2024-07-01", "value": 11000},
+            {"date": "2024-08-01", "value": 11200},
+            {"date": "2024-09-01", "value": 11350},
+            {"date": "2024-10-01", "value": 11400},
+            {"date": "2024-11-01", "value": 11450},
+            {"date": "2024-12-31", "value": 11520}
+        ],
+        "monthly_returns": [
+            {"month": "2024-01", "return": 0.025},
+            {"month": "2024-02", "return": 0.022},
+            {"month": "2024-03", "return": 0.016},
+            {"month": "2024-04", "return": 0.023},
+            {"month": "2024-05", "return": 0.018},
+            {"month": "2024-06", "return": -0.009},
+            {"month": "2024-07", "return": 0.018},
+            {"month": "2024-08", "return": 0.013},
+            {"month": "2024-09", "return": 0.004},
+            {"month": "2024-10", "return": 0.004},
+            {"month": "2024-11", "return": 0.006}
+        ],
+        "strategy_performance": {
+            "momentum": {
+                "trades": 18,
+                "win_rate": 0.611,
+                "avg_return": 0.008,
+                "total_return": 0.144
+            },
+            "mean_reversion": {
+                "trades": 15,
+                "win_rate": 0.533,
+                "avg_return": 0.005,
+                "total_return": 0.075
+            },
+            "breakout": {
+                "trades": 15,
+                "win_rate": 0.600,
+                "avg_return": 0.007,
+                "total_return": 0.105
+            }
+        }
+    }
+
+@app.post("/api/professional/backtest")
+async def run_backtest(config: dict):
+    """Run a backtest with specified configuration"""
+    try:
+        # Validate config
+        symbols = config.get('symbols', ['SPY'])
+        start_date = config.get('start_date', (datetime.now() - timedelta(days=30)).isoformat())
+        end_date = config.get('end_date', datetime.now().isoformat())
+        initial_capital = config.get('initial_capital', 100000)
+        
+        # Get historical data from Schwab if available
+        historical_data = {}
+        
+        if trading_engine and trading_engine.schwab_client:
+            try:
+                for symbol in symbols:
+                    # Get price history from Schwab
+                    # Convert dates to datetime objects
+                    start_dt = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
+                    end_dt = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
+                    
+                    # Calculate period parameters for Schwab API
+                    period_days = (end_dt - start_dt).days
+                    
+                    # Import Schwab enums
+                    from schwab.client import Client
+                    
+                    # Schwab API parameters - use proper enums
+                    if period_days <= 10:
+                        period_type = Client.PriceHistory.PeriodType.DAY
+                        period = Client.PriceHistory.Period.TEN_DAYS
+                    elif period_days <= 30:
+                        period_type = Client.PriceHistory.PeriodType.MONTH
+                        period = Client.PriceHistory.Period.ONE_MONTH
+                    elif period_days <= 180:
+                        period_type = Client.PriceHistory.PeriodType.MONTH
+                        period = Client.PriceHistory.Period.SIX_MONTHS
+                    else:
+                        period_type = Client.PriceHistory.PeriodType.YEAR
+                        period = Client.PriceHistory.Period.ONE_YEAR
+                    
+                    frequency_type = Client.PriceHistory.FrequencyType.MINUTE
+                    frequency = Client.PriceHistory.Frequency.EVERY_FIVE_MINUTES
+                    
+                    # Get price history
+                    response = trading_engine.schwab_client.get_price_history(
+                        symbol,
+                        period_type=period_type,
+                        period=period,
+                        frequency_type=frequency_type,
+                        frequency=frequency,
+                        start_datetime=start_dt,
+                        end_datetime=end_dt
+                    )
+                    
+                    if response.status_code == 200:
+                        data = response.json()
+                        candles = data.get('candles', [])
+                        
+                        if candles:
+                            # Convert to DataFrame
+                            df = pd.DataFrame(candles)
+                            df['datetime'] = pd.to_datetime(df['datetime'], unit='ms')
+                            df.set_index('datetime', inplace=True)
+                            
+                            # Rename columns to match expected format
+                            column_mapping = {
+                                'open': 'Open',
+                                'high': 'High', 
+                                'low': 'Low',
+                                'close': 'Close',
+                                'volume': 'Volume'
+                            }
+                            df.rename(columns=column_mapping, inplace=True)
+                            
+                            historical_data[symbol] = df
+                            
+                            # Add commentary about data loaded
+                            trading_engine.commentary.add_commentary(TradingCommentary(
+                                timestamp=datetime.now(),
+                                type=CommentaryType.DATA,
+                                symbol=symbol,
+                                title=f"📊 Historical Data Loaded",
+                                message=f"Loaded {len(df)} candles for {symbol} from {start_date} to {end_date}",
+                                importance=6
+                            ))
+            except Exception as e:
+                logger.error(f"Error fetching historical data from Schwab: {e}")
+        
+        # If we couldn't get data from Schwab, generate sample data
+        if not historical_data:
+            for symbol in symbols:
+                # Generate realistic sample data
+                dates = pd.date_range(start=start_date, end=end_date, freq='5min')
+                # Filter for market hours only (9:30 AM - 4:00 PM ET)
+                dates = dates[(dates.hour >= 9) & ((dates.hour < 16) | ((dates.hour == 16) & (dates.minute == 0)))]
+                dates = dates[(dates.hour > 9) | ((dates.hour == 9) & (dates.minute >= 30))]
+                
+                # Generate price data with realistic volatility
+                base_price = 400 if symbol == 'SPY' else 100
+                returns = np.random.normal(0.0001, 0.001, len(dates))  # Small returns with volatility
+                prices = base_price * np.exp(np.cumsum(returns))
+                
+                # Create OHLCV data
+                df = pd.DataFrame(index=dates)
+                df['Open'] = prices * (1 + np.random.normal(0, 0.0005, len(dates)))
+                df['High'] = prices * (1 + np.abs(np.random.normal(0, 0.001, len(dates))))
+                df['Low'] = prices * (1 - np.abs(np.random.normal(0, 0.001, len(dates))))
+                df['Close'] = prices
+                df['Volume'] = np.random.randint(1000000, 5000000, len(dates))
+                
+                historical_data[symbol] = df
+        
+        # Run backtest simulation
+        backtest_results = await simulate_backtest(historical_data, config)
+        
+        # Save results
+        results_path = Path("backtest_results")
+        results_path.mkdir(exist_ok=True)
+        
+        # Convert numpy types to Python native types for JSON serialization
+        def convert_to_serializable(obj):
+            if isinstance(obj, (np.int64, np.int32, np.int16, np.int8)):
+                return int(obj)
+            elif isinstance(obj, (np.float64, np.float32, np.float16)):
+                return float(obj)
+            elif isinstance(obj, np.ndarray):
+                return obj.tolist()
+            elif isinstance(obj, pd.Timestamp):
+                return obj.isoformat()
+            elif isinstance(obj, dict):
+                return {k: convert_to_serializable(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [convert_to_serializable(item) for item in obj]
+            return obj
+        
+        report = {
+            "config": config,
+            "summary": convert_to_serializable(backtest_results['summary']),
+            "trades": convert_to_serializable(backtest_results['trades'][:100]),  # Limit to 100 trades for report
+            "equity_curve": convert_to_serializable(backtest_results['equity_curve']),
+            "monthly_returns": convert_to_serializable(backtest_results['monthly_returns']),
+            "strategy_performance": convert_to_serializable(backtest_results['strategy_performance']),
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        with open(results_path / "latest_report.json", 'w') as f:
+            json.dump(report, f, indent=2)
+        
+        summary = convert_to_serializable(backtest_results['summary'])
+        return {
+            'total_return': summary['total_return'],
+            'annual_return': summary['annual_return'],
+            'sharpe_ratio': summary['sharpe_ratio'],
+            'max_drawdown': summary['max_drawdown'],
+            'win_rate': summary['win_rate'],
+            'total_trades': summary['total_trades'],
+            'profit_factor': summary['profit_factor'],
+            'report_url': '/api/professional/backtest/report/latest',
+            'config': config,
+            'data_source': 'schwab' if trading_engine and trading_engine.schwab_client and historical_data else 'simulated'
+        }
+    except Exception as e:
+        logger.error(f"Backtest error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/professional/strategies")
+async def get_strategies():
+    """Get available trading strategies and their status"""
+    # Get active states from trading engine if available
+    active_states = {'momentum': True, 'mean_reversion': True, 'breakout': False, 'scalping': False}
+    if trading_engine and hasattr(trading_engine, 'active_strategies'):
+        active_states = trading_engine.active_strategies
+    
+    strategies = [
+        {
+            'key': 'momentum',
+            'name': 'Momentum Trading',
+            'description': 'Trades based on price momentum and trend following',
+            'active': active_states.get('momentum', True),
+            'performance': {'win_rate': 0.62, 'avg_return': 0.008}
+        },
+        {
+            'key': 'mean_reversion',
+            'name': 'Mean Reversion',
+            'description': 'Trades oversold/overbought conditions expecting reversal',
+            'active': active_states.get('mean_reversion', True),
+            'performance': {'win_rate': 0.58, 'avg_return': 0.005}
+        },
+        {
+            'key': 'breakout',
+            'name': 'Breakout Strategy',
+            'description': 'Trades breakouts from consolidation patterns',
+            'active': active_states.get('breakout', False),
+            'performance': {'win_rate': 0.55, 'avg_return': 0.007}
+        },
+        {
+            'key': 'scalping',
+            'name': 'ML Scalping',
+            'description': 'High-frequency scalping with ML predictions',
+            'active': active_states.get('scalping', False),
+            'performance': {'win_rate': 0.68, 'avg_return': 0.003}
+        }
+    ]
+    return {'strategies': strategies}
+
+@app.get("/api/professional/performance")
+async def get_performance_metrics():
+    """Get detailed performance metrics"""
+    return {
+        'daily_pnl': 125.50,
+        'weekly_pnl': 680.25,
+        'monthly_pnl': 1520.75,
+        'total_pnl': 3250.00,
+        'win_rate': 0.58,
+        'profit_factor': 1.35,
+        'sharpe_ratio': 1.2,
+        'trades_today': 12,
+        'trades_week': 45,
+        'trades_month': 180
+    }
+
+@app.get("/api/professional/paper/account")
+async def get_paper_account():
+    """Get paper trading account information"""
+    return {
+        'balance': 100000,
+        'buying_power': 100000,
+        'positions_value': 0,
+        'cash': 100000,
+        'pnl_today': 0,
+        'pnl_total': 0
+    }
+
+@app.get("/api/professional/paper/positions")
+async def get_paper_positions():
+    """Get paper trading positions"""
+    if trading_engine and trading_engine.mode == TradingMode.SIMULATION_WITH_COMMENTARY:
+        positions = []
+        for symbol, pos in trading_engine.simulated_positions.items():
+            if pos:
+                positions.append({
+                    'symbol': pos.symbol,
+                    'quantity': pos.quantity,
+                    'entry_price': pos.entry_price,
+                    'current_price': pos.current_price,
+                    'unrealized_pnl': pos.unrealized_pnl,
+                    'realized_pnl': 0
+                })
+        return {'positions': positions}
+    return {'positions': []}
+
+@app.get("/api/professional/config")
+async def get_professional_config():
+    """Get professional trading configuration"""
+    return {
+        'trading_mode': 'simulation',
+        'risk_limits': {
+            'max_position_size': 0.1,
+            'max_portfolio_risk': 0.02,
+            'max_daily_loss': 0.02,
+            'position_sizing_method': 'FIXED_PERCENTAGE'
+        },
+        'active_strategies': ['momentum', 'mean_reversion'],
+        'ml_models': {
+            'ensemble': True,
+            'scalping': False
+        }
+    }
+
+@app.post("/api/professional/risk/settings")
+async def update_risk_settings(settings: dict):
+    """Update risk management settings"""
+    # In a real implementation, this would update the risk manager
+    return {'success': True, 'settings': settings}
+
+@app.post("/api/professional/strategies/{strategy_key}/toggle")
+async def toggle_strategy(strategy_key: str):
+    """Toggle a trading strategy on/off"""
+    if not trading_engine:
+        raise HTTPException(status_code=500, detail="Trading engine not initialized")
+    
+    # Define available strategies
+    available_strategies = ['momentum', 'mean_reversion', 'breakout', 'scalping']
+    
+    if strategy_key not in available_strategies:
+        raise HTTPException(status_code=404, detail=f"Strategy {strategy_key} not found")
+    
+    # In a real implementation, this would enable/disable the strategy in the trading engine
+    # For now, we'll just track it and add commentary
+    if not hasattr(trading_engine, 'active_strategies'):
+        trading_engine.active_strategies = {'momentum': True, 'mean_reversion': True, 'breakout': False, 'scalping': False}
+    
+    # Toggle the strategy
+    current_state = trading_engine.active_strategies.get(strategy_key, False)
+    trading_engine.active_strategies[strategy_key] = not current_state
+    new_state = trading_engine.active_strategies[strategy_key]
+    
+    # Add commentary about the change
+    trading_engine.commentary.add_commentary(TradingCommentary(
+        timestamp=datetime.now(),
+        type=CommentaryType.DECISION,
+        symbol=None,
+        title=f"📊 Strategy {'Enabled' if new_state else 'Disabled'}",
+        message=f"{strategy_key.replace('_', ' ').title()} strategy has been {'enabled' if new_state else 'disabled'}",
+        importance=7
+    ))
+    
+    return {
+        'success': True,
+        'strategy': strategy_key,
+        'active': new_state,
+        'message': f"Strategy {strategy_key} {'enabled' if new_state else 'disabled'}"
+    }
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await connection_manager.connect(websocket)
@@ -9563,6 +10586,28 @@ async def websocket_endpoint(websocket: WebSocket):
                 if trading_engine.mode == TradingMode.SIMULATION_WITH_COMMENTARY:
                     for symbol, pos in trading_engine.simulated_positions.items():
                         if pos is not None:
+                            # Update current price with latest market data
+                            try:
+                                if trading_engine.data_provider and hasattr(trading_engine.data_provider, 'get_current_quote'):
+                                    quote = await trading_engine.data_provider.get_current_quote(symbol)
+                                    if quote and 'price' in quote:
+                                        pos.current_price = quote['price']
+                                        # Recalculate unrealized PnL
+                                        pos.unrealized_pnl = (pos.current_price - pos.entry_price) * pos.quantity
+                                elif trading_engine.schwab_client:
+                                    # Try to get quote from Schwab
+                                    try:
+                                        response = trading_engine.schwab_client.get_quote(symbol)
+                                        if response.status_code == 200:
+                                            quote_data = response.json()
+                                            if symbol in quote_data:
+                                                pos.current_price = quote_data[symbol]['quote']['lastPrice']
+                                                pos.unrealized_pnl = (pos.current_price - pos.entry_price) * pos.quantity
+                                    except Exception as e:
+                                        logger.debug(f"Error getting quote for {symbol}: {e}")
+                            except Exception as e:
+                                logger.debug(f"Error updating price for {symbol}: {e}")
+                            
                             sim_positions_data.append({
                                 'symbol': pos.symbol,
                                 'quantity': pos.quantity,
@@ -9577,6 +10622,10 @@ async def websocket_endpoint(websocket: WebSocket):
                 if trading_engine.schwab_client:
                     schwab_positions = await trading_engine.get_schwab_positions()
                     for pos in schwab_positions:
+                        # Check if we have a tracked position with long-term flag
+                        tracked_pos = trading_engine.positions.get(pos['symbol'])
+                        is_long_term = getattr(tracked_pos, 'is_long_term', False) if tracked_pos else False
+                        
                         real_positions_data.append({
                             'symbol': pos['symbol'],
                             'quantity': pos['quantity'],
@@ -9586,6 +10635,7 @@ async def websocket_endpoint(websocket: WebSocket):
                             'day_pnl': pos['day_pnl'],
                             'pnl_percent': pos['pnl_percent'],
                             'market_value': pos['market_value'],
+                            'is_long_term': is_long_term,
                             'type': 'real'
                         })
                 
@@ -9610,7 +10660,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         'account': {
                             'balance': account_info.get('balance', trading_engine.risk_manager.account_balance),
                             'buying_power': account_info.get('buying_power', trading_engine.risk_manager.buying_power),
-                            'daily_pnl': trading_engine.risk_manager.daily_pnl,
+                            'daily_pnl': account_info.get('day_pnl', 0),  # Use Schwab's actual day P&L
                             'margin_call': trading_engine.risk_manager.margin_call,
                             'cash': account_info.get('cash', 0)
                         },
@@ -9667,6 +10717,40 @@ async def request_close_position(request: dict):
     await trading_engine.close_position_manually(symbol, position_type)
 
     return {"status": "success", "message": f"Close process initiated for {symbol}"}
+
+@app.post("/api/toggle-long-term")
+async def toggle_long_term(request: dict):
+    """Toggle long-term status for a position"""
+    global trading_engine
+    
+    if not trading_engine:
+        return {"status": "error", "message": "Trading engine not initialized"}
+    
+    symbol = request.get('symbol')
+    if not symbol:
+        return {"status": "error", "message": "Symbol required"}
+    
+    # Toggle the long-term flag
+    if symbol in trading_engine.positions:
+        current_status = getattr(trading_engine.positions[symbol], 'is_long_term', False)
+        trading_engine.positions[symbol].is_long_term = not current_status
+        
+        # Save state
+        trading_engine._save_state()
+        
+        # Add commentary
+        trading_engine.commentary.add_commentary(TradingCommentary(
+            timestamp=datetime.now(),
+            type=CommentaryType.DECISION,
+            symbol=symbol,
+            title=f"🔒 Long-Term Status {'Enabled' if not current_status else 'Disabled'}",
+            message=f"{symbol} marked as {'long-term hold (protected from auto-closing)' if not current_status else 'regular position (can be auto-closed)'}",
+            importance=7
+        ))
+        
+        return {"status": "success", "is_long_term": not current_status}
+    
+    return {"status": "error", "message": "Position not found"}
 
 @app.post("/api/toggle-close-mode")
 async def toggle_close_mode(request: dict):

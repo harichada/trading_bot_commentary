@@ -1,0 +1,2088 @@
+[
+  {
+    "timestamp": "2025-07-26T15:38:37.810310",
+    "type": "technical",
+    "symbol": null,
+    "title": "\ud83d\udd0c Connecting to Schwab API",
+    "message": "Attempting to establish connection with broker...",
+    "data": null,
+    "confidence": null,
+    "importance": 7
+  },
+  {
+    "timestamp": "2025-07-26T15:38:44.589019",
+    "type": "technical",
+    "symbol": null,
+    "title": "\ud83d\udd0c Connecting to Schwab API",
+    "message": "Attempting to establish connection with broker...",
+    "data": null,
+    "confidence": null,
+    "importance": 7
+  },
+  {
+    "timestamp": "2025-07-26T15:45:22.431943",
+    "type": "market_analysis",
+    "symbol": null,
+    "title": "\ud83d\udd0d Assessing Market Conditions",
+    "message": "Let me check the overall market health before making any trading decisions...",
+    "data": null,
+    "confidence": null,
+    "importance": 7
+  },
+  {
+    "timestamp": "2025-07-26T15:45:27.655536",
+    "type": "market_analysis",
+    "symbol": "NVDA",
+    "title": "\ud83d\udd0e Analyzing NVDA",
+    "message": "Fetching price data and calculating technical indicators...",
+    "data": null,
+    "confidence": null,
+    "importance": 4
+  },
+  {
+    "timestamp": "2025-07-26T15:45:33.383206",
+    "type": "technical",
+    "symbol": "TSLA",
+    "title": "\ud83d\udcc8 Data Retrieved: TSLA",
+    "message": "Got 40000 price candles from Schwab",
+    "data": {
+      "candle_count": 40000,
+      "timeframe": "5minute"
+    },
+    "confidence": null,
+    "importance": 3
+  },
+  {
+    "timestamp": "2025-07-26T15:45:38.649102",
+    "type": "technical",
+    "symbol": "PLTR",
+    "title": "\ud83d\udcca Technical Analysis: PLTR",
+    "message": "\ud83d\udcc8 Price above 50 SMA - Uptrend\n\ud83d\udd25 RSI at 71.9 - Overbought\n\ud83d\udfe2 MACD above signal - Bullish momentum\n\ud83d\udcaa ADX at 29.7 - Strong trend",
+    "data": {
+      "price": 159.32,
+      "rsi": 71.88231570292385,
+      "sma_20": 159.12493999999998,
+      "sma_50": 159.042478,
+      "volume_ratio": 2.7127128376691467,
+      "atr": 0.06960959020545232,
+      "adx": 29.654595982882263
+    },
+    "confidence": null,
+    "importance": 5
+  },
+  {
+    "timestamp": "2025-07-26T15:45:44.000686",
+    "type": "market_analysis",
+    "symbol": "MARA",
+    "title": "\ud83d\udd0e Analyzing MARA",
+    "message": "Fetching price data and calculating technical indicators...",
+    "data": null,
+    "confidence": null,
+    "importance": 4
+  },
+  {
+    "timestamp": "2025-07-26T15:45:49.849419",
+    "type": "technical",
+    "symbol": "RIVN",
+    "title": "\ud83d\udcc8 Data Retrieved: RIVN",
+    "message": "Got 40000 price candles from Schwab",
+    "data": {
+      "candle_count": 40000,
+      "timeframe": "5minute"
+    },
+    "confidence": null,
+    "importance": 3
+  },
+  {
+    "timestamp": "2025-07-26T15:45:56.472667",
+    "type": "technical",
+    "symbol": "NVDA",
+    "title": "\ud83d\udcca Technical Analysis: NVDA",
+    "message": "\ud83d\udcc9 Price below 50 SMA - Downtrend\n\u2796 RSI at 47.7 - Neutral\n\ud83d\udd34 MACD below signal - Bearish momentum\n\ud83d\ude34 ADX at 12.8 - Weak trend",
+    "data": {
+      "price": 173.45,
+      "rsi": 47.672376983984556,
+      "sma_20": 173.465515,
+      "sma_50": 173.473146,
+      "volume_ratio": 2.9613995485327314,
+      "atr": 0.06427304577466511,
+      "adx": 12.84981278449012
+    },
+    "confidence": null,
+    "importance": 5
+  },
+  {
+    "timestamp": "2025-07-26T15:46:28.089244",
+    "type": "market_analysis",
+    "symbol": null,
+    "title": "\ud83d\udd0d Assessing Market Conditions",
+    "message": "Let me check the overall market health before making any trading decisions...",
+    "data": null,
+    "confidence": null,
+    "importance": 7
+  },
+  {
+    "timestamp": "2025-07-26T15:46:33.004055",
+    "type": "market_analysis",
+    "symbol": "TSLA",
+    "title": "\ud83d\udd0e Analyzing TSLA",
+    "message": "Fetching price data and calculating technical indicators...",
+    "data": null,
+    "confidence": null,
+    "importance": 4
+  },
+  {
+    "timestamp": "2025-07-26T15:46:38.060690",
+    "type": "technical",
+    "symbol": "PENN",
+    "title": "\ud83d\udcca Low Volume",
+    "message": "Volume too low for reliable entry",
+    "data": null,
+    "confidence": null,
+    "importance": 5
+  },
+  {
+    "timestamp": "2025-07-26T15:46:44.711363",
+    "type": "market_analysis",
+    "symbol": "RIOT",
+    "title": "\ud83d\udd0e Analyzing RIOT",
+    "message": "Fetching price data and calculating technical indicators...",
+    "data": null,
+    "confidence": null,
+    "importance": 4
+  },
+  {
+    "timestamp": "2025-07-26T15:46:50.934612",
+    "type": "technical",
+    "symbol": "PENN",
+    "title": "\ud83d\udcc8 Data Retrieved: PENN",
+    "message": "Got 15996 price candles from Schwab",
+    "data": {
+      "candle_count": 15996,
+      "timeframe": "5minute"
+    },
+    "confidence": null,
+    "importance": 3
+  },
+  {
+    "timestamp": "2025-07-26T15:47:21.978775",
+    "type": "market_analysis",
+    "symbol": null,
+    "title": "\ud83d\udd0d Assessing Market Conditions",
+    "message": "Let me check the overall market health before making any trading decisions...",
+    "data": null,
+    "confidence": null,
+    "importance": 7
+  },
+  {
+    "timestamp": "2025-07-26T15:47:27.482537",
+    "type": "market_analysis",
+    "symbol": "PLTR",
+    "title": "\ud83d\udd0e Analyzing PLTR",
+    "message": "Fetching price data and calculating technical indicators...",
+    "data": null,
+    "confidence": null,
+    "importance": 4
+  },
+  {
+    "timestamp": "2025-07-26T15:47:28.590701",
+    "type": "technical",
+    "symbol": "PENN",
+    "title": "\ud83d\udcca Technical Analysis: PENN",
+    "message": "\ud83d\udcc8 Price above 50 SMA - Uptrend\n\u2796 RSI at 68.8 - Neutral\n\ud83d\udfe2 MACD above signal - Bullish momentum\n\ud83d\udcaa ADX at 36.5 - Strong trend",
+    "data": {
+      "price": 19.25,
+      "rsi": 68.8429253210505,
+      "sma_20": 19.131999999999998,
+      "sma_50": 19.0122,
+      "volume_ratio": 0.031501230516817066,
+      "atr": 0.03760723585455731,
+      "adx": 36.477308200232024
+    },
+    "confidence": null,
+    "importance": 5
+  },
+  {
+    "timestamp": "2025-07-26T15:47:33.455284",
+    "type": "technical",
+    "symbol": "MARA",
+    "title": "\ud83d\udcc8 Data Retrieved: MARA",
+    "message": "Got 40000 price candles from Schwab",
+    "data": {
+      "candle_count": 40000,
+      "timeframe": "5minute"
+    },
+    "confidence": null,
+    "importance": 3
+  },
+  {
+    "timestamp": "2025-07-26T19:47:38.548242",
+    "type": "technical",
+    "symbol": "RIVN",
+    "title": "\ud83d\udcca Technical Analysis: RIVN",
+    "message": "\ud83d\udcc9 Price below 50 SMA - Downtrend\n\u2796 RSI at 47.6 - Neutral\n\ud83d\udfe2 MACD above signal - Bullish momentum\n\ud83d\ude34 ADX at 19.7 - Weak trend",
+    "data": {
+      "price": 14.0,
+      "rsi": 47.60665872975155,
+      "sma_20": 14.00321,
+      "sma_50": 14.006274000000001,
+      "volume_ratio": 1.068808187927739,
+      "atr": 0.012379028188796184,
+      "adx": 19.653153761418338
+    },
+    "confidence": null,
+    "importance": 5
+  },
+  {
+    "timestamp": "2025-07-26T15:47:48.301465",
+    "type": "technical",
+    "symbol": "PENN",
+    "title": "\ud83d\udcca Technical Analysis: PENN",
+    "message": "\ud83d\udcc8 Price above 50 SMA - Uptrend\n\u2796 RSI at 68.8 - Neutral\n\ud83d\udfe2 MACD above signal - Bullish momentum\n\ud83d\udcaa ADX at 36.5 - Strong trend",
+    "data": {
+      "price": 19.25,
+      "rsi": 68.8429253210505,
+      "sma_20": 19.131999999999998,
+      "sma_50": 19.0122,
+      "volume_ratio": 0.031501230516817066,
+      "atr": 0.03760723585455731,
+      "adx": 36.477308200232024
+    },
+    "confidence": null,
+    "importance": 5
+  },
+  {
+    "timestamp": "2025-07-26T15:48:28.394603",
+    "type": "market_analysis",
+    "symbol": "PLTR",
+    "title": "\ud83d\udd0e Analyzing PLTR",
+    "message": "Fetching price data and calculating technical indicators...",
+    "data": null,
+    "confidence": null,
+    "importance": 4
+  },
+  {
+    "timestamp": "2025-07-26T15:48:38.487952",
+    "type": "market_analysis",
+    "symbol": "RIVN",
+    "title": "\ud83d\udd0e Analyzing RIVN",
+    "message": "Fetching price data and calculating technical indicators...",
+    "data": null,
+    "confidence": null,
+    "importance": 4
+  },
+  {
+    "timestamp": "2025-07-26T15:49:23.703931",
+    "type": "market_analysis",
+    "symbol": "TSLA",
+    "title": "\ud83d\udd0e Analyzing TSLA",
+    "message": "Fetching price data and calculating technical indicators...",
+    "data": null,
+    "confidence": null,
+    "importance": 4
+  },
+  {
+    "timestamp": "2025-07-26T15:49:28.413056",
+    "type": "market_analysis",
+    "symbol": "PENN",
+    "title": "\ud83d\udd0e Analyzing PENN",
+    "message": "Fetching price data and calculating technical indicators...",
+    "data": null,
+    "confidence": null,
+    "importance": 4
+  },
+  {
+    "timestamp": "2025-07-26T19:49:33.642343",
+    "type": "technical",
+    "symbol": "MARA",
+    "title": "\ud83d\udcca Technical Analysis: MARA",
+    "message": "\ud83d\udcc9 Price below 50 SMA - Downtrend\n\u2796 RSI at 44.8 - Neutral\n\ud83d\udd34 MACD below signal - Bearish momentum\n\ud83d\ude34 ADX at 17.2 - Weak trend",
+    "data": {
+      "price": 17.26,
+      "rsi": 44.82620796596739,
+      "sma_20": 17.285085000000002,
+      "sma_50": 17.26171,
+      "volume_ratio": 2.5497965644354266,
+      "atr": 0.02022953883111765,
+      "adx": 17.224891871487014
+    },
+    "confidence": null,
+    "importance": 5
+  },
+  {
+    "timestamp": "2025-07-26T15:50:28.506059",
+    "type": "technical",
+    "symbol": "RIVN",
+    "title": "\ud83d\udcc8 Data Retrieved: RIVN",
+    "message": "Got 40000 price candles from Schwab",
+    "data": {
+      "candle_count": 40000,
+      "timeframe": "5minute"
+    },
+    "confidence": null,
+    "importance": 3
+  },
+  {
+    "timestamp": "2025-07-26T15:51:23.633339",
+    "type": "market_analysis",
+    "symbol": "MARA",
+    "title": "\ud83d\udd0e Analyzing MARA",
+    "message": "Fetching price data and calculating technical indicators...",
+    "data": null,
+    "confidence": null,
+    "importance": 4
+  },
+  {
+    "timestamp": "2025-07-26T15:51:28.918308",
+    "type": "technical",
+    "symbol": "RIVN",
+    "title": "\ud83d\udcca Technical Analysis: RIVN",
+    "message": "\ud83d\udcc9 Price below 50 SMA - Downtrend\n\u2796 RSI at 47.6 - Neutral\n\ud83d\udfe2 MACD above signal - Bullish momentum\n\ud83d\ude34 ADX at 19.7 - Weak trend",
+    "data": {
+      "price": 14.0,
+      "rsi": 47.60665872975155,
+      "sma_20": 14.00321,
+      "sma_50": 14.006274000000001,
+      "volume_ratio": 1.068808187927739,
+      "atr": 0.012379028188796184,
+      "adx": 19.653153761418338
+    },
+    "confidence": null,
+    "importance": 5
+  },
+  {
+    "timestamp": "2025-07-26T19:52:08.925738",
+    "type": "technical",
+    "symbol": "NVDA",
+    "title": "\ud83d\udcca Technical Analysis: NVDA",
+    "message": "\ud83d\udcc9 Price below 50 SMA - Downtrend\n\u2796 RSI at 47.7 - Neutral\n\ud83d\udd34 MACD below signal - Bearish momentum\n\ud83d\ude34 ADX at 12.8 - Weak trend",
+    "data": {
+      "price": 173.45,
+      "rsi": 47.672376983984556,
+      "sma_20": 173.465515,
+      "sma_50": 173.473146,
+      "volume_ratio": 2.9613995485327314,
+      "atr": 0.06427304577466511,
+      "adx": 12.84981278449012
+    },
+    "confidence": null,
+    "importance": 5
+  },
+  {
+    "timestamp": "2025-07-26T15:52:19.048293",
+    "type": "technical",
+    "symbol": "MARA",
+    "title": "\ud83d\udcca Technical Analysis: MARA",
+    "message": "\ud83d\udcc9 Price below 50 SMA - Downtrend\n\u2796 RSI at 44.8 - Neutral\n\ud83d\udd34 MACD below signal - Bearish momentum\n\ud83d\ude34 ADX at 17.2 - Weak trend",
+    "data": {
+      "price": 17.26,
+      "rsi": 44.82620796596739,
+      "sma_20": 17.285085000000002,
+      "sma_50": 17.26171,
+      "volume_ratio": 2.5497965644354266,
+      "atr": 0.02022953883111765,
+      "adx": 17.224891871487014
+    },
+    "confidence": null,
+    "importance": 5
+  },
+  {
+    "timestamp": "2025-07-26T15:53:59.045783",
+    "type": "technical",
+    "symbol": "NVDA",
+    "title": "\ud83d\udcca Technical Analysis: NVDA",
+    "message": "\ud83d\udcc9 Price below 50 SMA - Downtrend\n\u2796 RSI at 47.7 - Neutral\n\ud83d\udd34 MACD below signal - Bearish momentum\n\ud83d\ude34 ADX at 12.8 - Weak trend",
+    "data": {
+      "price": 173.45,
+      "rsi": 47.672376983984556,
+      "sma_20": 173.465515,
+      "sma_50": 173.473146,
+      "volume_ratio": 2.9613995485327314,
+      "atr": 0.06427304577466511,
+      "adx": 12.84981278449012
+    },
+    "confidence": null,
+    "importance": 5
+  },
+  {
+    "timestamp": "2025-07-26T15:54:04.054773",
+    "type": "technical",
+    "symbol": "PLTR",
+    "title": "\ud83d\udcca Technical Analysis: PLTR",
+    "message": "\ud83d\udcc8 Price above 50 SMA - Uptrend\n\ud83d\udd25 RSI at 71.9 - Overbought\n\ud83d\udfe2 MACD above signal - Bullish momentum\n\ud83d\udcaa ADX at 29.7 - Strong trend",
+    "data": {
+      "price": 159.32,
+      "rsi": 71.88231570292385,
+      "sma_20": 159.12493999999998,
+      "sma_50": 159.042478,
+      "volume_ratio": 2.7127128376691467,
+      "atr": 0.06960959020545232,
+      "adx": 29.654595982882263
+    },
+    "confidence": null,
+    "importance": 5
+  },
+  {
+    "timestamp": "2025-07-26T15:55:44.144564",
+    "type": "technical",
+    "symbol": "TSLA",
+    "title": "\ud83d\udcca Technical Analysis: TSLA",
+    "message": "\ud83d\udcc8 Price above 50 SMA - Uptrend\n\u2796 RSI at 67.6 - Neutral\n\ud83d\udfe2 MACD above signal - Bullish momentum\n\ud83d\udcca Price above upper Bollinger Band - Overbought\n\ud83d\ude34 ADX at 21.1 - Weak trend",
+    "data": {
+      "price": 317.7,
+      "rsi": 67.64966499926754,
+      "sma_20": 317.24942,
+      "sma_50": 316.994084,
+      "volume_ratio": 3.7510657632970417,
+      "atr": 0.23333340350965545,
+      "adx": 21.135093199546372
+    },
+    "confidence": null,
+    "importance": 5
+  },
+  {
+    "timestamp": "2025-07-26T15:55:49.097627",
+    "type": "market_analysis",
+    "symbol": "MARA",
+    "title": "\ud83d\udd0e Analyzing MARA",
+    "message": "Fetching price data and calculating technical indicators...",
+    "data": null,
+    "confidence": null,
+    "importance": 4
+  },
+  {
+    "timestamp": "2025-07-26T19:56:54.301472",
+    "type": "technical",
+    "symbol": "TSLA",
+    "title": "\ud83d\udcca Technical Analysis: TSLA",
+    "message": "\ud83d\udcc8 Price above 50 SMA - Uptrend\n\u2796 RSI at 67.6 - Neutral\n\ud83d\udfe2 MACD above signal - Bullish momentum\n\ud83d\udcca Price above upper Bollinger Band - Overbought\n\ud83d\ude34 ADX at 21.1 - Weak trend",
+    "data": {
+      "price": 317.7,
+      "rsi": 67.64966499926754,
+      "sma_20": 317.24942,
+      "sma_50": 316.994084,
+      "volume_ratio": 3.7510657632970417,
+      "atr": 0.23333340350965545,
+      "adx": 21.135093199546372
+    },
+    "confidence": null,
+    "importance": 5
+  },
+  {
+    "timestamp": "2025-07-26T15:57:34.213809",
+    "type": "market_analysis",
+    "symbol": "PENN",
+    "title": "\ud83d\udd0e Analyzing PENN",
+    "message": "Fetching price data and calculating technical indicators...",
+    "data": null,
+    "confidence": null,
+    "importance": 4
+  },
+  {
+    "timestamp": "2025-07-26T15:58:29.625361",
+    "type": "technical",
+    "symbol": "PENN",
+    "title": "\ud83d\udcca Technical Analysis: PENN",
+    "message": "\ud83d\udcc8 Price above 50 SMA - Uptrend\n\u2796 RSI at 68.8 - Neutral\n\ud83d\udfe2 MACD above signal - Bullish momentum\n\ud83d\udcaa ADX at 36.5 - Strong trend",
+    "data": {
+      "price": 19.25,
+      "rsi": 68.8429253210505,
+      "sma_20": 19.131999999999998,
+      "sma_50": 19.0122,
+      "volume_ratio": 0.031501230516817066,
+      "atr": 0.03760723585455731,
+      "adx": 36.477308200232024
+    },
+    "confidence": null,
+    "importance": 5
+  },
+  {
+    "timestamp": "2025-07-26T19:59:14.598149",
+    "type": "technical",
+    "symbol": "NVDA",
+    "title": "\ud83d\udcca Technical Analysis: NVDA",
+    "message": "\ud83d\udcc9 Price below 50 SMA - Downtrend\n\u2796 RSI at 47.7 - Neutral\n\ud83d\udd34 MACD below signal - Bearish momentum\n\ud83d\ude34 ADX at 12.8 - Weak trend",
+    "data": {
+      "price": 173.45,
+      "rsi": 47.672376983984556,
+      "sma_20": 173.465515,
+      "sma_50": 173.473146,
+      "volume_ratio": 2.9613995485327314,
+      "atr": 0.06427304577466511,
+      "adx": 12.84981278449012
+    },
+    "confidence": null,
+    "importance": 5
+  },
+  {
+    "timestamp": "2025-07-26T15:59:24.786332",
+    "type": "market_analysis",
+    "symbol": "MARA",
+    "title": "\ud83d\udd0e Analyzing MARA",
+    "message": "Fetching price data and calculating technical indicators...",
+    "data": null,
+    "confidence": null,
+    "importance": 4
+  },
+  {
+    "timestamp": "2025-07-26T16:00:09.528543",
+    "type": "market_analysis",
+    "symbol": "TSLA",
+    "title": "\ud83d\udd0e Analyzing TSLA",
+    "message": "Fetching price data and calculating technical indicators...",
+    "data": null,
+    "confidence": null,
+    "importance": 4
+  },
+  {
+    "timestamp": "2025-07-26T16:00:24.578368",
+    "type": "technical",
+    "symbol": "NVDA",
+    "title": "\ud83d\udcca Technical Analysis: NVDA",
+    "message": "\ud83d\udcc9 Price below 50 SMA - Downtrend\n\u2796 RSI at 47.7 - Neutral\n\ud83d\udd34 MACD below signal - Bearish momentum\n\ud83d\ude34 ADX at 12.8 - Weak trend",
+    "data": {
+      "price": 173.45,
+      "rsi": 47.672376983984556,
+      "sma_20": 173.465515,
+      "sma_50": 173.473146,
+      "volume_ratio": 2.9613995485327314,
+      "atr": 0.06427304577466511,
+      "adx": 12.84981278449012
+    },
+    "confidence": null,
+    "importance": 5
+  },
+  {
+    "timestamp": "2025-07-26T20:01:04.773147",
+    "type": "technical",
+    "symbol": "PENN",
+    "title": "\ud83d\udcca Technical Analysis: PENN",
+    "message": "\ud83d\udcc8 Price above 50 SMA - Uptrend\n\u2796 RSI at 68.8 - Neutral\n\ud83d\udfe2 MACD above signal - Bullish momentum\n\ud83d\udcaa ADX at 36.5 - Strong trend",
+    "data": {
+      "price": 19.25,
+      "rsi": 68.8429253210505,
+      "sma_20": 19.131999999999998,
+      "sma_50": 19.0122,
+      "volume_ratio": 0.031501230516817066,
+      "atr": 0.03760723585455731,
+      "adx": 36.477308200232024
+    },
+    "confidence": null,
+    "importance": 5
+  },
+  {
+    "timestamp": "2025-07-26T16:01:49.724931",
+    "type": "market_analysis",
+    "symbol": null,
+    "title": "\ud83d\udd0d Stock Screener Update",
+    "message": "Found 10 high-opportunity stocks",
+    "data": {
+      "top_gainer": "TSLA",
+      "avg_volatility": 3.667488383012157
+    },
+    "confidence": null,
+    "importance": 6
+  },
+  {
+    "timestamp": "2025-07-26T16:02:34.841512",
+    "type": "market_analysis",
+    "symbol": null,
+    "title": "\ud83d\udd0d Assessing Market Conditions",
+    "message": "Let me check the overall market health before making any trading decisions...",
+    "data": null,
+    "confidence": null,
+    "importance": 7
+  },
+  {
+    "timestamp": "2025-07-26T16:02:39.966059",
+    "type": "technical",
+    "symbol": "TSLA",
+    "title": "\ud83d\udcca Technical Analysis: TSLA",
+    "message": "\ud83d\udcc8 Price above 50 SMA - Uptrend\n\u2796 RSI at 67.6 - Neutral\n\ud83d\udfe2 MACD above signal - Bullish momentum\n\ud83d\udcca Price above upper Bollinger Band - Overbought\n\ud83d\ude34 ADX at 21.1 - Weak trend",
+    "data": {
+      "price": 317.7,
+      "rsi": 67.64966499926754,
+      "sma_20": 317.24942,
+      "sma_50": 316.994084,
+      "volume_ratio": 3.7510657632970417,
+      "atr": 0.23333340350965545,
+      "adx": 21.135093199546372
+    },
+    "confidence": null,
+    "importance": 5
+  },
+  {
+    "timestamp": "2025-07-26T16:03:29.784251",
+    "type": "market_analysis",
+    "symbol": null,
+    "title": "\ud83d\udcc8 Scanning Watchlist",
+    "message": "Analyzing 7 symbols for trading opportunities. Market trend: neutral\nSkipping  (already have positions)",
+    "data": null,
+    "confidence": null,
+    "importance": 6
+  },
+  {
+    "timestamp": "2025-07-26T16:04:24.970866",
+    "type": "technical",
+    "symbol": "NVDA",
+    "title": "\ud83d\udcc8 Data Retrieved: NVDA",
+    "message": "Got 40000 price candles from Schwab",
+    "data": {
+      "candle_count": 40000,
+      "timeframe": "5minute"
+    },
+    "confidence": null,
+    "importance": 3
+  },
+  {
+    "timestamp": "2025-07-26T16:07:05.520104",
+    "type": "technical",
+    "symbol": "PLTR",
+    "title": "\ud83d\udcca Technical Analysis: PLTR",
+    "message": "\ud83d\udcc8 Price above 50 SMA - Uptrend\n\ud83d\udd25 RSI at 71.9 - Overbought\n\ud83d\udfe2 MACD above signal - Bullish momentum\n\ud83d\udcaa ADX at 29.7 - Strong trend",
+    "data": {
+      "price": 159.32,
+      "rsi": 71.88231570292385,
+      "sma_20": 159.12493999999998,
+      "sma_50": 159.042478,
+      "volume_ratio": 2.7127128376691467,
+      "atr": 0.06960959020545232,
+      "adx": 29.654595982882263
+    },
+    "confidence": null,
+    "importance": 5
+  },
+  {
+    "timestamp": "2025-07-26T16:09:11.137110",
+    "type": "market_analysis",
+    "symbol": null,
+    "title": "\ud83d\udcca Market Breadth Analysis",
+    "message": "Low volatility - Markets are calm, good for trend following\nNeutral market breadth",
+    "data": {
+      "vix": 14.93,
+      "advance_decline_ratio": 0,
+      "new_highs": 0,
+      "new_lows": 0,
+      "put_call_ratio": 1.0
+    },
+    "confidence": 0.8,
+    "importance": 8
+  },
+  {
+    "timestamp": "2025-07-26T16:09:20.868211",
+    "type": "technical",
+    "symbol": "TSLA",
+    "title": "\ud83d\udcca Technical Analysis: TSLA",
+    "message": "\ud83d\udcc8 Price above 50 SMA - Uptrend\n\u2796 RSI at 67.6 - Neutral\n\ud83d\udfe2 MACD above signal - Bullish momentum\n\ud83d\udcca Price above upper Bollinger Band - Overbought\n\ud83d\ude34 ADX at 21.1 - Weak trend",
+    "data": {
+      "price": 317.7,
+      "rsi": 67.64966499926754,
+      "sma_20": 317.24942,
+      "sma_50": 316.994084,
+      "volume_ratio": 3.7510657632970417,
+      "atr": 0.23333340350965545,
+      "adx": 21.135093199546372
+    },
+    "confidence": null,
+    "importance": 5
+  },
+  {
+    "timestamp": "2025-07-26T16:10:15.691892",
+    "type": "technical",
+    "symbol": "RIOT",
+    "title": "\ud83d\udcca Technical Analysis: RIOT",
+    "message": "\ud83d\udcc9 Price below 50 SMA - Downtrend\n\u2796 RSI at 49.8 - Neutral\n\ud83d\udfe2 MACD above signal - Bullish momentum\n\ud83d\ude34 ADX at 16.3 - Weak trend",
+    "data": {
+      "price": 14.55,
+      "rsi": 49.759818646543884,
+      "sma_20": 14.546904999999999,
+      "sma_50": 14.563188,
+      "volume_ratio": 2.682178057844563,
+      "atr": 0.021048676625377738,
+      "adx": 16.290784408829555
+    },
+    "confidence": null,
+    "importance": 5
+  },
+  {
+    "timestamp": "2025-07-26T16:11:50.938841",
+    "type": "market_analysis",
+    "symbol": "MARA",
+    "title": "\ud83d\udd0e Analyzing MARA",
+    "message": "Fetching price data and calculating technical indicators...",
+    "data": null,
+    "confidence": null,
+    "importance": 4
+  },
+  {
+    "timestamp": "2025-07-26T16:12:40.804117",
+    "type": "market_analysis",
+    "symbol": "MARA",
+    "title": "\ud83d\udd0e Analyzing MARA",
+    "message": "Fetching price data and calculating technical indicators...",
+    "data": null,
+    "confidence": null,
+    "importance": 4
+  },
+  {
+    "timestamp": "2025-07-26T16:14:26.304754",
+    "type": "technical",
+    "symbol": "TSLA",
+    "title": "\ud83d\udcc8 Data Retrieved: TSLA",
+    "message": "Got 40000 price candles from Schwab",
+    "data": {
+      "candle_count": 40000,
+      "timeframe": "5minute"
+    },
+    "confidence": null,
+    "importance": 3
+  },
+  {
+    "timestamp": "2025-07-26T16:15:01.103964",
+    "type": "technical",
+    "symbol": "PLTR",
+    "title": "\ud83d\udcca Technical Analysis: PLTR",
+    "message": "\ud83d\udcc8 Price above 50 SMA - Uptrend\n\ud83d\udd25 RSI at 71.9 - Overbought\n\ud83d\udfe2 MACD above signal - Bullish momentum\n\ud83d\udcaa ADX at 29.7 - Strong trend",
+    "data": {
+      "price": 159.32,
+      "rsi": 71.88231570292385,
+      "sma_20": 159.12493999999998,
+      "sma_50": 159.042478,
+      "volume_ratio": 2.7127128376691467,
+      "atr": 0.06960959020545232,
+      "adx": 29.654595982882263
+    },
+    "confidence": null,
+    "importance": 5
+  },
+  {
+    "timestamp": "2025-07-26T16:16:01.188402",
+    "type": "technical",
+    "symbol": "PENN",
+    "title": "\ud83d\udcca Technical Analysis: PENN",
+    "message": "\ud83d\udcc8 Price above 50 SMA - Uptrend\n\u2796 RSI at 68.8 - Neutral\n\ud83d\udfe2 MACD above signal - Bullish momentum\n\ud83d\udcaa ADX at 36.5 - Strong trend",
+    "data": {
+      "price": 19.25,
+      "rsi": 68.8429253210505,
+      "sma_20": 19.131999999999998,
+      "sma_50": 19.0122,
+      "volume_ratio": 0.031501230516817066,
+      "atr": 0.03760723585455731,
+      "adx": 36.477308200232024
+    },
+    "confidence": null,
+    "importance": 5
+  },
+  {
+    "timestamp": "2025-07-26T20:16:46.339641",
+    "type": "technical",
+    "symbol": "TSLA",
+    "title": "\ud83d\udcca Technical Analysis: TSLA",
+    "message": "\ud83d\udcc8 Price above 50 SMA - Uptrend\n\u2796 RSI at 67.6 - Neutral\n\ud83d\udfe2 MACD above signal - Bullish momentum\n\ud83d\udcca Price above upper Bollinger Band - Overbought\n\ud83d\ude34 ADX at 21.1 - Weak trend",
+    "data": {
+      "price": 317.7,
+      "rsi": 67.64966499926754,
+      "sma_20": 317.24942,
+      "sma_50": 316.994084,
+      "volume_ratio": 3.7510657632970417,
+      "atr": 0.23333340350965545,
+      "adx": 21.135093199546372
+    },
+    "confidence": null,
+    "importance": 5
+  },
+  {
+    "timestamp": "2025-07-26T20:17:21.417392",
+    "type": "technical",
+    "symbol": "TSLA",
+    "title": "\ud83d\udcca Technical Analysis: TSLA",
+    "message": "\ud83d\udcc8 Price above 50 SMA - Uptrend\n\u2796 RSI at 67.6 - Neutral\n\ud83d\udfe2 MACD above signal - Bullish momentum\n\ud83d\udcca Price above upper Bollinger Band - Overbought\n\ud83d\ude34 ADX at 21.1 - Weak trend",
+    "data": {
+      "price": 317.7,
+      "rsi": 67.64966499926754,
+      "sma_20": 317.24942,
+      "sma_50": 316.994084,
+      "volume_ratio": 3.7510657632970417,
+      "atr": 0.23333340350965545,
+      "adx": 21.135093199546372
+    },
+    "confidence": null,
+    "importance": 5
+  },
+  {
+    "timestamp": "2025-07-26T16:19:51.432750",
+    "type": "market_analysis",
+    "symbol": "RIOT",
+    "title": "\ud83d\udd0e Analyzing RIOT",
+    "message": "Fetching price data and calculating technical indicators...",
+    "data": null,
+    "confidence": null,
+    "importance": 4
+  },
+  {
+    "timestamp": "2025-07-26T16:22:01.541063",
+    "type": "market_analysis",
+    "symbol": null,
+    "title": "\ud83d\udcca Market Breadth Calculated",
+    "message": "Market internals analyzed",
+    "data": {
+      "advance_decline": 0,
+      "new_highs": 0,
+      "new_lows": 0,
+      "vix": 14.93,
+      "put_call_ratio": 1.0
+    },
+    "confidence": null,
+    "importance": 4
+  },
+  {
+    "timestamp": "2025-07-26T16:22:06.741291",
+    "type": "market_analysis",
+    "symbol": "PLTR",
+    "title": "\ud83d\udd0e Analyzing PLTR",
+    "message": "Fetching price data and calculating technical indicators...",
+    "data": null,
+    "confidence": null,
+    "importance": 4
+  },
+  {
+    "timestamp": "2025-07-26T16:23:02.131978",
+    "type": "technical",
+    "symbol": "PLTR",
+    "title": "\ud83d\udcca Technical Analysis: PLTR",
+    "message": "\ud83d\udcc8 Price above 50 SMA - Uptrend\n\ud83d\udd25 RSI at 71.9 - Overbought\n\ud83d\udfe2 MACD above signal - Bullish momentum\n\ud83d\udcaa ADX at 29.7 - Strong trend",
+    "data": {
+      "price": 159.32,
+      "rsi": 71.88231570292385,
+      "sma_20": 159.12493999999998,
+      "sma_50": 159.042478,
+      "volume_ratio": 2.7127128376691467,
+      "atr": 0.06960959020545232,
+      "adx": 29.654595982882263
+    },
+    "confidence": null,
+    "importance": 5
+  },
+  {
+    "timestamp": "2025-07-26T16:24:37.084388",
+    "type": "technical",
+    "symbol": "PLTR",
+    "title": "\ud83d\udcca Technical Analysis: PLTR",
+    "message": "\ud83d\udcc8 Price above 50 SMA - Uptrend\n\ud83d\udd25 RSI at 71.9 - Overbought\n\ud83d\udfe2 MACD above signal - Bullish momentum\n\ud83d\udcaa ADX at 29.7 - Strong trend",
+    "data": {
+      "price": 159.32,
+      "rsi": 71.88231570292385,
+      "sma_20": 159.12493999999998,
+      "sma_50": 159.042478,
+      "volume_ratio": 2.7127128376691467,
+      "atr": 0.06960959020545232,
+      "adx": 29.654595982882263
+    },
+    "confidence": null,
+    "importance": 5
+  },
+  {
+    "timestamp": "2025-07-26T16:25:31.941309",
+    "type": "market_analysis",
+    "symbol": "MARA",
+    "title": "\ud83d\udd0e Analyzing MARA",
+    "message": "Fetching price data and calculating technical indicators...",
+    "data": null,
+    "confidence": null,
+    "importance": 4
+  },
+  {
+    "timestamp": "2025-07-26T16:27:12.413125",
+    "type": "technical",
+    "symbol": "RIOT",
+    "title": "\ud83d\udcca Technical Analysis: RIOT",
+    "message": "\ud83d\udcc9 Price below 50 SMA - Downtrend\n\u2796 RSI at 49.8 - Neutral\n\ud83d\udfe2 MACD above signal - Bullish momentum\n\ud83d\ude34 ADX at 16.3 - Weak trend",
+    "data": {
+      "price": 14.55,
+      "rsi": 49.759818646543884,
+      "sma_20": 14.546904999999999,
+      "sma_50": 14.563188,
+      "volume_ratio": 2.682178057844563,
+      "atr": 0.021048676625377738,
+      "adx": 16.290784408829555
+    },
+    "confidence": null,
+    "importance": 5
+  },
+  {
+    "timestamp": "2025-07-26T16:28:42.445854",
+    "type": "technical",
+    "symbol": "PLTR",
+    "title": "\ud83d\udcc8 Data Retrieved: PLTR",
+    "message": "Got 40000 price candles from Schwab",
+    "data": {
+      "candle_count": 40000,
+      "timeframe": "5minute"
+    },
+    "confidence": null,
+    "importance": 3
+  },
+  {
+    "timestamp": "2025-07-26T16:29:32.556652",
+    "type": "market_analysis",
+    "symbol": "MARA",
+    "title": "\ud83d\udd0e Analyzing MARA",
+    "message": "Fetching price data and calculating technical indicators...",
+    "data": null,
+    "confidence": null,
+    "importance": 4
+  },
+  {
+    "timestamp": "2025-07-26T16:31:12.480910",
+    "type": "market_analysis",
+    "symbol": "MARA",
+    "title": "\ud83d\udd0e Analyzing MARA",
+    "message": "Fetching price data and calculating technical indicators...",
+    "data": null,
+    "confidence": null,
+    "importance": 4
+  },
+  {
+    "timestamp": "2025-07-26T16:31:57.595451",
+    "type": "market_analysis",
+    "symbol": "NVDA",
+    "title": "\ud83d\udd0e Analyzing NVDA",
+    "message": "Fetching price data and calculating technical indicators...",
+    "data": null,
+    "confidence": null,
+    "importance": 4
+  },
+  {
+    "timestamp": "2025-07-26T20:34:22.954623",
+    "type": "market_analysis",
+    "symbol": "PENN",
+    "title": "\ud83d\udd0e Analyzing PENN",
+    "message": "Fetching price data and calculating technical indicators...",
+    "data": null,
+    "confidence": null,
+    "importance": 4
+  },
+  {
+    "timestamp": "2025-07-26T16:35:13.185257",
+    "type": "market_analysis",
+    "symbol": null,
+    "title": "\ud83d\udd0d Stock Screener Update",
+    "message": "Found 10 high-opportunity stocks",
+    "data": {
+      "top_gainer": "TSLA",
+      "avg_volatility": 3.667488383012157
+    },
+    "confidence": null,
+    "importance": 6
+  },
+  {
+    "timestamp": "2025-07-26T16:37:38.427683",
+    "type": "market_analysis",
+    "symbol": null,
+    "title": "\ud83d\udd0d Stock Screener Update",
+    "message": "Found 10 high-opportunity stocks",
+    "data": {
+      "top_gainer": "TSLA",
+      "avg_volatility": 3.667488383012157
+    },
+    "confidence": null,
+    "importance": 6
+  },
+  {
+    "timestamp": "2025-07-26T16:38:23.223380",
+    "type": "market_analysis",
+    "symbol": null,
+    "title": "\ud83d\udd0d Assessing Market Conditions",
+    "message": "Let me check the overall market health before making any trading decisions...",
+    "data": null,
+    "confidence": null,
+    "importance": 7
+  },
+  {
+    "timestamp": "2025-07-26T16:39:13.263264",
+    "type": "technical",
+    "symbol": "PLTR",
+    "title": "\ud83d\udcca Technical Analysis: PLTR",
+    "message": "\ud83d\udcc8 Price above 50 SMA - Uptrend\n\ud83d\udd25 RSI at 71.9 - Overbought\n\ud83d\udfe2 MACD above signal - Bullish momentum\n\ud83d\udcaa ADX at 29.7 - Strong trend",
+    "data": {
+      "price": 159.32,
+      "rsi": 71.88231570292385,
+      "sma_20": 159.12493999999998,
+      "sma_50": 159.042478,
+      "volume_ratio": 2.7127128376691467,
+      "atr": 0.06960959020545232,
+      "adx": 29.654595982882263
+    },
+    "confidence": null,
+    "importance": 5
+  },
+  {
+    "timestamp": "2025-07-26T16:40:53.648940",
+    "type": "technical",
+    "symbol": "NVDA",
+    "title": "\ud83d\udcca Technical Analysis: NVDA",
+    "message": "\ud83d\udcc9 Price below 50 SMA - Downtrend\n\u2796 RSI at 47.7 - Neutral\n\ud83d\udd34 MACD below signal - Bearish momentum\n\ud83d\ude34 ADX at 12.8 - Weak trend",
+    "data": {
+      "price": 173.45,
+      "rsi": 47.672376983984556,
+      "sma_20": 173.465515,
+      "sma_50": 173.473146,
+      "volume_ratio": 2.9613995485327314,
+      "atr": 0.06427304577466511,
+      "adx": 12.84981278449012
+    },
+    "confidence": null,
+    "importance": 5
+  },
+  {
+    "timestamp": "2025-07-26T16:42:38.519802",
+    "type": "technical",
+    "symbol": "PLTR",
+    "title": "\ud83d\udcca Technical Analysis: PLTR",
+    "message": "\ud83d\udcc8 Price above 50 SMA - Uptrend\n\ud83d\udd25 RSI at 71.9 - Overbought\n\ud83d\udfe2 MACD above signal - Bullish momentum\n\ud83d\udcaa ADX at 29.7 - Strong trend",
+    "data": {
+      "price": 159.32,
+      "rsi": 71.88231570292385,
+      "sma_20": 159.12493999999998,
+      "sma_50": 159.042478,
+      "volume_ratio": 2.7127128376691467,
+      "atr": 0.06960959020545232,
+      "adx": 29.654595982882263
+    },
+    "confidence": null,
+    "importance": 5
+  },
+  {
+    "timestamp": "2025-07-26T16:43:28.757209",
+    "type": "technical",
+    "symbol": "NVDA",
+    "title": "\ud83d\udcc8 Data Retrieved: NVDA",
+    "message": "Got 40000 price candles from Schwab",
+    "data": {
+      "candle_count": 40000,
+      "timeframe": "5minute"
+    },
+    "confidence": null,
+    "importance": 3
+  },
+  {
+    "timestamp": "2025-07-26T20:44:13.974073",
+    "type": "market_analysis",
+    "symbol": "NVDA",
+    "title": "\ud83d\udd0e Analyzing NVDA",
+    "message": "Fetching price data and calculating technical indicators...",
+    "data": null,
+    "confidence": null,
+    "importance": 4
+  },
+  {
+    "timestamp": "2025-07-26T16:45:09.152375",
+    "type": "technical",
+    "symbol": "PENN",
+    "title": "\ud83d\udcca Technical Analysis: PENN",
+    "message": "\ud83d\udcc8 Price above 50 SMA - Uptrend\n\u2796 RSI at 68.8 - Neutral\n\ud83d\udfe2 MACD above signal - Bullish momentum\n\ud83d\udcaa ADX at 36.5 - Strong trend",
+    "data": {
+      "price": 19.25,
+      "rsi": 68.8429253210505,
+      "sma_20": 19.131999999999998,
+      "sma_50": 19.0122,
+      "volume_ratio": 0.031501230516817066,
+      "atr": 0.03760723585455731,
+      "adx": 36.477308200232024
+    },
+    "confidence": null,
+    "importance": 5
+  },
+  {
+    "timestamp": "2025-07-26T16:46:34.113044",
+    "type": "market_analysis",
+    "symbol": null,
+    "title": "\ud83d\udd0d Assessing Market Conditions",
+    "message": "Let me check the overall market health before making any trading decisions...",
+    "data": null,
+    "confidence": null,
+    "importance": 7
+  },
+  {
+    "timestamp": "2025-07-26T16:46:39.194109",
+    "type": "technical",
+    "symbol": "TSLA",
+    "title": "\ud83d\udcca Technical Analysis: TSLA",
+    "message": "\ud83d\udcc8 Price above 50 SMA - Uptrend\n\u2796 RSI at 67.6 - Neutral\n\ud83d\udfe2 MACD above signal - Bullish momentum\n\ud83d\udcca Price above upper Bollinger Band - Overbought\n\ud83d\ude34 ADX at 21.1 - Weak trend",
+    "data": {
+      "price": 317.7,
+      "rsi": 67.64966499926754,
+      "sma_20": 317.24942,
+      "sma_50": 316.994084,
+      "volume_ratio": 3.7510657632970417,
+      "atr": 0.23333340350965545,
+      "adx": 21.135093199546372
+    },
+    "confidence": null,
+    "importance": 5
+  },
+  {
+    "timestamp": "2025-07-26T16:46:44.294069",
+    "type": "market_analysis",
+    "symbol": "MARA",
+    "title": "\ud83d\udd0e Analyzing MARA",
+    "message": "Fetching price data and calculating technical indicators...",
+    "data": null,
+    "confidence": null,
+    "importance": 4
+  },
+  {
+    "timestamp": "2025-07-26T16:47:29.191186",
+    "type": "technical",
+    "symbol": "NVDA",
+    "title": "\ud83d\udcca Technical Analysis: NVDA",
+    "message": "\ud83d\udcc9 Price below 50 SMA - Downtrend\n\u2796 RSI at 47.7 - Neutral\n\ud83d\udd34 MACD below signal - Bearish momentum\n\ud83d\ude34 ADX at 12.8 - Weak trend",
+    "data": {
+      "price": 173.45,
+      "rsi": 47.672376983984556,
+      "sma_20": 173.465515,
+      "sma_50": 173.473146,
+      "volume_ratio": 2.9613995485327314,
+      "atr": 0.06427304577466511,
+      "adx": 12.84981278449012
+    },
+    "confidence": null,
+    "importance": 5
+  },
+  {
+    "timestamp": "2025-07-26T16:48:14.246858",
+    "type": "technical",
+    "symbol": "NVDA",
+    "title": "\ud83d\udcca Technical Analysis: NVDA",
+    "message": "\ud83d\udcc9 Price below 50 SMA - Downtrend\n\u2796 RSI at 47.7 - Neutral\n\ud83d\udd34 MACD below signal - Bearish momentum\n\ud83d\ude34 ADX at 12.8 - Weak trend",
+    "data": {
+      "price": 173.45,
+      "rsi": 47.672376983984556,
+      "sma_20": 173.465515,
+      "sma_50": 173.473146,
+      "volume_ratio": 2.9613995485327314,
+      "atr": 0.06427304577466511,
+      "adx": 12.84981278449012
+    },
+    "confidence": null,
+    "importance": 5
+  },
+  {
+    "timestamp": "2025-07-26T16:48:59.479562",
+    "type": "technical",
+    "symbol": "NVDA",
+    "title": "\ud83d\udcca Technical Analysis: NVDA",
+    "message": "\ud83d\udcc9 Price below 50 SMA - Downtrend\n\u2796 RSI at 47.7 - Neutral\n\ud83d\udd34 MACD below signal - Bearish momentum\n\ud83d\ude34 ADX at 12.8 - Weak trend",
+    "data": {
+      "price": 173.45,
+      "rsi": 47.672376983984556,
+      "sma_20": 173.465515,
+      "sma_50": 173.473146,
+      "volume_ratio": 2.9613995485327314,
+      "atr": 0.06427304577466511,
+      "adx": 12.84981278449012
+    },
+    "confidence": null,
+    "importance": 5
+  },
+  {
+    "timestamp": "2025-07-26T20:49:49.441725",
+    "type": "technical",
+    "symbol": "TSLA",
+    "title": "\ud83d\udcca Technical Analysis: TSLA",
+    "message": "\ud83d\udcc8 Price above 50 SMA - Uptrend\n\u2796 RSI at 67.6 - Neutral\n\ud83d\udfe2 MACD above signal - Bullish momentum\n\ud83d\udcca Price above upper Bollinger Band - Overbought\n\ud83d\ude34 ADX at 21.1 - Weak trend",
+    "data": {
+      "price": 317.7,
+      "rsi": 67.64966499926754,
+      "sma_20": 317.24942,
+      "sma_50": 316.994084,
+      "volume_ratio": 3.7510657632970417,
+      "atr": 0.23333340350965545,
+      "adx": 21.135093199546372
+    },
+    "confidence": null,
+    "importance": 5
+  },
+  {
+    "timestamp": "2025-07-26T16:52:59.902920",
+    "type": "technical",
+    "symbol": "MARA",
+    "title": "\ud83d\udcca Technical Analysis: MARA",
+    "message": "\ud83d\udcc9 Price below 50 SMA - Downtrend\n\u2796 RSI at 44.8 - Neutral\n\ud83d\udd34 MACD below signal - Bearish momentum\n\ud83d\ude34 ADX at 17.2 - Weak trend",
+    "data": {
+      "price": 17.26,
+      "rsi": 44.82620796596739,
+      "sma_20": 17.285085000000002,
+      "sma_50": 17.26171,
+      "volume_ratio": 2.5497965644354266,
+      "atr": 0.02022953883111765,
+      "adx": 17.224891871487014
+    },
+    "confidence": null,
+    "importance": 5
+  },
+  {
+    "timestamp": "2025-07-26T16:54:20.025306",
+    "type": "market_analysis",
+    "symbol": null,
+    "title": "\ud83d\udcca Market Breadth Calculated",
+    "message": "Market internals analyzed",
+    "data": {
+      "advance_decline": 0,
+      "new_highs": 0,
+      "new_lows": 0,
+      "vix": 14.93,
+      "put_call_ratio": 1.0
+    },
+    "confidence": null,
+    "importance": 4
+  },
+  {
+    "timestamp": "2025-07-26T16:56:43.381677",
+    "type": "technical",
+    "symbol": null,
+    "title": "\ud83d\udd0c Connecting to Schwab API",
+    "message": "Attempting to establish connection with broker...",
+    "data": null,
+    "confidence": null,
+    "importance": 7
+  },
+  {
+    "timestamp": "2025-07-26T16:57:35.224791",
+    "type": "technical",
+    "symbol": null,
+    "title": "\ud83d\udd0c Connecting to Schwab API",
+    "message": "Attempting to establish connection with broker...",
+    "data": null,
+    "confidence": null,
+    "importance": 7
+  },
+  {
+    "timestamp": "2025-07-26T17:03:21.743026",
+    "type": "technical",
+    "symbol": null,
+    "title": "\ud83d\udd0c Connecting to Schwab API",
+    "message": "Attempting to establish connection with broker...",
+    "data": null,
+    "confidence": null,
+    "importance": 7
+  },
+  {
+    "timestamp": "2025-07-26T17:03:40.712162",
+    "type": "technical",
+    "symbol": null,
+    "title": "\ud83d\udd0c Connecting to Schwab API",
+    "message": "Attempting to establish connection with broker...",
+    "data": null,
+    "confidence": null,
+    "importance": 7
+  },
+  {
+    "timestamp": "2025-07-26T17:10:49.507105",
+    "type": "market_analysis",
+    "symbol": null,
+    "title": "\ud83d\udd0d Assessing Market Conditions",
+    "message": "Let me check the overall market health before making any trading decisions...",
+    "data": null,
+    "confidence": null,
+    "importance": 7
+  },
+  {
+    "timestamp": "2025-07-26T17:10:54.622626",
+    "type": "market_analysis",
+    "symbol": null,
+    "title": "\ud83d\udd0d Stock Screener Update",
+    "message": "Found 10 high-opportunity stocks",
+    "data": {
+      "top_gainer": "TSLA",
+      "avg_volatility": 3.667488383012157
+    },
+    "confidence": null,
+    "importance": 6
+  },
+  {
+    "timestamp": "2025-07-26T17:10:59.790287",
+    "type": "technical",
+    "symbol": "PLTR",
+    "title": "\ud83d\udcca Technical Analysis: PLTR",
+    "message": "\ud83d\udcc8 Price above 50 SMA - Uptrend\n\ud83d\udd25 RSI at 71.9 - Overbought\n\ud83d\udfe2 MACD above signal - Bullish momentum\n\ud83d\udcaa ADX at 29.7 - Strong trend",
+    "data": {
+      "price": 159.32,
+      "rsi": 71.88231570292385,
+      "sma_20": 159.12493999999998,
+      "sma_50": 159.042478,
+      "volume_ratio": 2.7127128376691467,
+      "atr": 0.06960959020545232,
+      "adx": 29.654595982882263
+    },
+    "confidence": null,
+    "importance": 5
+  },
+  {
+    "timestamp": "2025-07-26T17:11:05.180070",
+    "type": "market_analysis",
+    "symbol": "MARA",
+    "title": "\ud83d\udd0e Analyzing MARA",
+    "message": "Fetching price data and calculating technical indicators...",
+    "data": null,
+    "confidence": null,
+    "importance": 4
+  },
+  {
+    "timestamp": "2025-07-26T21:11:06.498522",
+    "type": "technical",
+    "symbol": "MARA",
+    "title": "\ud83d\udcca Technical Analysis: MARA",
+    "message": "\ud83d\udcc9 Price below 50 SMA - Downtrend\n\u2796 RSI at 44.8 - Neutral\n\ud83d\udd34 MACD below signal - Bearish momentum\n\ud83d\ude34 ADX at 17.2 - Weak trend",
+    "data": {
+      "price": 17.26,
+      "rsi": 44.82620796596739,
+      "sma_20": 17.285085000000002,
+      "sma_50": 17.26171,
+      "volume_ratio": 2.5497965644354266,
+      "atr": 0.02022953883111765,
+      "adx": 17.224891871487014
+    },
+    "confidence": null,
+    "importance": 5
+  },
+  {
+    "timestamp": "2025-07-28T10:18:21.739071",
+    "type": "technical",
+    "symbol": null,
+    "title": "\ud83d\udd0c Connecting to Schwab API",
+    "message": "Attempting to establish connection with broker...",
+    "data": null,
+    "confidence": null,
+    "importance": 7
+  },
+  {
+    "timestamp": "2025-07-28T10:18:27.119605",
+    "type": "opportunity",
+    "symbol": "PLTR",
+    "title": "\ud83d\udcf0 News Signal: BUY PLTR",
+    "message": "News sentiment: Positive (0.39)\n\nHeadlines:\n\u2022 Tines Appoints Heather Planishek as Chief Operating and Financial Officer\n\u2022 Palantir Leads S&P 500's Five Top AI Stocks In 2025\n\u2022 Elon Musk and Tesla\u2019s $30 Trillion AI Supersonic Tsunami",
+    "data": {
+      "sentiment": 0.3854,
+      "news_count": 8,
+      "high_impact": true,
+      "sources": [
+        "Yahoo Finance RSS"
+      ]
+    },
+    "confidence": 0.6854,
+    "importance": 8
+  },
+  {
+    "timestamp": "2025-07-28T10:18:43.212196",
+    "type": "technical",
+    "symbol": null,
+    "title": "\ud83d\udd0c Connecting to Schwab API",
+    "message": "Attempting to establish connection with broker...",
+    "data": null,
+    "confidence": null,
+    "importance": 7
+  },
+  {
+    "timestamp": "2025-07-28T10:19:01.121281",
+    "type": "technical",
+    "symbol": null,
+    "title": "\ud83d\udd0c Connecting to Schwab API",
+    "message": "Attempting to establish connection with broker...",
+    "data": null,
+    "confidence": null,
+    "importance": 7
+  },
+  {
+    "timestamp": "2025-07-28T10:19:07.956356",
+    "type": "market_analysis",
+    "symbol": null,
+    "title": "\ud83d\udd0d Stock Screener Update",
+    "message": "Found 10 high-opportunity stocks",
+    "data": {
+      "top_gainer": "RIOT",
+      "avg_volatility": 2.74320553352734
+    },
+    "confidence": null,
+    "importance": 6
+  },
+  {
+    "timestamp": "2025-07-28T14:19:10.526232",
+    "type": "technical",
+    "symbol": "PLTR",
+    "title": "\ud83d\udcc8 Data Retrieved: PLTR",
+    "message": "Got 39868 price candles from Schwab",
+    "data": {
+      "candle_count": 39868,
+      "timeframe": "5minute"
+    },
+    "confidence": null,
+    "importance": 3
+  },
+  {
+    "timestamp": "2025-07-28T10:20:05.250804",
+    "type": "market_analysis",
+    "symbol": "PLTR",
+    "title": "\ud83d\udd0e Analyzing PLTR",
+    "message": "Fetching price data and calculating technical indicators...",
+    "data": null,
+    "confidence": null,
+    "importance": 4
+  },
+  {
+    "timestamp": "2025-07-28T10:22:20.285536",
+    "type": "market_analysis",
+    "symbol": "MARA",
+    "title": "\ud83c\udf05 Gap Detected: MARA",
+    "message": "2.3% gap up (Open: $17.64, Prev Close: $17.25)",
+    "data": null,
+    "confidence": null,
+    "importance": 7
+  },
+  {
+    "timestamp": "2025-07-28T10:23:10.378403",
+    "type": "technical",
+    "symbol": "NVDA",
+    "title": "\ud83d\udcca Technical Analysis: NVDA",
+    "message": "\ud83d\udcc8 Price above 50 SMA - Uptrend\n\u2796 RSI at 53.7 - Neutral\n\ud83d\udd34 MACD below signal - Bearish momentum\n\ud83d\ude34 ADX at 23.1 - Weak trend",
+    "data": {
+      "price": 174.89,
+      "rsi": 53.65933196359416,
+      "sma_20": 174.72359,
+      "sma_50": 174.441442,
+      "volume_ratio": 0.5813412490002989,
+      "atr": 0.37544980028071645,
+      "adx": 23.058742139004483
+    },
+    "confidence": null,
+    "importance": 5
+  },
+  {
+    "timestamp": "2025-07-28T14:25:31.154981",
+    "type": "market_analysis",
+    "symbol": null,
+    "title": "\ud83d\udcc8 Scanning Watchlist",
+    "message": "Analyzing 6 symbols for trading opportunities. Market trend: neutral\nSkipping HQGE (already have positions)",
+    "data": null,
+    "confidence": null,
+    "importance": 6
+  },
+  {
+    "timestamp": "2025-07-28T14:25:41.171049",
+    "type": "technical",
+    "symbol": "AMD",
+    "title": "\ud83d\udcc8 Data Retrieved: AMD",
+    "message": "Got 39869 price candles from Schwab",
+    "data": {
+      "candle_count": 39869,
+      "timeframe": "5minute"
+    },
+    "confidence": null,
+    "importance": 3
+  },
+  {
+    "timestamp": "2025-07-28T14:26:26.319705",
+    "type": "technical",
+    "symbol": "TSLA",
+    "title": "\ud83d\udcca Technical Analysis: TSLA",
+    "message": "\ud83d\udcc8 Price above 50 SMA - Uptrend\n\u2796 RSI at 65.7 - Neutral\n\ud83d\udfe2 MACD above signal - Bullish momentum\n\ud83d\udcaa ADX at 29.7 - Strong trend",
+    "data": {
+      "price": 324.435,
+      "rsi": 65.71021968267661,
+      "sma_20": 320.81980409999994,
+      "sma_50": 320.32633564,
+      "volume_ratio": 0.15849475624745907,
+      "atr": 1.5651185207094147,
+      "adx": 29.742691723456428
+    },
+    "confidence": null,
+    "importance": 5
+  },
+  {
+    "timestamp": "2025-07-28T10:27:05.769848",
+    "type": "market_analysis",
+    "symbol": "PLTR",
+    "title": "\ud83d\udd0e Analyzing PLTR",
+    "message": "Fetching price data and calculating technical indicators...",
+    "data": null,
+    "confidence": null,
+    "importance": 4
+  },
+  {
+    "timestamp": "2025-07-28T14:27:16.377720",
+    "type": "market_analysis",
+    "symbol": "AMD",
+    "title": "\ud83d\udd0e Analyzing AMD",
+    "message": "Fetching price data and calculating technical indicators...",
+    "data": null,
+    "confidence": null,
+    "importance": 4
+  },
+  {
+    "timestamp": "2025-07-28T14:29:01.509480",
+    "type": "warning",
+    "symbol": "HQGE",
+    "title": "\u23f1\ufe0f Close Confirmation Timeout",
+    "message": "No response received for closing HQGE. Position remains open.",
+    "data": null,
+    "confidence": null,
+    "importance": 8
+  },
+  {
+    "timestamp": "2025-07-28T10:31:11.256877",
+    "type": "technical",
+    "symbol": "MARA",
+    "title": "\ud83d\udcca Technical Analysis: MARA",
+    "message": "\ud83d\udcc9 Price below 50 SMA - Downtrend\n\u2744\ufe0f RSI at 24.2 - Oversold\n\ud83d\udd34 MACD below signal - Bearish momentum\n\ud83d\udcaa ADX at 40.5 - Strong trend",
+    "data": {
+      "price": 17.0598,
+      "rsi": 24.154177772046154,
+      "sma_20": 17.422255,
+      "sma_50": 17.538093999999997,
+      "volume_ratio": 1.0323996168595697,
+      "atr": 0.10050300812355666,
+      "adx": 40.53075498313446
+    },
+    "confidence": null,
+    "importance": 5
+  },
+  {
+    "timestamp": "2025-07-28T10:31:46.310686",
+    "type": "market_analysis",
+    "symbol": null,
+    "title": "\ud83d\udcca Market Breadth Calculated",
+    "message": "Market internals analyzed",
+    "data": {
+      "advance_decline": 0,
+      "new_highs": 0,
+      "new_lows": 0,
+      "vix": 15.31,
+      "put_call_ratio": 1.0
+    },
+    "confidence": null,
+    "importance": 4
+  },
+  {
+    "timestamp": "2025-07-28T10:32:51.202737",
+    "type": "market_analysis",
+    "symbol": null,
+    "title": "\ud83d\udd0d Assessing Market Conditions",
+    "message": "Let me check the overall market health before making any trading decisions...",
+    "data": null,
+    "confidence": null,
+    "importance": 7
+  },
+  {
+    "timestamp": "2025-07-28T14:35:02.138418",
+    "type": "market_analysis",
+    "symbol": null,
+    "title": "\ud83d\udcca Market Breadth Calculated",
+    "message": "Market internals analyzed",
+    "data": {
+      "advance_decline": 0,
+      "new_highs": 0,
+      "new_lows": 0,
+      "vix": 15.3,
+      "put_call_ratio": 1.0
+    },
+    "confidence": null,
+    "importance": 4
+  },
+  {
+    "timestamp": "2025-07-28T10:36:41.548374",
+    "type": "market_analysis",
+    "symbol": "MARA",
+    "title": "\ud83c\udf05 Gap Detected: MARA",
+    "message": "2.3% gap up (Open: $17.64, Prev Close: $17.25)",
+    "data": null,
+    "confidence": null,
+    "importance": 7
+  },
+  {
+    "timestamp": "2025-07-28T10:38:21.804614",
+    "type": "market_analysis",
+    "symbol": "MARA",
+    "title": "\ud83c\udf05 Gap Detected: MARA",
+    "message": "2.3% gap up (Open: $17.64, Prev Close: $17.25)",
+    "data": null,
+    "confidence": null,
+    "importance": 7
+  },
+  {
+    "timestamp": "2025-07-28T10:41:22.337798",
+    "type": "risk_assessment",
+    "symbol": null,
+    "title": "\ud83d\udeab Trading Conditions Not Met",
+    "message": "I'm not trading because: Max consecutive losses reached",
+    "data": {
+      "daily_pnl": -1857.7559950000011,
+      "consecutive_losses": 20,
+      "buying_power": 138257.47
+    },
+    "confidence": null,
+    "importance": 8
+  },
+  {
+    "timestamp": "2025-07-28T10:42:32.452562",
+    "type": "decision",
+    "symbol": "HQGE",
+    "title": "\ud83d\udce4 Closing Position",
+    "message": "Selling 5100 shares at market",
+    "data": null,
+    "confidence": null,
+    "importance": 9
+  },
+  {
+    "timestamp": "2025-07-28T10:43:05.746503",
+    "type": "technical",
+    "symbol": null,
+    "title": "\ud83d\udd0c Connecting to Schwab API",
+    "message": "Attempting to establish connection with broker...",
+    "data": null,
+    "confidence": null,
+    "importance": 7
+  },
+  {
+    "timestamp": "2025-07-28T10:43:10.262407",
+    "type": "market_analysis",
+    "symbol": "HQGE",
+    "title": "\ud83d\udce5 External Position Detected",
+    "message": "Found 5100.0 shares of HQGE (long)\nEntry: $0.02, Current: $0.00",
+    "data": {
+      "symbol": "HQGE",
+      "quantity": 5100.0,
+      "side": "long",
+      "average_price": 0.0190313725,
+      "current_price": 0.0001,
+      "market_value": 0.51,
+      "day_pnl": -1.02,
+      "total_pnl": 0,
+      "pnl_percent": 0.0,
+      "asset_type": "EQUITY"
+    },
+    "confidence": null,
+    "importance": 7
+  },
+  {
+    "timestamp": "2025-07-28T10:43:15.961890",
+    "type": "opportunity",
+    "symbol": "MARA",
+    "title": "\ud83d\udcf0 News Signal: BUY MARA",
+    "message": "News sentiment: Positive (0.14)\n\nHeadlines:\n\u2022 Cantor outlines how to navigate the emerging Bitcoin treasury sector\n\u2022 SUI Joins Bitcoin, Ethereum With Its Own Treasury Company: Look Who's Building A $450 Million Reserve\n\u2022 Should MARA Stock Be in Your Portfolio Pre-Q2 Earnings?",
+    "data": {
+      "sentiment": 0.14331428571428573,
+      "news_count": 7,
+      "high_impact": true,
+      "sources": [
+        "Investing.com",
+        "Benzinga",
+        "Yahoo Finance RSS"
+      ]
+    },
+    "confidence": 0.4433142857142857,
+    "importance": 8
+  },
+  {
+    "timestamp": "2025-07-28T10:43:17.257859",
+    "type": "decision",
+    "symbol": "MARA",
+    "title": "\ud83d\udce4 Placing Live Order",
+    "message": "Sending BUY order for 7656 shares",
+    "data": null,
+    "confidence": null,
+    "importance": 9
+  },
+  {
+    "timestamp": "2025-07-28T14:43:27.945111",
+    "type": "market_analysis",
+    "symbol": "TSLA",
+    "title": "\ud83d\udd0e Analyzing TSLA",
+    "message": "Fetching price data and calculating technical indicators...",
+    "data": null,
+    "confidence": null,
+    "importance": 4
+  },
+  {
+    "timestamp": "2025-07-28T14:46:43.308235",
+    "type": "market_analysis",
+    "symbol": "HQGE",
+    "title": "\ud83d\udce5 External Position Detected",
+    "message": "Found 5100.0 shares of HQGE (long)\nEntry: $0.02, Current: $0.00",
+    "data": {
+      "symbol": "HQGE",
+      "quantity": 5100.0,
+      "side": "long",
+      "average_price": 0.0190313725,
+      "current_price": 0.00030000000000000003,
+      "market_value": 1.53,
+      "day_pnl": 0.0,
+      "total_pnl": 0,
+      "pnl_percent": 0.0,
+      "asset_type": "EQUITY"
+    },
+    "confidence": null,
+    "importance": 7
+  },
+  {
+    "timestamp": "2025-07-28T14:49:08.507518",
+    "type": "technical",
+    "symbol": "TSLA",
+    "title": "\ud83d\udcc8 Data Retrieved: TSLA",
+    "message": "Got 39874 price candles from Schwab",
+    "data": {
+      "candle_count": 39874,
+      "timeframe": "5minute"
+    },
+    "confidence": null,
+    "importance": 3
+  },
+  {
+    "timestamp": "2025-07-28T14:50:23.655973",
+    "type": "technical",
+    "symbol": "NVDA",
+    "title": "\ud83d\udcc8 Data Retrieved: NVDA",
+    "message": "Got 39868 price candles from Schwab",
+    "data": {
+      "candle_count": 39868,
+      "timeframe": "5minute"
+    },
+    "confidence": null,
+    "importance": 3
+  },
+  {
+    "timestamp": "2025-07-28T10:52:48.443314",
+    "type": "market_analysis",
+    "symbol": null,
+    "title": "\ud83d\udd0d Assessing Market Conditions",
+    "message": "Let me check the overall market health before making any trading decisions...",
+    "data": null,
+    "confidence": null,
+    "importance": 7
+  },
+  {
+    "timestamp": "2025-07-28T10:56:38.724696",
+    "type": "risk_assessment",
+    "symbol": null,
+    "title": "\ud83d\udeab Trading Conditions Not Met",
+    "message": "I'm not trading because: Max consecutive losses reached",
+    "data": {
+      "daily_pnl": -3962.4759895000034,
+      "consecutive_losses": 42,
+      "buying_power": 6018.4
+    },
+    "confidence": null,
+    "importance": 8
+  },
+  {
+    "timestamp": "2025-07-28T10:57:42.846319",
+    "type": "technical",
+    "symbol": null,
+    "title": "\ud83d\udd0c Connecting to Schwab API",
+    "message": "Attempting to establish connection with broker...",
+    "data": null,
+    "confidence": null,
+    "importance": 7
+  },
+  {
+    "timestamp": "2025-07-28T10:57:43.970930",
+    "type": "market_analysis",
+    "symbol": null,
+    "title": "\ud83d\udd0d Assessing Market Conditions",
+    "message": "Let me check the overall market health before making any trading decisions...",
+    "data": null,
+    "confidence": null,
+    "importance": 7
+  },
+  {
+    "timestamp": "2025-07-28T10:57:48.971614",
+    "type": "decision",
+    "symbol": null,
+    "title": "\ud83e\udd16 ML Prediction Changed",
+    "message": "ML prediction has been disabled",
+    "data": null,
+    "confidence": null,
+    "importance": 8
+  },
+  {
+    "timestamp": "2025-07-28T14:59:19.510902",
+    "type": "market_analysis",
+    "symbol": null,
+    "title": "\ud83d\udd0d Assessing Market Conditions",
+    "message": "Let me check the overall market health before making any trading decisions...",
+    "data": null,
+    "confidence": null,
+    "importance": 7
+  },
+  {
+    "timestamp": "2025-07-28T15:07:20.403202",
+    "type": "technical",
+    "symbol": "NVDA",
+    "title": "\ud83d\udcc8 Data Retrieved: NVDA",
+    "message": "Got 39872 price candles from Schwab",
+    "data": {
+      "candle_count": 39872,
+      "timeframe": "5minute"
+    },
+    "confidence": null,
+    "importance": 3
+  },
+  {
+    "timestamp": "2025-07-28T11:08:25.088596",
+    "type": "market_analysis",
+    "symbol": null,
+    "title": "\ud83d\udcca Market Breadth Calculated",
+    "message": "Market internals analyzed",
+    "data": {
+      "advance_decline": 0,
+      "new_highs": 0,
+      "new_lows": 0,
+      "vix": 15.23,
+      "put_call_ratio": 1.0
+    },
+    "confidence": null,
+    "importance": 4
+  },
+  {
+    "timestamp": "2025-07-28T15:10:10.615480",
+    "type": "warning",
+    "symbol": "HQGE",
+    "title": "\ud83d\udea8 CRITICAL LOSS: HQGE",
+    "message": "Position down 98.4% ($95.53)\nIMMEDIATE ACTION REQUIRED!\nStop loss: $0.02",
+    "data": {
+      "current_price": 0.0003,
+      "entry_price": 0.0190313725,
+      "unrealized_pnl": -95.52999975,
+      "pnl_percentage": -98.42365546678253,
+      "distance_to_stop": 5926.601291666667
+    },
+    "confidence": null,
+    "importance": 10
+  },
+  {
+    "timestamp": "2025-07-28T15:11:15.751333",
+    "type": "market_analysis",
+    "symbol": null,
+    "title": "\ud83d\udd0d Assessing Market Conditions",
+    "message": "Let me check the overall market health before making any trading decisions...",
+    "data": null,
+    "confidence": null,
+    "importance": 7
+  },
+  {
+    "timestamp": "2025-07-28T15:13:30.931461",
+    "type": "market_analysis",
+    "symbol": null,
+    "title": "\ud83d\udcca Market Breadth Calculated",
+    "message": "Market internals analyzed",
+    "data": {
+      "advance_decline": 0,
+      "new_highs": 0,
+      "new_lows": 0,
+      "vix": 15.23,
+      "put_call_ratio": 1.0
+    },
+    "confidence": null,
+    "importance": 4
+  },
+  {
+    "timestamp": "2025-07-28T15:15:11.066825",
+    "type": "market_analysis",
+    "symbol": null,
+    "title": "\ud83d\udcca Market Breadth Calculated",
+    "message": "Market internals analyzed",
+    "data": {
+      "advance_decline": 0,
+      "new_highs": 0,
+      "new_lows": 0,
+      "vix": 15.22,
+      "put_call_ratio": 1.0
+    },
+    "confidence": null,
+    "importance": 4
+  },
+  {
+    "timestamp": "2025-07-28T11:16:09.560480",
+    "type": "technical",
+    "symbol": null,
+    "title": "\ud83d\udd0c Connecting to Schwab API",
+    "message": "Attempting to establish connection with broker...",
+    "data": null,
+    "confidence": null,
+    "importance": 7
+  },
+  {
+    "timestamp": "2025-07-28T11:16:14.205291",
+    "type": "decision",
+    "symbol": null,
+    "title": "\u2699\ufe0f Confirmation Settings Changed",
+    "message": "Close confirmations disabled",
+    "data": null,
+    "confidence": null,
+    "importance": 7
+  },
+  {
+    "timestamp": "2025-07-28T15:16:16.229069",
+    "type": "market_analysis",
+    "symbol": null,
+    "title": "\ud83d\udcc8 Scanning Watchlist",
+    "message": "Analyzing 6 symbols for trading opportunities. Market trend: neutral\nSkipping HQGE, NVDA (already have positions)",
+    "data": null,
+    "confidence": null,
+    "importance": 6
+  },
+  {
+    "timestamp": "2025-07-28T15:17:16.254223",
+    "type": "market_analysis",
+    "symbol": null,
+    "title": "\ud83d\udd0d Assessing Market Conditions",
+    "message": "Let me check the overall market health before making any trading decisions...",
+    "data": null,
+    "confidence": null,
+    "importance": 7
+  },
+  {
+    "timestamp": "2025-07-28T11:17:50.948274",
+    "type": "market_analysis",
+    "symbol": null,
+    "title": "\ud83d\udcca Market Breadth Analysis",
+    "message": "Normal volatility - Standard trading conditions\nNeutral market breadth",
+    "data": {
+      "vix": 15.24,
+      "advance_decline_ratio": 0,
+      "new_highs": 0,
+      "new_lows": 0,
+      "put_call_ratio": 1.0
+    },
+    "confidence": 0.8,
+    "importance": 8
+  },
+  {
+    "timestamp": "2025-07-28T11:36:32.891861",
+    "type": "market_analysis",
+    "symbol": "MARA",
+    "title": "\ud83c\udf05 Gap Detected: MARA",
+    "message": "2.3% gap up (Open: $17.64, Prev Close: $17.25)",
+    "data": null,
+    "confidence": null,
+    "importance": 7
+  },
+  {
+    "timestamp": "2025-07-28T11:45:03.116593",
+    "type": "technical",
+    "symbol": null,
+    "title": "\ud83d\udd0c Connecting to Schwab API",
+    "message": "Attempting to establish connection with broker...",
+    "data": null,
+    "confidence": null,
+    "importance": 7
+  },
+  {
+    "timestamp": "2025-07-28T11:45:03.665593",
+    "type": "market_analysis",
+    "symbol": null,
+    "title": "\ud83c\udfaf Trading Session Started",
+    "message": "Beginning market analysis. I'll explain each step of my decision-making process.",
+    "data": {
+      "mode": "simulation_commentary",
+      "account_balance": 100000,
+      "risk_per_trade": "2.0%"
+    },
+    "confidence": null,
+    "importance": 9
+  },
+  {
+    "timestamp": "2025-07-28T11:45:13.330782",
+    "type": "technical",
+    "symbol": "RIOT",
+    "title": "\ud83d\udcc8 Data Retrieved: RIOT",
+    "message": "Got 39878 price candles from Schwab",
+    "data": {
+      "candle_count": 39878,
+      "timeframe": "5minute"
+    },
+    "confidence": null,
+    "importance": 3
+  },
+  {
+    "timestamp": "2025-07-28T11:45:18.693170",
+    "type": "technical",
+    "symbol": "AMD",
+    "title": "\ud83d\udcca Technical Analysis: AMD",
+    "message": "\ud83d\udcc8 Price above 50 SMA - Uptrend\n\u2796 RSI at 48.7 - Neutral\n\ud83d\udd34 MACD below signal - Bearish momentum\n\ud83d\ude34 ADX at 23.8 - Weak trend",
+    "data": {
+      "price": 172.425,
+      "rsi": 48.673115625180266,
+      "sma_20": 173.164605,
+      "sma_50": 171.560016,
+      "volume_ratio": 0.026368237957344616,
+      "atr": 0.6162007781503887,
+      "adx": 23.782572162743747
+    },
+    "confidence": null,
+    "importance": 5
+  },
+  {
+    "timestamp": "2025-07-28T15:47:19.217419",
+    "type": "risk_assessment",
+    "symbol": null,
+    "title": "\ud83d\udeab Trading Conditions Not Met",
+    "message": "I'm not trading because: Insufficient buying power: $-20225.90",
+    "data": {
+      "daily_pnl": -4344.595988500003,
+      "consecutive_losses": 1,
+      "buying_power": -20225.9
+    },
+    "confidence": null,
+    "importance": 8
+  },
+  {
+    "timestamp": "2025-07-28T15:51:49.660223",
+    "type": "market_analysis",
+    "symbol": "MARA",
+    "title": "\ud83c\udf05 Gap Detected: MARA",
+    "message": "2.3% gap up (Open: $17.64, Prev Close: $17.25)",
+    "data": null,
+    "confidence": null,
+    "importance": 7
+  },
+  {
+    "timestamp": "2025-07-28T15:54:39.992573",
+    "type": "warning",
+    "symbol": "HQGE",
+    "title": "\ud83d\udea8 CRITICAL LOSS: HQGE",
+    "message": "Position down 98.4% ($95.53)\nIMMEDIATE ACTION REQUIRED!\nStop loss: $0.02",
+    "data": {
+      "current_price": 0.0003,
+      "entry_price": 0.0190313725,
+      "unrealized_pnl": -95.52999975,
+      "pnl_percentage": -98.42365546678253,
+      "distance_to_stop": 5926.601291666667
+    },
+    "confidence": null,
+    "importance": 10
+  },
+  {
+    "timestamp": "2025-07-28T11:57:24.948979",
+    "type": "market_analysis",
+    "symbol": "MARA",
+    "title": "\ud83c\udf05 Gap Detected: MARA",
+    "message": "2.3% gap up (Open: $17.64, Prev Close: $17.25)",
+    "data": null,
+    "confidence": null,
+    "importance": 7
+  },
+  {
+    "timestamp": "2025-07-28T11:59:40.187272",
+    "type": "risk_assessment",
+    "symbol": null,
+    "title": "\ud83d\udeab Trading Conditions Not Met",
+    "message": "I'm not trading because: Insufficient buying power: $-20076.40",
+    "data": {
+      "daily_pnl": -4344.595988500003,
+      "consecutive_losses": 1,
+      "buying_power": -20076.4
+    },
+    "confidence": null,
+    "importance": 8
+  }
+]
