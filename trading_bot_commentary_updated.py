@@ -116,6 +116,118 @@ except ImportError:
 import feedparser
 import yfinance as yf
 from datetime import datetime, timedelta
+
+# ============================================================================
+# UTILITY FUNCTIONS
+# ============================================================================
+
+def calculate_dynamic_stop_loss(price: float, is_short: bool = False, volatility_pct: float = None) -> float:
+    """Calculate dynamic stop loss based on stock price to prevent catastrophic losses
+    
+    For penny stocks (< $5): 2-3% max loss
+    For low-priced stocks ($5-20): 3-4% max loss  
+    For mid-priced stocks ($20-100): 4-5% max loss
+    For high-priced stocks (> $100): 2-3% max loss
+    """
+    if price <= 0:
+        return price * 0.95  # Default 5% stop
+        
+    # Volatility adjustment
+    volatility_multiplier = 1.0
+    if volatility_pct:
+        # Higher volatility = tighter stops
+        if volatility_pct > 5:
+            volatility_multiplier = 0.7  # Very volatile - tighten stop
+        elif volatility_pct > 3:
+            volatility_multiplier = 0.85
+    
+    # Base stop loss percentages by price tier
+    if price < 1:  # Ultra penny stocks
+        base_stop_pct = 0.02  # 2% max loss
+    elif price < 5:  # Penny stocks  
+        base_stop_pct = 0.03  # 3% max loss
+    elif price < 20:  # Low-priced stocks
+        base_stop_pct = 0.04  # 4% max loss
+    elif price < 100:  # Mid-priced stocks
+        base_stop_pct = 0.05  # 5% max loss
+    else:  # High-priced stocks
+        base_stop_pct = 0.03  # 3% max loss (tighter for expensive stocks)
+    
+    # Apply volatility adjustment
+    stop_pct = base_stop_pct * volatility_multiplier
+    
+    # Never allow more than 5% stop loss
+    stop_pct = min(stop_pct, 0.05)
+    
+    # Calculate stop price
+    if is_short:
+        # For short positions, stop is above entry
+        stop_price = price * (1 + stop_pct)
+    else:
+        # For long positions, stop is below entry
+        stop_price = price * (1 - stop_pct)
+        
+    return round(stop_price, 4)  # Round to 4 decimals for penny stocks
+
+def calculate_dynamic_take_profit(price: float, is_short: bool = False, strategy: str = None, volatility_pct: float = None) -> float:
+    """Calculate realistic take profit targets based on stock price and strategy
+    
+    For penny stocks (< $5): 2-5% targets
+    For low-priced stocks ($5-50): 3-7% targets  
+    For mid-priced stocks ($50-200): 2-4% targets
+    For high-priced stocks (> $200): 1-3% targets
+    """
+    if price <= 0:
+        return price * 1.05  # Default 5% target
+    
+    # Base profit percentages by price tier - more realistic targets
+    if price < 1:  # Sub-dollar penny stocks
+        base_profit_pct = 0.03  # 3% target
+    elif price < 5:  # Penny stocks
+        base_profit_pct = 0.05  # 5% target
+    elif price < 50:  # Low-priced stocks
+        base_profit_pct = 0.04  # 4% target
+    elif price < 200:  # Mid-priced stocks
+        base_profit_pct = 0.03  # 3% target
+    else:  # High-priced stocks
+        base_profit_pct = 0.02  # 2% target
+    
+    # Strategy adjustment
+    strategy_multiplier = 1.0
+    if strategy:
+        if strategy == 'momentum':
+            strategy_multiplier = 1.5  # Momentum can run further
+        elif strategy == 'mean_reversion':
+            strategy_multiplier = 0.8  # Mean reversion takes quicker profits
+        elif strategy == 'breakout':
+            strategy_multiplier = 2.0  # Breakouts have more potential
+        elif strategy == 'news_sentiment':
+            strategy_multiplier = 1.2  # News-driven moves can extend
+    
+    # Volatility adjustment
+    if volatility_pct and volatility_pct > 3:
+        # Higher volatility = can aim for larger targets
+        strategy_multiplier *= 1.2
+    
+    # Calculate final profit percentage
+    profit_pct = base_profit_pct * strategy_multiplier
+    
+    # Cap maximum targets for risk management
+    if price < 5:
+        profit_pct = min(profit_pct, 0.10)  # 10% max for penny stocks
+    else:
+        profit_pct = min(profit_pct, 0.07)  # 7% max for regular stocks
+    
+    # Calculate target price
+    if is_short:
+        # For short positions, take profit is below entry
+        target_price = price * (1 - profit_pct)
+    else:
+        # For long positions, take profit is above entry
+        target_price = price * (1 + profit_pct)
+    
+    return round(target_price, 4)
+
 import hashlib
 from typing import List, Dict, Optional
 import asyncio
@@ -2247,6 +2359,9 @@ class TradingBrain:
             'greed_level': 0.3,
             'last_update': datetime.now()
         }
+        # Add blacklist for symbols with catastrophic losses
+        self.blacklisted_symbols: Dict[str, Dict[str, Any]] = {}
+        self.consecutive_losses: Dict[str, int] = {}
         self._load_memories()
     
     def recover_confidence(self):
@@ -2275,6 +2390,8 @@ class TradingBrain:
                     self.pattern_success_rates = data.get('pattern_success_rates', {})
                     self.symbol_behaviors = data.get('symbol_behaviors', {})
                     self.emotional_state = data.get('emotional_state', self.emotional_state)
+                    self.blacklisted_symbols = data.get('blacklisted_symbols', {})
+                    self.consecutive_losses = data.get('consecutive_losses', {})
                     
                     # Reconstruct memories
                     for mem_data in data.get('memories', []):
@@ -2309,7 +2426,9 @@ class TradingBrain:
             ],
             'pattern_success_rates': self.pattern_success_rates,
             'symbol_behaviors': self.symbol_behaviors,
-            'emotional_state': self.emotional_state
+            'emotional_state': self.emotional_state,
+            'blacklisted_symbols': self.blacklisted_symbols,
+            'consecutive_losses': self.consecutive_losses
         }
         
         with open(self.memory_path, 'w') as f:
@@ -2439,6 +2558,11 @@ class TradingBrain:
     
     def should_take_trade(self, symbol: str, pattern: str, base_confidence: float) -> Tuple[bool, str]:
         """Decide if we should take a trade based on memory and emotional state"""
+        # First check if symbol is blacklisted
+        if symbol in self.blacklisted_symbols:
+            blacklist_info = self.blacklisted_symbols[symbol]
+            return False, f"⛔ {symbol} is blacklisted due to {blacklist_info['reason']}. Lost ${blacklist_info['total_loss']:.2f} over {blacklist_info['loss_count']} trades."
+        
         # Recover confidence gradually
         self.recover_confidence()
 
@@ -2475,6 +2599,48 @@ class TradingBrain:
             return False, f"Not confident enough. Setup confidence: {combined_confidence:.1%}"
         
         return True, "Looks good based on my experience"
+    
+    def track_symbol_loss(self, symbol: str, loss_amount: float) -> None:
+        """Track consecutive losses for a symbol and blacklist if necessary"""
+        # Update consecutive losses counter
+        self.consecutive_losses[symbol] = self.consecutive_losses.get(symbol, 0) + 1
+        
+        # Check if we should blacklist
+        if self.consecutive_losses[symbol] >= 5:  # 5 consecutive losses
+            total_loss = 0
+            loss_count = 0
+            for memory in self.memories:
+                if memory.symbol == symbol and 'loss' in memory.outcome.lower():
+                    # Extract loss amount from context
+                    if 'pnl' in memory.context:
+                        total_loss += abs(memory.context['pnl'])
+                        loss_count += 1
+            
+            self.blacklist_symbol(symbol, f"{self.consecutive_losses[symbol]} consecutive losses", total_loss, loss_count)
+            
+    def blacklist_symbol(self, symbol: str, reason: str, total_loss: float, loss_count: int) -> None:
+        """Add a symbol to the blacklist"""
+        self.blacklisted_symbols[symbol] = {
+            'reason': reason,
+            'total_loss': total_loss,
+            'loss_count': loss_count,
+            'blacklisted_at': datetime.now().isoformat(),
+            'consecutive_losses': self.consecutive_losses.get(symbol, 0)
+        }
+        
+        # Reset consecutive losses counter
+        if symbol in self.consecutive_losses:
+            del self.consecutive_losses[symbol]
+            
+        # Save immediately
+        self.save_memories()
+        
+        logger.warning(f"Blacklisted {symbol}: {reason} (Lost ${total_loss:.2f} over {loss_count} trades)")
+    
+    def reset_loss_streak(self, symbol: str) -> None:
+        """Reset the consecutive loss counter for a symbol on a win"""
+        if symbol in self.consecutive_losses:
+            del self.consecutive_losses[symbol]
 
 
 class DynamicExitManager:
@@ -2645,6 +2811,46 @@ class DynamicExitManager:
                 importance=7
             ))
             return True, "time_decay", 1.0
+        
+        # 7. End of Day Exit - Close all positions before market close
+        current_time = datetime.now()
+        market_close = current_time.replace(hour=15, minute=30, second=0)  # 3:30 PM ET
+        minutes_to_close = (market_close - current_time).total_seconds() / 60
+        
+        if 0 < minutes_to_close <= 30:  # Last 30 minutes of trading
+            if pnl_percent > 0:
+                self.commentary.add_commentary(TradingCommentary(
+                    timestamp=datetime.now(),
+                    type=CommentaryType.DECISION,
+                    symbol=symbol,
+                    title=f"⏰ End of Day Exit",
+                    message=f"Market closes in {minutes_to_close:.0f} minutes. Taking {pnl_percent:.1f}% profit rather than holding overnight.",
+                    importance=8
+                ))
+                return True, "eod_profit", 1.0
+            elif minutes_to_close <= 10:  # Last 10 minutes - close everything
+                self.commentary.add_commentary(TradingCommentary(
+                    timestamp=datetime.now(),
+                    type=CommentaryType.DECISION,
+                    symbol=symbol,
+                    title=f"🔔 Market Close Exit",
+                    message=f"Closing position with {minutes_to_close:.0f} minutes to close. No overnight positions.",
+                    importance=9
+                ))
+                return True, "eod_close", 1.0
+        
+        # 8. Lunch Hour Caution - Reduce position during low volume
+        if 11 <= current_time.hour <= 13:  # 11 AM - 1 PM ET
+            if position_age_minutes > 20 and abs(pnl_percent) < 0.5:
+                self.commentary.add_commentary(TradingCommentary(
+                    timestamp=datetime.now(),
+                    type=CommentaryType.DECISION,
+                    symbol=symbol,
+                    title=f"🍽️ Lunch Hour Exit",
+                    message=f"Low volume lunch hour - closing flat position after {position_age_minutes:.0f} minutes.",
+                    importance=6
+                ))
+                return True, "lunch_hour", 1.0
         
         # 7. Check against dynamic stop
         if current_price <= tracker['current_stop']:
@@ -3052,10 +3258,11 @@ class StockScreener:
     
     async def _get_volatile_stocks(self) -> List[Dict[str, Any]]:
         """Find additional volatile stocks using a pre-screened watchlist"""
+        # Focus on liquid, established stocks - NO PENNY STOCKS
         volatile_candidates = [
-            'TSLA', 'NVDA', 'AMD', 'PLTR', 'COIN', 'MARA', 'RIOT', 
-            'SQ', 'ROKU', 'SNAP', 'PINS', 'DKNG', 'PENN', 'FUBO',
-            'NIO', 'XPEV', 'LI', 'RIVN', 'LCID', 'FSR'
+            'TSLA', 'NVDA', 'AMD', 'AAPL', 'MSFT', 'AMZN', 'META', 'GOOGL',
+            'NFLX', 'PLTR', 'SQ', 'ROKU', 'DKNG', 'COIN', 'PYPL', 'CRM',
+            'BA', 'DIS', 'NKE', 'SBUX', 'V', 'MA', 'JPM', 'BAC'
         ]
         
         volatile_stocks = []
@@ -4640,33 +4847,66 @@ class MLPredictorWithCommentary:
             return "weak"
     
     async def retrain_model(self, data_provider, symbols: List[str]):
-        """Retrain the ML model with recent data"""
+        """Retrain the ML model with recent data - runs in background thread"""
+        # Check if we should retrain (avoid too frequent retraining)
+        if hasattr(self, '_last_retrain_time'):
+            elapsed = (datetime.now() - self._last_retrain_time).total_seconds()
+            if elapsed < 3600:  # Don't retrain more than once per hour
+                logger.info(f"Skipping ML retraining - only {elapsed:.0f}s since last training")
+                return
+        
         if self.commentary:
             self.commentary.add_commentary(TradingCommentary(
                 timestamp=datetime.now(),
                 type=CommentaryType.MARKET_ANALYSIS,
                 symbol=None,
-                title="🔧 ML Model Retraining",
-                message=f"Starting model retraining with {len(symbols)} symbols",
-                importance=8
+                title="🔧 ML Model Background Training",
+                message=f"Starting async model training with {len(symbols)} symbols. Trading continues uninterrupted.",
+                importance=7
             ))
         
-        # Collect training data
-        X, y = self.model.collect_training_data(data_provider, symbols)
+        # Run training in thread pool to avoid blocking
+        loop = asyncio.get_event_loop()
         
-        if len(X) > 0:
-            # Train model
-            success = self.model.train(X, y)
+        def _train_in_thread():
+            try:
+                # Collect training data
+                X, y = self.model.collect_training_data(data_provider, symbols)
+                
+                if len(X) > 0:
+                    # Train model
+                    success = self.model.train(X, y)
+                    return success, len(X)
+                return False, 0
+            except Exception as e:
+                logger.error(f"Error in ML training thread: {e}")
+                return False, 0
+        
+        # Execute in thread pool
+        success, samples = await loop.run_in_executor(None, _train_in_thread)
+        
+        if success:
+            self._last_retrain_time = datetime.now()
             
-            if success and self.brain:
+            if self.commentary:
+                self.commentary.add_commentary(TradingCommentary(
+                    timestamp=datetime.now(),
+                    type=CommentaryType.MARKET_ANALYSIS,
+                    symbol=None,
+                    title="✅ ML Training Complete",
+                    message=f"Model trained on {samples} samples in background",
+                    importance=7
+                ))
+            
+            if self.brain:
                 # Record in brain
                 self.brain.remember_trade(
                     symbol="MODEL",
-                    pattern="retraining",
+                    pattern="async_retraining",
                     outcome="completed",
                     pnl_percent=0,
                     context={
-                        'samples': len(X),
+                        'samples': samples,
                         'timestamp': datetime.now().isoformat()
                     }
                 )
@@ -4676,7 +4916,7 @@ class MLPredictorWithCommentary:
                     timestamp=datetime.now(),
                     type=CommentaryType.WARNING,
                     symbol=None,
-                    title="⚠️ Retraining Failed",
+                    title="⚠️ Training Failed",
                     message="Could not collect sufficient training data",
                     importance=8
                 ))
@@ -4704,6 +4944,9 @@ class RiskManagerWithCommentary:
         self.margin_call = False
         self.buying_power = account_balance * 0.5
         self.commentary = commentary_system
+        self.last_reset_date = datetime.now().date()
+        self.daily_trades_count = 0
+        self.daily_loss_hit = False
     
     async def calculate_position_size_with_commentary(self, signal, current_price: float) -> int:
         """Calculate position size with detailed explanation"""
@@ -4774,6 +5017,37 @@ class RiskManagerWithCommentary:
         # Calculate position size
         position_size = int(max_risk_amount / risk_per_share)
         
+        # Special handling for penny stocks (under $5)
+        if current_price < 5.0:
+            # Reduce position size for penny stocks
+            penny_stock_reduction = 0.3 if current_price < 1.0 else 0.5
+            old_size = position_size
+            position_size = int(position_size * penny_stock_reduction)
+            
+            self.commentary.add_commentary(TradingCommentary(
+                timestamp=datetime.now(),
+                type=CommentaryType.RISK_ASSESSMENT,
+                symbol=signal.symbol,
+                title=f"⚠️ Penny Stock Position Reduction",
+                message=f"Reduced position from {old_size} to {position_size} shares (stock price ${current_price:.3f})",
+                data={
+                    'reduction_factor': penny_stock_reduction,
+                    'reason': 'Higher volatility and spread risk in penny stocks'
+                },
+                importance=8
+            ))
+            
+            # Extra warning for sub-penny stocks
+            if current_price < 0.10:
+                self.commentary.add_commentary(TradingCommentary(
+                    timestamp=datetime.now(),
+                    type=CommentaryType.WARNING,
+                    symbol=signal.symbol,
+                    title=f"🚨 Sub-Penny Stock Warning",
+                    message=f"Extreme caution: ${current_price:.4f} stock - consider avoiding entirely",
+                    importance=9
+                ))
+        
         # Check against max position value
         position_value = position_size * current_price
         if position_value > Config().MAX_POSITION_VALUE:
@@ -4841,16 +5115,65 @@ class RiskManagerWithCommentary:
         
         return position_size
     
+    def reset_daily_tracking_if_needed(self):
+        """Reset daily P&L and counters at start of new trading day"""
+        current_date = datetime.now().date()
+        if current_date > self.last_reset_date:
+            self.commentary.add_commentary(TradingCommentary(
+                timestamp=datetime.now(),
+                type=CommentaryType.MARKET_ANALYSIS,
+                symbol=None,
+                title="🌅 New Trading Day",
+                message=f"Resetting daily P&L. Yesterday's P&L: ${self.daily_pnl:.2f}",
+                data={'yesterday_pnl': self.daily_pnl, 'trades_count': self.daily_trades_count},
+                importance=5
+            ))
+            self.daily_pnl = 0
+            self.daily_trades_count = 0
+            self.daily_loss_hit = False
+            self.last_reset_date = current_date
+    
     def check_trading_allowed(self) -> Tuple[bool, str]:
         """Check if trading is allowed"""
+        self.reset_daily_tracking_if_needed()
+        
+        # Check time-based restrictions
+        current_time = datetime.now()
+        current_hour = current_time.hour
+        current_minute = current_time.minute
+        
+        # No new trades in first 15 minutes (high volatility)
+        if current_hour == 9 and current_minute < 45:
+            return False, "Market open volatility - waiting 15 minutes"
+        
+        # No new trades in last 30 minutes (day trading rule)
+        if current_hour == 15 and current_minute >= 30:
+            return False, "Too close to market close - no new positions after 3:30 PM"
+        elif current_hour >= 16:
+            return False, "Market closed - no new positions"
+        
         if self.margin_call:
             return False, "Margin call active - resolve before trading"
         
         if self.buying_power < 100:
             return False, f"Insufficient buying power: ${self.buying_power:.2f}"
         
-        if self.daily_pnl <= -Config().MAX_DAILY_LOSS * self.account_balance:
-            return False, "Daily loss limit exceeded"
+        # Check daily loss limit (using negative value)
+        daily_loss_limit = -Config().MAX_DAILY_LOSS * self.account_balance
+        if self.daily_pnl <= daily_loss_limit:
+            self.daily_loss_hit = True
+            return False, f"Daily loss limit exceeded: ${self.daily_pnl:.2f} (limit: ${daily_loss_limit:.2f})"
+        
+        # Warn when approaching daily loss limit
+        if self.daily_pnl < 0 and abs(self.daily_pnl) >= 0.8 * Config().MAX_DAILY_LOSS * self.account_balance:
+            self.commentary.add_commentary(TradingCommentary(
+                timestamp=datetime.now(),
+                type=CommentaryType.WARNING,
+                symbol=None,
+                title="⚠️ Approaching Daily Loss Limit",
+                message=f"Current daily P&L: ${self.daily_pnl:.2f} (80% of limit reached)",
+                importance=8
+            ))
         
         if self.consecutive_losses >= Config().MAX_CONSECUTIVE_LOSSES:
             return False, "Max consecutive losses reached"
@@ -4909,8 +5232,8 @@ class NewsSignalStrategy(TradingStrategyWithCommentary):
             ))
 
             # Create trading signal
-            stop_loss = market_data.close * (1 - 0.02) if signal_type == SignalType.BUY else market_data.close * 1.02
-            take_profit = market_data.close * (1 + 0.04) if signal_type == SignalType.BUY else market_data.close * 0.96
+            stop_loss = calculate_dynamic_stop_loss(market_data.close, is_short=(signal_type == SignalType.SELL))
+            take_profit = calculate_dynamic_take_profit(market_data.close, is_short=(signal_type == SignalType.SELL), strategy='news_sentiment')
 
             return TradingSignal(
                 symbol=market_data.symbol,
@@ -4965,8 +5288,8 @@ class BreakoutStrategyWithCommentary(TradingStrategyWithCommentary):
                 
                 # Calculate targets
                 atr = indicators.get('atr', market_data.close * 0.02)
-                stop_loss = market_data.close - (2 * atr)
-                take_profit = market_data.close + 2 * (market_data.close - stop_loss)
+                stop_loss = calculate_dynamic_stop_loss(market_data.close)
+                take_profit = calculate_dynamic_take_profit(market_data.close, strategy='breakout')
                 
                 return TradingSignal(
                     symbol=market_data.symbol,
@@ -5035,8 +5358,8 @@ class MeanReversionStrategyWithCommentary(TradingStrategyWithCommentary):
                     confidence=0.65,
                     importance=7
                 ))
-                stop_loss = market_data.close * self.stop_loss_mult
-                take_profit = bb_middle * self.take_profit_mult
+                stop_loss = calculate_dynamic_stop_loss(market_data.close)
+                take_profit = calculate_dynamic_take_profit(market_data.close, strategy='mean_reversion')
                 return TradingSignal(
                     symbol=market_data.symbol,
                     signal_type=SignalType.BUY,
@@ -5072,8 +5395,8 @@ class MeanReversionStrategyWithCommentary(TradingStrategyWithCommentary):
                 ))
                 # For short positions: stop loss above entry, take profit below entry
                 # Convert stop_loss_mult (e.g., 0.98) to above price multiplier (e.g., 1.02)
-                stop_loss = market_data.close * (2 - self.stop_loss_mult)  # Stop above entry
-                take_profit = bb_middle  # Target at middle Bollinger Band
+                stop_loss = calculate_dynamic_stop_loss(market_data.close, is_short=True)
+                take_profit = calculate_dynamic_take_profit(market_data.close, is_short=True, strategy='mean_reversion')
                 return TradingSignal(
                     symbol=market_data.symbol,
                     signal_type=SignalType.SELL,
@@ -5132,8 +5455,8 @@ class MomentumStrategyWithCommentary(TradingStrategyWithCommentary):
                     importance=7
                 ))
                 
-                stop_loss = market_data.close * 0.97
-                take_profit = market_data.close * 1.06
+                stop_loss = calculate_dynamic_stop_loss(market_data.close)
+                take_profit = calculate_dynamic_take_profit(market_data.close, strategy='momentum')
                 
                 return TradingSignal(
                     symbol=market_data.symbol,
@@ -5313,8 +5636,26 @@ class TradingEngineWithCommentary:
                 with open(state_file, 'r') as f:
                     state = json.load(f)
                     self.trade_history = state.get('trade_history', [])
-                    self.risk_manager.daily_pnl = state.get('daily_pnl', 0)
-                    self.risk_manager.consecutive_losses = state.get('consecutive_losses', 0)
+                    
+                    # Load position long-term flags first
+                    positions_data = state.get('positions_data', {})
+                    long_term_symbols = {sym for sym, data in positions_data.items() if data.get('is_long_term', False)}
+                    
+                    # Recalculate daily P&L excluding long-term positions
+                    recalculated_pnl = 0
+                    consecutive_losses = 0
+                    
+                    for trade in self.trade_history:
+                        # Skip trades from positions marked as long-term
+                        if trade['symbol'] not in long_term_symbols:
+                            recalculated_pnl += trade.get('pnl', 0)
+                            if trade.get('pnl', 0) < 0:
+                                consecutive_losses += 1
+                            else:
+                                consecutive_losses = 0
+                    
+                    self.risk_manager.daily_pnl = recalculated_pnl
+                    self.risk_manager.consecutive_losses = consecutive_losses
                     
                     # Load position long-term flags
                     positions_data = state.get('positions_data', {})
@@ -5323,12 +5664,17 @@ class TradingEngineWithCommentary:
                             self.positions[symbol].is_long_term = pos_data.get('is_long_term', False)
                     
                     # Add human-like morning routine commentary
+                    original_pnl = state.get('daily_pnl', 0)
+                    blacklisted_info = ""
+                    if abs(original_pnl - recalculated_pnl) > 0.01:
+                        blacklisted_info = f" (Excluding blacklisted symbols: ${recalculated_pnl:.2f})"
+                    
                     self.commentary.add_commentary(TradingCommentary(
                         timestamp=datetime.now(),
                         type=CommentaryType.PSYCHOLOGY,
                         symbol=None,
                         title="☕ Good Morning!",
-                        message=f"Back at the desk. Yesterday's P&L: ${state.get('daily_pnl', 0):.2f}. "
+                        message=f"Back at the desk. Yesterday's P&L: ${recalculated_pnl:.2f}{blacklisted_info}. "
                                f"Let's see what the market has for us today.",
                         importance=8
                     ))
@@ -5468,7 +5814,7 @@ class TradingEngineWithCommentary:
             if action:
                 self.commentary.add_commentary(TradingCommentary(
                     timestamp=datetime.now(),
-                    type=CommentaryType.INFO,
+                    type=CommentaryType.MARKET_ANALYSIS,
                     symbol=signal.symbol,
                     title="💡 Suggested Action",
                     message=action,
@@ -6284,12 +6630,43 @@ class TradingEngineWithCommentary:
             # Get all Schwab positions
             schwab_positions = await self.get_schwab_positions()
             
+            # Log what we got from Schwab
+            self.commentary.add_commentary(TradingCommentary(
+                timestamp=datetime.now(),
+                type=CommentaryType.MARKET_ANALYSIS,
+                symbol=None,
+                title=f"🔄 Syncing with Schwab",
+                message=f"Found {len(schwab_positions)} positions in Schwab account",
+                importance=5
+            ))
+            
             # Create a set of symbols from Schwab
             schwab_symbols = {pos['symbol'] for pos in schwab_positions}
             
-            # Add or update positions from Schwab
+            # ALWAYS sync positions from Schwab as source of truth
             for pos_data in schwab_positions:
                 symbol = pos_data['symbol']
+                
+                # CHECK BLACKLIST - Close blacklisted positions immediately
+                if symbol in self.brain.blacklisted_symbols:
+                    if symbol in self.positions:
+                        # Close the blacklisted position
+                        self.commentary.add_commentary(TradingCommentary(
+                            timestamp=datetime.now(),
+                            type=CommentaryType.WARNING,
+                            symbol=symbol,
+                            title=f"⛔ BLACKLISTED POSITION DETECTED",
+                            message=f"{symbol} is blacklisted but found in account! Closing immediately.",
+                            importance=10
+                        ))
+                        
+                        # Force exit
+                        asyncio.create_task(self._execute_exit(
+                            symbol=symbol,
+                            reason="blacklisted_symbol",
+                            current_price=pos_data['current_price']
+                        ))
+                    continue  # Skip adding blacklisted positions
                 
                 if symbol not in self.positions:
                     # Create new position for externally opened position
@@ -6298,8 +6675,8 @@ class TradingEngineWithCommentary:
                         quantity=abs(pos_data['quantity']),
                         entry_price=pos_data['average_price'],
                         current_price=pos_data['current_price'],
-                        stop_loss=pos_data['average_price'] * 0.95,  # Default 5% stop
-                        take_profit=pos_data['average_price'] * 1.10,  # Default 10% target
+                        stop_loss=self.calculate_dynamic_stop_loss(pos_data['average_price'], symbol),
+                        take_profit=calculate_dynamic_take_profit(pos_data['average_price']),  # Dynamic target
                         entry_time=datetime.now(),
                         side='long' if pos_data['quantity'] > 0 else 'short',
                         reasoning={'source': 'external', 'strategy': 'manual_entry'}
@@ -6321,8 +6698,32 @@ class TradingEngineWithCommentary:
                         importance=7
                     ))
                 else:
-                    # Update existing position
+                    # Update existing position - ALWAYS sync with Schwab's data
                     position = self.positions[symbol]
+                    # Update quantity if different (handles partial fills)
+                    if position.quantity != abs(pos_data['quantity']):
+                        self.commentary.add_commentary(TradingCommentary(
+                            timestamp=datetime.now(),
+                            type=CommentaryType.MARKET_ANALYSIS,
+                            symbol=symbol,
+                            title=f"📊 Position Size Updated",
+                            message=f"Syncing {symbol} quantity: {position.quantity} → {abs(pos_data['quantity'])} shares",
+                            importance=7
+                        ))
+                        position.quantity = abs(pos_data['quantity'])
+                    
+                    # Update average price if different
+                    if abs(position.entry_price - pos_data['average_price']) > 0.01:
+                        self.commentary.add_commentary(TradingCommentary(
+                            timestamp=datetime.now(),
+                            type=CommentaryType.MARKET_ANALYSIS,
+                            symbol=symbol,
+                            title=f"📊 Entry Price Updated",
+                            message=f"Syncing {symbol} avg price: ${position.entry_price:.2f} → ${pos_data['average_price']:.2f}",
+                            importance=7
+                        ))
+                        position.entry_price = pos_data['average_price']
+                    
                     position.current_price = pos_data['current_price']
                     position.unrealized_pnl = pos_data['total_pnl']
             
@@ -6351,12 +6752,14 @@ class TradingEngineWithCommentary:
                 else:  # long
                     final_pnl = (exit_price - position.entry_price) * position.quantity
                 
-                # Update risk manager
-                self.risk_manager.daily_pnl += final_pnl
-                if final_pnl < 0:
-                    self.risk_manager.consecutive_losses += 1
-                else:
-                    self.risk_manager.consecutive_losses = 0
+                # Update risk manager (skip long-term positions)
+                if not getattr(position, 'is_long_term', False):
+                    self.risk_manager.daily_pnl += final_pnl
+                    self.risk_manager.daily_trades_count += 1
+                    if final_pnl < 0:
+                        self.risk_manager.consecutive_losses += 1
+                    else:
+                        self.risk_manager.consecutive_losses = 0
                 
                 # Record in trade history
                 self.trade_history.append({
@@ -6410,6 +6813,81 @@ class TradingEngineWithCommentary:
         with open("trading_state.json", 'w') as f:
             json.dump(state, f, indent=2, default=str)
 
+    def calculate_dynamic_stop_loss(self, price: float, symbol: str = None, is_short: bool = False) -> float:
+        """Calculate dynamic stop loss based on stock price to prevent catastrophic losses
+        
+        For penny stocks (< $5): 2-5% max loss
+        For low-priced stocks ($5-20): 3-5% max loss  
+        For mid-priced stocks ($20-100): 3-7% max loss
+        For high-priced stocks (> $100): 2-5% max loss
+        """
+        if price <= 0:
+            return price * 0.95  # Default 5% stop
+            
+        # Get volatility-based adjustment if we have the symbol
+        volatility_multiplier = 1.0
+        if symbol and hasattr(self, 'technical_analyzer'):
+            try:
+                # Get recent data to calculate volatility
+                df = self.data_provider.get_market_data(symbol, period_type='day', period=1, frequency=5)
+                if not df.empty and len(df) > 20:
+                    atr = self.technical_analyzer._calculate_atr(df)
+                    if atr > 0:
+                        # ATR as percentage of price
+                        atr_pct = (atr / price) * 100
+                        # Higher volatility = tighter stops
+                        if atr_pct > 5:
+                            volatility_multiplier = 0.7  # Very volatile - tighten stop
+                        elif atr_pct > 3:
+                            volatility_multiplier = 0.85
+            except:
+                pass
+        
+        # Base stop loss percentages by price tier
+        if price < 1:  # Ultra penny stocks
+            base_stop_pct = 0.02  # 2% max loss
+        elif price < 5:  # Penny stocks  
+            base_stop_pct = 0.03  # 3% max loss
+        elif price < 20:  # Low-priced stocks
+            base_stop_pct = 0.04  # 4% max loss
+        elif price < 100:  # Mid-priced stocks
+            base_stop_pct = 0.05  # 5% max loss
+        else:  # High-priced stocks
+            base_stop_pct = 0.03  # 3% max loss (tighter for expensive stocks)
+        
+        # Apply volatility adjustment
+        stop_pct = base_stop_pct * volatility_multiplier
+        
+        # Never allow more than 5% stop loss
+        stop_pct = min(stop_pct, 0.05)
+        
+        # Calculate stop price
+        if is_short:
+            # For short positions, stop is above entry
+            stop_price = price * (1 + stop_pct)
+        else:
+            # For long positions, stop is below entry
+            stop_price = price * (1 - stop_pct)
+            
+        # Log the calculation for transparency
+        if symbol:
+            self.commentary.add_commentary(TradingCommentary(
+                timestamp=datetime.now(),
+                type=CommentaryType.RISK_ASSESSMENT,
+                symbol=symbol,
+                title=f"🛡️ Dynamic Stop Loss Calculated",
+                message=f"Price: ${price:.2f} → Stop: ${stop_price:.2f} ({stop_pct*100:.1f}% risk)",
+                data={
+                    'price_tier': 'penny' if price < 5 else 'low' if price < 20 else 'mid' if price < 100 else 'high',
+                    'base_stop_pct': base_stop_pct,
+                    'volatility_adj': volatility_multiplier,
+                    'final_stop_pct': stop_pct
+                },
+                importance=6
+            ))
+            
+        return round(stop_price, 4)  # Round to 4 decimals for penny stocks
+    
     def _init_schwab_client(self):
         """Initialize Schwab client with commentary"""
         try:
@@ -6609,7 +7087,7 @@ class TradingEngineWithCommentary:
                         type=CommentaryType.WARNING,
                         symbol=None,
                         title="🚨 EMERGENCY STOP",
-                        message=f"Daily loss exceeded 3% limit. Closing all positions.",
+                        message=f"Daily loss exceeded 5% limit. Closing all positions.",
                         importance=10
                     ))
                     
@@ -6627,24 +7105,17 @@ class TradingEngineWithCommentary:
                     if (datetime.now() - self._last_bp_check).total_seconds() > 300:
                         await self._check_buying_power(0)
                 
-                # After the position management section
-                if analysis_count % 100 == 0:  # Every 100 cycles
+                # ML model retraining (async, non-blocking)
+                if analysis_count % 200 == 0:  # Every 200 cycles (~100 minutes)
                     asyncio.create_task(self.ml_predictor.retrain_model(
                         self.data_provider, 
-                        ['TSLA', 'PLTR', 'NVDA']
+                        ['TSLA', 'PLTR', 'NVDA', 'AMD', 'AAPL', 'MSFT']
                     ))
 
 		        # Save state periodically
                 if analysis_count % 10 == 0:  # Every 10 analysis cycles
                     self._save_state()
                     self.brain.save_memories()
-
-                # Add retraining check:
-                if analysis_count % 100 == 0:  # Every 100 cycles
-                    asyncio.create_task(self.ml_predictor.retrain_model(
-                        self.data_provider,
-                        ['PLTR', 'NVDA', 'TSLA']
-                    ))
                 # Wait before next analysis
                 await asyncio.sleep(30)  # Check every 30 seconds
                 
@@ -6877,6 +7348,23 @@ class TradingEngineWithCommentary:
         # Use dynamic watchlist
         watchlist = self.dynamic_watchlist
         
+        # Filter watchlist for suitable stocks
+        filtered_watchlist = []
+        for symbol in watchlist:
+            if self._is_symbol_suitable_for_trading(symbol):
+                filtered_watchlist.append(symbol)
+            else:
+                self.commentary.add_commentary(TradingCommentary(
+                    timestamp=datetime.now(),
+                    type=CommentaryType.WARNING,
+                    symbol=symbol,
+                    title=f"🚫 Filtered Out {symbol}",
+                    message=f"Symbol doesn't meet trading criteria (price/volume/volatility)",
+                    importance=4
+                ))
+        
+        watchlist = filtered_watchlist
+        
         # Get current positions (both tracked and from Schwab)
         positions_held = set(self.positions.keys())
         
@@ -6999,6 +7487,18 @@ class TradingEngineWithCommentary:
     
     async def _process_signal_with_commentary(self, signal, ml_signal, ml_explanation):
         """Process trading signal with detailed explanation"""
+        # Check if position exists and is marked as long-term
+        if signal.symbol in self.positions and getattr(self.positions[signal.symbol], 'is_long_term', False):
+            self.commentary.add_commentary(TradingCommentary(
+                timestamp=datetime.now(),
+                type=CommentaryType.MARKET_ANALYSIS,
+                symbol=signal.symbol,
+                title=f"🔒 Long-Term Position",
+                message=f"{signal.symbol} is marked as long-term hold and will not be traded.",
+                importance=6
+            ))
+            return
+        
         # Check if already in position (both bot-tracked and real Schwab positions)
         if signal.symbol in self.positions or signal.symbol in self.simulated_positions:
             self.commentary.add_commentary(TradingCommentary(
@@ -7036,8 +7536,8 @@ class TradingEngineWithCommentary:
                         current_price=existing_position['current_price'],
                         quantity=existing_position['quantity'],
                         side='long' if existing_position['quantity'] > 0 else 'short',
-                        stop_loss=existing_position['average_price'] * 0.95,
-                        take_profit=existing_position['average_price'] * 1.10,
+                        stop_loss=self.calculate_dynamic_stop_loss(existing_position['average_price'], signal.symbol),
+                        take_profit=calculate_dynamic_take_profit(existing_position['average_price']),
                         entry_time=datetime.now(),
                         unrealized_pnl=existing_position['total_pnl'],
                         reasoning={'source': 'existing_schwab_position'}
@@ -7314,6 +7814,11 @@ class TradingEngineWithCommentary:
         
         for symbol, position in list(positions_to_check.items()):
             try:
+                # Skip long-term positions completely in active management
+                if getattr(position, 'is_long_term', False):
+                    logger.info(f"Skipping long-term position {symbol} in active management")
+                    continue
+                
                 # Check if position is None
                 if position is None:
                     logger.warning(f"None position found for {symbol}, removing")
@@ -7491,6 +7996,31 @@ class TradingEngineWithCommentary:
             ))
             return True, "stop_loss"
         
+        # Check if take profit is hit
+        take_profit_hit = False
+        if position.side == 'short':
+            take_profit_hit = current_price <= position.take_profit
+        else:  # long
+            take_profit_hit = current_price >= position.take_profit
+        
+        if take_profit_hit:
+            profit_pct = ((current_price - position.entry_price) / position.entry_price) * 100 if position.side == 'long' else ((position.entry_price - current_price) / position.entry_price) * 100
+            self.commentary.add_commentary(TradingCommentary(
+                timestamp=datetime.now(),
+                type=CommentaryType.DECISION,
+                symbol=position.symbol,
+                title=f"🎯 Take Profit Target Hit!",
+                message=f"Target reached at ${current_price:.2f}! Booked {profit_pct:.1f}% profit.",
+                data={
+                    'entry_price': position.entry_price,
+                    'take_profit': position.take_profit,
+                    'current_price': current_price,
+                    'profit_pct': profit_pct
+                },
+                importance=9
+            ))
+            return True, "take_profit"
+        
         # Get current indicators for dynamic exit
         if self.data_provider:
             data = self.data_provider.get_market_data(position.symbol)
@@ -7618,9 +8148,16 @@ class TradingEngineWithCommentary:
                 'exit_reason': reason,
                 'holding_time': (datetime.now() - position.entry_time).total_seconds() / 60,
                 'max_profit': getattr(position, 'max_unrealized_pnl', pnl),
-                'market_conditions': self.market_state
+                'market_conditions': self.market_state,
+                'pnl': pnl  # Add pnl for blacklist tracking
             }
         )
+        
+        # Track consecutive losses and blacklist if necessary
+        if pnl < 0 and reason == "stop_loss":
+            self.brain.track_symbol_loss(position.symbol, abs(pnl))
+        elif pnl > 0:
+            self.brain.reset_loss_streak(position.symbol)
         
         # Add the lesson learned
         self.commentary.add_commentary(TradingCommentary(
@@ -7671,17 +8208,19 @@ class TradingEngineWithCommentary:
             if not success:
                 return  # Don't remove from tracking if close failed
         
-        # Update risk manager only after successful close
-        self.risk_manager.daily_pnl += pnl
-        if pnl < 0:
-            self.risk_manager.consecutive_losses += 1
-        else:
-            self.risk_manager.consecutive_losses = 0
+        # Update risk manager only after successful close (skip long-term positions)
+        if not getattr(position, 'is_long_term', False):
+            self.risk_manager.daily_pnl += pnl
+            self.risk_manager.daily_trades_count += 1
+            if pnl < 0:
+                self.risk_manager.consecutive_losses += 1
+            else:
+                self.risk_manager.consecutive_losses = 0
         
-        # Remove from positions
-        if self.mode == TradingMode.SIMULATION_WITH_COMMENTARY:
+        # Remove from positions - ensure it's removed from both tracking dicts
+        if position.symbol in self.simulated_positions:
             del self.simulated_positions[position.symbol]
-        else:
+        if position.symbol in self.positions:
             del self.positions[position.symbol]
         
         # Update trade history
@@ -7765,6 +8304,48 @@ class TradingEngineWithCommentary:
             del self.pending_close_requests[close_request_id]
         
         return False
+    def _is_symbol_suitable_for_trading(self, symbol: str) -> bool:
+        """Check if a symbol meets our trading criteria"""
+        try:
+            # Get quote to check price and volume
+            quote = self.data_provider.get_quote(symbol)
+            if not quote:
+                return False
+            
+            price = quote.get('last', 0)
+            volume = quote.get('totalVolume', 0)
+            
+            # Price filters
+            if price < 5:  # No penny stocks
+                logger.info(f"Filtering out {symbol}: Price ${price:.2f} < $5")
+                return False
+            
+            if price > 1000:  # No ultra high-priced stocks (harder to manage risk)
+                logger.info(f"Filtering out {symbol}: Price ${price:.2f} > $1000")
+                return False
+            
+            # Volume filter - need liquidity
+            if volume < 1_000_000:  # At least 1M volume
+                logger.info(f"Filtering out {symbol}: Volume {volume:,} < 1M")
+                return False
+            
+            # Additional filters for specific problem stocks
+            problem_stocks = ['HQGE', 'MULN', 'BBBY', 'APRN', 'PRTY', 'ENDP']
+            if symbol.upper() in problem_stocks:
+                logger.info(f"Filtering out {symbol}: Known problem stock")
+                return False
+            
+            # Check if blacklisted
+            if hasattr(self, 'brain') and symbol in self.brain.blacklisted_symbols:
+                logger.info(f"Filtering out {symbol}: Blacklisted")
+                return False
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error checking symbol {symbol}: {e}")
+            return False
+    
     def _generate_post_trade_analysis(self, position, exit_reason: str, pnl: float) -> str:
         """Generate insightful post-trade analysis"""
         analysis = []
@@ -7787,6 +8368,32 @@ class TradingEngineWithCommentary:
         analysis.append(f"- The {abs((position.current_price - position.entry_price) / position.entry_price * 100):.1f}% move took {(datetime.now() - position.entry_time).total_seconds() / 3600:.1f} hours")
         
         return "\n".join(analysis)
+    
+    def calculate_total_pnl(self) -> Dict[str, float]:
+        """Calculate total P&L including all positions and closed trades"""
+        total_open_pnl = 0
+        total_day_pnl = 0
+        
+        # Add unrealized P&L from open positions
+        for symbol, position in self.positions.items():
+            if hasattr(position, 'unrealized_pnl'):
+                total_open_pnl += position.unrealized_pnl
+        
+        # Add realized P&L from today's closed trades
+        today = datetime.now().date()
+        for trade in self.trade_history:
+            try:
+                exit_time = datetime.fromisoformat(trade['exit_time'])
+                if exit_time.date() == today:
+                    total_day_pnl += trade.get('pnl', 0)
+            except:
+                pass
+        
+        return {
+            'open_pnl': total_open_pnl,
+            'day_pnl': total_day_pnl,
+            'total_pnl': total_open_pnl + total_day_pnl
+        }
     
     async def _get_real_account_info(self) -> Dict[str, float]:
         """Get real account information from Schwab"""
@@ -8017,8 +8624,8 @@ class TradingEngineWithCommentary:
                         current_price=pos_data['current_price'],
                         quantity=pos_data['quantity'],
                         side='long' if pos_data['quantity'] > 0 else 'short',
-                        stop_loss=pos_data['average_price'] * 0.95,  # Default 5% stop
-                        take_profit=pos_data['average_price'] * 1.10,  # Default 10% target
+                        stop_loss=self.calculate_dynamic_stop_loss(pos_data['average_price'], symbol),
+                        take_profit=calculate_dynamic_take_profit(pos_data['average_price']),  # Dynamic target
                         entry_time=datetime.now(),  # We don't know actual entry time
                         unrealized_pnl=pos_data['total_pnl'],
                         reasoning={'source': 'existing_position', 'tracked_from': datetime.now().isoformat()}
@@ -8535,11 +9142,11 @@ class FreeNewsSignalStrategy(TradingStrategyWithCommentary):
             atr = market_data.indicators.get('atr', market_data.close * 0.02)
             
             if signal_type == SignalType.BUY:
-                stop_loss = market_data.close - (2 * atr)
-                take_profit = market_data.close + (4 * atr)
+                stop_loss = calculate_dynamic_stop_loss(market_data.close, is_short=False)
+                take_profit = calculate_dynamic_take_profit(market_data.close, is_short=False, strategy='free_news_sentiment')
             else:
-                stop_loss = market_data.close + (2 * atr)
-                take_profit = market_data.close - (4 * atr)
+                stop_loss = calculate_dynamic_stop_loss(market_data.close, is_short=True)
+                take_profit = calculate_dynamic_take_profit(market_data.close, is_short=True, strategy='free_news_sentiment')
             
             self.last_signal_time[symbol] = datetime.now()
             
@@ -9943,6 +10550,16 @@ async def toggle_confirmations(request: dict):
 async def get_dashboard():
     return HTMLResponse(content=DASHBOARD_HTML_WITH_COMMENTARY)
 
+@app.get("/performance")
+async def get_performance_dashboard():
+    """Serve the enhanced performance dashboard"""
+    dashboard_path = Path(__file__).parent / "realtime_dashboard.html"
+    if dashboard_path.exists():
+        with open(dashboard_path, 'r') as f:
+            return HTMLResponse(content=f.read(), status_code=200)
+    else:
+        return HTMLResponse(content=DASHBOARD_HTML_WITH_COMMENTARY, status_code=200)
+
 @app.post("/api/start")
 async def start_trading():
     global trading_engine, connection_manager, trading_task
@@ -10463,21 +11080,60 @@ async def get_strategies():
     ]
     return {'strategies': strategies}
 
-@app.get("/api/professional/performance")
+@app.get("/api/performance")
 async def get_performance_metrics():
-    """Get detailed performance metrics"""
+    """Get real-time performance metrics"""
+    if not trading_engine:
+        return {"error": "Trading engine not initialized"}
+    
+    # Calculate metrics from trade history
+    trades = trading_engine.trade_history
+    today = datetime.now().date()
+    
+    # Today's trades
+    todays_trades = [t for t in trades if datetime.fromisoformat(t['exit_time']).date() == today]
+    
+    # Win rate calculation
+    total_trades = len(trades)
+    winning_trades = sum(1 for t in trades if t.get('pnl', 0) > 0)
+    win_rate = winning_trades / total_trades if total_trades > 0 else 0
+    
+    # Profit factor
+    gross_profit = sum(t['pnl'] for t in trades if t['pnl'] > 0)
+    gross_loss = sum(abs(t['pnl']) for t in trades if t['pnl'] < 0)
+    profit_factor = gross_profit / gross_loss if gross_loss > 0 else 0
+    
+    # Current positions data
+    positions_data = []
+    for symbol, pos in trading_engine.positions.items():
+        positions_data.append({
+            'symbol': symbol,
+            'side': pos.side,
+            'entry_price': pos.entry_price,
+            'current_price': pos.current_price,
+            'quantity': pos.quantity,
+            'pnl': pos.unrealized_pnl,
+            'pnl_percent': ((pos.current_price - pos.entry_price) / pos.entry_price) * 100,
+            'entry_time': pos.entry_time.isoformat()
+        })
+    
     return {
-        'daily_pnl': 125.50,
-        'weekly_pnl': 680.25,
-        'monthly_pnl': 1520.75,
-        'total_pnl': 3250.00,
-        'win_rate': 0.58,
-        'profit_factor': 1.35,
-        'sharpe_ratio': 1.2,
-        'trades_today': 12,
-        'trades_week': 45,
-        'trades_month': 180
+        'metrics': {
+            'daily_pnl': trading_engine.risk_manager.daily_pnl,
+            'win_rate': win_rate,
+            'active_positions': len(trading_engine.positions),
+            'todays_trades': len(todays_trades),
+            'profit_factor': profit_factor,
+            'consecutive_losses': trading_engine.risk_manager.consecutive_losses
+        },
+        'positions': positions_data,
+        'last_update': datetime.now().isoformat()
     }
+
+@app.get("/api/professional/performance")
+async def get_professional_performance():
+    """Get detailed performance metrics for professional view"""
+    return await get_performance_metrics()
 
 @app.get("/api/professional/paper/account")
 async def get_paper_account():

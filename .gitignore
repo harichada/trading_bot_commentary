@@ -6,6 +6,7 @@ config.yaml
 
 # Authentication tokens
 token_*.json
+*.json
 
 # Logs
 *.log
