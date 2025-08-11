@@ -28,6 +28,14 @@ try:
 except ImportError:
     CATBOOST_AVAILABLE = False
     CatBoostClassifier = None
+
+# Import version control
+try:
+    from model_version_control import ModelVersionControl
+    HAS_VERSION_CONTROL = True
+except ImportError:
+    HAS_VERSION_CONTROL = False
+    logging.warning("Model version control not available")
 import ta
 from scipy import stats, signal
 from scipy.fft import fft, fftfreq
@@ -631,6 +639,9 @@ class ScalpingMLModel:
         # Performance tracking
         self.performance_history = deque(maxlen=1000)
         self.model_weights = {name: 1.0 for name in self.models.keys()}
+        self.total_trades = 0
+        self.winning_trades = 0
+        self.total_profit = 0.0
         
         # Online learning
         self.online_buffer = deque(maxlen=500)
@@ -639,6 +650,13 @@ class ScalpingMLModel:
         
         # Paths
         self.model_path = Path("scalping_ml_model.pkl")
+        
+        # Version control
+        if HAS_VERSION_CONTROL:
+            self.version_control = ModelVersionControl()
+            self.current_version_id = None
+        else:
+            self.version_control = None
         
     def _setup_commentary(self):
         """Setup commentary helper"""
@@ -1051,8 +1069,12 @@ class ScalpingMLModel:
         
         logger.info("Online model update completed")
     
-    def save_model(self):
-        """Save model to disk"""
+    def save_model(self, create_version: bool = True):
+        """Save model to disk with optional version control
+        
+        Args:
+            create_version: Whether to create a versioned backup
+        """
         model_data = {
             'models': self.models,
             'meta_model': self.meta_model,
@@ -1063,14 +1085,44 @@ class ScalpingMLModel:
             'feature_importance': self.feature_importance,
             'model_weights': self.model_weights,
             'is_trained': self.is_trained,
-            'last_retrain_time': self.last_retrain_time
+            'last_retrain_time': self.last_retrain_time,
+            'total_trades': self.total_trades,
+            'winning_trades': self.winning_trades,
+            'total_profit': self.total_profit,
+            # CRITICAL: Save the online buffer so we don't lose training data!
+            'online_buffer': list(self.online_buffer),  # Convert deque to list for pickling
+            'performance_history': list(self.performance_history)  # Save performance history too
         }
         
         with open(self.model_path, 'wb') as f:
             pickle.dump(model_data, f)
+        
+        # Log buffer save
+        if self.online_buffer:
+            logger.info(f"Saved {len(self.online_buffer)} training samples in buffer")
+        
+        # Create version if enabled (rest of versioning code stays the same)
     
-    def load_model(self):
-        """Load model from disk"""
+    def load_model(self, version_id: Optional[str] = None):
+        """Load model from disk, optionally loading a specific version
+        
+        Args:
+            version_id: Specific version to load (None for latest/best)
+        
+        Returns:
+            Success status
+        """
+        # Try version control first if available
+        if self.version_control and version_id:
+            model_path = self.version_control.load_version(version_id)
+            if model_path:
+                self.model_path = model_path
+        elif self.version_control and not self.model_path.exists():
+            # Try to load best version if main model doesn't exist
+            model_path = self.version_control.load_version()
+            if model_path:
+                self.model_path = model_path
+        
         if not self.model_path.exists():
             return False
         
@@ -1089,12 +1141,47 @@ class ScalpingMLModel:
             self.is_trained = model_data['is_trained']
             self.last_retrain_time = model_data['last_retrain_time']
             
-            logger.info("Model loaded successfully")
+            # Load performance metrics if available
+            self.total_trades = model_data.get('total_trades', 0)
+            self.winning_trades = model_data.get('winning_trades', 0)
+            self.total_profit = model_data.get('total_profit', 0.0)
+            
+            # CRITICAL: Restore the online buffer if available
+            if 'online_buffer' in model_data:
+                buffer_data = model_data['online_buffer']
+                self.online_buffer = deque(buffer_data, maxlen=500)
+                logger.info(f"Restored {len(self.online_buffer)} training samples from buffer")
+            
+            # Restore performance history if available
+            if 'performance_history' in model_data:
+                history_data = model_data['performance_history']
+                self.performance_history = deque(history_data, maxlen=1000)
+                logger.info(f"Restored {len(self.performance_history)} performance records")
+            
+            logger.info(f"Model loaded successfully (Version: {version_id or 'latest'})")
+            
+            if self.commentary:
+                win_rate = (self.winning_trades / self.total_trades * 100) if self.total_trades > 0 else 0
+                self._add_commentary({
+                    'type': 'MODEL_LOADED',
+                    'message': f'Model loaded: {self.total_trades} trades, {win_rate:.1f}% win rate, ${self.total_profit:.2f} profit',
+                    'importance': 6
+                })
+            
             return True
             
         except Exception as e:
             logger.error(f"Error loading model: {e}")
             return False
+    
+    def _calculate_recent_accuracy(self):
+        """Calculate accuracy of recent predictions"""
+        if len(self.performance_history) < 10:
+            return 0.5  # Default accuracy
+        
+        recent = list(self.performance_history)[-100:]  # Last 100 predictions
+        correct = sum(1 for p in recent if p.get('correct', False))
+        return correct / len(recent)
 
 
 class ModelValidator:

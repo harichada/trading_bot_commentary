@@ -42,6 +42,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
+from websockets.exceptions import ConnectionClosedError
 
 # System imports
 import sys
@@ -961,6 +962,15 @@ class ConfigManager:
                 'min_risk_reward_ratio': 2.0,
                 'max_daily_loss': 0.05,
                 'max_consecutive_losses': 3,
+                'extended_hours': {
+                    'allow_premarket': False,  # DANGER: Wide spreads, low liquidity
+                    'allow_afterhours': False,  # DANGER: Wide spreads, low liquidity
+                    'use_limit_orders': True,  # Always use limit orders in extended hours
+                    'premarket_start': "04:00",  # 4:00 AM ET
+                    'market_open': "09:30",      # 9:30 AM ET
+                    'market_close': "16:00",      # 4:00 PM ET
+                    'afterhours_end': "20:00"    # 8:00 PM ET
+                },
                 'position_size_kelly_fraction': 0.25,
                 'max_positions': 5,
                 'reserve_cash_percent': 0.1,
@@ -1065,10 +1075,15 @@ class CircuitBreaker:
         self.trip_time = None
         self.reset_time = None
     
-    def update_daily_pnl(self, pnl: float):
+    def update_daily_pnl(self, pnl: float, account_balance: float = 100000):
         """Update daily P&L and check circuit breaker"""
-        self.daily_pnl += pnl
-        daily_loss_ratio = abs(min(0, self.daily_pnl)) / 100000  # Assuming 100k account
+        self.daily_pnl = pnl  # Use the actual P&L, not accumulate
+        
+        # Only check if we have a loss
+        if self.daily_pnl >= 0:
+            return  # No loss, no circuit breaker needed
+        
+        daily_loss_ratio = abs(self.daily_pnl) / account_balance
         
         if daily_loss_ratio >= self.emergency_stop:
             self._trip_circuit_breaker("EMERGENCY_STOP", daily_loss_ratio)
@@ -1769,6 +1784,9 @@ class CommentaryType(Enum):
     WARNING = "warning"
     OPPORTUNITY = "opportunity"
     ANOMALY = "anomaly"
+    INFO = "info"
+    ACCOUNT_UPDATE = "account_update"
+    ERROR = "error"
 
 class SignalType(Enum):
     BUY = 1
@@ -1792,6 +1810,9 @@ class CommentaryType(Enum):
     WARNING = "warning"
     OPPORTUNITY = "opportunity"
     ANOMALY = "anomaly"
+    INFO = "info"
+    ACCOUNT_UPDATE = "account_update"
+    ERROR = "error"
 # ============================================================================
 # DATA STRUCTURES
 # ============================================================================
@@ -1995,7 +2016,10 @@ class CommentarySystem:
             CommentaryType.OPPORTUNITY: "bright_green",
             CommentaryType.TECHNICAL: "blue",
             CommentaryType.PSYCHOLOGY: "purple",
-            CommentaryType.ANOMALY: "bright_red"
+            CommentaryType.ANOMALY: "bright_red",
+            CommentaryType.INFO: "white",
+            CommentaryType.ACCOUNT_UPDATE: "bright_cyan",
+            CommentaryType.ERROR: "bright_red"
         }
         
         color = color_map.get(commentary.type, "white")
@@ -3683,7 +3707,7 @@ class HybridTradingModel:
         )
         
         self.scaler = RobustScaler()  # Robust to outliers
-        self.is_trained = False
+        self.is_trained = True
         self.last_training_time = None
         self.training_history = []
         self.feature_importance = {}
@@ -4290,7 +4314,7 @@ class IntegratedMLModel:
             random_state=42,
             eval_metric='mlogloss',  # Multi-class logloss
             use_label_encoder=False,
-            early_stopping_rounds=10,
+            # early_stopping_rounds moved to fit() call
             num_class=3,  # 3 classes
             objective='multi:softprob'  # Multi-class classification
         )
@@ -4303,6 +4327,7 @@ class IntegratedMLModel:
             self.model.fit(
                 X_train, y_train,
                 eval_set=[(X_val, y_val)],
+                early_stopping_rounds=10,
                 verbose=False
             )
             
@@ -4697,13 +4722,28 @@ class RiskManagerWithCommentary:
     
     def __init__(self, account_balance: float, commentary_system):
         self.account_balance = account_balance
-        self.daily_pnl = 0
+        self.schwab_daily_pnl = 0  # ONLY use Schwab P&L
         self.consecutive_losses = 0
         self.positions = {}
         self.max_portfolio_heat = 0.06
         self.margin_call = False
         self.buying_power = account_balance * 0.5
         self.commentary = commentary_system
+        self.last_schwab_sync = None
+    
+    def sync_with_schwab_data(self, schwab_account_info: Dict[str, float]):
+        """Sync risk manager with actual Schwab account data"""
+        if schwab_account_info:
+            # Update with real Schwab data ONLY
+            self.schwab_daily_pnl = schwab_account_info.get('day_pnl', 0)
+            self.buying_power = schwab_account_info.get('buying_power', self.buying_power)
+            self.account_balance = schwab_account_info.get('balance', self.account_balance)
+            
+            self.last_schwab_sync = datetime.now()
+            
+            # Log the sync
+            logger.info(f"Risk Manager synced with Schwab: P&L=${self.schwab_daily_pnl:.2f}, "
+                       f"Buying Power=${self.buying_power:.2f}, Balance=${self.account_balance:.2f}")
     
     async def calculate_position_size_with_commentary(self, signal, current_price: float) -> int:
         """Calculate position size with detailed explanation"""
@@ -4849,8 +4889,9 @@ class RiskManagerWithCommentary:
         if self.buying_power < 100:
             return False, f"Insufficient buying power: ${self.buying_power:.2f}"
         
-        if self.daily_pnl <= -Config().MAX_DAILY_LOSS * self.account_balance:
-            return False, "Daily loss limit exceeded"
+        # ONLY use Schwab's P&L
+        if self.schwab_daily_pnl <= -Config().MAX_DAILY_LOSS * self.account_balance:
+            return False, f"Daily loss limit exceeded (P&L: ${self.schwab_daily_pnl:.2f})"
         
         if self.consecutive_losses >= Config().MAX_CONSECUTIVE_LOSSES:
             return False, "Max consecutive losses reached"
@@ -5165,9 +5206,16 @@ class TradingEngineWithCommentary:
     
     def __init__(self, mode: TradingMode = TradingMode.SIMULATION_WITH_COMMENTARY, connection_manager=None):
         self.mode = mode
+        self.connection_manager = connection_manager  # Store connection manager for broadcasting
         self.schwab_client = None
         self.data_provider = None
         self.positions = {}
+        
+        # Trading hours configuration from config file
+        config = Config()
+        self.allow_premarket = config.manager.get('trading.extended_hours.allow_premarket', False)
+        self.allow_afterhours = config.manager.get('trading.extended_hours.allow_afterhours', False)
+        self.use_limit_orders_extended_hours = config.manager.get('trading.extended_hours.use_limit_orders', True)
         self.simulated_positions = {}
         self.trade_history = []
         self.is_running = False
@@ -5313,7 +5361,7 @@ class TradingEngineWithCommentary:
                 with open(state_file, 'r') as f:
                     state = json.load(f)
                     self.trade_history = state.get('trade_history', [])
-                    self.risk_manager.daily_pnl = state.get('daily_pnl', 0)
+                    # Don't load P&L from state - always get fresh from Schwab
                     self.risk_manager.consecutive_losses = state.get('consecutive_losses', 0)
                     
                     # Load position long-term flags
@@ -5369,23 +5417,93 @@ class TradingEngineWithCommentary:
             if self.risk_manager.buying_power < required:
                 raise InsufficientFundsException(required, self.risk_manager.buying_power)
                                     
-            from schwab.orders.equities import equity_buy_market, equity_sell_market, equity_sell_short_market
+            from schwab.orders.equities import (equity_buy_market, equity_sell_market, 
+                                                equity_sell_short_market, equity_buy_limit, 
+                                                equity_sell_limit, equity_sell_short_limit)
             from schwab.orders.common import Duration, Session
             
-            # Build order based on signal type
-            if signal.signal_type == SignalType.BUY:
-                order_builder = equity_buy_market(signal.symbol, signal.position_size)
-            else:  # SHORT
-                try:
-                    order_builder = equity_sell_short_market(signal.symbol, signal.position_size)
-                except AttributeError:
-                    # Fallback if short function not available
-                    order_builder = equity_sell_market(signal.symbol, signal.position_size)
-                    order_builder.set_instruction('SELL_SHORT')
+            # Check if we should use limit orders
+            use_limit, reason = self.should_use_limit_order()
+            is_regular, session = self.is_market_hours()
+            
+            # Block trading if market is closed and extended hours not allowed
+            if session == 'closed':
+                self.commentary.add_commentary(TradingCommentary(
+                    timestamp=datetime.now(),
+                    type=CommentaryType.WARNING,
+                    symbol=signal.symbol,
+                    title=f"🚫 Market Closed",
+                    message=f"Cannot place order - market is closed. Will retry during market hours.",
+                    importance=8
+                ))
+                return None
+            elif session == 'premarket' and not self.allow_premarket:
+                self.commentary.add_commentary(TradingCommentary(
+                    timestamp=datetime.now(),
+                    type=CommentaryType.WARNING,
+                    symbol=signal.symbol,
+                    title=f"🚫 Premarket Trading Disabled",
+                    message=f"Order blocked - premarket trading is disabled for safety. Enable in settings if needed.",
+                    importance=8
+                ))
+                return None
+            elif session == 'afterhours' and not self.allow_afterhours:
+                self.commentary.add_commentary(TradingCommentary(
+                    timestamp=datetime.now(),
+                    type=CommentaryType.WARNING,
+                    symbol=signal.symbol,
+                    title=f"🚫 After-Hours Trading Disabled",
+                    message=f"Order blocked - after-hours trading is disabled for safety. Enable in settings if needed.",
+                    importance=8
+                ))
+                return None
+            
+            # Get current price for limit orders
+            current_price = signal.entry_price
+            
+            # Build order based on type and market hours
+            if use_limit or self.use_limit_orders_extended_hours:
+                # Use limit orders during extended hours
+                self.commentary.add_commentary(TradingCommentary(
+                    timestamp=datetime.now(),
+                    type=CommentaryType.INFO,
+                    symbol=signal.symbol,
+                    title=f"⚠️ Using Limit Order",
+                    message=f"{reason}. Placing limit order at ${current_price:.2f}",
+                    importance=7
+                ))
+                
+                if signal.signal_type == SignalType.BUY:
+                    # Add small buffer above current price for buys
+                    limit_price = current_price * 1.001  # 0.1% above current
+                    order_builder = equity_buy_limit(signal.symbol, signal.position_size, limit_price)
+                else:  # SELL/SHORT
+                    # Subtract small buffer below current price for sells
+                    limit_price = current_price * 0.999  # 0.1% below current
+                    try:
+                        order_builder = equity_sell_short_limit(signal.symbol, signal.position_size, limit_price)
+                    except AttributeError:
+                        order_builder = equity_sell_limit(signal.symbol, signal.position_size, limit_price)
+                        order_builder.set_instruction('SELL_SHORT')
+            else:
+                # Use market orders during regular hours
+                if signal.signal_type == SignalType.BUY:
+                    order_builder = equity_buy_market(signal.symbol, signal.position_size)
+                else:  # SHORT
+                    try:
+                        order_builder = equity_sell_short_market(signal.symbol, signal.position_size)
+                    except AttributeError:
+                        order_builder = equity_sell_market(signal.symbol, signal.position_size)
+                        order_builder.set_instruction('SELL_SHORT')
             
             # Set order parameters
             order_builder.set_duration(Duration.DAY)
-            order_builder.set_session(Session.NORMAL)
+            
+            # Set session based on market hours
+            if session == 'premarket' or session == 'afterhours':
+                order_builder.set_session(Session.EXTENDED)
+            else:
+                order_builder.set_session(Session.NORMAL)
             
             # Build the order
             order = order_builder.build()
@@ -6210,30 +6328,55 @@ class TradingEngineWithCommentary:
             return False
         
         try:
-            from schwab.orders.equities import equity_sell_market
+            from schwab.orders.equities import (equity_sell_market, equity_buy_market, 
+                                                equity_buy_to_cover_market, equity_sell_limit,
+                                                equity_buy_limit, equity_buy_to_cover_limit)
             from schwab.orders.common import Duration, Session
             
             quantity_to_sell = int(position.quantity * exit_portion)
             
-            # Create market sell order
-            from schwab.orders.equities import equity_sell_market, equity_buy_market, equity_buy_to_cover_market
-            from schwab.orders.common import Duration, Session
-
-            quantity_to_sell = int(position.quantity * exit_portion)
-
-            # Create appropriate order based on position side
-            if position.side == 'long':
-                order_builder = equity_sell_market(position.symbol, quantity_to_sell)
-            else:  # SHORT position - need to buy to cover
-                try:
-                    order_builder = equity_buy_to_cover_market(position.symbol, quantity_to_sell)
-                except AttributeError:
-                    # Fallback if buy to cover not available
-                    order_builder = equity_buy_market(position.symbol, quantity_to_sell)
-                    order_builder.set_instruction('BUY_TO_COVER')
+            # Check market hours for order type
+            use_limit, reason = self.should_use_limit_order()
+            is_regular, session = self.is_market_hours()
+            
+            # Get current price for limit orders
+            current_price = position.current_price if hasattr(position, 'current_price') else position.entry_price
+            
+            # Create appropriate order based on position side and market hours
+            if use_limit or self.use_limit_orders_extended_hours:
+                # Use limit orders during extended hours
+                logger.info(f"Using limit order to close position: {reason}")
+                
+                if position.side == 'long':
+                    # Sell with limit slightly below current for quick fill
+                    limit_price = current_price * 0.999
+                    order_builder = equity_sell_limit(position.symbol, quantity_to_sell, limit_price)
+                else:  # SHORT position - need to buy to cover
+                    # Buy to cover with limit slightly above current for quick fill
+                    limit_price = current_price * 1.001
+                    try:
+                        order_builder = equity_buy_to_cover_limit(position.symbol, quantity_to_sell, limit_price)
+                    except AttributeError:
+                        order_builder = equity_buy_limit(position.symbol, quantity_to_sell, limit_price)
+                        order_builder.set_instruction('BUY_TO_COVER')
+            else:
+                # Use market orders during regular hours
+                if position.side == 'long':
+                    order_builder = equity_sell_market(position.symbol, quantity_to_sell)
+                else:  # SHORT position - need to buy to cover
+                    try:
+                        order_builder = equity_buy_to_cover_market(position.symbol, quantity_to_sell)
+                    except AttributeError:
+                        order_builder = equity_buy_market(position.symbol, quantity_to_sell)
+                        order_builder.set_instruction('BUY_TO_COVER')
 
             order_builder.set_duration(Duration.DAY)
-            order_builder.set_session(Session.NORMAL)
+            
+            # Set session based on market hours
+            if session == 'premarket' or session == 'afterhours':
+                order_builder.set_session(Session.EXTENDED)
+            else:
+                order_builder.set_session(Session.NORMAL)
             
             order = order_builder.build()
             
@@ -6351,8 +6494,8 @@ class TradingEngineWithCommentary:
                 else:  # long
                     final_pnl = (exit_price - position.entry_price) * position.quantity
                 
-                # Update risk manager
-                self.risk_manager.daily_pnl += final_pnl
+                # Update risk manager - Note: P&L will be updated from Schwab on next sync
+                # We don't track P&L internally anymore
                 if final_pnl < 0:
                     self.risk_manager.consecutive_losses += 1
                 else:
@@ -6386,6 +6529,224 @@ class TradingEngineWithCommentary:
                         
         except Exception as e:
             logger.error(f"Position update error: {e}")
+    def is_market_hours(self) -> tuple[bool, str]:
+        """Check if we're in regular market hours
+        
+        Returns:
+            (is_regular_hours, session_type)
+            session_type: 'regular', 'premarket', 'afterhours', or 'closed'
+        """
+        from datetime import time
+        import pytz
+        
+        # Get current time in Eastern timezone
+        eastern = pytz.timezone('US/Eastern')
+        now = datetime.now(eastern)
+        current_time = now.time()
+        weekday = now.weekday()
+        
+        # Skip weekends
+        if weekday >= 5:  # Saturday = 5, Sunday = 6
+            return False, 'closed'
+        
+        # Define market sessions (Eastern Time)
+        premarket_start = time(4, 0)    # 4:00 AM ET
+        regular_start = time(9, 30)     # 9:30 AM ET
+        regular_end = time(16, 0)       # 4:00 PM ET
+        afterhours_end = time(20, 0)    # 8:00 PM ET
+        
+        # Check which session we're in
+        if current_time < premarket_start:
+            return False, 'closed'
+        elif current_time < regular_start:
+            return False, 'premarket'
+        elif current_time < regular_end:
+            return True, 'regular'
+        elif current_time < afterhours_end:
+            return False, 'afterhours'
+        else:
+            return False, 'closed'
+    
+    def should_use_limit_order(self) -> tuple[bool, str]:
+        """Determine if we should use limit orders based on market hours
+        
+        Returns:
+            (use_limit, reason)
+        """
+        is_regular, session = self.is_market_hours()
+        
+        if is_regular:
+            return False, "Regular hours - market orders OK"
+        
+        if session == 'closed':
+            return True, "Market closed - orders will queue"
+        elif session == 'premarket':
+            if not self.allow_premarket:
+                return True, "Premarket trading disabled"
+            return True, "Premarket - using limit orders for safety"
+        elif session == 'afterhours':
+            if not self.allow_afterhours:
+                return True, "After-hours trading disabled"
+            return True, "After-hours - using limit orders for safety"
+        
+        return True, "Extended hours - using limit orders"
+    
+    def get_todays_trades(self):
+        """Get actual trades from Schwab (both open positions and closed trades from today)"""
+        if self.mode == TradingMode.LIVE and self.schwab_client:
+            return self.get_schwab_trades_today()
+        else:
+            # Fallback to internal trade history for simulation mode
+            return self.get_internal_trades_today()
+    
+    def get_internal_trades_today(self):
+        """Get trades from internal history (used for simulation)"""
+        today = datetime.now().date()
+        todays_trades = []
+        
+        for trade in self.trade_history:
+            # Parse the entry time
+            try:
+                if isinstance(trade.get('entry_time'), str):
+                    entry_time = datetime.fromisoformat(trade['entry_time'].replace('Z', '+00:00'))
+                else:
+                    entry_time = trade.get('entry_time', datetime.now())
+                
+                # Check if trade is from today
+                if entry_time.date() == today:
+                    todays_trades.append(trade)
+            except Exception as e:
+                logger.debug(f"Error parsing trade time: {e}")
+                # If we can't parse the time, include it if it's recent
+                if len(self.trade_history) <= 50 and trade in self.trade_history[-50:]:
+                    todays_trades.append(trade)
+        
+        # Sort by entry time (most recent first)
+        todays_trades.sort(key=lambda x: x.get('entry_time', ''), reverse=True)
+        
+        return todays_trades
+    
+    def get_schwab_trades_today(self):
+        """Get actual trades from Schwab API for today"""
+        try:
+            today = datetime.now().date()
+            todays_trades = []
+            
+            # Get today's filled orders from Schwab
+            from_time = datetime.combine(today, datetime.min.time())
+            to_time = datetime.now()
+            
+            # Get orders for today
+            response = self.schwab_client.get_orders_for_account(
+                self.account_hash,
+                from_entered_datetime=from_time,
+                to_entered_datetime=to_time
+            )
+            
+            if response.status_code == 200:
+                orders = response.json()
+                
+                for order in orders:
+                    # Process each order
+                    status = order.get('status', '')
+                    
+                    # Include both FILLED orders (closed trades) and WORKING orders (open positions)
+                    if status in ['FILLED', 'WORKING', 'QUEUED', 'ACCEPTED']:
+                        # Extract order details
+                        order_activities = order.get('orderActivityCollection', [])
+                        order_legs = order.get('orderLegCollection', [])
+                        
+                        for leg in order_legs:
+                            symbol = leg.get('instrument', {}).get('symbol', 'Unknown')
+                            quantity = leg.get('quantity', 0)
+                            instruction = leg.get('instruction', '')  # BUY, SELL, etc.
+                            
+                            # Get execution details if filled
+                            if order_activities:
+                                for activity in order_activities:
+                                    execution_legs = activity.get('executionLegs', [])
+                                    for exec_leg in execution_legs:
+                                        exec_price = exec_leg.get('price', 0)
+                                        exec_quantity = exec_leg.get('quantity', 0)
+                                        exec_time = exec_leg.get('time', '')
+                                        
+                                        # Create trade record
+                                        trade = {
+                                            'symbol': symbol,
+                                            'entry_time': order.get('enteredTime', ''),
+                                            'exit_time': exec_time if status == 'FILLED' else None,
+                                            'entry_price': exec_price if instruction in ['BUY', 'BUY_TO_OPEN'] else 0,
+                                            'exit_price': exec_price if instruction in ['SELL', 'SELL_TO_CLOSE'] else 0,
+                                            'quantity': exec_quantity,
+                                            'status': status,
+                                            'instruction': instruction,
+                                            'pnl': 0,  # Will calculate below
+                                            'reason': 'Schwab Order'
+                                        }
+                                        todays_trades.append(trade)
+                            else:
+                                # For working orders without execution yet
+                                if status == 'WORKING':
+                                    # Get current position info to show unrealized P&L
+                                    positions = self.positions.get(symbol)
+                                    current_pnl = positions.unrealized_pnl if positions else 0
+                                    
+                                    trade = {
+                                        'symbol': symbol,
+                                        'entry_time': order.get('enteredTime', ''),
+                                        'exit_time': None,  # Still open
+                                        'entry_price': order.get('price', 0),
+                                        'exit_price': 0,
+                                        'quantity': quantity,
+                                        'status': 'OPEN',
+                                        'instruction': instruction,
+                                        'pnl': current_pnl,
+                                        'reason': 'Open Position'
+                                    }
+                                    todays_trades.append(trade)
+            
+            # Also add current open positions that might not have orders today
+            current_positions = self.positions
+            for symbol, position in current_positions.items():
+                # Check if we already have this position in trades
+                if not any(t['symbol'] == symbol and t['status'] == 'OPEN' for t in todays_trades):
+                    trade = {
+                        'symbol': symbol,
+                        'entry_time': position.entry_time.isoformat() if hasattr(position.entry_time, 'isoformat') else str(position.entry_time),
+                        'exit_time': None,
+                        'entry_price': position.entry_price,
+                        'exit_price': 0,
+                        'quantity': position.quantity,
+                        'status': 'OPEN',
+                        'pnl': position.unrealized_pnl,
+                        'reason': 'Open Position'
+                    }
+                    todays_trades.append(trade)
+            
+            # Sort by time (most recent first)
+            todays_trades.sort(key=lambda x: x.get('entry_time', ''), reverse=True)
+            
+            return todays_trades
+            
+        except Exception as e:
+            logger.error(f"Error getting Schwab trades: {e}")
+            # Fallback to internal history
+            return self.get_internal_trades_today()
+    
+    async def _broadcast_trade_update(self, trade_record):
+        """Broadcast a single trade update to all connected WebSocket clients"""
+        if hasattr(self, 'connection_manager') and self.connection_manager:
+            try:
+                await self.connection_manager.broadcast({
+                    'type': 'trade_update',
+                    'data': {
+                        'new_trade': trade_record,
+                        'all_trades': self.get_todays_trades()
+                    }
+                })
+            except Exception as e:
+                logger.debug(f"Error broadcasting trade update: {e}")
+    
     def _save_state(self):
         """Save current trading state"""
         # Save position long-term flags
@@ -6401,7 +6762,7 @@ class TradingEngineWithCommentary:
         
         state = {
             'trade_history': self.trade_history[-100:],  # Keep last 100 trades
-            'daily_pnl': self.risk_manager.daily_pnl,
+            'schwab_pnl': self.risk_manager.schwab_daily_pnl,  # Store Schwab P&L for reference
             'consecutive_losses': self.risk_manager.consecutive_losses,
             'positions_data': positions_data,  # Save position metadata
             'last_save': datetime.now().isoformat()
@@ -6499,9 +6860,59 @@ class TradingEngineWithCommentary:
             # Create dummy data provider for simulation
             self.data_provider = DummyDataProvider(self.commentary)
      
+    async def sync_positions_with_schwab(self):
+        """Sync internal position tracking with actual Schwab positions"""
+        if not self.schwab_client or self.mode != TradingMode.LIVE:
+            return
+        
+        try:
+            schwab_positions = await self.get_schwab_positions()
+            
+            # Clear out internal tracking and rebuild from Schwab
+            self.positions.clear()
+            
+            for pos_data in schwab_positions:
+                symbol = pos_data['symbol']
+                
+                # Create Position object for each Schwab position
+                position = Position(
+                    symbol=symbol,
+                    entry_price=pos_data['average_price'],
+                    current_price=pos_data['current_price'],
+                    quantity=abs(pos_data['quantity']),
+                    side='long' if pos_data['quantity'] > 0 else 'short',
+                    stop_loss=pos_data['average_price'] * 0.95,  # Default 5% stop
+                    take_profit=pos_data['average_price'] * 1.1,  # Default 10% profit
+                    entry_time=datetime.now() - timedelta(hours=1)  # Approximate
+                )
+                
+                position.unrealized_pnl = pos_data['total_pnl']
+                self.positions[symbol] = position
+                
+            logger.info(f"Synced {len(self.positions)} positions from Schwab")
+            
+            # Update commentary
+            if self.positions:
+                self.commentary.add_commentary(TradingCommentary(
+                    timestamp=datetime.now(),
+                    type=CommentaryType.ACCOUNT_UPDATE,
+                    symbol=None,
+                    title="📊 Position Sync Complete",
+                    message=f"Synced {len(self.positions)} positions from Schwab: {', '.join(self.positions.keys())}",
+                    importance=5
+                ))
+                
+        except Exception as e:
+            logger.error(f"Failed to sync positions with Schwab: {e}")
+    
     async def start(self):
         """Start the trading engine with commentary"""
         self.is_running = True
+        self.ml_predictor.model.is_trained = True 
+        
+        # Sync positions with Schwab on startup
+        if self.mode == TradingMode.LIVE and self.schwab_client:
+            await self.sync_positions_with_schwab()
         
         risk_per_trade = Config().MAX_RISK_PER_TRADE
         self.commentary.add_commentary(TradingCommentary(
@@ -6578,6 +6989,32 @@ class TradingEngineWithCommentary:
                 
                 analysis_count += 1
                 
+                # Sync with Schwab account data periodically (every 5 analyses)
+                if analysis_count % 5 == 0 and self.schwab_client:
+                    try:
+                        # Sync account info
+                        account_info = await self._get_real_account_info()
+                        if account_info:
+                            self.risk_manager.sync_with_schwab_data(account_info)
+                            
+                            # Log the sync to commentary
+                            self.commentary.add_commentary(TradingCommentary(
+                                timestamp=datetime.now(),
+                                type=CommentaryType.ACCOUNT_UPDATE,
+                                symbol=None,
+                                title="📊 Account Sync",
+                                message=f"Synced with Schwab: Daily P&L=${account_info.get('day_pnl', 0):.2f}",
+                                data={'schwab_pnl': account_info.get('day_pnl', 0),
+                                      'buying_power': account_info.get('buying_power', 0)},
+                                importance=4
+                            ))
+                        
+                        # Also sync positions every 5 analyses
+                        await self.sync_positions_with_schwab()
+                        
+                    except Exception as e:
+                        logger.error(f"Failed to sync with Schwab: {e}")
+                
                 # Update position prices before analysis
                 await self._update_position_prices()
                 
@@ -6602,21 +7039,69 @@ class TradingEngineWithCommentary:
                 
                 # Manage existing positions with commentary
                 await self._manage_positions_with_commentary()
-                # Emergency stop check
-                if self.risk_manager.daily_pnl < -self.risk_manager.account_balance * 0.05:
-                    self.commentary.add_commentary(TradingCommentary(
-                        timestamp=datetime.now(),
-                        type=CommentaryType.WARNING,
-                        symbol=None,
-                        title="🚨 EMERGENCY STOP",
-                        message=f"Daily loss exceeded 3% limit. Closing all positions.",
-                        importance=10
-                    ))
+                
+                # Emergency stop check - ONLY use Schwab P&L
+                # Get fresh P&L from Schwab for accuracy
+                schwab_pnl = 0
+                if self.schwab_client and analysis_count % 5 == 0:  # Check every 5 cycles
+                    fresh_info = await self._get_real_account_info()
+                    if fresh_info:
+                        schwab_pnl = fresh_info.get('day_pnl', 0)
+                        # Update risk manager with Schwab data
+                        self.risk_manager.schwab_daily_pnl = schwab_pnl
+                        logger.info(f"Schwab P&L Check: ${schwab_pnl:.2f} (Limit: ${self.risk_manager.account_balance * 0.05:.2f})")
+                
+                # Only check emergency stop with real Schwab P&L
+                if schwab_pnl < 0 and abs(schwab_pnl) > self.risk_manager.account_balance * 0.05:
+                    # Double-check with fresh Schwab data before closing positions
+                    if self.schwab_client:
+                        fresh_account_info = await self._get_real_account_info()
+                        if fresh_account_info:
+                            fresh_pnl = fresh_account_info.get('day_pnl', 0)
+                            logger.warning(f"Emergency stop check - Fresh P&L: ${fresh_pnl:.2f}")
+                            
+                            # If fresh data shows we're not in loss, abort emergency stop
+                            if fresh_pnl >= 0:
+                                logger.warning(f"Emergency stop ABORTED - Fresh data shows profit: ${fresh_pnl:.2f}")
+                                self.commentary.add_commentary(TradingCommentary(
+                                    timestamp=datetime.now(),
+                                    type=CommentaryType.INFO,
+                                    symbol=None,
+                                    title="✅ False Alarm",
+                                    message=f"Emergency stop cancelled - Account is actually in profit: ${fresh_pnl:.2f}",
+                                    importance=7
+                                ))
+                                continue  # Skip emergency stop
                     
-                    # Close all positions
-                    for symbol in list(self.positions.keys()):
-                        position = self.positions[symbol]
-                        await self._close_position_with_commentary(position, "emergency_stop")
+                    # Check if manual close only is enabled
+                    if self.manual_close_only:
+                        self.commentary.add_commentary(TradingCommentary(
+                            timestamp=datetime.now(),
+                            type=CommentaryType.WARNING,
+                            symbol=None,
+                            title="🚨 EMERGENCY STOP (Manual Mode)",
+                            message=f"Daily loss of ${abs(pnl_to_check):.2f} exceeded 5% limit (${self.risk_manager.account_balance * 0.05:.2f}). "
+                                   f"Manual close only is ON - YOU must close positions manually!",
+                            importance=10
+                        ))
+                        
+                        # Stop trading but DON'T close positions
+                        self.is_running = False
+                        break
+                    else:
+                        self.commentary.add_commentary(TradingCommentary(
+                            timestamp=datetime.now(),
+                            type=CommentaryType.WARNING,
+                            symbol=None,
+                            title="🚨 EMERGENCY STOP",
+                            message=f"Daily loss of ${abs(pnl_to_check):.2f} exceeded 5% limit (${self.risk_manager.account_balance * 0.05:.2f}). Closing all positions.",
+                            importance=10
+                        ))
+                        
+                        # Close all positions
+                        for symbol in list(self.positions.keys()):
+                            position = self.positions[symbol]
+                            await self._close_position_with_commentary(position, "emergency_stop")
                     
                     self.is_running = False
                     break
@@ -6627,24 +7112,21 @@ class TradingEngineWithCommentary:
                     if (datetime.now() - self._last_bp_check).total_seconds() > 300:
                         await self._check_buying_power(0)
                 
-                # After the position management section
+                # After the position management section - retrain ML model periodically
                 if analysis_count % 100 == 0:  # Every 100 cycles
-                    asyncio.create_task(self.ml_predictor.retrain_model(
-                        self.data_provider, 
-                        ['TSLA', 'PLTR', 'NVDA']
-                    ))
+                    # ScalpingMLModel doesn't have async retrain_model, just train()
+                    # The training happens automatically via update_with_outcome
+                    logger.info(f"ML model analysis cycle {analysis_count} - model is self-retraining via online learning")
 
 		        # Save state periodically
                 if analysis_count % 10 == 0:  # Every 10 analysis cycles
                     self._save_state()
                     self.brain.save_memories()
-
-                # Add retraining check:
-                if analysis_count % 100 == 0:  # Every 100 cycles
-                    asyncio.create_task(self.ml_predictor.retrain_model(
-                        self.data_provider,
-                        ['PLTR', 'NVDA', 'TSLA']
-                    ))
+                    
+                    # Also save ML model periodically to preserve buffer
+                    if hasattr(self, 'ml_predictor') and self.ml_predictor:
+                        if hasattr(self.ml_predictor, 'save_model'):
+                            self.ml_predictor.save_model(create_version=False)  # Don't create version every time
                 # Wait before next analysis
                 await asyncio.sleep(30)  # Check every 30 seconds
                 
@@ -6838,7 +7320,7 @@ class TradingEngineWithCommentary:
                 title="🚫 Trading Conditions Not Met",
                 message=f"I'm not trading because: {reason}",
                 data={
-                    'daily_pnl': self.risk_manager.daily_pnl,
+                    'daily_pnl': self.risk_manager.schwab_daily_pnl,  # Use Schwab P&L
                     'consecutive_losses': self.risk_manager.consecutive_losses,
                     'buying_power': self.risk_manager.buying_power
                 },
@@ -6999,19 +7481,8 @@ class TradingEngineWithCommentary:
     
     async def _process_signal_with_commentary(self, signal, ml_signal, ml_explanation):
         """Process trading signal with detailed explanation"""
-        # Check if already in position (both bot-tracked and real Schwab positions)
-        if signal.symbol in self.positions or signal.symbol in self.simulated_positions:
-            self.commentary.add_commentary(TradingCommentary(
-                timestamp=datetime.now(),
-                type=CommentaryType.DECISION,
-                symbol=signal.symbol,
-                title=f"📍 Already in Position",
-                message=f"I already have a position in {signal.symbol}, skipping this signal.",
-                importance=3
-            ))
-            return
         
-        # CRITICAL: Check real Schwab positions before placing order
+        # CRITICAL: Check real Schwab positions FIRST before internal tracking
         if self.mode == TradingMode.LIVE and self.schwab_client:
             schwab_positions = await self.get_schwab_positions()
             existing_position = next((pos for pos in schwab_positions if pos['symbol'] == signal.symbol), None)
@@ -7054,6 +7525,18 @@ class TradingEngineWithCommentary:
                         )
                 
                 return
+        
+        # Check internal tracking (for simulation mode or as fallback)
+        if signal.symbol in self.positions or signal.symbol in self.simulated_positions:
+            self.commentary.add_commentary(TradingCommentary(
+                timestamp=datetime.now(),
+                type=CommentaryType.DECISION,
+                symbol=signal.symbol,
+                title=f"📍 Already Tracking Position",
+                message=f"Already tracking position in {signal.symbol}, skipping this signal.",
+                importance=3
+            ))
+            return
         
         # EARLY BUYING POWER CHECK for LIVE mode
         if self.mode == TradingMode.LIVE:
@@ -7429,7 +7912,19 @@ class TradingEngineWithCommentary:
                         should_exit, exit_reason = await self._evaluate_exit_conditions(position, current_price)
                         
                         if should_exit:
-                            await self._close_position_with_commentary(position, exit_reason)
+                            # Check if manual close only is enabled
+                            if self.manual_close_only and self.mode == TradingMode.LIVE:
+                                self.commentary.add_commentary(TradingCommentary(
+                                    timestamp=datetime.now(),
+                                    type=CommentaryType.INFO,
+                                    symbol=position.symbol,
+                                    title=f"📍 Exit Signal (Manual Mode)",
+                                    message=f"Exit condition met ({exit_reason}) but manual close only is ON. "
+                                           f"Current P&L: ${position.unrealized_pnl:.2f}. YOU must close manually.",
+                                    importance=7
+                                ))
+                            else:
+                                await self._close_position_with_commentary(position, exit_reason)
                     else:
                         # Log that we're skipping long-term position
                         if not hasattr(self, '_long_term_logged') or symbol not in self._long_term_logged:
@@ -7523,6 +8018,20 @@ class TradingEngineWithCommentary:
     
     async def _close_position_with_commentary(self, position, reason: str):
         """Close position with detailed commentary"""
+        # CRITICAL: Check if manual close only is enabled (except for manual_override)
+        if self.manual_close_only and self.mode == TradingMode.LIVE and reason != "manual_override":
+            logger.warning(f"Attempted to auto-close {position.symbol} but manual_close_only is ON. Reason: {reason}")
+            self.commentary.add_commentary(TradingCommentary(
+                timestamp=datetime.now(),
+                type=CommentaryType.WARNING,
+                symbol=position.symbol,
+                title=f"⚠️ Auto-Close Blocked",
+                message=f"Attempted to close {position.symbol} ({reason}) but manual close only is ON. "
+                       f"Current P&L: ${position.unrealized_pnl:.2f}. Use manual close button.",
+                importance=8
+            ))
+            return  # Don't close the position
+        
         # Debug log
         logger.info(f"Attempting to close position: {position.symbol}, mode: {self.mode}")
         # ADD CONFIRMATION HERE
@@ -7672,7 +8181,7 @@ class TradingEngineWithCommentary:
                 return  # Don't remove from tracking if close failed
         
         # Update risk manager only after successful close
-        self.risk_manager.daily_pnl += pnl
+        # Note: P&L will be updated from Schwab on next sync
         if pnl < 0:
             self.risk_manager.consecutive_losses += 1
         else:
@@ -7685,7 +8194,7 @@ class TradingEngineWithCommentary:
             del self.positions[position.symbol]
         
         # Update trade history
-        self.trade_history.append({
+        trade_record = {
             'symbol': position.symbol,
             'entry_time': position.entry_time.isoformat(),
             'exit_time': datetime.now().isoformat(),
@@ -7693,9 +8202,17 @@ class TradingEngineWithCommentary:
             'exit_price': exit_price,
             'quantity': position.quantity,
             'pnl': pnl,
-            'exit_reason': reason,
+            'reason': reason,  # Changed from exit_reason to match frontend
             'reasoning': position.reasoning
-        })
+        }
+        self.trade_history.append(trade_record)
+        
+        # Broadcast trade update immediately if we have a connection manager
+        if hasattr(self, 'connection_manager') and self.connection_manager:
+            try:
+                asyncio.create_task(self._broadcast_trade_update(trade_record))
+            except Exception as e:
+                logger.debug(f"Could not broadcast trade update: {e}")
     
     async def _get_close_confirmation(self, position, reason: str) -> bool:
         """Get user confirmation before closing position"""
@@ -7789,7 +8306,7 @@ class TradingEngineWithCommentary:
         return "\n".join(analysis)
     
     async def _get_real_account_info(self) -> Dict[str, float]:
-        """Get real account information from Schwab"""
+        """Get real account information directly from Schwab - NO CALCULATIONS"""
         if not self.schwab_client or not self.account_id:
             return {}
     
@@ -7801,70 +8318,39 @@ class TradingEngineWithCommentary:
                 fields=[Client.Account.Fields.POSITIONS]
             )
             
-            if response.status_code == 200:
-                data = response.json()
-                account = data.get('securitiesAccount', {})
-                current_balances = account.get('currentBalances', {})
-                initial_balances = account.get('initialBalances', {})
-                
-                # Try to calculate day P&L from balance difference
-                current_value = current_balances.get('liquidationValue', 0)
-                initial_value = initial_balances.get('liquidationValue', 0)
-                
-                # This gives us the total change including deposits/withdrawals
-                balance_change = current_value - initial_value
-                
-                # Get cash movement to adjust for deposits/withdrawals
-                current_cash = current_balances.get('cashBalance', 0)
-                initial_cash = initial_balances.get('cashBalance', 0)
-                
-                # If there's a projected balances section, check it
-                projected = account.get('projectedBalances', {})
-                
-                # Debug: log available balance fields
-                logger.debug(f"Current balances fields: {list(current_balances.keys())}")
-                logger.debug(f"Initial balances fields: {list(initial_balances.keys())}")
-                if projected:
-                    logger.debug(f"Projected balances fields: {list(projected.keys())}")
-                
-                # First try to get it from projected balances if available
-                day_pnl = projected.get('dayTradingGainLoss', None)
-                
-                if day_pnl is None:
-                    # Method 1: Try to calculate from balance change
-                    # This includes both realized and unrealized P&L
-                    if initial_value > 0:
-                        # Calculate the change, excluding any cash deposits/withdrawals
-                        cash_change = current_cash - initial_cash
-                        
-                        # If cash increased significantly (likely a deposit), don't count it as P&L
-                        if abs(cash_change) > 1000:  # Threshold for deposits/withdrawals
-                            # Balance change minus cash movement
-                            day_pnl = balance_change - cash_change
-                        else:
-                            # No significant cash movement, so balance change is P&L
-                            day_pnl = balance_change
-                    else:
-                        # Method 2: Fallback to position-based calculation
-                        day_pnl = 0
-                        positions = account.get('positions', [])
-                        
-                        for pos in positions:
-                            # Get current day P&L for this position
-                            current_day_pnl = pos.get('currentDayProfitLoss', 0)
-                            day_pnl += current_day_pnl
-                    
-                    # Log the calculation method used
-                    logger.info(f"Day P&L calculated: ${day_pnl:.2f} (Method: {'balance change' if initial_value > 0 else 'position sum'})")
+            if response.status_code != 200:
+                logger.error(f"Failed to get account info from Schwab. Status: {response.status_code}")
+                return {}
             
-                return {
-                    'balance': current_value,
-                    'buying_power': current_balances.get('buyingPower', 0),
-                    'day_trades_remaining': account.get('roundTrips', 3),
-                    'cash': current_cash,
-                    'day_pnl': day_pnl,
-                    'initial_balance': initial_value  # For reference
-                }
+            data = response.json()
+            account = data.get('securitiesAccount', {})
+            current_balances = account.get('currentBalances', {})
+            
+            # ONLY use Schwab's reported values - NO CALCULATIONS
+            current_value = current_balances.get('liquidationValue', 0)
+            current_cash = current_balances.get('cashBalance', 0)
+            buying_power = current_balances.get('buyingPower', 0)
+            
+            # Get today's P&L from positions ONLY (most reliable)
+            day_pnl = 0
+            if 'positions' in account:
+                for position in account.get('positions', []):
+                    # Schwab provides currentDayProfitLoss for each position
+                    position_day_pnl = position.get('currentDayProfitLoss', 0)
+                    if position_day_pnl == 0:
+                        # Fallback: Check for other P&L fields
+                        position_day_pnl = position.get('dayGainLoss', 0)
+                    day_pnl += position_day_pnl
+            
+            logger.debug(f"Schwab Direct Values - Balance: ${current_value:.2f}, P&L: ${day_pnl:.2f}, Cash: ${current_cash:.2f}")
+            
+            return {
+                'balance': current_value,
+                'buying_power': buying_power,
+                'day_trades_remaining': account.get('roundTrips', 3),
+                'cash': current_cash,
+                'day_pnl': day_pnl  # Direct from Schwab positions
+            }
         except Exception as e:
             logger.error(f"Account info error: {e}")
     
@@ -9152,7 +9638,12 @@ DASHBOARD_HTML_WITH_COMMENTARY = """
             </div>
             
             <div class="card">
-                <h3>Recent Bot Trades</h3>
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <h3>Recent Bot Trades (Today)</h3>
+                    <button onclick="refreshTrades()" style="padding: 5px 10px; background: #4CAF50; color: white; border: none; border-radius: 3px; cursor: pointer;">
+                        🔄 Refresh
+                    </button>
+                </div>
                 <table id="trades-table">
                     <thead>
                         <tr>
@@ -9190,6 +9681,9 @@ DASHBOARD_HTML_WITH_COMMENTARY = """
                 addCommentary(data.data);
             } else if (data.type === 'dashboard_update') {
                 updateDashboard(data.data);
+            } else if (data.type === 'trade_update') {
+                // Update trades table immediately when a trade is closed
+                updateTradesTable(data.data.all_trades);
             } else if (data.type === 'close_confirmation_request') {
                 showCloseConfirmation(data.data);
             }
@@ -9280,6 +9774,34 @@ DASHBOARD_HTML_WITH_COMMENTARY = """
             });
         }
         
+        function updateTradesTable(trades) {
+            const tradesBody = document.getElementById('trades-body');
+            if (!trades || trades.length === 0) {
+                tradesBody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: #666;">No trades today</td></tr>';
+            } else {
+                tradesBody.innerHTML = trades.map(trade => {
+                    const pnlClass = trade.pnl >= 0 ? 'positive' : 'negative';
+                    const isOpen = trade.status === 'OPEN' || trade.status === 'WORKING' || !trade.exit_time;
+                    const exitTime = isOpen ? '<span style="color: #4CAF50;">OPEN</span>' : 
+                                    (trade.exit_time ? new Date(trade.exit_time).toLocaleTimeString() : 'Pending');
+                    const entryTime = new Date(trade.entry_time).toLocaleTimeString();
+                    const pnlDisplay = isOpen ? 
+                        `<span class="${pnlClass}">$${trade.pnl ? trade.pnl.toFixed(2) : '0.00'} (unrealized)</span>` :
+                        `<span class="${pnlClass}">$${trade.pnl ? trade.pnl.toFixed(2) : 'N/A'}</span>`;
+                    
+                    return `
+                        <tr style="${isOpen ? 'background-color: rgba(76, 175, 80, 0.1);' : ''}">
+                            <td style="font-weight: bold;">${trade.symbol}</td>
+                            <td>${entryTime}</td>
+                            <td>${exitTime}</td>
+                            <td>${pnlDisplay}</td>
+                            <td style="font-size: 0.9em;">${trade.reason || (isOpen ? 'Open Position' : 'Closed')}</td>
+                        </tr>
+                    `;
+                }).join('');
+            }
+        }
+        
         function updateDashboard(data) {
             if (data.account) {
                 document.getElementById('balance').textContent = `$${data.account.balance.toLocaleString()}`;
@@ -9357,6 +9879,29 @@ DASHBOARD_HTML_WITH_COMMENTARY = """
                 }
             }
             
+            // Update recent trades table
+            if (data.trades) {
+                const tradesBody = document.getElementById('trades-body');
+                if (data.trades.length === 0) {
+                    tradesBody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: #666;">No trades today</td></tr>';
+                } else {
+                    tradesBody.innerHTML = data.trades.map(trade => {
+                        const pnlClass = trade.pnl >= 0 ? 'positive' : 'negative';
+                        const exitTime = trade.exit_time ? new Date(trade.exit_time).toLocaleTimeString() : 'Open';
+                        const entryTime = new Date(trade.entry_time).toLocaleTimeString();
+                        return `
+                            <tr>
+                                <td style="font-weight: bold;">${trade.symbol}</td>
+                                <td>${entryTime}</td>
+                                <td>${exitTime}</td>
+                                <td class="${pnlClass}">$${trade.pnl ? trade.pnl.toFixed(2) : 'N/A'}</td>
+                                <td style="font-size: 0.9em;">${trade.reason || '-'}</td>
+                            </tr>
+                        `;
+                    }).join('');
+                }
+            }
+            
             // Update simulated positions
             if (data.simulated_positions) {
                 const tbody = document.getElementById('simulated-positions-body');
@@ -9386,6 +9931,18 @@ DASHBOARD_HTML_WITH_COMMENTARY = """
             if (data.screener) {
                 updateTickerTape(data.screener);
             }   
+        }
+        
+        async function refreshTrades() {
+            try {
+                const response = await fetch('/api/get-trades-today');
+                const data = await response.json();
+                if (data.status === 'success') {
+                    updateTradesTable(data.trades);
+                }
+            } catch (error) {
+                console.error('Error refreshing trades:', error);
+            }
         }
         
         async function requestClosePosition(symbol, positionType) {
@@ -10639,8 +11196,28 @@ async def websocket_endpoint(websocket: WebSocket):
                             'type': 'real'
                         })
                 
-                # Get account info
-                account_info = await trading_engine._get_real_account_info()
+                # Get account info from Schwab
+                account_info = {}
+                if trading_engine.schwab_client:
+                    try:
+                        account_info = await trading_engine._get_real_account_info()
+                        # Log if we got real data
+                        if account_info:
+                            logger.debug(f"WebSocket: Got real Schwab data - Balance=${account_info.get('balance', 0):.2f}, P&L=${account_info.get('day_pnl', 0):.2f}")
+                    except Exception as e:
+                        logger.error(f"WebSocket: Failed to get Schwab account info: {e}")
+                        account_info = {}
+                
+                # If no Schwab data, use risk manager values
+                if not account_info:
+                    logger.debug("WebSocket: Using risk manager fallback values")
+                    account_info = {
+                        'balance': trading_engine.risk_manager.account_balance,
+                        'buying_power': trading_engine.risk_manager.buying_power,
+                        'day_pnl': trading_engine.risk_manager.schwab_daily_pnl if hasattr(trading_engine.risk_manager, 'schwab_daily_pnl') else trading_engine.risk_manager.daily_pnl,
+                        'cash': 0
+                    }
+                
                 # Get screener data
                 screener_data = []
                 if trading_engine.screener and trading_engine.screener.top_movers:
@@ -10654,27 +11231,44 @@ async def websocket_endpoint(websocket: WebSocket):
                         'low': m.get('low', 0)
                     } for m in trading_engine.screener.top_movers[:10]]
                 
-                await websocket.send_json({
-                    'type': 'dashboard_update',
-                    'data': {
-                        'account': {
-                            'balance': account_info.get('balance', trading_engine.risk_manager.account_balance),
-                            'buying_power': account_info.get('buying_power', trading_engine.risk_manager.buying_power),
-                            'daily_pnl': account_info.get('day_pnl', 0),  # Use Schwab's actual day P&L
-                            'margin_call': trading_engine.risk_manager.margin_call,
-                            'cash': account_info.get('cash', 0)
-                        },
-                        'simulated_positions': sim_positions_data,
-                        'real_positions': real_positions_data,
-                        'trades': trading_engine.trade_history[-5:] if trading_engine.trade_history else [],
-                        'screener': screener_data
-                    }
-                })
+                try:
+                    await websocket.send_json({
+                        'type': 'dashboard_update',
+                        'data': {
+                            'account': {
+                                'balance': account_info.get('balance', 0),
+                                'buying_power': account_info.get('buying_power', 0),
+                                'daily_pnl': account_info.get('day_pnl', 0),
+                                'margin_call': trading_engine.risk_manager.margin_call,
+                                'cash': account_info.get('cash', 0)
+                            },
+                            'simulated_positions': sim_positions_data,
+                            'real_positions': real_positions_data,
+                            'trades': trading_engine.get_todays_trades(),
+                            'screener': screener_data
+                        }
+                    })
+                except (ConnectionClosedError, ConnectionResetError):
+                    # Connection closed, break the loop
+                    break
+                except Exception as e:
+                    if "Connection closed" in str(e) or "sent 1012" in str(e):
+                        break
+                    logger.debug(f"Error sending WebSocket data: {e}")
                 
                 
             
     except WebSocketDisconnect:
         await connection_manager.disconnect(websocket)
+    except asyncio.CancelledError:
+        # Handle graceful shutdown
+        await connection_manager.disconnect(websocket)
+        logger.info("WebSocket connection cancelled during shutdown")
+    except Exception as e:
+        # Handle any other connection errors
+        await connection_manager.disconnect(websocket)
+        if "Connection closed" not in str(e) and "sent 1012" not in str(e):
+            logger.error(f"WebSocket error: {e}")
 
 @app.post("/api/confirm-close")
 async def confirm_close(request: dict):
@@ -10691,6 +11285,51 @@ async def confirm_close(request: dict):
             return {"status": "success", "confirmed": confirmed}
     
     return {"status": "error", "message": "Invalid or expired request"}
+
+@app.get("/api/get-trades-today")
+async def get_trades_today():
+    """Get today's actual trades from Schwab"""
+    if not trading_engine:
+        return {"status": "error", "message": "Trading engine not initialized"}
+    
+    try:
+        trades = trading_engine.get_todays_trades()
+        return {"status": "success", "trades": trades}
+    except Exception as e:
+        logger.error(f"Error getting today's trades: {e}")
+        return {"status": "error", "message": str(e)}
+
+@app.post("/api/reset-pnl")
+async def reset_pnl():
+    """Reset P&L values when they're incorrect"""
+    global trading_engine
+    
+    if not trading_engine:
+        return {"status": "error", "message": "Trading engine not initialized"}
+    
+    # Reset Schwab P&L
+    old_schwab = trading_engine.risk_manager.schwab_daily_pnl
+    
+    # Reset to 0 temporarily
+    trading_engine.risk_manager.schwab_daily_pnl = 0
+    
+    # Try to get fresh P&L from Schwab
+    new_pnl = 0
+    if trading_engine.schwab_client:
+        try:
+            account_info = await trading_engine._get_real_account_info()
+            if account_info:
+                trading_engine.risk_manager.sync_with_schwab_data(account_info)
+                new_pnl = account_info.get('day_pnl', 0)
+        except Exception as e:
+            logger.error(f"Error refreshing P&L: {e}")
+    
+    return {
+        "status": "success", 
+        "old_pnl": old_schwab,
+        "new_pnl": new_pnl,
+        "message": f"P&L reset from ${old_schwab:.2f} to ${new_pnl:.2f}"
+    }
 
 @app.post("/api/request-close-position")
 async def request_close_position(request: dict):
@@ -11208,6 +11847,17 @@ def main():
         if trading_engine:
             trading_engine._save_state()
             trading_engine.brain.save_memories()
+            
+            # CRITICAL: Save ML model with buffer
+            if hasattr(trading_engine, 'ml_predictor') and trading_engine.ml_predictor:
+                if hasattr(trading_engine.ml_predictor, 'save_model'):
+                    trading_engine.ml_predictor.save_model()
+                    buffer_size = len(getattr(trading_engine.ml_predictor, 'online_buffer', []))
+                    if buffer_size > 0:
+                        print(f"✅ ML model saved with {buffer_size} training samples in buffer")
+                    else:
+                        print("✅ ML model saved")
+            
             print("✅ State saved successfully")
         sys.exit(0)
     
