@@ -1960,6 +1960,37 @@ class CommentarySystem:
         
     def add_commentary(self, commentary: TradingCommentary):
         """Add new commentary and notify subscribers"""
+        # Normalize dict inputs to TradingCommentary to avoid serialization issues
+        if isinstance(commentary, dict):
+            raw_type = commentary.get('type', 'MARKET_ANALYSIS')
+            try:
+                # Accept either enum, member name, or value
+                if isinstance(raw_type, CommentaryType):
+                    ctype = raw_type
+                elif isinstance(raw_type, str) and raw_type in CommentaryType.__members__:
+                    ctype = CommentaryType[raw_type]
+                else:
+                    ctype = CommentaryType(str(raw_type).lower())
+            except Exception:
+                ctype = CommentaryType.MARKET_ANALYSIS
+            ts = commentary.get('timestamp')
+            if isinstance(ts, str):
+                try:
+                    ts = datetime.fromisoformat(ts)
+                except Exception:
+                    ts = datetime.now()
+            elif ts is None:
+                ts = datetime.now()
+            commentary = TradingCommentary(
+                timestamp=ts,
+                type=ctype,
+                symbol=commentary.get('symbol'),
+                title=commentary.get('title', ''),
+                message=commentary.get('message', ''),
+                data=commentary.get('data', {}),
+                confidence=commentary.get('confidence'),
+                importance=commentary.get('importance', 5)
+            )
         self.history.append(commentary)
         self._display_commentary(commentary)
         self._notify_subscribers(commentary)
