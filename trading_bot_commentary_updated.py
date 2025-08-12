@@ -1798,21 +1798,6 @@ class NewsImpact(Enum):
     HIGH = "high"
     MEDIUM = "medium"
     LOW = "low"
-
-class CommentaryType(Enum):
-    MARKET_ANALYSIS = "market_analysis"
-    SIGNAL_GENERATION = "signal_generation"
-    RISK_ASSESSMENT = "risk_assessment"
-    DECISION = "decision"
-    TECHNICAL = "technical"
-    FUNDAMENTAL = "fundamental"
-    PSYCHOLOGY = "psychology"
-    WARNING = "warning"
-    OPPORTUNITY = "opportunity"
-    ANOMALY = "anomaly"
-    INFO = "info"
-    ACCOUNT_UPDATE = "account_update"
-    ERROR = "error"
 # ============================================================================
 # DATA STRUCTURES
 # ============================================================================

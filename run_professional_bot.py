@@ -20,6 +20,8 @@ from trading_bot_commentary_updated import (
     TradingEngineWithCommentary, 
     Config, 
     TradingMode,
+    TradingCommentary,
+    CommentaryType,
     app,
     connection_manager
 )
@@ -131,13 +133,14 @@ class ProfessionalTradingEngine(TradingEngineWithCommentary):
             self.paper_engine = paper_engine
             self.mode = TradingMode.SIMULATION_WITH_COMMENTARY
         
-        self.commentary.add_commentary({
-            'type': 'DECISION',
-            'timestamp': datetime.now(),
-            'title': '🚀 Professional Mode Activated',
-            'message': f"Strategies: {', '.join(self.prof_config['strategies']['enabled'])}",
-            'importance': 10
-        })
+        self.commentary.add_commentary(TradingCommentary(
+            timestamp=datetime.now(),
+            type=CommentaryType.DECISION,
+            symbol=None,
+            title='🚀 Professional Mode Activated',
+            message=f"Strategies: {', '.join(self.prof_config['strategies']['enabled'])}",
+            importance=10
+        ))
     
     async def generate_trading_signals(self, market_data):
         """Generate signals using professional strategy system"""
@@ -177,14 +180,15 @@ class ProfessionalTradingEngine(TradingEngineWithCommentary):
                     all_signals.append(trading_signal)
         
         # Add commentary about signals
-        self.commentary.add_commentary({
-            'type': 'SIGNAL_GENERATION',
-            'timestamp': datetime.now(),
-            'title': f'📊 Generated {len(all_signals)} Signals',
-            'message': f"Active strategies: {len(self.strategy_manager.strategies)}",
-            'data': {'signals': len(all_signals)},
-            'importance': 8
-        })
+        self.commentary.add_commentary(TradingCommentary(
+            timestamp=datetime.now(),
+            type=CommentaryType.SIGNAL_GENERATION,
+            symbol=None,
+            title=f'📊 Generated {len(all_signals)} Signals',
+            message=f"Active strategies: {len(self.strategy_manager.strategies)}",
+            data={'signals': len(all_signals)},
+            importance=8
+        ))
         
         return all_signals
     
@@ -203,13 +207,14 @@ class ProfessionalTradingEngine(TradingEngineWithCommentary):
         
         size = self.risk_manager.calculate_position_size(method, signal_data)
         
-        self.commentary.add_commentary({
-            'type': 'RISK_ASSESSMENT',
-            'timestamp': datetime.now(),
-            'title': f'📏 Position Size Calculated',
-            'message': f"{signal['symbol']}: {size:.0f} shares using {method.value}",
-            'importance': 7
-        })
+        self.commentary.add_commentary(TradingCommentary(
+            timestamp=datetime.now(),
+            type=CommentaryType.RISK_ASSESSMENT,
+            symbol=None,
+            title='📏 Position Size Calculated',
+            message=f"{signal['symbol']}: {size:.0f} shares using {method.value}",
+            importance=7
+        ))
         
         return size
     
@@ -242,14 +247,15 @@ class ProfessionalTradingEngine(TradingEngineWithCommentary):
             
             order_id = self.paper_engine.place_order(paper_order)
             
-            self.commentary.add_commentary({
-                'type': 'DECISION',
-                'timestamp': datetime.now(),
-                'title': f'📝 Paper Order Placed',
-                'message': f"{order['side']} {order['quantity']} {order['symbol']}",
-                'data': {'order_id': order_id},
-                'importance': 9
-            })
+            self.commentary.add_commentary(TradingCommentary(
+                timestamp=datetime.now(),
+                type=CommentaryType.DECISION,
+                symbol=None,
+                title='📝 Paper Order Placed',
+                message=f"{order['side']} {order['quantity']} {order['symbol']}",
+                data={'order_id': order_id},
+                importance=9
+            ))
         else:
             # Use real execution
             await super().execute_signal(signal)
