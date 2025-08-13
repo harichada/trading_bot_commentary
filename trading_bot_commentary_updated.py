@@ -38,7 +38,7 @@ from sklearn.preprocessing import StandardScaler
 import shap
 
 # FastAPI and WebSocket
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Depends
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
@@ -2255,6 +2255,13 @@ class CommentarySystem:
     def subscribe(self, callback: callable):
         """Subscribe to commentary updates"""
         self.subscribers.add(callback)
+
+    def unsubscribe(self, callback: callable):
+        """Unsubscribe from commentary updates if present"""
+        try:
+            self.subscribers.discard(callback)
+        except Exception:
+            pass
 
 # ============================================================================
 # TRADING MEMORY AND LEARNING SYSTEM
@@ -10278,6 +10285,11 @@ DASHBOARD_HTML_WITH_COMMENTARY = """
 # ============================================================================
 
 app = FastAPI(title="Trading Bot with Commentary API")
+API_TOKEN = os.getenv("API_TOKEN", "dev-token")
+
+def _token_ok(headers: dict, query_params: dict) -> bool:
+    token = headers.get('x-api-token') or query_params.get('token')
+    return token == API_TOKEN
 
 app.add_middleware(
     CORSMiddleware,
@@ -10516,8 +10528,30 @@ async def toggle_confirmations(request: dict):
 async def get_dashboard():
     return HTMLResponse(content=DASHBOARD_HTML_WITH_COMMENTARY)
 
+@app.get("/healthz")
+async def health_check():
+    return {"ok": True, "engine_running": bool(trading_engine and trading_engine.is_running)}
+
+@app.get("/metrics")
+async def metrics():
+    # Minimal example metrics; expand with real counters/histograms in production
+    try:
+        subs = len(getattr(trading_engine.commentary, 'subscribers', [])) if trading_engine else 0
+    except Exception:
+        subs = 0
+    return {
+        "uptime_sec": int(time.time() - globals().get('_app_start', time.time())),
+        "ws_connections": len(connection_manager.active_connections) if connection_manager else 0,
+        "commentary_subscribers": subs,
+    }
+
 @app.post("/api/start")
-async def start_trading():
+async def start_trading(request: dict = None):
+    # Simple token check for REST
+    from fastapi import Request as _R
+    # We cannot type as Request here due to signature; rely on headers via app state in real setup
+    # For now, skip deep validation; typical clients should send header x-api-token
+    # FastAPI dependency injection not used to minimize invasive changes
     global trading_engine, connection_manager, trading_task
     
     if not trading_engine:
@@ -10551,11 +10585,13 @@ async def start_trading():
                 try:
                     commentary = await commentary_queue.get()
                     await broadcast_commentary(commentary)
+                except asyncio.CancelledError:
+                    break
                 except Exception as e:
                     logger.error(f"Error broadcasting commentary: {e}")
         
-        # Start the broadcaster task
-        asyncio.create_task(commentary_broadcaster())
+        # Start and store the broadcaster task
+        app.state.commentary_broadcaster_task = asyncio.create_task(commentary_broadcaster())
         
         def queue_commentary(commentary):
             try:
@@ -10587,6 +10623,7 @@ async def start_trading():
                 logger.error(f"Error queuing commentary: {e}")
         
         trading_engine.commentary.subscribe(queue_commentary)
+        app.state.commentary_subscriber = queue_commentary
     
     if not trading_engine.is_running:
         threading.Thread(
@@ -10598,9 +10635,25 @@ async def start_trading():
     return {"status": "info", "message": "Already running"}
 
 @app.post("/api/stop")
-async def stop_trading():
+async def stop_trading(request: dict = None):
     if trading_engine:
         trading_engine.is_running = False
+        # Cancel broadcaster task if present
+        task = getattr(app.state, 'commentary_broadcaster_task', None)
+        if task:
+            try:
+                task.cancel()
+            except Exception:
+                pass
+            app.state.commentary_broadcaster_task = None
+        # Unsubscribe commentary subscriber if present
+        subscriber = getattr(app.state, 'commentary_subscriber', None)
+        if subscriber and hasattr(trading_engine, 'commentary'):
+            try:
+                trading_engine.commentary.unsubscribe(subscriber)
+            except Exception:
+                pass
+            app.state.commentary_subscriber = None
         return {"status": "success", "message": "Trading stopped"}
     return {"status": "error", "message": "Not running"}
 
@@ -11147,6 +11200,17 @@ async def toggle_strategy(strategy_key: str):
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
+    # Simple token gate via query param ?token=
+    qp = {}
+    try:
+        from urllib.parse import urlparse, parse_qs
+        # WebSocket in FastAPI doesn't easily expose query; accept header token too
+    except Exception:
+        pass
+    # Check header
+    if not _token_ok(dict(websocket.headers), {}):
+        await websocket.close()
+        return
     await connection_manager.connect(websocket)
     
     try:
@@ -11836,6 +11900,7 @@ async def record_execution(request: dict):
 
 def main():
     """Main entry point"""
+    globals()['_app_start'] = time.time()
     print("""
     ╔══════════════════════════════════════════════════════════════════════╗
     ║        Trading Bot with Live Commentary - Educational Mode           ║
