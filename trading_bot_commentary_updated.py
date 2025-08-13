@@ -4753,6 +4753,7 @@ class RiskManagerWithCommentary:
         self.buying_power = account_balance * 0.5
         self.commentary = commentary_system
         self.last_schwab_sync = None
+        self.allow_margin = False  # Allow/disallow margin usage
     
     def sync_with_schwab_data(self, schwab_account_info: Dict[str, float]):
         """Sync risk manager with actual Schwab account data"""
@@ -4852,10 +4853,11 @@ class RiskManagerWithCommentary:
                 importance=7
             ))
         
-        # Check buying power
-        if position_value > self.buying_power:
+        # Check buying power (respect margin toggle)
+        effective_bp = min(self.buying_power, self.account_balance) if not getattr(self, 'allow_margin', False) else self.buying_power
+        if position_value > effective_bp:
             old_size = position_size
-            position_size = int(self.buying_power * 0.95 / current_price)
+            position_size = int(effective_bp * 0.95 / current_price)
             
             self.commentary.add_commentary(TradingCommentary(
                 timestamp=datetime.now(),
@@ -4865,8 +4867,9 @@ class RiskManagerWithCommentary:
                 message=f"Reduced position from {old_size} to {position_size} shares due to buying power constraints",
                 data={
                     'required_capital': old_size * current_price,
-                    'available_buying_power': self.buying_power,
-                    'adjusted_capital': position_size * current_price
+                    'available_buying_power': effective_bp,
+                    'adjusted_capital': position_size * current_price,
+                    'margin_enabled': getattr(self, 'allow_margin', False)
                 },
                 importance=7
             ))
@@ -9583,6 +9586,13 @@ DASHBOARD_HTML_WITH_COMMENTARY = """
                             <span class="toggle-slider"></span>
                         </label>
                     </div>
+                    <div class="toggle-group">
+                        <label class="toggle-container">
+                            <span id="margin-label">Use Margin</span>
+                            <input type="checkbox" id="margin-toggle" onchange="toggleMarginUsage()">
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </div>
                     <button class="button button-secondary" onclick="refreshPositions()">🔄 Refresh</button>
                     <button class="button button-primary" onclick="startTrading()">Start Commentary</button>
                     <button class="button button-danger" onclick="stopTrading()">Stop</button>
@@ -10527,6 +10537,23 @@ async def toggle_confirmations(request: dict):
 @app.get("/")
 async def get_dashboard():
     return HTMLResponse(content=DASHBOARD_HTML_WITH_COMMENTARY)
+
+@app.post("/api/toggle-margin")
+async def toggle_margin(request: dict):
+    global trading_engine
+    if not trading_engine:
+        return {"status": "error", "message": "Trading engine not initialized"}
+    enabled = request.get('enabled', False)
+    trading_engine.risk_manager.allow_margin = enabled
+    trading_engine.commentary.add_commentary(TradingCommentary(
+        timestamp=datetime.now(),
+        type=CommentaryType.DECISION,
+        symbol=None,
+        title="💳 Margin Usage Updated",
+        message=f"Margin usage has been {'enabled' if enabled else 'disabled'}",
+        importance=7
+    ))
+    return {"status": "success", "enabled": enabled}
 
 @app.get("/healthz")
 async def health_check():
