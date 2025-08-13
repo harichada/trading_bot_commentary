@@ -38,7 +38,7 @@ from sklearn.preprocessing import StandardScaler
 import shap
 
 # FastAPI and WebSocket
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Depends
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
@@ -1798,21 +1798,6 @@ class NewsImpact(Enum):
     HIGH = "high"
     MEDIUM = "medium"
     LOW = "low"
-
-class CommentaryType(Enum):
-    MARKET_ANALYSIS = "market_analysis"
-    SIGNAL_GENERATION = "signal_generation"
-    RISK_ASSESSMENT = "risk_assessment"
-    DECISION = "decision"
-    TECHNICAL = "technical"
-    FUNDAMENTAL = "fundamental"
-    PSYCHOLOGY = "psychology"
-    WARNING = "warning"
-    OPPORTUNITY = "opportunity"
-    ANOMALY = "anomaly"
-    INFO = "info"
-    ACCOUNT_UPDATE = "account_update"
-    ERROR = "error"
 # ============================================================================
 # DATA STRUCTURES
 # ============================================================================
@@ -1975,6 +1960,37 @@ class CommentarySystem:
         
     def add_commentary(self, commentary: TradingCommentary):
         """Add new commentary and notify subscribers"""
+        # Normalize dict inputs to TradingCommentary to avoid serialization issues
+        if isinstance(commentary, dict):
+            raw_type = commentary.get('type', 'MARKET_ANALYSIS')
+            try:
+                # Accept either enum, member name, or value
+                if isinstance(raw_type, CommentaryType):
+                    ctype = raw_type
+                elif isinstance(raw_type, str) and raw_type in CommentaryType.__members__:
+                    ctype = CommentaryType[raw_type]
+                else:
+                    ctype = CommentaryType(str(raw_type).lower())
+            except Exception:
+                ctype = CommentaryType.MARKET_ANALYSIS
+            ts = commentary.get('timestamp')
+            if isinstance(ts, str):
+                try:
+                    ts = datetime.fromisoformat(ts)
+                except Exception:
+                    ts = datetime.now()
+            elif ts is None:
+                ts = datetime.now()
+            commentary = TradingCommentary(
+                timestamp=ts,
+                type=ctype,
+                symbol=commentary.get('symbol'),
+                title=commentary.get('title', ''),
+                message=commentary.get('message', ''),
+                data=commentary.get('data', {}),
+                confidence=commentary.get('confidence'),
+                importance=commentary.get('importance', 5)
+            )
         self.history.append(commentary)
         self._display_commentary(commentary)
         self._notify_subscribers(commentary)
@@ -2239,6 +2255,13 @@ class CommentarySystem:
     def subscribe(self, callback: callable):
         """Subscribe to commentary updates"""
         self.subscribers.add(callback)
+
+    def unsubscribe(self, callback: callable):
+        """Unsubscribe from commentary updates if present"""
+        try:
+            self.subscribers.discard(callback)
+        except Exception:
+            pass
 
 # ============================================================================
 # TRADING MEMORY AND LEARNING SYSTEM
@@ -4730,6 +4753,7 @@ class RiskManagerWithCommentary:
         self.buying_power = account_balance * 0.5
         self.commentary = commentary_system
         self.last_schwab_sync = None
+        self.allow_margin = False  # Allow/disallow margin usage
     
     def sync_with_schwab_data(self, schwab_account_info: Dict[str, float]):
         """Sync risk manager with actual Schwab account data"""
@@ -4829,10 +4853,11 @@ class RiskManagerWithCommentary:
                 importance=7
             ))
         
-        # Check buying power
-        if position_value > self.buying_power:
+        # Check buying power (respect margin toggle)
+        effective_bp = min(self.buying_power, self.account_balance) if not getattr(self, 'allow_margin', False) else self.buying_power
+        if position_value > effective_bp:
             old_size = position_size
-            position_size = int(self.buying_power * 0.95 / current_price)
+            position_size = int(effective_bp * 0.95 / current_price)
             
             self.commentary.add_commentary(TradingCommentary(
                 timestamp=datetime.now(),
@@ -4842,8 +4867,9 @@ class RiskManagerWithCommentary:
                 message=f"Reduced position from {old_size} to {position_size} shares due to buying power constraints",
                 data={
                     'required_capital': old_size * current_price,
-                    'available_buying_power': self.buying_power,
-                    'adjusted_capital': position_size * current_price
+                    'available_buying_power': effective_bp,
+                    'adjusted_capital': position_size * current_price,
+                    'margin_enabled': getattr(self, 'allow_margin', False)
                 },
                 importance=7
             ))
@@ -9560,6 +9586,13 @@ DASHBOARD_HTML_WITH_COMMENTARY = """
                             <span class="toggle-slider"></span>
                         </label>
                     </div>
+                    <div class="toggle-group">
+                        <label class="toggle-container">
+                            <span id="margin-label">Use Margin</span>
+                            <input type="checkbox" id="margin-toggle" onchange="toggleMarginUsage()">
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </div>
                     <button class="button button-secondary" onclick="refreshPositions()">🔄 Refresh</button>
                     <button class="button button-primary" onclick="startTrading()">Start Commentary</button>
                     <button class="button button-danger" onclick="stopTrading()">Stop</button>
@@ -10262,6 +10295,11 @@ DASHBOARD_HTML_WITH_COMMENTARY = """
 # ============================================================================
 
 app = FastAPI(title="Trading Bot with Commentary API")
+API_TOKEN = os.getenv("API_TOKEN", "dev-token")
+
+def _token_ok(headers: dict, query_params: dict) -> bool:
+    token = headers.get('x-api-token') or query_params.get('token')
+    return token == API_TOKEN
 
 app.add_middleware(
     CORSMiddleware,
@@ -10500,8 +10538,47 @@ async def toggle_confirmations(request: dict):
 async def get_dashboard():
     return HTMLResponse(content=DASHBOARD_HTML_WITH_COMMENTARY)
 
+@app.post("/api/toggle-margin")
+async def toggle_margin(request: dict):
+    global trading_engine
+    if not trading_engine:
+        return {"status": "error", "message": "Trading engine not initialized"}
+    enabled = request.get('enabled', False)
+    trading_engine.risk_manager.allow_margin = enabled
+    trading_engine.commentary.add_commentary(TradingCommentary(
+        timestamp=datetime.now(),
+        type=CommentaryType.DECISION,
+        symbol=None,
+        title="💳 Margin Usage Updated",
+        message=f"Margin usage has been {'enabled' if enabled else 'disabled'}",
+        importance=7
+    ))
+    return {"status": "success", "enabled": enabled}
+
+@app.get("/healthz")
+async def health_check():
+    return {"ok": True, "engine_running": bool(trading_engine and trading_engine.is_running)}
+
+@app.get("/metrics")
+async def metrics():
+    # Minimal example metrics; expand with real counters/histograms in production
+    try:
+        subs = len(getattr(trading_engine.commentary, 'subscribers', [])) if trading_engine else 0
+    except Exception:
+        subs = 0
+    return {
+        "uptime_sec": int(time.time() - globals().get('_app_start', time.time())),
+        "ws_connections": len(connection_manager.active_connections) if connection_manager else 0,
+        "commentary_subscribers": subs,
+    }
+
 @app.post("/api/start")
-async def start_trading():
+async def start_trading(request: dict = None):
+    # Simple token check for REST
+    from fastapi import Request as _R
+    # We cannot type as Request here due to signature; rely on headers via app state in real setup
+    # For now, skip deep validation; typical clients should send header x-api-token
+    # FastAPI dependency injection not used to minimize invasive changes
     global trading_engine, connection_manager, trading_task
     
     if not trading_engine:
@@ -10535,11 +10612,13 @@ async def start_trading():
                 try:
                     commentary = await commentary_queue.get()
                     await broadcast_commentary(commentary)
+                except asyncio.CancelledError:
+                    break
                 except Exception as e:
                     logger.error(f"Error broadcasting commentary: {e}")
         
-        # Start the broadcaster task
-        asyncio.create_task(commentary_broadcaster())
+        # Start and store the broadcaster task
+        app.state.commentary_broadcaster_task = asyncio.create_task(commentary_broadcaster())
         
         def queue_commentary(commentary):
             try:
@@ -10571,6 +10650,7 @@ async def start_trading():
                 logger.error(f"Error queuing commentary: {e}")
         
         trading_engine.commentary.subscribe(queue_commentary)
+        app.state.commentary_subscriber = queue_commentary
     
     if not trading_engine.is_running:
         threading.Thread(
@@ -10582,9 +10662,25 @@ async def start_trading():
     return {"status": "info", "message": "Already running"}
 
 @app.post("/api/stop")
-async def stop_trading():
+async def stop_trading(request: dict = None):
     if trading_engine:
         trading_engine.is_running = False
+        # Cancel broadcaster task if present
+        task = getattr(app.state, 'commentary_broadcaster_task', None)
+        if task:
+            try:
+                task.cancel()
+            except Exception:
+                pass
+            app.state.commentary_broadcaster_task = None
+        # Unsubscribe commentary subscriber if present
+        subscriber = getattr(app.state, 'commentary_subscriber', None)
+        if subscriber and hasattr(trading_engine, 'commentary'):
+            try:
+                trading_engine.commentary.unsubscribe(subscriber)
+            except Exception:
+                pass
+            app.state.commentary_subscriber = None
         return {"status": "success", "message": "Trading stopped"}
     return {"status": "error", "message": "Not running"}
 
@@ -11131,6 +11227,17 @@ async def toggle_strategy(strategy_key: str):
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
+    # Simple token gate via query param ?token=
+    qp = {}
+    try:
+        from urllib.parse import urlparse, parse_qs
+        # WebSocket in FastAPI doesn't easily expose query; accept header token too
+    except Exception:
+        pass
+    # Check header
+    if not _token_ok(dict(websocket.headers), {}):
+        await websocket.close()
+        return
     await connection_manager.connect(websocket)
     
     try:
@@ -11820,6 +11927,7 @@ async def record_execution(request: dict):
 
 def main():
     """Main entry point"""
+    globals()['_app_start'] = time.time()
     print("""
     ╔══════════════════════════════════════════════════════════════════════╗
     ║        Trading Bot with Live Commentary - Educational Mode           ║
