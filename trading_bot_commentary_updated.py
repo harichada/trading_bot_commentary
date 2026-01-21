@@ -10697,6 +10697,75 @@ async def get_bot_status():
         "uptime": str(datetime.now() - trading_engine.start_time) if trading_engine and hasattr(trading_engine, 'start_time') else "0:00:00"
     }
 
+@app.get("/api/account-stats")
+async def get_account_stats():
+    """Get detailed account statistics - returns real Schwab data when in live mode"""
+    if not trading_engine:
+        return {
+            "status": "success",
+            "source": "none",
+            "stats": {
+                "balance": 0,
+                "buying_power": 0,
+                "daily_pnl": 0,
+                "total_pnl": 0,
+                "position_count": 0,
+                "cash": 0
+            }
+        }
+
+    # Determine if we're in live mode with Schwab connected
+    is_live = trading_engine.mode == TradingMode.LIVE
+    has_schwab = trading_engine.schwab_client is not None
+
+    # Try to get real Schwab data if available
+    if is_live and has_schwab:
+        try:
+            account_info = await trading_engine._get_real_account_info()
+            schwab_positions = await trading_engine.get_schwab_positions()
+
+            # Calculate total unrealized P&L from positions
+            total_pnl = sum(pos.get('total_pnl', 0) for pos in schwab_positions)
+
+            if account_info:
+                return {
+                    "status": "success",
+                    "source": "schwab",
+                    "stats": {
+                        "balance": account_info.get('balance', 0),
+                        "buying_power": account_info.get('buying_power', 0),
+                        "daily_pnl": account_info.get('day_pnl', 0),
+                        "total_pnl": total_pnl,
+                        "position_count": len(schwab_positions),
+                        "cash": account_info.get('cash', 0)
+                    }
+                }
+        except Exception as e:
+            logger.error(f"Failed to get Schwab account stats: {e}")
+
+    # Fall back to internal tracking (simulation mode or Schwab unavailable)
+    positions = trading_engine.positions if hasattr(trading_engine, 'positions') else {}
+    simulated_positions = trading_engine.simulated_positions if hasattr(trading_engine, 'simulated_positions') else {}
+
+    # Use simulated positions in simulation mode
+    active_positions = simulated_positions if trading_engine.mode == TradingMode.SIMULATION_WITH_COMMENTARY else positions
+
+    # Calculate P&L from tracked positions
+    total_pnl = sum(getattr(pos, 'unrealized_pnl', 0) for pos in active_positions.values())
+
+    return {
+        "status": "success",
+        "source": "simulation" if trading_engine.mode == TradingMode.SIMULATION_WITH_COMMENTARY else "internal",
+        "stats": {
+            "balance": trading_engine.risk_manager.account_balance if hasattr(trading_engine, 'risk_manager') else 100000,
+            "buying_power": trading_engine.risk_manager.buying_power if hasattr(trading_engine, 'risk_manager') else 50000,
+            "daily_pnl": trading_engine.risk_manager.schwab_daily_pnl if hasattr(trading_engine.risk_manager, 'schwab_daily_pnl') else 0,
+            "total_pnl": total_pnl,
+            "position_count": len(active_positions),
+            "cash": 0
+        }
+    }
+
 @app.post("/api/refresh-positions")
 async def refresh_positions():
     """Manually refresh positions from Schwab"""

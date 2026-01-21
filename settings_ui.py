@@ -67,6 +67,8 @@ SETTINGS_HTML = """
             display: flex;
             justify-content: space-between;
             align-items: center;
+            flex-wrap: wrap;
+            gap: 15px;
         }
         .status-indicator {
             display: flex;
@@ -81,6 +83,80 @@ SETTINGS_HTML = """
         }
         .status-dot.running { background: #22c55e; }
         .status-dot.stopped { background: #ef4444; }
+        .status-dot.live { background: #ef4444; animation: pulse 1.5s infinite; }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        /* Account Stats Panel */
+        .account-stats {
+            background: #1a1a1a;
+            border: 1px solid #333;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        .account-stats h3 {
+            margin: 0 0 15px 0;
+            color: #4a9eff;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 15px;
+        }
+        .stat-box {
+            background: #0a0a0a;
+            padding: 15px;
+            border-radius: 6px;
+            border: 1px solid #222;
+        }
+        .stat-label {
+            font-size: 12px;
+            color: #666;
+            margin-bottom: 5px;
+        }
+        .stat-value {
+            font-size: 20px;
+            font-weight: bold;
+            color: #fff;
+        }
+        .stat-value.positive { color: #22c55e; }
+        .stat-value.negative { color: #ef4444; }
+        .stat-value.live { color: #ef4444; }
+        .stat-value.simulation { color: #4a9eff; }
+        .data-source {
+            font-size: 10px;
+            color: #666;
+            margin-top: 5px;
+        }
+        .data-source.real { color: #22c55e; }
+        .data-source.simulated { color: #f59e0b; }
+
+        /* Mode Toggle */
+        .mode-toggle-container {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            padding: 15px;
+            background: #0a0a0a;
+            border-radius: 6px;
+            border: 2px solid #333;
+        }
+        .mode-toggle-container.live-mode {
+            border-color: #ef4444;
+            background: rgba(239, 68, 68, 0.1);
+        }
+        .mode-label {
+            font-weight: bold;
+            font-size: 14px;
+        }
+        .mode-label.live { color: #ef4444; }
+        .mode-label.simulation { color: #4a9eff; }
         .btn {
             padding: 10px 20px;
             border: none;
@@ -251,10 +327,49 @@ SETTINGS_HTML = """
                 <div id="statusDot" class="status-dot"></div>
                 <span id="statusText">Checking...</span>
             </div>
+            <div class="mode-toggle-container" id="modeContainer">
+                <span class="mode-label simulation" id="modeLabel">SIMULATION</span>
+                <label class="toggle-switch">
+                    <input type="checkbox" id="mode-toggle" onchange="toggleTradingMode()">
+                    <span class="toggle-slider"></span>
+                </label>
+                <span style="font-size: 12px; color: #666;">Live Trading</span>
+            </div>
             <div class="quick-actions">
                 <button class="btn btn-success" onclick="startBot()">▶ Start</button>
                 <button class="btn btn-danger" onclick="stopBot()">⏹ Stop</button>
                 <button class="btn btn-secondary" onclick="refreshStatus()">↻ Refresh</button>
+            </div>
+        </div>
+
+        <!-- Real-time Account Stats -->
+        <div class="account-stats">
+            <h3>📊 Account Stats <span id="dataSourceBadge" class="data-source simulated">(Simulated Data)</span></h3>
+            <div class="stats-grid">
+                <div class="stat-box">
+                    <div class="stat-label">Account Balance</div>
+                    <div class="stat-value" id="accountBalance">$0.00</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-label">Daily P&L</div>
+                    <div class="stat-value" id="dailyPnl">$0.00</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-label">Buying Power</div>
+                    <div class="stat-value" id="buyingPower">$0.00</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-label">Open Positions</div>
+                    <div class="stat-value" id="positionCount">0</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-label">Total P&L</div>
+                    <div class="stat-value" id="totalPnl">$0.00</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-label">Schwab Connected</div>
+                    <div class="stat-value" id="schwabStatus">No</div>
+                </div>
             </div>
         </div>
 
@@ -632,17 +747,115 @@ SETTINGS_HTML = """
 
                 const dot = document.getElementById('statusDot');
                 const text = document.getElementById('statusText');
+                const modeToggle = document.getElementById('mode-toggle');
+                const modeLabel = document.getElementById('modeLabel');
+                const modeContainer = document.getElementById('modeContainer');
 
                 if (data.bot_running) {
-                    dot.className = 'status-dot running';
-                    text.textContent = `Running (${data.mode}) - ${data.positions_count} positions`;
+                    const isLive = data.mode === 'live';
+                    dot.className = isLive ? 'status-dot live' : 'status-dot running';
+                    text.textContent = `Running (${data.mode.toUpperCase()}) - ${data.positions_count} positions`;
+
+                    // Update mode toggle
+                    modeToggle.checked = isLive;
+                    modeLabel.textContent = isLive ? 'LIVE TRADING' : 'SIMULATION';
+                    modeLabel.className = isLive ? 'mode-label live' : 'mode-label simulation';
+                    modeContainer.className = isLive ? 'mode-toggle-container live-mode' : 'mode-toggle-container';
+
+                    // Update Schwab status
+                    document.getElementById('schwabStatus').textContent = data.schwab_connected ? 'Yes' : 'No';
+                    document.getElementById('schwabStatus').className = data.schwab_connected ? 'stat-value positive' : 'stat-value negative';
                 } else {
                     dot.className = 'status-dot stopped';
                     text.textContent = 'Stopped';
                 }
+
+                // Fetch detailed account stats
+                await refreshAccountStats();
             } catch (e) {
                 document.getElementById('statusDot').className = 'status-dot';
                 document.getElementById('statusText').textContent = 'Cannot connect to bot';
+            }
+        }
+
+        async function refreshAccountStats() {
+            try {
+                // Try to get detailed stats
+                const response = await fetch(`${BOT_URL}/api/account-stats`);
+                const data = await response.json();
+
+                if (data.status === 'success') {
+                    const stats = data.stats;
+                    const isReal = data.source === 'schwab';
+
+                    // Update balance
+                    document.getElementById('accountBalance').textContent = `$${(stats.balance || 0).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+
+                    // Update daily P&L
+                    const pnl = stats.daily_pnl || 0;
+                    const pnlEl = document.getElementById('dailyPnl');
+                    pnlEl.textContent = `$${pnl.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+                    pnlEl.className = pnl >= 0 ? 'stat-value positive' : 'stat-value negative';
+
+                    // Update buying power
+                    document.getElementById('buyingPower').textContent = `$${(stats.buying_power || 0).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+
+                    // Update position count
+                    document.getElementById('positionCount').textContent = stats.position_count || 0;
+
+                    // Update total P&L
+                    const totalPnl = stats.total_pnl || 0;
+                    const totalPnlEl = document.getElementById('totalPnl');
+                    totalPnlEl.textContent = `$${totalPnl.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+                    totalPnlEl.className = totalPnl >= 0 ? 'stat-value positive' : 'stat-value negative';
+
+                    // Update data source badge
+                    const badge = document.getElementById('dataSourceBadge');
+                    badge.textContent = isReal ? '(Live Schwab Data)' : '(Simulated Data)';
+                    badge.className = isReal ? 'data-source real' : 'data-source simulated';
+                }
+            } catch (e) {
+                console.error('Failed to fetch account stats:', e);
+            }
+        }
+
+        async function toggleTradingMode() {
+            const toggle = document.getElementById('mode-toggle');
+            const modeLabel = document.getElementById('modeLabel');
+            const modeContainer = document.getElementById('modeContainer');
+            const isLive = toggle.checked;
+
+            // Confirm before switching to live
+            if (isLive) {
+                if (!confirm('WARNING: You are about to switch to LIVE TRADING mode.\\n\\nThis will use real money from your Schwab account.\\n\\nAre you sure?')) {
+                    toggle.checked = false;
+                    return;
+                }
+            }
+
+            try {
+                const response = await fetch(`${BOT_URL}/api/toggle-mode`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({mode: isLive ? 'live' : 'simulation'})
+                });
+                const data = await response.json();
+
+                if (data.status === 'success') {
+                    modeLabel.textContent = isLive ? 'LIVE TRADING' : 'SIMULATION';
+                    modeLabel.className = isLive ? 'mode-label live' : 'mode-label simulation';
+                    modeContainer.className = isLive ? 'mode-toggle-container live-mode' : 'mode-toggle-container';
+                    showMessage(`Switched to ${isLive ? 'LIVE TRADING' : 'SIMULATION'} mode`, 'success');
+
+                    // Refresh stats immediately
+                    setTimeout(refreshAccountStats, 500);
+                } else {
+                    toggle.checked = !isLive;  // Revert toggle
+                    showMessage(data.message || 'Failed to switch mode', 'error');
+                }
+            } catch (e) {
+                toggle.checked = !isLive;  // Revert toggle
+                showMessage('Connection error: ' + e.message, 'error');
             }
         }
 
