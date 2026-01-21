@@ -240,14 +240,25 @@ def setup_schwab_token(api_key, app_secret):
 
         try:
             # Use schwab-py's client_from_manual_flow if available
-            client = auth.client_from_manual_flow(
-                api_key=api_key,
-                app_secret=app_secret,
-                callback_url=callback_url,
-                token_path=str(token_path),
-                requested_url=redirect_url
-            )
-        except AttributeError:
+            # Try different parameter names based on schwab-py version
+            try:
+                client = auth.client_from_manual_flow(
+                    api_key=api_key,
+                    app_secret=app_secret,
+                    callback_url=callback_url,
+                    token_path=str(token_path),
+                    authorization_response=redirect_url
+                )
+            except TypeError:
+                # Older version might use different params
+                client = auth.client_from_manual_flow(
+                    api_key,
+                    app_secret,
+                    callback_url,
+                    str(token_path),
+                    redirect_url
+                )
+        except (AttributeError, TypeError):
             # Fallback: manually exchange the code
             import base64
             import httpx
