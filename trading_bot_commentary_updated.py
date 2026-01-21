@@ -10592,6 +10592,111 @@ async def stop_trading():
         return {"status": "success", "message": "Trading stopped"}
     return {"status": "error", "message": "Not running"}
 
+# ============================================================================
+# SETTINGS MANAGEMENT API
+# ============================================================================
+
+@app.get("/api/settings")
+async def get_all_settings():
+    """Get all current settings"""
+    try:
+        config = config_manager.config
+        return {
+            "status": "success",
+            "settings": config,
+            "editable": {
+                "trading": {
+                    "max_positions": {"type": "int", "min": 1, "max": 20, "description": "Maximum number of positions"},
+                    "max_position_value": {"type": "float", "min": 100, "max": 100000, "description": "Maximum value per position ($)"},
+                    "max_risk_per_trade": {"type": "float", "min": 0.001, "max": 0.1, "description": "Maximum risk per trade (%)"},
+                    "max_daily_loss": {"type": "float", "min": 0.01, "max": 0.2, "description": "Maximum daily loss (%)"},
+                    "min_risk_reward_ratio": {"type": "float", "min": 1.0, "max": 5.0, "description": "Minimum risk/reward ratio"},
+                    "ml_prediction_enabled": {"type": "bool", "description": "Enable ML predictions"},
+                },
+                "risk": {
+                    "stop_loss_percent": {"type": "float", "min": 0.005, "max": 0.1, "description": "Default stop loss (%)"},
+                    "take_profit_percent": {"type": "float", "min": 0.01, "max": 0.2, "description": "Default take profit (%)"},
+                    "trailing_stop_enabled": {"type": "bool", "description": "Enable trailing stops"},
+                },
+                "strategies": {
+                    "breakout_enabled": {"type": "bool", "description": "Enable breakout strategy"},
+                    "mean_reversion_enabled": {"type": "bool", "description": "Enable mean reversion strategy"},
+                    "momentum_enabled": {"type": "bool", "description": "Enable momentum strategy"},
+                    "min_consensus": {"type": "int", "min": 1, "max": 5, "description": "Minimum strategy consensus"},
+                }
+            }
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@app.put("/api/settings")
+async def update_settings(settings: dict):
+    """Update multiple settings at once"""
+    try:
+        updated = []
+        for key, value in settings.items():
+            config_manager.update(key, value)
+            updated.append(key)
+
+        return {
+            "status": "success",
+            "message": f"Updated {len(updated)} setting(s)",
+            "updated": updated
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@app.get("/api/settings/{category}")
+async def get_category_settings(category: str):
+    """Get settings for a specific category"""
+    try:
+        if category in config_manager.config:
+            return {
+                "status": "success",
+                "category": category,
+                "settings": config_manager.config[category]
+            }
+        return {"status": "error", "message": f"Category '{category}' not found"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@app.put("/api/settings/{category}")
+async def update_category_settings(category: str, settings: dict):
+    """Update settings for a specific category"""
+    try:
+        for key, value in settings.items():
+            config_manager.update(f"{category}.{key}", value)
+
+        return {
+            "status": "success",
+            "message": f"Updated {category} settings",
+            "settings": config_manager.config.get(category, {})
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@app.post("/api/settings/reset")
+async def reset_settings():
+    """Reset settings to defaults"""
+    try:
+        config_manager.config = config_manager._get_default_config()
+        config_manager._save_config(config_manager.config)
+        return {"status": "success", "message": "Settings reset to defaults"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@app.get("/api/status")
+async def get_bot_status():
+    """Get current bot status"""
+    return {
+        "status": "success",
+        "bot_running": trading_engine.is_running if trading_engine else False,
+        "mode": trading_engine.mode.value if trading_engine else "not_started",
+        "positions_count": len(trading_engine.positions) if trading_engine else 0,
+        "schwab_connected": trading_engine.schwab_client is not None if trading_engine else False,
+        "uptime": str(datetime.now() - trading_engine.start_time) if trading_engine and hasattr(trading_engine, 'start_time') else "0:00:00"
+    }
+
 @app.post("/api/refresh-positions")
 async def refresh_positions():
     """Manually refresh positions from Schwab"""
