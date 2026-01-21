@@ -235,70 +235,48 @@ def setup_schwab_token(api_key, app_secret):
         auth_code = params['code'][0]
         print_success(f"Authorization code received!")
 
-        # Exchange code for token
+        # Exchange code for token - do this directly without schwab-py's manual flow
+        # (schwab-py's client_from_manual_flow starts its own interactive prompt)
         print_info("Exchanging code for access token...")
 
-        try:
-            # Use schwab-py's client_from_manual_flow if available
-            # Try different parameter names based on schwab-py version
-            try:
-                client = auth.client_from_manual_flow(
-                    api_key=api_key,
-                    app_secret=app_secret,
-                    callback_url=callback_url,
-                    token_path=str(token_path),
-                    authorization_response=redirect_url
-                )
-            except TypeError:
-                # Older version might use different params
-                client = auth.client_from_manual_flow(
-                    api_key,
-                    app_secret,
-                    callback_url,
-                    str(token_path),
-                    redirect_url
-                )
-        except (AttributeError, TypeError):
-            # Fallback: manually exchange the code
-            import base64
-            import httpx
+        import base64
 
-            credentials = base64.b64encode(f"{api_key}:{app_secret}".encode()).decode()
+        credentials = base64.b64encode(f"{api_key}:{app_secret}".encode()).decode()
 
-            token_response = httpx.post(
-                "https://api.schwabapi.com/v1/oauth/token",
-                headers={
-                    "Authorization": f"Basic {credentials}",
-                    "Content-Type": "application/x-www-form-urlencoded"
-                },
-                data={
-                    "grant_type": "authorization_code",
-                    "code": auth_code,
-                    "redirect_uri": callback_url
-                }
-            )
+        token_response = httpx.post(
+            "https://api.schwabapi.com/v1/oauth/token",
+            headers={
+                "Authorization": f"Basic {credentials}",
+                "Content-Type": "application/x-www-form-urlencoded"
+            },
+            data={
+                "grant_type": "authorization_code",
+                "code": auth_code,
+                "redirect_uri": callback_url
+            }
+        )
 
-            if token_response.status_code != 200:
-                print_error(f"Token exchange failed: {token_response.status_code}")
-                print_error(token_response.text)
-                return False
+        if token_response.status_code != 200:
+            print_error(f"Token exchange failed: {token_response.status_code}")
+            print_error(token_response.text)
+            return False
 
-            token_data = token_response.json()
+        token_data = token_response.json()
 
-            # Save token
-            import time
-            token_data['creation_timestamp'] = int(time.time())
-            with open(token_path, 'w') as f:
-                json.dump(token_data, f, indent=2)
+        # Save token in schwab-py compatible format
+        import time
+        token_data['creation_timestamp'] = int(time.time())
+        with open(token_path, 'w') as f:
+            json.dump(token_data, f, indent=2)
 
-            print_success("Token saved successfully!")
+        print_success("Token saved successfully!")
 
-            # Create client for verification
-            client = auth.client_from_token_file(
-                str(token_path),
-                api_key,
-                app_secret
-            )
+        # Create client for verification
+        client = auth.client_from_token_file(
+            str(token_path),
+            api_key,
+            app_secret
+        )
 
         # Test the connection
         response = client.get_account_numbers()
