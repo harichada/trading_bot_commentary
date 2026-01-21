@@ -4770,7 +4770,8 @@ class RiskManagerWithCommentary:
             return 0
         
         # Maximum risk amount
-        max_risk_amount = self.account_balance * Config().MAX_RISK_PER_TRADE
+        max_risk_pct = Config().MAX_RISK_PER_TRADE or 0.02  # Default to 2%
+        max_risk_amount = self.account_balance * max_risk_pct
         # Adjust based on recent performance
         if hasattr(self, 'trade_history') and len(self.trade_history) >= 5:
             recent_trades = self.trade_history[-5:]
@@ -4802,7 +4803,7 @@ class RiskManagerWithCommentary:
             type=CommentaryType.RISK_ASSESSMENT,
             symbol=signal.symbol,
             title=f"📊 Risk Calculation",
-            message=f"With {Config().MAX_RISK_PER_TRADE:.1%} risk per trade on ${self.account_balance:,.0f} account",
+            message=f"With {max_risk_pct:.1%} risk per trade on ${self.account_balance:,.0f} account",
             data={
                 'max_risk_amount': max_risk_amount,
                 'risk_per_share': risk_per_share,
@@ -6913,8 +6914,8 @@ class TradingEngineWithCommentary:
         # Sync positions with Schwab on startup
         if self.mode == TradingMode.LIVE and self.schwab_client:
             await self.sync_positions_with_schwab()
-        
-        risk_per_trade = Config().MAX_RISK_PER_TRADE
+
+        risk_per_trade = Config().MAX_RISK_PER_TRADE or 0.02  # Default to 2% if not set
         self.commentary.add_commentary(TradingCommentary(
             timestamp=datetime.now(),
             type=CommentaryType.MARKET_ANALYSIS,
