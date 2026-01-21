@@ -169,7 +169,7 @@ AUTO_START="false"
 
 
 def setup_schwab_token(api_key, app_secret):
-    """Authenticate with Schwab and create token file"""
+    """Authenticate with Schwab and create token file (WSL/headless compatible)"""
     print_header("SCHWAB AUTHENTICATION")
 
     token_path = Path("token_1.json")
@@ -181,56 +181,134 @@ def setup_schwab_token(api_key, app_secret):
             print_info("Keeping existing token.")
             return True
 
-    print_info("Opening browser for Schwab OAuth login...")
-    print_info("1. Log in to your Schwab account")
-    print_info("2. Authorize the application")
-    print_info("3. You'll be redirected to https://127.0.0.1 (this is expected)")
-    print_info("4. Copy the FULL URL from your browser's address bar")
-    print()
-
-    input("Press Enter to open browser...")
-
     try:
         from schwab import auth
-
-        # Try to authenticate
-        try:
-            client = auth.easy_client(
-                api_key=api_key,
-                app_secret=app_secret,
-                callback_url='https://127.0.0.1',
-                token_path=str(token_path)
-            )
-
-            # Test the connection
-            response = client.get_account_numbers()
-            if response.status_code == 200:
-                accounts = response.json()
-                print_success(f"Authentication successful! Found {len(accounts)} account(s).")
-
-                # Show account info (masked)
-                for acc in accounts:
-                    acc_num = acc.get('accountNumber', 'Unknown')
-                    masked = acc_num[:2] + '*' * (len(acc_num) - 4) + acc_num[-2:]
-                    print_info(f"  Account: {masked}")
-
-                return True
-            else:
-                print_error(f"Authentication failed: {response.status_code}")
-                return False
-
-        except Exception as e:
-            print_error(f"Authentication error: {e}")
-            print()
-            print_info("Manual authentication fallback:")
-            print_info("If the browser didn't open or you got an error,")
-            print_info("you may need to authenticate manually.")
-            return False
-
+        from schwab.auth import OAuth2Client
+        import httpx
     except ImportError:
         print_error("schwab-py not installed. Installing...")
-        os.system("pip install schwab-py")
+        os.system("pip install schwab-py httpx")
         print_info("Please run setup again after installation.")
+        return False
+
+    callback_url = 'https://127.0.0.1'
+
+    # Build the authorization URL manually
+    auth_url = (
+        f"https://api.schwabapi.com/v1/oauth/authorize?"
+        f"client_id={api_key}&"
+        f"redirect_uri={callback_url}&"
+        f"response_type=code"
+    )
+
+    print_info("Manual authentication for WSL/headless environments:")
+    print()
+    print(f"{Colors.BOLD}Step 1:{Colors.END} Copy this URL and open it in your browser:")
+    print()
+    print(f"  {Colors.CYAN}{auth_url}{Colors.END}")
+    print()
+    print(f"{Colors.BOLD}Step 2:{Colors.END} Log in to your Schwab account and authorize the app")
+    print()
+    print(f"{Colors.BOLD}Step 3:{Colors.END} After authorization, you'll be redirected to a URL like:")
+    print(f"  https://127.0.0.1/?code=XXXXX&session=YYYYY")
+    print()
+    print(f"{Colors.BOLD}Step 4:{Colors.END} Copy the ENTIRE URL from your browser (it will show an error page, that's OK)")
+    print()
+
+    redirect_url = get_input("Paste the full redirect URL here")
+
+    if not redirect_url:
+        print_error("No URL provided")
+        return False
+
+    try:
+        # Extract the authorization code from the URL
+        from urllib.parse import urlparse, parse_qs
+        parsed = urlparse(redirect_url)
+        params = parse_qs(parsed.query)
+
+        if 'code' not in params:
+            print_error("Could not find authorization code in URL")
+            print_info("Make sure you copied the ENTIRE URL including the ?code=... part")
+            return False
+
+        auth_code = params['code'][0]
+        print_success(f"Authorization code received!")
+
+        # Exchange code for token
+        print_info("Exchanging code for access token...")
+
+        try:
+            # Use schwab-py's client_from_manual_flow if available
+            client = auth.client_from_manual_flow(
+                api_key=api_key,
+                app_secret=app_secret,
+                callback_url=callback_url,
+                token_path=str(token_path),
+                requested_url=redirect_url
+            )
+        except AttributeError:
+            # Fallback: manually exchange the code
+            import base64
+            import httpx
+
+            credentials = base64.b64encode(f"{api_key}:{app_secret}".encode()).decode()
+
+            token_response = httpx.post(
+                "https://api.schwabapi.com/v1/oauth/token",
+                headers={
+                    "Authorization": f"Basic {credentials}",
+                    "Content-Type": "application/x-www-form-urlencoded"
+                },
+                data={
+                    "grant_type": "authorization_code",
+                    "code": auth_code,
+                    "redirect_uri": callback_url
+                }
+            )
+
+            if token_response.status_code != 200:
+                print_error(f"Token exchange failed: {token_response.status_code}")
+                print_error(token_response.text)
+                return False
+
+            token_data = token_response.json()
+
+            # Save token
+            import time
+            token_data['creation_timestamp'] = int(time.time())
+            with open(token_path, 'w') as f:
+                json.dump(token_data, f, indent=2)
+
+            print_success("Token saved successfully!")
+
+            # Create client for verification
+            client = auth.client_from_token_file(
+                str(token_path),
+                api_key,
+                app_secret
+            )
+
+        # Test the connection
+        response = client.get_account_numbers()
+        if response.status_code == 200:
+            accounts = response.json()
+            print_success(f"Authentication successful! Found {len(accounts)} account(s).")
+
+            for acc in accounts:
+                acc_num = acc.get('accountNumber', 'Unknown')
+                masked = acc_num[:2] + '*' * (len(acc_num) - 4) + acc_num[-2:]
+                print_info(f"  Account: {masked}")
+
+            return True
+        else:
+            print_error(f"API test failed: {response.status_code}")
+            return False
+
+    except Exception as e:
+        print_error(f"Authentication error: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 
