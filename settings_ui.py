@@ -863,10 +863,10 @@ SETTINGS_HTML = """
             try {
                 const response = await fetch(`${BOT_URL}/api/start`, {method: 'POST'});
                 const data = await response.json();
-                showMessage(data.message, 'success');
+                showMessage(data.message || 'Bot started', 'success');
                 setTimeout(refreshStatus, 1000);
             } catch (e) {
-                showMessage('Failed to start: ' + e.message, 'error');
+                showMessage('Cannot connect to main bot. Make sure trading_bot_commentary_updated.py is running on port 8000', 'error');
             }
         }
 
@@ -874,10 +874,10 @@ SETTINGS_HTML = """
             try {
                 const response = await fetch(`${BOT_URL}/api/stop`, {method: 'POST'});
                 const data = await response.json();
-                showMessage(data.message, 'success');
+                showMessage(data.message || 'Bot stopped', 'success');
                 setTimeout(refreshStatus, 1000);
             } catch (e) {
-                showMessage('Failed to stop: ' + e.message, 'error');
+                showMessage('Cannot connect to main bot. Make sure trading_bot_commentary_updated.py is running on port 8000', 'error');
             }
         }
 
