@@ -6425,49 +6425,54 @@ class TradingEngineWithCommentary:
         """Update real positions from account - syncs ALL Schwab positions"""
         if not self.schwab_client or self.mode != TradingMode.LIVE:
             return
-        
+
         try:
             # Get all Schwab positions
             schwab_positions = await self.get_schwab_positions()
-            
+
             # Create a set of symbols from Schwab
             schwab_symbols = {pos['symbol'] for pos in schwab_positions}
-            
+
             # Add or update positions from Schwab
             for pos_data in schwab_positions:
                 symbol = pos_data['symbol']
-                
+
                 if symbol not in self.positions:
                     # Create new position for externally opened position
+                    # IMPORTANT: External positions have NO automatic stop loss/take profit
+                    # They are flagged as manually managed and the bot won't take actions on them
                     position = Position(
                         symbol=symbol,
                         quantity=abs(pos_data['quantity']),
                         entry_price=pos_data['average_price'],
                         current_price=pos_data['current_price'],
-                        stop_loss=pos_data['average_price'] * 0.95,  # Default 5% stop
-                        take_profit=pos_data['average_price'] * 1.10,  # Default 10% target
+                        stop_loss=0,  # No automatic stop loss for external positions
+                        take_profit=float('inf'),  # No automatic take profit
                         entry_time=datetime.now(),
                         side='long' if pos_data['quantity'] > 0 else 'short',
                         reasoning={'source': 'external', 'strategy': 'manual_entry'}
                     )
                     position.unrealized_pnl = pos_data['total_pnl']
+                    position.is_external = True  # Flag as externally created
+                    position.is_manually_managed = True  # Bot won't auto-manage this
                     self.positions[symbol] = position
-                    
+
                     # Log that we found an external position
                     self.commentary.add_commentary(TradingCommentary(
                         timestamp=datetime.now(),
                         type=CommentaryType.MARKET_ANALYSIS,
                         symbol=symbol,
-                        title=f"📥 External Position Detected",
+                        title=f"📥 External Position Detected (Manual Mode)",
                         message=f"Found {abs(pos_data['quantity'])} shares of {symbol} "
                                 f"({'long' if pos_data['quantity'] > 0 else 'short'})\n"
                                 f"Entry: ${pos_data['average_price']:.2f}, "
-                                f"Current: ${pos_data['current_price']:.2f}",
+                                f"Current: ${pos_data['current_price']:.2f}\n"
+                                f"⚠️ This position is MANUALLY MANAGED - bot will NOT auto-close",
                         data=pos_data,
                         importance=7
                     ))
                 else:
-                    # Update existing position
+                    # Update existing position prices only
                     position = self.positions[symbol]
                     position.current_price = pos_data['current_price']
                     position.unrealized_pnl = pos_data['total_pnl']
@@ -6867,33 +6872,37 @@ class TradingEngineWithCommentary:
         """Sync internal position tracking with actual Schwab positions"""
         if not self.schwab_client or self.mode != TradingMode.LIVE:
             return
-        
+
         try:
             schwab_positions = await self.get_schwab_positions()
-            
+
             # Clear out internal tracking and rebuild from Schwab
             self.positions.clear()
-            
+
             for pos_data in schwab_positions:
                 symbol = pos_data['symbol']
-                
+
                 # Create Position object for each Schwab position
+                # IMPORTANT: All synced positions are marked as external/manually managed
+                # The bot will NOT take automatic actions on these positions
                 position = Position(
                     symbol=symbol,
                     entry_price=pos_data['average_price'],
                     current_price=pos_data['current_price'],
                     quantity=abs(pos_data['quantity']),
                     side='long' if pos_data['quantity'] > 0 else 'short',
-                    stop_loss=pos_data['average_price'] * 0.95,  # Default 5% stop
-                    take_profit=pos_data['average_price'] * 1.1,  # Default 10% profit
+                    stop_loss=0,  # No automatic stop loss
+                    take_profit=float('inf'),  # No automatic take profit
                     entry_time=datetime.now() - timedelta(hours=1)  # Approximate
                 )
-                
+
                 position.unrealized_pnl = pos_data['total_pnl']
+                position.is_external = True  # All synced positions are external
+                position.is_manually_managed = True  # Bot won't auto-manage
                 self.positions[symbol] = position
-                
-            logger.info(f"Synced {len(self.positions)} positions from Schwab")
-            
+
+            logger.info(f"Synced {len(self.positions)} positions from Schwab (all marked as manually managed)")
+
             # Update commentary
             if self.positions:
                 self.commentary.add_commentary(TradingCommentary(
@@ -6901,7 +6910,8 @@ class TradingEngineWithCommentary:
                     type=CommentaryType.ACCOUNT_UPDATE,
                     symbol=None,
                     title="📊 Position Sync Complete",
-                    message=f"Synced {len(self.positions)} positions from Schwab: {', '.join(self.positions.keys())}",
+                    message=f"Synced {len(self.positions)} positions from Schwab: {', '.join(self.positions.keys())}\n"
+                           f"⚠️ All positions marked as MANUALLY MANAGED - bot will not auto-close",
                     importance=5
                 ))
                 
@@ -7806,7 +7816,24 @@ class TradingEngineWithCommentary:
                     logger.warning(f"None position found for {symbol}, removing")
                     del positions_to_check[symbol]
                     continue
-                
+
+                # CRITICAL: Skip external/manually managed positions when manual_close_only is ON
+                # These positions should only be managed by the user, not the bot
+                is_external = getattr(position, 'is_external', False)
+                is_manually_managed = getattr(position, 'is_manually_managed', False)
+
+                if self.manual_close_only and self.mode == TradingMode.LIVE and (is_external or is_manually_managed):
+                    # Only update the price for display purposes, but don't take any action
+                    if self.data_provider:
+                        quote = self.data_provider.get_quote(symbol)
+                        if quote:
+                            position.current_price = quote.get('last', position.current_price)
+                            if position.side == 'short':
+                                position.unrealized_pnl = (position.entry_price - position.current_price) * position.quantity
+                            else:
+                                position.unrealized_pnl = (position.current_price - position.entry_price) * position.quantity
+                    continue  # Skip all automatic management for this position
+
                 # Get current price
                 if self.data_provider:
                     quote = self.data_provider.get_quote(symbol)
@@ -7956,13 +7983,21 @@ class TradingEngineWithCommentary:
                 ))
     async def _evaluate_exit_conditions(self, position, current_price: float) -> Tuple[bool, str]:
         """Evaluate exit conditions with detailed reasoning"""
+        # CRITICAL: Never auto-exit external/manually managed positions
+        is_external = getattr(position, 'is_external', False)
+        is_manually_managed = getattr(position, 'is_manually_managed', False)
+
+        if is_external or is_manually_managed:
+            # External positions are NEVER auto-managed
+            return False, ""
+
         # Check if stop loss is hit based on position side
         stop_loss_hit = False
         if position.side == 'short':
             stop_loss_hit = current_price >= position.stop_loss
         else:  # long
             stop_loss_hit = current_price <= position.stop_loss
-            
+
         # If manual close only mode, only check hard stops
         if self.manual_close_only and self.mode == TradingMode.LIVE:
             # Still check stop loss for safety
@@ -8022,6 +8057,24 @@ class TradingEngineWithCommentary:
     
     async def _close_position_with_commentary(self, position, reason: str):
         """Close position with detailed commentary"""
+        # CRITICAL: Never auto-close external/manually managed positions (except for explicit manual_override)
+        is_external = getattr(position, 'is_external', False)
+        is_manually_managed = getattr(position, 'is_manually_managed', False)
+
+        if (is_external or is_manually_managed) and reason != "manual_override":
+            logger.warning(f"Blocked auto-close of EXTERNAL position {position.symbol}. Reason: {reason}")
+            self.commentary.add_commentary(TradingCommentary(
+                timestamp=datetime.now(),
+                type=CommentaryType.WARNING,
+                symbol=position.symbol,
+                title=f"🚫 External Position Protected",
+                message=f"Cannot auto-close {position.symbol} - this is an EXTERNAL position.\n"
+                       f"Current P&L: ${position.unrealized_pnl:.2f}\n"
+                       f"Use Schwab directly or the manual close button.",
+                importance=9
+            ))
+            return  # NEVER auto-close external positions
+
         # CRITICAL: Check if manual close only is enabled (except for manual_override)
         if self.manual_close_only and self.mode == TradingMode.LIVE and reason != "manual_override":
             logger.warning(f"Attempted to auto-close {position.symbol} but manual_close_only is ON. Reason: {reason}")
