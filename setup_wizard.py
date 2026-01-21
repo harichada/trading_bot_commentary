@@ -261,11 +261,15 @@ def setup_schwab_token(api_key, app_secret):
             print_error(token_response.text)
             return False
 
-        token_data = token_response.json()
+        raw_token = token_response.json()
 
         # Save token in schwab-py compatible format
+        # schwab-py expects: {"token": {actual_token_data}, "creation_timestamp": ...}
         import time
-        token_data['creation_timestamp'] = int(time.time())
+        token_data = {
+            "token": raw_token,
+            "creation_timestamp": int(time.time())
+        }
         with open(token_path, 'w') as f:
             json.dump(token_data, f, indent=2)
 
