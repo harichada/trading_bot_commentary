@@ -4,7 +4,7 @@ Settings UI - Standalone settings management interface
 Run alongside the main trading bot for settings control.
 
 Usage:
-    python settings_ui.py
+    python settings_ui.py --bot-port 9000 --ui-port 8001
     Then open http://localhost:8001 in your browser
 """
 
@@ -14,6 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 import httpx
 import json
+import argparse
 from pathlib import Path
 
 app = FastAPI(title="Trading Bot Settings")
@@ -26,8 +27,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Main bot URL
-BOT_URL = "http://localhost:9000"
+# Main bot URL - will be set from command line args
+BOT_PORT = 9000  # Default, overridden by args
 
 SETTINGS_HTML = """
 <!DOCTYPE html>
@@ -620,7 +621,7 @@ SETTINGS_HTML = """
     </div>
 
     <script>
-        const BOT_URL = 'http://localhost:9000';
+        const BOT_URL = '{{BOT_URL}}';
 
         // Tab switching
         function showTab(tabId) {
@@ -866,7 +867,7 @@ SETTINGS_HTML = """
                 showMessage(data.message || 'Bot started', 'success');
                 setTimeout(refreshStatus, 1000);
             } catch (e) {
-                showMessage('Cannot connect to main bot. Make sure trading_bot_commentary_updated.py is running on port 9000', 'error');
+                showMessage(`Cannot connect to main bot. Make sure trading_bot_commentary_updated.py is running on port ${BOT_URL.split(':').pop()}`, 'error');
             }
         }
 
@@ -877,7 +878,7 @@ SETTINGS_HTML = """
                 showMessage(data.message || 'Bot stopped', 'success');
                 setTimeout(refreshStatus, 1000);
             } catch (e) {
-                showMessage('Cannot connect to main bot. Make sure trading_bot_commentary_updated.py is running on port 9000', 'error');
+                showMessage(`Cannot connect to main bot. Make sure trading_bot_commentary_updated.py is running on port ${BOT_URL.split(':').pop()}`, 'error');
             }
         }
 
@@ -892,18 +893,36 @@ SETTINGS_HTML = """
 
 @app.get("/", response_class=HTMLResponse)
 async def settings_page():
-    return SETTINGS_HTML
+    # Replace the placeholder with actual bot URL
+    bot_url = f"http://localhost:{BOT_PORT}"
+    html = SETTINGS_HTML.replace("{{BOT_URL}}", bot_url)
+    return html
 
 @app.get("/health")
 async def health():
     return {"status": "ok"}
 
-if __name__ == "__main__":
+def main():
+    global BOT_PORT
+
+    parser = argparse.ArgumentParser(description="Trading Bot Settings UI")
+    parser.add_argument("--bot-port", type=int, default=9000,
+                        help="Port where the main trading bot is running (default: 9000)")
+    parser.add_argument("--ui-port", type=int, default=8001,
+                        help="Port for the settings UI (default: 8001)")
+    args = parser.parse_args()
+
+    BOT_PORT = args.bot_port
+    ui_port = args.ui_port
+
     print("\n" + "="*50)
     print("  Trading Bot Settings UI")
     print("="*50)
-    print("\n  Open in browser: http://localhost:8001")
-    print("  (Make sure the main bot is running on port 9000)")
+    print(f"\n  Settings UI: http://localhost:{ui_port}")
+    print(f"  Connecting to bot on port: {args.bot_port}")
     print("="*50 + "\n")
 
-    uvicorn.run(app, host="0.0.0.0", port=8001)
+    uvicorn.run(app, host="0.0.0.0", port=ui_port)
+
+if __name__ == "__main__":
+    main()
