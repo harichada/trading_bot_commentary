@@ -1,0 +1,20 @@
+# Settings UI Dockerfile
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install dependencies
+RUN pip install --no-cache-dir fastapi uvicorn requests
+
+# Copy UI file
+COPY settings_ui.py .
+
+# Create non-root user
+RUN groupadd -r tradingbot && useradd -r -g tradingbot tradingbot
+USER tradingbot
+
+ENV PYTHONUNBUFFERED=1
+
+EXPOSE 8001
+
+CMD ["python", "settings_ui.py", "--bot-port", "9000", "--ui-port", "8001"]
