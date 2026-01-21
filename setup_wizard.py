@@ -639,6 +639,51 @@ backtesting:
   initial_capital: 100000
   commission: 0.005
   slippage: 0.001
+
+# Technical Analysis (required)
+technical_analysis:
+  timeframes:
+    - 1min
+    - 5min
+    - 15min
+    - 1hour
+    - 1day
+  fibonacci_levels:
+    - 0.236
+    - 0.382
+    - 0.5
+    - 0.618
+    - 0.786
+
+# Order Management
+order_management:
+  auto_cancel_existing_orders: true
+  require_close_confirmation: true
+  confirm_only_losses: false
+  confirm_threshold_percent: 5
+
+# Error Recovery
+error_recovery:
+  max_retries: 3
+  retry_delay: 1.0
+  circuit_breaker_enabled: true
+  max_daily_loss_threshold: 0.10
+  emergency_stop_loss: 0.15
+
+# Performance Metrics
+performance_metrics:
+  calculate_sharpe: true
+  calculate_sortino: true
+  calculate_max_drawdown: true
+  risk_free_rate: 0.02
+
+# Paths
+paths:
+  trade_journal: "trade_journal.json"
+  model: "trading_model.pkl"
+  log: "trading_bot.log"
+  commentary_log: "trading_commentary.json"
+  backtest_results: "backtest_results.json"
 '''
 
     with open("Config().yaml", 'w') as f:
