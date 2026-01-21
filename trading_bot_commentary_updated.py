@@ -23,6 +23,13 @@ from trading_exceptions import *
 from circuit_breaker import api_circuit_breaker, order_circuit_breaker
 from error_recovery import ErrorRecoveryManager
 
+# Analytics logging for clean analysis and stats
+from analytics_logger import (
+    analytics_logger, log_trade, log_decision, log_signal,
+    log_performance, log_system_event, log_error,
+    TradeLog, DecisionLog, SignalLog, PerformanceLog, MarketDataLog
+)
+
 # Core Dependencies
 import numpy as np
 import pandas as pd
@@ -5555,6 +5562,31 @@ class TradingEngineWithCommentary:
                 # Wait for fill verification
                 if await self._verify_order_fill(order_id, signal):
                     await self._place_bracket_orders(signal)
+
+                    # Log the trade for analytics
+                    log_trade(
+                        symbol=signal.symbol,
+                        action='BUY' if signal.signal_type == SignalType.BUY else 'SELL',
+                        quantity=signal.position_size,
+                        price=signal.entry_price,
+                        order_type='LIMIT' if use_limit else 'MARKET',
+                        side='long' if signal.signal_type == SignalType.BUY else 'short',
+                        reason=signal.reasoning.get('primary_reason', 'strategy_signal'),
+                        strategy=signal.reasoning.get('strategy', 'unknown'),
+                        confidence=signal.confidence,
+                        stop_loss=signal.stop_loss,
+                        take_profit=signal.take_profit,
+                        account_balance=self.risk_manager.account_balance,
+                        mode=self.mode.value,
+                        order_id=order_id
+                    )
+                    log_system_event('TRADE_EXECUTED', f"Executed {signal.signal_type.value} for {signal.symbol}", 'INFO', {
+                        'symbol': signal.symbol,
+                        'quantity': signal.position_size,
+                        'price': signal.entry_price,
+                        'order_id': order_id
+                    })
+
                     return True
                 else:
                     return False                
@@ -7135,7 +7167,24 @@ class TradingEngineWithCommentary:
                 if analysis_count % 10 == 0:  # Every 10 analysis cycles
                     self._save_state()
                     self.brain.save_memories()
-                    
+
+                    # Log performance snapshot for analytics
+                    positions_count = len(self.positions) + len(self.simulated_positions)
+                    total_unrealized = sum(getattr(p, 'unrealized_pnl', 0) for p in self.positions.values())
+                    total_unrealized += sum(getattr(p, 'unrealized_pnl', 0) for p in self.simulated_positions.values())
+
+                    log_performance(
+                        account_balance=self.risk_manager.account_balance,
+                        daily_pnl=self.risk_manager.schwab_daily_pnl if hasattr(self.risk_manager, 'schwab_daily_pnl') else 0,
+                        total_pnl=total_unrealized,
+                        win_rate=self.performance_analyzer.get_win_rate() if hasattr(self, 'performance_analyzer') else 0,
+                        total_trades=len(self.trade_history),
+                        open_positions=positions_count,
+                        mode=self.mode.value,
+                        unrealized_pnl=total_unrealized,
+                        buying_power=self.risk_manager.buying_power
+                    )
+
                     # Also save ML model periodically to preserve buffer
                     if hasattr(self, 'ml_predictor') and self.ml_predictor:
                         if hasattr(self.ml_predictor, 'save_model'):
@@ -7644,6 +7693,18 @@ class TradingEngineWithCommentary:
             confidence=signal.confidence,
             importance=8
         ))
+
+        # Log the signal for analytics
+        log_signal(
+            symbol=signal.symbol,
+            strategy=signal.reasoning.get('strategy', 'unknown'),
+            signal=signal.signal_type.name,
+            strength=signal.strength,
+            price=signal.entry_price,
+            volume=0,
+            indicators=signal.reasoning.get('indicators', {}),
+            conditions_met=signal.reasoning.get('conditions', [])
+        )
         
         # Check ML confirmation
         # Check ML confirmation (1 for BUY, -1 for SELL)
@@ -7659,7 +7720,19 @@ class TradingEngineWithCommentary:
                 data=ml_explanation,
                 importance=7
             ))
-            
+
+            # Log the decision to skip
+            log_decision(
+                symbol=signal.symbol,
+                decision='SKIP',
+                reason='ML model disagrees with strategy signal',
+                factors={'ml_signal': ml_signal, 'expected': expected_ml_signal},
+                signals={'strategy': signal.strength, 'ml': ml_signal},
+                indicators=ml_explanation,
+                confidence=signal.confidence,
+                mode=self.mode.value
+            )
+
             if self.mode != TradingMode.SIMULATION_WITH_COMMENTARY:
                 return
             else:
@@ -11479,6 +11552,88 @@ async def get_professional_config():
             'ensemble': True,
             'scalping': False
         }
+    }
+
+# ==================== Analytics API Endpoints ====================
+
+@app.get("/api/analytics/summary")
+async def get_analytics_summary():
+    """Get analytics summary report"""
+    return analytics_logger.get_summary_report()
+
+@app.get("/api/analytics/trades")
+async def get_trade_history(days: int = 7, symbol: str = None):
+    """Get trade history for analysis"""
+    trades = analytics_logger.get_trade_history(days=days, symbol=symbol)
+    return {
+        'status': 'success',
+        'count': len(trades),
+        'trades': trades
+    }
+
+@app.get("/api/analytics/decisions")
+async def get_decision_analysis(days: int = 7, symbol: str = None):
+    """Get decision analysis"""
+    analysis = analytics_logger.get_decision_analysis(days=days, symbol=symbol)
+    return {
+        'status': 'success',
+        'analysis': analysis
+    }
+
+@app.get("/api/analytics/performance")
+async def get_performance_history(days: int = 7):
+    """Get performance snapshots"""
+    snapshots = analytics_logger.get_performance_history(days=days)
+    return {
+        'status': 'success',
+        'count': len(snapshots),
+        'snapshots': snapshots
+    }
+
+@app.get("/api/analytics/daily-stats")
+async def get_daily_stats(date: str = None):
+    """Get statistics for a specific day"""
+    from datetime import datetime as dt
+    if date:
+        try:
+            target_date = dt.strptime(date, "%Y-%m-%d").date()
+        except ValueError:
+            return {'status': 'error', 'message': 'Invalid date format. Use YYYY-MM-DD'}
+    else:
+        target_date = dt.now().date()
+
+    stats = analytics_logger.get_daily_stats(target_date)
+    return {
+        'status': 'success',
+        'stats': stats
+    }
+
+@app.post("/api/analytics/export/{category}")
+async def export_analytics(category: str, days: int = 30):
+    """Export analytics to CSV file"""
+    from analytics_logger import LogCategory
+
+    category_map = {
+        'trades': LogCategory.TRADE,
+        'decisions': LogCategory.DECISION,
+        'signals': LogCategory.SIGNAL,
+        'performance': LogCategory.PERFORMANCE,
+        'market_data': LogCategory.MARKET_DATA,
+        'system': LogCategory.SYSTEM
+    }
+
+    if category not in category_map:
+        return {'status': 'error', 'message': f'Invalid category. Valid: {list(category_map.keys())}'}
+
+    output_file = f"logs/exports/{category}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+    Path("logs/exports").mkdir(parents=True, exist_ok=True)
+
+    analytics_logger.export_to_csv(category_map[category], output_file, days=days)
+
+    return {
+        'status': 'success',
+        'message': f'Exported to {output_file}',
+        'file': output_file
     }
 
 @app.post("/api/professional/risk/settings")
