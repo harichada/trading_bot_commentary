@@ -1,0 +1,78 @@
+# Development Environment Configuration
+# ======================================
+# This file contains development-specific settings.
+# Use this for local development and testing.
+
+database:
+  host: "localhost"
+  port: 5432
+  database: trading_dev
+  user: "dev_user"
+  pool_size: 5
+  ssl_enabled: false
+
+api:
+  schwab_app_key: "${SCHWAB_APP_KEY:-dev_key}"
+  schwab_callback_url: "https://127.0.0.1/callback"
+  schwab_token_path: "token_1.json"
+  rate_limit_per_second: 10
+  timeout_seconds: 60.0
+  max_retries: 5
+
+trading:
+  max_positions: 5
+  max_position_value: 10000.0
+  max_portfolio_percent: 0.20
+  max_daily_loss_percent: 0.05
+  max_daily_loss_absolute: 1000.0
+  max_drawdown_percent: 0.15
+  default_stop_loss_percent: 0.03
+  default_take_profit_percent: 0.06
+  min_position_value: 100.0
+  use_paper_trading: true
+
+risk:
+  var_confidence_level: 0.95
+  var_lookback_days: 252
+  correlation_threshold: 0.85
+  max_sector_exposure: 0.40
+  max_single_stock_exposure: 0.15
+  circuit_breaker_loss_threshold: 0.05
+  consecutive_loss_limit: 5
+
+ml:
+  model_path: "models/"
+  feature_store_path: "feature_store/"
+  retrain_threshold_days: 7
+  min_training_samples: 500
+  prediction_confidence_threshold: 0.55
+  enable_online_learning: true
+  drift_detection_enabled: true
+  drift_threshold: 0.15
+
+alerting:
+  enabled: false
+  telegram_chat_id: ""
+  email_smtp_host: "localhost"
+  email_smtp_port: 1025
+  email_from: "dev@localhost"
+  email_to:
+    - "dev@localhost"
+  throttle_minutes: 1
+  escalation_minutes: 5
+
+logging:
+  level: "DEBUG"
+  format: "text"
+  log_file: "trading_bot.log"
+  max_file_size_mb: 50
+  backup_count: 3
+  include_timestamps: true
+  mask_sensitive_data: false
+
+feature_flags:
+  enable_new_strategies: true
+  enable_ml_v2: true
+  enable_advanced_orders: true
+  close_positions_on_shutdown: false
+  enable_performance_profiling: true
