@@ -27,7 +27,7 @@ app.add_middleware(
 )
 
 # Main bot URL
-BOT_URL = "http://localhost:8000"
+BOT_URL = "http://localhost:9000"
 
 SETTINGS_HTML = """
 <!DOCTYPE html>
@@ -620,7 +620,7 @@ SETTINGS_HTML = """
     </div>
 
     <script>
-        const BOT_URL = 'http://localhost:8000';
+        const BOT_URL = 'http://localhost:9000';
 
         // Tab switching
         function showTab(tabId) {
@@ -866,7 +866,7 @@ SETTINGS_HTML = """
                 showMessage(data.message || 'Bot started', 'success');
                 setTimeout(refreshStatus, 1000);
             } catch (e) {
-                showMessage('Cannot connect to main bot. Make sure trading_bot_commentary_updated.py is running on port 8000', 'error');
+                showMessage('Cannot connect to main bot. Make sure trading_bot_commentary_updated.py is running on port 9000', 'error');
             }
         }
 
@@ -877,7 +877,7 @@ SETTINGS_HTML = """
                 showMessage(data.message || 'Bot stopped', 'success');
                 setTimeout(refreshStatus, 1000);
             } catch (e) {
-                showMessage('Cannot connect to main bot. Make sure trading_bot_commentary_updated.py is running on port 8000', 'error');
+                showMessage('Cannot connect to main bot. Make sure trading_bot_commentary_updated.py is running on port 9000', 'error');
             }
         }
 
@@ -903,7 +903,7 @@ if __name__ == "__main__":
     print("  Trading Bot Settings UI")
     print("="*50)
     print("\n  Open in browser: http://localhost:8001")
-    print("  (Make sure the main bot is running on port 8000)")
+    print("  (Make sure the main bot is running on port 9000)")
     print("="*50 + "\n")
 
     uvicorn.run(app, host="0.0.0.0", port=8001)
