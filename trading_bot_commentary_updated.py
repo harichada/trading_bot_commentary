@@ -4814,27 +4814,29 @@ class RiskManagerWithCommentary:
         
         # Calculate position size
         position_size = int(max_risk_amount / risk_per_share)
-        
+
         # Check against max position value
+        max_position_value = Config().MAX_POSITION_VALUE or 10000  # Default $10k
+        min_position_size = Config().MIN_POSITION_SIZE or 1  # Default 1 share
         position_value = position_size * current_price
-        if position_value > Config().MAX_POSITION_VALUE:
+        if position_value > max_position_value:
             old_size = position_size
-            position_size = int(Config().MAX_POSITION_VALUE / current_price)
-            
+            position_size = int(max_position_value / current_price)
+
             self.commentary.add_commentary(TradingCommentary(
                 timestamp=datetime.now(),
                 type=CommentaryType.RISK_ASSESSMENT,
                 symbol=signal.symbol,
                 title=f"⚠️ Position Size Capped",
-                message=f"Reduced from {old_size} to {position_size} shares (max ${Config().MAX_POSITION_VALUE})",
+                message=f"Reduced from {old_size} to {position_size} shares (max ${max_position_value})",
                 importance=7
             ))
-        
+
         # Check buying power
         if position_value > self.buying_power:
             old_size = position_size
             position_size = int(self.buying_power * 0.95 / current_price)
-            
+
             self.commentary.add_commentary(TradingCommentary(
                 timestamp=datetime.now(),
                 type=CommentaryType.RISK_ASSESSMENT,
@@ -4848,16 +4850,16 @@ class RiskManagerWithCommentary:
                 },
                 importance=7
             ))
-        
+
         # Ensure minimum position size
-        if position_size < Config().MIN_POSITION_SIZE:
+        if position_size < min_position_size:
             position_size = 0
             self.commentary.add_commentary(TradingCommentary(
                 timestamp=datetime.now(),
                 type=CommentaryType.WARNING,
                 symbol=signal.symbol,
                 title=f"❌ Position Too Small",
-                message=f"Calculated size below minimum ({Config().MIN_POSITION_SIZE} shares)",
+                message=f"Calculated size below minimum ({min_position_size} shares)",
                 importance=8
             ))
         
@@ -7542,15 +7544,16 @@ class TradingEngineWithCommentary:
         # EARLY BUYING POWER CHECK for LIVE mode
         if self.mode == TradingMode.LIVE:
             # First check if we have ANY buying power before doing calculations
-            has_power, available_bp = await self._check_buying_power(Config().MIN_BUYING_POWER)
+            min_buying_power = Config().MIN_BUYING_POWER or 100  # Default $100
+            has_power, available_bp = await self._check_buying_power(min_buying_power)
             logger.info(f"Has buying power or not: {has_power} {available_bp}")
-            if not has_power or available_bp < Config().MIN_BUYING_POWER:
+            if not has_power or (available_bp is not None and available_bp < min_buying_power):
                 self.commentary.add_commentary(TradingCommentary(
                     timestamp=datetime.now(),
                     type=CommentaryType.WARNING,
                     symbol=signal.symbol,
                     title=f"❌ No Buying Power",
-                    message=f"Cannot trade - buying power is ${available_bp:.2f} (need at least ${Config().MIN_BUYING_POWER})",
+                    message=f"Cannot trade - buying power is ${available_bp or 0:.2f} (need at least ${min_buying_power})",
                     importance=9
                 ))
                 return
