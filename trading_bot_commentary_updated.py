@@ -6848,25 +6848,25 @@ class TradingEngineWithCommentary:
                 type=CommentaryType.WARNING,
                 symbol=None,
                 title="⚠️ Authentication Required",
-                message="Schwab token not found or invalid. Running in simulation mode without real data.",
+                message="Schwab token not found or invalid. Running in simulation mode with REAL market data from yfinance.",
                 importance=8
             ))
-            
-            # Create dummy data provider for simulation
-            self.data_provider = DummyDataProvider(self.commentary)
-            
+
+            # Use RealTimeDataProvider for real prices even in simulation mode
+            self.data_provider = RealTimeDataProvider(self.commentary)
+
         except Exception as e:
             self.commentary.add_commentary(TradingCommentary(
                 timestamp=datetime.now(),
                 type=CommentaryType.WARNING,
                 symbol=None,
                 title="⚠️ Broker Connection Issue",
-                message=f"Could not connect to Schwab: {str(e)}. Running in simulation mode.",
+                message=f"Could not connect to Schwab: {str(e)}. Running in simulation mode with REAL market data.",
                 importance=8
             ))
-            
-            # Create dummy data provider for simulation
-            self.data_provider = DummyDataProvider(self.commentary)
+
+            # Use RealTimeDataProvider for real prices even in simulation mode
+            self.data_provider = RealTimeDataProvider(self.commentary)
      
     async def sync_positions_with_schwab(self):
         """Sync internal position tracking with actual Schwab positions"""
@@ -7834,14 +7834,15 @@ class TradingEngineWithCommentary:
                                 position.unrealized_pnl = (position.current_price - position.entry_price) * position.quantity
                     continue  # Skip all automatic management for this position
 
-                # Get current price
+                # Get current price - always use real data when available
                 if self.data_provider:
                     quote = self.data_provider.get_quote(symbol)
-                    if quote:
-                        current_price = quote.get('last', position.current_price)
+                    if quote and quote.get('last'):
+                        current_price = quote.get('last')
                     else:
-                        # Simulate price movement for demo
-                        current_price = position.current_price * (1 + np.random.randn() * 0.001)
+                        # Fallback: keep current price if real data unavailable
+                        logger.warning(f"Could not get real price for {symbol}, using last known price")
+                        current_price = position.current_price
                     
                     # Update position
                     old_price = position.current_price
@@ -8616,6 +8617,171 @@ class TradingEngineWithCommentary:
 # ============================================================================
 # DUMMY DATA PROVIDER FOR SIMULATION
 # ============================================================================
+
+class RealTimeDataProvider:
+    """Provides real-time market data using yfinance - works in both simulation and live modes"""
+
+    def __init__(self, commentary_system, schwab_client=None):
+        self.commentary = commentary_system
+        self.schwab_client = schwab_client
+        self._price_cache = {}
+        self._cache_time = {}
+        self._cache_ttl = 30  # Cache for 30 seconds to avoid rate limiting
+
+    def get_market_data(self, symbol: str, period: str = "1d", interval: str = "5m", **kwargs) -> pd.DataFrame:
+        """Get real market data from yfinance"""
+        try:
+            import yfinance as yf
+
+            # Check cache first
+            cache_key = f"{symbol}_{period}_{interval}"
+            if cache_key in self._price_cache:
+                cache_age = (datetime.now() - self._cache_time.get(cache_key, datetime.min)).total_seconds()
+                if cache_age < self._cache_ttl:
+                    return self._price_cache[cache_key]
+
+            # Fetch real data
+            ticker = yf.Ticker(symbol)
+            data = ticker.history(period=period, interval=interval)
+
+            if not data.empty:
+                # Ensure proper column names
+                data.columns = [col.title() for col in data.columns]
+                if 'Adj Close' in data.columns:
+                    data = data.drop('Adj Close', axis=1, errors='ignore')
+
+                # Cache the data
+                self._price_cache[cache_key] = data
+                self._cache_time[cache_key] = datetime.now()
+
+                return data
+
+        except Exception as e:
+            logger.warning(f"Failed to get real data for {symbol}: {e}")
+
+        # Return empty DataFrame on failure
+        return pd.DataFrame()
+
+    def get_quote(self, symbol: str) -> Dict[str, float]:
+        """Get real-time quote from yfinance"""
+        try:
+            import yfinance as yf
+
+            # Check cache
+            cache_key = f"quote_{symbol}"
+            if cache_key in self._price_cache:
+                cache_age = (datetime.now() - self._cache_time.get(cache_key, datetime.min)).total_seconds()
+                if cache_age < 15:  # Quote cache for 15 seconds
+                    return self._price_cache[cache_key]
+
+            ticker = yf.Ticker(symbol)
+            info = ticker.fast_info
+
+            quote = {
+                'bid': getattr(info, 'bid', 0) or info.last_price * 0.9999,
+                'ask': getattr(info, 'ask', 0) or info.last_price * 1.0001,
+                'last': info.last_price,
+                'volume': info.last_volume or 0,
+                'high': info.day_high or info.last_price,
+                'low': info.day_low or info.last_price,
+                'open': info.open or info.last_price,
+                'close': info.previous_close or info.last_price,
+                'market_cap': getattr(info, 'market_cap', 0) or 0
+            }
+
+            # Cache the quote
+            self._price_cache[cache_key] = quote
+            self._cache_time[cache_key] = datetime.now()
+
+            return quote
+
+        except Exception as e:
+            logger.warning(f"Failed to get real quote for {symbol}: {e}")
+            return None
+
+    def get_multiple_quotes(self, symbols: List[str]) -> Dict[str, Dict[str, float]]:
+        """Get quotes for multiple symbols efficiently"""
+        quotes = {}
+        try:
+            import yfinance as yf
+
+            # Batch download for efficiency
+            tickers = yf.Tickers(' '.join(symbols))
+
+            for symbol in symbols:
+                try:
+                    ticker = tickers.tickers.get(symbol)
+                    if ticker:
+                        info = ticker.fast_info
+                        quotes[symbol] = {
+                            'last': info.last_price,
+                            'volume': info.last_volume or 0,
+                            'high': info.day_high or info.last_price,
+                            'low': info.day_low or info.last_price,
+                            'open': info.open or info.last_price,
+                            'change_pct': ((info.last_price - info.previous_close) / info.previous_close * 100) if info.previous_close else 0
+                        }
+                except Exception as e:
+                    logger.debug(f"Failed to get quote for {symbol}: {e}")
+
+        except Exception as e:
+            logger.warning(f"Failed to get multiple quotes: {e}")
+
+        return quotes
+
+    def calculate_market_breadth(self) -> Dict[str, float]:
+        """Calculate real market breadth from major indices and sectors"""
+        try:
+            import yfinance as yf
+
+            # Check cache
+            if 'market_breadth' in self._price_cache:
+                cache_age = (datetime.now() - self._cache_time.get('market_breadth', datetime.min)).total_seconds()
+                if cache_age < 60:  # Cache breadth for 1 minute
+                    return self._price_cache['market_breadth']
+
+            # Major market ETFs
+            symbols = ['SPY', 'QQQ', 'IWM', 'DIA', 'XLF', 'XLK', 'XLE', 'XLV', 'XLI', 'XLP']
+            advances = 0
+            declines = 0
+
+            tickers = yf.Tickers(' '.join(symbols))
+            for symbol in symbols:
+                try:
+                    ticker = tickers.tickers.get(symbol)
+                    if ticker:
+                        info = ticker.fast_info
+                        if info.last_price > info.previous_close:
+                            advances += 1
+                        else:
+                            declines += 1
+                except:
+                    pass
+
+            total = advances + declines
+            breadth = {
+                'advance_decline_ratio': advances / max(declines, 1),
+                'advancing_percent': (advances / total * 100) if total > 0 else 50,
+                'declining_percent': (declines / total * 100) if total > 0 else 50,
+                'advances': advances,
+                'declines': declines
+            }
+
+            self._price_cache['market_breadth'] = breadth
+            self._cache_time['market_breadth'] = datetime.now()
+
+            return breadth
+
+        except Exception as e:
+            logger.warning(f"Failed to calculate market breadth: {e}")
+            return {
+                'advance_decline_ratio': 1.0,
+                'advancing_percent': 50,
+                'declining_percent': 50,
+                'advances': 0,
+                'declines': 0
+            }
+
 
 class DummyDataProvider:
     """Provides simulated market data when Schwab is not connected"""
