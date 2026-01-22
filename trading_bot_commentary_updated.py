@@ -6953,8 +6953,7 @@ class TradingEngineWithCommentary:
     async def start(self):
         """Start the trading engine with commentary"""
         self.is_running = True
-        self.ml_predictor.model.is_trained = True 
-        
+
         # Sync positions with Schwab on startup
         if self.mode == TradingMode.LIVE and self.schwab_client:
             await self.sync_positions_with_schwab()
