@@ -10841,30 +10841,33 @@ async def start_trading():
             try:
                 # Check if the queue and event loop are still valid
                 if commentary_queue is None or main_loop is None:
-                    logger.debug("Commentary queue or event loop not available")
                     return
-                    
+
                 # Check if the loop is still running
                 if main_loop.is_closed():
-                    logger.debug("Event loop is closed, cannot queue commentary")
                     return
-                
+
+                # Check if loop is running
+                if not main_loop.is_running():
+                    return
+
                 # Use asyncio.run_coroutine_threadsafe for cross-thread communication
                 future = asyncio.run_coroutine_threadsafe(
-                    commentary_queue.put(commentary), 
+                    commentary_queue.put(commentary),
                     main_loop
                 )
                 # Wait for completion with timeout
                 future.result(timeout=0.5)
             except asyncio.TimeoutError:
-                logger.debug("Timeout queuing commentary - queue might be full")
+                pass  # Queue full, skip silently
             except RuntimeError as e:
-                if "Event loop is closed" in str(e):
-                    logger.debug("Event loop closed, skipping commentary")
-                else:
-                    logger.error(f"Runtime error queuing commentary: {e}")
+                if "Event loop" not in str(e):
+                    logger.debug(f"Commentary queue runtime error: {e}")
             except Exception as e:
-                logger.error(f"Error queuing commentary: {e}")
+                # Only log unexpected errors, not routine threading issues
+                error_str = str(e)
+                if error_str and "loop" not in error_str.lower():
+                    logger.debug(f"Commentary queue error: {type(e).__name__}: {e}")
         
         trading_engine.commentary.subscribe(queue_commentary)
     
