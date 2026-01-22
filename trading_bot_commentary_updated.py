@@ -3714,7 +3714,7 @@ class HybridTradingModel:
         )
         
         self.scaler = RobustScaler()  # Robust to outliers
-        self.is_trained = True
+        self.is_trained = False  # Only true after actual training
         self.last_training_time = None
         self.training_history = []
         self.feature_importance = {}
