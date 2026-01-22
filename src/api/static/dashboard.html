@@ -1,0 +1,1280 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Trading Bot Dashboard</title>
+    <style>
+        :root {
+            --bg-primary: #0d1117;
+            --bg-secondary: #161b22;
+            --bg-tertiary: #21262d;
+            --border-color: #30363d;
+            --text-primary: #f0f6fc;
+            --text-secondary: #8b949e;
+            --text-muted: #6e7681;
+            --accent-green: #3fb950;
+            --accent-red: #f85149;
+            --accent-blue: #58a6ff;
+            --accent-yellow: #d29922;
+            --accent-purple: #a371f7;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+        }
+
+        /* Header */
+        .header {
+            background: var(--bg-secondary);
+            border-bottom: 1px solid var(--border-color);
+            padding: 16px 24px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .logo {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .logo-icon {
+            width: 32px;
+            height: 32px;
+            background: linear-gradient(135deg, var(--accent-blue), var(--accent-purple));
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+        }
+
+        .logo-text {
+            font-size: 18px;
+            font-weight: 600;
+        }
+
+        .header-status {
+            display: flex;
+            align-items: center;
+            gap: 24px;
+        }
+
+        .status-indicator {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 12px;
+            background: var(--bg-tertiary);
+            border-radius: 6px;
+            font-size: 13px;
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--accent-green);
+            animation: pulse 2s infinite;
+        }
+
+        .status-dot.offline {
+            background: var(--text-muted);
+            animation: none;
+        }
+
+        .status-dot.warning {
+            background: var(--accent-yellow);
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .mode-badge {
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 500;
+            text-transform: uppercase;
+        }
+
+        .mode-badge.simulation { background: var(--accent-blue); color: white; }
+        .mode-badge.paper { background: var(--accent-yellow); color: black; }
+        .mode-badge.live { background: var(--accent-red); color: white; }
+
+        /* Main Layout */
+        .main-container {
+            display: grid;
+            grid-template-columns: 280px 1fr 320px;
+            min-height: calc(100vh - 65px);
+        }
+
+        /* Sidebar */
+        .sidebar {
+            background: var(--bg-secondary);
+            border-right: 1px solid var(--border-color);
+            padding: 20px;
+        }
+
+        .nav-section {
+            margin-bottom: 24px;
+        }
+
+        .nav-section-title {
+            font-size: 11px;
+            font-weight: 600;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 12px;
+        }
+
+        .nav-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 10px 12px;
+            border-radius: 6px;
+            cursor: pointer;
+            color: var(--text-secondary);
+            transition: all 0.15s;
+            margin-bottom: 4px;
+        }
+
+        .nav-item:hover {
+            background: var(--bg-tertiary);
+            color: var(--text-primary);
+        }
+
+        .nav-item.active {
+            background: rgba(88, 166, 255, 0.15);
+            color: var(--accent-blue);
+        }
+
+        .nav-icon {
+            width: 18px;
+            height: 18px;
+            opacity: 0.8;
+        }
+
+        /* Main Content */
+        .content {
+            padding: 24px;
+            overflow-y: auto;
+        }
+
+        .page-title {
+            font-size: 24px;
+            font-weight: 600;
+            margin-bottom: 24px;
+        }
+
+        /* Stats Grid */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+
+        .stat-card {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 20px;
+        }
+
+        .stat-label {
+            font-size: 13px;
+            color: var(--text-secondary);
+            margin-bottom: 8px;
+        }
+
+        .stat-value {
+            font-size: 28px;
+            font-weight: 600;
+            margin-bottom: 4px;
+        }
+
+        .stat-value.positive { color: var(--accent-green); }
+        .stat-value.negative { color: var(--accent-red); }
+
+        .stat-change {
+            font-size: 12px;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .stat-change.positive { color: var(--accent-green); }
+        .stat-change.negative { color: var(--accent-red); }
+
+        /* Charts Section */
+        .charts-section {
+            display: grid;
+            grid-template-columns: 2fr 1fr;
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+
+        .chart-card {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 20px;
+        }
+
+        .chart-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 16px;
+        }
+
+        .chart-title {
+            font-size: 16px;
+            font-weight: 600;
+        }
+
+        .chart-controls {
+            display: flex;
+            gap: 8px;
+        }
+
+        .chart-btn {
+            padding: 4px 10px;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            color: var(--text-secondary);
+            font-size: 12px;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+
+        .chart-btn:hover, .chart-btn.active {
+            background: var(--accent-blue);
+            color: white;
+            border-color: var(--accent-blue);
+        }
+
+        .chart-placeholder {
+            height: 250px;
+            background: var(--bg-tertiary);
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--text-muted);
+        }
+
+        /* Positions Table */
+        .table-card {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            overflow: hidden;
+        }
+
+        .table-header {
+            padding: 16px 20px;
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .table-title {
+            font-size: 16px;
+            font-weight: 600;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        th {
+            text-align: left;
+            padding: 12px 20px;
+            font-size: 12px;
+            font-weight: 500;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        td {
+            padding: 14px 20px;
+            border-bottom: 1px solid var(--border-color);
+            font-size: 14px;
+        }
+
+        tr:last-child td {
+            border-bottom: none;
+        }
+
+        tr:hover {
+            background: var(--bg-tertiary);
+        }
+
+        .symbol-cell {
+            font-weight: 600;
+        }
+
+        .pnl-positive { color: var(--accent-green); }
+        .pnl-negative { color: var(--accent-red); }
+
+        /* Right Panel */
+        .right-panel {
+            background: var(--bg-secondary);
+            border-left: 1px solid var(--border-color);
+            padding: 20px;
+            overflow-y: auto;
+        }
+
+        .panel-section {
+            margin-bottom: 24px;
+        }
+
+        .panel-title {
+            font-size: 14px;
+            font-weight: 600;
+            margin-bottom: 16px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        /* Activity Feed */
+        .activity-feed {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .activity-item {
+            display: flex;
+            gap: 12px;
+            padding: 12px;
+            background: var(--bg-tertiary);
+            border-radius: 8px;
+        }
+
+        .activity-icon {
+            width: 32px;
+            height: 32px;
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 14px;
+            flex-shrink: 0;
+        }
+
+        .activity-icon.buy { background: rgba(63, 185, 80, 0.2); color: var(--accent-green); }
+        .activity-icon.sell { background: rgba(248, 81, 73, 0.2); color: var(--accent-red); }
+        .activity-icon.signal { background: rgba(88, 166, 255, 0.2); color: var(--accent-blue); }
+        .activity-icon.alert { background: rgba(210, 153, 34, 0.2); color: var(--accent-yellow); }
+
+        .activity-content {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .activity-title {
+            font-size: 13px;
+            font-weight: 500;
+            margin-bottom: 2px;
+        }
+
+        .activity-desc {
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+
+        .activity-time {
+            font-size: 11px;
+            color: var(--text-muted);
+        }
+
+        /* Quick Actions */
+        .quick-actions {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+        }
+
+        .action-btn {
+            padding: 12px;
+            border-radius: 8px;
+            border: 1px solid var(--border-color);
+            background: var(--bg-tertiary);
+            color: var(--text-primary);
+            font-size: 13px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.15s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+        }
+
+        .action-btn:hover {
+            border-color: var(--accent-blue);
+            background: rgba(88, 166, 255, 0.1);
+        }
+
+        .action-btn.primary {
+            background: var(--accent-blue);
+            border-color: var(--accent-blue);
+        }
+
+        .action-btn.primary:hover {
+            background: #4393e6;
+        }
+
+        .action-btn.danger {
+            border-color: var(--accent-red);
+            color: var(--accent-red);
+        }
+
+        .action-btn.danger:hover {
+            background: rgba(248, 81, 73, 0.1);
+        }
+
+        /* Strategy Status */
+        .strategy-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .strategy-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px 12px;
+            background: var(--bg-tertiary);
+            border-radius: 6px;
+        }
+
+        .strategy-name {
+            font-size: 13px;
+            font-weight: 500;
+        }
+
+        .strategy-status {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .strategy-signal {
+            font-size: 11px;
+            padding: 2px 6px;
+            border-radius: 4px;
+            text-transform: uppercase;
+            font-weight: 500;
+        }
+
+        .strategy-signal.buy { background: rgba(63, 185, 80, 0.2); color: var(--accent-green); }
+        .strategy-signal.sell { background: rgba(248, 81, 73, 0.2); color: var(--accent-red); }
+        .strategy-signal.hold { background: rgba(139, 148, 158, 0.2); color: var(--text-secondary); }
+
+        /* Toggle Switch */
+        .toggle {
+            position: relative;
+            width: 36px;
+            height: 20px;
+        }
+
+        .toggle input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+
+        .toggle-slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: var(--bg-primary);
+            border-radius: 20px;
+            transition: 0.2s;
+        }
+
+        .toggle-slider:before {
+            position: absolute;
+            content: "";
+            height: 14px;
+            width: 14px;
+            left: 3px;
+            bottom: 3px;
+            background-color: var(--text-secondary);
+            border-radius: 50%;
+            transition: 0.2s;
+        }
+
+        .toggle input:checked + .toggle-slider {
+            background-color: var(--accent-green);
+        }
+
+        .toggle input:checked + .toggle-slider:before {
+            transform: translateX(16px);
+            background-color: white;
+        }
+
+        /* Risk Meters */
+        .risk-meters {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .risk-meter {
+            padding: 12px;
+            background: var(--bg-tertiary);
+            border-radius: 8px;
+        }
+
+        .risk-meter-header {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 8px;
+        }
+
+        .risk-meter-label {
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+
+        .risk-meter-value {
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        .risk-bar {
+            height: 6px;
+            background: var(--bg-primary);
+            border-radius: 3px;
+            overflow: hidden;
+        }
+
+        .risk-bar-fill {
+            height: 100%;
+            border-radius: 3px;
+            transition: width 0.3s;
+        }
+
+        .risk-bar-fill.safe { background: var(--accent-green); }
+        .risk-bar-fill.warning { background: var(--accent-yellow); }
+        .risk-bar-fill.danger { background: var(--accent-red); }
+
+        /* Connection Status */
+        .connection-status {
+            padding: 12px;
+            background: var(--bg-tertiary);
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .connection-icon {
+            width: 24px;
+            height: 24px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .connection-info {
+            flex: 1;
+        }
+
+        .connection-label {
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+
+        .connection-value {
+            font-size: 13px;
+            font-weight: 500;
+        }
+
+        /* Empty State */
+        .empty-state {
+            text-align: center;
+            padding: 40px 20px;
+            color: var(--text-secondary);
+        }
+
+        .empty-state-icon {
+            font-size: 48px;
+            margin-bottom: 16px;
+            opacity: 0.5;
+        }
+
+        /* Responsive */
+        @media (max-width: 1400px) {
+            .main-container {
+                grid-template-columns: 240px 1fr 280px;
+            }
+            .stats-grid {
+                grid-template-columns: repeat(2, 1fr);
+            }
+        }
+
+        @media (max-width: 1100px) {
+            .main-container {
+                grid-template-columns: 1fr;
+            }
+            .sidebar, .right-panel {
+                display: none;
+            }
+            .charts-section {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <!-- Header -->
+    <header class="header">
+        <div class="logo">
+            <div class="logo-icon">TB</div>
+            <span class="logo-text">Trading Bot</span>
+        </div>
+        <div class="header-status">
+            <div class="status-indicator">
+                <div class="status-dot" id="status-dot"></div>
+                <span id="status-text">Connected</span>
+            </div>
+            <span class="mode-badge simulation" id="mode-badge">Simulation</span>
+        </div>
+    </header>
+
+    <div class="main-container">
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <nav class="nav-section">
+                <div class="nav-section-title">Overview</div>
+                <div class="nav-item active" data-page="dashboard">
+                    <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <rect x="3" y="3" width="7" height="7" rx="1"/>
+                        <rect x="14" y="3" width="7" height="7" rx="1"/>
+                        <rect x="3" y="14" width="7" height="7" rx="1"/>
+                        <rect x="14" y="14" width="7" height="7" rx="1"/>
+                    </svg>
+                    Dashboard
+                </div>
+                <div class="nav-item" data-page="positions">
+                    <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M12 2v20M2 12h20"/>
+                    </svg>
+                    Positions
+                </div>
+                <div class="nav-item" data-page="orders">
+                    <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2"/>
+                        <rect x="9" y="3" width="6" height="4" rx="1"/>
+                    </svg>
+                    Orders
+                </div>
+            </nav>
+
+            <nav class="nav-section">
+                <div class="nav-section-title">Analysis</div>
+                <div class="nav-item" data-page="signals">
+                    <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+                    </svg>
+                    Signals
+                </div>
+                <div class="nav-item" data-page="performance">
+                    <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <line x1="12" y1="20" x2="12" y2="10"/>
+                        <line x1="18" y1="20" x2="18" y2="4"/>
+                        <line x1="6" y1="20" x2="6" y2="16"/>
+                    </svg>
+                    Performance
+                </div>
+                <div class="nav-item" data-page="analytics">
+                    <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M21 21H3V3"/>
+                        <path d="M21 9l-6 6-4-4-6 6"/>
+                    </svg>
+                    Analytics
+                </div>
+            </nav>
+
+            <nav class="nav-section">
+                <div class="nav-section-title">Configuration</div>
+                <div class="nav-item" data-page="strategies">
+                    <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="3"/>
+                        <path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/>
+                    </svg>
+                    Strategies
+                </div>
+                <div class="nav-item" data-page="risk">
+                    <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                    </svg>
+                    Risk Settings
+                </div>
+                <div class="nav-item" data-page="settings">
+                    <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="3"/>
+                        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.26.604.852.997 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+                    </svg>
+                    Settings
+                </div>
+            </nav>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="content">
+            <h1 class="page-title">Dashboard</h1>
+
+            <!-- Stats Grid -->
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-label">Portfolio Value</div>
+                    <div class="stat-value" id="portfolio-value">$100,000.00</div>
+                    <div class="stat-change positive" id="portfolio-change">
+                        <span>+2.34%</span>
+                        <span>today</span>
+                    </div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Daily P&L</div>
+                    <div class="stat-value positive" id="daily-pnl">+$2,340.00</div>
+                    <div class="stat-change positive">
+                        <span>5 winning trades</span>
+                    </div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Open Positions</div>
+                    <div class="stat-value" id="open-positions">3</div>
+                    <div class="stat-change">
+                        <span>$45,000 exposed</span>
+                    </div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Win Rate</div>
+                    <div class="stat-value" id="win-rate">68%</div>
+                    <div class="stat-change positive">
+                        <span>+5% vs last week</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Charts Section -->
+            <div class="charts-section">
+                <div class="chart-card">
+                    <div class="chart-header">
+                        <h3 class="chart-title">Portfolio Performance</h3>
+                        <div class="chart-controls">
+                            <button class="chart-btn">1D</button>
+                            <button class="chart-btn active">1W</button>
+                            <button class="chart-btn">1M</button>
+                            <button class="chart-btn">ALL</button>
+                        </div>
+                    </div>
+                    <div class="chart-placeholder" id="portfolio-chart">
+                        <canvas id="performanceChart"></canvas>
+                    </div>
+                </div>
+                <div class="chart-card">
+                    <div class="chart-header">
+                        <h3 class="chart-title">Strategy Distribution</h3>
+                    </div>
+                    <div class="chart-placeholder" id="strategy-chart">
+                        <canvas id="strategyChart"></canvas>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Positions Table -->
+            <div class="table-card">
+                <div class="table-header">
+                    <h3 class="table-title">Open Positions</h3>
+                    <button class="action-btn">View All</button>
+                </div>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Symbol</th>
+                            <th>Side</th>
+                            <th>Quantity</th>
+                            <th>Entry Price</th>
+                            <th>Current Price</th>
+                            <th>P&L</th>
+                            <th>Strategy</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="positions-table">
+                        <tr>
+                            <td class="symbol-cell">AAPL</td>
+                            <td>Long</td>
+                            <td>100</td>
+                            <td>$185.50</td>
+                            <td>$189.25</td>
+                            <td class="pnl-positive">+$375.00 (+2.02%)</td>
+                            <td>Momentum</td>
+                            <td><button class="action-btn">Close</button></td>
+                        </tr>
+                        <tr>
+                            <td class="symbol-cell">NVDA</td>
+                            <td>Long</td>
+                            <td>50</td>
+                            <td>$480.00</td>
+                            <td>$495.80</td>
+                            <td class="pnl-positive">+$790.00 (+3.29%)</td>
+                            <td>Breakout</td>
+                            <td><button class="action-btn">Close</button></td>
+                        </tr>
+                        <tr>
+                            <td class="symbol-cell">GOOGL</td>
+                            <td>Long</td>
+                            <td>75</td>
+                            <td>$142.30</td>
+                            <td>$140.15</td>
+                            <td class="pnl-negative">-$161.25 (-1.51%)</td>
+                            <td>Mean Reversion</td>
+                            <td><button class="action-btn">Close</button></td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </main>
+
+        <!-- Right Panel -->
+        <aside class="right-panel">
+            <!-- Quick Actions -->
+            <div class="panel-section">
+                <h3 class="panel-title">Quick Actions</h3>
+                <div class="quick-actions">
+                    <button class="action-btn primary" id="btn-start-stop">
+                        <span>Start Bot</span>
+                    </button>
+                    <button class="action-btn" id="btn-analyze">
+                        <span>Analyze</span>
+                    </button>
+                    <button class="action-btn danger" id="btn-close-all">
+                        <span>Close All</span>
+                    </button>
+                    <button class="action-btn" id="btn-refresh">
+                        <span>Refresh</span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Strategy Status -->
+            <div class="panel-section">
+                <h3 class="panel-title">Strategy Status</h3>
+                <div class="strategy-list" id="strategy-list">
+                    <div class="strategy-item">
+                        <span class="strategy-name">Momentum</span>
+                        <div class="strategy-status">
+                            <span class="strategy-signal buy">BUY</span>
+                            <label class="toggle">
+                                <input type="checkbox" checked>
+                                <span class="toggle-slider"></span>
+                            </label>
+                        </div>
+                    </div>
+                    <div class="strategy-item">
+                        <span class="strategy-name">Mean Reversion</span>
+                        <div class="strategy-status">
+                            <span class="strategy-signal hold">HOLD</span>
+                            <label class="toggle">
+                                <input type="checkbox" checked>
+                                <span class="toggle-slider"></span>
+                            </label>
+                        </div>
+                    </div>
+                    <div class="strategy-item">
+                        <span class="strategy-name">Breakout</span>
+                        <div class="strategy-status">
+                            <span class="strategy-signal sell">SELL</span>
+                            <label class="toggle">
+                                <input type="checkbox" checked>
+                                <span class="toggle-slider"></span>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Risk Status -->
+            <div class="panel-section">
+                <h3 class="panel-title">Risk Status</h3>
+                <div class="risk-meters">
+                    <div class="risk-meter">
+                        <div class="risk-meter-header">
+                            <span class="risk-meter-label">Daily Loss Limit</span>
+                            <span class="risk-meter-value" id="daily-loss-pct">1.2% / 3%</span>
+                        </div>
+                        <div class="risk-bar">
+                            <div class="risk-bar-fill safe" style="width: 40%"></div>
+                        </div>
+                    </div>
+                    <div class="risk-meter">
+                        <div class="risk-meter-header">
+                            <span class="risk-meter-label">Portfolio Exposure</span>
+                            <span class="risk-meter-value" id="exposure-pct">45% / 80%</span>
+                        </div>
+                        <div class="risk-bar">
+                            <div class="risk-bar-fill safe" style="width: 56%"></div>
+                        </div>
+                    </div>
+                    <div class="risk-meter">
+                        <div class="risk-meter-header">
+                            <span class="risk-meter-label">Max Drawdown</span>
+                            <span class="risk-meter-value" id="drawdown-pct">3.5% / 15%</span>
+                        </div>
+                        <div class="risk-bar">
+                            <div class="risk-bar-fill safe" style="width: 23%"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Activity Feed -->
+            <div class="panel-section">
+                <h3 class="panel-title">Recent Activity</h3>
+                <div class="activity-feed" id="activity-feed">
+                    <div class="activity-item">
+                        <div class="activity-icon buy">B</div>
+                        <div class="activity-content">
+                            <div class="activity-title">Bought AAPL</div>
+                            <div class="activity-desc">100 shares @ $185.50</div>
+                            <div class="activity-time">2 min ago</div>
+                        </div>
+                    </div>
+                    <div class="activity-item">
+                        <div class="activity-icon signal">S</div>
+                        <div class="activity-content">
+                            <div class="activity-title">Signal: NVDA</div>
+                            <div class="activity-desc">Strong buy signal (conf: 0.85)</div>
+                            <div class="activity-time">5 min ago</div>
+                        </div>
+                    </div>
+                    <div class="activity-item">
+                        <div class="activity-icon sell">S</div>
+                        <div class="activity-content">
+                            <div class="activity-title">Sold MSFT</div>
+                            <div class="activity-desc">50 shares @ $425.30 (+$340)</div>
+                            <div class="activity-time">15 min ago</div>
+                        </div>
+                    </div>
+                    <div class="activity-item">
+                        <div class="activity-icon alert">!</div>
+                        <div class="activity-content">
+                            <div class="activity-title">Risk Warning</div>
+                            <div class="activity-desc">Approaching daily loss limit</div>
+                            <div class="activity-time">1 hour ago</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Connection Status -->
+            <div class="panel-section">
+                <h3 class="panel-title">Connection</h3>
+                <div class="connection-status">
+                    <div class="connection-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="var(--accent-green)" stroke-width="2" width="20" height="20">
+                            <path d="M5 12.55a11 11 0 0 1 14.08 0"/>
+                            <path d="M1.42 9a16 16 0 0 1 21.16 0"/>
+                            <path d="M8.53 16.11a6 6 0 0 1 6.95 0"/>
+                            <circle cx="12" cy="20" r="1"/>
+                        </svg>
+                    </div>
+                    <div class="connection-info">
+                        <div class="connection-label">Broker API</div>
+                        <div class="connection-value" id="broker-status">Schwab Connected</div>
+                    </div>
+                </div>
+            </div>
+        </aside>
+    </div>
+
+    <script>
+        // Dashboard JavaScript
+        const API_BASE = window.location.origin;
+        let ws = null;
+        let isRunning = false;
+
+        // Initialize dashboard
+        document.addEventListener('DOMContentLoaded', () => {
+            initWebSocket();
+            loadDashboardData();
+            setupEventListeners();
+        });
+
+        // WebSocket connection
+        function initWebSocket() {
+            const wsUrl = `ws://${window.location.host}/ws`;
+            ws = new WebSocket(wsUrl);
+
+            ws.onopen = () => {
+                updateConnectionStatus(true);
+            };
+
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                handleWebSocketMessage(data);
+            };
+
+            ws.onclose = () => {
+                updateConnectionStatus(false);
+                setTimeout(initWebSocket, 5000);
+            };
+
+            ws.onerror = () => {
+                updateConnectionStatus(false);
+            };
+        }
+
+        function handleWebSocketMessage(data) {
+            switch(data.type) {
+                case 'state_update':
+                    updateDashboard(data.data);
+                    break;
+                case 'trade':
+                    addActivity('trade', data.data);
+                    break;
+                case 'signal':
+                    addActivity('signal', data.data);
+                    break;
+                case 'alert':
+                    addActivity('alert', data.data);
+                    break;
+            }
+        }
+
+        function updateConnectionStatus(connected) {
+            const dot = document.getElementById('status-dot');
+            const text = document.getElementById('status-text');
+
+            if (connected) {
+                dot.classList.remove('offline');
+                text.textContent = 'Connected';
+            } else {
+                dot.classList.add('offline');
+                text.textContent = 'Disconnected';
+            }
+        }
+
+        // Load initial dashboard data
+        async function loadDashboardData() {
+            try {
+                const response = await fetch(`${API_BASE}/api/status`);
+                if (response.ok) {
+                    const data = await response.json();
+                    updateDashboard(data);
+                }
+            } catch (error) {
+                console.error('Failed to load dashboard data:', error);
+            }
+        }
+
+        function updateDashboard(data) {
+            if (data.portfolio) {
+                document.getElementById('portfolio-value').textContent =
+                    formatCurrency(data.portfolio.account_balance);
+                document.getElementById('daily-pnl').textContent =
+                    formatCurrency(data.portfolio.daily_pnl, true);
+                document.getElementById('open-positions').textContent =
+                    data.portfolio.position_count || 0;
+            }
+
+            if (data.mode) {
+                const badge = document.getElementById('mode-badge');
+                badge.textContent = data.mode;
+                badge.className = `mode-badge ${data.mode.toLowerCase()}`;
+            }
+
+            if (data.is_running !== undefined) {
+                isRunning = data.is_running;
+                updateStartStopButton();
+            }
+
+            if (data.positions) {
+                updatePositionsTable(data.positions);
+            }
+        }
+
+        function updatePositionsTable(positions) {
+            const tbody = document.getElementById('positions-table');
+            if (!positions || Object.keys(positions).length === 0) {
+                tbody.innerHTML = `
+                    <tr>
+                        <td colspan="8" class="empty-state">
+                            <div>No open positions</div>
+                        </td>
+                    </tr>
+                `;
+                return;
+            }
+
+            tbody.innerHTML = Object.entries(positions).map(([symbol, pos]) => {
+                const pnl = pos.unrealized_pnl || 0;
+                const pnlPct = pos.unrealized_pnl_pct || 0;
+                const pnlClass = pnl >= 0 ? 'pnl-positive' : 'pnl-negative';
+                const pnlSign = pnl >= 0 ? '+' : '';
+
+                return `
+                    <tr>
+                        <td class="symbol-cell">${symbol}</td>
+                        <td>${pos.side || 'Long'}</td>
+                        <td>${pos.quantity}</td>
+                        <td>${formatCurrency(pos.entry_price)}</td>
+                        <td>${formatCurrency(pos.current_price)}</td>
+                        <td class="${pnlClass}">${pnlSign}${formatCurrency(pnl)} (${pnlSign}${pnlPct.toFixed(2)}%)</td>
+                        <td>${pos.strategy || 'N/A'}</td>
+                        <td><button class="action-btn" onclick="closePosition('${symbol}')">Close</button></td>
+                    </tr>
+                `;
+            }).join('');
+        }
+
+        function addActivity(type, data) {
+            const feed = document.getElementById('activity-feed');
+            const iconClass = type === 'trade' ? (data.action === 'buy' ? 'buy' : 'sell') :
+                             type === 'signal' ? 'signal' : 'alert';
+            const iconText = type === 'trade' ? (data.action === 'buy' ? 'B' : 'S') :
+                            type === 'signal' ? 'S' : '!';
+
+            const item = document.createElement('div');
+            item.className = 'activity-item';
+            item.innerHTML = `
+                <div class="activity-icon ${iconClass}">${iconText}</div>
+                <div class="activity-content">
+                    <div class="activity-title">${data.title || 'Activity'}</div>
+                    <div class="activity-desc">${data.description || ''}</div>
+                    <div class="activity-time">Just now</div>
+                </div>
+            `;
+
+            feed.insertBefore(item, feed.firstChild);
+
+            // Keep only last 10 items
+            while (feed.children.length > 10) {
+                feed.removeChild(feed.lastChild);
+            }
+        }
+
+        // Event listeners
+        function setupEventListeners() {
+            document.getElementById('btn-start-stop').addEventListener('click', toggleBot);
+            document.getElementById('btn-analyze').addEventListener('click', runAnalysis);
+            document.getElementById('btn-close-all').addEventListener('click', closeAllPositions);
+            document.getElementById('btn-refresh').addEventListener('click', loadDashboardData);
+
+            // Navigation
+            document.querySelectorAll('.nav-item').forEach(item => {
+                item.addEventListener('click', () => {
+                    document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
+                    item.classList.add('active');
+                });
+            });
+
+            // Chart time controls
+            document.querySelectorAll('.chart-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    btn.parentElement.querySelectorAll('.chart-btn').forEach(b => b.classList.remove('active'));
+                    btn.classList.add('active');
+                });
+            });
+        }
+
+        async function toggleBot() {
+            const endpoint = isRunning ? '/api/stop' : '/api/start';
+            try {
+                const response = await fetch(`${API_BASE}${endpoint}`, { method: 'POST' });
+                if (response.ok) {
+                    isRunning = !isRunning;
+                    updateStartStopButton();
+                }
+            } catch (error) {
+                console.error('Failed to toggle bot:', error);
+            }
+        }
+
+        function updateStartStopButton() {
+            const btn = document.getElementById('btn-start-stop');
+            if (isRunning) {
+                btn.innerHTML = '<span>Stop Bot</span>';
+                btn.classList.remove('primary');
+                btn.classList.add('danger');
+            } else {
+                btn.innerHTML = '<span>Start Bot</span>';
+                btn.classList.remove('danger');
+                btn.classList.add('primary');
+            }
+        }
+
+        async function runAnalysis() {
+            try {
+                await fetch(`${API_BASE}/api/analyze`, { method: 'POST' });
+            } catch (error) {
+                console.error('Failed to run analysis:', error);
+            }
+        }
+
+        async function closeAllPositions() {
+            if (!confirm('Are you sure you want to close all positions?')) return;
+            try {
+                await fetch(`${API_BASE}/api/close-all`, { method: 'POST' });
+                loadDashboardData();
+            } catch (error) {
+                console.error('Failed to close all positions:', error);
+            }
+        }
+
+        async function closePosition(symbol) {
+            if (!confirm(`Close position in ${symbol}?`)) return;
+            try {
+                await fetch(`${API_BASE}/api/positions/${symbol}/close`, { method: 'POST' });
+                loadDashboardData();
+            } catch (error) {
+                console.error(`Failed to close ${symbol}:`, error);
+            }
+        }
+
+        // Utility functions
+        function formatCurrency(value, showSign = false) {
+            if (value === undefined || value === null) return '$0.00';
+            const sign = showSign && value >= 0 ? '+' : '';
+            return sign + '$' + Math.abs(value).toLocaleString('en-US', {
+                minimumFractionDigits: 2,
+                maximumFractionDigits: 2
+            });
+        }
+    </script>
+</body>
+</html>
