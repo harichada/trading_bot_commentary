@@ -1653,6 +1653,12 @@ class PerformanceAnalyzer:
         
         return metrics
     
+    def get_win_rate(self) -> float:
+        """Get the latest win rate from metrics history"""
+        if self.metrics_history:
+            return self.metrics_history[-1]['metrics'].get('win_rate', 0.0)
+        return 0.0
+
     def _get_empty_metrics(self) -> Dict[str, float]:
         """Return empty metrics structure"""
         return {
