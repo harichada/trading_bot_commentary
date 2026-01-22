@@ -59,6 +59,11 @@ def main():
 
     args = parser.parse_args()
 
+    # Validate port
+    if not (0 < args.port < 65536):
+        print(f"Error: Port must be between 1 and 65535, got {args.port}")
+        sys.exit(1)
+
     print(f"""
 ╔══════════════════════════════════════════════════════════════╗
 ║            Professional Trading Bot Dashboard                 ║
