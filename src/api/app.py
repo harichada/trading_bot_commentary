@@ -7,6 +7,7 @@ Main API application with WebSocket support and professional dashboard.
 import asyncio
 import json
 import logging
+import random
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Any, Optional, Set
@@ -58,6 +59,124 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 
+# Demo data state
+class DemoState:
+    """Demo trading state for UI demonstration"""
+
+    def __init__(self):
+        self.is_running = False
+        self.mode = "simulation"
+        self.start_time = None
+        self.account_balance = 100000.0
+        self.cash = 55000.0
+        self.daily_pnl = 0.0
+        self.total_pnl = 0.0
+
+        # Demo positions
+        self.positions = {
+            "AAPL": {
+                "symbol": "AAPL",
+                "side": "long",
+                "quantity": 100,
+                "entry_price": 185.50,
+                "current_price": 189.25,
+                "stop_loss": 180.0,
+                "take_profit": 195.0,
+                "strategy": "momentum",
+                "unrealized_pnl": 375.0,
+                "unrealized_pnl_pct": 2.02
+            },
+            "NVDA": {
+                "symbol": "NVDA",
+                "side": "long",
+                "quantity": 50,
+                "entry_price": 480.0,
+                "current_price": 495.80,
+                "stop_loss": 460.0,
+                "take_profit": 520.0,
+                "strategy": "breakout",
+                "unrealized_pnl": 790.0,
+                "unrealized_pnl_pct": 3.29
+            },
+            "GOOGL": {
+                "symbol": "GOOGL",
+                "side": "long",
+                "quantity": 75,
+                "entry_price": 142.30,
+                "current_price": 140.15,
+                "stop_loss": 135.0,
+                "take_profit": 155.0,
+                "strategy": "mean_reversion",
+                "unrealized_pnl": -161.25,
+                "unrealized_pnl_pct": -1.51
+            }
+        }
+
+        self.strategies = {
+            "momentum": {"enabled": True, "signal": "buy", "confidence": 0.75},
+            "mean_reversion": {"enabled": True, "signal": "hold", "confidence": 0.45},
+            "breakout": {"enabled": True, "signal": "sell", "confidence": 0.68}
+        }
+
+        self.activities = []
+
+    def update_prices(self):
+        """Simulate price movements"""
+        for symbol, pos in self.positions.items():
+            # Random price change (-1% to +1%)
+            change_pct = random.uniform(-0.01, 0.01)
+            pos["current_price"] = round(pos["current_price"] * (1 + change_pct), 2)
+            pos["unrealized_pnl"] = round((pos["current_price"] - pos["entry_price"]) * pos["quantity"], 2)
+            pos["unrealized_pnl_pct"] = round((pos["current_price"] - pos["entry_price"]) / pos["entry_price"] * 100, 2)
+
+        # Update daily P&L
+        self.daily_pnl = sum(p["unrealized_pnl"] for p in self.positions.values())
+
+    def update_strategies(self):
+        """Simulate strategy signal changes"""
+        signals = ["buy", "sell", "hold"]
+        for name, strategy in self.strategies.items():
+            if random.random() < 0.1:  # 10% chance to change
+                strategy["signal"] = random.choice(signals)
+                strategy["confidence"] = round(random.uniform(0.3, 0.95), 2)
+
+    def get_status(self) -> Dict[str, Any]:
+        """Get current status"""
+        total_market_value = sum(p["current_price"] * p["quantity"] for p in self.positions.values())
+
+        return {
+            "is_running": self.is_running,
+            "mode": self.mode,
+            "uptime_seconds": (datetime.now() - self.start_time).total_seconds() if self.start_time else 0,
+            "portfolio": {
+                "account_balance": self.account_balance,
+                "buying_power": self.cash,
+                "cash": self.cash,
+                "total_market_value": round(total_market_value, 2),
+                "total_unrealized_pnl": round(self.daily_pnl, 2),
+                "daily_pnl": round(self.daily_pnl, 2),
+                "total_pnl": round(self.total_pnl + self.daily_pnl, 2),
+                "position_count": len(self.positions)
+            },
+            "positions": self.positions,
+            "strategies": self.strategies
+        }
+
+    def add_activity(self, activity_type: str, data: Dict):
+        """Add activity to feed"""
+        self.activities.insert(0, {
+            "type": activity_type,
+            "data": data,
+            "timestamp": datetime.now().isoformat()
+        })
+        if len(self.activities) > 50:
+            self.activities = self.activities[:50]
+
+
+# Global demo state
+demo_state = DemoState()
+
+
 # Request/Response models
 class StartRequest(BaseModel):
     mode: Optional[str] = None
@@ -81,17 +200,7 @@ def create_app(
     title: str = "Trading Bot API",
     version: str = "2.0.0"
 ) -> FastAPI:
-    """
-    Create FastAPI application.
-
-    Args:
-        engine: Trading engine instance (optional, can be set later)
-        title: API title
-        version: API version
-
-    Returns:
-        FastAPI application
-    """
+    """Create FastAPI application."""
     global _app
 
     app = FastAPI(
@@ -102,11 +211,69 @@ def create_app(
 
     # Store engine reference
     app.state.engine = engine
+    app.state.update_task = None
 
     # Static files
     static_dir = Path(__file__).parent / "static"
     if static_dir.exists():
         app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+
+    @app.on_event("startup")
+    async def startup():
+        """Start background update task"""
+        app.state.update_task = asyncio.create_task(background_updates())
+
+    @app.on_event("shutdown")
+    async def shutdown():
+        """Stop background update task"""
+        if app.state.update_task:
+            app.state.update_task.cancel()
+            try:
+                await app.state.update_task
+            except asyncio.CancelledError:
+                pass
+
+    async def background_updates():
+        """Background task to send periodic updates"""
+        while True:
+            try:
+                await asyncio.sleep(2)  # Update every 2 seconds
+
+                if demo_state.is_running:
+                    # Update demo data
+                    demo_state.update_prices()
+                    demo_state.update_strategies()
+
+                    # Occasionally generate activity
+                    if random.random() < 0.15:  # 15% chance
+                        activity_types = [
+                            ("signal", {
+                                "title": f"Signal: {random.choice(['AAPL', 'NVDA', 'GOOGL', 'MSFT', 'TSLA'])}",
+                                "description": f"{random.choice(['Buy', 'Sell', 'Hold'])} signal (conf: {random.uniform(0.5, 0.95):.2f})"
+                            }),
+                            ("alert", {
+                                "title": "Risk Update",
+                                "description": f"Daily exposure: {random.uniform(30, 60):.1f}%"
+                            })
+                        ]
+                        act_type, act_data = random.choice(activity_types)
+                        demo_state.add_activity(act_type, act_data)
+
+                        await manager.broadcast({
+                            "type": act_type,
+                            "data": act_data
+                        })
+
+                    # Broadcast state update
+                    await manager.broadcast({
+                        "type": "state_update",
+                        "data": demo_state.get_status()
+                    })
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Background update error: {e}")
 
     # ==================== Dashboard Routes ====================
 
@@ -126,24 +293,20 @@ def create_app(
         await manager.connect(websocket)
         try:
             # Send initial state
-            if app.state.engine:
-                await websocket.send_json({
-                    "type": "state_update",
-                    "data": get_engine_status(app.state.engine)
-                })
+            await websocket.send_json({
+                "type": "state_update",
+                "data": demo_state.get_status()
+            })
 
             while True:
-                # Keep connection alive and handle incoming messages
                 try:
                     data = await asyncio.wait_for(
                         websocket.receive_text(),
                         timeout=30.0
                     )
-                    # Handle client messages if needed
                     message = json.loads(data)
-                    await handle_client_message(websocket, message, app.state.engine)
+                    await handle_client_message(websocket, message)
                 except asyncio.TimeoutError:
-                    # Send ping to keep alive
                     await websocket.send_json({"type": "ping"})
 
         except WebSocketDisconnect:
@@ -163,152 +326,197 @@ def create_app(
     @app.get("/api/status")
     async def get_status():
         """Get current bot status"""
-        if not app.state.engine:
-            return {
-                "is_running": False,
-                "mode": "simulation",
-                "message": "Engine not initialized"
-            }
-        return get_engine_status(app.state.engine)
+        return demo_state.get_status()
 
     # ==================== Control Endpoints ====================
 
     @app.post("/api/start")
     async def start_bot(request: StartRequest = None):
         """Start the trading bot"""
-        if not app.state.engine:
-            raise HTTPException(status_code=500, detail="Engine not initialized")
-
-        if app.state.engine.is_running:
+        if demo_state.is_running:
             return {"status": "already_running"}
 
-        success = await app.state.engine.start()
-        if success:
-            await broadcast_state_update(app.state.engine)
-            return {"status": "started"}
-        raise HTTPException(status_code=500, detail="Failed to start engine")
+        demo_state.is_running = True
+        demo_state.start_time = datetime.now()
+
+        demo_state.add_activity("alert", {
+            "title": "Bot Started",
+            "description": f"Trading bot started in {demo_state.mode} mode"
+        })
+
+        await manager.broadcast({
+            "type": "state_update",
+            "data": demo_state.get_status()
+        })
+
+        return {"status": "started"}
 
     @app.post("/api/stop")
     async def stop_bot():
         """Stop the trading bot"""
-        if not app.state.engine:
-            raise HTTPException(status_code=500, detail="Engine not initialized")
+        demo_state.is_running = False
 
-        await app.state.engine.stop()
-        await broadcast_state_update(app.state.engine)
+        demo_state.add_activity("alert", {
+            "title": "Bot Stopped",
+            "description": "Trading bot has been stopped"
+        })
+
+        await manager.broadcast({
+            "type": "state_update",
+            "data": demo_state.get_status()
+        })
+
         return {"status": "stopped"}
 
     @app.post("/api/analyze")
     async def run_analysis():
         """Trigger manual analysis"""
-        if not app.state.engine:
-            raise HTTPException(status_code=500, detail="Engine not initialized")
+        demo_state.update_prices()
+        demo_state.update_strategies()
 
-        # This would trigger an analysis cycle
-        return {"status": "analysis_triggered"}
+        demo_state.add_activity("signal", {
+            "title": "Analysis Complete",
+            "description": f"Analyzed {len(demo_state.positions)} positions"
+        })
+
+        await manager.broadcast({
+            "type": "state_update",
+            "data": demo_state.get_status()
+        })
+
+        return {"status": "analysis_complete"}
 
     # ==================== Portfolio Endpoints ====================
 
     @app.get("/api/portfolio")
     async def get_portfolio():
         """Get portfolio summary"""
-        if not app.state.engine:
-            return {"error": "Engine not initialized"}
-
-        return app.state.engine.get_portfolio_summary()
+        return demo_state.get_status()["portfolio"]
 
     @app.get("/api/positions")
     async def get_positions():
         """Get all positions"""
-        if not app.state.engine or not app.state.engine.state:
-            return {"positions": {}}
-
-        return {
-            "positions": {
-                k: v.to_dict()
-                for k, v in app.state.engine.state.portfolio.positions.items()
-            }
-        }
+        return {"positions": demo_state.positions}
 
     @app.post("/api/positions/{symbol}/close")
     async def close_position(symbol: str):
         """Close a specific position"""
-        if not app.state.engine:
-            raise HTTPException(status_code=500, detail="Engine not initialized")
+        if symbol not in demo_state.positions:
+            raise HTTPException(status_code=404, detail=f"Position {symbol} not found")
 
-        success = await app.state.engine.manual_sell(symbol)
-        if success:
-            await broadcast_state_update(app.state.engine)
-            return {"status": "closing", "symbol": symbol}
-        raise HTTPException(status_code=400, detail=f"Failed to close {symbol}")
+        pos = demo_state.positions[symbol]
+        pnl = pos["unrealized_pnl"]
+
+        del demo_state.positions[symbol]
+        demo_state.total_pnl += pnl
+        demo_state.cash += pos["current_price"] * pos["quantity"]
+
+        demo_state.add_activity("trade" if pnl >= 0 else "alert", {
+            "title": f"Closed {symbol}",
+            "description": f"P&L: ${pnl:+.2f}"
+        })
+
+        await manager.broadcast({
+            "type": "trade",
+            "data": {
+                "action": "sell",
+                "title": f"Sold {symbol}",
+                "description": f"{pos['quantity']} shares @ ${pos['current_price']:.2f} ({'+' if pnl >= 0 else ''}{pnl:.2f})"
+            }
+        })
+
+        await manager.broadcast({
+            "type": "state_update",
+            "data": demo_state.get_status()
+        })
+
+        return {"status": "closed", "symbol": symbol, "pnl": pnl}
 
     @app.post("/api/close-all")
     async def close_all_positions():
         """Close all positions"""
-        if not app.state.engine:
-            raise HTTPException(status_code=500, detail="Engine not initialized")
+        total_pnl = sum(p["unrealized_pnl"] for p in demo_state.positions.values())
+        total_value = sum(p["current_price"] * p["quantity"] for p in demo_state.positions.values())
 
-        await app.state.engine.close_all_positions()
-        await broadcast_state_update(app.state.engine)
-        return {"status": "closing_all"}
+        demo_state.positions = {}
+        demo_state.total_pnl += total_pnl
+        demo_state.cash += total_value
+
+        demo_state.add_activity("alert", {
+            "title": "Closed All Positions",
+            "description": f"Total P&L: ${total_pnl:+.2f}"
+        })
+
+        await manager.broadcast({
+            "type": "state_update",
+            "data": demo_state.get_status()
+        })
+
+        return {"status": "all_closed", "total_pnl": total_pnl}
 
     # ==================== Order Endpoints ====================
 
     @app.post("/api/orders")
     async def submit_order(order: OrderRequest):
         """Submit a new order"""
-        if not app.state.engine:
-            raise HTTPException(status_code=500, detail="Engine not initialized")
+        # Simulate order fill
+        price = random.uniform(100, 500)
 
         if order.side.lower() == 'buy':
-            success = await app.state.engine.manual_buy(order.symbol, order.quantity)
-        else:
-            success = await app.state.engine.manual_sell(order.symbol, order.quantity)
+            demo_state.positions[order.symbol] = {
+                "symbol": order.symbol,
+                "side": "long",
+                "quantity": order.quantity,
+                "entry_price": price,
+                "current_price": price,
+                "stop_loss": price * 0.95,
+                "take_profit": price * 1.10,
+                "strategy": "manual",
+                "unrealized_pnl": 0,
+                "unrealized_pnl_pct": 0
+            }
+            demo_state.cash -= price * order.quantity
 
-        if success:
-            await broadcast_state_update(app.state.engine)
-            return {"status": "submitted", "order": order.dict()}
-        raise HTTPException(status_code=400, detail="Failed to submit order")
+            await manager.broadcast({
+                "type": "trade",
+                "data": {
+                    "action": "buy",
+                    "title": f"Bought {order.symbol}",
+                    "description": f"{order.quantity} shares @ ${price:.2f}"
+                }
+            })
+
+        await manager.broadcast({
+            "type": "state_update",
+            "data": demo_state.get_status()
+        })
+
+        return {"status": "filled", "order": order.dict(), "fill_price": price}
 
     @app.get("/api/orders")
     async def get_orders():
         """Get pending orders"""
-        if not app.state.engine or not app.state.engine.state:
-            return {"orders": {}}
-
-        return {
-            "orders": {
-                k: v.to_dict()
-                for k, v in app.state.engine.state.portfolio.pending_orders.items()
-            }
-        }
+        return {"orders": {}}
 
     # ==================== Strategy Endpoints ====================
 
     @app.get("/api/strategies")
     async def get_strategies():
         """Get strategy status"""
-        if not app.state.engine or not app.state.engine._strategy_manager:
-            return {"strategies": []}
-
-        return app.state.engine._strategy_manager.to_dict()
+        return {"strategies": demo_state.strategies}
 
     @app.post("/api/strategies/{name}/enable")
     async def enable_strategy(name: str):
         """Enable a strategy"""
-        if not app.state.engine or not app.state.engine._strategy_manager:
-            raise HTTPException(status_code=500, detail="Strategy manager not available")
-
-        app.state.engine._strategy_manager.enable_strategy(name)
+        if name in demo_state.strategies:
+            demo_state.strategies[name]["enabled"] = True
         return {"status": "enabled", "strategy": name}
 
     @app.post("/api/strategies/{name}/disable")
     async def disable_strategy(name: str):
         """Disable a strategy"""
-        if not app.state.engine or not app.state.engine._strategy_manager:
-            raise HTTPException(status_code=500, detail="Strategy manager not available")
-
-        app.state.engine._strategy_manager.disable_strategy(name)
+        if name in demo_state.strategies:
+            demo_state.strategies[name]["enabled"] = False
         return {"status": "disabled", "strategy": name}
 
     # ==================== Risk Endpoints ====================
@@ -316,44 +524,45 @@ def create_app(
     @app.get("/api/risk")
     async def get_risk_status():
         """Get risk status"""
-        if not app.state.engine or not app.state.engine._risk_manager:
-            return {"error": "Risk manager not available"}
+        total_value = sum(p["current_price"] * p["quantity"] for p in demo_state.positions.values())
+        exposure = total_value / demo_state.account_balance * 100
 
-        return app.state.engine._risk_manager.get_risk_status()
+        return {
+            "daily_loss_pct": abs(min(0, demo_state.daily_pnl)) / demo_state.account_balance * 100,
+            "daily_loss_limit": 3.0,
+            "exposure_pct": exposure,
+            "exposure_limit": 80.0,
+            "drawdown_pct": 3.5,
+            "drawdown_limit": 15.0,
+            "consecutive_losses": 0,
+            "circuit_breaker_active": False
+        }
 
     # ==================== Settings Endpoints ====================
 
     @app.get("/api/settings")
     async def get_settings():
         """Get current settings"""
-        if not app.state.engine:
-            return {"error": "Engine not initialized"}
-
-        return app.state.engine.config.to_dict()
+        return {
+            "mode": demo_state.mode,
+            "risk": {
+                "max_position_size": 0.10,
+                "max_daily_loss": 0.03,
+                "max_drawdown": 0.15
+            }
+        }
 
     @app.put("/api/settings")
     async def update_setting(update: SettingUpdate):
         """Update a setting"""
-        # Settings updates would be handled here
         return {"status": "updated", "key": update.key}
 
-    # ==================== Analytics Endpoints ====================
+    # ==================== Activity Feed ====================
 
-    @app.get("/api/analytics/trades")
-    async def get_trade_history(limit: int = 100):
-        """Get trade history"""
-        # Would return trade history from analytics logger
-        return {"trades": []}
-
-    @app.get("/api/analytics/performance")
-    async def get_performance():
-        """Get performance metrics"""
-        return {
-            "total_pnl": 0,
-            "win_rate": 0,
-            "sharpe_ratio": 0,
-            "max_drawdown": 0
-        }
+    @app.get("/api/activities")
+    async def get_activities(limit: int = 20):
+        """Get recent activities"""
+        return {"activities": demo_state.activities[:limit]}
 
     _app = app
     return app
@@ -364,77 +573,9 @@ def get_app() -> Optional[FastAPI]:
     return _app
 
 
-def get_engine_status(engine) -> Dict[str, Any]:
-    """Get comprehensive engine status"""
-    status = {
-        "is_running": engine.is_running,
-        "mode": engine.mode.value if hasattr(engine.mode, 'value') else str(engine.mode),
-        "uptime_seconds": engine.status.uptime_seconds,
-        "last_analysis": (
-            engine.status.last_analysis_time.isoformat()
-            if engine.status.last_analysis_time else None
-        ),
-        "error_count": engine.status.error_count
-    }
-
-    if engine.state and engine.state.portfolio:
-        portfolio = engine.state.portfolio
-        status["portfolio"] = {
-            "account_balance": portfolio.account_balance,
-            "buying_power": portfolio.buying_power,
-            "cash": portfolio.cash,
-            "total_market_value": portfolio.total_market_value,
-            "total_unrealized_pnl": portfolio.total_unrealized_pnl,
-            "daily_pnl": portfolio.daily_pnl,
-            "total_pnl": portfolio.total_pnl,
-            "position_count": portfolio.position_count
-        }
-        status["positions"] = {
-            k: v.to_dict() for k, v in portfolio.positions.items()
-        }
-
-    return status
-
-
-async def handle_client_message(websocket: WebSocket, message: Dict, engine):
+async def handle_client_message(websocket: WebSocket, message: Dict):
     """Handle incoming client messages"""
     msg_type = message.get("type")
 
-    if msg_type == "subscribe":
-        # Handle subscription requests
-        pass
-    elif msg_type == "command":
-        # Handle commands
-        pass
-
-
-async def broadcast_state_update(engine):
-    """Broadcast state update to all clients"""
-    await manager.broadcast({
-        "type": "state_update",
-        "data": get_engine_status(engine)
-    })
-
-
-async def broadcast_trade(trade_data: Dict):
-    """Broadcast trade event"""
-    await manager.broadcast({
-        "type": "trade",
-        "data": trade_data
-    })
-
-
-async def broadcast_signal(signal_data: Dict):
-    """Broadcast signal event"""
-    await manager.broadcast({
-        "type": "signal",
-        "data": signal_data
-    })
-
-
-async def broadcast_alert(alert_data: Dict):
-    """Broadcast alert event"""
-    await manager.broadcast({
-        "type": "alert",
-        "data": alert_data
-    })
+    if msg_type == "ping":
+        await websocket.send_json({"type": "pong"})
