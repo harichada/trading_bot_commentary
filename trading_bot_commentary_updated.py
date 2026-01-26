@@ -30,6 +30,15 @@ from analytics_logger import (
     TradeLog, DecisionLog, SignalLog, PerformanceLog, MarketDataLog
 )
 
+# Professional Trading Modules - Institutional-grade filters and management
+try:
+    from pro_trading_integration import get_pro_trading_wrapper, ProTradingWrapper
+    PRO_TRADING_AVAILABLE = True
+except ImportError:
+    PRO_TRADING_AVAILABLE = False
+    logger_init = logging.getLogger(__name__)
+    logger_init.warning("Professional trading modules not available")
+
 # Core Dependencies
 import numpy as np
 import pandas as pd
@@ -5324,6 +5333,25 @@ class TradingEngineWithCommentary:
         self.advanced_exit_manager = AdvancedExitManager(self.commentary)
         self.alternative_data_integrator = AlternativeDataIntegrator(self.commentary)
         self.market_neutral_strategies = MarketNeutralStrategies(self.commentary)
+
+        # Professional Trading Wrapper - Institutional-grade filtering
+        # This wraps all trade decisions through quality filters
+        self.pro_trading_wrapper = None
+        if PRO_TRADING_AVAILABLE:
+            try:
+                self.pro_trading_wrapper = get_pro_trading_wrapper()
+                self.commentary.add_commentary(TradingCommentary(
+                    timestamp=datetime.now(),
+                    type=CommentaryType.MARKET_ANALYSIS,
+                    symbol=None,
+                    title="🏛️ Professional Trading Modules Loaded",
+                    message="Institutional-grade filters active: Regime detection, session awareness, "
+                           "quality gates, market context, R-multiple exits. Trade quality > quantity.",
+                    importance=8
+                ))
+            except Exception as e:
+                logger.error(f"Failed to initialize professional trading wrapper: {e}")
+                self.pro_trading_wrapper = None
         
         # Add initial commentary
         self.commentary.add_commentary(TradingCommentary(
@@ -7768,7 +7796,109 @@ class TradingEngineWithCommentary:
                     ))
         except Exception as e:
             logger.error(f"Multi-timeframe check failed: {e}")
-        
+
+        # ================================================================
+        # PROFESSIONAL TRADING FILTER - Institutional Quality Gate
+        # This is where we filter out low-quality setups that retail loses on
+        # ================================================================
+        if self.pro_trading_wrapper is not None:
+            try:
+                # Get market data for regime/context analysis
+                market_df = None
+                if self.data_provider:
+                    raw_data = self.data_provider.get_market_data(signal.symbol)
+                    if not raw_data.empty:
+                        # Rename columns to lowercase for pro modules
+                        market_df = raw_data.rename(columns={
+                            'Open': 'open', 'High': 'high', 'Low': 'low',
+                            'Close': 'close', 'Volume': 'volume'
+                        })
+
+                # Build additional signals for confluence
+                additional_signals = {
+                    'trend_aligned': ml_signal == (1 if signal.signal_type == SignalType.BUY else -1),
+                    'ml_confirmed': ml_signal == (1 if signal.signal_type == SignalType.BUY else -1),
+                    'volume_confirmed': signal.reasoning.get('volume_confirmation', False),
+                    'momentum_confirmed': signal.reasoning.get('momentum_confirmed', False),
+                }
+
+                # Evaluate through professional filter
+                pro_decision = self.pro_trading_wrapper.evaluate_trade_signal(
+                    symbol=signal.symbol,
+                    direction='long' if signal.signal_type == SignalType.BUY else 'short',
+                    strategy=signal.reasoning.get('strategy', 'unknown'),
+                    entry_price=signal.entry_price,
+                    stop_loss=signal.stop_loss,
+                    take_profit=signal.take_profit,
+                    position_size=signal.position_size if signal.position_size else 100,
+                    confidence=signal.confidence,
+                    market_data=market_df,
+                    additional_signals=additional_signals
+                )
+
+                if not pro_decision.allowed:
+                    # Trade blocked by professional filters
+                    self.commentary.add_commentary(TradingCommentary(
+                        timestamp=datetime.now(),
+                        type=CommentaryType.DECISION,
+                        symbol=signal.symbol,
+                        title=f"🏛️ Professional Filter: BLOCKED",
+                        message=pro_decision.final_recommendation,
+                        data={
+                            'reasons_against': pro_decision.reasons_against,
+                            'regime': pro_decision.regime,
+                            'session': pro_decision.session,
+                            'quality_score': pro_decision.quality_score,
+                            'confluence_score': pro_decision.confluence_score
+                        },
+                        importance=8
+                    ))
+
+                    # Log the blocked trade for analysis
+                    log_decision(
+                        symbol=signal.symbol,
+                        decision='BLOCKED_BY_PRO_FILTER',
+                        reason='; '.join(pro_decision.reasons_against[:3]),
+                        factors={
+                            'regime': pro_decision.regime,
+                            'session': pro_decision.session,
+                            'quality': pro_decision.quality_score,
+                            'confluence': pro_decision.confluence_score
+                        },
+                        signals={'strategy': signal.strength, 'ml': ml_signal},
+                        indicators=signal.reasoning.get('indicators', {}),
+                        confidence=signal.confidence,
+                        mode=self.mode.value
+                    )
+                    return  # Don't take this trade
+
+                # Trade approved - use adjusted parameters from pro filter
+                self.commentary.add_commentary(TradingCommentary(
+                    timestamp=datetime.now(),
+                    type=CommentaryType.DECISION,
+                    symbol=signal.symbol,
+                    title=f"🏛️ Professional Filter: APPROVED",
+                    message=f"Quality: {pro_decision.quality_score:.0f}/100, "
+                           f"Confluence: {pro_decision.confluence_score}, "
+                           f"R-Target: {pro_decision.r_multiple_target:.1f}",
+                    data={
+                        'reasons_for': pro_decision.reasons_for,
+                        'regime': pro_decision.regime,
+                        'session': pro_decision.session,
+                        'adjusted_stop': pro_decision.stop_loss,
+                        'adjusted_size': pro_decision.position_size
+                    },
+                    importance=7
+                ))
+
+                # Apply adjustments from pro filter
+                signal.stop_loss = pro_decision.stop_loss
+                signal.position_size = int(pro_decision.position_size) if pro_decision.position_size else signal.position_size
+
+            except Exception as e:
+                logger.error(f"Professional filter error (continuing with trade): {e}")
+                # On error, continue with original signal - fail open
+
         # Check portfolio concentration
         if self.positions:
             total_value = sum(p.current_price * p.quantity for p in self.positions.values()) 
@@ -7868,6 +7998,48 @@ class TradingEngineWithCommentary:
                 signal.stop_loss,
                 signal.take_profit
             )
+
+        # Register position with professional exit manager for R-multiple tracking
+        if position and self.pro_trading_wrapper is not None:
+            try:
+                # Get ATR for the symbol
+                atr = None
+                if self.data_provider:
+                    raw_data = self.data_provider.get_market_data(signal.symbol)
+                    if not raw_data.empty and len(raw_data) >= 14:
+                        high = raw_data['High'].values
+                        low = raw_data['Low'].values
+                        close = raw_data['Close'].values
+                        tr = np.maximum(
+                            high[1:] - low[1:],
+                            np.maximum(
+                                np.abs(high[1:] - close[:-1]),
+                                np.abs(low[1:] - close[:-1])
+                            )
+                        )
+                        atr = float(np.mean(tr[-14:]))
+
+                # Open position in professional exit manager
+                self.pro_trading_wrapper.exit_manager.open_position(
+                    symbol=signal.symbol,
+                    direction='long' if signal.signal_type == SignalType.BUY else 'short',
+                    entry_price=signal.entry_price,
+                    position_size=signal.position_size,
+                    stop_loss=signal.stop_loss,
+                    atr=atr
+                )
+
+                self.commentary.add_commentary(TradingCommentary(
+                    timestamp=datetime.now(),
+                    type=CommentaryType.DECISION,
+                    symbol=signal.symbol,
+                    title=f"🏛️ Pro Exit Manager: Tracking",
+                    message=f"Position registered for R-multiple management. "
+                           f"Scale-out targets: 1R (50%), 2R (25%), 3R (25%)",
+                    importance=6
+                ))
+            except Exception as e:
+                logger.error(f"Failed to register position with pro exit manager: {e}")
 
     async def close_position_manually(self, symbol: str, position_type: str):
         """Manually close a position"""
@@ -8017,6 +8189,90 @@ class TradingEngineWithCommentary:
                             importance=4
                         ))
                     
+                    # ================================================================
+                    # PROFESSIONAL EXIT MANAGER - R-Multiple Based Exits
+                    # Scale out at 1R, 2R, 3R. Move to breakeven. Trail properly.
+                    # ================================================================
+                    if self.pro_trading_wrapper is not None and not getattr(position, 'is_long_term', False):
+                        try:
+                            # Get ATR for trailing stop calculations
+                            current_atr = None
+                            market_df = None
+                            if self.data_provider:
+                                raw_data = self.data_provider.get_market_data(symbol)
+                                if not raw_data.empty and len(raw_data) >= 14:
+                                    # Calculate ATR
+                                    high = raw_data['High'].values
+                                    low = raw_data['Low'].values
+                                    close = raw_data['Close'].values
+                                    tr = np.maximum(
+                                        high[1:] - low[1:],
+                                        np.maximum(
+                                            np.abs(high[1:] - close[:-1]),
+                                            np.abs(low[1:] - close[:-1])
+                                        )
+                                    )
+                                    current_atr = float(np.mean(tr[-14:]))
+                                    # Rename columns for pro modules
+                                    market_df = raw_data.rename(columns={
+                                        'Open': 'open', 'High': 'high', 'Low': 'low',
+                                        'Close': 'close', 'Volume': 'volume'
+                                    })
+
+                            # Check for exit signals from professional exit manager
+                            pro_exit_signals = self.pro_trading_wrapper.update_positions(
+                                current_prices={symbol: current_price},
+                                market_data={symbol: market_df} if market_df is not None else None,
+                                atrs={symbol: current_atr} if current_atr else None
+                            )
+
+                            # Process any exit signals
+                            for exit_sig in pro_exit_signals:
+                                if exit_sig.symbol == symbol:
+                                    self.commentary.add_commentary(TradingCommentary(
+                                        timestamp=datetime.now(),
+                                        type=CommentaryType.DECISION,
+                                        symbol=symbol,
+                                        title=f"🏛️ Pro Exit: {exit_sig.exit_reason.value.upper()}",
+                                        message=f"{exit_sig.message}\n"
+                                               f"Exiting {exit_sig.exit_size_pct:.0%} @ ${exit_sig.exit_price:.2f}",
+                                        data={
+                                            'r_multiple': exit_sig.r_multiple,
+                                            'exit_reason': exit_sig.exit_reason.value,
+                                            'exit_size_pct': exit_sig.exit_size_pct
+                                        },
+                                        importance=9
+                                    ))
+
+                                    # Handle partial exit vs full exit
+                                    if exit_sig.exit_size_pct < 1.0:
+                                        # Partial exit - scale out
+                                        exit_quantity = int(position.quantity * exit_sig.exit_size_pct)
+                                        if exit_quantity > 0 and not self.manual_close_only:
+                                            # Execute partial close
+                                            position.quantity -= exit_quantity
+                                            self.commentary.add_commentary(TradingCommentary(
+                                                timestamp=datetime.now(),
+                                                type=CommentaryType.DECISION,
+                                                symbol=symbol,
+                                                title=f"📊 Scaled Out {exit_sig.exit_size_pct:.0%}",
+                                                message=f"Locked in profit at {exit_sig.r_multiple:.1f}R. "
+                                                       f"Remaining: {position.quantity} shares",
+                                                importance=8
+                                            ))
+                                    else:
+                                        # Full exit
+                                        if not self.manual_close_only or self.mode != TradingMode.LIVE:
+                                            await self._close_position_with_commentary(
+                                                position,
+                                                f"pro_exit_{exit_sig.exit_reason.value}"
+                                            )
+                                            continue  # Position closed, move to next
+
+                        except Exception as e:
+                            logger.error(f"Professional exit manager error for {symbol}: {e}")
+                            # Continue with normal exit logic on error
+
                     # Check exit conditions with reasoning (skip if long-term)
                     if not getattr(position, 'is_long_term', False):
                         should_exit, exit_reason = await self._evaluate_exit_conditions(position, current_price)
