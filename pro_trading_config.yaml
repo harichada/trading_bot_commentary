@@ -22,6 +22,7 @@ features:
   market_context: true           # Key levels, trapped traders
   exit_manager: true             # Professional exit management
   performance_tracker: true      # R-multiple tracking
+  sentiment_analysis: true       # News/social sentiment analysis
 
   # Integration controls
   block_trades_in_choppy: true   # Hard block when chop index > 61.8
@@ -29,6 +30,7 @@ features:
   require_confluence: true       # Require multiple confirming signals
   use_r_based_exits: true        # Scale out at R-multiples
   enforce_daily_limits: true     # Stop after R target or loss limit
+  use_sentiment_blocking: true   # Block trades when sentiment strongly opposes
 
 # -----------------------------------------------------------------------------
 # REGIME DETECTOR SETTINGS
@@ -228,6 +230,54 @@ logging:
   commentary_level: "detailed"   # Options: minimal, normal, detailed
   include_context_in_commentary: true
   include_levels_in_commentary: true
+
+# -----------------------------------------------------------------------------
+# SENTIMENT ANALYSIS SETTINGS
+# -----------------------------------------------------------------------------
+sentiment:
+  # Feature toggles
+  enabled: true
+  use_llm_analysis: false        # Use Claude/OpenAI for nuanced sentiment
+  track_social_sentiment: true   # Reddit/StockTwits monitoring
+  track_earnings: true           # Earnings calendar integration
+  track_news_velocity: true      # Detect news spikes
+
+  # Thresholds
+  block_threshold: 0.6           # Block if sentiment score > 0.6 against direction
+  confluence_threshold: 0.3      # Add to confluence if score > 0.3 in direction
+  alert_threshold: 0.5           # Alert if sentiment flips beyond this
+
+  # Weighting
+  recency_half_life_minutes: 30  # News older than 30 min = 50% weight
+  source_weights:
+    sec_filings: 1.0             # Official filings get full weight
+    major_news: 0.9              # Reuters, AP, WSJ, etc.
+    financial_news: 0.8          # Benzinga, Seeking Alpha
+    general_news: 0.6            # Google News, Yahoo
+    social_media: 0.5            # Reddit, StockTwits
+    unknown: 0.4                 # Unknown sources
+
+  # News sources
+  sources:
+    enable_yahoo_rss: true
+    enable_google_news: true
+    enable_finnhub: true
+    enable_sec_edgar: true
+    enable_reddit: true
+    enable_stocktwits: true
+
+  # Update frequency
+  update_interval_seconds: 60    # How often to fetch new news
+  max_headlines_per_source: 20   # Limit headlines per source
+
+  # Trading integration
+  log_sentiment_at_trade: true   # Capture sentiment snapshot at trade time
+  check_position_divergence: true # Alert if sentiment diverges from position
+
+  # Alert settings
+  alert_on_breaking_news: true   # Alert on high-impact news
+  alert_on_sentiment_flip: true  # Alert when sentiment direction changes
+  alert_on_divergence: true      # Alert when price and sentiment diverge
 
 # -----------------------------------------------------------------------------
 # RISK MANAGEMENT OVERRIDES

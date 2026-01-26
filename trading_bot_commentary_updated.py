@@ -11900,6 +11900,149 @@ async def export_analytics(category: str, days: int = 30):
         'file': output_file
     }
 
+# =============================================================================
+# NEWS SENTIMENT API ENDPOINTS
+# =============================================================================
+
+# Initialize sentiment engine
+_sentiment_engine_instance = None
+
+def get_sentiment_engine_instance():
+    """Get or create sentiment engine instance"""
+    global _sentiment_engine_instance
+    if _sentiment_engine_instance is None:
+        try:
+            from news_sentiment_widget import get_sentiment_engine
+            _sentiment_engine_instance = get_sentiment_engine({
+                'watchlist': Config().WATCHLIST if hasattr(Config(), 'WATCHLIST') else ['TSLA', 'NVDA', 'AMD', 'AAPL', 'SPY', 'MARA']
+            })
+        except ImportError:
+            logger.warning("News sentiment widget not available")
+            return None
+    return _sentiment_engine_instance
+
+@app.get("/api/sentiment/update")
+async def get_sentiment_update():
+    """Get full sentiment update for all watchlist symbols"""
+    engine = get_sentiment_engine_instance()
+    if not engine:
+        return {'status': 'error', 'message': 'Sentiment engine not available'}
+
+    try:
+        data = await engine.update()
+        return {'status': 'success', 'data': data}
+    except Exception as e:
+        logger.error(f"Sentiment update failed: {e}")
+        return {'status': 'error', 'message': str(e)}
+
+@app.get("/api/sentiment/market")
+async def get_market_sentiment():
+    """Get overall market sentiment"""
+    engine = get_sentiment_engine_instance()
+    if not engine:
+        return {'status': 'error', 'message': 'Sentiment engine not available'}
+
+    try:
+        data = await engine.update()
+        return {
+            'status': 'success',
+            'market_sentiment': data.get('market_sentiment', {}),
+            'last_updated': data.get('last_updated')
+        }
+    except Exception as e:
+        return {'status': 'error', 'message': str(e)}
+
+@app.get("/api/sentiment/symbol/{symbol}")
+async def get_symbol_sentiment(symbol: str):
+    """Get sentiment for a specific symbol"""
+    engine = get_sentiment_engine_instance()
+    if not engine:
+        return {'status': 'error', 'message': 'Sentiment engine not available'}
+
+    try:
+        sentiment = engine.get_symbol_sentiment(symbol.upper())
+        if sentiment:
+            return {'status': 'success', 'sentiment': sentiment}
+        else:
+            return {'status': 'error', 'message': f'No sentiment data for {symbol}'}
+    except Exception as e:
+        return {'status': 'error', 'message': str(e)}
+
+@app.get("/api/sentiment/headlines")
+async def get_sentiment_headlines(symbol: str = None, limit: int = 10):
+    """Get recent headlines with sentiment scores"""
+    engine = get_sentiment_engine_instance()
+    if not engine:
+        return {'status': 'error', 'message': 'Sentiment engine not available'}
+
+    try:
+        headlines = engine.get_headlines(symbol.upper() if symbol else None, limit)
+        return {'status': 'success', 'headlines': headlines}
+    except Exception as e:
+        return {'status': 'error', 'message': str(e)}
+
+@app.get("/api/sentiment/alerts")
+async def get_sentiment_alerts():
+    """Get active sentiment alerts"""
+    engine = get_sentiment_engine_instance()
+    if not engine:
+        return {'status': 'error', 'message': 'Sentiment engine not available'}
+
+    try:
+        alerts = [a.to_dict() for a in engine._alerts if not a.acknowledged][-10:]
+        return {'status': 'success', 'alerts': alerts}
+    except Exception as e:
+        return {'status': 'error', 'message': str(e)}
+
+@app.post("/api/sentiment/alerts/{alert_id}/acknowledge")
+async def acknowledge_sentiment_alert(alert_id: str):
+    """Acknowledge a sentiment alert"""
+    engine = get_sentiment_engine_instance()
+    if not engine:
+        return {'status': 'error', 'message': 'Sentiment engine not available'}
+
+    engine.acknowledge_alert(alert_id)
+    return {'status': 'success', 'message': f'Alert {alert_id} acknowledged'}
+
+@app.get("/api/sentiment/correlation/{symbol}")
+async def get_sentiment_correlation(symbol: str):
+    """Get historical sentiment-price correlation for a symbol"""
+    engine = get_sentiment_engine_instance()
+    if not engine:
+        return {'status': 'error', 'message': 'Sentiment engine not available'}
+
+    try:
+        correlation = engine.get_sentiment_price_correlation(symbol.upper())
+        return {'status': 'success', 'correlation': correlation}
+    except Exception as e:
+        return {'status': 'error', 'message': str(e)}
+
+@app.get("/api/sentiment/social/{symbol}")
+async def get_social_sentiment(symbol: str):
+    """Get social media sentiment for a symbol"""
+    engine = get_sentiment_engine_instance()
+    if not engine:
+        return {'status': 'error', 'message': 'Sentiment engine not available'}
+
+    try:
+        social = await engine.social_tracker.get_social_sentiment(symbol.upper())
+        return {'status': 'success', 'social': social.to_dict()}
+    except Exception as e:
+        return {'status': 'error', 'message': str(e)}
+
+@app.get("/api/sentiment/earnings")
+async def get_upcoming_earnings():
+    """Get upcoming earnings for watchlist"""
+    engine = get_sentiment_engine_instance()
+    if not engine:
+        return {'status': 'error', 'message': 'Sentiment engine not available'}
+
+    try:
+        earnings = await engine.earnings_calendar.get_upcoming_earnings(engine.watchlist)
+        return {'status': 'success', 'earnings': [e.to_dict() for e in earnings]}
+    except Exception as e:
+        return {'status': 'error', 'message': str(e)}
+
 @app.post("/api/professional/risk/settings")
 async def update_risk_settings(settings: dict):
     """Update risk management settings"""
@@ -12047,6 +12190,23 @@ async def websocket_endpoint(websocket: WebSocket):
                         'low': m.get('low', 0)
                     } for m in trading_engine.screener.top_movers[:10]]
                 
+                # Get sentiment data (every 30 seconds to avoid excessive API calls)
+                sentiment_data = None
+                if not hasattr(websocket, '_last_sentiment_update'):
+                    websocket._last_sentiment_update = datetime.now() - timedelta(seconds=30)
+                if not hasattr(websocket, '_sentiment_update_count'):
+                    websocket._sentiment_update_count = 0
+
+                websocket._sentiment_update_count += 1
+                if websocket._sentiment_update_count % 30 == 0:  # Every 30 seconds
+                    try:
+                        sentiment_engine = get_sentiment_engine_instance()
+                        if sentiment_engine:
+                            sentiment_data = await sentiment_engine.update()
+                            websocket._last_sentiment_update = datetime.now()
+                    except Exception as e:
+                        logger.debug(f"Sentiment update error: {e}")
+
                 try:
                     await websocket.send_json({
                         'type': 'dashboard_update',
@@ -12064,6 +12224,23 @@ async def websocket_endpoint(websocket: WebSocket):
                             'screener': screener_data
                         }
                     })
+
+                    # Send sentiment update separately if available
+                    if sentiment_data:
+                        await websocket.send_json({
+                            'type': 'sentiment_update',
+                            'data': sentiment_data
+                        })
+
+                        # Send any critical alerts
+                        alerts = sentiment_data.get('alerts', [])
+                        critical_alerts = [a for a in alerts if a.get('urgency') in ['critical', 'high']]
+                        for alert in critical_alerts:
+                            await websocket.send_json({
+                                'type': 'sentiment_alert',
+                                'data': alert
+                            })
+
                 except (ConnectionClosedError, ConnectionResetError):
                     # Connection closed, break the loop
                     break

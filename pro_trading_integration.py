@@ -37,6 +37,9 @@ from pathlib import Path
 import logging
 import uuid
 
+# Set up logging first (needed before optional imports)
+logger = logging.getLogger(__name__)
+
 # Import all professional modules
 from regime_detector import get_regime_detector, RegimeDetector, MarketRegime
 from session_manager import get_session_manager, SessionManager, MarketSession
@@ -45,7 +48,13 @@ from market_context import get_market_context_analyzer, MarketContextAnalyzer
 from exit_manager import get_exit_manager, ProExitManager, ExitSignal, ExitReason
 from performance_tracker import get_performance_tracker, PerformanceTracker, TradeRecord
 
-logger = logging.getLogger(__name__)
+# Import sentiment engine (optional - may not be available)
+try:
+    from news_sentiment_widget import get_sentiment_engine, NewsSentimentEngine
+    SENTIMENT_AVAILABLE = True
+except ImportError:
+    SENTIMENT_AVAILABLE = False
+    logger.warning("News sentiment widget not available")
 
 
 @dataclass
@@ -77,6 +86,11 @@ class TradeDecision:
     # R-multiple info
     r_multiple_target: float
     risk_per_share: float
+
+    # Sentiment info (optional)
+    sentiment_score: Optional[float] = None
+    sentiment_direction: Optional[str] = None
+    sentiment_blocked: bool = False
 
 
 class ProTradingWrapper:
@@ -114,6 +128,17 @@ class ProTradingWrapper:
         self.performance_tracker = get_performance_tracker(
             self.config.get('performance_tracker', {})
         )
+
+        # Initialize sentiment engine (optional)
+        self.sentiment_engine = None
+        if SENTIMENT_AVAILABLE and self.config.get('features', {}).get('sentiment_analysis', True):
+            try:
+                sentiment_config = self.config.get('sentiment', {})
+                self.sentiment_engine = get_sentiment_engine(sentiment_config)
+                logger.info("Sentiment engine initialized")
+            except Exception as e:
+                logger.warning(f"Failed to initialize sentiment engine: {e}")
+                self.sentiment_engine = None
 
         # Feature flags
         self.features = self.config.get('features', {})
@@ -331,6 +356,50 @@ class ProTradingWrapper:
                 reasons_against.append(f"Symbol: {symbol_reason}")
 
         # ================================================================
+        # 6. SENTIMENT ANALYSIS
+        # ================================================================
+        sentiment_score = None
+        sentiment_direction = None
+        sentiment_blocked = False
+        sentiment_confluence = 0
+
+        if self.features.get('sentiment_analysis', True) and self.sentiment_engine:
+            try:
+                # Get sentiment for symbol
+                sentiment = self.sentiment_engine.get_symbol_sentiment(symbol)
+                if sentiment:
+                    sentiment_score = sentiment.score
+                    sentiment_direction = sentiment.direction
+
+                    # Check if sentiment strongly opposes the trade direction
+                    sentiment_config = self.config.get('sentiment', {})
+                    block_threshold = sentiment_config.get('block_threshold', 0.6)
+                    confluence_threshold = sentiment_config.get('confluence_threshold', 0.3)
+
+                    should_block, block_reason = self.sentiment_engine.should_block_trade(
+                        symbol, direction
+                    )
+
+                    if should_block:
+                        sentiment_blocked = True
+                        reasons_against.append(f"Sentiment: {block_reason}")
+
+                    # Add to confluence scoring
+                    sentiment_confluence = self.sentiment_engine.get_confluence_modifier(symbol)
+
+                    # If sentiment agrees with direction, it's a positive
+                    if (direction == 'long' and sentiment_score > confluence_threshold) or \
+                       (direction == 'short' and sentiment_score < -confluence_threshold):
+                        reasons_for.append(f"Sentiment: {sentiment_direction} ({sentiment_score:+.2f}) supports {direction}")
+                    elif (direction == 'long' and sentiment_score < -confluence_threshold) or \
+                         (direction == 'short' and sentiment_score > confluence_threshold):
+                        if not sentiment_blocked:
+                            reasons_against.append(f"Sentiment: {sentiment_direction} ({sentiment_score:+.2f}) opposes {direction}")
+
+            except Exception as e:
+                logger.warning(f"Sentiment analysis failed for {symbol}: {e}")
+
+        # ================================================================
         # FINAL DECISION
         # ================================================================
         # Trade is allowed only if ALL filters pass
@@ -338,6 +407,7 @@ class ProTradingWrapper:
             regime_allowed and
             session_allowed and
             (filter_result is None or filter_result.allowed) and
+            not sentiment_blocked and
             len(reasons_against) == 0
         )
 
@@ -367,6 +437,11 @@ class ProTradingWrapper:
             reasons_for, reasons_against, regime, session
         )
 
+        # Add sentiment to confluence score if available
+        total_confluence = (filter_result.confluence_score if filter_result else 0)
+        if sentiment_confluence:
+            total_confluence += int(sentiment_confluence)
+
         return TradeDecision(
             allowed=allowed,
             symbol=symbol,
@@ -380,12 +455,15 @@ class ProTradingWrapper:
             regime=regime,
             session=session,
             quality_score=filter_result.quality_score if filter_result else 50,
-            confluence_score=filter_result.confluence_score if filter_result else 0,
+            confluence_score=total_confluence,
             reasons_for=reasons_for,
             reasons_against=reasons_against,
             final_recommendation=recommendation,
             r_multiple_target=r_target,
-            risk_per_share=adjusted_risk if allowed else 0
+            risk_per_share=adjusted_risk if allowed else 0,
+            sentiment_score=sentiment_score,
+            sentiment_direction=sentiment_direction,
+            sentiment_blocked=sentiment_blocked
         )
 
     def open_position(
@@ -422,6 +500,20 @@ class ProTradingWrapper:
             atr=atr
         )
 
+        # Log sentiment at trade time
+        sentiment_snapshot = None
+        if self.sentiment_engine:
+            try:
+                trade_id = str(uuid.uuid4())
+                sentiment_snapshot = self.sentiment_engine.log_trade_sentiment(
+                    trade_id, decision.symbol
+                )
+            except Exception as e:
+                logger.warning(f"Failed to log trade sentiment: {e}")
+                trade_id = str(uuid.uuid4())
+        else:
+            trade_id = str(uuid.uuid4())
+
         # Track in our positions
         self.active_positions[decision.symbol] = {
             'direction': decision.direction,
@@ -432,7 +524,10 @@ class ProTradingWrapper:
             'session_at_entry': decision.session,
             'quality_score': decision.quality_score,
             'entry_time': datetime.now(),
-            'trade_id': str(uuid.uuid4())
+            'trade_id': trade_id,
+            'sentiment_at_entry': decision.sentiment_score,
+            'sentiment_direction_at_entry': decision.sentiment_direction,
+            'sentiment_snapshot': sentiment_snapshot
         }
 
         # Record trade start in session manager

@@ -1,0 +1,993 @@
+<!--
+    News Sentiment Widget - Standalone HTML/CSS/JS Component
+
+    Usage: Include this in your dashboard or use the JavaScript functions directly.
+
+    Required: WebSocket connection to ws://localhost:8000/ws
+    API Endpoints: /api/sentiment/*
+-->
+
+<style>
+/* ============================================ */
+/* NEWS SENTIMENT WIDGET STYLES                 */
+/* ============================================ */
+
+.sentiment-widget {
+    background: #1a1a1a;
+    border-radius: 12px;
+    padding: 16px;
+    color: #e0e0e0;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    max-width: 100%;
+}
+
+.sentiment-widget h2 {
+    margin: 0 0 12px 0;
+    font-size: 14px;
+    color: #888;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+
+/* Market Sentiment Header */
+.sentiment-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 16px;
+    background: linear-gradient(135deg, #1e1e1e, #2a2a2a);
+    border-radius: 8px;
+    margin-bottom: 12px;
+}
+
+.sentiment-label {
+    font-size: 12px;
+    color: #888;
+    margin-bottom: 4px;
+}
+
+.sentiment-score {
+    font-size: 28px;
+    font-weight: 700;
+}
+
+.sentiment-score.bullish { color: #4CAF50; }
+.sentiment-score.bearish { color: #f44336; }
+.sentiment-score.neutral { color: #ff9800; }
+
+.sentiment-trend {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 14px;
+}
+
+.sentiment-trend .arrow {
+    font-size: 18px;
+}
+
+.sentiment-trend .arrow.up { color: #4CAF50; }
+.sentiment-trend .arrow.down { color: #f44336; }
+.sentiment-trend .arrow.flat { color: #888; }
+
+/* Sparkline */
+.sparkline-container {
+    width: 120px;
+    height: 40px;
+    position: relative;
+}
+
+.sparkline {
+    width: 100%;
+    height: 100%;
+}
+
+.sparkline polyline {
+    fill: none;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
+.sparkline.bullish polyline { stroke: #4CAF50; }
+.sparkline.bearish polyline { stroke: #f44336; }
+.sparkline.neutral polyline { stroke: #ff9800; }
+
+/* Symbol Grid */
+.symbol-sentiment-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(80px, 1fr));
+    gap: 8px;
+    margin-bottom: 16px;
+}
+
+.symbol-sentiment-item {
+    background: #252525;
+    border-radius: 6px;
+    padding: 8px;
+    text-align: center;
+    transition: transform 0.2s, background 0.2s;
+    cursor: pointer;
+}
+
+.symbol-sentiment-item:hover {
+    background: #303030;
+    transform: translateY(-2px);
+}
+
+.symbol-sentiment-item .symbol {
+    font-size: 12px;
+    font-weight: 600;
+    color: #fff;
+    margin-bottom: 4px;
+}
+
+.symbol-sentiment-item .score {
+    font-size: 16px;
+    font-weight: 700;
+}
+
+.symbol-sentiment-item .indicator {
+    font-size: 14px;
+    margin-left: 2px;
+}
+
+.symbol-sentiment-item .trend {
+    font-size: 10px;
+    margin-top: 2px;
+}
+
+/* Headlines */
+.headlines-section {
+    margin-top: 16px;
+}
+
+.headlines-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+}
+
+.headlines-title {
+    font-size: 14px;
+    color: #888;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.headlines-filter {
+    display: flex;
+    gap: 8px;
+}
+
+.headlines-filter select {
+    background: #252525;
+    border: 1px solid #333;
+    color: #e0e0e0;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 12px;
+}
+
+.headline-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    max-height: 300px;
+    overflow-y: auto;
+}
+
+.headline-item {
+    display: flex;
+    gap: 12px;
+    padding: 10px 12px;
+    background: #252525;
+    border-radius: 6px;
+    transition: background 0.2s;
+    cursor: pointer;
+}
+
+.headline-item:hover {
+    background: #303030;
+}
+
+.headline-sentiment {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    min-width: 50px;
+}
+
+.headline-sentiment .score {
+    font-size: 16px;
+    font-weight: 700;
+}
+
+.headline-sentiment .indicator {
+    font-size: 16px;
+}
+
+.headline-content {
+    flex: 1;
+}
+
+.headline-text {
+    font-size: 13px;
+    color: #e0e0e0;
+    margin-bottom: 4px;
+    line-height: 1.4;
+}
+
+.headline-meta {
+    font-size: 11px;
+    color: #666;
+    display: flex;
+    gap: 8px;
+}
+
+.headline-source {
+    color: #888;
+}
+
+.headline-symbols {
+    color: #667eea;
+}
+
+.headline-time {
+    color: #666;
+}
+
+.headline-expand {
+    color: #667eea;
+    font-size: 18px;
+    align-self: center;
+    opacity: 0.5;
+    transition: opacity 0.2s;
+}
+
+.headline-item:hover .headline-expand {
+    opacity: 1;
+}
+
+/* Impact badges */
+.impact-badge {
+    font-size: 9px;
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-weight: 600;
+    text-transform: uppercase;
+}
+
+.impact-badge.breaking { background: #f44336; color: #fff; }
+.impact-badge.high { background: #ff9800; color: #000; }
+.impact-badge.medium { background: #2196F3; color: #fff; }
+.impact-badge.low { background: #333; color: #888; }
+
+/* Alerts Section */
+.alerts-section {
+    margin-top: 16px;
+    padding-top: 12px;
+    border-top: 1px solid #333;
+}
+
+.alert-item {
+    display: flex;
+    gap: 10px;
+    padding: 10px;
+    background: rgba(255, 152, 0, 0.1);
+    border-left: 3px solid #ff9800;
+    border-radius: 0 6px 6px 0;
+    margin-bottom: 8px;
+}
+
+.alert-item.critical {
+    background: rgba(244, 67, 54, 0.1);
+    border-left-color: #f44336;
+}
+
+.alert-icon {
+    font-size: 18px;
+}
+
+.alert-content {
+    flex: 1;
+}
+
+.alert-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: #ff9800;
+    margin-bottom: 2px;
+}
+
+.alert-item.critical .alert-title {
+    color: #f44336;
+}
+
+.alert-message {
+    font-size: 12px;
+    color: #999;
+}
+
+.alert-dismiss {
+    background: none;
+    border: none;
+    color: #666;
+    cursor: pointer;
+    padding: 4px;
+    font-size: 14px;
+}
+
+.alert-dismiss:hover {
+    color: #fff;
+}
+
+/* Social Sentiment */
+.social-section {
+    margin-top: 16px;
+    padding: 12px;
+    background: #252525;
+    border-radius: 8px;
+}
+
+.social-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+}
+
+.social-item {
+    display: flex;
+    flex-direction: column;
+}
+
+.social-label {
+    font-size: 11px;
+    color: #666;
+    margin-bottom: 4px;
+}
+
+.social-value {
+    font-size: 18px;
+    font-weight: 600;
+}
+
+.buzz-indicator {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+}
+
+.buzz-indicator.viral { background: #f44336; color: #fff; }
+.buzz-indicator.high { background: #ff9800; color: #000; }
+.buzz-indicator.normal { background: #2196F3; color: #fff; }
+.buzz-indicator.low { background: #333; color: #888; }
+
+/* Earnings Section */
+.earnings-section {
+    margin-top: 16px;
+}
+
+.earnings-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 12px;
+    background: #252525;
+    border-radius: 6px;
+    margin-bottom: 6px;
+}
+
+.earnings-symbol {
+    font-weight: 600;
+    color: #667eea;
+}
+
+.earnings-date {
+    font-size: 12px;
+    color: #888;
+}
+
+.earnings-countdown {
+    font-size: 11px;
+    padding: 2px 8px;
+    background: #ff9800;
+    color: #000;
+    border-radius: 10px;
+    font-weight: 600;
+}
+
+.earnings-countdown.imminent {
+    background: #f44336;
+    color: #fff;
+}
+
+/* Update indicator */
+.update-indicator {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    color: #666;
+    margin-top: 12px;
+}
+
+.update-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #4CAF50;
+    animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+}
+
+/* Scrollbar styling */
+.headline-list::-webkit-scrollbar {
+    width: 6px;
+}
+
+.headline-list::-webkit-scrollbar-track {
+    background: #1a1a1a;
+}
+
+.headline-list::-webkit-scrollbar-thumb {
+    background: #444;
+    border-radius: 3px;
+}
+
+.headline-list::-webkit-scrollbar-thumb:hover {
+    background: #555;
+}
+
+/* Loading state */
+.sentiment-loading {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 40px;
+    color: #666;
+}
+
+.sentiment-loading .spinner {
+    width: 24px;
+    height: 24px;
+    border: 2px solid #333;
+    border-top-color: #667eea;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+    margin-right: 12px;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+/* Error state */
+.sentiment-error {
+    padding: 20px;
+    background: rgba(244, 67, 54, 0.1);
+    border: 1px solid rgba(244, 67, 54, 0.3);
+    border-radius: 8px;
+    color: #f44336;
+    text-align: center;
+}
+
+/* Tab system for mobile */
+.sentiment-tabs {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 12px;
+    overflow-x: auto;
+}
+
+.sentiment-tab {
+    padding: 8px 16px;
+    background: #252525;
+    border: none;
+    border-radius: 6px;
+    color: #888;
+    cursor: pointer;
+    font-size: 12px;
+    white-space: nowrap;
+    transition: all 0.2s;
+}
+
+.sentiment-tab.active {
+    background: #667eea;
+    color: #fff;
+}
+
+.sentiment-tab:hover:not(.active) {
+    background: #333;
+}
+</style>
+
+<div class="sentiment-widget" id="sentiment-widget">
+    <!-- Loading State -->
+    <div class="sentiment-loading" id="sentiment-loading">
+        <div class="spinner"></div>
+        <span>Loading sentiment data...</span>
+    </div>
+
+    <!-- Main Content (hidden until loaded) -->
+    <div id="sentiment-content" style="display: none;">
+
+        <!-- Market Sentiment Header -->
+        <div class="sentiment-header">
+            <div>
+                <div class="sentiment-label">MARKET SENTIMENT</div>
+                <div class="sentiment-score" id="market-score">+42</div>
+            </div>
+            <div class="sentiment-trend">
+                <span class="arrow" id="market-trend-arrow">↑</span>
+                <span id="market-trend-label">Bullish</span>
+            </div>
+            <div class="sparkline-container">
+                <svg class="sparkline" id="market-sparkline" viewBox="0 0 120 40">
+                    <polyline points=""></polyline>
+                </svg>
+            </div>
+        </div>
+
+        <!-- Symbol Sentiment Grid -->
+        <h2>WATCHLIST SENTIMENT</h2>
+        <div class="symbol-sentiment-grid" id="symbol-grid">
+            <!-- Populated by JavaScript -->
+        </div>
+
+        <!-- Headlines Section -->
+        <div class="headlines-section">
+            <div class="headlines-header">
+                <div class="headlines-title">
+                    <span>📰</span>
+                    <span>Recent Headlines</span>
+                </div>
+                <div class="headlines-filter">
+                    <select id="headline-filter-symbol" onchange="filterHeadlines()">
+                        <option value="">All Symbols</option>
+                    </select>
+                </div>
+            </div>
+            <div class="headline-list" id="headline-list">
+                <!-- Populated by JavaScript -->
+            </div>
+        </div>
+
+        <!-- Alerts Section -->
+        <div class="alerts-section" id="alerts-section" style="display: none;">
+            <h2>⚠️ ALERTS</h2>
+            <div id="alerts-list">
+                <!-- Populated by JavaScript -->
+            </div>
+        </div>
+
+        <!-- Earnings Section -->
+        <div class="earnings-section" id="earnings-section" style="display: none;">
+            <h2>📅 UPCOMING EARNINGS</h2>
+            <div id="earnings-list">
+                <!-- Populated by JavaScript -->
+            </div>
+        </div>
+
+        <!-- Update Indicator -->
+        <div class="update-indicator">
+            <div class="update-dot"></div>
+            <span>Updated <span id="last-update">just now</span> • Auto-refresh ON</span>
+        </div>
+    </div>
+
+    <!-- Error State -->
+    <div class="sentiment-error" id="sentiment-error" style="display: none;">
+        <p>⚠️ Unable to load sentiment data</p>
+        <button onclick="loadSentimentData()" style="margin-top: 10px; padding: 8px 16px; background: #667eea; border: none; border-radius: 4px; color: #fff; cursor: pointer;">
+            Retry
+        </button>
+    </div>
+</div>
+
+<script>
+// ============================================
+// NEWS SENTIMENT WIDGET JAVASCRIPT
+// ============================================
+
+class SentimentWidget {
+    constructor(containerId = 'sentiment-widget') {
+        this.container = document.getElementById(containerId);
+        this.data = null;
+        this.lastUpdate = null;
+        this.refreshInterval = null;
+        this.watchlist = [];
+
+        // Initialize
+        this.init();
+    }
+
+    async init() {
+        await this.loadData();
+        this.startAutoRefresh();
+        this.setupWebSocketListener();
+    }
+
+    async loadData() {
+        try {
+            const response = await fetch('/api/sentiment/update');
+            const result = await response.json();
+
+            if (result.status === 'success') {
+                this.data = result.data;
+                this.lastUpdate = new Date();
+                this.render();
+                this.showContent();
+            } else {
+                this.showError(result.message);
+            }
+        } catch (error) {
+            console.error('Failed to load sentiment data:', error);
+            this.showError(error.message);
+        }
+    }
+
+    setupWebSocketListener() {
+        // Listen for sentiment updates from existing WebSocket
+        if (window.sentimentWebSocket) {
+            return; // Already set up
+        }
+
+        // If there's a global WebSocket, add listener
+        const checkWebSocket = () => {
+            if (window.ws && window.ws.readyState === WebSocket.OPEN) {
+                const originalOnMessage = window.ws.onmessage;
+                window.ws.onmessage = (event) => {
+                    // Call original handler
+                    if (originalOnMessage) {
+                        originalOnMessage(event);
+                    }
+
+                    // Handle sentiment updates
+                    try {
+                        const data = JSON.parse(event.data);
+                        if (data.type === 'sentiment_update') {
+                            this.data = data.data;
+                            this.lastUpdate = new Date();
+                            this.render();
+                        } else if (data.type === 'sentiment_alert') {
+                            this.showAlert(data.data);
+                        }
+                    } catch (e) {
+                        // Ignore parse errors
+                    }
+                };
+                window.sentimentWebSocket = true;
+            } else {
+                setTimeout(checkWebSocket, 1000);
+            }
+        };
+        checkWebSocket();
+    }
+
+    startAutoRefresh() {
+        // Refresh every 30 seconds
+        this.refreshInterval = setInterval(() => this.loadData(), 30000);
+    }
+
+    stopAutoRefresh() {
+        if (this.refreshInterval) {
+            clearInterval(this.refreshInterval);
+        }
+    }
+
+    showContent() {
+        document.getElementById('sentiment-loading').style.display = 'none';
+        document.getElementById('sentiment-content').style.display = 'block';
+        document.getElementById('sentiment-error').style.display = 'none';
+    }
+
+    showError(message) {
+        document.getElementById('sentiment-loading').style.display = 'none';
+        document.getElementById('sentiment-content').style.display = 'none';
+        document.getElementById('sentiment-error').style.display = 'block';
+    }
+
+    render() {
+        if (!this.data) return;
+
+        this.renderMarketSentiment();
+        this.renderSymbolGrid();
+        this.renderHeadlines();
+        this.renderAlerts();
+        this.renderEarnings();
+        this.updateTimestamp();
+    }
+
+    renderMarketSentiment() {
+        const market = this.data.market_sentiment;
+        if (!market) return;
+
+        const score = market.score;
+        const scoreEl = document.getElementById('market-score');
+        const trendArrow = document.getElementById('market-trend-arrow');
+        const trendLabel = document.getElementById('market-trend-label');
+
+        // Update score
+        scoreEl.textContent = (score >= 0 ? '+' : '') + Math.round(score);
+        scoreEl.className = 'sentiment-score ' + this.getSentimentClass(score);
+
+        // Update trend
+        trendArrow.textContent = market.trend;
+        trendArrow.className = 'arrow ' + (market.trend === '↑' ? 'up' : market.trend === '↓' ? 'down' : 'flat');
+        trendLabel.textContent = market.label;
+
+        // Update sparkline
+        this.renderSparkline('market-sparkline', market.history, score);
+    }
+
+    renderSparkline(elementId, history, currentScore) {
+        const svg = document.getElementById(elementId);
+        if (!svg || !history || history.length < 2) return;
+
+        const scores = history.map(h => h[1]);
+        const min = Math.min(...scores) - 10;
+        const max = Math.max(...scores) + 10;
+        const range = max - min || 1;
+
+        const width = 120;
+        const height = 40;
+        const points = scores.map((score, i) => {
+            const x = (i / (scores.length - 1)) * width;
+            const y = height - ((score - min) / range) * height;
+            return `${x},${y}`;
+        }).join(' ');
+
+        const polyline = svg.querySelector('polyline');
+        polyline.setAttribute('points', points);
+
+        svg.className = 'sparkline ' + this.getSentimentClass(currentScore);
+    }
+
+    renderSymbolGrid() {
+        const grid = document.getElementById('symbol-grid');
+        const symbols = this.data.symbol_sentiments;
+        const filter = document.getElementById('headline-filter-symbol');
+
+        if (!symbols) return;
+
+        // Update filter dropdown
+        filter.innerHTML = '<option value="">All Symbols</option>';
+
+        grid.innerHTML = Object.entries(symbols).map(([symbol, sentiment]) => {
+            filter.innerHTML += `<option value="${symbol}">${symbol}</option>`;
+
+            const score = sentiment.score;
+            const cls = this.getSentimentClass(score);
+            const indicator = this.getSentimentIndicator(score);
+
+            return `
+                <div class="symbol-sentiment-item" onclick="window.sentimentWidget.filterBySymbol('${symbol}')">
+                    <div class="symbol">${symbol}</div>
+                    <div class="score ${cls}">
+                        ${score >= 0 ? '+' : ''}${Math.round(score)}
+                        <span class="indicator">${indicator}</span>
+                    </div>
+                    <div class="trend">${sentiment.trend}</div>
+                </div>
+            `;
+        }).join('');
+    }
+
+    renderHeadlines() {
+        const list = document.getElementById('headline-list');
+        const headlines = this.data.headlines;
+
+        if (!headlines || headlines.length === 0) {
+            list.innerHTML = '<div style="color: #666; padding: 20px; text-align: center;">No recent headlines</div>';
+            return;
+        }
+
+        list.innerHTML = headlines.map(h => {
+            const cls = this.getSentimentClass(h.sentiment_score);
+            const indicator = this.getSentimentIndicator(h.sentiment_score);
+            const impactCls = h.impact || 'medium';
+
+            return `
+                <div class="headline-item" onclick="window.open('${h.url}', '_blank')">
+                    <div class="headline-sentiment">
+                        <span class="indicator">${indicator}</span>
+                        <span class="score ${cls}">${h.sentiment_score >= 0 ? '+' : ''}${Math.round(h.sentiment_score)}</span>
+                    </div>
+                    <div class="headline-content">
+                        <div class="headline-text">${this.escapeHtml(h.headline)}</div>
+                        <div class="headline-meta">
+                            <span class="headline-source">${h.source}</span>
+                            ${h.symbols && h.symbols.length ? `<span class="headline-symbols">${h.symbols.join(', ')}</span>` : ''}
+                            <span class="headline-time">${this.formatTime(h.age_minutes)}</span>
+                            ${h.is_breaking ? '<span class="impact-badge breaking">BREAKING</span>' : ''}
+                            ${!h.is_breaking && impactCls === 'high' ? '<span class="impact-badge high">HIGH</span>' : ''}
+                        </div>
+                    </div>
+                    <div class="headline-expand">→</div>
+                </div>
+            `;
+        }).join('');
+    }
+
+    renderAlerts() {
+        const section = document.getElementById('alerts-section');
+        const list = document.getElementById('alerts-list');
+        const alerts = this.data.alerts;
+
+        if (!alerts || alerts.length === 0) {
+            section.style.display = 'none';
+            return;
+        }
+
+        section.style.display = 'block';
+        list.innerHTML = alerts.map(a => `
+            <div class="alert-item ${a.urgency === 'critical' ? 'critical' : ''}">
+                <span class="alert-icon">🔔</span>
+                <div class="alert-content">
+                    <div class="alert-title">${a.title}</div>
+                    <div class="alert-message">${a.message}</div>
+                </div>
+                <button class="alert-dismiss" onclick="window.sentimentWidget.dismissAlert('${a.id}')" title="Dismiss">✕</button>
+            </div>
+        `).join('');
+    }
+
+    renderEarnings() {
+        const section = document.getElementById('earnings-section');
+        const list = document.getElementById('earnings-list');
+        const earnings = this.data.earnings;
+
+        if (!earnings || earnings.length === 0) {
+            section.style.display = 'none';
+            return;
+        }
+
+        section.style.display = 'block';
+        list.innerHTML = earnings.map(e => `
+            <div class="earnings-item">
+                <span class="earnings-symbol">${e.symbol}</span>
+                <span class="earnings-date">${e.earnings_date} ${e.earnings_time}</span>
+                <span class="earnings-countdown ${e.days_until <= 1 ? 'imminent' : ''}">
+                    ${e.days_until === 0 ? 'TODAY' : e.days_until === 1 ? 'TOMORROW' : e.days_until + ' days'}
+                </span>
+            </div>
+        `).join('');
+    }
+
+    updateTimestamp() {
+        const el = document.getElementById('last-update');
+        if (this.lastUpdate) {
+            const seconds = Math.floor((new Date() - this.lastUpdate) / 1000);
+            if (seconds < 10) {
+                el.textContent = 'just now';
+            } else if (seconds < 60) {
+                el.textContent = seconds + 's ago';
+            } else {
+                el.textContent = Math.floor(seconds / 60) + 'm ago';
+            }
+        }
+    }
+
+    getSentimentClass(score) {
+        if (score >= 25) return 'bullish';
+        if (score <= -25) return 'bearish';
+        return 'neutral';
+    }
+
+    getSentimentIndicator(score) {
+        if (score >= 50) return '🟢';
+        if (score >= 25) return '🟢';
+        if (score >= -24) return '🟡';
+        if (score >= -49) return '🔴';
+        return '🔴';
+    }
+
+    formatTime(minutes) {
+        if (minutes < 1) return 'just now';
+        if (minutes < 60) return minutes + 'm';
+        if (minutes < 1440) return Math.floor(minutes / 60) + 'h';
+        return Math.floor(minutes / 1440) + 'd';
+    }
+
+    escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
+    filterBySymbol(symbol) {
+        document.getElementById('headline-filter-symbol').value = symbol;
+        this.filterHeadlines();
+    }
+
+    filterHeadlines() {
+        const filter = document.getElementById('headline-filter-symbol').value;
+        // Re-fetch with filter if needed, or filter client-side
+        if (filter) {
+            const filtered = this.data.headlines.filter(h =>
+                h.symbols && h.symbols.includes(filter)
+            );
+            this.renderFilteredHeadlines(filtered);
+        } else {
+            this.renderHeadlines();
+        }
+    }
+
+    renderFilteredHeadlines(headlines) {
+        const list = document.getElementById('headline-list');
+        if (headlines.length === 0) {
+            list.innerHTML = '<div style="color: #666; padding: 20px; text-align: center;">No headlines for this symbol</div>';
+            return;
+        }
+        // Use same rendering logic
+        const temp = this.data.headlines;
+        this.data.headlines = headlines;
+        this.renderHeadlines();
+        this.data.headlines = temp;
+    }
+
+    async dismissAlert(alertId) {
+        try {
+            await fetch(`/api/sentiment/alerts/${alertId}/acknowledge`, { method: 'POST' });
+            // Remove from local data
+            this.data.alerts = this.data.alerts.filter(a => a.id !== alertId);
+            this.renderAlerts();
+        } catch (e) {
+            console.error('Failed to dismiss alert:', e);
+        }
+    }
+
+    showAlert(alert) {
+        // Add to data and re-render
+        if (!this.data.alerts) this.data.alerts = [];
+        this.data.alerts.unshift(alert);
+        this.renderAlerts();
+
+        // Show notification if critical
+        if (alert.urgency === 'critical' && Notification.permission === 'granted') {
+            new Notification('Sentiment Alert', {
+                body: alert.message,
+                icon: '📊'
+            });
+        }
+    }
+}
+
+// Initialize widget
+let sentimentWidget;
+function loadSentimentData() {
+    if (!sentimentWidget) {
+        sentimentWidget = new SentimentWidget();
+        window.sentimentWidget = sentimentWidget;
+    } else {
+        sentimentWidget.loadData();
+    }
+}
+
+// Auto-initialize when DOM is ready
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', loadSentimentData);
+} else {
+    loadSentimentData();
+}
+
+// Request notification permission
+if ('Notification' in window && Notification.permission === 'default') {
+    Notification.requestPermission();
+}
+
+// Export for external use
+window.filterHeadlines = function() {
+    if (sentimentWidget) sentimentWidget.filterHeadlines();
+};
+</script>
