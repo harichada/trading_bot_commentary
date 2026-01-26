@@ -13233,11 +13233,18 @@ async def get_upcoming_earnings():
 
 @app.post("/api/backtest/run")
 async def run_backtest(config: dict):
-    """Run a backtest with the given configuration"""
+    """Run a backtest with the given configuration using Schwab historical data"""
     try:
         from backtesting_engine import BacktestingEngine, BacktestConfig, BacktestMode
-        from datetime import datetime
-        import yfinance as yf
+        from datetime import datetime, timedelta
+        from schwab.client import Client
+
+        # Check if trading engine and Schwab client are available
+        if not trading_engine or not trading_engine.schwab_client:
+            return {
+                'status': 'error',
+                'message': 'Schwab client not connected. Please ensure the trading bot is running with valid Schwab credentials.'
+            }
 
         # Parse configuration
         symbols = config.get('symbols', ['TSLA', 'NVDA'])
@@ -13261,41 +13268,88 @@ async def run_backtest(config: dict):
             commission=commission
         )
 
-        # Try to load historical data or fetch from yfinance
+        # Fetch historical data from Schwab
         market_data = {}
 
-        # Map timeframe to yfinance interval
-        interval_map = {
-            '1min': '1m', '5min': '5m', '15min': '15m',
-            '1hour': '1h', '1day': '1d'
-        }
-        yf_interval = interval_map.get(timeframe, '5m')
+        # Calculate period for Schwab API
+        period_days = (end_date - start_date).days
 
-        # yfinance has limits on historical intraday data
-        # For intraday, max is 60 days for 1m, 730 days for others
+        # Map timeframe to Schwab frequency
+        if timeframe == '1min':
+            frequency_type = Client.PriceHistory.FrequencyType.MINUTE
+            frequency = Client.PriceHistory.Frequency.EVERY_MINUTE
+        elif timeframe == '5min':
+            frequency_type = Client.PriceHistory.FrequencyType.MINUTE
+            frequency = Client.PriceHistory.Frequency.EVERY_FIVE_MINUTES
+        elif timeframe == '15min':
+            frequency_type = Client.PriceHistory.FrequencyType.MINUTE
+            frequency = Client.PriceHistory.Frequency.EVERY_FIFTEEN_MINUTES
+        elif timeframe == '1hour':
+            frequency_type = Client.PriceHistory.FrequencyType.MINUTE
+            frequency = Client.PriceHistory.Frequency.EVERY_THIRTY_MINUTES  # Closest to 1hr
+        else:  # 1day
+            frequency_type = Client.PriceHistory.FrequencyType.DAILY
+            frequency = Client.PriceHistory.Frequency.DAILY
+
+        # Determine period type based on date range
+        if period_days <= 10:
+            period_type = Client.PriceHistory.PeriodType.DAY
+            period = Client.PriceHistory.Period.TEN_DAYS
+        elif period_days <= 30:
+            period_type = Client.PriceHistory.PeriodType.MONTH
+            period = Client.PriceHistory.Period.ONE_MONTH
+        elif period_days <= 90:
+            period_type = Client.PriceHistory.PeriodType.MONTH
+            period = Client.PriceHistory.Period.THREE_MONTHS
+        elif period_days <= 180:
+            period_type = Client.PriceHistory.PeriodType.MONTH
+            period = Client.PriceHistory.Period.SIX_MONTHS
+        else:
+            period_type = Client.PriceHistory.PeriodType.YEAR
+            period = Client.PriceHistory.Period.ONE_YEAR
+
         for symbol in symbols:
             try:
-                ticker = yf.Ticker(symbol)
+                # Fetch from Schwab API
+                response = trading_engine.schwab_client.get_price_history(
+                    symbol,
+                    period_type=period_type,
+                    period=period,
+                    frequency_type=frequency_type,
+                    frequency=frequency,
+                    start_datetime=start_date,
+                    end_datetime=end_date
+                )
 
-                # For intraday, we need to adjust the period
-                if yf_interval in ['1m', '5m', '15m', '1h']:
-                    # Fetch available intraday data
-                    df = ticker.history(start=start_date, end=end_date, interval=yf_interval)
+                if response.status_code == 200:
+                    data = response.json()
+                    candles = data.get('candles', [])
+
+                    if candles:
+                        # Convert to DataFrame
+                        df = pd.DataFrame(candles)
+                        df['datetime'] = pd.to_datetime(df['datetime'], unit='ms')
+                        df.set_index('datetime', inplace=True)
+
+                        # Filter by date range
+                        df = df[(df.index >= start_date) & (df.index <= end_date)]
+
+                        # Rename columns to lowercase (backtesting engine expects lowercase)
+                        df.columns = df.columns.str.lower()
+
+                        if len(df) > 0:
+                            market_data[symbol] = df
+                            logger.info(f"Fetched {len(df)} bars for {symbol} from Schwab")
                 else:
-                    df = ticker.history(start=start_date, end=end_date, interval=yf_interval)
+                    logger.warning(f"Schwab API returned {response.status_code} for {symbol}")
 
-                if len(df) > 0:
-                    # Rename columns to lowercase
-                    df.columns = df.columns.str.lower()
-                    market_data[symbol] = df
-                    logger.info(f"Fetched {len(df)} bars for {symbol}")
             except Exception as e:
-                logger.warning(f"Failed to fetch data for {symbol}: {e}")
+                logger.warning(f"Failed to fetch data for {symbol} from Schwab: {e}")
 
         if not market_data:
             return {
                 'status': 'error',
-                'message': 'No historical data available. Try using daily timeframe or check symbol names.'
+                'message': 'No historical data available from Schwab. Check symbol names and ensure market data access is enabled.'
             }
 
         # Run backtest
