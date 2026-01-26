@@ -10823,23 +10823,25 @@ DASHBOARD_HTML_WITH_COMMENTARY = """
             // Update market sentiment
             if (data.market_sentiment) {
                 const score = data.market_sentiment.score || 0;
-                const direction = data.market_sentiment.direction || 'neutral';
+                // API returns 'label' not 'direction'
+                const label = data.market_sentiment.label || 'neutral';
 
                 const labelEl = document.getElementById('market-sentiment-label');
                 const scoreEl = document.getElementById('market-sentiment-score');
                 const barEl = document.getElementById('sentiment-bar');
 
-                labelEl.textContent = direction.toUpperCase();
-                labelEl.className = 'sentiment-' + direction;
+                labelEl.textContent = label.toUpperCase();
+                labelEl.className = 'sentiment-' + label;
 
-                scoreEl.textContent = (score > 0 ? '+' : '') + (score * 100).toFixed(0);
-                scoreEl.className = 'sentiment-' + direction;
+                // Score is already -100 to +100 scale
+                scoreEl.textContent = (score > 0 ? '+' : '') + Math.round(score);
+                scoreEl.className = 'sentiment-' + label;
 
-                // Update sentiment bar (score is -1 to 1, need to convert to 0-100%)
-                const barWidth = ((score + 1) / 2) * 100;
+                // Update sentiment bar (score is -100 to +100, convert to 0-100%)
+                const barWidth = ((score + 100) / 200) * 100;
                 barEl.style.width = barWidth + '%';
-                barEl.style.background = direction === 'bullish' ? '#22c55e' :
-                                         direction === 'bearish' ? '#ef4444' : '#888';
+                barEl.style.background = label === 'bullish' ? '#22c55e' :
+                                         label === 'bearish' ? '#ef4444' : '#888';
             }
 
             // Update news velocity (aggregate from all symbols)
@@ -10879,12 +10881,13 @@ DASHBOARD_HTML_WITH_COMMENTARY = """
                 const gridEl = document.getElementById('symbol-sentiment-grid');
                 gridEl.innerHTML = Object.entries(data.symbol_sentiments).map(([symbol, sentiment]) => {
                     const score = sentiment.score || 0;
-                    const direction = sentiment.direction || 'neutral';
-                    const colorClass = 'sentiment-' + direction;
+                    // API returns 'label' not 'direction', score is already -100 to +100
+                    const label = sentiment.label || 'neutral';
+                    const colorClass = 'sentiment-' + label;
                     return `
                         <div class="sentiment-symbol-card">
                             <div class="symbol">${symbol}</div>
-                            <div class="score ${colorClass}">${(score > 0 ? '+' : '') + (score * 100).toFixed(0)}</div>
+                            <div class="score ${colorClass}">${(score > 0 ? '+' : '') + Math.round(score)}</div>
                         </div>
                     `;
                 }).join('');
@@ -10895,11 +10898,12 @@ DASHBOARD_HTML_WITH_COMMENTARY = """
                 const headlinesEl = document.getElementById('headlines-list');
                 headlinesEl.innerHTML = data.headlines.slice(0, 10).map(headline => {
                     const score = headline.sentiment_score || 0;
-                    const direction = score > 0.1 ? 'bullish' : score < -0.1 ? 'bearish' : 'neutral';
-                    const timeAgo = getTimeAgo(headline.published_at || headline.timestamp);
+                    // Score is -100 to +100 scale
+                    const direction = score > 10 ? 'bullish' : score < -10 ? 'bearish' : 'neutral';
+                    const timeAgo = getTimeAgo(headline.published_time);
                     return `
                         <div class="headline-item">
-                            <div class="headline-title">${headline.title}</div>
+                            <div class="headline-title">${headline.headline || 'No headline'}</div>
                             <div class="headline-meta">
                                 <span>${headline.source || 'Unknown'} • ${timeAgo}</span>
                                 <span class="headline-sentiment ${direction}">${direction.toUpperCase()}</span>
