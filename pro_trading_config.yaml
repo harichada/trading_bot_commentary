@@ -1,0 +1,297 @@
+# =============================================================================
+#                    PROFESSIONAL TRADING CONFIGURATION
+# =============================================================================
+# This configuration file controls all professional trading modules.
+# The goal: Trade less, trade better, keep what you make.
+#
+# Philosophy:
+# - Less is more (fewer trades, higher quality)
+# - Context over indicators (who's in control, where are the levels)
+# - Exits make money (entries just get you in)
+# - Risk in R-multiples (standardize your risk)
+# - Adapt to conditions (regime, session, volatility)
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# FEATURE FLAGS - Enable/disable modules
+# -----------------------------------------------------------------------------
+features:
+  regime_detector: true          # Detect trending/ranging/volatile/choppy
+  session_manager: true          # Block dead zones, adjust for session
+  no_trade_filter: true          # Quality gate - THE MOST IMPORTANT
+  market_context: true           # Key levels, trapped traders
+  exit_manager: true             # Professional exit management
+  performance_tracker: true      # R-multiple tracking
+
+  # Integration controls
+  block_trades_in_choppy: true   # Hard block when chop index > 61.8
+  block_trades_in_dead_zone: true # No trades during lunch, first 30 min
+  require_confluence: true       # Require multiple confirming signals
+  use_r_based_exits: true        # Scale out at R-multiples
+  enforce_daily_limits: true     # Stop after R target or loss limit
+
+# -----------------------------------------------------------------------------
+# REGIME DETECTOR SETTINGS
+# -----------------------------------------------------------------------------
+regime_detector:
+  # Lookback periods
+  trend_lookback: 20             # Bars for trend detection
+  volatility_lookback: 20        # Bars for volatility calc
+  chop_lookback: 14              # Bars for choppiness index
+
+  # Thresholds
+  adx_trending_threshold: 25     # ADX > 25 = trending
+  adx_strong_trend_threshold: 40 # ADX > 40 = strong trend
+  chop_index_threshold: 61.8     # CI > 61.8 = choppy (Fibonacci)
+  volatility_high_percentile: 80 # Top 20% = high volatility
+  volatility_low_percentile: 20  # Bottom 20% = low volatility
+
+# -----------------------------------------------------------------------------
+# SESSION MANAGER SETTINGS
+# -----------------------------------------------------------------------------
+session_manager:
+  timezone: "US/Eastern"
+
+  # Session windows (Eastern Time)
+  # You can adjust these based on your trading style
+  sessions:
+    pre_market:
+      start: "04:00"
+      end: "09:30"
+      allow_entries: false
+      max_trades: 0
+      notes: "Low liquidity, wide spreads. NO NEW POSITIONS."
+
+    market_open:
+      start: "09:30"
+      end: "10:00"
+      allow_entries: false        # First 30 min = trap city
+      max_trades: 0
+      notes: "Gap fills, retail traps. WAIT FOR CLARITY."
+
+    morning_momentum:
+      start: "10:00"
+      end: "11:30"
+      allow_entries: true         # PRIME TIME
+      max_trades: 4
+      position_size_mult: 1.0
+      notes: "BEST TIME TO TRADE. Trends establish here."
+
+    lunch_dead_zone:
+      start: "11:30"
+      end: "14:00"
+      allow_entries: false        # DEAD ZONE
+      max_trades: 0
+      notes: "Low volume, choppy. STAND ASIDE."
+
+    afternoon:
+      start: "14:00"
+      end: "15:00"
+      allow_entries: true
+      max_trades: 2
+      position_size_mult: 0.5
+      notes: "Institutional positioning. Be selective."
+
+    power_hour:
+      start: "15:00"
+      end: "16:00"
+      allow_entries: true
+      max_trades: 2
+      position_size_mult: 0.8
+      notes: "Institutional activity. Trade with the flow."
+
+    after_hours:
+      start: "16:00"
+      end: "20:00"
+      allow_entries: false
+      max_trades: 0
+      notes: "Thin liquidity. EXIT ONLY."
+
+# -----------------------------------------------------------------------------
+# NO TRADE FILTER SETTINGS (The Gatekeeper)
+# -----------------------------------------------------------------------------
+no_trade_filter:
+  # Daily R-multiple targets
+  daily_r_target: 3.0            # Stop trading after +3R (bank the win)
+  daily_r_loss_limit: -2.0       # Stop after -2R (protect capital)
+
+  # Drawdown mode
+  drawdown_threshold: -1.5       # R to trigger drawdown mode
+  drawdown_size_reduction: 0.5   # Trade 50% size in drawdown
+
+  # Consecutive loss handling
+  max_consecutive_losses: 3      # Take a break after 3 losses
+  loss_cooldown_minutes: 30      # Minimum break time
+
+  # Confluence requirements
+  min_confluence_score: 2        # At least 2 confirming signals
+  min_quality_score: 60          # Minimum setup quality (0-100)
+
+  # Trade limits
+  max_trades_per_day: 5          # Fewer trades, better selection
+  max_trades_per_symbol: 2       # Don't overtrade one ticker
+
+  # Entry requirements
+  min_confidence: 0.70           # 70% minimum confidence
+  min_r_multiple: 1.5            # Risk:Reward at least 1.5:1
+
+  # Strategy filtering
+  min_strategy_win_rate: 0.40    # Disable strategies below 40%
+  min_strategy_trades: 10        # Trades needed before filtering
+
+  # Correlation limits
+  max_correlated_positions: 2    # Max positions in same sector
+
+  # Correlation groups (customize for your watchlist)
+  correlation_groups:
+    tech: ["AAPL", "MSFT", "GOOGL", "NVDA", "AMD", "META", "AMZN"]
+    crypto_related: ["MARA", "RIOT", "COIN", "MSTR"]
+    ev: ["TSLA", "RIVN", "LCID", "NIO"]
+    meme: ["GME", "AMC"]
+    financials: ["JPM", "BAC", "GS", "MS"]
+    energy: ["XOM", "CVX", "OXY", "SLB"]
+
+# -----------------------------------------------------------------------------
+# MARKET CONTEXT SETTINGS
+# -----------------------------------------------------------------------------
+market_context:
+  # Level detection
+  swing_lookback: 20             # Bars to find swing highs/lows
+  round_number_interval: 5.0     # $5 increments for round numbers
+  level_proximity_pct: 0.3       # Within 0.3% = "at level"
+
+  # Volume profile
+  volume_profile_lookback: 50    # Bars for volume profile
+  value_area_pct: 0.70           # 70% of volume = value area
+
+# -----------------------------------------------------------------------------
+# EXIT MANAGER SETTINGS (Where the money is made)
+# -----------------------------------------------------------------------------
+exit_manager:
+  # Scale-out plan (the key to letting winners run)
+  scale_out_plan:
+    - r: 1.0
+      size_pct: 0.50             # Take 50% off at 1R
+    - r: 2.0
+      size_pct: 0.25             # Take 25% off at 2R
+    - r: 3.0
+      size_pct: 0.25             # Final 25% at 3R or trail
+
+  # Stop loss settings
+  initial_stop_atr_mult: 1.5     # Stop = 1.5 ATR
+  max_stop_pct: 0.03             # Never risk more than 3%
+  min_stop_pct: 0.005            # Never risk less than 0.5%
+
+  # Breakeven settings
+  move_to_breakeven_at_r: 1.0    # Move to BE after 1R (free trade!)
+  breakeven_buffer_pct: 0.001    # 0.1% buffer above entry
+
+  # Trailing stop settings
+  start_trailing_at_r: 1.5       # Start trailing after 1.5R
+  trail_atr_mult: 2.0            # Trail by 2 ATR
+  trail_mode: "chandelier"       # Options: fixed_atr, chandelier, structure
+
+  # Time stop (cut dead trades)
+  time_stop_bars: 20             # Exit if flat after 20 bars
+  time_stop_min_r: 0.3           # Must be at least 0.3R to stay
+
+  # End of day
+  close_before_eod_minutes: 15   # Close positions 15 min before close
+
+# -----------------------------------------------------------------------------
+# PERFORMANCE TRACKER SETTINGS
+# -----------------------------------------------------------------------------
+performance_tracker:
+  # Files
+  data_file: "performance_data.json"
+
+  # Thresholds
+  min_expectancy: 0.20           # 0.2R per trade minimum
+  min_trades_for_stats: 10       # Trades needed before filtering
+
+  # Reporting
+  generate_weekly_report: true
+  report_day: "Friday"           # Generate report on Fridays
+
+# -----------------------------------------------------------------------------
+# LOGGING SETTINGS
+# -----------------------------------------------------------------------------
+logging:
+  # What to log (for analyzing WHY trades were taken/skipped)
+  log_rejected_trades: true      # Log all rejected signals
+  log_filter_reasons: true       # Log why each filter rejected
+  log_exit_decisions: true       # Log exit reasoning
+  log_regime_changes: true       # Log regime transitions
+  log_session_changes: true      # Log session transitions
+
+  # Commentary
+  commentary_level: "detailed"   # Options: minimal, normal, detailed
+  include_context_in_commentary: true
+  include_levels_in_commentary: true
+
+# -----------------------------------------------------------------------------
+# RISK MANAGEMENT OVERRIDES
+# -----------------------------------------------------------------------------
+risk:
+  # Position sizing
+  max_position_pct: 0.10         # Max 10% of account per position
+  max_total_exposure: 0.40       # Max 40% total exposure
+  max_sector_exposure: 0.25      # Max 25% in one sector
+
+  # Daily limits (these override everything)
+  hard_daily_loss_limit: -0.03   # Hard stop at -3% of account
+  reduce_size_after_loss_pct: 0.25  # Cut size 25% after each loss
+
+  # Volatility adjustment
+  reduce_size_in_high_volatility: true
+  high_vol_size_reduction: 0.5   # 50% size when vol is high
+
+# -----------------------------------------------------------------------------
+# WATCHLIST
+# -----------------------------------------------------------------------------
+# Symbols to trade - focus on liquid, volatile names
+watchlist:
+  primary:
+    - "TSLA"   # Tesla - high vol, good for momentum
+    - "NVDA"   # Nvidia - strong trends
+    - "AMD"    # AMD - good momentum
+    - "AAPL"   # Apple - liquid, good for ranges
+    - "SPY"    # S&P ETF - for market direction
+
+  secondary:
+    - "MARA"   # Marathon Digital - high vol (crypto)
+    - "RIOT"   # Riot Platforms - high vol (crypto)
+    - "PLTR"   # Palantir - momentum plays
+    - "RIVN"   # Rivian - EV momentum
+    - "DKNG"   # DraftKings - momentum
+
+  # Avoid these (add symbols that historically lose)
+  blacklist: []
+
+# -----------------------------------------------------------------------------
+# STRATEGY PREFERENCES
+# -----------------------------------------------------------------------------
+strategies:
+  # Enable/disable specific strategies
+  enabled:
+    - "momentum"
+    - "trend_following"
+    - "ma_cross"
+
+  # Disabled (these might be overtrading or unprofitable)
+  disabled:
+    - "mean_reversion"           # Disable in trending markets
+    - "scalping"                 # Too many trades
+
+  # Strategy-regime compatibility
+  # Only use certain strategies in certain regimes
+  regime_strategy_map:
+    trending_up: ["trend_following", "momentum"]
+    trending_down: ["trend_following", "momentum"]
+    ranging: ["mean_reversion"]
+    volatile: ["momentum"]       # Only strong momentum in vol
+    choppy: []                   # NO STRATEGIES in chop!
+
+# =============================================================================
+# Remember: The goal is not to trade more. It's to keep what you make.
+# =============================================================================
