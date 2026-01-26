@@ -10150,6 +10150,272 @@ DASHBOARD_HTML_WITH_COMMENTARY = """
         #sentiment-card {
             border-left: 4px solid #4a9eff;
         }
+
+        /* Tab Navigation Styles */
+        .tab-navigation {
+            display: flex;
+            background: #111;
+            border-bottom: 2px solid #333;
+            padding: 0 20px;
+        }
+
+        .tab-button {
+            padding: 15px 30px;
+            background: transparent;
+            border: none;
+            color: #888;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            border-bottom: 3px solid transparent;
+            margin-bottom: -2px;
+        }
+
+        .tab-button:hover {
+            color: #fff;
+            background: rgba(74, 158, 255, 0.1);
+        }
+
+        .tab-button.active {
+            color: #4a9eff;
+            border-bottom-color: #4a9eff;
+        }
+
+        .tab-button .tab-icon {
+            margin-right: 8px;
+        }
+
+        .tab-content {
+            display: none;
+        }
+
+        .tab-content.active {
+            display: flex;
+        }
+
+        /* Sentiment Tab Styles */
+        .sentiment-full-panel {
+            flex: 1;
+            padding: 20px;
+            overflow-y: auto;
+        }
+
+        .sentiment-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 20px;
+        }
+
+        .sentiment-large-card {
+            background: #1a1a1a;
+            border: 1px solid #333;
+            border-radius: 10px;
+            padding: 20px;
+        }
+
+        .sentiment-large-card h3 {
+            margin: 0 0 15px 0;
+            color: #4a9eff;
+            font-size: 14px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .sentiment-meter {
+            height: 8px;
+            background: linear-gradient(to right, #ef4444, #888, #22c55e);
+            border-radius: 4px;
+            position: relative;
+            margin: 15px 0;
+        }
+
+        .sentiment-meter-pointer {
+            position: absolute;
+            top: -4px;
+            width: 16px;
+            height: 16px;
+            background: #fff;
+            border-radius: 50%;
+            transform: translateX(-50%);
+            box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+            transition: left 0.3s ease;
+        }
+
+        .headlines-full-list {
+            max-height: 400px;
+            overflow-y: auto;
+        }
+
+        .headline-full-item {
+            padding: 15px;
+            border-bottom: 1px solid #333;
+            transition: background 0.2s;
+        }
+
+        .headline-full-item:hover {
+            background: #222;
+        }
+
+        .headline-full-title {
+            font-size: 14px;
+            line-height: 1.5;
+            margin-bottom: 8px;
+        }
+
+        .headline-full-title a {
+            color: #fff;
+            text-decoration: none;
+        }
+
+        .headline-full-title a:hover {
+            color: #4a9eff;
+        }
+
+        /* Backtesting Tab Styles */
+        .backtest-panel {
+            flex: 1;
+            padding: 20px;
+            overflow-y: auto;
+        }
+
+        .backtest-config {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+
+        .backtest-input-group {
+            background: #1a1a1a;
+            border: 1px solid #333;
+            border-radius: 8px;
+            padding: 15px;
+        }
+
+        .backtest-input-group label {
+            display: block;
+            color: #888;
+            font-size: 12px;
+            margin-bottom: 8px;
+            text-transform: uppercase;
+        }
+
+        .backtest-input-group input,
+        .backtest-input-group select {
+            width: 100%;
+            padding: 10px;
+            background: #0a0a0a;
+            border: 1px solid #444;
+            border-radius: 4px;
+            color: #fff;
+            font-size: 14px;
+        }
+
+        .backtest-input-group input:focus,
+        .backtest-input-group select:focus {
+            outline: none;
+            border-color: #4a9eff;
+        }
+
+        .backtest-results {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 15px;
+            margin-top: 20px;
+        }
+
+        .backtest-metric {
+            background: #1a1a1a;
+            border: 1px solid #333;
+            border-radius: 8px;
+            padding: 20px;
+            text-align: center;
+        }
+
+        .backtest-metric .value {
+            font-size: 28px;
+            font-weight: bold;
+            margin-bottom: 5px;
+        }
+
+        .backtest-metric .label {
+            color: #888;
+            font-size: 12px;
+            text-transform: uppercase;
+        }
+
+        .backtest-chart {
+            background: #1a1a1a;
+            border: 1px solid #333;
+            border-radius: 8px;
+            padding: 20px;
+            margin-top: 20px;
+            min-height: 300px;
+        }
+
+        .backtest-trades-table {
+            margin-top: 20px;
+            background: #1a1a1a;
+            border: 1px solid #333;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+
+        .backtest-trades-table table {
+            width: 100%;
+        }
+
+        .run-backtest-btn {
+            padding: 15px 40px;
+            background: linear-gradient(135deg, #4a9eff, #2563eb);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .run-backtest-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(74, 158, 255, 0.4);
+        }
+
+        .run-backtest-btn:disabled {
+            background: #444;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+
+        .backtest-progress {
+            margin-top: 15px;
+            padding: 15px;
+            background: #1a1a1a;
+            border-radius: 8px;
+            display: none;
+        }
+
+        .backtest-progress.active {
+            display: block;
+        }
+
+        .progress-bar {
+            height: 6px;
+            background: #333;
+            border-radius: 3px;
+            overflow: hidden;
+            margin-top: 10px;
+        }
+
+        .progress-bar-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #4a9eff, #22c55e);
+            width: 0%;
+            transition: width 0.3s;
+        }
     </style>
 </head>
 <body>
@@ -10159,7 +10425,22 @@ DASHBOARD_HTML_WITH_COMMENTARY = """
             <!-- Ticker items will be inserted here -->
         </div>
     </div>
-    <div class="container">
+
+    <!-- Tab Navigation -->
+    <div class="tab-navigation">
+        <button class="tab-button active" onclick="switchTab('dashboard')">
+            <span class="tab-icon">📊</span>Dashboard
+        </button>
+        <button class="tab-button" onclick="switchTab('sentiment')">
+            <span class="tab-icon">📰</span>News & Sentiment
+        </button>
+        <button class="tab-button" onclick="switchTab('backtest')">
+            <span class="tab-icon">🔬</span>Backtesting
+        </button>
+    </div>
+
+    <!-- Dashboard Tab -->
+    <div class="container tab-content active" id="tab-dashboard">
         <div class="commentary-panel">
             <h2>Live Trading Commentary</h2>
             <div class="filter-buttons">
@@ -10358,12 +10639,623 @@ DASHBOARD_HTML_WITH_COMMENTARY = """
             </div>
         </div>
     </div>
-    
+
+    <!-- Sentiment Tab -->
+    <div class="tab-content" id="tab-sentiment" style="flex-direction: column;">
+        <div class="sentiment-full-panel">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                <h2 style="margin: 0;">📰 News & Sentiment Analysis</h2>
+                <button onclick="refreshSentiment()" class="button button-primary">🔄 Refresh Data</button>
+            </div>
+
+            <div class="sentiment-grid">
+                <!-- Market Sentiment Overview -->
+                <div class="sentiment-large-card">
+                    <h3>Market Sentiment</h3>
+                    <div style="text-align: center; padding: 20px 0;">
+                        <div id="sent-market-label" style="font-size: 24px; font-weight: bold; color: #888;">NEUTRAL</div>
+                        <div id="sent-market-score" style="font-size: 48px; font-weight: bold; margin: 10px 0;">0</div>
+                        <div class="sentiment-meter">
+                            <div class="sentiment-meter-pointer" id="sent-meter-pointer" style="left: 50%;"></div>
+                        </div>
+                        <div style="display: flex; justify-content: space-between; font-size: 12px; color: #666;">
+                            <span>Bearish</span>
+                            <span>Neutral</span>
+                            <span>Bullish</span>
+                        </div>
+                    </div>
+                    <div style="margin-top: 15px; padding-top: 15px; border-top: 1px solid #333;">
+                        <div style="display: flex; justify-content: space-between; margin: 8px 0;">
+                            <span style="color: #888;">Confidence</span>
+                            <span id="sent-confidence">--</span>
+                        </div>
+                        <div style="display: flex; justify-content: space-between; margin: 8px 0;">
+                            <span style="color: #888;">Trend</span>
+                            <span id="sent-trend">--</span>
+                        </div>
+                        <div style="display: flex; justify-content: space-between; margin: 8px 0;">
+                            <span style="color: #888;">Sources</span>
+                            <span id="sent-sources">--</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- News Velocity -->
+                <div class="sentiment-large-card">
+                    <h3>News Velocity</h3>
+                    <div id="velocity-status" style="text-align: center; padding: 20px 0;">
+                        <div style="font-size: 48px; margin-bottom: 10px;">📊</div>
+                        <div id="velocity-label" style="font-size: 24px; font-weight: bold; color: #4a9eff;">Normal</div>
+                        <div style="color: #888; margin-top: 10px;">News flow is within normal range</div>
+                    </div>
+                    <div style="margin-top: 15px; padding-top: 15px; border-top: 1px solid #333;">
+                        <div style="display: flex; justify-content: space-between; margin: 8px 0;">
+                            <span style="color: #888;">Headlines (24h)</span>
+                            <span id="velocity-count">0</span>
+                        </div>
+                        <div style="display: flex; justify-content: space-between; margin: 8px 0;">
+                            <span style="color: #888;">Per Hour</span>
+                            <span id="velocity-rate">0</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Alerts -->
+                <div class="sentiment-large-card">
+                    <h3>Active Alerts</h3>
+                    <div id="sentiment-alerts-list" style="max-height: 250px; overflow-y: auto;">
+                        <div style="text-align: center; color: #666; padding: 30px;">No active alerts</div>
+                    </div>
+                </div>
+
+                <!-- Upcoming Earnings -->
+                <div class="sentiment-large-card">
+                    <h3>Upcoming Earnings</h3>
+                    <div id="earnings-list" style="max-height: 250px; overflow-y: auto;">
+                        <div style="text-align: center; color: #666; padding: 30px;">No upcoming earnings</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Symbol Sentiment Details -->
+            <div class="sentiment-large-card" style="margin-top: 20px;">
+                <h3>Watchlist Sentiment</h3>
+                <div id="watchlist-sentiment-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 15px; margin-top: 15px;">
+                    <!-- Will be populated by JS -->
+                </div>
+            </div>
+
+            <!-- Full Headlines List -->
+            <div class="sentiment-large-card" style="margin-top: 20px;">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <h3 style="margin: 0;">Recent Headlines</h3>
+                    <select id="headline-filter" onchange="filterHeadlines()" style="padding: 8px 15px; background: #0a0a0a; border: 1px solid #444; border-radius: 4px; color: #fff;">
+                        <option value="all">All Symbols</option>
+                    </select>
+                </div>
+                <div id="full-headlines-list" class="headlines-full-list" style="margin-top: 15px;">
+                    <div style="text-align: center; color: #666; padding: 30px;">Loading headlines...</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Backtesting Tab -->
+    <div class="tab-content" id="tab-backtest" style="flex-direction: column;">
+        <div class="backtest-panel">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                <h2 style="margin: 0;">🔬 Strategy Backtesting</h2>
+            </div>
+
+            <!-- Configuration -->
+            <div class="card">
+                <h3>Backtest Configuration</h3>
+                <div class="backtest-config">
+                    <div class="backtest-input-group">
+                        <label>Symbols (comma-separated)</label>
+                        <input type="text" id="bt-symbols" value="TSLA,NVDA,AMD,AAPL" placeholder="TSLA,NVDA,AMD">
+                    </div>
+                    <div class="backtest-input-group">
+                        <label>Start Date</label>
+                        <input type="date" id="bt-start-date" value="2024-01-01">
+                    </div>
+                    <div class="backtest-input-group">
+                        <label>End Date</label>
+                        <input type="date" id="bt-end-date" value="2024-12-31">
+                    </div>
+                    <div class="backtest-input-group">
+                        <label>Initial Capital ($)</label>
+                        <input type="number" id="bt-capital" value="100000" min="1000">
+                    </div>
+                    <div class="backtest-input-group">
+                        <label>Timeframe</label>
+                        <select id="bt-timeframe">
+                            <option value="1min">1 Minute</option>
+                            <option value="5min" selected>5 Minutes</option>
+                            <option value="15min">15 Minutes</option>
+                            <option value="1hour">1 Hour</option>
+                            <option value="1day">Daily</option>
+                        </select>
+                    </div>
+                    <div class="backtest-input-group">
+                        <label>Mode</label>
+                        <select id="bt-mode">
+                            <option value="FAST">Fast (no slippage)</option>
+                            <option value="REALISTIC" selected>Realistic</option>
+                            <option value="DETAILED">Detailed</option>
+                        </select>
+                    </div>
+                    <div class="backtest-input-group">
+                        <label>Max Positions</label>
+                        <input type="number" id="bt-max-positions" value="5" min="1" max="20">
+                    </div>
+                    <div class="backtest-input-group">
+                        <label>Commission (%)</label>
+                        <input type="number" id="bt-commission" value="0.1" step="0.01" min="0">
+                    </div>
+                </div>
+                <div style="text-align: center; margin-top: 20px;">
+                    <button onclick="runBacktest()" class="run-backtest-btn" id="run-backtest-btn">
+                        🚀 Run Backtest
+                    </button>
+                </div>
+                <div class="backtest-progress" id="backtest-progress">
+                    <div style="display: flex; justify-content: space-between;">
+                        <span id="backtest-status">Initializing...</span>
+                        <span id="backtest-percent">0%</span>
+                    </div>
+                    <div class="progress-bar">
+                        <div class="progress-bar-fill" id="backtest-progress-fill"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Results (hidden until backtest runs) -->
+            <div id="backtest-results-container" style="display: none;">
+                <div class="card">
+                    <h3>Performance Metrics</h3>
+                    <div class="backtest-results" id="backtest-metrics">
+                        <!-- Will be populated by JS -->
+                    </div>
+                </div>
+
+                <div class="card backtest-chart">
+                    <h3>Equity Curve</h3>
+                    <canvas id="equity-chart" style="width: 100%; height: 250px;"></canvas>
+                </div>
+
+                <div class="card backtest-trades-table">
+                    <h3>Trade History</h3>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Symbol</th>
+                                <th>Entry</th>
+                                <th>Exit</th>
+                                <th>Side</th>
+                                <th>P&L</th>
+                                <th>P&L %</th>
+                                <th>Exit Reason</th>
+                            </tr>
+                        </thead>
+                        <tbody id="backtest-trades-body">
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- No Data Message -->
+            <div id="backtest-no-data" class="card" style="text-align: center; padding: 60px 20px;">
+                <div style="font-size: 64px; margin-bottom: 20px;">📈</div>
+                <h3 style="color: #4a9eff;">Configure and Run a Backtest</h3>
+                <p style="color: #888; max-width: 500px; margin: 15px auto;">
+                    Set your parameters above and click "Run Backtest" to test your strategies against historical data.
+                    Results will include performance metrics, equity curves, and detailed trade history.
+                </p>
+                <p style="color: #666; font-size: 12px; margin-top: 20px;">
+                    Note: Requires historical data files in the ./historical_data/ directory
+                </p>
+            </div>
+        </div>
+    </div>
+
     <script>
         let ws = null;
         let currentFilter = 'all';
         let allCommentary = [];
-        
+        let currentTab = 'dashboard';
+        let sentimentData = null;
+        let backtestRunning = false;
+
+        // ============== TAB NAVIGATION ==============
+        function switchTab(tabName) {
+            currentTab = tabName;
+
+            // Update tab buttons
+            document.querySelectorAll('.tab-button').forEach(btn => {
+                btn.classList.remove('active');
+            });
+            event.target.closest('.tab-button').classList.add('active');
+
+            // Update tab content
+            document.querySelectorAll('.tab-content').forEach(content => {
+                content.classList.remove('active');
+            });
+            document.getElementById('tab-' + tabName).classList.add('active');
+
+            // Load tab-specific data
+            if (tabName === 'sentiment') {
+                loadSentimentTab();
+            }
+        }
+
+        // ============== SENTIMENT TAB FUNCTIONS ==============
+        function loadSentimentTab() {
+            refreshSentimentFull();
+        }
+
+        async function refreshSentimentFull() {
+            try {
+                const response = await fetch('/api/sentiment/update');
+                if (response.ok) {
+                    const result = await response.json();
+                    if (result.status === 'success' && result.data) {
+                        sentimentData = result.data;
+                        updateSentimentTab(result.data);
+                    }
+                }
+            } catch (err) {
+                console.error('Failed to fetch sentiment:', err);
+            }
+        }
+
+        function updateSentimentTab(data) {
+            // Market sentiment
+            if (data.market_sentiment) {
+                const score = data.market_sentiment.score || 0;
+                const label = data.market_sentiment.label || 'neutral';
+
+                document.getElementById('sent-market-label').textContent = label.toUpperCase();
+                document.getElementById('sent-market-label').className = 'sentiment-' + label;
+                document.getElementById('sent-market-score').textContent = (score > 0 ? '+' : '') + Math.round(score);
+                document.getElementById('sent-market-score').className = 'sentiment-' + label;
+
+                // Update meter pointer (score is -100 to +100)
+                const pointerPos = ((score + 100) / 200) * 100;
+                document.getElementById('sent-meter-pointer').style.left = pointerPos + '%';
+
+                document.getElementById('sent-confidence').textContent =
+                    ((data.market_sentiment.confidence || 0) * 100).toFixed(0) + '%';
+                document.getElementById('sent-trend').textContent = data.market_sentiment.trend || '--';
+                document.getElementById('sent-sources').textContent = data.market_sentiment.source_count || '--';
+            }
+
+            // News velocity
+            if (data.velocities) {
+                let totalArticles = 0;
+                let hasSpike = false;
+                Object.values(data.velocities).forEach(v => {
+                    if (v) {
+                        totalArticles += v.recent_count || 0;
+                        if (v.is_spike) hasSpike = true;
+                    }
+                });
+
+                const velocityLabel = hasSpike ? 'SPIKE DETECTED!' : totalArticles > 50 ? 'Elevated' : 'Normal';
+                document.getElementById('velocity-label').textContent = velocityLabel;
+                document.getElementById('velocity-label').style.color = hasSpike ? '#ef4444' : totalArticles > 50 ? '#ffd700' : '#4a9eff';
+                document.getElementById('velocity-count').textContent = totalArticles;
+                document.getElementById('velocity-rate').textContent = (totalArticles / 24).toFixed(1);
+            }
+
+            // Headlines count
+            if (data.headlines) {
+                document.getElementById('velocity-count').textContent = data.headlines.length;
+            }
+
+            // Alerts
+            if (data.alerts && data.alerts.length > 0) {
+                document.getElementById('sentiment-alerts-list').innerHTML = data.alerts.map(alert => `
+                    <div style="padding: 12px; border-bottom: 1px solid #333; display: flex; align-items: center; gap: 10px;">
+                        <span style="font-size: 20px;">${alert.alert_type === 'breaking_news' ? '🚨' : alert.alert_type === 'sentiment_flip' ? '🔄' : '⚠️'}</span>
+                        <div>
+                            <div style="font-weight: bold;">${alert.symbol || 'Market'}</div>
+                            <div style="color: #888; font-size: 12px;">${alert.message}</div>
+                        </div>
+                    </div>
+                `).join('');
+            } else {
+                document.getElementById('sentiment-alerts-list').innerHTML =
+                    '<div style="text-align: center; color: #666; padding: 30px;">No active alerts</div>';
+            }
+
+            // Earnings
+            if (data.earnings && data.earnings.length > 0) {
+                document.getElementById('earnings-list').innerHTML = data.earnings.map(earning => `
+                    <div style="padding: 12px; border-bottom: 1px solid #333; display: flex; justify-content: space-between; align-items: center;">
+                        <div>
+                            <div style="font-weight: bold;">${earning.symbol}</div>
+                            <div style="color: #888; font-size: 12px;">${earning.company_name || ''}</div>
+                        </div>
+                        <div style="text-align: right;">
+                            <div style="color: #4a9eff;">${new Date(earning.date).toLocaleDateString()}</div>
+                            <div style="color: #888; font-size: 12px;">${earning.timing || ''}</div>
+                        </div>
+                    </div>
+                `).join('');
+            } else {
+                document.getElementById('earnings-list').innerHTML =
+                    '<div style="text-align: center; color: #666; padding: 30px;">No upcoming earnings</div>';
+            }
+
+            // Watchlist sentiment grid
+            if (data.symbol_sentiments) {
+                const gridEl = document.getElementById('watchlist-sentiment-grid');
+                gridEl.innerHTML = Object.entries(data.symbol_sentiments).map(([symbol, sent]) => {
+                    const score = sent.score || 0;
+                    const label = sent.label || 'neutral';
+                    return `
+                        <div class="sentiment-symbol-card" style="padding: 15px;">
+                            <div class="symbol" style="font-size: 16px;">${symbol}</div>
+                            <div class="score sentiment-${label}" style="font-size: 24px; margin: 8px 0;">
+                                ${(score > 0 ? '+' : '') + Math.round(score)}
+                            </div>
+                            <div style="color: #888; font-size: 11px; text-transform: uppercase;">${label}</div>
+                            <div style="font-size: 11px; color: #666; margin-top: 5px;">
+                                ${sent.trend || ''} ${sent.trend_change ? (sent.trend_change > 0 ? '+' : '') + sent.trend_change.toFixed(1) : ''}
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+
+                // Update filter dropdown
+                const filterEl = document.getElementById('headline-filter');
+                const currentVal = filterEl.value;
+                filterEl.innerHTML = '<option value="all">All Symbols</option>' +
+                    Object.keys(data.symbol_sentiments).map(s =>
+                        `<option value="${s}">${s}</option>`
+                    ).join('');
+                filterEl.value = currentVal;
+            }
+
+            // Full headlines list
+            if (data.headlines && data.headlines.length > 0) {
+                updateHeadlinesList(data.headlines);
+            }
+        }
+
+        function updateHeadlinesList(headlines, filter = 'all') {
+            const filtered = filter === 'all' ? headlines :
+                headlines.filter(h => h.symbols && h.symbols.includes(filter));
+
+            document.getElementById('full-headlines-list').innerHTML = filtered.map(h => {
+                const score = h.sentiment_score || 0;
+                const direction = score > 10 ? 'bullish' : score < -10 ? 'bearish' : 'neutral';
+                return `
+                    <div class="headline-full-item">
+                        <div class="headline-full-title">
+                            <a href="${h.url || '#'}" target="_blank">${h.headline || 'No headline'}</a>
+                        </div>
+                        <div class="headline-meta">
+                            <div>
+                                <span style="color: #4a9eff;">${h.source || 'Unknown'}</span>
+                                <span style="margin: 0 8px;">•</span>
+                                <span>${getTimeAgo(h.published_time)}</span>
+                                ${h.symbols && h.symbols.length ? '<span style="margin: 0 8px;">•</span><span style="color: #888;">' + h.symbols.join(', ') + '</span>' : ''}
+                            </div>
+                            <div>
+                                <span class="headline-sentiment ${direction}">${direction.toUpperCase()}</span>
+                                <span style="margin-left: 8px; color: #666;">${(score > 0 ? '+' : '') + Math.round(score)}</span>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }).join('') || '<div style="text-align: center; color: #666; padding: 30px;">No headlines found</div>';
+        }
+
+        function filterHeadlines() {
+            const filter = document.getElementById('headline-filter').value;
+            if (sentimentData && sentimentData.headlines) {
+                updateHeadlinesList(sentimentData.headlines, filter);
+            }
+        }
+
+        // ============== BACKTESTING FUNCTIONS ==============
+        async function runBacktest() {
+            if (backtestRunning) return;
+
+            backtestRunning = true;
+            const btn = document.getElementById('run-backtest-btn');
+            btn.disabled = true;
+            btn.textContent = '⏳ Running...';
+
+            // Show progress
+            const progress = document.getElementById('backtest-progress');
+            progress.classList.add('active');
+            document.getElementById('backtest-status').textContent = 'Initializing...';
+            document.getElementById('backtest-percent').textContent = '0%';
+            document.getElementById('backtest-progress-fill').style.width = '0%';
+
+            // Get configuration
+            const config = {
+                symbols: document.getElementById('bt-symbols').value.split(',').map(s => s.trim()),
+                start_date: document.getElementById('bt-start-date').value,
+                end_date: document.getElementById('bt-end-date').value,
+                initial_capital: parseFloat(document.getElementById('bt-capital').value),
+                timeframe: document.getElementById('bt-timeframe').value,
+                mode: document.getElementById('bt-mode').value,
+                max_positions: parseInt(document.getElementById('bt-max-positions').value),
+                commission: parseFloat(document.getElementById('bt-commission').value) / 100
+            };
+
+            try {
+                // Simulate progress updates
+                let progressPercent = 0;
+                const progressInterval = setInterval(() => {
+                    if (progressPercent < 90) {
+                        progressPercent += Math.random() * 10;
+                        document.getElementById('backtest-progress-fill').style.width = progressPercent + '%';
+                        document.getElementById('backtest-percent').textContent = Math.round(progressPercent) + '%';
+                        document.getElementById('backtest-status').textContent =
+                            progressPercent < 30 ? 'Loading historical data...' :
+                            progressPercent < 60 ? 'Running strategy signals...' :
+                            'Calculating metrics...';
+                    }
+                }, 500);
+
+                const response = await fetch('/api/backtest/run', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(config)
+                });
+
+                clearInterval(progressInterval);
+
+                if (response.ok) {
+                    const result = await response.json();
+                    document.getElementById('backtest-progress-fill').style.width = '100%';
+                    document.getElementById('backtest-percent').textContent = '100%';
+                    document.getElementById('backtest-status').textContent = 'Complete!';
+
+                    if (result.status === 'success') {
+                        displayBacktestResults(result.data);
+                    } else {
+                        alert('Backtest failed: ' + result.message);
+                    }
+                } else {
+                    alert('Backtest request failed');
+                }
+            } catch (err) {
+                console.error('Backtest error:', err);
+                alert('Backtest error: ' + err.message);
+            } finally {
+                backtestRunning = false;
+                btn.disabled = false;
+                btn.textContent = '🚀 Run Backtest';
+                setTimeout(() => {
+                    progress.classList.remove('active');
+                }, 2000);
+            }
+        }
+
+        function displayBacktestResults(results) {
+            // Show results container, hide no-data message
+            document.getElementById('backtest-results-container').style.display = 'block';
+            document.getElementById('backtest-no-data').style.display = 'none';
+
+            // Display metrics
+            const metricsHtml = `
+                <div class="backtest-metric">
+                    <div class="value ${results.total_return >= 0 ? 'positive' : 'negative'}">
+                        ${(results.total_return * 100).toFixed(2)}%
+                    </div>
+                    <div class="label">Total Return</div>
+                </div>
+                <div class="backtest-metric">
+                    <div class="value ${results.annual_return >= 0 ? 'positive' : 'negative'}">
+                        ${(results.annual_return * 100).toFixed(2)}%
+                    </div>
+                    <div class="label">Annual Return</div>
+                </div>
+                <div class="backtest-metric">
+                    <div class="value">${results.sharpe_ratio.toFixed(2)}</div>
+                    <div class="label">Sharpe Ratio</div>
+                </div>
+                <div class="backtest-metric">
+                    <div class="value negative">${(results.max_drawdown * 100).toFixed(2)}%</div>
+                    <div class="label">Max Drawdown</div>
+                </div>
+                <div class="backtest-metric">
+                    <div class="value">${(results.win_rate * 100).toFixed(1)}%</div>
+                    <div class="label">Win Rate</div>
+                </div>
+                <div class="backtest-metric">
+                    <div class="value">${results.profit_factor.toFixed(2)}</div>
+                    <div class="label">Profit Factor</div>
+                </div>
+                <div class="backtest-metric">
+                    <div class="value">${results.total_trades}</div>
+                    <div class="label">Total Trades</div>
+                </div>
+                <div class="backtest-metric">
+                    <div class="value">$${results.final_capital.toLocaleString()}</div>
+                    <div class="label">Final Capital</div>
+                </div>
+            `;
+            document.getElementById('backtest-metrics').innerHTML = metricsHtml;
+
+            // Draw equity curve (simple canvas chart)
+            if (results.equity_curve) {
+                drawEquityCurve(results.equity_curve);
+            }
+
+            // Display trades
+            if (results.trades && results.trades.length > 0) {
+                document.getElementById('backtest-trades-body').innerHTML = results.trades.slice(0, 50).map(t => `
+                    <tr>
+                        <td style="font-weight: bold;">${t.symbol}</td>
+                        <td>${new Date(t.entry_time).toLocaleDateString()}</td>
+                        <td>${new Date(t.exit_time).toLocaleDateString()}</td>
+                        <td>${t.side.toUpperCase()}</td>
+                        <td class="${t.pnl >= 0 ? 'positive' : 'negative'}">$${t.pnl.toFixed(2)}</td>
+                        <td class="${t.pnl_pct >= 0 ? 'positive' : 'negative'}">${(t.pnl_pct * 100).toFixed(2)}%</td>
+                        <td>${t.exit_reason}</td>
+                    </tr>
+                `).join('');
+            }
+        }
+
+        function drawEquityCurve(equityCurve) {
+            const canvas = document.getElementById('equity-chart');
+            const ctx = canvas.getContext('2d');
+
+            // Set canvas size
+            canvas.width = canvas.parentElement.clientWidth - 40;
+            canvas.height = 250;
+
+            const data = Array.isArray(equityCurve) ? equityCurve : Object.values(equityCurve);
+            if (data.length < 2) return;
+
+            const values = data.map(d => typeof d === 'object' ? d.equity || d : d);
+            const minVal = Math.min(...values) * 0.95;
+            const maxVal = Math.max(...values) * 1.05;
+
+            // Clear and draw
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // Draw grid
+            ctx.strokeStyle = '#333';
+            ctx.lineWidth = 1;
+            for (let i = 0; i <= 4; i++) {
+                const y = (canvas.height / 4) * i;
+                ctx.beginPath();
+                ctx.moveTo(0, y);
+                ctx.lineTo(canvas.width, y);
+                ctx.stroke();
+            }
+
+            // Draw equity line
+            ctx.strokeStyle = '#4a9eff';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+
+            values.forEach((val, i) => {
+                const x = (i / (values.length - 1)) * canvas.width;
+                const y = canvas.height - ((val - minVal) / (maxVal - minVal)) * canvas.height;
+
+                if (i === 0) ctx.moveTo(x, y);
+                else ctx.lineTo(x, y);
+            });
+            ctx.stroke();
+
+            // Fill under curve
+            ctx.lineTo(canvas.width, canvas.height);
+            ctx.lineTo(0, canvas.height);
+            ctx.closePath();
+            ctx.fillStyle = 'rgba(74, 158, 255, 0.1)';
+            ctx.fill();
+        }
+
         function connectWebSocket() {
             ws = new WebSocket(`ws://${window.location.host}/ws`);
             
@@ -12334,6 +13226,132 @@ async def get_upcoming_earnings():
         return {'status': 'success', 'earnings': [e.to_dict() for e in earnings]}
     except Exception as e:
         return {'status': 'error', 'message': str(e)}
+
+# ============================================================================
+# BACKTESTING API ENDPOINTS
+# ============================================================================
+
+@app.post("/api/backtest/run")
+async def run_backtest(config: dict):
+    """Run a backtest with the given configuration"""
+    try:
+        from backtesting_engine import BacktestingEngine, BacktestConfig, BacktestMode
+        from datetime import datetime
+        import yfinance as yf
+
+        # Parse configuration
+        symbols = config.get('symbols', ['TSLA', 'NVDA'])
+        start_date = datetime.strptime(config.get('start_date', '2024-01-01'), '%Y-%m-%d')
+        end_date = datetime.strptime(config.get('end_date', '2024-12-31'), '%Y-%m-%d')
+        initial_capital = config.get('initial_capital', 100000)
+        timeframe = config.get('timeframe', '5min')
+        mode = BacktestMode[config.get('mode', 'REALISTIC')]
+        max_positions = config.get('max_positions', 5)
+        commission = config.get('commission', 0.001)
+
+        # Create backtest config
+        bt_config = BacktestConfig(
+            start_date=start_date,
+            end_date=end_date,
+            initial_capital=initial_capital,
+            symbols=symbols,
+            timeframe=timeframe,
+            mode=mode,
+            max_positions=max_positions,
+            commission=commission
+        )
+
+        # Try to load historical data or fetch from yfinance
+        market_data = {}
+
+        # Map timeframe to yfinance interval
+        interval_map = {
+            '1min': '1m', '5min': '5m', '15min': '15m',
+            '1hour': '1h', '1day': '1d'
+        }
+        yf_interval = interval_map.get(timeframe, '5m')
+
+        # yfinance has limits on historical intraday data
+        # For intraday, max is 60 days for 1m, 730 days for others
+        for symbol in symbols:
+            try:
+                ticker = yf.Ticker(symbol)
+
+                # For intraday, we need to adjust the period
+                if yf_interval in ['1m', '5m', '15m', '1h']:
+                    # Fetch available intraday data
+                    df = ticker.history(start=start_date, end=end_date, interval=yf_interval)
+                else:
+                    df = ticker.history(start=start_date, end=end_date, interval=yf_interval)
+
+                if len(df) > 0:
+                    # Rename columns to lowercase
+                    df.columns = df.columns.str.lower()
+                    market_data[symbol] = df
+                    logger.info(f"Fetched {len(df)} bars for {symbol}")
+            except Exception as e:
+                logger.warning(f"Failed to fetch data for {symbol}: {e}")
+
+        if not market_data:
+            return {
+                'status': 'error',
+                'message': 'No historical data available. Try using daily timeframe or check symbol names.'
+            }
+
+        # Run backtest
+        engine = BacktestingEngine(bt_config)
+        results = engine.run(market_data)
+
+        # Convert results to dict
+        return {
+            'status': 'success',
+            'data': {
+                'total_return': results.total_return,
+                'annual_return': results.annual_return,
+                'sharpe_ratio': results.sharpe_ratio,
+                'sortino_ratio': results.sortino_ratio,
+                'max_drawdown': results.max_drawdown,
+                'win_rate': results.win_rate,
+                'profit_factor': results.profit_factor,
+                'total_trades': results.total_trades,
+                'winning_trades': results.winning_trades,
+                'losing_trades': results.losing_trades,
+                'avg_win': results.avg_win,
+                'avg_loss': results.avg_loss,
+                'initial_capital': results.initial_capital,
+                'final_capital': results.final_capital,
+                'equity_curve': [
+                    {'date': d.isoformat(), 'equity': float(v)}
+                    for d, v in results.equity_curve.items()
+                ][-500:],  # Limit to last 500 points
+                'trades': [
+                    {
+                        'symbol': t.symbol,
+                        'entry_time': t.entry_time.isoformat(),
+                        'exit_time': t.exit_time.isoformat(),
+                        'entry_price': t.entry_price,
+                        'exit_price': t.exit_price,
+                        'side': t.side,
+                        'pnl': t.pnl,
+                        'pnl_pct': t.pnl_pct,
+                        'exit_reason': t.exit_reason
+                    }
+                    for t in results.trades
+                ]
+            }
+        }
+
+    except ImportError as e:
+        return {'status': 'error', 'message': f'Backtesting engine not available: {e}'}
+    except Exception as e:
+        logger.error(f"Backtest failed: {e}")
+        return {'status': 'error', 'message': str(e)}
+
+@app.get("/api/backtest/status")
+async def get_backtest_status():
+    """Get current backtest status (for polling during long backtests)"""
+    # This would track progress for long-running backtests
+    return {'status': 'idle', 'progress': 0}
 
 @app.post("/api/professional/risk/settings")
 async def update_risk_settings(settings: dict):
