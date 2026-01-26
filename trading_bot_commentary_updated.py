@@ -10062,6 +10062,94 @@ DASHBOARD_HTML_WITH_COMMENTARY = """
         .price-updated {
             animation: priceFlash 0.5s ease-out;
         }
+
+        /* Sentiment Widget Styles */
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .sentiment-symbol-card {
+            background: #1a1a1a;
+            border: 1px solid #333;
+            border-radius: 6px;
+            padding: 8px;
+            text-align: center;
+            transition: all 0.2s;
+        }
+
+        .sentiment-symbol-card:hover {
+            border-color: #4a9eff;
+            transform: translateY(-2px);
+        }
+
+        .sentiment-symbol-card .symbol {
+            font-weight: bold;
+            font-size: 12px;
+            margin-bottom: 4px;
+        }
+
+        .sentiment-symbol-card .score {
+            font-size: 14px;
+            font-weight: bold;
+        }
+
+        .sentiment-bullish { color: #22c55e; }
+        .sentiment-bearish { color: #ef4444; }
+        .sentiment-neutral { color: #888; }
+
+        .headline-item {
+            padding: 10px;
+            border-bottom: 1px solid #222;
+            transition: background 0.2s;
+        }
+
+        .headline-item:hover {
+            background: #1a1a1a;
+        }
+
+        .headline-item:last-child {
+            border-bottom: none;
+        }
+
+        .headline-title {
+            font-size: 13px;
+            line-height: 1.4;
+            margin-bottom: 5px;
+        }
+
+        .headline-meta {
+            display: flex;
+            justify-content: space-between;
+            font-size: 11px;
+            color: #666;
+        }
+
+        .headline-sentiment {
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 10px;
+            font-weight: bold;
+        }
+
+        .headline-sentiment.bullish {
+            background: rgba(34, 197, 94, 0.2);
+            color: #22c55e;
+        }
+
+        .headline-sentiment.bearish {
+            background: rgba(239, 68, 68, 0.2);
+            color: #ef4444;
+        }
+
+        .headline-sentiment.neutral {
+            background: rgba(136, 136, 136, 0.2);
+            color: #888;
+        }
+
+        #sentiment-card {
+            border-left: 4px solid #4a9eff;
+        }
     </style>
 </head>
 <body>
@@ -10193,7 +10281,59 @@ DASHBOARD_HTML_WITH_COMMENTARY = """
                     </tbody>
                 </table>
             </div>
-            
+
+            <!-- News Sentiment Widget -->
+            <div class="card" id="sentiment-card">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                    <h3 style="margin: 0;">📰 News Sentiment</h3>
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                        <span id="sentiment-last-update" style="font-size: 11px; color: #666;">--</span>
+                        <button onclick="refreshSentiment()" style="padding: 5px 10px; background: #4a9eff; color: white; border: none; border-radius: 3px; cursor: pointer; font-size: 12px;">
+                            🔄 Refresh
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Market Sentiment Overview -->
+                <div style="display: flex; gap: 15px; margin-bottom: 15px;">
+                    <div style="flex: 1; background: #0a0a0a; border-radius: 8px; padding: 15px; text-align: center;">
+                        <div style="font-size: 11px; color: #666; margin-bottom: 5px;">MARKET SENTIMENT</div>
+                        <div id="market-sentiment-label" style="font-size: 18px; font-weight: bold; color: #888;">--</div>
+                        <div id="market-sentiment-score" style="font-size: 24px; font-weight: bold; margin: 5px 0;">0</div>
+                        <div style="height: 4px; background: #333; border-radius: 2px; margin-top: 8px;">
+                            <div id="sentiment-bar" style="height: 100%; width: 50%; background: #888; border-radius: 2px; transition: all 0.3s;"></div>
+                        </div>
+                    </div>
+                    <div style="flex: 1; background: #0a0a0a; border-radius: 8px; padding: 15px;">
+                        <div style="font-size: 11px; color: #666; margin-bottom: 8px;">NEWS VELOCITY</div>
+                        <div id="news-velocity" style="font-size: 16px; font-weight: bold; color: #4a9eff;">Normal</div>
+                        <div style="font-size: 11px; color: #666; margin-top: 10px;">HEADLINES TODAY</div>
+                        <div id="headline-count" style="font-size: 16px; font-weight: bold;">0</div>
+                    </div>
+                </div>
+
+                <!-- Breaking News Alerts -->
+                <div id="breaking-news-container" style="display: none; background: linear-gradient(90deg, #ef4444 0%, #1a1a1a 100%); border-radius: 6px; padding: 10px 15px; margin-bottom: 15px;">
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                        <span style="animation: pulse 1s infinite;">🚨</span>
+                        <span style="font-weight: bold; color: #fff;">BREAKING:</span>
+                        <span id="breaking-news-text" style="color: #fff;"></span>
+                    </div>
+                </div>
+
+                <!-- Symbol Sentiment Grid -->
+                <div style="font-size: 11px; color: #666; margin-bottom: 8px;">WATCHLIST SENTIMENT</div>
+                <div id="symbol-sentiment-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(80px, 1fr)); gap: 8px; margin-bottom: 15px;">
+                    <!-- Symbol sentiment cards will be inserted here -->
+                </div>
+
+                <!-- Recent Headlines -->
+                <div style="font-size: 11px; color: #666; margin-bottom: 8px;">RECENT HEADLINES</div>
+                <div id="headlines-list" style="max-height: 200px; overflow-y: auto;">
+                    <div style="text-align: center; color: #666; padding: 20px;">Loading headlines...</div>
+                </div>
+            </div>
+
             <div class="card">
                 <div style="display: flex; justify-content: space-between; align-items: center;">
                     <h3>Recent Bot Trades (Today)</h3>
@@ -10233,7 +10373,7 @@ DASHBOARD_HTML_WITH_COMMENTARY = """
             
             ws.onmessage = (event) => {
             const data = JSON.parse(event.data);
-            
+
             if (data.type === 'commentary') {
                 addCommentary(data.data);
             } else if (data.type === 'dashboard_update') {
@@ -10243,6 +10383,9 @@ DASHBOARD_HTML_WITH_COMMENTARY = """
                 updateTradesTable(data.data.all_trades);
             } else if (data.type === 'close_confirmation_request') {
                 showCloseConfirmation(data.data);
+            } else if (data.type === 'sentiment_update') {
+                // Update sentiment widget from WebSocket
+                updateSentimentWidget(data.data);
             }
         };
             
@@ -10645,6 +10788,149 @@ DASHBOARD_HTML_WITH_COMMENTARY = """
                 console.log(`Refreshed ${data.count} positions`);
             }
         }
+
+        // ============== SENTIMENT WIDGET FUNCTIONS ==============
+        async function refreshSentiment() {
+            try {
+                const response = await fetch('/api/sentiment/update');
+                if (response.ok) {
+                    const result = await response.json();
+                    if (result.status === 'success' && result.data) {
+                        updateSentimentWidget(result.data);
+                    } else if (result.status === 'error') {
+                        console.log('Sentiment not available:', result.message);
+                        showSentimentUnavailable();
+                    }
+                }
+            } catch (err) {
+                console.error('Failed to fetch sentiment:', err);
+                showSentimentUnavailable();
+            }
+        }
+
+        function showSentimentUnavailable() {
+            document.getElementById('market-sentiment-label').textContent = 'UNAVAILABLE';
+            document.getElementById('market-sentiment-score').textContent = '--';
+            document.getElementById('headlines-list').innerHTML =
+                '<div style="text-align: center; color: #666; padding: 20px;">Sentiment engine not available</div>';
+        }
+
+        function updateSentimentWidget(data) {
+            // Update last refresh time
+            const lastUpdate = document.getElementById('sentiment-last-update');
+            lastUpdate.textContent = 'Updated: ' + new Date().toLocaleTimeString();
+
+            // Update market sentiment
+            if (data.market_sentiment) {
+                const score = data.market_sentiment.score || 0;
+                const direction = data.market_sentiment.direction || 'neutral';
+
+                const labelEl = document.getElementById('market-sentiment-label');
+                const scoreEl = document.getElementById('market-sentiment-score');
+                const barEl = document.getElementById('sentiment-bar');
+
+                labelEl.textContent = direction.toUpperCase();
+                labelEl.className = 'sentiment-' + direction;
+
+                scoreEl.textContent = (score > 0 ? '+' : '') + (score * 100).toFixed(0);
+                scoreEl.className = 'sentiment-' + direction;
+
+                // Update sentiment bar (score is -1 to 1, need to convert to 0-100%)
+                const barWidth = ((score + 1) / 2) * 100;
+                barEl.style.width = barWidth + '%';
+                barEl.style.background = direction === 'bullish' ? '#22c55e' :
+                                         direction === 'bearish' ? '#ef4444' : '#888';
+            }
+
+            // Update news velocity (aggregate from all symbols)
+            if (data.velocities) {
+                const velocityEl = document.getElementById('news-velocity');
+                // Check if any symbol has elevated velocity
+                let maxVelocity = 'normal';
+                Object.values(data.velocities).forEach(v => {
+                    if (v && v.is_spike) maxVelocity = 'spike';
+                    else if (v && v.articles_per_hour > 5 && maxVelocity !== 'spike') maxVelocity = 'elevated';
+                });
+                velocityEl.textContent = maxVelocity.charAt(0).toUpperCase() + maxVelocity.slice(1);
+                velocityEl.style.color = maxVelocity === 'spike' ? '#ef4444' :
+                                         maxVelocity === 'elevated' ? '#ffd700' : '#4a9eff';
+            }
+
+            // Update headline count
+            if (data.headlines) {
+                document.getElementById('headline-count').textContent = data.headlines.length;
+            }
+
+            // Update breaking news
+            if (data.alerts && data.alerts.length > 0) {
+                const breakingAlert = data.alerts.find(a => a.alert_type === 'breaking_news');
+                if (breakingAlert) {
+                    document.getElementById('breaking-news-container').style.display = 'block';
+                    document.getElementById('breaking-news-text').textContent = breakingAlert.message;
+                } else {
+                    document.getElementById('breaking-news-container').style.display = 'none';
+                }
+            } else {
+                document.getElementById('breaking-news-container').style.display = 'none';
+            }
+
+            // Update symbol sentiment grid
+            if (data.symbol_sentiments) {
+                const gridEl = document.getElementById('symbol-sentiment-grid');
+                gridEl.innerHTML = Object.entries(data.symbol_sentiments).map(([symbol, sentiment]) => {
+                    const score = sentiment.score || 0;
+                    const direction = sentiment.direction || 'neutral';
+                    const colorClass = 'sentiment-' + direction;
+                    return `
+                        <div class="sentiment-symbol-card">
+                            <div class="symbol">${symbol}</div>
+                            <div class="score ${colorClass}">${(score > 0 ? '+' : '') + (score * 100).toFixed(0)}</div>
+                        </div>
+                    `;
+                }).join('');
+            }
+
+            // Update headlines list
+            if (data.headlines && data.headlines.length > 0) {
+                const headlinesEl = document.getElementById('headlines-list');
+                headlinesEl.innerHTML = data.headlines.slice(0, 10).map(headline => {
+                    const score = headline.sentiment_score || 0;
+                    const direction = score > 0.1 ? 'bullish' : score < -0.1 ? 'bearish' : 'neutral';
+                    const timeAgo = getTimeAgo(headline.published_at || headline.timestamp);
+                    return `
+                        <div class="headline-item">
+                            <div class="headline-title">${headline.title}</div>
+                            <div class="headline-meta">
+                                <span>${headline.source || 'Unknown'} • ${timeAgo}</span>
+                                <span class="headline-sentiment ${direction}">${direction.toUpperCase()}</span>
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+            } else {
+                document.getElementById('headlines-list').innerHTML =
+                    '<div style="text-align: center; color: #666; padding: 20px;">No recent headlines</div>';
+            }
+        }
+
+        function getTimeAgo(timestamp) {
+            if (!timestamp) return 'Just now';
+            const now = new Date();
+            const then = new Date(timestamp);
+            const diffMs = now - then;
+            const diffMins = Math.floor(diffMs / 60000);
+            const diffHours = Math.floor(diffMs / 3600000);
+
+            if (diffMins < 1) return 'Just now';
+            if (diffMins < 60) return diffMins + 'm ago';
+            if (diffHours < 24) return diffHours + 'h ago';
+            return Math.floor(diffHours / 24) + 'd ago';
+        }
+
+        // Refresh sentiment every 60 seconds
+        setInterval(refreshSentiment, 60000);
+        // ============== END SENTIMENT WIDGET ==============
+
         async function toggleCloseMode() {
             const toggle = document.getElementById('close-mode-toggle');
             const label = document.getElementById('close-mode-label');
@@ -10810,6 +11096,8 @@ DASHBOARD_HTML_WITH_COMMENTARY = """
 
         // Connect on load
         connectWebSocket();
+        // Load initial sentiment data
+        refreshSentiment();
     </script>
 </body>
 </html>
