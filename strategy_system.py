@@ -564,18 +564,101 @@ class MomentumBreakoutStrategy(BaseStrategy):
         return signals
 
 
-class VolumeProfileStrategy(BaseStrategy):
-    """Volume profile and market structure strategy"""
-    
+class SimplePriceActionStrategy(BaseStrategy):
+    """
+    Simple price action strategy - generates more signals
+
+    Triggers on:
+    - 3 consecutive up/down candles
+    - Price above/below short-term moving average
+    - Any momentum in the direction
+
+    This is more aggressive to generate trades for testing.
+    """
+
     def get_required_indicators(self) -> List[str]:
-        return ['vwap', 'volume_ma', 'price_levels']
-    
+        return ['sma_short', 'sma_medium']
+
     def get_required_lookback(self) -> int:
-        return 100
-    
+        return 20
+
     def analyze(self, market_data: pd.DataFrame, current_positions: Dict) -> List[StrategySignal]:
         signals = []
-        
+
+        # Short-term indicators
+        market_data['sma_short'] = market_data['close'].rolling(5).mean()
+        market_data['sma_medium'] = market_data['close'].rolling(15).mean()
+
+        # Candle direction (1 = up, -1 = down)
+        market_data['candle_dir'] = np.where(
+            market_data['close'] > market_data['open'], 1, -1
+        )
+
+        latest = market_data.iloc[-1]
+        prev1 = market_data.iloc[-2]
+        prev2 = market_data.iloc[-3]
+        symbol = market_data.index.name or 'UNKNOWN'
+
+        # Bullish conditions:
+        # 1. Price above short SMA
+        # 2. Short SMA above medium SMA (uptrend)
+        # 3. Last 2 candles are green OR price momentum positive
+        price_above_sma = latest['close'] > latest['sma_short']
+        short_above_medium = latest['sma_short'] > latest['sma_medium']
+        recent_green = (latest['candle_dir'] == 1) and (prev1['candle_dir'] == 1)
+        price_momentum = (latest['close'] - prev2['close']) / prev2['close'] * 100
+
+        if price_above_sma and (short_above_medium or recent_green) and price_momentum > 0.2:
+            signal = StrategySignal(
+                symbol=symbol,
+                signal_type=SignalType.BUY,
+                strength=0.65,  # Lower strength for simple strategy
+                strategy_name=self.name,
+                timestamp=datetime.now(),
+                entry_price=latest['close'],
+                metadata={
+                    'price_momentum': round(price_momentum, 2),
+                    'above_sma': price_above_sma,
+                    'trend_aligned': short_above_medium
+                }
+            )
+            signals.append(self.set_risk_levels(signal, latest['close']))
+
+        # Bearish conditions (for exits or shorts)
+        price_below_sma = latest['close'] < latest['sma_short']
+        short_below_medium = latest['sma_short'] < latest['sma_medium']
+        recent_red = (latest['candle_dir'] == -1) and (prev1['candle_dir'] == -1)
+
+        if price_below_sma and (short_below_medium or recent_red) and price_momentum < -0.2:
+            signal = StrategySignal(
+                symbol=symbol,
+                signal_type=SignalType.SELL if symbol not in current_positions else SignalType.CLOSE_LONG,
+                strength=0.65,
+                strategy_name=self.name,
+                timestamp=datetime.now(),
+                entry_price=latest['close'],
+                metadata={
+                    'price_momentum': round(price_momentum, 2),
+                    'below_sma': price_below_sma
+                }
+            )
+            signals.append(signal)
+
+        return signals
+
+
+class VolumeProfileStrategy(BaseStrategy):
+    """Volume profile and market structure strategy"""
+
+    def get_required_indicators(self) -> List[str]:
+        return ['vwap', 'volume_ma', 'price_levels']
+
+    def get_required_lookback(self) -> int:
+        return 100
+
+    def analyze(self, market_data: pd.DataFrame, current_positions: Dict) -> List[StrategySignal]:
+        signals = []
+
         # Calculate VWAP
         market_data['vwap'] = (market_data['close'] * market_data['volume']).cumsum() / market_data['volume'].cumsum()
         market_data['volume_ma'] = market_data['volume'].rolling(20).mean()
@@ -648,36 +731,42 @@ class StrategyManager:
                 name='MA Crossover',
                 enabled=True,
                 weight=1.0,
-                parameters={'fast_period': 20, 'slow_period': 50}
+                parameters={'fast_period': 10, 'slow_period': 30}  # FASTER periods
             ),
             'rsi_momentum': StrategyConfig(
                 name='RSI Momentum',
                 enabled=True,
                 weight=0.8,
-                parameters={'rsi_period': 14, 'oversold_level': 30, 'overbought_level': 70}
+                parameters={'rsi_period': 14, 'oversold_level': 35, 'overbought_level': 65}  # WIDER range
             ),
             'bollinger_bands': StrategyConfig(
                 name='Bollinger Bands',
                 enabled=True,
                 weight=0.9,
-                parameters={'bb_period': 20, 'bb_std': 2}
+                parameters={'bb_period': 20, 'bb_std': 1.5}  # TIGHTER bands (1.5 std)
             ),
             'macd': StrategyConfig(
                 name='MACD',
                 enabled=True,
                 weight=0.7,
-                parameters={'fast_period': 12, 'slow_period': 26, 'signal_period': 9}
+                parameters={'fast_period': 8, 'slow_period': 17, 'signal_period': 9}  # FASTER MACD
             ),
             'momentum_breakout': StrategyConfig(
                 name='Momentum Breakout',
                 enabled=True,
                 weight=1.0,  # High weight - catches fast moves
                 parameters={
-                    'roc_period': 5,
-                    'range_period': 10,
-                    'volume_surge': 1.3,  # 30% above average volume
-                    'momentum_threshold': 1.0  # 1% move triggers signal
+                    'roc_period': 3,           # SHORTER lookback (was 5)
+                    'range_period': 5,          # SHORTER range (was 10)
+                    'volume_surge': 1.1,        # LOWER threshold (was 1.3)
+                    'momentum_threshold': 0.5   # LOWER threshold (was 1.0%)
                 }
+            ),
+            'simple_price_action': StrategyConfig(
+                name='Simple Price Action',
+                enabled=True,
+                weight=0.8,  # Good weight - generates more signals
+                parameters={}
             ),
             'volume_profile': StrategyConfig(
                 name='Volume Profile',
@@ -694,6 +783,7 @@ class StrategyManager:
             'bollinger_bands': BollingerBandStrategy,
             'macd': MACDStrategy,
             'momentum_breakout': MomentumBreakoutStrategy,
+            'simple_price_action': SimplePriceActionStrategy,
             'volume_profile': VolumeProfileStrategy
         }
         
