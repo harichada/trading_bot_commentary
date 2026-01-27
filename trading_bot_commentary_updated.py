@@ -5123,7 +5123,7 @@ class MeanReversionStrategyWithCommentary(TradingStrategyWithCommentary):
                 )
             # LOOSENED: RSI > 60 OR price near BB upper
             near_bb_upper = market_data.close > bb_upper * 0.995
-            elif rsi > 60 or (near_bb_upper and rsi > 55):
+            if rsi > 60 or (near_bb_upper and rsi > 55):
                 distance_from_mean = ((market_data.close - bb_middle) / market_data.close) * 100
                 self.commentary.add_commentary(TradingCommentary(
                     timestamp=datetime.now(),
