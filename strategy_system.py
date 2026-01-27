@@ -449,6 +449,121 @@ class MACDStrategy(BaseStrategy):
         
         return signals
 
+
+class MomentumBreakoutStrategy(BaseStrategy):
+    """Momentum breakout strategy for catching fast directional moves
+
+    This strategy identifies:
+    - Strong price momentum (rate of change)
+    - Volume surge confirmation
+    - Short-term breakouts from recent range
+    - Relative strength acceleration
+    """
+
+    def get_required_indicators(self) -> List[str]:
+        return ['roc', 'atr', 'volume_surge', 'range_high', 'range_low']
+
+    def get_required_lookback(self) -> int:
+        return 30
+
+    def analyze(self, market_data: pd.DataFrame, current_positions: Dict) -> List[StrategySignal]:
+        signals = []
+
+        # Parameters
+        roc_period = self.parameters.get('roc_period', 5)  # Short-term rate of change
+        range_period = self.parameters.get('range_period', 10)  # Recent range lookback
+        volume_surge_threshold = self.parameters.get('volume_surge', 1.5)  # 50% above average
+        momentum_threshold = self.parameters.get('momentum_threshold', 1.5)  # 1.5% move
+
+        # Calculate Rate of Change (momentum)
+        market_data['roc'] = ((market_data['close'] - market_data['close'].shift(roc_period)) /
+                              market_data['close'].shift(roc_period) * 100)
+
+        # Calculate ATR for volatility-adjusted stops
+        market_data['atr'] = ta.volatility.AverageTrueRange(
+            high=market_data['high'],
+            low=market_data['low'],
+            close=market_data['close'],
+            window=14
+        ).average_true_range()
+
+        # Volume surge detection
+        market_data['volume_ma'] = market_data['volume'].rolling(20).mean()
+        market_data['volume_surge'] = market_data['volume'] / market_data['volume_ma']
+
+        # Recent range (for breakout detection)
+        market_data['range_high'] = market_data['high'].rolling(range_period).max()
+        market_data['range_low'] = market_data['low'].rolling(range_period).min()
+
+        # Short-term momentum (last 3 bars)
+        market_data['short_momentum'] = (market_data['close'] - market_data['close'].shift(3)) / market_data['close'].shift(3) * 100
+
+        latest = market_data.iloc[-1]
+        prev = market_data.iloc[-2]
+        symbol = market_data.index.name or 'UNKNOWN'
+
+        # Bullish momentum breakout conditions:
+        # 1. Strong positive momentum (ROC > threshold)
+        # 2. Price breaking above recent range high
+        # 3. Volume surge confirmation
+        # 4. Consecutive up bars (momentum continuation)
+
+        bullish_momentum = latest['roc'] > momentum_threshold
+        breakout_up = latest['close'] > prev['range_high']
+        volume_confirmed = latest['volume_surge'] > volume_surge_threshold
+        consecutive_up = (latest['close'] > latest['open'] and
+                         prev['close'] > prev['open'])
+        short_term_strong = latest['short_momentum'] > 1.0  # 1% move in 3 bars
+
+        if bullish_momentum and volume_confirmed and (breakout_up or short_term_strong):
+            # Calculate strength based on momentum magnitude and volume
+            strength = min(0.95, 0.7 + (latest['roc'] / 10) + (latest['volume_surge'] - 1) * 0.1)
+
+            signal = StrategySignal(
+                symbol=symbol,
+                signal_type=SignalType.BUY,
+                strength=strength,
+                strategy_name=self.name,
+                timestamp=datetime.now(),
+                entry_price=latest['close'],
+                metadata={
+                    'roc': round(latest['roc'], 2),
+                    'volume_surge': round(latest['volume_surge'], 2),
+                    'breakout': breakout_up,
+                    'short_momentum': round(latest['short_momentum'], 2),
+                    'atr': round(latest['atr'], 2)
+                }
+            )
+            # Use ATR-based stops for momentum trades (tighter)
+            signal.stop_loss = latest['close'] - (latest['atr'] * 1.5)
+            signal.take_profit = latest['close'] + (latest['atr'] * 3)  # 2:1 reward/risk
+            signals.append(signal)
+
+        # Bearish momentum (for exits or shorts)
+        bearish_momentum = latest['roc'] < -momentum_threshold
+        breakout_down = latest['close'] < prev['range_low']
+
+        if bearish_momentum and volume_confirmed and (breakout_down or latest['short_momentum'] < -1.0):
+            strength = min(0.95, 0.7 + (abs(latest['roc']) / 10) + (latest['volume_surge'] - 1) * 0.1)
+
+            signal = StrategySignal(
+                symbol=symbol,
+                signal_type=SignalType.SELL if symbol not in current_positions else SignalType.CLOSE_LONG,
+                strength=strength,
+                strategy_name=self.name,
+                timestamp=datetime.now(),
+                entry_price=latest['close'],
+                metadata={
+                    'roc': round(latest['roc'], 2),
+                    'volume_surge': round(latest['volume_surge'], 2),
+                    'breakout': breakout_down
+                }
+            )
+            signals.append(signal)
+
+        return signals
+
+
 class VolumeProfileStrategy(BaseStrategy):
     """Volume profile and market structure strategy"""
     
@@ -553,6 +668,17 @@ class StrategyManager:
                 weight=0.7,
                 parameters={'fast_period': 12, 'slow_period': 26, 'signal_period': 9}
             ),
+            'momentum_breakout': StrategyConfig(
+                name='Momentum Breakout',
+                enabled=True,
+                weight=1.0,  # High weight - catches fast moves
+                parameters={
+                    'roc_period': 5,
+                    'range_period': 10,
+                    'volume_surge': 1.3,  # 30% above average volume
+                    'momentum_threshold': 1.0  # 1% move triggers signal
+                }
+            ),
             'volume_profile': StrategyConfig(
                 name='Volume Profile',
                 enabled=False,
@@ -567,6 +693,7 @@ class StrategyManager:
             'rsi_momentum': RSIMomentumStrategy,
             'bollinger_bands': BollingerBandStrategy,
             'macd': MACDStrategy,
+            'momentum_breakout': MomentumBreakoutStrategy,
             'volume_profile': VolumeProfileStrategy
         }
         
@@ -631,12 +758,23 @@ class StrategyManager:
         """Get consensus signal from multiple strategy signals"""
         if not signals:
             return None
-        
+
         # Group signals by type
         buy_signals = [s for s in signals if s.signal_type == SignalType.BUY]
         sell_signals = [s for s in signals if s.signal_type in [SignalType.SELL, SignalType.CLOSE_LONG]]
-        
-        # Calculate weighted consensus
+
+        # Check for high-confidence momentum signals (can act alone)
+        # This allows catching fast moves without waiting for multiple confirmations
+        momentum_strategies = ['Momentum Breakout']
+        high_confidence_buys = [s for s in buy_signals
+                                if s.strategy_name in momentum_strategies and s.strength >= 0.85]
+        if high_confidence_buys:
+            # Strong momentum signal - act immediately
+            best_signal = max(high_confidence_buys, key=lambda s: s.strength)
+            best_signal.metadata['action_type'] = 'momentum_breakout'
+            return best_signal
+
+        # Calculate weighted consensus (requires 2+ strategies)
         if buy_signals and len(buy_signals) >= 2:  # Require at least 2 strategies to agree
             avg_strength = sum(s.strength for s in buy_signals) / len(buy_signals)
             if avg_strength > 0.6:  # Threshold for consensus
@@ -658,6 +796,14 @@ class StrategyManager:
                 consensus.take_profit = min(s.take_profit for s in buy_signals if s.take_profit)
                 return consensus
         
+        # Check for high-confidence momentum sell signals
+        high_confidence_sells = [s for s in sell_signals
+                                 if s.strategy_name in momentum_strategies and s.strength >= 0.85]
+        if high_confidence_sells:
+            best_signal = max(high_confidence_sells, key=lambda s: s.strength)
+            best_signal.metadata['action_type'] = 'momentum_breakdown'
+            return best_signal
+
         elif sell_signals and len(sell_signals) >= 2:
             avg_strength = sum(s.strength for s in sell_signals) / len(sell_signals)
             if avg_strength > 0.6:
@@ -674,7 +820,7 @@ class StrategyManager:
                     }
                 )
                 return consensus
-        
+
         return None
     
     def save_configs(self, filepath: str):
