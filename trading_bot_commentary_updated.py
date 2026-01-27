@@ -13271,11 +13271,30 @@ async def run_backtest(config: dict):
         # Fetch historical data from Schwab
         market_data = {}
 
-        # Calculate period for Schwab API
-        period_days = (end_date - start_date).days
+        # Calculate days from now to start_date for minute data validation
+        days_ago = (datetime.now() - start_date).days
 
         # Map timeframe to Schwab frequency
-        if timeframe == '1min':
+        # Note: Schwab minute data is only available for the last 30 days
+        use_minute_data = timeframe in ['1min', '5min', '15min', '1hour']
+
+        if use_minute_data and days_ago > 30:
+            # Minute data not available for dates > 30 days ago, fall back to daily
+            logger.warning(f"Minute data only available for last 30 days. Falling back to daily data for backtest starting {start_date.date()}")
+            frequency_type = Client.PriceHistory.FrequencyType.DAILY
+            frequency = Client.PriceHistory.Frequency.DAILY
+            # Update config to reflect actual timeframe used
+            bt_config = BacktestConfig(
+                start_date=start_date,
+                end_date=end_date,
+                initial_capital=initial_capital,
+                symbols=symbols,
+                timeframe='1day',  # Fallback to daily
+                mode=mode,
+                max_positions=max_positions,
+                commission=commission
+            )
+        elif timeframe == '1min':
             frequency_type = Client.PriceHistory.FrequencyType.MINUTE
             frequency = Client.PriceHistory.Frequency.EVERY_MINUTE
         elif timeframe == '5min':
@@ -13291,30 +13310,12 @@ async def run_backtest(config: dict):
             frequency_type = Client.PriceHistory.FrequencyType.DAILY
             frequency = Client.PriceHistory.Frequency.DAILY
 
-        # Determine period type based on date range
-        if period_days <= 10:
-            period_type = Client.PriceHistory.PeriodType.DAY
-            period = Client.PriceHistory.Period.TEN_DAYS
-        elif period_days <= 30:
-            period_type = Client.PriceHistory.PeriodType.MONTH
-            period = Client.PriceHistory.Period.ONE_MONTH
-        elif period_days <= 90:
-            period_type = Client.PriceHistory.PeriodType.MONTH
-            period = Client.PriceHistory.Period.THREE_MONTHS
-        elif period_days <= 180:
-            period_type = Client.PriceHistory.PeriodType.MONTH
-            period = Client.PriceHistory.Period.SIX_MONTHS
-        else:
-            period_type = Client.PriceHistory.PeriodType.YEAR
-            period = Client.PriceHistory.Period.ONE_YEAR
-
         for symbol in symbols:
             try:
-                # Fetch from Schwab API
+                # Fetch from Schwab API using only start/end datetime (not period)
+                # Note: Schwab API requires EITHER period_type+period OR start_datetime+end_datetime, not both
                 response = trading_engine.schwab_client.get_price_history(
                     symbol,
-                    period_type=period_type,
-                    period=period,
                     frequency_type=frequency_type,
                     frequency=frequency,
                     start_datetime=start_date,
