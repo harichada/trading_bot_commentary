@@ -13312,10 +13312,17 @@ async def run_backtest(config: dict):
 
         for symbol in symbols:
             try:
-                # Fetch from Schwab API using only start/end datetime (not period)
-                # Note: Schwab API requires EITHER period_type+period OR start_datetime+end_datetime, not both
+                # Fetch from Schwab API
+                # Schwab requires period_type even when using start/end datetime
+                # period_type defines the data scale, period is optional when dates are provided
+                if frequency_type == Client.PriceHistory.FrequencyType.MINUTE:
+                    period_type = Client.PriceHistory.PeriodType.DAY
+                else:
+                    period_type = Client.PriceHistory.PeriodType.YEAR
+
                 response = trading_engine.schwab_client.get_price_history(
                     symbol,
+                    period_type=period_type,
                     frequency_type=frequency_type,
                     frequency=frequency,
                     start_datetime=start_date,
@@ -13342,7 +13349,12 @@ async def run_backtest(config: dict):
                             market_data[symbol] = df
                             logger.info(f"Fetched {len(df)} bars for {symbol} from Schwab")
                 else:
-                    logger.warning(f"Schwab API returned {response.status_code} for {symbol}")
+                    # Log the actual error response for debugging
+                    try:
+                        error_body = response.json()
+                        logger.warning(f"Schwab API returned {response.status_code} for {symbol}: {error_body}")
+                    except:
+                        logger.warning(f"Schwab API returned {response.status_code} for {symbol}: {response.text[:500]}")
 
             except Exception as e:
                 logger.warning(f"Failed to fetch data for {symbol} from Schwab: {e}")
