@@ -283,7 +283,7 @@ class BollingerBandStrategy(BaseStrategy):
     """Bollinger Band squeeze and breakout strategy"""
     
     def get_required_indicators(self) -> List[str]:
-        return ['bb_upper', 'bb_lower', 'bb_middle', 'bb_width', 'atr']
+        return ['bb_upper', 'bb_lower', 'bb_middle', 'bb_width', 'atr', 'rsi']
     
     def get_required_lookback(self) -> int:
         return 50
@@ -312,18 +312,26 @@ class BollingerBandStrategy(BaseStrategy):
             low=market_data['low'],
             close=market_data['close']
         ).average_true_range()
-        
+
+        # Calculate RSI for mean reversion signals
+        market_data['rsi'] = ta.momentum.RSIIndicator(
+            close=market_data['close'],
+            window=14
+        ).rsi()
+
         latest = market_data.iloc[-1]
         prev = market_data.iloc[-2]
         symbol = market_data.index.name or 'UNKNOWN'
         
-        # Detect squeeze
-        bb_squeeze = latest['bb_width'] < market_data['bb_width'].rolling(20).mean() * 0.8
-        
+        # Detect squeeze (use .iloc[-1] to get scalar value from rolling mean)
+        bb_width_avg = market_data['bb_width'].rolling(20).mean().iloc[-1]
+        bb_squeeze = latest['bb_width'] < bb_width_avg * 0.8
+
         # Breakout signals
         if bb_squeeze:
             # Wait for breakout from squeeze
-            if latest['close'] > latest['bb_upper'] and latest['volume'] > market_data['volume'].rolling(20).mean() * 1.5:
+            vol_avg = market_data['volume'].rolling(20).mean().iloc[-1]
+            if latest['close'] > latest['bb_upper'] and latest['volume'] > vol_avg * 1.5:
                 signal = StrategySignal(
                     symbol=symbol,
                     signal_type=SignalType.BUY,
