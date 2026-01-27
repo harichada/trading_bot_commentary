@@ -13369,24 +13369,30 @@ async def run_backtest(config: dict):
         engine = BacktestingEngine(bt_config)
         results = engine.run(market_data)
 
-        # Convert results to dict
+        # Convert results to dict - ensure all numpy types are converted to native Python
+        def to_python(val):
+            """Convert numpy types to native Python types for JSON serialization"""
+            if hasattr(val, 'item'):  # numpy scalar
+                return val.item()
+            return val
+
         return {
             'status': 'success',
             'data': {
-                'total_return': results.total_return,
-                'annual_return': results.annual_return,
-                'sharpe_ratio': results.sharpe_ratio,
-                'sortino_ratio': results.sortino_ratio,
-                'max_drawdown': results.max_drawdown,
-                'win_rate': results.win_rate,
-                'profit_factor': results.profit_factor,
-                'total_trades': results.total_trades,
-                'winning_trades': results.winning_trades,
-                'losing_trades': results.losing_trades,
-                'avg_win': results.avg_win,
-                'avg_loss': results.avg_loss,
-                'initial_capital': results.initial_capital,
-                'final_capital': results.final_capital,
+                'total_return': to_python(results.total_return),
+                'annual_return': to_python(results.annual_return),
+                'sharpe_ratio': to_python(results.sharpe_ratio),
+                'sortino_ratio': to_python(results.sortino_ratio),
+                'max_drawdown': to_python(results.max_drawdown),
+                'win_rate': to_python(results.win_rate),
+                'profit_factor': to_python(results.profit_factor),
+                'total_trades': int(results.total_trades),
+                'winning_trades': int(results.winning_trades),
+                'losing_trades': int(results.losing_trades),
+                'avg_win': to_python(results.avg_win),
+                'avg_loss': to_python(results.avg_loss),
+                'initial_capital': to_python(results.initial_capital),
+                'final_capital': to_python(results.final_capital),
                 'equity_curve': [
                     {'date': d.isoformat(), 'equity': float(v)}
                     for d, v in results.equity_curve.items()
@@ -13396,11 +13402,11 @@ async def run_backtest(config: dict):
                         'symbol': t.symbol,
                         'entry_time': t.entry_time.isoformat(),
                         'exit_time': t.exit_time.isoformat(),
-                        'entry_price': t.entry_price,
-                        'exit_price': t.exit_price,
+                        'entry_price': to_python(t.entry_price),
+                        'exit_price': to_python(t.exit_price),
                         'side': t.side,
-                        'pnl': t.pnl,
-                        'pnl_pct': t.pnl_pct,
+                        'pnl': to_python(t.pnl),
+                        'pnl_pct': to_python(t.pnl_pct),
                         'exit_reason': t.exit_reason
                     }
                     for t in results.trades
