@@ -18,21 +18,21 @@
 features:
   regime_detector: true          # Detect trending/ranging/volatile/choppy
   session_manager: true          # Block dead zones, adjust for session
-  no_trade_filter: true          # Quality gate - THE MOST IMPORTANT
+  no_trade_filter: false         # CHANGED: DISABLED for testing - let trades through
   market_context: true           # Key levels, trapped traders
   exit_manager: true             # Professional exit management
   performance_tracker: true      # R-multiple tracking
-  sentiment_analysis: true       # News/social sentiment analysis
+  sentiment_analysis: false      # CHANGED: Disabled for faster decisions
   adaptive_risk: true            # Scale position based on recent wins/losses
-  psychological_levels: true     # Check for round number resistance/support
+  psychological_levels: false    # CHANGED: Disabled for testing
 
   # Integration controls
-  block_trades_in_choppy: true   # Hard block when chop index > 61.8
-  block_trades_in_dead_zone: true # No trades during lunch, first 30 min
-  require_confluence: false      # CHANGED: Allow momentum signals without multiple confirmations
+  block_trades_in_choppy: false  # CHANGED: Allow trading in choppy (with reduced size)
+  block_trades_in_dead_zone: false # CHANGED: Allow lunch trading
+  require_confluence: false      # Allow momentum signals without multiple confirmations
   use_r_based_exits: true        # Scale out at R-multiples
-  enforce_daily_limits: true     # Stop after R target or loss limit
-  use_sentiment_blocking: false  # CHANGED: Don't block on sentiment alone - it's too slow
+  enforce_daily_limits: false    # CHANGED: Don't stop after limits for testing
+  use_sentiment_blocking: false  # Don't block on sentiment alone
 
 # -----------------------------------------------------------------------------
 # ADAPTIVE RISK SETTINGS (Human-like position sizing)
@@ -86,9 +86,10 @@ session_manager:
     market_open:
       start: "09:30"
       end: "10:00"
-      allow_entries: false        # First 30 min = trap city
-      max_trades: 0
-      notes: "Gap fills, retail traps. WAIT FOR CLARITY."
+      allow_entries: true         # CHANGED: Allow with caution
+      max_trades: 2               # CHANGED: Allow 2 trades
+      position_size_mult: 0.5     # Half size due to volatility
+      notes: "High volatility - reduced size, be selective."
 
     morning_momentum:
       start: "10:00"
@@ -101,9 +102,10 @@ session_manager:
     lunch_dead_zone:
       start: "11:30"
       end: "14:00"
-      allow_entries: false        # DEAD ZONE
-      max_trades: 0
-      notes: "Low volume, choppy. STAND ASIDE."
+      allow_entries: true         # CHANGED: Allow but with reduced size
+      max_trades: 2               # CHANGED: Allow 2 trades
+      position_size_mult: 0.5     # Half size during lunch
+      notes: "Lower volume - proceed with caution, reduced size."
 
     afternoon:
       start: "14:00"
@@ -144,20 +146,20 @@ no_trade_filter:
   max_consecutive_losses: 3      # Take a break after 3 losses
   loss_cooldown_minutes: 30      # Minimum break time
 
-  # Confluence requirements
-  min_confluence_score: 2        # At least 2 confirming signals
-  min_quality_score: 60          # Minimum setup quality (0-100)
+  # Confluence requirements - LOOSENED for more trades
+  min_confluence_score: 1        # CHANGED: Allow single good signal
+  min_quality_score: 40          # CHANGED: Lower threshold (was 60)
 
-  # Trade limits
-  max_trades_per_day: 5          # Fewer trades, better selection
-  max_trades_per_symbol: 2       # Don't overtrade one ticker
+  # Trade limits - LOOSENED
+  max_trades_per_day: 10         # CHANGED: Allow more trades (was 5)
+  max_trades_per_symbol: 3       # CHANGED: Allow 3 per ticker (was 2)
 
-  # Entry requirements
-  min_confidence: 0.70           # 70% minimum confidence
-  min_r_multiple: 1.5            # Risk:Reward at least 1.5:1
+  # Entry requirements - LOOSENED
+  min_confidence: 0.55           # CHANGED: 55% minimum (was 70%)
+  min_r_multiple: 1.2            # CHANGED: 1.2:1 R:R (was 1.5)
 
   # Strategy filtering
-  min_strategy_win_rate: 0.40    # Disable strategies below 40%
+  min_strategy_win_rate: 0.35    # CHANGED: 35% (was 40%)
   min_strategy_trades: 10        # Trades needed before filtering
 
   # Correlation limits
