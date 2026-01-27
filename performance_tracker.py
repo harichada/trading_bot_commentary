@@ -350,6 +350,34 @@ class PerformanceTracker:
             'avg_r_per_trade': f"{np.mean([t.r_result for t in trades]):+.2f}R",
         }
 
+    def get_daily_stats(self) -> Dict:
+        """
+        Get current daily statistics for adaptive risk calculations.
+
+        Returns stats including current streak for position sizing decisions.
+        """
+        today = datetime.now().date()
+        daily = self.daily_performance.get(today, DailyPerformance(date=today))
+
+        # Calculate consecutive wins/losses from current streak
+        consecutive_wins = self.current_streak if self.current_streak > 0 else 0
+        consecutive_losses = abs(self.current_streak) if self.current_streak < 0 else 0
+
+        return {
+            'date': today,
+            'trades': daily.trades,
+            'wins': daily.wins,
+            'losses': daily.losses,
+            'daily_pnl_r': daily.total_r,
+            'best_trade_r': daily.best_trade_r,
+            'worst_trade_r': daily.worst_trade_r,
+            'consecutive_wins': consecutive_wins,
+            'consecutive_losses': consecutive_losses,
+            'current_streak': self.current_streak,
+            'max_win_streak': self.max_win_streak,
+            'max_loss_streak': self.max_loss_streak,
+        }
+
     def should_use_strategy(self, strategy: str) -> Tuple[bool, str]:
         """
         Determine if a strategy should be used based on performance.

@@ -23,14 +23,33 @@ features:
   exit_manager: true             # Professional exit management
   performance_tracker: true      # R-multiple tracking
   sentiment_analysis: true       # News/social sentiment analysis
+  adaptive_risk: true            # Scale position based on recent wins/losses
+  psychological_levels: true     # Check for round number resistance/support
 
   # Integration controls
   block_trades_in_choppy: true   # Hard block when chop index > 61.8
   block_trades_in_dead_zone: true # No trades during lunch, first 30 min
-  require_confluence: true       # Require multiple confirming signals
+  require_confluence: false      # CHANGED: Allow momentum signals without multiple confirmations
   use_r_based_exits: true        # Scale out at R-multiples
   enforce_daily_limits: true     # Stop after R target or loss limit
-  use_sentiment_blocking: true   # Block trades when sentiment strongly opposes
+  use_sentiment_blocking: false  # CHANGED: Don't block on sentiment alone - it's too slow
+
+# -----------------------------------------------------------------------------
+# ADAPTIVE RISK SETTINGS (Human-like position sizing)
+# -----------------------------------------------------------------------------
+adaptive_risk:
+  # After losses - protect capital
+  scale_down_per_loss: 0.75     # Reduce to 75% after each loss
+  max_loss_reduction: 0.25      # Never go below 25% size
+
+  # After wins - careful scaling
+  scale_up_per_win: 1.1         # Increase by 10% per win
+  max_win_increase: 1.25        # Never exceed 125% size
+  wins_needed_to_scale: 2       # Need 2 consecutive wins to scale up
+
+  # Daily P&L limits
+  daily_loss_r_limit: -2.0      # Stop trading if down 2R today
+  daily_gain_r_target: 4.0      # Optional: take profits at 4R
 
 # -----------------------------------------------------------------------------
 # REGIME DETECTOR SETTINGS

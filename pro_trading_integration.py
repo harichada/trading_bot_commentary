@@ -400,6 +400,25 @@ class ProTradingWrapper:
                 logger.warning(f"Sentiment analysis failed for {symbol}: {e}")
 
         # ================================================================
+        # 7. ADAPTIVE RISK SCALING (Human-like risk adjustment)
+        # ================================================================
+        # Scale position size based on recent performance - like a real trader would
+        adaptive_multiplier = self._calculate_adaptive_risk_multiplier()
+        if adaptive_multiplier != 1.0:
+            adjusted_size *= adaptive_multiplier
+            if adaptive_multiplier < 1.0:
+                reasons_against.append(f"Risk scaled down to {adaptive_multiplier:.0%} after recent losses")
+            else:
+                reasons_for.append(f"Risk scaled up to {adaptive_multiplier:.0%} on winning streak")
+
+        # ================================================================
+        # 8. PSYCHOLOGICAL LEVELS CHECK
+        # ================================================================
+        psych_warning = self._check_psychological_levels(entry_price, take_profit, direction)
+        if psych_warning:
+            reasons_against.append(psych_warning)
+
+        # ================================================================
         # FINAL DECISION
         # ================================================================
         # Trade is allowed only if ALL filters pass
@@ -739,6 +758,115 @@ class ProTradingWrapper:
         else:
             # Stop above resistance
             return key_level * (1 + buffer)
+
+    def _calculate_adaptive_risk_multiplier(self) -> float:
+        """
+        Calculate position size multiplier based on recent performance.
+
+        Human traders naturally:
+        - Size down after losses (protect capital)
+        - Size up slightly after wins (ride the hot hand, carefully)
+        - Have hard limits on both directions
+        """
+        # Get recent performance stats
+        stats = self.performance_tracker.get_daily_stats() if self.performance_tracker else {}
+
+        consecutive_losses = stats.get('consecutive_losses', 0)
+        consecutive_wins = stats.get('consecutive_wins', 0)
+        daily_pnl_r = stats.get('daily_pnl_r', 0)  # P&L in R-multiples
+
+        multiplier = 1.0
+
+        # Scale DOWN after consecutive losses (more aggressive reduction)
+        if consecutive_losses >= 3:
+            multiplier = 0.25  # Only 25% size after 3+ losses
+        elif consecutive_losses >= 2:
+            multiplier = 0.5   # Half size after 2 losses
+        elif consecutive_losses >= 1:
+            multiplier = 0.75  # 75% size after 1 loss
+
+        # Scale UP after consecutive wins (conservative increase)
+        elif consecutive_wins >= 3:
+            multiplier = 1.25  # Max 25% increase even on hot streak
+        elif consecutive_wins >= 2:
+            multiplier = 1.15  # 15% increase after 2 wins
+
+        # Daily P&L override - if down big, reduce regardless of streak
+        if daily_pnl_r < -2:  # Down more than 2R today
+            multiplier = min(multiplier, 0.25)  # Cap at 25%
+        elif daily_pnl_r < -1:  # Down more than 1R today
+            multiplier = min(multiplier, 0.5)   # Cap at 50%
+
+        return multiplier
+
+    def _check_psychological_levels(
+        self,
+        entry_price: float,
+        take_profit: float,
+        direction: str
+    ) -> Optional[str]:
+        """
+        Check if psychological price levels might interfere with the trade.
+
+        Humans instinctively watch round numbers:
+        - $100, $150, $200 (major)
+        - $25, $50, $75 intervals (moderate)
+        - $5, $10 intervals (minor for lower-priced stocks)
+
+        Returns a warning string if there's a concern, None otherwise.
+        """
+        # Determine relevant intervals based on price
+        if entry_price >= 500:
+            intervals = [100, 50, 25]
+        elif entry_price >= 100:
+            intervals = [50, 25, 10]
+        elif entry_price >= 50:
+            intervals = [25, 10, 5]
+        else:
+            intervals = [10, 5, 1]
+
+        warnings = []
+
+        for interval in intervals:
+            # Find nearest round level above and below
+            level_below = (entry_price // interval) * interval
+            level_above = level_below + interval
+
+            # Check if take profit has to cross a major level
+            if direction == 'long':
+                # Is there a round number between entry and target?
+                if entry_price < level_above <= take_profit:
+                    distance_to_level = (level_above - entry_price) / entry_price * 100
+                    if distance_to_level < 3:  # Level is within 3% of entry
+                        return f"⚠️ Psychological resistance at ${level_above:.0f} between entry and target"
+
+                # Is entry just below a round number (might get rejected)?
+                distance_to_resistance = (level_above - entry_price) / entry_price * 100
+                if distance_to_resistance < 1:  # Within 1% of round number
+                    return f"⚠️ Buying just below psychological level ${level_above:.0f} - high rejection risk"
+
+            else:  # short
+                # Is there support between entry and target?
+                if take_profit < level_below <= entry_price:
+                    distance_to_level = (entry_price - level_below) / entry_price * 100
+                    if distance_to_level < 3:
+                        return f"⚠️ Psychological support at ${level_below:.0f} between entry and target"
+
+        return None  # No concerns
+
+    def record_trade_result(self, symbol: str, pnl: float, r_multiple: float):
+        """Record trade result for adaptive risk calculation"""
+        if self.performance_tracker:
+            is_win = pnl > 0
+            # Update streak tracking
+            if hasattr(self.performance_tracker, 'record_trade'):
+                self.performance_tracker.record_trade(
+                    symbol=symbol,
+                    pnl=pnl,
+                    r_multiple=r_multiple,
+                    is_win=is_win
+                )
+            logger.info(f"Trade recorded: {symbol} {'WIN' if is_win else 'LOSS'} ${pnl:.2f} ({r_multiple:.1f}R)")
 
     def _generate_approved_recommendation(
         self, symbol: str, direction: str, strategy: str,
