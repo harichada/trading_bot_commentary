@@ -5066,9 +5066,9 @@ class BreakoutStrategyWithCommentary(TradingStrategyWithCommentary):
 
 class MeanReversionStrategyWithCommentary(TradingStrategyWithCommentary):
     """Mean reversion strategy with explanations and tunable parameters"""
-    def __init__(self, commentary_system, rsi_threshold=30, bb_window=20, stop_loss_mult=0.98, take_profit_mult=1.0):
+    def __init__(self, commentary_system, rsi_threshold=40, bb_window=20, stop_loss_mult=0.98, take_profit_mult=1.0):
         super().__init__(commentary_system)
-        self.rsi_threshold = rsi_threshold
+        self.rsi_threshold = rsi_threshold  # CHANGED: 40 (was 30)
         self.bb_window = bb_window
         self.stop_loss_mult = stop_loss_mult
         self.take_profit_mult = take_profit_mult
@@ -5082,7 +5082,9 @@ class MeanReversionStrategyWithCommentary(TradingStrategyWithCommentary):
             bb_upper = float(indicators.get('bb_upper', market_data.close))
             if np.isnan(rsi) or np.isnan(bb_lower) or bb_lower <= 0:
                 return None
-            if rsi < self.rsi_threshold and market_data.close < bb_lower:
+            # LOOSENED: RSI < 40 OR price near BB lower (within 0.5%)
+            near_bb_lower = market_data.close < bb_lower * 1.005
+            if rsi < self.rsi_threshold or (near_bb_lower and rsi < 45):
                 distance_from_mean = ((bb_middle - market_data.close) / market_data.close) * 100
                 self.commentary.add_commentary(TradingCommentary(
                     timestamp=datetime.now(),
@@ -5119,7 +5121,9 @@ class MeanReversionStrategyWithCommentary(TradingStrategyWithCommentary):
                     },
                     confidence=0.65
                 )
-            elif rsi > 70 and market_data.close > bb_upper:
+            # LOOSENED: RSI > 60 OR price near BB upper
+            near_bb_upper = market_data.close > bb_upper * 0.995
+            elif rsi > 60 or (near_bb_upper and rsi > 55):
                 distance_from_mean = ((market_data.close - bb_middle) / market_data.close) * 100
                 self.commentary.add_commentary(TradingCommentary(
                     timestamp=datetime.now(),
@@ -5177,7 +5181,8 @@ class MomentumStrategyWithCommentary(TradingStrategyWithCommentary):
             if np.isnan(macd) or np.isnan(macd_signal) or np.isnan(rsi) or np.isnan(adx):
                 return None
             
-            if macd > macd_signal and 50 < rsi < 70 and adx > 25:
+            # LOOSENED: ADX > 15 (was 25), RSI 40-75 (was 50-70)
+            if macd > macd_signal and 40 < rsi < 75 and adx > 15:
                 
                 self.commentary.add_commentary(TradingCommentary(
                     timestamp=datetime.now(),
@@ -5219,8 +5224,132 @@ class MomentumStrategyWithCommentary(TradingStrategyWithCommentary):
                 )
         except Exception as e:
             logger.debug(f"Momentum strategy error for {market_data.symbol}: {e}")
-        
+
         return None
+
+
+class SimpleScalpingStrategy(TradingStrategyWithCommentary):
+    """
+    Simple scalping strategy - VERY aggressive signal generation.
+
+    Triggers on:
+    - Price above/below short SMA (5 period)
+    - Any positive/negative momentum
+    - Small moves (0.3%+) with decent volume
+
+    This is designed to generate signals even in quiet markets.
+    """
+
+    async def generate_signal_with_commentary(self, market_data) -> Optional[TradingSignal]:
+        indicators = market_data.indicators
+
+        try:
+            sma_5 = float(indicators.get('sma_5', market_data.close))
+            sma_20 = float(indicators.get('sma_20', market_data.close))
+            rsi = float(indicators.get('rsi', 50))
+            volume_ratio = float(indicators.get('volume_ratio', 1.0))
+
+            # Calculate simple momentum (price change)
+            price_change_pct = float(indicators.get('price_change_pct', 0))
+
+            # If indicators missing, estimate from current data
+            if sma_5 == market_data.close:
+                sma_5 = market_data.close * 0.999  # Assume slight uptrend
+
+            # BUY CONDITIONS (very loose):
+            # - Price above 5-period SMA OR
+            # - RSI < 50 (not overbought) AND positive price change
+            # - Volume at least average
+
+            price_above_sma = market_data.close > sma_5
+            bullish_momentum = price_change_pct > 0.1  # Just 0.1% move
+            not_overbought = rsi < 55
+
+            if (price_above_sma or bullish_momentum) and not_overbought and volume_ratio >= 0.8:
+                self.commentary.add_commentary(TradingCommentary(
+                    timestamp=datetime.now(),
+                    type=CommentaryType.OPPORTUNITY,
+                    symbol=market_data.symbol,
+                    title=f"⚡ Scalp Opportunity - Long",
+                    message=f"Quick long setup: Price {'above' if price_above_sma else 'near'} short SMA, "
+                           f"RSI at {rsi:.1f}, momentum {price_change_pct:+.2f}%",
+                    data={
+                        'sma_5': sma_5,
+                        'rsi': rsi,
+                        'momentum': price_change_pct,
+                        'volume_ratio': volume_ratio
+                    },
+                    confidence=0.6,
+                    importance=6
+                ))
+
+                # Tight stops for scalping
+                stop_loss = market_data.close * 0.995   # 0.5% stop
+                take_profit = market_data.close * 1.01  # 1% target (2:1 R:R)
+
+                return TradingSignal(
+                    symbol=market_data.symbol,
+                    signal_type=SignalType.BUY,
+                    strength=0.65,
+                    entry_price=market_data.close,
+                    stop_loss=stop_loss,
+                    take_profit=take_profit,
+                    position_size=0,
+                    reasoning={
+                        'strategy': 'scalping',
+                        'sma_position': 'above' if price_above_sma else 'near',
+                        'momentum': price_change_pct,
+                        'rsi': rsi
+                    },
+                    confidence=0.6
+                )
+
+            # SELL CONDITIONS
+            price_below_sma = market_data.close < sma_5
+            bearish_momentum = price_change_pct < -0.1
+            not_oversold = rsi > 45
+
+            if (price_below_sma or bearish_momentum) and not_oversold and volume_ratio >= 0.8:
+                self.commentary.add_commentary(TradingCommentary(
+                    timestamp=datetime.now(),
+                    type=CommentaryType.OPPORTUNITY,
+                    symbol=market_data.symbol,
+                    title=f"⚡ Scalp Opportunity - Short/Exit",
+                    message=f"Quick short setup: Price {'below' if price_below_sma else 'near'} short SMA, "
+                           f"RSI at {rsi:.1f}, momentum {price_change_pct:+.2f}%",
+                    data={
+                        'sma_5': sma_5,
+                        'rsi': rsi,
+                        'momentum': price_change_pct
+                    },
+                    confidence=0.6,
+                    importance=6
+                ))
+
+                stop_loss = market_data.close * 1.005
+                take_profit = market_data.close * 0.99
+
+                return TradingSignal(
+                    symbol=market_data.symbol,
+                    signal_type=SignalType.SELL,
+                    strength=0.65,
+                    entry_price=market_data.close,
+                    stop_loss=stop_loss,
+                    take_profit=take_profit,
+                    position_size=0,
+                    reasoning={
+                        'strategy': 'scalping_short',
+                        'sma_position': 'below' if price_below_sma else 'near',
+                        'momentum': price_change_pct
+                    },
+                    confidence=0.6
+                )
+
+        except Exception as e:
+            logger.debug(f"Scalping strategy error for {market_data.symbol}: {e}")
+
+        return None
+
 
 # ============================================================================
 # ENHANCED TRADING ENGINE WITH COMMENTARY
@@ -5285,8 +5414,9 @@ class TradingEngineWithCommentary:
         # Dynamic watchlist
         self.dynamic_watchlist = ['NVDA', 'TSLA', 'PLTR']  # Default symbols
         self.last_screener_run = None
-        # Trading strategies
+        # Trading strategies - ADDED SimpleScalpingStrategy for more signals
         self.strategies = [
+            SimpleScalpingStrategy(self.commentary),  # NEW: Most aggressive, generates most signals
             BreakoutStrategyWithCommentary(self.commentary),
             MeanReversionStrategyWithCommentary(self.commentary),
             MomentumStrategyWithCommentary(self.commentary)
