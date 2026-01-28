@@ -46,8 +46,8 @@ class StrategyConfig:
     parameters: Dict[str, Any] = field(default_factory=dict)
     risk_parameters: Dict[str, float] = field(default_factory=lambda: {
         'max_position_size': 0.1,  # 10% of portfolio
-        'stop_loss_pct': 0.02,     # 2% stop loss
-        'take_profit_pct': 0.05,   # 5% take profit
+        'stop_loss_pct': 0.01,     # 1% stop loss (tightened for day trading)
+        'take_profit_pct': 0.025,  # 2.5% take profit
         'max_positions': 5
     })
 
@@ -731,41 +731,41 @@ class StrategyManager:
                 name='MA Crossover',
                 enabled=True,
                 weight=1.0,
-                parameters={'fast_period': 10, 'slow_period': 30}  # FASTER periods
+                parameters={'fast_period': 9, 'slow_period': 21}  # Standard day trading periods
             ),
             'rsi_momentum': StrategyConfig(
                 name='RSI Momentum',
                 enabled=True,
                 weight=0.8,
-                parameters={'rsi_period': 14, 'oversold_level': 35, 'overbought_level': 65}  # WIDER range
+                parameters={'rsi_period': 14, 'oversold_level': 30, 'overbought_level': 70}  # Standard levels
             ),
             'bollinger_bands': StrategyConfig(
                 name='Bollinger Bands',
                 enabled=True,
                 weight=0.9,
-                parameters={'bb_period': 20, 'bb_std': 1.5}  # TIGHTER bands (1.5 std)
+                parameters={'bb_period': 20, 'bb_std': 2.0}  # Standard 2.0 std deviation
             ),
             'macd': StrategyConfig(
                 name='MACD',
                 enabled=True,
                 weight=0.7,
-                parameters={'fast_period': 8, 'slow_period': 17, 'signal_period': 9}  # FASTER MACD
+                parameters={'fast_period': 12, 'slow_period': 26, 'signal_period': 9}  # Standard MACD
             ),
             'momentum_breakout': StrategyConfig(
                 name='Momentum Breakout',
                 enabled=True,
-                weight=1.0,  # High weight - catches fast moves
+                weight=1.0,
                 parameters={
-                    'roc_period': 3,           # SHORTER lookback (was 5)
-                    'range_period': 5,          # SHORTER range (was 10)
-                    'volume_surge': 1.1,        # LOWER threshold (was 1.3)
-                    'momentum_threshold': 0.5   # LOWER threshold (was 1.0%)
+                    'roc_period': 5,            # Standard lookback
+                    'range_period': 10,          # Standard range
+                    'volume_surge': 1.5,         # Require 50% above avg volume
+                    'momentum_threshold': 1.0    # Require 1.0% move
                 }
             ),
             'simple_price_action': StrategyConfig(
                 name='Simple Price Action',
-                enabled=True,
-                weight=0.8,  # Good weight - generates more signals
+                enabled=False,  # Disabled - too many false signals
+                weight=0.8,
                 parameters={}
             ),
             'volume_profile': StrategyConfig(
@@ -853,21 +853,11 @@ class StrategyManager:
         buy_signals = [s for s in signals if s.signal_type == SignalType.BUY]
         sell_signals = [s for s in signals if s.signal_type in [SignalType.SELL, SignalType.CLOSE_LONG]]
 
-        # Check for high-confidence momentum signals (can act alone)
-        # This allows catching fast moves without waiting for multiple confirmations
-        momentum_strategies = ['Momentum Breakout']
-        high_confidence_buys = [s for s in buy_signals
-                                if s.strategy_name in momentum_strategies and s.strength >= 0.85]
-        if high_confidence_buys:
-            # Strong momentum signal - act immediately
-            best_signal = max(high_confidence_buys, key=lambda s: s.strength)
-            best_signal.metadata['action_type'] = 'momentum_breakout'
-            return best_signal
-
-        # Calculate weighted consensus (requires 2+ strategies)
+        # Calculate weighted consensus (requires 2+ strategies agreeing)
+        # No single-signal bypasses - always require consensus
         if buy_signals and len(buy_signals) >= 2:  # Require at least 2 strategies to agree
             avg_strength = sum(s.strength for s in buy_signals) / len(buy_signals)
-            if avg_strength > 0.6:  # Threshold for consensus
+            if avg_strength > 0.65:  # Raised threshold for consensus
                 # Create consensus signal
                 consensus = StrategySignal(
                     symbol=buy_signals[0].symbol,
@@ -886,17 +876,10 @@ class StrategyManager:
                 consensus.take_profit = min(s.take_profit for s in buy_signals if s.take_profit)
                 return consensus
         
-        # Check for high-confidence momentum sell signals
-        high_confidence_sells = [s for s in sell_signals
-                                 if s.strategy_name in momentum_strategies and s.strength >= 0.85]
-        if high_confidence_sells:
-            best_signal = max(high_confidence_sells, key=lambda s: s.strength)
-            best_signal.metadata['action_type'] = 'momentum_breakdown'
-            return best_signal
-
-        elif sell_signals and len(sell_signals) >= 2:
+        # Sell consensus (requires 2+ strategies agreeing)
+        if sell_signals and len(sell_signals) >= 2:
             avg_strength = sum(s.strength for s in sell_signals) / len(sell_signals)
-            if avg_strength > 0.6:
+            if avg_strength > 0.65:  # Raised threshold
                 consensus = StrategySignal(
                     symbol=sell_signals[0].symbol,
                     signal_type=sell_signals[0].signal_type,

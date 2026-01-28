@@ -2474,52 +2474,75 @@ class TradingBrain:
         """Get confidence in a pattern based on history"""
         if pattern not in self.pattern_success_rates:
             return 0.5
-        
+
         stats = self.pattern_success_rates[pattern]
         if stats['total'] < 3:
             return 0.5  # Not enough data
-        
+
         win_rate = stats['wins'] / stats['total']
         # Adjust by emotional state
         return win_rate * self.emotional_state['confidence']
+
+    def get_strategy_weight_adjustment(self, strategy_name: str) -> float:
+        """Get weight adjustment for a strategy based on its historical performance.
+        Returns 0.0 to disable, 0.5 for underperforming, 1.0 for normal, 1.2 for outperforming."""
+        if strategy_name not in self.pattern_success_rates:
+            return 1.0  # No data, use normal weight
+
+        stats = self.pattern_success_rates[strategy_name]
+        if stats['total'] < 5:
+            return 1.0  # Not enough data
+
+        win_rate = stats['wins'] / stats['total']
+        if win_rate < 0.30:
+            return 0.0  # Disable strategy
+        elif win_rate < 0.40:
+            return 0.5  # Reduce weight
+        elif win_rate > 0.60:
+            return 1.2  # Boost weight
+        else:
+            return 1.0  # Normal weight
     
     def should_take_trade(self, symbol: str, pattern: str, base_confidence: float) -> Tuple[bool, str]:
         """Decide if we should take a trade based on memory and emotional state"""
         # Recover confidence gradually
         self.recover_confidence()
 
-        # Lower threshold during low confidence periods
-        if self.emotional_state['confidence'] < 0.5:
-            threshold = 0.3  # Much lower bar
-        else:
-            threshold = 0.6 * self.emotional_state['confidence']
+        # Hard minimum threshold - never go below this regardless of emotional state
+        HARD_MIN_THRESHOLD = 0.55
+        threshold = max(HARD_MIN_THRESHOLD, 0.65 * self.emotional_state['confidence'])
+
+        # Drawdown awareness: raise threshold when risk appetite is very low
+        risk_appetite = self.emotional_state.get('risk_appetite', 0.5)
+        if risk_appetite < 0.3:
+            threshold = max(threshold, 0.70)
+
         pattern_confidence = self.get_pattern_confidence(pattern)
-        
-        # Check recent memories for this symbol
+
+        # Check recent memories for this symbol - tighter check
         recent_symbol_memories = [m for m in self.memories[-20:] if m.symbol == symbol]
         if recent_symbol_memories:
             recent_success = sum(1 for m in recent_symbol_memories if 'win' in m.outcome.lower())
             recent_rate = recent_success / len(recent_symbol_memories)
-            
-            if recent_rate < 0.2 and len(recent_symbol_memories) >= 3:
-                return False, f"I've been wrong on {symbol} lately. Sitting this one out."
-        
+
+            if recent_rate < 0.3 and len(recent_symbol_memories) >= 3:
+                return False, f"I've been wrong on {symbol} lately (win rate {recent_rate:.0%}). Sitting this one out."
+
         # Emotional state check
         if self.emotional_state['fear_level'] > 0.9:
             if base_confidence < 0.6:
                 return False, "I'm feeling cautious after recent losses. Need a stronger setup."
-        
+
         if self.emotional_state['greed_level'] > 0.7:
             if base_confidence < 0.6:
                 return False, "Getting greedy here. Need to calm down and wait for quality setups."
-        
-        # Confidence threshold
+
+        # Confidence threshold check
         combined_confidence = (base_confidence + pattern_confidence) / 2
-        threshold = 0.6 * self.emotional_state['confidence']
-        
+
         if combined_confidence < threshold:
-            return False, f"Not confident enough. Setup confidence: {combined_confidence:.1%}"
-        
+            return False, f"Not confident enough. Setup confidence: {combined_confidence:.1%}, threshold: {threshold:.1%}"
+
         return True, "Looks good based on my experience"
 
 
@@ -2590,8 +2613,8 @@ class DynamicExitManager:
                 tracker['partial_exits'].append({'price': current_price, 'portion': 0.5})
                 return True, "quick_scalp", 0.5
 
-        # Progressive profit taking
-        if pnl_percent > 1.5 and not tracker.get('scaled_out'):
+        # Progressive profit taking (tightened for day trading)
+        if pnl_percent > 1.0 and not tracker.get('scaled_out'):
             tracker['scaled_out'] = True
             self.commentary.add_commentary(TradingCommentary(
                 timestamp=datetime.now(),
@@ -2603,7 +2626,7 @@ class DynamicExitManager:
             ))
             return True, "scale_out_half", 0.5
 
-        if pnl_percent > 3.0:
+        if pnl_percent > 2.0:
             self.commentary.add_commentary(TradingCommentary(
                 timestamp=datetime.now(),
                 type=CommentaryType.DECISION,
@@ -2633,9 +2656,9 @@ class DynamicExitManager:
                 ))
                 return True, "momentum_fade", 1.0
         
-        # 3. Time-Based Trailing Stop
-        if pnl_percent > 1.0 and not tracker['trailing_activated']:
-            new_stop = position.entry_price * 1.002  # Move stop to breakeven + 0.2%
+        # 3. Time-Based Trailing Stop (tightened for day trading)
+        if pnl_percent > 0.7 and not tracker['trailing_activated']:
+            new_stop = position.entry_price * 1.001  # Move stop to breakeven + 0.1%
             tracker['current_stop'] = new_stop
             tracker['trailing_activated'] = True
             
@@ -2644,14 +2667,14 @@ class DynamicExitManager:
                 type=CommentaryType.RISK_ASSESSMENT,
                 symbol=symbol,
                 title=f"🛡️ Protecting Profits",
-                message=f"Moving stop to breakeven + 0.2%. Can't let a winner turn into a loser!",
+                message=f"Moving stop to breakeven + 0.1%. Can't let a winner turn into a loser!",
                 importance=7
             ))
         
-        # 4. Dynamic Trailing Stop based on ATR
-        if tracker['trailing_activated'] and pnl_percent > 1.5:
+        # 4. Dynamic Trailing Stop based on ATR (tightened for day trading)
+        if tracker['trailing_activated'] and pnl_percent > 1.0:
             atr = indicators.get('atr', current_price * 0.01)
-            new_stop = current_price - (1.5 * atr)
+            new_stop = current_price - (1.0 * atr)  # Trail at 1.0x ATR (tighter)
             
             if new_stop > tracker['current_stop']:
                 tracker['current_stop'] = new_stop
@@ -3197,6 +3220,90 @@ class StockScreener:
     def get_watchlist_symbols(self) -> List[str]:
         """Get current top mover symbols for the watchlist"""
         return [mover['symbol'] for mover in self.top_movers[:5]]  # Top 5 for focused trading
+
+# ============================================================================
+# SYMBOL GATEKEEPER - Hard filters to prevent trading junk
+# ============================================================================
+
+class SymbolGatekeeper:
+    """Hard symbol-level filters to prevent trading penny stocks and repeat losers"""
+
+    PERMANENT_BLACKLIST = {'HQGE'}
+    MIN_PRICE = 10.0
+    MIN_AVG_VOLUME = 1_000_000
+    MAX_SPREAD_PCT = 0.003  # 0.3%
+    MAX_CONSECUTIVE_LOSSES_PER_SYMBOL = 3
+    BLACKLIST_COOLDOWN_HOURS = 24
+
+    def __init__(self):
+        self.dynamic_blacklist: Dict[str, datetime] = {}  # symbol -> blacklist_until
+        self.symbol_losses: Dict[str, int] = {}  # symbol -> consecutive loss count
+        self.symbol_wins: Dict[str, int] = {}  # symbol -> win count (for stats)
+
+    def is_allowed(self, symbol: str, price: float = 0, avg_volume: float = 0,
+                   spread_pct: float = 0) -> Tuple[bool, str]:
+        """Check if a symbol passes all hard filters"""
+        # Permanent blacklist
+        if symbol in self.PERMANENT_BLACKLIST:
+            return False, f"{symbol} is permanently blacklisted"
+
+        # Dynamic blacklist (auto-blacklisted after consecutive losses)
+        if symbol in self.dynamic_blacklist:
+            blacklist_until = self.dynamic_blacklist[symbol]
+            if datetime.now() < blacklist_until:
+                remaining = (blacklist_until - datetime.now()).total_seconds() / 3600
+                return False, f"{symbol} blacklisted for {remaining:.1f} more hours after consecutive losses"
+            else:
+                # Cooldown expired, remove from blacklist
+                del self.dynamic_blacklist[symbol]
+                self.symbol_losses[symbol] = 0
+
+        # Price filter - no penny stocks
+        if price > 0 and price < self.MIN_PRICE:
+            return False, f"{symbol} price ${price:.2f} below minimum ${self.MIN_PRICE}"
+
+        # Volume filter
+        if avg_volume > 0 and avg_volume < self.MIN_AVG_VOLUME:
+            return False, f"{symbol} avg volume {avg_volume:,.0f} below minimum {self.MIN_AVG_VOLUME:,}"
+
+        # Spread filter
+        if spread_pct > 0 and spread_pct > self.MAX_SPREAD_PCT:
+            return False, f"{symbol} spread {spread_pct:.2%} exceeds max {self.MAX_SPREAD_PCT:.2%}"
+
+        return True, "Symbol passes all filters"
+
+    def record_loss(self, symbol: str):
+        """Record a loss for a symbol, auto-blacklist after consecutive losses"""
+        self.symbol_losses[symbol] = self.symbol_losses.get(symbol, 0) + 1
+        if self.symbol_losses[symbol] >= self.MAX_CONSECUTIVE_LOSSES_PER_SYMBOL:
+            blacklist_until = datetime.now() + timedelta(hours=self.BLACKLIST_COOLDOWN_HOURS)
+            self.dynamic_blacklist[symbol] = blacklist_until
+            logger.warning(f"SymbolGatekeeper: {symbol} auto-blacklisted after "
+                         f"{self.symbol_losses[symbol]} consecutive losses until {blacklist_until}")
+
+    def record_win(self, symbol: str):
+        """Record a win - resets consecutive loss counter"""
+        self.symbol_losses[symbol] = 0
+        self.symbol_wins[symbol] = self.symbol_wins.get(symbol, 0) + 1
+
+    def load_from_brain(self, brain):
+        """Load symbol performance data from TradingBrain"""
+        if hasattr(brain, 'memories'):
+            symbol_results = {}
+            for memory in brain.memories[-100:]:  # Last 100 trades
+                sym = memory.symbol
+                if sym not in symbol_results:
+                    symbol_results[sym] = []
+                symbol_results[sym].append('win' in memory.outcome.lower())
+
+            for sym, results in symbol_results.items():
+                # Check last N results for consecutive losses
+                recent = results[-self.MAX_CONSECUTIVE_LOSSES_PER_SYMBOL:]
+                if len(recent) >= self.MAX_CONSECUTIVE_LOSSES_PER_SYMBOL and not any(recent):
+                    self.symbol_losses[sym] = len(recent)
+                    self.dynamic_blacklist[sym] = datetime.now() + timedelta(hours=self.BLACKLIST_COOLDOWN_HOURS)
+                    logger.info(f"SymbolGatekeeper: Loaded blacklist for {sym} from brain data")
+
 # ============================================================================
 # TECHNICAL ANALYZER WITH COMMENTARY
 # ============================================================================
@@ -4837,6 +4944,32 @@ class RiskManagerWithCommentary:
         # Calculate position size
         position_size = int(max_risk_amount / risk_per_share)
 
+        # Additional adaptive sizing: check last 10 trades
+        if hasattr(self, 'trade_history') and len(self.trade_history) >= 10:
+            recent_10 = self.trade_history[-10:]
+            wins_10 = sum(1 for t in recent_10 if t.get('pnl', 0) > 0)
+            recent_wr = wins_10 / 10
+            if recent_wr < 0.30:
+                position_size = int(position_size * 0.5)
+                self.commentary.add_commentary(TradingCommentary(
+                    timestamp=datetime.now(),
+                    type=CommentaryType.RISK_ASSESSMENT,
+                    symbol=signal.symbol,
+                    title=f"⚠️ Reduced Size - Low Win Rate",
+                    message=f"Last 10 trades win rate: {recent_wr:.0%}. Halving position size.",
+                    importance=7
+                ))
+            elif recent_wr > 0.60:
+                position_size = int(position_size * 1.2)
+                self.commentary.add_commentary(TradingCommentary(
+                    timestamp=datetime.now(),
+                    type=CommentaryType.RISK_ASSESSMENT,
+                    symbol=signal.symbol,
+                    title=f"📈 Increased Size - High Win Rate",
+                    message=f"Last 10 trades win rate: {recent_wr:.0%}. Increasing position size 20%.",
+                    importance=6
+                ))
+
         # Check against max position value
         max_position_value = Config().MAX_POSITION_VALUE or 10000  # Default $10k
         min_position_size = Config().MIN_POSITION_SIZE or 1  # Default 1 share
@@ -4910,17 +5043,22 @@ class RiskManagerWithCommentary:
         """Check if trading is allowed"""
         if self.margin_call:
             return False, "Margin call active - resolve before trading"
-        
+
         if self.buying_power < 100:
             return False, f"Insufficient buying power: ${self.buying_power:.2f}"
-        
-        # ONLY use Schwab's P&L
+
+        # Hard dollar cap on daily losses - absolute limit
+        HARD_DAILY_LOSS_LIMIT = 500.0
+        if self.schwab_daily_pnl <= -HARD_DAILY_LOSS_LIMIT:
+            return False, f"Hard daily loss limit hit (P&L: ${self.schwab_daily_pnl:.2f}, limit: -${HARD_DAILY_LOSS_LIMIT})"
+
+        # Percentage-based daily loss limit
         if self.schwab_daily_pnl <= -Config().MAX_DAILY_LOSS * self.account_balance:
             return False, f"Daily loss limit exceeded (P&L: ${self.schwab_daily_pnl:.2f})"
-        
+
         if self.consecutive_losses >= Config().MAX_CONSECUTIVE_LOSSES:
             return False, "Max consecutive losses reached"
-        
+
         return True, "Trading allowed"
 
 # ============================================================================
@@ -5228,6 +5366,271 @@ class MomentumStrategyWithCommentary(TradingStrategyWithCommentary):
         return None
 
 
+class VWAPReversionStrategy(TradingStrategyWithCommentary):
+    """VWAP reversion strategy - buys pullbacks to VWAP in uptrends"""
+
+    async def generate_signal_with_commentary(self, market_data) -> Optional[TradingSignal]:
+        indicators = market_data.indicators
+
+        try:
+            vwap = float(indicators.get('vwap', 0))
+            sma_20 = float(indicators.get('sma_20', 0))
+            rsi = float(indicators.get('rsi', 50))
+            atr = float(indicators.get('atr', market_data.close * 0.01))
+            volume_ratio = float(indicators.get('volume_ratio', 1.0))
+
+            if vwap <= 0 or sma_20 <= 0 or np.isnan(vwap) or np.isnan(sma_20):
+                return None
+
+            # Calculate distance from VWAP
+            vwap_distance_pct = abs(market_data.close - vwap) / vwap
+
+            # BUY: Price pulls back within 0.2% of VWAP in an uptrend
+            uptrend = sma_20 > vwap
+            near_vwap = vwap_distance_pct < 0.002  # Within 0.2%
+            rsi_neutral = 40 <= rsi <= 60  # Not extreme
+            volume_ok = volume_ratio > 1.0
+
+            if uptrend and near_vwap and rsi_neutral and volume_ok and market_data.close >= vwap * 0.998:
+                stop_loss = vwap - (1.5 * atr)
+                take_profit = market_data.close + (2.0 * atr)
+
+                self.commentary.add_commentary(TradingCommentary(
+                    timestamp=datetime.now(),
+                    type=CommentaryType.OPPORTUNITY,
+                    symbol=market_data.symbol,
+                    title=f"📊 VWAP Reversion Setup",
+                    message=f"Price pulled back to VWAP (${vwap:.2f}) in uptrend. "
+                           f"RSI neutral at {rsi:.1f}, volume {volume_ratio:.1f}x avg.",
+                    data={
+                        'vwap': vwap,
+                        'sma_20': sma_20,
+                        'vwap_distance': f"{vwap_distance_pct:.2%}",
+                        'rsi': rsi,
+                        'volume_ratio': volume_ratio
+                    },
+                    confidence=0.70,
+                    importance=7
+                ))
+
+                return TradingSignal(
+                    symbol=market_data.symbol,
+                    signal_type=SignalType.BUY,
+                    strength=0.75,
+                    entry_price=market_data.close,
+                    stop_loss=stop_loss,
+                    take_profit=take_profit,
+                    position_size=0,
+                    reasoning={
+                        'strategy': 'vwap_reversion',
+                        'vwap': vwap,
+                        'trend': 'up',
+                        'rsi': rsi,
+                        'volume_ratio': volume_ratio
+                    },
+                    confidence=0.70
+                )
+
+            # SELL: Price extends above VWAP in downtrend
+            downtrend = sma_20 < vwap
+            near_vwap_above = vwap_distance_pct < 0.002 and market_data.close <= vwap * 1.002
+            rsi_neutral_sell = 40 <= rsi <= 60
+            volume_ok_sell = volume_ratio > 1.0
+
+            if downtrend and near_vwap_above and rsi_neutral_sell and volume_ok_sell:
+                stop_loss = vwap + (1.5 * atr)
+                take_profit = market_data.close - (2.0 * atr)
+
+                self.commentary.add_commentary(TradingCommentary(
+                    timestamp=datetime.now(),
+                    type=CommentaryType.OPPORTUNITY,
+                    symbol=market_data.symbol,
+                    title=f"📊 VWAP Reversion Short Setup",
+                    message=f"Price bounced to VWAP (${vwap:.2f}) in downtrend. "
+                           f"RSI at {rsi:.1f}, volume {volume_ratio:.1f}x avg.",
+                    data={'vwap': vwap, 'rsi': rsi},
+                    confidence=0.70,
+                    importance=7
+                ))
+
+                return TradingSignal(
+                    symbol=market_data.symbol,
+                    signal_type=SignalType.SELL,
+                    strength=0.75,
+                    entry_price=market_data.close,
+                    stop_loss=stop_loss,
+                    take_profit=take_profit,
+                    position_size=0,
+                    reasoning={
+                        'strategy': 'vwap_reversion_short',
+                        'vwap': vwap,
+                        'trend': 'down',
+                        'rsi': rsi
+                    },
+                    confidence=0.70
+                )
+
+        except Exception as e:
+            logger.debug(f"VWAP reversion strategy error for {market_data.symbol}: {e}")
+
+        return None
+
+
+class OpeningRangeBreakoutStrategy(TradingStrategyWithCommentary):
+    """Opening Range Breakout - trades breakouts of the first 15-min range (9:30-9:45 ET)"""
+
+    def __init__(self, commentary_system):
+        super().__init__(commentary_system)
+        self.opening_ranges: Dict[str, Dict] = {}  # symbol -> {high, low, date}
+
+    async def generate_signal_with_commentary(self, market_data) -> Optional[TradingSignal]:
+        indicators = market_data.indicators
+
+        try:
+            # Determine current ET time
+            import pytz
+            et_tz = pytz.timezone('US/Eastern')
+            now_et = datetime.now(et_tz)
+            current_date = now_et.date()
+            current_time = now_et.time()
+
+            # During 9:30-9:45, build the opening range
+            from datetime import time as dt_time
+            range_start = dt_time(9, 30)
+            range_end = dt_time(9, 45)
+            active_start = dt_time(9, 45)
+            active_end = dt_time(11, 30)
+
+            symbol = market_data.symbol
+
+            # Reset ranges for new day
+            if symbol in self.opening_ranges:
+                if self.opening_ranges[symbol].get('date') != current_date:
+                    del self.opening_ranges[symbol]
+
+            # Build opening range during 9:30-9:45
+            if range_start <= current_time <= range_end:
+                if symbol not in self.opening_ranges:
+                    self.opening_ranges[symbol] = {
+                        'high': market_data.high,
+                        'low': market_data.low,
+                        'date': current_date
+                    }
+                else:
+                    self.opening_ranges[symbol]['high'] = max(
+                        self.opening_ranges[symbol]['high'], market_data.high
+                    )
+                    self.opening_ranges[symbol]['low'] = min(
+                        self.opening_ranges[symbol]['low'], market_data.low
+                    )
+                return None  # Don't trade during range building
+
+            # Only active 9:45 AM - 11:30 AM ET
+            if not (active_start <= current_time <= active_end):
+                return None
+
+            # Need an established opening range
+            if symbol not in self.opening_ranges:
+                return None
+
+            orb = self.opening_ranges[symbol]
+            range_high = orb['high']
+            range_low = orb['low']
+            range_size = range_high - range_low
+
+            if range_size <= 0:
+                return None
+
+            volume_ratio = float(indicators.get('volume_ratio', 1.0))
+            atr = float(indicators.get('atr', market_data.close * 0.01))
+
+            # BUY: Breakout above range high with volume
+            if market_data.close > range_high and volume_ratio > 1.2:
+                stop_loss = range_low  # Bottom of opening range
+                take_profit = market_data.close + (2.0 * range_size)  # 2x range target
+
+                self.commentary.add_commentary(TradingCommentary(
+                    timestamp=datetime.now(),
+                    type=CommentaryType.OPPORTUNITY,
+                    symbol=symbol,
+                    title=f"🔥 Opening Range Breakout - Long",
+                    message=f"Price broke above 15-min opening range high (${range_high:.2f}). "
+                           f"Range: ${range_low:.2f}-${range_high:.2f}, Volume {volume_ratio:.1f}x avg.",
+                    data={
+                        'range_high': range_high,
+                        'range_low': range_low,
+                        'range_size': range_size,
+                        'volume_ratio': volume_ratio,
+                        'breakout_pct': ((market_data.close - range_high) / range_high) * 100
+                    },
+                    confidence=0.75,
+                    importance=8
+                ))
+
+                return TradingSignal(
+                    symbol=symbol,
+                    signal_type=SignalType.BUY,
+                    strength=0.80,
+                    entry_price=market_data.close,
+                    stop_loss=stop_loss,
+                    take_profit=take_profit,
+                    position_size=0,
+                    reasoning={
+                        'strategy': 'opening_range_breakout',
+                        'range_high': range_high,
+                        'range_low': range_low,
+                        'volume_ratio': volume_ratio
+                    },
+                    confidence=0.75
+                )
+
+            # SELL: Breakdown below range low with volume
+            if market_data.close < range_low and volume_ratio > 1.2:
+                stop_loss = range_high  # Top of opening range
+                take_profit = market_data.close - (2.0 * range_size)
+
+                self.commentary.add_commentary(TradingCommentary(
+                    timestamp=datetime.now(),
+                    type=CommentaryType.OPPORTUNITY,
+                    symbol=symbol,
+                    title=f"🔥 Opening Range Breakdown - Short",
+                    message=f"Price broke below 15-min opening range low (${range_low:.2f}). "
+                           f"Range: ${range_low:.2f}-${range_high:.2f}, Volume {volume_ratio:.1f}x avg.",
+                    data={
+                        'range_high': range_high,
+                        'range_low': range_low,
+                        'range_size': range_size,
+                        'volume_ratio': volume_ratio
+                    },
+                    confidence=0.75,
+                    importance=8
+                ))
+
+                return TradingSignal(
+                    symbol=symbol,
+                    signal_type=SignalType.SELL,
+                    strength=0.80,
+                    entry_price=market_data.close,
+                    stop_loss=stop_loss,
+                    take_profit=take_profit,
+                    position_size=0,
+                    reasoning={
+                        'strategy': 'opening_range_breakdown',
+                        'range_high': range_high,
+                        'range_low': range_low,
+                        'volume_ratio': volume_ratio
+                    },
+                    confidence=0.75
+                )
+
+        except ImportError:
+            logger.debug(f"pytz not available for ORB strategy on {market_data.symbol}")
+        except Exception as e:
+            logger.debug(f"ORB strategy error for {market_data.symbol}: {e}")
+
+        return None
+
+
 class SimpleScalpingStrategy(TradingStrategyWithCommentary):
     """
     Simple scalping strategy - VERY aggressive signal generation.
@@ -5414,14 +5817,19 @@ class TradingEngineWithCommentary:
         # Dynamic watchlist
         self.dynamic_watchlist = ['NVDA', 'TSLA', 'PLTR']  # Default symbols
         self.last_screener_run = None
-        # Trading strategies - ADDED SimpleScalpingStrategy for more signals
+        # Trading strategies - Focused on quality day trading signals
+        # Removed: SimpleScalpingStrategy (noise on 0.1% moves), FreeNewsSignalStrategy (0% win rate)
         self.strategies = [
-            SimpleScalpingStrategy(self.commentary),  # NEW: Most aggressive, generates most signals
+            OpeningRangeBreakoutStrategy(self.commentary),
+            VWAPReversionStrategy(self.commentary),
             BreakoutStrategyWithCommentary(self.commentary),
+            MomentumStrategyWithCommentary(self.commentary),
             MeanReversionStrategyWithCommentary(self.commentary),
-            MomentumStrategyWithCommentary(self.commentary)
         ]
-        self.strategies.append(FreeNewsSignalStrategy(self.commentary))
+
+        # Symbol gatekeeper - hard filters for penny stocks and repeat losers
+        self.symbol_gatekeeper = SymbolGatekeeper()
+        self.symbol_gatekeeper.load_from_brain(self.brain)
         
 	    # Initialize brain and exit manager
         self.brain = TradingBrain()
@@ -7353,7 +7761,7 @@ class TradingEngineWithCommentary:
                         if hasattr(self.ml_predictor, 'save_model'):
                             self.ml_predictor.save_model(create_version=False)  # Don't create version every time
                 # Wait before next analysis
-                await asyncio.sleep(30)  # Check every 30 seconds
+                await asyncio.sleep(10)  # Check every 10 seconds for faster reaction
                 
             except Exception as e:
                 self.commentary.add_commentary(TradingCommentary(
@@ -7365,7 +7773,7 @@ class TradingEngineWithCommentary:
                     importance=9
                 ))
                 logger.error(f"Trading loop error: {e}", exc_info=True)
-                await asyncio.sleep(60)
+                await asyncio.sleep(20)  # Faster error recovery
     
     async def _update_position_prices(self):
         """Update current prices for all positions"""
@@ -7621,7 +8029,7 @@ class TradingEngineWithCommentary:
         for symbol in symbols_to_analyze:
             try:
                 # Rate limiting check
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(0.3)
                 
                 self.commentary.add_commentary(TradingCommentary(
                     timestamp=datetime.now(),
@@ -7632,9 +8040,12 @@ class TradingEngineWithCommentary:
                     importance=4
                 ))
                 
-                # Get market data
+                # Get market data - use 1-min bars from Schwab, fallback to 5-min for yfinance
                 if self.data_provider:
-                    data = self.data_provider.get_market_data(symbol)
+                    if isinstance(self.data_provider, SchwabDataProvider):
+                        data = self.data_provider.get_market_data(symbol, frequency=1)
+                    else:
+                        data = self.data_provider.get_market_data(symbol)
                     if data.empty:
                         self.commentary.add_commentary(TradingCommentary(
                             timestamp=datetime.now(),
@@ -7650,7 +8061,29 @@ class TradingEngineWithCommentary:
                     quote = self.data_provider.get_quote(symbol)
                     if not quote:
                         quote = {'last': data['Close'].iloc[-1]}
-                    
+
+                    # SymbolGatekeeper check - hard filters for price, volume, spread
+                    if hasattr(self, 'symbol_gatekeeper'):
+                        current_price = float(quote.get('last', data['Close'].iloc[-1]))
+                        avg_vol = float(data['Volume'].mean()) if 'Volume' in data.columns else 0
+                        bid = float(quote.get('bid', 0))
+                        ask = float(quote.get('ask', 0))
+                        spread_pct = (ask - bid) / current_price if bid > 0 and ask > 0 and current_price > 0 else 0
+
+                        gate_allowed, gate_reason = self.symbol_gatekeeper.is_allowed(
+                            symbol, price=current_price, avg_volume=avg_vol, spread_pct=spread_pct
+                        )
+                        if not gate_allowed:
+                            self.commentary.add_commentary(TradingCommentary(
+                                timestamp=datetime.now(),
+                                type=CommentaryType.RISK_ASSESSMENT,
+                                symbol=symbol,
+                                title=f"🚫 Symbol Gatekeeper: {symbol} BLOCKED",
+                                message=gate_reason,
+                                importance=7
+                            ))
+                            continue
+
                     # Technical analysis with commentary
                     indicators = await self.technical_analyzer.analyze_with_commentary(data, symbol)
                     
@@ -7663,7 +8096,7 @@ class TradingEngineWithCommentary:
                         low=float(data['Low'].iloc[-1]),
                         close=float(quote.get('last', data['Close'].iloc[-1])),
                         volume=int(quote.get('volume', data['Volume'].iloc[-1])),
-                        timeframe='5min',
+                        timeframe='1min' if isinstance(self.data_provider, SchwabDataProvider) else '5min',
                         indicators=indicators
                     )
                     
@@ -7685,11 +8118,21 @@ class TradingEngineWithCommentary:
                             indicators, symbol, data
                         )
                     
-                    # Check each strategy
+                    # Check each strategy with brain feedback weighting
                     for strategy in self.strategies:
                         signal = await strategy.generate_signal_with_commentary(market_data)
-                        
+
                         if signal:
+                            # Apply brain feedback: adjust signal based on strategy performance
+                            strategy_name = signal.reasoning.get('strategy', 'unknown')
+                            if hasattr(self, 'brain'):
+                                weight = self.brain.get_strategy_weight_adjustment(strategy_name)
+                                if weight == 0:
+                                    logger.info(f"Brain disabled strategy '{strategy_name}' for {symbol} (low win rate)")
+                                    continue
+                                signal.strength *= weight
+                                signal.confidence *= weight
+
                             # Process the signal with full explanation
                             await self._process_signal_with_commentary(signal, ml_signal, ml_explanation)
                 
@@ -7896,17 +8339,33 @@ class TradingEngineWithCommentary:
                 mode=self.mode.value
             )
 
-            if self.mode != TradingMode.SIMULATION_WITH_COMMENTARY:
-                return
-            else:
+            # ML disagreement blocks trade in ALL modes (no simulation override)
+            return
+
+        # ML confidence check - block if ML has low confidence even when agreeing
+        if Config().ML_PREDICTION_ENABLED:
+            ml_confidence = ml_explanation.get('confidence', 0.5) if isinstance(ml_explanation, dict) else 0.5
+            if ml_confidence < 0.60:
                 self.commentary.add_commentary(TradingCommentary(
                     timestamp=datetime.now(),
                     type=CommentaryType.DECISION,
                     symbol=signal.symbol,
-                    title=f"📝 Simulation Override",
-                    message="In simulation mode, I'll show you what would happen if we took this trade anyway.",
-                    importance=5
+                    title=f"🤖 ML Confidence Too Low",
+                    message=f"ML model confidence {ml_confidence:.0%} is below 60% threshold. Skipping trade.",
+                    importance=7
                 ))
+                log_decision(
+                    symbol=signal.symbol,
+                    decision='SKIP',
+                    reason=f'ML confidence too low: {ml_confidence:.2f}',
+                    factors={'ml_confidence': ml_confidence},
+                    signals={'strategy': signal.strength, 'ml': ml_signal},
+                    indicators=ml_explanation if isinstance(ml_explanation, dict) else {},
+                    confidence=signal.confidence,
+                    mode=self.mode.value
+                )
+                return
+
         # Multi-timeframe confirmation
         try:
             daily_data = self.data_provider.get_market_data(signal.symbol, frequency_type='daily', frequency=1)
@@ -8237,7 +8696,46 @@ class TradingEngineWithCommentary:
                         pnl_pct = ((position.entry_price - current_price) / position.entry_price) * 100
                     else:
                         pnl_pct = ((current_price - position.entry_price) / position.entry_price) * 100
-                    
+
+                    # === TIME-BASED EXITS for day trading discipline ===
+                    position_age_seconds = (datetime.now() - position.entry_time).total_seconds()
+
+                    # 30-minute flat exit: if held > 30 min and not profitable, cut it
+                    if position_age_seconds > 1800 and pnl_pct <= 0:
+                        self.commentary.add_commentary(TradingCommentary(
+                            timestamp=datetime.now(),
+                            type=CommentaryType.DECISION,
+                            symbol=symbol,
+                            title=f"⏰ 30-Min Flat Exit: {symbol}",
+                            message=f"Position held {position_age_seconds/60:.0f} min with {pnl_pct:.1f}% P&L. "
+                                   f"Cutting dead money - move on to better setups.",
+                            importance=8
+                        ))
+                        await self._close_position_with_commentary(position, "30min_flat_exit")
+                        continue
+
+                    # EOD exit: Close all positions at 3:45 PM ET
+                    try:
+                        import pytz
+                        et_tz = pytz.timezone('US/Eastern')
+                        now_et = datetime.now(et_tz)
+                        from datetime import time as dt_time
+                        eod_cutoff = dt_time(15, 45)
+                        if now_et.time() >= eod_cutoff:
+                            self.commentary.add_commentary(TradingCommentary(
+                                timestamp=datetime.now(),
+                                type=CommentaryType.DECISION,
+                                symbol=symbol,
+                                title=f"🏁 EOD Exit: {symbol}",
+                                message=f"Closing position at {now_et.strftime('%H:%M')} ET. "
+                                       f"Day trading discipline - no overnight risk. P&L: {pnl_pct:.1f}%",
+                                importance=9
+                            ))
+                            await self._close_position_with_commentary(position, "eod_exit")
+                            continue
+                    except ImportError:
+                        pass  # pytz not available, skip EOD check
+
                     # Alert on significant losses
                     if position.unrealized_pnl < 0:
                         loss_pct = abs(pnl_pct)
@@ -8682,6 +9180,13 @@ class TradingEngineWithCommentary:
             win_rate = self.strategy_performance[strategy]['wins'] / self.strategy_performance[strategy]['total']
             if win_rate < 0.35:
                 logger.warning(f"Disabling {strategy} - win rate {win_rate:.1%}")
+        # Record win/loss in symbol gatekeeper for auto-blacklisting
+        if hasattr(self, 'symbol_gatekeeper'):
+            if pnl > 0:
+                self.symbol_gatekeeper.record_win(position.symbol)
+            else:
+                self.symbol_gatekeeper.record_loss(position.symbol)
+
         # Save state after each trade
         self._save_state()
 
@@ -9090,7 +9595,7 @@ class RealTimeDataProvider:
         self.schwab_client = schwab_client
         self._price_cache = {}
         self._cache_time = {}
-        self._cache_ttl = 30  # Cache for 30 seconds to avoid rate limiting
+        self._cache_ttl = 15  # Cache for 15 seconds for faster reaction
 
     def get_market_data(self, symbol: str, period: str = "1d", interval: str = "5m", **kwargs) -> pd.DataFrame:
         """Get real market data from yfinance"""

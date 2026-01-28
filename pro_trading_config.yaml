@@ -18,7 +18,7 @@
 features:
   regime_detector: true          # Detect trending/ranging/volatile/choppy
   session_manager: true          # Block dead zones, adjust for session
-  no_trade_filter: false         # CHANGED: DISABLED for testing - let trades through
+  no_trade_filter: true           # Re-enabled: Quality gate active
   market_context: true           # Key levels, trapped traders
   exit_manager: true             # Professional exit management
   performance_tracker: true      # R-multiple tracking
@@ -27,11 +27,11 @@ features:
   psychological_levels: false    # CHANGED: Disabled for testing
 
   # Integration controls
-  block_trades_in_choppy: false  # CHANGED: Allow trading in choppy (with reduced size)
-  block_trades_in_dead_zone: false # CHANGED: Allow lunch trading
-  require_confluence: false      # Allow momentum signals without multiple confirmations
+  block_trades_in_choppy: true   # Block trades in choppy markets
+  block_trades_in_dead_zone: true  # Block trades during dead zones
+  require_confluence: true       # Require multiple strategy confirmation
   use_r_based_exits: true        # Scale out at R-multiples
-  enforce_daily_limits: false    # CHANGED: Don't stop after limits for testing
+  enforce_daily_limits: true     # Enforce daily limits to protect capital
   use_sentiment_blocking: false  # Don't block on sentiment alone
 
 # -----------------------------------------------------------------------------
@@ -146,20 +146,20 @@ no_trade_filter:
   max_consecutive_losses: 3      # Take a break after 3 losses
   loss_cooldown_minutes: 30      # Minimum break time
 
-  # Confluence requirements - LOOSENED for more trades
-  min_confluence_score: 1        # CHANGED: Allow single good signal
-  min_quality_score: 40          # CHANGED: Lower threshold (was 60)
+  # Confluence requirements - Tightened for quality trades
+  min_confluence_score: 2        # Require 2+ confirming signals
+  min_quality_score: 55          # Minimum quality score for entry
 
-  # Trade limits - LOOSENED
-  max_trades_per_day: 10         # CHANGED: Allow more trades (was 5)
-  max_trades_per_symbol: 3       # CHANGED: Allow 3 per ticker (was 2)
+  # Trade limits - Conservative
+  max_trades_per_day: 6          # Max 6 trades per day
+  max_trades_per_symbol: 3       # Max 3 per ticker
 
-  # Entry requirements - LOOSENED
-  min_confidence: 0.55           # CHANGED: 55% minimum (was 70%)
-  min_r_multiple: 1.2            # CHANGED: 1.2:1 R:R (was 1.5)
+  # Entry requirements - Tightened
+  min_confidence: 0.65           # 65% minimum confidence
+  min_r_multiple: 1.5            # 1.5:1 risk/reward minimum
 
   # Strategy filtering
-  min_strategy_win_rate: 0.35    # CHANGED: 35% (was 40%)
+  min_strategy_win_rate: 0.40    # 40% minimum strategy win rate
   min_strategy_trades: 10        # Trades needed before filtering
 
   # Correlation limits
@@ -337,7 +337,7 @@ watchlist:
     - "DKNG"   # DraftKings - momentum
 
   # Avoid these (add symbols that historically lose)
-  blacklist: []
+  blacklist: ["HQGE"]
 
 # -----------------------------------------------------------------------------
 # STRATEGY PREFERENCES
