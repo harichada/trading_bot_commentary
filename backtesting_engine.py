@@ -181,15 +181,21 @@ class BacktestingEngine:
     def run(self, market_data: Dict[str, pd.DataFrame]) -> BacktestResults:
         """Run the backtest"""
         logger.info(f"Starting backtest from {self.config.start_date} to {self.config.end_date}")
-        
+
+        for symbol, df in market_data.items():
+            logger.info(f"Backtest data: {symbol} has {len(df)} bars, columns={list(df.columns)}, "
+                        f"range={df.index[0]} to {df.index[-1]}")
+
         # Get all unique timestamps
         all_timestamps = set()
         for df in market_data.values():
             all_timestamps.update(df.index)
-        
+
         timestamps = sorted(all_timestamps)
-        
+        logger.info(f"Backtest: {len(timestamps)} total timestamps to process")
+
         # Main backtest loop
+        signal_count = 0
         for timestamp in timestamps:
             self.current_time = timestamp
             
@@ -207,7 +213,8 @@ class BacktestingEngine:
             
             # Generate signals
             signals = self._generate_signals(current_data)
-            
+            signal_count += len(signals)
+
             # Execute signals
             for signal in signals:
                 self._process_signal(signal, current_data)
@@ -227,33 +234,52 @@ class BacktestingEngine:
         
         # Close all remaining positions
         self._close_all_positions(market_data)
-        
+
+        logger.info(f"Backtest complete: {signal_count} total signals generated, "
+                    f"{len(self.trades)} trades executed, "
+                    f"{len(self.positions)} positions still open")
+
         # Calculate results
         results = self._calculate_results()
-        
+
         return results
     
     def _generate_signals(self, market_data: Dict[str, pd.DataFrame]) -> List[StrategySignal]:
         """Generate trading signals from strategies"""
         all_signals = []
-        
+
         for symbol, data in market_data.items():
-            if len(data) < 100:  # Need minimum data
+            if len(data) < 30:  # Need minimum data for indicators (was 100, too strict)
                 continue
-            
+
+            # Ensure index.name is set so strategies know the symbol
+            data.index.name = symbol
+
             # Run strategies
-            signals = self.strategy_manager.analyze_all(data, self.positions)
-            
+            try:
+                signals = self.strategy_manager.analyze_all(data, self.positions)
+            except Exception as e:
+                logger.debug(f"Strategy error for {symbol} (len={len(data)}): {e}")
+                continue
+
+            # Fix symbol on signals (strategies may set 'UNKNOWN' if index.name wasn't set)
+            for sig in signals:
+                if sig.symbol == 'UNKNOWN' or not sig.symbol:
+                    sig.symbol = symbol
+
             # Filter with ML models if configured
             if self.model_manager.active_model:
                 signals = self._filter_signals_with_ml(signals, data)
-            
+
+            if signals:
+                logger.info(f"Backtest: {len(signals)} signals for {symbol} at {data.index[-1]}")
+
             all_signals.extend(signals)
-        
+
         # Apply portfolio-level filters
         if self.config.use_portfolio_optimization:
             all_signals = self._optimize_portfolio_signals(all_signals)
-        
+
         return all_signals
     
     def _filter_signals_with_ml(self, signals: List[StrategySignal], 
@@ -285,21 +311,24 @@ class BacktestingEngine:
     def _process_signal(self, signal: StrategySignal, market_data: Dict[str, pd.DataFrame]):
         """Process a trading signal"""
         symbol = signal.symbol
-        
+
         # Check if we already have a position
         if symbol in self.positions and signal.signal_type in [SignalType.BUY]:
+            logger.debug(f"Backtest: Skipping {symbol} BUY - already have position")
             return
-        
+
         # Check position limits
         if len(self.positions) >= self.config.max_positions:
+            logger.debug(f"Backtest: Skipping {symbol} - max positions ({self.config.max_positions}) reached")
             return
-        
+
         # Get current price
         if symbol not in market_data or len(market_data[symbol]) == 0:
+            logger.debug(f"Backtest: Skipping {symbol} - no market data")
             return
-        
+
         current_bar = market_data[symbol].iloc[-1]
-        
+
         if signal.signal_type == SignalType.BUY:
             # Calculate position size
             position_size = self._calculate_position_size(signal, current_bar['close'])
