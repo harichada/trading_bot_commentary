@@ -12652,42 +12652,61 @@ trading_engine = None
 connection_manager = ConnectionManager()
 
 async def simulate_backtest(historical_data: Dict[str, pd.DataFrame], config: dict) -> dict:
-    """Simulate a backtest with the given historical data"""
+    """Simulate a backtest using the real StrategyManager strategies"""
+    from strategy_system import StrategyManager, SignalType
+    import ta
+
     initial_capital = config.get('initial_capital', 100000)
     commission = config.get('commission', 0.001)  # 0.1% per trade
-    
+    stop_loss_pct = 0.01  # 1% stop loss
+    take_profit_pct = 0.025  # 2.5% take profit
+
     # Initialize tracking variables
     cash = initial_capital
     positions = {}
     trades = []
     equity_curve = []
-    
+    strategy_stats = {}  # Track per-strategy performance
+
+    # Initialize strategy manager with real strategies
+    strategy_manager = StrategyManager()
+
     # Get all unique timestamps across all symbols
     all_timestamps = set()
     for df in historical_data.values():
         all_timestamps.update(df.index)
     all_timestamps = sorted(list(all_timestamps))
-    
+
     # Simulate trading
     for timestamp in all_timestamps:
         current_equity = cash
-        
-        # Update positions with current prices
+
+        # Update positions and check exits
         for symbol, position in list(positions.items()):
             if symbol in historical_data and timestamp in historical_data[symbol].index:
-                current_price = historical_data[symbol].loc[timestamp, 'Close']
+                current_price = float(historical_data[symbol].loc[timestamp, 'Close'])
                 position['current_price'] = current_price
                 position['value'] = position['quantity'] * current_price
                 position['unrealized_pnl'] = (current_price - position['entry_price']) * position['quantity']
                 current_equity += position['value']
-                
-                # Simple exit logic - exit if 2% profit or 1% loss
+
                 pnl_pct = (current_price - position['entry_price']) / position['entry_price']
-                if pnl_pct > 0.02 or pnl_pct < -0.01:
-                    # Close position
+
+                # Exit on stop loss or take profit
+                should_exit = False
+                exit_reason = ''
+                if pnl_pct <= -stop_loss_pct:
+                    should_exit = True
+                    exit_reason = 'stop_loss'
+                elif pnl_pct >= take_profit_pct:
+                    should_exit = True
+                    exit_reason = 'take_profit'
+
+                if should_exit:
                     trade_pnl = position['unrealized_pnl'] - (position['value'] * commission)
                     cash += position['value'] - (position['value'] * commission)
-                    
+
+                    strategy_name = position.get('strategy', 'unknown')
                     trades.append({
                         'symbol': symbol,
                         'entry_time': position['entry_time'],
@@ -12696,84 +12715,136 @@ async def simulate_backtest(historical_data: Dict[str, pd.DataFrame], config: di
                         'exit_price': current_price,
                         'quantity': position['quantity'],
                         'pnl': trade_pnl,
-                        'pnl_pct': pnl_pct
+                        'pnl_pct': pnl_pct,
+                        'strategy': strategy_name,
+                        'exit_reason': exit_reason
                     })
-                    
+
+                    # Track strategy performance
+                    if strategy_name not in strategy_stats:
+                        strategy_stats[strategy_name] = {'wins': 0, 'losses': 0, 'total_pnl': 0}
+                    if trade_pnl > 0:
+                        strategy_stats[strategy_name]['wins'] += 1
+                    else:
+                        strategy_stats[strategy_name]['losses'] += 1
+                    strategy_stats[strategy_name]['total_pnl'] += trade_pnl
+
                     del positions[symbol]
-        
-        # Generate entry signals (simple momentum strategy for demo)
+
+        # Generate entry signals using real StrategyManager
         for symbol, df in historical_data.items():
-            if timestamp in df.index and symbol not in positions and len(positions) < 5:
-                # Get recent data
-                idx = df.index.get_loc(timestamp)
-                if idx >= 20:  # Need at least 20 periods
-                    recent_data = df.iloc[max(0, idx-20):idx+1]
-                    
-                    # Simple momentum signal
-                    returns = recent_data['Close'].pct_change().dropna()
-                    if len(returns) > 0 and returns.mean() > 0.001 and returns.iloc[-1] > 0:
-                        # Enter position
-                        position_size = (current_equity * 0.1) / recent_data['Close'].iloc[-1]  # 10% of equity
-                        position_value = position_size * recent_data['Close'].iloc[-1]
-                        
-                        if cash >= position_value * (1 + commission):
-                            positions[symbol] = {
-                                'quantity': position_size,
-                                'entry_price': recent_data['Close'].iloc[-1],
-                                'entry_time': timestamp,
-                                'current_price': recent_data['Close'].iloc[-1],
-                                'value': position_value
-                            }
-                            cash -= position_value * (1 + commission)
-        
-        # Record equity
+            if timestamp not in df.index or symbol in positions or len(positions) >= 5:
+                continue
+
+            idx = df.index.get_loc(timestamp)
+            if idx < 50:  # Need minimum data for indicators
+                continue
+
+            recent_data = df.iloc[max(0, idx - 100):idx + 1].copy()
+            if len(recent_data) < 30:
+                continue
+
+            # Prepare data in lowercase format for StrategyManager
+            backtest_df = recent_data.rename(columns={
+                'Open': 'open', 'High': 'high', 'Low': 'low',
+                'Close': 'close', 'Volume': 'volume'
+            })
+            backtest_df.index.name = symbol
+
+            try:
+                # Run all strategies through the real StrategyManager
+                signals = strategy_manager.analyze_all(backtest_df, positions)
+
+                # Take the best buy signal if any
+                buy_signals = [s for s in signals if s.signal_type == SignalType.BUY]
+                if buy_signals:
+                    best_signal = max(buy_signals, key=lambda s: s.strength)
+                    entry_price = float(recent_data['Close'].iloc[-1])
+
+                    # Position sizing: 10% of equity per position
+                    position_value = current_equity * 0.1
+                    position_size = position_value / entry_price
+
+                    if cash >= position_value * (1 + commission) and position_size > 0:
+                        positions[symbol] = {
+                            'quantity': position_size,
+                            'entry_price': entry_price,
+                            'entry_time': timestamp,
+                            'current_price': entry_price,
+                            'value': position_value,
+                            'strategy': best_signal.strategy_name
+                        }
+                        cash -= position_value * (1 + commission)
+            except Exception as e:
+                logger.debug(f"Backtest strategy error for {symbol} at {timestamp}: {e}")
+                continue
+
+        # Record equity (sample every N bars to keep output manageable)
         equity_curve.append({
             'date': timestamp.strftime('%Y-%m-%d'),
             'value': current_equity
         })
-    
+
+    # Close remaining positions at final prices
+    for symbol, position in list(positions.items()):
+        if symbol in historical_data and len(historical_data[symbol]) > 0:
+            final_price = float(historical_data[symbol]['Close'].iloc[-1])
+            trade_pnl = (final_price - position['entry_price']) * position['quantity']
+            trade_pnl -= position['quantity'] * final_price * commission
+            pnl_pct = (final_price - position['entry_price']) / position['entry_price']
+            cash += position['quantity'] * final_price * (1 - commission)
+            trades.append({
+                'symbol': symbol,
+                'entry_time': position['entry_time'],
+                'exit_time': all_timestamps[-1] if all_timestamps else datetime.now(),
+                'entry_price': position['entry_price'],
+                'exit_price': final_price,
+                'quantity': position['quantity'],
+                'pnl': trade_pnl,
+                'pnl_pct': pnl_pct,
+                'strategy': position.get('strategy', 'unknown'),
+                'exit_reason': 'end_of_backtest'
+            })
+
     # Calculate performance metrics
     equity_df = pd.DataFrame(equity_curve)
+    winning_trades = []
+    losing_trades = []
+
     if not equity_df.empty:
         equity_df['date'] = pd.to_datetime(equity_df['date'])
         equity_df.set_index('date', inplace=True)
-        
-        # Remove duplicates by keeping last value for each date
         equity_df = equity_df.groupby(equity_df.index).last()
-        
+
         daily_returns = equity_df['value'].pct_change().dropna()
-        
+
         total_return = (equity_df['value'].iloc[-1] - initial_capital) / initial_capital
-        annual_return = (1 + total_return) ** (252 / len(equity_df)) - 1 if len(equity_df) > 0 else 0
-        
+        annual_return = (1 + total_return) ** (252 / max(len(equity_df), 1)) - 1
+
         sharpe_ratio = np.sqrt(252) * daily_returns.mean() / daily_returns.std() if daily_returns.std() > 0 else 0
-        
-        # Calculate drawdown
+
         rolling_max = equity_df['value'].expanding().max()
         drawdown = (equity_df['value'] - rolling_max) / rolling_max
-        max_drawdown = drawdown.min()
-        
-        # Trade statistics
+        max_drawdown = float(drawdown.min())
+
         winning_trades = [t for t in trades if t['pnl'] > 0]
         losing_trades = [t for t in trades if t['pnl'] <= 0]
-        
+
         win_rate = len(winning_trades) / len(trades) if trades else 0
-        avg_win = np.mean([t['pnl'] for t in winning_trades]) if winning_trades else 0
-        avg_loss = np.mean([t['pnl'] for t in losing_trades]) if losing_trades else 0
+        avg_win = float(np.mean([t['pnl'] for t in winning_trades])) if winning_trades else 0
+        avg_loss = float(np.mean([t['pnl'] for t in losing_trades])) if losing_trades else 0
         profit_factor = abs(sum(t['pnl'] for t in winning_trades) / sum(t['pnl'] for t in losing_trades)) if losing_trades and sum(t['pnl'] for t in losing_trades) != 0 else 0
-        
-        # Monthly returns
+
         monthly_returns = []
-        if not equity_df.empty:
+        if not equity_df.empty and len(equity_df) > 1:
             monthly = equity_df.resample('M').last()
             monthly_pct = monthly['value'].pct_change().dropna()
             for date, ret in monthly_pct.items():
                 monthly_returns.append({
                     'month': date.strftime('%Y-%m'),
-                    'return': ret
+                    'return': float(ret)
                 })
     else:
-        # Default values if no data
         total_return = 0
         annual_return = 0
         sharpe_ratio = 0
@@ -12783,38 +12854,53 @@ async def simulate_backtest(historical_data: Dict[str, pd.DataFrame], config: di
         avg_loss = 0
         profit_factor = 0
         monthly_returns = []
-    
-    return {
-        'summary': {
-            'total_return': total_return,
-            'annual_return': annual_return,
-            'sharpe_ratio': sharpe_ratio,
-            'sortino_ratio': sharpe_ratio * 0.8,  # Approximation
-            'max_drawdown': max_drawdown,
-            'win_rate': win_rate,
-            'total_trades': len(trades),
-            'winning_trades': len(winning_trades) if trades else 0,
-            'losing_trades': len(losing_trades) if trades else 0,
-            'profit_factor': profit_factor,
-            'average_win': avg_win,
-            'average_loss': avg_loss,
-            'best_trade': max([t['pnl'] for t in trades]) if trades else 0,
-            'worst_trade': min([t['pnl'] for t in trades]) if trades else 0,
-            'commission_paid': sum([t.get('commission', 0) for t in trades]),
-            'initial_capital': initial_capital,
-            'final_capital': equity_df['value'].iloc[-1] if not equity_df.empty else initial_capital
-        },
-        'trades': trades,
-        'equity_curve': equity_curve[-100:],  # Last 100 points
-        'monthly_returns': monthly_returns,
-        'strategy_performance': {
-            'momentum': {
+
+    # Build per-strategy performance report
+    strategy_performance = {}
+    for name, stats in strategy_stats.items():
+        total = stats['wins'] + stats['losses']
+        strategy_performance[name] = {
+            'trades': total,
+            'win_rate': stats['wins'] / total if total > 0 else 0,
+            'total_pnl': float(stats['total_pnl']),
+            'avg_return': float(stats['total_pnl'] / total) if total > 0 else 0
+        }
+
+    # If no per-strategy data, show aggregate
+    if not strategy_performance:
+        strategy_performance = {
+            'all': {
                 'trades': len(trades),
                 'win_rate': win_rate,
-                'avg_return': total_return / len(trades) if trades else 0,
-                'total_return': total_return
+                'avg_return': float(total_return / len(trades)) if trades else 0,
+                'total_return': float(total_return)
             }
         }
+
+    return {
+        'summary': {
+            'total_return': float(total_return),
+            'annual_return': float(annual_return),
+            'sharpe_ratio': float(sharpe_ratio),
+            'sortino_ratio': float(sharpe_ratio * 0.8),
+            'max_drawdown': float(max_drawdown),
+            'win_rate': float(win_rate),
+            'total_trades': len(trades),
+            'winning_trades': len(winning_trades),
+            'losing_trades': len(losing_trades),
+            'profit_factor': float(profit_factor),
+            'average_win': float(avg_win),
+            'average_loss': float(avg_loss),
+            'best_trade': float(max([t['pnl'] for t in trades])) if trades else 0,
+            'worst_trade': float(min([t['pnl'] for t in trades])) if trades else 0,
+            'commission_paid': 0,
+            'initial_capital': initial_capital,
+            'final_capital': float(equity_df['value'].iloc[-1]) if not equity_df.empty else initial_capital
+        },
+        'trades': trades[-100:],
+        'equity_curve': equity_curve[-500:],
+        'monthly_returns': monthly_returns,
+        'strategy_performance': strategy_performance
     }
 
 @app.post("/api/toggle-mode")
