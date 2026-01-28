@@ -14207,6 +14207,30 @@ async def websocket_endpoint(websocket: WebSocket):
                         'high': m.get('high', 0),
                         'low': m.get('low', 0)
                     } for m in trading_engine.screener.top_movers[:10]]
+
+                # Fallback: use watchlist quotes from data provider when screener has no data
+                if not screener_data and trading_engine.data_provider:
+                    try:
+                        for sym in trading_engine.dynamic_watchlist[:10]:
+                            quote = trading_engine.data_provider.get_quote(sym)
+                            if quote and quote.get('last', 0) > 0:
+                                last_price = quote['last']
+                                prev_close = quote.get('close', last_price)
+                                change_pct = ((last_price - prev_close) / prev_close * 100) if prev_close > 0 else 0
+                                high = quote.get('high', last_price)
+                                low = quote.get('low', last_price)
+                                volatility = ((high - low) / last_price * 100) if last_price > 0 else 0
+                                screener_data.append({
+                                    'symbol': sym,
+                                    'last': last_price,
+                                    'change': change_pct,
+                                    'volume': quote.get('volume', 0),
+                                    'volatility': volatility,
+                                    'high': high,
+                                    'low': low
+                                })
+                    except Exception as e:
+                        logger.debug(f"Ticker tape fallback error: {e}")
                 
                 # Get sentiment data (every 30 seconds to avoid excessive API calls)
                 sentiment_data = None
