@@ -7696,7 +7696,7 @@ class TradingEngineWithCommentary:
                             type=CommentaryType.WARNING,
                             symbol=None,
                             title="🚨 EMERGENCY STOP (Manual Mode)",
-                            message=f"Daily loss of ${abs(pnl_to_check):.2f} exceeded 5% limit (${self.risk_manager.account_balance * 0.05:.2f}). "
+                            message=f"Daily loss of ${abs(schwab_pnl):.2f} exceeded 5% limit (${self.risk_manager.account_balance * 0.05:.2f}). "
                                    f"Manual close only is ON - YOU must close positions manually!",
                             importance=10
                         ))
@@ -7710,7 +7710,7 @@ class TradingEngineWithCommentary:
                             type=CommentaryType.WARNING,
                             symbol=None,
                             title="🚨 EMERGENCY STOP",
-                            message=f"Daily loss of ${abs(pnl_to_check):.2f} exceeded 5% limit (${self.risk_manager.account_balance * 0.05:.2f}). Closing all positions.",
+                            message=f"Daily loss of ${abs(schwab_pnl):.2f} exceeded 5% limit (${self.risk_manager.account_balance * 0.05:.2f}). Closing all positions.",
                             importance=10
                         ))
                         
