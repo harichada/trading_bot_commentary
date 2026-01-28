@@ -731,41 +731,41 @@ class StrategyManager:
                 name='MA Crossover',
                 enabled=True,
                 weight=1.0,
-                parameters={'fast_period': 9, 'slow_period': 21}  # Standard day trading periods
+                parameters={'fast_period': 9, 'slow_period': 21}
             ),
             'rsi_momentum': StrategyConfig(
                 name='RSI Momentum',
                 enabled=True,
                 weight=0.8,
-                parameters={'rsi_period': 14, 'oversold_level': 30, 'overbought_level': 70}  # Standard levels
+                parameters={'rsi_period': 14, 'oversold_level': 35, 'overbought_level': 65}
             ),
             'bollinger_bands': StrategyConfig(
                 name='Bollinger Bands',
                 enabled=True,
                 weight=0.9,
-                parameters={'bb_period': 20, 'bb_std': 2.0}  # Standard 2.0 std deviation
+                parameters={'bb_period': 20, 'bb_std': 1.8}  # Tighter than 2.0 but not as loose as 1.5
             ),
             'macd': StrategyConfig(
                 name='MACD',
                 enabled=True,
                 weight=0.7,
-                parameters={'fast_period': 12, 'slow_period': 26, 'signal_period': 9}  # Standard MACD
+                parameters={'fast_period': 12, 'slow_period': 26, 'signal_period': 9}
             ),
             'momentum_breakout': StrategyConfig(
                 name='Momentum Breakout',
                 enabled=True,
                 weight=1.0,
                 parameters={
-                    'roc_period': 5,            # Standard lookback
-                    'range_period': 10,          # Standard range
-                    'volume_surge': 1.5,         # Require 50% above avg volume
-                    'momentum_threshold': 1.0    # Require 1.0% move
+                    'roc_period': 5,
+                    'range_period': 10,
+                    'volume_surge': 1.3,         # 30% above avg (was 1.1 too loose, 1.5 too tight)
+                    'momentum_threshold': 0.8    # 0.8% move (was 0.5 too loose, 1.0 too tight)
                 }
             ),
             'simple_price_action': StrategyConfig(
                 name='Simple Price Action',
-                enabled=False,  # Disabled - too many false signals
-                weight=0.8,
+                enabled=True,
+                weight=0.5,  # Low weight - consensus filter will gate it in live trading
                 parameters={}
             ),
             'volume_profile': StrategyConfig(
@@ -857,7 +857,7 @@ class StrategyManager:
         # No single-signal bypasses - always require consensus
         if buy_signals and len(buy_signals) >= 2:  # Require at least 2 strategies to agree
             avg_strength = sum(s.strength for s in buy_signals) / len(buy_signals)
-            if avg_strength > 0.65:  # Raised threshold for consensus
+            if avg_strength > 0.60:  # Consensus threshold
                 # Create consensus signal
                 consensus = StrategySignal(
                     symbol=buy_signals[0].symbol,
@@ -879,7 +879,7 @@ class StrategyManager:
         # Sell consensus (requires 2+ strategies agreeing)
         if sell_signals and len(sell_signals) >= 2:
             avg_strength = sum(s.strength for s in sell_signals) / len(sell_signals)
-            if avg_strength > 0.65:  # Raised threshold
+            if avg_strength > 0.60:  # Consensus threshold
                 consensus = StrategySignal(
                     symbol=sell_signals[0].symbol,
                     signal_type=sell_signals[0].signal_type,
