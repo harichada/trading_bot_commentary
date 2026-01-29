@@ -11428,6 +11428,57 @@ DASHBOARD_HTML_WITH_COMMENTARY = """
                         <label>Commission (%)</label>
                         <input type="number" id="bt-commission" value="0.1" step="0.01" min="0">
                     </div>
+                    <div class="backtest-input-group" style="grid-column: 1 / -1;">
+                        <label>Strategies (select which to test)</label>
+                        <p style="color: #888; font-size: 11px; margin: 4px 0 8px 0;">Enhanced strategies (recommended) adapt to market conditions automatically.</p>
+                        <div id="bt-strategies" style="display: flex; flex-wrap: wrap; gap: 12px; margin-top: 8px;">
+                            <!-- Enhanced Strategies (Recommended) -->
+                            <label style="display: flex; align-items: center; gap: 4px; cursor: pointer; background: #1a2a1a; padding: 4px 8px; border-radius: 4px; border: 1px solid #2a4a2a;">
+                                <input type="checkbox" value="adaptive" checked> 🧠 Adaptive
+                            </label>
+                            <label style="display: flex; align-items: center; gap: 4px; cursor: pointer; background: #1a2a1a; padding: 4px 8px; border-radius: 4px; border: 1px solid #2a4a2a;">
+                                <input type="checkbox" value="smart_trend" checked> 📈 Smart Trend
+                            </label>
+                            <label style="display: flex; align-items: center; gap: 4px; cursor: pointer; background: #1a2a1a; padding: 4px 8px; border-radius: 4px; border: 1px solid #2a4a2a;">
+                                <input type="checkbox" value="mean_reversion" checked> 🔄 Mean Reversion
+                            </label>
+                            <label style="display: flex; align-items: center; gap: 4px; cursor: pointer; background: #1a2a1a; padding: 4px 8px; border-radius: 4px; border: 1px solid #2a4a2a;">
+                                <input type="checkbox" value="volume_breakout" checked> 📊 Volume Breakout
+                            </label>
+                            <label style="display: flex; align-items: center; gap: 4px; cursor: pointer; background: #1a2a1a; padding: 4px 8px; border-radius: 4px; border: 1px solid #2a4a2a;">
+                                <input type="checkbox" value="support_resistance" checked> 🎯 Support/Resistance
+                            </label>
+                            <!-- Legacy Strategies -->
+                            <label style="display: flex; align-items: center; gap: 4px; cursor: pointer; opacity: 0.7;">
+                                <input type="checkbox" value="ma_cross"> MA Cross
+                            </label>
+                            <label style="display: flex; align-items: center; gap: 4px; cursor: pointer; opacity: 0.7;">
+                                <input type="checkbox" value="rsi_momentum"> RSI Momentum
+                            </label>
+                            <label style="display: flex; align-items: center; gap: 4px; cursor: pointer; opacity: 0.7;">
+                                <input type="checkbox" value="macd"> MACD
+                            </label>
+                            <label style="display: flex; align-items: center; gap: 4px; cursor: pointer; opacity: 0.7;">
+                                <input type="checkbox" value="bollinger_bands"> Bollinger
+                            </label>
+                        </div>
+                    </div>
+                    <div class="backtest-input-group" style="grid-column: 1 / -1; margin-top: 10px; padding-top: 10px; border-top: 1px solid #333;">
+                        <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                            <input type="checkbox" id="bt-use-consensus" checked>
+                            <span><strong>Use Consensus Mode</strong> (Recommended) — Require 2+ strategies to agree before trading</span>
+                        </label>
+                        <p style="color: #666; font-size: 11px; margin: 5px 0 0 26px;">
+                            Without consensus, strategies fire independently and can conflict, causing excessive trades and losses.
+                        </p>
+                        <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; margin-top: 10px;">
+                            <input type="checkbox" id="bt-exit-on-signal" checked>
+                            <span><strong>Exit on Opposite Signal</strong> (Recommended) — Close positions when consensus reverses</span>
+                        </label>
+                        <p style="color: #666; font-size: 11px; margin: 5px 0 0 26px;">
+                            Captures small profits before stop losses hit. Works best with consensus mode.
+                        </p>
+                    </div>
                 </div>
                 <div style="text-align: center; margin-top: 20px;">
                     <button onclick="runBacktest()" class="run-backtest-btn" id="run-backtest-btn">
@@ -11477,6 +11528,53 @@ DASHBOARD_HTML_WITH_COMMENTARY = """
                         </tbody>
                     </table>
                 </div>
+
+                <!-- Backtest Logs Panel -->
+                <div class="card" id="backtest-logs-container">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                        <h3 style="margin: 0;">Backtest Log</h3>
+                        <div>
+                            <select id="bt-log-filter" onchange="filterBacktestLogs()" style="padding: 5px 10px; background: #2a2a2a; border: 1px solid #444; color: #fff; border-radius: 4px;">
+                                <option value="all">All</option>
+                                <option value="signal">Signals</option>
+                                <option value="trade_open">Trades Opened</option>
+                                <option value="trade_close">Trades Closed</option>
+                                <option value="stop_hit">Stop Hits</option>
+                                <option value="tp_hit">Take Profit Hits</option>
+                                <option value="skip">Skipped</option>
+                                <option value="info">Info</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div id="backtest-log-entries" style="max-height: 400px; overflow-y: auto; font-family: monospace; font-size: 12px; background: #1a1a1a; border-radius: 4px; padding: 10px;">
+                        <div style="color: #666; text-align: center; padding: 20px;">Run a backtest to see logs</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Saved Reports Panel -->
+            <div class="card" id="backtest-saved-reports">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                    <h3 style="margin: 0;">📁 Saved Reports</h3>
+                    <button onclick="loadSavedReports()" style="padding: 5px 15px; background: #333; border: 1px solid #444; color: #fff; border-radius: 4px; cursor: pointer;">
+                        🔄 Refresh
+                    </button>
+                </div>
+                <div id="saved-reports-list" style="max-height: 300px; overflow-y: auto;">
+                    <div style="color: #666; text-align: center; padding: 20px;">Loading reports...</div>
+                </div>
+                <div id="compare-controls" style="margin-top: 15px; padding-top: 15px; border-top: 1px solid #333; display: none;">
+                    <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+                        <span style="color: #888;">Compare:</span>
+                        <select id="compare-report-1" style="padding: 5px; background: #2a2a2a; border: 1px solid #444; color: #fff; border-radius: 4px; flex: 1; min-width: 150px;"></select>
+                        <span style="color: #666;">vs</span>
+                        <select id="compare-report-2" style="padding: 5px; background: #2a2a2a; border: 1px solid #444; color: #fff; border-radius: 4px; flex: 1; min-width: 150px;"></select>
+                        <button onclick="compareReports()" style="padding: 5px 15px; background: #4a9eff; border: none; color: #fff; border-radius: 4px; cursor: pointer;">
+                            Compare
+                        </button>
+                    </div>
+                </div>
+                <div id="comparison-results" style="margin-top: 15px; display: none;"></div>
             </div>
 
             <!-- No Data Message -->
@@ -11488,7 +11586,7 @@ DASHBOARD_HTML_WITH_COMMENTARY = """
                     Results will include performance metrics, equity curves, and detailed trade history.
                 </p>
                 <p style="color: #666; font-size: 12px; margin-top: 20px;">
-                    Note: Requires historical data files in the ./historical_data/ directory
+                    Note: Backtest reports are automatically saved for comparison.
                 </p>
             </div>
         </div>
@@ -11521,6 +11619,8 @@ DASHBOARD_HTML_WITH_COMMENTARY = """
             // Load tab-specific data
             if (tabName === 'sentiment') {
                 loadSentimentTab();
+            } else if (tabName === 'backtest') {
+                loadSavedReports();
             }
         }
 
@@ -11696,13 +11796,15 @@ DASHBOARD_HTML_WITH_COMMENTARY = """
         }
 
         // ============== BACKTESTING FUNCTIONS ==============
+        let backtestPollInterval = null;
+
         async function runBacktest() {
             if (backtestRunning) return;
 
             backtestRunning = true;
             const btn = document.getElementById('run-backtest-btn');
             btn.disabled = true;
-            btn.textContent = '⏳ Running...';
+            btn.textContent = '⏳ Starting...';
 
             // Show progress
             const progress = document.getElementById('backtest-progress');
@@ -11710,6 +11812,11 @@ DASHBOARD_HTML_WITH_COMMENTARY = """
             document.getElementById('backtest-status').textContent = 'Initializing...';
             document.getElementById('backtest-percent').textContent = '0%';
             document.getElementById('backtest-progress-fill').style.width = '0%';
+
+            // Collect selected strategies
+            const strategies = Array.from(
+                document.querySelectorAll('#bt-strategies input:checked')
+            ).map(cb => cb.value);
 
             // Get configuration
             const config = {
@@ -11720,57 +11827,82 @@ DASHBOARD_HTML_WITH_COMMENTARY = """
                 timeframe: document.getElementById('bt-timeframe').value,
                 mode: document.getElementById('bt-mode').value,
                 max_positions: parseInt(document.getElementById('bt-max-positions').value),
-                commission: parseFloat(document.getElementById('bt-commission').value) / 100
+                commission: parseFloat(document.getElementById('bt-commission').value) / 100,
+                strategies: strategies.length > 0 ? strategies : null,
+                use_consensus: document.getElementById('bt-use-consensus').checked,
+                exit_on_opposite_signal: document.getElementById('bt-exit-on-signal').checked
             };
 
             try {
-                // Simulate progress updates
-                let progressPercent = 0;
-                const progressInterval = setInterval(() => {
-                    if (progressPercent < 90) {
-                        progressPercent += Math.random() * 10;
-                        document.getElementById('backtest-progress-fill').style.width = progressPercent + '%';
-                        document.getElementById('backtest-percent').textContent = Math.round(progressPercent) + '%';
-                        document.getElementById('backtest-status').textContent =
-                            progressPercent < 30 ? 'Loading historical data...' :
-                            progressPercent < 60 ? 'Running strategy signals...' :
-                            'Calculating metrics...';
-                    }
-                }, 500);
-
+                // Start the backtest
                 const response = await fetch('/api/backtest/run', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify(config)
                 });
 
-                clearInterval(progressInterval);
+                const startResult = await response.json();
 
-                if (response.ok) {
-                    const result = await response.json();
-                    document.getElementById('backtest-progress-fill').style.width = '100%';
-                    document.getElementById('backtest-percent').textContent = '100%';
-                    document.getElementById('backtest-status').textContent = 'Complete!';
-
-                    if (result.status === 'success') {
-                        displayBacktestResults(result.data);
-                    } else {
-                        alert('Backtest failed: ' + result.message);
-                    }
-                } else {
-                    alert('Backtest request failed');
+                if (startResult.status === 'error') {
+                    alert('Backtest failed: ' + startResult.message);
+                    resetBacktestUI();
+                    return;
                 }
+
+                if (startResult.status !== 'started') {
+                    alert('Unexpected response: ' + JSON.stringify(startResult));
+                    resetBacktestUI();
+                    return;
+                }
+
+                btn.textContent = '⏳ Running...';
+
+                // Poll for progress
+                backtestPollInterval = setInterval(async () => {
+                    try {
+                        const statusResp = await fetch('/api/backtest/status');
+                        const status = await statusResp.json();
+
+                        document.getElementById('backtest-progress-fill').style.width = status.progress + '%';
+                        document.getElementById('backtest-percent').textContent = status.progress + '%';
+                        document.getElementById('backtest-status').textContent = status.message || 'Processing...';
+
+                        if (status.status === 'complete') {
+                            clearInterval(backtestPollInterval);
+                            backtestPollInterval = null;
+                            document.getElementById('backtest-status').textContent = 'Complete!';
+                            displayBacktestResults(status.data);
+                            resetBacktestUI();
+                        } else if (status.status === 'error') {
+                            clearInterval(backtestPollInterval);
+                            backtestPollInterval = null;
+                            alert('Backtest failed: ' + status.message);
+                            resetBacktestUI();
+                        }
+                    } catch (pollErr) {
+                        console.error('Polling error:', pollErr);
+                    }
+                }, 500);
+
             } catch (err) {
                 console.error('Backtest error:', err);
                 alert('Backtest error: ' + err.message);
-            } finally {
-                backtestRunning = false;
-                btn.disabled = false;
-                btn.textContent = '🚀 Run Backtest';
-                setTimeout(() => {
-                    progress.classList.remove('active');
-                }, 2000);
+                resetBacktestUI();
             }
+        }
+
+        function resetBacktestUI() {
+            backtestRunning = false;
+            const btn = document.getElementById('run-backtest-btn');
+            btn.disabled = false;
+            btn.textContent = '🚀 Run Backtest';
+            if (backtestPollInterval) {
+                clearInterval(backtestPollInterval);
+                backtestPollInterval = null;
+            }
+            setTimeout(() => {
+                document.getElementById('backtest-progress').classList.remove('active');
+            }, 2000);
         }
 
         function displayBacktestResults(results) {
@@ -11838,6 +11970,241 @@ DASHBOARD_HTML_WITH_COMMENTARY = """
                     </tr>
                 `).join('');
             }
+
+            // Display logs
+            if (results.logs && results.logs.length > 0) {
+                window.backtestLogs = results.logs;
+                displayBacktestLogs(results.logs);
+            }
+        }
+
+        // Store logs globally for filtering
+        window.backtestLogs = [];
+
+        function displayBacktestLogs(logs) {
+            const container = document.getElementById('backtest-log-entries');
+            if (!logs || logs.length === 0) {
+                container.innerHTML = '<div style="color: #666; text-align: center; padding: 20px;">No logs available</div>';
+                return;
+            }
+
+            const categoryColors = {
+                'signal': '#4a9eff',
+                'trade_open': '#4CAF50',
+                'trade_close': '#ff9800',
+                'stop_hit': '#f44336',
+                'tp_hit': '#8bc34a',
+                'skip': '#666',
+                'info': '#888',
+                'error': '#f44336'
+            };
+
+            const levelColors = {
+                'info': '#aaa',
+                'warning': '#ff9800',
+                'error': '#f44336',
+                'debug': '#666'
+            };
+
+            container.innerHTML = logs.map(log => {
+                const catColor = categoryColors[log.category] || '#888';
+                const lvlColor = levelColors[log.level] || '#aaa';
+                return `<div class="log-entry" data-category="${log.category}" style="padding: 4px 8px; border-bottom: 1px solid #333; color: ${lvlColor};">
+                    <span style="color:#555;">${log.timestamp ? log.timestamp.substring(11, 19) : ''}</span>
+                    <span style="color:${catColor}; font-weight: bold;">[${log.category}]</span>
+                    <span style="color:#4a9eff;">${log.symbol || ''}</span>
+                    <span>${log.message}</span>
+                </div>`;
+            }).join('');
+        }
+
+        function filterBacktestLogs() {
+            const filter = document.getElementById('bt-log-filter').value;
+            const logs = window.backtestLogs || [];
+
+            if (filter === 'all') {
+                displayBacktestLogs(logs);
+            } else {
+                const filtered = logs.filter(log => log.category === filter);
+                displayBacktestLogs(filtered);
+            }
+        }
+
+        // ============== SAVED REPORTS FUNCTIONS ==============
+        async function loadSavedReports() {
+            const container = document.getElementById('saved-reports-list');
+            container.innerHTML = '<div style="color: #666; text-align: center; padding: 20px;">Loading...</div>';
+
+            try {
+                const response = await fetch('/api/backtest/reports');
+                const result = await response.json();
+
+                if (result.status !== 'success' || !result.reports || result.reports.length === 0) {
+                    container.innerHTML = '<div style="color: #666; text-align: center; padding: 20px;">No saved reports yet. Run a backtest to create one.</div>';
+                    document.getElementById('compare-controls').style.display = 'none';
+                    return;
+                }
+
+                // Display reports
+                container.innerHTML = result.reports.map(r => {
+                    const returnClass = r.total_return >= 0 ? 'positive' : 'negative';
+                    const returnPct = (r.total_return * 100).toFixed(2);
+                    const winRate = (r.win_rate * 100).toFixed(1);
+                    const ddPct = (r.max_drawdown * 100).toFixed(2);
+                    const timestamp = r.timestamp ? new Date(r.timestamp).toLocaleString() : 'Unknown';
+
+                    return `<div class="saved-report-item" style="padding: 12px; border-bottom: 1px solid #333; display: flex; justify-content: space-between; align-items: center;">
+                        <div style="flex: 1;">
+                            <div style="font-weight: bold; color: #fff; margin-bottom: 4px;">
+                                ${r.symbols.join(', ')} | ${r.timeframe}
+                            </div>
+                            <div style="font-size: 11px; color: #666;">
+                                ${timestamp} | ${r.strategies.length} strategies | ${r.total_trades} trades
+                            </div>
+                        </div>
+                        <div style="text-align: right; margin-right: 15px;">
+                            <div class="${returnClass}" style="font-weight: bold;">${returnPct}%</div>
+                            <div style="font-size: 11px; color: #666;">Win: ${winRate}% | DD: ${ddPct}%</div>
+                        </div>
+                        <div>
+                            <button onclick="viewReport('${r.filename}')" style="padding: 4px 10px; background: #333; border: 1px solid #444; color: #fff; border-radius: 4px; cursor: pointer; margin-right: 5px;">
+                                View
+                            </button>
+                            <button onclick="deleteReport('${r.filename}')" style="padding: 4px 10px; background: #442222; border: 1px solid #663333; color: #f44336; border-radius: 4px; cursor: pointer;">
+                                🗑
+                            </button>
+                        </div>
+                    </div>`;
+                }).join('');
+
+                // Populate compare dropdowns
+                const select1 = document.getElementById('compare-report-1');
+                const select2 = document.getElementById('compare-report-2');
+                const options = result.reports.map(r =>
+                    `<option value="${r.filename}">${r.symbols.join(',')} - ${new Date(r.timestamp).toLocaleDateString()}</option>`
+                ).join('');
+                select1.innerHTML = options;
+                select2.innerHTML = options;
+                if (result.reports.length > 1) {
+                    select2.selectedIndex = 1;
+                }
+                document.getElementById('compare-controls').style.display = result.reports.length >= 2 ? 'block' : 'none';
+
+            } catch (err) {
+                console.error('Failed to load reports:', err);
+                container.innerHTML = '<div style="color: #f44336; text-align: center; padding: 20px;">Failed to load reports</div>';
+            }
+        }
+
+        async function viewReport(filename) {
+            try {
+                const response = await fetch(`/api/backtest/reports/${filename}`);
+                const result = await response.json();
+
+                if (result.status !== 'success') {
+                    alert('Failed to load report: ' + result.message);
+                    return;
+                }
+
+                const report = result.report;
+                // Display results using existing function
+                displayBacktestResults({
+                    ...report.metrics,
+                    equity_curve: report.equity_curve,
+                    trades: report.trades,
+                    logs: report.logs
+                });
+
+            } catch (err) {
+                console.error('Failed to view report:', err);
+                alert('Failed to load report');
+            }
+        }
+
+        async function deleteReport(filename) {
+            if (!confirm(`Delete report ${filename}?`)) return;
+
+            try {
+                const response = await fetch(`/api/backtest/reports/${filename}`, { method: 'DELETE' });
+                const result = await response.json();
+
+                if (result.status === 'success') {
+                    loadSavedReports();
+                } else {
+                    alert('Failed to delete: ' + result.message);
+                }
+            } catch (err) {
+                console.error('Failed to delete report:', err);
+                alert('Failed to delete report');
+            }
+        }
+
+        async function compareReports() {
+            const report1 = document.getElementById('compare-report-1').value;
+            const report2 = document.getElementById('compare-report-2').value;
+
+            if (report1 === report2) {
+                alert('Please select two different reports to compare');
+                return;
+            }
+
+            try {
+                const response = await fetch(`/api/backtest/compare?report1=${encodeURIComponent(report1)}&report2=${encodeURIComponent(report2)}`);
+                const result = await response.json();
+
+                if (result.status !== 'success') {
+                    alert('Comparison failed: ' + result.message);
+                    return;
+                }
+
+                const comp = result.comparison;
+                const container = document.getElementById('comparison-results');
+                container.style.display = 'block';
+
+                const formatMetric = (name, m) => {
+                    const diffClass = m.diff > 0 ? 'positive' : m.diff < 0 ? 'negative' : '';
+                    const diffSign = m.diff > 0 ? '+' : '';
+                    const isPercent = ['total_return', 'win_rate', 'max_drawdown'].includes(name);
+                    const format = v => isPercent ? (v * 100).toFixed(2) + '%' : typeof v === 'number' ? v.toFixed(2) : v;
+
+                    return `<tr>
+                        <td style="padding: 8px; border-bottom: 1px solid #333;">${name.replace(/_/g, ' ')}</td>
+                        <td style="padding: 8px; border-bottom: 1px solid #333; text-align: right;">${format(m.r1)}</td>
+                        <td style="padding: 8px; border-bottom: 1px solid #333; text-align: right;">${format(m.r2)}</td>
+                        <td style="padding: 8px; border-bottom: 1px solid #333; text-align: right;" class="${diffClass}">${diffSign}${format(m.diff)}</td>
+                    </tr>`;
+                };
+
+                container.innerHTML = `
+                    <h4 style="margin: 0 0 10px 0; color: #4a9eff;">📊 Comparison Results</h4>
+                    <table style="width: 100%; border-collapse: collapse;">
+                        <thead>
+                            <tr style="color: #888;">
+                                <th style="padding: 8px; text-align: left; border-bottom: 2px solid #444;">Metric</th>
+                                <th style="padding: 8px; text-align: right; border-bottom: 2px solid #444;">Report 1</th>
+                                <th style="padding: 8px; text-align: right; border-bottom: 2px solid #444;">Report 2</th>
+                                <th style="padding: 8px; text-align: right; border-bottom: 2px solid #444;">Diff</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${Object.entries(comp.metrics_comparison).map(([k, v]) => formatMetric(k, v)).join('')}
+                        </tbody>
+                    </table>
+                    <div style="margin-top: 10px; font-size: 11px; color: #666;">
+                        <strong>Report 1 strategies:</strong> ${comp.config_diff.strategies.r1.join(', ')}<br>
+                        <strong>Report 2 strategies:</strong> ${comp.config_diff.strategies.r2.join(', ')}
+                    </div>
+                `;
+
+            } catch (err) {
+                console.error('Comparison failed:', err);
+                alert('Comparison failed');
+            }
+        }
+
+        // Load saved reports when backtest tab is shown
+        function onBacktestTabShown() {
+            loadSavedReports();
         }
 
         function drawEquityCurve(equityCurve) {
@@ -13952,13 +14319,100 @@ async def get_upcoming_earnings():
 # BACKTESTING API ENDPOINTS
 # ============================================================================
 
+# Module-level backtest state for async operation
+_backtest_state = {
+    'engine': None,
+    'running': False,
+    'results': None,
+    'error': None
+}
+
+def _to_python(val):
+    """Convert numpy types to native Python types for JSON serialization"""
+    if hasattr(val, 'item'):  # numpy scalar
+        return val.item()
+    return val
+
+def _fetch_backtest_data(symbols, start_date, end_date, timeframe):
+    """Fetch historical data from Schwab for backtesting (synchronous)"""
+    from schwab.client import Client
+
+    market_data = {}
+    days_ago = (datetime.now() - start_date).days
+    use_minute_data = timeframe in ['1min', '5min', '15min', '1hour']
+    actual_timeframe = timeframe
+
+    if use_minute_data and days_ago > 30:
+        logger.warning(f"Minute data only available for last 30 days. Falling back to daily data.")
+        frequency_type = Client.PriceHistory.FrequencyType.DAILY
+        frequency = Client.PriceHistory.Frequency.DAILY
+        actual_timeframe = '1day'
+    elif timeframe == '1min':
+        frequency_type = Client.PriceHistory.FrequencyType.MINUTE
+        frequency = Client.PriceHistory.Frequency.EVERY_MINUTE
+    elif timeframe == '5min':
+        frequency_type = Client.PriceHistory.FrequencyType.MINUTE
+        frequency = Client.PriceHistory.Frequency.EVERY_FIVE_MINUTES
+    elif timeframe == '15min':
+        frequency_type = Client.PriceHistory.FrequencyType.MINUTE
+        frequency = Client.PriceHistory.Frequency.EVERY_FIFTEEN_MINUTES
+    elif timeframe == '1hour':
+        frequency_type = Client.PriceHistory.FrequencyType.MINUTE
+        frequency = Client.PriceHistory.Frequency.EVERY_THIRTY_MINUTES
+    else:
+        frequency_type = Client.PriceHistory.FrequencyType.DAILY
+        frequency = Client.PriceHistory.Frequency.DAILY
+
+    for symbol in symbols:
+        try:
+            if frequency_type == Client.PriceHistory.FrequencyType.MINUTE:
+                period_type = Client.PriceHistory.PeriodType.DAY
+            else:
+                period_type = Client.PriceHistory.PeriodType.YEAR
+
+            response = trading_engine.schwab_client.get_price_history(
+                symbol,
+                period_type=period_type,
+                frequency_type=frequency_type,
+                frequency=frequency,
+                start_datetime=start_date,
+                end_datetime=end_date
+            )
+
+            if response.status_code == 200:
+                data = response.json()
+                candles = data.get('candles', [])
+                if candles:
+                    df = pd.DataFrame(candles)
+                    df['datetime'] = pd.to_datetime(df['datetime'], unit='ms')
+                    df.set_index('datetime', inplace=True)
+                    df = df[(df.index >= start_date) & (df.index <= end_date)]
+                    df.columns = df.columns.str.lower()
+                    if len(df) > 0:
+                        market_data[symbol] = df
+                        logger.info(f"Fetched {len(df)} bars for {symbol} from Schwab")
+            else:
+                try:
+                    error_body = response.json()
+                    logger.warning(f"Schwab API returned {response.status_code} for {symbol}: {error_body}")
+                except:
+                    logger.warning(f"Schwab API returned {response.status_code} for {symbol}: {response.text[:500]}")
+        except Exception as e:
+            logger.warning(f"Failed to fetch data for {symbol} from Schwab: {e}")
+
+    return market_data, actual_timeframe
+
 @app.post("/api/backtest/run")
 async def run_backtest(config: dict):
-    """Run a backtest with the given configuration using Schwab historical data"""
+    """Start a backtest asynchronously with the given configuration"""
+    global _backtest_state
+
+    # Check if already running
+    if _backtest_state['running']:
+        return {'status': 'error', 'message': 'A backtest is already running. Wait for it to complete or check /api/backtest/status'}
+
     try:
         from backtesting_engine import BacktestingEngine, BacktestConfig, BacktestMode
-        from datetime import datetime, timedelta
-        from schwab.client import Client
 
         # Check if trading engine and Schwab client are available
         if not trading_engine or not trading_engine.schwab_client:
@@ -13976,109 +14430,12 @@ async def run_backtest(config: dict):
         mode = BacktestMode[config.get('mode', 'REALISTIC')]
         max_positions = config.get('max_positions', 5)
         commission = config.get('commission', 0.001)
+        enabled_strategies = config.get('strategies', None)  # None = all strategies
+        use_consensus = config.get('use_consensus', True)  # Default to consensus mode
+        exit_on_opposite_signal = config.get('exit_on_opposite_signal', True)  # Default to True (exit when consensus reverses)
 
-        # Create backtest config
-        bt_config = BacktestConfig(
-            start_date=start_date,
-            end_date=end_date,
-            initial_capital=initial_capital,
-            symbols=symbols,
-            timeframe=timeframe,
-            mode=mode,
-            max_positions=max_positions,
-            commission=commission
-        )
-
-        # Fetch historical data from Schwab
-        market_data = {}
-
-        # Calculate days from now to start_date for minute data validation
-        days_ago = (datetime.now() - start_date).days
-
-        # Map timeframe to Schwab frequency
-        # Note: Schwab minute data is only available for the last 30 days
-        use_minute_data = timeframe in ['1min', '5min', '15min', '1hour']
-
-        if use_minute_data and days_ago > 30:
-            # Minute data not available for dates > 30 days ago, fall back to daily
-            logger.warning(f"Minute data only available for last 30 days. Falling back to daily data for backtest starting {start_date.date()}")
-            frequency_type = Client.PriceHistory.FrequencyType.DAILY
-            frequency = Client.PriceHistory.Frequency.DAILY
-            # Update config to reflect actual timeframe used
-            bt_config = BacktestConfig(
-                start_date=start_date,
-                end_date=end_date,
-                initial_capital=initial_capital,
-                symbols=symbols,
-                timeframe='1day',  # Fallback to daily
-                mode=mode,
-                max_positions=max_positions,
-                commission=commission
-            )
-        elif timeframe == '1min':
-            frequency_type = Client.PriceHistory.FrequencyType.MINUTE
-            frequency = Client.PriceHistory.Frequency.EVERY_MINUTE
-        elif timeframe == '5min':
-            frequency_type = Client.PriceHistory.FrequencyType.MINUTE
-            frequency = Client.PriceHistory.Frequency.EVERY_FIVE_MINUTES
-        elif timeframe == '15min':
-            frequency_type = Client.PriceHistory.FrequencyType.MINUTE
-            frequency = Client.PriceHistory.Frequency.EVERY_FIFTEEN_MINUTES
-        elif timeframe == '1hour':
-            frequency_type = Client.PriceHistory.FrequencyType.MINUTE
-            frequency = Client.PriceHistory.Frequency.EVERY_THIRTY_MINUTES  # Closest to 1hr
-        else:  # 1day
-            frequency_type = Client.PriceHistory.FrequencyType.DAILY
-            frequency = Client.PriceHistory.Frequency.DAILY
-
-        for symbol in symbols:
-            try:
-                # Fetch from Schwab API
-                # Schwab requires period_type even when using start/end datetime
-                # period_type defines the data scale, period is optional when dates are provided
-                if frequency_type == Client.PriceHistory.FrequencyType.MINUTE:
-                    period_type = Client.PriceHistory.PeriodType.DAY
-                else:
-                    period_type = Client.PriceHistory.PeriodType.YEAR
-
-                response = trading_engine.schwab_client.get_price_history(
-                    symbol,
-                    period_type=period_type,
-                    frequency_type=frequency_type,
-                    frequency=frequency,
-                    start_datetime=start_date,
-                    end_datetime=end_date
-                )
-
-                if response.status_code == 200:
-                    data = response.json()
-                    candles = data.get('candles', [])
-
-                    if candles:
-                        # Convert to DataFrame
-                        df = pd.DataFrame(candles)
-                        df['datetime'] = pd.to_datetime(df['datetime'], unit='ms')
-                        df.set_index('datetime', inplace=True)
-
-                        # Filter by date range
-                        df = df[(df.index >= start_date) & (df.index <= end_date)]
-
-                        # Rename columns to lowercase (backtesting engine expects lowercase)
-                        df.columns = df.columns.str.lower()
-
-                        if len(df) > 0:
-                            market_data[symbol] = df
-                            logger.info(f"Fetched {len(df)} bars for {symbol} from Schwab")
-                else:
-                    # Log the actual error response for debugging
-                    try:
-                        error_body = response.json()
-                        logger.warning(f"Schwab API returned {response.status_code} for {symbol}: {error_body}")
-                    except:
-                        logger.warning(f"Schwab API returned {response.status_code} for {symbol}: {response.text[:500]}")
-
-            except Exception as e:
-                logger.warning(f"Failed to fetch data for {symbol} from Schwab: {e}")
+        # Fetch data synchronously (fast enough, and we need it before starting thread)
+        market_data, actual_timeframe = _fetch_backtest_data(symbols, start_date, end_date, timeframe)
 
         if not market_data:
             return {
@@ -14086,66 +14443,426 @@ async def run_backtest(config: dict):
                 'message': 'No historical data available from Schwab. Check symbol names and ensure market data access is enabled.'
             }
 
-        # Run backtest
-        engine = BacktestingEngine(bt_config)
-        results = engine.run(market_data)
+        # Create backtest config
+        bt_config = BacktestConfig(
+            start_date=start_date,
+            end_date=end_date,
+            initial_capital=initial_capital,
+            symbols=symbols,
+            timeframe=actual_timeframe,
+            mode=mode,
+            max_positions=max_positions,
+            commission=commission,
+            use_consensus=use_consensus,
+            exit_on_opposite_signal=exit_on_opposite_signal
+        )
 
-        # Convert results to dict - ensure all numpy types are converted to native Python
-        def to_python(val):
-            """Convert numpy types to native Python types for JSON serialization"""
-            if hasattr(val, 'item'):  # numpy scalar
-                return val.item()
-            return val
+        # Initialize state
+        _backtest_state['running'] = True
+        _backtest_state['results'] = None
+        _backtest_state['error'] = None
 
+        # Create engine with strategy filter
+        engine = BacktestingEngine(bt_config, enabled_strategies=enabled_strategies)
+        _backtest_state['engine'] = engine
+
+        def run_in_thread():
+            global _backtest_state
+            try:
+                results = engine.run(market_data)
+                _backtest_state['results'] = results
+            except Exception as e:
+                logger.error(f"Backtest failed: {e}")
+                _backtest_state['error'] = str(e)
+            finally:
+                _backtest_state['running'] = False
+
+        import threading
+        thread = threading.Thread(target=run_in_thread, daemon=True)
+        thread.start()
+
+        return {'status': 'started', 'message': 'Backtest started. Poll /api/backtest/status for progress.'}
+
+    except ImportError as e:
+        return {'status': 'error', 'message': f'Backtesting engine not available: {e}'}
+    except Exception as e:
+        logger.error(f"Backtest startup failed: {e}")
+        _backtest_state['running'] = False
+        return {'status': 'error', 'message': str(e)}
+
+@app.get("/api/backtest/status")
+async def get_backtest_status():
+    """Get current backtest status and results when complete"""
+    global _backtest_state
+
+    engine = _backtest_state.get('engine')
+
+    if _backtest_state.get('running') and engine:
         return {
-            'status': 'success',
+            'status': 'running',
+            'progress': engine.progress.get('percent', 0),
+            'message': engine.progress.get('message', 'Processing...'),
+            'step': engine.progress.get('current_step', 0),
+            'total': engine.progress.get('total_steps', 0)
+        }
+    elif _backtest_state.get('error'):
+        error = _backtest_state['error']
+        _backtest_state['error'] = None  # Clear error
+        return {'status': 'error', 'message': error}
+    elif _backtest_state.get('results'):
+        results = _backtest_state['results']
+        logs = engine.log_entries[-200:] if engine else []  # Last 200 log entries
+
+        response_data = {
+            'status': 'complete',
+            'progress': 100,
             'data': {
-                'total_return': to_python(results.total_return),
-                'annual_return': to_python(results.annual_return),
-                'sharpe_ratio': to_python(results.sharpe_ratio),
-                'sortino_ratio': to_python(results.sortino_ratio),
-                'max_drawdown': to_python(results.max_drawdown),
-                'win_rate': to_python(results.win_rate),
-                'profit_factor': to_python(results.profit_factor),
+                'total_return': _to_python(results.total_return),
+                'annual_return': _to_python(results.annual_return),
+                'sharpe_ratio': _to_python(results.sharpe_ratio),
+                'sortino_ratio': _to_python(results.sortino_ratio),
+                'max_drawdown': _to_python(results.max_drawdown),
+                'win_rate': _to_python(results.win_rate),
+                'profit_factor': _to_python(results.profit_factor),
                 'total_trades': int(results.total_trades),
                 'winning_trades': int(results.winning_trades),
                 'losing_trades': int(results.losing_trades),
-                'avg_win': to_python(results.avg_win),
-                'avg_loss': to_python(results.avg_loss),
-                'initial_capital': to_python(results.initial_capital),
-                'final_capital': to_python(results.final_capital),
+                'avg_win': _to_python(results.avg_win),
+                'avg_loss': _to_python(results.avg_loss),
+                'initial_capital': _to_python(results.initial_capital),
+                'final_capital': _to_python(results.final_capital),
                 'equity_curve': [
                     {'date': d.isoformat(), 'equity': float(v)}
                     for d, v in results.equity_curve.items()
-                ][-500:],  # Limit to last 500 points
+                ][-500:],
                 'trades': [
                     {
                         'symbol': t.symbol,
                         'entry_time': t.entry_time.isoformat(),
                         'exit_time': t.exit_time.isoformat(),
-                        'entry_price': to_python(t.entry_price),
-                        'exit_price': to_python(t.exit_price),
+                        'entry_price': _to_python(t.entry_price),
+                        'exit_price': _to_python(t.exit_price),
                         'side': t.side,
-                        'pnl': to_python(t.pnl),
-                        'pnl_pct': to_python(t.pnl_pct),
+                        'pnl': _to_python(t.pnl),
+                        'pnl_pct': _to_python(t.pnl_pct),
                         'exit_reason': t.exit_reason
                     }
                     for t in results.trades
-                ]
+                ],
+                'logs': logs
             }
         }
+        # Clear results after returning
+        _backtest_state['results'] = None
+        return response_data
+    else:
+        return {'status': 'idle', 'progress': 0}
 
-    except ImportError as e:
-        return {'status': 'error', 'message': f'Backtesting engine not available: {e}'}
+# Optimization state
+_optimization_state = {
+    'running': False,
+    'progress': 0,
+    'total': 0,
+    'results': None,
+    'error': None
+}
+
+@app.post("/api/backtest/optimize")
+async def run_backtest_optimization(config: dict):
+    """
+    Run parameter optimization to find best backtest settings.
+    Tests multiple combinations of strategies, stop loss, take profit, etc.
+    """
+    global _optimization_state
+
+    if _optimization_state['running']:
+        return {'status': 'error', 'message': 'Optimization already running'}
+
+    if _backtest_state['running']:
+        return {'status': 'error', 'message': 'A backtest is already running'}
+
+    try:
+        from backtesting_engine import BacktestingEngine, BacktestConfig, BacktestMode
+        from itertools import combinations, product
+
+        if not trading_engine or not trading_engine.schwab_client:
+            return {'status': 'error', 'message': 'Schwab client not connected'}
+
+        # Parse config
+        symbols = config.get('symbols', ['PLTR'])
+        start_date = datetime.strptime(config.get('start_date', '2026-01-01'), '%Y-%m-%d')
+        end_date = datetime.strptime(config.get('end_date', '2026-01-29'), '%Y-%m-%d')
+        initial_capital = config.get('initial_capital', 100000)
+        timeframe = config.get('timeframe', '5min')
+
+        # Fetch data once
+        market_data, actual_timeframe = _fetch_backtest_data(symbols, start_date, end_date, timeframe)
+        if not market_data:
+            return {'status': 'error', 'message': 'No market data available'}
+
+        # Define parameter grid
+        all_strategies = ['ma_cross', 'rsi_momentum', 'bollinger_bands', 'macd', 'momentum_breakout', 'simple_price_action']
+
+        # Generate strategy combinations (2-6 strategies)
+        strategy_combos = []
+        for r in range(2, len(all_strategies) + 1):
+            for combo in combinations(all_strategies, r):
+                strategy_combos.append(list(combo))
+
+        param_grid = {
+            'strategies': strategy_combos,
+            'use_consensus': [True, False],
+            'stop_loss': [0.01, 0.015, 0.02, 0.025, 0.03],
+            'take_profit': [0.02, 0.03, 0.04, 0.05, 0.06],
+            'max_position_size': [0.05, 0.1, 0.15, 0.2]
+        }
+
+        # Calculate total combinations
+        total = 1
+        for v in param_grid.values():
+            total *= len(v)
+
+        _optimization_state['running'] = True
+        _optimization_state['progress'] = 0
+        _optimization_state['total'] = total
+        _optimization_state['results'] = None
+        _optimization_state['error'] = None
+
+        def run_optimization():
+            global _optimization_state
+            try:
+                results = []
+                param_names = list(param_grid.keys())
+                param_values = list(param_grid.values())
+
+                for i, combo in enumerate(product(*param_values)):
+                    params = dict(zip(param_names, combo))
+                    strategies = params.pop('strategies')
+
+                    bt_config = BacktestConfig(
+                        start_date=start_date,
+                        end_date=end_date,
+                        initial_capital=initial_capital,
+                        symbols=symbols,
+                        timeframe=actual_timeframe,
+                        mode=BacktestMode.REALISTIC,
+                        stop_loss_default=params['stop_loss'],
+                        take_profit_default=params['take_profit'],
+                        max_position_size=params['max_position_size'],
+                        use_consensus=params['use_consensus'],
+                        exit_on_opposite_signal=False,  # Let SL/TP manage exits
+                        commission=0.001
+                    )
+
+                    try:
+                        engine = BacktestingEngine(bt_config, enabled_strategies=strategies)
+                        bt_results = engine.run(market_data)
+
+                        results.append({
+                            'params': {**params, 'strategies': strategies},
+                            'total_return': float(bt_results.total_return),
+                            'sharpe_ratio': float(bt_results.sharpe_ratio),
+                            'win_rate': float(bt_results.win_rate),
+                            'profit_factor': float(bt_results.profit_factor),
+                            'total_trades': int(bt_results.total_trades),
+                            'max_drawdown': float(bt_results.max_drawdown),
+                            'final_capital': float(bt_results.final_capital)
+                        })
+                    except Exception as e:
+                        logger.debug(f"Optimization run failed: {e}")
+
+                    _optimization_state['progress'] = i + 1
+
+                # Sort by total return
+                results.sort(key=lambda x: x['total_return'], reverse=True)
+                _optimization_state['results'] = results
+
+                # Save to file
+                with open('optimization_results.json', 'w') as f:
+                    json.dump(results, f, indent=2)
+
+            except Exception as e:
+                _optimization_state['error'] = str(e)
+                logger.error(f"Optimization failed: {e}")
+            finally:
+                _optimization_state['running'] = False
+
+        import threading
+        thread = threading.Thread(target=run_optimization, daemon=True)
+        thread.start()
+
+        return {
+            'status': 'started',
+            'message': f'Optimization started with {total} combinations',
+            'total_combinations': total
+        }
+
     except Exception as e:
-        logger.error(f"Backtest failed: {e}")
+        _optimization_state['running'] = False
         return {'status': 'error', 'message': str(e)}
 
-@app.get("/api/backtest/status")
-async def get_backtest_status():
-    """Get current backtest status (for polling during long backtests)"""
-    # This would track progress for long-running backtests
-    return {'status': 'idle', 'progress': 0}
+@app.get("/api/backtest/optimize/status")
+async def get_optimization_status():
+    """Get optimization progress and results"""
+    global _optimization_state
+
+    if _optimization_state['running']:
+        return {
+            'status': 'running',
+            'progress': _optimization_state['progress'],
+            'total': _optimization_state['total'],
+            'percent': int(100 * _optimization_state['progress'] / max(_optimization_state['total'], 1))
+        }
+    elif _optimization_state['error']:
+        error = _optimization_state['error']
+        _optimization_state['error'] = None
+        return {'status': 'error', 'message': error}
+    elif _optimization_state['results']:
+        results = _optimization_state['results']
+        return {
+            'status': 'complete',
+            'total_tested': len(results),
+            'profitable': len([r for r in results if r['total_return'] > 0]),
+            'top_10': results[:10],
+            'best': results[0] if results else None
+        }
+    else:
+        return {'status': 'idle'}
+
+@app.get("/api/backtest/reports")
+async def list_backtest_reports():
+    """List all saved backtest reports for comparison"""
+    from pathlib import Path
+    reports_dir = Path('backtest_reports')
+
+    if not reports_dir.exists():
+        return {'status': 'success', 'reports': []}
+
+    reports = []
+    for filepath in sorted(reports_dir.glob('*.json'), reverse=True):  # Most recent first
+        try:
+            with open(filepath) as f:
+                data = json.load(f)
+            reports.append({
+                'filename': filepath.name,
+                'timestamp': data.get('meta', {}).get('timestamp', ''),
+                'symbols': data.get('config', {}).get('symbols', []),
+                'timeframe': data.get('config', {}).get('timeframe', ''),
+                'strategies': data.get('config', {}).get('strategies_enabled', []),
+                'total_return': data.get('metrics', {}).get('total_return', 0),
+                'sharpe_ratio': data.get('metrics', {}).get('sharpe_ratio', 0),
+                'win_rate': data.get('metrics', {}).get('win_rate', 0),
+                'total_trades': data.get('metrics', {}).get('total_trades', 0),
+                'max_drawdown': data.get('metrics', {}).get('max_drawdown', 0)
+            })
+        except Exception as e:
+            logger.warning(f"Failed to read report {filepath}: {e}")
+
+    return {'status': 'success', 'reports': reports}
+
+@app.get("/api/backtest/reports/{filename}")
+async def get_backtest_report(filename: str):
+    """Get a specific backtest report"""
+    from pathlib import Path
+    filepath = Path('backtest_reports') / filename
+
+    if not filepath.exists():
+        return {'status': 'error', 'message': f'Report not found: {filename}'}
+
+    try:
+        with open(filepath) as f:
+            data = json.load(f)
+        return {'status': 'success', 'report': data}
+    except Exception as e:
+        return {'status': 'error', 'message': str(e)}
+
+@app.get("/api/backtest/compare")
+async def compare_backtest_reports(report1: str, report2: str):
+    """Compare two backtest reports side-by-side"""
+    from pathlib import Path
+    reports_dir = Path('backtest_reports')
+
+    def load_report(filename):
+        filepath = reports_dir / filename
+        if not filepath.exists():
+            return None
+        with open(filepath) as f:
+            return json.load(f)
+
+    r1 = load_report(report1)
+    r2 = load_report(report2)
+
+    if not r1:
+        return {'status': 'error', 'message': f'Report not found: {report1}'}
+    if not r2:
+        return {'status': 'error', 'message': f'Report not found: {report2}'}
+
+    # Build comparison
+    m1, m2 = r1.get('metrics', {}), r2.get('metrics', {})
+    c1, c2 = r1.get('config', {}), r2.get('config', {})
+
+    def diff(v1, v2):
+        if v2 == 0:
+            return 0
+        return ((v1 - v2) / abs(v2)) * 100 if v2 != 0 else 0
+
+    comparison = {
+        'report1': {'filename': report1, 'timestamp': r1.get('meta', {}).get('timestamp', '')},
+        'report2': {'filename': report2, 'timestamp': r2.get('meta', {}).get('timestamp', '')},
+        'config_diff': {
+            'symbols': {'r1': c1.get('symbols'), 'r2': c2.get('symbols')},
+            'timeframe': {'r1': c1.get('timeframe'), 'r2': c2.get('timeframe')},
+            'strategies': {'r1': c1.get('strategies_enabled'), 'r2': c2.get('strategies_enabled')}
+        },
+        'metrics_comparison': {
+            'total_return': {
+                'r1': m1.get('total_return', 0), 'r2': m2.get('total_return', 0),
+                'diff': m1.get('total_return', 0) - m2.get('total_return', 0),
+                'diff_pct': diff(m1.get('total_return', 0), m2.get('total_return', 0))
+            },
+            'sharpe_ratio': {
+                'r1': m1.get('sharpe_ratio', 0), 'r2': m2.get('sharpe_ratio', 0),
+                'diff': m1.get('sharpe_ratio', 0) - m2.get('sharpe_ratio', 0)
+            },
+            'win_rate': {
+                'r1': m1.get('win_rate', 0), 'r2': m2.get('win_rate', 0),
+                'diff': m1.get('win_rate', 0) - m2.get('win_rate', 0)
+            },
+            'profit_factor': {
+                'r1': m1.get('profit_factor', 0), 'r2': m2.get('profit_factor', 0),
+                'diff': m1.get('profit_factor', 0) - m2.get('profit_factor', 0)
+            },
+            'max_drawdown': {
+                'r1': m1.get('max_drawdown', 0), 'r2': m2.get('max_drawdown', 0),
+                'diff': m1.get('max_drawdown', 0) - m2.get('max_drawdown', 0)
+            },
+            'total_trades': {
+                'r1': m1.get('total_trades', 0), 'r2': m2.get('total_trades', 0),
+                'diff': m1.get('total_trades', 0) - m2.get('total_trades', 0)
+            },
+            'final_capital': {
+                'r1': m1.get('final_capital', 0), 'r2': m2.get('final_capital', 0),
+                'diff': m1.get('final_capital', 0) - m2.get('final_capital', 0)
+            }
+        }
+    }
+
+    return {'status': 'success', 'comparison': comparison}
+
+@app.delete("/api/backtest/reports/{filename}")
+async def delete_backtest_report(filename: str):
+    """Delete a backtest report"""
+    from pathlib import Path
+    filepath = Path('backtest_reports') / filename
+
+    if not filepath.exists():
+        return {'status': 'error', 'message': f'Report not found: {filename}'}
+
+    try:
+        filepath.unlink()
+        return {'status': 'success', 'message': f'Deleted {filename}'}
+    except Exception as e:
+        return {'status': 'error', 'message': str(e)}
 
 @app.post("/api/professional/risk/settings")
 async def update_risk_settings(settings: dict):
