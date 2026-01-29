@@ -37,16 +37,19 @@ class BacktestConfig:
     symbols: List[str] = field(default_factory=list)
     timeframe: str = "5min"
     
-    # Risk parameters
+    # Risk parameters (optimized for best performance)
     max_positions: int = 5
-    max_position_size: float = 0.1  # 10% of capital
-    stop_loss_default: float = 0.02  # 2%
-    take_profit_default: float = 0.05  # 5%
+    max_position_size: float = 0.2  # 20% of capital (optimized)
+    stop_loss_default: float = 0.02  # 2% (optimized)
+    take_profit_default: float = 0.04  # 4% (optimized)
     
     # Advanced features
     use_trailing_stops: bool = True
     use_portfolio_optimization: bool = True
     reinvest_profits: bool = True
+    use_consensus: bool = True  # Require 2+ strategies to agree before trading
+    exit_on_opposite_signal: bool = True  # Exit when consensus reverses - captures small profits before stops hit
+    min_holding_bars: int = 12  # Minimum bars to hold before allowing signal-based exit (12 bars = 1 hour at 5min)
 
 @dataclass
 class Trade:
@@ -141,22 +144,40 @@ class Position:
 
 class BacktestingEngine:
     """Professional backtesting engine with realistic simulation"""
-    
-    def __init__(self, config: BacktestConfig):
+
+    def __init__(self, config: BacktestConfig, enabled_strategies: Optional[List[str]] = None):
         self.config = config
         self.strategy_manager = StrategyManager()
         self.model_manager = ModelManager()
-        
+
+        # Filter strategies if specified
+        if enabled_strategies is not None:
+            for key in list(self.strategy_manager.strategy_configs.keys()):
+                if key not in enabled_strategies:
+                    self.strategy_manager.disable_strategy(key)
+
         # State tracking
         self.positions: Dict[str, Position] = {}
         self.trades: List[Trade] = []
         self.cash = config.initial_capital
         self.equity_curve = []
         self.current_time = None
-        
+
         # Performance tracking
         self.daily_pnl = {}
         self.high_water_mark = config.initial_capital
+
+        # Progress tracking for async UI updates
+        self.progress = {
+            'status': 'idle',      # idle | running | complete | error
+            'percent': 0,
+            'message': '',
+            'current_step': 0,
+            'total_steps': 0
+        }
+
+        # Structured logging for UI display
+        self.log_entries = []
         
     def load_historical_data(self, data_path: str) -> Dict[str, pd.DataFrame]:
         """Load historical data for backtesting"""
@@ -177,14 +198,100 @@ class BacktestingEngine:
                 logger.warning(f"No data file found for {symbol}")
         
         return market_data
-    
+
+    def _log(self, level: str, category: str, message: str, symbol: str = '', data: Optional[Dict] = None):
+        """Add structured log entry for UI display"""
+        self.log_entries.append({
+            'timestamp': self.current_time.isoformat() if self.current_time else '',
+            'level': level,
+            'category': category,  # signal, trade_open, trade_close, skip, stop_hit, tp_hit, info, error
+            'symbol': symbol,
+            'message': message,
+            'data': data or {}
+        })
+
+    def _precompute_indicators(self, market_data: Dict[str, pd.DataFrame]):
+        """Pre-compute all technical indicators once on full DataFrames.
+
+        This avoids O(T×B) recomputation at every timestamp.
+        Indicators are computed once, then strategies just look up values.
+        """
+        for symbol, df in market_data.items():
+            if len(df) < 30:
+                continue
+            close = df['close']
+            volume = df['volume']
+            high = df['high']
+            low = df['low']
+
+            # MA Cross indicators
+            df['sma_fast'] = close.rolling(9).mean()
+            df['sma_slow'] = close.rolling(21).mean()
+            df['volume_sma'] = volume.rolling(20).mean()
+
+            # RSI indicators
+            df['rsi'] = ta.momentum.RSIIndicator(close=close, window=14).rsi()
+            df['rsi_ma'] = df['rsi'].rolling(5).mean()
+            df['price_ma'] = close.rolling(20).mean()
+
+            # Bollinger Bands (matching strategy params: window=20, window_dev=1.8)
+            bb = ta.volatility.BollingerBands(close=close, window=20, window_dev=1.8)
+            df['bb_upper'] = bb.bollinger_hband()
+            df['bb_lower'] = bb.bollinger_lband()
+            df['bb_middle'] = bb.bollinger_mavg()
+            df['bb_width'] = bb.bollinger_wband()
+
+            # MACD
+            macd_ind = ta.trend.MACD(close=close, window_slow=26, window_fast=12, window_sign=9)
+            df['macd'] = macd_ind.macd()
+            df['macd_signal'] = macd_ind.macd_signal()
+            df['macd_histogram'] = macd_ind.macd_diff()
+
+            # Momentum Breakout
+            df['roc'] = ((close - close.shift(5)) / close.shift(5) * 100)
+            df['volume_ma'] = volume.rolling(20).mean()
+            df['volume_surge'] = volume / df['volume_ma']
+            df['range_high'] = high.rolling(10).max()
+            df['range_low'] = low.rolling(10).min()
+            df['short_momentum'] = (close - close.shift(3)) / close.shift(3) * 100
+            df['atr'] = ta.volatility.AverageTrueRange(high=high, low=low, close=close, window=14).average_true_range()
+
+            # Simple Price Action
+            df['sma_short'] = close.rolling(5).mean()
+            df['sma_medium'] = close.rolling(15).mean()
+            df['sma_20'] = close.rolling(20).mean()
+            df['ema_9'] = close.ewm(span=9).mean()
+            df['candle_dir'] = np.where(close > df['open'], 1, -1)
+
+            # Enhanced Strategy Indicators (for new strategies)
+            df['ema_fast'] = close.ewm(span=12).mean()
+            df['ema_slow'] = close.ewm(span=26).mean()
+
+            # ADX with +DI and -DI (for trend strength and direction)
+            adx_ind = ta.trend.ADXIndicator(high=high, low=low, close=close, window=14)
+            df['adx'] = adx_ind.adx()
+            df['di_plus'] = adx_ind.adx_pos()
+            df['di_minus'] = adx_ind.adx_neg()
+
+            # Volume analysis (for breakout detection)
+            df['volume_std'] = volume.rolling(20).std()
+            df['high_20'] = high.rolling(20).max()
+            df['low_20'] = low.rolling(20).min()
+
     def run(self, market_data: Dict[str, pd.DataFrame]) -> BacktestResults:
         """Run the backtest"""
+        self.progress = {'status': 'running', 'percent': 0, 'message': 'Starting backtest...', 'current_step': 0, 'total_steps': 0}
+        self._log('info', 'info', f"Starting backtest from {self.config.start_date} to {self.config.end_date}")
         logger.info(f"Starting backtest from {self.config.start_date} to {self.config.end_date}")
 
         for symbol, df in market_data.items():
             logger.info(f"Backtest data: {symbol} has {len(df)} bars, columns={list(df.columns)}, "
                         f"range={df.index[0]} to {df.index[-1]}")
+
+        # Pre-compute all indicators once (major performance optimization)
+        self.progress['message'] = 'Pre-computing indicators...'
+        self._log('info', 'info', 'Pre-computing technical indicators on full data')
+        self._precompute_indicators(market_data)
 
         # Get all unique timestamps
         all_timestamps = set()
@@ -192,25 +299,33 @@ class BacktestingEngine:
             all_timestamps.update(df.index)
 
         timestamps = sorted(all_timestamps)
+        self.progress['total_steps'] = len(timestamps)
         logger.info(f"Backtest: {len(timestamps)} total timestamps to process")
+        self._log('info', 'info', f"Processing {len(timestamps)} timestamps across {len(market_data)} symbols")
 
         # Main backtest loop
         signal_count = 0
-        for timestamp in timestamps:
+        for i, timestamp in enumerate(timestamps):
             self.current_time = timestamp
-            
+
+            # Update progress
+            self.progress['current_step'] = i
+            self.progress['percent'] = int((i / len(timestamps)) * 100)
+            if i % 100 == 0:  # Update message every 100 steps to avoid overhead
+                self.progress['message'] = f'Processing {timestamp.strftime("%Y-%m-%d %H:%M")} ({i}/{len(timestamps)})'
+
             # Get current market snapshot
             current_data = {}
             for symbol, df in market_data.items():
                 if timestamp in df.index:
                     current_data[symbol] = df.loc[:timestamp]
-            
+
             # Update trailing stops
             self._update_trailing_stops(current_data)
-            
+
             # Check stop losses and take profits
             self._check_exits(current_data)
-            
+
             # Generate signals
             signals = self._generate_signals(current_data)
             signal_count += len(signals)
@@ -218,7 +333,7 @@ class BacktestingEngine:
             # Execute signals
             for signal in signals:
                 self._process_signal(signal, current_data)
-            
+
             # Record equity
             equity = self._calculate_equity(current_data)
             self.equity_curve.append({
@@ -227,52 +342,187 @@ class BacktestingEngine:
                 'cash': self.cash,
                 'positions_value': equity - self.cash
             })
-            
+
             # Update high water mark
             if equity > self.high_water_mark:
                 self.high_water_mark = equity
-        
+
         # Close all remaining positions
         self._close_all_positions(market_data)
 
         logger.info(f"Backtest complete: {signal_count} total signals generated, "
                     f"{len(self.trades)} trades executed, "
                     f"{len(self.positions)} positions still open")
+        self._log('info', 'info', f"Backtest complete: {signal_count} signals, {len(self.trades)} trades")
 
         # Calculate results
         results = self._calculate_results()
 
+        # Save report to disk for comparison
+        self._save_report(results)
+
+        self.progress = {'status': 'complete', 'percent': 100, 'message': 'Backtest complete', 'current_step': len(timestamps), 'total_steps': len(timestamps)}
+
         return results
+
+    def _save_report(self, results: BacktestResults):
+        """Save backtest report to disk for later comparison"""
+        try:
+            reports_dir = Path('backtest_reports')
+            reports_dir.mkdir(exist_ok=True)
+
+            # Generate filename with timestamp
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            symbols_str = '_'.join(self.config.symbols[:3])  # First 3 symbols
+            if len(self.config.symbols) > 3:
+                symbols_str += f'_+{len(self.config.symbols)-3}'
+            filename = f"backtest_{timestamp}_{symbols_str}.json"
+
+            # Build report data
+            report = {
+                'meta': {
+                    'timestamp': datetime.now().isoformat(),
+                    'filename': filename
+                },
+                'config': {
+                    'symbols': self.config.symbols,
+                    'start_date': self.config.start_date.isoformat(),
+                    'end_date': self.config.end_date.isoformat(),
+                    'initial_capital': self.config.initial_capital,
+                    'timeframe': self.config.timeframe,
+                    'mode': self.config.mode.value,
+                    'max_positions': self.config.max_positions,
+                    'max_position_size': self.config.max_position_size,
+                    'stop_loss_default': self.config.stop_loss_default,
+                    'take_profit_default': self.config.take_profit_default,
+                    'commission': self.config.commission,
+                    'slippage': self.config.slippage,
+                    'use_consensus': self.config.use_consensus,
+                    'exit_on_opposite_signal': self.config.exit_on_opposite_signal,
+                    'strategies_enabled': list(self.strategy_manager.strategies.keys())
+                },
+                'metrics': {
+                    'total_return': float(results.total_return),
+                    'annual_return': float(results.annual_return),
+                    'sharpe_ratio': float(results.sharpe_ratio),
+                    'sortino_ratio': float(results.sortino_ratio),
+                    'max_drawdown': float(results.max_drawdown),
+                    'max_drawdown_duration': int(results.max_drawdown_duration),
+                    'win_rate': float(results.win_rate),
+                    'profit_factor': float(results.profit_factor),
+                    'total_trades': int(results.total_trades),
+                    'winning_trades': int(results.winning_trades),
+                    'losing_trades': int(results.losing_trades),
+                    'avg_win': float(results.avg_win),
+                    'avg_loss': float(results.avg_loss),
+                    'largest_win': float(results.largest_win),
+                    'largest_loss': float(results.largest_loss),
+                    'initial_capital': float(results.initial_capital),
+                    'final_capital': float(results.final_capital),
+                    'value_at_risk': float(results.value_at_risk) if not np.isnan(results.value_at_risk) else 0,
+                    'conditional_var': float(results.conditional_value_at_risk) if not np.isnan(results.conditional_value_at_risk) else 0
+                },
+                'trades': [
+                    {
+                        'symbol': t.symbol,
+                        'entry_time': t.entry_time.isoformat(),
+                        'exit_time': t.exit_time.isoformat(),
+                        'entry_price': float(t.entry_price),
+                        'exit_price': float(t.exit_price),
+                        'quantity': float(t.quantity),
+                        'side': t.side,
+                        'pnl': float(t.pnl),
+                        'pnl_pct': float(t.pnl_pct),
+                        'commission': float(t.commission),
+                        'strategy': t.strategy,
+                        'exit_reason': t.exit_reason
+                    }
+                    for t in results.trades
+                ],
+                'equity_curve': [
+                    {'date': d.isoformat(), 'equity': float(v)}
+                    for d, v in results.equity_curve.items()
+                ][-500:],  # Last 500 points
+                'logs': self.log_entries[-500:]  # Last 500 log entries
+            }
+
+            # Save to file
+            filepath = reports_dir / filename
+            with open(filepath, 'w') as f:
+                json.dump(report, f, indent=2)
+
+            logger.info(f"Backtest report saved to {filepath}")
+            self._log('info', 'info', f"Report saved: {filename}")
+
+        except Exception as e:
+            logger.error(f"Failed to save backtest report: {e}")
     
     def _generate_signals(self, market_data: Dict[str, pd.DataFrame]) -> List[StrategySignal]:
-        """Generate trading signals from strategies"""
+        """Generate trading signals from strategies using regime-aware consensus filtering"""
         all_signals = []
 
         for symbol, data in market_data.items():
-            if len(data) < 30:  # Need minimum data for indicators (was 100, too strict)
+            if len(data) < 30:  # Need minimum data for indicators
                 continue
 
             # Ensure index.name is set so strategies know the symbol
             data.index.name = symbol
 
-            # Run strategies
+            # Run strategies with regime awareness
             try:
-                signals = self.strategy_manager.analyze_all(data, self.positions)
+                raw_signals, regime = self.strategy_manager.analyze_with_regime(data, self.positions)
             except Exception as e:
                 logger.debug(f"Strategy error for {symbol} (len={len(data)}): {e}")
-                continue
+                # Fallback to standard analysis if regime-aware fails
+                try:
+                    raw_signals = self.strategy_manager.analyze_all(data, self.positions)
+                    regime = None
+                except Exception as e2:
+                    logger.debug(f"Fallback strategy error for {symbol}: {e2}")
+                    continue
 
-            # Fix symbol on signals (strategies may set 'UNKNOWN' if index.name wasn't set)
-            for sig in signals:
+            # Fix symbol on signals
+            for sig in raw_signals:
                 if sig.symbol == 'UNKNOWN' or not sig.symbol:
                     sig.symbol = symbol
 
-            # Filter with ML models if configured
-            if self.model_manager.active_model:
-                signals = self._filter_signals_with_ml(signals, data)
+            # USE CONSENSUS FILTERING - require 2+ strategies to agree
+            if self.config.use_consensus:
+                consensus_signal = self.strategy_manager.get_consensus_signal(raw_signals)
+                if consensus_signal:
+                    signals = [consensus_signal]
+                    regime_info = regime.regime.value if regime else 'unknown'
+                    self._log('info', 'signal',
+                        f"CONSENSUS {consensus_signal.signal_type.value} from {consensus_signal.metadata.get('strategies', [])} "
+                        f"(strength={consensus_signal.strength:.2f}, regime={regime_info})", symbol, {
+                        'strategy': 'Consensus',
+                        'signal_type': consensus_signal.signal_type.value,
+                        'strength': consensus_signal.strength,
+                        'price': consensus_signal.entry_price,
+                        'agreeing_strategies': consensus_signal.metadata.get('strategies', []),
+                        'regime': regime_info,
+                        'regime_confidence': regime.confidence if regime else 0
+                    })
+                else:
+                    signals = []  # No consensus = no trade
+                    if raw_signals:
+                        self._log('debug', 'skip', f"No consensus from {len(raw_signals)} signals (regime={regime.regime.value if regime else 'unknown'})", symbol)
+            else:
+                # Legacy mode: process all signals (causes strategy conflicts!)
+                signals = raw_signals
+                if signals:
+                    logger.info(f"Backtest: {len(signals)} signals for {symbol} at {data.index[-1]}")
+                    for sig in signals:
+                        self._log('info', 'signal', f"{sig.signal_type.value} signal from {sig.strategy_name} (strength={sig.strength:.2f})", symbol, {
+                            'strategy': sig.strategy_name,
+                            'signal_type': sig.signal_type.value,
+                            'strength': sig.strength,
+                            'price': sig.entry_price
+                        })
 
-            if signals:
-                logger.info(f"Backtest: {len(signals)} signals for {symbol} at {data.index[-1]}")
+            # Filter with ML models if configured
+            if signals and self.model_manager.active_model:
+                signals = self._filter_signals_with_ml(signals, data)
 
             all_signals.extend(signals)
 
@@ -315,16 +565,19 @@ class BacktestingEngine:
         # Check if we already have a position
         if symbol in self.positions and signal.signal_type in [SignalType.BUY]:
             logger.debug(f"Backtest: Skipping {symbol} BUY - already have position")
+            self._log('debug', 'skip', f"Skipping BUY - already have position", symbol)
             return
 
         # Check position limits
         if len(self.positions) >= self.config.max_positions:
             logger.debug(f"Backtest: Skipping {symbol} - max positions ({self.config.max_positions}) reached")
+            self._log('debug', 'skip', f"Skipping - max positions ({self.config.max_positions}) reached", symbol)
             return
 
         # Get current price
         if symbol not in market_data or len(market_data[symbol]) == 0:
             logger.debug(f"Backtest: Skipping {symbol} - no market data")
+            self._log('debug', 'skip', f"Skipping - no market data", symbol)
             return
 
         current_bar = market_data[symbol].iloc[-1]
@@ -352,22 +605,44 @@ class BacktestingEngine:
                         strategy=signal.strategy_name
                     )
                     
-                    # Set stop loss and take profit
-                    position.stop_loss = signal.stop_loss or entry_price * (1 - self.config.stop_loss_default)
-                    position.take_profit = signal.take_profit or entry_price * (1 + self.config.take_profit_default)
+                    # Set stop loss and take profit (always use config values for consistent backtesting)
+                    position.stop_loss = entry_price * (1 - self.config.stop_loss_default)
+                    position.take_profit = entry_price * (1 + self.config.take_profit_default)
                     
-                    # Set trailing stop if configured
+                    # Set trailing stop if configured (uses stop_loss_default as distance)
                     if self.config.use_trailing_stops:
-                        position.trailing_stop_distance = entry_price * 0.02  # 2% trailing
+                        position.trailing_stop_distance = entry_price * self.config.stop_loss_default
                     
                     self.positions[symbol] = position
                     self.cash -= total_cost
-                    
+
                     logger.debug(f"Opened {symbol} position: {position_size} @ {entry_price:.2f}")
+                    self._log('info', 'trade_open', f"Opened {position_size:.2f} shares @ ${entry_price:.2f} (strategy: {signal.strategy_name})", symbol, {
+                        'quantity': position_size,
+                        'entry_price': entry_price,
+                        'stop_loss': position.stop_loss,
+                        'take_profit': position.take_profit,
+                        'strategy': signal.strategy_name,
+                        'cost': total_cost
+                    })
         
         elif signal.signal_type in [SignalType.SELL, SignalType.CLOSE_LONG]:
             if symbol in self.positions:
-                self._close_position(symbol, market_data, 'signal')
+                position = self.positions[symbol]
+
+                # Check minimum holding period (to prevent over-trading)
+                if self.current_time and position.entry_time:
+                    bars_held = (self.current_time - position.entry_time).total_seconds() / 300  # 5-min bars
+                    if bars_held < self.config.min_holding_bars:
+                        self._log('debug', 'skip', f'Ignoring exit signal - only held {bars_held:.0f} bars (min: {self.config.min_holding_bars})', symbol)
+                        return  # Don't exit yet
+
+                if self.config.exit_on_opposite_signal:
+                    # Close on opposite signal
+                    self._close_position(symbol, market_data, 'signal')
+                else:
+                    # Skip closing - let stop loss/take profit manage exit
+                    self._log('debug', 'skip', f'Ignoring opposite signal - waiting for SL/TP exit', symbol)
     
     def _check_exits(self, market_data: Dict[str, pd.DataFrame]):
         """Check for stop loss and take profit exits"""
@@ -383,10 +658,12 @@ class BacktestingEngine:
             # Check stop loss
             if position.stop_loss and current_price <= position.stop_loss:
                 positions_to_close.append((symbol, 'stop_loss'))
-            
+                self._log('warning', 'stop_hit', f"Stop loss hit at ${current_price:.2f} (stop was ${position.stop_loss:.2f})", symbol)
+
             # Check take profit
             elif position.take_profit and current_price >= position.take_profit:
                 positions_to_close.append((symbol, 'take_profit'))
+                self._log('info', 'tp_hit', f"Take profit hit at ${current_price:.2f} (target was ${position.take_profit:.2f})", symbol)
         
         # Close positions
         for symbol, reason in positions_to_close:
@@ -448,11 +725,21 @@ class BacktestingEngine:
         
         self.trades.append(trade)
         self.cash += abs(position.quantity) * exit_price - commission
-        
+
         # Remove position
         del self.positions[symbol]
-        
+
         logger.debug(f"Closed {symbol} position: P&L = ${net_pnl:.2f} ({pnl_pct:.2%})")
+        pnl_sign = '+' if net_pnl >= 0 else ''
+        self._log('info', 'trade_close', f"Closed @ ${exit_price:.2f} | P&L: {pnl_sign}${net_pnl:.2f} ({pnl_pct:+.2%}) | Reason: {reason}", symbol, {
+            'entry_price': position.entry_price,
+            'exit_price': exit_price,
+            'quantity': position.quantity,
+            'pnl': net_pnl,
+            'pnl_pct': pnl_pct,
+            'exit_reason': reason,
+            'strategy': position.strategy
+        })
     
     def _close_all_positions(self, market_data: Dict[str, pd.DataFrame]):
         """Close all remaining positions at end of backtest"""
