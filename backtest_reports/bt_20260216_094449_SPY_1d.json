@@ -1,0 +1,271 @@
+{
+  "timestamp": "2026-02-16T09:44:49.803451",
+  "config": {
+    "symbol": "SPY",
+    "start_date": "2025-02-16",
+    "end_date": "2026-02-16",
+    "interval": "1d",
+    "initial_capital": 100000,
+    "mode": "rules",
+    "factors": {
+      "price_action": true,
+      "technical_indicators": true,
+      "news_sentiment": false,
+      "market_regime": true
+    }
+  },
+  "metrics": {
+    "total_return": 7.26,
+    "buy_hold_return": 11.49,
+    "sharpe_ratio": 1.24,
+    "max_drawdown": 3.89,
+    "win_rate": 75.0,
+    "total_trades": 4,
+    "winning_trades": 3,
+    "losing_trades": 1,
+    "profit_factor": 21.02,
+    "avg_win": 2503.97,
+    "avg_loss": 357.37,
+    "initial_capital": 100000,
+    "final_value": 107256.8,
+    "gross_profit": 7511.91,
+    "gross_loss": 357.37
+  },
+  "per_symbol_metrics": {},
+  "trades": [
+    {
+      "date": "2025-06-03 05:00:00",
+      "symbol": "SPY",
+      "type": "BUY",
+      "price": 596.09,
+      "shares": 159,
+      "cost": 94873.08831,
+      "pnl": 0,
+      "strength": 0.5,
+      "reasoning": "Uptrend (EMA9>589.7 > EMA21>581.5, slope 0.87%) | RSI 64.5 | MACD hist -0.165 | ADX 18.2 | Stoch K 95.4 | Vol ratio 0.93 | ATR 8.8840 | Price $596.09 | S $583.24 | BB SQUEEZE | OBV +0.25 | BULL PENNANT | ROUNDING BOTTOM | STRUCT: UPTREND (HH+HL) [++]",
+      "risk_notes": "Uptrend (EMA9>589.7 > EMA21>581.5, slope 0.87%) | RSI 64.5 | MACD hist -0.165 | ADX 18.2 | Stoch K 95.4 | Vol ratio 0.93 | ATR 8.8840 | Price $596.09 | S $583.24 | BB SQUEEZE | OBV +0.25 | BULL PENNANT | ROUNDING BOTTOM | STRUCT: UPTREND (HH+HL) [++]",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "BUY",
+        "strength": 0.5
+      },
+      "indicators": {
+        "rsi": 64.5,
+        "macd": 9.178,
+        "macd_signal": 9.343,
+        "macd_hist": -0.165,
+        "bb_pct": 77.0,
+        "bb_upper": 606.55,
+        "bb_lower": 560.58,
+        "adx": 18.2,
+        "atr": 8.884,
+        "ema9": 589.65,
+        "ema21": 581.49,
+        "ema_trend": "BULL"
+      }
+    },
+    {
+      "date": "2025-08-01 05:00:00",
+      "symbol": "SPY",
+      "type": "SELL",
+      "price": 621.72,
+      "shares": 159,
+      "proceeds": 98754.62652,
+      "pnl": 3881.538209999999,
+      "return_pct": 4.299686288983207,
+      "strength": 0.5,
+      "reasoning": "Uptrend (EMA9>630.5 > EMA21>626.4, slope 0.29%) | RSI 47.6 | MACD hist -1.594 | ADX 30.3 | Stoch K 16.8 | Vol ratio 1.96 | ATR 5.5590 | Price $621.72 | R $626.28 | S $618.05 | BB SQUEEZE | OBV -0.63 | STRUCT: UPTREND (HH+HL) [++]",
+      "risk_notes": "Uptrend (EMA9>630.5 > EMA21>626.4, slope 0.29%) | RSI 47.6 | MACD hist -1.594 | ADX 30.3 | Stoch K 16.8 | Vol ratio 1.96 | ATR 5.5590 | Price $621.72 | R $626.28 | S $618.05 | BB SQUEEZE | OBV -0.63 | STRUCT: UPTREND (HH+HL) [++]",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "SELL",
+        "strength": 0.5
+      }
+    },
+    {
+      "date": "2025-09-03 05:00:00",
+      "symbol": "SPY",
+      "type": "BUY",
+      "price": 643.74,
+      "shares": 153,
+      "cost": 98590.71221999999,
+      "pnl": 0,
+      "strength": 0.5,
+      "reasoning": "Uptrend (EMA9>643.4 > EMA21>640.4, slope 0.28%) | RSI 56.5 | MACD hist -0.659 | ADX 21.7 | Stoch K 65.3 | Vol ratio 1.09 | ATR 5.3832 | Price $643.74 | R $646.19 | S $632.95 | HAMMER | BB SQUEEZE | STRUCT: UPTREND (HH+HL) [++]",
+      "risk_notes": "Uptrend (EMA9>643.4 > EMA21>640.4, slope 0.28%) | RSI 56.5 | MACD hist -0.659 | ADX 21.7 | Stoch K 65.3 | Vol ratio 1.09 | ATR 5.3832 | Price $643.74 | R $646.19 | S $632.95 | HAMMER | BB SQUEEZE | STRUCT: UPTREND (HH+HL) [++]",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "BUY",
+        "strength": 0.5
+      },
+      "indicators": {
+        "rsi": 56.5,
+        "macd": 4.122,
+        "macd_signal": 4.781,
+        "macd_hist": -0.659,
+        "bb_pct": 63.0,
+        "bb_upper": 650.61,
+        "bb_lower": 632.23,
+        "adx": 21.7,
+        "atr": 5.383,
+        "ema9": 643.4,
+        "ema21": 640.37,
+        "ema_trend": "BULL"
+      }
+    },
+    {
+      "date": "2025-09-25 05:00:00",
+      "symbol": "SPY",
+      "type": "SELL",
+      "price": 658.05,
+      "shares": 153,
+      "proceeds": 100580.96835,
+      "pnl": 1990.2561300000089,
+      "return_pct": 2.222947152577115,
+      "strength": 0.5,
+      "reasoning": "Uptrend (EMA9>660.2 > EMA21>655.2, slope 0.48%) | RSI 57.7 | MACD hist -0.262 | ADX 27.2 | Stoch K 53.8 | Vol ratio 1.18 | ATR 5.1274 | Price $658.05 | R $667.34 | S $654.30 | SPINNING TOP | OBV -0.25 | RISING WEDGE | STRUCT: UPTREND (HH+HL) [++]",
+      "risk_notes": "Uptrend (EMA9>660.2 > EMA21>655.2, slope 0.48%) | RSI 57.7 | MACD hist -0.262 | ADX 27.2 | Stoch K 53.8 | Vol ratio 1.18 | ATR 5.1274 | Price $658.05 | R $667.34 | S $654.30 | SPINNING TOP | OBV -0.25 | RISING WEDGE | STRUCT: UPTREND (HH+HL) [++]",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "SELL",
+        "strength": 0.5
+      }
+    },
+    {
+      "date": "2025-10-13 05:00:00",
+      "symbol": "SPY",
+      "type": "BUY",
+      "price": 663.04,
+      "shares": 151,
+      "cost": 100219.15903999998,
+      "pnl": 0,
+      "strength": 0.5,
+      "reasoning": "Uptrend (EMA9>665.2 > EMA21>662.8, slope 0.12%) | RSI 52.2 | MACD hist -1.455 | ADX 27.4 | Stoch K 48.3 | Vol ratio 1.01 | ATR 6.4038 | Price $663.04 | R $667.34 | S $654.40 | BULL HARAMI | BB SQUEEZE | OBV -0.10 | STRUCT: UPTREND (HH+HL) [++]",
+      "risk_notes": "Uptrend (EMA9>665.2 > EMA21>662.8, slope 0.12%) | RSI 52.2 | MACD hist -1.455 | ADX 27.4 | Stoch K 48.3 | Vol ratio 1.01 | ATR 6.4038 | Price $663.04 | R $667.34 | S $654.40 | BULL HARAMI | BB SQUEEZE | OBV -0.10 | STRUCT: UPTREND (HH+HL) [++]",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "BUY",
+        "strength": 0.5
+      },
+      "indicators": {
+        "rsi": 52.2,
+        "macd": 3.911,
+        "macd_signal": 5.366,
+        "macd_hist": -1.455,
+        "bb_pct": 42.0,
+        "bb_upper": 674.79,
+        "bb_lower": 654.61,
+        "adx": 27.4,
+        "atr": 6.404,
+        "ema9": 665.21,
+        "ema21": 662.8,
+        "ema_trend": "BULL"
+      }
+    },
+    {
+      "date": "2025-11-04 06:00:00",
+      "symbol": "SPY",
+      "type": "SELL",
+      "price": 675.24,
+      "shares": 151,
+      "proceeds": 101859.27876,
+      "pnl": 1640.119720000017,
+      "return_pct": 1.8400096525096554,
+      "strength": 0.5,
+      "reasoning": "Uptrend (EMA9>679.0 > EMA21>674.1, slope 0.40%) | RSI 53.2 | MACD hist 0.116 | ADX 16.5 | Stoch K 55.6 | Vol ratio 0.99 | ATR 6.9771 | Price $675.24 | R $689.70 | S $667.67 | SHOOTING STAR | OBV +0.19 | STRUCT: ACCUMULATION (higher lows) [+]",
+      "risk_notes": "Uptrend (EMA9>679.0 > EMA21>674.1, slope 0.40%) | RSI 53.2 | MACD hist 0.116 | ADX 16.5 | Stoch K 55.6 | Vol ratio 0.99 | ATR 6.9771 | Price $675.24 | R $689.70 | S $667.67 | SHOOTING STAR | OBV +0.19 | STRUCT: ACCUMULATION (higher lows) [+]",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "SELL",
+        "strength": 0.5
+      }
+    },
+    {
+      "date": "2025-12-15 06:00:00",
+      "symbol": "SPY",
+      "type": "SHORT",
+      "price": 680.73,
+      "shares": 150,
+      "proceeds": 102007.3905,
+      "pnl": 0,
+      "strength": 0.5,
+      "reasoning": "Uptrend (EMA9>682.9 > EMA21>679.7, slope 0.33%) | RSI 52.5 | MACD hist 0.261 | ADX 16.6 | Stoch K 65.6 | Vol ratio 1.08 | ATR 7.3968 | Price $680.73 | R $684.96 | S $667.67 | BEAR DIVERGENCE | OBV -0.11 | STRUCT: RANGE-BOUND [~] | GUARD: DIV_BEAR_VS_BULL_TREND",
+      "risk_notes": "Uptrend (EMA9>682.9 > EMA21>679.7, slope 0.33%) | RSI 52.5 | MACD hist 0.261 | ADX 16.6 | Stoch K 65.6 | Vol ratio 1.08 | ATR 7.3968 | Price $680.73 | R $684.96 | S $667.67 | BEAR DIVERGENCE | OBV -0.11 | STRUCT: RANGE-BOUND [~] | GUARD: DIV_BEAR_VS_BULL_TREND",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "SELL",
+        "strength": 0.5
+      },
+      "indicators": {
+        "rsi": 52.5,
+        "macd": 3.437,
+        "macd_signal": 3.176,
+        "macd_hist": 0.261,
+        "bb_pct": 60.0,
+        "bb_upper": 697.6,
+        "bb_lower": 655.25,
+        "adx": 16.6,
+        "atr": 7.397,
+        "ema9": 682.89,
+        "ema21": 679.69,
+        "ema_trend": "BULL"
+      }
+    },
+    {
+      "date": "2026-02-13 06:00:00",
+      "symbol": "SPY",
+      "type": "CLOSE_SHORT",
+      "price": 681.75,
+      "shares": 150,
+      "cost": 102364.76249999998,
+      "pnl": -357.3719999999885,
+      "return_pct": -0.14961496149614728,
+      "strength": 0,
+      "reasoning": "End of backtest - covering short position",
+      "risk_notes": "",
+      "factors_used": [],
+      "raw_response": {},
+      "indicators": {}
+    }
+  ],
+  "trade_count": 8,
+  "equity_curve_summary": {
+    "start": {
+      "date": "2025-04-30 05:00:00",
+      "value": 100000
+    },
+    "end": {
+      "date": "2026-02-13 06:00:00",
+      "value": 107256.80456000002
+    },
+    "points": 200
+  }
+}

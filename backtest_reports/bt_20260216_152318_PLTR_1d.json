@@ -1,0 +1,29 @@
+{
+  "timestamp": "2026-02-16T15:23:18.233040",
+  "config": {
+    "symbol": "PLTR",
+    "start_date": "2026-01-20",
+    "end_date": "2026-02-14",
+    "interval": "1d",
+    "initial_capital": 100000,
+    "mode": "live_api",
+    "factors": {
+      "price_action": true,
+      "technical_indicators": true,
+      "news_sentiment": false,
+      "market_regime": true
+    }
+  },
+  "metrics": {
+    "total_return": 0,
+    "total_trades": 0
+  },
+  "per_symbol_metrics": {},
+  "trades": [],
+  "trade_count": 0,
+  "equity_curve_summary": {
+    "start": null,
+    "end": null,
+    "points": 0
+  }
+}

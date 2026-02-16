@@ -45,6 +45,13 @@ import uvicorn
 from claude_strategy import ClaudeStrategy
 from strategy_system import StrategyConfig, StrategySignal, SignalType
 
+# LLM Predictor system (DataPrep, PromptBuilder, Predictor, BacktestTracker)
+try:
+    from llm_predictor import DataPrep, LLMPromptBuilder, Predictor, BacktestTracker, LLMPrediction
+    LLM_PREDICTOR_AVAILABLE = True
+except ImportError:
+    LLM_PREDICTOR_AVAILABLE = False
+
 # TradingBrain for autonomous learning
 try:
     from trading_bot_commentary_updated import TradingBrain
@@ -2614,6 +2621,24 @@ class BacktestRunner:
                 logger.warning("Live API mode selected but ANTHROPIC_API_KEY is NOT SET! "
                                "Set it in the SAME terminal: export ANTHROPIC_API_KEY=sk-ant-...")
 
+        # Initialize LLM predictor components for live_api mode
+        self._llm_predictor = None
+        self._llm_prompt_builder = None
+        self._llm_tracker = None
+        if self.mode == 'live_api' and LLM_PREDICTOR_AVAILABLE:
+            predictor_config = {
+                'llm_provider': config.get('llm_provider', 'anthropic'),
+                'ollama_url': config.get('ollama_url', 'http://localhost:11434'),
+                'ollama_model': config.get('ollama_model', 'qwen3-coder:30b'),
+                'api_key': self.strategy.api_client.api_key if hasattr(self.strategy, 'api_client') else '',
+                'model': config.get('model', 'claude-3-5-haiku-latest'),
+                'max_tokens': 1024,
+            }
+            self._llm_predictor = Predictor(predictor_config)
+            self._llm_prompt_builder = LLMPromptBuilder(self.trading_style)
+            self._llm_tracker = BacktestTracker()
+            logger.info(f"LLM Predictor initialized ({predictor_config['llm_provider']})")
+
     async def _fetch_single_symbol(self, symbol: str) -> Optional[pd.DataFrame]:
         """Fetch historical OHLCV data for one symbol — routes to appropriate provider."""
         df = None
@@ -2757,9 +2782,22 @@ class BacktestRunner:
 
         # Pre-compute all indicators once on the full DataFrame — O(n) instead of O(n^2)
         is_rules_mode = self.mode == 'rules'
-        _pa = None      # PrecomputedArrays for rules mode
+        is_llm_mode = self.mode == 'live_api' and self._llm_predictor is not None
+        _pa = None      # PrecomputedArrays for rules mode and LLM mode
         _pos = None     # PositionState for rules mode
         _rules_p = {}   # rules_params for rules mode
+        _mkt = None     # MarketContext for LLM mode
+        entry_bar_index = 0  # Track entry bar for BacktestTracker
+        if is_llm_mode:
+            await broadcast({'type': 'progress', 'progress': 12,
+                             'message': f'Pre-computing indicators for LLM context on {total_bars} bars...'})
+            _pa = precompute_arrays(df, self.trading_style, self.interval, lookback)
+            try:
+                _mkt = fetch_market_context(df, self.interval)
+            except Exception:
+                _mkt = None
+            await broadcast({'type': 'progress', 'progress': 15,
+                             'message': f'Processing {bars_to_process} bars with LLM...'})
         if is_rules_mode:
             await broadcast({'type': 'progress', 'progress': 12,
                              'message': f'Pre-computing indicators on {total_bars} bars...'})
@@ -3002,8 +3040,49 @@ class BacktestRunner:
                         logger.error(f"Rules engine error at bar {i}: {e}")
                         signal = None
                         signals = []
+                elif is_llm_mode and _pa is not None:
+                    # LLM Predictor path — rich context via DataPrep + structured prompt
+                    try:
+                        data_prep = DataPrep(df, _pa, i, symbol, self.interval, _mkt)
+                        context_text = data_prep.to_text()
+                        context_dict = data_prep.build()
+                        # Build position info for prompt
+                        pos_info = None
+                        if position != 0:
+                            if position > 0:
+                                pnl_pct = ((current_price / entry_price) - 1) * 100 if entry_price > 0 else 0
+                                pos_info = {
+                                    'side': 'long', 'entry_price': entry_price,
+                                    'size': position, 'pnl': (current_price - entry_price) * position,
+                                    'pnl_pct': pnl_pct,
+                                }
+                            else:
+                                pnl_pct = ((entry_price / current_price) - 1) * 100 if current_price > 0 else 0
+                                pos_info = {
+                                    'side': 'short', 'entry_price': entry_price,
+                                    'size': abs(position), 'pnl': (entry_price - current_price) * abs(position),
+                                    'pnl_pct': pnl_pct,
+                                }
+                        sys_prompt, usr_prompt = self._llm_prompt_builder.build(context_text, pos_info)
+                        prediction = await self._llm_predictor.predict(
+                            sys_prompt, usr_prompt, context_dict, i)
+                        if prediction is not None:
+                            self._llm_tracker.record_prediction(prediction)
+                            signal = self._llm_predictor.to_strategy_signal(prediction)
+                            signal.metadata['prompt_sent'] = usr_prompt[:500]
+                            signals = [signal]
+                        else:
+                            signal = None
+                            signals = []
+                        await asyncio.sleep(0.3)
+                    except Exception as e:
+                        logger.error(f"LLM Predictor error at bar {i}: {e}")
+                        import traceback as _tb
+                        logger.error(_tb.format_exc())
+                        signal = None
+                        signals = []
                 else:
-                    # Live API or fallback mode — use ClaudeStrategy
+                    # Fallback: Live API or fallback mode — use ClaudeStrategy
                     try:
                         bar_data = df.iloc[:i + 1].copy()
                         signals = await self.strategy.analyze_async(bar_data, current_positions)
@@ -3175,6 +3254,7 @@ class BacktestRunner:
                     cash -= cost
                     position = shares  # Positive = long
                     entry_price = current_price
+                    entry_bar_index = i
                     entry_day = bar_day
                     trades.append({
                         'date': bar_date,
@@ -3201,6 +3281,7 @@ class BacktestRunner:
                     cash += proceeds
                     position = -shares  # Negative = short
                     entry_price = current_price
+                    entry_bar_index = i
                     entry_day = bar_day
                     trades.append({
                         'date': bar_date,
@@ -3239,6 +3320,12 @@ class BacktestRunner:
                     'factors_used': signal.metadata.get('factors_used', []),
                     'raw_response': signal.metadata.get('raw_response', {}),
                 })
+                # Record outcome for LLM tracker
+                if is_llm_mode and self._llm_tracker is not None:
+                    self._llm_tracker.record_outcome(
+                        symbol=symbol, exit_price=current_price, exit_bar=i,
+                        pnl=pnl, return_pct=trades[-1].get('return_pct', 0),
+                        arrays=_pa, entry_bar=entry_bar_index)
                 position = 0
                 entry_price = 0
                 entry_day = None
@@ -3266,6 +3353,12 @@ class BacktestRunner:
                     'factors_used': signal.metadata.get('factors_used', []),
                     'raw_response': signal.metadata.get('raw_response', {}),
                 })
+                # Record outcome for LLM tracker
+                if is_llm_mode and self._llm_tracker is not None:
+                    self._llm_tracker.record_outcome(
+                        symbol=symbol, exit_price=current_price, exit_bar=i,
+                        pnl=pnl, return_pct=trades[-1].get('return_pct', 0),
+                        arrays=_pa, entry_bar=entry_bar_index)
                 position = 0
                 entry_price = 0
                 entry_day = None
@@ -3336,8 +3429,8 @@ class BacktestRunner:
                     'equity': portfolio_value,
                     'buy_hold': bh_shares * current_price,
                 }
-                # Attach detected patterns and market structure (rules mode only)
-                if is_rules_mode and _pa is not None:
+                # Attach detected patterns and market structure (rules + LLM mode)
+                if (is_rules_mode or is_llm_mode) and _pa is not None:
                     pats = _get_patterns_at_bar(_pa, i)
                     if pats:
                         bar_msg['patterns'] = pats
@@ -3494,6 +3587,10 @@ class BacktestRunner:
             },
             'api_stats': self.strategy.get_api_stats(),
         }
+
+        # Attach LLM prediction tracker report
+        if is_llm_mode and self._llm_tracker is not None:
+            results['llm_tracker_report'] = self._llm_tracker.report()
 
         return results
 

@@ -1,0 +1,15 @@
+{
+  "version": 2,
+  "status": "stopped",
+  "symbols": [],
+  "active_chart_symbol": "",
+  "interval": "5m",
+  "initial_capital": 100000.0,
+  "commission_pct": 0.001,
+  "rules_params": {},
+  "cash": 100000.0,
+  "symbol_states": {},
+  "trades": [],
+  "equity_curve": [],
+  "total_bars_processed": 0
+}
