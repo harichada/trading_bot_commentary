@@ -1049,8 +1049,8 @@ def precompute_arrays(df: pd.DataFrame, trading_style: str, interval: str, lookb
     BacktestRunner._precompute_indicators(df)
     n = len(df)
     intraday = interval not in ('1d', '1wk', '1mo')
-    # Always force EOD close for intraday intervals to avoid overnight gap risk
-    force_eod_close = intraday
+    # Only force EOD close in day-trading mode with intraday intervals
+    force_eod_close = (trading_style == 'day') and intraday
 
     days = None
     bar_hours = None
@@ -2144,8 +2144,8 @@ def quick_backtest(params: dict, arrays: PrecomputedArrays,
         lo = arr_low[i]
         op = arr_open[i]
 
-        # Day trading: force close on new day
-        if arr_days is not None:
+        # Day trading: force close on new day (only when force_eod_close is set)
+        if arrays.force_eod_close and arr_days is not None:
             bar_day = arr_days[i]
             if current_day is not None and bar_day != current_day and pos.position != 0:
                 pp = arr_close[i - 1]
@@ -2187,6 +2187,104 @@ def quick_backtest(params: dict, arrays: PrecomputedArrays,
         atr = _nan(arr_atr[i])
         if atr <= 0:
             atr = cp * 0.01
+
+        # --- Overnight gap protection (universal, works regardless of adaptive_risk) ---
+        _max_gap_pct = params.get('max_gap_pct', 0.0)
+        if _max_gap_pct > 0 and pos.position != 0 and i > lookback:
+            _prev_close = arr_close[i - 1]
+            if _prev_close > 0:
+                _gap_pct = (op - _prev_close) / _prev_close
+                _gap_exit = False
+                if pos.position > 0 and _gap_pct < -_max_gap_pct:
+                    _gap_exit = True
+                elif pos.position < 0 and _gap_pct > _max_gap_pct:
+                    _gap_exit = True
+                if _gap_exit:
+                    slip = slippage_factor * atr if slippage_factor > 0 else 0.0
+                    if pos.position > 0:
+                        sell_px = op - slip
+                        proceeds = pos.position * sell_px * (1 - commission_pct)
+                        pnl = proceeds - pos.position * pos.entry_price * (1 + commission_pct)
+                        cash += proceeds
+                        trades.append(pnl)
+                        consec_losses = consec_losses + 1 if pnl < 0 else 0
+                        if _logging:
+                            trade_log.append({
+                                'entry_bar': _entry_bar, 'exit_bar': i, 'direction': 'long',
+                                'entry_price': pos.entry_price, 'exit_price': sell_px,
+                                'shares': pos.position, 'pnl': round(pnl, 2),
+                                'return_pct': round((sell_px / pos.entry_price - 1) * 100, 3) if pos.entry_price > 0 else 0,
+                                'patterns_at_entry': _entry_patterns, 'exit_reason': 'gap_protection',
+                            })
+                    else:
+                        s = abs(pos.position)
+                        cover_px = op + slip
+                        cost = s * cover_px * (1 + commission_pct)
+                        pnl = s * pos.entry_price * (1 - commission_pct) - cost
+                        cash -= cost
+                        trades.append(pnl)
+                        consec_losses = consec_losses + 1 if pnl < 0 else 0
+                        if _logging:
+                            trade_log.append({
+                                'entry_bar': _entry_bar, 'exit_bar': i, 'direction': 'short',
+                                'entry_price': pos.entry_price, 'exit_price': cover_px,
+                                'shares': s, 'pnl': round(pnl, 2),
+                                'return_pct': round((pos.entry_price / cover_px - 1) * 100, 3) if cover_px > 0 else 0,
+                                'patterns_at_entry': _entry_patterns, 'exit_reason': 'gap_protection',
+                            })
+                    pos.position = 0; pos.entry_price = 0.0; pos.bars_since_exit = 0
+                    # Update equity tracking after forced exit
+                    eq = cash
+                    if eq > peak_equity: peak_equity = eq
+                    continue
+
+        # --- Max trade loss cap (universal, works regardless of adaptive_risk) ---
+        _max_loss_pct = params.get('max_trade_loss_pct', 0.0)
+        if _max_loss_pct > 0 and pos.position != 0:
+            if pos.position > 0:
+                _eq_now = cash + pos.position * cp
+                _unr_pnl = (cp - pos.entry_price) * pos.position
+            else:
+                _eq_now = cash - abs(pos.position) * cp
+                _unr_pnl = (pos.entry_price - cp) * abs(pos.position)
+            _entry_eq = _eq_now - _unr_pnl if (_eq_now - _unr_pnl) > 0 else peak_equity
+            if _unr_pnl < 0 and abs(_unr_pnl) > _entry_eq * _max_loss_pct:
+                slip = slippage_factor * atr if slippage_factor > 0 else 0.0
+                if pos.position > 0:
+                    sell_px = cp - slip
+                    proceeds = pos.position * sell_px * (1 - commission_pct)
+                    pnl = proceeds - pos.position * pos.entry_price * (1 + commission_pct)
+                    cash += proceeds
+                    trades.append(pnl)
+                    consec_losses = consec_losses + 1 if pnl < 0 else 0
+                    if _logging:
+                        trade_log.append({
+                            'entry_bar': _entry_bar, 'exit_bar': i, 'direction': 'long',
+                            'entry_price': pos.entry_price, 'exit_price': sell_px,
+                            'shares': pos.position, 'pnl': round(pnl, 2),
+                            'return_pct': round((sell_px / pos.entry_price - 1) * 100, 3) if pos.entry_price > 0 else 0,
+                            'patterns_at_entry': _entry_patterns, 'exit_reason': 'max_loss_cap',
+                        })
+                else:
+                    s = abs(pos.position)
+                    cover_px = cp + slip
+                    cost = s * cover_px * (1 + commission_pct)
+                    pnl = s * pos.entry_price * (1 - commission_pct) - cost
+                    cash -= cost
+                    trades.append(pnl)
+                    consec_losses = consec_losses + 1 if pnl < 0 else 0
+                    if _logging:
+                        trade_log.append({
+                            'entry_bar': _entry_bar, 'exit_bar': i, 'direction': 'short',
+                            'entry_price': pos.entry_price, 'exit_price': cover_px,
+                            'shares': s, 'pnl': round(pnl, 2),
+                            'return_pct': round((pos.entry_price / cover_px - 1) * 100, 3) if cover_px > 0 else 0,
+                            'patterns_at_entry': _entry_patterns, 'exit_reason': 'max_loss_cap',
+                        })
+                pos.position = 0; pos.entry_price = 0.0; pos.bars_since_exit = 0
+                eq = cash
+                if eq > peak_equity: peak_equity = eq
+                continue
 
         # --- Stop-price execution (before signal eval) ---
         # When stop triggered, fill at stop price, not bar close.
@@ -2620,8 +2718,8 @@ class BacktestRunner:
         await broadcast({'type': 'progress', 'progress': 15,
                          'message': f'Processing {bars_to_process} bars{freq_ui_msg}...'})
 
-        # Force-close positions at end of day for all intraday intervals (avoid overnight gaps)
-        force_eod_close = self.interval not in ('1d', '1wk', '1mo')
+        # Force-close positions at end of day only in day-trading mode with intraday intervals
+        force_eod_close = self.trading_style == 'day' and self.interval not in ('1d', '1wk', '1mo')
         current_trading_day = None
         entry_day = None  # Track which day the position was opened
 
@@ -2726,6 +2824,94 @@ class BacktestRunner:
                     _pos.position = 0; _pos.entry_price = 0.0; _pos.bars_since_exit = 0
 
             current_trading_day = bar_day
+
+            # --- Overnight gap protection (universal) ---
+            _max_gap_pct = _rules_p.get('max_gap_pct', 0.0) if is_rules_mode else self.strategy.parameters.get('rules_params', {}).get('max_gap_pct', 0.0)
+            if _max_gap_pct > 0 and position != 0 and i > lookback:
+                _prev_close = float(df['close'].iloc[i - 1])
+                _open_px = float(df['open'].iloc[i])
+                if _prev_close > 0:
+                    _gap_pct = (_open_px - _prev_close) / _prev_close
+                    _gap_exit = False
+                    if position > 0 and _gap_pct < -_max_gap_pct:
+                        _gap_exit = True
+                    elif position < 0 and _gap_pct > _max_gap_pct:
+                        _gap_exit = True
+                    if _gap_exit:
+                        if position > 0:
+                            proceeds = position * _open_px * (1 - self.commission_pct)
+                            pnl = proceeds - (position * entry_price * (1 + self.commission_pct))
+                            cash += proceeds
+                            trades.append({
+                                'date': bar_date, 'symbol': symbol, 'type': 'SELL',
+                                'price': _open_px, 'shares': position, 'proceeds': proceeds,
+                                'pnl': pnl, 'return_pct': ((_open_px / entry_price) - 1) * 100 if entry_price > 0 else 0,
+                                'strength': 0, 'reasoning': f'Gap protection: {_gap_pct*100:+.1f}% gap exceeded {_max_gap_pct*100:.1f}% threshold',
+                                'risk_notes': 'Forced exit at open price due to adverse overnight gap',
+                                'factors_used': [], 'raw_response': {}, 'indicators': {},
+                            })
+                        else:
+                            shares = abs(position)
+                            cost = shares * _open_px * (1 + self.commission_pct)
+                            entry_proceeds = shares * entry_price * (1 - self.commission_pct)
+                            pnl = entry_proceeds - cost
+                            cash -= cost
+                            trades.append({
+                                'date': bar_date, 'symbol': symbol, 'type': 'COVER',
+                                'price': _open_px, 'shares': shares, 'cost': cost,
+                                'pnl': pnl, 'return_pct': ((entry_price / _open_px) - 1) * 100 if _open_px > 0 else 0,
+                                'strength': 0, 'reasoning': f'Gap protection: {_gap_pct*100:+.1f}% gap exceeded {_max_gap_pct*100:.1f}% threshold',
+                                'risk_notes': 'Forced exit at open price due to adverse overnight gap',
+                                'factors_used': [], 'raw_response': {}, 'indicators': {},
+                            })
+                        await broadcast({'type': 'trade', 'trade': trades[-1]})
+                        position = 0; entry_price = 0; entry_day = None
+                        if is_rules_mode and _pos is not None:
+                            _pos.position = 0; _pos.entry_price = 0.0; _pos.bars_since_exit = 0
+                        continue
+
+            # --- Max trade loss cap (universal) ---
+            _max_loss_pct = _rules_p.get('max_trade_loss_pct', 0.0) if is_rules_mode else self.strategy.parameters.get('rules_params', {}).get('max_trade_loss_pct', 0.0)
+            if _max_loss_pct > 0 and position != 0:
+                if position > 0:
+                    _unr_pnl = (current_price - entry_price) * position
+                    _eq_now = cash + position * current_price
+                else:
+                    _unr_pnl = (entry_price - current_price) * abs(position)
+                    _eq_now = cash - abs(position) * current_price
+                _entry_eq = _eq_now - _unr_pnl if (_eq_now - _unr_pnl) > 0 else initial_capital
+                if _unr_pnl < 0 and abs(_unr_pnl) > _entry_eq * _max_loss_pct:
+                    if position > 0:
+                        proceeds = position * current_price * (1 - self.commission_pct)
+                        pnl = proceeds - (position * entry_price * (1 + self.commission_pct))
+                        cash += proceeds
+                        trades.append({
+                            'date': bar_date, 'symbol': symbol, 'type': 'SELL',
+                            'price': current_price, 'shares': position, 'proceeds': proceeds,
+                            'pnl': pnl, 'return_pct': ((current_price / entry_price) - 1) * 100 if entry_price > 0 else 0,
+                            'strength': 0, 'reasoning': f'Max loss cap: unrealized loss ${abs(_unr_pnl):.0f} exceeded {_max_loss_pct*100:.1f}% of equity',
+                            'risk_notes': 'Forced exit — trade loss exceeded maximum allowed per-trade loss',
+                            'factors_used': [], 'raw_response': {}, 'indicators': {},
+                        })
+                    else:
+                        shares = abs(position)
+                        cost = shares * current_price * (1 + self.commission_pct)
+                        entry_proceeds = shares * entry_price * (1 - self.commission_pct)
+                        pnl = entry_proceeds - cost
+                        cash -= cost
+                        trades.append({
+                            'date': bar_date, 'symbol': symbol, 'type': 'COVER',
+                            'price': current_price, 'shares': shares, 'cost': cost,
+                            'pnl': pnl, 'return_pct': ((entry_price / current_price) - 1) * 100 if current_price > 0 else 0,
+                            'strength': 0, 'reasoning': f'Max loss cap: unrealized loss ${abs(_unr_pnl):.0f} exceeded {_max_loss_pct*100:.1f}% of equity',
+                            'risk_notes': 'Forced exit — trade loss exceeded maximum allowed per-trade loss',
+                            'factors_used': [], 'raw_response': {}, 'indicators': {},
+                        })
+                    await broadcast({'type': 'trade', 'trade': trades[-1]})
+                    position = 0; entry_price = 0; entry_day = None
+                    if is_rules_mode and _pos is not None:
+                        _pos.position = 0; _pos.entry_price = 0.0; _pos.bars_since_exit = 0
+                    continue
 
             # Get indicators for this bar (pre-computed for rules mode, calculated otherwise)
             if is_rules_mode:
@@ -6251,8 +6437,84 @@ class PaperTrader:
             _eff_rp.update(_per[sym])
         else:
             _eff_rp = {k: v for k, v in _rp.items() if k != 'per_symbol'}
+
+        # --- Overnight gap protection (universal) ---
+        _max_gap_pct = _eff_rp.get('max_gap_pct', 0.0)
+        if _max_gap_pct > 0 and ss.pos.position != 0 and ss.df is not None and len(ss.df) >= 2:
+            _prev_close = float(ss.df['close'].iloc[-2])
+            _bar_open = float(row['open'])
+            if _prev_close > 0:
+                _gap_pct = (_bar_open - _prev_close) / _prev_close
+                _gap_exit = False
+                if ss.pos.position > 0 and _gap_pct < -_max_gap_pct:
+                    _gap_exit = True
+                elif ss.pos.position < 0 and _gap_pct > _max_gap_pct:
+                    _gap_exit = True
+                if _gap_exit:
+                    force_sig = 2 if ss.pos.position > 0 else 1
+                    trade_msg = self._execute_trade(sym, force_sig, ss, _bar_open, atr, bar_date, row)
+                    if trade_msg:
+                        trade_msg['reasoning'] = f'Gap protection: {_gap_pct*100:+.1f}% gap exceeded {_max_gap_pct*100:.1f}% threshold'
+                        trade_msg['exit_reason'] = 'gap_protection'
+                        await broadcast({'type': 'trade', 'trade': trade_msg})
+                    await broadcast({
+                        'type': 'decision', 'symbol': sym, 'bar': 0, 'total_bars': 'LIVE',
+                        'date': bar_date, 'price': round(_bar_open, 2), 'signal': 'GAP_EXIT',
+                        'strength': 0, 'reasoning': f'Forced exit: {_gap_pct*100:+.1f}% adverse gap at open',
+                        'risk_notes': '', 'regime': '', 'regime_confidence': '',
+                        'source': 'gap_protection', 'indicators': '', 'position': 'FLAT',
+                        'action': trade_msg['type'] if trade_msg else 'GAP_EXIT',
+                    })
+                    return  # skip further processing this bar
+
+        # --- Max trade loss cap (universal) ---
+        _max_loss_pct = _eff_rp.get('max_trade_loss_pct', 0.0)
+        if _max_loss_pct > 0 and ss.pos.position != 0:
+            if ss.pos.position > 0:
+                _unr_pnl = (cp - ss.pos.entry_price) * ss.pos.position
+            else:
+                _unr_pnl = (ss.pos.entry_price - cp) * abs(ss.pos.position)
+            _eq_now = self._current_equity_all()
+            _entry_eq = _eq_now - _unr_pnl if (_eq_now - _unr_pnl) > 0 else self.initial_capital
+            if _unr_pnl < 0 and abs(_unr_pnl) > _entry_eq * _max_loss_pct:
+                force_sig = 2 if ss.pos.position > 0 else 1
+                trade_msg = self._execute_trade(sym, force_sig, ss, cp, atr, bar_date, row)
+                if trade_msg:
+                    trade_msg['reasoning'] = f'Max loss cap: unrealized loss ${abs(_unr_pnl):.0f} exceeded {_max_loss_pct*100:.1f}% of equity'
+                    trade_msg['exit_reason'] = 'max_loss_cap'
+                    await broadcast({'type': 'trade', 'trade': trade_msg})
+                await broadcast({
+                    'type': 'decision', 'symbol': sym, 'bar': 0, 'total_bars': 'LIVE',
+                    'date': bar_date, 'price': round(cp, 2), 'signal': 'MAX_LOSS_EXIT',
+                    'strength': 0, 'reasoning': f'Forced exit: loss ${abs(_unr_pnl):.0f} exceeded {_max_loss_pct*100:.1f}% cap',
+                    'risk_notes': '', 'regime': '', 'regime_confidence': '',
+                    'source': 'max_loss_cap', 'indicators': '', 'position': 'FLAT',
+                    'action': trade_msg['type'] if trade_msg else 'MAX_LOSS_EXIT',
+                })
+                return  # skip further processing this bar
+
         sig = evaluate_rules_signal(_eff_rp, ss.arrays, i, ss.pos,
                                     mkt=self._mkt_context)
+
+        # --- News sentiment entry filter (paper trading only) ---
+        _news_threshold = _eff_rp.get('news_sentiment_threshold', 0)
+        _news_reason = ''
+        if _news_threshold > 0 and sig != 0 and ss.pos.position == 0:
+            try:
+                _sentiment = await fetch_news_sentiment(sym)
+                _score = _sentiment.get('overall_score', 0)
+                _label = _sentiment.get('overall_label', 'Neutral')
+                if sig == 1 and _score < -_news_threshold:
+                    _news_reason = f'News BLOCKED BUY: sentiment={_score:.0f} ({_label}), threshold=-{_news_threshold}'
+                    sig = 0
+                elif sig == 2 and _score > _news_threshold:
+                    _news_reason = f'News BLOCKED SHORT: sentiment=+{_score:.0f} ({_label}), threshold=+{_news_threshold}'
+                    sig = 0
+                else:
+                    _news_reason = f'News OK: {_score:.0f} ({_label})'
+            except Exception as e:
+                logger.debug(f"News sentiment fetch failed for {sym}: {e}")
+                _news_reason = f'News unavailable'
 
         # Execute trade on shared cash pool
         trade_msg = self._execute_trade(sym, sig, ss, cp, atr, bar_date, row)
@@ -6309,7 +6571,7 @@ class PaperTrader:
             'signal': sig_name,
             'strength': round(min(0.95, 0.5 + 0.15 * max(0, ss.pos.last_score - _rp.get('min_triggers', 2))), 2) if sig != 0 else 0,
             'reasoning': reasoning,
-            'risk_notes': '',
+            'risk_notes': _news_reason,
             'regime': '',
             'regime_confidence': '',
             'source': 'rules_engine',
@@ -7793,6 +8055,19 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             </div>
 
             <div class="panel-section">
+                <h3>Risk Protection</h3>
+                <label>Max Trade Loss (%)</label>
+                <input type="number" id="maxTradeLossPct" value="3" min="0" max="20" step="0.5" title="Force close if trade loss exceeds this % of equity (0=disabled). Works even without adaptive risk.">
+                <div style="font-size:0.75em;color:#f59e0b;margin-bottom:6px;">Safety net: active even with adaptive risk OFF. 0 = disabled.</div>
+                <label>Max Gap Exit (%)</label>
+                <input type="number" id="maxGapPct" value="2" min="0" max="10" step="0.5" title="Force exit on adverse overnight gap exceeding this % (0=disabled).">
+                <div style="font-size:0.75em;color:#888;margin-bottom:6px;">Exit at open price on adverse gap. Best for swing trades. 0 = disabled.</div>
+                <label>News Sentiment Filter</label>
+                <input type="number" id="newsSentimentThreshold" value="0" min="0" max="80" step="5" title="Block entries when news sentiment opposes trade direction (0=disabled). Paper trading only.">
+                <div style="font-size:0.75em;color:#888;margin-bottom:6px;">Paper trading only. 0=off, 30=moderate, 50=strict.</div>
+            </div>
+
+            <div class="panel-section">
                 <h3>Adaptive Risk <span style="font-size:0.7em;color:#4ade80;font-weight:normal;">NEW</span></h3>
                 <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
                     <input type="checkbox" id="adaptiveRisk" checked>
@@ -9128,7 +9403,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
                     const hint = document.createElement('div');
                     hint.style.cssText = 'color:#667eea;font-size:0.8em;margin-top:8px;';
-                    hint.textContent = '"Use All" applies per-symbol tuning. Individual buttons apply that symbol\'s params globally.';
+                    hint.textContent = 'Use All applies per-symbol tuning. Individual buttons apply that symbol params globally.';
                     feed.appendChild(hint);
                 }
 
@@ -9185,17 +9460,26 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
     // Adaptive risk params helper — reads checkbox + fields, returns object
     function _getAdaptiveRiskParams() {
+        // Universal safety params — always included regardless of adaptive risk toggle
+        const params = {};
+        const maxLoss = parseFloat(document.getElementById('maxTradeLossPct').value);
+        if (maxLoss > 0) params.max_trade_loss_pct = maxLoss / 100;
+        const maxGap = parseFloat(document.getElementById('maxGapPct').value);
+        if (maxGap > 0) params.max_gap_pct = maxGap / 100;
+        const newsThresh = parseFloat(document.getElementById('newsSentimentThreshold').value);
+        if (newsThresh > 0) params.news_sentiment_threshold = newsThresh;
+
+        // Adaptive risk params — only when checkbox is on
         const on = document.getElementById('adaptiveRisk') && document.getElementById('adaptiveRisk').checked;
-        if (!on) return {};
-        return {
-            adaptive_risk: true,
-            risk_per_trade: parseFloat(document.getElementById('riskPerTrade').value) / 100 || 0.02,
-            max_stop_pct: parseFloat(document.getElementById('maxStopPct').value) / 100 || 0.04,
-            drawdown_half_risk: 0.05,
-            drawdown_skip: 0.10,
-            cooldown_losses: parseInt(document.getElementById('cooldownLosses').value) || 3,
-            reentry_cooldown_bars: parseInt(document.getElementById('reentryCooldown').value) || 5,
-        };
+        if (!on) return params;
+        params.adaptive_risk = true;
+        params.risk_per_trade = parseFloat(document.getElementById('riskPerTrade').value) / 100 || 0.02;
+        params.max_stop_pct = parseFloat(document.getElementById('maxStopPct').value) / 100 || 0.04;
+        params.drawdown_half_risk = 0.05;
+        params.drawdown_skip = 0.10;
+        params.cooldown_losses = parseInt(document.getElementById('cooldownLosses').value) || 3;
+        params.reentry_cooldown_bars = parseInt(document.getElementById('reentryCooldown').value) || 5;
+        return params;
     }
 
     // Toggle adaptive risk param visibility
