@@ -501,8 +501,10 @@ class ResponseParser:
         Returns StrategySignal on success, None on parse failure (caller should HOLD).
         """
         try:
-            # Strip markdown code fences
+            # Strip thinking tags (local models like qwen3-coder)
             text = response_text.strip()
+            text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
+            # Strip markdown code fences
             text = re.sub(r'^```(?:json)?\s*', '', text)
             text = re.sub(r'\s*```$', '', text)
 
@@ -569,6 +571,11 @@ class ClaudeAPIClient:
         self.model = config.get('model', 'claude-3-5-haiku-latest')
         self.max_tokens = config.get('max_tokens', 500)
 
+        # LLM provider: 'anthropic' or 'ollama'
+        self.llm_provider = config.get('llm_provider', 'anthropic')
+        self.ollama_url = config.get('ollama_url', 'http://localhost:11434')
+        self.ollama_model = config.get('ollama_model', 'qwen3-coder:30b')
+
         # Rate limiting
         self.max_calls_per_hour = config.get('max_calls_per_hour', 5000)
         self.daily_cost_cap = config.get('daily_cost_cap', 5.0)
@@ -589,7 +596,9 @@ class ClaudeAPIClient:
 
     @property
     def is_available(self) -> bool:
-        """Check if API key is set."""
+        """Check if LLM provider is available."""
+        if self.llm_provider == 'ollama':
+            return True  # No API key needed for local Ollama
         return bool(self.api_key)
 
     def _check_rate_limit(self) -> bool:
@@ -638,18 +647,63 @@ class ClaudeAPIClient:
         key = self._get_cache_key(symbol, current_price)
         self._cache[key] = (time.time(), data)
 
+    async def _call_ollama(self, system_prompt: str, user_prompt: str) -> Optional[str]:
+        """Call local Ollama API and return response text."""
+        if aiohttp is None:
+            logger.error("aiohttp not installed - cannot call Ollama")
+            return None
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f'{self.ollama_url}/api/chat',
+                    json={
+                        'model': self.ollama_model,
+                        'messages': [
+                            {'role': 'system', 'content': system_prompt},
+                            {'role': 'user', 'content': user_prompt}
+                        ],
+                        'stream': False,
+                        'options': {'temperature': 0.3, 'num_predict': 512}
+                    },
+                    timeout=aiohttp.ClientTimeout(total=120)
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        content = data['message']['content']
+                        # Strip <think>...</think> tags (qwen3-coder thinking mode)
+                        content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL).strip()
+                        self._failure_count = 0
+                        return content
+                    else:
+                        error_text = await resp.text()
+                        logger.error(f"Ollama error {resp.status}: {error_text[:200]}")
+                        self._failure_count += 1
+                        if self._failure_count >= self._max_failures:
+                            self._circuit_open_until = time.time() + self._circuit_reset_seconds
+                        return None
+        except Exception as e:
+            logger.error(f"Ollama call failed: {e}")
+            self._failure_count += 1
+            if self._failure_count >= self._max_failures:
+                self._circuit_open_until = time.time() + self._circuit_reset_seconds
+            return None
+
     async def call_api(self, system_prompt: str, user_prompt: str) -> Optional[str]:
-        """Call Claude API and return response text.
+        """Call LLM API (Anthropic or Ollama) and return response text.
 
         Returns None if rate limited, circuit broken, or API error.
         """
         if not self.is_available:
-            logger.warning("Claude API key not set")
+            logger.warning("LLM provider not available (check API key or Ollama)")
             return None
 
         if not self._check_circuit_breaker():
             logger.warning("Circuit breaker open - skipping API call")
             return None
+
+        # Route to Ollama for local models
+        if self.llm_provider == 'ollama':
+            return await self._call_ollama(system_prompt, user_prompt)
 
         if not self._check_rate_limit():
             logger.warning("Rate limit reached - skipping API call")
@@ -766,6 +820,9 @@ class ClaudeStrategy(BaseStrategy):
             'model': self.parameters.get('model', 'claude-3-5-haiku-latest'),
             'max_calls_per_hour': self.parameters.get('max_calls_per_hour', 5000),
             'cache_ttl_seconds': self.parameters.get('cache_ttl_seconds', 300),
+            'llm_provider': self.parameters.get('llm_provider', 'anthropic'),
+            'ollama_url': self.parameters.get('ollama_url', 'http://localhost:11434'),
+            'ollama_model': self.parameters.get('ollama_model', 'qwen3-coder:30b'),
         }
         self.api_client = ClaudeAPIClient(api_config)
 

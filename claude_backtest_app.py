@@ -2592,15 +2592,22 @@ class BacktestRunner:
                 'cache_ttl_seconds': 0,
                 'backtesting_mode': self.mode,
                 'rules_params': config.get('rules_params', {}),
+                'llm_provider': config.get('llm_provider', 'anthropic'),
+                'ollama_url': config.get('ollama_url', 'http://localhost:11434'),
+                'ollama_model': config.get('ollama_model', 'qwen3-coder:30b'),
             }
         )
         self.strategy = ClaudeStrategy(strategy_config)
         self.strategy.set_backtesting(True, self.mode)
 
-        # Log API key status clearly
+        # Log LLM provider status
+        llm_provider = config.get('llm_provider', 'anthropic')
         api_available = self.strategy.api_client.is_available
         if self.mode == 'live_api':
-            if api_available:
+            if llm_provider == 'ollama':
+                ollama_model = config.get('ollama_model', 'qwen3-coder:30b')
+                logger.info(f"Live API mode: Using local Ollama ({ollama_model})")
+            elif api_available:
                 key = self.strategy.api_client.api_key
                 logger.info(f"Live API mode: API key found ({key[:8]}...{key[-4:]})")
             else:
@@ -4668,6 +4675,28 @@ class BacktestRunner:
 async def dashboard():
     """Serve the backtest dashboard HTML."""
     return DASHBOARD_HTML
+
+
+@app.get("/api/ollama/models")
+async def get_ollama_models():
+    """Proxy endpoint to fetch available Ollama models (avoids CORS)."""
+    try:
+        async with _aiohttp.ClientSession() as session:
+            async with session.get(
+                'http://localhost:11434/api/tags',
+                timeout=_aiohttp.ClientTimeout(total=5)
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    models = [
+                        {'name': m['name'], 'size_gb': round(m.get('size', 0) / 1e9, 1)}
+                        for m in data.get('models', [])
+                    ]
+                    return {'models': models}
+        return {'models': [], 'error': 'Ollama not running'}
+    except Exception as e:
+        logger.error(f"Ollama models fetch error: {e}")
+        return {'models': [], 'error': f'Ollama not reachable: {str(e)}'}
 
 
 @app.post("/api/backtest/run")
@@ -8056,9 +8085,25 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                 <h3>Backtest Mode</h3>
                 <div class="radio-group" style="flex-direction:column;gap:6px;">
                     <label><input type="radio" name="mode" value="rules" checked> Rules Engine (backtest, free)</label>
-                    <label><input type="radio" name="mode" value="live_api"> Live API (backtest, costs $)</label>
+                    <label><input type="radio" name="mode" value="live_api"> Live LLM (backtest, per-bar AI)</label>
                     <label><input type="radio" name="mode" value="fallback"> Fallback (backtest, Adaptive)</label>
                     <label style="color:#fbbf24;"><input type="radio" name="mode" value="paper"> Live Paper Trade (real-time, rules engine)</label>
+                </div>
+                <div id="llmProviderSection" style="display:none;margin-top:8px;">
+                    <label>LLM Provider</label>
+                    <select id="llmProvider" style="width:100%;padding:4px;background:#1a1a1a;color:#e0e0e0;border:1px solid #333;border-radius:4px;">
+                        <option value="ollama">Local Ollama (free, GPU)</option>
+                        <option value="anthropic">Claude API ($)</option>
+                    </select>
+                    <div id="ollamaModelSection" style="margin-top:4px;">
+                        <label>Ollama Model</label>
+                        <select id="ollamaModel" style="width:100%;padding:4px;background:#1a1a1a;color:#e0e0e0;border:1px solid #333;border-radius:4px;">
+                            <option>Loading...</option>
+                        </select>
+                    </div>
+                    <div id="anthropicNote" style="display:none;font-size:0.75em;color:#f59e0b;margin-top:4px;">
+                        Requires ANTHROPIC_API_KEY environment variable
+                    </div>
                 </div>
             </div>
 
@@ -8618,6 +8663,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         checkTelegramStatus();
         fetchNewsSentiment();
         checkPaperState();
+        fetchOllamaModels();
 
         document.querySelectorAll('input[name="mode"]').forEach(r => {
             r.addEventListener('change', () => { updateCostEstimate(); updateModeUI(); });
@@ -8625,6 +8671,17 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         document.getElementById('startDate').addEventListener('change', updateCostEstimate);
         document.getElementById('endDate').addEventListener('change', updateCostEstimate);
         document.getElementById('callFrequency').addEventListener('change', updateCostEstimate);
+
+        // LLM provider toggle
+        const llmProv = document.getElementById('llmProvider');
+        if (llmProv) {
+            llmProv.addEventListener('change', function() {
+                const isOllama = this.value === 'ollama';
+                document.getElementById('ollamaModelSection').style.display = isOllama ? '' : 'none';
+                document.getElementById('anthropicNote').style.display = isOllama ? 'none' : '';
+                updateCostEstimate();
+            });
+        }
 
         // Initial mode UI
         updateModeUI();
@@ -8712,6 +8769,26 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         } catch(e) { console.error('Failed to check data sources:', e); }
     }
 
+    async function fetchOllamaModels() {
+        try {
+            const resp = await fetch('/api/ollama/models');
+            const data = await resp.json();
+            const sel = document.getElementById('ollamaModel');
+            if (!sel) return;
+            sel.innerHTML = '';
+            if (data.models && data.models.length > 0) {
+                data.models.forEach(m => {
+                    const opt = document.createElement('option');
+                    opt.value = m.name;
+                    opt.textContent = m.name + ' (' + m.size_gb + 'GB)';
+                    sel.appendChild(opt);
+                });
+            } else {
+                sel.innerHTML = '<option value="">No models found — is Ollama running?</option>';
+            }
+        } catch(e) { console.error('Ollama models fetch failed:', e); }
+    }
+
     function updateCostEstimate() {
         const mode = document.querySelector('input[name="mode"]:checked').value;
         const el = document.getElementById('costEstimate');
@@ -8725,12 +8802,18 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             const bars = tradingDays * barsPerDay;
             const freq = parseInt(document.getElementById('callFrequency').value) || 1;
             const apiCalls = Math.ceil(bars / freq);
-            const costPerCall = 0.0003;
-            const est = (apiCalls * costPerCall).toFixed(2);
-            const estTimeSec = apiCalls * 1.8;
-            const estTimeStr = estTimeSec > 120 ? `~${Math.round(estTimeSec/60)} min` : `~${Math.round(estTimeSec)}s`;
-            el.textContent = `~${bars} bars, ~${apiCalls} API calls (~$${est}, ${estTimeStr})`;
-            if (callEl) callEl.textContent = freq > 1 ? `Skipping ${freq-1} of every ${freq} bars` : '';
+            const provider = document.getElementById('llmProvider') ? document.getElementById('llmProvider').value : 'anthropic';
+            if (provider === 'ollama') {
+                const model = document.getElementById('ollamaModel') ? document.getElementById('ollamaModel').value : 'local';
+                el.textContent = '~' + bars + ' bars, ~' + apiCalls + ' LLM calls (FREE, local GPU: ' + model + ')';
+            } else {
+                const costPerCall = 0.0003;
+                const est = (apiCalls * costPerCall).toFixed(2);
+                const estTimeSec = apiCalls * 1.8;
+                const estTimeStr = estTimeSec > 120 ? '~' + Math.round(estTimeSec/60) + ' min' : '~' + Math.round(estTimeSec) + 's';
+                el.textContent = '~' + bars + ' bars, ~' + apiCalls + ' API calls (~$' + est + ', ' + estTimeStr + ')';
+            }
+            if (callEl) callEl.textContent = freq > 1 ? 'Skipping ' + (freq-1) + ' of every ' + freq + ' bars' : '';
         } else if (mode === 'rules') {
             el.textContent = 'Rules engine: no API calls, runs instantly';
             if (callEl) callEl.textContent = '';
@@ -8751,9 +8834,14 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     function updateModeUI() {
         const mode = document.querySelector('input[name="mode"]:checked').value;
         const isPaper = mode === 'paper';
+        const isLiveApi = mode === 'live_api';
         const btnRun = document.getElementById('btnRun');
         const dateSection = document.getElementById('startDate').closest('.panel-section');
         const callFreqSection = document.getElementById('callFrequency').closest('.panel-section');
+
+        // Show/hide LLM provider section
+        const llmSection = document.getElementById('llmProviderSection');
+        if (llmSection) llmSection.style.display = isLiveApi ? '' : 'none';
 
         if (isPaper) {
             btnRun.textContent = 'Go Live';
@@ -9247,6 +9335,16 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             },
             rules_params: _buildRulesParams(),
         };
+
+        // Add LLM provider config for live_api mode
+        if (selectedMode === 'live_api') {
+            const provEl = document.getElementById('llmProvider');
+            config.llm_provider = provEl ? provEl.value : 'anthropic';
+            if (config.llm_provider === 'ollama') {
+                const modelEl = document.getElementById('ollamaModel');
+                config.ollama_model = modelEl ? modelEl.value : 'qwen3-coder:30b';
+            }
+        }
 
         document.getElementById('btnRun').disabled = true;
         document.getElementById('btnRun').textContent = 'Running...';
