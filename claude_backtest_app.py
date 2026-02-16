@@ -1597,8 +1597,9 @@ def evaluate_rules_signal(params: dict, arrays: PrecomputedArrays,
             if macd_h > 0: long_score = max(long_score, long_score + 1)
             if bb_squeeze_fire: long_score = max(long_score, 3)
 
-        # BOUNCE — oversold at support with reversal candle (not in strong downtrend)
-        if at_support and rsi < 35 and candle_bull and not strong_bear:
+        # BOUNCE — oversold at support with reversal candle (not in downtrend)
+        # Tightened: require short-term trend to NOT be bearish (was: not strong_bear)
+        if at_support and rsi < 35 and candle_bull and not bear_trend:
             long_score = max(long_score, 1)
             if bull_reversal_candle: long_score = max(long_score, 2)
             if stoch_bull_x or (sk < 30 and sk > sd): long_score = max(long_score, 2)
@@ -1629,8 +1630,9 @@ def evaluate_rules_signal(params: dict, arrays: PrecomputedArrays,
             if macd_h < 0: short_score = max(short_score, short_score + 1)
             if bb_squeeze_fire: short_score = max(short_score, 3)
 
-        # BOUNCE short — overbought at resistance with reversal (not in strong uptrend)
-        if at_resistance and rsi > 65 and candle_bear and not strong_bull:
+        # BOUNCE short — overbought at resistance with reversal (not in uptrend)
+        # Tightened: require short-term trend to NOT be bullish (was: not strong_bull)
+        if at_resistance and rsi > 65 and candle_bear and not bull_trend:
             short_score = max(short_score, 1)
             if bear_reversal_candle: short_score = max(short_score, 2)
             if stoch_bear_x or (sk > 70 and sk < sd): short_score = max(short_score, 2)
@@ -1767,6 +1769,16 @@ def evaluate_rules_signal(params: dict, arrays: PrecomputedArrays,
             long_score = max(0, long_score - 1)
             short_score = max(0, short_score - 1)
 
+        # --- Counter-trend penalty ---
+        # Entering against the medium-term trend (EMA21 vs EMA50) needs extra conviction.
+        # Deduct from score so counter-trend trades need more triggers to qualify.
+        _ct_penalty = params.get('counter_trend_penalty', 1)
+        if _ct_penalty > 0:
+            if long_score > 0 and ema21 < ema50:
+                long_score = max(0, long_score - _ct_penalty)
+            if short_score > 0 and ema21 > ema50:
+                short_score = max(0, short_score - _ct_penalty)
+
         # --- Market context filter (adaptive risk) ---
         if mkt is not None and params.get('adaptive_risk') and i < mkt.n:
             spy_t = mkt.spy_trend[i]
@@ -1854,6 +1866,10 @@ def describe_signal_reasoning(arrays: PrecomputedArrays, i: int, params: dict) -
     else:
         parts.append(f"No trend (slope {slope:.2f}%)")
 
+    if ema21 > ema50:
+        parts.append(f"EMA21>{ema50:.1f}=EMA50 (mid-term UP)")
+    elif ema21 < ema50:
+        parts.append(f"EMA21<{ema50:.1f}=EMA50 (mid-term DOWN)")
     parts.append(f"RSI {rsi:.1f}")
     parts.append(f"MACD hist {macd_h:.3f}")
     parts.append(f"ADX {adx_v:.1f}")
@@ -8065,6 +8081,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                 <label>News Sentiment Filter</label>
                 <input type="number" id="newsSentimentThreshold" value="0" min="0" max="80" step="5" title="Block entries when news sentiment opposes trade direction (0=disabled). Paper trading only.">
                 <div style="font-size:0.75em;color:#888;margin-bottom:6px;">Paper trading only. 0=off, 30=moderate, 50=strict.</div>
+                <label>Counter-Trend Penalty</label>
+                <input type="number" id="counterTrendPenalty" value="1" min="0" max="3" step="1" title="Score penalty for trades against the medium-term trend (EMA21 vs EMA50). Higher = fewer counter-trend entries.">
+                <div style="font-size:0.75em;color:#888;margin-bottom:6px;">Penalizes entries against EMA50 trend. 0=off, 1=moderate, 2=strict.</div>
             </div>
 
             <div class="panel-section">
@@ -9468,6 +9487,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         if (maxGap > 0) params.max_gap_pct = maxGap / 100;
         const newsThresh = parseFloat(document.getElementById('newsSentimentThreshold').value);
         if (newsThresh > 0) params.news_sentiment_threshold = newsThresh;
+        const ctPenalty = parseInt(document.getElementById('counterTrendPenalty').value);
+        if (ctPenalty >= 0) params.counter_trend_penalty = ctPenalty;
 
         // Adaptive risk params — only when checkbox is on
         const on = document.getElementById('adaptiveRisk') && document.getElementById('adaptiveRisk').checked;
