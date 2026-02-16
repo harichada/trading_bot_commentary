@@ -1,0 +1,42 @@
+{
+  "version": 2,
+  "status": "stopped",
+  "symbols": [
+    "PLTR"
+  ],
+  "active_chart_symbol": "PLTR",
+  "interval": "5m",
+  "initial_capital": 100000,
+  "commission_pct": 0.001,
+  "rules_params": {
+    "adaptive_risk": true,
+    "risk_per_trade": 0.02,
+    "max_stop_pct": 0.04,
+    "drawdown_half_risk": 0.05,
+    "drawdown_skip": 0.1,
+    "cooldown_losses": 3,
+    "reentry_cooldown_bars": 5
+  },
+  "cash": 100000,
+  "symbol_states": {
+    "PLTR": {
+      "position": 0,
+      "entry_price": 0.0,
+      "r_value": 0.0,
+      "trailing_stop": 0.0,
+      "highest_high": 0.0,
+      "lowest_low": 0.0,
+      "bars_since_exit": 1000,
+      "last_bar_time": "2026-02-11 20:15:00",
+      "bars_processed": 304
+    }
+  },
+  "trades": [],
+  "equity_curve": [
+    {
+      "date": "2026-02-11 20:15:00",
+      "value": 100000
+    }
+  ],
+  "total_bars_processed": 304
+}

@@ -1,0 +1,253 @@
+{
+  "meta": {
+    "timestamp": "2026-01-29T13:53:02.080011",
+    "filename": "backtest_20260129_135302_AMD.json"
+  },
+  "config": {
+    "symbols": [
+      "AMD"
+    ],
+    "start_date": "2026-01-01T00:00:00",
+    "end_date": "2026-01-29T00:00:00",
+    "initial_capital": 100000,
+    "timeframe": "1day",
+    "mode": "REALISTIC",
+    "max_positions": 5,
+    "max_position_size": 0.2,
+    "stop_loss_default": 0.02,
+    "take_profit_default": 0.04,
+    "commission": 0.001,
+    "slippage": 0.0005,
+    "use_consensus": true,
+    "exit_on_opposite_signal": true,
+    "strategies_enabled": [
+      "adaptive",
+      "smart_trend",
+      "mean_reversion",
+      "volume_breakout",
+      "support_resistance"
+    ]
+  },
+  "metrics": {
+    "total_return": 0.0,
+    "annual_return": 0.0,
+    "sharpe_ratio": 0.0,
+    "sortino_ratio": 0.0,
+    "max_drawdown": 0.0,
+    "max_drawdown_duration": 0,
+    "win_rate": 0.0,
+    "profit_factor": 0.0,
+    "total_trades": 0,
+    "winning_trades": 0,
+    "losing_trades": 0,
+    "avg_win": 0.0,
+    "avg_loss": 0.0,
+    "largest_win": 0.0,
+    "largest_loss": 0.0,
+    "initial_capital": 100000.0,
+    "final_capital": 100000.0,
+    "value_at_risk": 0.0,
+    "conditional_var": 0.0
+  },
+  "trades": [],
+  "equity_curve": [
+    {
+      "date": "2025-12-01T06:00:00",
+      "equity": 100000.0
+    },
+    {
+      "date": "2025-12-02T06:00:00",
+      "equity": 100000.0
+    },
+    {
+      "date": "2025-12-03T06:00:00",
+      "equity": 100000.0
+    },
+    {
+      "date": "2025-12-04T06:00:00",
+      "equity": 100000.0
+    },
+    {
+      "date": "2025-12-05T06:00:00",
+      "equity": 100000.0
+    },
+    {
+      "date": "2025-12-08T06:00:00",
+      "equity": 100000.0
+    },
+    {
+      "date": "2025-12-09T06:00:00",
+      "equity": 100000.0
+    },
+    {
+      "date": "2025-12-10T06:00:00",
+      "equity": 100000.0
+    },
+    {
+      "date": "2025-12-11T06:00:00",
+      "equity": 100000.0
+    },
+    {
+      "date": "2025-12-12T06:00:00",
+      "equity": 100000.0
+    },
+    {
+      "date": "2025-12-15T06:00:00",
+      "equity": 100000.0
+    },
+    {
+      "date": "2025-12-16T06:00:00",
+      "equity": 100000.0
+    },
+    {
+      "date": "2025-12-17T06:00:00",
+      "equity": 100000.0
+    },
+    {
+      "date": "2025-12-18T06:00:00",
+      "equity": 100000.0
+    },
+    {
+      "date": "2025-12-19T06:00:00",
+      "equity": 100000.0
+    },
+    {
+      "date": "2025-12-22T06:00:00",
+      "equity": 100000.0
+    },
+    {
+      "date": "2025-12-23T06:00:00",
+      "equity": 100000.0
+    },
+    {
+      "date": "2025-12-24T06:00:00",
+      "equity": 100000.0
+    },
+    {
+      "date": "2025-12-26T06:00:00",
+      "equity": 100000.0
+    },
+    {
+      "date": "2025-12-29T06:00:00",
+      "equity": 100000.0
+    },
+    {
+      "date": "2025-12-30T06:00:00",
+      "equity": 100000.0
+    },
+    {
+      "date": "2025-12-31T06:00:00",
+      "equity": 100000.0
+    },
+    {
+      "date": "2026-01-02T06:00:00",
+      "equity": 100000.0
+    },
+    {
+      "date": "2026-01-05T06:00:00",
+      "equity": 100000.0
+    },
+    {
+      "date": "2026-01-06T06:00:00",
+      "equity": 100000.0
+    },
+    {
+      "date": "2026-01-07T06:00:00",
+      "equity": 100000.0
+    },
+    {
+      "date": "2026-01-08T06:00:00",
+      "equity": 100000.0
+    },
+    {
+      "date": "2026-01-09T06:00:00",
+      "equity": 100000.0
+    },
+    {
+      "date": "2026-01-12T06:00:00",
+      "equity": 100000.0
+    },
+    {
+      "date": "2026-01-13T06:00:00",
+      "equity": 100000.0
+    },
+    {
+      "date": "2026-01-14T06:00:00",
+      "equity": 100000.0
+    },
+    {
+      "date": "2026-01-15T06:00:00",
+      "equity": 100000.0
+    },
+    {
+      "date": "2026-01-16T06:00:00",
+      "equity": 100000.0
+    },
+    {
+      "date": "2026-01-20T06:00:00",
+      "equity": 100000.0
+    },
+    {
+      "date": "2026-01-21T06:00:00",
+      "equity": 100000.0
+    },
+    {
+      "date": "2026-01-22T06:00:00",
+      "equity": 100000.0
+    },
+    {
+      "date": "2026-01-23T06:00:00",
+      "equity": 100000.0
+    },
+    {
+      "date": "2026-01-26T06:00:00",
+      "equity": 100000.0
+    },
+    {
+      "date": "2026-01-27T06:00:00",
+      "equity": 100000.0
+    },
+    {
+      "date": "2026-01-28T06:00:00",
+      "equity": 100000.0
+    },
+    {
+      "date": "2026-01-29T05:00:00",
+      "equity": 100000.0
+    }
+  ],
+  "logs": [
+    {
+      "timestamp": "",
+      "level": "info",
+      "category": "info",
+      "symbol": "",
+      "message": "Starting backtest from 2026-01-01 00:00:00 to 2026-01-29 00:00:00",
+      "data": {}
+    },
+    {
+      "timestamp": "",
+      "level": "info",
+      "category": "info",
+      "symbol": "",
+      "message": "Pre-computing technical indicators on full data",
+      "data": {}
+    },
+    {
+      "timestamp": "",
+      "level": "info",
+      "category": "info",
+      "symbol": "",
+      "message": "Processing 41 timestamps across 1 symbols",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T05:00:00",
+      "level": "info",
+      "category": "info",
+      "symbol": "",
+      "message": "Backtest complete: 0 signals, 0 trades",
+      "data": {}
+    }
+  ]
+}

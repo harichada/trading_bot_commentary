@@ -1,0 +1,562 @@
+{
+  "timestamp": "2026-02-12T11:21:53.086451",
+  "config": {
+    "symbol": "TSLA",
+    "start_date": "2026-02-03",
+    "end_date": "2026-02-12",
+    "interval": "5m",
+    "initial_capital": 100000,
+    "mode": "rules",
+    "factors": {
+      "price_action": true,
+      "technical_indicators": true,
+      "news_sentiment": false,
+      "market_regime": true
+    }
+  },
+  "metrics": {
+    "total_return": -2.02,
+    "buy_hold_return": -0.8,
+    "sharpe_ratio": -3.84,
+    "max_drawdown": 3.52,
+    "win_rate": 44.4,
+    "total_trades": 9,
+    "winning_trades": 4,
+    "losing_trades": 5,
+    "profit_factor": 0.68,
+    "avg_win": 1062.61,
+    "avg_loss": 1254.43,
+    "initial_capital": 100000,
+    "final_value": 97978.27,
+    "gross_profit": 4250.42,
+    "gross_loss": 6272.16
+  },
+  "per_symbol_metrics": {},
+  "trades": [
+    {
+      "date": "2026-02-03 18:55:00",
+      "symbol": "TSLA",
+      "type": "SHORT",
+      "price": 416.1083,
+      "shares": 222,
+      "proceeds": 92283.6665574,
+      "pnl": 0,
+      "strength": 0.8,
+      "reasoning": "Downtrend (EMA9>417.5 < EMA21>418.9, slope -0.20%) | RSI 30.6 | MACD hist -0.017 | ADX 31.7 | Stoch K 0.2 | Vol ratio 0.90 | ATR 1.3361 | Price $416.11 | R $418.84 | BB SQUEEZE | OBV -0.35 | STRUCT: DISTRIBUTION (lower highs) [-]",
+      "risk_notes": "Downtrend (EMA9>417.5 < EMA21>418.9, slope -0.20%) | RSI 30.6 | MACD hist -0.017 | ADX 31.7 | Stoch K 0.2 | Vol ratio 0.90 | ATR 1.3361 | Price $416.11 | R $418.84 | BB SQUEEZE | OBV -0.35 | STRUCT: DISTRIBUTION (lower highs) [-]",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "SELL",
+        "strength": 0.8
+      },
+      "indicators": {
+        "rsi": 30.6,
+        "macd": -1.482,
+        "macd_signal": -1.465,
+        "macd_hist": -0.017,
+        "bb_pct": 5.0,
+        "bb_upper": 420.99,
+        "bb_lower": 415.84,
+        "adx": 31.7,
+        "atr": 1.336,
+        "ema9": 417.54,
+        "ema21": 418.86,
+        "ema_trend": "BEAR"
+      }
+    },
+    {
+      "date": "2026-02-03 20:30:00",
+      "symbol": "TSLA",
+      "type": "COVER",
+      "price": 420.61,
+      "shares": 222,
+      "cost": 93468.79542,
+      "pnl": -1185.1288625999878,
+      "return_pct": -1.0702788806733143,
+      "strength": 0.8,
+      "reasoning": "Uptrend (EMA9>418.6 > EMA21>418.1, slope 0.12%) | RSI 62.7 | MACD hist 0.500 | ADX 18.0 | Stoch K 99.0 | Vol ratio 1.21 | ATR 1.3735 | Price $420.61 | R $422.70 | S $420.31 | BULL MARUBOZU | OBV +0.21 | STRUCT: ACCUMULATION (higher lows) [+]",
+      "risk_notes": "Uptrend (EMA9>418.6 > EMA21>418.1, slope 0.12%) | RSI 62.7 | MACD hist 0.500 | ADX 18.0 | Stoch K 99.0 | Vol ratio 1.21 | ATR 1.3735 | Price $420.61 | R $422.70 | S $420.31 | BULL MARUBOZU | OBV +0.21 | STRUCT: ACCUMULATION (higher lows) [+]",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "BUY",
+        "strength": 0.8
+      }
+    },
+    {
+      "date": "2026-02-04 15:30:00",
+      "symbol": "TSLA",
+      "type": "SHORT",
+      "price": 413.16,
+      "shares": 190,
+      "proceeds": 78421.8996,
+      "pnl": 0,
+      "strength": 0.8,
+      "reasoning": "Downtrend (EMA9>417.0 < EMA21>418.2, slope -0.30%) | RSI 33.9 | MACD hist -0.779 | ADX 21.5 | Stoch K 1.1 | Vol ratio 1.25 | ATR 2.1928 | Price $413.16 | R $417.77 | ENGULF BEAR | BEAR DIVERGENCE | OBV -0.34 | STRUCT: UPTREND (HH+HL) [++]",
+      "risk_notes": "Downtrend (EMA9>417.0 < EMA21>418.2, slope -0.30%) | RSI 33.9 | MACD hist -0.779 | ADX 21.5 | Stoch K 1.1 | Vol ratio 1.25 | ATR 2.1928 | Price $413.16 | R $417.77 | ENGULF BEAR | BEAR DIVERGENCE | OBV -0.34 | STRUCT: UPTREND (HH+HL) [++]",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "SELL",
+        "strength": 0.8
+      },
+      "indicators": {
+        "rsi": 33.9,
+        "macd": -0.868,
+        "macd_signal": -0.088,
+        "macd_hist": -0.779,
+        "bb_pct": -9.0,
+        "bb_upper": 424.64,
+        "bb_lower": 414.06,
+        "adx": 21.5,
+        "atr": 2.193,
+        "ema9": 416.99,
+        "ema21": 418.23,
+        "ema_trend": "BEAR"
+      }
+    },
+    {
+      "date": "2026-02-04 17:10:00",
+      "symbol": "TSLA",
+      "type": "COVER",
+      "price": 407.165,
+      "shares": 190,
+      "cost": 77438.71135,
+      "pnl": 983.1882500000065,
+      "return_pct": 1.4723760637579408,
+      "strength": 0.8,
+      "reasoning": "Downtrend (EMA9>407.0 < EMA21>409.2, slope -0.27%) | RSI 37.4 | MACD hist 0.175 | ADX 48.5 | Stoch K 51.0 | Vol ratio 0.67 | ATR 1.9002 | Price $407.17 | R $409.24 | S $407.03 | HAMMER | HANGING MAN | BULL DIVERGENCE | OBV +0.28 | STRUCT: DOWNTREND (LH+LL) [--] | GUARD: DIV_BULL_VS_BEAR_TREND",
+      "risk_notes": "Downtrend (EMA9>407.0 < EMA21>409.2, slope -0.27%) | RSI 37.4 | MACD hist 0.175 | ADX 48.5 | Stoch K 51.0 | Vol ratio 0.67 | ATR 1.9002 | Price $407.17 | R $409.24 | S $407.03 | HAMMER | HANGING MAN | BULL DIVERGENCE | OBV +0.28 | STRUCT: DOWNTREND (LH+LL) [--] | GUARD: DIV_BULL_VS_BEAR_TREND",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "BUY",
+        "strength": 0.8
+      }
+    },
+    {
+      "date": "2026-02-04 17:35:00",
+      "symbol": "TSLA",
+      "type": "SHORT",
+      "price": 400.94,
+      "shares": 184,
+      "proceeds": 73699.18704,
+      "pnl": 0,
+      "strength": 0.65,
+      "reasoning": "Downtrend (EMA9>404.3 < EMA21>407.0, slope -0.47%) | RSI 23.5 | MACD hist -0.169 | ADX 50.4 | Stoch K 2.9 | Vol ratio 1.22 | ATR 1.9027 | Price $400.94 | R $407.52 | OBV -0.50 | ROUNDING TOP | STRUCT: DOWNTREND (LH+LL) [--] | GUARD: STRETCHED_3.2ATR",
+      "risk_notes": "Downtrend (EMA9>404.3 < EMA21>407.0, slope -0.47%) | RSI 23.5 | MACD hist -0.169 | ADX 50.4 | Stoch K 2.9 | Vol ratio 1.22 | ATR 1.9027 | Price $400.94 | R $407.52 | OBV -0.50 | ROUNDING TOP | STRUCT: DOWNTREND (LH+LL) [--] | GUARD: STRETCHED_3.2ATR",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "SELL",
+        "strength": 0.65
+      },
+      "indicators": {
+        "rsi": 23.5,
+        "macd": -2.934,
+        "macd_signal": -2.764,
+        "macd_hist": -0.169,
+        "bb_pct": -10.0,
+        "bb_upper": 410.84,
+        "bb_lower": 401.83,
+        "adx": 50.4,
+        "atr": 1.903,
+        "ema9": 404.29,
+        "ema21": 406.96,
+        "ema_trend": "BEAR"
+      }
+    },
+    {
+      "date": "2026-02-04 18:25:00",
+      "symbol": "TSLA",
+      "type": "COVER",
+      "price": 406.425,
+      "shares": 184,
+      "cost": 74856.98219999998,
+      "pnl": -1157.7951599999797,
+      "return_pct": -1.349572491849671,
+      "strength": 0.65,
+      "reasoning": "No trend (slope -0.01%) | RSI 53.2 | MACD hist 0.770 | ADX 41.1 | Stoch K 99.0 | Vol ratio 1.12 | ATR 1.7095 | Price $406.43 | R $407.52 | S $403.69 | BULL MARUBOZU | BULL DIVERGENCE | OBV +0.49 | ROUNDING TOP | STRUCT: DOWNTREND (LH+LL) [--] | GUARD: DIV_BULL_VS_BEAR_TREND",
+      "risk_notes": "No trend (slope -0.01%) | RSI 53.2 | MACD hist 0.770 | ADX 41.1 | Stoch K 99.0 | Vol ratio 1.12 | ATR 1.7095 | Price $406.43 | R $407.52 | S $403.69 | BULL MARUBOZU | BULL DIVERGENCE | OBV +0.49 | ROUNDING TOP | STRUCT: DOWNTREND (LH+LL) [--] | GUARD: DIV_BULL_VS_BEAR_TREND",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "BUY",
+        "strength": 0.65
+      }
+    },
+    {
+      "date": "2026-02-05 14:30:00",
+      "symbol": "TSLA",
+      "type": "BUY",
+      "price": 398.43,
+      "shares": 186,
+      "cost": 74182.08797999998,
+      "pnl": 0,
+      "strength": 0.5,
+      "reasoning": "Downtrend (EMA9>405.4 < EMA21>406.0, slope -0.22%) | RSI 25.4 | MACD hist -0.729 | ADX 19.3 | Stoch K 33.9 | Vol ratio 3.52 | ATR 2.3478 | Price $398.43 | R $404.58 | HAMMER | OBV -1.17 | ROUNDING BOTTOM | STRUCT: UPTREND (HH+HL) [++] | GUARD: STRETCHED_3.2ATR",
+      "risk_notes": "Downtrend (EMA9>405.4 < EMA21>406.0, slope -0.22%) | RSI 25.4 | MACD hist -0.729 | ADX 19.3 | Stoch K 33.9 | Vol ratio 3.52 | ATR 2.3478 | Price $398.43 | R $404.58 | HAMMER | OBV -1.17 | ROUNDING BOTTOM | STRUCT: UPTREND (HH+HL) [++] | GUARD: STRETCHED_3.2ATR",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "BUY",
+        "strength": 0.5
+      },
+      "indicators": {
+        "rsi": 25.4,
+        "macd": -0.299,
+        "macd_signal": 0.43,
+        "macd_hist": -0.729,
+        "bb_pct": -39.0,
+        "bb_upper": 411.32,
+        "bb_lower": 402.06,
+        "adx": 19.3,
+        "atr": 2.348,
+        "ema9": 405.38,
+        "ema21": 406.04,
+        "ema_trend": "BEAR"
+      }
+    },
+    {
+      "date": "2026-02-05 15:00:00",
+      "symbol": "TSLA",
+      "type": "SELL",
+      "price": 393.215,
+      "shares": 186,
+      "proceeds": 73064.85200999999,
+      "pnl": -1117.2359699999943,
+      "return_pct": -1.3088873829781966,
+      "strength": 0.5,
+      "reasoning": "Downtrend (EMA9>398.8 < EMA21>402.1, slope -0.71%) | RSI 21.3 | MACD hist -1.413 | ADX 31.1 | Stoch K 5.4 | Vol ratio 1.38 | ATR 2.6103 | Price $393.21 | R $404.58 | S $392.84 | OBV -0.75 | STRUCT: RANGE-BOUND [~] | GUARD: STRETCHED_3.4ATR",
+      "risk_notes": "Downtrend (EMA9>398.8 < EMA21>402.1, slope -0.71%) | RSI 21.3 | MACD hist -1.413 | ADX 31.1 | Stoch K 5.4 | Vol ratio 1.38 | ATR 2.6103 | Price $393.21 | R $404.58 | S $392.84 | OBV -0.75 | STRUCT: RANGE-BOUND [~] | GUARD: STRETCHED_3.4ATR",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "SELL",
+        "strength": 0.5
+      }
+    },
+    {
+      "date": "2026-02-05 17:05:00",
+      "symbol": "TSLA",
+      "type": "BUY",
+      "price": 397.215,
+      "shares": 157,
+      "cost": 62425.11775499999,
+      "pnl": 0,
+      "strength": 0.5,
+      "reasoning": "Uptrend (EMA9>396.7 > EMA21>395.9, slope 0.21%) | RSI 54.0 | MACD hist 0.822 | ADX 24.4 | Stoch K 81.7 | Vol ratio 0.73 | ATR 2.0838 | Price $397.21 | R $398.79 | S $395.81 | SHOOTING STAR | OBV +0.29 | STRUCT: UPTREND (HH+HL) [++]",
+      "risk_notes": "Uptrend (EMA9>396.7 > EMA21>395.9, slope 0.21%) | RSI 54.0 | MACD hist 0.822 | ADX 24.4 | Stoch K 81.7 | Vol ratio 0.73 | ATR 2.0838 | Price $397.21 | R $398.79 | S $395.81 | SHOOTING STAR | OBV +0.29 | STRUCT: UPTREND (HH+HL) [++]",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "BUY",
+        "strength": 0.5
+      },
+      "indicators": {
+        "rsi": 54.0,
+        "macd": 0.234,
+        "macd_signal": -0.587,
+        "macd_hist": 0.822,
+        "bb_pct": 74.0,
+        "bb_upper": 400.47,
+        "bb_lower": 387.75,
+        "adx": 24.4,
+        "atr": 2.084,
+        "ema9": 396.7,
+        "ema21": 395.86,
+        "ema_trend": "BULL"
+      }
+    },
+    {
+      "date": "2026-02-06 14:45:00",
+      "symbol": "TSLA",
+      "type": "SELL",
+      "price": 408.06,
+      "shares": 157,
+      "proceeds": 64001.35458,
+      "pnl": 1576.2368250000072,
+      "return_pct": 2.7302594312903716,
+      "strength": 0.5,
+      "reasoning": "Uptrend (EMA9>401.3 > EMA21>399.0, slope 0.70%) | RSI 75.2 | MACD hist 1.446 | ADX 25.7 | Stoch K 95.1 | Vol ratio 2.13 | ATR 2.2260 | Price $408.06 | R $409.16 | S $399.59 | ENGULF BULL | BULL DIVERGENCE | OBV +0.93 | STRUCT: DOWNTREND (LH+LL) [--] | GUARD: STRETCHED_4.1ATR",
+      "risk_notes": "Uptrend (EMA9>401.3 > EMA21>399.0, slope 0.70%) | RSI 75.2 | MACD hist 1.446 | ADX 25.7 | Stoch K 95.1 | Vol ratio 2.13 | ATR 2.2260 | Price $408.06 | R $409.16 | S $399.59 | ENGULF BULL | BULL DIVERGENCE | OBV +0.93 | STRUCT: DOWNTREND (LH+LL) [--] | GUARD: STRETCHED_4.1ATR",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "SELL",
+        "strength": 0.5
+      }
+    },
+    {
+      "date": "2026-02-06 16:30:00",
+      "symbol": "TSLA",
+      "type": "BUY",
+      "price": 411.13,
+      "shares": 175,
+      "cost": 72019.69774999999,
+      "pnl": 0,
+      "strength": 0.5,
+      "reasoning": "Uptrend (EMA9>410.1 > EMA21>408.3, slope 0.25%) | RSI 67.9 | MACD hist -0.287 | ADX 40.6 | Stoch K 75.8 | Vol ratio 0.55 | ATR 1.7583 | Price $411.13 | R $411.57 | S $408.70 | ENGULF BULL | BB SQUEEZE | BULL PENNANT | ROUNDING BOTTOM | STRUCT: ACCUMULATION (higher lows) [+]",
+      "risk_notes": "Uptrend (EMA9>410.1 > EMA21>408.3, slope 0.25%) | RSI 67.9 | MACD hist -0.287 | ADX 40.6 | Stoch K 75.8 | Vol ratio 0.55 | ATR 1.7583 | Price $411.13 | R $411.57 | S $408.70 | ENGULF BULL | BB SQUEEZE | BULL PENNANT | ROUNDING BOTTOM | STRUCT: ACCUMULATION (higher lows) [+]",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "BUY",
+        "strength": 0.5
+      },
+      "indicators": {
+        "rsi": 67.9,
+        "macd": 2.241,
+        "macd_signal": 2.528,
+        "macd_hist": -0.287,
+        "bb_pct": 80.0,
+        "bb_upper": 412.31,
+        "bb_lower": 406.31,
+        "adx": 40.6,
+        "atr": 1.758,
+        "ema9": 410.09,
+        "ema21": 408.32,
+        "ema_trend": "BULL"
+      }
+    },
+    {
+      "date": "2026-02-09 18:00:00",
+      "symbol": "TSLA",
+      "type": "SELL",
+      "price": 419.7298,
+      "shares": 175,
+      "proceeds": 73379.26228499999,
+      "pnl": 1359.5645349999977,
+      "return_pct": 2.091747135942401,
+      "strength": 0.5,
+      "reasoning": "Uptrend (EMA9>420.1 > EMA21>419.5, slope 0.04%) | RSI 56.2 | MACD hist -0.335 | ADX 29.7 | Stoch K 25.8 | Vol ratio 0.96 | ATR 0.9387 | Price $419.73 | R $420.69 | S $417.45 | BULL HARAMI | SPINNING TOP | BB SQUEEZE | OBV +0.22 | RISING WEDGE | STRUCT: UPTREND (HH+HL) [++]",
+      "risk_notes": "Uptrend (EMA9>420.1 > EMA21>419.5, slope 0.04%) | RSI 56.2 | MACD hist -0.335 | ADX 29.7 | Stoch K 25.8 | Vol ratio 0.96 | ATR 0.9387 | Price $419.73 | R $420.69 | S $417.45 | BULL HARAMI | SPINNING TOP | BB SQUEEZE | OBV +0.22 | RISING WEDGE | STRUCT: UPTREND (HH+HL) [++]",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "SELL",
+        "strength": 0.5
+      }
+    },
+    {
+      "date": "2026-02-10 14:55:00",
+      "symbol": "TSLA",
+      "type": "BUY",
+      "price": 422.32,
+      "shares": 225,
+      "cost": 95117.02199999998,
+      "pnl": 0,
+      "strength": 0.8,
+      "reasoning": "Uptrend (EMA9>421.4 > EMA21>420.7, slope 0.16%) | RSI 60.3 | MACD hist 0.264 | ADX 21.8 | Stoch K 62.7 | Vol ratio 1.28 | ATR 1.6925 | Price $422.32 | R $425.48 | S $420.28 | SHOOTING STAR | MORNING STAR | BULL DIVERGENCE | OBV +0.60 | STRUCT: BROADENING [~]",
+      "risk_notes": "Uptrend (EMA9>421.4 > EMA21>420.7, slope 0.16%) | RSI 60.3 | MACD hist 0.264 | ADX 21.8 | Stoch K 62.7 | Vol ratio 1.28 | ATR 1.6925 | Price $422.32 | R $425.48 | S $420.28 | SHOOTING STAR | MORNING STAR | BULL DIVERGENCE | OBV +0.60 | STRUCT: BROADENING [~]",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "BUY",
+        "strength": 0.8
+      },
+      "indicators": {
+        "rsi": 60.3,
+        "macd": 0.6,
+        "macd_signal": 0.336,
+        "macd_hist": 0.264,
+        "bb_pct": 84.0,
+        "bb_upper": 423.25,
+        "bb_lower": 417.59,
+        "adx": 21.8,
+        "atr": 1.692,
+        "ema9": 421.38,
+        "ema21": 420.69,
+        "ema_trend": "BULL"
+      }
+    },
+    {
+      "date": "2026-02-10 17:30:00",
+      "symbol": "TSLA",
+      "type": "SELL",
+      "price": 424.64,
+      "shares": 225,
+      "proceeds": 95448.456,
+      "pnl": 331.43400000002293,
+      "return_pct": 0.5493464671339154,
+      "strength": 0.8,
+      "reasoning": "Uptrend (EMA9>424.7 > EMA21>423.9, slope 0.18%) | RSI 55.2 | MACD hist 0.132 | ADX 19.0 | Stoch K 62.1 | Vol ratio 0.82 | ATR 1.5075 | Price $424.64 | R $425.42 | S $422.86 | HAMMER | HANGING MAN | OBV -0.16 | ROUNDING BOTTOM | STRUCT: ACCUMULATION (higher lows) [+]",
+      "risk_notes": "Uptrend (EMA9>424.7 > EMA21>423.9, slope 0.18%) | RSI 55.2 | MACD hist 0.132 | ADX 19.0 | Stoch K 62.1 | Vol ratio 0.82 | ATR 1.5075 | Price $424.64 | R $425.42 | S $422.86 | HAMMER | HANGING MAN | OBV -0.16 | ROUNDING BOTTOM | STRUCT: ACCUMULATION (higher lows) [+]",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "SELL",
+        "strength": 0.8
+      }
+    },
+    {
+      "date": "2026-02-11 14:45:00",
+      "symbol": "TSLA",
+      "type": "BUY",
+      "price": 435.115,
+      "shares": 220,
+      "cost": 95821.0253,
+      "pnl": 0,
+      "strength": 0.5,
+      "reasoning": "Uptrend (EMA9>430.5 > EMA21>427.8, slope 0.71%) | RSI 75.4 | MACD hist 1.190 | ADX 31.0 | Stoch K 90.3 | Vol ratio 1.39 | ATR 2.0155 | Price $435.12 | R $436.35 | S $424.30 | SPINNING TOP | OBV +0.46 | STRUCT: ACCUMULATION (higher lows) [+] | GUARD: STRETCHED_3.6ATR",
+      "risk_notes": "Uptrend (EMA9>430.5 > EMA21>427.8, slope 0.71%) | RSI 75.4 | MACD hist 1.190 | ADX 31.0 | Stoch K 90.3 | Vol ratio 1.39 | ATR 2.0155 | Price $435.12 | R $436.35 | S $424.30 | SPINNING TOP | OBV +0.46 | STRUCT: ACCUMULATION (higher lows) [+] | GUARD: STRETCHED_3.6ATR",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "BUY",
+        "strength": 0.5
+      },
+      "indicators": {
+        "rsi": 75.4,
+        "macd": 2.242,
+        "macd_signal": 1.052,
+        "macd_hist": 1.19,
+        "bb_pct": 104.0,
+        "bb_upper": 434.44,
+        "bb_lower": 419.1,
+        "adx": 31.0,
+        "atr": 2.015,
+        "ema9": 430.55,
+        "ema21": 427.83,
+        "ema_trend": "BULL"
+      }
+    },
+    {
+      "date": "2026-02-11 15:00:00",
+      "symbol": "TSLA",
+      "type": "SELL",
+      "price": 428.27,
+      "shares": 220,
+      "proceeds": 94125.18059999999,
+      "pnl": -1695.8447000000015,
+      "return_pct": -1.573147328867086,
+      "strength": 0.5,
+      "reasoning": "Uptrend (EMA9>430.6 > EMA21>428.6, slope 0.35%) | RSI 50.9 | MACD hist 0.364 | ADX 32.9 | Stoch K 36.3 | Vol ratio 1.37 | ATR 2.2414 | Price $428.27 | R $436.35 | S $424.30 | THREE BLACK CROWS | OBV -0.32 | STRUCT: ACCUMULATION (higher lows) [+]",
+      "risk_notes": "Uptrend (EMA9>430.6 > EMA21>428.6, slope 0.35%) | RSI 50.9 | MACD hist 0.364 | ADX 32.9 | Stoch K 36.3 | Vol ratio 1.37 | ATR 2.2414 | Price $428.27 | R $436.35 | S $424.30 | THREE BLACK CROWS | OBV -0.32 | STRUCT: ACCUMULATION (higher lows) [+]",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "SELL",
+        "strength": 0.5
+      }
+    },
+    {
+      "date": "2026-02-12 15:20:00",
+      "symbol": "TSLA",
+      "type": "BUY",
+      "price": 429.9995,
+      "shares": 196,
+      "cost": 84364.181902,
+      "pnl": 0,
+      "strength": 0.5,
+      "reasoning": "Uptrend (EMA9>429.3 > EMA21>428.8, slope 0.04%) | RSI 56.1 | MACD hist -0.177 | ADX 19.1 | Stoch K 38.3 | Vol ratio 0.80 | ATR 1.9819 | Price $430.00 | R $436.23 | S $426.19 | ENGULF BULL | STRUCT: W-BOTTOM FORMING [+]",
+      "risk_notes": "Uptrend (EMA9>429.3 > EMA21>428.8, slope 0.04%) | RSI 56.1 | MACD hist -0.177 | ADX 19.1 | Stoch K 38.3 | Vol ratio 0.80 | ATR 1.9819 | Price $430.00 | R $436.23 | S $426.19 | ENGULF BULL | STRUCT: W-BOTTOM FORMING [+]",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "BUY",
+        "strength": 0.5
+      },
+      "indicators": {
+        "rsi": 56.1,
+        "macd": 0.761,
+        "macd_signal": 0.938,
+        "macd_hist": -0.177,
+        "bb_pct": 62.0,
+        "bb_upper": 433.85,
+        "bb_lower": 423.75,
+        "adx": 19.1,
+        "atr": 1.982,
+        "ema9": 429.35,
+        "ema21": 428.79,
+        "ema_trend": "BULL"
+      }
+    },
+    {
+      "date": "2026-02-12 15:55:00",
+      "symbol": "TSLA",
+      "type": "SELL",
+      "price": 425.16,
+      "shares": 196,
+      "proceeds": 83248.02864,
+      "pnl": -1116.1532619999925,
+      "return_pct": -1.1254664249609525,
+      "strength": 0.5,
+      "reasoning": "Downtrend (EMA9>427.1 < EMA21>427.9, slope -0.20%) | RSI 38.4 | MACD hist -0.605 | ADX 17.6 | Stoch K 8.9 | Vol ratio 0.77 | ATR 1.8466 | Price $425.16 | R $425.91 | S $424.60 | OBV -0.31 | STRUCT: RANGE-BOUND [~]",
+      "risk_notes": "Downtrend (EMA9>427.1 < EMA21>427.9, slope -0.20%) | RSI 38.4 | MACD hist -0.605 | ADX 17.6 | Stoch K 8.9 | Vol ratio 0.77 | ATR 1.8466 | Price $425.16 | R $425.91 | S $424.60 | OBV -0.31 | STRUCT: RANGE-BOUND [~]",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "SELL",
+        "strength": 0.5
+      }
+    }
+  ],
+  "trade_count": 18,
+  "equity_curve_summary": {
+    "start": {
+      "date": "2026-02-03 18:40:00",
+      "value": 100000
+    },
+    "end": {
+      "date": "2026-02-12 16:20:00",
+      "value": 97978.26565540009
+    },
+    "points": 519
+  }
+}

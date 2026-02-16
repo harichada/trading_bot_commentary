@@ -1,33 +1,6 @@
 {
   "trade_history": [
     {
-      "symbol": "DKNG",
-      "entry_time": "2025-08-08T09:35:43.146004",
-      "exit_time": "2025-08-08T09:42:47.727406",
-      "entry_price": 43.5,
-      "exit_price": 43.69,
-      "quantity": 1848.0,
-      "pnl": 351.1199999999958,
-      "exit_reason": "external_close",
-      "reasoning": {
-        "source": "existing_schwab_position"
-      }
-    },
-    {
-      "symbol": "PLTR",
-      "entry_time": "2025-08-08T09:49:55.618554",
-      "exit_time": "2025-08-08T09:50:41.107214",
-      "entry_price": 187.4901,
-      "exit_price": 187.23,
-      "quantity": 172.0,
-      "pnl": 44.737200000003895,
-      "exit_reason": "stop_loss",
-      "reasoning": {
-        "source": "external",
-        "strategy": "manual_entry"
-      }
-    },
-    {
       "symbol": "RIVN",
       "entry_time": "2025-08-08T09:47:38.144540",
       "exit_time": "2025-08-08T09:56:17.011585",
@@ -1291,46 +1264,42 @@
       "pnl": -95.52999975,
       "reason": "stop_loss",
       "reasoning": {}
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-28T10:18:41.805869",
+      "exit_time": "2026-01-28T10:48:16.870074",
+      "entry_price": 191.845,
+      "exit_price": 190.7999,
+      "quantity": 247,
+      "pnl": -258.13969999999773,
+      "reason": "stop_loss",
+      "reasoning": {
+        "strategy": "scalping",
+        "sma_position": "above",
+        "momentum": 0.0,
+        "rsi": 53.45487561240864
+      }
+    },
+    {
+      "symbol": "TSLA",
+      "entry_time": "2026-01-28T10:14:59.004412",
+      "exit_time": "2026-01-28T11:01:19.445562",
+      "entry_price": 434.965,
+      "exit_price": 433.9,
+      "quantity": 109,
+      "pnl": -116.08499999999975,
+      "reason": "time_decay",
+      "reasoning": {
+        "strategy": "scalping",
+        "sma_position": "above",
+        "momentum": 0.0,
+        "rsi": 52.19323715872698
+      }
     }
   ],
-  "schwab_pnl": 261.495000000002,
-  "consecutive_losses": 8,
-  "positions_data": {
-    "RIVN": {
-      "is_long_term": false,
-      "entry_price": 12.145,
-      "quantity": 823.0,
-      "side": "long",
-      "entry_time": "2025-08-11T09:50:56.598422"
-    },
-    "DKNG": {
-      "is_long_term": false,
-      "entry_price": 43.6198809524,
-      "quantity": 168.0,
-      "side": "long",
-      "entry_time": "2025-08-11T09:50:56.598444"
-    },
-    "COIN": {
-      "is_long_term": false,
-      "entry_price": 331.8599,
-      "quantity": 30.0,
-      "side": "long",
-      "entry_time": "2025-08-11T09:50:56.598445"
-    },
-    "TSLA": {
-      "is_long_term": false,
-      "entry_price": 342.3544,
-      "quantity": 29.0,
-      "side": "long",
-      "entry_time": "2025-08-11T09:50:56.598449"
-    },
-    "HQGE": {
-      "is_long_term": false,
-      "entry_price": 0.0190313725,
-      "quantity": 5100.0,
-      "side": "long",
-      "entry_time": "2025-08-11T10:51:15.358677"
-    }
-  },
-  "last_save": "2025-08-11T10:51:15.689356"
+  "schwab_pnl": 3645.1699999999996,
+  "consecutive_losses": 10,
+  "positions_data": {},
+  "last_save": "2026-02-03T16:17:56.728744"
 }

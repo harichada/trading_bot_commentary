@@ -1,0 +1,760 @@
+{
+  "timestamp": "2026-02-12T16:06:13.593826",
+  "config": {
+    "symbol": "NVDA",
+    "start_date": "2026-02-03",
+    "end_date": "2026-02-12",
+    "interval": "5m",
+    "initial_capital": 100000,
+    "mode": "rules",
+    "factors": {
+      "price_action": true,
+      "technical_indicators": true,
+      "news_sentiment": false,
+      "market_regime": true
+    }
+  },
+  "metrics": {
+    "total_return": 0.31,
+    "buy_hold_return": -0.05,
+    "sharpe_ratio": 0.76,
+    "max_drawdown": 4.62,
+    "win_rate": 69.2,
+    "total_trades": 13,
+    "winning_trades": 9,
+    "losing_trades": 4,
+    "profit_factor": 1.05,
+    "avg_win": 529.59,
+    "avg_loss": 1137.68,
+    "initial_capital": 100000,
+    "final_value": 100309.21,
+    "gross_profit": 4766.29,
+    "gross_loss": 4550.72
+  },
+  "per_symbol_metrics": {},
+  "trades": [
+    {
+      "date": "2026-02-03 18:20:00",
+      "symbol": "NVDA",
+      "type": "SHORT",
+      "price": 179.11,
+      "shares": 530,
+      "proceeds": 94833.3717,
+      "pnl": 0,
+      "strength": 0.5,
+      "reasoning": "Downtrend (EMA9>179.2 < EMA21>179.5, slope -0.09%) | RSI 40.6 | MACD hist 0.075 | ADX 53.4 | Stoch K 25.9 | Vol ratio 0.59 | ATR 0.5158 | Price $179.11 | R $179.71 | S $179.10 | BEAR HARAMI | SPINNING TOP | OBV -0.11 | STRUCT: DOWNTREND (LH+LL) [--]",
+      "risk_notes": "Downtrend (EMA9>179.2 < EMA21>179.5, slope -0.09%) | RSI 40.6 | MACD hist 0.075 | ADX 53.4 | Stoch K 25.9 | Vol ratio 0.59 | ATR 0.5158 | Price $179.11 | R $179.71 | S $179.10 | BEAR HARAMI | SPINNING TOP | OBV -0.11 | STRUCT: DOWNTREND (LH+LL) [--]",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "SELL",
+        "strength": 0.5
+      },
+      "indicators": {
+        "rsi": 40.6,
+        "macd": -0.465,
+        "macd_signal": -0.54,
+        "macd_hist": 0.075,
+        "bb_pct": 27.0,
+        "bb_upper": 180.42,
+        "bb_lower": 178.62,
+        "adx": 53.4,
+        "atr": 0.516,
+        "ema9": 179.21,
+        "ema21": 179.54,
+        "ema_trend": "BEAR"
+      }
+    },
+    {
+      "date": "2026-02-03 19:55:00",
+      "symbol": "NVDA",
+      "type": "COVER",
+      "price": 177.88,
+      "shares": 530,
+      "cost": 94370.67639999998,
+      "pnl": 462.69530000002123,
+      "return_pct": 0.6914774004947333,
+      "strength": 0.5,
+      "reasoning": "Downtrend (EMA9>177.7 < EMA21>178.2, slope -0.30%) | RSI 44.5 | MACD hist -0.093 | ADX 41.6 | Stoch K 50.5 | Vol ratio 1.36 | ATR 0.6077 | Price $177.88 | R $179.48 | DOUBLE TOP | STRUCT: M-TOP CONFIRMED [--] | GUARD: LAST_15MIN",
+      "risk_notes": "Downtrend (EMA9>177.7 < EMA21>178.2, slope -0.30%) | RSI 44.5 | MACD hist -0.093 | ADX 41.6 | Stoch K 50.5 | Vol ratio 1.36 | ATR 0.6077 | Price $177.88 | R $179.48 | DOUBLE TOP | STRUCT: M-TOP CONFIRMED [--] | GUARD: LAST_15MIN",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "BUY",
+        "strength": 0.5
+      }
+    },
+    {
+      "date": "2026-02-04 14:35:00",
+      "symbol": "NVDA",
+      "type": "BUY",
+      "price": 179.47,
+      "shares": 509,
+      "cost": 91441.58022999999,
+      "pnl": 0,
+      "strength": 0.65,
+      "reasoning": "No trend (slope -0.00%) | RSI 50.9 | MACD hist -0.087 | ADX 21.6 | Stoch K 65.5 | Vol ratio 2.10 | ATR 0.8170 | Price $179.47 | R $179.48 | S $179.12 | ENGULF BULL | OBV +0.18 | BEAR PENNANT | ROUNDING BOTTOM | STRUCT: UPTREND (HH+HL) [++]",
+      "risk_notes": "No trend (slope -0.00%) | RSI 50.9 | MACD hist -0.087 | ADX 21.6 | Stoch K 65.5 | Vol ratio 2.10 | ATR 0.8170 | Price $179.47 | R $179.48 | S $179.12 | ENGULF BULL | OBV +0.18 | BEAR PENNANT | ROUNDING BOTTOM | STRUCT: UPTREND (HH+HL) [++]",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "BUY",
+        "strength": 0.65
+      },
+      "indicators": {
+        "rsi": 50.9,
+        "macd": 0.205,
+        "macd_signal": 0.292,
+        "macd_hist": -0.087,
+        "bb_pct": 48.0,
+        "bb_upper": 181.1,
+        "bb_lower": 177.94,
+        "adx": 21.6,
+        "atr": 0.817,
+        "ema9": 179.54,
+        "ema21": 179.4,
+        "ema_trend": "BULL"
+      }
+    },
+    {
+      "date": "2026-02-04 15:00:00",
+      "symbol": "NVDA",
+      "type": "SELL",
+      "price": 176.93,
+      "shares": 509,
+      "proceeds": 89967.31263000001,
+      "pnl": -1474.2675999999774,
+      "return_pct": -1.4152783194962937,
+      "strength": 0.65,
+      "reasoning": "Downtrend (EMA9>178.5 < EMA21>178.9, slope -0.24%) | RSI 36.5 | MACD hist -0.308 | ADX 27.6 | Stoch K 6.5 | Vol ratio 1.75 | ATR 0.8810 | Price $176.93 | R $178.16 | S $176.25 | OBV -0.96 | STRUCT: TRIANGLE (converging) [~]",
+      "risk_notes": "Downtrend (EMA9>178.5 < EMA21>178.9, slope -0.24%) | RSI 36.5 | MACD hist -0.308 | ADX 27.6 | Stoch K 6.5 | Vol ratio 1.75 | ATR 0.8810 | Price $176.93 | R $178.16 | S $176.25 | OBV -0.96 | STRUCT: TRIANGLE (converging) [~]",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "SELL",
+        "strength": 0.65
+      }
+    },
+    {
+      "date": "2026-02-04 15:35:00",
+      "symbol": "NVDA",
+      "type": "BUY",
+      "price": 176.695,
+      "shares": 458,
+      "cost": 81007.23631,
+      "pnl": 0,
+      "strength": 0.65,
+      "reasoning": "Downtrend (EMA9>177.4 < EMA21>178.1, slope -0.30%) | RSI 40.4 | MACD hist -0.246 | ADX 36.6 | Stoch K 26.5 | Vol ratio 2.12 | ATR 0.9602 | Price $176.69 | R $178.13 | S $176.65 | BULL HARAMI | BULL DIVERGENCE | OBV +0.18 | STRUCT: DOWNTREND (LH+LL) [--] | GUARD: DIV_BULL_VS_BEAR_TREND",
+      "risk_notes": "Downtrend (EMA9>177.4 < EMA21>178.1, slope -0.30%) | RSI 40.4 | MACD hist -0.246 | ADX 36.6 | Stoch K 26.5 | Vol ratio 2.12 | ATR 0.9602 | Price $176.69 | R $178.13 | S $176.65 | BULL HARAMI | BULL DIVERGENCE | OBV +0.18 | STRUCT: DOWNTREND (LH+LL) [--] | GUARD: DIV_BULL_VS_BEAR_TREND",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "BUY",
+        "strength": 0.65
+      },
+      "indicators": {
+        "rsi": 40.4,
+        "macd": -0.624,
+        "macd_signal": -0.378,
+        "macd_hist": -0.246,
+        "bb_pct": 15.0,
+        "bb_upper": 181.13,
+        "bb_lower": 175.92,
+        "adx": 36.6,
+        "atr": 0.96,
+        "ema9": 177.37,
+        "ema21": 178.08,
+        "ema_trend": "BEAR"
+      }
+    },
+    {
+      "date": "2026-02-04 16:20:00",
+      "symbol": "NVDA",
+      "type": "SELL",
+      "price": 175.26,
+      "shares": 458,
+      "proceeds": 80188.81092,
+      "pnl": -818.4253899999894,
+      "return_pct": -0.8121339030532804,
+      "strength": 0.65,
+      "reasoning": "Downtrend (EMA9>175.6 < EMA21>176.6, slope -0.41%) | RSI 39.2 | MACD hist -0.158 | ADX 44.2 | Stoch K 21.3 | Vol ratio 0.74 | ATR 0.9258 | Price $175.26 | R $177.56 | S $174.58 | OBV +0.19 | STRUCT: DOWNTREND (LH+LL) [--]",
+      "risk_notes": "Downtrend (EMA9>175.6 < EMA21>176.6, slope -0.41%) | RSI 39.2 | MACD hist -0.158 | ADX 44.2 | Stoch K 21.3 | Vol ratio 0.74 | ATR 0.9258 | Price $175.26 | R $177.56 | S $174.58 | OBV +0.19 | STRUCT: DOWNTREND (LH+LL) [--]",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "SELL",
+        "strength": 0.65
+      }
+    },
+    {
+      "date": "2026-02-05 16:00:00",
+      "symbol": "NVDA",
+      "type": "SHORT",
+      "price": 172.51,
+      "shares": 389,
+      "proceeds": 67039.28361,
+      "pnl": 0,
+      "strength": 0.65,
+      "reasoning": "Downtrend (EMA9>172.8 < EMA21>173.2, slope -0.13%) | RSI 44.4 | MACD hist 0.020 | ADX 20.0 | Stoch K 29.2 | Vol ratio 0.89 | ATR 1.0498 | Price $172.51 | R $173.43 | S $172.43 | ENGULF BEAR | EVENING STAR | STRUCT: DOWNTREND (LH+LL) [--]",
+      "risk_notes": "Downtrend (EMA9>172.8 < EMA21>173.2, slope -0.13%) | RSI 44.4 | MACD hist 0.020 | ADX 20.0 | Stoch K 29.2 | Vol ratio 0.89 | ATR 1.0498 | Price $172.51 | R $173.43 | S $172.43 | ENGULF BEAR | EVENING STAR | STRUCT: DOWNTREND (LH+LL) [--]",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "SELL",
+        "strength": 0.65
+      },
+      "indicators": {
+        "rsi": 44.4,
+        "macd": -0.532,
+        "macd_signal": -0.553,
+        "macd_hist": 0.02,
+        "bb_pct": 34.0,
+        "bb_upper": 176.34,
+        "bb_lower": 170.58,
+        "adx": 20.0,
+        "atr": 1.05,
+        "ema9": 172.77,
+        "ema21": 173.24,
+        "ema_trend": "BEAR"
+      }
+    },
+    {
+      "date": "2026-02-05 16:30:00",
+      "symbol": "NVDA",
+      "type": "COVER",
+      "price": 175.21,
+      "shares": 389,
+      "cost": 68224.84668999999,
+      "pnl": -1185.5630799999926,
+      "return_pct": -1.5410079333371463,
+      "strength": 0.65,
+      "reasoning": "Uptrend (EMA9>173.5 > EMA21>173.4, slope 0.18%) | RSI 60.7 | MACD hist 0.315 | ADX 18.4 | Stoch K 99.1 | Vol ratio 0.85 | ATR 0.9822 | Price $175.21 | R $175.50 | S $174.28 | OBV +0.35 | BULL PENNANT | STRUCT: DOWNTREND (LH+LL) [--]",
+      "risk_notes": "Uptrend (EMA9>173.5 > EMA21>173.4, slope 0.18%) | RSI 60.7 | MACD hist 0.315 | ADX 18.4 | Stoch K 99.1 | Vol ratio 0.85 | ATR 0.9822 | Price $175.21 | R $175.50 | S $174.28 | OBV +0.35 | BULL PENNANT | STRUCT: DOWNTREND (LH+LL) [--]",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "BUY",
+        "strength": 0.65
+      }
+    },
+    {
+      "date": "2026-02-05 20:20:00",
+      "symbol": "NVDA",
+      "type": "SHORT",
+      "price": 172.68,
+      "shares": 507,
+      "proceeds": 87461.21124,
+      "pnl": 0,
+      "strength": 0.65,
+      "reasoning": "Downtrend (EMA9>173.2 < EMA21>173.5, slope -0.06%) | RSI 38.7 | MACD hist -0.013 | ADX 17.5 | Stoch K 7.2 | Vol ratio 2.03 | ATR 0.5468 | Price $172.68 | R $173.43 | S $171.82 | BB SQUEEZE | OBV -0.33 | STRUCT: M-TOP CONFIRMED [--]",
+      "risk_notes": "Downtrend (EMA9>173.2 < EMA21>173.5, slope -0.06%) | RSI 38.7 | MACD hist -0.013 | ADX 17.5 | Stoch K 7.2 | Vol ratio 2.03 | ATR 0.5468 | Price $172.68 | R $173.43 | S $171.82 | BB SQUEEZE | OBV -0.33 | STRUCT: M-TOP CONFIRMED [--]",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "SELL",
+        "strength": 0.65
+      },
+      "indicators": {
+        "rsi": 38.7,
+        "macd": -0.272,
+        "macd_signal": -0.259,
+        "macd_hist": -0.013,
+        "bb_pct": 10.0,
+        "bb_upper": 174.31,
+        "bb_lower": 172.5,
+        "adx": 17.5,
+        "atr": 0.547,
+        "ema9": 173.25,
+        "ema21": 173.5,
+        "ema_trend": "BEAR"
+      }
+    },
+    {
+      "date": "2026-02-05 EOD",
+      "symbol": "NVDA",
+      "type": "EOD_COVER",
+      "price": 170.39,
+      "shares": 507,
+      "cost": 86474.11772999998,
+      "pnl": 987.0935100000206,
+      "return_pct": 1.3439755854216973,
+      "strength": 0,
+      "reasoning": "Day trading: forced cover at end of day",
+      "risk_notes": "Short covered to avoid overnight risk",
+      "factors_used": [],
+      "raw_response": {},
+      "indicators": {}
+    },
+    {
+      "date": "2026-02-06 14:30:00",
+      "symbol": "NVDA",
+      "type": "BUY",
+      "price": 177.49,
+      "shares": 396,
+      "cost": 70356.32604,
+      "pnl": 0,
+      "strength": 0.65,
+      "reasoning": "Uptrend (EMA9>175.6 > EMA21>174.4, slope 0.71%) | RSI 69.5 | MACD hist 0.613 | ADX 24.4 | Stoch K 98.3 | Vol ratio 2.67 | ATR 1.0101 | Price $177.49 | S $174.73 | HAMMER | HANGING MAN | BULL DIVERGENCE | OBV +0.45 | STRUCT: BROADENING [~] | GUARD: STRETCHED_3.1ATR",
+      "risk_notes": "Uptrend (EMA9>175.6 > EMA21>174.4, slope 0.71%) | RSI 69.5 | MACD hist 0.613 | ADX 24.4 | Stoch K 98.3 | Vol ratio 2.67 | ATR 1.0101 | Price $177.49 | S $174.73 | HAMMER | HANGING MAN | BULL DIVERGENCE | OBV +0.45 | STRUCT: BROADENING [~] | GUARD: STRETCHED_3.1ATR",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "BUY",
+        "strength": 0.65
+      },
+      "indicators": {
+        "rsi": 69.5,
+        "macd": 0.94,
+        "macd_signal": 0.327,
+        "macd_hist": 0.613,
+        "bb_pct": 97.0,
+        "bb_upper": 177.75,
+        "bb_lower": 169.33,
+        "adx": 24.4,
+        "atr": 1.01,
+        "ema9": 175.58,
+        "ema21": 174.35,
+        "ema_trend": "BULL"
+      }
+    },
+    {
+      "date": "2026-02-06 15:10:00",
+      "symbol": "NVDA",
+      "type": "SELL",
+      "price": 180.06,
+      "shares": 396,
+      "proceeds": 71232.45624,
+      "pnl": 876.1301999999996,
+      "return_pct": 1.4479688996563045,
+      "strength": 0.65,
+      "reasoning": "Uptrend (EMA9>179.3 > EMA21>177.4, slope 0.69%) | RSI 68.8 | MACD hist 0.330 | ADX 26.6 | Stoch K 76.8 | Vol ratio 1.93 | ATR 1.0904 | Price $180.06 | R $181.70 | S $174.73 | SPINNING TOP | OBV +0.64 | ROUNDING BOTTOM | STRUCT: BROADENING [~]",
+      "risk_notes": "Uptrend (EMA9>179.3 > EMA21>177.4, slope 0.69%) | RSI 68.8 | MACD hist 0.330 | ADX 26.6 | Stoch K 76.8 | Vol ratio 1.93 | ATR 1.0904 | Price $180.06 | R $181.70 | S $174.73 | SPINNING TOP | OBV +0.64 | ROUNDING BOTTOM | STRUCT: BROADENING [~]",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "SELL",
+        "strength": 0.65
+      }
+    },
+    {
+      "date": "2026-02-06 18:15:00",
+      "symbol": "NVDA",
+      "type": "BUY",
+      "price": 184.89,
+      "shares": 507,
+      "cost": 93832.96922999999,
+      "pnl": 0,
+      "strength": 0.5,
+      "reasoning": "Uptrend (EMA9>184.6 > EMA21>184.1, slope 0.15%) | RSI 64.8 | MACD hist -0.141 | ADX 32.8 | Stoch K 84.6 | Vol ratio 0.73 | ATR 0.5422 | Price $184.89 | R $185.16 | S $184.21 | OBV +0.21 | STRUCT: UPTREND (HH+HL) [++]",
+      "risk_notes": "Uptrend (EMA9>184.6 > EMA21>184.1, slope 0.15%) | RSI 64.8 | MACD hist -0.141 | ADX 32.8 | Stoch K 84.6 | Vol ratio 0.73 | ATR 0.5422 | Price $184.89 | R $185.16 | S $184.21 | OBV +0.21 | STRUCT: UPTREND (HH+HL) [++]",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "BUY",
+        "strength": 0.5
+      },
+      "indicators": {
+        "rsi": 64.8,
+        "macd": 0.721,
+        "macd_signal": 0.862,
+        "macd_hist": -0.141,
+        "bb_pct": 79.0,
+        "bb_upper": 185.38,
+        "bb_lower": 183.04,
+        "adx": 32.8,
+        "atr": 0.542,
+        "ema9": 184.6,
+        "ema21": 184.1,
+        "ema_trend": "BULL"
+      }
+    },
+    {
+      "date": "2026-02-06 EOD",
+      "symbol": "NVDA",
+      "type": "EOD_CLOSE",
+      "price": 185.51,
+      "shares": 507,
+      "proceeds": 93959.51642999999,
+      "pnl": 126.54720000000088,
+      "return_pct": 0.3353345232300242,
+      "strength": 0,
+      "reasoning": "Day trading: forced close at end of day",
+      "risk_notes": "Position closed to avoid overnight risk",
+      "factors_used": [],
+      "raw_response": {},
+      "indicators": {}
+    },
+    {
+      "date": "2026-02-09 14:45:00",
+      "symbol": "NVDA",
+      "type": "BUY",
+      "price": 193.47,
+      "shares": 398,
+      "cost": 77078.06105999999,
+      "pnl": 0,
+      "strength": 0.5,
+      "reasoning": "Uptrend (EMA9>188.3 > EMA21>186.8, slope 0.94%) | RSI 83.7 | MACD hist 0.775 | ADX 31.9 | Stoch K 98.1 | Vol ratio 2.94 | ATR 0.9621 | Price $193.47 | S $185.21 | OBV +1.31 | STRUCT: UPTREND (HH+HL) [++] | GUARD: RSI_EXTREME_HI,STRETCHED_7.0ATR",
+      "risk_notes": "Uptrend (EMA9>188.3 > EMA21>186.8, slope 0.94%) | RSI 83.7 | MACD hist 0.775 | ADX 31.9 | Stoch K 98.1 | Vol ratio 2.94 | ATR 0.9621 | Price $193.47 | S $185.21 | OBV +1.31 | STRUCT: UPTREND (HH+HL) [++] | GUARD: RSI_EXTREME_HI,STRETCHED_7.0ATR",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "BUY",
+        "strength": 0.5
+      },
+      "indicators": {
+        "rsi": 83.7,
+        "macd": 1.264,
+        "macd_signal": 0.489,
+        "macd_hist": 0.775,
+        "bb_pct": 127.0,
+        "bb_upper": 190.95,
+        "bb_lower": 181.69,
+        "adx": 31.9,
+        "atr": 0.962,
+        "ema9": 188.35,
+        "ema21": 186.77,
+        "ema_trend": "BULL"
+      }
+    },
+    {
+      "date": "2026-02-09 14:55:00",
+      "symbol": "NVDA",
+      "type": "SELL",
+      "price": 191.16,
+      "shares": 398,
+      "proceeds": 76005.59831999999,
+      "pnl": -1072.4627400000027,
+      "return_pct": -1.1939835633431595,
+      "strength": 0.5,
+      "reasoning": "Uptrend (EMA9>189.4 > EMA21>187.6, slope 1.04%) | RSI 68.4 | MACD hist 0.723 | ADX 36.6 | Stoch K 74.4 | Vol ratio 1.31 | ATR 1.0424 | Price $191.16 | R $193.66 | S $185.21 | OBV +0.33 | STRUCT: RANGE-BOUND [~] | GUARD: STRETCHED_3.5ATR",
+      "risk_notes": "Uptrend (EMA9>189.4 > EMA21>187.6, slope 1.04%) | RSI 68.4 | MACD hist 0.723 | ADX 36.6 | Stoch K 74.4 | Vol ratio 1.31 | ATR 1.0424 | Price $191.16 | R $193.66 | S $185.21 | OBV +0.33 | STRUCT: RANGE-BOUND [~] | GUARD: STRETCHED_3.5ATR",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "SELL",
+        "strength": 0.5
+      }
+    },
+    {
+      "date": "2026-02-09 16:55:00",
+      "symbol": "NVDA",
+      "type": "SHORT",
+      "price": 191.485,
+      "shares": 485,
+      "proceeds": 92777.354775,
+      "pnl": 0,
+      "strength": 0.5,
+      "reasoning": "Uptrend (EMA9>191.6 > EMA21>191.2, slope 0.10%) | RSI 57.0 | MACD hist -0.229 | ADX 44.3 | Stoch K 26.9 | Vol ratio 0.60 | ATR 0.5719 | Price $191.49 | R $191.95 | S $191.41 | BB SQUEEZE | OBV -0.12 | BULL PENNANT | BEAR PENNANT | STRUCT: M-TOP FORMING [-]",
+      "risk_notes": "Uptrend (EMA9>191.6 > EMA21>191.2, slope 0.10%) | RSI 57.0 | MACD hist -0.229 | ADX 44.3 | Stoch K 26.9 | Vol ratio 0.60 | ATR 0.5719 | Price $191.49 | R $191.95 | S $191.41 | BB SQUEEZE | OBV -0.12 | BULL PENNANT | BEAR PENNANT | STRUCT: M-TOP FORMING [-]",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "SELL",
+        "strength": 0.5
+      },
+      "indicators": {
+        "rsi": 57.0,
+        "macd": 0.664,
+        "macd_signal": 0.893,
+        "macd_hist": -0.229,
+        "bb_pct": 43.0,
+        "bb_upper": 192.25,
+        "bb_lower": 190.9,
+        "adx": 44.3,
+        "atr": 0.572,
+        "ema9": 191.63,
+        "ema21": 191.22,
+        "ema_trend": "BULL"
+      }
+    },
+    {
+      "date": "2026-02-09 EOD",
+      "symbol": "NVDA",
+      "type": "EOD_COVER",
+      "price": 189.85,
+      "shares": 485,
+      "cost": 92169.32724999999,
+      "pnl": 608.0275250000122,
+      "return_pct": 0.8612062154332412,
+      "strength": 0,
+      "reasoning": "Day trading: forced cover at end of day",
+      "risk_notes": "Short covered to avoid overnight risk",
+      "factors_used": [],
+      "raw_response": {},
+      "indicators": {}
+    },
+    {
+      "date": "2026-02-10 14:40:00",
+      "symbol": "NVDA",
+      "type": "SHORT",
+      "price": 189.48,
+      "shares": 493,
+      "proceeds": 93320.22636,
+      "pnl": 0,
+      "strength": 0.8,
+      "reasoning": "Downtrend (EMA9>190.6 < EMA21>190.7, slope -0.05%) | RSI 38.2 | MACD hist -0.054 | ADX 21.5 | Stoch K 8.3 | Vol ratio 1.81 | ATR 0.6110 | Price $189.48 | R $190.48 | THREE BLACK CROWS | BEAR DIVERGENCE | OBV -1.26 | STRUCT: UPTREND (HH+HL) [++]",
+      "risk_notes": "Downtrend (EMA9>190.6 < EMA21>190.7, slope -0.05%) | RSI 38.2 | MACD hist -0.054 | ADX 21.5 | Stoch K 8.3 | Vol ratio 1.81 | ATR 0.6110 | Price $189.48 | R $190.48 | THREE BLACK CROWS | BEAR DIVERGENCE | OBV -1.26 | STRUCT: UPTREND (HH+HL) [++]",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "SELL",
+        "strength": 0.8
+      },
+      "indicators": {
+        "rsi": 38.2,
+        "macd": -0.066,
+        "macd_signal": -0.013,
+        "macd_hist": -0.054,
+        "bb_pct": 12.0,
+        "bb_upper": 191.82,
+        "bb_lower": 189.15,
+        "adx": 21.5,
+        "atr": 0.611,
+        "ema9": 190.58,
+        "ema21": 190.66,
+        "ema_trend": "BEAR"
+      }
+    },
+    {
+      "date": "2026-02-10 EOD",
+      "symbol": "NVDA",
+      "type": "EOD_COVER",
+      "price": 188.42,
+      "shares": 493,
+      "cost": 92983.95105999999,
+      "pnl": 336.27530000000843,
+      "return_pct": 0.5625729752680275,
+      "strength": 0,
+      "reasoning": "Day trading: forced cover at end of day",
+      "risk_notes": "Short covered to avoid overnight risk",
+      "factors_used": [],
+      "raw_response": {},
+      "indicators": {}
+    },
+    {
+      "date": "2026-02-11 14:55:00",
+      "symbol": "NVDA",
+      "type": "SHORT",
+      "price": 191.21,
+      "shares": 491,
+      "proceeds": 93790.22589,
+      "pnl": 0,
+      "strength": 0.65,
+      "reasoning": "Uptrend (EMA9>191.6 > EMA21>190.9, slope 0.29%) | RSI 54.4 | MACD hist 0.086 | ADX 34.0 | Stoch K 39.5 | Vol ratio 1.10 | ATR 0.7663 | Price $191.21 | R $191.35 | S $191.00 | THREE BLACK CROWS | BEAR DIVERGENCE | OBV -0.83 | STRUCT: UPTREND (HH+HL) [++] | GUARD: DIV_BEAR_VS_BULL_TREND",
+      "risk_notes": "Uptrend (EMA9>191.6 > EMA21>190.9, slope 0.29%) | RSI 54.4 | MACD hist 0.086 | ADX 34.0 | Stoch K 39.5 | Vol ratio 1.10 | ATR 0.7663 | Price $191.21 | R $191.35 | S $191.00 | THREE BLACK CROWS | BEAR DIVERGENCE | OBV -0.83 | STRUCT: UPTREND (HH+HL) [++] | GUARD: DIV_BEAR_VS_BULL_TREND",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "SELL",
+        "strength": 0.65
+      },
+      "indicators": {
+        "rsi": 54.4,
+        "macd": 0.716,
+        "macd_signal": 0.629,
+        "macd_hist": 0.086,
+        "bb_pct": 60.0,
+        "bb_upper": 193.21,
+        "bb_lower": 188.16,
+        "adx": 34.0,
+        "atr": 0.766,
+        "ema9": 191.63,
+        "ema21": 190.92,
+        "ema_trend": "BULL"
+      }
+    },
+    {
+      "date": "2026-02-11 15:35:00",
+      "symbol": "NVDA",
+      "type": "COVER",
+      "price": 190.34,
+      "shares": 491,
+      "cost": 93550.39693999999,
+      "pnl": 239.82895000001008,
+      "return_pct": 0.45707680991908806,
+      "strength": 0.65,
+      "reasoning": "Downtrend (EMA9>190.2 < EMA21>190.4, slope -0.17%) | RSI 49.8 | MACD hist -0.256 | ADX 25.2 | Stoch K 35.1 | Vol ratio 1.03 | ATR 0.7947 | Price $190.34 | R $191.35 | S $189.44 | OBV -0.30 | STRUCT: BROADENING [~]",
+      "risk_notes": "Downtrend (EMA9>190.2 < EMA21>190.4, slope -0.17%) | RSI 49.8 | MACD hist -0.256 | ADX 25.2 | Stoch K 35.1 | Vol ratio 1.03 | ATR 0.7947 | Price $190.34 | R $191.35 | S $189.44 | OBV -0.30 | STRUCT: BROADENING [~]",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "BUY",
+        "strength": 0.65
+      }
+    },
+    {
+      "date": "2026-02-12 16:20:00",
+      "symbol": "NVDA",
+      "type": "SHORT",
+      "price": 188.615,
+      "shares": 499,
+      "proceeds": 94024.766115,
+      "pnl": 0,
+      "strength": 0.8,
+      "reasoning": "Downtrend (EMA9>189.5 < EMA21>190.2, slope -0.28%) | RSI 30.3 | MACD hist -0.201 | ADX 32.8 | Stoch K 8.5 | Vol ratio 0.98 | ATR 0.6782 | Price $188.62 | R $190.55 | OBV -0.49 | STRUCT: DOWNTREND (LH+LL) [--]",
+      "risk_notes": "Downtrend (EMA9>189.5 < EMA21>190.2, slope -0.28%) | RSI 30.3 | MACD hist -0.201 | ADX 32.8 | Stoch K 8.5 | Vol ratio 0.98 | ATR 0.6782 | Price $188.62 | R $190.55 | OBV -0.49 | STRUCT: DOWNTREND (LH+LL) [--]",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "SELL",
+        "strength": 0.8
+      },
+      "indicators": {
+        "rsi": 30.3,
+        "macd": -0.663,
+        "macd_signal": -0.462,
+        "macd_hist": -0.201,
+        "bb_pct": 7.0,
+        "bb_upper": 192.62,
+        "bb_lower": 188.32,
+        "adx": 32.8,
+        "atr": 0.678,
+        "ema9": 189.45,
+        "ema21": 190.18,
+        "ema_trend": "BEAR"
+      }
+    },
+    {
+      "date": "2026-02-12 16:25:00",
+      "symbol": "NVDA",
+      "type": "COVER",
+      "price": 187.315,
+      "shares": 499,
+      "cost": 93563.65518499998,
+      "pnl": 461.1109300000244,
+      "return_pct": 0.6940180978565635,
+      "strength": 0.8,
+      "reasoning": "Downtrend (EMA9>189.0 < EMA21>189.9, slope -0.36%) | RSI 23.5 | MACD hist -0.273 | ADX 35.1 | Stoch K 1.5 | Vol ratio 1.58 | ATR 0.7276 | Price $187.31 | R $190.55 | OBV -0.69 | STRUCT: DOWNTREND (LH+LL) [--] | GUARD: RSI_EXTREME_LO,STRETCHED_3.6ATR",
+      "risk_notes": "Downtrend (EMA9>189.0 < EMA21>189.9, slope -0.36%) | RSI 23.5 | MACD hist -0.273 | ADX 35.1 | Stoch K 1.5 | Vol ratio 1.58 | ATR 0.7276 | Price $187.31 | R $190.55 | OBV -0.69 | STRUCT: DOWNTREND (LH+LL) [--] | GUARD: RSI_EXTREME_LO,STRETCHED_3.6ATR",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "BUY",
+        "strength": 0.8
+      }
+    },
+    {
+      "date": "2026-02-12 18:15:00",
+      "symbol": "NVDA",
+      "type": "SHORT",
+      "price": 188.61,
+      "shares": 501,
+      "proceeds": 94399.11639,
+      "pnl": 0,
+      "strength": 0.65,
+      "reasoning": "Downtrend (EMA9>189.3 < EMA21>189.5, slope -0.09%) | RSI 38.4 | MACD hist -0.035 | ADX 23.5 | Stoch K 2.6 | Vol ratio 1.11 | ATR 0.6145 | Price $188.61 | R $189.90 | S $187.25 | OBV -0.43 | STRUCT: DISTRIBUTION (lower highs) [-]",
+      "risk_notes": "Downtrend (EMA9>189.3 < EMA21>189.5, slope -0.09%) | RSI 38.4 | MACD hist -0.035 | ADX 23.5 | Stoch K 2.6 | Vol ratio 1.11 | ATR 0.6145 | Price $188.61 | R $189.90 | S $187.25 | OBV -0.43 | STRUCT: DISTRIBUTION (lower highs) [-]",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "SELL",
+        "strength": 0.65
+      },
+      "indicators": {
+        "rsi": 38.4,
+        "macd": -0.163,
+        "macd_signal": -0.129,
+        "macd_hist": -0.035,
+        "bb_pct": -1.0,
+        "bb_upper": 190.34,
+        "bb_lower": 188.63,
+        "adx": 23.5,
+        "atr": 0.614,
+        "ema9": 189.35,
+        "ema21": 189.5,
+        "ema_trend": "BEAR"
+      }
+    },
+    {
+      "date": "2026-02-12 20:55:00",
+      "symbol": "NVDA",
+      "type": "CLOSE_SHORT",
+      "price": 186.9,
+      "shares": 501,
+      "cost": 93730.53689999999,
+      "pnl": 668.5794900000037,
+      "return_pct": 0.9149277688603519,
+      "strength": 0,
+      "reasoning": "End of backtest - covering short position",
+      "risk_notes": "",
+      "factors_used": [],
+      "raw_response": {},
+      "indicators": {}
+    }
+  ],
+  "trade_count": 26,
+  "equity_curve_summary": {
+    "start": {
+      "date": "2026-02-03 18:20:00",
+      "value": 99905.07170000001
+    },
+    "end": {
+      "date": "2026-02-12 20:55:00",
+      "value": 100309.20649500006
+    },
+    "points": 642
+  }
+}

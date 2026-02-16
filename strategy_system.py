@@ -1697,6 +1697,16 @@ class AdaptiveStrategy(BaseStrategy):
         return signals
 
 
+def _get_claude_strategy_class():
+    """Import ClaudeStrategy with graceful degradation."""
+    try:
+        from claude_strategy import ClaudeStrategy
+        return ClaudeStrategy
+    except ImportError as e:
+        logger.warning(f"ClaudeStrategy not available: {e}")
+        return None
+
+
 class StrategyManager:
     """Manages multiple trading strategies"""
     
@@ -1799,6 +1809,25 @@ class StrategyManager:
                 enabled=False,
                 weight=0.6,
                 parameters={}
+            ),
+
+            # === CLAUDE AI STRATEGY ===
+            'claude_ai': StrategyConfig(
+                name='Claude AI',
+                enabled=False,  # Requires ANTHROPIC_API_KEY to be set
+                weight=1.5,
+                parameters={
+                    'model': 'claude-3-5-haiku-latest',
+                    'factors': {
+                        'price_action': True,
+                        'technical_indicators': True,
+                        'news_sentiment': False,
+                        'market_regime': True,
+                    },
+                    'max_calls_per_hour': 30,
+                    'cache_ttl_seconds': 300,
+                    'backtesting_mode': 'fallback',
+                }
             )
         }
 
@@ -1817,12 +1846,13 @@ class StrategyManager:
             'macd': MACDStrategy,
             'momentum_breakout': MomentumBreakoutStrategy,
             'simple_price_action': SimplePriceActionStrategy,
-            'volume_profile': VolumeProfileStrategy
+            'volume_profile': VolumeProfileStrategy,
+            'claude_ai': _get_claude_strategy_class(),
         }
 
         for key, config in default_configs.items():
             self.strategy_configs[key] = config
-            if config.enabled and key in strategy_classes:
+            if config.enabled and key in strategy_classes and strategy_classes[key] is not None:
                 self.strategies[key] = strategy_classes[key](config)
     
     def add_strategy(self, key: str, strategy: BaseStrategy, config: StrategyConfig):

@@ -1,0 +1,7259 @@
+{
+  "meta": {
+    "timestamp": "2026-01-29T10:21:47.550679",
+    "filename": "backtest_20260129_102147_NVDA.json"
+  },
+  "config": {
+    "symbols": [
+      "NVDA"
+    ],
+    "start_date": "2026-01-01T00:00:00",
+    "end_date": "2026-01-31T00:00:00",
+    "initial_capital": 100000,
+    "timeframe": "1min",
+    "mode": "REALISTIC",
+    "max_positions": 5,
+    "commission": 0.001,
+    "slippage": 0.0005,
+    "strategies_enabled": [
+      "ma_cross",
+      "rsi_momentum",
+      "macd"
+    ]
+  },
+  "metrics": {
+    "total_return": -0.030878442615950043,
+    "annual_return": -0.3455835952277915,
+    "sharpe_ratio": -9.804277666672217,
+    "sortino_ratio": -10.826964613450242,
+    "max_drawdown": 0.03191568542993293,
+    "max_drawdown_duration": 0,
+    "win_rate": 0.3424657534246575,
+    "profit_factor": 0.4531261644793063,
+    "total_trades": 73,
+    "winning_trades": 25,
+    "losing_trades": 48,
+    "avg_win": 62.62943157115023,
+    "avg_loss": -71.98766738057954,
+    "largest_win": 354.5352821142031,
+    "largest_loss": -399.8892236881462,
+    "initial_capital": 100000.0,
+    "final_capital": 96912.155738405,
+    "value_at_risk": -0.0032717579525796334,
+    "conditional_var": -0.005759028542206612
+  },
+  "trades": [
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-02T03:59:00",
+      "exit_time": "2026-01-02T04:28:00",
+      "entry_price": 188.59425,
+      "exit_price": 188.34578000000002,
+      "quantity": 84.88,
+      "side": "long",
+      "pnl": -37.07692340639738,
+      "pnl_pct": -0.0023161670093333657,
+      "commission": 15.986789806400001,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-02T11:28:00",
+      "exit_time": "2026-01-02T14:13:00",
+      "entry_price": 189.95493,
+      "exit_price": 188.935485,
+      "quantity": 89.49,
+      "side": "long",
+      "pnl": -108.13796960264914,
+      "pnl_pct": -0.006361406282005897,
+      "commission": 16.90783655265,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-02T16:09:00",
+      "exit_time": "2026-01-05T06:08:00",
+      "entry_price": 189.124515,
+      "exit_price": 189.95497500000002,
+      "quantity": 79.21,
+      "side": "long",
+      "pnl": 50.734403030251286,
+      "pnl_pct": 0.003386684296322009,
+      "commission": 15.04633356975,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-05T06:44:00",
+      "exit_time": "2026-01-05T07:40:00",
+      "entry_price": 189.90490499999999,
+      "exit_price": 189.56517,
+      "quantity": 89.44,
+      "side": "long",
+      "pnl": -47.340607204799134,
+      "pnl_pct": -0.002787185354691025,
+      "commission": 16.9547088048,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-05T10:46:00",
+      "exit_time": "2026-01-05T11:40:00",
+      "entry_price": 190.96543499999999,
+      "exit_price": 191.074415,
+      "quantity": 83.65,
+      "side": "long",
+      "pnl": -6.86719781474979,
+      "pnl_pct": -0.0004298914879543384,
+      "commission": 15.983374814750002,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-05T19:20:00",
+      "exit_time": "2026-01-05T20:37:00",
+      "entry_price": 186.8383725,
+      "exit_price": 187.46622000000002,
+      "quantity": 90.82,
+      "side": "long",
+      "pnl": 39.995427849602706,
+      "pnl_pct": 0.002357017319876461,
+      "commission": 17.0256821004,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-06T07:53:00",
+      "exit_time": "2026-01-06T09:57:00",
+      "entry_price": 189.304605,
+      "exit_price": 189.095405,
+      "quantity": 89.66,
+      "side": "long",
+      "pnl": -35.71116601230088,
+      "pnl_pct": -0.0021039921612050053,
+      "commission": 16.9542940123,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-06T16:09:00",
+      "exit_time": "2026-01-06T18:28:00",
+      "entry_price": 188.5892475,
+      "exit_price": 188.16587,
+      "quantity": 89.95,
+      "side": "long",
+      "pnl": -55.008326131498805,
+      "pnl_pct": -0.0032427266034877555,
+      "commission": 16.925520006500005,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-06T20:12:00",
+      "exit_time": "2026-01-06T20:56:00",
+      "entry_price": 187.6487775,
+      "exit_price": 187.06142250000002,
+      "quantity": 90.34,
+      "side": "long",
+      "pnl": -69.96077960864764,
+      "pnl_pct": -0.004126946270673007,
+      "commission": 16.899128908650003,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-07T08:18:00",
+      "exit_time": "2026-01-07T12:18:00",
+      "entry_price": 187.843875,
+      "exit_price": 188.27581500000002,
+      "quantity": 79.56,
+      "side": "long",
+      "pnl": 19.385922558602044,
+      "pnl_pct": 0.0012971633224667328,
+      "commission": 14.979223841400003,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-07T20:07:00",
+      "exit_time": "2026-01-07T21:02:00",
+      "entry_price": 189.46818675,
+      "exit_price": 189.01544500000003,
+      "quantity": 89.4,
+      "side": "long",
+      "pnl": -57.373093232997576,
+      "pnl_pct": -0.0033871501385441573,
+      "commission": 16.897980783,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-08T03:02:00",
+      "exit_time": "2026-01-08T07:00:00",
+      "entry_price": 188.904405,
+      "exit_price": 188.035935,
+      "quantity": 89.6,
+      "side": "long",
+      "pnl": -94.66293177600018,
+      "pnl_pct": -0.005592807298485189,
+      "commission": 16.848019775999997,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-08T14:26:00",
+      "exit_time": "2026-01-08T14:42:00",
+      "entry_price": 189.4947,
+      "exit_price": 187.156375,
+      "quantity": 89.22,
+      "side": "long",
+      "pnl": -225.32344827749978,
+      "pnl_pct": -0.013327451242699653,
+      "commission": 16.698091777499997,
+      "strategy": "Consensus",
+      "exit_reason": "stop_loss"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-08T17:41:00",
+      "exit_time": "2026-01-08T20:19:00",
+      "entry_price": 184.51220999999998,
+      "exit_price": 184.76757000000003,
+      "quantity": 91.4,
+      "side": "long",
+      "pnl": 6.452148102004834,
+      "pnl_pct": 0.0003825894774121067,
+      "commission": 16.887755898,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-09T02:56:00",
+      "exit_time": "2026-01-09T05:16:00",
+      "entry_price": 185.0925,
+      "exit_price": 185.01744500000004,
+      "quantity": 85.75,
+      "side": "long",
+      "pnl": -22.30121215874687,
+      "pnl_pct": -0.001405094452773416,
+      "commission": 15.865245908750003,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-09T12:19:00",
+      "exit_time": "2026-01-09T13:04:00",
+      "entry_price": 185.71281,
+      "exit_price": 185.697105,
+      "quantity": 90.77,
+      "side": "long",
+      "pnl": -18.281269070849724,
+      "pnl_pct": -0.0010844814905336738,
+      "commission": 16.85572622085,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-09T15:03:00",
+      "exit_time": "2026-01-09T16:35:00",
+      "entry_price": 184.8924,
+      "exit_price": 185.317295,
+      "quantity": 91.14,
+      "side": "long",
+      "pnl": 21.835112033699293,
+      "pnl_pct": 0.001295768268463129,
+      "commission": 16.8898182663,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-09T18:05:00",
+      "exit_time": "2026-01-09T19:00:00",
+      "entry_price": 185.25258,
+      "exit_price": 185.1923575,
+      "quantity": 85.62,
+      "side": "long",
+      "pnl": -21.012420099148336,
+      "pnl_pct": -0.0013247581086319044,
+      "commission": 15.856169649150003,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-09T20:01:00",
+      "exit_time": "2026-01-12T01:00:00",
+      "entry_price": 186.05798249999998,
+      "exit_price": 184.01794500000003,
+      "quantity": 90.54,
+      "side": "long",
+      "pnl": -201.36597999029587,
+      "pnl_pct": -0.01195356100886429,
+      "commission": 16.6609847403,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-12T01:15:00",
+      "exit_time": "2026-01-12T05:25:00",
+      "entry_price": 184.01196,
+      "exit_price": 183.078415,
+      "quantity": 80.6,
+      "side": "long",
+      "pnl": -89.99984724899846,
+      "pnl_pct": -0.006068211082583877,
+      "commission": 14.756120249,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-12T08:38:00",
+      "exit_time": "2026-01-12T13:09:00",
+      "entry_price": 182.65127999999999,
+      "exit_price": 182.858525,
+      "quantity": 91.93,
+      "side": "long",
+      "pnl": 2.2418486467500323,
+      "pnl_pct": 0.0001335138467138054,
+      "commission": 16.81018420325,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-12T14:25:00",
+      "exit_time": "2026-01-12T16:31:00",
+      "entry_price": 183.341625,
+      "exit_price": 185.01744500000004,
+      "quantity": 91.57,
+      "side": "long",
+      "pnl": 136.51278996135403,
+      "pnl_pct": 0.00813128254426699,
+      "commission": 16.942047438650004,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-12T20:47:00",
+      "exit_time": "2026-01-13T06:41:00",
+      "entry_price": 185.79224969999999,
+      "exit_price": 184.757575,
+      "quantity": 90.47,
+      "side": "long",
+      "pnl": -110.3220379192484,
+      "pnl_pct": -0.006563418425521021,
+      "commission": 16.71501781025,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-13T09:03:00",
+      "exit_time": "2026-01-13T09:30:00",
+      "entry_price": 185.182545,
+      "exit_price": 185.497205,
+      "quantity": 90.65,
+      "side": "long",
+      "pnl": 11.708607366750318,
+      "pnl_pct": 0.0006974890371012208,
+      "commission": 16.81532163325,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-13T11:54:00",
+      "exit_time": "2026-01-13T13:46:00",
+      "entry_price": 185.33262,
+      "exit_price": 185.64713000000003,
+      "quantity": 90.57,
+      "side": "long",
+      "pnl": 11.671110135903724,
+      "pnl_pct": 0.0006953059315734118,
+      "commission": 16.8140605641,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-13T14:52:00",
+      "exit_time": "2026-01-13T16:27:00",
+      "entry_price": 184.37214,
+      "exit_price": 185.22734,
+      "quantity": 91.04,
+      "side": "long",
+      "pnl": 60.99431096639968,
+      "pnl_pct": 0.0036338063874509262,
+      "commission": 16.863097033600003,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-13T17:34:00",
+      "exit_time": "2026-01-13T18:50:00",
+      "entry_price": 186.56823749999998,
+      "exit_price": 184.47761505,
+      "quantity": 90.01,
+      "side": "long",
+      "pnl": -204.78175685514904,
+      "pnl_pct": -0.012194466193903901,
+      "commission": 16.6048301306505,
+      "strategy": "Consensus",
+      "exit_reason": "stop_loss"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-13T19:50:00",
+      "exit_time": "2026-01-13T20:52:00",
+      "entry_price": 184.5058068,
+      "exit_price": 184.777565,
+      "quantity": 90.81,
+      "side": "long",
+      "pnl": 7.898711464351997,
+      "pnl_pct": 0.00047142491886072174,
+      "commission": 16.779650677650004,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-14T02:01:00",
+      "exit_time": "2026-01-14T02:43:00",
+      "entry_price": 185.73281999999998,
+      "exit_price": 185.51719500000002,
+      "quantity": 90.2,
+      "side": "long",
+      "pnl": -36.18302598899641,
+      "pnl_pct": -0.0021597808884825003,
+      "commission": 16.733650989,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-14T10:55:00",
+      "exit_time": "2026-01-14T13:03:00",
+      "entry_price": 184.27209,
+      "exit_price": 184.537685,
+      "quantity": 90.87,
+      "side": "long",
+      "pnl": 7.365678214051719,
+      "pnl_pct": 0.0004398784156625071,
+      "commission": 16.76893943595,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-14T14:46:00",
+      "exit_time": "2026-01-14T19:59:00",
+      "entry_price": 182.67129,
+      "exit_price": 181.25942495,
+      "quantity": 91.66,
+      "side": "long",
+      "pnl": -146.02578937391596,
+      "pnl_pct": -0.008721263614824138,
+      "commission": 16.614238890917,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-14T22:29:00",
+      "exit_time": "2026-01-15T02:14:00",
+      "entry_price": 182.89129995,
+      "exit_price": 182.52869,
+      "quantity": 91.39,
+      "side": "long",
+      "pnl": -49.820220309598014,
+      "pnl_pct": -0.0029806701584439055,
+      "commission": 16.6812969791,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-15T06:13:00",
+      "exit_time": "2026-01-15T06:31:00",
+      "entry_price": 183.301605,
+      "exit_price": 183.80805,
+      "quantity": 85.77,
+      "side": "long",
+      "pnl": 27.672571201501164,
+      "pnl_pct": 0.001760142525757009,
+      "commission": 15.7652164485,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-15T07:32:00",
+      "exit_time": "2026-01-15T08:01:00",
+      "entry_price": 183.95193,
+      "exit_price": 183.78806,
+      "quantity": 90.82,
+      "side": "long",
+      "pnl": -31.574305009200256,
+      "pnl_pct": -0.001889939725014045,
+      "commission": 16.691631609199998,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-15T10:00:00",
+      "exit_time": "2026-01-15T10:17:00",
+      "entry_price": 185.65277999999998,
+      "exit_price": 185.75707500000001,
+      "quantity": 84.65,
+      "side": "long",
+      "pnl": -6.895764648746953,
+      "pnl_pct": -0.0004387872618980659,
+      "commission": 15.724336398750001,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-15T12:30:00",
+      "exit_time": "2026-01-15T14:51:00",
+      "entry_price": 184.99245,
+      "exit_price": 187.95597500000002,
+      "quantity": 90.24,
+      "side": "long",
+      "pnl": 250.46734881600295,
+      "pnl_pct": 0.015003688123488462,
+      "commission": 16.961147184,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-15T16:38:00",
+      "exit_time": "2026-01-15T18:34:00",
+      "entry_price": 187.78884749999997,
+      "exit_price": 189.07551495,
+      "quantity": 89.11,
+      "side": "long",
+      "pnl": 97.80641733230894,
+      "pnl_pct": 0.00584481959212215,
+      "commission": 16.8485191371945,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-15T20:33:00",
+      "exit_time": "2026-01-15T22:30:00",
+      "entry_price": 187.43367,
+      "exit_price": 187.34628,
+      "quantity": 89.35,
+      "side": "long",
+      "pnl": -24.547686617999926,
+      "pnl_pct": -0.0014657786938707393,
+      "commission": 16.739390118,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-15T23:13:00",
+      "exit_time": "2026-01-16T00:06:00",
+      "entry_price": 187.45368,
+      "exit_price": 187.44623,
+      "quantity": 89.3,
+      "side": "long",
+      "pnl": -17.404233338997976,
+      "pnl_pct": -0.001039703408329873,
+      "commission": 16.738948339000004,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-16T12:02:00",
+      "exit_time": "2026-01-16T14:11:00",
+      "entry_price": 188.644275,
+      "exit_price": 188.48571,
+      "quantity": 88.71,
+      "side": "long",
+      "pnl": -30.78686848409837,
+      "pnl_pct": -0.0018397097394022783,
+      "commission": 16.7205673341,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-16T14:28:00",
+      "exit_time": "2026-01-16T17:14:00",
+      "entry_price": 189.244575,
+      "exit_price": 187.995955,
+      "quantity": 83.19,
+      "side": "long",
+      "pnl": -119.51208129644901,
+      "pnl_pct": -0.007591319090652866,
+      "commission": 15.63938349645,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-16T21:07:00",
+      "exit_time": "2026-01-16T23:08:00",
+      "entry_price": 186.403155,
+      "exit_price": 186.26682000000002,
+      "quantity": 89.61,
+      "side": "long",
+      "pnl": -28.90834909019768,
+      "pnl_pct": -0.001730667166014299,
+      "commission": 16.691369740200003,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-17T00:01:00",
+      "exit_time": "2026-01-20T01:00:00",
+      "entry_price": 186.48319499999997,
+      "exit_price": 182.198855,
+      "quantity": 89.53,
+      "side": "long",
+      "pnl": -399.8892236881462,
+      "pnl_pct": -0.02395142819705528,
+      "commission": 16.312263488150002,
+      "strategy": "Consensus",
+      "exit_reason": "stop_loss"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-20T01:13:00",
+      "exit_time": "2026-01-20T07:31:00",
+      "entry_price": 182.97143999999997,
+      "exit_price": 182.038935,
+      "quantity": 80.17,
+      "side": "long",
+      "pnl": -89.35298726894707,
+      "pnl_pct": -0.006091354667154413,
+      "commission": 14.594061418950002,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-20T08:44:00",
+      "exit_time": "2026-01-20T10:25:00",
+      "entry_price": 181.16053499999998,
+      "exit_price": 181.159375,
+      "quantity": 91.67,
+      "side": "long",
+      "pnl": -16.713217106247278,
+      "pnl_pct": -0.0010063967574393082,
+      "commission": 16.60687990625,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-20T11:52:00",
+      "exit_time": "2026-01-20T12:18:00",
+      "entry_price": 181.84087499999998,
+      "exit_price": 182.358775,
+      "quantity": 89.51,
+      "side": "long",
+      "pnl": 30.03429504975231,
+      "pnl_pct": 0.001845246427680387,
+      "commission": 16.322933950250004,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-20T13:16:00",
+      "exit_time": "2026-01-20T15:45:00",
+      "entry_price": 182.27098995,
+      "exit_price": 181.17936500000002,
+      "quantity": 91.09,
+      "side": "long",
+      "pnl": -115.93974505334839,
+      "pnl_pct": -0.00698303287511158,
+      "commission": 16.50362835785,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-20T16:49:00",
+      "exit_time": "2026-01-20T18:13:00",
+      "entry_price": 179.959935,
+      "exit_price": 179.74008500000002,
+      "quantity": 92.14,
+      "side": "long",
+      "pnl": -36.81823043189813,
+      "pnl_pct": -0.002220439149413894,
+      "commission": 16.561251431900004,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-20T18:42:00",
+      "exit_time": "2026-01-21T01:24:00",
+      "entry_price": 179.42967,
+      "exit_price": 179.360275,
+      "quantity": 92.36,
+      "side": "long",
+      "pnl": -22.9750371989987,
+      "pnl_pct": -0.0013863664521034116,
+      "commission": 16.565714999,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-21T02:12:00",
+      "exit_time": "2026-01-21T05:34:00",
+      "entry_price": 179.96993999999998,
+      "exit_price": 179.66012500000002,
+      "quantity": 86.63,
+      "side": "long",
+      "pnl": -42.40323007874635,
+      "pnl_pct": -0.0027197604499949153,
+      "commission": 15.563956628750002,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-21T09:19:00",
+      "exit_time": "2026-01-21T10:44:00",
+      "entry_price": 179.819865,
+      "exit_price": 179.56017500000002,
+      "quantity": 92.07,
+      "side": "long",
+      "pnl": -40.441763612247954,
+      "pnl_pct": -0.0024427233053477037,
+      "commission": 16.532105312250003,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-21T11:16:00",
+      "exit_time": "2026-01-21T14:29:00",
+      "entry_price": 179.29960499999999,
+      "exit_price": 178.99046,
+      "quantity": 92.28,
+      "side": "long",
+      "pnl": -45.04514024879746,
+      "pnl_pct": -0.0027224569736222924,
+      "commission": 16.5172396488,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-21T16:53:00",
+      "exit_time": "2026-01-21T19:52:00",
+      "entry_price": 180.83037,
+      "exit_price": 184.89250750000002,
+      "quantity": 91.44,
+      "side": "long",
+      "pnl": 354.5352821142031,
+      "pnl_pct": 0.021441337494913237,
+      "commission": 16.9065708858,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-21T21:13:00",
+      "exit_time": "2026-01-21T22:19:00",
+      "entry_price": 183.0915,
+      "exit_price": 183.40825,
+      "quantity": 79.97,
+      "side": "long",
+      "pnl": 10.663339747501054,
+      "pnl_pct": 0.000728279302971537,
+      "commission": 14.667157752500001,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-21T23:44:00",
+      "exit_time": "2026-01-22T05:32:00",
+      "entry_price": 183.79184999999998,
+      "exit_price": 183.98796000000002,
+      "quantity": 90.28,
+      "side": "long",
+      "pnl": 1.0943777712029643,
+      "pnl_pct": 6.595526406656679e-05,
+      "commission": 16.610433028800003,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-22T06:22:00",
+      "exit_time": "2026-01-22T06:55:00",
+      "entry_price": 183.53171999999998,
+      "exit_price": 183.78806,
+      "quantity": 79.76,
+      "side": "long",
+      "pnl": 5.786742734401827,
+      "pnl_pct": 0.0003953100859078905,
+      "commission": 14.658935665600001,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-22T11:29:00",
+      "exit_time": "2026-01-22T12:54:00",
+      "entry_price": 184.97243999999998,
+      "exit_price": 184.797555,
+      "quantity": 89.68,
+      "side": "long",
+      "pnl": -32.256331532399024,
+      "pnl_pct": -0.00194451970790886,
+      "commission": 16.5726447324,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-22T19:05:00",
+      "exit_time": "2026-01-22T19:44:00",
+      "entry_price": 184.562235,
+      "exit_price": 184.597655,
+      "quantity": 89.83,
+      "side": "long",
+      "pnl": -13.400628748648542,
+      "pnl_pct": -0.000808278329529244,
+      "commission": 16.582407348649998,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-22T21:53:00",
+      "exit_time": "2026-01-23T03:23:00",
+      "entry_price": 184.46448615,
+      "exit_price": 184.62764,
+      "quantity": 89.85,
+      "side": "long",
+      "pnl": -1.9294200314986778,
+      "pnl_pct": -0.0001164115133930092,
+      "commission": 16.588793453999997,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-23T07:43:00",
+      "exit_time": "2026-01-23T07:45:00",
+      "entry_price": 184.84237499999998,
+      "exit_price": 184.54767999999999,
+      "quantity": 84.38,
+      "side": "long",
+      "pnl": -40.438497338399166,
+      "pnl_pct": -0.0025927100319934225,
+      "commission": 15.572133238399998,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-23T08:39:00",
+      "exit_time": "2026-01-23T10:44:00",
+      "entry_price": 184.35213,
+      "exit_price": 183.66812,
+      "quantity": 89.84,
+      "side": "long",
+      "pnl": -77.95220230080007,
+      "pnl_pct": -0.004706634634489989,
+      "commission": 16.5007439008,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-23T16:19:00",
+      "exit_time": "2026-01-23T17:17:00",
+      "entry_price": 187.55373,
+      "exit_price": 187.87101750000002,
+      "quantity": 88.22,
+      "side": "long",
+      "pnl": 11.417122086151792,
+      "pnl_pct": 0.0006900235068639813,
+      "commission": 16.573981163850004,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-23T19:31:00",
+      "exit_time": "2026-01-23T19:36:00",
+      "entry_price": 188.0789925,
+      "exit_price": 187.61114750000002,
+      "quantity": 87.97,
+      "side": "long",
+      "pnl": -57.660477295573486,
+      "pnl_pct": -0.003485004565302437,
+      "commission": 16.504152645575004,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-23T20:35:00",
+      "exit_time": "2026-01-26T04:37:00",
+      "entry_price": 187.43367,
+      "exit_price": 186.06692,
+      "quantity": 88.2,
+      "side": "long",
+      "pnl": -136.95845234399968,
+      "pnl_pct": -0.008284621007527604,
+      "commission": 16.411102344000003,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-26T06:52:00",
+      "exit_time": "2026-01-26T14:11:00",
+      "entry_price": 186.4932,
+      "exit_price": 186.84653,
+      "quantity": 88.51,
+      "side": "long",
+      "pnl": 14.735451929699973,
+      "pnl_pct": 0.0008927053104349097,
+      "commission": 16.5377863703,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-26T19:35:00",
+      "exit_time": "2026-01-26T20:51:00",
+      "entry_price": 186.623265,
+      "exit_price": 186.36677000000003,
+      "quantity": 88.45,
+      "side": "long",
+      "pnl": -39.171123556497584,
+      "pnl_pct": -0.0023730255174775378,
+      "commission": 16.484140806500005,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-27T08:23:00",
+      "exit_time": "2026-01-27T08:37:00",
+      "entry_price": 187.503705,
+      "exit_price": 187.076415,
+      "quantity": 87.98,
+      "side": "long",
+      "pnl": -54.051957191699934,
+      "pnl_pct": -0.0032765561352507636,
+      "commission": 16.458982991699997,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-27T11:50:00",
+      "exit_time": "2026-01-27T13:20:00",
+      "entry_price": 187.583745,
+      "exit_price": 186.96647000000002,
+      "quantity": 87.88,
+      "side": "long",
+      "pnl": -70.67674038359807,
+      "pnl_pct": -0.004287372927755431,
+      "commission": 16.4306133836,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-27T14:46:00",
+      "exit_time": "2026-01-27T15:21:00",
+      "entry_price": 186.50320499999998,
+      "exit_price": 188.78556,
+      "quantity": 88.31,
+      "side": "long",
+      "pnl": 184.8831172464021,
+      "pnl_pct": 0.011225380496812501,
+      "commission": 16.6716528036,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-27T18:04:00",
+      "exit_time": "2026-01-28T05:19:00",
+      "entry_price": 189.32461499999997,
+      "exit_price": 191.454225,
+      "quantity": 87.14,
+      "side": "long",
+      "pnl": 168.89089423350367,
+      "pnl_pct": 0.010237209646511322,
+      "commission": 16.6833211665,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-28T14:38:00",
+      "exit_time": "2026-01-28T16:22:00",
+      "entry_price": 191.71581,
+      "exit_price": 191.5219911,
+      "quantity": 86.19,
+      "side": "long",
+      "pnl": -33.212531403908706,
+      "pnl_pct": -0.002009958860982809,
+      "commission": 16.507280412909,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-28T17:43:00",
+      "exit_time": "2026-01-28T22:17:00",
+      "entry_price": 191.45067749999998,
+      "exit_price": 192.02394,
+      "quantity": 81.19,
+      "side": "long",
+      "pnl": 30.952758686402184,
+      "pnl_pct": 0.0019913147604297557,
+      "commission": 15.5904236886,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-29T14:25:00",
+      "exit_time": "2026-01-29T15:01:00",
+      "entry_price": 191.48569499999996,
+      "exit_price": 189.46192165000002,
+      "quantity": 86.27,
+      "side": "long",
+      "pnl": -190.9358068852405,
+      "pnl_pct": -0.011558227739413864,
+      "commission": 16.344879980745503,
+      "strategy": "Consensus",
+      "exit_reason": "stop_loss"
+    }
+  ],
+  "equity_curve": [
+    {
+      "date": "2026-01-28T20:00:00",
+      "equity": 97119.04950128648
+    },
+    {
+      "date": "2026-01-28T20:01:00",
+      "equity": 97112.14835128648
+    },
+    {
+      "date": "2026-01-28T20:02:00",
+      "equity": 97114.17810128648
+    },
+    {
+      "date": "2026-01-28T20:03:00",
+      "equity": 97113.76403228648
+    },
+    {
+      "date": "2026-01-28T20:04:00",
+      "equity": 97125.54470128649
+    },
+    {
+      "date": "2026-01-28T20:05:00",
+      "equity": 97121.89115128649
+    },
+    {
+      "date": "2026-01-28T20:06:00",
+      "equity": 97129.19825128648
+    },
+    {
+      "date": "2026-01-28T20:07:00",
+      "equity": 97129.19825128648
+    },
+    {
+      "date": "2026-01-28T20:08:00",
+      "equity": 97128.98715728648
+    },
+    {
+      "date": "2026-01-28T20:09:00",
+      "equity": 97142.18865128649
+    },
+    {
+      "date": "2026-01-28T20:10:00",
+      "equity": 97132.44585128648
+    },
+    {
+      "date": "2026-01-28T20:11:00",
+      "equity": 97138.12915128648
+    },
+    {
+      "date": "2026-01-28T20:12:00",
+      "equity": 97134.47560128648
+    },
+    {
+      "date": "2026-01-28T20:13:00",
+      "equity": 97132.03990128648
+    },
+    {
+      "date": "2026-01-28T20:14:00",
+      "equity": 97133.66370128648
+    },
+    {
+      "date": "2026-01-28T20:15:00",
+      "equity": 97124.32685128649
+    },
+    {
+      "date": "2026-01-28T20:16:00",
+      "equity": 97107.68290128649
+    },
+    {
+      "date": "2026-01-28T20:17:00",
+      "equity": 97108.08885128648
+    },
+    {
+      "date": "2026-01-28T20:18:00",
+      "equity": 97113.36620128648
+    },
+    {
+      "date": "2026-01-28T20:19:00",
+      "equity": 97118.23760128648
+    },
+    {
+      "date": "2026-01-28T20:20:00",
+      "equity": 97112.55430128648
+    },
+    {
+      "date": "2026-01-28T20:21:00",
+      "equity": 97114.58405128648
+    },
+    {
+      "date": "2026-01-28T20:22:00",
+      "equity": 97123.51495128649
+    },
+    {
+      "date": "2026-01-28T20:23:00",
+      "equity": 97121.08737028649
+    },
+    {
+      "date": "2026-01-28T20:24:00",
+      "equity": 97120.26735128649
+    },
+    {
+      "date": "2026-01-28T20:25:00",
+      "equity": 97107.68290128649
+    },
+    {
+      "date": "2026-01-28T20:26:00",
+      "equity": 97102.40555128649
+    },
+    {
+      "date": "2026-01-28T20:27:00",
+      "equity": 97108.98194128649
+    },
+    {
+      "date": "2026-01-28T20:28:00",
+      "equity": 97102.81150128649
+    },
+    {
+      "date": "2026-01-28T20:29:00",
+      "equity": 97102.64912128648
+    },
+    {
+      "date": "2026-01-28T20:30:00",
+      "equity": 97098.76012028649
+    },
+    {
+      "date": "2026-01-28T20:31:00",
+      "equity": 97091.85897028648
+    },
+    {
+      "date": "2026-01-28T20:32:00",
+      "equity": 97091.44490128648
+    },
+    {
+      "date": "2026-01-28T20:33:00",
+      "equity": 97081.70210128649
+    },
+    {
+      "date": "2026-01-28T20:34:00",
+      "equity": 97077.64260128648
+    },
+    {
+      "date": "2026-01-28T20:35:00",
+      "equity": 97090.63300128648
+    },
+    {
+      "date": "2026-01-28T20:36:00",
+      "equity": 97094.58695428648
+    },
+    {
+      "date": "2026-01-28T20:37:00",
+      "equity": 97086.57350128649
+    },
+    {
+      "date": "2026-01-28T20:38:00",
+      "equity": 97079.67235128648
+    },
+    {
+      "date": "2026-01-28T20:39:00",
+      "equity": 97085.35565128649
+    },
+    {
+      "date": "2026-01-28T20:40:00",
+      "equity": 97094.28655128648
+    },
+    {
+      "date": "2026-01-28T20:41:00",
+      "equity": 97081.29615128649
+    },
+    {
+      "date": "2026-01-28T20:42:00",
+      "equity": 97078.86045128648
+    },
+    {
+      "date": "2026-01-28T20:43:00",
+      "equity": 97074.07024128648
+    },
+    {
+      "date": "2026-01-28T20:44:00",
+      "equity": 97071.95930128648
+    },
+    {
+      "date": "2026-01-28T20:45:00",
+      "equity": 97072.77120128648
+    },
+    {
+      "date": "2026-01-28T20:46:00",
+      "equity": 97063.84030128649
+    },
+    {
+      "date": "2026-01-28T20:47:00",
+      "equity": 97068.81724828649
+    },
+    {
+      "date": "2026-01-28T20:48:00",
+      "equity": 97071.54523228649
+    },
+    {
+      "date": "2026-01-28T20:49:00",
+      "equity": 97069.92955128648
+    },
+    {
+      "date": "2026-01-28T20:50:00",
+      "equity": 97079.68047028649
+    },
+    {
+      "date": "2026-01-28T20:51:00",
+      "equity": 97086.17567028648
+    },
+    {
+      "date": "2026-01-28T20:52:00",
+      "equity": 97084.20275328649
+    },
+    {
+      "date": "2026-01-28T20:53:00",
+      "equity": 97096.31630128648
+    },
+    {
+      "date": "2026-01-28T20:54:00",
+      "equity": 97101.99960128649
+    },
+    {
+      "date": "2026-01-28T20:55:00",
+      "equity": 97103.20933228648
+    },
+    {
+      "date": "2026-01-28T20:56:00",
+      "equity": 97090.63300128648
+    },
+    {
+      "date": "2026-01-28T20:57:00",
+      "equity": 97095.90223228649
+    },
+    {
+      "date": "2026-01-28T20:58:00",
+      "equity": 97106.46505128648
+    },
+    {
+      "date": "2026-01-28T20:59:00",
+      "equity": 97095.09845128648
+    },
+    {
+      "date": "2026-01-28T21:00:00",
+      "equity": 97084.54375128649
+    },
+    {
+      "date": "2026-01-28T21:01:00",
+      "equity": 97141.37675128649
+    },
+    {
+      "date": "2026-01-28T21:02:00",
+      "equity": 97094.28655128648
+    },
+    {
+      "date": "2026-01-28T21:03:00",
+      "equity": 97127.58257028648
+    },
+    {
+      "date": "2026-01-28T21:04:00",
+      "equity": 97109.71265128648
+    },
+    {
+      "date": "2026-01-28T21:05:00",
+      "equity": 97112.96025128648
+    },
+    {
+      "date": "2026-01-28T21:06:00",
+      "equity": 97151.93145128648
+    },
+    {
+      "date": "2026-01-28T21:07:00",
+      "equity": 97139.75295128649
+    },
+    {
+      "date": "2026-01-28T21:08:00",
+      "equity": 97137.31725128648
+    },
+    {
+      "date": "2026-01-28T21:09:00",
+      "equity": 97134.06965128648
+    },
+    {
+      "date": "2026-01-28T21:10:00",
+      "equity": 97145.43625128649
+    },
+    {
+      "date": "2026-01-28T21:11:00",
+      "equity": 97154.41586528649
+    },
+    {
+      "date": "2026-01-28T21:12:00",
+      "equity": 97153.82317828649
+    },
+    {
+      "date": "2026-01-28T21:13:00",
+      "equity": 97164.92185128649
+    },
+    {
+      "date": "2026-01-28T21:14:00",
+      "equity": 97186.84315128648
+    },
+    {
+      "date": "2026-01-28T21:15:00",
+      "equity": 97194.75105728648
+    },
+    {
+      "date": "2026-01-28T21:16:00",
+      "equity": 97191.71455128648
+    },
+    {
+      "date": "2026-01-28T21:17:00",
+      "equity": 97186.84315128648
+    },
+    {
+      "date": "2026-01-28T21:18:00",
+      "equity": 97178.74850828649
+    },
+    {
+      "date": "2026-01-28T21:19:00",
+      "equity": 97177.10035128648
+    },
+    {
+      "date": "2026-01-28T21:20:00",
+      "equity": 97176.28845128648
+    },
+    {
+      "date": "2026-01-28T21:21:00",
+      "equity": 97166.54565128649
+    },
+    {
+      "date": "2026-01-28T21:22:00",
+      "equity": 97186.03125128649
+    },
+    {
+      "date": "2026-01-28T21:23:00",
+      "equity": 97198.20975128649
+    },
+    {
+      "date": "2026-01-28T21:24:00",
+      "equity": 97200.64545128649
+    },
+    {
+      "date": "2026-01-28T21:25:00",
+      "equity": 97211.20015128648
+    },
+    {
+      "date": "2026-01-28T21:26:00",
+      "equity": 97218.50725128649
+    },
+    {
+      "date": "2026-01-28T21:27:00",
+      "equity": 97221.90099328649
+    },
+    {
+      "date": "2026-01-28T21:28:00",
+      "equity": 97214.48834628648
+    },
+    {
+      "date": "2026-01-28T21:29:00",
+      "equity": 97217.69535128649
+    },
+    {
+      "date": "2026-01-28T21:30:00",
+      "equity": 97212.01205128648
+    },
+    {
+      "date": "2026-01-28T21:31:00",
+      "equity": 97202.26925128649
+    },
+    {
+      "date": "2026-01-28T21:32:00",
+      "equity": 97205.51685128649
+    },
+    {
+      "date": "2026-01-28T21:33:00",
+      "equity": 97209.57635128648
+    },
+    {
+      "date": "2026-01-28T21:34:00",
+      "equity": 97207.83888528649
+    },
+    {
+      "date": "2026-01-28T21:35:00",
+      "equity": 97210.38825128648
+    },
+    {
+      "date": "2026-01-28T21:36:00",
+      "equity": 97207.95255128648
+    },
+    {
+      "date": "2026-01-28T21:37:00",
+      "equity": 97206.32875128649
+    },
+    {
+      "date": "2026-01-28T21:38:00",
+      "equity": 97188.46695128648
+    },
+    {
+      "date": "2026-01-28T21:39:00",
+      "equity": 97181.97175128649
+    },
+    {
+      "date": "2026-01-28T21:40:00",
+      "equity": 97177.10035128648
+    },
+    {
+      "date": "2026-01-28T21:41:00",
+      "equity": 97178.72415128649
+    },
+    {
+      "date": "2026-01-28T21:42:00",
+      "equity": 97176.28845128648
+    },
+    {
+      "date": "2026-01-28T21:43:00",
+      "equity": 97173.85275128648
+    },
+    {
+      "date": "2026-01-28T21:44:00",
+      "equity": 97155.93411828649
+    },
+    {
+      "date": "2026-01-28T21:45:00",
+      "equity": 97141.37675128649
+    },
+    {
+      "date": "2026-01-28T21:46:00",
+      "equity": 97149.49575128648
+    },
+    {
+      "date": "2026-01-28T21:47:00",
+      "equity": 97162.48615128649
+    },
+    {
+      "date": "2026-01-28T21:48:00",
+      "equity": 97149.49575128648
+    },
+    {
+      "date": "2026-01-28T21:49:00",
+      "equity": 97153.55525128648
+    },
+    {
+      "date": "2026-01-28T21:50:00",
+      "equity": 97153.53901328648
+    },
+    {
+      "date": "2026-01-28T21:51:00",
+      "equity": 97148.68385128648
+    },
+    {
+      "date": "2026-01-28T21:52:00",
+      "equity": 97145.44437028648
+    },
+    {
+      "date": "2026-01-28T21:53:00",
+      "equity": 97141.37675128649
+    },
+    {
+      "date": "2026-01-28T21:54:00",
+      "equity": 97119.45545128649
+    },
+    {
+      "date": "2026-01-28T21:55:00",
+      "equity": 97141.37675128649
+    },
+    {
+      "date": "2026-01-28T21:56:00",
+      "equity": 97139.34700128649
+    },
+    {
+      "date": "2026-01-28T21:57:00",
+      "equity": 97157.61475128648
+    },
+    {
+      "date": "2026-01-28T21:58:00",
+      "equity": 97151.93145128648
+    },
+    {
+      "date": "2026-01-28T21:59:00",
+      "equity": 97150.30765128648
+    },
+    {
+      "date": "2026-01-28T22:00:00",
+      "equity": 97155.99095128648
+    },
+    {
+      "date": "2026-01-28T22:01:00",
+      "equity": 97159.23855128649
+    },
+    {
+      "date": "2026-01-28T22:02:00",
+      "equity": 97168.03142828649
+    },
+    {
+      "date": "2026-01-28T22:03:00",
+      "equity": 97160.05045128649
+    },
+    {
+      "date": "2026-01-28T22:04:00",
+      "equity": 97155.99095128648
+    },
+    {
+      "date": "2026-01-28T22:05:00",
+      "equity": 97158.42665128649
+    },
+    {
+      "date": "2026-01-28T22:06:00",
+      "equity": 97162.48615128649
+    },
+    {
+      "date": "2026-01-28T22:07:00",
+      "equity": 97165.73375128649
+    },
+    {
+      "date": "2026-01-28T22:08:00",
+      "equity": 97170.60515128648
+    },
+    {
+      "date": "2026-01-28T22:09:00",
+      "equity": 97165.73375128649
+    },
+    {
+      "date": "2026-01-28T22:10:00",
+      "equity": 97160.86235128649
+    },
+    {
+      "date": "2026-01-28T22:11:00",
+      "equity": 97158.62962628648
+    },
+    {
+      "date": "2026-01-28T22:12:00",
+      "equity": 97160.86235128649
+    },
+    {
+      "date": "2026-01-28T22:13:00",
+      "equity": 97153.07623028649
+    },
+    {
+      "date": "2026-01-28T22:14:00",
+      "equity": 97162.48615128649
+    },
+    {
+      "date": "2026-01-28T22:15:00",
+      "equity": 97160.38333028648
+    },
+    {
+      "date": "2026-01-28T22:16:00",
+      "equity": 97153.55525128648
+    },
+    {
+      "date": "2026-01-28T22:17:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T22:18:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T22:19:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T22:20:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T22:21:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T22:22:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T22:23:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T22:24:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T22:25:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T22:26:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T22:27:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T22:28:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T22:29:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T22:30:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T22:31:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T22:32:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T22:33:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T22:34:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T22:35:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T22:36:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T22:37:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T22:38:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T22:39:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T22:40:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T22:41:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T22:42:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T22:43:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T22:44:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T22:45:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T22:46:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T22:47:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T22:48:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T22:49:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T22:50:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T22:51:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T22:52:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T22:53:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T22:54:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T22:55:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T22:56:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T22:57:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T22:58:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T22:59:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T23:00:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T23:01:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T23:02:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T23:03:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T23:04:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T23:05:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T23:06:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T23:07:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T23:08:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T23:09:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T23:10:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T23:11:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T23:12:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T23:13:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T23:14:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T23:15:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T23:16:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T23:17:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T23:18:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T23:19:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T23:20:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T23:21:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T23:22:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T23:23:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T23:24:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T23:25:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T23:26:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T23:27:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T23:28:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T23:29:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T23:30:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T23:31:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T23:32:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T23:33:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T23:34:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T23:35:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T23:36:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T23:37:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T23:38:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T23:39:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T23:40:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T23:41:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T23:42:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T23:43:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T23:44:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T23:45:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T23:46:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T23:47:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T23:48:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T23:49:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T23:50:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T23:51:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T23:52:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T23:53:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T23:54:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T23:55:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T23:56:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T23:57:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T23:58:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-28T23:59:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T00:00:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T00:01:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T00:02:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T00:03:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T00:04:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T00:05:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T00:06:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T00:07:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T00:08:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T00:09:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T00:10:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T00:11:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T00:12:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T00:13:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T00:14:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T00:15:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T00:16:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T00:17:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T00:18:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T00:19:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T00:20:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T00:21:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T00:22:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T00:23:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T00:24:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T00:25:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T00:26:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T00:27:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T00:28:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T00:29:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T00:30:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T00:31:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T00:32:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T00:33:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T00:34:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T00:35:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T00:36:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T00:37:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T00:38:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T00:39:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T00:40:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T00:41:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T00:42:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T00:43:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T00:44:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T00:45:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T00:46:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T00:47:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T00:48:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T00:49:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T00:50:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T00:51:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T00:52:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T00:53:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T00:54:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T00:55:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T00:56:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T00:57:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T00:58:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T00:59:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T12:00:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T12:01:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T12:02:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T12:03:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T12:04:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T12:05:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T12:06:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T12:07:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T12:08:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T12:09:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T12:10:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T12:11:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T12:12:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T12:13:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T12:14:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T12:15:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T12:16:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T12:17:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T12:18:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T12:20:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T12:21:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T12:22:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T12:23:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T12:24:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T12:25:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T12:26:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T12:27:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T12:28:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T12:29:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T12:30:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T12:31:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T12:32:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T12:33:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T12:34:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T12:35:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T12:36:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T12:37:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T12:38:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T12:39:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T12:40:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T12:41:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T12:42:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T12:43:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T12:44:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T12:45:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T12:46:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T12:47:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T12:48:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T12:49:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T12:50:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T12:51:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T12:52:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T12:53:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T12:54:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T12:55:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T12:56:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T12:57:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T12:58:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T13:00:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T13:01:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T13:02:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T13:03:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T13:04:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T13:05:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T13:06:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T13:07:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T13:08:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T13:09:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T13:10:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T13:11:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T13:12:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T13:13:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T13:14:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T13:15:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T13:16:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T13:17:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T13:18:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T13:19:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T13:20:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T13:21:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T13:22:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T13:23:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T13:24:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T13:25:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T13:26:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T13:27:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T13:28:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T13:29:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T13:30:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T13:31:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T13:32:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T13:33:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T13:34:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T13:35:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T13:36:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T13:37:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T13:38:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T13:39:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T13:40:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T13:41:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T13:42:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T13:43:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T13:44:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T13:45:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T13:46:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T13:47:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T13:48:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T13:49:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T13:50:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T13:51:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T13:52:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T13:53:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T13:54:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T13:55:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T13:56:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T13:57:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T13:58:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T13:59:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T14:00:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T14:01:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T14:02:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T14:03:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T14:04:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T14:05:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T14:06:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T14:07:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T14:08:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T14:09:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T14:10:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T14:11:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T14:12:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T14:13:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T14:14:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T14:15:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T14:16:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T14:17:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T14:18:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T14:19:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T14:20:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T14:21:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T14:22:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T14:23:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T14:24:00",
+      "equity": 97119.61101619789
+    },
+    {
+      "date": "2026-01-29T14:25:00",
+      "equity": 97094.83593764024
+    },
+    {
+      "date": "2026-01-29T14:26:00",
+      "equity": 97095.70726464024
+    },
+    {
+      "date": "2026-01-29T14:27:00",
+      "equity": 97072.40573764023
+    },
+    {
+      "date": "2026-01-29T14:28:00",
+      "equity": 97094.83593764024
+    },
+    {
+      "date": "2026-01-29T14:29:00",
+      "equity": 97091.38513764023
+    },
+    {
+      "date": "2026-01-29T14:30:00",
+      "equity": 97113.81533764023
+    },
+    {
+      "date": "2026-01-29T14:31:00",
+      "equity": 97134.52013764024
+    },
+    {
+      "date": "2026-01-29T14:32:00",
+      "equity": 97221.91164764024
+    },
+    {
+      "date": "2026-01-29T14:33:00",
+      "equity": 97274.27753764024
+    },
+    {
+      "date": "2026-01-29T14:34:00",
+      "equity": 97220.79013764024
+    },
+    {
+      "date": "2026-01-29T14:35:00",
+      "equity": 97112.95263764024
+    },
+    {
+      "date": "2026-01-29T14:36:00",
+      "equity": 97089.65973764024
+    },
+    {
+      "date": "2026-01-29T14:37:00",
+      "equity": 97040.48583764024
+    },
+    {
+      "date": "2026-01-29T14:38:00",
+      "equity": 97059.46523764024
+    },
+    {
+      "date": "2026-01-29T14:39:00",
+      "equity": 97060.32793764024
+    },
+    {
+      "date": "2026-01-29T14:40:00",
+      "equity": 97052.56363764024
+    },
+    {
+      "date": "2026-01-29T14:41:00",
+      "equity": 97037.03503764023
+    },
+    {
+      "date": "2026-01-29T14:42:00",
+      "equity": 97035.30963764024
+    },
+    {
+      "date": "2026-01-29T14:43:00",
+      "equity": 96998.21353764024
+    },
+    {
+      "date": "2026-01-29T14:44:00",
+      "equity": 97027.54533764024
+    },
+    {
+      "date": "2026-01-29T14:45:00",
+      "equity": 97054.28903764024
+    },
+    {
+      "date": "2026-01-29T14:46:00",
+      "equity": 97041.77988764024
+    },
+    {
+      "date": "2026-01-29T14:47:00",
+      "equity": 97093.10191064024
+    },
+    {
+      "date": "2026-01-29T14:48:00",
+      "equity": 97133.66606464025
+    },
+    {
+      "date": "2026-01-29T14:49:00",
+      "equity": 97120.71693764025
+    },
+    {
+      "date": "2026-01-29T14:50:00",
+      "equity": 97144.87253764024
+    },
+    {
+      "date": "2026-01-29T14:51:00",
+      "equity": 97116.83478764024
+    },
+    {
+      "date": "2026-01-29T14:52:00",
+      "equity": 97111.22723764024
+    },
+    {
+      "date": "2026-01-29T14:53:00",
+      "equity": 97073.69978764025
+    },
+    {
+      "date": "2026-01-29T14:54:00",
+      "equity": 97068.52358764024
+    },
+    {
+      "date": "2026-01-29T14:55:00",
+      "equity": 97062.05333764025
+    },
+    {
+      "date": "2026-01-29T14:56:00",
+      "equity": 97064.21008764024
+    },
+    {
+      "date": "2026-01-29T14:57:00",
+      "equity": 97072.40573764023
+    },
+    {
+      "date": "2026-01-29T14:58:00",
+      "equity": 97092.67918764024
+    },
+    {
+      "date": "2026-01-29T14:59:00",
+      "equity": 97043.93663764023
+    },
+    {
+      "date": "2026-01-29T15:00:00",
+      "equity": 96974.92063764024
+    },
+    {
+      "date": "2026-01-29T15:01:00",
+      "equity": 96912.155738405
+    },
+    {
+      "date": "2026-01-29T15:02:00",
+      "equity": 96912.155738405
+    },
+    {
+      "date": "2026-01-29T15:03:00",
+      "equity": 96912.155738405
+    },
+    {
+      "date": "2026-01-29T15:04:00",
+      "equity": 96912.155738405
+    },
+    {
+      "date": "2026-01-29T15:05:00",
+      "equity": 96912.155738405
+    },
+    {
+      "date": "2026-01-29T15:06:00",
+      "equity": 96912.155738405
+    },
+    {
+      "date": "2026-01-29T15:07:00",
+      "equity": 96912.155738405
+    },
+    {
+      "date": "2026-01-29T15:08:00",
+      "equity": 96912.155738405
+    },
+    {
+      "date": "2026-01-29T15:09:00",
+      "equity": 96912.155738405
+    },
+    {
+      "date": "2026-01-29T15:10:00",
+      "equity": 96912.155738405
+    },
+    {
+      "date": "2026-01-29T15:11:00",
+      "equity": 96912.155738405
+    },
+    {
+      "date": "2026-01-29T15:12:00",
+      "equity": 96912.155738405
+    },
+    {
+      "date": "2026-01-29T15:13:00",
+      "equity": 96912.155738405
+    },
+    {
+      "date": "2026-01-29T15:14:00",
+      "equity": 96912.155738405
+    },
+    {
+      "date": "2026-01-29T15:15:00",
+      "equity": 96912.155738405
+    },
+    {
+      "date": "2026-01-29T15:16:00",
+      "equity": 96912.155738405
+    },
+    {
+      "date": "2026-01-29T15:17:00",
+      "equity": 96912.155738405
+    },
+    {
+      "date": "2026-01-29T15:18:00",
+      "equity": 96912.155738405
+    },
+    {
+      "date": "2026-01-29T15:19:00",
+      "equity": 96912.155738405
+    },
+    {
+      "date": "2026-01-29T15:20:00",
+      "equity": 96912.155738405
+    },
+    {
+      "date": "2026-01-29T15:21:00",
+      "equity": 96912.155738405
+    }
+  ],
+  "logs": [
+    {
+      "timestamp": "2026-01-27T16:32:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T16:33:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T16:34:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T16:35:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T16:41:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T16:57:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T17:01:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T17:07:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T17:10:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T17:13:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T17:16:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T17:23:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T17:24:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T17:25:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T17:37:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T17:38:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T17:39:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T17:41:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T17:42:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T17:45:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T17:54:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T17:56:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T17:57:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T17:58:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T17:59:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T18:00:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T18:01:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T18:02:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T18:03:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T18:04:00",
+      "level": "info",
+      "category": "signal",
+      "symbol": "NVDA",
+      "message": "CONSENSUS BUY from ['RSI Momentum', 'MACD'] (strength=0.85)",
+      "data": {
+        "strategy": "Consensus",
+        "signal_type": "BUY",
+        "strength": 0.8500000000000001,
+        "price": 189.23,
+        "agreeing_strategies": [
+          "RSI Momentum",
+          "MACD"
+        ]
+      }
+    },
+    {
+      "timestamp": "2026-01-27T18:04:00",
+      "level": "info",
+      "category": "trade_open",
+      "symbol": "NVDA",
+      "message": "Opened 87.14 shares @ $189.32 (strategy: Consensus)",
+      "data": {
+        "quantity": 87.14,
+        "entry_price": 189.32461499999997,
+        "stop_loss": 187.33769999999998,
+        "take_profit": 193.96074999999996,
+        "strategy": "Consensus",
+        "cost": 16514.244698051098
+      }
+    },
+    {
+      "timestamp": "2026-01-27T18:05:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T18:28:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T18:32:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T18:33:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T18:35:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T18:36:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T18:48:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T18:51:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T18:57:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T19:13:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T19:24:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T19:26:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T19:42:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T20:22:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T20:23:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T20:24:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T20:30:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T20:48:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T20:51:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 2 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T21:04:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T21:05:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T21:06:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T21:08:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T21:20:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T21:32:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T21:50:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T21:53:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T22:00:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T22:08:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 2 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T22:14:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T22:20:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T22:27:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T22:40:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T22:47:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T23:03:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T23:05:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T23:07:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T23:09:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 2 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T23:10:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T23:13:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T23:14:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T23:20:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T23:21:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T23:22:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T23:25:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T23:30:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T23:32:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T23:37:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 2 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T23:38:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T23:52:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T23:56:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T23:58:00",
+      "level": "info",
+      "category": "signal",
+      "symbol": "NVDA",
+      "message": "CONSENSUS BUY from ['RSI Momentum', 'MACD'] (strength=0.85)",
+      "data": {
+        "strategy": "Consensus",
+        "signal_type": "BUY",
+        "strength": 0.8500000000000001,
+        "price": 188.85,
+        "agreeing_strategies": [
+          "RSI Momentum",
+          "MACD"
+        ]
+      }
+    },
+    {
+      "timestamp": "2026-01-27T23:58:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "Skipping BUY - already have position",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T23:59:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T00:09:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T00:10:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T00:11:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T00:23:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T00:28:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T00:41:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T00:43:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T00:44:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T00:45:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T00:46:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T00:47:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T00:48:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T00:55:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T00:59:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T01:00:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T01:01:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T01:02:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T01:03:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T01:15:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T01:27:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T01:36:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T01:40:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T01:43:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T01:46:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T01:58:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T02:09:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T02:29:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T02:37:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T02:41:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T02:57:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T02:58:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T02:59:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T03:07:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T03:17:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T03:42:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T03:45:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T03:46:00",
+      "level": "info",
+      "category": "signal",
+      "symbol": "NVDA",
+      "message": "CONSENSUS BUY from ['MA Crossover', 'MACD'] (strength=0.80)",
+      "data": {
+        "strategy": "Consensus",
+        "signal_type": "BUY",
+        "strength": 0.8,
+        "price": 189.34,
+        "agreeing_strategies": [
+          "MA Crossover",
+          "MACD"
+        ]
+      }
+    },
+    {
+      "timestamp": "2026-01-28T03:46:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "Skipping BUY - already have position",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T03:54:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T04:02:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T04:03:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T04:04:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T04:05:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T04:06:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T04:07:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T04:08:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T04:09:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T04:10:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T04:11:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T04:12:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T04:13:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T04:14:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T04:18:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T04:20:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T04:27:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T04:28:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 2 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T04:29:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T04:36:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T04:54:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T04:58:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T05:01:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T05:05:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T05:13:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T05:18:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T05:19:00",
+      "level": "info",
+      "category": "signal",
+      "symbol": "NVDA",
+      "message": "CONSENSUS CLOSE_LONG from ['MA Crossover', 'MACD'] (strength=0.80)",
+      "data": {
+        "strategy": "Consensus",
+        "signal_type": "CLOSE_LONG",
+        "strength": 0.8,
+        "price": 191.55,
+        "agreeing_strategies": [
+          "MA Crossover",
+          "MACD"
+        ]
+      }
+    },
+    {
+      "timestamp": "2026-01-28T05:19:00",
+      "level": "info",
+      "category": "trade_close",
+      "symbol": "NVDA",
+      "message": "Closed @ $191.45 | P&L: +$168.89 (+1.02%) | Reason: signal",
+      "data": {
+        "entry_price": 189.32461499999997,
+        "exit_price": 191.454225,
+        "quantity": 87.14,
+        "pnl": 168.89089423350367,
+        "pnl_pct": 0.010237209646511322,
+        "exit_reason": "signal",
+        "strategy": "Consensus"
+      }
+    },
+    {
+      "timestamp": "2026-01-28T05:20:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T05:23:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T05:28:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T05:32:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T05:41:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T05:43:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T05:54:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T06:12:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T06:13:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T06:16:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T06:19:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T06:20:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T06:21:00",
+      "level": "info",
+      "category": "signal",
+      "symbol": "NVDA",
+      "message": "CONSENSUS SELL from ['RSI Momentum', 'MACD'] (strength=0.85)",
+      "data": {
+        "strategy": "Consensus",
+        "signal_type": "SELL",
+        "strength": 0.8500000000000001,
+        "price": 191.89,
+        "agreeing_strategies": [
+          "RSI Momentum",
+          "MACD"
+        ]
+      }
+    },
+    {
+      "timestamp": "2026-01-28T06:22:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T06:23:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T06:24:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T06:25:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T06:26:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T06:27:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 2 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T06:33:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T06:34:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T06:35:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T06:42:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T06:54:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T07:01:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T07:07:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T07:08:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 2 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T07:09:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T07:10:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T07:11:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T07:12:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T07:14:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T07:24:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T07:26:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 2 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T07:27:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T07:28:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T07:29:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T07:35:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T07:52:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T07:54:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T07:57:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T08:02:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T08:05:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T08:07:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T08:08:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T08:10:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T08:12:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T08:14:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T08:15:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T08:31:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T08:40:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T08:42:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 2 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T08:49:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T08:54:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T09:00:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T09:04:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T09:06:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T09:14:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T09:19:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T09:35:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T09:47:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T09:49:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T09:58:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T09:59:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T10:00:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T10:01:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T10:02:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T10:03:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T10:04:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T10:25:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T10:26:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T10:28:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T10:36:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T10:38:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T10:39:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T10:51:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T10:53:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T10:58:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T10:59:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T11:00:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T11:01:00",
+      "level": "info",
+      "category": "signal",
+      "symbol": "NVDA",
+      "message": "CONSENSUS SELL from ['RSI Momentum', 'MACD'] (strength=0.85)",
+      "data": {
+        "strategy": "Consensus",
+        "signal_type": "SELL",
+        "strength": 0.8500000000000001,
+        "price": 191.85,
+        "agreeing_strategies": [
+          "RSI Momentum",
+          "MACD"
+        ]
+      }
+    },
+    {
+      "timestamp": "2026-01-28T11:02:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T11:05:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T11:15:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T11:16:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T11:17:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T11:18:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T11:32:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T11:39:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T11:47:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T11:50:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T11:57:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T12:00:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T12:06:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T12:10:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T12:16:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T12:17:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T12:26:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T12:27:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T12:28:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T12:29:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T12:30:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T12:31:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T12:32:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T12:33:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T12:34:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T12:35:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T12:39:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T12:40:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T12:41:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T12:42:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T12:43:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T12:53:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T12:55:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T13:17:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T13:25:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T13:27:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 2 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T13:31:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T13:34:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T13:38:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T13:39:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T13:42:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T13:47:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T13:48:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T13:49:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T13:50:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T13:51:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T14:01:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T14:05:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T14:06:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T14:13:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T14:19:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T14:33:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T14:35:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T14:36:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T14:37:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T14:38:00",
+      "level": "info",
+      "category": "signal",
+      "symbol": "NVDA",
+      "message": "CONSENSUS BUY from ['RSI Momentum', 'MACD'] (strength=0.85)",
+      "data": {
+        "strategy": "Consensus",
+        "signal_type": "BUY",
+        "strength": 0.8500000000000001,
+        "price": 191.62,
+        "agreeing_strategies": [
+          "RSI Momentum",
+          "MACD"
+        ]
+      }
+    },
+    {
+      "timestamp": "2026-01-28T14:38:00",
+      "level": "info",
+      "category": "trade_open",
+      "symbol": "NVDA",
+      "message": "Opened 86.19 shares @ $191.72 (strategy: Consensus)",
+      "data": {
+        "quantity": 86.19,
+        "entry_price": 191.71581,
+        "stop_loss": 189.7038,
+        "take_profit": 196.41049999999998,
+        "strategy": "Consensus",
+        "cost": 16540.509649563897
+      }
+    },
+    {
+      "timestamp": "2026-01-28T14:39:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T14:40:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T14:48:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T14:52:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T14:53:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T15:04:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T15:10:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T15:17:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T15:23:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T15:28:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T15:52:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T16:13:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T16:15:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T16:16:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T16:17:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T16:18:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T16:19:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T16:20:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T16:21:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T16:22:00",
+      "level": "info",
+      "category": "signal",
+      "symbol": "NVDA",
+      "message": "CONSENSUS CLOSE_LONG from ['RSI Momentum', 'MACD'] (strength=0.85)",
+      "data": {
+        "strategy": "Consensus",
+        "signal_type": "CLOSE_LONG",
+        "strength": 0.8500000000000001,
+        "price": 191.6178,
+        "agreeing_strategies": [
+          "RSI Momentum",
+          "MACD"
+        ]
+      }
+    },
+    {
+      "timestamp": "2026-01-28T16:22:00",
+      "level": "info",
+      "category": "trade_close",
+      "symbol": "NVDA",
+      "message": "Closed @ $191.52 | P&L: $-33.21 (-0.20%) | Reason: signal",
+      "data": {
+        "entry_price": 191.71581,
+        "exit_price": 191.5219911,
+        "quantity": 86.19,
+        "pnl": -33.212531403908706,
+        "pnl_pct": -0.002009958860982809,
+        "exit_reason": "signal",
+        "strategy": "Consensus"
+      }
+    },
+    {
+      "timestamp": "2026-01-28T16:23:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T16:28:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T16:49:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T16:50:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T16:53:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T16:54:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T16:55:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T16:56:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T16:57:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T17:24:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T17:34:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T17:35:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T17:36:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T17:40:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T17:43:00",
+      "level": "info",
+      "category": "signal",
+      "symbol": "NVDA",
+      "message": "CONSENSUS BUY from ['MA Crossover', 'MACD'] (strength=0.80)",
+      "data": {
+        "strategy": "Consensus",
+        "signal_type": "BUY",
+        "strength": 0.8,
+        "price": 191.355,
+        "agreeing_strategies": [
+          "MA Crossover",
+          "MACD"
+        ]
+      }
+    },
+    {
+      "timestamp": "2026-01-28T17:43:00",
+      "level": "info",
+      "category": "trade_open",
+      "symbol": "NVDA",
+      "message": "Opened 81.19 shares @ $191.45 (strategy: Consensus)",
+      "data": {
+        "quantity": 81.19,
+        "entry_price": 191.45067749999998,
+        "stop_loss": 189.44144999999997,
+        "take_profit": 196.13887499999998,
+        "strategy": "Consensus",
+        "cost": 15559.424386731223
+      }
+    },
+    {
+      "timestamp": "2026-01-28T17:53:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T17:54:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T17:55:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T17:56:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T17:57:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T17:58:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T17:59:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T18:01:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T18:05:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T18:06:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T18:07:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T18:08:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T18:09:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T18:12:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T18:21:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T18:25:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T18:26:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T18:27:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T18:28:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T18:37:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T18:41:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T18:42:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T18:43:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T18:44:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T18:45:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T18:49:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T18:55:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T18:56:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T19:02:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T19:07:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T19:12:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T19:13:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T19:15:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T19:24:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T19:30:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T19:31:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T19:35:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T19:36:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T19:37:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T19:44:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T19:45:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T19:56:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T20:01:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T20:09:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T20:15:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T20:20:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T20:43:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T20:44:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T20:45:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T20:46:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T20:47:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T20:50:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T20:55:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T21:00:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T21:06:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T21:07:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T21:08:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T21:09:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T21:10:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T21:11:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T21:12:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T21:13:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T21:17:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T21:21:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T21:23:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 2 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T21:24:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T21:25:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T21:28:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T21:29:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T21:30:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T21:31:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T21:40:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T21:58:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T22:17:00",
+      "level": "info",
+      "category": "signal",
+      "symbol": "NVDA",
+      "message": "CONSENSUS CLOSE_LONG from ['MA Crossover', 'MACD'] (strength=0.80)",
+      "data": {
+        "strategy": "Consensus",
+        "signal_type": "CLOSE_LONG",
+        "strength": 0.8,
+        "price": 192.12,
+        "agreeing_strategies": [
+          "MA Crossover",
+          "MACD"
+        ]
+      }
+    },
+    {
+      "timestamp": "2026-01-28T22:17:00",
+      "level": "info",
+      "category": "trade_close",
+      "symbol": "NVDA",
+      "message": "Closed @ $192.02 | P&L: +$30.95 (+0.20%) | Reason: signal",
+      "data": {
+        "entry_price": 191.45067749999998,
+        "exit_price": 192.02394,
+        "quantity": 81.19,
+        "pnl": 30.952758686402184,
+        "pnl_pct": 0.0019913147604297557,
+        "exit_reason": "signal",
+        "strategy": "Consensus"
+      }
+    },
+    {
+      "timestamp": "2026-01-28T22:25:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T22:37:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T23:01:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T23:02:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T23:04:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 2 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T23:05:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 2 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T23:13:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T23:21:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T23:32:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T23:33:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T23:34:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T23:49:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T23:50:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T23:51:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T23:52:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T23:53:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T23:54:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T23:58:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T23:59:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T00:00:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T00:01:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 2 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T00:05:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T00:06:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T00:08:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T00:20:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T00:21:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T00:24:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T00:30:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T00:33:00",
+      "level": "info",
+      "category": "signal",
+      "symbol": "NVDA",
+      "message": "CONSENSUS SELL from ['MA Crossover', 'MACD'] (strength=0.80)",
+      "data": {
+        "strategy": "Consensus",
+        "signal_type": "SELL",
+        "strength": 0.8,
+        "price": 190.24,
+        "agreeing_strategies": [
+          "MA Crossover",
+          "MACD"
+        ]
+      }
+    },
+    {
+      "timestamp": "2026-01-29T00:34:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T00:35:00",
+      "level": "info",
+      "category": "signal",
+      "symbol": "NVDA",
+      "message": "CONSENSUS SELL from ['MA Crossover', 'MACD'] (strength=0.80)",
+      "data": {
+        "strategy": "Consensus",
+        "signal_type": "SELL",
+        "strength": 0.8,
+        "price": 190.068,
+        "agreeing_strategies": [
+          "MA Crossover",
+          "MACD"
+        ]
+      }
+    },
+    {
+      "timestamp": "2026-01-29T00:42:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T00:45:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T00:52:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T12:00:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T12:04:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T12:06:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T12:07:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T12:09:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T12:10:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T12:11:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T12:12:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T12:13:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T12:14:00",
+      "level": "info",
+      "category": "signal",
+      "symbol": "NVDA",
+      "message": "CONSENSUS SELL from ['RSI Momentum', 'MACD'] (strength=0.75)",
+      "data": {
+        "strategy": "Consensus",
+        "signal_type": "SELL",
+        "strength": 0.75,
+        "price": 191.26,
+        "agreeing_strategies": [
+          "RSI Momentum",
+          "MACD"
+        ]
+      }
+    },
+    {
+      "timestamp": "2026-01-29T12:15:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T12:16:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T12:17:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T12:18:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T12:20:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T12:21:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T12:38:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T12:39:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T12:50:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T12:53:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 2 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T13:00:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T13:08:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T13:24:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T13:25:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T13:28:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T13:29:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T13:39:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T13:40:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T13:41:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T13:42:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T13:43:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T13:44:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T13:45:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T13:46:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T13:47:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T13:52:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T14:21:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T14:22:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T14:23:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T14:24:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T14:25:00",
+      "level": "info",
+      "category": "signal",
+      "symbol": "NVDA",
+      "message": "CONSENSUS BUY from ['RSI Momentum', 'MACD'] (strength=0.85)",
+      "data": {
+        "strategy": "Consensus",
+        "signal_type": "BUY",
+        "strength": 0.8500000000000001,
+        "price": 191.39,
+        "agreeing_strategies": [
+          "RSI Momentum",
+          "MACD"
+        ]
+      }
+    },
+    {
+      "timestamp": "2026-01-29T14:25:00",
+      "level": "info",
+      "category": "trade_open",
+      "symbol": "NVDA",
+      "message": "Opened 86.27 shares @ $191.49 (strategy: Consensus)",
+      "data": {
+        "quantity": 86.27,
+        "entry_price": 191.48569499999996,
+        "stop_loss": 189.47609999999997,
+        "take_profit": 196.17474999999996,
+        "strategy": "Consensus",
+        "cost": 16535.990378557646
+      }
+    },
+    {
+      "timestamp": "2026-01-29T14:27:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 2 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T14:28:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T14:30:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T14:34:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T14:37:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 2 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T14:38:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T14:39:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T14:40:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T14:42:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T14:48:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T14:55:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T15:00:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T15:01:00",
+      "level": "warning",
+      "category": "stop_hit",
+      "symbol": "NVDA",
+      "message": "Stop loss hit at $189.56 (stop was $189.64)",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T15:01:00",
+      "level": "info",
+      "category": "trade_close",
+      "symbol": "NVDA",
+      "message": "Closed @ $189.46 | P&L: $-190.94 (-1.16%) | Reason: stop_loss",
+      "data": {
+        "entry_price": 191.48569499999996,
+        "exit_price": 189.46192165000002,
+        "quantity": 86.27,
+        "pnl": -190.9358068852405,
+        "pnl_pct": -0.011558227739413864,
+        "exit_reason": "stop_loss",
+        "strategy": "Consensus"
+      }
+    },
+    {
+      "timestamp": "2026-01-29T15:05:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T15:06:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T15:13:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T15:14:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T15:15:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T15:16:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T15:17:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T15:19:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T15:21:00",
+      "level": "info",
+      "category": "info",
+      "symbol": "",
+      "message": "Backtest complete: 288 signals, 73 trades",
+      "data": {}
+    }
+  ]
+}

@@ -29,5 +29,19 @@
     "use_trailing_stops": true,
     "default_stop_loss_pct": 2.0,
     "default_take_profit_pct": 5.0
+  },
+  "claude_strategy": {
+    "enabled": false,
+    "weight": 1.5,
+    "model": "claude-3-5-haiku-latest",
+    "factors": {
+      "price_action": true,
+      "technical_indicators": true,
+      "news_sentiment": false,
+      "market_regime": true
+    },
+    "max_calls_per_hour": 30,
+    "cache_ttl_seconds": 300,
+    "backtesting_mode": "fallback"
   }
 }

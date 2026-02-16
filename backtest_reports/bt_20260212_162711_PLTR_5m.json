@@ -1,0 +1,1210 @@
+{
+  "timestamp": "2026-02-12T16:27:11.905427",
+  "config": {
+    "symbol": "PLTR",
+    "start_date": "2026-01-21",
+    "end_date": "2026-02-12",
+    "interval": "5m",
+    "initial_capital": 100000,
+    "mode": "rules",
+    "factors": {
+      "price_action": true,
+      "technical_indicators": true,
+      "news_sentiment": false,
+      "market_regime": true
+    }
+  },
+  "metrics": {
+    "total_return": 4.35,
+    "buy_hold_return": -23.15,
+    "sharpe_ratio": 3.5,
+    "max_drawdown": 3.86,
+    "win_rate": 57.1,
+    "total_trades": 21,
+    "winning_trades": 12,
+    "losing_trades": 9,
+    "profit_factor": 1.5,
+    "avg_win": 1083.56,
+    "avg_loss": 961.52,
+    "initial_capital": 100000,
+    "final_value": 104349.08,
+    "gross_profit": 13002.72,
+    "gross_loss": 8653.64
+  },
+  "per_symbol_metrics": {},
+  "trades": [
+    {
+      "date": "2026-01-23 15:30:00",
+      "symbol": "PLTR",
+      "type": "BUY",
+      "price": 168.85,
+      "shares": 552,
+      "cost": 93298.4052,
+      "pnl": 0,
+      "strength": 0.5,
+      "reasoning": "Uptrend (EMA9>168.2 > EMA21>167.5, slope 0.25%) | RSI 69.4 | MACD hist 0.093 | ADX 46.5 | Stoch K 87.2 | Vol ratio 1.04 | ATR 0.6743 | Price $168.85 | R $169.19 | S $166.50 | BULL MARUBOZU | STRUCT: RANGE-BOUND [~]",
+      "risk_notes": "Uptrend (EMA9>168.2 > EMA21>167.5, slope 0.25%) | RSI 69.4 | MACD hist 0.093 | ADX 46.5 | Stoch K 87.2 | Vol ratio 1.04 | ATR 0.6743 | Price $168.85 | R $169.19 | S $166.50 | BULL MARUBOZU | STRUCT: RANGE-BOUND [~]",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "BUY",
+        "strength": 0.5
+      },
+      "indicators": {
+        "rsi": 69.4,
+        "macd": 0.737,
+        "macd_signal": 0.643,
+        "macd_hist": 0.093,
+        "bb_pct": 81.0,
+        "bb_upper": 169.81,
+        "bb_lower": 164.67,
+        "adx": 46.5,
+        "atr": 0.674,
+        "ema9": 168.23,
+        "ema21": 167.5,
+        "ema_trend": "BULL"
+      }
+    },
+    {
+      "date": "2026-01-23 17:35:00",
+      "symbol": "PLTR",
+      "type": "SELL",
+      "price": 170.845,
+      "shares": 552,
+      "proceeds": 94212.13356,
+      "pnl": 913.7283600000083,
+      "return_pct": 1.1815220610008836,
+      "strength": 0.5,
+      "reasoning": "Uptrend (EMA9>171.1 > EMA21>170.6, slope 0.18%) | RSI 57.1 | MACD hist -0.114 | ADX 46.9 | Stoch K 32.0 | Vol ratio 0.52 | ATR 0.4946 | Price $170.84 | R $171.33 | S $170.61 | BEAR DIVERGENCE | RISING WEDGE | STRUCT: UPTREND (HH+HL) [++] | GUARD: DIV_BEAR_VS_BULL_TREND",
+      "risk_notes": "Uptrend (EMA9>171.1 > EMA21>170.6, slope 0.18%) | RSI 57.1 | MACD hist -0.114 | ADX 46.9 | Stoch K 32.0 | Vol ratio 0.52 | ATR 0.4946 | Price $170.84 | R $171.33 | S $170.61 | BEAR DIVERGENCE | RISING WEDGE | STRUCT: UPTREND (HH+HL) [++] | GUARD: DIV_BEAR_VS_BULL_TREND",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "SELL",
+        "strength": 0.5
+      }
+    },
+    {
+      "date": "2026-01-26 15:25:00",
+      "symbol": "PLTR",
+      "type": "SHORT",
+      "price": 169.05,
+      "shares": 567,
+      "proceeds": 95755.49865000001,
+      "pnl": 0,
+      "strength": 0.5,
+      "reasoning": "Downtrend (EMA9>169.5 < EMA21>169.6, slope -0.04%) | RSI 42.6 | MACD hist -0.034 | ADX 18.4 | Stoch K 36.3 | Vol ratio 2.45 | ATR 0.6118 | Price $169.05 | R $169.82 | S $168.50 | ENGULF BEAR | OBV -0.32 | STRUCT: RANGE-BOUND [~]",
+      "risk_notes": "Downtrend (EMA9>169.5 < EMA21>169.6, slope -0.04%) | RSI 42.6 | MACD hist -0.034 | ADX 18.4 | Stoch K 36.3 | Vol ratio 2.45 | ATR 0.6118 | Price $169.05 | R $169.82 | S $168.50 | ENGULF BEAR | OBV -0.32 | STRUCT: RANGE-BOUND [~]",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "SELL",
+        "strength": 0.5
+      },
+      "indicators": {
+        "rsi": 42.6,
+        "macd": -0.106,
+        "macd_signal": -0.073,
+        "macd_hist": -0.034,
+        "bb_pct": 8.0,
+        "bb_upper": 170.37,
+        "bb_lower": 168.94,
+        "adx": 18.4,
+        "atr": 0.612,
+        "ema9": 169.48,
+        "ema21": 169.6,
+        "ema_trend": "BEAR"
+      }
+    },
+    {
+      "date": "2026-01-26 EOD",
+      "symbol": "PLTR",
+      "type": "EOD_COVER",
+      "price": 167.5,
+      "shares": 567,
+      "cost": 95067.47249999999,
+      "pnl": 688.0261500000197,
+      "return_pct": 0.9253731343283667,
+      "strength": 0,
+      "reasoning": "Day trading: forced cover at end of day",
+      "risk_notes": "Short covered to avoid overnight risk",
+      "factors_used": [],
+      "raw_response": {},
+      "indicators": {}
+    },
+    {
+      "date": "2026-01-27 15:50:00",
+      "symbol": "PLTR",
+      "type": "SHORT",
+      "price": 167.195,
+      "shares": 577,
+      "proceeds": 96375.043485,
+      "pnl": 0,
+      "strength": 0.5,
+      "reasoning": "Downtrend (EMA9>167.9 < EMA21>167.9, slope -0.05%) | RSI 41.5 | MACD hist -0.025 | ADX 20.8 | Stoch K 37.0 | Vol ratio 0.63 | ATR 0.4907 | Price $167.19 | R $167.85 | S $165.90 | OBV -0.26 | STRUCT: BROADENING [~]",
+      "risk_notes": "Downtrend (EMA9>167.9 < EMA21>167.9, slope -0.05%) | RSI 41.5 | MACD hist -0.025 | ADX 20.8 | Stoch K 37.0 | Vol ratio 0.63 | ATR 0.4907 | Price $167.19 | R $167.85 | S $165.90 | OBV -0.26 | STRUCT: BROADENING [~]",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "SELL",
+        "strength": 0.5
+      },
+      "indicators": {
+        "rsi": 41.5,
+        "macd": -0.028,
+        "macd_signal": -0.003,
+        "macd_hist": -0.025,
+        "bb_pct": 35.0,
+        "bb_upper": 169.44,
+        "bb_lower": 165.96,
+        "adx": 20.8,
+        "atr": 0.491,
+        "ema9": 167.86,
+        "ema21": 167.89,
+        "ema_trend": "BEAR"
+      }
+    },
+    {
+      "date": "2026-01-27 19:20:00",
+      "symbol": "PLTR",
+      "type": "COVER",
+      "price": 165.44,
+      "shares": 577,
+      "cost": 95554.33888,
+      "pnl": 820.7046050000063,
+      "return_pct": 1.0608075435203146,
+      "strength": 0.5,
+      "reasoning": "Downtrend (EMA9>166.2 < EMA21>166.4, slope -0.09%) | RSI 30.6 | MACD hist -0.031 | ADX 12.3 | Stoch K 0.0 | Vol ratio 2.30 | ATR 0.2936 | Price $165.44 | R $166.57 | BEAR MARUBOZU | BB SQUEEZE | OBV -0.83 | BULL PENNANT | BEAR PENNANT | STRUCT: DOWNTREND (LH+LL) [--] | GUARD: STRETCHED_3.3ATR",
+      "risk_notes": "Downtrend (EMA9>166.2 < EMA21>166.4, slope -0.09%) | RSI 30.6 | MACD hist -0.031 | ADX 12.3 | Stoch K 0.0 | Vol ratio 2.30 | ATR 0.2936 | Price $165.44 | R $166.57 | BEAR MARUBOZU | BB SQUEEZE | OBV -0.83 | BULL PENNANT | BEAR PENNANT | STRUCT: DOWNTREND (LH+LL) [--] | GUARD: STRETCHED_3.3ATR",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "BUY",
+        "strength": 0.5
+      }
+    },
+    {
+      "date": "2026-01-28 15:10:00",
+      "symbol": "PLTR",
+      "type": "SHORT",
+      "price": 162.585,
+      "shares": 598,
+      "proceeds": 97128.60417,
+      "pnl": 0,
+      "strength": 0.65,
+      "reasoning": "Downtrend (EMA9>163.3 < EMA21>164.0, slope -0.24%) | RSI 33.5 | MACD hist -0.081 | ADX 33.0 | Stoch K 15.5 | Vol ratio 0.92 | ATR 0.6035 | Price $162.59 | R $164.18 | S $162.00 | SHOOTING STAR | OBV -0.49 | STRUCT: DOWNTREND (LH+LL) [--]",
+      "risk_notes": "Downtrend (EMA9>163.3 < EMA21>164.0, slope -0.24%) | RSI 33.5 | MACD hist -0.081 | ADX 33.0 | Stoch K 15.5 | Vol ratio 0.92 | ATR 0.6035 | Price $162.59 | R $164.18 | S $162.00 | SHOOTING STAR | OBV -0.49 | STRUCT: DOWNTREND (LH+LL) [--]",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "SELL",
+        "strength": 0.65
+      },
+      "indicators": {
+        "rsi": 33.5,
+        "macd": -0.694,
+        "macd_signal": -0.613,
+        "macd_hist": -0.081,
+        "bb_pct": 14.0,
+        "bb_upper": 166.3,
+        "bb_lower": 161.98,
+        "adx": 33.0,
+        "atr": 0.604,
+        "ema9": 163.34,
+        "ema21": 164.0,
+        "ema_trend": "BEAR"
+      }
+    },
+    {
+      "date": "2026-01-28 17:50:00",
+      "symbol": "PLTR",
+      "type": "COVER",
+      "price": 159.59,
+      "shares": 598,
+      "cost": 95530.25482,
+      "pnl": 1598.349350000004,
+      "return_pct": 1.8766840027570675,
+      "strength": 0.65,
+      "reasoning": "Downtrend (EMA9>159.5 < EMA21>160.5, slope -0.45%) | RSI 34.9 | MACD hist -0.105 | ADX 51.6 | Stoch K 32.9 | Vol ratio 2.17 | ATR 0.4952 | Price $159.59 | R $162.93 | S $158.51 | MORNING STAR | BULL MARUBOZU | STRUCT: DOWNTREND (LH+LL) [--]",
+      "risk_notes": "Downtrend (EMA9>159.5 < EMA21>160.5, slope -0.45%) | RSI 34.9 | MACD hist -0.105 | ADX 51.6 | Stoch K 32.9 | Vol ratio 2.17 | ATR 0.4952 | Price $159.59 | R $162.93 | S $158.51 | MORNING STAR | BULL MARUBOZU | STRUCT: DOWNTREND (LH+LL) [--]",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "BUY",
+        "strength": 0.65
+      }
+    },
+    {
+      "date": "2026-01-28 19:05:00",
+      "symbol": "PLTR",
+      "type": "SHORT",
+      "price": 159.005,
+      "shares": 621,
+      "proceeds": 98643.362895,
+      "pnl": 0,
+      "strength": 0.8,
+      "reasoning": "Downtrend (EMA9>159.3 < EMA21>159.6, slope -0.09%) | RSI 36.1 | MACD hist 0.106 | ADX 38.0 | Stoch K 3.4 | Vol ratio 1.80 | ATR 0.4456 | Price $159.00 | R $159.67 | S $158.51 | BB SQUEEZE | OBV -0.77 | BEAR PENNANT | STRUCT: DISTRIBUTION (lower highs) [-]",
+      "risk_notes": "Downtrend (EMA9>159.3 < EMA21>159.6, slope -0.09%) | RSI 36.1 | MACD hist 0.106 | ADX 38.0 | Stoch K 3.4 | Vol ratio 1.80 | ATR 0.4456 | Price $159.00 | R $159.67 | S $158.51 | BB SQUEEZE | OBV -0.77 | BEAR PENNANT | STRUCT: DISTRIBUTION (lower highs) [-]",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "SELL",
+        "strength": 0.8
+      },
+      "indicators": {
+        "rsi": 36.1,
+        "macd": -0.456,
+        "macd_signal": -0.562,
+        "macd_hist": 0.106,
+        "bb_pct": 28.0,
+        "bb_upper": 159.93,
+        "bb_lower": 158.65,
+        "adx": 38.0,
+        "atr": 0.446,
+        "ema9": 159.33,
+        "ema21": 159.64,
+        "ema_trend": "BEAR"
+      }
+    },
+    {
+      "date": "2026-01-28 21:40:00",
+      "symbol": "PLTR",
+      "type": "COVER",
+      "price": 159.23,
+      "shares": 621,
+      "cost": 98980.71182999997,
+      "pnl": -337.3489349999727,
+      "return_pct": -0.14130503045908238,
+      "strength": 0.8,
+      "reasoning": "Downtrend (EMA9>158.1 < EMA21>158.5, slope -0.23%) | RSI 54.8 | MACD hist -0.015 | ADX 34.9 | Stoch K 92.2 | Vol ratio 0.01 | ATR 0.5945 | Price $159.23 | R $159.55 | S $159.16 | OBV -0.73 | STRUCT: DOWNTREND (LH+LL) [--]",
+      "risk_notes": "Downtrend (EMA9>158.1 < EMA21>158.5, slope -0.23%) | RSI 54.8 | MACD hist -0.015 | ADX 34.9 | Stoch K 92.2 | Vol ratio 0.01 | ATR 0.5945 | Price $159.23 | R $159.55 | S $159.16 | OBV -0.73 | STRUCT: DOWNTREND (LH+LL) [--]",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "BUY",
+        "strength": 0.8
+      }
+    },
+    {
+      "date": "2026-01-29 16:50:00",
+      "symbol": "PLTR",
+      "type": "SHORT",
+      "price": 149.92,
+      "shares": 508,
+      "proceeds": 76083.20064,
+      "pnl": 0,
+      "strength": 0.5,
+      "reasoning": "Downtrend (EMA9>149.8 < EMA21>150.1, slope -0.04%) | RSI 44.6 | MACD hist 0.460 | ADX 34.5 | Stoch K 84.0 | Vol ratio 0.53 | ATR 0.7636 | Price $149.92 | R $150.41 | S $149.29 | STRUCT: BROADENING [~]",
+      "risk_notes": "Downtrend (EMA9>149.8 < EMA21>150.1, slope -0.04%) | RSI 44.6 | MACD hist 0.460 | ADX 34.5 | Stoch K 84.0 | Vol ratio 0.53 | ATR 0.7636 | Price $149.92 | R $150.41 | S $149.29 | STRUCT: BROADENING [~]",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "SELL",
+        "strength": 0.5
+      },
+      "indicators": {
+        "rsi": 44.6,
+        "macd": -0.752,
+        "macd_signal": -1.212,
+        "macd_hist": 0.46,
+        "bb_pct": 72.0,
+        "bb_upper": 150.93,
+        "bb_lower": 147.28,
+        "adx": 34.5,
+        "atr": 0.764,
+        "ema9": 149.79,
+        "ema21": 150.1,
+        "ema_trend": "BEAR"
+      }
+    },
+    {
+      "date": "2026-01-29 20:55:00",
+      "symbol": "PLTR",
+      "type": "COVER",
+      "price": 151.9,
+      "shares": 508,
+      "cost": 77242.36519999999,
+      "pnl": -1159.1645599999902,
+      "return_pct": -1.30348913759053,
+      "strength": 0.5,
+      "reasoning": "Uptrend (EMA9>150.8 > EMA21>150.3, slope 0.34%) | RSI 68.4 | MACD hist 0.287 | ADX 25.0 | Stoch K 98.0 | Vol ratio 3.01 | ATR 0.4796 | Price $151.90 | S $150.16 | OBV +1.20 | STRUCT: RANGE-BOUND [~] | GUARD: STRETCHED_3.2ATR",
+      "risk_notes": "Uptrend (EMA9>150.8 > EMA21>150.3, slope 0.34%) | RSI 68.4 | MACD hist 0.287 | ADX 25.0 | Stoch K 98.0 | Vol ratio 3.01 | ATR 0.4796 | Price $151.90 | S $150.16 | OBV +1.20 | STRUCT: RANGE-BOUND [~] | GUARD: STRETCHED_3.2ATR",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "BUY",
+        "strength": 0.5
+      }
+    },
+    {
+      "date": "2026-01-30 16:05:00",
+      "symbol": "PLTR",
+      "type": "SHORT",
+      "price": 148.74,
+      "shares": 529,
+      "proceeds": 78604.77654,
+      "pnl": 0,
+      "strength": 0.65,
+      "reasoning": "Downtrend (EMA9>149.0 < EMA21>149.2, slope -0.09%) | RSI 44.8 | MACD hist 0.030 | ADX 11.3 | Stoch K 51.8 | Vol ratio 1.72 | ATR 0.6296 | Price $148.74 | R $149.60 | S $148.44 | OBV -0.27 | STRUCT: DISTRIBUTION (lower highs) [-]",
+      "risk_notes": "Downtrend (EMA9>149.0 < EMA21>149.2, slope -0.09%) | RSI 44.8 | MACD hist 0.030 | ADX 11.3 | Stoch K 51.8 | Vol ratio 1.72 | ATR 0.6296 | Price $148.74 | R $149.60 | S $148.44 | OBV -0.27 | STRUCT: DISTRIBUTION (lower highs) [-]",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "SELL",
+        "strength": 0.65
+      },
+      "indicators": {
+        "rsi": 44.8,
+        "macd": -0.223,
+        "macd_signal": -0.253,
+        "macd_hist": 0.03,
+        "bb_pct": 41.0,
+        "bb_upper": 150.24,
+        "bb_lower": 147.68,
+        "adx": 11.3,
+        "atr": 0.63,
+        "ema9": 148.98,
+        "ema21": 149.15,
+        "ema_trend": "BEAR"
+      }
+    },
+    {
+      "date": "2026-01-30 18:45:00",
+      "symbol": "PLTR",
+      "type": "COVER",
+      "price": 147.18,
+      "shares": 529,
+      "cost": 77936.07822,
+      "pnl": 668.6983200000104,
+      "return_pct": 1.0599266204647462,
+      "strength": 0.65,
+      "reasoning": "Downtrend (EMA9>147.0 < EMA21>147.5, slope -0.23%) | RSI 43.0 | MACD hist -0.048 | ADX 22.5 | Stoch K 40.8 | Vol ratio 0.78 | ATR 0.4667 | Price $147.18 | R $148.44 | S $146.31 | OBV -0.18 | STRUCT: DOWNTREND (LH+LL) [--]",
+      "risk_notes": "Downtrend (EMA9>147.0 < EMA21>147.5, slope -0.23%) | RSI 43.0 | MACD hist -0.048 | ADX 22.5 | Stoch K 40.8 | Vol ratio 0.78 | ATR 0.4667 | Price $147.18 | R $148.44 | S $146.31 | OBV -0.18 | STRUCT: DOWNTREND (LH+LL) [--]",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "BUY",
+        "strength": 0.65
+      }
+    },
+    {
+      "date": "2026-01-30 20:00:00",
+      "symbol": "PLTR",
+      "type": "SHORT",
+      "price": 146.18,
+      "shares": 670,
+      "proceeds": 97842.6594,
+      "pnl": 0,
+      "strength": 0.5,
+      "reasoning": "Downtrend (EMA9>146.7 < EMA21>147.0, slope -0.19%) | RSI 33.3 | MACD hist -0.059 | ADX 17.9 | Stoch K 1.6 | Vol ratio 0.79 | ATR 0.4096 | Price $146.18 | R $146.90 | OBV -0.44 | BEAR PENNANT | STRUCT: DOWNTREND (LH+LL) [--]",
+      "risk_notes": "Downtrend (EMA9>146.7 < EMA21>147.0, slope -0.19%) | RSI 33.3 | MACD hist -0.059 | ADX 17.9 | Stoch K 1.6 | Vol ratio 0.79 | ATR 0.4096 | Price $146.18 | R $146.90 | OBV -0.44 | BEAR PENNANT | STRUCT: DOWNTREND (LH+LL) [--]",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "SELL",
+        "strength": 0.5
+      },
+      "indicators": {
+        "rsi": 33.3,
+        "macd": -0.353,
+        "macd_signal": -0.294,
+        "macd_hist": -0.059,
+        "bb_pct": 5.0,
+        "bb_upper": 147.94,
+        "bb_lower": 146.09,
+        "adx": 17.9,
+        "atr": 0.41,
+        "ema9": 146.7,
+        "ema21": 147.04,
+        "ema_trend": "BEAR"
+      }
+    },
+    {
+      "date": "2026-01-30 EOD",
+      "symbol": "PLTR",
+      "type": "EOD_COVER",
+      "price": 146.87,
+      "shares": 670,
+      "cost": 98501.3029,
+      "pnl": -658.643499999991,
+      "return_pct": -0.46980322734391233,
+      "strength": 0,
+      "reasoning": "Day trading: forced cover at end of day",
+      "risk_notes": "Short covered to avoid overnight risk",
+      "factors_used": [],
+      "raw_response": {},
+      "indicators": {}
+    },
+    {
+      "date": "2026-02-02 18:35:00",
+      "symbol": "PLTR",
+      "type": "SHORT",
+      "price": 149.47,
+      "shares": 651,
+      "proceeds": 97207.66503,
+      "pnl": 0,
+      "strength": 0.5,
+      "reasoning": "Downtrend (EMA9>149.7 < EMA21>149.8, slope -0.03%) | RSI 43.6 | MACD hist -0.031 | ADX 7.6 | Stoch K 0.8 | Vol ratio 0.59 | ATR 0.3146 | Price $149.47 | R $150.06 | S $149.11 | BEAR MARUBOZU | BB SQUEEZE | OBV -0.23 | BULL FLAG | BEAR FLAG | STRUCT: DISTRIBUTION (lower highs) [-]",
+      "risk_notes": "Downtrend (EMA9>149.7 < EMA21>149.8, slope -0.03%) | RSI 43.6 | MACD hist -0.031 | ADX 7.6 | Stoch K 0.8 | Vol ratio 0.59 | ATR 0.3146 | Price $149.47 | R $150.06 | S $149.11 | BEAR MARUBOZU | BB SQUEEZE | OBV -0.23 | BULL FLAG | BEAR FLAG | STRUCT: DISTRIBUTION (lower highs) [-]",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "SELL",
+        "strength": 0.5
+      },
+      "indicators": {
+        "rsi": 43.6,
+        "macd": -0.05,
+        "macd_signal": -0.018,
+        "macd_hist": -0.031,
+        "bb_pct": 2.0,
+        "bb_upper": 150.15,
+        "bb_lower": 149.46,
+        "adx": 7.6,
+        "atr": 0.315,
+        "ema9": 149.71,
+        "ema21": 149.79,
+        "ema_trend": "BEAR"
+      }
+    },
+    {
+      "date": "2026-02-02 19:55:00",
+      "symbol": "PLTR",
+      "type": "COVER",
+      "price": 147.32,
+      "shares": 651,
+      "cost": 96001.22531999998,
+      "pnl": 1206.4397100000206,
+      "return_pct": 1.4594080912299745,
+      "strength": 0.5,
+      "reasoning": "Downtrend (EMA9>148.2 < EMA21>148.7, slope -0.27%) | RSI 24.7 | MACD hist -0.133 | ADX 22.7 | Stoch K 0.0 | Vol ratio 2.58 | ATR 0.3736 | Price $147.32 | R $149.04 | S $145.97 | ENGULF BEAR | OBV -0.60 | STRUCT: DISTRIBUTION (lower highs) [-] | GUARD: RSI_EXTREME_LO,STRETCHED_3.8ATR,LAST_15MIN",
+      "risk_notes": "Downtrend (EMA9>148.2 < EMA21>148.7, slope -0.27%) | RSI 24.7 | MACD hist -0.133 | ADX 22.7 | Stoch K 0.0 | Vol ratio 2.58 | ATR 0.3736 | Price $147.32 | R $149.04 | S $145.97 | ENGULF BEAR | OBV -0.60 | STRUCT: DISTRIBUTION (lower highs) [-] | GUARD: RSI_EXTREME_LO,STRETCHED_3.8ATR,LAST_15MIN",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "BUY",
+        "strength": 0.5
+      }
+    },
+    {
+      "date": "2026-02-03 14:50:00",
+      "symbol": "PLTR",
+      "type": "SHORT",
+      "price": 155.275,
+      "shares": 241,
+      "proceeds": 37383.853725,
+      "pnl": 0,
+      "strength": 0.5,
+      "reasoning": "No trend (slope -0.31%) | RSI 46.5 | MACD hist -0.973 | ADX 43.1 | Stoch K 0.0 | Vol ratio 2.30 | ATR 1.9120 | Price $155.28 | R $159.88 | S $150.18 | BEAR MARUBOZU | BEAR DIVERGENCE | OBV -1.18 | STRUCT: UPTREND (HH+HL) [++] | GUARD: DIV_BEAR_VS_BULL_TREND",
+      "risk_notes": "No trend (slope -0.31%) | RSI 46.5 | MACD hist -0.973 | ADX 43.1 | Stoch K 0.0 | Vol ratio 2.30 | ATR 1.9120 | Price $155.28 | R $159.88 | S $150.18 | BEAR MARUBOZU | BEAR DIVERGENCE | OBV -1.18 | STRUCT: UPTREND (HH+HL) [++] | GUARD: DIV_BEAR_VS_BULL_TREND",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "SELL",
+        "strength": 0.5
+      },
+      "indicators": {
+        "rsi": 46.5,
+        "macd": 1.76,
+        "macd_signal": 2.733,
+        "macd_hist": -0.973,
+        "bb_pct": 31.0,
+        "bb_upper": 168.0,
+        "bb_lower": 149.52,
+        "adx": 43.1,
+        "atr": 1.912,
+        "ema9": 158.55,
+        "ema21": 157.56,
+        "ema_trend": "BULL"
+      }
+    },
+    {
+      "date": "2026-02-03 17:45:00",
+      "symbol": "PLTR",
+      "type": "COVER",
+      "price": 159.71,
+      "shares": 241,
+      "cost": 38528.60011,
+      "pnl": -1144.7463849999986,
+      "return_pct": -2.776908146014656,
+      "strength": 0.5,
+      "reasoning": "Uptrend (EMA9>158.0 > EMA21>157.1, slope 0.41%) | RSI 63.1 | MACD hist 0.341 | ADX 23.5 | Stoch K 98.6 | Vol ratio 2.95 | ATR 1.2318 | Price $159.71 | R $159.88 | S $158.41 | BEAR DIVERGENCE | OBV +0.85 | STRUCT: RANGE-BOUND [~] | GUARD: DIV_BEAR_VS_BULL_TREND",
+      "risk_notes": "Uptrend (EMA9>158.0 > EMA21>157.1, slope 0.41%) | RSI 63.1 | MACD hist 0.341 | ADX 23.5 | Stoch K 98.6 | Vol ratio 2.95 | ATR 1.2318 | Price $159.71 | R $159.88 | S $158.41 | BEAR DIVERGENCE | OBV +0.85 | STRUCT: RANGE-BOUND [~] | GUARD: DIV_BEAR_VS_BULL_TREND",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "BUY",
+        "strength": 0.5
+      }
+    },
+    {
+      "date": "2026-02-04 19:00:00",
+      "symbol": "PLTR",
+      "type": "SHORT",
+      "price": 136.68,
+      "shares": 338,
+      "proceeds": 46151.64216,
+      "pnl": 0,
+      "strength": 0.5,
+      "reasoning": "Downtrend (EMA9>136.7 < EMA21>137.3, slope -0.24%) | RSI 41.7 | MACD hist 0.228 | ADX 41.6 | Stoch K 38.5 | Vol ratio 0.65 | ATR 0.8245 | Price $136.68 | R $138.26 | S $135.80 | BULL DIVERGENCE | BB SQUEEZE | OBV -0.15 | STRUCT: W-BOTTOM FORMING [+] | GUARD: DIV_BULL_VS_BEAR_TREND",
+      "risk_notes": "Downtrend (EMA9>136.7 < EMA21>137.3, slope -0.24%) | RSI 41.7 | MACD hist 0.228 | ADX 41.6 | Stoch K 38.5 | Vol ratio 0.65 | ATR 0.8245 | Price $136.68 | R $138.26 | S $135.80 | BULL DIVERGENCE | BB SQUEEZE | OBV -0.15 | STRUCT: W-BOTTOM FORMING [+] | GUARD: DIV_BULL_VS_BEAR_TREND",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "SELL",
+        "strength": 0.5
+      },
+      "indicators": {
+        "rsi": 41.7,
+        "macd": -0.869,
+        "macd_signal": -1.097,
+        "macd_hist": 0.228,
+        "bb_pct": 45.0,
+        "bb_upper": 137.81,
+        "bb_lower": 135.75,
+        "adx": 41.6,
+        "atr": 0.825,
+        "ema9": 136.72,
+        "ema21": 137.27,
+        "ema_trend": "BEAR"
+      }
+    },
+    {
+      "date": "2026-02-04 19:55:00",
+      "symbol": "PLTR",
+      "type": "COVER",
+      "price": 139.975,
+      "shares": 338,
+      "cost": 47358.86154999999,
+      "pnl": -1207.2193899999838,
+      "return_pct": -2.353991784247178,
+      "strength": 0.5,
+      "reasoning": "Uptrend (EMA9>138.4 > EMA21>137.9, slope 0.39%) | RSI 67.4 | MACD hist 0.438 | ADX 27.7 | Stoch K 99.0 | Vol ratio 2.08 | ATR 0.7870 | Price $139.97 | R $140.93 | S $139.16 | OBV +1.18 | BEAR PENNANT | STRUCT: TRIANGLE (converging) [~] | GUARD: STRETCHED_2.7ATR,LAST_15MIN",
+      "risk_notes": "Uptrend (EMA9>138.4 > EMA21>137.9, slope 0.39%) | RSI 67.4 | MACD hist 0.438 | ADX 27.7 | Stoch K 99.0 | Vol ratio 2.08 | ATR 0.7870 | Price $139.97 | R $140.93 | S $139.16 | OBV +1.18 | BEAR PENNANT | STRUCT: TRIANGLE (converging) [~] | GUARD: STRETCHED_2.7ATR,LAST_15MIN",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "BUY",
+        "strength": 0.5
+      }
+    },
+    {
+      "date": "2026-02-04 20:45:00",
+      "symbol": "PLTR",
+      "type": "BUY",
+      "price": 138.575,
+      "shares": 363,
+      "cost": 50353.02772499999,
+      "pnl": 0,
+      "strength": 0.95,
+      "reasoning": "Uptrend (EMA9>138.3 > EMA21>138.2, slope 0.05%) | RSI 54.1 | MACD hist 0.017 | ADX 20.9 | Stoch K 41.2 | Vol ratio 2.70 | ATR 0.7707 | Price $138.57 | R $139.54 | S $137.69 | OBV +0.93 | STRUCT: ACCUMULATION (higher lows) [+]",
+      "risk_notes": "Uptrend (EMA9>138.3 > EMA21>138.2, slope 0.05%) | RSI 54.1 | MACD hist 0.017 | ADX 20.9 | Stoch K 41.2 | Vol ratio 2.70 | ATR 0.7707 | Price $138.57 | R $139.54 | S $137.69 | OBV +0.93 | STRUCT: ACCUMULATION (higher lows) [+]",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "BUY",
+        "strength": 0.95
+      },
+      "indicators": {
+        "rsi": 54.1,
+        "macd": 0.132,
+        "macd_signal": 0.115,
+        "macd_hist": 0.017,
+        "bb_pct": 63.0,
+        "bb_upper": 139.63,
+        "bb_lower": 136.78,
+        "adx": 20.9,
+        "atr": 0.771,
+        "ema9": 138.33,
+        "ema21": 138.16,
+        "ema_trend": "BULL"
+      }
+    },
+    {
+      "date": "2026-02-04 EOD",
+      "symbol": "PLTR",
+      "type": "EOD_CLOSE",
+      "price": 139.485,
+      "shares": 363,
+      "proceeds": 50582.42194500001,
+      "pnl": 229.3942200000165,
+      "return_pct": 0.6566841060797524,
+      "strength": 0,
+      "reasoning": "Day trading: forced close at end of day",
+      "risk_notes": "Position closed to avoid overnight risk",
+      "factors_used": [],
+      "raw_response": {},
+      "indicators": {}
+    },
+    {
+      "date": "2026-02-06 15:55:00",
+      "symbol": "PLTR",
+      "type": "BUY",
+      "price": 134.41,
+      "shares": 306,
+      "cost": 41170.589459999996,
+      "pnl": 0,
+      "strength": 0.65,
+      "reasoning": "Uptrend (EMA9>134.2 > EMA21>133.7, slope 0.13%) | RSI 55.5 | MACD hist -0.142 | ADX 8.9 | Stoch K 70.9 | Vol ratio 0.95 | ATR 1.1266 | Price $134.41 | R $135.08 | S $132.49 | ENGULF BULL | BULL MARUBOZU | OBV +0.12 | ROUNDING BOTTOM | STRUCT: RANGE-BOUND [~]",
+      "risk_notes": "Uptrend (EMA9>134.2 > EMA21>133.7, slope 0.13%) | RSI 55.5 | MACD hist -0.142 | ADX 8.9 | Stoch K 70.9 | Vol ratio 0.95 | ATR 1.1266 | Price $134.41 | R $135.08 | S $132.49 | ENGULF BULL | BULL MARUBOZU | OBV +0.12 | ROUNDING BOTTOM | STRUCT: RANGE-BOUND [~]",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "BUY",
+        "strength": 0.65
+      },
+      "indicators": {
+        "rsi": 55.5,
+        "macd": 0.604,
+        "macd_signal": 0.745,
+        "macd_hist": -0.142,
+        "bb_pct": 49.0,
+        "bb_upper": 136.25,
+        "bb_lower": 132.61,
+        "adx": 8.9,
+        "atr": 1.127,
+        "ema9": 134.15,
+        "ema21": 133.71,
+        "ema_trend": "BULL"
+      }
+    },
+    {
+      "date": "2026-02-06 EOD",
+      "symbol": "PLTR",
+      "type": "EOD_CLOSE",
+      "price": 135.81,
+      "shares": 306,
+      "proceeds": 41516.30214,
+      "pnl": 345.7126800000042,
+      "return_pct": 1.0415891674726563,
+      "strength": 0,
+      "reasoning": "Day trading: forced close at end of day",
+      "risk_notes": "Position closed to avoid overnight risk",
+      "factors_used": [],
+      "raw_response": {},
+      "indicators": {}
+    },
+    {
+      "date": "2026-02-09 15:00:00",
+      "symbol": "PLTR",
+      "type": "BUY",
+      "price": 140.37,
+      "shares": 426,
+      "cost": 59857.41761999999,
+      "pnl": 0,
+      "strength": 0.5,
+      "reasoning": "Uptrend (EMA9>138.7 > EMA21>137.4, slope 0.77%) | RSI 74.6 | MACD hist 0.449 | ADX 42.3 | Stoch K 95.5 | Vol ratio 1.35 | ATR 0.8765 | Price $140.37 | R $140.65 | S $136.22 | MORNING STAR | BULL MARUBOZU | OBV +0.62 | STRUCT: BROADENING [~] | GUARD: STRETCHED_3.3ATR",
+      "risk_notes": "Uptrend (EMA9>138.7 > EMA21>137.4, slope 0.77%) | RSI 74.6 | MACD hist 0.449 | ADX 42.3 | Stoch K 95.5 | Vol ratio 1.35 | ATR 0.8765 | Price $140.37 | R $140.65 | S $136.22 | MORNING STAR | BULL MARUBOZU | OBV +0.62 | STRUCT: BROADENING [~] | GUARD: STRETCHED_3.3ATR",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "BUY",
+        "strength": 0.5
+      },
+      "indicators": {
+        "rsi": 74.6,
+        "macd": 1.138,
+        "macd_signal": 0.689,
+        "macd_hist": 0.449,
+        "bb_pct": 94.0,
+        "bb_upper": 140.85,
+        "bb_lower": 132.67,
+        "adx": 42.3,
+        "atr": 0.876,
+        "ema9": 138.75,
+        "ema21": 137.44,
+        "ema_trend": "BULL"
+      }
+    },
+    {
+      "date": "2026-02-09 17:50:00",
+      "symbol": "PLTR",
+      "type": "SELL",
+      "price": 144.81,
+      "shares": 426,
+      "proceeds": 61627.37094,
+      "pnl": 1769.9533200000078,
+      "return_pct": 3.163069031844401,
+      "strength": 0.5,
+      "reasoning": "Uptrend (EMA9>145.0 > EMA21>144.3, slope 0.24%) | RSI 62.1 | MACD hist -0.224 | ADX 49.8 | Stoch K 43.6 | Vol ratio 1.02 | ATR 0.5121 | Price $144.81 | R $145.46 | S $144.75 | SHOOTING STAR | OBV -0.25 | STRUCT: UPTREND (HH+HL) [++]",
+      "risk_notes": "Uptrend (EMA9>145.0 > EMA21>144.3, slope 0.24%) | RSI 62.1 | MACD hist -0.224 | ADX 49.8 | Stoch K 43.6 | Vol ratio 1.02 | ATR 0.5121 | Price $144.81 | R $145.46 | S $144.75 | SHOOTING STAR | OBV -0.25 | STRUCT: UPTREND (HH+HL) [++]",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "SELL",
+        "strength": 0.5
+      }
+    },
+    {
+      "date": "2026-02-09 19:15:00",
+      "symbol": "PLTR",
+      "type": "BUY",
+      "price": 144.68,
+      "shares": 681,
+      "cost": 98625.60707999999,
+      "pnl": 0,
+      "strength": 0.5,
+      "reasoning": "Uptrend (EMA9>144.5 > EMA21>144.4, slope 0.04%) | RSI 56.8 | MACD hist -0.083 | ADX 23.7 | Stoch K 70.1 | Vol ratio 0.77 | ATR 0.4451 | Price $144.68 | R $144.77 | S $144.26 | MORNING STAR | BB SQUEEZE | STRUCT: DOWNTREND (LH+LL) [--]",
+      "risk_notes": "Uptrend (EMA9>144.5 > EMA21>144.4, slope 0.04%) | RSI 56.8 | MACD hist -0.083 | ADX 23.7 | Stoch K 70.1 | Vol ratio 0.77 | ATR 0.4451 | Price $144.68 | R $144.77 | S $144.26 | MORNING STAR | BB SQUEEZE | STRUCT: DOWNTREND (LH+LL) [--]",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "BUY",
+        "strength": 0.5
+      },
+      "indicators": {
+        "rsi": 56.8,
+        "macd": 0.169,
+        "macd_signal": 0.252,
+        "macd_hist": -0.083,
+        "bb_pct": 64.0,
+        "bb_upper": 145.13,
+        "bb_lower": 143.88,
+        "adx": 23.7,
+        "atr": 0.445,
+        "ema9": 144.45,
+        "ema21": 144.4,
+        "ema_trend": "BULL"
+      }
+    },
+    {
+      "date": "2026-02-09 20:45:00",
+      "symbol": "PLTR",
+      "type": "SELL",
+      "price": 143.02,
+      "shares": 681,
+      "proceeds": 97299.22338000001,
+      "pnl": -1326.3836999999767,
+      "return_pct": -1.147359690351113,
+      "strength": 0.5,
+      "reasoning": "Downtrend (EMA9>143.5 < EMA21>143.9, slope -0.19%) | RSI 31.6 | MACD hist -0.128 | ADX 18.0 | Stoch K 5.7 | Vol ratio 1.72 | ATR 0.3623 | Price $143.02 | R $143.27 | S $142.20 | OBV -0.77 | STRUCT: RANGE-BOUND [~]",
+      "risk_notes": "Downtrend (EMA9>143.5 < EMA21>143.9, slope -0.19%) | RSI 31.6 | MACD hist -0.128 | ADX 18.0 | Stoch K 5.7 | Vol ratio 1.72 | ATR 0.3623 | Price $143.02 | R $143.27 | S $142.20 | OBV -0.77 | STRUCT: RANGE-BOUND [~]",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "SELL",
+        "strength": 0.5
+      }
+    },
+    {
+      "date": "2026-02-10 17:45:00",
+      "symbol": "PLTR",
+      "type": "SHORT",
+      "price": 141.1,
+      "shares": 632,
+      "proceeds": 89086.0248,
+      "pnl": 0,
+      "strength": 0.65,
+      "reasoning": "Downtrend (EMA9>140.9 < EMA21>141.3, slope -0.10%) | RSI 43.3 | MACD hist 0.143 | ADX 26.4 | Stoch K 76.5 | Vol ratio 0.64 | ATR 0.4796 | Price $141.10 | R $143.75 | S $139.83 | OBV -0.14 | STRUCT: DOWNTREND (LH+LL) [--]",
+      "risk_notes": "Downtrend (EMA9>140.9 < EMA21>141.3, slope -0.10%) | RSI 43.3 | MACD hist 0.143 | ADX 26.4 | Stoch K 76.5 | Vol ratio 0.64 | ATR 0.4796 | Price $141.10 | R $143.75 | S $139.83 | OBV -0.14 | STRUCT: DOWNTREND (LH+LL) [--]",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "SELL",
+        "strength": 0.65
+      },
+      "indicators": {
+        "rsi": 43.3,
+        "macd": -0.531,
+        "macd_signal": -0.674,
+        "macd_hist": 0.143,
+        "bb_pct": 52.0,
+        "bb_upper": 142.34,
+        "bb_lower": 139.74,
+        "adx": 26.4,
+        "atr": 0.48,
+        "ema9": 140.94,
+        "ema21": 141.31,
+        "ema_trend": "BEAR"
+      }
+    },
+    {
+      "date": "2026-02-10 19:35:00",
+      "symbol": "PLTR",
+      "type": "COVER",
+      "price": 138.75,
+      "shares": 632,
+      "cost": 87777.68999999999,
+      "pnl": 1308.3348000000115,
+      "return_pct": 1.6936936936936986,
+      "strength": 0.65,
+      "reasoning": "Downtrend (EMA9>138.5 < EMA21>139.2, slope -0.29%) | RSI 40.0 | MACD hist 0.008 | ADX 45.7 | Stoch K 46.8 | Vol ratio 0.73 | ATR 0.4607 | Price $138.75 | R $141.04 | S $137.81 | BULL MARUBOZU | OBV +0.23 | STRUCT: DOWNTREND (LH+LL) [--]",
+      "risk_notes": "Downtrend (EMA9>138.5 < EMA21>139.2, slope -0.29%) | RSI 40.0 | MACD hist 0.008 | ADX 45.7 | Stoch K 46.8 | Vol ratio 0.73 | ATR 0.4607 | Price $138.75 | R $141.04 | S $137.81 | BULL MARUBOZU | OBV +0.23 | STRUCT: DOWNTREND (LH+LL) [--]",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "BUY",
+        "strength": 0.65
+      }
+    },
+    {
+      "date": "2026-02-10 20:00:00",
+      "symbol": "PLTR",
+      "type": "SHORT",
+      "price": 138.62,
+      "shares": 710,
+      "proceeds": 98321.7798,
+      "pnl": 0,
+      "strength": 0.8,
+      "reasoning": "Downtrend (EMA9>138.7 < EMA21>139.0, slope -0.06%) | RSI 39.9 | MACD hist 0.145 | ADX 39.3 | Stoch K 55.5 | Vol ratio 0.67 | ATR 0.4167 | Price $138.62 | R $141.04 | S $137.81 | STRUCT: DOWNTREND (LH+LL) [--]",
+      "risk_notes": "Downtrend (EMA9>138.7 < EMA21>139.0, slope -0.06%) | RSI 39.9 | MACD hist 0.145 | ADX 39.3 | Stoch K 55.5 | Vol ratio 0.67 | ATR 0.4167 | Price $138.62 | R $141.04 | S $137.81 | STRUCT: DOWNTREND (LH+LL) [--]",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "SELL",
+        "strength": 0.8
+      },
+      "indicators": {
+        "rsi": 39.9,
+        "macd": -0.483,
+        "macd_signal": -0.628,
+        "macd_hist": 0.145,
+        "bb_pct": 43.0,
+        "bb_upper": 139.79,
+        "bb_lower": 137.73,
+        "adx": 39.3,
+        "atr": 0.417,
+        "ema9": 138.71,
+        "ema21": 139.03,
+        "ema_trend": "BEAR"
+      }
+    },
+    {
+      "date": "2026-02-10 EOD",
+      "symbol": "PLTR",
+      "type": "EOD_COVER",
+      "price": 139.43,
+      "shares": 710,
+      "cost": 99094.2953,
+      "pnl": -772.5154999999941,
+      "return_pct": -0.5809366707308361,
+      "strength": 0,
+      "reasoning": "Day trading: forced cover at end of day",
+      "risk_notes": "Short covered to avoid overnight risk",
+      "factors_used": [],
+      "raw_response": {},
+      "indicators": {}
+    },
+    {
+      "date": "2026-02-11 14:55:00",
+      "symbol": "PLTR",
+      "type": "SHORT",
+      "price": 135.87,
+      "shares": 583,
+      "proceeds": 79132.99779000001,
+      "pnl": 0,
+      "strength": 0.5,
+      "reasoning": "Downtrend (EMA9>137.4 < EMA21>138.1, slope -0.44%) | RSI 31.0 | MACD hist -0.269 | ADX 30.9 | Stoch K 2.5 | Vol ratio 0.93 | ATR 0.7586 | Price $135.87 | R $138.53 | OBV -0.28 | STRUCT: RANGE-BOUND [~] | GUARD: STRETCHED_3.0ATR",
+      "risk_notes": "Downtrend (EMA9>137.4 < EMA21>138.1, slope -0.44%) | RSI 31.0 | MACD hist -0.269 | ADX 30.9 | Stoch K 2.5 | Vol ratio 0.93 | ATR 0.7586 | Price $135.87 | R $138.53 | OBV -0.28 | STRUCT: RANGE-BOUND [~] | GUARD: STRETCHED_3.0ATR",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "SELL",
+        "strength": 0.5
+      },
+      "indicators": {
+        "rsi": 31.0,
+        "macd": -0.643,
+        "macd_signal": -0.374,
+        "macd_hist": -0.269,
+        "bb_pct": -3.0,
+        "bb_upper": 140.77,
+        "bb_lower": 136.03,
+        "adx": 30.9,
+        "atr": 0.759,
+        "ema9": 137.41,
+        "ema21": 138.13,
+        "ema_trend": "BEAR"
+      }
+    },
+    {
+      "date": "2026-02-11 15:50:00",
+      "symbol": "PLTR",
+      "type": "COVER",
+      "price": 135.04,
+      "shares": 583,
+      "cost": 78807.04831999999,
+      "pnl": 325.9494700000214,
+      "return_pct": 0.6146327014218134,
+      "strength": 0.5,
+      "reasoning": "Downtrend (EMA9>134.4 < EMA21>135.5, slope -0.48%) | RSI 43.1 | MACD hist -0.025 | ADX 43.7 | Stoch K 42.5 | Vol ratio 0.69 | ATR 0.8585 | Price $135.04 | R $137.84 | S $132.97 | BULL MARUBOZU | OBV +0.14 | STRUCT: RANGE-BOUND [~]",
+      "risk_notes": "Downtrend (EMA9>134.4 < EMA21>135.5, slope -0.48%) | RSI 43.1 | MACD hist -0.025 | ADX 43.7 | Stoch K 42.5 | Vol ratio 0.69 | ATR 0.8585 | Price $135.04 | R $137.84 | S $132.97 | BULL MARUBOZU | OBV +0.14 | STRUCT: RANGE-BOUND [~]",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "BUY",
+        "strength": 0.5
+      }
+    },
+    {
+      "date": "2026-02-11 16:40:00",
+      "symbol": "PLTR",
+      "type": "SHORT",
+      "price": 134.235,
+      "shares": 526,
+      "proceeds": 70537.00239,
+      "pnl": 0,
+      "strength": 0.65,
+      "reasoning": "Downtrend (EMA9>134.5 < EMA21>134.9, slope -0.23%) | RSI 41.6 | MACD hist 0.150 | ADX 35.7 | Stoch K 41.8 | Vol ratio 2.02 | ATR 0.7342 | Price $134.24 | R $135.04 | S $134.06 | OBV -0.43 | STRUCT: TRIANGLE (converging) [~]",
+      "risk_notes": "Downtrend (EMA9>134.5 < EMA21>134.9, slope -0.23%) | RSI 41.6 | MACD hist 0.150 | ADX 35.7 | Stoch K 41.8 | Vol ratio 2.02 | ATR 0.7342 | Price $134.24 | R $135.04 | S $134.06 | OBV -0.43 | STRUCT: TRIANGLE (converging) [~]",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "SELL",
+        "strength": 0.65
+      },
+      "indicators": {
+        "rsi": 41.6,
+        "macd": -0.653,
+        "macd_signal": -0.803,
+        "macd_hist": 0.15,
+        "bb_pct": 46.0,
+        "bb_upper": 135.44,
+        "bb_lower": 133.21,
+        "adx": 35.7,
+        "atr": 0.734,
+        "ema9": 134.46,
+        "ema21": 134.92,
+        "ema_trend": "BEAR"
+      }
+    },
+    {
+      "date": "2026-02-11 EOD",
+      "symbol": "PLTR",
+      "type": "EOD_COVER",
+      "price": 135.65,
+      "shares": 526,
+      "cost": 71423.2519,
+      "pnl": -886.2495100000087,
+      "return_pct": -1.0431256911168418,
+      "strength": 0,
+      "reasoning": "Day trading: forced cover at end of day",
+      "risk_notes": "Short covered to avoid overnight risk",
+      "factors_used": [],
+      "raw_response": {},
+      "indicators": {}
+    },
+    {
+      "date": "2026-02-12 15:05:00",
+      "symbol": "PLTR",
+      "type": "SHORT",
+      "price": 133.24,
+      "shares": 543,
+      "proceeds": 72276.97068000001,
+      "pnl": 0,
+      "strength": 0.5,
+      "reasoning": "Downtrend (EMA9>134.2 < EMA21>134.7, slope -0.33%) | RSI 32.6 | MACD hist -0.245 | ADX 26.3 | Stoch K 3.7 | Vol ratio 0.72 | ATR 0.7349 | Price $133.24 | R $134.53 | SHOOTING STAR | BULL DIVERGENCE | BEAR DIVERGENCE | OBV -0.59 | STRUCT: BROADENING [~] | GUARD: DIV_BULL_VS_BEAR_TREND",
+      "risk_notes": "Downtrend (EMA9>134.2 < EMA21>134.7, slope -0.33%) | RSI 32.6 | MACD hist -0.245 | ADX 26.3 | Stoch K 3.7 | Vol ratio 0.72 | ATR 0.7349 | Price $133.24 | R $134.53 | SHOOTING STAR | BULL DIVERGENCE | BEAR DIVERGENCE | OBV -0.59 | STRUCT: BROADENING [~] | GUARD: DIV_BULL_VS_BEAR_TREND",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "SELL",
+        "strength": 0.5
+      },
+      "indicators": {
+        "rsi": 32.6,
+        "macd": -0.346,
+        "macd_signal": -0.1,
+        "macd_hist": -0.245,
+        "bb_pct": -9.0,
+        "bb_upper": 136.39,
+        "bb_lower": 133.49,
+        "adx": 26.3,
+        "atr": 0.735,
+        "ema9": 134.23,
+        "ema21": 134.69,
+        "ema_trend": "BEAR"
+      }
+    },
+    {
+      "date": "2026-02-12 16:20:00",
+      "symbol": "PLTR",
+      "type": "COVER",
+      "price": 127.22,
+      "shares": 543,
+      "cost": 69149.54046,
+      "pnl": 3127.4302200000093,
+      "return_pct": 4.731960383587497,
+      "strength": 0.5,
+      "reasoning": "Downtrend (EMA9>128.8 < EMA21>130.7, slope -1.08%) | RSI 15.9 | MACD hist -0.404 | ADX 55.7 | Stoch K 6.5 | Vol ratio 1.56 | ATR 0.8198 | Price $127.22 | R $134.53 | OBV -1.10 | STRUCT: DOWNTREND (LH+LL) [--] | GUARD: RSI_EXTREME_LO,STRETCHED_4.2ATR",
+      "risk_notes": "Downtrend (EMA9>128.8 < EMA21>130.7, slope -1.08%) | RSI 15.9 | MACD hist -0.404 | ADX 55.7 | Stoch K 6.5 | Vol ratio 1.56 | ATR 0.8198 | Price $127.22 | R $134.53 | OBV -1.10 | STRUCT: DOWNTREND (LH+LL) [--] | GUARD: RSI_EXTREME_LO,STRETCHED_4.2ATR",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "BUY",
+        "strength": 0.5
+      }
+    },
+    {
+      "date": "2026-02-12 16:45:00",
+      "symbol": "PLTR",
+      "type": "SHORT",
+      "price": 127.41,
+      "shares": 541,
+      "proceeds": 68859.88119,
+      "pnl": 0,
+      "strength": 0.5,
+      "reasoning": "Downtrend (EMA9>128.0 < EMA21>129.5, slope -0.65%) | RSI 29.1 | MACD hist -0.020 | ADX 56.6 | Stoch K 18.9 | Vol ratio 0.78 | ATR 0.8438 | Price $127.41 | R $128.66 | S $126.59 | OBV -0.40 | ROUNDING TOP | STRUCT: DOWNTREND (LH+LL) [--]",
+      "risk_notes": "Downtrend (EMA9>128.0 < EMA21>129.5, slope -0.65%) | RSI 29.1 | MACD hist -0.020 | ADX 56.6 | Stoch K 18.9 | Vol ratio 0.78 | ATR 0.8438 | Price $127.41 | R $128.66 | S $126.59 | OBV -0.40 | ROUNDING TOP | STRUCT: DOWNTREND (LH+LL) [--]",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "SELL",
+        "strength": 0.5
+      },
+      "indicators": {
+        "rsi": 29.1,
+        "macd": -1.718,
+        "macd_signal": -1.697,
+        "macd_hist": -0.02,
+        "bb_pct": 27.0,
+        "bb_upper": 134.36,
+        "bb_lower": 124.89,
+        "adx": 56.6,
+        "atr": 0.844,
+        "ema9": 127.95,
+        "ema21": 129.5,
+        "ema_trend": "BEAR"
+      }
+    },
+    {
+      "date": "2026-02-12 19:30:00",
+      "symbol": "PLTR",
+      "type": "COVER",
+      "price": 129.3,
+      "shares": 541,
+      "cost": 70021.25129999999,
+      "pnl": -1161.370109999989,
+      "return_pct": -1.4617169373549954,
+      "strength": 0.5,
+      "reasoning": "Uptrend (EMA9>128.9 > EMA21>128.7, slope 0.12%) | RSI 58.4 | MACD hist 0.101 | ADX 19.0 | Stoch K 80.7 | Vol ratio 0.90 | ATR 0.5290 | Price $129.30 | R $134.53 | S $128.60 | BEAR DIVERGENCE | OBV +0.17 | STRUCT: UPTREND (HH+HL) [++] | GUARD: DIV_BEAR_VS_BULL_TREND",
+      "risk_notes": "Uptrend (EMA9>128.9 > EMA21>128.7, slope 0.12%) | RSI 58.4 | MACD hist 0.101 | ADX 19.0 | Stoch K 80.7 | Vol ratio 0.90 | ATR 0.5290 | Price $129.30 | R $134.53 | S $128.60 | BEAR DIVERGENCE | OBV +0.17 | STRUCT: UPTREND (HH+HL) [++] | GUARD: DIV_BEAR_VS_BULL_TREND",
+      "factors_used": [
+        "price_action",
+        "technical_indicators",
+        "market_regime"
+      ],
+      "raw_response": {
+        "signal": "BUY",
+        "strength": 0.5
+      }
+    }
+  ],
+  "trade_count": 42,
+  "equity_curve_summary": {
+    "start": {
+      "date": "2026-01-21 18:25:00",
+      "value": 100000
+    },
+    "end": {
+      "date": "2026-02-12 20:55:00",
+      "value": 104349.07961500024
+    },
+    "points": 1332
+  }
+}

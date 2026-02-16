@@ -1,0 +1,1719 @@
+{
+  "meta": {
+    "timestamp": "2026-01-29T08:15:11.176763",
+    "filename": "backtest_20260129_081511_TEST_DEMO.json"
+  },
+  "config": {
+    "symbols": [
+      "TEST",
+      "DEMO"
+    ],
+    "start_date": "2026-01-22T08:15:11.123351",
+    "end_date": "2026-01-29T08:15:11.123355",
+    "initial_capital": 100000,
+    "timeframe": "5min",
+    "mode": "REALISTIC",
+    "max_positions": 5,
+    "commission": 0.001,
+    "slippage": 0.0005,
+    "strategies_enabled": [
+      "ma_cross",
+      "macd"
+    ]
+  },
+  "metrics": {
+    "total_return": -0.002559182320562977,
+    "annual_return": 0.0,
+    "sharpe_ratio": -11.921679152130565,
+    "sortino_ratio": -11.921679152130565,
+    "max_drawdown": 0.002559182320562977,
+    "max_drawdown_duration": 0,
+    "win_rate": 0.2222222222222222,
+    "profit_factor": 0.5719910730790685,
+    "total_trades": 9,
+    "winning_trades": 2,
+    "losing_trades": 7,
+    "avg_win": 135.7470920397896,
+    "avg_loss": -67.8067985067636,
+    "largest_win": 141.8526217416193,
+    "largest_loss": -102.72712720717885,
+    "initial_capital": 100000.0,
+    "final_capital": 99744.0817679437,
+    "value_at_risk": -0.0024295070266449723,
+    "conditional_var": -0.0025573758175210237
+  },
+  "trades": [
+    {
+      "symbol": "TEST",
+      "entry_time": "2026-01-22T12:15:11.123427",
+      "exit_time": "2026-01-22T12:20:11.123427",
+      "entry_price": 95.8764777588463,
+      "exit_price": 94.44311760885199,
+      "quantity": 58.44,
+      "side": "long",
+      "pnl": -89.28482295872902,
+      "pnl_pct": -0.015935120931809568,
+      "commission": 5.51925579306131,
+      "strategy": "MACD",
+      "exit_reason": "stop_loss"
+    },
+    {
+      "symbol": "TEST",
+      "entry_time": "2026-01-22T12:45:11.123427",
+      "exit_time": "2026-01-22T13:25:11.123427",
+      "entry_price": 95.06026256788522,
+      "exit_price": 93.4089852894658,
+      "quantity": 58.88,
+      "side": "long",
+      "pnl": -102.72712720717885,
+      "pnl_pct": -0.018353476169529304,
+      "commission": 5.499921053843747,
+      "strategy": "MACD",
+      "exit_reason": "stop_loss"
+    },
+    {
+      "symbol": "TEST",
+      "entry_time": "2026-01-22T13:40:11.123427",
+      "exit_time": "2026-01-22T14:20:11.123427",
+      "entry_price": 94.83269093419177,
+      "exit_price": 97.33593972570885,
+      "quantity": 58.96,
+      "side": "long",
+      "pnl": 141.8526217416193,
+      "pnl_pct": 0.02537007890518399,
+      "commission": 5.738927006227794,
+      "strategy": "MACD",
+      "exit_reason": "take_profit"
+    },
+    {
+      "symbol": "TEST",
+      "entry_time": "2026-01-22T15:45:11.123427",
+      "exit_time": "2026-01-22T16:00:11.123427",
+      "entry_price": 96.1690003116925,
+      "exit_price": 95.034711760337,
+      "quantity": 58.22,
+      "side": "long",
+      "pnl": -71.5712003786038,
+      "pnl_pct": -0.012782947302472567,
+      "commission": 5.532920918686821,
+      "strategy": "MACD",
+      "exit_reason": "stop_loss"
+    },
+    {
+      "symbol": "TEST",
+      "entry_time": "2026-01-22T17:15:11.123427",
+      "exit_time": "2026-01-22T18:40:11.123427",
+      "entry_price": 94.78506299020152,
+      "exit_price": 97.07833923453448,
+      "quantity": 59.03,
+      "side": "long",
+      "pnl": 129.64156233795995,
+      "pnl_pct": 0.023170295358937068,
+      "commission": 5.730534365014571,
+      "strategy": "MACD",
+      "exit_reason": "take_profit"
+    },
+    {
+      "symbol": "TEST",
+      "entry_time": "2026-01-22T20:20:11.123427",
+      "exit_time": "2026-01-22T20:30:11.123427",
+      "entry_price": 95.09035010286684,
+      "exit_price": 93.93231470672912,
+      "quantity": 58.91,
+      "side": "long",
+      "pnl": -73.75341784584649,
+      "pnl_pct": -0.013166085827742724,
+      "commission": 5.533552659373412,
+      "strategy": "MACD",
+      "exit_reason": "stop_loss"
+    },
+    {
+      "symbol": "TEST",
+      "entry_time": "2026-01-22T20:45:11.123427",
+      "exit_time": "2026-01-22T20:50:11.123427",
+      "entry_price": 95.28502999600279,
+      "exit_price": 94.10648792813318,
+      "quantity": 58.74,
+      "side": "long",
+      "pnl": -74.75537616755969,
+      "pnl_pct": -0.013356227687089306,
+      "commission": 5.527815100898543,
+      "strategy": "MACD",
+      "exit_reason": "stop_loss"
+    },
+    {
+      "symbol": "TEST",
+      "entry_time": "2026-01-22T20:50:11.123427",
+      "exit_time": "2026-01-22T21:05:11.123427",
+      "entry_price": 94.20064149284364,
+      "exit_price": 94.09857577400652,
+      "quantity": 84.81,
+      "side": "long",
+      "pnl": -16.636693825970028,
+      "pnl_pct": -0.002082409328667189,
+      "commission": 7.980500211393494,
+      "strategy": "MA Crossover",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "TEST",
+      "entry_time": "2026-01-22T21:15:11.123427",
+      "exit_time": "2026-01-22T21:35:11.123427",
+      "entry_price": 94.38265450442135,
+      "exit_price": 93.7012215064231,
+      "quantity": 59.24,
+      "side": "long",
+      "pnl": -45.91895116345727,
+      "pnl_pct": -0.00821267661494273,
+      "commission": 5.550860362040504,
+      "strategy": "MACD",
+      "exit_reason": "signal"
+    }
+  ],
+  "equity_curve": [
+    {
+      "date": "2026-01-22T08:15:11.123427",
+      "equity": 100000.0
+    },
+    {
+      "date": "2026-01-22T08:20:11.123427",
+      "equity": 100000.0
+    },
+    {
+      "date": "2026-01-22T08:25:11.123427",
+      "equity": 100000.0
+    },
+    {
+      "date": "2026-01-22T08:30:11.123427",
+      "equity": 100000.0
+    },
+    {
+      "date": "2026-01-22T08:35:11.123427",
+      "equity": 100000.0
+    },
+    {
+      "date": "2026-01-22T08:40:11.123427",
+      "equity": 100000.0
+    },
+    {
+      "date": "2026-01-22T08:45:11.123427",
+      "equity": 100000.0
+    },
+    {
+      "date": "2026-01-22T08:50:11.123427",
+      "equity": 100000.0
+    },
+    {
+      "date": "2026-01-22T08:55:11.123427",
+      "equity": 100000.0
+    },
+    {
+      "date": "2026-01-22T09:00:11.123427",
+      "equity": 100000.0
+    },
+    {
+      "date": "2026-01-22T09:05:11.123427",
+      "equity": 100000.0
+    },
+    {
+      "date": "2026-01-22T09:10:11.123427",
+      "equity": 100000.0
+    },
+    {
+      "date": "2026-01-22T09:15:11.123427",
+      "equity": 100000.0
+    },
+    {
+      "date": "2026-01-22T09:20:11.123427",
+      "equity": 100000.0
+    },
+    {
+      "date": "2026-01-22T09:25:11.123427",
+      "equity": 100000.0
+    },
+    {
+      "date": "2026-01-22T09:30:11.123427",
+      "equity": 100000.0
+    },
+    {
+      "date": "2026-01-22T09:35:11.123427",
+      "equity": 100000.0
+    },
+    {
+      "date": "2026-01-22T09:40:11.123427",
+      "equity": 100000.0
+    },
+    {
+      "date": "2026-01-22T09:45:11.123427",
+      "equity": 100000.0
+    },
+    {
+      "date": "2026-01-22T09:50:11.123427",
+      "equity": 100000.0
+    },
+    {
+      "date": "2026-01-22T09:55:11.123427",
+      "equity": 100000.0
+    },
+    {
+      "date": "2026-01-22T10:00:11.123427",
+      "equity": 100000.0
+    },
+    {
+      "date": "2026-01-22T10:05:11.123427",
+      "equity": 100000.0
+    },
+    {
+      "date": "2026-01-22T10:10:11.123427",
+      "equity": 100000.0
+    },
+    {
+      "date": "2026-01-22T10:15:11.123427",
+      "equity": 100000.0
+    },
+    {
+      "date": "2026-01-22T10:20:11.123427",
+      "equity": 100000.0
+    },
+    {
+      "date": "2026-01-22T10:25:11.123427",
+      "equity": 100000.0
+    },
+    {
+      "date": "2026-01-22T10:30:11.123427",
+      "equity": 100000.0
+    },
+    {
+      "date": "2026-01-22T10:35:11.123427",
+      "equity": 100000.0
+    },
+    {
+      "date": "2026-01-22T10:40:11.123427",
+      "equity": 100000.0
+    },
+    {
+      "date": "2026-01-22T10:45:11.123427",
+      "equity": 100000.0
+    },
+    {
+      "date": "2026-01-22T10:50:11.123427",
+      "equity": 100000.0
+    },
+    {
+      "date": "2026-01-22T10:55:11.123427",
+      "equity": 100000.0
+    },
+    {
+      "date": "2026-01-22T11:00:11.123427",
+      "equity": 100000.0
+    },
+    {
+      "date": "2026-01-22T11:05:11.123427",
+      "equity": 100000.0
+    },
+    {
+      "date": "2026-01-22T11:10:11.123427",
+      "equity": 100000.0
+    },
+    {
+      "date": "2026-01-22T11:15:11.123427",
+      "equity": 100000.0
+    },
+    {
+      "date": "2026-01-22T11:20:11.123427",
+      "equity": 100000.0
+    },
+    {
+      "date": "2026-01-22T11:25:11.123427",
+      "equity": 100000.0
+    },
+    {
+      "date": "2026-01-22T11:30:11.123427",
+      "equity": 100000.0
+    },
+    {
+      "date": "2026-01-22T11:35:11.123427",
+      "equity": 100000.0
+    },
+    {
+      "date": "2026-01-22T11:40:11.123427",
+      "equity": 100000.0
+    },
+    {
+      "date": "2026-01-22T11:45:11.123427",
+      "equity": 100000.0
+    },
+    {
+      "date": "2026-01-22T11:50:11.123427",
+      "equity": 100000.0
+    },
+    {
+      "date": "2026-01-22T11:55:11.123427",
+      "equity": 100000.0
+    },
+    {
+      "date": "2026-01-22T12:00:11.123427",
+      "equity": 100000.0
+    },
+    {
+      "date": "2026-01-22T12:05:11.123427",
+      "equity": 100000.0
+    },
+    {
+      "date": "2026-01-22T12:10:11.123427",
+      "equity": 100000.0
+    },
+    {
+      "date": "2026-01-22T12:15:11.123427",
+      "equity": 99991.59686801498
+    },
+    {
+      "date": "2026-01-22T12:20:11.123427",
+      "equity": 99905.11215568105
+    },
+    {
+      "date": "2026-01-22T12:25:11.123427",
+      "equity": 99905.11215568105
+    },
+    {
+      "date": "2026-01-22T12:30:11.123427",
+      "equity": 99905.11215568105
+    },
+    {
+      "date": "2026-01-22T12:35:11.123427",
+      "equity": 99905.11215568105
+    },
+    {
+      "date": "2026-01-22T12:40:11.123427",
+      "equity": 99905.11215568105
+    },
+    {
+      "date": "2026-01-22T12:45:11.123427",
+      "equity": 99896.71783187884
+    },
+    {
+      "date": "2026-01-22T12:50:11.123427",
+      "equity": 99900.12826439865
+    },
+    {
+      "date": "2026-01-22T12:55:11.123427",
+      "equity": 99896.34645541736
+    },
+    {
+      "date": "2026-01-22T13:00:11.123427",
+      "equity": 99939.81207079739
+    },
+    {
+      "date": "2026-01-22T13:05:11.123427",
+      "equity": 99914.11057797482
+    },
+    {
+      "date": "2026-01-22T13:10:11.123427",
+      "equity": 99907.58658246124
+    },
+    {
+      "date": "2026-01-22T13:15:11.123427",
+      "equity": 99938.4415635546
+    },
+    {
+      "date": "2026-01-22T13:20:11.123427",
+      "equity": 99885.59828643136
+    },
+    {
+      "date": "2026-01-22T13:25:11.123427",
+      "equity": 99796.78788021387
+    },
+    {
+      "date": "2026-01-22T13:30:11.123427",
+      "equity": 99796.78788021387
+    },
+    {
+      "date": "2026-01-22T13:35:11.123427",
+      "equity": 99796.78788021387
+    },
+    {
+      "date": "2026-01-22T13:40:11.123427",
+      "equity": 99788.40227416295
+    },
+    {
+      "date": "2026-01-22T13:45:11.123427",
+      "equity": 99797.1850071068
+    },
+    {
+      "date": "2026-01-22T13:50:11.123427",
+      "equity": 99875.64755508403
+    },
+    {
+      "date": "2026-01-22T13:55:11.123427",
+      "equity": 99846.52503211513
+    },
+    {
+      "date": "2026-01-22T14:00:11.123427",
+      "equity": 99811.40999918152
+    },
+    {
+      "date": "2026-01-22T14:05:11.123427",
+      "equity": 99852.97390175448
+    },
+    {
+      "date": "2026-01-22T14:10:11.123427",
+      "equity": 99808.68007429104
+    },
+    {
+      "date": "2026-01-22T14:15:11.123427",
+      "equity": 99879.75410874069
+    },
+    {
+      "date": "2026-01-22T14:20:11.123427",
+      "equity": 99933.049166498
+    },
+    {
+      "date": "2026-01-22T14:25:11.123427",
+      "equity": 99933.049166498
+    },
+    {
+      "date": "2026-01-22T14:30:11.123427",
+      "equity": 99933.049166498
+    },
+    {
+      "date": "2026-01-22T14:35:11.123427",
+      "equity": 99933.049166498
+    },
+    {
+      "date": "2026-01-22T14:40:11.123427",
+      "equity": 99933.049166498
+    },
+    {
+      "date": "2026-01-22T14:45:11.123427",
+      "equity": 99933.049166498
+    },
+    {
+      "date": "2026-01-22T14:50:11.123427",
+      "equity": 99933.049166498
+    },
+    {
+      "date": "2026-01-22T14:55:11.123427",
+      "equity": 99933.049166498
+    },
+    {
+      "date": "2026-01-22T15:00:11.123427",
+      "equity": 99933.049166498
+    },
+    {
+      "date": "2026-01-22T15:05:11.123427",
+      "equity": 99933.049166498
+    },
+    {
+      "date": "2026-01-22T15:10:11.123427",
+      "equity": 99933.049166498
+    },
+    {
+      "date": "2026-01-22T15:15:11.123427",
+      "equity": 99933.049166498
+    },
+    {
+      "date": "2026-01-22T15:20:11.123427",
+      "equity": 99933.049166498
+    },
+    {
+      "date": "2026-01-22T15:25:11.123427",
+      "equity": 99933.049166498
+    },
+    {
+      "date": "2026-01-22T15:30:11.123427",
+      "equity": 99933.049166498
+    },
+    {
+      "date": "2026-01-22T15:35:11.123427",
+      "equity": 99933.049166498
+    },
+    {
+      "date": "2026-01-22T15:40:11.123427",
+      "equity": 99933.049166498
+    },
+    {
+      "date": "2026-01-22T15:45:11.123427",
+      "equity": 99924.65212674106
+    },
+    {
+      "date": "2026-01-22T15:50:11.123427",
+      "equity": 99907.80001726747
+    },
+    {
+      "date": "2026-01-22T15:55:11.123427",
+      "equity": 99894.35376970896
+    },
+    {
+      "date": "2026-01-22T16:00:11.123427",
+      "equity": 99855.87900692126
+    },
+    {
+      "date": "2026-01-22T16:05:11.123427",
+      "equity": 99855.87900692126
+    },
+    {
+      "date": "2026-01-22T16:10:11.123427",
+      "equity": 99855.87900692126
+    },
+    {
+      "date": "2026-01-22T16:15:11.123427",
+      "equity": 99855.87900692126
+    },
+    {
+      "date": "2026-01-22T16:20:11.123427",
+      "equity": 99855.87900692126
+    },
+    {
+      "date": "2026-01-22T16:25:11.123427",
+      "equity": 99855.87900692126
+    },
+    {
+      "date": "2026-01-22T16:30:11.123427",
+      "equity": 99855.87900692126
+    },
+    {
+      "date": "2026-01-22T16:35:11.123427",
+      "equity": 99855.87900692126
+    },
+    {
+      "date": "2026-01-22T16:40:11.123427",
+      "equity": 99855.87900692126
+    },
+    {
+      "date": "2026-01-22T16:45:11.123427",
+      "equity": 99855.87900692126
+    },
+    {
+      "date": "2026-01-22T16:50:11.123427",
+      "equity": 99855.87900692126
+    },
+    {
+      "date": "2026-01-22T16:55:11.123427",
+      "equity": 99855.87900692126
+    },
+    {
+      "date": "2026-01-22T17:00:11.123427",
+      "equity": 99855.87900692126
+    },
+    {
+      "date": "2026-01-22T17:05:11.123427",
+      "equity": 99855.87900692126
+    },
+    {
+      "date": "2026-01-22T17:10:11.123427",
+      "equity": 99855.87900692126
+    },
+    {
+      "date": "2026-01-22T17:15:11.123427",
+      "equity": 99847.48766161031
+    },
+    {
+      "date": "2026-01-22T17:20:11.123427",
+      "equity": 99803.80830716963
+    },
+    {
+      "date": "2026-01-22T17:25:11.123427",
+      "equity": 99852.58095365949
+    },
+    {
+      "date": "2026-01-22T17:30:11.123427",
+      "equity": 99783.42599013321
+    },
+    {
+      "date": "2026-01-22T17:35:11.123427",
+      "equity": 99784.61850895638
+    },
+    {
+      "date": "2026-01-22T17:40:11.123427",
+      "equity": 99875.51331444799
+    },
+    {
+      "date": "2026-01-22T17:45:11.123427",
+      "equity": 99862.61176614281
+    },
+    {
+      "date": "2026-01-22T17:50:11.123427",
+      "equity": 99863.92288545368
+    },
+    {
+      "date": "2026-01-22T17:55:11.123427",
+      "equity": 99832.95957704177
+    },
+    {
+      "date": "2026-01-22T18:00:11.123427",
+      "equity": 99835.71228687475
+    },
+    {
+      "date": "2026-01-22T18:05:11.123427",
+      "equity": 99911.07526669776
+    },
+    {
+      "date": "2026-01-22T18:10:11.123427",
+      "equity": 99917.43068980632
+    },
+    {
+      "date": "2026-01-22T18:15:11.123427",
+      "equity": 99948.09082834629
+    },
+    {
+      "date": "2026-01-22T18:20:11.123427",
+      "equity": 99859.13882364289
+    },
+    {
+      "date": "2026-01-22T18:25:11.123427",
+      "equity": 99886.42264215011
+    },
+    {
+      "date": "2026-01-22T18:30:11.123427",
+      "equity": 99870.54259335499
+    },
+    {
+      "date": "2026-01-22T18:35:11.123427",
+      "equity": 99893.22100221145
+    },
+    {
+      "date": "2026-01-22T18:40:11.123427",
+      "equity": 99979.92540699091
+    },
+    {
+      "date": "2026-01-22T18:45:11.123427",
+      "equity": 99979.92540699091
+    },
+    {
+      "date": "2026-01-22T18:50:11.123427",
+      "equity": 99979.92540699091
+    },
+    {
+      "date": "2026-01-22T18:55:11.123427",
+      "equity": 99979.92540699091
+    },
+    {
+      "date": "2026-01-22T19:00:11.123427",
+      "equity": 99979.92540699091
+    },
+    {
+      "date": "2026-01-22T19:05:11.123427",
+      "equity": 99979.92540699091
+    },
+    {
+      "date": "2026-01-22T19:10:11.123427",
+      "equity": 99979.92540699091
+    },
+    {
+      "date": "2026-01-22T19:15:11.123427",
+      "equity": 99979.92540699091
+    },
+    {
+      "date": "2026-01-22T19:20:11.123427",
+      "equity": 99979.92540699091
+    },
+    {
+      "date": "2026-01-22T19:25:11.123427",
+      "equity": 99979.92540699091
+    },
+    {
+      "date": "2026-01-22T19:30:11.123427",
+      "equity": 99979.92540699091
+    },
+    {
+      "date": "2026-01-22T19:35:11.123427",
+      "equity": 99979.92540699091
+    },
+    {
+      "date": "2026-01-22T19:40:11.123427",
+      "equity": 99979.92540699091
+    },
+    {
+      "date": "2026-01-22T19:45:11.123427",
+      "equity": 99979.92540699091
+    },
+    {
+      "date": "2026-01-22T19:50:11.123427",
+      "equity": 99979.92540699091
+    },
+    {
+      "date": "2026-01-22T19:55:11.123427",
+      "equity": 99979.92540699091
+    },
+    {
+      "date": "2026-01-22T20:00:11.123427",
+      "equity": 99979.92540699091
+    },
+    {
+      "date": "2026-01-22T20:05:11.123427",
+      "equity": 99979.92540699091
+    },
+    {
+      "date": "2026-01-22T20:10:11.123427",
+      "equity": 99979.92540699091
+    },
+    {
+      "date": "2026-01-22T20:15:11.123427",
+      "equity": 99979.92540699091
+    },
+    {
+      "date": "2026-01-22T20:20:11.123427",
+      "equity": 99971.52414794732
+    },
+    {
+      "date": "2026-01-22T20:25:11.123427",
+      "equity": 99969.04400805944
+    },
+    {
+      "date": "2026-01-22T20:30:11.123427",
+      "equity": 99900.5702166205
+    },
+    {
+      "date": "2026-01-22T20:35:11.123427",
+      "equity": 99900.5702166205
+    },
+    {
+      "date": "2026-01-22T20:40:11.123427",
+      "equity": 99900.5702166205
+    },
+    {
+      "date": "2026-01-22T20:45:11.123427",
+      "equity": 99892.17605118893
+    },
+    {
+      "date": "2026-01-22T20:50:11.123427",
+      "equity": 99808.23605947441
+    },
+    {
+      "date": "2026-01-22T20:55:11.123427",
+      "equity": 99777.47912508505
+    },
+    {
+      "date": "2026-01-22T21:00:11.123427",
+      "equity": 99785.7141471707
+    },
+    {
+      "date": "2026-01-22T21:05:11.123427",
+      "equity": 99795.59194756
+    },
+    {
+      "date": "2026-01-22T21:10:11.123427",
+      "equity": 99795.59194756
+    },
+    {
+      "date": "2026-01-22T21:15:11.123427",
+      "equity": 99787.20650198929
+    },
+    {
+      "date": "2026-01-22T21:20:11.123427",
+      "equity": 99802.03533991096
+    },
+    {
+      "date": "2026-01-22T21:25:11.123427",
+      "equity": 99781.97674029955
+    },
+    {
+      "date": "2026-01-22T21:30:11.123427",
+      "equity": 99786.2977683301
+    },
+    {
+      "date": "2026-01-22T21:35:11.123427",
+      "equity": 99744.0817679437
+    },
+    {
+      "date": "2026-01-22T21:40:11.123427",
+      "equity": 99744.0817679437
+    },
+    {
+      "date": "2026-01-22T21:45:11.123427",
+      "equity": 99744.0817679437
+    },
+    {
+      "date": "2026-01-22T21:50:11.123427",
+      "equity": 99744.0817679437
+    },
+    {
+      "date": "2026-01-22T21:55:11.123427",
+      "equity": 99744.0817679437
+    },
+    {
+      "date": "2026-01-22T22:00:11.123427",
+      "equity": 99744.0817679437
+    },
+    {
+      "date": "2026-01-22T22:05:11.123427",
+      "equity": 99744.0817679437
+    },
+    {
+      "date": "2026-01-22T22:10:11.123427",
+      "equity": 99744.0817679437
+    },
+    {
+      "date": "2026-01-22T22:15:11.123427",
+      "equity": 99744.0817679437
+    },
+    {
+      "date": "2026-01-22T22:20:11.123427",
+      "equity": 99744.0817679437
+    },
+    {
+      "date": "2026-01-22T22:25:11.123427",
+      "equity": 99744.0817679437
+    },
+    {
+      "date": "2026-01-22T22:30:11.123427",
+      "equity": 99744.0817679437
+    },
+    {
+      "date": "2026-01-22T22:35:11.123427",
+      "equity": 99744.0817679437
+    },
+    {
+      "date": "2026-01-22T22:40:11.123427",
+      "equity": 99744.0817679437
+    },
+    {
+      "date": "2026-01-22T22:45:11.123427",
+      "equity": 99744.0817679437
+    },
+    {
+      "date": "2026-01-22T22:50:11.123427",
+      "equity": 99744.0817679437
+    },
+    {
+      "date": "2026-01-22T22:55:11.123427",
+      "equity": 99744.0817679437
+    },
+    {
+      "date": "2026-01-22T23:00:11.123427",
+      "equity": 99744.0817679437
+    },
+    {
+      "date": "2026-01-22T23:05:11.123427",
+      "equity": 99744.0817679437
+    },
+    {
+      "date": "2026-01-22T23:10:11.123427",
+      "equity": 99744.0817679437
+    },
+    {
+      "date": "2026-01-22T23:15:11.123427",
+      "equity": 99744.0817679437
+    },
+    {
+      "date": "2026-01-22T23:20:11.123427",
+      "equity": 99744.0817679437
+    },
+    {
+      "date": "2026-01-22T23:25:11.123427",
+      "equity": 99744.0817679437
+    },
+    {
+      "date": "2026-01-22T23:30:11.123427",
+      "equity": 99744.0817679437
+    },
+    {
+      "date": "2026-01-22T23:35:11.123427",
+      "equity": 99744.0817679437
+    },
+    {
+      "date": "2026-01-22T23:40:11.123427",
+      "equity": 99744.0817679437
+    },
+    {
+      "date": "2026-01-22T23:45:11.123427",
+      "equity": 99744.0817679437
+    },
+    {
+      "date": "2026-01-22T23:50:11.123427",
+      "equity": 99744.0817679437
+    },
+    {
+      "date": "2026-01-22T23:55:11.123427",
+      "equity": 99744.0817679437
+    },
+    {
+      "date": "2026-01-23T00:00:11.123427",
+      "equity": 99744.0817679437
+    },
+    {
+      "date": "2026-01-23T00:05:11.123427",
+      "equity": 99744.0817679437
+    },
+    {
+      "date": "2026-01-23T00:10:11.123427",
+      "equity": 99744.0817679437
+    },
+    {
+      "date": "2026-01-23T00:15:11.123427",
+      "equity": 99744.0817679437
+    },
+    {
+      "date": "2026-01-23T00:20:11.123427",
+      "equity": 99744.0817679437
+    },
+    {
+      "date": "2026-01-23T00:25:11.123427",
+      "equity": 99744.0817679437
+    },
+    {
+      "date": "2026-01-23T00:30:11.123427",
+      "equity": 99744.0817679437
+    },
+    {
+      "date": "2026-01-23T00:35:11.123427",
+      "equity": 99744.0817679437
+    },
+    {
+      "date": "2026-01-23T00:40:11.123427",
+      "equity": 99744.0817679437
+    },
+    {
+      "date": "2026-01-23T00:45:11.123427",
+      "equity": 99744.0817679437
+    },
+    {
+      "date": "2026-01-23T00:50:11.123427",
+      "equity": 99744.0817679437
+    }
+  ],
+  "logs": [
+    {
+      "timestamp": "",
+      "level": "info",
+      "category": "info",
+      "symbol": "",
+      "message": "Starting backtest from 2026-01-22 08:15:11.123351 to 2026-01-29 08:15:11.123355",
+      "data": {}
+    },
+    {
+      "timestamp": "",
+      "level": "info",
+      "category": "info",
+      "symbol": "",
+      "message": "Pre-computing technical indicators on full data",
+      "data": {}
+    },
+    {
+      "timestamp": "",
+      "level": "info",
+      "category": "info",
+      "symbol": "",
+      "message": "Processing 200 timestamps across 1 symbols",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-22T11:20:11.123427",
+      "level": "info",
+      "category": "signal",
+      "symbol": "TEST",
+      "message": "SELL signal from MACD (strength=0.56)",
+      "data": {
+        "strategy": "MACD",
+        "signal_type": "SELL",
+        "strength": 0.5599999999999999,
+        "price": 95.62807221082706
+      }
+    },
+    {
+      "timestamp": "2026-01-22T12:15:11.123427",
+      "level": "info",
+      "category": "signal",
+      "symbol": "TEST",
+      "message": "BUY signal from MACD (strength=0.56)",
+      "data": {
+        "strategy": "MACD",
+        "signal_type": "BUY",
+        "strength": 0.5599999999999999,
+        "price": 95.82856347710776
+      }
+    },
+    {
+      "timestamp": "2026-01-22T12:15:11.123427",
+      "level": "info",
+      "category": "trade_open",
+      "symbol": "TEST",
+      "message": "Opened 58.44 shares @ $95.88 (strategy: MACD)",
+      "data": {
+        "quantity": 58.44,
+        "entry_price": 95.8764777588463,
+        "stop_loss": 94.87027784233669,
+        "take_profit": 98.22427756403545,
+        "strategy": "MACD",
+        "cost": 5608.624381587205
+      }
+    },
+    {
+      "timestamp": "2026-01-22T12:20:11.123427",
+      "level": "warning",
+      "category": "stop_hit",
+      "symbol": "TEST",
+      "message": "Stop loss hit at $94.49 (stop was $94.87)",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-22T12:20:11.123427",
+      "level": "info",
+      "category": "trade_close",
+      "symbol": "TEST",
+      "message": "Closed @ $94.44 | P&L: $-89.28 (-1.59%) | Reason: stop_loss",
+      "data": {
+        "entry_price": 95.8764777588463,
+        "exit_price": 94.44311760885199,
+        "quantity": 58.44,
+        "pnl": -89.28482295872902,
+        "pnl_pct": -0.015935120931809568,
+        "exit_reason": "stop_loss",
+        "strategy": "MACD"
+      }
+    },
+    {
+      "timestamp": "2026-01-22T12:30:11.123427",
+      "level": "info",
+      "category": "signal",
+      "symbol": "TEST",
+      "message": "SELL signal from MACD (strength=0.56)",
+      "data": {
+        "strategy": "MACD",
+        "signal_type": "SELL",
+        "strength": 0.5599999999999999,
+        "price": 94.1267147300245
+      }
+    },
+    {
+      "timestamp": "2026-01-22T12:45:11.123427",
+      "level": "info",
+      "category": "signal",
+      "symbol": "TEST",
+      "message": "BUY signal from MACD (strength=0.56)",
+      "data": {
+        "strategy": "MACD",
+        "signal_type": "BUY",
+        "strength": 0.5599999999999999,
+        "price": 95.01275618979032
+      }
+    },
+    {
+      "timestamp": "2026-01-22T12:45:11.123427",
+      "level": "info",
+      "category": "trade_open",
+      "symbol": "TEST",
+      "message": "Opened 58.88 shares @ $95.06 (strategy: MACD)",
+      "data": {
+        "quantity": 58.88,
+        "entry_price": 95.06026256788522,
+        "stop_loss": 94.06262862789242,
+        "take_profit": 97.38807509453507,
+        "strategy": "MACD",
+        "cost": 5602.745408257079
+      }
+    },
+    {
+      "timestamp": "2026-01-22T13:20:11.123427",
+      "level": "info",
+      "category": "signal",
+      "symbol": "TEST",
+      "message": "BUY signal from MA Crossover (strength=0.80)",
+      "data": {
+        "strategy": "MA Crossover",
+        "signal_type": "BUY",
+        "strength": 0.8,
+        "price": 94.82390521411997
+      }
+    },
+    {
+      "timestamp": "2026-01-22T13:20:11.123427",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TEST",
+      "message": "Skipping BUY - already have position",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-22T13:25:11.123427",
+      "level": "warning",
+      "category": "stop_hit",
+      "symbol": "TEST",
+      "message": "Stop loss hit at $93.46 (stop was $93.84)",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-22T13:25:11.123427",
+      "level": "info",
+      "category": "trade_close",
+      "symbol": "TEST",
+      "message": "Closed @ $93.41 | P&L: $-102.73 (-1.84%) | Reason: stop_loss",
+      "data": {
+        "entry_price": 95.06026256788522,
+        "exit_price": 93.4089852894658,
+        "quantity": 58.88,
+        "pnl": -102.72712720717885,
+        "pnl_pct": -0.018353476169529304,
+        "exit_reason": "stop_loss",
+        "strategy": "MACD"
+      }
+    },
+    {
+      "timestamp": "2026-01-22T13:30:11.123427",
+      "level": "info",
+      "category": "signal",
+      "symbol": "TEST",
+      "message": "SELL signal from MACD (strength=0.56)",
+      "data": {
+        "strategy": "MACD",
+        "signal_type": "SELL",
+        "strength": 0.5599999999999999,
+        "price": 93.3726289461287
+      }
+    },
+    {
+      "timestamp": "2026-01-22T13:35:11.123427",
+      "level": "info",
+      "category": "signal",
+      "symbol": "TEST",
+      "message": "SELL signal from MA Crossover (strength=0.80)",
+      "data": {
+        "strategy": "MA Crossover",
+        "signal_type": "SELL",
+        "strength": 0.8,
+        "price": 93.34753905227156
+      }
+    },
+    {
+      "timestamp": "2026-01-22T13:40:11.123427",
+      "level": "info",
+      "category": "signal",
+      "symbol": "TEST",
+      "message": "BUY signal from MACD (strength=0.56)",
+      "data": {
+        "strategy": "MACD",
+        "signal_type": "BUY",
+        "strength": 0.5599999999999999,
+        "price": 94.78529828504925
+      }
+    },
+    {
+      "timestamp": "2026-01-22T13:40:11.123427",
+      "level": "info",
+      "category": "trade_open",
+      "symbol": "TEST",
+      "message": "Opened 58.96 shares @ $94.83 (strategy: MACD)",
+      "data": {
+        "quantity": 58.96,
+        "entry_price": 94.83269093419177,
+        "stop_loss": 93.83744530219876,
+        "take_profit": 97.15493074217548,
+        "strategy": "MACD",
+        "cost": 5596.926792937426
+      }
+    },
+    {
+      "timestamp": "2026-01-22T14:10:11.123427",
+      "level": "info",
+      "category": "signal",
+      "symbol": "TEST",
+      "message": "BUY signal from MA Crossover (strength=0.80)",
+      "data": {
+        "strategy": "MA Crossover",
+        "signal_type": "BUY",
+        "strength": 0.8,
+        "price": 95.12922298193025
+      }
+    },
+    {
+      "timestamp": "2026-01-22T14:10:11.123427",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TEST",
+      "message": "Skipping BUY - already have position",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-22T14:20:11.123427",
+      "level": "info",
+      "category": "tp_hit",
+      "symbol": "TEST",
+      "message": "Take profit hit at $97.38 (target was $97.15)",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-22T14:20:11.123427",
+      "level": "info",
+      "category": "trade_close",
+      "symbol": "TEST",
+      "message": "Closed @ $97.34 | P&L: +$141.85 (+2.54%) | Reason: take_profit",
+      "data": {
+        "entry_price": 94.83269093419177,
+        "exit_price": 97.33593972570885,
+        "quantity": 58.96,
+        "pnl": 141.8526217416193,
+        "pnl_pct": 0.02537007890518399,
+        "exit_reason": "take_profit",
+        "strategy": "MACD"
+      }
+    },
+    {
+      "timestamp": "2026-01-22T15:00:11.123427",
+      "level": "info",
+      "category": "signal",
+      "symbol": "TEST",
+      "message": "SELL signal from MACD (strength=0.56)",
+      "data": {
+        "strategy": "MACD",
+        "signal_type": "SELL",
+        "strength": 0.5599999999999999,
+        "price": 95.2392245697697
+      }
+    },
+    {
+      "timestamp": "2026-01-22T15:20:11.123427",
+      "level": "info",
+      "category": "signal",
+      "symbol": "TEST",
+      "message": "SELL signal from MA Crossover (strength=0.80)",
+      "data": {
+        "strategy": "MA Crossover",
+        "signal_type": "SELL",
+        "strength": 0.8,
+        "price": 94.51175895366019
+      }
+    },
+    {
+      "timestamp": "2026-01-22T15:45:11.123427",
+      "level": "info",
+      "category": "signal",
+      "symbol": "TEST",
+      "message": "BUY signal from MACD (strength=0.56)",
+      "data": {
+        "strategy": "MACD",
+        "signal_type": "BUY",
+        "strength": 0.5599999999999999,
+        "price": 96.12093984177162
+      }
+    },
+    {
+      "timestamp": "2026-01-22T15:45:11.123427",
+      "level": "info",
+      "category": "trade_open",
+      "symbol": "TEST",
+      "message": "Opened 58.22 shares @ $96.17 (strategy: MACD)",
+      "data": {
+        "quantity": 58.22,
+        "entry_price": 96.1690003116925,
+        "stop_loss": 95.1597304433539,
+        "take_profit": 98.5239633378159,
+        "strategy": "MACD",
+        "cost": 5604.558157344884
+      }
+    },
+    {
+      "timestamp": "2026-01-22T16:00:11.123427",
+      "level": "warning",
+      "category": "stop_hit",
+      "symbol": "TEST",
+      "message": "Stop loss hit at $95.08 (stop was $95.16)",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-22T16:00:11.123427",
+      "level": "info",
+      "category": "trade_close",
+      "symbol": "TEST",
+      "message": "Closed @ $95.03 | P&L: $-71.57 (-1.28%) | Reason: stop_loss",
+      "data": {
+        "entry_price": 96.1690003116925,
+        "exit_price": 95.034711760337,
+        "quantity": 58.22,
+        "pnl": -71.5712003786038,
+        "pnl_pct": -0.012782947302472567,
+        "exit_reason": "stop_loss",
+        "strategy": "MACD"
+      }
+    },
+    {
+      "timestamp": "2026-01-22T16:00:11.123427",
+      "level": "info",
+      "category": "signal",
+      "symbol": "TEST",
+      "message": "SELL signal from MACD (strength=0.56)",
+      "data": {
+        "strategy": "MACD",
+        "signal_type": "SELL",
+        "strength": 0.5599999999999999,
+        "price": 95.0822528867804
+      }
+    },
+    {
+      "timestamp": "2026-01-22T17:15:11.123427",
+      "level": "info",
+      "category": "signal",
+      "symbol": "TEST",
+      "message": "BUY signal from MACD (strength=0.56)",
+      "data": {
+        "strategy": "MACD",
+        "signal_type": "BUY",
+        "strength": 0.5599999999999999,
+        "price": 94.73769414312997
+      }
+    },
+    {
+      "timestamp": "2026-01-22T17:15:11.123427",
+      "level": "info",
+      "category": "trade_open",
+      "symbol": "TEST",
+      "message": "Opened 59.03 shares @ $94.79 (strategy: MACD)",
+      "data": {
+        "quantity": 59.03,
+        "entry_price": 94.78506299020152,
+        "stop_loss": 93.79031720169867,
+        "take_profit": 97.10613649670822,
+        "strategy": "MACD",
+        "cost": 5600.757430579907
+      }
+    },
+    {
+      "timestamp": "2026-01-22T17:45:11.123427",
+      "level": "info",
+      "category": "signal",
+      "symbol": "TEST",
+      "message": "BUY signal from MA Crossover (strength=0.80)",
+      "data": {
+        "strategy": "MA Crossover",
+        "signal_type": "BUY",
+        "strength": 0.8,
+        "price": 94.9939046214038
+      }
+    },
+    {
+      "timestamp": "2026-01-22T17:45:11.123427",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TEST",
+      "message": "Skipping BUY - already have position",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-22T18:40:11.123427",
+      "level": "info",
+      "category": "tp_hit",
+      "symbol": "TEST",
+      "message": "Take profit hit at $97.13 (target was $97.11)",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-22T18:40:11.123427",
+      "level": "info",
+      "category": "trade_close",
+      "symbol": "TEST",
+      "message": "Closed @ $97.08 | P&L: +$129.64 (+2.32%) | Reason: take_profit",
+      "data": {
+        "entry_price": 94.78506299020152,
+        "exit_price": 97.07833923453448,
+        "quantity": 59.03,
+        "pnl": 129.64156233795995,
+        "pnl_pct": 0.023170295358937068,
+        "exit_reason": "take_profit",
+        "strategy": "MACD"
+      }
+    },
+    {
+      "timestamp": "2026-01-22T19:05:11.123427",
+      "level": "info",
+      "category": "signal",
+      "symbol": "TEST",
+      "message": "SELL signal from MACD (strength=0.56)",
+      "data": {
+        "strategy": "MACD",
+        "signal_type": "SELL",
+        "strength": 0.5599999999999999,
+        "price": 94.31809385159778
+      }
+    },
+    {
+      "timestamp": "2026-01-22T19:25:11.123427",
+      "level": "info",
+      "category": "signal",
+      "symbol": "TEST",
+      "message": "SELL signal from MA Crossover (strength=0.80)",
+      "data": {
+        "strategy": "MA Crossover",
+        "signal_type": "SELL",
+        "strength": 0.8,
+        "price": 93.45937931809799
+      }
+    },
+    {
+      "timestamp": "2026-01-22T20:20:11.123427",
+      "level": "info",
+      "category": "signal",
+      "symbol": "TEST",
+      "message": "BUY signal from MACD (strength=0.56)",
+      "data": {
+        "strategy": "MACD",
+        "signal_type": "BUY",
+        "strength": 0.5599999999999999,
+        "price": 95.04282868852258
+      }
+    },
+    {
+      "timestamp": "2026-01-22T20:20:11.123427",
+      "level": "info",
+      "category": "trade_open",
+      "symbol": "TEST",
+      "message": "Opened 58.91 shares @ $95.09 (strategy: MACD)",
+      "data": {
+        "quantity": 58.91,
+        "entry_price": 95.09035010286684,
+        "stop_loss": 94.09240040163735,
+        "take_profit": 97.41889940573563,
+        "strategy": "MACD",
+        "cost": 5607.374297084445
+      }
+    },
+    {
+      "timestamp": "2026-01-22T20:30:11.123427",
+      "level": "warning",
+      "category": "stop_hit",
+      "symbol": "TEST",
+      "message": "Stop loss hit at $93.98 (stop was $94.09)",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-22T20:30:11.123427",
+      "level": "info",
+      "category": "trade_close",
+      "symbol": "TEST",
+      "message": "Closed @ $93.93 | P&L: $-73.75 (-1.32%) | Reason: stop_loss",
+      "data": {
+        "entry_price": 95.09035010286684,
+        "exit_price": 93.93231470672912,
+        "quantity": 58.91,
+        "pnl": -73.75341784584649,
+        "pnl_pct": -0.013166085827742724,
+        "exit_reason": "stop_loss",
+        "strategy": "MACD"
+      }
+    },
+    {
+      "timestamp": "2026-01-22T20:35:11.123427",
+      "level": "info",
+      "category": "signal",
+      "symbol": "TEST",
+      "message": "SELL signal from MACD (strength=0.56)",
+      "data": {
+        "strategy": "MACD",
+        "signal_type": "SELL",
+        "strength": 0.5599999999999999,
+        "price": 93.54254828166572
+      }
+    },
+    {
+      "timestamp": "2026-01-22T20:45:11.123427",
+      "level": "info",
+      "category": "signal",
+      "symbol": "TEST",
+      "message": "BUY signal from MACD (strength=0.56)",
+      "data": {
+        "strategy": "MACD",
+        "signal_type": "BUY",
+        "strength": 0.5599999999999999,
+        "price": 95.23741129035761
+      }
+    },
+    {
+      "timestamp": "2026-01-22T20:45:11.123427",
+      "level": "info",
+      "category": "trade_open",
+      "symbol": "TEST",
+      "message": "Opened 58.74 shares @ $95.29 (strategy: MACD)",
+      "data": {
+        "quantity": 58.74,
+        "entry_price": 95.28502999600279,
+        "stop_loss": 94.28503717745404,
+        "take_profit": 97.61834657261655,
+        "strategy": "MACD",
+        "cost": 5602.6397046271695
+      }
+    },
+    {
+      "timestamp": "2026-01-22T20:50:11.123427",
+      "level": "warning",
+      "category": "stop_hit",
+      "symbol": "TEST",
+      "message": "Stop loss hit at $94.15 (stop was $94.29)",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-22T20:50:11.123427",
+      "level": "info",
+      "category": "trade_close",
+      "symbol": "TEST",
+      "message": "Closed @ $94.11 | P&L: $-74.76 (-1.34%) | Reason: stop_loss",
+      "data": {
+        "entry_price": 95.28502999600279,
+        "exit_price": 94.10648792813318,
+        "quantity": 58.74,
+        "pnl": -74.75537616755969,
+        "pnl_pct": -0.013356227687089306,
+        "exit_reason": "stop_loss",
+        "strategy": "MACD"
+      }
+    },
+    {
+      "timestamp": "2026-01-22T20:50:11.123427",
+      "level": "info",
+      "category": "signal",
+      "symbol": "TEST",
+      "message": "BUY signal from MA Crossover (strength=0.80)",
+      "data": {
+        "strategy": "MA Crossover",
+        "signal_type": "BUY",
+        "strength": 0.8,
+        "price": 94.15356471048841
+      }
+    },
+    {
+      "timestamp": "2026-01-22T20:50:11.123427",
+      "level": "info",
+      "category": "trade_open",
+      "symbol": "TEST",
+      "message": "Opened 84.81 shares @ $94.20 (strategy: MA Crossover)",
+      "data": {
+        "quantity": 84.81,
+        "entry_price": 94.20064149284364,
+        "stop_loss": 93.21202906338353,
+        "take_profit": 96.50740382825062,
+        "strategy": "MA Crossover",
+        "cost": 7997.145561413077
+      }
+    },
+    {
+      "timestamp": "2026-01-22T21:05:11.123427",
+      "level": "info",
+      "category": "signal",
+      "symbol": "TEST",
+      "message": "CLOSE_LONG signal from MA Crossover (strength=0.80)",
+      "data": {
+        "strategy": "MA Crossover",
+        "signal_type": "CLOSE_LONG",
+        "strength": 0.8,
+        "price": 94.14564859830567
+      }
+    },
+    {
+      "timestamp": "2026-01-22T21:05:11.123427",
+      "level": "info",
+      "category": "trade_close",
+      "symbol": "TEST",
+      "message": "Closed @ $94.10 | P&L: $-16.64 (-0.21%) | Reason: signal",
+      "data": {
+        "entry_price": 94.20064149284364,
+        "exit_price": 94.09857577400652,
+        "quantity": 84.81,
+        "pnl": -16.636693825970028,
+        "pnl_pct": -0.002082409328667189,
+        "exit_reason": "signal",
+        "strategy": "MA Crossover"
+      }
+    },
+    {
+      "timestamp": "2026-01-22T21:10:11.123427",
+      "level": "info",
+      "category": "signal",
+      "symbol": "TEST",
+      "message": "SELL signal from MACD (strength=0.56)",
+      "data": {
+        "strategy": "MACD",
+        "signal_type": "SELL",
+        "strength": 0.5599999999999999,
+        "price": 93.6172503029466
+      }
+    },
+    {
+      "timestamp": "2026-01-22T21:15:11.123427",
+      "level": "info",
+      "category": "signal",
+      "symbol": "TEST",
+      "message": "BUY signal from MACD (strength=0.56)",
+      "data": {
+        "strategy": "MACD",
+        "signal_type": "BUY",
+        "strength": 0.5599999999999999,
+        "price": 94.33548676104084
+      }
+    },
+    {
+      "timestamp": "2026-01-22T21:15:11.123427",
+      "level": "info",
+      "category": "trade_open",
+      "symbol": "TEST",
+      "message": "Opened 59.24 shares @ $94.38 (strategy: MACD)",
+      "data": {
+        "quantity": 59.24,
+        "entry_price": 94.38265450442135,
+        "stop_loss": 93.39213189343043,
+        "take_profit": 96.69387393006686,
+        "strategy": "MACD",
+        "cost": 5596.8196812947635
+      }
+    },
+    {
+      "timestamp": "2026-01-22T21:35:11.123427",
+      "level": "info",
+      "category": "signal",
+      "symbol": "TEST",
+      "message": "CLOSE_LONG signal from MA Crossover (strength=0.80)",
+      "data": {
+        "strategy": "MA Crossover",
+        "signal_type": "CLOSE_LONG",
+        "strength": 0.8,
+        "price": 93.74809555420019
+      }
+    },
+    {
+      "timestamp": "2026-01-22T21:35:11.123427",
+      "level": "info",
+      "category": "trade_close",
+      "symbol": "TEST",
+      "message": "Closed @ $93.70 | P&L: $-45.92 (-0.82%) | Reason: signal",
+      "data": {
+        "entry_price": 94.38265450442135,
+        "exit_price": 93.7012215064231,
+        "quantity": 59.24,
+        "pnl": -45.91895116345727,
+        "pnl_pct": -0.00821267661494273,
+        "exit_reason": "signal",
+        "strategy": "MACD"
+      }
+    },
+    {
+      "timestamp": "2026-01-23T00:00:11.123427",
+      "level": "info",
+      "category": "signal",
+      "symbol": "TEST",
+      "message": "SELL signal from MACD (strength=0.56)",
+      "data": {
+        "strategy": "MACD",
+        "signal_type": "SELL",
+        "strength": 0.5599999999999999,
+        "price": 97.16994968445641
+      }
+    },
+    {
+      "timestamp": "2026-01-23T00:30:11.123427",
+      "level": "info",
+      "category": "signal",
+      "symbol": "TEST",
+      "message": "SELL signal from MA Crossover (strength=0.80)",
+      "data": {
+        "strategy": "MA Crossover",
+        "signal_type": "SELL",
+        "strength": 0.8,
+        "price": 96.73789936939012
+      }
+    },
+    {
+      "timestamp": "2026-01-23T00:50:11.123427",
+      "level": "info",
+      "category": "info",
+      "symbol": "",
+      "message": "Backtest complete: 27 signals, 9 trades",
+      "data": {}
+    }
+  ]
+}

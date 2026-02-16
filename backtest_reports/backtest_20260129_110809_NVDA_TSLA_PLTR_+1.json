@@ -1,0 +1,7471 @@
+{
+  "meta": {
+    "timestamp": "2026-01-29T11:08:09.336757",
+    "filename": "backtest_20260129_110809_NVDA_TSLA_PLTR_+1.json"
+  },
+  "config": {
+    "symbols": [
+      "NVDA",
+      "TSLA",
+      "PLTR",
+      "AMD"
+    ],
+    "start_date": "2026-01-01T00:00:00",
+    "end_date": "2026-01-29T00:00:00",
+    "initial_capital": 100000,
+    "timeframe": "5min",
+    "mode": "DETAILED",
+    "max_positions": 5,
+    "max_position_size": 0.2,
+    "stop_loss_default": 0.02,
+    "take_profit_default": 0.04,
+    "commission": 0.001,
+    "slippage": 0.0005,
+    "use_consensus": true,
+    "exit_on_opposite_signal": true,
+    "strategies_enabled": [
+      "ma_cross",
+      "rsi_momentum",
+      "macd"
+    ]
+  },
+  "metrics": {
+    "total_return": -0.03329397832841918,
+    "annual_return": -0.36729335381915207,
+    "sharpe_ratio": 9.415660792795794,
+    "sortino_ratio": 180.31712655955482,
+    "max_drawdown": 0.1930122976596924,
+    "max_drawdown_duration": 26,
+    "win_rate": 0.4430379746835443,
+    "profit_factor": 0.6837612259424746,
+    "total_trades": 79,
+    "winning_trades": 35,
+    "losing_trades": 44,
+    "avg_win": 141.19757943734888,
+    "avg_loss": -164.26239469166345,
+    "largest_win": 579.6418595143535,
+    "largest_loss": -452.81447891729783,
+    "initial_capital": 100000.0,
+    "final_capital": 96670.60216715808,
+    "value_at_risk": -0.0037227169337827846,
+    "conditional_var": -0.006150154881852776
+  },
+  "trades": [
+    {
+      "symbol": "AMD",
+      "entry_time": "2026-01-02T05:55:00",
+      "exit_time": "2026-01-02T09:40:00",
+      "entry_price": 216.52820999999997,
+      "exit_price": 217.87101,
+      "quantity": 62.08,
+      "side": "long",
+      "pnl": 69.83559169920244,
+      "pnl_pct": 0.005195299910344428,
+      "commission": 13.525432300800002,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-02T05:55:00",
+      "exit_time": "2026-01-02T09:50:00",
+      "entry_price": 188.55423,
+      "exit_price": 190.014945,
+      "quantity": 84.9,
+      "side": "long",
+      "pnl": 107.88243466950186,
+      "pnl_pct": 0.006739175541169359,
+      "commission": 16.132268830500003,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "PLTR",
+      "entry_time": "2026-01-02T08:00:00",
+      "exit_time": "2026-01-02T10:15:00",
+      "entry_price": 180.91040999999998,
+      "exit_price": 182.64863000000003,
+      "quantity": 66.3,
+      "side": "long",
+      "pnl": 103.1343818310027,
+      "pnl_pct": 0.008598573017440185,
+      "commission": 12.109604169000002,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "PLTR",
+      "entry_time": "2026-01-02T17:00:00",
+      "exit_time": "2026-01-02T18:45:00",
+      "entry_price": 170.30510999999998,
+      "exit_price": 166.8315425,
+      "quantity": 100.11,
+      "side": "long",
+      "pnl": -364.4403481446723,
+      "pnl_pct": -0.021375747577391975,
+      "commission": 16.701505719675,
+      "strategy": "Consensus",
+      "exit_reason": "stop_loss"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-02T21:05:00",
+      "exit_time": "2026-01-05T02:10:00",
+      "entry_price": 188.95443,
+      "exit_price": 189.655125,
+      "quantity": 89.89,
+      "side": "long",
+      "pnl": 45.93737436374964,
+      "pnl_pct": 0.0027045667836419394,
+      "commission": 17.048099186250003,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "TSLA",
+      "entry_time": "2026-01-05T10:20:00",
+      "exit_time": "2026-01-05T12:00:00",
+      "entry_price": 445.032405,
+      "exit_price": 444.15781000000004,
+      "quantity": 38.18,
+      "side": "long",
+      "pnl": -50.34998228579781,
+      "pnl_pct": -0.002963273674419153,
+      "commission": 16.957945185800003,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-05T14:00:00",
+      "exit_time": "2026-01-05T17:00:00",
+      "entry_price": 192.3351195,
+      "exit_price": 188.33578500000002,
+      "quantity": 83.08,
+      "side": "long",
+      "pnl": -347.9116472777979,
+      "pnl_pct": -0.021772780217603344,
+      "commission": 15.646937017800001,
+      "strategy": "Consensus",
+      "exit_reason": "stop_loss"
+    },
+    {
+      "symbol": "TSLA",
+      "entry_time": "2026-01-06T09:35:00",
+      "exit_time": "2026-01-06T13:45:00",
+      "entry_price": 450.58518,
+      "exit_price": 447.945915,
+      "quantity": 31.15,
+      "side": "long",
+      "pnl": -96.16662000224895,
+      "pnl_pct": -0.00685155893276376,
+      "commission": 13.95351525225,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "AMD",
+      "entry_time": "2026-01-05T17:55:00",
+      "exit_time": "2026-01-06T14:30:00",
+      "entry_price": 222.3161025,
+      "exit_price": 219.9049925,
+      "quantity": 76.09,
+      "side": "long",
+      "pnl": -200.19393077932563,
+      "pnl_pct": -0.011834567819935617,
+      "commission": 16.732570879325003,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "TSLA",
+      "entry_time": "2026-01-06T15:30:00",
+      "exit_time": "2026-01-06T18:00:00",
+      "entry_price": 438.67922999999996,
+      "exit_price": 428.775505,
+      "quantity": 29.39,
+      "side": "long",
+      "pnl": -303.6721898419486,
+      "pnl_pct": -0.02355365788574023,
+      "commission": 12.601712091950002,
+      "strategy": "Consensus",
+      "exit_reason": "stop_loss"
+    },
+    {
+      "symbol": "PLTR",
+      "entry_time": "2026-01-06T14:30:00",
+      "exit_time": "2026-01-07T01:20:00",
+      "entry_price": 176.94843,
+      "exit_price": 179.280315,
+      "quantity": 74.56,
+      "side": "long",
+      "pnl": 160.49820531359998,
+      "pnl_pct": 0.012165152779258904,
+      "commission": 13.367140286400002,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "AMD",
+      "entry_time": "2026-01-06T16:20:00",
+      "exit_time": "2026-01-07T14:30:00",
+      "entry_price": 213.91690499999999,
+      "exit_price": 207.82593505000003,
+      "quantity": 51.23,
+      "side": "long",
+      "pnl": -322.6873131911094,
+      "pnl_pct": -0.02944505898236495,
+      "commission": 10.6469226526115,
+      "strategy": "Consensus",
+      "exit_reason": "stop_loss"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-07T05:25:00",
+      "exit_time": "2026-01-07T15:40:00",
+      "entry_price": 188.023965,
+      "exit_price": 189.28531,
+      "quantity": 66.04,
+      "side": "long",
+      "pnl": 70.79882192760039,
+      "pnl_pct": 0.005701718342127323,
+      "commission": 12.500401872400001,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "PLTR",
+      "entry_time": "2026-01-07T03:05:00",
+      "exit_time": "2026-01-07T17:25:00",
+      "entry_price": 179.56973999999997,
+      "exit_price": 186.7115975,
+      "quantity": 83.34,
+      "side": "long",
+      "pnl": 579.6418595143535,
+      "pnl_pct": 0.03873228252432756,
+      "commission": 15.560544535650003,
+      "strategy": "Consensus",
+      "exit_reason": "take_profit"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-07T20:55:00",
+      "exit_time": "2026-01-07T23:15:00",
+      "entry_price": 189.3396225,
+      "exit_price": 188.915495,
+      "quantity": 78.91,
+      "side": "long",
+      "pnl": -48.37522273544979,
+      "pnl_pct": -0.003237795591358578,
+      "commission": 14.907321710449999,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "TSLA",
+      "entry_time": "2026-01-07T14:40:00",
+      "exit_time": "2026-01-08T06:15:00",
+      "entry_price": 437.5836825,
+      "exit_price": 428.60559,
+      "quantity": 26.05,
+      "side": "long",
+      "pnl": -245.04448524450007,
+      "pnl_pct": -0.02149691239915008,
+      "commission": 11.1651756195,
+      "strategy": "Consensus",
+      "exit_reason": "stop_loss"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-08T04:40:00",
+      "exit_time": "2026-01-08T08:45:00",
+      "entry_price": 188.75432999999998,
+      "exit_price": 189.55517500000002,
+      "quantity": 56.35,
+      "side": "long",
+      "pnl": 34.446181638752144,
+      "pnl_pct": 0.003238547295842369,
+      "commission": 10.68143411125,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "PLTR",
+      "entry_time": "2026-01-08T04:25:00",
+      "exit_time": "2026-01-08T13:30:00",
+      "entry_price": 184.11201,
+      "exit_price": 186.376765,
+      "quantity": 69.63,
+      "side": "long",
+      "pnl": 144.71747650305056,
+      "pnl_pct": 0.011288661912930114,
+      "commission": 12.97741414695,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "AMD",
+      "entry_time": "2026-01-07T20:55:00",
+      "exit_time": "2026-01-08T14:40:00",
+      "entry_price": 210.12501,
+      "exit_price": 206.766565,
+      "quantity": 58.99,
+      "side": "long",
+      "pnl": -210.31183021934936,
+      "pnl_pct": -0.016967097657722842,
+      "commission": 12.197159669350002,
+      "strategy": "Consensus",
+      "exit_reason": "stop_loss"
+    },
+    {
+      "symbol": "PLTR",
+      "entry_time": "2026-01-08T16:15:00",
+      "exit_time": "2026-01-08T19:35:00",
+      "entry_price": 178.77734399999997,
+      "exit_price": 174.962475,
+      "quantity": 69.69,
+      "side": "long",
+      "pnl": -278.0513554927471,
+      "pnl_pct": -0.022317321567323203,
+      "commission": 12.193134882750002,
+      "strategy": "Consensus",
+      "exit_reason": "stop_loss"
+    },
+    {
+      "symbol": "TSLA",
+      "entry_time": "2026-01-08T14:45:00",
+      "exit_time": "2026-01-09T07:20:00",
+      "entry_price": 431.53565999999995,
+      "exit_price": 435.8819500000001,
+      "quantity": 36.67,
+      "side": "long",
+      "pnl": 143.39466319350456,
+      "pnl_pct": 0.009061610458797598,
+      "commission": 15.983791106500004,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "TSLA",
+      "entry_time": "2026-01-09T14:00:00",
+      "exit_time": "2026-01-09T14:15:00",
+      "entry_price": 438.15896999999995,
+      "exit_price": 437.28125,
+      "quantity": 23.26,
+      "side": "long",
+      "pnl": -30.586929074998928,
+      "pnl_pct": -0.0030011966889550473,
+      "commission": 10.171161875,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "PLTR",
+      "entry_time": "2026-01-08T20:05:00",
+      "exit_time": "2026-01-09T14:15:00",
+      "entry_price": 175.50270749999999,
+      "exit_price": 177.281315,
+      "quantity": 69.91,
+      "side": "long",
+      "pnl": 111.94871359335147,
+      "pnl_pct": 0.009124224963879952,
+      "commission": 12.39373673165,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "PLTR",
+      "entry_time": "2026-01-09T15:20:00",
+      "exit_time": "2026-01-09T20:50:00",
+      "entry_price": 177.70881,
+      "exit_price": 177.16137500000002,
+      "quantity": 72.75,
+      "side": "long",
+      "pnl": -52.71438628124846,
+      "pnl_pct": -0.004077436425352118,
+      "commission": 12.88849003125,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "AMD",
+      "entry_time": "2026-01-08T16:30:00",
+      "exit_time": "2026-01-09T20:55:00",
+      "entry_price": 204.62476125,
+      "exit_price": 203.05842,
+      "quantity": 51.74,
+      "side": "long",
+      "pnl": -91.54873892579967,
+      "pnl_pct": -0.008647045739680703,
+      "commission": 10.5062426508,
+      "strategy": "Consensus",
+      "exit_reason": "stop_loss"
+    },
+    {
+      "symbol": "AMD",
+      "entry_time": "2026-01-09T21:35:00",
+      "exit_time": "2026-01-12T01:00:00",
+      "entry_price": 203.29159499999997,
+      "exit_price": 201.649125,
+      "quantity": 63.81,
+      "side": "long",
+      "pnl": -117.67324136624838,
+      "pnl_pct": -0.009071300389964352,
+      "commission": 12.86723066625,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "AMD",
+      "entry_time": "2026-01-12T02:25:00",
+      "exit_time": "2026-01-12T05:30:00",
+      "entry_price": 201.39064499999998,
+      "exit_price": 200.59965,
+      "quantity": 72.89,
+      "side": "long",
+      "pnl": -72.27733403849862,
+      "pnl_pct": -0.0049237373960442955,
+      "commission": 14.621708488500001,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "PLTR",
+      "entry_time": "2026-01-12T04:50:00",
+      "exit_time": "2026-01-12T05:45:00",
+      "entry_price": 175.337625,
+      "exit_price": 174.922495,
+      "quantity": 61.3,
+      "side": "long",
+      "pnl": -36.1702179435003,
+      "pnl_pct": -0.0033652360410379965,
+      "commission": 10.7227489435,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "PLTR",
+      "entry_time": "2026-01-12T08:00:00",
+      "exit_time": "2026-01-12T13:35:00",
+      "entry_price": 175.50770999999997,
+      "exit_price": 178.84053500000002,
+      "quantity": 69.29,
+      "side": "long",
+      "pnl": 218.53958357985294,
+      "pnl_pct": 0.017970631973946005,
+      "commission": 12.391860670150002,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-09T13:25:00",
+      "exit_time": "2026-01-12T18:50:00",
+      "entry_price": 185.8929,
+      "exit_price": 186.63253705,
+      "quantity": 65.29,
+      "side": "long",
+      "pnl": 36.10566465050543,
+      "pnl_pct": 0.002974855483722073,
+      "commission": 12.1852383439945,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "TSLA",
+      "entry_time": "2026-01-12T05:55:00",
+      "exit_time": "2026-01-13T00:00:00",
+      "entry_price": 443.28153,
+      "exit_price": 447.38619500000004,
+      "quantity": 33.07,
+      "side": "long",
+      "pnl": 120.94621008135226,
+      "pnl_pct": 0.008250465127658417,
+      "commission": 14.795061468650001,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "AMD",
+      "entry_time": "2026-01-12T22:10:00",
+      "exit_time": "2026-01-13T05:00:00",
+      "entry_price": 207.80384999999998,
+      "exit_price": 207.67611000000002,
+      "quantity": 68.66,
+      "side": "long",
+      "pnl": -23.02967011259727,
+      "pnl_pct": -0.0016140995944009713,
+      "commission": 14.259041712600002,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "PLTR",
+      "entry_time": "2026-01-13T01:55:00",
+      "exit_time": "2026-01-13T06:05:00",
+      "entry_price": 178.86938999999998,
+      "exit_price": 178.75058,
+      "quantity": 80.24,
+      "side": "long",
+      "pnl": -23.876260939197422,
+      "pnl_pct": -0.0016635634526397608,
+      "commission": 14.3429465392,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "AMD",
+      "entry_time": "2026-01-13T11:25:00",
+      "exit_time": "2026-01-13T13:00:00",
+      "entry_price": 211.375635,
+      "exit_price": 212.543675,
+      "quantity": 74.66,
+      "side": "long",
+      "pnl": 71.33735562450143,
+      "pnl_pct": 0.004520371162930009,
+      "commission": 15.868510775499999,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-13T19:55:00",
+      "exit_time": "2026-01-14T06:45:00",
+      "entry_price": 184.522215,
+      "exit_price": 184.58766000000003,
+      "quantity": 90.92,
+      "side": "long",
+      "pnl": -10.83245064719641,
+      "pnl_pct": -0.0006456819304925455,
+      "commission": 16.782710047200002,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "AMD",
+      "entry_time": "2026-01-14T07:00:00",
+      "exit_time": "2026-01-14T14:40:00",
+      "entry_price": 220.69029,
+      "exit_price": 215.35227000000003,
+      "quantity": 76.0,
+      "side": "long",
+      "pnl": -422.05629251999784,
+      "pnl_pct": -0.02516364571363775,
+      "commission": 16.36677252,
+      "strategy": "Consensus",
+      "exit_reason": "stop_loss"
+    },
+    {
+      "symbol": "PLTR",
+      "entry_time": "2026-01-14T09:00:00",
+      "exit_time": "2026-01-14T14:40:00",
+      "entry_price": 178.40915999999999,
+      "exit_price": 176.301805,
+      "quantity": 73.42,
+      "side": "long",
+      "pnl": -167.66608262309882,
+      "pnl_pct": -0.012800109618810963,
+      "commission": 12.944078523100002,
+      "strategy": "Consensus",
+      "exit_reason": "stop_loss"
+    },
+    {
+      "symbol": "TSLA",
+      "entry_time": "2026-01-14T12:00:00",
+      "exit_time": "2026-01-14T15:45:00",
+      "entry_price": 443.80179,
+      "exit_price": 435.8569625,
+      "quantity": 26.33,
+      "side": "long",
+      "pnl": -220.6634218976243,
+      "pnl_pct": -0.018883845562001844,
+      "commission": 11.476113822624999,
+      "strategy": "Consensus",
+      "exit_reason": "stop_loss"
+    },
+    {
+      "symbol": "TSLA",
+      "entry_time": "2026-01-14T20:35:00",
+      "exit_time": "2026-01-14T20:45:00",
+      "entry_price": 437.86882499999996,
+      "exit_price": 436.231775,
+      "quantity": 35.74,
+      "side": "long",
+      "pnl": -74.09909063849754,
+      "pnl_pct": -0.004734938083340213,
+      "commission": 15.590923638500003,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "AMD",
+      "entry_time": "2026-01-15T04:55:00",
+      "exit_time": "2026-01-15T10:20:00",
+      "entry_price": 222.35112,
+      "exit_price": 227.37625500000001,
+      "quantity": 74.71,
+      "side": "long",
+      "pnl": 358.4405558389504,
+      "pnl_pct": 0.021577398598217116,
+      "commission": 16.98728001105,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "PLTR",
+      "entry_time": "2026-01-15T08:10:00",
+      "exit_time": "2026-01-15T14:10:00",
+      "entry_price": 178.44918,
+      "exit_price": 178.7115995,
+      "quantity": 72.7,
+      "side": "long",
+      "pnl": 6.085564366349484,
+      "pnl_pct": 0.0004690853748949303,
+      "commission": 12.992333283650002,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-15T21:30:00",
+      "exit_time": "2026-01-16T06:05:00",
+      "entry_price": 187.09349999999998,
+      "exit_price": 188.375765,
+      "quantity": 55.43,
+      "side": "long",
+      "pnl": 60.634280296051315,
+      "pnl_pct": 0.005846751677637245,
+      "commission": 10.441668653950002,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "AMD",
+      "entry_time": "2026-01-15T21:15:00",
+      "exit_time": "2026-01-16T06:10:00",
+      "entry_price": 228.52500539999997,
+      "exit_price": 232.34377000000003,
+      "quantity": 53.4,
+      "side": "long",
+      "pnl": 191.5148723220035,
+      "pnl_pct": 0.01569377855925462,
+      "commission": 12.407157318000001,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "PLTR",
+      "entry_time": "2026-01-15T14:45:00",
+      "exit_time": "2026-01-16T14:40:00",
+      "entry_price": 179.7648375,
+      "exit_price": 177.33138995,
+      "quantity": 92.73,
+      "side": "long",
+      "pnl": -242.09753110156453,
+      "pnl_pct": -0.01452330153248135,
+      "commission": 16.443939790063503,
+      "strategy": "Consensus",
+      "exit_reason": "stop_loss"
+    },
+    {
+      "symbol": "TSLA",
+      "entry_time": "2026-01-16T14:30:00",
+      "exit_time": "2026-01-16T15:25:00",
+      "entry_price": 444.06191999999993,
+      "exit_price": 436.6065875,
+      "quantity": 20.24,
+      "side": "long",
+      "pnl": -159.73284713099878,
+      "pnl_pct": -0.01777215908875938,
+      "commission": 8.836917330999999,
+      "strategy": "Consensus",
+      "exit_reason": "stop_loss"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-16T13:50:00",
+      "exit_time": "2026-01-16T20:55:00",
+      "entry_price": 188.57413995,
+      "exit_price": 186.12689,
+      "quantity": 61.03,
+      "side": "long",
+      "pnl": -160.7149885451991,
+      "pnl_pct": -0.013964676390401247,
+      "commission": 11.3593240967,
+      "strategy": "Consensus",
+      "exit_reason": "stop_loss"
+    },
+    {
+      "symbol": "AMD",
+      "entry_time": "2026-01-16T13:40:00",
+      "exit_time": "2026-01-20T01:00:00",
+      "entry_price": 233.266575,
+      "exit_price": 225.87700500000003,
+      "quantity": 59.46,
+      "side": "long",
+      "pnl": -452.81447891729783,
+      "pnl_pct": -0.03264697055289625,
+      "commission": 13.430646717300002,
+      "strategy": "Consensus",
+      "exit_reason": "stop_loss"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-16T21:55:00",
+      "exit_time": "2026-01-20T01:05:00",
+      "entry_price": 186.44227454999998,
+      "exit_price": 182.53868500000002,
+      "quantity": 67.42,
+      "side": "long",
+      "pnl": -275.48676560369756,
+      "pnl_pct": -0.021916318307434873,
+      "commission": 12.306758142700001,
+      "strategy": "Consensus",
+      "exit_reason": "stop_loss"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-20T02:00:00",
+      "exit_time": "2026-01-20T06:15:00",
+      "entry_price": 183.701805,
+      "exit_price": 182.72859,
+      "quantity": 79.15,
+      "side": "long",
+      "pnl": -91.49293514850082,
+      "pnl_pct": -0.006292499902219307,
+      "commission": 14.4629678985,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-20T07:30:00",
+      "exit_time": "2026-01-20T12:55:00",
+      "entry_price": 182.19105,
+      "exit_price": 182.21884500000002,
+      "quantity": 78.8,
+      "side": "long",
+      "pnl": -12.168598985997953,
+      "pnl_pct": -0.0008475929251188466,
+      "commission": 14.358844986000001,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "AMD",
+      "entry_time": "2026-01-20T14:30:00",
+      "exit_time": "2026-01-20T16:15:00",
+      "entry_price": 232.105995,
+      "exit_price": 238.11588250000003,
+      "quantity": 49.97,
+      "side": "long",
+      "pnl": 288.41542772647597,
+      "pnl_pct": 0.024866964842937465,
+      "commission": 11.898650648525,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "PLTR",
+      "entry_time": "2026-01-20T04:15:00",
+      "exit_time": "2026-01-20T16:45:00",
+      "entry_price": 167.83387499999998,
+      "exit_price": 170.90450500000003,
+      "quantity": 73.62,
+      "side": "long",
+      "pnl": 213.47779094190375,
+      "pnl_pct": 0.017277355331276546,
+      "commission": 12.581989658100003,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "TSLA",
+      "entry_time": "2026-01-20T07:55:00",
+      "exit_time": "2026-01-20T20:00:00",
+      "entry_price": 426.943365,
+      "exit_price": 420.5796050000001,
+      "quantity": 27.9,
+      "side": "long",
+      "pnl": -189.28307497949717,
+      "pnl_pct": -0.015890490779731172,
+      "commission": 11.7341709795,
+      "strategy": "Consensus",
+      "exit_reason": "stop_loss"
+    },
+    {
+      "symbol": "TSLA",
+      "entry_time": "2026-01-20T20:55:00",
+      "exit_time": "2026-01-21T02:15:00",
+      "entry_price": 419.45962499999996,
+      "exit_price": 421.3892000000001,
+      "quantity": 26.44,
+      "side": "long",
+      "pnl": 39.876432552002996,
+      "pnl_pct": 0.0035955446248256036,
+      "commission": 11.141530448000003,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "PLTR",
+      "entry_time": "2026-01-20T21:40:00",
+      "exit_time": "2026-01-21T06:55:00",
+      "entry_price": 168.70431,
+      "exit_price": 169.145385,
+      "quantity": 63.32,
+      "side": "long",
+      "pnl": 17.218583221800763,
+      "pnl_pct": 0.0016118711786320815,
+      "commission": 10.710285778200001,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "AMD",
+      "entry_time": "2026-01-20T19:45:00",
+      "exit_time": "2026-01-21T08:00:00",
+      "entry_price": 231.84586499999997,
+      "exit_price": 234.84252,
+      "quantity": 54.98,
+      "side": "long",
+      "pnl": 151.84445015040177,
+      "pnl_pct": 0.01191227835786518,
+      "commission": 12.9116417496,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "PLTR",
+      "entry_time": "2026-01-21T12:55:00",
+      "exit_time": "2026-01-21T14:35:00",
+      "entry_price": 167.64207915,
+      "exit_price": 166.546685,
+      "quantity": 88.11,
+      "side": "long",
+      "pnl": -111.18960697185037,
+      "pnl_pct": -0.007527589978592819,
+      "commission": 14.67442841535,
+      "strategy": "Consensus",
+      "exit_reason": "stop_loss"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-20T15:30:00",
+      "exit_time": "2026-01-21T16:30:00",
+      "entry_price": 181.4056575,
+      "exit_price": 182.20894995,
+      "quantity": 57.05,
+      "side": "long",
+      "pnl": 35.43281367785335,
+      "pnl_pct": 0.0034237272894866305,
+      "commission": 10.3950205946475,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "PLTR",
+      "entry_time": "2026-01-21T17:50:00",
+      "exit_time": "2026-01-22T02:40:00",
+      "entry_price": 162.3661425,
+      "exit_price": 167.57617000000002,
+      "quantity": 101.72,
+      "side": "long",
+      "pnl": 512.9181492876024,
+      "pnl_pct": 0.03105605178739788,
+      "commission": 17.0458480124,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "PLTR",
+      "entry_time": "2026-01-22T17:55:00",
+      "exit_time": "2026-01-23T02:40:00",
+      "entry_price": 165.812865,
+      "exit_price": 166.60665500000002,
+      "quantity": 83.07,
+      "side": "long",
+      "pnl": 52.100120469152465,
+      "pnl_pct": 0.003782476980902717,
+      "commission": 13.840014830850002,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-22T15:25:00",
+      "exit_time": "2026-01-23T06:35:00",
+      "entry_price": 184.962435,
+      "exit_price": 184.477715,
+      "quantity": 89.75,
+      "side": "long",
+      "pnl": -60.0604949212509,
+      "pnl_pct": -0.0036180195994933244,
+      "commission": 16.55687492125,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "AMD",
+      "entry_time": "2026-01-23T14:30:00",
+      "exit_time": "2026-01-23T16:55:00",
+      "entry_price": 262.41113999999993,
+      "exit_price": 259.5551575,
+      "quantity": 36.89,
+      "side": "long",
+      "pnl": -114.93218418517223,
+      "pnl_pct": -0.011872733975775289,
+      "commission": 9.574989760175,
+      "strategy": "Consensus",
+      "exit_reason": "stop_loss"
+    },
+    {
+      "symbol": "PLTR",
+      "entry_time": "2026-01-23T10:30:00",
+      "exit_time": "2026-01-23T17:00:00",
+      "entry_price": 165.53272499999997,
+      "exit_price": 170.75308075,
+      "quantity": 89.18,
+      "side": "long",
+      "pnl": 450.3235660437185,
+      "pnl_pct": 0.030505162464099102,
+      "commission": 15.227759741285004,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-23T14:25:00",
+      "exit_time": "2026-01-26T01:00:00",
+      "entry_price": 187.663785,
+      "exit_price": 186.956475,
+      "quantity": 61.43,
+      "side": "long",
+      "pnl": -54.93478955924867,
+      "pnl_pct": -0.004765258651262834,
+      "commission": 11.48473625925,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "TSLA",
+      "entry_time": "2026-01-22T20:55:00",
+      "exit_time": "2026-01-26T01:05:00",
+      "entry_price": 449.6096925,
+      "exit_price": 443.37820000000005,
+      "quantity": 23.92,
+      "side": "long",
+      "pnl": -159.6629071439987,
+      "pnl_pct": -0.01484592261097651,
+      "commission": 10.605606544000002,
+      "strategy": "Consensus",
+      "exit_reason": "stop_loss"
+    },
+    {
+      "symbol": "AMD",
+      "entry_time": "2026-01-23T19:05:00",
+      "exit_time": "2026-01-26T08:10:00",
+      "entry_price": 257.298585,
+      "exit_price": 258.67060000000004,
+      "quantity": 49.95,
+      "side": "long",
+      "pnl": 55.611552780001645,
+      "pnl_pct": 0.004327052167815197,
+      "commission": 12.920596470000003,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-26T02:50:00",
+      "exit_time": "2026-01-26T08:45:00",
+      "entry_price": 186.17304000000001,
+      "exit_price": 186.756575,
+      "quantity": 58.07,
+      "side": "long",
+      "pnl": 23.040923139749044,
+      "pnl_pct": 0.002131234603033734,
+      "commission": 10.84495431025,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "TSLA",
+      "entry_time": "2026-01-26T02:05:00",
+      "exit_time": "2026-01-26T09:00:00",
+      "entry_price": 444.47212499999995,
+      "exit_price": 445.68704500000007,
+      "quantity": 28.62,
+      "side": "long",
+      "pnl": 22.01544717210344,
+      "pnl_pct": 0.0017306663606859942,
+      "commission": 12.755563227900002,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "TSLA",
+      "entry_time": "2026-01-26T15:55:00",
+      "exit_time": "2026-01-27T02:30:00",
+      "entry_price": 438.7492649999999,
+      "exit_price": 436.91143500000004,
+      "quantity": 31.43,
+      "side": "long",
+      "pnl": -71.49512330204632,
+      "pnl_pct": -0.005184604548568038,
+      "commission": 13.732126402050001,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "AMD",
+      "entry_time": "2026-01-26T15:50:00",
+      "exit_time": "2026-01-27T03:35:00",
+      "entry_price": 253.32659999999998,
+      "exit_price": 253.42322500000003,
+      "quantity": 65.59,
+      "side": "long",
+      "pnl": -10.284395577747006,
+      "pnl_pct": -0.0006189568130624827,
+      "commission": 16.622029327750003,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-27T13:40:00",
+      "exit_time": "2026-01-27T16:35:00",
+      "entry_price": 187.24817729999998,
+      "exit_price": 189.56517,
+      "quantity": 88.64,
+      "side": "long",
+      "pnl": 188.57517625920127,
+      "pnl_pct": 0.011361539325381803,
+      "commission": 16.8030566688,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "AMD",
+      "entry_time": "2026-01-27T14:25:00",
+      "exit_time": "2026-01-27T19:15:00",
+      "entry_price": 252.32609999999997,
+      "exit_price": 249.785045,
+      "quantity": 54.58,
+      "side": "long",
+      "pnl": -152.32404965609845,
+      "pnl_pct": -0.011060449335205403,
+      "commission": 13.6332677561,
+      "strategy": "Consensus",
+      "exit_reason": "stop_loss"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-27T20:05:00",
+      "exit_time": "2026-01-28T04:55:00",
+      "entry_price": 189.5097075,
+      "exit_price": 191.38426,
+      "quantity": 72.68,
+      "side": "long",
+      "pnl": 122.33266768320156,
+      "pnl_pct": 0.00888169931875401,
+      "commission": 13.909808016800001,
+      "strategy": "Consensus",
+      "exit_reason": "signal"
+    },
+    {
+      "symbol": "PLTR",
+      "entry_time": "2026-01-27T20:35:00",
+      "exit_time": "2026-01-28T14:30:00",
+      "entry_price": 165.08229989999998,
+      "exit_price": 162.73859000000002,
+      "quantity": 69.22,
+      "side": "long",
+      "pnl": -173.49636447779756,
+      "pnl_pct": -0.015183023810052727,
+      "commission": 11.264765199800001,
+      "strategy": "Consensus",
+      "exit_reason": "stop_loss"
+    },
+    {
+      "symbol": "AMD",
+      "entry_time": "2026-01-27T19:20:00",
+      "exit_time": "2026-01-28T15:25:00",
+      "entry_price": 250.88548004999998,
+      "exit_price": 252.77355000000003,
+      "quantity": 66.16,
+      "side": "long",
+      "pnl": 108.19120982400295,
+      "pnl_pct": 0.0065180990134388805,
+      "commission": 16.723498068,
+      "strategy": "Consensus",
+      "exit_reason": "stop_loss"
+    },
+    {
+      "symbol": "PLTR",
+      "entry_time": "2026-01-28T16:10:00",
+      "exit_time": "2026-01-28T17:30:00",
+      "entry_price": 162.6238713,
+      "exit_price": 159.14039,
+      "quantity": 84.7,
+      "side": "long",
+      "pnl": -308.5300571429995,
+      "pnl_pct": -0.022399059011947123,
+      "commission": 13.479191033000001,
+      "strategy": "Consensus",
+      "exit_reason": "stop_loss"
+    },
+    {
+      "symbol": "TSLA",
+      "entry_time": "2026-01-28T21:05:00",
+      "exit_time": "2026-01-28T22:45:00",
+      "entry_price": 447.0165966,
+      "exit_price": 437.311235,
+      "quantity": 28.89,
+      "side": "long",
+      "pnl": -293.02181820315013,
+      "pnl_pct": -0.022689700812329985,
+      "commission": 12.633921579150002,
+      "strategy": "Consensus",
+      "exit_reason": "stop_loss"
+    },
+    {
+      "symbol": "NVDA",
+      "entry_time": "2026-01-28T16:10:00",
+      "exit_time": "2026-01-29T15:10:00",
+      "entry_price": 191.8959,
+      "exit_price": 188.34568005,
+      "quantity": 86.51,
+      "side": "long",
+      "pnl": -323.42331265562666,
+      "pnl_pct": -0.019482259027160106,
+      "commission": 16.293784781125503,
+      "strategy": "Consensus",
+      "exit_reason": "stop_loss"
+    },
+    {
+      "symbol": "PLTR",
+      "entry_time": "2026-01-29T15:55:00",
+      "exit_time": "2026-01-29T16:05:00",
+      "entry_price": 148.29411,
+      "exit_price": 148.66563000000002,
+      "quantity": 110.84,
+      "side": "long",
+      "pnl": 24.701178370803575,
+      "pnl_pct": 0.001502786388481864,
+      "commission": 16.478098429200003,
+      "strategy": "Consensus",
+      "exit_reason": "end_of_data"
+    }
+  ],
+  "equity_curve": [
+    {
+      "date": "2026-01-27T11:30:00",
+      "equity": 97584.77143543778
+    },
+    {
+      "date": "2026-01-27T11:35:00",
+      "equity": 97584.77143543778
+    },
+    {
+      "date": "2026-01-27T11:40:00",
+      "equity": 97584.77143543778
+    },
+    {
+      "date": "2026-01-27T11:45:00",
+      "equity": 97584.77143543778
+    },
+    {
+      "date": "2026-01-27T11:50:00",
+      "equity": 97584.77143543778
+    },
+    {
+      "date": "2026-01-27T11:55:00",
+      "equity": 97584.77143543778
+    },
+    {
+      "date": "2026-01-27T12:00:00",
+      "equity": 97584.77143543778
+    },
+    {
+      "date": "2026-01-27T12:05:00",
+      "equity": 97584.77143543778
+    },
+    {
+      "date": "2026-01-27T12:10:00",
+      "equity": 97584.77143543778
+    },
+    {
+      "date": "2026-01-27T12:15:00",
+      "equity": 97584.77143543778
+    },
+    {
+      "date": "2026-01-27T12:20:00",
+      "equity": 97584.77143543778
+    },
+    {
+      "date": "2026-01-27T12:25:00",
+      "equity": 97584.77143543778
+    },
+    {
+      "date": "2026-01-27T12:30:00",
+      "equity": 97584.77143543778
+    },
+    {
+      "date": "2026-01-27T12:35:00",
+      "equity": 97584.77143543778
+    },
+    {
+      "date": "2026-01-27T12:40:00",
+      "equity": 97584.77143543778
+    },
+    {
+      "date": "2026-01-27T12:45:00",
+      "equity": 97584.77143543778
+    },
+    {
+      "date": "2026-01-27T12:50:00",
+      "equity": 97584.77143543778
+    },
+    {
+      "date": "2026-01-27T12:55:00",
+      "equity": 97584.77143543778
+    },
+    {
+      "date": "2026-01-27T13:00:00",
+      "equity": 97584.77143543778
+    },
+    {
+      "date": "2026-01-27T13:05:00",
+      "equity": 97584.77143543778
+    },
+    {
+      "date": "2026-01-27T13:10:00",
+      "equity": 97584.77143543778
+    },
+    {
+      "date": "2026-01-27T13:15:00",
+      "equity": 97584.77143543778
+    },
+    {
+      "date": "2026-01-27T13:20:00",
+      "equity": 97584.77143543778
+    },
+    {
+      "date": "2026-01-27T13:25:00",
+      "equity": 97584.77143543778
+    },
+    {
+      "date": "2026-01-27T13:30:00",
+      "equity": 97584.77143543778
+    },
+    {
+      "date": "2026-01-27T13:35:00",
+      "equity": 97584.77143543778
+    },
+    {
+      "date": "2026-01-27T13:40:00",
+      "equity": 97559.8790651299
+    },
+    {
+      "date": "2026-01-27T13:45:00",
+      "equity": 97567.03231312992
+    },
+    {
+      "date": "2026-01-27T13:50:00",
+      "equity": 97570.10812112992
+    },
+    {
+      "date": "2026-01-27T13:55:00",
+      "equity": 97571.88092112991
+    },
+    {
+      "date": "2026-01-27T14:00:00",
+      "equity": 97584.29052112991
+    },
+    {
+      "date": "2026-01-27T14:05:00",
+      "equity": 97576.71180112992
+    },
+    {
+      "date": "2026-01-27T14:10:00",
+      "equity": 97573.65372112991
+    },
+    {
+      "date": "2026-01-27T14:15:00",
+      "equity": 97563.90332112991
+    },
+    {
+      "date": "2026-01-27T14:20:00",
+      "equity": 97564.78972112991
+    },
+    {
+      "date": "2026-01-27T14:25:00",
+      "equity": 97546.7944245919
+    },
+    {
+      "date": "2026-01-27T14:30:00",
+      "equity": 97348.54282459192
+    },
+    {
+      "date": "2026-01-27T14:35:00",
+      "equity": 97272.39643659191
+    },
+    {
+      "date": "2026-01-27T14:40:00",
+      "equity": 97337.13917659191
+    },
+    {
+      "date": "2026-01-27T14:45:00",
+      "equity": 97470.60841259192
+    },
+    {
+      "date": "2026-01-27T14:50:00",
+      "equity": 97532.96942459191
+    },
+    {
+      "date": "2026-01-27T14:55:00",
+      "equity": 97619.63772459191
+    },
+    {
+      "date": "2026-01-27T15:00:00",
+      "equity": 97702.22373259191
+    },
+    {
+      "date": "2026-01-27T15:05:00",
+      "equity": 97813.41822459191
+    },
+    {
+      "date": "2026-01-27T15:10:00",
+      "equity": 97816.05222459191
+    },
+    {
+      "date": "2026-01-27T15:15:00",
+      "equity": 97794.9586245919
+    },
+    {
+      "date": "2026-01-27T15:20:00",
+      "equity": 97788.96952459191
+    },
+    {
+      "date": "2026-01-27T15:25:00",
+      "equity": 97793.49745659191
+    },
+    {
+      "date": "2026-01-27T15:30:00",
+      "equity": 97820.64402459191
+    },
+    {
+      "date": "2026-01-27T15:35:00",
+      "equity": 97812.50335259191
+    },
+    {
+      "date": "2026-01-27T15:40:00",
+      "equity": 97863.3370205919
+    },
+    {
+      "date": "2026-01-27T15:45:00",
+      "equity": 97773.7729245919
+    },
+    {
+      "date": "2026-01-27T15:50:00",
+      "equity": 97783.6082885919
+    },
+    {
+      "date": "2026-01-27T15:55:00",
+      "equity": 97807.09847459191
+    },
+    {
+      "date": "2026-01-27T16:00:00",
+      "equity": 97833.2134245919
+    },
+    {
+      "date": "2026-01-27T16:05:00",
+      "equity": 97824.01302459191
+    },
+    {
+      "date": "2026-01-27T16:10:00",
+      "equity": 97786.17622459191
+    },
+    {
+      "date": "2026-01-27T16:15:00",
+      "equity": 97818.83526459191
+    },
+    {
+      "date": "2026-01-27T16:20:00",
+      "equity": 97805.06352459191
+    },
+    {
+      "date": "2026-01-27T16:25:00",
+      "equity": 97773.26612059191
+    },
+    {
+      "date": "2026-01-27T16:30:00",
+      "equity": 97789.7735665919
+    },
+    {
+      "date": "2026-01-27T16:35:00",
+      "equity": 97745.10013672311
+    },
+    {
+      "date": "2026-01-27T16:40:00",
+      "equity": 97735.5486367231
+    },
+    {
+      "date": "2026-01-27T16:45:00",
+      "equity": 97736.91313672312
+    },
+    {
+      "date": "2026-01-27T16:50:00",
+      "equity": 97744.82723672311
+    },
+    {
+      "date": "2026-01-27T16:55:00",
+      "equity": 97755.19743672312
+    },
+    {
+      "date": "2026-01-27T17:00:00",
+      "equity": 97755.19743672312
+    },
+    {
+      "date": "2026-01-27T17:05:00",
+      "equity": 97762.35287472312
+    },
+    {
+      "date": "2026-01-27T17:10:00",
+      "equity": 97760.65543672311
+    },
+    {
+      "date": "2026-01-27T17:15:00",
+      "equity": 97757.65353672311
+    },
+    {
+      "date": "2026-01-27T17:20:00",
+      "equity": 97709.34477872311
+    },
+    {
+      "date": "2026-01-27T17:25:00",
+      "equity": 97754.65163672311
+    },
+    {
+      "date": "2026-01-27T17:30:00",
+      "equity": 97748.64783672312
+    },
+    {
+      "date": "2026-01-27T17:35:00",
+      "equity": 97751.37683672311
+    },
+    {
+      "date": "2026-01-27T17:40:00",
+      "equity": 97744.82723672311
+    },
+    {
+      "date": "2026-01-27T17:45:00",
+      "equity": 97716.99143672311
+    },
+    {
+      "date": "2026-01-27T17:50:00",
+      "equity": 97702.2548367231
+    },
+    {
+      "date": "2026-01-27T17:55:00",
+      "equity": 97723.54103672311
+    },
+    {
+      "date": "2026-01-27T18:00:00",
+      "equity": 97718.08303672311
+    },
+    {
+      "date": "2026-01-27T18:05:00",
+      "equity": 97688.06403672311
+    },
+    {
+      "date": "2026-01-27T18:10:00",
+      "equity": 97669.50137872311
+    },
+    {
+      "date": "2026-01-27T18:15:00",
+      "equity": 97667.05073672312
+    },
+    {
+      "date": "2026-01-27T18:20:00",
+      "equity": 97667.32363672311
+    },
+    {
+      "date": "2026-01-27T18:25:00",
+      "equity": 97656.95343672311
+    },
+    {
+      "date": "2026-01-27T18:30:00",
+      "equity": 97676.05643672311
+    },
+    {
+      "date": "2026-01-27T18:35:00",
+      "equity": 97668.43706872311
+    },
+    {
+      "date": "2026-01-27T18:40:00",
+      "equity": 97665.13497872312
+    },
+    {
+      "date": "2026-01-27T18:45:00",
+      "equity": 97658.92923272311
+    },
+    {
+      "date": "2026-01-27T18:50:00",
+      "equity": 97638.9420367231
+    },
+    {
+      "date": "2026-01-27T18:55:00",
+      "equity": 97618.82930672311
+    },
+    {
+      "date": "2026-01-27T19:00:00",
+      "equity": 97625.29703672312
+    },
+    {
+      "date": "2026-01-27T19:05:00",
+      "equity": 97640.88508472311
+    },
+    {
+      "date": "2026-01-27T19:10:00",
+      "equity": 97637.57753672311
+    },
+    {
+      "date": "2026-01-27T19:15:00",
+      "equity": 97590.65292506701
+    },
+    {
+      "date": "2026-01-27T19:20:00",
+      "equity": 97565.7591975989
+    },
+    {
+      "date": "2026-01-27T19:25:00",
+      "equity": 97587.58538159891
+    },
+    {
+      "date": "2026-01-27T19:30:00",
+      "equity": 97604.78698159891
+    },
+    {
+      "date": "2026-01-27T19:35:00",
+      "equity": 97574.3533815989
+    },
+    {
+      "date": "2026-01-27T19:40:00",
+      "equity": 97558.4749815989
+    },
+    {
+      "date": "2026-01-27T19:45:00",
+      "equity": 97584.2773815989
+    },
+    {
+      "date": "2026-01-27T19:50:00",
+      "equity": 97577.9326375989
+    },
+    {
+      "date": "2026-01-27T19:55:00",
+      "equity": 97534.3265815989
+    },
+    {
+      "date": "2026-01-27T20:00:00",
+      "equity": 97530.0261815989
+    },
+    {
+      "date": "2026-01-27T20:05:00",
+      "equity": 97567.59007495781
+    },
+    {
+      "date": "2026-01-27T20:10:00",
+      "equity": 97587.1676749578
+    },
+    {
+      "date": "2026-01-27T20:15:00",
+      "equity": 97636.9279469578
+    },
+    {
+      "date": "2026-01-27T20:20:00",
+      "equity": 97641.71033495781
+    },
+    {
+      "date": "2026-01-27T20:25:00",
+      "equity": 97603.38167495781
+    },
+    {
+      "date": "2026-01-27T20:30:00",
+      "equity": 97578.7798589578
+    },
+    {
+      "date": "2026-01-27T20:35:00",
+      "equity": 97560.20003508072
+    },
+    {
+      "date": "2026-01-27T20:40:00",
+      "equity": 97562.03487908072
+    },
+    {
+      "date": "2026-01-27T20:45:00",
+      "equity": 97585.86297908073
+    },
+    {
+      "date": "2026-01-27T20:50:00",
+      "equity": 97516.86027908072
+    },
+    {
+      "date": "2026-01-27T20:55:00",
+      "equity": 97597.69911908073
+    },
+    {
+      "date": "2026-01-27T21:00:00",
+      "equity": 97582.42435908073
+    },
+    {
+      "date": "2026-01-27T21:05:00",
+      "equity": 97594.15347908073
+    },
+    {
+      "date": "2026-01-27T21:10:00",
+      "equity": 97599.60299508073
+    },
+    {
+      "date": "2026-01-27T21:15:00",
+      "equity": 97616.10007908073
+    },
+    {
+      "date": "2026-01-27T21:20:00",
+      "equity": 97608.84807908072
+    },
+    {
+      "date": "2026-01-27T21:25:00",
+      "equity": 97601.92607908073
+    },
+    {
+      "date": "2026-01-27T21:30:00",
+      "equity": 97621.02167908073
+    },
+    {
+      "date": "2026-01-27T21:35:00",
+      "equity": 97635.21467908073
+    },
+    {
+      "date": "2026-01-27T21:40:00",
+      "equity": 97607.99827908073
+    },
+    {
+      "date": "2026-01-27T21:45:00",
+      "equity": 97652.89995108073
+    },
+    {
+      "date": "2026-01-27T21:50:00",
+      "equity": 97634.51906308072
+    },
+    {
+      "date": "2026-01-27T21:55:00",
+      "equity": 97630.90287908074
+    },
+    {
+      "date": "2026-01-27T22:00:00",
+      "equity": 97635.72167908073
+    },
+    {
+      "date": "2026-01-27T22:05:00",
+      "equity": 97637.97227908073
+    },
+    {
+      "date": "2026-01-27T22:10:00",
+      "equity": 97627.44287908074
+    },
+    {
+      "date": "2026-01-27T22:15:00",
+      "equity": 97622.52427908074
+    },
+    {
+      "date": "2026-01-27T22:20:00",
+      "equity": 97626.05447908073
+    },
+    {
+      "date": "2026-01-27T22:25:00",
+      "equity": 97633.35707908074
+    },
+    {
+      "date": "2026-01-27T22:30:00",
+      "equity": 97634.17730308074
+    },
+    {
+      "date": "2026-01-27T22:35:00",
+      "equity": 97623.55410508072
+    },
+    {
+      "date": "2026-01-27T22:40:00",
+      "equity": 97640.16867908073
+    },
+    {
+      "date": "2026-01-27T22:45:00",
+      "equity": 97638.60658308072
+    },
+    {
+      "date": "2026-01-27T22:50:00",
+      "equity": 97631.93967908074
+    },
+    {
+      "date": "2026-01-27T22:55:00",
+      "equity": 97638.29312708075
+    },
+    {
+      "date": "2026-01-27T23:00:00",
+      "equity": 97647.37395308074
+    },
+    {
+      "date": "2026-01-27T23:05:00",
+      "equity": 97639.32986308073
+    },
+    {
+      "date": "2026-01-27T23:10:00",
+      "equity": 97644.80667508073
+    },
+    {
+      "date": "2026-01-27T23:15:00",
+      "equity": 97656.45847908073
+    },
+    {
+      "date": "2026-01-27T23:20:00",
+      "equity": 97652.10071908074
+    },
+    {
+      "date": "2026-01-27T23:25:00",
+      "equity": 97650.89659908073
+    },
+    {
+      "date": "2026-01-27T23:30:00",
+      "equity": 97673.54072108073
+    },
+    {
+      "date": "2026-01-27T23:35:00",
+      "equity": 97668.39287908073
+    },
+    {
+      "date": "2026-01-27T23:40:00",
+      "equity": 97660.32327908074
+    },
+    {
+      "date": "2026-01-27T23:45:00",
+      "equity": 97665.31182508073
+    },
+    {
+      "date": "2026-01-27T23:50:00",
+      "equity": 97645.28681108073
+    },
+    {
+      "date": "2026-01-27T23:55:00",
+      "equity": 97644.10127908073
+    },
+    {
+      "date": "2026-01-28T00:00:00",
+      "equity": 97649.22347908074
+    },
+    {
+      "date": "2026-01-28T00:05:00",
+      "equity": 97652.82187908073
+    },
+    {
+      "date": "2026-01-28T00:10:00",
+      "equity": 97656.76098708072
+    },
+    {
+      "date": "2026-01-28T00:15:00",
+      "equity": 97669.08747908073
+    },
+    {
+      "date": "2026-01-28T00:20:00",
+      "equity": 97652.88365108073
+    },
+    {
+      "date": "2026-01-28T00:25:00",
+      "equity": 97679.27227908073
+    },
+    {
+      "date": "2026-01-28T00:30:00",
+      "equity": 97702.15087908073
+    },
+    {
+      "date": "2026-01-28T00:35:00",
+      "equity": 97780.54607908073
+    },
+    {
+      "date": "2026-01-28T00:40:00",
+      "equity": 97793.77854308073
+    },
+    {
+      "date": "2026-01-28T00:45:00",
+      "equity": 97792.36081108073
+    },
+    {
+      "date": "2026-01-28T00:50:00",
+      "equity": 97773.38221708074
+    },
+    {
+      "date": "2026-01-28T00:55:00",
+      "equity": 97789.15912308072
+    },
+    {
+      "date": "2026-01-28T01:00:00",
+      "equity": 97833.56387908073
+    },
+    {
+      "date": "2026-01-28T01:05:00",
+      "equity": 97845.81627908073
+    },
+    {
+      "date": "2026-01-28T01:10:00",
+      "equity": 97842.40347908073
+    },
+    {
+      "date": "2026-01-28T01:15:00",
+      "equity": 97823.17847908073
+    },
+    {
+      "date": "2026-01-28T01:20:00",
+      "equity": 97810.46567908072
+    },
+    {
+      "date": "2026-01-28T01:25:00",
+      "equity": 97813.43247908074
+    },
+    {
+      "date": "2026-01-28T01:30:00",
+      "equity": 97827.52727908074
+    },
+    {
+      "date": "2026-01-28T01:35:00",
+      "equity": 97811.92327908074
+    },
+    {
+      "date": "2026-01-28T01:40:00",
+      "equity": 97808.39147908073
+    },
+    {
+      "date": "2026-01-28T01:45:00",
+      "equity": 97771.36247908074
+    },
+    {
+      "date": "2026-01-28T01:50:00",
+      "equity": 97770.01267908074
+    },
+    {
+      "date": "2026-01-28T01:55:00",
+      "equity": 97745.79887908073
+    },
+    {
+      "date": "2026-01-28T02:00:00",
+      "equity": 97748.32587908073
+    },
+    {
+      "date": "2026-01-28T02:05:00",
+      "equity": 97769.15847908074
+    },
+    {
+      "date": "2026-01-28T02:10:00",
+      "equity": 97768.37147908073
+    },
+    {
+      "date": "2026-01-28T02:15:00",
+      "equity": 97766.48647908073
+    },
+    {
+      "date": "2026-01-28T02:20:00",
+      "equity": 97748.43167908074
+    },
+    {
+      "date": "2026-01-28T02:25:00",
+      "equity": 97757.66347908073
+    },
+    {
+      "date": "2026-01-28T02:30:00",
+      "equity": 97750.56287908074
+    },
+    {
+      "date": "2026-01-28T02:35:00",
+      "equity": 97758.37027908073
+    },
+    {
+      "date": "2026-01-28T02:40:00",
+      "equity": 97764.70787908073
+    },
+    {
+      "date": "2026-01-28T02:45:00",
+      "equity": 97754.62287908074
+    },
+    {
+      "date": "2026-01-28T02:50:00",
+      "equity": 97768.03047908074
+    },
+    {
+      "date": "2026-01-28T02:55:00",
+      "equity": 97750.88107908073
+    },
+    {
+      "date": "2026-01-28T03:00:00",
+      "equity": 97754.10127908073
+    },
+    {
+      "date": "2026-01-28T03:05:00",
+      "equity": 97753.84047908074
+    },
+    {
+      "date": "2026-01-28T03:10:00",
+      "equity": 97739.99507908072
+    },
+    {
+      "date": "2026-01-28T03:15:00",
+      "equity": 97745.14387908073
+    },
+    {
+      "date": "2026-01-28T03:20:00",
+      "equity": 97751.38967908072
+    },
+    {
+      "date": "2026-01-28T03:25:00",
+      "equity": 97720.40127908073
+    },
+    {
+      "date": "2026-01-28T03:30:00",
+      "equity": 97713.85447908074
+    },
+    {
+      "date": "2026-01-28T03:35:00",
+      "equity": 97722.68147908073
+    },
+    {
+      "date": "2026-01-28T03:40:00",
+      "equity": 97685.93187908073
+    },
+    {
+      "date": "2026-01-28T03:45:00",
+      "equity": 97723.83987908074
+    },
+    {
+      "date": "2026-01-28T03:50:00",
+      "equity": 97789.95107908073
+    },
+    {
+      "date": "2026-01-28T03:55:00",
+      "equity": 97865.39587908072
+    },
+    {
+      "date": "2026-01-28T04:00:00",
+      "equity": 97980.71767908073
+    },
+    {
+      "date": "2026-01-28T04:05:00",
+      "equity": 98009.04607908073
+    },
+    {
+      "date": "2026-01-28T04:10:00",
+      "equity": 97972.61107908073
+    },
+    {
+      "date": "2026-01-28T04:15:00",
+      "equity": 97970.78627908073
+    },
+    {
+      "date": "2026-01-28T04:20:00",
+      "equity": 97962.28527908074
+    },
+    {
+      "date": "2026-01-28T04:25:00",
+      "equity": 97974.85807908073
+    },
+    {
+      "date": "2026-01-28T04:30:00",
+      "equity": 97953.69547908072
+    },
+    {
+      "date": "2026-01-28T04:35:00",
+      "equity": 97935.62527908073
+    },
+    {
+      "date": "2026-01-28T04:40:00",
+      "equity": 97937.81367908073
+    },
+    {
+      "date": "2026-01-28T04:45:00",
+      "equity": 97930.30327908073
+    },
+    {
+      "date": "2026-01-28T04:50:00",
+      "equity": 97954.57687908073
+    },
+    {
+      "date": "2026-01-28T04:55:00",
+      "equity": 97925.97368786394
+    },
+    {
+      "date": "2026-01-28T05:00:00",
+      "equity": 97928.08088786394
+    },
+    {
+      "date": "2026-01-28T05:05:00",
+      "equity": 97935.92828786394
+    },
+    {
+      "date": "2026-01-28T05:10:00",
+      "equity": 97936.49808786393
+    },
+    {
+      "date": "2026-01-28T05:15:00",
+      "equity": 97931.77508786393
+    },
+    {
+      "date": "2026-01-28T05:20:00",
+      "equity": 97917.72848786393
+    },
+    {
+      "date": "2026-01-28T05:25:00",
+      "equity": 97913.06668786393
+    },
+    {
+      "date": "2026-01-28T05:30:00",
+      "equity": 97917.69788786393
+    },
+    {
+      "date": "2026-01-28T05:35:00",
+      "equity": 97924.37508786394
+    },
+    {
+      "date": "2026-01-28T05:40:00",
+      "equity": 97929.22048786393
+    },
+    {
+      "date": "2026-01-28T05:45:00",
+      "equity": 97932.62028786393
+    },
+    {
+      "date": "2026-01-28T05:50:00",
+      "equity": 97936.77348786393
+    },
+    {
+      "date": "2026-01-28T05:55:00",
+      "equity": 97938.69708786393
+    },
+    {
+      "date": "2026-01-28T06:00:00",
+      "equity": 98032.45328786393
+    },
+    {
+      "date": "2026-01-28T06:05:00",
+      "equity": 98044.01808786394
+    },
+    {
+      "date": "2026-01-28T06:10:00",
+      "equity": 98065.54488786393
+    },
+    {
+      "date": "2026-01-28T06:15:00",
+      "equity": 98096.81628786394
+    },
+    {
+      "date": "2026-01-28T06:20:00",
+      "equity": 98081.74088786394
+    },
+    {
+      "date": "2026-01-28T06:25:00",
+      "equity": 98075.08268786393
+    },
+    {
+      "date": "2026-01-28T06:30:00",
+      "equity": 98129.31488786393
+    },
+    {
+      "date": "2026-01-28T06:35:00",
+      "equity": 98130.00708786394
+    },
+    {
+      "date": "2026-01-28T06:40:00",
+      "equity": 98103.23708786393
+    },
+    {
+      "date": "2026-01-28T06:45:00",
+      "equity": 98071.67128786394
+    },
+    {
+      "date": "2026-01-28T06:50:00",
+      "equity": 98103.25608786393
+    },
+    {
+      "date": "2026-01-28T06:55:00",
+      "equity": 98079.34668786393
+    },
+    {
+      "date": "2026-01-28T07:00:00",
+      "equity": 98072.09968786393
+    },
+    {
+      "date": "2026-01-28T07:05:00",
+      "equity": 98093.34368786393
+    },
+    {
+      "date": "2026-01-28T07:10:00",
+      "equity": 98109.34448786394
+    },
+    {
+      "date": "2026-01-28T07:15:00",
+      "equity": 98083.02188786393
+    },
+    {
+      "date": "2026-01-28T07:20:00",
+      "equity": 98079.74448786394
+    },
+    {
+      "date": "2026-01-28T07:25:00",
+      "equity": 98061.66708786393
+    },
+    {
+      "date": "2026-01-28T07:30:00",
+      "equity": 98051.55948786394
+    },
+    {
+      "date": "2026-01-28T07:35:00",
+      "equity": 98046.83648786394
+    },
+    {
+      "date": "2026-01-28T07:40:00",
+      "equity": 98074.23748786394
+    },
+    {
+      "date": "2026-01-28T07:45:00",
+      "equity": 98103.91768786393
+    },
+    {
+      "date": "2026-01-28T07:50:00",
+      "equity": 98096.03968786393
+    },
+    {
+      "date": "2026-01-28T07:55:00",
+      "equity": 98083.34688786394
+    },
+    {
+      "date": "2026-01-28T08:00:00",
+      "equity": 98086.05448786393
+    },
+    {
+      "date": "2026-01-28T08:05:00",
+      "equity": 98093.24028786394
+    },
+    {
+      "date": "2026-01-28T08:10:00",
+      "equity": 98078.62388786394
+    },
+    {
+      "date": "2026-01-28T08:15:00",
+      "equity": 98059.37628786394
+    },
+    {
+      "date": "2026-01-28T08:20:00",
+      "equity": 98080.79228786394
+    },
+    {
+      "date": "2026-01-28T08:25:00",
+      "equity": 98070.59288786394
+    },
+    {
+      "date": "2026-01-28T08:30:00",
+      "equity": 98076.57788786394
+    },
+    {
+      "date": "2026-01-28T08:35:00",
+      "equity": 98078.62388786394
+    },
+    {
+      "date": "2026-01-28T08:40:00",
+      "equity": 98081.08668786394
+    },
+    {
+      "date": "2026-01-28T08:45:00",
+      "equity": 98048.36228786394
+    },
+    {
+      "date": "2026-01-28T08:50:00",
+      "equity": 98041.83808786393
+    },
+    {
+      "date": "2026-01-28T08:55:00",
+      "equity": 98031.96368786393
+    },
+    {
+      "date": "2026-01-28T09:00:00",
+      "equity": 98045.93008786393
+    },
+    {
+      "date": "2026-01-28T09:05:00",
+      "equity": 98011.35068786393
+    },
+    {
+      "date": "2026-01-28T09:10:00",
+      "equity": 98032.93868786393
+    },
+    {
+      "date": "2026-01-28T09:15:00",
+      "equity": 98036.85868786393
+    },
+    {
+      "date": "2026-01-28T09:20:00",
+      "equity": 97985.34148786393
+    },
+    {
+      "date": "2026-01-28T09:25:00",
+      "equity": 97984.63028786393
+    },
+    {
+      "date": "2026-01-28T09:30:00",
+      "equity": 86549.48628786393
+    },
+    {
+      "date": "2026-01-28T09:35:00",
+      "equity": 98018.32228786394
+    },
+    {
+      "date": "2026-01-28T09:40:00",
+      "equity": 86569.33428786394
+    },
+    {
+      "date": "2026-01-28T09:45:00",
+      "equity": 98021.47728786393
+    },
+    {
+      "date": "2026-01-28T09:50:00",
+      "equity": 98057.65108786392
+    },
+    {
+      "date": "2026-01-28T09:55:00",
+      "equity": 98107.19088786394
+    },
+    {
+      "date": "2026-01-28T10:00:00",
+      "equity": 98100.86928786393
+    },
+    {
+      "date": "2026-01-28T10:05:00",
+      "equity": 98123.21068786393
+    },
+    {
+      "date": "2026-01-28T10:10:00",
+      "equity": 98172.93408786393
+    },
+    {
+      "date": "2026-01-28T10:15:00",
+      "equity": 98157.53368786394
+    },
+    {
+      "date": "2026-01-28T10:20:00",
+      "equity": 98148.56568786394
+    },
+    {
+      "date": "2026-01-28T10:25:00",
+      "equity": 98146.58088786394
+    },
+    {
+      "date": "2026-01-28T10:30:00",
+      "equity": 98156.56608786393
+    },
+    {
+      "date": "2026-01-28T10:35:00",
+      "equity": 98159.02888786394
+    },
+    {
+      "date": "2026-01-28T10:40:00",
+      "equity": 98198.87788786393
+    },
+    {
+      "date": "2026-01-28T10:45:00",
+      "equity": 98180.26128786393
+    },
+    {
+      "date": "2026-01-28T10:50:00",
+      "equity": 98169.07528786393
+    },
+    {
+      "date": "2026-01-28T10:55:00",
+      "equity": 98173.10608786394
+    },
+    {
+      "date": "2026-01-28T11:00:00",
+      "equity": 98127.56648786392
+    },
+    {
+      "date": "2026-01-28T11:05:00",
+      "equity": 98156.95228786394
+    },
+    {
+      "date": "2026-01-28T11:10:00",
+      "equity": 98153.13568786393
+    },
+    {
+      "date": "2026-01-28T11:15:00",
+      "equity": 98135.33368786394
+    },
+    {
+      "date": "2026-01-28T11:20:00",
+      "equity": 98125.28728786393
+    },
+    {
+      "date": "2026-01-28T11:25:00",
+      "equity": 98150.88708786393
+    },
+    {
+      "date": "2026-01-28T11:30:00",
+      "equity": 81102.20848786393
+    },
+    {
+      "date": "2026-01-28T11:35:00",
+      "equity": 98175.45808786392
+    },
+    {
+      "date": "2026-01-28T11:40:00",
+      "equity": 98168.14988786392
+    },
+    {
+      "date": "2026-01-28T11:45:00",
+      "equity": 86701.65428786393
+    },
+    {
+      "date": "2026-01-28T11:50:00",
+      "equity": 98162.85708786393
+    },
+    {
+      "date": "2026-01-28T11:55:00",
+      "equity": 98161.62568786394
+    },
+    {
+      "date": "2026-01-28T12:00:00",
+      "equity": 98094.88008786393
+    },
+    {
+      "date": "2026-01-28T12:05:00",
+      "equity": 98082.63468786393
+    },
+    {
+      "date": "2026-01-28T12:10:00",
+      "equity": 98045.09548786393
+    },
+    {
+      "date": "2026-01-28T12:15:00",
+      "equity": 98022.26448786393
+    },
+    {
+      "date": "2026-01-28T12:20:00",
+      "equity": 98009.80488786392
+    },
+    {
+      "date": "2026-01-28T12:25:00",
+      "equity": 98003.14668786393
+    },
+    {
+      "date": "2026-01-28T12:30:00",
+      "equity": 97986.96228786393
+    },
+    {
+      "date": "2026-01-28T12:35:00",
+      "equity": 98015.65588786393
+    },
+    {
+      "date": "2026-01-28T12:40:00",
+      "equity": 98024.96048786394
+    },
+    {
+      "date": "2026-01-28T12:45:00",
+      "equity": 98022.58948786394
+    },
+    {
+      "date": "2026-01-28T12:50:00",
+      "equity": 98028.15768786393
+    },
+    {
+      "date": "2026-01-28T12:55:00",
+      "equity": 98020.18788786393
+    },
+    {
+      "date": "2026-01-28T13:00:00",
+      "equity": 98045.80590386393
+    },
+    {
+      "date": "2026-01-28T13:05:00",
+      "equity": 98035.27073586393
+    },
+    {
+      "date": "2026-01-28T13:10:00",
+      "equity": 97964.35959186393
+    },
+    {
+      "date": "2026-01-28T13:15:00",
+      "equity": 98044.95408786394
+    },
+    {
+      "date": "2026-01-28T13:20:00",
+      "equity": 97999.31108786393
+    },
+    {
+      "date": "2026-01-28T13:25:00",
+      "equity": 97971.49328786394
+    },
+    {
+      "date": "2026-01-28T13:30:00",
+      "equity": 97964.33808786393
+    },
+    {
+      "date": "2026-01-28T13:35:00",
+      "equity": 97937.18188786393
+    },
+    {
+      "date": "2026-01-28T13:40:00",
+      "equity": 97934.56608786393
+    },
+    {
+      "date": "2026-01-28T13:45:00",
+      "equity": 97955.25928786394
+    },
+    {
+      "date": "2026-01-28T13:50:00",
+      "equity": 97950.78108786393
+    },
+    {
+      "date": "2026-01-28T13:55:00",
+      "equity": 97959.33228786394
+    },
+    {
+      "date": "2026-01-28T14:00:00",
+      "equity": 97945.85548786394
+    },
+    {
+      "date": "2026-01-28T14:05:00",
+      "equity": 97933.79368786393
+    },
+    {
+      "date": "2026-01-28T14:10:00",
+      "equity": 97956.83888786394
+    },
+    {
+      "date": "2026-01-28T14:15:00",
+      "equity": 97948.11568786393
+    },
+    {
+      "date": "2026-01-28T14:20:00",
+      "equity": 97999.86608786393
+    },
+    {
+      "date": "2026-01-28T14:25:00",
+      "equity": 97836.87508786394
+    },
+    {
+      "date": "2026-01-28T14:30:00",
+      "equity": 97749.06632246413
+    },
+    {
+      "date": "2026-01-28T14:35:00",
+      "equity": 97831.76632246413
+    },
+    {
+      "date": "2026-01-28T14:40:00",
+      "equity": 97898.25712246413
+    },
+    {
+      "date": "2026-01-28T14:45:00",
+      "equity": 97829.11992246413
+    },
+    {
+      "date": "2026-01-28T14:50:00",
+      "equity": 97885.85212246413
+    },
+    {
+      "date": "2026-01-28T14:55:00",
+      "equity": 97776.55580246414
+    },
+    {
+      "date": "2026-01-28T15:00:00",
+      "equity": 97758.65952246414
+    },
+    {
+      "date": "2026-01-28T15:05:00",
+      "equity": 97698.12312246412
+    },
+    {
+      "date": "2026-01-28T15:10:00",
+      "equity": 97694.48432246412
+    },
+    {
+      "date": "2026-01-28T15:15:00",
+      "equity": 97717.30952246413
+    },
+    {
+      "date": "2026-01-28T15:20:00",
+      "equity": 97676.29032246413
+    },
+    {
+      "date": "2026-01-28T15:25:00",
+      "equity": 97605.88129239614
+    },
+    {
+      "date": "2026-01-28T15:30:00",
+      "equity": 97605.88129239614
+    },
+    {
+      "date": "2026-01-28T15:35:00",
+      "equity": 97605.88129239614
+    },
+    {
+      "date": "2026-01-28T15:40:00",
+      "equity": 97605.88129239614
+    },
+    {
+      "date": "2026-01-28T15:45:00",
+      "equity": 97605.88129239614
+    },
+    {
+      "date": "2026-01-28T15:50:00",
+      "equity": 97605.88129239614
+    },
+    {
+      "date": "2026-01-28T15:55:00",
+      "equity": 97605.88129239614
+    },
+    {
+      "date": "2026-01-28T16:00:00",
+      "equity": 97605.88129239614
+    },
+    {
+      "date": "2026-01-28T16:05:00",
+      "equity": 97605.88129239614
+    },
+    {
+      "date": "2026-01-28T16:10:00",
+      "equity": 97560.32614807802
+    },
+    {
+      "date": "2026-01-28T16:15:00",
+      "equity": 97577.83084807803
+    },
+    {
+      "date": "2026-01-28T16:20:00",
+      "equity": 97575.06631807802
+    },
+    {
+      "date": "2026-01-28T16:25:00",
+      "equity": 97584.64119807802
+    },
+    {
+      "date": "2026-01-28T16:30:00",
+      "equity": 97512.13157007803
+    },
+    {
+      "date": "2026-01-28T16:35:00",
+      "equity": 97438.24357807802
+    },
+    {
+      "date": "2026-01-28T16:40:00",
+      "equity": 97356.55422807802
+    },
+    {
+      "date": "2026-01-28T16:45:00",
+      "equity": 97372.03309807803
+    },
+    {
+      "date": "2026-01-28T16:50:00",
+      "equity": 97271.81343907802
+    },
+    {
+      "date": "2026-01-28T16:55:00",
+      "equity": 97267.66342607803
+    },
+    {
+      "date": "2026-01-28T17:00:00",
+      "equity": 97319.46907807802
+    },
+    {
+      "date": "2026-01-28T17:05:00",
+      "equity": 97328.32637807803
+    },
+    {
+      "date": "2026-01-28T17:10:00",
+      "equity": 97338.31122807803
+    },
+    {
+      "date": "2026-01-28T17:15:00",
+      "equity": 97350.23181607803
+    },
+    {
+      "date": "2026-01-28T17:20:00",
+      "equity": 97257.32238007803
+    },
+    {
+      "date": "2026-01-28T17:25:00",
+      "equity": 97258.63758607802
+    },
+    {
+      "date": "2026-01-28T17:30:00",
+      "equity": 97187.30902004502
+    },
+    {
+      "date": "2026-01-28T17:35:00",
+      "equity": 97188.60667004503
+    },
+    {
+      "date": "2026-01-28T17:40:00",
+      "equity": 97225.37342004503
+    },
+    {
+      "date": "2026-01-28T17:45:00",
+      "equity": 97221.91302004503
+    },
+    {
+      "date": "2026-01-28T17:50:00",
+      "equity": 97246.13582004502
+    },
+    {
+      "date": "2026-01-28T17:55:00",
+      "equity": 97241.37777004502
+    },
+    {
+      "date": "2026-01-28T18:00:00",
+      "equity": 97247.43347004503
+    },
+    {
+      "date": "2026-01-28T18:05:00",
+      "equity": 97233.15932004503
+    },
+    {
+      "date": "2026-01-28T18:10:00",
+      "equity": 97238.78247004503
+    },
+    {
+      "date": "2026-01-28T18:15:00",
+      "equity": 97237.91737004503
+    },
+    {
+      "date": "2026-01-28T18:20:00",
+      "equity": 97243.31559404502
+    },
+    {
+      "date": "2026-01-28T18:25:00",
+      "equity": 97251.75897004502
+    },
+    {
+      "date": "2026-01-28T18:30:00",
+      "equity": 97253.48917004502
+    },
+    {
+      "date": "2026-01-28T18:35:00",
+      "equity": 97253.05662004503
+    },
+    {
+      "date": "2026-01-28T18:40:00",
+      "equity": 97256.08447004503
+    },
+    {
+      "date": "2026-01-28T18:45:00",
+      "equity": 97248.73112004502
+    },
+    {
+      "date": "2026-01-28T18:50:00",
+      "equity": 97266.89822004503
+    },
+    {
+      "date": "2026-01-28T18:55:00",
+      "equity": 97269.06097004501
+    },
+    {
+      "date": "2026-01-28T19:00:00",
+      "equity": 97265.60057004503
+    },
+    {
+      "date": "2026-01-28T19:05:00",
+      "equity": 97255.65192004503
+    },
+    {
+      "date": "2026-01-28T19:10:00",
+      "equity": 97247.11338304503
+    },
+    {
+      "date": "2026-01-28T19:15:00",
+      "equity": 97244.83817004503
+    },
+    {
+      "date": "2026-01-28T19:20:00",
+      "equity": 97247.86602004502
+    },
+    {
+      "date": "2026-01-28T19:25:00",
+      "equity": 97234.88952004502
+    },
+    {
+      "date": "2026-01-28T19:30:00",
+      "equity": 97239.22367104502
+    },
+    {
+      "date": "2026-01-28T19:35:00",
+      "equity": 97267.32211904503
+    },
+    {
+      "date": "2026-01-28T19:40:00",
+      "equity": 97248.01308704502
+    },
+    {
+      "date": "2026-01-28T19:45:00",
+      "equity": 97280.87823604503
+    },
+    {
+      "date": "2026-01-28T19:50:00",
+      "equity": 97290.34243004503
+    },
+    {
+      "date": "2026-01-28T19:55:00",
+      "equity": 97240.05416704502
+    },
+    {
+      "date": "2026-01-28T20:00:00",
+      "equity": 97267.76332004502
+    },
+    {
+      "date": "2026-01-28T20:05:00",
+      "equity": 97285.49787004503
+    },
+    {
+      "date": "2026-01-28T20:10:00",
+      "equity": 97276.41432004502
+    },
+    {
+      "date": "2026-01-28T20:15:00",
+      "equity": 97259.97742004502
+    },
+    {
+      "date": "2026-01-28T20:20:00",
+      "equity": 97262.14017004502
+    },
+    {
+      "date": "2026-01-28T20:25:00",
+      "equity": 97243.36750004502
+    },
+    {
+      "date": "2026-01-28T20:30:00",
+      "equity": 97216.72242004503
+    },
+    {
+      "date": "2026-01-28T20:35:00",
+      "equity": 97224.94087004503
+    },
+    {
+      "date": "2026-01-28T20:40:00",
+      "equity": 97210.66672004503
+    },
+    {
+      "date": "2026-01-28T20:45:00",
+      "equity": 97208.50397004503
+    },
+    {
+      "date": "2026-01-28T20:50:00",
+      "equity": 97242.67542004502
+    },
+    {
+      "date": "2026-01-28T20:55:00",
+      "equity": 97235.32207004502
+    },
+    {
+      "date": "2026-01-28T21:00:00",
+      "equity": 97250.89387004502
+    },
+    {
+      "date": "2026-01-28T21:05:00",
+      "equity": 97257.47863279525
+    },
+    {
+      "date": "2026-01-28T21:10:00",
+      "equity": 97230.12558479524
+    },
+    {
+      "date": "2026-01-28T21:15:00",
+      "equity": 97296.59178479525
+    },
+    {
+      "date": "2026-01-28T21:20:00",
+      "equity": 97149.08793579525
+    },
+    {
+      "date": "2026-01-28T21:25:00",
+      "equity": 97258.66588479525
+    },
+    {
+      "date": "2026-01-28T21:30:00",
+      "equity": 97275.32017079525
+    },
+    {
+      "date": "2026-01-28T21:35:00",
+      "equity": 97244.58018479525
+    },
+    {
+      "date": "2026-01-28T21:40:00",
+      "equity": 97232.72592779525
+    },
+    {
+      "date": "2026-01-28T21:45:00",
+      "equity": 97183.38938479524
+    },
+    {
+      "date": "2026-01-28T21:50:00",
+      "equity": 97157.68959379525
+    },
+    {
+      "date": "2026-01-28T21:55:00",
+      "equity": 97208.53008479525
+    },
+    {
+      "date": "2026-01-28T22:00:00",
+      "equity": 97217.47478479525
+    },
+    {
+      "date": "2026-01-28T22:05:00",
+      "equity": 97236.23408479524
+    },
+    {
+      "date": "2026-01-28T22:10:00",
+      "equity": 97231.61808479525
+    },
+    {
+      "date": "2026-01-28T22:15:00",
+      "equity": 97227.35338479525
+    },
+    {
+      "date": "2026-01-28T22:20:00",
+      "equity": 97359.62638479525
+    },
+    {
+      "date": "2026-01-28T22:25:00",
+      "equity": 97331.63028479525
+    },
+    {
+      "date": "2026-01-28T22:30:00",
+      "equity": 97238.88858479525
+    },
+    {
+      "date": "2026-01-28T22:35:00",
+      "equity": 97286.55197379526
+    },
+    {
+      "date": "2026-01-28T22:40:00",
+      "equity": 97192.78658979526
+    },
+    {
+      "date": "2026-01-28T22:45:00",
+      "equity": 96980.47874836609
+    },
+    {
+      "date": "2026-01-28T22:50:00",
+      "equity": 96979.5703933661
+    },
+    {
+      "date": "2026-01-28T22:55:00",
+      "equity": 96975.2362423661
+    },
+    {
+      "date": "2026-01-28T23:00:00",
+      "equity": 96980.4268423661
+    },
+    {
+      "date": "2026-01-28T23:05:00",
+      "equity": 96956.2040423661
+    },
+    {
+      "date": "2026-01-28T23:10:00",
+      "equity": 96935.44164236609
+    },
+    {
+      "date": "2026-01-28T23:15:00",
+      "equity": 96936.3067423661
+    },
+    {
+      "date": "2026-01-28T23:20:00",
+      "equity": 96957.06914236609
+    },
+    {
+      "date": "2026-01-28T23:25:00",
+      "equity": 96952.7436423661
+    },
+    {
+      "date": "2026-01-28T23:30:00",
+      "equity": 96944.0926423661
+    },
+    {
+      "date": "2026-01-28T23:35:00",
+      "equity": 96924.19534236609
+    },
+    {
+      "date": "2026-01-28T23:40:00",
+      "equity": 96884.4007423661
+    },
+    {
+      "date": "2026-01-28T23:45:00",
+      "equity": 96865.3685423661
+    },
+    {
+      "date": "2026-01-28T23:50:00",
+      "equity": 96880.9403423661
+    },
+    {
+      "date": "2026-01-28T23:55:00",
+      "equity": 96851.5269423661
+    },
+    {
+      "date": "2026-01-29T00:00:00",
+      "equity": 96797.02564236609
+    },
+    {
+      "date": "2026-01-29T00:05:00",
+      "equity": 96840.2806423661
+    },
+    {
+      "date": "2026-01-29T00:10:00",
+      "equity": 96840.2806423661
+    },
+    {
+      "date": "2026-01-29T00:15:00",
+      "equity": 96819.51824236609
+    },
+    {
+      "date": "2026-01-29T00:20:00",
+      "equity": 96835.0900423661
+    },
+    {
+      "date": "2026-01-29T00:25:00",
+      "equity": 96839.4155423661
+    },
+    {
+      "date": "2026-01-29T00:30:00",
+      "equity": 96828.5931413661
+    },
+    {
+      "date": "2026-01-29T00:35:00",
+      "equity": 96814.3276423661
+    },
+    {
+      "date": "2026-01-29T00:40:00",
+      "equity": 96807.7528823661
+    },
+    {
+      "date": "2026-01-29T00:45:00",
+      "equity": 96799.6209423661
+    },
+    {
+      "date": "2026-01-29T00:50:00",
+      "equity": 96807.4068423661
+    },
+    {
+      "date": "2026-01-29T00:55:00",
+      "equity": 96822.1135423661
+    },
+    {
+      "date": "2026-01-29T12:00:00",
+      "equity": 96905.1631423661
+    },
+    {
+      "date": "2026-01-29T12:05:00",
+      "equity": 96915.5443423661
+    },
+    {
+      "date": "2026-01-29T12:10:00",
+      "equity": 96906.0282423661
+    },
+    {
+      "date": "2026-01-29T12:15:00",
+      "equity": 96909.4886423661
+    },
+    {
+      "date": "2026-01-29T12:20:00",
+      "equity": 96905.1631423661
+    },
+    {
+      "date": "2026-01-29T12:25:00",
+      "equity": 96900.7511323661
+    },
+    {
+      "date": "2026-01-29T12:30:00",
+      "equity": 96900.8376423661
+    },
+    {
+      "date": "2026-01-29T12:35:00",
+      "equity": 96885.26584236609
+    },
+    {
+      "date": "2026-01-29T12:40:00",
+      "equity": 96887.8611423661
+    },
+    {
+      "date": "2026-01-29T12:45:00",
+      "equity": 96893.9168423661
+    },
+    {
+      "date": "2026-01-29T12:50:00",
+      "equity": 96890.45644236609
+    },
+    {
+      "date": "2026-01-29T12:55:00",
+      "equity": 96886.1309423661
+    },
+    {
+      "date": "2026-01-29T13:00:00",
+      "equity": 96888.7262423661
+    },
+    {
+      "date": "2026-01-29T13:05:00",
+      "equity": 96890.45644236609
+    },
+    {
+      "date": "2026-01-29T13:10:00",
+      "equity": 96887.8611423661
+    },
+    {
+      "date": "2026-01-29T13:15:00",
+      "equity": 96907.75844236609
+    },
+    {
+      "date": "2026-01-29T13:20:00",
+      "equity": 96908.6235423661
+    },
+    {
+      "date": "2026-01-29T13:25:00",
+      "equity": 96913.8141423661
+    },
+    {
+      "date": "2026-01-29T13:30:00",
+      "equity": 96924.19534236609
+    },
+    {
+      "date": "2026-01-29T13:35:00",
+      "equity": 96942.37109336609
+    },
+    {
+      "date": "2026-01-29T13:40:00",
+      "equity": 96937.1718423661
+    },
+    {
+      "date": "2026-01-29T13:45:00",
+      "equity": 96938.0369423661
+    },
+    {
+      "date": "2026-01-29T13:50:00",
+      "equity": 96919.0047423661
+    },
+    {
+      "date": "2026-01-29T13:55:00",
+      "equity": 96931.5486923661
+    },
+    {
+      "date": "2026-01-29T14:00:00",
+      "equity": 96913.8141423661
+    },
+    {
+      "date": "2026-01-29T14:05:00",
+      "equity": 96923.69358436609
+    },
+    {
+      "date": "2026-01-29T14:10:00",
+      "equity": 96904.2980423661
+    },
+    {
+      "date": "2026-01-29T14:15:00",
+      "equity": 96914.6792423661
+    },
+    {
+      "date": "2026-01-29T14:20:00",
+      "equity": 96909.4886423661
+    },
+    {
+      "date": "2026-01-29T14:25:00",
+      "equity": 96913.8141423661
+    },
+    {
+      "date": "2026-01-29T14:30:00",
+      "equity": 97043.5791423661
+    },
+    {
+      "date": "2026-01-29T14:35:00",
+      "equity": 96882.6705423661
+    },
+    {
+      "date": "2026-01-29T14:40:00",
+      "equity": 96849.7967423661
+    },
+    {
+      "date": "2026-01-29T14:45:00",
+      "equity": 96943.2275423661
+    },
+    {
+      "date": "2026-01-29T14:50:00",
+      "equity": 96890.88899236609
+    },
+    {
+      "date": "2026-01-29T14:55:00",
+      "equity": 96866.2336423661
+    },
+    {
+      "date": "2026-01-29T15:00:00",
+      "equity": 96756.3659423661
+    },
+    {
+      "date": "2026-01-29T15:05:00",
+      "equity": 96740.80279336609
+    },
+    {
+      "date": "2026-01-29T15:10:00",
+      "equity": 96637.61663871047
+    },
+    {
+      "date": "2026-01-29T15:15:00",
+      "equity": 96637.61663871047
+    },
+    {
+      "date": "2026-01-29T15:20:00",
+      "equity": 96637.61663871047
+    },
+    {
+      "date": "2026-01-29T15:25:00",
+      "equity": 96637.61663871047
+    },
+    {
+      "date": "2026-01-29T15:30:00",
+      "equity": 96637.61663871047
+    },
+    {
+      "date": "2026-01-29T15:35:00",
+      "equity": 96637.61663871047
+    },
+    {
+      "date": "2026-01-29T15:40:00",
+      "equity": 96637.61663871047
+    },
+    {
+      "date": "2026-01-29T15:45:00",
+      "equity": 96637.61663871047
+    },
+    {
+      "date": "2026-01-29T15:50:00",
+      "equity": 96637.61663871047
+    },
+    {
+      "date": "2026-01-29T15:55:00",
+      "equity": 96612.96536715809
+    },
+    {
+      "date": "2026-01-29T16:00:00",
+      "equity": 96704.96256715809
+    },
+    {
+      "date": "2026-01-29T16:05:00",
+      "equity": 96670.60216715808
+    }
+  ],
+  "logs": [
+    {
+      "timestamp": "2026-01-27T10:15:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T10:20:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T10:40:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 2 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T10:45:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T10:50:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T10:55:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T10:55:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T11:05:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T11:25:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T11:30:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T11:40:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T11:50:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T12:05:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T12:10:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T12:30:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T12:30:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T12:35:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T12:40:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T12:45:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T12:50:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T12:55:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T13:00:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T13:05:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T13:05:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T13:10:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T13:25:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T13:25:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T13:30:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T13:30:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T13:30:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T13:35:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T13:35:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T13:35:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T13:40:00",
+      "level": "info",
+      "category": "signal",
+      "symbol": "NVDA",
+      "message": "CONSENSUS BUY from ['RSI Momentum', 'MACD'] (strength=0.85)",
+      "data": {
+        "strategy": "Consensus",
+        "signal_type": "BUY",
+        "strength": 0.8500000000000001,
+        "price": 187.1546,
+        "agreeing_strategies": [
+          "RSI Momentum",
+          "MACD"
+        ]
+      }
+    },
+    {
+      "timestamp": "2026-01-27T13:40:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T13:40:00",
+      "level": "info",
+      "category": "trade_open",
+      "symbol": "NVDA",
+      "message": "Opened 88.64 shares @ $187.25 (strategy: Consensus)",
+      "data": {
+        "quantity": 88.64,
+        "entry_price": 187.24817729999998,
+        "stop_loss": 183.50321375399997,
+        "take_profit": 194.738104392,
+        "strategy": "Consensus",
+        "cost": 16614.27611430787
+      }
+    },
+    {
+      "timestamp": "2026-01-27T13:45:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T13:45:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T13:50:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T14:00:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T14:05:00",
+      "level": "info",
+      "category": "signal",
+      "symbol": "TSLA",
+      "message": "CONSENSUS SELL from ['MA Crossover', 'MACD'] (strength=0.80)",
+      "data": {
+        "strategy": "Consensus",
+        "signal_type": "SELL",
+        "strength": 0.8,
+        "price": 437.11,
+        "agreeing_strategies": [
+          "MA Crossover",
+          "MACD"
+        ]
+      }
+    },
+    {
+      "timestamp": "2026-01-27T14:10:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T14:15:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T14:20:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T14:25:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T14:25:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T14:25:00",
+      "level": "info",
+      "category": "signal",
+      "symbol": "AMD",
+      "message": "CONSENSUS BUY from ['RSI Momentum', 'MACD'] (strength=0.85)",
+      "data": {
+        "strategy": "Consensus",
+        "signal_type": "BUY",
+        "strength": 0.8500000000000001,
+        "price": 252.2,
+        "agreeing_strategies": [
+          "RSI Momentum",
+          "MACD"
+        ]
+      }
+    },
+    {
+      "timestamp": "2026-01-27T14:25:00",
+      "level": "info",
+      "category": "trade_open",
+      "symbol": "AMD",
+      "message": "Opened 54.58 shares @ $252.33 (strategy: Consensus)",
+      "data": {
+        "quantity": 54.58,
+        "entry_price": 252.32609999999997,
+        "stop_loss": 247.27957799999996,
+        "take_profit": 262.41914399999996,
+        "strategy": "Consensus",
+        "cost": 13785.730496537997
+      }
+    },
+    {
+      "timestamp": "2026-01-27T14:30:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T14:30:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T14:30:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T14:30:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T14:35:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T14:45:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T14:50:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T14:55:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 2 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T15:00:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T15:10:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T15:10:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T15:15:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T15:20:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T15:20:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T15:25:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T15:30:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T15:30:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T15:35:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T15:40:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T15:45:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T15:50:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T15:50:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T15:55:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T16:00:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T16:00:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T16:05:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T16:10:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T16:10:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T16:10:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T16:15:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T16:20:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T16:25:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T16:25:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T16:25:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T16:30:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T16:35:00",
+      "level": "info",
+      "category": "signal",
+      "symbol": "NVDA",
+      "message": "CONSENSUS CLOSE_LONG from ['RSI Momentum', 'MACD'] (strength=0.85)",
+      "data": {
+        "strategy": "Consensus",
+        "signal_type": "CLOSE_LONG",
+        "strength": 0.8500000000000001,
+        "price": 189.66,
+        "agreeing_strategies": [
+          "RSI Momentum",
+          "MACD"
+        ]
+      }
+    },
+    {
+      "timestamp": "2026-01-27T16:35:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T16:35:00",
+      "level": "info",
+      "category": "trade_close",
+      "symbol": "NVDA",
+      "message": "Closed @ $189.57 | P&L: +$188.58 (+1.14%) | Reason: signal",
+      "data": {
+        "entry_price": 187.24817729999998,
+        "exit_price": 189.56517,
+        "quantity": 88.64,
+        "pnl": 188.57517625920127,
+        "pnl_pct": 0.011361539325381803,
+        "exit_reason": "signal",
+        "strategy": "Consensus"
+      }
+    },
+    {
+      "timestamp": "2026-01-27T16:40:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T16:45:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T17:30:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T17:35:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T17:40:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T17:40:00",
+      "level": "info",
+      "category": "signal",
+      "symbol": "TSLA",
+      "message": "CONSENSUS SELL from ['MA Crossover', 'MACD'] (strength=0.80)",
+      "data": {
+        "strategy": "Consensus",
+        "signal_type": "SELL",
+        "strength": 0.8,
+        "price": 433.8851,
+        "agreeing_strategies": [
+          "MA Crossover",
+          "MACD"
+        ]
+      }
+    },
+    {
+      "timestamp": "2026-01-27T17:45:00",
+      "level": "info",
+      "category": "signal",
+      "symbol": "NVDA",
+      "message": "CONSENSUS SELL from ['MA Crossover', 'RSI Momentum'] (strength=0.85)",
+      "data": {
+        "strategy": "Consensus",
+        "signal_type": "SELL",
+        "strength": 0.8500000000000001,
+        "price": 189.295,
+        "agreeing_strategies": [
+          "MA Crossover",
+          "RSI Momentum"
+        ]
+      }
+    },
+    {
+      "timestamp": "2026-01-27T17:45:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T17:50:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T17:55:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T18:00:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T18:05:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T18:50:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T18:55:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T19:05:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T19:15:00",
+      "level": "warning",
+      "category": "stop_hit",
+      "symbol": "AMD",
+      "message": "Stop loss hit at $249.91 (stop was $249.94)",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T19:15:00",
+      "level": "info",
+      "category": "trade_close",
+      "symbol": "AMD",
+      "message": "Closed @ $249.79 | P&L: $-152.32 (-1.11%) | Reason: stop_loss",
+      "data": {
+        "entry_price": 252.32609999999997,
+        "exit_price": 249.785045,
+        "quantity": 54.58,
+        "pnl": -152.32404965609845,
+        "pnl_pct": -0.011060449335205403,
+        "exit_reason": "stop_loss",
+        "strategy": "Consensus"
+      }
+    },
+    {
+      "timestamp": "2026-01-27T19:15:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T19:20:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T19:20:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T19:20:00",
+      "level": "info",
+      "category": "signal",
+      "symbol": "AMD",
+      "message": "CONSENSUS BUY from ['RSI Momentum', 'MACD'] (strength=0.85)",
+      "data": {
+        "strategy": "Consensus",
+        "signal_type": "BUY",
+        "strength": 0.8500000000000001,
+        "price": 250.7601,
+        "agreeing_strategies": [
+          "RSI Momentum",
+          "MACD"
+        ]
+      }
+    },
+    {
+      "timestamp": "2026-01-27T19:20:00",
+      "level": "info",
+      "category": "trade_open",
+      "symbol": "AMD",
+      "message": "Opened 66.16 shares @ $250.89 (strategy: Consensus)",
+      "data": {
+        "quantity": 66.16,
+        "entry_price": 250.88548004999998,
+        "stop_loss": 245.86777044899998,
+        "take_profit": 260.92089925199997,
+        "strategy": "Consensus",
+        "cost": 16615.181943468106
+      }
+    },
+    {
+      "timestamp": "2026-01-27T19:25:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T19:30:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T19:35:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T19:35:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T19:40:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T19:45:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T19:50:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T19:55:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T20:00:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T20:00:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T20:05:00",
+      "level": "info",
+      "category": "signal",
+      "symbol": "NVDA",
+      "message": "CONSENSUS BUY from ['RSI Momentum', 'MACD'] (strength=0.85)",
+      "data": {
+        "strategy": "Consensus",
+        "signal_type": "BUY",
+        "strength": 0.8500000000000001,
+        "price": 189.415,
+        "agreeing_strategies": [
+          "RSI Momentum",
+          "MACD"
+        ]
+      }
+    },
+    {
+      "timestamp": "2026-01-27T20:05:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T20:05:00",
+      "level": "info",
+      "category": "trade_open",
+      "symbol": "NVDA",
+      "message": "Opened 72.68 shares @ $189.51 (strategy: Consensus)",
+      "data": {
+        "quantity": 72.68,
+        "entry_price": 189.5097075,
+        "stop_loss": 185.71951335,
+        "take_profit": 197.0900958,
+        "strategy": "Consensus",
+        "cost": 13787.3391066411
+      }
+    },
+    {
+      "timestamp": "2026-01-27T20:10:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T20:10:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T20:15:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T20:20:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T20:30:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T20:35:00",
+      "level": "info",
+      "category": "signal",
+      "symbol": "PLTR",
+      "message": "CONSENSUS BUY from ['RSI Momentum', 'MACD'] (strength=0.85)",
+      "data": {
+        "strategy": "Consensus",
+        "signal_type": "BUY",
+        "strength": 0.8500000000000001,
+        "price": 164.9998,
+        "agreeing_strategies": [
+          "RSI Momentum",
+          "MACD"
+        ]
+      }
+    },
+    {
+      "timestamp": "2026-01-27T20:35:00",
+      "level": "info",
+      "category": "trade_open",
+      "symbol": "PLTR",
+      "message": "Opened 69.22 shares @ $165.08 (strategy: Consensus)",
+      "data": {
+        "quantity": 69.22,
+        "entry_price": 165.08229989999998,
+        "stop_loss": 161.78065390199998,
+        "take_profit": 171.68559189599998,
+        "strategy": "Consensus",
+        "cost": 11438.423795877077
+      }
+    },
+    {
+      "timestamp": "2026-01-27T20:40:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T20:40:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T20:45:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T20:50:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T20:50:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T20:55:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T21:00:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T21:05:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T21:05:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T21:10:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T21:15:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T21:20:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T21:25:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T21:45:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T22:00:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T22:10:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T22:25:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T22:45:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T23:25:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T23:30:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T23:40:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-27T23:50:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T00:00:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T00:05:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T00:15:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T00:20:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T00:25:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T00:30:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 2 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T00:35:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T00:50:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T00:50:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T00:55:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T00:55:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T01:00:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T01:05:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T01:10:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T01:10:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T01:15:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T01:15:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T01:15:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T01:20:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T01:20:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T01:25:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T01:30:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T01:35:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T01:35:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T01:40:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T01:40:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T01:45:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T01:45:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T01:55:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T02:00:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T02:05:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T02:10:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T02:25:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T02:50:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T02:55:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T03:00:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T03:05:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T03:10:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T03:15:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T03:25:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T03:40:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T03:45:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T03:50:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T03:55:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T04:00:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T04:05:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T04:10:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T04:15:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T04:20:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T04:25:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T04:25:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T04:30:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T04:30:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T04:35:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T04:35:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T04:35:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T04:40:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T04:40:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T04:40:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T04:45:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T04:50:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T04:50:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T04:55:00",
+      "level": "info",
+      "category": "signal",
+      "symbol": "NVDA",
+      "message": "CONSENSUS CLOSE_LONG from ['RSI Momentum', 'MACD'] (strength=0.75)",
+      "data": {
+        "strategy": "Consensus",
+        "signal_type": "CLOSE_LONG",
+        "strength": 0.75,
+        "price": 191.48,
+        "agreeing_strategies": [
+          "RSI Momentum",
+          "MACD"
+        ]
+      }
+    },
+    {
+      "timestamp": "2026-01-28T04:55:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T04:55:00",
+      "level": "info",
+      "category": "trade_close",
+      "symbol": "NVDA",
+      "message": "Closed @ $191.38 | P&L: +$122.33 (+0.89%) | Reason: signal",
+      "data": {
+        "entry_price": 189.5097075,
+        "exit_price": 191.38426,
+        "quantity": 72.68,
+        "pnl": 122.33266768320156,
+        "pnl_pct": 0.00888169931875401,
+        "exit_reason": "signal",
+        "strategy": "Consensus"
+      }
+    },
+    {
+      "timestamp": "2026-01-28T05:00:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T05:00:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T05:10:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T05:15:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T05:30:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T05:35:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T05:45:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T06:00:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T06:00:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T06:05:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T06:05:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T06:10:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T06:20:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T06:20:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T06:25:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T06:30:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T06:30:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T06:30:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T06:35:00",
+      "level": "info",
+      "category": "signal",
+      "symbol": "NVDA",
+      "message": "CONSENSUS SELL from ['RSI Momentum', 'MACD'] (strength=0.75)",
+      "data": {
+        "strategy": "Consensus",
+        "signal_type": "SELL",
+        "strength": 0.75,
+        "price": 192.0,
+        "agreeing_strategies": [
+          "RSI Momentum",
+          "MACD"
+        ]
+      }
+    },
+    {
+      "timestamp": "2026-01-28T06:35:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T06:35:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T06:40:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T06:40:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T06:45:00",
+      "level": "info",
+      "category": "signal",
+      "symbol": "TSLA",
+      "message": "CONSENSUS SELL from ['RSI Momentum', 'MACD'] (strength=0.85)",
+      "data": {
+        "strategy": "Consensus",
+        "signal_type": "SELL",
+        "strength": 0.8500000000000001,
+        "price": 433.19,
+        "agreeing_strategies": [
+          "RSI Momentum",
+          "MACD"
+        ]
+      }
+    },
+    {
+      "timestamp": "2026-01-28T06:45:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T06:50:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T06:50:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T06:55:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T07:00:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T07:05:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T07:10:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T07:10:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T07:15:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T07:20:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T07:35:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T07:35:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T07:40:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T07:40:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T07:45:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T07:45:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T07:45:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T07:50:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T07:55:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T08:00:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T08:05:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T08:25:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T08:40:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T08:50:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T09:05:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T09:15:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T09:25:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T09:45:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T09:50:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T09:50:00",
+      "level": "info",
+      "category": "signal",
+      "symbol": "AMD",
+      "message": "CONSENSUS BUY from ['MA Crossover', 'MACD'] (strength=0.80)",
+      "data": {
+        "strategy": "Consensus",
+        "signal_type": "BUY",
+        "strength": 0.8,
+        "price": 256.52,
+        "agreeing_strategies": [
+          "MA Crossover",
+          "MACD"
+        ]
+      }
+    },
+    {
+      "timestamp": "2026-01-28T09:50:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "Skipping BUY - already have position",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T10:10:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T10:10:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T10:15:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T10:20:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T10:25:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T10:30:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T10:30:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T10:35:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T10:35:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T10:45:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T10:50:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T10:55:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T10:55:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T11:00:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T11:05:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T11:30:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T11:40:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T11:45:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T11:50:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T12:00:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T12:05:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T12:10:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T12:15:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T12:25:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T12:30:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T12:35:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T12:40:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T12:45:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T13:00:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T13:00:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T13:05:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T13:10:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T13:15:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T13:35:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T13:35:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T13:40:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T13:45:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T13:45:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T13:50:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T13:55:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T13:55:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T14:00:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T14:00:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T14:05:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T14:05:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T14:05:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T14:10:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T14:10:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T14:15:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T14:15:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T14:20:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T14:25:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T14:30:00",
+      "level": "warning",
+      "category": "stop_hit",
+      "symbol": "PLTR",
+      "message": "Stop loss hit at $162.82 (stop was $163.32)",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T14:30:00",
+      "level": "info",
+      "category": "trade_close",
+      "symbol": "PLTR",
+      "message": "Closed @ $162.74 | P&L: $-173.50 (-1.52%) | Reason: stop_loss",
+      "data": {
+        "entry_price": 165.08229989999998,
+        "exit_price": 162.73859000000002,
+        "quantity": 69.22,
+        "pnl": -173.49636447779756,
+        "pnl_pct": -0.015183023810052727,
+        "exit_reason": "stop_loss",
+        "strategy": "Consensus"
+      }
+    },
+    {
+      "timestamp": "2026-01-28T14:30:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T14:30:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T14:35:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T14:35:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T14:40:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T14:40:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 2 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T14:40:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T14:45:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T14:45:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T14:50:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T14:50:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T14:55:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T15:05:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T15:05:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T15:05:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 2 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T15:10:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T15:10:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T15:15:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T15:15:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T15:20:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T15:20:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T15:25:00",
+      "level": "warning",
+      "category": "stop_hit",
+      "symbol": "AMD",
+      "message": "Stop loss hit at $252.90 (stop was $253.53)",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T15:25:00",
+      "level": "info",
+      "category": "trade_close",
+      "symbol": "AMD",
+      "message": "Closed @ $252.77 | P&L: +$108.19 (+0.65%) | Reason: stop_loss",
+      "data": {
+        "entry_price": 250.88548004999998,
+        "exit_price": 252.77355000000003,
+        "quantity": 66.16,
+        "pnl": 108.19120982400295,
+        "pnl_pct": 0.0065180990134388805,
+        "exit_reason": "stop_loss",
+        "strategy": "Consensus"
+      }
+    },
+    {
+      "timestamp": "2026-01-28T15:25:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T15:30:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 2 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T15:30:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T15:35:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T15:40:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 2 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T15:40:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T15:45:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T15:45:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T15:50:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T16:10:00",
+      "level": "info",
+      "category": "signal",
+      "symbol": "NVDA",
+      "message": "CONSENSUS BUY from ['RSI Momentum', 'MACD'] (strength=0.85)",
+      "data": {
+        "strategy": "Consensus",
+        "signal_type": "BUY",
+        "strength": 0.8500000000000001,
+        "price": 191.8,
+        "agreeing_strategies": [
+          "RSI Momentum",
+          "MACD"
+        ]
+      }
+    },
+    {
+      "timestamp": "2026-01-28T16:10:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T16:10:00",
+      "level": "info",
+      "category": "signal",
+      "symbol": "PLTR",
+      "message": "CONSENSUS BUY from ['RSI Momentum', 'MACD'] (strength=0.85)",
+      "data": {
+        "strategy": "Consensus",
+        "signal_type": "BUY",
+        "strength": 0.8500000000000001,
+        "price": 162.5426,
+        "agreeing_strategies": [
+          "RSI Momentum",
+          "MACD"
+        ]
+      }
+    },
+    {
+      "timestamp": "2026-01-28T16:10:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T16:10:00",
+      "level": "info",
+      "category": "trade_open",
+      "symbol": "NVDA",
+      "message": "Opened 86.51 shares @ $191.90 (strategy: Consensus)",
+      "data": {
+        "quantity": 86.51,
+        "entry_price": 191.8959,
+        "stop_loss": 188.057982,
+        "take_profit": 199.57173600000002,
+        "strategy": "Consensus",
+        "cost": 16617.515223309005
+      }
+    },
+    {
+      "timestamp": "2026-01-28T16:10:00",
+      "level": "info",
+      "category": "trade_open",
+      "symbol": "PLTR",
+      "message": "Opened 84.70 shares @ $162.62 (strategy: Consensus)",
+      "data": {
+        "quantity": 84.7,
+        "entry_price": 162.6238713,
+        "stop_loss": 159.37139387399998,
+        "take_profit": 169.128826152,
+        "strategy": "Consensus",
+        "cost": 13788.01614100911
+      }
+    },
+    {
+      "timestamp": "2026-01-28T16:15:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T16:15:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T16:15:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T16:20:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T16:20:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T16:25:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T16:30:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T16:40:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T16:40:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T16:45:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T17:00:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T17:05:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T17:10:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T17:15:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T17:15:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T17:25:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T17:30:00",
+      "level": "warning",
+      "category": "stop_hit",
+      "symbol": "PLTR",
+      "message": "Stop loss hit at $159.22 (stop was $159.60)",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T17:30:00",
+      "level": "info",
+      "category": "trade_close",
+      "symbol": "PLTR",
+      "message": "Closed @ $159.14 | P&L: $-308.53 (-2.24%) | Reason: stop_loss",
+      "data": {
+        "entry_price": 162.6238713,
+        "exit_price": 159.14039,
+        "quantity": 84.7,
+        "pnl": -308.5300571429995,
+        "pnl_pct": -0.022399059011947123,
+        "exit_reason": "stop_loss",
+        "strategy": "Consensus"
+      }
+    },
+    {
+      "timestamp": "2026-01-28T17:30:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T17:30:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T17:40:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T17:45:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T17:50:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T17:55:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T17:55:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T18:05:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T18:05:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T19:05:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T19:10:00",
+      "level": "info",
+      "category": "signal",
+      "symbol": "AMD",
+      "message": "CONSENSUS SELL from ['MA Crossover', 'MACD'] (strength=0.80)",
+      "data": {
+        "strategy": "Consensus",
+        "signal_type": "SELL",
+        "strength": 0.8,
+        "price": 250.96,
+        "agreeing_strategies": [
+          "MA Crossover",
+          "MACD"
+        ]
+      }
+    },
+    {
+      "timestamp": "2026-01-28T19:15:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T19:25:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T19:30:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T19:30:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T19:30:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T19:35:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T19:40:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T19:45:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 2 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T19:45:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T19:55:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T19:55:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T20:05:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T20:15:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T20:20:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T20:25:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T20:25:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T20:30:00",
+      "level": "info",
+      "category": "signal",
+      "symbol": "TSLA",
+      "message": "CONSENSUS SELL from ['RSI Momentum', 'MACD'] (strength=0.85)",
+      "data": {
+        "strategy": "Consensus",
+        "signal_type": "SELL",
+        "strength": 0.8500000000000001,
+        "price": 432.9264,
+        "agreeing_strategies": [
+          "RSI Momentum",
+          "MACD"
+        ]
+      }
+    },
+    {
+      "timestamp": "2026-01-28T20:30:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T20:35:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T20:35:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T20:40:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T20:55:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T21:05:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T21:05:00",
+      "level": "info",
+      "category": "signal",
+      "symbol": "TSLA",
+      "message": "CONSENSUS BUY from ['MA Crossover', 'MACD'] (strength=0.80)",
+      "data": {
+        "strategy": "Consensus",
+        "signal_type": "BUY",
+        "strength": 0.8,
+        "price": 446.7932,
+        "agreeing_strategies": [
+          "MA Crossover",
+          "MACD"
+        ]
+      }
+    },
+    {
+      "timestamp": "2026-01-28T21:05:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T21:05:00",
+      "level": "info",
+      "category": "trade_open",
+      "symbol": "TSLA",
+      "message": "Opened 28.89 shares @ $447.02 (strategy: Consensus)",
+      "data": {
+        "quantity": 28.89,
+        "entry_price": 447.0165966,
+        "stop_loss": 438.076264668,
+        "take_profit": 464.89726046400006,
+        "strategy": "Consensus",
+        "cost": 12927.223785249775
+      }
+    },
+    {
+      "timestamp": "2026-01-28T21:10:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 2 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T21:20:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T21:30:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T21:35:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T21:50:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T21:55:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T22:20:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T22:20:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T22:25:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T22:25:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T22:25:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T22:30:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T22:30:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T22:35:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T22:35:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T22:40:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T22:40:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T22:45:00",
+      "level": "warning",
+      "category": "stop_hit",
+      "symbol": "TSLA",
+      "message": "Stop loss hit at $437.53 (stop was $440.82)",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T22:45:00",
+      "level": "info",
+      "category": "trade_close",
+      "symbol": "TSLA",
+      "message": "Closed @ $437.31 | P&L: $-293.02 (-2.27%) | Reason: stop_loss",
+      "data": {
+        "entry_price": 447.0165966,
+        "exit_price": 437.311235,
+        "quantity": 28.89,
+        "pnl": -293.02181820315013,
+        "pnl_pct": -0.022689700812329985,
+        "exit_reason": "stop_loss",
+        "strategy": "Consensus"
+      }
+    },
+    {
+      "timestamp": "2026-01-28T22:55:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T22:55:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T23:05:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T23:30:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-28T23:30:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T00:00:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T00:05:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T00:10:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T00:15:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T00:30:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T00:50:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T12:00:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T12:00:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T12:05:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T12:30:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T12:35:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T12:45:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T13:00:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T13:05:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T13:15:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T13:35:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T13:50:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T14:00:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T14:05:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T14:10:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T14:30:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T14:40:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T14:45:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T14:45:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T14:50:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T14:50:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T14:50:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T14:55:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T14:55:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T15:00:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T15:05:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T15:05:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T15:10:00",
+      "level": "warning",
+      "category": "stop_hit",
+      "symbol": "NVDA",
+      "message": "Stop loss hit at $188.44 (stop was $189.20)",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T15:10:00",
+      "level": "info",
+      "category": "trade_close",
+      "symbol": "NVDA",
+      "message": "Closed @ $188.35 | P&L: $-323.42 (-1.95%) | Reason: stop_loss",
+      "data": {
+        "entry_price": 191.8959,
+        "exit_price": 188.34568005,
+        "quantity": 86.51,
+        "pnl": -323.42331265562666,
+        "pnl_pct": -0.019482259027160106,
+        "exit_reason": "stop_loss",
+        "strategy": "Consensus"
+      }
+    },
+    {
+      "timestamp": "2026-01-29T15:10:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T15:10:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T15:10:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "AMD",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T15:15:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T15:15:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T15:20:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T15:20:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T15:25:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T15:25:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T15:30:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T15:30:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T15:35:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "NVDA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T15:35:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T15:40:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T15:45:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T15:50:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T15:55:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T15:55:00",
+      "level": "info",
+      "category": "signal",
+      "symbol": "PLTR",
+      "message": "CONSENSUS BUY from ['RSI Momentum', 'MACD'] (strength=0.85)",
+      "data": {
+        "strategy": "Consensus",
+        "signal_type": "BUY",
+        "strength": 0.8500000000000001,
+        "price": 148.22,
+        "agreeing_strategies": [
+          "RSI Momentum",
+          "MACD"
+        ]
+      }
+    },
+    {
+      "timestamp": "2026-01-29T15:55:00",
+      "level": "info",
+      "category": "trade_open",
+      "symbol": "PLTR",
+      "message": "Opened 110.84 shares @ $148.29 (strategy: Consensus)",
+      "data": {
+        "quantity": 110.84,
+        "entry_price": 148.29411,
+        "stop_loss": 145.32822779999998,
+        "take_profit": 154.22587439999998,
+        "strategy": "Consensus",
+        "cost": 16453.356071552396
+      }
+    },
+    {
+      "timestamp": "2026-01-29T16:00:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T16:00:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T16:05:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "TSLA",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T16:05:00",
+      "level": "debug",
+      "category": "skip",
+      "symbol": "PLTR",
+      "message": "No consensus from 1 signals",
+      "data": {}
+    },
+    {
+      "timestamp": "2026-01-29T16:05:00",
+      "level": "info",
+      "category": "trade_close",
+      "symbol": "PLTR",
+      "message": "Closed @ $148.67 | P&L: +$24.70 (+0.15%) | Reason: end_of_data",
+      "data": {
+        "entry_price": 148.29411,
+        "exit_price": 148.66563000000002,
+        "quantity": 110.84,
+        "pnl": 24.701178370803575,
+        "pnl_pct": 0.001502786388481864,
+        "exit_reason": "end_of_data",
+        "strategy": "Consensus"
+      }
+    },
+    {
+      "timestamp": "2026-01-29T16:05:00",
+      "level": "info",
+      "category": "info",
+      "symbol": "",
+      "message": "Backtest complete: 246 signals, 79 trades",
+      "data": {}
+    }
+  ]
+}
