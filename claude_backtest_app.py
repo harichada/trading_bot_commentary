@@ -8397,14 +8397,22 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     };
 
     function parseBarTime(dateStr) {
-        // Convert "2024-01-15 09:30:00" or "2024-01-15" to UTC timestamp in seconds.
-        // LWC needs strictly increasing times; we treat all bar dates as UTC to avoid
-        // local-timezone offset issues.
+        // Convert bar date string to a timestamp for lightweight-charts.
+        // Schwab/data sources send UTC timestamps (14:30 UTC = 9:30 AM ET).
+        // LWC has no timezone setting, so we shift UTC → ET for intraday bars.
         if (!dateStr) return 0;
+        const hasTime = dateStr.includes(' ') || (dateStr.includes('T') && dateStr.length > 10);
+        if (!hasTime) {
+            // Daily bar: date-only "2026-01-15" — keep as-is, no TZ shift
+            const d = new Date(dateStr + 'T00:00:00Z');
+            return Math.floor(d.getTime() / 1000);
+        }
+        // Intraday bar: convert UTC → Eastern Time for correct display
         const s = dateStr.replace(' ', 'T');
-        // Parse as UTC by appending 'Z'
-        const d = new Date(s + (s.includes('T') ? 'Z' : 'T00:00:00Z'));
-        return Math.floor(d.getTime() / 1000);
+        const d = new Date(s + 'Z');
+        const etStr = d.toLocaleString('sv-SE', {timeZone: 'America/New_York'});
+        const etFake = new Date(etStr.replace(' ', 'T') + 'Z');
+        return Math.floor(etFake.getTime() / 1000);
     }
 
     function initChartGrid(symbols) {
