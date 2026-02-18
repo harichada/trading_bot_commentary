@@ -824,6 +824,9 @@ class GapFadeConfig:
     scan_universe: str = 'alpaca'      # 'alpaca' = all tradeable, 'study' = original 167, 'custom' = user list
     custom_symbols: str = ''           # comma-separated custom list (only used when scan_universe='custom')
 
+    # Position cap
+    max_notional: float = 50_000       # max $ value per position (caps compounding)
+
     # Backtest
     backtest_years: int = 3            # default lookback for backtests
 
@@ -1293,6 +1296,11 @@ class GapFadeEngine:
         max_shares = int(self.equity * 0.20 / entry_price)
         shares = min(shares, max_shares)
 
+        # Absolute notional cap (prevents unrealistic compounding in backtests)
+        if self.config.max_notional > 0:
+            max_shares_notional = int(self.config.max_notional / entry_price)
+            shares = min(shares, max_shares_notional)
+
         return max(0, shares)
 
     def should_enter(self, candidate: GapCandidate) -> Tuple[bool, str]:
@@ -1564,6 +1572,7 @@ class GapFadeBacktester:
         self.progress = 0.0
         self.status = 'idle'
         self._cancel = False
+        self.result = None
 
     async def run(self, symbol: str = None, symbols: List[str] = None,
                   start_date: str = None, end_date: str = None,
@@ -1613,7 +1622,8 @@ class GapFadeBacktester:
                 pct = (done / total) * 25 if total > 0 else 0
                 self.progress = pct
 
-            all_gap_days = scanner.scan_historical_batch(
+            all_gap_days = await asyncio.to_thread(
+                scanner.scan_historical_batch,
                 syms, start_date, end_date,
                 progress_callback=_batch_progress,
             )
@@ -1638,7 +1648,7 @@ class GapFadeBacktester:
                 if progress_callback:
                     await progress_callback(self.progress, f"Scanning {sym} ({idx+1}/{total_symbols})...")
 
-                gaps = scanner.scan_historical(sym, start_date, end_date)
+                gaps = await asyncio.to_thread(scanner.scan_historical, sym, start_date, end_date)
                 raw_gap_count += len(gaps)
                 before = len(gaps)
                 # Filter by vol_ratio
@@ -1658,7 +1668,10 @@ class GapFadeBacktester:
         if not all_gap_days:
             self.status = 'done'
             await _log('warn', f'No qualifying gap days found in {total_symbols} symbols')
-            return {'error': 'No gap days found', 'total_trades': 0, 'bt_log': self.bt_log}
+            no_gaps_result = {'error': 'No gap days found', 'total_trades': 0, 'bt_log': self.bt_log}
+            self.result = no_gaps_result
+            await broadcast({'type': 'backtest_complete', 'result': no_gaps_result})
+            return no_gaps_result
 
         # Sort by date
         all_gap_days.sort(key=lambda g: g['date'])
@@ -1714,10 +1727,10 @@ class GapFadeBacktester:
                     if min_df is None or len(min_df) < 10:
                         bars_missing += 1
                         await _log('warn', f'{sym} {gap_date}: no 1-min data')
-                        _time.sleep(0.35)
+                        await asyncio.sleep(0.35)
                         continue
                     day_trades, day_log = self._simulate_day_verbose(engine, gap, min_df)
-                    _time.sleep(0.35)
+                    await asyncio.sleep(0.35)
                 else:
                     # Fast mode: simulate from daily OHLCV already in gap dict
                     day_trades, day_log = self._simulate_day_daily(engine, gap)
@@ -1755,6 +1768,8 @@ class GapFadeBacktester:
                    f'{metrics.get("win_rate",0):.1%} win rate, '
                    f'${metrics.get("total_pnl",0):,.0f} P&L ({metrics.get("return_pct",0):.1f}%)')
 
+        self.result = metrics
+        await broadcast({'type': 'backtest_complete', 'result': metrics})
         return metrics
 
     def _simulate_day_daily(self, engine: GapFadeEngine,
@@ -1804,6 +1819,10 @@ class GapFadeBacktester:
         shares = int(dollar_risk / risk_per_share) if risk_per_share > 0 else 0
         max_shares = int(engine.equity * 0.20 / entry_price) if entry_price > 0 else 0
         shares = min(shares, max_shares)
+        # Absolute notional cap (prevents unrealistic compounding in backtests)
+        if self.config.max_notional > 0:
+            max_shares_notional = int(self.config.max_notional / entry_price) if entry_price > 0 else 0
+            shares = min(shares, max_shares_notional)
         if shares <= 0:
             log.append({'level': 'skip', 'msg': f'{sym} {gap["date"]}: position size = 0'})
             return day_trades, log
@@ -2633,7 +2652,8 @@ async def run_backtest(body: dict):
     for key in ['gap_threshold', 'vol_ratio_max', 'stop_pct', 'risk_pct',
                 'kelly_fraction', 'max_positions', 'initial_capital',
                 'daily_loss_limit', 'max_consec_losses', 'max_drawdown',
-                'time_exit_hour', 'min_avg_volume', 'min_price']:
+                'time_exit_hour', 'min_avg_volume', 'min_price',
+                'max_notional']:
         if key in body:
             field_type = type(getattr(config, key))
             try:
@@ -2658,18 +2678,26 @@ async def run_backtest(body: dict):
 
     backtester = GapFadeBacktester(config)
     use_1min = body.get('use_1min', False)
-    result = await backtester.run(
+    asyncio.create_task(backtester.run(
         symbol=symbol, symbols=symbols,
         start_date=start_date, end_date=end_date,
         config=config, progress_callback=progress_cb,
         use_1min=use_1min,
-    )
-    return result
+    ))
+    return {'status': 'started'}
 
 
 @app.get("/api/backtest/status")
 async def backtest_status():
     return {'progress': backtester.progress, 'status': backtester.status}
+
+
+@app.get("/api/backtest/results")
+async def backtest_results():
+    """Return backtest results once complete."""
+    if backtester.status == 'done' and backtester.result is not None:
+        return backtester.result
+    return {'status': backtester.status, 'progress': backtester.progress}
 
 
 @app.post("/api/backtest/cancel")
@@ -3328,6 +3356,9 @@ function handleMessage(msg) {
     document.getElementById('btProgress').style.display = 'block';
     document.getElementById('btProgressMsg').textContent = msg.message || 'Running...';
     document.getElementById('btProgressBar').style.width = msg.progress + '%';
+  } else if (msg.type === 'backtest_complete') {
+    document.getElementById('btProgress').style.display = 'none';
+    renderBacktestResults(msg.result);
   } else if (msg.type === 'bt_log') {
     appendBtLog(msg.entry);
   } else if (msg.type === 'db_build_progress') {
@@ -3396,8 +3427,10 @@ async function runBacktest() {
 
   try {
     const r = await api('backtest', 'POST', body);
-    document.getElementById('btProgress').style.display = 'none';
-    renderBacktestResults(r);
+    if (r.error) {
+      document.getElementById('btProgressMsg').textContent = 'Error: ' + r.error;
+    }
+    // Results will arrive via WebSocket 'backtest_complete' message
   } catch(e) {
     document.getElementById('btProgressMsg').textContent = 'Error: ' + e.message;
   }
@@ -3617,6 +3650,7 @@ function renderConfig(config) {
     ['time_exit_hour', 'Time Exit Hour', 'number'],
     ['min_avg_volume', 'Min Avg Volume', 'number'],
     ['min_price', 'Min Price', 'number'],
+    ['max_notional', 'Max Notional $', 'number'],
   ];
   grid.innerHTML = fields.map(([key, label, type]) => `
     <div class="config-item">
@@ -3687,7 +3721,7 @@ function showTab(name) {
 
 // ── Helpers ──────────────────────────────────────────────────────
 function pnlFmt(v) {
-  const sign = v >= 0 ? '+' : '';
+  const sign = v >= 0 ? '+' : '-';
   return sign + '$' + Math.abs(v).toFixed(2).replace(/\\B(?=(\\d{3})+(?!\\d))/g, ',');
 }
 
