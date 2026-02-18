@@ -28,10 +28,13 @@ import asyncio
 import json
 import logging
 import os
+import sqlite3
 import time as _time
 import traceback
+from collections import defaultdict
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timedelta, timezone, date
+from itertools import groupby
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -179,6 +182,117 @@ def fetch_alpaca_bars(symbol: str, start_date: str, end_date: str,
         return None
 
 
+def fetch_alpaca_bars_multi(symbols: List[str], start_date: str, end_date: str,
+                            interval: str = '1Day', feed: str = 'iex',
+                            batch_size: int = 100) -> Dict[str, pd.DataFrame]:
+    """Fetch daily bars for many symbols at once using Alpaca multi-stock bars endpoint.
+
+    Returns {symbol: DataFrame} dict.  Much faster than per-symbol fetching.
+    Batches `batch_size` symbols per request (Alpaca limit).
+    """
+    cfg = _get_alpaca_config()
+    if cfg is None:
+        return {}
+
+    interval_map = {
+        '1m': '1Min', '5m': '5Min', '10m': '10Min', '15m': '15Min',
+        '30m': '30Min', '1h': '1Hour', '1d': '1Day', '1Day': '1Day',
+    }
+    timeframe = interval_map.get(interval, interval)
+    headers = _alpaca_headers(cfg)
+    start_rfc = datetime.strptime(start_date, '%Y-%m-%d').strftime('%Y-%m-%dT00:00:00Z')
+    end_rfc = (datetime.strptime(end_date, '%Y-%m-%d') + timedelta(days=1)).strftime('%Y-%m-%dT00:00:00Z')
+
+    url = f'{cfg["data_url"]}/v2/stocks/bars'
+    results: Dict[str, pd.DataFrame] = {}
+    total_batches = (len(symbols) + batch_size - 1) // batch_size
+
+    for i in range(0, len(symbols), batch_size):
+        batch = symbols[i:i + batch_size]
+        batch_num = i // batch_size
+        batch_bars: Dict[str, list] = defaultdict(list)
+
+        # Retry loop for timeouts
+        for attempt in range(3):
+            page_token = None
+            if attempt > 0:
+                batch_bars.clear()
+                _time.sleep(2 ** attempt)
+
+            try:
+                while True:
+                    params = {
+                        'symbols': ','.join(batch),
+                        'timeframe': timeframe,
+                        'start': start_rfc,
+                        'end': end_rfc,
+                        'limit': 10000,
+                        'feed': feed,
+                        'adjustment': 'split',
+                    }
+                    if page_token:
+                        params['page_token'] = page_token
+
+                    resp = requests.get(url, headers=headers, params=params, timeout=45)
+                    if resp.status_code == 429:
+                        _time.sleep(min(2 ** (attempt + 1), 30))
+                        continue
+                    if resp.status_code != 200:
+                        logger.warning(f"Multi-bar batch {batch_num} failed ({resp.status_code})")
+                        break
+
+                    data = resp.json()
+                    bars_dict = data.get('bars') or {}
+                    for sym, bars in bars_dict.items():
+                        batch_bars[sym].extend(bars)
+
+                    page_token = data.get('next_page_token')
+                    if not page_token:
+                        break
+
+                # If we got data, don't retry
+                if batch_bars:
+                    break
+
+            except requests.exceptions.Timeout:
+                logger.warning(f"Multi-bar batch {batch_num}/{total_batches} timed out (attempt {attempt+1}/3)")
+            except Exception as e:
+                logger.warning(f"Multi-bar batch {batch_num} error: {e}")
+                break  # Don't retry on non-timeout errors
+
+        # Convert each symbol's bars to DataFrame
+        for sym, bars in batch_bars.items():
+            if not bars:
+                continue
+            try:
+                df = pd.DataFrame(bars)
+                df['datetime'] = pd.to_datetime(df['t'])
+                df.rename(columns={'o': 'open', 'h': 'high', 'l': 'low',
+                                   'c': 'close', 'v': 'volume'}, inplace=True)
+                df = df[['datetime', 'open', 'high', 'low', 'close', 'volume']].dropna()
+                for col in ['open', 'high', 'low', 'close', 'volume']:
+                    df[col] = pd.to_numeric(df[col], errors='coerce').astype(np.float64)
+                df.set_index('datetime', inplace=True)
+                df.sort_index(inplace=True)
+                if df.index.tz is not None:
+                    df.index = df.index.tz_convert(None)
+                df.index.name = sym
+                results[sym] = df
+            except Exception:
+                pass
+
+        # Rate limit between batches
+        if i + batch_size < len(symbols):
+            _time.sleep(0.3)
+
+        # Log progress every 20 batches
+        if batch_num % 20 == 0 and batch_num > 0:
+            logger.info(f"Multi-bar progress: batch {batch_num}/{total_batches}, {len(results)} symbols so far")
+
+    logger.info(f"Multi-bar fetch: {len(results)} symbols with data out of {len(symbols)} requested")
+    return results
+
+
 def fetch_alpaca_snapshots(symbols: List[str]) -> dict:
     """Batch fetch latest quotes/trades via Alpaca snapshots endpoint.
     Returns {symbol: {latestTrade: {p, s, t}, dailyBar: {o,h,l,c,v}, prevDailyBar: {o,h,l,c,v}}}
@@ -213,6 +327,67 @@ def fetch_alpaca_snapshots(symbols: List[str]) -> dict:
             _time.sleep(0.3)
 
     return results
+
+
+# Module-level cache for Alpaca assets list
+_assets_cache: Dict[str, Any] = {'symbols': [], 'timestamp': 0.0}
+
+
+def fetch_alpaca_assets(min_price: float = 1.0,
+                        asset_class: str = 'us_equity') -> List[str]:
+    """Fetch all active, tradeable symbols from Alpaca.
+
+    Filters: active, tradeable, major exchanges (NYSE, NASDAQ, ARCA, AMEX, BATS).
+    Cached for 24 hours.
+    """
+    now = _time.time()
+    if _assets_cache['symbols'] and (now - _assets_cache['timestamp']) < 86400:
+        return _assets_cache['symbols']
+
+    cfg = _get_alpaca_config()
+    if cfg is None:
+        logger.warning("fetch_alpaca_assets: Alpaca not configured")
+        return []
+
+    headers = _alpaca_headers(cfg)
+    valid_exchanges = {'NYSE', 'NASDAQ', 'ARCA', 'AMEX', 'BATS', 'NYSEARCA'}
+
+    try:
+        resp = requests.get(
+            f'{cfg["base_url"]}/v2/assets',
+            headers=headers,
+            params={'status': 'active', 'asset_class': asset_class},
+            timeout=60
+        )
+        if resp.status_code != 200:
+            logger.error(f"Alpaca assets API returned {resp.status_code}: {resp.text[:200]}")
+            return []
+
+        assets = resp.json()
+        symbols = []
+        for a in assets:
+            if not a.get('tradable', False):
+                continue
+            if a.get('status') != 'active':
+                continue
+            exchange = a.get('exchange', '')
+            if exchange not in valid_exchanges:
+                continue
+            sym = a.get('symbol', '')
+            # Skip symbols with special characters (warrants, units, etc.)
+            if not sym or '/' in sym or '.' in sym or '-' in sym or len(sym) > 5:
+                continue
+            symbols.append(sym)
+
+        symbols = sorted(set(symbols))
+        _assets_cache['symbols'] = symbols
+        _assets_cache['timestamp'] = now
+        logger.info(f"Fetched {len(symbols)} tradeable assets from Alpaca")
+        return symbols
+
+    except Exception as e:
+        logger.error(f"fetch_alpaca_assets failed: {e}")
+        return []
 
 
 def alpaca_check_shortable(symbol: str) -> Tuple[bool, bool]:
@@ -406,6 +581,173 @@ class AlpacaTickStreamer:
 
 
 # =============================================================================
+# SECTION 2b: LOCAL PRICE DATABASE
+# =============================================================================
+
+class PriceDB:
+    """SQLite cache for daily bars — eliminates repeated Alpaca fetches."""
+
+    DB_PATH = os.path.join(os.path.dirname(__file__) or '.', 'gap_fade_prices.db')
+
+    def __init__(self):
+        self._conn = sqlite3.connect(self.DB_PATH)
+        self._conn.execute('PRAGMA journal_mode=WAL')
+        self._conn.execute('PRAGMA synchronous=NORMAL')
+        self._conn.execute('''
+            CREATE TABLE IF NOT EXISTS daily_bars (
+                symbol TEXT NOT NULL,
+                date   TEXT NOT NULL,
+                open   REAL,
+                high   REAL,
+                low    REAL,
+                close  REAL,
+                volume REAL,
+                PRIMARY KEY (symbol, date)
+            ) WITHOUT ROWID
+        ''')
+        self._conn.commit()
+
+    def upsert_bars(self, symbol: str, df: pd.DataFrame):
+        """Insert or replace bars for a single symbol from a DataFrame."""
+        if df is None or df.empty:
+            return
+        rows = []
+        for idx, row in df.iterrows():
+            dt = idx
+            if hasattr(dt, 'strftime'):
+                date_str = dt.strftime('%Y-%m-%d')
+            else:
+                date_str = str(dt)[:10]
+            rows.append((symbol, date_str, float(row['open']), float(row['high']),
+                         float(row['low']), float(row['close']), float(row['volume'])))
+        self._conn.executemany(
+            'INSERT OR REPLACE INTO daily_bars (symbol, date, open, high, low, close, volume) '
+            'VALUES (?, ?, ?, ?, ?, ?, ?)', rows
+        )
+        self._conn.commit()
+
+    def upsert_bars_batch(self, dfs: Dict[str, pd.DataFrame]):
+        """Bulk insert bars for many symbols at once (single transaction)."""
+        rows = []
+        for symbol, df in dfs.items():
+            if df is None or df.empty:
+                continue
+            for idx, row in df.iterrows():
+                dt = idx
+                if hasattr(dt, 'strftime'):
+                    date_str = dt.strftime('%Y-%m-%d')
+                else:
+                    date_str = str(dt)[:10]
+                rows.append((symbol, date_str, float(row['open']), float(row['high']),
+                             float(row['low']), float(row['close']), float(row['volume'])))
+        if rows:
+            self._conn.executemany(
+                'INSERT OR REPLACE INTO daily_bars (symbol, date, open, high, low, close, volume) '
+                'VALUES (?, ?, ?, ?, ?, ?, ?)', rows
+            )
+            self._conn.commit()
+        logger.info(f"PriceDB: upserted {len(rows)} rows for {len(dfs)} symbols")
+
+    def get_bars(self, symbol: str, start: str, end: str) -> Optional[pd.DataFrame]:
+        """Get daily bars for one symbol in [start, end] date range."""
+        cur = self._conn.execute(
+            'SELECT date, open, high, low, close, volume FROM daily_bars '
+            'WHERE symbol = ? AND date >= ? AND date <= ? ORDER BY date',
+            (symbol, start, end)
+        )
+        rows = cur.fetchall()
+        if not rows:
+            return None
+        df = pd.DataFrame(rows, columns=['datetime', 'open', 'high', 'low', 'close', 'volume'])
+        df['datetime'] = pd.to_datetime(df['datetime'])
+        for col in ['open', 'high', 'low', 'close', 'volume']:
+            df[col] = df[col].astype(np.float64)
+        df.set_index('datetime', inplace=True)
+        df.sort_index(inplace=True)
+        df.index.name = symbol
+        return df
+
+    def get_bars_batch(self, symbols: List[str], start: str, end: str) -> Dict[str, pd.DataFrame]:
+        """Get daily bars for many symbols at once. Returns {symbol: DataFrame}."""
+        results = {}
+        # Use chunked IN queries for efficiency
+        chunk_size = 500
+        for i in range(0, len(symbols), chunk_size):
+            chunk = symbols[i:i + chunk_size]
+            placeholders = ','.join('?' * len(chunk))
+            cur = self._conn.execute(
+                f'SELECT symbol, date, open, high, low, close, volume FROM daily_bars '
+                f'WHERE symbol IN ({placeholders}) AND date >= ? AND date <= ? ORDER BY symbol, date',
+                chunk + [start, end]
+            )
+            rows = cur.fetchall()
+            # Group by symbol
+            for sym, group in groupby(rows, key=lambda r: r[0]):
+                bar_rows = list(group)
+                df = pd.DataFrame(bar_rows, columns=['symbol', 'datetime', 'open', 'high', 'low', 'close', 'volume'])
+                df.drop(columns=['symbol'], inplace=True)
+                df['datetime'] = pd.to_datetime(df['datetime'])
+                for col in ['open', 'high', 'low', 'close', 'volume']:
+                    df[col] = df[col].astype(np.float64)
+                df.set_index('datetime', inplace=True)
+                df.sort_index(inplace=True)
+                df.index.name = sym
+                results[sym] = df
+        return results
+
+    def get_last_date(self, symbol: str) -> Optional[str]:
+        """Get the most recent date stored for a symbol."""
+        cur = self._conn.execute(
+            'SELECT MAX(date) FROM daily_bars WHERE symbol = ?', (symbol,)
+        )
+        row = cur.fetchone()
+        return row[0] if row and row[0] else None
+
+    def get_last_dates_batch(self) -> Dict[str, str]:
+        """Get the most recent date for every symbol in the DB."""
+        cur = self._conn.execute(
+            'SELECT symbol, MAX(date) FROM daily_bars GROUP BY symbol'
+        )
+        return {row[0]: row[1] for row in cur.fetchall()}
+
+    def get_symbols(self) -> List[str]:
+        """Get all symbols stored in the DB."""
+        cur = self._conn.execute('SELECT DISTINCT symbol FROM daily_bars ORDER BY symbol')
+        return [row[0] for row in cur.fetchall()]
+
+    def get_stats(self) -> dict:
+        """Get DB statistics: symbol count, date range, file size."""
+        cur = self._conn.execute('SELECT COUNT(DISTINCT symbol), MIN(date), MAX(date), COUNT(*) FROM daily_bars')
+        row = cur.fetchone()
+        symbol_count = row[0] or 0
+        min_date = row[1] or ''
+        max_date = row[2] or ''
+        total_rows = row[3] or 0
+        try:
+            size_bytes = os.path.getsize(self.DB_PATH)
+        except OSError:
+            size_bytes = 0
+        return {
+            'symbol_count': symbol_count,
+            'min_date': min_date,
+            'max_date': max_date,
+            'total_rows': total_rows,
+            'size_mb': round(size_bytes / (1024 * 1024), 1),
+        }
+
+
+# Module-level singleton (created lazily)
+_price_db: Optional[PriceDB] = None
+
+
+def get_price_db() -> PriceDB:
+    global _price_db
+    if _price_db is None:
+        _price_db = PriceDB()
+    return _price_db
+
+
+# =============================================================================
 # SECTION 3: DATA CLASSES & CONFIG
 # =============================================================================
 
@@ -477,6 +819,10 @@ class GapFadeConfig:
     daily_loss_limit: float = 0.02     # halt if daily P&L <= -2%
     max_consec_losses: int = 3         # pause after N consecutive losses
     max_drawdown: float = 0.05         # halt if drawdown >= 5%
+
+    # Scanner universe
+    scan_universe: str = 'alpaca'      # 'alpaca' = all tradeable, 'study' = original 167, 'custom' = user list
+    custom_symbols: str = ''           # comma-separated custom list (only used when scan_universe='custom')
 
     # Backtest
     backtest_years: int = 3            # default lookback for backtests
@@ -553,25 +899,94 @@ class GapScanner:
 
     def __init__(self, config: GapFadeConfig, universe: List[str] = None):
         self.config = config
-        self.universe = universe or UNIVERSE
+        self._explicit_universe = universe  # None = use config.scan_universe
         self._avg_volumes: Dict[str, float] = {}     # 20d avg volume cache
         self._prev_closes: Dict[str, float] = {}     # previous day close cache
         self._shortable_cache: Dict[str, Tuple[bool, bool]] = {}
         self._cache_date: str = ''
 
-    def _ensure_volume_cache(self):
-        """Fetch 30d daily bars to compute 20d avg volume (cached per day)."""
-        today = datetime.now(ET).strftime('%Y-%m-%d')
-        if self._cache_date == today and self._avg_volumes:
-            return
+    def _resolve_universe(self) -> List[str]:
+        """Resolve the scan universe based on config or explicit override."""
+        if self._explicit_universe is not None:
+            return self._explicit_universe
 
-        logger.info(f"Building volume cache for {len(self.universe)} symbols...")
+        mode = getattr(self.config, 'scan_universe', 'study')
+        if mode == 'alpaca':
+            assets = fetch_alpaca_assets(min_price=self.config.min_price)
+            if assets:
+                return assets
+            logger.warning("Alpaca assets fetch failed, falling back to study universe")
+            return UNIVERSE
+        elif mode == 'custom':
+            custom = getattr(self.config, 'custom_symbols', '')
+            if custom:
+                return [s.strip().upper() for s in custom.split(',') if s.strip()]
+            return UNIVERSE
+        else:  # 'study' or default
+            return UNIVERSE
+
+    def _fetch_volume_for_candidates(self, symbols: List[str]) -> Dict[str, float]:
+        """Fetch 20d avg volume only for symbols that have a gap. Much faster than caching all."""
+        today = datetime.now(ET).strftime('%Y-%m-%d')
         end = datetime.now(ET)
         start = end - timedelta(days=45)
         start_str = start.strftime('%Y-%m-%d')
         end_str = end.strftime('%Y-%m-%d')
 
-        for i, sym in enumerate(self.universe):
+        avg_volumes = {}
+        need_api = []
+        db = get_price_db()
+
+        for sym in symbols:
+            # Use in-memory cache if available today
+            if self._cache_date == today and sym in self._avg_volumes:
+                avg_volumes[sym] = self._avg_volumes[sym]
+                continue
+            # Try local DB
+            df = db.get_bars(sym, start_str, end_str)
+            if df is not None and len(df) >= 5:
+                vol_20 = df['volume'].tail(20).mean()
+                avg_volumes[sym] = vol_20
+                self._avg_volumes[sym] = vol_20
+            else:
+                need_api.append(sym)
+
+        # Fall back to API for symbols not in DB
+        for i, sym in enumerate(need_api):
+            try:
+                df = fetch_alpaca_bars(sym, start_str, end_str, '1Day', 'iex')
+                if df is not None and len(df) >= 5:
+                    vol_20 = df['volume'].tail(20).mean()
+                    avg_volumes[sym] = vol_20
+                    self._avg_volumes[sym] = vol_20
+                    # Cache into DB
+                    db.upsert_bars(sym, df)
+            except Exception:
+                pass
+
+            # Rate limit
+            if (i + 1) % 80 == 0:
+                _time.sleep(1)
+
+        self._cache_date = today
+        return avg_volumes
+
+    def _ensure_volume_cache(self):
+        """Fetch 30d daily bars to compute 20d avg volume (cached per day).
+        Used for study/custom universes where the set is small enough to pre-cache.
+        """
+        universe = self._resolve_universe()
+        today = datetime.now(ET).strftime('%Y-%m-%d')
+        if self._cache_date == today and self._avg_volumes:
+            return
+
+        logger.info(f"Building volume cache for {len(universe)} symbols...")
+        end = datetime.now(ET)
+        start = end - timedelta(days=45)
+        start_str = start.strftime('%Y-%m-%d')
+        end_str = end.strftime('%Y-%m-%d')
+
+        for i, sym in enumerate(universe):
             try:
                 df = fetch_alpaca_bars(sym, start_str, end_str, '1Day', 'iex')
                 if df is not None and len(df) >= 5:
@@ -588,20 +1003,33 @@ class GapScanner:
         self._cache_date = today
         logger.info(f"Volume cache built: {len(self._avg_volumes)} symbols")
 
-    def scan_premarket(self) -> List[GapCandidate]:
-        """Scan for gap-up candidates using Alpaca snapshots."""
-        self._ensure_volume_cache()
+    def scan_premarket(self) -> Tuple[List[GapCandidate], int]:
+        """Scan for gap-up candidates using Alpaca snapshots.
+
+        Uses snapshot-first approach for large universes: snapshot all symbols first,
+        then fetch volume data only for gap candidates.
+
+        Returns (candidates, universe_size).
+        """
+        universe = self._resolve_universe()
+        universe_size = len(universe)
+        is_large = universe_size > 500  # Alpaca universe mode
+
+        if not is_large:
+            # Small universe: pre-cache volume then snapshot (original flow)
+            self._ensure_volume_cache()
 
         # Fetch snapshots in batch
-        snapshots = fetch_alpaca_snapshots(self.universe)
+        logger.info(f"Fetching snapshots for {universe_size} symbols ({self.config.scan_universe} mode)...")
+        snapshots = fetch_alpaca_snapshots(universe)
         if not snapshots:
             logger.warning("No snapshot data returned")
-            return []
+            return [], universe_size
 
-        candidates = []
+        # Phase 1: Find gap candidates from snapshots (no volume filter yet for large universe)
+        raw_candidates = []
         for sym, snap in snapshots.items():
             try:
-                # Get latest trade price and previous daily bar
                 latest_trade = snap.get('latestTrade', {})
                 prev_bar = snap.get('prevDailyBar', {})
 
@@ -614,41 +1042,63 @@ class GapScanner:
                 if prev_close <= 0 or current_price <= 0:
                     continue
 
-                # Compute gap
                 gap_pct = (current_price - prev_close) / prev_close
                 if gap_pct < self.config.gap_threshold:
                     continue
 
-                # Price filter
                 if current_price < self.config.min_price:
                     continue
 
-                # Volume filter
-                avg_vol = self._avg_volumes.get(sym, 0)
-                if avg_vol < self.config.min_avg_volume:
-                    continue
+                # For small universe, check pre-cached volume
+                if not is_large:
+                    avg_vol = self._avg_volumes.get(sym, 0)
+                    if avg_vol < self.config.min_avg_volume:
+                        continue
+                    daily_bar = snap.get('dailyBar', {})
+                    today_vol = float(daily_bar.get('v', 0)) if daily_bar else 0
+                    vol_ratio = today_vol / avg_vol if avg_vol > 0 and today_vol > 0 else 0.5
+                else:
+                    avg_vol = 0
+                    vol_ratio = 0.5  # placeholder until we fetch volume
 
-                # Volume ratio from daily bar (if available) or estimate
-                daily_bar = snap.get('dailyBar', {})
-                today_vol = float(daily_bar.get('v', 0)) if daily_bar else 0
-                vol_ratio = today_vol / avg_vol if avg_vol > 0 and today_vol > 0 else 0.5
-
-                candidates.append(GapCandidate(
+                raw_candidates.append(GapCandidate(
                     symbol=sym,
                     gap_pct=gap_pct,
                     prev_close=prev_close,
                     premarket_price=current_price,
                     avg_vol_20d=avg_vol,
                     vol_ratio=vol_ratio,
-                    shortable=True,   # will verify before entry
+                    shortable=True,
                     easy_to_borrow=True,
                     score=0.0,
                 ))
             except Exception as e:
                 logger.debug(f"Snapshot parse error for {sym}: {e}")
 
+        # Phase 2: For large universe, fetch volume only for gap candidates
+        if is_large and raw_candidates:
+            gap_symbols = [c.symbol for c in raw_candidates]
+            logger.info(f"Found {len(gap_symbols)} gap candidates, fetching volume data...")
+            avg_volumes = self._fetch_volume_for_candidates(gap_symbols)
+
+            # Apply volume filters
+            filtered = []
+            for c in raw_candidates:
+                avg_vol = avg_volumes.get(c.symbol, 0)
+                if avg_vol < self.config.min_avg_volume:
+                    continue
+                c.avg_vol_20d = avg_vol
+
+                # Recalculate vol_ratio with actual data
+                snap = snapshots.get(c.symbol, {})
+                daily_bar = snap.get('dailyBar', {})
+                today_vol = float(daily_bar.get('v', 0)) if daily_bar else 0
+                c.vol_ratio = today_vol / avg_vol if avg_vol > 0 and today_vol > 0 else 0.5
+                filtered.append(c)
+            raw_candidates = filtered
+
         # Filter by volume ratio
-        candidates = [c for c in candidates if c.vol_ratio <= self.config.vol_ratio_max]
+        candidates = [c for c in raw_candidates if c.vol_ratio <= self.config.vol_ratio_max]
 
         # Check shortability for top candidates
         candidates.sort(key=lambda c: c.gap_pct, reverse=True)
@@ -669,35 +1119,109 @@ class GapScanner:
                 c.score += 10  # very low volume = stronger signal
 
         candidates.sort(key=lambda c: c.score, reverse=True)
-        logger.info(f"Scanner found {len(candidates)} gap-up candidates")
-        return candidates
+        logger.info(f"Scanner found {len(candidates)} gap-up candidates from {universe_size} symbols")
+        return candidates, universe_size
 
     def scan_historical(self, symbol: str, start_date: str, end_date: str) -> List[dict]:
-        """Find historical gap-up days for backtesting."""
-        df = fetch_alpaca_bars(symbol, start_date, end_date, '1Day', 'iex')
-        if df is None or len(df) < 25:
+        """Find historical gap-up days for backtesting (single symbol)."""
+        # Fetch extra days for rolling avg volume
+        adj_start = (datetime.strptime(start_date, '%Y-%m-%d') - timedelta(days=45)).strftime('%Y-%m-%d')
+        df = fetch_alpaca_bars(symbol, adj_start, end_date, '1Day', 'iex')
+        start_dt = datetime.strptime(start_date, '%Y-%m-%d')
+        return self._find_gaps_in_df(df, symbol, after_date=start_dt,
+                                     gap_threshold=self.config.gap_threshold,
+                                     min_price=self.config.min_price,
+                                     min_avg_volume=self.config.min_avg_volume)
+
+    def scan_historical_batch(self, symbols: List[str], start_date: str,
+                              end_date: str, progress_callback=None) -> List[dict]:
+        """Find historical gap-up days for ALL symbols using batch API.
+
+        Uses local PriceDB when available (<1s), falls back to Alpaca API (~7min).
+        Returns list of gap dicts sorted by date.
+        """
+        # Fetch extra 45 days before start for rolling avg volume calculation
+        adj_start = (datetime.strptime(start_date, '%Y-%m-%d') - timedelta(days=45)).strftime('%Y-%m-%d')
+        logger.info(f"Batch fetching daily bars for {len(symbols)} symbols ({adj_start} to {end_date})...")
+
+        # Try local PriceDB first
+        db = get_price_db()
+        all_dfs = db.get_bars_batch(symbols, adj_start, end_date)
+        db_hit_count = len(all_dfs)
+
+        # Find symbols missing from DB
+        missing_symbols = [s for s in symbols if s not in all_dfs]
+        if missing_symbols:
+            logger.info(f"PriceDB hit {db_hit_count}/{len(symbols)} symbols, "
+                        f"fetching {len(missing_symbols)} from API...")
+            api_dfs = fetch_alpaca_bars_multi(missing_symbols, adj_start, end_date, '1Day', 'iex')
+            all_dfs.update(api_dfs)
+            # Cache API results into DB for next time
+            if api_dfs:
+                db.upsert_bars_batch(api_dfs)
+        else:
+            logger.info(f"PriceDB hit all {db_hit_count} symbols — no API calls needed")
+
+        all_gaps = []
+        start_dt = datetime.strptime(start_date, '%Y-%m-%d')
+        processed = 0
+        for sym, df in all_dfs.items():
+            gaps = self._find_gaps_in_df(df, sym, after_date=start_dt,
+                                         gap_threshold=self.config.gap_threshold,
+                                         min_price=self.config.min_price,
+                                         min_avg_volume=self.config.min_avg_volume)
+            all_gaps.extend(gaps)
+            processed += 1
+            if progress_callback and processed % 500 == 0:
+                progress_callback(processed, len(all_dfs))
+
+        logger.info(f"Batch scan: {len(all_gaps)} gaps found across {len(all_dfs)} symbols with data")
+        return all_gaps
+
+    @staticmethod
+    def _find_gaps_in_df(df: Optional[pd.DataFrame], symbol: str,
+                         after_date: datetime = None, min_bars: int = 5,
+                         gap_threshold: float = None, min_price: float = None,
+                         min_avg_volume: int = None) -> List[dict]:
+        """Extract gap-up days from a DataFrame of daily bars.
+
+        Shared logic for both single-symbol and batch scanning.
+        """
+        if df is None or len(df) < min_bars:
             return []
 
         opens = df['open'].values
         closes = df['close'].values
+        highs = df['high'].values
+        lows = df['low'].values
         volumes = df['volume'].values
         dates = df.index
 
-        avg_vol = pd.Series(volumes).rolling(20).mean().values
+        # Use a shorter window if not enough bars for 20-day rolling
+        window = min(20, len(df) - 1)
+        avg_vol = pd.Series(volumes).rolling(window).mean().values
 
         gaps = []
         for i in range(1, len(df)):
+            # Skip bars before the requested start date
+            if after_date is not None:
+                bar_dt = dates[i].to_pydatetime() if hasattr(dates[i], 'to_pydatetime') else dates[i]
+                if hasattr(bar_dt, 'replace'):
+                    bar_dt = bar_dt.replace(tzinfo=None)
+                if bar_dt < after_date:
+                    continue
+
             prev_c = closes[i-1]
             if prev_c <= 0 or opens[i] <= 0:
                 continue
             gap = (opens[i] - prev_c) / prev_c
-            if gap < self.config.gap_threshold:
+            if gap_threshold is not None and gap < gap_threshold:
                 continue
-            if opens[i] < self.config.min_price:
+            if min_price is not None and opens[i] < min_price:
                 continue
 
             cur_avg_vol = avg_vol[i] if not np.isnan(avg_vol[i]) else volumes[i]
-            if cur_avg_vol < self.config.min_avg_volume:
+            if min_avg_volume is not None and cur_avg_vol < min_avg_volume:
                 continue
 
             vol_ratio = volumes[i] / cur_avg_vol if cur_avg_vol > 0 else 1.0
@@ -706,8 +1230,8 @@ class GapScanner:
                 'date': dates[i].strftime('%Y-%m-%d') if hasattr(dates[i], 'strftime') else str(dates[i])[:10],
                 'symbol': symbol,
                 'open': float(opens[i]),
-                'high': float(df['high'].values[i]),
-                'low': float(df['low'].values[i]),
+                'high': float(highs[i]),
+                'low': float(lows[i]),
                 'close': float(closes[i]),
                 'prev_close': float(prev_c),
                 'gap_pct': round(gap, 4),
@@ -1072,35 +1596,64 @@ class GapFadeBacktester:
             self.bt_log.append(entry)
             await broadcast({'type': 'bt_log', 'entry': entry})
 
-        # Step 1: Find gap days for each symbol using daily bars
+        # Step 1: Find gap days — use batch API for large universes
         total_symbols = len(syms)
         await _log('info', f'Scanning {total_symbols} symbols for gap-ups >= {self.config.gap_threshold:.0%}, '
                    f'vol_ratio <= {self.config.vol_ratio_max}x, stop = {self.config.stop_pct:.0%}')
 
-        for idx, sym in enumerate(syms):
-            if self._cancel:
-                break
+        use_batch = total_symbols > 50  # batch API for large universes
 
-            self.progress = (idx / total_symbols) * 30  # 0-30% for scanning
+        if use_batch:
+            # Batch mode: fetch all symbols' daily bars in multi-symbol requests
+            await _log('info', f'Using batch API for {total_symbols} symbols...')
             if progress_callback:
-                await progress_callback(self.progress, f"Scanning {sym} ({idx+1}/{total_symbols})...")
+                await progress_callback(2, f"Fetching daily bars for {total_symbols} symbols (batch)...")
 
-            gaps = scanner.scan_historical(sym, start_date, end_date)
-            raw_gap_count += len(gaps)
-            before = len(gaps)
+            def _batch_progress(done, total):
+                pct = (done / total) * 25 if total > 0 else 0
+                self.progress = pct
+
+            all_gap_days = scanner.scan_historical_batch(
+                syms, start_date, end_date,
+                progress_callback=_batch_progress,
+            )
+            raw_gap_count = len(all_gap_days)
+
+            if progress_callback:
+                await progress_callback(25, f"Found {raw_gap_count} raw gaps, filtering...")
+
             # Filter by vol_ratio
-            gaps = [g for g in gaps if g['vol_ratio'] <= self.config.vol_ratio_max]
-            if gaps:
-                await _log('scan', f'{sym}: {before} gaps found, {len(gaps)} pass vol filter', {
-                    'symbol': sym, 'raw': before, 'filtered': len(gaps),
-                    'samples': [{'date': g['date'], 'gap': f"{g['gap_pct']:.1%}",
-                                 'vol': f"{g['vol_ratio']:.2f}x"} for g in gaps[:5]]
-                })
-            all_gap_days.extend(gaps)
+            all_gap_days = [g for g in all_gap_days if g['vol_ratio'] <= self.config.vol_ratio_max]
+            await _log('scan', f'Batch scan: {raw_gap_count} raw gaps → {len(all_gap_days)} pass vol filter '
+                       f'(from {total_symbols} symbols)')
+            self.progress = 30
 
-            # Rate limit
-            if (idx + 1) % 50 == 0:
-                await asyncio.sleep(0.5)
+        else:
+            # Sequential mode for small universes (< 50 symbols)
+            for idx, sym in enumerate(syms):
+                if self._cancel:
+                    break
+
+                self.progress = (idx / total_symbols) * 30  # 0-30% for scanning
+                if progress_callback:
+                    await progress_callback(self.progress, f"Scanning {sym} ({idx+1}/{total_symbols})...")
+
+                gaps = scanner.scan_historical(sym, start_date, end_date)
+                raw_gap_count += len(gaps)
+                before = len(gaps)
+                # Filter by vol_ratio
+                gaps = [g for g in gaps if g['vol_ratio'] <= self.config.vol_ratio_max]
+                if gaps:
+                    await _log('scan', f'{sym}: {before} gaps found, {len(gaps)} pass vol filter', {
+                        'symbol': sym, 'raw': before, 'filtered': len(gaps),
+                        'samples': [{'date': g['date'], 'gap': f"{g['gap_pct']:.1%}",
+                                     'vol': f"{g['vol_ratio']:.2f}x"} for g in gaps[:5]]
+                    })
+                all_gap_days.extend(gaps)
+
+                # Rate limit
+                if (idx + 1) % 50 == 0:
+                    await asyncio.sleep(0.5)
 
         if not all_gap_days:
             self.status = 'done'
@@ -1116,46 +1669,70 @@ class GapFadeBacktester:
                    f'(from {raw_gap_count} raw). Simulating with {mode_label}...')
 
         # Step 2: Simulate each gap day
+        # Group by date to enforce max_positions per calendar day
+        gaps_by_date: Dict[str, List[dict]] = defaultdict(list)
+        for gap in all_gap_days:
+            gaps_by_date[gap['date']].append(gap)
+
+        # Sort each day's gaps by gap_pct descending (best first)
+        for d in gaps_by_date:
+            gaps_by_date[d].sort(key=lambda g: g['gap_pct'], reverse=True)
+
+        sorted_dates = sorted(gaps_by_date.keys())
         total_gaps = len(all_gap_days)
         trades_by_day = []
         bars_missing = 0
+        gi = 0  # global gap counter for progress
 
-        for gi, gap in enumerate(all_gap_days):
+        for date_str in sorted_dates:
             if self._cancel:
                 break
 
-            self.progress = 30 + (gi / total_gaps) * 65  # 30-95%
-            sym = gap['symbol']
-            gap_date = gap['date']
+            day_gaps = gaps_by_date[date_str]
+            # Enforce max_positions per day — only trade top N gaps
+            max_pos = self.config.max_positions
+            day_gaps = day_gaps[:max_pos]
 
-            if progress_callback and gi % max(1, total_gaps // 40) == 0:
-                await progress_callback(self.progress, f"Simulating {sym} {gap_date} ({gi+1}/{total_gaps})")
+            # Reset daily stats for each new calendar day
+            engine.daily_stats = DailyStats(date=date_str, peak_equity=engine.equity)
 
-            if use_1min:
-                # Detailed mode: fetch 1-min bars per day (slow)
-                min_df = fetch_alpaca_bars(sym, gap_date, gap_date, '1Min', 'iex')
-                if min_df is None or len(min_df) < 10:
-                    bars_missing += 1
-                    await _log('warn', f'{sym} {gap_date}: no 1-min data')
+            for gap in day_gaps:
+                if self._cancel:
+                    break
+
+                gi += 1
+                self.progress = 30 + (gi / total_gaps) * 65  # 30-95%
+                sym = gap['symbol']
+                gap_date = gap['date']
+
+                if progress_callback and gi % max(1, total_gaps // 40) == 0:
+                    await progress_callback(self.progress, f"Simulating {sym} {gap_date} ({gi+1}/{total_gaps})")
+
+                if use_1min:
+                    # Detailed mode: fetch 1-min bars per day (slow)
+                    min_df = fetch_alpaca_bars(sym, gap_date, gap_date, '1Min', 'iex')
+                    if min_df is None or len(min_df) < 10:
+                        bars_missing += 1
+                        await _log('warn', f'{sym} {gap_date}: no 1-min data')
+                        _time.sleep(0.35)
+                        continue
+                    day_trades, day_log = self._simulate_day_verbose(engine, gap, min_df)
                     _time.sleep(0.35)
-                    continue
-                day_trades, day_log = self._simulate_day_verbose(engine, gap, min_df)
-                _time.sleep(0.35)
-            else:
-                # Fast mode: simulate from daily OHLCV already in gap dict
-                day_trades, day_log = self._simulate_day_daily(engine, gap)
+                else:
+                    # Fast mode: simulate from daily OHLCV already in gap dict
+                    day_trades, day_log = self._simulate_day_daily(engine, gap)
 
-            for entry in day_log:
-                await _log(entry['level'], entry['msg'], entry.get('data'))
+                for entry in day_log:
+                    await _log(entry['level'], entry['msg'], entry.get('data'))
 
-            trades_by_day.append({
-                'date': gap_date,
-                'symbol': sym,
-                'gap_pct': gap['gap_pct'],
-                'vol_ratio': gap['vol_ratio'],
-                'trades': len(day_trades),
-                'pnl': sum(t.pnl for t in day_trades),
-            })
+                trades_by_day.append({
+                    'date': gap_date,
+                    'symbol': sym,
+                    'gap_pct': gap['gap_pct'],
+                    'vol_ratio': gap['vol_ratio'],
+                    'trades': len(day_trades),
+                    'pnl': sum(t.pnl for t in day_trades),
+                })
 
         self.progress = 100
         self.status = 'done'
@@ -1716,16 +2293,17 @@ class GapFadeLiveTrader:
         self._add_message('scan', 'Running pre-market scan...')
         await broadcast({'type': 'live_status', 'status': 'scanning'})
 
-        self.candidates = self.scanner.scan_premarket()
+        self.candidates, universe_size = self.scanner.scan_premarket()
         self.last_scan_time = datetime.now(ET).strftime('%H:%M:%S')
 
-        self._add_message('scan', f'Found {len(self.candidates)} candidates', {
+        self._add_message('scan', f'Found {len(self.candidates)} candidates from {universe_size} symbols', {
             'candidates': [asdict(c) for c in self.candidates[:10]]
         })
         await broadcast({
             'type': 'scan_results',
             'candidates': [asdict(c) for c in self.candidates[:10]],
             'scan_time': self.last_scan_time,
+            'universe_size': universe_size,
         })
 
     async def _enter_positions(self):
@@ -1974,13 +2552,14 @@ async def get_state():
 async def run_scan():
     """Trigger a pre-market scan."""
     scanner = GapScanner(live_trader.config)
-    candidates = scanner.scan_premarket()
+    candidates, universe_size = scanner.scan_premarket()
     live_trader.candidates = candidates
     live_trader.last_scan_time = datetime.now(ET).strftime('%H:%M:%S')
     return {
         'candidates': [asdict(c) for c in candidates[:15]],
         'scan_time': live_trader.last_scan_time,
         'count': len(candidates),
+        'universe_size': universe_size,
     }
 
 
@@ -2033,6 +2612,8 @@ async def update_config(body: dict):
             except (ValueError, TypeError):
                 pass
     live_trader.engine.config = config
+    # Rebuild scanner when universe config changes
+    live_trader.scanner = GapScanner(config)
     return {'config': asdict(config)}
 
 
@@ -2062,6 +2643,15 @@ async def run_backtest(body: dict):
 
     if symbols and isinstance(symbols, str):
         symbols = [s.strip() for s in symbols.split(',')]
+
+    # Resolve universe if no explicit symbols provided
+    bt_universe = body.get('universe', '')
+    if not symbols and not symbol and bt_universe:
+        if bt_universe == 'alpaca':
+            symbols = fetch_alpaca_assets(min_price=config.min_price)
+        elif bt_universe == 'study':
+            symbols = UNIVERSE
+        # 'custom' handled via symbols param directly
 
     async def progress_cb(pct, msg):
         await broadcast({'type': 'backtest_progress', 'progress': round(pct, 1), 'message': msg})
@@ -2113,6 +2703,122 @@ async def get_account():
             'portfolio_value': acct.get('portfolio_value'),
         }
     return {'error': 'Could not fetch account'}
+
+
+# ── Price Database Endpoints ──────────────────────────────────────
+
+@app.get("/api/db/stats")
+async def db_stats():
+    """Get price database statistics."""
+    db = get_price_db()
+    return db.get_stats()
+
+
+@app.post("/api/db/build")
+async def db_build(body: dict):
+    """Bulk-load daily bars from Alpaca into local DB.
+
+    Body: {universe: 'alpaca'|'study', start_date: 'YYYY-MM-DD'}
+    Streams progress via WebSocket (db_build_progress messages).
+    """
+    universe = body.get('universe', 'study')
+    start_date = body.get('start_date', (datetime.now() - timedelta(days=5*365)).strftime('%Y-%m-%d'))
+    end_date = datetime.now().strftime('%Y-%m-%d')
+
+    if universe == 'alpaca':
+        symbols = fetch_alpaca_assets(min_price=1.0)
+    elif universe == 'study':
+        # UNIVERSE is defined later; import at call time
+        symbols = UNIVERSE
+    else:
+        return {'error': f'Unknown universe: {universe}'}
+
+    if not symbols:
+        return {'error': 'No symbols resolved for universe'}
+
+    db = get_price_db()
+    total = len(symbols)
+    batch_size = 100
+    loaded = 0
+
+    await broadcast({'type': 'db_build_progress', 'progress': 0,
+                     'message': f'Building DB: 0/{total} symbols...'})
+
+    for i in range(0, total, batch_size):
+        batch = symbols[i:i + batch_size]
+        batch_num = i // batch_size + 1
+        total_batches = (total + batch_size - 1) // batch_size
+
+        try:
+            dfs = fetch_alpaca_bars_multi(batch, start_date, end_date, '1Day', 'iex')
+            if dfs:
+                db.upsert_bars_batch(dfs)
+                loaded += len(dfs)
+        except Exception as e:
+            logger.warning(f"DB build batch {batch_num} error: {e}")
+
+        pct = min(99, (i + len(batch)) / total * 100)
+        await broadcast({'type': 'db_build_progress', 'progress': round(pct, 1),
+                         'message': f'Building DB: {loaded}/{total} symbols (batch {batch_num}/{total_batches})...'})
+
+    await broadcast({'type': 'db_build_progress', 'progress': 100,
+                     'message': f'Done: {loaded} symbols loaded'})
+
+    return db.get_stats()
+
+
+@app.post("/api/db/update")
+async def db_update():
+    """Incremental update — fetch only new bars since last stored date per symbol.
+
+    Typically 1-2 new bars per symbol, completes in ~30-60s.
+    """
+    db = get_price_db()
+    last_dates = db.get_last_dates_batch()
+    if not last_dates:
+        return {'error': 'DB is empty — use Build first'}
+
+    symbols = list(last_dates.keys())
+    today = datetime.now().strftime('%Y-%m-%d')
+    total = len(symbols)
+    batch_size = 100
+    updated = 0
+
+    await broadcast({'type': 'db_build_progress', 'progress': 0,
+                     'message': f'Updating: 0/{total} symbols...'})
+
+    for i in range(0, total, batch_size):
+        batch = symbols[i:i + batch_size]
+        batch_num = i // batch_size + 1
+
+        # Determine the earliest "last date + 1 day" for this batch
+        start_dates = []
+        for sym in batch:
+            ld = last_dates.get(sym, '2020-01-01')
+            next_day = (datetime.strptime(ld, '%Y-%m-%d') + timedelta(days=1)).strftime('%Y-%m-%d')
+            start_dates.append(next_day)
+        batch_start = min(start_dates)
+
+        if batch_start > today:
+            # All symbols in batch are up to date
+            updated += len(batch)
+        else:
+            try:
+                dfs = fetch_alpaca_bars_multi(batch, batch_start, today, '1Day', 'iex')
+                if dfs:
+                    db.upsert_bars_batch(dfs)
+                    updated += len(dfs)
+            except Exception as e:
+                logger.warning(f"DB update batch {batch_num} error: {e}")
+
+        pct = min(99, (i + len(batch)) / total * 100)
+        await broadcast({'type': 'db_build_progress', 'progress': round(pct, 1),
+                         'message': f'Updating: {min(i + len(batch), total)}/{total} symbols...'})
+
+    await broadcast({'type': 'db_build_progress', 'progress': 100,
+                     'message': f'Update complete: {updated} symbols refreshed'})
+
+    return db.get_stats()
 
 
 @app.websocket("/ws")
@@ -2460,7 +3166,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
     <!-- Candidates tab -->
     <div class="tab-content" id="tab-candidates">
-      <h2>Gap-Up Candidates <span style="color:var(--muted);font-size:11px;" id="scanTime"></span></h2>
+      <h2>Gap-Up Candidates <span style="color:var(--muted);font-size:11px;" id="scanTime"></span> <span style="color:var(--muted);font-size:11px;" id="universeInfo"></span></h2>
       <table>
         <thead><tr>
           <th>Symbol</th><th>Gap %</th><th>Prev Close</th><th>Current</th><th>Vol Ratio</th>
@@ -2489,7 +3195,14 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;">
         <div class="config-item">
           <label>Symbol(s):</label>
-          <input id="btSymbol" value="" placeholder="TSLA,NVDA..." style="width:160px;">
+          <input id="btSymbol" value="" placeholder="TSLA,NVDA... (blank=universe)" style="width:200px;">
+        </div>
+        <div class="config-item">
+          <label>Universe:</label>
+          <select id="btUniverse" style="background:var(--bg);color:var(--text);border:1px solid var(--border);padding:4px 6px;border-radius:4px;font-size:12px;">
+            <option value="study">Study (167)</option>
+            <option value="alpaca">All Tradeable (Alpaca)</option>
+          </select>
         </div>
         <div class="config-item">
           <label>Start:</label>
@@ -2529,6 +3242,43 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     <!-- Config tab -->
     <div class="tab-content" id="tab-config">
       <h2>Strategy Configuration</h2>
+      <div style="margin-bottom:16px;padding:12px;background:rgba(168,85,247,0.06);border:1px solid rgba(168,85,247,0.2);border-radius:8px;">
+        <div style="font-size:12px;color:var(--purple);font-weight:600;margin-bottom:8px;text-transform:uppercase;">Scan Universe</div>
+        <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
+          <label style="display:flex;align-items:center;gap:4px;cursor:pointer;">
+            <input type="radio" name="scanUniverse" value="alpaca" id="univAlpaca"> All Tradeable (Alpaca ~4000+)
+          </label>
+          <label style="display:flex;align-items:center;gap:4px;cursor:pointer;">
+            <input type="radio" name="scanUniverse" value="study" id="univStudy" checked> Study Universe (167)
+          </label>
+          <label style="display:flex;align-items:center;gap:4px;cursor:pointer;">
+            <input type="radio" name="scanUniverse" value="custom" id="univCustom"> Custom
+          </label>
+        </div>
+        <div id="customSymbolsRow" style="margin-top:8px;display:none;">
+          <input id="customSymbolsInput" placeholder="TSLA,AAPL,NVDA,..." style="width:100%;background:var(--bg);color:var(--text);border:1px solid var(--border);padding:6px 8px;border-radius:4px;font-size:12px;">
+        </div>
+      </div>
+      <!-- Price Database Section -->
+      <div style="margin-bottom:16px;padding:12px;background:rgba(6,182,212,0.06);border:1px solid rgba(6,182,212,0.2);border-radius:8px;">
+        <div style="font-size:12px;color:var(--cyan);font-weight:600;margin-bottom:8px;text-transform:uppercase;">Price Database (Local Cache)</div>
+        <div style="color:var(--muted);font-size:11px;margin-bottom:8px;" id="dbStatus">Loading...</div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+          <label>Universe:</label>
+          <select id="dbUniverse" style="width:auto;">
+            <option value="study">Study (167)</option>
+            <option value="alpaca">All Tradeable (Alpaca)</option>
+          </select>
+          <label>Start:</label>
+          <input type="date" id="dbStartDate" style="width:130px;">
+          <button class="primary" onclick="buildDB()">Build DB</button>
+          <button onclick="updateDB()">Update (Latest)</button>
+        </div>
+        <div id="dbProgress" style="display:none;margin-top:8px;">
+          <div style="color:var(--muted);font-size:11px;" id="dbProgressMsg">Building...</div>
+          <div class="progress-bar"><div class="progress-fill" id="dbProgressBar" style="width:0%;background:var(--cyan);"></div></div>
+        </div>
+      </div>
       <div class="config-grid" id="configGrid"></div>
       <div style="margin-top:12px;">
         <button class="primary" onclick="saveConfig()">Save Config</button>
@@ -2571,6 +3321,7 @@ function handleMessage(msg) {
   } else if (msg.type === 'scan_results') {
     renderCandidates(msg.candidates || []);
     if (msg.scan_time) document.getElementById('scanTime').textContent = `Last scan: ${msg.scan_time}`;
+    if (msg.universe_size) document.getElementById('universeInfo').textContent = `(${msg.universe_size.toLocaleString()} symbols scanned)`;
   } else if (msg.type === 'trade') {
     fetchState();
   } else if (msg.type === 'backtest_progress') {
@@ -2579,6 +3330,13 @@ function handleMessage(msg) {
     document.getElementById('btProgressBar').style.width = msg.progress + '%';
   } else if (msg.type === 'bt_log') {
     appendBtLog(msg.entry);
+  } else if (msg.type === 'db_build_progress') {
+    document.getElementById('dbProgress').style.display = 'block';
+    document.getElementById('dbProgressMsg').textContent = msg.message || 'Working...';
+    document.getElementById('dbProgressBar').style.width = msg.progress + '%';
+    if (msg.progress >= 100) {
+      setTimeout(() => { document.getElementById('dbProgress').style.display = 'none'; fetchDbStats(); }, 2000);
+    }
   }
 }
 
@@ -2596,9 +3354,11 @@ async function fetchState() {
 }
 
 async function runScan() {
+  document.getElementById('universeInfo').textContent = 'Scanning...';
   const r = await api('scan', 'POST');
   renderCandidates(r.candidates || []);
   if (r.scan_time) document.getElementById('scanTime').textContent = `Last scan: ${r.scan_time}`;
+  if (r.universe_size) document.getElementById('universeInfo').textContent = `(${r.universe_size.toLocaleString()} symbols scanned)`;
 }
 
 async function startTrading() { await api('start', 'POST'); fetchState(); }
@@ -2620,7 +3380,11 @@ async function runBacktest() {
     vol_ratio_max: parseFloat(document.getElementById('btVol').value),
     stop_pct: parseFloat(document.getElementById('btStop').value) / 100,
   };
-  if (syms) body.symbols = syms;
+  if (syms) {
+    body.symbols = syms;
+  } else {
+    body.universe = document.getElementById('btUniverse').value;
+  }
   if (document.getElementById('bt1min').checked) body.use_1min = true;
 
   document.getElementById('btProgress').style.display = 'block';
@@ -2641,6 +3405,51 @@ async function runBacktest() {
 
 async function cancelBacktest() { await api('backtest/cancel', 'POST'); }
 
+async function fetchDbStats() {
+  try {
+    const stats = await api('db/stats');
+    const el = document.getElementById('dbStatus');
+    if (stats.symbol_count > 0) {
+      el.innerHTML = `<span style="color:var(--text)">${stats.symbol_count.toLocaleString()}</span> symbols | ` +
+        `${stats.min_date} to ${stats.max_date} | ` +
+        `<span style="color:var(--text)">${stats.size_mb} MB</span> ` +
+        `<span style="color:var(--muted)">(${stats.total_rows.toLocaleString()} rows)</span>`;
+    } else {
+      el.textContent = 'Empty — click Build DB to populate';
+    }
+  } catch(e) {
+    document.getElementById('dbStatus').textContent = 'Error loading stats';
+  }
+}
+
+async function buildDB() {
+  const universe = document.getElementById('dbUniverse').value;
+  const startDate = document.getElementById('dbStartDate').value;
+  const body = { universe };
+  if (startDate) body.start_date = startDate;
+  document.getElementById('dbProgress').style.display = 'block';
+  document.getElementById('dbProgressMsg').textContent = 'Starting build...';
+  document.getElementById('dbProgressBar').style.width = '0%';
+  try {
+    await api('db/build', 'POST', body);
+    fetchDbStats();
+  } catch(e) {
+    document.getElementById('dbProgressMsg').textContent = 'Error: ' + e.message;
+  }
+}
+
+async function updateDB() {
+  document.getElementById('dbProgress').style.display = 'block';
+  document.getElementById('dbProgressMsg').textContent = 'Starting update...';
+  document.getElementById('dbProgressBar').style.width = '0%';
+  try {
+    await api('db/update', 'POST', {});
+    fetchDbStats();
+  } catch(e) {
+    document.getElementById('dbProgressMsg').textContent = 'Error: ' + e.message;
+  }
+}
+
 async function saveConfig() {
   const inputs = document.querySelectorAll('#configGrid input');
   const body = {};
@@ -2649,6 +3458,10 @@ async function saveConfig() {
     const val = inp.type === 'number' ? parseFloat(inp.value) : inp.value;
     body[key] = val;
   });
+  // Include scan universe settings
+  const univRadio = document.querySelector('input[name="scanUniverse"]:checked');
+  if (univRadio) body.scan_universe = univRadio.value;
+  body.custom_symbols = document.getElementById('customSymbolsInput').value.trim();
   await api('config', 'POST', body);
   fetchState();
 }
@@ -2811,6 +3624,14 @@ function renderConfig(config) {
       <input type="${type}" data-key="${key}" value="${config[key] !== undefined ? config[key] : ''}" step="any">
     </div>
   `).join('');
+
+  // Set scan universe radio buttons from config
+  const univ = config.scan_universe || 'study';
+  const radioMap = { alpaca: 'univAlpaca', study: 'univStudy', custom: 'univCustom' };
+  const radioEl = document.getElementById(radioMap[univ] || 'univStudy');
+  if (radioEl) radioEl.checked = true;
+  document.getElementById('customSymbolsInput').value = config.custom_symbols || '';
+  document.getElementById('customSymbolsRow').style.display = univ === 'custom' ? 'block' : 'none';
 }
 
 function renderBacktestResults(r) {
@@ -2906,8 +3727,21 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btEnd').value = end.toISOString().slice(0,10);
   document.getElementById('btStart').value = start.toISOString().slice(0,10);
 
+  // Toggle custom symbols input visibility
+  document.querySelectorAll('input[name="scanUniverse"]').forEach(r => {
+    r.addEventListener('change', () => {
+      document.getElementById('customSymbolsRow').style.display = r.value === 'custom' ? 'block' : 'none';
+    });
+  });
+
+  // Set default DB start date (5 years ago)
+  const dbStart = new Date(end);
+  dbStart.setFullYear(dbStart.getFullYear() - 5);
+  document.getElementById('dbStartDate').value = dbStart.toISOString().slice(0,10);
+
   connectWS();
   fetchState();
+  fetchDbStats();
   setInterval(updateClock, 1000);
   setInterval(fetchState, 10000);
   updateClock();
