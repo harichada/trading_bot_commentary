@@ -22,10 +22,8 @@ try:
 except ImportError:
     _requests = None
 
-try:
-    import yfinance as yf
-except ImportError:
-    yf = None
+
+
 
 try:
     from schwab.auth import easy_client
@@ -192,7 +190,7 @@ def get_schwab_client():
         logger.warning("Schwab credentials missing. Either:\n"
                        "  1. export SCHWAB_API_KEY=... && export SCHWAB_SECRET=...\n"
                        "  2. Create a .env file (run setup_wizard.py)\n"
-                       "Falling back to yfinance.")
+                       "Set credentials or run setup_wizard.py.")
         return None
 
     if not os.path.exists(token_path):
@@ -309,51 +307,6 @@ def fetch_schwab_data(symbol: str, start_date: str, end_date: str, interval: str
         return None
 
 
-def fetch_yfinance_data(symbol: str, start_date: str, end_date: str, interval: str) -> Optional[pd.DataFrame]:
-    """Fetch data from yfinance as fallback."""
-    if yf is None:
-        return None
-
-    # Crypto symbols: force daily bars (yfinance intraday crypto is unreliable)
-    if symbol.endswith('-USD') and interval not in ('1d', '1wk', '1mo'):
-        logger.warning(f"yfinance: crypto {symbol} intraday not supported, forcing 1d")
-        interval = '1d'
-
-    # Forex symbols: convert EUR/USD → EURUSD=X for yfinance
-    yf_symbol = symbol
-    if '/' in symbol:
-        yf_symbol = symbol.replace('/', '') + '=X'
-
-    try:
-        ticker = yf.Ticker(yf_symbol)
-
-        # yfinance intraday limits
-        if interval in ('1m', '2m', '5m', '15m', '30m', '60m', '90m'):
-            max_days = {'1m': 7, '2m': 60, '5m': 60, '15m': 60, '30m': 60, '60m': 730, '90m': 730}
-            requested_start = datetime.strptime(start_date, '%Y-%m-%d')
-            requested_end = datetime.strptime(end_date, '%Y-%m-%d')
-            days_requested = (requested_end - requested_start).days
-            limit = max_days.get(interval, 60)
-
-            if days_requested > limit:
-                logger.warning(f"yfinance: {interval} data limited to {limit} days, clamping from {days_requested}d")
-                start_date = (requested_end - timedelta(days=limit)).strftime('%Y-%m-%d')
-
-        df = ticker.history(start=start_date, end=end_date, interval=interval)
-        if df.empty:
-            return None
-
-        df.columns = [c.lower() for c in df.columns]
-        # Strip timezone so index is tz-naive like Schwab/Coinbase providers
-        if df.index.tz is not None:
-            df.index = df.index.tz_localize(None)
-        df.index.name = symbol
-        logger.info(f"yfinance: fetched {len(df)} bars for {symbol} ({interval})")
-        return df
-
-    except Exception as e:
-        logger.error(f"yfinance data fetch failed: {e}")
-        return None
 
 # =============================================================================
 # COINBASE CRYPTO DATA PROVIDER (public API, no auth needed)
@@ -1172,16 +1125,16 @@ class MarketContext:
 def fetch_market_context(target_df: pd.DataFrame, interval: str) -> Optional[MarketContext]:
     """Fetch SPY + VIX data and align to target_df's index.
 
-    Returns None if data unavailable (crypto/forex, no yfinance, etc.)."""
-    if yf is None:
-        return None
+    Returns None if data unavailable (crypto/forex, etc.)."""
     n = len(target_df)
     start = str(target_df.index[0])[:10]
     end_dt = pd.Timestamp(str(target_df.index[-1])) + timedelta(days=1)
     end = end_dt.strftime('%Y-%m-%d')
 
-    # Fetch SPY at same interval
-    spy_df = fetch_yfinance_data('SPY', start, end, interval)
+    # Fetch SPY at same interval: Schwab → Alpaca
+    spy_df = fetch_schwab_data('SPY', start, end, interval)
+    if spy_df is None:
+        spy_df = fetch_alpaca_bars('SPY', start, end, interval)
     if spy_df is None or len(spy_df) < 30:
         return None
 
@@ -1196,8 +1149,10 @@ def fetch_market_context(target_df: pd.DataFrame, interval: str) -> Optional[Mar
     ).astype(float)
     spy_series = pd.Series(spy_trend_raw, index=spy_df.index)
 
-    # Fetch VIX (daily only — yfinance doesn't have intraday VIX)
-    vix_df = fetch_yfinance_data('^VIX', start, end, '1d')
+    # Fetch VIX (daily only): Schwab uses $VIX.X symbol
+    vix_df = fetch_schwab_data('$VIX.X', start, end, '1d')
+    if vix_df is None:
+        vix_df = fetch_schwab_data('$VIX', start, end, '1d')
     if vix_df is not None and not vix_df.empty:
         vix_series = pd.Series(vix_df['close'].values, index=vix_df.index)
     else:
@@ -2645,39 +2600,24 @@ class BacktestRunner:
         source = 'none'
 
         if '/' in symbol:
-            # Forex: OANDA → yfinance
+            # Forex: OANDA only
             df = fetch_oanda_data(symbol, self.start_date, self.end_date, self.interval)
             source = 'OANDA'
-            if df is None:
-                await broadcast({'type': 'progress', 'progress': 7,
-                                 'message': f'OANDA unavailable for {symbol}, trying yfinance...'})
-                df = fetch_yfinance_data(symbol, self.start_date, self.end_date, self.interval)
-                source = 'yfinance'
         elif symbol.endswith('-USD'):
-            # Crypto: Coinbase → yfinance
+            # Crypto: Coinbase only
             df = fetch_coinbase_data(symbol, self.start_date, self.end_date, self.interval)
             source = 'Coinbase'
-            if df is None:
-                await broadcast({'type': 'progress', 'progress': 7,
-                                 'message': f'Coinbase unavailable for {symbol}, trying yfinance...'})
-                df = fetch_yfinance_data(symbol, self.start_date, self.end_date, self.interval)
-                source = 'yfinance'
         else:
-            # Equities: Schwab → Alpaca → yfinance
+            # Equities: Schwab → Alpaca
             df = fetch_schwab_data(symbol, self.start_date, self.end_date, self.interval)
             source = 'Schwab'
             if df is None:
                 df = fetch_alpaca_bars(symbol, self.start_date, self.end_date, self.interval)
                 source = 'Alpaca'
-            if df is None:
-                await broadcast({'type': 'progress', 'progress': 7,
-                                 'message': f'Schwab/Alpaca unavailable for {symbol}, trying yfinance...'})
-                df = fetch_yfinance_data(symbol, self.start_date, self.end_date, self.interval)
-                source = 'yfinance'
 
         if df is None or df.empty:
             raise RuntimeError(f"No data for {symbol} ({self.interval}). "
-                              f"Check data source credentials or yfinance availability.")
+                              f"Check data source credentials.")
 
         await broadcast({'type': 'progress', 'progress': 10,
                          'message': f'{source}: {len(df)} {self.interval} bars for {symbol}'})
@@ -3043,7 +2983,9 @@ class BacktestRunner:
                 elif is_llm_mode and _pa is not None:
                     # LLM Predictor path — rich context via DataPrep + structured prompt
                     try:
-                        data_prep = DataPrep(df, _pa, i, symbol, self.interval, _mkt)
+                        _recent_trades = [t for t in trades[-10:] if t.get('pnl') is not None]
+                        data_prep = DataPrep(df, _pa, i, symbol, self.interval, _mkt,
+                                             recent_trades=_recent_trades)
                         context_text = data_prep.to_text()
                         context_dict = data_prep.build()
                         # Build position info for prompt
@@ -3739,6 +3681,10 @@ class BacktestRunner:
                     'points': len(results.get('equity_curve', [])),
                 },
             }
+
+            # Include LLM tracker report if available
+            if results.get('llm_tracker_report'):
+                report['llm_tracker_report'] = results['llm_tracker_report']
 
             with open(filepath, 'w') as f:
                 json.dump(report, f, indent=2, default=str)
@@ -4897,17 +4843,15 @@ async def api_key_status():
 async def data_sources():
     """Check which data sources are available."""
     schwab_ok = get_schwab_client() is not None
-    yfinance_ok = yf is not None
     coinbase_ok = _requests is not None  # public API, always available if requests installed
     oanda_ok = _get_oanda_config() is not None
     alpaca_ok = _get_alpaca_config() is not None
     return {
         'schwab': schwab_ok,
-        'yfinance': yfinance_ok,
         'coinbase': coinbase_ok,
         'oanda': oanda_ok,
         'alpaca': alpaca_ok,
-        'primary': 'schwab' if schwab_ok else ('yfinance' if yfinance_ok else 'none'),
+        'primary': 'schwab' if schwab_ok else ('alpaca' if alpaca_ok else 'none'),
     }
 
 
@@ -5344,20 +5288,14 @@ async def run_optimizer(config: dict = {}):
     df = None
     if '/' in symbol:
         df = fetch_oanda_data(symbol, start, end, interval)
-        if df is None:
-            df = fetch_yfinance_data(symbol, start, end, interval)
     elif symbol.endswith('-USD'):
         df = fetch_coinbase_data(symbol, start, end, interval)
-        if df is None:
-            df = fetch_yfinance_data(symbol, start, end, interval)
     else:
         df = fetch_schwab_data(symbol, start, end, interval)
         if df is None:
             df = fetch_alpaca_bars(symbol, start, end, interval)
-        if df is None:
-            df = fetch_yfinance_data(symbol, start, end, interval)
     if df is None or df.empty:
-        return {'error': f'No data for {symbol} — check data source credentials or yfinance'}
+        return {'error': f'No data for {symbol} — check data source credentials'}
 
     adaptive_risk = config.get('adaptive_risk', False)
     param_grid = build_param_grid()
@@ -5444,18 +5382,12 @@ async def run_multi_optimizer(config: dict = {}):
             df = None
             if '/' in sym:
                 df = fetch_oanda_data(sym, start, end, interval)
-                if df is None:
-                    df = fetch_yfinance_data(sym, start, end, interval)
             elif sym.endswith('-USD'):
                 df = fetch_coinbase_data(sym, start, end, interval)
-                if df is None:
-                    df = fetch_yfinance_data(sym, start, end, interval)
             else:
                 df = fetch_schwab_data(sym, start, end, interval)
                 if df is None:
                     df = fetch_alpaca_bars(sym, start, end, interval)
-                if df is None:
-                    df = fetch_yfinance_data(sym, start, end, interval)
 
             if df is None or df.empty:
                 per_symbol_results[sym] = {'error': f'No data for {sym}'}
@@ -5560,15 +5492,13 @@ async def run_walkforward_analysis(config: dict = {}):
 
     df = None
     if '/' in symbol:
-        df = fetch_yfinance_data(symbol.replace('/', ''), start, end, interval)
+        df = fetch_oanda_data(symbol, start, end, interval)
     elif symbol.endswith('-USD'):
-        df = fetch_yfinance_data(symbol, start, end, interval)
+        df = fetch_coinbase_data(symbol, start, end, interval)
     else:
         df = fetch_schwab_data(symbol, start, end, interval)
         if df is None:
             df = fetch_alpaca_bars(symbol, start, end, interval)
-        if df is None:
-            df = fetch_yfinance_data(symbol, start, end, interval)
 
     if df is None or len(df) < 100:
         return {'error': f'Insufficient data for {symbol} {interval}: got {len(df) if df is not None else 0} bars'}
@@ -5911,22 +5841,16 @@ class AutonomousBacktestEngine:
 
         df = None
         if '/' in symbol:
-            # Forex: OANDA → yfinance
+            # Forex: OANDA
             df = fetch_oanda_data(symbol, start, end, interval)
-            if df is None:
-                df = fetch_yfinance_data(symbol, start, end, interval)
         elif symbol.endswith('-USD'):
-            # Crypto: Coinbase → yfinance
+            # Crypto: Coinbase
             df = fetch_coinbase_data(symbol, start, end, interval)
-            if df is None:
-                df = fetch_yfinance_data(symbol, start, end, interval)
         else:
-            # Equities: Schwab → Alpaca → yfinance
+            # Equities: Schwab → Alpaca
             df = fetch_schwab_data(symbol, start, end, interval)
             if df is None:
                 df = fetch_alpaca_bars(symbol, start, end, interval)
-            if df is None:
-                df = fetch_yfinance_data(symbol, start, end, interval)
 
         if df is not None and not df.empty:
             self._data_cache[cache_key] = (df, now)
@@ -6202,18 +6126,12 @@ def _fetch_recent_bars(symbol: str, interval: str, count: int = 100) -> Optional
     df = None
     if '/' in symbol:
         df = fetch_oanda_data(symbol, start, end, interval)
-        if df is None:
-            df = fetch_yfinance_data(symbol, start, end, interval)
     elif symbol.endswith('-USD'):
         df = fetch_coinbase_data(symbol, start, end, interval)
-        if df is None:
-            df = fetch_yfinance_data(symbol, start, end, interval)
     else:
         df = fetch_schwab_data(symbol, start, end, interval)
         if df is None:
             df = fetch_alpaca_bars(symbol, start, end, interval)
-        if df is None:
-            df = fetch_yfinance_data(symbol, start, end, interval)
     return df
 
 
@@ -8793,7 +8711,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     });
 
     let selectedInterval = '5m';
-    // Schwab allows much longer history than yfinance for intraday data
+    // Schwab/Alpaca intraday data limits
     const intervalLimits = {'1m': 10, '5m': 60, '10m': 60, '15m': 60, '30m': 120, '1h': 365, '1d': 365};
 
     function initDates() {
@@ -8863,7 +8781,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             if (data.coinbase) sources.push('Coinbase');
             if (data.oanda) sources.push('OANDA');
             if (data.alpaca) sources.push('Alpaca');
-            if (data.yfinance) sources.push('yfinance');
+
+
             if (sources.length > 0) {
                 el.textContent = 'Data: ' + sources.join(' + ');
                 el.className = 'api-status set';

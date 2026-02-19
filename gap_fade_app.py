@@ -41,6 +41,8 @@ import numpy as np
 import pandas as pd
 import requests
 import aiohttp
+import feedparser
+import yfinance as yf
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
@@ -590,7 +592,7 @@ class PriceDB:
     DB_PATH = os.path.join(os.path.dirname(__file__) or '.', 'gap_fade_prices.db')
 
     def __init__(self):
-        self._conn = sqlite3.connect(self.DB_PATH)
+        self._conn = sqlite3.connect(self.DB_PATH, check_same_thread=False)
         self._conn.execute('PRAGMA journal_mode=WAL')
         self._conn.execute('PRAGMA synchronous=NORMAL')
         self._conn.execute('''
@@ -830,6 +832,12 @@ class GapFadeConfig:
     # Backtest
     backtest_years: int = 3            # default lookback for backtests
 
+    # Catalyst detection
+    catalyst_enabled: bool = True
+    catalyst_skip_earnings: bool = True    # skip earnings gaps entirely
+    catalyst_news_penalty: float = 15.0    # score penalty for news-driven gaps
+    catalyst_noise_bonus: float = 5.0      # score bonus for clean noise gaps
+
 
 @dataclass
 class GapCandidate:
@@ -843,6 +851,8 @@ class GapCandidate:
     shortable: bool
     easy_to_borrow: bool
     score: float = 0.0                 # ranking score
+    catalyst: str = ''                 # 'earnings', 'fda', 'ma', 'offering', 'upgrade', 'downgrade', ''
+    catalyst_detail: str = ''          # headline snippet or earnings info
 
 
 @dataclass
@@ -891,6 +901,218 @@ class TradeRecord:
     exit_time: str
     exit_reason: str                   # 'stop', 'partial', 'full_target', 'time_exit', 'eod', 'manual'
     holding_minutes: int = 0
+
+
+# =============================================================================
+# SECTION 3b: CATALYST DETECTION
+# =============================================================================
+
+CATALYST_PATTERNS = {
+    'earnings': [
+        'earnings', 'quarterly results', 'beats estimates', 'misses estimates',
+        'eps', 'revenue', 'guidance', 'fiscal q', 'quarterly report',
+        'profit', 'net income', 'earnings call', 'beats expectations',
+        'earnings surprise', 'reports q',
+    ],
+    'fda': [
+        'fda approv', 'clinical trial', 'phase 3', 'phase 2', 'pdufa',
+        'drug approv', 'fda clear', 'new drug application', 'breakthrough therapy',
+        'fda accept', 'fda reject', 'complete response',
+    ],
+    'ma': [
+        'acquir', 'merger', 'buyout', 'takeover', 'tender offer',
+        'acquisition', 'merge with', 'deal to buy', 'agreed to buy',
+        'purchase agreement',
+    ],
+    'offering': [
+        'offering', 'dilut', 'equity raise', 'capital raise',
+        'secondary offering', 'shelf offering', 'public offering',
+        'stock offering', 'share sale', 'at-the-market',
+    ],
+    'upgrade': [
+        'upgrade', 'price target raised', 'overweight', 'outperform',
+        'buy rating', 'price target increase', 'raises target',
+        'initiates coverage', 'bullish',
+    ],
+    'downgrade': [
+        'downgrade', 'price target lowered', 'underweight', 'underperform',
+        'sell rating', 'price target cut', 'lowers target', 'bearish',
+    ],
+}
+
+
+def _classify_headlines(headlines: List[str]) -> Tuple[str, str]:
+    """Classify a list of headlines into a catalyst type.
+
+    Returns (catalyst_type, detail) where catalyst_type is one of the
+    CATALYST_PATTERNS keys or '' for noise.
+    """
+    if not headlines:
+        return '', ''
+
+    combined = ' '.join(headlines).lower()
+    # Check in priority order: earnings > fda > ma > offering > upgrade > downgrade
+    for cat in ('earnings', 'fda', 'ma', 'offering', 'upgrade', 'downgrade'):
+        for keyword in CATALYST_PATTERNS[cat]:
+            if keyword in combined:
+                # Find the headline that matched for the detail
+                for h in headlines:
+                    if keyword in h.lower():
+                        detail = h[:120] if len(h) > 120 else h
+                        return cat, detail
+                return cat, headlines[0][:120]
+    return '', ''
+
+
+async def _fetch_alpaca_news(symbols: List[str]) -> Dict[str, List[str]]:
+    """Fetch recent news headlines from Alpaca News API.
+
+    Returns {symbol: [headline1, headline2, ...]}
+    """
+    cfg = _get_alpaca_config()
+    if not cfg:
+        return {}
+
+    headers = {
+        'APCA-API-KEY-ID': cfg['api_key'],
+        'APCA-API-SECRET-KEY': cfg['secret_key'],
+    }
+    since = (datetime.now(timezone.utc) - timedelta(hours=48)).strftime('%Y-%m-%dT%H:%M:%SZ')
+    sym_str = ','.join(symbols)
+    url = f"{cfg['data_url']}/v1beta1/news?symbols={sym_str}&start={since}&limit=50&sort=desc"
+
+    result: Dict[str, List[str]] = defaultdict(list)
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=2.5)) as resp:
+                if resp.status != 200:
+                    logger.debug(f"Alpaca news API returned {resp.status}")
+                    return {}
+                data = await resp.json()
+                for article in data.get('news', []):
+                    headline = article.get('headline', '')
+                    for sym in article.get('symbols', []):
+                        if sym in symbols:
+                            result[sym].append(headline)
+    except Exception as e:
+        logger.debug(f"Alpaca news fetch failed: {e}")
+    return dict(result)
+
+
+async def _check_earnings_batch(symbols: List[str]) -> Dict[str, str]:
+    """Check if any symbols had earnings in the last 2 days using yfinance.
+
+    Returns {symbol: 'earnings_YYYY-MM-DD'} for symbols with recent earnings.
+    """
+    result: Dict[str, str] = {}
+    cutoff = datetime.now(timezone.utc) - timedelta(days=2)
+
+    def _check_one(sym: str) -> Optional[Tuple[str, str]]:
+        try:
+            ticker = yf.Ticker(sym)
+            dates = ticker.earnings_dates
+            if dates is not None and len(dates) > 0:
+                for dt in dates.index:
+                    dt_aware = dt.to_pydatetime()
+                    if dt_aware.tzinfo is None:
+                        dt_aware = dt_aware.replace(tzinfo=timezone.utc)
+                    if dt_aware >= cutoff:
+                        return sym, f"earnings {dt_aware.strftime('%Y-%m-%d')}"
+        except Exception:
+            pass
+        return None
+
+    loop = asyncio.get_event_loop()
+    tasks = [loop.run_in_executor(None, _check_one, sym) for sym in symbols]
+    try:
+        done = await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=3.0)
+        for item in done:
+            if isinstance(item, tuple) and item is not None:
+                result[item[0]] = item[1]
+    except asyncio.TimeoutError:
+        logger.debug("yfinance earnings check timed out")
+    return result
+
+
+async def _fetch_google_news_batch(symbols: List[str]) -> Dict[str, List[str]]:
+    """Fallback: fetch headlines from Google News RSS for uncovered symbols.
+
+    Returns {symbol: [headline1, ...]}
+    """
+    result: Dict[str, List[str]] = defaultdict(list)
+
+    async def _fetch_one(session: aiohttp.ClientSession, sym: str):
+        url = f"https://news.google.com/rss/search?q={sym}+stock&hl=en-US&gl=US&ceid=US:en"
+        try:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=2.0)) as resp:
+                if resp.status != 200:
+                    return
+                text = await resp.text()
+                feed = feedparser.parse(text)
+                for entry in feed.entries[:5]:
+                    result[sym].append(entry.get('title', ''))
+        except Exception:
+            pass
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            tasks = [_fetch_one(session, sym) for sym in symbols]
+            await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=2.0)
+    except asyncio.TimeoutError:
+        logger.debug("Google News RSS fetch timed out")
+    return dict(result)
+
+
+async def detect_catalysts(candidates: List[GapCandidate], config: GapFadeConfig):
+    """Main catalyst detection: classify each candidate's gap as catalyst-driven or noise.
+
+    Modifies candidates in-place (sets catalyst and catalyst_detail fields).
+    Three tiers: Alpaca News (fast) + yfinance earnings (parallel) -> Google News (fallback).
+    Hard timeout of 3.0s.
+    """
+    if not candidates:
+        return
+
+    symbols = [c.symbol for c in candidates]
+    sym_map = {c.symbol: c for c in candidates}
+
+    try:
+        # Tier 1: Alpaca News + yfinance earnings in parallel
+        alpaca_task = _fetch_alpaca_news(symbols)
+        earnings_task = _check_earnings_batch(symbols)
+        news_results, earnings_results = await asyncio.wait_for(
+            asyncio.gather(alpaca_task, earnings_task), timeout=3.0
+        )
+
+        # Apply earnings results first (highest priority)
+        for sym, detail in earnings_results.items():
+            if sym in sym_map:
+                sym_map[sym].catalyst = 'earnings'
+                sym_map[sym].catalyst_detail = detail
+
+        # Apply Alpaca news results for symbols without earnings catalyst
+        for sym, headlines in news_results.items():
+            if sym in sym_map and not sym_map[sym].catalyst:
+                cat, detail = _classify_headlines(headlines)
+                if cat:
+                    sym_map[sym].catalyst = cat
+                    sym_map[sym].catalyst_detail = detail
+
+        # Tier 2: Google News fallback for symbols still uncovered
+        uncovered = [s for s in symbols if not sym_map[s].catalyst and s not in news_results]
+        if uncovered:
+            google_results = await _fetch_google_news_batch(uncovered)
+            for sym, headlines in google_results.items():
+                if sym in sym_map and not sym_map[sym].catalyst:
+                    cat, detail = _classify_headlines(headlines)
+                    if cat:
+                        sym_map[sym].catalyst = cat
+                        sym_map[sym].catalyst_detail = detail
+
+    except asyncio.TimeoutError:
+        logger.warning("Catalyst detection hit 3.0s hard timeout — proceeding with partial results")
+    except Exception as e:
+        logger.warning(f"Catalyst detection error: {e}")
 
 
 # =============================================================================
@@ -1292,19 +1514,27 @@ class GapFadeEngine:
         dollar_risk = self.equity * risk_frac
         shares = int(dollar_risk / risk_per_share)
 
-        # Cap at reasonable position size (max 20% of equity in one position)
-        max_shares = int(self.equity * 0.20 / entry_price)
+        # Per-position cap: divide equity by max_positions so all slots fit without leverage
+        open_count = len(self.positions)
+        slots = max(1, self.config.max_positions - open_count)
+        per_slot_equity = self.equity / max(1, self.config.max_positions)
+        max_shares = int(per_slot_equity / entry_price) if entry_price > 0 else 0
         shares = min(shares, max_shares)
 
-        # Absolute notional cap (prevents unrealistic compounding in backtests)
-        if self.config.max_notional > 0:
-            max_shares_notional = int(self.config.max_notional / entry_price)
+        # Absolute notional cap (also per-slot)
+        if entry_price > 0 and self.config.max_notional > 0:
+            notional_limit = min(self.config.max_notional, per_slot_equity)
+            max_shares_notional = int(notional_limit / entry_price)
             shares = min(shares, max_shares_notional)
 
         return max(0, shares)
 
     def should_enter(self, candidate: GapCandidate) -> Tuple[bool, str]:
         """Check if we should enter a new short. Returns (ok, reason)."""
+        # Catalyst-driven gaps: never short into earnings or M&A
+        if candidate.catalyst in ('earnings', 'ma'):
+            return False, f"catalyst-driven gap ({candidate.catalyst})"
+
         # Already in this symbol?
         if candidate.symbol in self.positions:
             return False, "already in position"
@@ -1817,11 +2047,15 @@ class GapFadeBacktester:
         risk_frac = min(self.config.risk_pct, kelly_risk) if kelly_risk > 0 else self.config.risk_pct
         dollar_risk = engine.equity * risk_frac
         shares = int(dollar_risk / risk_per_share) if risk_per_share > 0 else 0
-        max_shares = int(engine.equity * 0.20 / entry_price) if entry_price > 0 else 0
+        # Per-position cap: divide equity evenly across max_positions slots
+        open_count = len(engine.positions)
+        per_slot_equity = engine.equity / max(1, self.config.max_positions)
+        max_shares = int(per_slot_equity / entry_price) if entry_price > 0 else 0
         shares = min(shares, max_shares)
-        # Absolute notional cap (prevents unrealistic compounding in backtests)
-        if self.config.max_notional > 0:
-            max_shares_notional = int(self.config.max_notional / entry_price) if entry_price > 0 else 0
+        # Absolute notional cap (also per-slot)
+        if entry_price > 0 and self.config.max_notional > 0:
+            notional_limit = min(self.config.max_notional, per_slot_equity)
+            max_shares_notional = int(notional_limit / entry_price)
             shares = min(shares, max_shares_notional)
         if shares <= 0:
             log.append({'level': 'skip', 'msg': f'{sym} {gap["date"]}: position size = 0'})
@@ -2308,12 +2542,25 @@ class GapFadeLiveTrader:
             self._add_message('error', f'Trading loop error: {e}')
 
     async def _run_scan(self):
-        """Run the pre-market scanner."""
+        """Run the pre-market scanner (non-blocking)."""
         self._add_message('scan', 'Running pre-market scan...')
         await broadcast({'type': 'live_status', 'status': 'scanning'})
 
-        self.candidates, universe_size = self.scanner.scan_premarket()
+        self.candidates, universe_size = await asyncio.to_thread(self.scanner.scan_premarket)
         self.last_scan_time = datetime.now(ET).strftime('%H:%M:%S')
+
+        # Catalyst detection — classify gaps before ranking
+        if self.config.catalyst_enabled and self.candidates:
+            try:
+                await detect_catalysts(self.candidates, self.config)
+                self._apply_catalyst_scores()
+                self.candidates.sort(key=lambda c: c.score, reverse=True)
+                cat_counts = defaultdict(int)
+                for c in self.candidates:
+                    cat_counts[c.catalyst or 'noise'] += 1
+                self._add_message('catalyst', f'Catalyst scan: {dict(cat_counts)}')
+            except Exception as e:
+                logger.warning(f"Catalyst detection failed (non-fatal): {e}")
 
         self._add_message('scan', f'Found {len(self.candidates)} candidates from {universe_size} symbols', {
             'candidates': [asdict(c) for c in self.candidates[:10]]
@@ -2324,6 +2571,40 @@ class GapFadeLiveTrader:
             'scan_time': self.last_scan_time,
             'universe_size': universe_size,
         })
+
+    def _apply_catalyst_scores(self):
+        """Adjust candidate scores based on catalyst classification."""
+        filtered = []
+        for c in self.candidates:
+            if c.catalyst == 'earnings' and self.config.catalyst_skip_earnings:
+                c.score = -999
+                self._add_message('catalyst',
+                    f'{c.symbol}: SKIP — earnings gap ({c.catalyst_detail})')
+                continue
+            elif c.catalyst == 'ma':
+                c.score = -999
+                self._add_message('catalyst',
+                    f'{c.symbol}: SKIP — M&A gap ({c.catalyst_detail})')
+                continue
+            elif c.catalyst == 'fda':
+                c.score -= 20
+                self._add_message('catalyst',
+                    f'{c.symbol}: -20 penalty (FDA: {c.catalyst_detail})')
+            elif c.catalyst in ('upgrade', 'downgrade'):
+                c.score -= self.config.catalyst_news_penalty
+                self._add_message('catalyst',
+                    f'{c.symbol}: -{self.config.catalyst_news_penalty} penalty '
+                    f'({c.catalyst}: {c.catalyst_detail})')
+            elif c.catalyst == 'offering':
+                c.score += self.config.catalyst_noise_bonus
+                self._add_message('catalyst',
+                    f'{c.symbol}: +{self.config.catalyst_noise_bonus} bonus '
+                    f'(offering = bearish catalyst)')
+            else:
+                # No catalyst = clean noise gap
+                c.score += self.config.catalyst_noise_bonus
+            filtered.append(c)
+        self.candidates = filtered
 
     async def _enter_positions(self):
         """Enter short positions on top candidates."""
@@ -2569,11 +2850,22 @@ async def get_state():
 
 @app.post("/api/scan")
 async def run_scan():
-    """Trigger a pre-market scan."""
+    """Trigger a pre-market scan (non-blocking)."""
     scanner = GapScanner(live_trader.config)
-    candidates, universe_size = scanner.scan_premarket()
+    candidates, universe_size = await asyncio.to_thread(scanner.scan_premarket)
     live_trader.candidates = candidates
     live_trader.last_scan_time = datetime.now(ET).strftime('%H:%M:%S')
+
+    # Catalyst detection
+    if live_trader.config.catalyst_enabled and candidates:
+        try:
+            await detect_catalysts(candidates, live_trader.config)
+            live_trader._apply_catalyst_scores()
+            candidates = live_trader.candidates  # _apply_catalyst_scores filters in-place
+            candidates.sort(key=lambda c: c.score, reverse=True)
+        except Exception as e:
+            logger.warning(f"Catalyst detection failed (non-fatal): {e}")
+
     return {
         'candidates': [asdict(c) for c in candidates[:15]],
         'scan_time': live_trader.last_scan_time,
@@ -3168,6 +3460,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       <div class="tab" data-tab="trades" onclick="showTab('trades')">Trade Log</div>
       <div class="tab" data-tab="backtest" onclick="showTab('backtest')">Backtest</div>
       <div class="tab" data-tab="config" onclick="showTab('config')">Config</div>
+      <div class="tab" data-tab="guide" onclick="showTab('guide')">Guide</div>
     </div>
 
     <!-- Live tab -->
@@ -3198,7 +3491,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       <table>
         <thead><tr>
           <th>Symbol</th><th>Gap %</th><th>Prev Close</th><th>Current</th><th>Vol Ratio</th>
-          <th>Avg Vol</th><th>Shortable</th><th>ETB</th><th>Score</th>
+          <th>Avg Vol</th><th>Shortable</th><th>ETB</th><th>Catalyst</th><th>Score</th>
         </tr></thead>
         <tbody id="candidatesTable"></tbody>
       </table>
@@ -3311,6 +3604,168 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       <div style="margin-top:12px;">
         <button class="primary" onclick="saveConfig()">Save Config</button>
       </div>
+    </div>
+
+    <!-- Guide tab -->
+    <div class="tab-content" id="tab-guide">
+      <h2>How the Bot Works</h2>
+
+      <!-- Section 1: Strategy Overview -->
+      <div style="margin-bottom:20px;padding:16px;background:rgba(168,85,247,0.06);border:1px solid rgba(168,85,247,0.2);border-radius:8px;">
+        <h3 style="color:var(--purple);margin:0 0 10px 0;font-size:14px;">What Is Gap Fading?</h3>
+        <p style="color:var(--text);line-height:1.7;margin:0 0 10px 0;font-size:13px;">
+          When a stock opens significantly higher than yesterday's close, that jump is called a <strong style="color:var(--purple);">gap up</strong>.
+          Most of the time, the price drifts back down toward yesterday's close during the trading day &mdash; this is called <strong style="color:var(--purple);">fading the gap</strong>.
+        </p>
+        <p style="color:var(--text);line-height:1.7;margin:0 0 10px 0;font-size:13px;">
+          This bot finds stocks that gapped up on <em>below-average volume</em> (a sign the move lacks conviction) and shorts them,
+          betting the price will fall back. It closes all positions before market close &mdash; no overnight risk.
+        </p>
+        <div style="display:inline-block;padding:8px 14px;background:rgba(168,85,247,0.12);border-radius:6px;margin-top:4px;">
+          <span style="color:var(--purple);font-weight:600;font-size:13px;">Statistical Edge:</span>
+          <span style="color:var(--text);font-size:13px;"> 71% of low-volume gap-ups fade &mdash; historical study of 12,000+ events across 450 tickers.</span>
+        </div>
+      </div>
+
+      <!-- Section 2: Daily Schedule Timeline -->
+      <div style="margin-bottom:20px;padding:16px;background:rgba(6,182,212,0.06);border:1px solid rgba(6,182,212,0.2);border-radius:8px;">
+        <h3 style="color:var(--cyan);margin:0 0 14px 0;font-size:14px;">Daily Schedule</h3>
+        <div id="guideTimeline">
+          <div class="tl-step" data-phase="premarket" style="display:flex;align-items:flex-start;margin-bottom:14px;position:relative;padding-left:28px;">
+            <div style="position:absolute;left:0;top:2px;width:14px;height:14px;border-radius:50%;background:var(--blue);border:2px solid rgba(59,130,246,0.4);"></div>
+            <div style="border-left:2px solid var(--border);position:absolute;left:6px;top:18px;height:calc(100% - 4px);"></div>
+            <div>
+              <span style="color:var(--blue);font-weight:600;font-size:13px;">7:00 AM ET &mdash; Pre-Market Scan</span>
+              <p style="color:var(--muted);margin:3px 0 0 0;font-size:12px;line-height:1.5;">Bot wakes up and scans for stocks that gapped up overnight. Filters by gap size, volume ratio, and market cap.</p>
+            </div>
+          </div>
+          <div class="tl-step" data-phase="refresh" style="display:flex;align-items:flex-start;margin-bottom:14px;position:relative;padding-left:28px;">
+            <div style="position:absolute;left:0;top:2px;width:14px;height:14px;border-radius:50%;background:var(--blue);border:2px solid rgba(59,130,246,0.4);"></div>
+            <div style="border-left:2px solid var(--border);position:absolute;left:6px;top:18px;height:calc(100% - 4px);"></div>
+            <div>
+              <span style="color:var(--blue);font-weight:600;font-size:13px;">9:25 AM ET &mdash; Final Scan Refresh</span>
+              <p style="color:var(--muted);margin:3px 0 0 0;font-size:12px;line-height:1.5;">Re-checks candidates with the latest pre-market data. Drops any that no longer qualify.</p>
+            </div>
+          </div>
+          <div class="tl-step" data-phase="entry" style="display:flex;align-items:flex-start;margin-bottom:14px;position:relative;padding-left:28px;">
+            <div style="position:absolute;left:0;top:2px;width:14px;height:14px;border-radius:50%;background:var(--red);border:2px solid rgba(239,68,68,0.4);"></div>
+            <div style="border-left:2px solid var(--border);position:absolute;left:6px;top:18px;height:calc(100% - 4px);"></div>
+            <div>
+              <span style="color:var(--red);font-weight:600;font-size:13px;">9:31 AM ET &mdash; Enter Positions</span>
+              <p style="color:var(--muted);margin:3px 0 0 0;font-size:12px;line-height:1.5;">One minute after open, the bot shorts qualified gap-ups. Waits one minute to avoid the chaotic opening auction.</p>
+            </div>
+          </div>
+          <div class="tl-step" data-phase="monitor" style="display:flex;align-items:flex-start;margin-bottom:14px;position:relative;padding-left:28px;">
+            <div style="position:absolute;left:0;top:2px;width:14px;height:14px;border-radius:50%;background:var(--yellow);border:2px solid rgba(234,179,8,0.4);"></div>
+            <div style="border-left:2px solid var(--border);position:absolute;left:6px;top:18px;height:calc(100% - 4px);"></div>
+            <div>
+              <span style="color:var(--yellow);font-weight:600;font-size:13px;">9:31 AM &ndash; 3:55 PM ET &mdash; Monitor &amp; Manage</span>
+              <p style="color:var(--muted);margin:3px 0 0 0;font-size:12px;line-height:1.5;">Watches positions, enforces stop-losses, and checks circuit breakers. The dashboard updates live during this window.</p>
+            </div>
+          </div>
+          <div class="tl-step" data-phase="close" style="display:flex;align-items:flex-start;margin-bottom:14px;position:relative;padding-left:28px;">
+            <div style="position:absolute;left:0;top:2px;width:14px;height:14px;border-radius:50%;background:var(--green);border:2px solid rgba(34,197,94,0.4);"></div>
+            <div style="border-left:2px solid var(--border);position:absolute;left:6px;top:18px;height:calc(100% - 4px);"></div>
+            <div>
+              <span style="color:var(--green);font-weight:600;font-size:13px;">3:55 PM ET &mdash; Close All Positions</span>
+              <p style="color:var(--muted);margin:3px 0 0 0;font-size:12px;line-height:1.5;">All positions are closed before market close. No overnight exposure &mdash; every day starts flat.</p>
+            </div>
+          </div>
+          <div class="tl-step" data-phase="sleep" style="display:flex;align-items:flex-start;position:relative;padding-left:28px;">
+            <div style="position:absolute;left:0;top:2px;width:14px;height:14px;border-radius:50%;background:var(--purple);border:2px solid rgba(168,85,247,0.4);"></div>
+            <div>
+              <span style="color:var(--purple);font-weight:600;font-size:13px;">After 4:00 PM ET &mdash; Save &amp; Sleep</span>
+              <p style="color:var(--muted);margin:3px 0 0 0;font-size:12px;line-height:1.5;">Logs results, updates statistics, and sleeps until the next trading day.</p>
+            </div>
+          </div>
+        </div>
+        <div id="guideNextEvent" style="margin-top:14px;padding:8px 12px;background:rgba(6,182,212,0.10);border-radius:6px;font-size:12px;color:var(--cyan);display:none;"></div>
+      </div>
+
+      <!-- Section 3: Safety Features -->
+      <div style="margin-bottom:20px;padding:16px;background:rgba(34,197,94,0.06);border:1px solid rgba(34,197,94,0.2);border-radius:8px;">
+        <h3 style="color:var(--green);margin:0 0 12px 0;font-size:14px;">Safety Features (Circuit Breakers)</h3>
+        <p style="color:var(--muted);margin:0 0 12px 0;font-size:12px;">The bot has three automatic safety switches that pause or halt trading to protect your account:</p>
+        <div style="display:flex;flex-direction:column;gap:10px;">
+          <div style="display:flex;align-items:flex-start;gap:10px;">
+            <div style="min-width:32px;height:32px;display:flex;align-items:center;justify-content:center;background:rgba(239,68,68,0.12);border-radius:6px;font-size:16px;">&#128721;</div>
+            <div>
+              <span style="color:var(--text);font-weight:600;font-size:13px;">Daily Loss Limit</span>
+              <p style="color:var(--muted);margin:2px 0 0 0;font-size:12px;line-height:1.5;">If total losses for the day exceed the configured limit, trading stops for the rest of the day. Prevents one bad day from wiping out weeks of gains.</p>
+            </div>
+          </div>
+          <div style="display:flex;align-items:flex-start;gap:10px;">
+            <div style="min-width:32px;height:32px;display:flex;align-items:center;justify-content:center;background:rgba(234,179,8,0.12);border-radius:6px;font-size:16px;">&#9208;</div>
+            <div>
+              <span style="color:var(--text);font-weight:600;font-size:13px;">Consecutive Loss Pause</span>
+              <p style="color:var(--muted);margin:2px 0 0 0;font-size:12px;line-height:1.5;">After several losses in a row, the bot pauses to avoid revenge trading. It waits before resuming to let conditions change.</p>
+            </div>
+          </div>
+          <div style="display:flex;align-items:flex-start;gap:10px;">
+            <div style="min-width:32px;height:32px;display:flex;align-items:center;justify-content:center;background:rgba(239,68,68,0.12);border-radius:6px;font-size:16px;">&#9940;</div>
+            <div>
+              <span style="color:var(--text);font-weight:600;font-size:13px;">Max Drawdown Halt</span>
+              <p style="color:var(--muted);margin:2px 0 0 0;font-size:12px;line-height:1.5;">If the account drops below a percentage threshold from its peak, all trading halts until you manually review and restart. This is the final safety net.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Section 4: Quick Start -->
+      <div style="margin-bottom:20px;padding:16px;background:rgba(59,130,246,0.06);border:1px solid rgba(59,130,246,0.2);border-radius:8px;">
+        <h3 style="color:var(--blue);margin:0 0 12px 0;font-size:14px;">Quick Start &mdash; 3 Steps</h3>
+        <div style="display:flex;flex-direction:column;gap:12px;">
+          <div style="display:flex;align-items:flex-start;gap:12px;">
+            <div style="min-width:28px;height:28px;display:flex;align-items:center;justify-content:center;background:var(--blue);border-radius:50%;color:#fff;font-weight:700;font-size:13px;">1</div>
+            <div>
+              <span style="color:var(--text);font-weight:600;font-size:13px;">Configure API Keys</span>
+              <p style="color:var(--muted);margin:2px 0 0 0;font-size:12px;line-height:1.5;">Go to the <strong>Config</strong> tab and enter your Alpaca API credentials. The bot needs these to place real trades. Use a paper-trading key first to practice.</p>
+            </div>
+          </div>
+          <div style="display:flex;align-items:flex-start;gap:12px;">
+            <div style="min-width:28px;height:28px;display:flex;align-items:center;justify-content:center;background:var(--blue);border-radius:50%;color:#fff;font-weight:700;font-size:13px;">2</div>
+            <div>
+              <span style="color:var(--text);font-weight:600;font-size:13px;">Click Start Trading</span>
+              <p style="color:var(--muted);margin:2px 0 0 0;font-size:12px;line-height:1.5;">On the <strong>Live Trading</strong> tab, hit the green Start button. The bot will wait for the right time and begin scanning automatically.</p>
+            </div>
+          </div>
+          <div style="display:flex;align-items:flex-start;gap:12px;">
+            <div style="min-width:28px;height:28px;display:flex;align-items:center;justify-content:center;background:var(--blue);border-radius:50%;color:#fff;font-weight:700;font-size:13px;">3</div>
+            <div>
+              <span style="color:var(--text);font-weight:600;font-size:13px;">Watch the Dashboard</span>
+              <p style="color:var(--muted);margin:2px 0 0 0;font-size:12px;line-height:1.5;">The Live Trading tab shows real-time status, positions, and activity logs. The <strong>Scanner</strong> tab shows today's candidates. Everything updates automatically.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Section 5: Status Badge Legend -->
+      <div style="margin-bottom:10px;padding:16px;background:rgba(148,163,184,0.06);border:1px solid rgba(148,163,184,0.15);border-radius:8px;">
+        <h3 style="color:var(--muted);margin:0 0 12px 0;font-size:14px;">Status Badge Legend</h3>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill, minmax(280px, 1fr));gap:10px;">
+          <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:var(--card);border:1px solid var(--border);border-radius:6px;">
+            <span style="display:inline-block;padding:3px 10px;border-radius:4px;font-size:11px;font-weight:600;background:rgba(148,163,184,0.15);color:var(--muted);">STOPPED</span>
+            <span style="color:var(--muted);font-size:12px;">Bot is idle. Click Start to begin.</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:var(--card);border:1px solid var(--border);border-radius:6px;">
+            <span style="display:inline-block;padding:3px 10px;border-radius:4px;font-size:11px;font-weight:600;background:rgba(6,182,212,0.15);color:var(--cyan);">SCANNING</span>
+            <span style="color:var(--muted);font-size:12px;">Looking for gap-up candidates.</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:var(--card);border:1px solid var(--border);border-radius:6px;">
+            <span style="display:inline-block;padding:3px 10px;border-radius:4px;font-size:11px;font-weight:600;background:rgba(34,197,94,0.15);color:var(--green);">TRADING</span>
+            <span style="color:var(--muted);font-size:12px;">Actively managing positions.</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:var(--card);border:1px solid var(--border);border-radius:6px;">
+            <span style="display:inline-block;padding:3px 10px;border-radius:4px;font-size:11px;font-weight:600;background:rgba(234,179,8,0.15);color:var(--yellow);">PAUSED</span>
+            <span style="color:var(--muted);font-size:12px;">Temporarily paused by a circuit breaker.</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:var(--card);border:1px solid var(--border);border-radius:6px;">
+            <span style="display:inline-block;padding:3px 10px;border-radius:4px;font-size:11px;font-weight:600;background:rgba(239,68,68,0.15);color:var(--red);">HALTED</span>
+            <span style="color:var(--muted);font-size:12px;">Max drawdown hit. Manual review needed.</span>
+          </div>
+        </div>
+      </div>
+
     </div>
   </div>
 
@@ -3583,6 +4038,19 @@ function renderPositions(positions) {
   }).join('');
 }
 
+function catalystBadge(cat, detail) {
+  const labels = {earnings:'EARN',fda:'FDA',ma:'M&A',offering:'OFFER',upgrade:'UPG',downgrade:'DNG'};
+  const colors = {
+    earnings:'var(--red)',fda:'var(--red)',ma:'var(--red)',
+    offering:'var(--green)',upgrade:'var(--orange)',downgrade:'var(--orange)',
+  };
+  if (!cat) return '<span style="color:var(--green);font-weight:600;" title="No catalyst — clean noise gap">NOISE</span>';
+  const label = labels[cat] || cat.toUpperCase();
+  const color = colors[cat] || 'var(--muted)';
+  const tip = detail ? detail.replace(/"/g, '&quot;') : '';
+  return `<span style="color:${color};font-weight:600;cursor:help;" title="${tip}">${label}</span>`;
+}
+
 function renderCandidates(candidates) {
   const tbody = document.getElementById('candidatesTable');
   const noC = document.getElementById('noCandidates');
@@ -3604,6 +4072,7 @@ function renderCandidates(candidates) {
     <td>${(c.avg_vol_20d/1000).toFixed(0)}K</td>
     <td>${c.shortable ? '✓' : '✗'}</td>
     <td>${c.easy_to_borrow ? '✓' : '—'}</td>
+    <td>${catalystBadge(c.catalyst || '', c.catalyst_detail || '')}</td>
     <td>${c.score.toFixed(1)}</td>
   </tr>`).join('');
 }
@@ -3694,14 +4163,18 @@ function renderBacktestResults(r) {
     ${r.trades && r.trades.length > 0 ? `
     <h2 style="margin-top:12px;">Recent Trades</h2>
     <table>
-      <thead><tr><th>Time</th><th>Symbol</th><th>Entry</th><th>Exit</th><th>P&L</th><th>Reason</th></tr></thead>
+      <thead><tr><th>Entry Time</th><th>Exit Time</th><th>Symbol</th><th>Shares</th><th>Entry</th><th>Exit</th><th>P&L</th><th>P&L %</th><th>Reason</th><th>Hold</th></tr></thead>
       <tbody>${r.trades.slice(-50).reverse().map(t => `<tr>
+        <td>${t.entry_time||''}</td>
         <td>${t.exit_time||''}</td>
         <td style="font-weight:600;">${t.symbol}</td>
+        <td>${t.shares||0}</td>
         <td>$${(t.entry_price||0).toFixed(2)}</td>
         <td>$${(t.exit_price||0).toFixed(2)}</td>
         <td class="${(t.pnl||0)>=0?'pnl-pos':'pnl-neg'}">${pnlFmt(t.pnl||0)}</td>
+        <td class="${(t.pnl_pct||0)>=0?'pnl-pos':'pnl-neg'}">${((t.pnl_pct||0)*100).toFixed(2)}%</td>
         <td>${t.exit_reason||''}</td>
+        <td>${t.holding_minutes ? t.holding_minutes + 'm' : '—'}</td>
       </tr>`).join('')}</tbody>
     </table>` : ''}
   `;
@@ -3717,6 +4190,70 @@ function showTab(name) {
   const tabBtn = document.querySelector(`.tab[data-tab="${name}"]`);
   if (tabBtn) tabBtn.classList.add('active');
   activeTab = name;
+}
+
+// ── Guide Timeline ──────────────────────────────────────────────
+function updateGuideTimeline() {
+  const now = new Date();
+  const et = new Date(now.toLocaleString('en-US', {timeZone: 'America/New_York'}));
+  const mins = et.getHours() * 60 + et.getMinutes();
+  const day = et.getDay();
+  const isWeekend = day === 0 || day === 6;
+
+  const phases = [
+    {name: 'premarket', start: 420, label: 'Pre-Market Scan'},
+    {name: 'refresh',   start: 565, label: 'Final Scan Refresh'},
+    {name: 'entry',     start: 571, label: 'Enter Positions'},
+    {name: 'monitor',   start: 572, label: 'Monitor & Manage'},
+    {name: 'close',     start: 955, label: 'Close All Positions'},
+    {name: 'sleep',     start: 960, label: 'Save & Sleep'}
+  ];
+
+  let current = null;
+  let next = null;
+  if (!isWeekend) {
+    for (let i = phases.length - 1; i >= 0; i--) {
+      if (mins >= phases[i].start) { current = phases[i]; next = phases[i + 1] || null; break; }
+    }
+    if (!current && mins < 420) next = phases[0];
+  }
+
+  document.querySelectorAll('#guideTimeline .tl-step').forEach(el => {
+    const phase = el.dataset.phase;
+    const dot = el.querySelector('div[style*="border-radius:50%"]');
+    if (current && phase === current.name) {
+      el.style.background = 'rgba(255,255,255,0.03)';
+      el.style.borderRadius = '6px';
+      el.style.padding = '8px 8px 8px 28px';
+      el.style.marginLeft = '-8px';
+      if (dot) dot.style.boxShadow = '0 0 8px currentColor';
+    } else {
+      el.style.background = '';
+      el.style.borderRadius = '';
+      el.style.padding = '';
+      el.style.paddingLeft = '28px';
+      el.style.marginLeft = '';
+      if (dot) dot.style.boxShadow = '';
+    }
+  });
+
+  const evtEl = document.getElementById('guideNextEvent');
+  if (isWeekend) {
+    evtEl.style.display = 'block';
+    evtEl.textContent = 'Market is closed — trading resumes Monday at 7:00 AM ET';
+  } else if (next) {
+    evtEl.style.display = 'block';
+    const h = Math.floor(next.start / 60), m = next.start % 60;
+    const ampm = h >= 12 ? 'PM' : 'AM';
+    const h12 = h > 12 ? h - 12 : h;
+    evtEl.textContent = 'Next: ' + next.label + ' at ' + h12 + ':' + String(m).padStart(2,'0') + ' ' + ampm + ' ET';
+  } else if (current && current.name === 'sleep') {
+    evtEl.style.display = 'block';
+    evtEl.textContent = 'Trading day complete — next session tomorrow at 7:00 AM ET';
+  } else {
+    evtEl.style.display = 'block';
+    evtEl.textContent = 'Waiting for market — pre-market scan starts at 7:00 AM ET';
+  }
 }
 
 // ── Helpers ──────────────────────────────────────────────────────
@@ -3778,7 +4315,9 @@ document.addEventListener('DOMContentLoaded', () => {
   fetchDbStats();
   setInterval(updateClock, 1000);
   setInterval(fetchState, 10000);
+  setInterval(updateGuideTimeline, 30000);
   updateClock();
+  updateGuideTimeline();
 });
 </script>
 </body>

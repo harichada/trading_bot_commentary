@@ -69,7 +69,7 @@ class DataPrep:
 
     def __init__(self, df: pd.DataFrame, arrays, bar_index: int,
                  symbol: str = 'UNKNOWN', interval: str = '5m',
-                 market_context=None):
+                 market_context=None, recent_trades: Optional[List[dict]] = None):
         """
         Args:
             df: Full OHLCV DataFrame (same one used to build arrays).
@@ -78,6 +78,7 @@ class DataPrep:
             symbol: Ticker symbol.
             interval: Bar interval ('1m', '5m', '1d', etc.).
             market_context: Optional MarketContext (SPY/VIX).
+            recent_trades: Last N trades for trade history context.
         """
         self.df = df
         self.arrays = arrays
@@ -85,6 +86,7 @@ class DataPrep:
         self.symbol = symbol
         self.interval = interval
         self.mkt = market_context
+        self.recent_trades = recent_trades or []
 
     def build(self) -> dict:
         """Extract all data and return a rich context dict."""
@@ -204,9 +206,9 @@ class DataPrep:
         # Market structure
         struct_bias, struct_type = imports['_market_structure_bias'](a, i)
 
-        # Recent price action (last 5 bars)
+        # Recent price action (last 20 bars)
         recent_bars = []
-        for j in range(max(0, i - 4), i + 1):
+        for j in range(max(0, i - 19), i + 1):
             bar_change = ((a.close[j] - a.open[j]) / a.open[j] * 100) if a.open[j] > 0 else 0
             bar_range = a.high[j] - a.low[j]
             body = abs(a.close[j] - a.open[j])
@@ -232,9 +234,13 @@ class DataPrep:
             except (IndexError, TypeError):
                 pass
 
+        # Price story — summarize the journey from recent peak/trough to now
+        price_story = self._build_price_story(a, i, atr)
+
         return {
             'symbol': self.symbol,
             'interval': self.interval,
+            'price_story': price_story,
             'timestamp': str(self.df.index[self.i]) if self.i < len(self.df) else '',
             'price': round(price, 2),
             'open': round(bar_open, 2),
@@ -283,6 +289,83 @@ class DataPrep:
             'vix_level': round(vix_level, 1) if vix_level is not None else None,
         }
 
+    def _build_price_story(self, a, i: int, atr: float) -> str:
+        """Build a narrative of the price journey over the lookback window.
+
+        Identifies the recent peak and trough, describes the move from peak to now
+        (or trough to now), and identifies key swing points. This gives the LLM the
+        'chart shape' that a human trader sees at a glance.
+        """
+        # Use up to 50 bars of history
+        lookback = min(i, 50)
+        if lookback < 10:
+            return "Insufficient history for price narrative."
+
+        start = i - lookback
+        highs = a.high[start:i + 1]
+        lows = a.low[start:i + 1]
+        closes = a.close[start:i + 1]
+        price = float(closes[-1])
+
+        # Find the highest high and lowest low in the window
+        peak_idx_rel = int(np.nanargmax(highs))
+        trough_idx_rel = int(np.nanargmin(lows))
+        peak_price = float(highs[peak_idx_rel])
+        trough_price = float(lows[trough_idx_rel])
+        peak_bars_ago = lookback - peak_idx_rel
+        trough_bars_ago = lookback - trough_idx_rel
+
+        # Calculate the move
+        peak_to_now = ((price - peak_price) / peak_price * 100) if peak_price > 0 else 0
+        trough_to_now = ((price - trough_price) / trough_price * 100) if trough_price > 0 else 0
+
+        parts = []
+
+        # Describe the dominant story
+        if peak_idx_rel < trough_idx_rel:
+            # Peak came first → selloff → possibly bouncing
+            selloff_pct = ((trough_price - peak_price) / peak_price * 100)
+            bounce_pct = ((price - trough_price) / trough_price * 100) if trough_price > 0 else 0
+            parts.append(
+                f"Price peaked at ${peak_price:.2f} ({peak_bars_ago} bars ago), "
+                f"then sold off {abs(selloff_pct):.1f}% to a low of ${trough_price:.2f} "
+                f"({trough_bars_ago} bars ago).")
+            if bounce_pct > 1:
+                parts.append(f"Currently bouncing {bounce_pct:.1f}% off that low.")
+            else:
+                parts.append(f"Still near the lows, {abs(peak_to_now):.1f}% below the peak.")
+        else:
+            # Trough came first → rally → possibly pulling back
+            rally_pct = ((peak_price - trough_price) / trough_price * 100) if trough_price > 0 else 0
+            pullback_pct = ((price - peak_price) / peak_price * 100) if peak_price > 0 else 0
+            parts.append(
+                f"Price bottomed at ${trough_price:.2f} ({trough_bars_ago} bars ago), "
+                f"then rallied {rally_pct:.1f}% to a high of ${peak_price:.2f} "
+                f"({peak_bars_ago} bars ago).")
+            if pullback_pct < -1:
+                parts.append(f"Currently pulling back {abs(pullback_pct):.1f}% from that high.")
+            else:
+                parts.append(f"Still near the highs, up {trough_to_now:.1f}% from the bottom.")
+
+        # Describe the last 10-bar trend slope
+        if len(closes) >= 10:
+            last10_start = float(closes[-10])
+            last10_chg = ((price - last10_start) / last10_start * 100) if last10_start > 0 else 0
+            if abs(last10_chg) > 2:
+                direction = "up" if last10_chg > 0 else "down"
+                parts.append(f"Over the last 10 bars: moved {direction} {abs(last10_chg):.1f}%.")
+
+        # Describe momentum shift if any
+        if len(closes) >= 5:
+            last5_chg = ((price - float(closes[-5])) / float(closes[-5]) * 100) if closes[-5] > 0 else 0
+            first5_chg = ((float(closes[-5]) - float(closes[-10])) / float(closes[-10]) * 100) if len(closes) >= 10 and closes[-10] > 0 else 0
+            if first5_chg < -1 and last5_chg > 1:
+                parts.append("Momentum shifting: was declining, now recovering.")
+            elif first5_chg > 1 and last5_chg < -1:
+                parts.append("Momentum shifting: was rising, now fading.")
+
+        return ' '.join(parts)
+
     def to_text(self) -> str:
         """Build natural language market summary for LLM prompt."""
         ctx = self.build()
@@ -300,6 +383,10 @@ class DataPrep:
                 f"Price is {abs(ctx['dist_from_52w_high_pct']):.1f}% below the high "
                 f"and {ctx['dist_from_52w_low_pct']:.1f}% above the low.")
         sections.append('\n'.join(price_lines))
+
+        # 1b. PRICE STORY — the narrative a trader sees on the chart
+        if ctx.get('price_story'):
+            sections.append(f"## PRICE STORY\n{ctx['price_story']}")
 
         # 2. TREND
         trend_lines = [f"## TREND"]
@@ -440,11 +527,37 @@ class DataPrep:
                 mkt_lines.append(f"VIX: {ctx['vix_level']:.1f} ({vix_desc}).")
             sections.append('\n'.join(mkt_lines))
 
-        # 10. RECENT PRICE ACTION
+        # 10. RECENT PRICE ACTION — show last 20 bars grouped
         if ctx['recent_bars']:
-            recent_lines = [f"## RECENT PRICE ACTION (last {len(ctx['recent_bars'])} bars)"]
-            for j, bar in enumerate(ctx['recent_bars']):
-                bar_num = len(ctx['recent_bars']) - j
+            n_bars = len(ctx['recent_bars'])
+            recent_lines = [f"## RECENT PRICE ACTION (last {n_bars} bars)"]
+            # Show detailed last 5 bars
+            detail_start = max(0, n_bars - 5)
+            # Show summary for older bars in 5-bar groups
+            if n_bars > 5:
+                group_idx = 0
+                while group_idx < detail_start:
+                    group_end = min(group_idx + 5, detail_start)
+                    group = ctx['recent_bars'][group_idx:group_end]
+                    total_chg = sum(b['change_pct'] for b in group)
+                    bulls = sum(1 for b in group if b['type'] == 'bullish')
+                    bears = sum(1 for b in group if b['type'] == 'bearish')
+                    avg_vol = sum(b['vol_ratio'] for b in group) / len(group) if group else 1
+                    bars_ago_end = n_bars - group_idx
+                    bars_ago_start = n_bars - group_end + 1
+                    vol_note = ''
+                    if avg_vol >= 1.5:
+                        vol_note = ', HIGH vol'
+                    elif avg_vol <= 0.7:
+                        vol_note = ', low vol'
+                    recent_lines.append(
+                        f"  Bars -{bars_ago_end} to -{bars_ago_start}: "
+                        f"{total_chg:+.1f}% net ({bulls}up/{bears}dn{vol_note})")
+                    group_idx = group_end
+                recent_lines.append("  --- Last 5 bars (detail) ---")
+            for j in range(detail_start, n_bars):
+                bar = ctx['recent_bars'][j]
+                bar_num = n_bars - j
                 vol_desc = ''
                 if bar['vol_ratio'] >= 1.5:
                     vol_desc = ', HIGH volume'
@@ -454,6 +567,37 @@ class DataPrep:
                     f"  Bar -{bar_num}: {bar['change_pct']:+.2f}% {bar['type']} candle "
                     f"(range {bar['range_atr']:.1f}x ATR{vol_desc})")
             sections.append('\n'.join(recent_lines))
+
+        # 11. RECENT TRADE HISTORY — so LLM knows its own track record
+        if self.recent_trades:
+            trade_lines = [f"## YOUR RECENT TRADE HISTORY (last {len(self.recent_trades)} trades)"]
+            wins = sum(1 for t in self.recent_trades if t.get('pnl', 0) > 0)
+            losses = sum(1 for t in self.recent_trades if t.get('pnl', 0) < 0)
+            total_pnl = sum(t.get('pnl', 0) for t in self.recent_trades)
+            trade_lines.append(f"Record: {wins}W / {losses}L, Net P&L: ${total_pnl:+,.2f}")
+            # Show last 5 trades with detail
+            for t in self.recent_trades[-5:]:
+                pnl = t.get('pnl', 0)
+                ret = t.get('return_pct', 0)
+                result = 'WIN' if pnl > 0 else 'LOSS'
+                trade_lines.append(
+                    f"  {t.get('date', '?')[:10]} {t.get('type', '?'):6s} "
+                    f"@ ${t.get('price', 0):.2f} → ${pnl:+,.2f} ({ret:+.1f}%) {result}")
+            # Streak detection
+            recent_results = [t.get('pnl', 0) > 0 for t in self.recent_trades if t.get('pnl', 0) != 0]
+            if len(recent_results) >= 3:
+                streak = 1
+                for k in range(len(recent_results) - 2, -1, -1):
+                    if recent_results[k] == recent_results[-1]:
+                        streak += 1
+                    else:
+                        break
+                if streak >= 3:
+                    streak_type = "WINNING" if recent_results[-1] else "LOSING"
+                    trade_lines.append(
+                        f"WARNING: {streak}-trade {streak_type} streak. "
+                        f"{'Consider being more selective.' if not recent_results[-1] else 'Momentum is with you.'}")
+            sections.append('\n'.join(trade_lines))
 
         return '\n\n'.join(sections)
 
@@ -537,23 +681,32 @@ You MUST return ONLY a JSON object with these exact fields:
 
 CRITICAL RULES:
 1. TREND FIRST: Identify the dominant trend from EMA alignment, ADX, and market structure. \
-Trade WITH the trend unless you see strong reversal evidence.
-2. CONFLUENCE: Only signal BUY or SELL when 3+ indicators agree. Mixed signals = HOLD.
-3. RISK/REWARD: Every trade must have a clear stop loss and at least 1:2 risk/reward ratio.
-4. VOLUME CONFIRMS: Strong volume confirms breakouts and reversals. Low volume = suspect.
+ONLY trade WITH the trend. Counter-trend trades lose money.
+2. CONFLUENCE: Signal BUY or SELL ONLY when 4+ indicators agree. If fewer agree = HOLD.
+3. RISK/REWARD: Every trade MUST have a clear stop loss and at least 1:2 risk/reward ratio. \
+If you cannot identify a clear stop and target, signal HOLD.
+4. VOLUME CONFIRMS: Strong volume confirms breakouts and reversals. Low volume = HOLD.
 5. PATTERNS MATTER: Candlestick and chart patterns are leading indicators. Weight them heavily.
 6. DIVERGENCES WARN: RSI/MACD divergences often precede reversals. Don't ignore them.
 7. MARKET CONTEXT: SPY trend and VIX level set the macro backdrop. Don't fight the market.
 8. INVALIDATION: Every thesis has a failure point. State it clearly.
-9. HOLD is the default when signals are mixed, unclear, or risk/reward is poor.
-10. Only signal with confidence >= 0.6. Below that, signal HOLD.
+9. BE SELECTIVE: You should signal HOLD on 70-80% of bars. Only the BEST setups deserve a trade. \
+If there is any doubt, HOLD. The best traders are patient and wait for perfect setups.
+10. Only signal with confidence >= 0.7. Below that, signal HOLD.
+11. REVIEW YOUR TRACK RECORD: If your recent trades show a losing streak, be MORE conservative. \
+After 3+ losses in a row, you MUST signal HOLD unless the setup is exceptional.
+12. AVOID OVERTRADING: After entering and exiting a trade, WAIT for a new setup to develop. \
+Don't immediately re-enter. Give the market time.
 
 When a position exists:
 - BUY = go long (if flat) or cover short (if short)
 - SELL = go short (if flat) or close long (if long)
 - HOLD = maintain current position
+- Let winners run. Don't close a winning position unless you see strong reversal evidence.
+- Cut losers quickly if the thesis is invalidated.
 
-Capital preservation is priority #1. Return ONLY the JSON object, no other text."""
+Capital preservation is priority #1. The best trade is often NO trade. \
+Return ONLY the JSON object, no other text."""
 
     def _build_user_prompt(self, context_text: str, current_position: Optional[dict]) -> str:
         parts = []
@@ -655,7 +808,7 @@ class Predictor:
         self.ollama_model = config.get('ollama_model', 'qwen3-coder:30b')
         self.api_key = config.get('api_key', os.environ.get('ANTHROPIC_API_KEY', ''))
         self.model = config.get('model', 'claude-3-5-haiku-latest')
-        self.max_tokens = config.get('max_tokens', 1024)
+        self.max_tokens = config.get('max_tokens', 2048)
         self.temperature = config.get('temperature', 0.3)
         self.timeout = config.get('timeout', 120)
 
@@ -775,6 +928,13 @@ class Predictor:
         if aiohttp is None:
             logger.error("aiohttp not available for Ollama call")
             return None
+
+        # For qwen3 models, append /no_think to disable thinking mode
+        # This prevents <think> tags from consuming the token budget
+        actual_prompt = user_prompt
+        if 'qwen3' in self.ollama_model.lower():
+            actual_prompt = user_prompt + ' /no_think'
+
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.post(
@@ -783,7 +943,7 @@ class Predictor:
                         'model': self.ollama_model,
                         'messages': [
                             {'role': 'system', 'content': system_prompt},
-                            {'role': 'user', 'content': user_prompt},
+                            {'role': 'user', 'content': actual_prompt},
                         ],
                         'stream': False,
                         'options': {
@@ -796,7 +956,7 @@ class Predictor:
                     if resp.status == 200:
                         data = await resp.json()
                         content = data.get('message', {}).get('content', '')
-                        # Strip <think>...</think> tags (qwen3-coder thinking mode)
+                        # Strip <think>...</think> tags in case they still appear
                         content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL).strip()
                         self._failure_count = 0
                         return content
@@ -866,13 +1026,19 @@ class Predictor:
 
     def _parse_response(self, response_text: str) -> Optional[dict]:
         """Parse LLM response into a dict. Robust with multiple fallbacks."""
-        if not response_text:
+        if not response_text or not response_text.strip():
             return None
 
         text = response_text.strip()
 
         # Strip <think> tags (belt-and-suspenders)
         text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
+
+        # If stripping think tags left nothing useful, return HOLD
+        if not text or text == '{':
+            logger.warning("LLM response empty after stripping think tags — defaulting to HOLD")
+            return self._fill_defaults({'prediction': 'HOLD', 'confidence': 0.3,
+                                         'analysis': 'Response truncated by token limit'})
 
         # Strip markdown code fences
         text = re.sub(r'^```(?:json)?\s*', '', text, flags=re.MULTILINE)
@@ -906,6 +1072,37 @@ class Predictor:
                     return self._fill_defaults(data)
             except json.JSONDecodeError:
                 pass
+
+        # Truncated JSON recovery: if response has unclosed braces, try to close them
+        if '{' in text and text.count('{') > text.count('}'):
+            # Find the start of the JSON object
+            json_start = text.index('{')
+            truncated = text[json_start:]
+            # Try closing with increasing numbers of braces
+            missing_braces = truncated.count('{') - truncated.count('}')
+            # Remove any trailing partial key/value (after last comma or colon)
+            cleaned = re.sub(r',\s*"[^"]*"?\s*:?\s*"?[^"{}]*$', '', truncated)
+            if not cleaned.endswith('}'):
+                cleaned = cleaned.rstrip(', \n\r\t')
+                cleaned += '}' * max(1, cleaned.count('{') - cleaned.count('}'))
+            try:
+                data = json.loads(cleaned)
+                if isinstance(data, dict):
+                    logger.warning(f"Recovered truncated JSON ({missing_braces} unclosed braces)")
+                    return self._fill_defaults(data)
+            except json.JSONDecodeError:
+                pass
+
+            # Ultra-fallback: extract just prediction and confidence with regex
+            pred_match = re.search(r'"prediction"\s*:\s*"(BUY|SELL|HOLD)"', text, re.IGNORECASE)
+            conf_match = re.search(r'"confidence"\s*:\s*([\d.]+)', text)
+            if pred_match:
+                logger.warning(f"Extracted prediction from truncated JSON via regex")
+                return self._fill_defaults({
+                    'prediction': pred_match.group(1).upper(),
+                    'confidence': float(conf_match.group(1)) if conf_match else 0.5,
+                    'analysis': re.search(r'"analysis"\s*:\s*"([^"]*)"', text).group(1) if re.search(r'"analysis"\s*:\s*"([^"]*)"', text) else 'Truncated response',
+                })
 
         return None
 
@@ -1040,9 +1237,14 @@ class BacktestTracker:
         self._pattern_stats: Dict[str, dict] = {}
         self._structure_stats: Dict[str, dict] = {}
         self._confidence_buckets: Dict[str, dict] = {}
+        self._signal_counts: Dict[str, int] = {'BUY': 0, 'SELL': 0, 'HOLD': 0}
+        self._total_predictions: int = 0
 
     def record_prediction(self, prediction: LLMPrediction):
         """Record a new prediction (pending outcome)."""
+        self._total_predictions += 1
+        sig = prediction.prediction.upper() if prediction.prediction else 'HOLD'
+        self._signal_counts[sig] = self._signal_counts.get(sig, 0) + 1
         if prediction.prediction in ('BUY', 'SELL'):
             self._pending[prediction.symbol] = prediction
 
@@ -1152,9 +1354,12 @@ class BacktestTracker:
 
     def report(self) -> dict:
         """Generate comprehensive accuracy report."""
+        hold_pct_early = (self._signal_counts.get('HOLD', 0) / self._total_predictions * 100) if self._total_predictions > 0 else 0
         if not self._outcomes:
             return {
-                'total_predictions': len(self._pending),
+                'total_predictions': self._total_predictions,
+                'signal_distribution': dict(self._signal_counts),
+                'hold_pct': round(hold_pct_early, 1),
                 'total_trades': 0,
                 'outcomes': [],
             }
@@ -1182,8 +1387,12 @@ class BacktestTracker:
 
         target_hits = sum(1 for o in self._outcomes if o.hit_target)
 
+        hold_pct = (self._signal_counts.get('HOLD', 0) / self._total_predictions * 100) if self._total_predictions > 0 else 0
+
         return {
-            'total_predictions': len(self._outcomes) + len(self._pending),
+            'total_predictions': self._total_predictions,
+            'signal_distribution': dict(self._signal_counts),
+            'hold_pct': round(hold_pct, 1),
             'total_trades': len(self._outcomes),
             'win_rate': round(len(wins) / len(self._outcomes), 3) if self._outcomes else 0,
             'avg_r_multiple': round(sum(r_values) / len(r_values), 3) if r_values else 0,
