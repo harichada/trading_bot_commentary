@@ -2,16 +2,56 @@
 # Install gap-fade as a systemd service for 24/7 operation
 set -e
 
-SERVICE_FILE="gap-fade.service"
-INSTALL_PATH="/etc/systemd/system/$SERVICE_FILE"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+CURRENT_USER="$(whoami)"
+PYTHON_PATH="$(which python3 || which python)"
 
 echo "Installing Gap Fade service..."
+echo "  User:    $CURRENT_USER"
+echo "  Dir:     $SCRIPT_DIR"
+echo "  Python:  $PYTHON_PATH"
+echo ""
+
+# Generate service file with correct paths
+cat > /tmp/gap-fade.service <<EOF
+[Unit]
+Description=Gap Fade Trading Strategy Dashboard
+After=network.target
+
+[Service]
+Type=simple
+User=$CURRENT_USER
+WorkingDirectory=$SCRIPT_DIR
+ExecStart=$PYTHON_PATH $SCRIPT_DIR/gap_fade_app.py
+Restart=always
+RestartSec=10
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+# Environment
+EnvironmentFile=$SCRIPT_DIR/.env
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=gap-fade
+
+# Watchdog
+WatchdogSec=120
+
+# Resource limits
+MemoryMax=2G
+CPUQuota=80%
+
+[Install]
+WantedBy=multi-user.target
+EOF
 
 # Stop if already running
 sudo systemctl stop gap-fade 2>/dev/null || true
 
 # Copy service file
-sudo cp "$SERVICE_FILE" "$INSTALL_PATH"
+sudo cp /tmp/gap-fade.service /etc/systemd/system/gap-fade.service
 
 # Reload systemd
 sudo systemctl daemon-reload
@@ -22,6 +62,9 @@ sudo systemctl enable gap-fade
 # Start it
 sudo systemctl start gap-fade
 
+sleep 2
+sudo systemctl status gap-fade --no-pager
+
 echo ""
 echo "Done! Gap Fade is running as a systemd service."
 echo ""
@@ -30,11 +73,4 @@ echo "  sudo systemctl status gap-fade    # Check status"
 echo "  sudo systemctl restart gap-fade   # Restart"
 echo "  sudo systemctl stop gap-fade      # Stop"
 echo "  journalctl -u gap-fade -f         # Follow logs"
-echo "  journalctl -u gap-fade --since '1 hour ago'  # Recent logs"
 echo "  curl localhost:8002/api/health     # Health check"
-echo ""
-echo "The service will:"
-echo "  - Auto-restart on crash (after 10s)"
-echo "  - Restart if unresponsive for 120s (watchdog)"
-echo "  - Start on boot"
-echo "  - Cap memory at 2GB, CPU at 80%"

@@ -4,16 +4,17 @@ After=network.target
 
 [Service]
 Type=simple
-User=nvidia
-WorkingDirectory=/home/nvidia/claude/branch2/trading_bot_commentary
-ExecStart=/home/nvidia/anaconda3/envs/trading-bot/bin/python gap_fade_app.py
+# EDIT THESE for your system:
+User=botuser
+WorkingDirectory=/home/botuser/claude/trading_bot_commentary
+ExecStart=/home/botuser/claude/trading_bot_commentary/venv/bin/python gap_fade_app.py
 Restart=always
 RestartSec=10
 StartLimitIntervalSec=300
 StartLimitBurst=5
 
 # Environment
-EnvironmentFile=/home/nvidia/claude/branch2/trading_bot_commentary/.env
+EnvironmentFile=/home/botuser/claude/trading_bot_commentary/.env
 
 # Logging — stdout/stderr go to journalctl
 StandardOutput=journal
