@@ -306,9 +306,9 @@ def fetch_alpaca_snapshots(symbols: List[str]) -> dict:
     headers = _alpaca_headers(cfg)
     results = {}
 
-    # Batch 100 symbols per request
-    for i in range(0, len(symbols), 100):
-        batch = symbols[i:i+100]
+    # Batch 500 symbols per request (Alpaca supports ~2000 per URL, 500 is safe)
+    for i in range(0, len(symbols), 500):
+        batch = symbols[i:i+500]
         params = {
             'symbols': ','.join(batch),
             'feed': 'iex',
@@ -325,8 +325,8 @@ def fetch_alpaca_snapshots(symbols: List[str]) -> dict:
         except Exception as e:
             logger.warning(f"Snapshot fetch error: {e}")
 
-        if i + 100 < len(symbols):
-            _time.sleep(0.3)
+        if i + 500 < len(symbols):
+            _time.sleep(0.1)
 
     return results
 
@@ -583,6 +583,105 @@ class AlpacaTickStreamer:
 
 
 # =============================================================================
+# SECTION 2a: POLYGON / MASSIVE.COM HELPERS
+# =============================================================================
+
+def _get_polygon_key() -> Optional[str]:
+    """Get Polygon.io / Massive.com API key from env."""
+    _load_env_file()
+    return os.environ.get('POLYGON_API_KEY', '') or os.environ.get('MASSIVE_API_KEY', '') or None
+
+
+def fetch_polygon_grouped_daily(date_str: str) -> List[dict]:
+    """Fetch OHLCV for ALL US stocks for a single date via Polygon grouped daily.
+
+    One API call returns every ticker (~11k+).
+    Free tier: 5 req/min, EOD data.
+
+    Returns list of dicts: [{symbol, date, open, high, low, close, volume}, ...]
+    """
+    api_key = _get_polygon_key()
+    if not api_key:
+        raise ValueError("POLYGON_API_KEY or MASSIVE_API_KEY not set in .env")
+
+    url = f"https://api.polygon.io/v2/aggs/grouped/locale/us/market/stocks/{date_str}"
+    params = {'adjusted': 'true', 'apiKey': api_key}
+
+    resp = requests.get(url, params=params, timeout=30)
+    if resp.status_code == 403:
+        msg = resp.json().get('message', 'Forbidden')
+        if 'today' in msg.lower():
+            raise ValueError(f"Polygon free tier: no same-day data ({date_str}). Use yesterday or older.")
+        raise ValueError(f"Polygon 403: {msg}")
+    if resp.status_code == 429:
+        raise ValueError("Polygon rate limit hit — try again in a minute")
+    resp.raise_for_status()
+
+    data = resp.json()
+    if data.get('resultsCount', 0) == 0:
+        logger.warning(f"Polygon grouped daily: 0 results for {date_str} (market closed?)")
+        return []
+
+    bars = []
+    for r in data.get('results', []):
+        sym = r.get('T', '')
+        if not sym or len(sym) > 5:  # skip warrants, units, etc.
+            continue
+        bars.append({
+            'symbol': sym,
+            'date': date_str,
+            'open': float(r.get('o', 0)),
+            'high': float(r.get('h', 0)),
+            'low': float(r.get('l', 0)),
+            'close': float(r.get('c', 0)),
+            'volume': int(r.get('v', 0)),
+        })
+
+    logger.info(f"Polygon grouped daily: {len(bars)} tickers for {date_str}")
+    return bars
+
+
+def fetch_polygon_daily_range(start_date: str, end_date: str,
+                               progress_callback=None) -> Dict[str, List[dict]]:
+    """Fetch grouped daily bars for a date range.
+
+    Calls the grouped daily endpoint once per trading day.
+    Free tier: 5 req/min, so we sleep 12s between calls to be safe.
+
+    Returns {date_str: [bar_dicts]}
+    """
+    from datetime import timedelta
+    start = datetime.strptime(start_date, '%Y-%m-%d')
+    end = datetime.strptime(end_date, '%Y-%m-%d')
+
+    all_bars = {}
+    current = start
+    day_num = 0
+    total_days = (end - start).days + 1
+
+    while current <= end:
+        ds = current.strftime('%Y-%m-%d')
+        # Skip weekends
+        if current.weekday() < 5:
+            try:
+                bars = fetch_polygon_grouped_daily(ds)
+                if bars:
+                    all_bars[ds] = bars
+                    day_num += 1
+                    if progress_callback:
+                        progress_callback(day_num, total_days, ds, len(bars))
+            except Exception as e:
+                logger.warning(f"Polygon fetch error for {ds}: {e}")
+
+            # Rate limit: 5 req/min on free tier → 12s between calls
+            _time.sleep(12)
+
+        current += timedelta(days=1)
+
+    return all_bars
+
+
+# =============================================================================
 # SECTION 2b: LOCAL PRICE DATABASE
 # =============================================================================
 
@@ -606,6 +705,11 @@ class PriceDB:
                 volume REAL,
                 PRIMARY KEY (symbol, date)
             ) WITHOUT ROWID
+        ''')
+        # Covering index for date-range scans (used by SQL gap scanner)
+        self._conn.execute('''
+            CREATE INDEX IF NOT EXISTS idx_bars_date_symbol
+            ON daily_bars (date, symbol)
         ''')
         self._conn.commit()
 
@@ -649,6 +753,22 @@ class PriceDB:
             )
             self._conn.commit()
         logger.info(f"PriceDB: upserted {len(rows)} rows for {len(dfs)} symbols")
+
+    def upsert_bars_dicts(self, bars: List[dict]):
+        """Bulk insert from list of dicts (Polygon format).
+
+        Each dict: {symbol, date, open, high, low, close, volume}
+        """
+        if not bars:
+            return
+        rows = [(b['symbol'], b['date'], b['open'], b['high'],
+                 b['low'], b['close'], b['volume']) for b in bars]
+        self._conn.executemany(
+            'INSERT OR REPLACE INTO daily_bars (symbol, date, open, high, low, close, volume) '
+            'VALUES (?, ?, ?, ?, ?, ?, ?)', rows
+        )
+        self._conn.commit()
+        logger.info(f"PriceDB: upserted {len(rows)} rows from Polygon data")
 
     def get_bars(self, symbol: str, start: str, end: str) -> Optional[pd.DataFrame]:
         """Get daily bars for one symbol in [start, end] date range."""
@@ -737,6 +857,82 @@ class PriceDB:
             'size_mb': round(size_bytes / (1024 * 1024), 1),
         }
 
+    def scan_gaps_sql(self, symbols: List[str], start: str, end: str,
+                      gap_threshold: float = 0.05, max_gap_pct: float = None,
+                      min_price: float = 3.0,
+                      min_avg_volume: int = 5000, vol_window: int = 20) -> List[dict]:
+        """Find gap-up days using pure SQL with window functions.
+
+        ~50x faster than loading individual DataFrames.  Uses LAG() for
+        prev_close and prev_volume (no look-ahead), and AVG() window for
+        rolling average volume.
+
+        Returns list of gap dicts ready for backtester simulation.
+        """
+        # Fetch extra days before start for rolling avg volume warmup
+        adj_start = (datetime.strptime(start, '%Y-%m-%d') - timedelta(days=60)).strftime('%Y-%m-%d')
+
+        all_gaps = []
+        chunk_size = 500
+        for i in range(0, len(symbols), chunk_size):
+            chunk = symbols[i:i + chunk_size]
+            placeholders = ','.join('?' * len(chunk))
+
+            # Window functions: LAG for prev close/volume, AVG for rolling avg vol
+            # All computed on ordered partitions — no look-ahead
+            sql = f"""
+            WITH w AS (
+                SELECT symbol, date, open, high, low, close, volume,
+                       LAG(close)  OVER (PARTITION BY symbol ORDER BY date) AS prev_close,
+                       LAG(volume) OVER (PARTITION BY symbol ORDER BY date) AS prev_volume,
+                       AVG(volume) OVER (
+                           PARTITION BY symbol ORDER BY date
+                           ROWS BETWEEN {vol_window} PRECEDING AND 1 PRECEDING
+                       ) AS avg_vol
+                FROM daily_bars
+                WHERE symbol IN ({placeholders}) AND date >= ? AND date <= ?
+            )
+            SELECT symbol, date, open, high, low, close, volume,
+                   prev_close, prev_volume, avg_vol
+            FROM w
+            WHERE date >= ?
+              AND prev_close > 0
+              AND open > 0
+              AND (open - prev_close) / prev_close >= ?
+              {f'AND (open - prev_close) / prev_close <= ?' if max_gap_pct else ''}
+              AND open >= ?
+              AND avg_vol >= ?
+            ORDER BY date, symbol
+            """
+            params = chunk + [adj_start, end, start, gap_threshold]
+            if max_gap_pct:
+                params.append(max_gap_pct)
+            params.extend([min_price, min_avg_volume])
+            cur = self._conn.execute(sql, params)
+
+            for row in cur:
+                sym, date_str, bar_open, bar_high, bar_low, bar_close, volume, \
+                    prev_close, prev_volume, avg_vol = row
+                gap_pct = (bar_open - prev_close) / prev_close
+                # vol_ratio from PREVIOUS day's volume (no look-ahead)
+                vol_ratio = prev_volume / avg_vol if avg_vol and avg_vol > 0 else 1.0
+
+                all_gaps.append({
+                    'date': date_str,
+                    'symbol': sym,
+                    'open': float(bar_open),
+                    'high': float(bar_high),
+                    'low': float(bar_low),
+                    'close': float(bar_close),
+                    'prev_close': float(prev_close),
+                    'gap_pct': round(gap_pct, 4),
+                    'volume': int(volume),
+                    'avg_vol': int(avg_vol) if avg_vol else 0,
+                    'vol_ratio': round(vol_ratio, 2),
+                })
+
+        return all_gaps
+
 
 # Module-level singleton (created lazily)
 _price_db: Optional[PriceDB] = None
@@ -794,9 +990,10 @@ UNIVERSE = sorted(set(LARGE_CAP + MID_CAP + SMALL_CAP + ETFS))
 @dataclass
 class GapFadeConfig:
     """All tunable parameters for the gap fade strategy."""
-    # Gap detection
-    gap_threshold: float = 0.05        # minimum gap-up % to consider (5%)
-    vol_ratio_max: float = 1.5         # only short when gap-day vol < this × avg vol (IEX ~noisier than SIP)
+    # Gap detection (optimized: sweep found 7-10%/50%/3.0x best)
+    gap_threshold: float = 0.07        # minimum gap-up % to consider (7%)
+    max_gap_pct: float = 0.50          # maximum gap-up % to consider (50%) — filter out M&A/catalyst mega-gaps
+    vol_ratio_max: float = 3.0         # only short when gap-day vol < this × avg vol
     min_avg_volume: int = 5_000         # minimum 20d avg daily volume (IEX ~2-3% of consolidated)
     min_price: float = 3.0             # minimum stock price
 
@@ -804,11 +1001,13 @@ class GapFadeConfig:
     initial_capital: float = 25_000
     risk_pct: float = 0.02             # risk 2% of equity per trade
     kelly_fraction: float = 0.25       # quarter Kelly
-    max_positions: int = 5             # max concurrent shorts
+    max_positions: int = 3             # max concurrent shorts (3 = more capital per trade)
 
-    # Stops and targets
-    stop_pct: float = 0.05             # 5% stop loss above entry (study: 5% > 3%)
-    partial_target_pct: float = 0.50   # cover half when price drops to midpoint
+    # Stops and targets (optimized: 2.5% stop, 1/3 partial cover)
+    stop_pct: float = 0.015            # 1.5% stop loss above entry (walk-forward optimal)
+    partial_target_pct: float = 0.50   # cover fraction when price drops to midpoint
+    partial_cover_frac: float = 0.33   # fraction of position to cover at partial target (0.33 = 1/3)
+    bounce_entry_pct: float = 0.0      # wait for bounce above open before shorting (0 = disabled)
     # Full target = prev_close (full gap fill)
 
     # Time exits
@@ -831,6 +1030,17 @@ class GapFadeConfig:
 
     # Backtest
     backtest_years: int = 3            # default lookback for backtests
+
+    # Live order execution
+    limit_orders_only: bool = True       # True = limit orders (less slippage), False = market orders (faster fill)
+    limit_offset_pct: float = 0.001      # limit price offset from current (0.1% = slightly aggressive)
+
+    # Realism adjustments (backtest accuracy)
+    slippage_pct: float = 0.0015         # 0.15% slippage per side (entry + exit)
+    borrow_rate_annual: float = 0.02     # 2% annualized short borrow fee
+    max_pct_adv: float = 0.02           # max 2% of avg daily volume per position
+    adverse_fill: bool = True            # assume adverse ordering on ambiguous bars
+    adverse_fill_pct: float = 0.50       # probability of adverse fill when ambiguous (0=always favorable, 1=always adverse)
 
     # Catalyst detection
     catalyst_enabled: bool = True
@@ -1256,19 +1466,33 @@ class GapScanner:
         for sym, snap in snapshots.items():
             try:
                 latest_trade = snap.get('latestTrade', {})
-                prev_bar = snap.get('prevDailyBar', {})
+                daily_bar = snap.get('dailyBar', {})
 
-                if not latest_trade or not prev_bar:
+                if not latest_trade or not daily_bar:
                     continue
 
                 current_price = float(latest_trade.get('p', 0))
-                prev_close = float(prev_bar.get('c', 0))
+                # During pre-market: dailyBar = yesterday, prevDailyBar = 2 days ago
+                # During market hours: dailyBar = today, prevDailyBar = yesterday
+                # Detect which by comparing dailyBar date to today
+                import datetime as _dt
+                bar_date = daily_bar.get('t', '')[:10]  # 'YYYY-MM-DD'
+                today_str = _dt.date.today().strftime('%Y-%m-%d')
+                if bar_date == today_str:
+                    # Market hours: dailyBar is today, use prevDailyBar for yesterday's close
+                    prev_bar = snap.get('prevDailyBar', {})
+                    prev_close = float(prev_bar.get('c', 0)) if prev_bar else 0
+                else:
+                    # Pre-market: dailyBar is yesterday
+                    prev_close = float(daily_bar.get('c', 0))
 
                 if prev_close <= 0 or current_price <= 0:
                     continue
 
                 gap_pct = (current_price - prev_close) / prev_close
                 if gap_pct < self.config.gap_threshold:
+                    continue
+                if self.config.max_gap_pct > 0 and gap_pct > self.config.max_gap_pct:
                     continue
 
                 if current_price < self.config.min_price:
@@ -1279,9 +1503,9 @@ class GapScanner:
                     avg_vol = self._avg_volumes.get(sym, 0)
                     if avg_vol < self.config.min_avg_volume:
                         continue
-                    daily_bar = snap.get('dailyBar', {})
-                    today_vol = float(daily_bar.get('v', 0)) if daily_bar else 0
-                    vol_ratio = today_vol / avg_vol if avg_vol > 0 and today_vol > 0 else 0.5
+                    # daily_bar is yesterday's completed bar; use its volume as proxy
+                    yesterday_vol = float(daily_bar.get('v', 0))
+                    vol_ratio = yesterday_vol / avg_vol if avg_vol > 0 and yesterday_vol > 0 else 0.5
                 else:
                     avg_vol = 0
                     vol_ratio = 0.5  # placeholder until we fetch volume
@@ -1355,58 +1579,56 @@ class GapScanner:
         start_dt = datetime.strptime(start_date, '%Y-%m-%d')
         return self._find_gaps_in_df(df, symbol, after_date=start_dt,
                                      gap_threshold=self.config.gap_threshold,
+                                     max_gap_pct=self.config.max_gap_pct if self.config.max_gap_pct > 0 else None,
                                      min_price=self.config.min_price,
                                      min_avg_volume=self.config.min_avg_volume)
 
     def scan_historical_batch(self, symbols: List[str], start_date: str,
                               end_date: str, progress_callback=None) -> List[dict]:
-        """Find historical gap-up days for ALL symbols using batch API.
+        """Find historical gap-up days for ALL symbols.
 
-        Uses local PriceDB when available (<1s), falls back to Alpaca API (~7min).
+        Fast path: SQL window functions on local PriceDB (~1-2s for 11k symbols).
+        Slow path: fetch missing symbols from API, then SQL scan.
         Returns list of gap dicts sorted by date.
         """
-        # Fetch extra 45 days before start for rolling avg volume calculation
         adj_start = (datetime.strptime(start_date, '%Y-%m-%d') - timedelta(days=45)).strftime('%Y-%m-%d')
-        logger.info(f"Batch fetching daily bars for {len(symbols)} symbols ({adj_start} to {end_date})...")
-
-        # Try local PriceDB first
         db = get_price_db()
-        all_dfs = db.get_bars_batch(symbols, adj_start, end_date)
-        db_hit_count = len(all_dfs)
 
-        # Find symbols missing from DB
-        missing_symbols = [s for s in symbols if s not in all_dfs]
+        # Check which symbols are missing from DB
+        db_symbols = set(db.get_symbols())
+        missing_symbols = [s for s in symbols if s not in db_symbols]
+
         if missing_symbols:
-            logger.info(f"PriceDB hit {db_hit_count}/{len(symbols)} symbols, "
-                        f"fetching {len(missing_symbols)} from API...")
+            logger.info(f"PriceDB has {len(db_symbols)} symbols, "
+                        f"fetching {len(missing_symbols)} missing from API...")
+            if progress_callback:
+                progress_callback(0, len(missing_symbols))
             api_dfs = fetch_alpaca_bars_multi(missing_symbols, adj_start, end_date, '1Day', 'iex')
-            all_dfs.update(api_dfs)
-            # Cache API results into DB for next time
             if api_dfs:
                 db.upsert_bars_batch(api_dfs)
+                logger.info(f"Cached {len(api_dfs)} new symbols into PriceDB")
         else:
-            logger.info(f"PriceDB hit all {db_hit_count} symbols — no API calls needed")
+            logger.info(f"PriceDB has all {len(symbols)} symbols cached")
 
-        all_gaps = []
-        start_dt = datetime.strptime(start_date, '%Y-%m-%d')
-        processed = 0
-        for sym, df in all_dfs.items():
-            gaps = self._find_gaps_in_df(df, sym, after_date=start_dt,
-                                         gap_threshold=self.config.gap_threshold,
-                                         min_price=self.config.min_price,
-                                         min_avg_volume=self.config.min_avg_volume)
-            all_gaps.extend(gaps)
-            processed += 1
-            if progress_callback and processed % 500 == 0:
-                progress_callback(processed, len(all_dfs))
-
-        logger.info(f"Batch scan: {len(all_gaps)} gaps found across {len(all_dfs)} symbols with data")
+        # Fast SQL gap scan — no DataFrame construction
+        logger.info(f"SQL gap scan for {len(symbols)} symbols...")
+        t0 = _time.time()
+        all_gaps = db.scan_gaps_sql(
+            symbols, start_date, end_date,
+            gap_threshold=self.config.gap_threshold,
+            max_gap_pct=self.config.max_gap_pct if self.config.max_gap_pct > 0 else None,
+            min_price=self.config.min_price,
+            min_avg_volume=self.config.min_avg_volume,
+        )
+        elapsed = _time.time() - t0
+        logger.info(f"SQL gap scan: {len(all_gaps)} gaps in {elapsed:.1f}s")
         return all_gaps
 
     @staticmethod
     def _find_gaps_in_df(df: Optional[pd.DataFrame], symbol: str,
                          after_date: datetime = None, min_bars: int = 5,
-                         gap_threshold: float = None, min_price: float = None,
+                         gap_threshold: float = None, max_gap_pct: float = None,
+                         min_price: float = None,
                          min_avg_volume: int = None) -> List[dict]:
         """Extract gap-up days from a DataFrame of daily bars.
 
@@ -1442,14 +1664,20 @@ class GapScanner:
             gap = (opens[i] - prev_c) / prev_c
             if gap_threshold is not None and gap < gap_threshold:
                 continue
+            if max_gap_pct is not None and gap > max_gap_pct:
+                continue
             if min_price is not None and opens[i] < min_price:
                 continue
 
-            cur_avg_vol = avg_vol[i] if not np.isnan(avg_vol[i]) else volumes[i]
-            if min_avg_volume is not None and cur_avg_vol < min_avg_volume:
+            # Use avg volume computed up to the PREVIOUS day (no look-ahead)
+            prev_avg_vol = avg_vol[i-1] if i >= 1 and not np.isnan(avg_vol[i-1]) else (
+                avg_vol[i] if not np.isnan(avg_vol[i]) else volumes[i-1])
+            if min_avg_volume is not None and prev_avg_vol < min_avg_volume:
                 continue
 
-            vol_ratio = volumes[i] / cur_avg_vol if cur_avg_vol > 0 else 1.0
+            # vol_ratio uses PREVIOUS day's volume (known at pre-market)
+            # NOT the gap day's volume (that's look-ahead bias)
+            vol_ratio = volumes[i-1] / prev_avg_vol if prev_avg_vol > 0 else 1.0
 
             gaps.append({
                 'date': dates[i].strftime('%Y-%m-%d') if hasattr(dates[i], 'strftime') else str(dates[i])[:10],
@@ -1461,7 +1689,7 @@ class GapScanner:
                 'prev_close': float(prev_c),
                 'gap_pct': round(gap, 4),
                 'volume': int(volumes[i]),
-                'avg_vol': int(cur_avg_vol),
+                'avg_vol': int(prev_avg_vol),
                 'vol_ratio': round(vol_ratio, 2),
             })
 
@@ -1572,19 +1800,27 @@ class GapFadeEngine:
 
     def open_position(self, candidate: GapCandidate, entry_price: float,
                       entry_time: str) -> Optional[GapPosition]:
-        """Create a new short position."""
-        stop_price = entry_price * (1 + self.config.stop_pct)
-        half_target = (entry_price + candidate.prev_close) / 2
+        """Create a new short position. Applies slippage in backtest mode."""
+        # Slippage: short sell gets worse (lower) fill price
+        slip = self.config.slippage_pct if self.backtest_mode else 0
+        fill_price = entry_price * (1 - slip)
+
+        stop_price = fill_price * (1 + self.config.stop_pct)
+        half_target = (fill_price + candidate.prev_close) / 2
         full_target = candidate.prev_close
 
-        shares = self.compute_position_size(entry_price, stop_price)
+        shares = self.compute_position_size(fill_price, stop_price)
+        # Liquidity cap: max % of average daily volume
+        if candidate.avg_vol_20d > 0 and self.config.max_pct_adv > 0:
+            max_liq = int(candidate.avg_vol_20d * self.config.max_pct_adv)
+            shares = min(shares, max_liq)
         if shares <= 0:
             return None
 
         pos = GapPosition(
             symbol=candidate.symbol,
             shares=shares,
-            entry_price=entry_price,
+            entry_price=fill_price,
             stop_price=stop_price,
             half_target=half_target,
             full_target=full_target,
@@ -1605,6 +1841,8 @@ class GapFadeEngine:
         pos = self.positions[symbol]
         trades = []
         now_str = current_time.strftime('%Y-%m-%d %H:%M')
+        # Slippage: buy-to-cover gets worse (higher) fill in backtest
+        slip = self.config.slippage_pct if self.backtest_mode else 0
 
         # Parse entry time for holding duration
         try:
@@ -1615,7 +1853,7 @@ class GapFadeEngine:
 
         # 1. Stop loss — use HIGH for honest stop check
         if high >= pos.stop_price:
-            exit_price = pos.stop_price  # fill at stop price
+            exit_price = pos.stop_price * (1 + slip)
             pnl = (pos.entry_price - exit_price) * pos.remaining_shares
             pnl_pct = (pos.entry_price - exit_price) / pos.entry_price
             trades.append(TradeRecord(
@@ -1628,14 +1866,15 @@ class GapFadeEngine:
             del self.positions[symbol]
             return trades
 
-        # 2. Partial profit — cover 50% when price hits midpoint target
+        # 2. Partial profit — cover fraction when price hits midpoint target
         if not pos.partial_filled and price <= pos.half_target:
-            cover_shares = pos.remaining_shares // 2
+            cover_shares = max(1, int(pos.remaining_shares * self.config.partial_cover_frac))
             if cover_shares > 0:
-                pnl = (pos.entry_price - price) * cover_shares
-                pnl_pct = (pos.entry_price - price) / pos.entry_price
+                fill_price = price * (1 + slip)
+                pnl = (pos.entry_price - fill_price) * cover_shares
+                pnl_pct = (pos.entry_price - fill_price) / pos.entry_price
                 trades.append(TradeRecord(
-                    symbol=symbol, entry_price=pos.entry_price, exit_price=price,
+                    symbol=symbol, entry_price=pos.entry_price, exit_price=fill_price,
                     shares=cover_shares, pnl=pnl, pnl_pct=pnl_pct,
                     entry_time=pos.entry_time, exit_time=now_str,
                     exit_reason='partial', holding_minutes=holding_min,
@@ -1648,10 +1887,11 @@ class GapFadeEngine:
 
         # 3. Full target — cover remaining when price reaches prev_close
         if price <= pos.full_target and pos.remaining_shares > 0:
-            pnl = (pos.entry_price - price) * pos.remaining_shares
-            pnl_pct = (pos.entry_price - price) / pos.entry_price
+            fill_price = price * (1 + slip)
+            pnl = (pos.entry_price - fill_price) * pos.remaining_shares
+            pnl_pct = (pos.entry_price - fill_price) / pos.entry_price
             trades.append(TradeRecord(
-                symbol=symbol, entry_price=pos.entry_price, exit_price=price,
+                symbol=symbol, entry_price=pos.entry_price, exit_price=fill_price,
                 shares=pos.remaining_shares, pnl=pnl, pnl_pct=pnl_pct,
                 entry_time=pos.entry_time, exit_time=now_str,
                 exit_reason='full_target', holding_minutes=holding_min,
@@ -1666,10 +1906,11 @@ class GapFadeEngine:
         if (et_hour > self.config.time_exit_hour or
             (et_hour == self.config.time_exit_hour and et_min >= self.config.time_exit_min)):
             if pos.remaining_shares > 0:
-                pnl = (pos.entry_price - price) * pos.remaining_shares
-                pnl_pct = (pos.entry_price - price) / pos.entry_price
+                fill_price = price * (1 + slip)
+                pnl = (pos.entry_price - fill_price) * pos.remaining_shares
+                pnl_pct = (pos.entry_price - fill_price) / pos.entry_price
                 trades.append(TradeRecord(
-                    symbol=symbol, entry_price=pos.entry_price, exit_price=price,
+                    symbol=symbol, entry_price=pos.entry_price, exit_price=fill_price,
                     shares=pos.remaining_shares, pnl=pnl, pnl_pct=pnl_pct,
                     entry_time=pos.entry_time, exit_time=now_str,
                     exit_reason='time_exit', holding_minutes=holding_min,
@@ -1682,10 +1923,11 @@ class GapFadeEngine:
         if (et_hour > self.config.eod_exit_hour or
             (et_hour == self.config.eod_exit_hour and et_min >= self.config.eod_exit_min)):
             if pos.remaining_shares > 0:
-                pnl = (pos.entry_price - price) * pos.remaining_shares
-                pnl_pct = (pos.entry_price - price) / pos.entry_price
+                fill_price = price * (1 + slip)
+                pnl = (pos.entry_price - fill_price) * pos.remaining_shares
+                pnl_pct = (pos.entry_price - fill_price) / pos.entry_price
                 trades.append(TradeRecord(
-                    symbol=symbol, entry_price=pos.entry_price, exit_price=price,
+                    symbol=symbol, entry_price=pos.entry_price, exit_price=fill_price,
                     shares=pos.remaining_shares, pnl=pnl, pnl_pct=pnl_pct,
                     entry_time=pos.entry_time, exit_time=now_str,
                     exit_reason='eod', holding_minutes=holding_min,
@@ -1835,9 +2077,14 @@ class GapFadeBacktester:
             self.bt_log.append(entry)
             await broadcast({'type': 'bt_log', 'entry': entry})
 
+        # Seed random for reproducible adverse fill resolution
+        import random
+        random.seed(42)
+
         # Step 1: Find gap days — use batch API for large universes
         total_symbols = len(syms)
-        await _log('info', f'Scanning {total_symbols} symbols for gap-ups >= {self.config.gap_threshold:.0%}, '
+        max_gap_label = f', max_gap <= {self.config.max_gap_pct:.0%}' if self.config.max_gap_pct > 0 else ''
+        await _log('info', f'Scanning {total_symbols} symbols for gap-ups >= {self.config.gap_threshold:.0%}{max_gap_label}, '
                    f'vol_ratio <= {self.config.vol_ratio_max}x, stop = {self.config.stop_pct:.0%}')
 
         use_batch = total_symbols > 50  # batch API for large universes
@@ -1917,7 +2164,7 @@ class GapFadeBacktester:
         for gap in all_gap_days:
             gaps_by_date[gap['date']].append(gap)
 
-        # Sort each day's gaps by gap_pct descending (best first)
+        # Sort each day's gaps by gap_pct descending (biggest fade opportunity first)
         for d in gaps_by_date:
             gaps_by_date[d].sort(key=lambda g: g['gap_pct'], reverse=True)
 
@@ -1994,9 +2241,34 @@ class GapFadeBacktester:
         metrics['daily_summary'] = trades_by_day[-100:]
         metrics['bt_log'] = self.bt_log[-500:]
 
+        # Realism adjustments applied
+        metrics['realism'] = {
+            'slippage_pct': self.config.slippage_pct,
+            'borrow_rate_annual': self.config.borrow_rate_annual,
+            'max_pct_adv': self.config.max_pct_adv,
+            'adverse_fill': self.config.adverse_fill,
+            'adverse_fill_pct': self.config.adverse_fill_pct,
+        }
+
+        # Survivorship bias warning
+        warnings = []
+        if len(syms) > 50:
+            warnings.append(
+                'Survivorship bias: backtest uses currently-listed symbols only. '
+                'Delisted/bankrupt stocks that gapped up and never recovered are excluded, '
+                'which may overstate win rate.')
+        if self.config.slippage_pct == 0:
+            warnings.append('No slippage applied — results assume perfect fills at exact prices.')
+        if self.config.borrow_rate_annual == 0:
+            warnings.append('No short borrow fees — real borrow costs can be 2-100%+ annualized.')
+        metrics['warnings'] = warnings
+
         await _log('info', f'Backtest complete: {metrics["total_trades"]} trades, '
                    f'{metrics.get("win_rate",0):.1%} win rate, '
                    f'${metrics.get("total_pnl",0):,.0f} P&L ({metrics.get("return_pct",0):.1f}%)')
+        if warnings:
+            for w in warnings:
+                await _log('warn', f'WARNING: {w}')
 
         self.result = metrics
         await broadcast({'type': 'backtest_complete', 'result': metrics})
@@ -2007,11 +2279,14 @@ class GapFadeBacktester:
         """Fast simulation from daily OHLCV — no extra API calls.
 
         Uses the gap dict which already has open/high/low/close from daily bars.
-        Order of checks within the bar (conservative for shorts):
-          1. Stop: high >= stop_price  → loss at stop_price
-          2. Partial: low <= midpoint  → cover half
-          3. Full target: close <= prev_close → cover rest at prev_close
-          4. Otherwise: exit at close (time_exit)
+        Realism: slippage on entry/exit, short borrow fee, liquidity cap,
+        and adverse fill ordering when both stop and target hit on same bar.
+
+        Order of checks (conservative — stop first):
+          1. Stop: high >= stop_price  → loss at stop_price (+slippage)
+          2. Partial target: low <= midpoint → cover half (+slippage)
+          3. Full target: close <= prev_close → cover rest (+slippage)
+          4. Otherwise: exit at close (time_exit, +slippage)
         """
         sym = gap['symbol']
         prev_close = gap['prev_close']
@@ -2021,6 +2296,7 @@ class GapFadeBacktester:
         day_close = gap['close']
         day_trades = []
         log = []
+        slip = self.config.slippage_pct
 
         candidate = GapCandidate(
             symbol=sym, gap_pct=gap['gap_pct'], prev_close=prev_close,
@@ -2028,9 +2304,30 @@ class GapFadeBacktester:
             vol_ratio=gap['vol_ratio'], shortable=True, easy_to_borrow=True,
         )
 
-        # Entry at the open
-        entry_price = day_open
+        # Bounce entry: if configured, wait for a small bounce above open before shorting
+        # This gives a better entry price but may miss trades that fade immediately
+        bounce = self.config.bounce_entry_pct
+        if bounce > 0 and day_high >= day_open * (1 + bounce):
+            # Bounce happened — enter at bounce level (minus slippage)
+            entry_price = day_open * (1 + bounce) * (1 - slip)
+        elif bounce > 0:
+            # No bounce reached — skip this trade
+            log.append({'level': 'skip', 'msg': f'{sym} {gap["date"]}: SKIP — no bounce to {bounce:.1%} above open'})
+            return day_trades, log
+        else:
+            # Entry with slippage: short sell gets worse (lower) fill
+            entry_price = day_open * (1 - slip)
         entry_time_str = f'{gap["date"]} 09:31'
+        # Estimated exit times for daily-bar mode (we don't know exact intrabar timing)
+        exit_stop_str = f'{gap["date"]} 10:30'     # stops tend to hit early
+        exit_partial_str = f'{gap["date"]} 12:00'   # partial midday
+        exit_full_str = f'{gap["date"]} 14:00'      # full target afternoon
+        exit_close_str = f'{gap["date"]} 15:55'     # EOD exit
+        # Holding minutes estimates (from 09:31)
+        hold_stop = 59       # ~1h
+        hold_partial = 149   # ~2.5h
+        hold_full = 269      # ~4.5h
+        hold_close = 384     # ~6.5h
 
         ok, reason = engine.should_enter(candidate)
         if not ok:
@@ -2048,7 +2345,6 @@ class GapFadeBacktester:
         dollar_risk = engine.equity * risk_frac
         shares = int(dollar_risk / risk_per_share) if risk_per_share > 0 else 0
         # Per-position cap: divide equity evenly across max_positions slots
-        open_count = len(engine.positions)
         per_slot_equity = engine.equity / max(1, self.config.max_positions)
         max_shares = int(per_slot_equity / entry_price) if entry_price > 0 else 0
         shares = min(shares, max_shares)
@@ -2057,18 +2353,31 @@ class GapFadeBacktester:
             notional_limit = min(self.config.max_notional, per_slot_equity)
             max_shares_notional = int(notional_limit / entry_price)
             shares = min(shares, max_shares_notional)
+        # Liquidity cap: max % of average daily volume
+        avg_vol = gap.get('avg_vol', 0)
+        if avg_vol > 0 and self.config.max_pct_adv > 0:
+            max_shares_liq = int(avg_vol * self.config.max_pct_adv)
+            if shares > max_shares_liq:
+                shares = max_shares_liq
         if shares <= 0:
             log.append({'level': 'skip', 'msg': f'{sym} {gap["date"]}: position size = 0'})
             return day_trades, log
 
+        # Borrow fee: annualized rate prorated to 1 day
+        notional = shares * entry_price
+        borrow_cost = notional * (self.config.borrow_rate_annual / 252)
+
         stop_dist = (stop_price - entry_price) / entry_price
         target_dist = (entry_price - full_target) / entry_price
+        cost_note = f' | borrow ${borrow_cost:.0f}' if borrow_cost > 0.5 else ''
+        liq_note = f' | liq-capped' if avg_vol > 0 and shares == int(avg_vol * self.config.max_pct_adv) else ''
         log.append({
             'level': 'entry',
-            'msg': (f'{sym} {gap["date"]}: SHORT {shares}sh @ ${entry_price:.2f} '
+            'msg': (f'{sym} {gap["date"]}: SHORT {shares}sh @ ${entry_price:.2f} (slip {slip:.2%}) '
                     f'| gap {gap["gap_pct"]:.1%} vol {gap["vol_ratio"]:.2f}x '
                     f'| stop ${stop_price:.2f} (+{stop_dist:.1%}) '
-                    f'| half ${half_target:.2f} full ${full_target:.2f} (-{target_dist:.1%})'),
+                    f'| half ${half_target:.2f} full ${full_target:.2f} (-{target_dist:.1%})'
+                    f'{cost_note}{liq_note}'),
             'data': {'symbol': sym, 'shares': shares, 'entry': entry_price,
                      'stop': stop_price, 'gap_pct': gap['gap_pct'], 'vol_ratio': gap['vol_ratio']}
         })
@@ -2083,16 +2392,58 @@ class GapFadeBacktester:
         # 3. Full target — close at or below prev_close
         full_hit = day_close <= full_target
 
-        if stopped and not partial_hit:
-            # Pure stop-out: entire position lost at stop
-            exit_price = stop_price
-            pnl = (entry_price - exit_price) * remaining
-            pnl_pct = (entry_price - exit_price) / entry_price
+        if stopped and partial_hit and self.config.adverse_fill:
+            # AMBIGUOUS BAR: both stop and target reachable from daily OHLCV.
+            # Use close as heuristic: close < open → stock dropped (target likely first),
+            # close > open → stock rallied (stop likely first).
+            # Fallback: random with adverse_fill_pct probability of stop-first.
+            import random
+            if day_close < day_open:
+                # Bearish close → more likely target hit first, then bounced to stop
+                assume_stop = random.random() < (self.config.adverse_fill_pct * 0.5)
+            elif day_close > entry_price:
+                # Close above entry → stock held up, likely stop hit first
+                assume_stop = random.random() < min(1.0, self.config.adverse_fill_pct * 1.5)
+            else:
+                # Neutral → use base probability
+                assume_stop = random.random() < self.config.adverse_fill_pct
+
+            if assume_stop:
+                # Adverse: stop hit first → full loss
+                exit_price = stop_price * (1 + slip)
+                pnl = (entry_price - exit_price) * remaining - borrow_cost
+                pnl_pct = pnl / (entry_price * remaining) if remaining > 0 else 0
+                day_trades.append(TradeRecord(
+                    symbol=sym, entry_price=entry_price, exit_price=exit_price,
+                    shares=remaining, pnl=pnl, pnl_pct=pnl_pct,
+                    entry_time=entry_time_str, exit_time=exit_stop_str,
+                    exit_reason='stop_adverse', holding_minutes=hold_stop,
+                ))
+                engine._record_trade(day_trades[-1])
+                total_pnl += pnl
+                remaining = 0
+                log.append({
+                    'level': 'stop',
+                    'msg': (f'{sym} {gap["date"]}: STOP (adverse) {shares}sh @ ${exit_price:.2f} '
+                            f'| P&L ${pnl:.0f} ({pnl_pct:+.1%}) '
+                            f'| ambiguous bar — resolved as stop first'),
+                    'data': {'pnl': pnl, 'reason': 'stop_adverse'}
+                })
+            else:
+                # Favorable: target hit first → treat as partial_hit path
+                # (fall through to the partial_hit branch below)
+                stopped = False
+
+        elif stopped:
+            # Pure stop-out: entire position lost at stop (+slippage)
+            exit_price = stop_price * (1 + slip)
+            pnl = (entry_price - exit_price) * remaining - borrow_cost
+            pnl_pct = pnl / (entry_price * remaining) if remaining > 0 else 0
             day_trades.append(TradeRecord(
                 symbol=sym, entry_price=entry_price, exit_price=exit_price,
                 shares=remaining, pnl=pnl, pnl_pct=pnl_pct,
-                entry_time=entry_time_str, exit_time=f'{gap["date"]} stop',
-                exit_reason='stop',
+                entry_time=entry_time_str, exit_time=exit_stop_str,
+                exit_reason='stop', holding_minutes=hold_stop,
             ))
             engine._record_trade(day_trades[-1])
             total_pnl += pnl
@@ -2104,81 +2455,40 @@ class GapFadeBacktester:
                 'data': {'pnl': pnl, 'reason': 'stop'}
             })
 
-        elif stopped and partial_hit:
-            # Partial fill happened before stop (low hit target, then high hit stop)
-            cover_shares = shares // 2
-            if cover_shares > 0:
-                pnl1 = (entry_price - half_target) * cover_shares
-                pnl_pct1 = (entry_price - half_target) / entry_price
-                day_trades.append(TradeRecord(
-                    symbol=sym, entry_price=entry_price, exit_price=half_target,
-                    shares=cover_shares, pnl=pnl1, pnl_pct=pnl_pct1,
-                    entry_time=entry_time_str, exit_time=f'{gap["date"]} partial',
-                    exit_reason='partial',
-                ))
-                engine._record_trade(day_trades[-1])
-                total_pnl += pnl1
-                remaining -= cover_shares
-                log.append({
-                    'level': 'exit',
-                    'msg': (f'{sym} {gap["date"]}: PARTIAL {cover_shares}sh @ ${half_target:.2f} '
-                            f'| P&L +${pnl1:.0f} ({pnl_pct1:+.1%})'),
-                    'data': {'pnl': pnl1, 'reason': 'partial'}
-                })
-
-            # Remaining stopped at breakeven (stop moved to entry after partial)
-            if remaining > 0:
-                be_price = entry_price  # stop moved to breakeven
-                pnl2 = (entry_price - be_price) * remaining
-                day_trades.append(TradeRecord(
-                    symbol=sym, entry_price=entry_price, exit_price=be_price,
-                    shares=remaining, pnl=pnl2, pnl_pct=0.0,
-                    entry_time=entry_time_str, exit_time=f'{gap["date"]} stop',
-                    exit_reason='stop',
-                ))
-                engine._record_trade(day_trades[-1])
-                total_pnl += pnl2
-                be_shares = remaining
-                remaining = 0
-                log.append({
-                    'level': 'stop',
-                    'msg': (f'{sym} {gap["date"]}: STOP (BE) {be_shares}sh @ ${be_price:.2f} '
-                            f'| P&L $0'),
-                    'data': {'pnl': 0, 'reason': 'stop_be'}
-                })
-
         elif partial_hit:
             # Partial fill, no stop hit
-            cover_shares = shares // 2
+            cover_shares = max(1, int(shares * self.config.partial_cover_frac))
             if cover_shares > 0:
-                pnl1 = (entry_price - half_target) * cover_shares
-                pnl_pct1 = (entry_price - half_target) / entry_price
+                exit_p = half_target * (1 + slip)
+                pnl1 = (entry_price - exit_p) * cover_shares - (borrow_cost * cover_shares / shares)
+                pnl_pct1 = pnl1 / (entry_price * cover_shares) if cover_shares > 0 else 0
                 day_trades.append(TradeRecord(
-                    symbol=sym, entry_price=entry_price, exit_price=half_target,
+                    symbol=sym, entry_price=entry_price, exit_price=exit_p,
                     shares=cover_shares, pnl=pnl1, pnl_pct=pnl_pct1,
-                    entry_time=entry_time_str, exit_time=f'{gap["date"]} partial',
-                    exit_reason='partial',
+                    entry_time=entry_time_str, exit_time=exit_partial_str,
+                    exit_reason='partial', holding_minutes=hold_partial,
                 ))
                 engine._record_trade(day_trades[-1])
                 total_pnl += pnl1
                 remaining -= cover_shares
                 log.append({
                     'level': 'exit',
-                    'msg': (f'{sym} {gap["date"]}: PARTIAL {cover_shares}sh @ ${half_target:.2f} '
-                            f'| P&L +${pnl1:.0f} ({pnl_pct1:+.1%})'),
+                    'msg': (f'{sym} {gap["date"]}: PARTIAL {cover_shares}sh @ ${exit_p:.2f} '
+                            f'| P&L ${pnl1:+.0f} ({pnl_pct1:+.1%})'),
                     'data': {'pnl': pnl1, 'reason': 'partial'}
                 })
 
             # Check if remaining hits full target
+            remaining_borrow = borrow_cost * remaining / shares if shares > 0 else 0
             if remaining > 0 and full_hit:
-                exit_p = full_target
-                pnl2 = (entry_price - exit_p) * remaining
-                pnl_pct2 = (entry_price - exit_p) / entry_price
+                exit_p = full_target * (1 + slip)
+                pnl2 = (entry_price - exit_p) * remaining - remaining_borrow
+                pnl_pct2 = pnl2 / (entry_price * remaining) if remaining > 0 else 0
                 day_trades.append(TradeRecord(
                     symbol=sym, entry_price=entry_price, exit_price=exit_p,
                     shares=remaining, pnl=pnl2, pnl_pct=pnl_pct2,
-                    entry_time=entry_time_str, exit_time=f'{gap["date"]} full',
-                    exit_reason='full_target',
+                    entry_time=entry_time_str, exit_time=exit_full_str,
+                    exit_reason='full_target', holding_minutes=hold_full,
                 ))
                 engine._record_trade(day_trades[-1])
                 total_pnl += pnl2
@@ -2186,46 +2496,48 @@ class GapFadeBacktester:
                 log.append({
                     'level': 'exit',
                     'msg': (f'{sym} {gap["date"]}: FULL TARGET {day_trades[-1].shares}sh @ ${exit_p:.2f} '
-                            f'| P&L +${pnl2:.0f} ({pnl_pct2:+.1%})'),
+                            f'| P&L ${pnl2:+.0f} ({pnl_pct2:+.1%})'),
                     'data': {'pnl': pnl2, 'reason': 'full_target'}
                 })
             elif remaining > 0:
                 # Exit at close (time exit)
-                pnl2 = (entry_price - day_close) * remaining
-                pnl_pct2 = (entry_price - day_close) / entry_price
+                exit_p = day_close * (1 + slip)
+                pnl2 = (entry_price - exit_p) * remaining - remaining_borrow
+                pnl_pct2 = pnl2 / (entry_price * remaining) if remaining > 0 else 0
                 day_trades.append(TradeRecord(
-                    symbol=sym, entry_price=entry_price, exit_price=day_close,
+                    symbol=sym, entry_price=entry_price, exit_price=exit_p,
                     shares=remaining, pnl=pnl2, pnl_pct=pnl_pct2,
-                    entry_time=entry_time_str, exit_time=f'{gap["date"]} close',
-                    exit_reason='time_exit',
+                    entry_time=entry_time_str, exit_time=exit_close_str,
+                    exit_reason='time_exit', holding_minutes=hold_close,
                 ))
                 engine._record_trade(day_trades[-1])
                 total_pnl += pnl2
                 remaining = 0
                 log.append({
                     'level': 'exit' if pnl2 >= 0 else 'stop',
-                    'msg': (f'{sym} {gap["date"]}: TIME EXIT {day_trades[-1].shares}sh @ ${day_close:.2f} '
-                            f'| P&L ${pnl2:.0f} ({pnl_pct2:+.1%})'),
+                    'msg': (f'{sym} {gap["date"]}: TIME EXIT {day_trades[-1].shares}sh @ ${exit_p:.2f} '
+                            f'| P&L ${pnl2:+.0f} ({pnl_pct2:+.1%})'),
                     'data': {'pnl': pnl2, 'reason': 'time_exit'}
                 })
 
         else:
             # No targets hit, no stop — exit at close
-            pnl = (entry_price - day_close) * remaining
-            pnl_pct = (entry_price - day_close) / entry_price
+            exit_p = day_close * (1 + slip)
+            pnl = (entry_price - exit_p) * remaining - borrow_cost
+            pnl_pct = pnl / (entry_price * remaining) if remaining > 0 else 0
             day_trades.append(TradeRecord(
-                symbol=sym, entry_price=entry_price, exit_price=day_close,
+                symbol=sym, entry_price=entry_price, exit_price=exit_p,
                 shares=remaining, pnl=pnl, pnl_pct=pnl_pct,
-                entry_time=entry_time_str, exit_time=f'{gap["date"]} close',
-                exit_reason='time_exit',
+                entry_time=entry_time_str, exit_time=exit_close_str,
+                exit_reason='time_exit', holding_minutes=hold_close,
             ))
             engine._record_trade(day_trades[-1])
             total_pnl += pnl
             remaining = 0
             log.append({
                 'level': 'exit' if pnl >= 0 else 'stop',
-                'msg': (f'{sym} {gap["date"]}: EXIT @ CLOSE ${day_close:.2f} '
-                        f'| P&L ${pnl:.0f} ({pnl_pct:+.1%}) | H ${day_high:.2f} L ${day_low:.2f}'),
+                'msg': (f'{sym} {gap["date"]}: EXIT @ CLOSE ${exit_p:.2f} '
+                        f'| P&L ${pnl:+.0f} ({pnl_pct:+.1%}) | H ${day_high:.2f} L ${day_low:.2f}'),
                 'data': {'pnl': pnl, 'reason': 'time_exit'}
             })
 
@@ -2392,8 +2704,22 @@ class GapFadeBacktester:
                 })
             day_trades.extend(remaining)
 
-        # Summary line for this gap day
+        # Deduct borrow cost (annualized rate prorated to 1 day)
         total_pnl = sum(t.pnl for t in day_trades)
+        if engine.backtest_mode and day_trades and self.config.borrow_rate_annual > 0:
+            # Use first trade's entry for notional estimate
+            notional = sum(t.shares * t.entry_price for t in day_trades)
+            borrow_cost = notional * (self.config.borrow_rate_annual / 252)
+            if borrow_cost > 0.01:
+                engine.equity -= borrow_cost
+                total_pnl -= borrow_cost
+                log.append({
+                    'level': 'info',
+                    'msg': f'{sym} {gap["date"]}: borrow cost ${borrow_cost:.2f} '
+                           f'(${notional:,.0f} × {self.config.borrow_rate_annual:.1%}/252)',
+                })
+
+        # Summary line for this gap day
         pnl_sign = '+' if total_pnl >= 0 else ''
         log.append({
             'level': 'summary',
@@ -2525,12 +2851,21 @@ class GapFadeLiveTrader:
                     await asyncio.sleep(300)
                     continue
 
-                # After hours — save state and sleep
+                # After hours — save state and sleep until pre-market
                 if now.hour >= 16:
                     self._save_state()
                     self.engine.reset_daily()
-                    self.status = 'scanning'
+                    self.status = 'waiting'
+                    await broadcast({'type': 'live_status', 'status': 'waiting'})
+                    self._add_message('info', 'After hours — sleeping until 7:00 AM ET')
                     await asyncio.sleep(3600)
+                    continue
+
+                # Before pre-market — sleep
+                if now.hour < 7:
+                    self.status = 'waiting'
+                    await broadcast({'type': 'live_status', 'status': 'waiting'})
+                    await asyncio.sleep(600)
                     continue
 
                 await asyncio.sleep(30)
@@ -2625,12 +2960,22 @@ class GapFadeLiveTrader:
                 continue
 
             # Place actual order on Alpaca
-            result = alpaca_place_order(candidate.symbol, pos.shares, 'sell')
+            if self.config.limit_orders_only:
+                # Limit sell: slightly below current price to get filled quickly
+                limit_px = round(entry_price * (1 - self.config.limit_offset_pct), 2)
+                result = alpaca_place_order(candidate.symbol, pos.shares, 'sell',
+                                           order_type='limit', limit_price=limit_px)
+                order_label = f'LIMIT @ ${limit_px:.2f}'
+            else:
+                result = alpaca_place_order(candidate.symbol, pos.shares, 'sell')
+                order_label = 'MARKET'
             if 'error' in result:
                 self._add_message('error', f'Order failed for {candidate.symbol}: {result["error"]}')
                 del self.engine.positions[candidate.symbol]
                 continue
 
+            self._add_message('entry', f'SHORT {pos.shares} {candidate.symbol} {order_label} '
+                             f'(gap {candidate.gap_pct:.1%}, score {candidate.score:.0f})')
             symbols_entered.append(candidate.symbol)
             self._add_message('entry', f'SHORT {pos.shares} {candidate.symbol} @ ${entry_price:.2f} '
                             f'(gap {candidate.gap_pct:.1%}, vol {candidate.vol_ratio:.1f}x)', {
@@ -2663,7 +3008,13 @@ class GapFadeLiveTrader:
         closed = self.engine.check_exits(symbol, price, price, now)
         for trade in closed:
             # Place cover order
-            result = alpaca_place_order(symbol, trade.shares, 'buy')
+            if self.config.limit_orders_only:
+                # Limit buy: slightly above current price for quick fill
+                limit_px = round(price * (1 + self.config.limit_offset_pct), 2)
+                alpaca_place_order(symbol, trade.shares, 'buy',
+                                  order_type='limit', limit_price=limit_px)
+            else:
+                alpaca_place_order(symbol, trade.shares, 'buy')
             self._add_message('exit', f'{trade.exit_reason.upper()} {trade.shares} {symbol} '
                             f'@ ${trade.exit_price:.2f} P&L: ${trade.pnl:.2f} ({trade.pnl_pct:.1%})')
 
@@ -2693,7 +3044,12 @@ class GapFadeLiveTrader:
                 if price:
                     closed = self.engine.check_exits(sym, price, price, now)
                     for trade in closed:
-                        alpaca_place_order(sym, trade.shares, 'buy')
+                        if self.config.limit_orders_only:
+                            limit_px = round(price * (1 + self.config.limit_offset_pct), 2)
+                            alpaca_place_order(sym, trade.shares, 'buy',
+                                              order_type='limit', limit_price=limit_px)
+                        else:
+                            alpaca_place_order(sym, trade.shares, 'buy')
                         self._add_message('exit', f'{trade.exit_reason.upper()} {sym} '
                                         f'@ ${trade.exit_price:.2f} P&L: ${trade.pnl:.2f}')
                     if closed:
@@ -2724,6 +3080,7 @@ class GapFadeLiveTrader:
 
         trades = self.engine.force_close_all(prices, 'eod')
         for trade in trades:
+            # EOD: always use market orders to guarantee close before bell
             alpaca_place_order(trade.symbol, trade.shares, 'buy')
             self._add_message('exit', f'EOD close {trade.symbol} @ ${trade.exit_price:.2f} '
                             f'P&L: ${trade.pnl:.2f}')
@@ -2830,16 +3187,56 @@ async def broadcast(msg: dict):
 # =============================================================================
 
 app = FastAPI(title="Gap Fade Strategy", version="1.0")
+_app_start_time = _time.time()
 
 # Singletons
 live_trader = GapFadeLiveTrader()
 backtester = GapFadeBacktester()
 
 
+async def _watchdog_heartbeat():
+    """Ping systemd watchdog every 30s so it knows we're alive."""
+    try:
+        import socket
+        addr = os.environ.get('NOTIFY_SOCKET')
+        if not addr:
+            return  # Not running under systemd watchdog
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        if addr[0] == '@':
+            addr = '\0' + addr[1:]
+        # Send READY on startup
+        sock.sendto(b'READY=1', addr)
+        logger.info("systemd watchdog: READY sent")
+        while True:
+            sock.sendto(b'WATCHDOG=1', addr)
+            await asyncio.sleep(30)
+    except Exception as e:
+        logger.warning(f"Watchdog heartbeat error: {e}")
+
+
+@app.on_event("startup")
+async def on_startup():
+    asyncio.create_task(_watchdog_heartbeat())
+    logger.info("Gap Fade app started")
+
+
 @app.get("/", response_class=HTMLResponse)
 async def dashboard():
     """Serve the embedded HTML dashboard."""
     return HTMLResponse(DASHBOARD_HTML)
+
+
+@app.get("/api/health")
+async def health_check():
+    """Health check for monitoring / watchdog."""
+    now = datetime.now(ET)
+    return {
+        'status': 'ok',
+        'timestamp': now.isoformat(),
+        'trader_status': live_trader.status,
+        'uptime_seconds': int((_time.time() - _app_start_time)),
+        'positions': len(live_trader.engine.positions) if live_trader.engine else 0,
+    }
 
 
 @app.get("/api/state")
@@ -2922,7 +3319,12 @@ async def update_config(body: dict):
                 setattr(config, key, field_type(value))
             except (ValueError, TypeError):
                 pass
+    # Sync capital if changed while idle (no open positions)
+    old_capital = live_trader.engine.config.initial_capital
     live_trader.engine.config = config
+    if config.initial_capital != old_capital and not live_trader.engine.positions:
+        live_trader.engine.equity = config.initial_capital
+        live_trader.engine.peak_equity = config.initial_capital
     # Rebuild scanner when universe config changes
     live_trader.scanner = GapScanner(config)
     return {'config': asdict(config)}
@@ -2941,11 +3343,14 @@ async def run_backtest(body: dict):
 
     # Build config from body
     config = GapFadeConfig()
-    for key in ['gap_threshold', 'vol_ratio_max', 'stop_pct', 'risk_pct',
+    for key in ['gap_threshold', 'max_gap_pct', 'vol_ratio_max', 'stop_pct', 'risk_pct',
                 'kelly_fraction', 'max_positions', 'initial_capital',
                 'daily_loss_limit', 'max_consec_losses', 'max_drawdown',
                 'time_exit_hour', 'min_avg_volume', 'min_price',
-                'max_notional']:
+                'max_notional', 'slippage_pct', 'borrow_rate_annual',
+                'max_pct_adv', 'adverse_fill', 'adverse_fill_pct',
+                'partial_cover_frac', 'bounce_entry_pct',
+                'limit_orders_only', 'limit_offset_pct']:
         if key in body:
             field_type = type(getattr(config, key))
             try:
@@ -3141,6 +3546,71 @@ async def db_update():
     return db.get_stats()
 
 
+@app.post("/api/db/polygon-update")
+async def db_polygon_update(body: dict = {}):
+    """Update DB using Polygon/Massive grouped daily — one API call per day.
+
+    Body params:
+        days: number of trading days to backfill (default 1 = yesterday only)
+    """
+    api_key = _get_polygon_key()
+    if not api_key:
+        return {'error': 'POLYGON_API_KEY or MASSIVE_API_KEY not set in .env'}
+
+    db = get_price_db()
+    days = body.get('days', 1)
+    today = datetime.now(ET)
+    total_inserted = 0
+    days_fetched = 0
+
+    await broadcast({'type': 'db_build_progress', 'progress': 0,
+                     'message': f'Polygon: fetching {days} day(s) of data...'})
+
+    # Walk backwards from yesterday
+    current = today - timedelta(days=1)
+    attempts = 0
+    while days_fetched < days and attempts < days + 10:
+        attempts += 1
+        # Skip weekends
+        if current.weekday() >= 5:
+            current -= timedelta(days=1)
+            continue
+
+        ds = current.strftime('%Y-%m-%d')
+        try:
+            bars = fetch_polygon_grouped_daily(ds)
+            if bars:
+                db.upsert_bars_dicts(bars)
+                total_inserted += len(bars)
+                days_fetched += 1
+
+                pct = min(99, days_fetched / days * 100)
+                await broadcast({'type': 'db_build_progress', 'progress': round(pct, 1),
+                                 'message': f'Polygon: {ds} — {len(bars)} tickers ({days_fetched}/{days} days)'})
+            else:
+                logger.info(f"Polygon: no data for {ds} (holiday?), skipping")
+        except Exception as e:
+            logger.warning(f"Polygon fetch error for {ds}: {e}")
+            await broadcast({'type': 'db_build_progress', 'progress': -1,
+                             'message': f'Polygon error: {e}'})
+            if 'invalid' in str(e).lower() or '403' in str(e):
+                return {'error': str(e)}
+
+        current -= timedelta(days=1)
+
+        # Rate limit: 5 req/min on free tier
+        if days_fetched < days:
+            await asyncio.sleep(13)
+
+    await broadcast({'type': 'db_build_progress', 'progress': 100,
+                     'message': f'Polygon update complete: {total_inserted} rows across {days_fetched} days'})
+
+    stats = db.get_stats()
+    stats['polygon_inserted'] = total_inserted
+    stats['polygon_days'] = days_fetched
+    return stats
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     """WebSocket for live updates."""
@@ -3207,6 +3677,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     text-transform: uppercase;
   }
   .status-stopped { background: #374151; color: var(--muted); }
+  .status-waiting { background: #1e293b; color: #94a3b8; }
   .status-scanning { background: #1e3a5f; color: var(--blue); }
   .status-trading { background: #14532d; color: var(--green); }
   .status-paused { background: #422006; color: var(--yellow); }
@@ -3522,7 +3993,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           <label>Universe:</label>
           <select id="btUniverse" style="background:var(--bg);color:var(--text);border:1px solid var(--border);padding:4px 6px;border-radius:4px;font-size:12px;">
             <option value="study">Study (167)</option>
-            <option value="alpaca">All Tradeable (Alpaca)</option>
+            <option value="alpaca" selected>All Tradeable (Alpaca)</option>
           </select>
         </div>
         <div class="config-item">
@@ -3535,15 +4006,31 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         </div>
         <div class="config-item">
           <label>Gap %:</label>
-          <input type="number" id="btGap" value="5" step="1" style="width:60px;">
+          <input type="number" id="btGap" value="7" step="1" style="width:60px;" title="Min gap % to consider">
+        </div>
+        <div class="config-item">
+          <label>Max Gap %:</label>
+          <input type="number" id="btMaxGap" value="50" step="1" style="width:60px;" title="Filter out mega-gaps above this % (M&A, biotech catalysts)">
         </div>
         <div class="config-item">
           <label>Vol Max:</label>
-          <input type="number" id="btVol" value="1.5" step="0.1" style="width:60px;">
+          <input type="number" id="btVol" value="3.0" step="0.1" style="width:60px;" title="Max volume ratio vs 20d avg">
         </div>
         <div class="config-item">
           <label>Stop %:</label>
-          <input type="number" id="btStop" value="5" step="0.5" style="width:60px;">
+          <input type="number" id="btStop" value="1.5" step="0.5" style="width:60px;" title="Stop loss above entry">
+        </div>
+        <div class="config-item">
+          <label>Max Pos:</label>
+          <input type="number" id="btMaxPos" value="3" step="1" style="width:50px;" title="Max simultaneous positions">
+        </div>
+        <div class="config-item">
+          <label>Slip %:</label>
+          <input type="number" id="btSlip" value="0.05" step="0.01" style="width:60px;" title="Slippage per side (0.05=limit orders, 0.15=market orders)">
+        </div>
+        <div class="config-item">
+          <label>Cover frac:</label>
+          <input type="number" id="btCoverFrac" value="0.33" step="0.01" style="width:60px;" title="Fraction to cover at partial target (0=none, 0.33=1/3, 0.5=half)">
         </div>
         <label style="display:flex;align-items:center;gap:4px;cursor:pointer;">
           <input type="checkbox" id="bt1min"> 1-min bars (slow, detailed)
@@ -3593,7 +4080,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           <label>Start:</label>
           <input type="date" id="dbStartDate" style="width:130px;">
           <button class="primary" onclick="buildDB()">Build DB</button>
-          <button onclick="updateDB()">Update (Latest)</button>
+          <button onclick="updateDB()">Update (Alpaca)</button>
+          <button onclick="polygonUpdate(1)" style="background:var(--purple);color:white;">Polygon Update</button>
+          <label style="margin-left:8px;font-size:11px;">Days:</label>
+          <input type="number" id="polygonDays" value="1" min="1" max="30" style="width:50px;">
         </div>
         <div id="dbProgress" style="display:none;margin-top:8px;">
           <div style="color:var(--muted);font-size:11px;" id="dbProgressMsg">Building...</div>
@@ -3863,8 +4353,12 @@ async function runBacktest() {
     start_date: document.getElementById('btStart').value,
     end_date: document.getElementById('btEnd').value,
     gap_threshold: parseFloat(document.getElementById('btGap').value) / 100,
+    max_gap_pct: parseFloat(document.getElementById('btMaxGap').value) / 100,
     vol_ratio_max: parseFloat(document.getElementById('btVol').value),
     stop_pct: parseFloat(document.getElementById('btStop').value) / 100,
+    max_positions: parseInt(document.getElementById('btMaxPos').value),
+    slippage_pct: parseFloat(document.getElementById('btSlip').value) / 100,
+    partial_cover_frac: parseFloat(document.getElementById('btCoverFrac').value),
   };
   if (syms) {
     body.symbols = syms;
@@ -3928,10 +4422,29 @@ async function buildDB() {
 
 async function updateDB() {
   document.getElementById('dbProgress').style.display = 'block';
-  document.getElementById('dbProgressMsg').textContent = 'Starting update...';
+  document.getElementById('dbProgressMsg').textContent = 'Starting Alpaca update...';
   document.getElementById('dbProgressBar').style.width = '0%';
   try {
     await api('db/update', 'POST', {});
+    fetchDbStats();
+  } catch(e) {
+    document.getElementById('dbProgressMsg').textContent = 'Error: ' + e.message;
+  }
+}
+
+async function polygonUpdate(days) {
+  days = days || parseInt(document.getElementById('polygonDays').value) || 1;
+  document.getElementById('dbProgress').style.display = 'block';
+  document.getElementById('dbProgressMsg').textContent = 'Polygon: fetching ' + days + ' day(s)...';
+  document.getElementById('dbProgressBar').style.width = '0%';
+  try {
+    const r = await api('db/polygon-update', 'POST', {days});
+    if (r.error) {
+      document.getElementById('dbProgressMsg').textContent = 'Error: ' + r.error;
+    } else {
+      document.getElementById('dbProgressMsg').textContent =
+        `Polygon done: ${r.polygon_inserted} rows, ${r.polygon_days} days`;
+    }
     fetchDbStats();
   } catch(e) {
     document.getElementById('dbProgressMsg').textContent = 'Error: ' + e.message;
@@ -3943,8 +4456,12 @@ async function saveConfig() {
   const body = {};
   inputs.forEach(inp => {
     const key = inp.dataset.key;
-    const val = inp.type === 'number' ? parseFloat(inp.value) : inp.value;
-    body[key] = val;
+    if (!key) return;
+    if (inp.type === 'checkbox') {
+      body[key] = inp.checked;
+    } else {
+      body[key] = inp.type === 'number' ? parseFloat(inp.value) : inp.value;
+    }
   });
   // Include scan universe settings
   const univRadio = document.querySelector('input[name="scanUniverse"]:checked');
@@ -4107,6 +4624,7 @@ function renderConfig(config) {
   const grid = document.getElementById('configGrid');
   const fields = [
     ['gap_threshold', 'Gap Threshold', 'number'],
+    ['max_gap_pct', 'Max Gap % (0=no cap)', 'number'],
     ['vol_ratio_max', 'Vol Ratio Max', 'number'],
     ['stop_pct', 'Stop %', 'number'],
     ['risk_pct', 'Risk %', 'number'],
@@ -4120,8 +4638,20 @@ function renderConfig(config) {
     ['min_avg_volume', 'Min Avg Volume', 'number'],
     ['min_price', 'Min Price', 'number'],
     ['max_notional', 'Max Notional $', 'number'],
+    ['slippage_pct', 'Slippage % (per side)', 'number'],
+    ['borrow_rate_annual', 'Borrow Rate (annual)', 'number'],
+    ['max_pct_adv', 'Max % of ADV', 'number'],
+    ['limit_offset_pct', 'Limit Offset %', 'number'],
   ];
-  grid.innerHTML = fields.map(([key, label, type]) => `
+  grid.innerHTML = `
+    <div class="config-item" style="grid-column: span 2; display:flex; align-items:center; gap:8px;">
+      <label style="font-weight:600;">Limit Orders Only:</label>
+      <input type="checkbox" id="cfgLimitOrders" data-key="limit_orders_only"
+             ${config.limit_orders_only ? 'checked' : ''}
+             style="width:18px;height:18px;">
+      <span style="font-size:11px;color:var(--muted);">Less slippage, better fills. Disable for guaranteed execution.</span>
+    </div>
+  ` + fields.map(([key, label, type]) => `
     <div class="config-item">
       <label>${label}:</label>
       <input type="${type}" data-key="${key}" value="${config[key] !== undefined ? config[key] : ''}" step="any">
@@ -4143,12 +4673,21 @@ function renderBacktestResults(r) {
     return;
   }
 
+  const warnings = r.warnings || [];
+  const realism = r.realism || {};
   const html = `
+    ${warnings.length > 0 ? `<div style="margin-bottom:10px;padding:10px 14px;background:rgba(234,179,8,0.10);border:1px solid rgba(234,179,8,0.3);border-radius:6px;font-size:12px;color:var(--yellow);">
+      <strong>Warnings:</strong><br>${warnings.map(w => '&bull; ' + w).join('<br>')}
+    </div>` : ''}
     <div style="margin-bottom:10px;padding:8px 12px;background:rgba(168,85,247,0.08);border-radius:6px;font-size:12px;color:var(--muted);">
       Funnel: <span style="color:var(--text)">${r.raw_gaps||'?'}</span> raw gaps
       &rarr; <span style="color:var(--text)">${r.gap_days_found||0}</span> vol-filtered
       ${r.bars_missing ? `&rarr; <span style="color:var(--orange)">${r.bars_missing} no 1m data</span>` : ''}
       &rarr; <span style="color:var(--green)">${r.gap_days_traded||0}</span> traded
+      &nbsp;|&nbsp; Slippage: ${((realism.slippage_pct||0)*100).toFixed(2)}%
+      &nbsp;|&nbsp; Borrow: ${((realism.borrow_rate_annual||0)*100).toFixed(1)}%/yr
+      &nbsp;|&nbsp; ADV cap: ${((realism.max_pct_adv||0)*100).toFixed(0)}%
+      &nbsp;|&nbsp; Adverse fill: ${realism.adverse_fill ? ((realism.adverse_fill_pct||1)*100).toFixed(0)+'%' : 'OFF'}
     </div>
     <div class="stats-grid" style="margin-bottom:12px;">
       <div class="stat"><div class="label">Trades</div><div class="value">${r.total_trades||0}</div></div>
@@ -4157,6 +4696,9 @@ function renderBacktestResults(r) {
       <div class="stat"><div class="label">Return</div><div class="value ${(r.return_pct||0)>=0?'green':'red'}">${(r.return_pct||0).toFixed(1)}%</div></div>
       <div class="stat"><div class="label">Profit Factor</div><div class="value">${(r.profit_factor||0).toFixed(2)}</div></div>
       <div class="stat"><div class="label">Max DD</div><div class="value red">${(r.max_drawdown_pct||0).toFixed(1)}%</div></div>
+      <div class="stat"><div class="label">Avg Win</div><div class="value green">$${(r.avg_win||0).toFixed(0)}</div></div>
+      <div class="stat"><div class="label">Avg Loss</div><div class="value red">$${(r.avg_loss||0).toFixed(0)}</div></div>
+      <div class="stat"><div class="label">Sharpe</div><div class="value">${(r.sharpe||0).toFixed(2)}</div></div>
       <div class="stat"><div class="label">Gap Days</div><div class="value">${r.gap_days_found||0}</div></div>
       <div class="stat"><div class="label">Traded</div><div class="value">${r.gap_days_traded||0}</div></div>
     </div>
@@ -4346,6 +4888,13 @@ if __name__ == '__main__':
     else:
         print("  Alpaca:   NOT configured — set ALPACA_API_KEY + ALPACA_SECRET_KEY")
         print("            (Backtesting still works, live trading requires credentials)")
+
+    # Check Polygon/Massive credentials
+    poly_key = _get_polygon_key()
+    if poly_key:
+        print("  Polygon:  Configured (grouped daily for bulk DB updates)")
+    else:
+        print("  Polygon:  NOT configured — set POLYGON_API_KEY in .env (optional)")
     print()
 
     uvicorn.run(app, host="0.0.0.0", port=8002, log_level="info")
