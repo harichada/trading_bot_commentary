@@ -4559,7 +4559,15 @@ async def broadcast(msg: dict):
 # SECTION 9: FASTAPI ENDPOINTS
 # =============================================================================
 
-app = FastAPI(title="Gap Fade Strategy", version="1.0")
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def lifespan(app):
+    asyncio.create_task(_watchdog_heartbeat())
+    logger.info("Gap Fade app started")
+    yield
+
+app = FastAPI(title="Gap Fade Strategy", version="1.0", lifespan=lifespan)
 _app_start_time = _time.time()
 
 # ---------------------------------------------------------------------------
@@ -4677,12 +4685,6 @@ async def _watchdog_heartbeat():
             await asyncio.sleep(30)
     except Exception as e:
         logger.warning(f"Watchdog heartbeat error: {e}")
-
-
-@app.on_event("startup")
-async def on_startup():
-    asyncio.create_task(_watchdog_heartbeat())
-    logger.info("Gap Fade app started")
 
 
 @app.get("/", response_class=HTMLResponse)
