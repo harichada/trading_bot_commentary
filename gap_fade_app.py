@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Gap Fade Trading Strategy — Standalone FastAPI App (port 8002)
+Gap Fade Trading Strategy — Standalone FastAPI App
 
 Data-driven gap fade strategy: short gap-ups that occur on below-average volume.
 Study of 3,754 Alpaca SIP events (5 years, 156 stocks) showed gap-ups on low volume
@@ -44,8 +44,8 @@ import aiohttp
 import feedparser
 import yfinance as yf
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
+from fastapi.responses import HTMLResponse, JSONResponse
 import uvicorn
 
 logger = logging.getLogger('GapFadeApp')
@@ -412,10 +412,30 @@ def alpaca_check_shortable(symbol: str) -> Tuple[bool, bool]:
     return False, False
 
 
+@dataclass
+class OrderResult:
+    """Structured result from order submission + fill verification."""
+    order_id: str = ''
+    status: str = ''               # 'filled', 'partially_filled', 'rejected', 'cancelled', 'error', 'timeout'
+    filled_qty: int = 0
+    filled_avg_price: float = 0.0
+    symbol: str = ''
+    side: str = ''
+    error: str = ''
+
+    @property
+    def is_filled(self) -> bool:
+        return self.status == 'filled'
+
+    @property
+    def is_error(self) -> bool:
+        return self.status in ('error', 'rejected', 'cancelled', 'timeout')
+
+
 def alpaca_place_order(symbol: str, qty: int, side: str, order_type: str = 'market',
                        limit_price: float = None, stop_price: float = None,
                        time_in_force: str = 'day') -> dict:
-    """Place an order on Alpaca paper account.
+    """Place an order on Alpaca paper account (sync, for backward compat).
     side: 'sell' for short entry, 'buy' for cover (buy-to-cover).
     """
     cfg = _get_alpaca_config()
@@ -454,8 +474,128 @@ def alpaca_place_order(symbol: str, qty: int, side: str, order_type: str = 'mark
         return {'error': str(e)}
 
 
+def alpaca_get_order(order_id: str) -> Optional[dict]:
+    """Get order status from Alpaca by order ID."""
+    cfg = _get_alpaca_config()
+    if cfg is None:
+        return None
+    try:
+        resp = requests.get(
+            f'{cfg["base_url"]}/v2/orders/{order_id}',
+            headers=_alpaca_headers(cfg), timeout=10
+        )
+        if resp.status_code == 200:
+            return resp.json()
+        logger.warning(f"Get order {order_id} failed: HTTP {resp.status_code}")
+    except Exception as e:
+        logger.warning(f"Get order {order_id} error: {e}")
+    return None
+
+
+def alpaca_cancel_order(order_id: str) -> bool:
+    """Cancel an open order on Alpaca. Returns True if successfully cancelled."""
+    cfg = _get_alpaca_config()
+    if cfg is None:
+        return False
+    try:
+        resp = requests.delete(
+            f'{cfg["base_url"]}/v2/orders/{order_id}',
+            headers=_alpaca_headers(cfg), timeout=10
+        )
+        return resp.status_code in (200, 204)
+    except Exception as e:
+        logger.warning(f"Cancel order {order_id} error: {e}")
+        return False
+
+
+async def alpaca_submit_and_confirm(
+    symbol: str, qty: int, side: str,
+    order_type: str = 'market', limit_price: float = None,
+    timeout_sec: float = 30.0, poll_interval: float = 0.5,
+) -> OrderResult:
+    """Submit order and poll until filled, rejected, or timeout.
+
+    For limit orders that don't fill within timeout, cancels the order and
+    returns a timeout result. Market orders typically fill within 1-2 polls.
+    """
+    result = OrderResult(symbol=symbol, side=side)
+
+    # Submit order (runs sync HTTP in thread to not block event loop)
+    order_resp = await asyncio.to_thread(
+        alpaca_place_order, symbol, qty, side, order_type, limit_price
+    )
+    if 'error' in order_resp:
+        result.status = 'error'
+        result.error = order_resp['error']
+        logger.error(f"Order submit failed: {side} {qty} {symbol}: {result.error}")
+        return result
+
+    order_id = order_resp.get('id', '')
+    result.order_id = order_id
+    logger.info(f"Order submitted: {side} {qty} {symbol} ({order_type}) id={order_id}")
+
+    # Poll for fill
+    deadline = _time.monotonic() + timeout_sec
+    while _time.monotonic() < deadline:
+        await asyncio.sleep(poll_interval)
+        order_data = await asyncio.to_thread(alpaca_get_order, order_id)
+        if order_data is None:
+            continue
+
+        status = order_data.get('status', '')
+
+        if status == 'filled':
+            result.status = 'filled'
+            result.filled_qty = int(order_data.get('filled_qty', qty))
+            result.filled_avg_price = float(order_data.get('filled_avg_price', 0))
+            logger.info(f"Order FILLED: {side} {result.filled_qty} {symbol} "
+                       f"@ ${result.filled_avg_price:.2f} (id={order_id})")
+            return result
+
+        if status in ('cancelled', 'canceled', 'expired', 'suspended'):
+            result.status = 'cancelled'
+            result.error = f"Order {status}"
+            logger.warning(f"Order {status}: {side} {qty} {symbol} (id={order_id})")
+            return result
+
+        if status == 'rejected':
+            result.status = 'rejected'
+            result.error = f"Rejected: {order_data.get('reject_reason', 'unknown')}"
+            logger.warning(f"Order REJECTED: {side} {qty} {symbol}: {result.error}")
+            return result
+
+        if status == 'partially_filled':
+            result.filled_qty = int(order_data.get('filled_qty', 0))
+            result.filled_avg_price = float(order_data.get('filled_avg_price', 0))
+            # Keep polling — may fully fill
+
+    # Timeout — cancel the order if it hasn't filled
+    logger.warning(f"Order TIMEOUT after {timeout_sec}s: {side} {qty} {symbol} (id={order_id})")
+    order_data = await asyncio.to_thread(alpaca_get_order, order_id)
+    if order_data and order_data.get('status') == 'filled':
+        result.status = 'filled'
+        result.filled_qty = int(order_data.get('filled_qty', qty))
+        result.filled_avg_price = float(order_data.get('filled_avg_price', 0))
+        return result
+
+    # Cancel unfilled order
+    cancelled = await asyncio.to_thread(alpaca_cancel_order, order_id)
+    filled_qty = int(order_data.get('filled_qty', 0)) if order_data else 0
+
+    if filled_qty > 0:
+        result.status = 'partially_filled'
+        result.filled_qty = filled_qty
+        result.filled_avg_price = float(order_data.get('filled_avg_price', 0))
+        result.error = f"Partial fill: {filled_qty}/{qty} shares"
+    else:
+        result.status = 'timeout'
+        result.error = f"No fill after {timeout_sec}s, order cancelled"
+
+    return result
+
+
 def alpaca_get_positions() -> List[dict]:
-    """Get current positions on Alpaca paper account for crash recovery."""
+    """Get current positions on Alpaca paper account."""
     cfg = _get_alpaca_config()
     if cfg is None:
         return []
@@ -471,6 +611,79 @@ def alpaca_get_positions() -> List[dict]:
     except Exception as e:
         logger.warning(f"Get positions error: {e}")
     return []
+
+
+def alpaca_place_stop_order(symbol: str, qty: int, stop_price: float,
+                            limit_offset_pct: float = 0.003,
+                            direction: str = 'short') -> dict:
+    """Place a broker-side stop-limit order.
+
+    For shorts: buy-to-cover stop (side='buy', limit above stop).
+    For longs: sell stop (side='sell', limit below stop).
+
+    Alpaca holds this order server-side and triggers it the instant price
+    hits the stop — no polling delay.
+
+    Returns {'id': order_id, ...} or {'error': ...}.
+    """
+    cfg = _get_alpaca_config()
+    if cfg is None:
+        return {'error': 'Alpaca not configured'}
+
+    if direction == 'long':
+        side = 'sell'
+        limit_price = round(stop_price * (1 - limit_offset_pct), 2)
+    else:
+        side = 'buy'
+        limit_price = round(stop_price * (1 + limit_offset_pct), 2)
+    headers = {**_alpaca_headers(cfg), 'Content-Type': 'application/json'}
+    payload = {
+        'symbol': symbol,
+        'qty': str(qty),
+        'side': side,
+        'type': 'stop_limit',
+        'stop_price': str(round(stop_price, 2)),
+        'limit_price': str(limit_price),
+        'time_in_force': 'day',
+    }
+
+    try:
+        resp = requests.post(
+            f'{cfg["base_url"]}/v2/orders',
+            headers=headers, json=payload, timeout=10
+        )
+        if resp.status_code in (200, 201):
+            data = resp.json()
+            logger.info(f"Broker stop placed: {side.upper()} {qty} {symbol} stop=${stop_price:.2f} "
+                       f"limit=${limit_price:.2f} -> id={data.get('id', '?')}")
+            return {'id': data.get('id'), 'status': data.get('status'),
+                    'symbol': symbol, 'stop_price': stop_price, 'limit_price': limit_price}
+        else:
+            err = resp.text[:200]
+            logger.warning(f"Broker stop failed ({resp.status_code}): {err}")
+            return {'error': f"HTTP {resp.status_code}: {err}"}
+    except Exception as e:
+        logger.warning(f"Broker stop error: {e}")
+        return {'error': str(e)}
+
+
+async def alpaca_replace_stop_order(old_order_id: str, symbol: str, qty: int,
+                                     new_stop_price: float,
+                                     limit_offset_pct: float = 0.003) -> dict:
+    """Cancel old stop order and place a new one at a different price.
+
+    Used when stop moves to breakeven after partial fill.
+    Returns the new order result dict.
+    """
+    # Cancel old
+    if old_order_id:
+        await asyncio.to_thread(alpaca_cancel_order, old_order_id)
+
+    # Place new
+    result = await asyncio.to_thread(
+        alpaca_place_stop_order, symbol, qty, new_stop_price, limit_offset_pct
+    )
+    return result
 
 
 def alpaca_get_account() -> Optional[dict]:
@@ -712,6 +925,8 @@ class PriceDB:
             ON daily_bars (date, symbol)
         ''')
         self._conn.commit()
+        # Update query planner statistics (fast on subsequent runs)
+        self._conn.execute('ANALYZE daily_bars')
 
     def upsert_bars(self, symbol: str, df: pd.DataFrame):
         """Insert or replace bars for a single symbol from a DataFrame."""
@@ -860,26 +1075,59 @@ class PriceDB:
     def scan_gaps_sql(self, symbols: List[str], start: str, end: str,
                       gap_threshold: float = 0.05, max_gap_pct: float = None,
                       min_price: float = 3.0,
-                      min_avg_volume: int = 5000, vol_window: int = 20) -> List[dict]:
-        """Find gap-up days using pure SQL with window functions.
+                      min_avg_volume: int = 5000, vol_window: int = 20,
+                      gap_down_config: dict = None) -> List[dict]:
+        """Find gap days using pure SQL with window functions.
 
-        ~50x faster than loading individual DataFrames.  Uses LAG() for
-        prev_close and prev_volume (no look-ahead), and AVG() window for
-        rolling average volume.
+        Uses LAG() for prev_close and prev_volume (no look-ahead), and AVG()
+        window for rolling average volume.
+
+        For large universes (>2000 symbols), runs a single date-range scan
+        instead of chunked IN-clause queries — ~15x faster on 12K+ symbols.
+
+        gap_down_config: if set, also scan for gap-downs with keys:
+            threshold (positive float), max_pct (positive float), vol_ratio_max (float)
 
         Returns list of gap dicts ready for backtester simulation.
         """
         # Fetch extra days before start for rolling avg volume warmup
         adj_start = (datetime.strptime(start, '%Y-%m-%d') - timedelta(days=60)).strftime('%Y-%m-%d')
 
-        all_gaps = []
-        chunk_size = 500
-        for i in range(0, len(symbols), chunk_size):
-            chunk = symbols[i:i + chunk_size]
-            placeholders = ','.join('?' * len(chunk))
+        # --- Build gap filter clauses (shared by both paths) ---
+        gap_up_where = "(open - prev_close) / prev_close >= ?"
+        gap_up_params = [gap_threshold]
+        if max_gap_pct:
+            gap_up_where += " AND (open - prev_close) / prev_close <= ?"
+            gap_up_params.append(max_gap_pct)
 
-            # Window functions: LAG for prev close/volume, AVG for rolling avg vol
-            # All computed on ordered partitions — no look-ahead
+        if gap_down_config:
+            gd_thresh = gap_down_config.get('threshold', 0.05)
+            gd_max = gap_down_config.get('max_pct', 0.50)
+            gap_filter = f"""
+            (
+                ({gap_up_where})
+                OR
+                (
+                    (prev_close - open) / prev_close >= ?
+                    AND (prev_close - open) / prev_close <= ?
+                )
+            )
+            """
+            gap_params = gap_up_params + [gd_thresh, gd_max]
+        else:
+            gap_filter = gap_up_where
+            gap_params = gap_up_params
+
+        # --- Choose scan strategy based on universe size ---
+        # Large universe (>2000): single pass over date range, no IN clause
+        # Small universe: chunked IN-clause for targeted scans
+        use_full_scan = len(symbols) > 2000
+
+        all_gaps = []
+
+        if use_full_scan:
+            # Build a set for post-filter (faster than 12K-element IN clause)
+            symbol_set = set(symbols)
             sql = f"""
             WITH w AS (
                 SELECT symbol, date, open, high, low, close, volume,
@@ -890,7 +1138,7 @@ class PriceDB:
                            ROWS BETWEEN {vol_window} PRECEDING AND 1 PRECEDING
                        ) AS avg_vol
                 FROM daily_bars
-                WHERE symbol IN ({placeholders}) AND date >= ? AND date <= ?
+                WHERE date >= ? AND date <= ?
             )
             SELECT symbol, date, open, high, low, close, volume,
                    prev_close, prev_volume, avg_vol
@@ -898,40 +1146,76 @@ class PriceDB:
             WHERE date >= ?
               AND prev_close > 0
               AND open > 0
-              AND (open - prev_close) / prev_close >= ?
-              {f'AND (open - prev_close) / prev_close <= ?' if max_gap_pct else ''}
+              AND {gap_filter}
               AND open >= ?
               AND avg_vol >= ?
             ORDER BY date, symbol
             """
-            params = chunk + [adj_start, end, start, gap_threshold]
-            if max_gap_pct:
-                params.append(max_gap_pct)
-            params.extend([min_price, min_avg_volume])
+            params = [adj_start, end, start] + gap_params + [min_price, min_avg_volume]
             cur = self._conn.execute(sql, params)
-
             for row in cur:
-                sym, date_str, bar_open, bar_high, bar_low, bar_close, volume, \
-                    prev_close, prev_volume, avg_vol = row
-                gap_pct = (bar_open - prev_close) / prev_close
-                # vol_ratio from PREVIOUS day's volume (no look-ahead)
-                vol_ratio = prev_volume / avg_vol if avg_vol and avg_vol > 0 else 1.0
-
-                all_gaps.append({
-                    'date': date_str,
-                    'symbol': sym,
-                    'open': float(bar_open),
-                    'high': float(bar_high),
-                    'low': float(bar_low),
-                    'close': float(bar_close),
-                    'prev_close': float(prev_close),
-                    'gap_pct': round(gap_pct, 4),
-                    'volume': int(volume),
-                    'avg_vol': int(avg_vol) if avg_vol else 0,
-                    'vol_ratio': round(vol_ratio, 2),
-                })
+                sym = row[0]
+                if sym not in symbol_set:
+                    continue
+                all_gaps.append(self._gap_row_to_dict(row))
+        else:
+            # Chunked approach for small symbol lists
+            chunk_size = 500
+            for i in range(0, len(symbols), chunk_size):
+                chunk = symbols[i:i + chunk_size]
+                placeholders = ','.join('?' * len(chunk))
+                sql = f"""
+                WITH w AS (
+                    SELECT symbol, date, open, high, low, close, volume,
+                           LAG(close)  OVER (PARTITION BY symbol ORDER BY date) AS prev_close,
+                           LAG(volume) OVER (PARTITION BY symbol ORDER BY date) AS prev_volume,
+                           AVG(volume) OVER (
+                               PARTITION BY symbol ORDER BY date
+                               ROWS BETWEEN {vol_window} PRECEDING AND 1 PRECEDING
+                           ) AS avg_vol
+                    FROM daily_bars
+                    WHERE symbol IN ({placeholders}) AND date >= ? AND date <= ?
+                )
+                SELECT symbol, date, open, high, low, close, volume,
+                       prev_close, prev_volume, avg_vol
+                FROM w
+                WHERE date >= ?
+                  AND prev_close > 0
+                  AND open > 0
+                  AND {gap_filter}
+                  AND open >= ?
+                  AND avg_vol >= ?
+                ORDER BY date, symbol
+                """
+                params = chunk + [adj_start, end, start] + gap_params + [min_price, min_avg_volume]
+                cur = self._conn.execute(sql, params)
+                for row in cur:
+                    all_gaps.append(self._gap_row_to_dict(row))
 
         return all_gaps
+
+    @staticmethod
+    def _gap_row_to_dict(row) -> dict:
+        """Convert a gap SQL row tuple to a dict."""
+        sym, date_str, bar_open, bar_high, bar_low, bar_close, volume, \
+            prev_close, prev_volume, avg_vol = row
+        gap_pct = (bar_open - prev_close) / prev_close
+        vol_ratio = prev_volume / avg_vol if avg_vol and avg_vol > 0 else 1.0
+        direction = 'short' if gap_pct > 0 else 'long'
+        return {
+            'date': date_str,
+            'symbol': sym,
+            'open': float(bar_open),
+            'high': float(bar_high),
+            'low': float(bar_low),
+            'close': float(bar_close),
+            'prev_close': float(prev_close),
+            'gap_pct': round(gap_pct, 4),
+            'volume': int(volume),
+            'avg_vol': int(avg_vol) if avg_vol else 0,
+            'vol_ratio': round(vol_ratio, 2),
+            'direction': direction,
+        }
 
 
 # Module-level singleton (created lazily)
@@ -995,13 +1279,14 @@ class GapFadeConfig:
     max_gap_pct: float = 0.50          # maximum gap-up % to consider (50%) — filter out M&A/catalyst mega-gaps
     vol_ratio_max: float = 3.0         # only short when gap-day vol < this × avg vol
     min_avg_volume: int = 5_000         # minimum 20d avg daily volume (IEX ~2-3% of consolidated)
-    min_price: float = 3.0             # minimum stock price
+    min_price: float = 10.0            # minimum stock price (low-price stocks have wide spreads/slippage)
 
-    # Position sizing
+    # Position sizing — equal-risk: total risk budget split across all candidates
     initial_capital: float = 25_000
-    risk_pct: float = 0.02             # risk 2% of equity per trade
-    kelly_fraction: float = 0.25       # quarter Kelly
-    max_positions: int = 3             # max concurrent shorts (3 = more capital per trade)
+    risk_pct: float = 0.02             # 2% of equity = total daily risk budget
+    kelly_fraction: float = 0.25       # quarter Kelly (used as risk_pct cap)
+    max_positions: int = 3             # max concurrent shorts
+    thin_day_threshold: int = 10       # if fewer candidates than this, trade ALL of them
 
     # Stops and targets (optimized: 2.5% stop, 1/3 partial cover)
     stop_pct: float = 0.015            # 1.5% stop loss above entry (walk-forward optimal)
@@ -1009,6 +1294,31 @@ class GapFadeConfig:
     partial_cover_frac: float = 0.33   # fraction of position to cover at partial target (0.33 = 1/3)
     bounce_entry_pct: float = 0.0      # wait for bounce above open before shorting (0 = disabled)
     # Full target = prev_close (full gap fill)
+
+    # Adaptive stops — scale stop with gap size
+    adaptive_stops: bool = False        # if True, stop = gap_pct * stop_gap_fraction (clamped)
+    stop_gap_fraction: float = 0.15     # stop = gap_pct * this fraction
+    stop_min_pct: float = 0.01          # floor: 1% minimum stop
+    stop_max_pct: float = 0.05          # ceiling: 5% maximum stop
+
+    # Market regime filter — reduce/block entries on broad rally days
+    regime_filter: bool = False
+    regime_spy_gap_limit: float = 0.01   # SPY gap > 1% → halve max positions
+    regime_spy_block_pct: float = 0.015  # SPY gap > 1.5% → block all entries
+    regime_vix_threshold: float = 25.0   # VIX > 25 → halve max positions
+
+    # Re-entry after stop-out
+    reentry_enabled: bool = False
+    reentry_cooldown_minutes: int = 30   # minutes to wait after stop before re-entry
+    reentry_max_per_symbol: int = 1      # max re-entries per symbol per day
+    reentry_stop_pct: float = 0.01       # tighter stop on re-entry (1%)
+    reentry_trigger_pct: float = 0.0     # price must drop this % below original entry
+
+    # Gap-down fading (longs)
+    trade_gap_downs: bool = False
+    gap_down_threshold: float = 0.05     # minimum gap-down % to consider (stored positive)
+    gap_down_max_pct: float = 0.50       # maximum gap-down %
+    gap_down_vol_ratio_max: float = 3.0  # max vol ratio for gap-down candidates
 
     # Time exits
     time_exit_hour: int = 15           # close remaining by 3:00 PM ET (study edge = full day)
@@ -1044,7 +1354,8 @@ class GapFadeConfig:
 
     # Catalyst detection
     catalyst_enabled: bool = True
-    catalyst_skip_earnings: bool = True    # skip earnings gaps entirely
+    catalyst_skip_earnings: bool = False   # hard-skip earnings gaps (False = penalty only)
+    catalyst_earnings_penalty: float = 40.0  # heavy penalty for earnings gaps (when not hard-skip)
     catalyst_news_penalty: float = 15.0    # score penalty for news-driven gaps
     catalyst_noise_bonus: float = 5.0      # score bonus for clean noise gaps
 
@@ -1063,11 +1374,12 @@ class GapCandidate:
     score: float = 0.0                 # ranking score
     catalyst: str = ''                 # 'earnings', 'fda', 'ma', 'offering', 'upgrade', 'downgrade', ''
     catalyst_detail: str = ''          # headline snippet or earnings info
+    direction: str = 'short'           # 'short' (gap-up fade) or 'long' (gap-down fade)
 
 
 @dataclass
 class GapPosition:
-    """Active short position."""
+    """Active position (short for gap-up fades, long for gap-down fades)."""
     symbol: str
     shares: int
     entry_price: float
@@ -1078,6 +1390,12 @@ class GapPosition:
     partial_filled: bool = False       # has the 50% cover fired?
     entry_time: str = ''
     remaining_shares: int = 0
+    # Live trading state
+    closing: bool = False              # True while a cover order is pending (prevents duplicate exits)
+    entry_order_id: str = ''           # Alpaca order ID for entry
+    entry_fill_price: float = 0.0     # actual fill price from broker
+    stop_order_id: str = ''           # Alpaca broker-side stop order ID
+    direction: str = 'short'          # 'short' or 'long'
 
     def __post_init__(self):
         if self.remaining_shares == 0:
@@ -1111,6 +1429,99 @@ class TradeRecord:
     exit_time: str
     exit_reason: str                   # 'stop', 'partial', 'full_target', 'time_exit', 'eod', 'manual'
     holding_minutes: int = 0
+    side: str = 'short'                # 'short' or 'long' (for gap-down fading)
+
+
+@dataclass
+class StopOutRecord:
+    """Tracks a stopped-out position for potential re-entry."""
+    symbol: str
+    stop_time: datetime
+    original_entry: float
+    prev_close: float
+    gap_pct: float
+    avg_vol_20d: float
+    reentry_count: int = 0
+    direction: str = 'short'
+
+
+@dataclass
+class MarketRegime:
+    """Market context for filtering entries on broad rally/crash days."""
+    spy_gap_pct: float = 0.0
+    vix_level: float = 20.0
+    position_reduction: int = 0    # 0=none, -999=block all entries
+    note: str = ''
+
+
+def fetch_market_regime_backtest(date_str: str, spy_data: Dict[str, dict],
+                                  config: GapFadeConfig) -> Optional[MarketRegime]:
+    """Compute market regime from pre-cached SPY daily bars for backtest.
+
+    spy_data: dict keyed by date_str → {'prev_close': float, 'open': float}
+    """
+    if not config.regime_filter:
+        return None
+
+    spy = spy_data.get(date_str)
+    if not spy or spy['prev_close'] <= 0:
+        return None
+
+    spy_gap = (spy['open'] - spy['prev_close']) / spy['prev_close']
+    regime = MarketRegime(spy_gap_pct=spy_gap)
+
+    if abs(spy_gap) >= config.regime_spy_block_pct:
+        regime.position_reduction = -999
+        regime.note = f'SPY gap {spy_gap:+.1%} >= block threshold {config.regime_spy_block_pct:.1%}'
+    elif abs(spy_gap) >= config.regime_spy_gap_limit:
+        regime.position_reduction = -1   # halve
+        regime.note = f'SPY gap {spy_gap:+.1%} >= limit {config.regime_spy_gap_limit:.1%} — halve positions'
+
+    return regime
+
+
+async def fetch_market_regime_live(config: GapFadeConfig) -> Optional[MarketRegime]:
+    """Fetch live market regime from Alpaca snapshot for SPY."""
+    if not config.regime_filter:
+        return None
+
+    try:
+        cfg = _get_alpaca_config()
+        if cfg is None:
+            return None
+
+        headers = {
+            'APCA-API-KEY-ID': cfg['api_key'],
+            'APCA-API-SECRET-KEY': cfg['secret_key'],
+        }
+        async with aiohttp.ClientSession() as session:
+            # SPY snapshot for prev_close vs current
+            url = f'{cfg["data_url"]}/v2/stocks/SPY/snapshot'
+            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                if resp.status != 200:
+                    return None
+                data = await resp.json()
+
+            prev_close = float(data.get('prevDailyBar', {}).get('c', 0))
+            current = float(data.get('latestTrade', {}).get('p', 0))
+
+            if prev_close <= 0 or current <= 0:
+                return None
+
+            spy_gap = (current - prev_close) / prev_close
+            regime = MarketRegime(spy_gap_pct=spy_gap)
+
+            if abs(spy_gap) >= config.regime_spy_block_pct:
+                regime.position_reduction = -999
+                regime.note = f'SPY gap {spy_gap:+.1%} — blocking entries'
+            elif abs(spy_gap) >= config.regime_spy_gap_limit:
+                regime.position_reduction = -1
+                regime.note = f'SPY gap {spy_gap:+.1%} — halving positions'
+
+            return regime
+    except Exception as e:
+        logger.warning(f"fetch_market_regime_live failed: {e}")
+        return None
 
 
 # =============================================================================
@@ -1210,12 +1621,16 @@ async def _fetch_alpaca_news(symbols: List[str]) -> Dict[str, List[str]]:
 
 
 async def _check_earnings_batch(symbols: List[str]) -> Dict[str, str]:
-    """Check if any symbols had earnings in the last 2 days using yfinance.
+    """Check if any symbols reported earnings in the last 2 days using yfinance.
 
-    Returns {symbol: 'earnings_YYYY-MM-DD'} for symbols with recent earnings.
+    Returns {symbol: 'earnings YYYY-MM-DD'} for symbols with RECENT PAST earnings.
+    Only matches earnings dates within the last 2 calendar days — NOT future dates.
+    The old code matched any date >= cutoff, which caught upcoming earnings weeks away
+    and caused nearly every stock to be classified as 'earnings' during earnings season.
     """
     result: Dict[str, str] = {}
-    cutoff = datetime.now(timezone.utc) - timedelta(days=2)
+    now = datetime.now(timezone.utc)
+    cutoff_past = now - timedelta(days=2)
 
     def _check_one(sym: str) -> Optional[Tuple[str, str]]:
         try:
@@ -1226,7 +1641,9 @@ async def _check_earnings_batch(symbols: List[str]) -> Dict[str, str]:
                     dt_aware = dt.to_pydatetime()
                     if dt_aware.tzinfo is None:
                         dt_aware = dt_aware.replace(tzinfo=timezone.utc)
-                    if dt_aware >= cutoff:
+                    # Only match earnings that ALREADY HAPPENED (past 2 days)
+                    # Not future earnings — those don't explain today's gap
+                    if cutoff_past <= dt_aware <= now:
                         return sym, f"earnings {dt_aware.strftime('%Y-%m-%d')}"
         except Exception:
             pass
@@ -1490,13 +1907,23 @@ class GapScanner:
                     continue
 
                 gap_pct = (current_price - prev_close) / prev_close
-                if gap_pct < self.config.gap_threshold:
-                    continue
-                if self.config.max_gap_pct > 0 and gap_pct > self.config.max_gap_pct:
+
+                # Determine direction
+                is_gap_up = gap_pct >= self.config.gap_threshold and \
+                            (self.config.max_gap_pct <= 0 or gap_pct <= self.config.max_gap_pct)
+                is_gap_down = False
+                if self.config.trade_gap_downs and gap_pct < 0:
+                    abs_gap = abs(gap_pct)
+                    is_gap_down = abs_gap >= self.config.gap_down_threshold and \
+                                  abs_gap <= self.config.gap_down_max_pct
+
+                if not is_gap_up and not is_gap_down:
                     continue
 
                 if current_price < self.config.min_price:
                     continue
+
+                direction = 'short' if is_gap_up else 'long'
 
                 # For small universe, check pre-cached volume
                 if not is_large:
@@ -1520,6 +1947,7 @@ class GapScanner:
                     shortable=True,
                     easy_to_borrow=True,
                     score=0.0,
+                    direction=direction,
                 ))
             except Exception as e:
                 logger.debug(f"Snapshot parse error for {sym}: {e}")
@@ -1546,29 +1974,35 @@ class GapScanner:
                 filtered.append(c)
             raw_candidates = filtered
 
-        # Filter by volume ratio
-        candidates = [c for c in raw_candidates if c.vol_ratio <= self.config.vol_ratio_max]
+        # Filter by volume ratio (different limits for gap-ups vs gap-downs)
+        def _vol_ok_live(c):
+            if c.direction == 'long':
+                return c.vol_ratio <= self.config.gap_down_vol_ratio_max
+            return c.vol_ratio <= self.config.vol_ratio_max
+        candidates = [c for c in raw_candidates if _vol_ok_live(c)]
 
-        # Check shortability for top candidates
-        candidates.sort(key=lambda c: c.gap_pct, reverse=True)
-        for c in candidates[:20]:
+        # Check shortability for short candidates (longs don't need shortability)
+        shorts = [c for c in candidates if c.direction == 'short']
+        longs = [c for c in candidates if c.direction == 'long']
+        shorts.sort(key=lambda c: c.gap_pct, reverse=True)
+        for c in shorts[:20]:
             shortable, etb = alpaca_check_shortable(c.symbol)
             c.shortable = shortable
             c.easy_to_borrow = etb
             _time.sleep(0.15)
+        shorts = [c for c in shorts if c.shortable]
+        candidates = shorts + longs
 
-        candidates = [c for c in candidates if c.shortable]
-
-        # Score: bigger gap = higher priority (from data: larger gaps fade more)
+        # Score: bigger abs(gap) = higher priority (larger gaps fade more)
         for c in candidates:
-            c.score = c.gap_pct * 100
+            c.score = abs(c.gap_pct) * 100
             if c.easy_to_borrow:
                 c.score += 5
             if c.vol_ratio < 0.5:
                 c.score += 10  # very low volume = stronger signal
 
         candidates.sort(key=lambda c: c.score, reverse=True)
-        logger.info(f"Scanner found {len(candidates)} gap-up candidates from {universe_size} symbols")
+        logger.info(f"Scanner found {len(candidates)} gap candidates from {universe_size} symbols")
         return candidates, universe_size
 
     def scan_historical(self, symbol: str, start_date: str, end_date: str) -> List[dict]:
@@ -1577,11 +2011,19 @@ class GapScanner:
         adj_start = (datetime.strptime(start_date, '%Y-%m-%d') - timedelta(days=45)).strftime('%Y-%m-%d')
         df = fetch_alpaca_bars(symbol, adj_start, end_date, '1Day', 'iex')
         start_dt = datetime.strptime(start_date, '%Y-%m-%d')
+        gd_cfg = None
+        if self.config.trade_gap_downs:
+            gd_cfg = {
+                'threshold': self.config.gap_down_threshold,
+                'max_pct': self.config.gap_down_max_pct,
+                'vol_ratio_max': self.config.gap_down_vol_ratio_max,
+            }
         return self._find_gaps_in_df(df, symbol, after_date=start_dt,
                                      gap_threshold=self.config.gap_threshold,
                                      max_gap_pct=self.config.max_gap_pct if self.config.max_gap_pct > 0 else None,
                                      min_price=self.config.min_price,
-                                     min_avg_volume=self.config.min_avg_volume)
+                                     min_avg_volume=self.config.min_avg_volume,
+                                     gap_down_config=gd_cfg)
 
     def scan_historical_batch(self, symbols: List[str], start_date: str,
                               end_date: str, progress_callback=None) -> List[dict]:
@@ -1613,12 +2055,20 @@ class GapScanner:
         # Fast SQL gap scan — no DataFrame construction
         logger.info(f"SQL gap scan for {len(symbols)} symbols...")
         t0 = _time.time()
+        gd_cfg = None
+        if self.config.trade_gap_downs:
+            gd_cfg = {
+                'threshold': self.config.gap_down_threshold,
+                'max_pct': self.config.gap_down_max_pct,
+                'vol_ratio_max': self.config.gap_down_vol_ratio_max,
+            }
         all_gaps = db.scan_gaps_sql(
             symbols, start_date, end_date,
             gap_threshold=self.config.gap_threshold,
             max_gap_pct=self.config.max_gap_pct if self.config.max_gap_pct > 0 else None,
             min_price=self.config.min_price,
             min_avg_volume=self.config.min_avg_volume,
+            gap_down_config=gd_cfg,
         )
         elapsed = _time.time() - t0
         logger.info(f"SQL gap scan: {len(all_gaps)} gaps in {elapsed:.1f}s")
@@ -1629,9 +2079,11 @@ class GapScanner:
                          after_date: datetime = None, min_bars: int = 5,
                          gap_threshold: float = None, max_gap_pct: float = None,
                          min_price: float = None,
-                         min_avg_volume: int = None) -> List[dict]:
-        """Extract gap-up days from a DataFrame of daily bars.
+                         min_avg_volume: int = None,
+                         gap_down_config: dict = None) -> List[dict]:
+        """Extract gap days from a DataFrame of daily bars.
 
+        Detects gap-ups (and gap-downs if gap_down_config provided).
         Shared logic for both single-symbol and batch scanning.
         """
         if df is None or len(df) < min_bars:
@@ -1662,10 +2114,20 @@ class GapScanner:
             if prev_c <= 0 or opens[i] <= 0:
                 continue
             gap = (opens[i] - prev_c) / prev_c
-            if gap_threshold is not None and gap < gap_threshold:
+
+            # Determine if this qualifies as a gap-up or gap-down
+            is_gap_up = (gap_threshold is None or gap >= gap_threshold) and \
+                        (max_gap_pct is None or gap <= max_gap_pct) and gap > 0
+            is_gap_down = False
+            if gap_down_config and gap < 0:
+                gd_thresh = gap_down_config.get('threshold', 0.05)
+                gd_max = gap_down_config.get('max_pct', 0.50)
+                abs_gap = abs(gap)
+                is_gap_down = abs_gap >= gd_thresh and abs_gap <= gd_max
+
+            if not is_gap_up and not is_gap_down:
                 continue
-            if max_gap_pct is not None and gap > max_gap_pct:
-                continue
+
             if min_price is not None and opens[i] < min_price:
                 continue
 
@@ -1676,8 +2138,9 @@ class GapScanner:
                 continue
 
             # vol_ratio uses PREVIOUS day's volume (known at pre-market)
-            # NOT the gap day's volume (that's look-ahead bias)
             vol_ratio = volumes[i-1] / prev_avg_vol if prev_avg_vol > 0 else 1.0
+
+            direction = 'short' if gap > 0 else 'long'
 
             gaps.append({
                 'date': dates[i].strftime('%Y-%m-%d') if hasattr(dates[i], 'strftime') else str(dates[i])[:10],
@@ -1691,6 +2154,7 @@ class GapScanner:
                 'volume': int(volumes[i]),
                 'avg_vol': int(prev_avg_vol),
                 'vol_ratio': round(vol_ratio, 2),
+                'direction': direction,
             })
 
         return gaps
@@ -1699,6 +2163,40 @@ class GapScanner:
 # =============================================================================
 # SECTION 5: STRATEGY ENGINE
 # =============================================================================
+
+def compute_adaptive_stop_pct(config: GapFadeConfig, gap_pct: float) -> float:
+    """Compute stop-loss % based on gap size when adaptive_stops is enabled.
+
+    Larger gaps get wider stops (proportional to gap_pct * stop_gap_fraction),
+    clamped to [stop_min_pct, stop_max_pct]. Falls back to fixed config.stop_pct
+    when adaptive_stops is disabled.
+    """
+    if not config.adaptive_stops:
+        return config.stop_pct
+    return max(config.stop_min_pct, min(config.stop_max_pct,
+                                         abs(gap_pct) * config.stop_gap_fraction))
+
+
+def _direction_pnl(direction: str, entry: float, exit_price: float, shares: int) -> float:
+    """Compute P&L for a trade given its direction."""
+    if direction == 'long':
+        return (exit_price - entry) * shares
+    return (entry - exit_price) * shares
+
+
+def _stop_hit(direction: str, bar_high: float, bar_low: float, stop_price: float) -> bool:
+    """Check if stop price was hit given direction."""
+    if direction == 'long':
+        return bar_low <= stop_price  # long stop is below entry
+    return bar_high >= stop_price     # short stop is above entry
+
+
+def _target_hit(direction: str, price: float, target: float) -> bool:
+    """Check if target price was hit given direction."""
+    if direction == 'long':
+        return price >= target        # long target is above entry
+    return price <= target            # short target is below entry
+
 
 class GapFadeEngine:
     """Entry/exit logic, position sizing, and circuit breakers."""
@@ -1715,8 +2213,16 @@ class GapFadeEngine:
         self.daily_stats = DailyStats()
         self.equity = config.initial_capital
         self.peak_equity = config.initial_capital
+        self._stopped_today: Dict[str, StopOutRecord] = {}  # re-entry tracking
         self.trade_log: List[TradeRecord] = []
         self.all_trade_log: List[TradeRecord] = []   # persists across resets
+        self._effective_max_positions: int = config.max_positions  # updated per scan
+
+    def effective_max_positions(self, n_candidates: int) -> int:
+        """If fewer candidates than thin_day_threshold, trade all of them."""
+        if n_candidates < self.config.thin_day_threshold:
+            return n_candidates
+        return self.config.max_positions
 
     def compute_kelly_size(self) -> float:
         """Compute optimal position size using Kelly criterion.
@@ -1730,32 +2236,49 @@ class GapFadeEngine:
         return max(0, kelly * self.config.kelly_fraction)
 
     def compute_position_size(self, entry_price: float, stop_price: float) -> int:
-        """Compute number of shares to short based on risk and Kelly sizing."""
+        """Equal-risk sizing: total risk budget split across all candidate slots.
+
+        shares = (risk_pct * equity / n_candidates) / risk_per_share
+        Risk budget is the sole constraint — no notional cap. This allows
+        the strategy to use margin naturally (intraday shorts get 2:1).
+        """
         risk_per_share = abs(stop_price - entry_price)
         if risk_per_share <= 0:
             return 0
 
-        # Kelly-adjusted risk
-        kelly_risk = self.compute_kelly_size()
-        risk_frac = min(self.config.risk_pct, kelly_risk) if kelly_risk > 0 else self.config.risk_pct
-
-        dollar_risk = self.equity * risk_frac
-        shares = int(dollar_risk / risk_per_share)
-
-        # Per-position cap: divide equity by max_positions so all slots fit without leverage
-        open_count = len(self.positions)
-        slots = max(1, self.config.max_positions - open_count)
-        per_slot_equity = self.equity / max(1, self.config.max_positions)
-        max_shares = int(per_slot_equity / entry_price) if entry_price > 0 else 0
-        shares = min(shares, max_shares)
-
-        # Absolute notional cap (also per-slot)
-        if entry_price > 0 and self.config.max_notional > 0:
-            notional_limit = min(self.config.max_notional, per_slot_equity)
-            max_shares_notional = int(notional_limit / entry_price)
-            shares = min(shares, max_shares_notional)
+        # Risk budget per position = total budget / effective candidates
+        n_slots = max(1, self._effective_max_positions)
+        risk_per_position = self.equity * self.config.risk_pct / n_slots
+        shares = int(risk_per_position / risk_per_share)
 
         return max(0, shares)
+
+    def can_reenter(self, symbol: str, current_price: float,
+                    current_time: datetime) -> Tuple[bool, str]:
+        """Check if a stopped-out symbol qualifies for re-entry."""
+        if not self.config.reentry_enabled:
+            return False, "re-entry disabled"
+        rec = self._stopped_today.get(symbol)
+        if rec is None:
+            return False, "no stop-out record"
+        if rec.reentry_count >= self.config.reentry_max_per_symbol:
+            return False, f"max re-entries ({self.config.reentry_max_per_symbol}) reached"
+        elapsed = (current_time - rec.stop_time).total_seconds() / 60
+        if elapsed < self.config.reentry_cooldown_minutes:
+            return False, f"cooldown ({elapsed:.0f}m < {self.config.reentry_cooldown_minutes}m)"
+        # Trigger: price must move favorably past original entry by trigger_pct
+        if self.config.reentry_trigger_pct > 0:
+            if rec.direction == 'long':
+                # Long re-entry: price must rise above original entry
+                trigger_price = rec.original_entry * (1 + self.config.reentry_trigger_pct)
+                if current_price < trigger_price:
+                    return False, f"price ${current_price:.2f} < trigger ${trigger_price:.2f}"
+            else:
+                # Short re-entry: price must drop below original entry
+                trigger_price = rec.original_entry * (1 - self.config.reentry_trigger_pct)
+                if current_price > trigger_price:
+                    return False, f"price ${current_price:.2f} > trigger ${trigger_price:.2f}"
+        return True, "re-entry eligible"
 
     def should_enter(self, candidate: GapCandidate) -> Tuple[bool, str]:
         """Check if we should enter a new short. Returns (ok, reason)."""
@@ -1767,13 +2290,15 @@ class GapFadeEngine:
         if candidate.symbol in self.positions:
             return False, "already in position"
 
-        # Max positions (applies in both modes)
-        if len(self.positions) >= self.config.max_positions:
-            return False, f"max positions ({self.config.max_positions}) reached"
+        # Max positions (applies in both modes) — uses effective max for thin days
+        eff_max = self._effective_max_positions
+        if len(self.positions) >= eff_max:
+            return False, f"max positions ({eff_max}) reached"
 
-        # Volume ratio check (applies in both modes)
-        if candidate.vol_ratio > self.config.vol_ratio_max:
-            return False, f"vol ratio {candidate.vol_ratio:.1f} > {self.config.vol_ratio_max}"
+        # Volume ratio check (applies in both modes; different limit for gap-downs)
+        vol_limit = self.config.gap_down_vol_ratio_max if candidate.direction == 'long' else self.config.vol_ratio_max
+        if candidate.vol_ratio > vol_limit:
+            return False, f"vol ratio {candidate.vol_ratio:.1f} > {vol_limit}"
 
         # Circuit breakers — skip in backtest mode (measure raw edge)
         if not self.backtest_mode:
@@ -1800,14 +2325,24 @@ class GapFadeEngine:
 
     def open_position(self, candidate: GapCandidate, entry_price: float,
                       entry_time: str) -> Optional[GapPosition]:
-        """Create a new short position. Applies slippage in backtest mode."""
-        # Slippage: short sell gets worse (lower) fill price
+        """Create a new position. Direction-aware: short for gap-ups, long for gap-downs."""
+        direction = candidate.direction
+        # Slippage: adverse fill (short=lower, long=higher)
         slip = self.config.slippage_pct if self.backtest_mode else 0
-        fill_price = entry_price * (1 - slip)
+        if direction == 'long':
+            fill_price = entry_price * (1 + slip)  # long gets worse (higher) fill
+        else:
+            fill_price = entry_price * (1 - slip)  # short gets worse (lower) fill
 
-        stop_price = fill_price * (1 + self.config.stop_pct)
-        half_target = (fill_price + candidate.prev_close) / 2
-        full_target = candidate.prev_close
+        eff_stop_pct = compute_adaptive_stop_pct(self.config, candidate.gap_pct)
+        if direction == 'long':
+            stop_price = fill_price * (1 - eff_stop_pct)  # long stop below entry
+            half_target = (fill_price + candidate.prev_close) / 2
+            full_target = candidate.prev_close  # gap fill = back up to prev close
+        else:
+            stop_price = fill_price * (1 + eff_stop_pct)  # short stop above entry
+            half_target = (fill_price + candidate.prev_close) / 2
+            full_target = candidate.prev_close  # gap fill = back down to prev close
 
         shares = self.compute_position_size(fill_price, stop_price)
         # Liquidity cap: max % of average daily volume
@@ -1827,6 +2362,7 @@ class GapFadeEngine:
             prev_close=candidate.prev_close,
             entry_time=entry_time,
             remaining_shares=shares,
+            direction=direction,
         )
         self.positions[candidate.symbol] = pos
         self.daily_stats.trades += 1
@@ -1851,52 +2387,62 @@ class GapFadeEngine:
         except (ValueError, TypeError):
             holding_min = 0
 
-        # 1. Stop loss — use HIGH for honest stop check
-        if high >= pos.stop_price:
-            exit_price = pos.stop_price * (1 + slip)
-            pnl = (pos.entry_price - exit_price) * pos.remaining_shares
-            pnl_pct = (pos.entry_price - exit_price) / pos.entry_price
-            trades.append(TradeRecord(
-                symbol=symbol, entry_price=pos.entry_price, exit_price=exit_price,
-                shares=pos.remaining_shares, pnl=pnl, pnl_pct=pnl_pct,
+        d = pos.direction
+        # Exit slippage: adverse fill direction depends on position direction
+        # Short: covering = buy, slippage makes fill higher
+        # Long: selling = sell, slippage makes fill lower
+        exit_slip = lambda p: p * (1 + slip) if d == 'short' else p * (1 - slip)
+
+        def _make_trade(exit_px, reason, shares_out):
+            fp = exit_slip(exit_px)
+            pnl = _direction_pnl(d, pos.entry_price, fp, shares_out)
+            pnl_pct = pnl / (pos.entry_price * shares_out) if pos.entry_price > 0 else 0
+            return TradeRecord(
+                symbol=symbol, entry_price=pos.entry_price, exit_price=fp,
+                shares=shares_out, pnl=pnl, pnl_pct=pnl_pct,
                 entry_time=pos.entry_time, exit_time=now_str,
-                exit_reason='stop', holding_minutes=holding_min,
-            ))
-            self._record_trade(trades[-1])
+                exit_reason=reason, holding_minutes=holding_min,
+                side=d,
+            )
+
+        # 1. Stop loss — direction-aware check
+        if _stop_hit(d, high, price, pos.stop_price):
+            trade = _make_trade(pos.stop_price, 'stop', pos.remaining_shares)
+            trades.append(trade)
+            self._record_trade(trade)
+            # Save stop-out record for potential re-entry
+            if self.config.reentry_enabled:
+                prev = self._stopped_today.get(symbol)
+                cnt = (prev.reentry_count if prev else 0)
+                self._stopped_today[symbol] = StopOutRecord(
+                    symbol=symbol, stop_time=current_time,
+                    original_entry=pos.entry_price,
+                    prev_close=pos.prev_close,
+                    gap_pct=0.0,
+                    avg_vol_20d=0.0,
+                    reentry_count=cnt,
+                    direction=d,
+                )
             del self.positions[symbol]
             return trades
 
         # 2. Partial profit — cover fraction when price hits midpoint target
-        if not pos.partial_filled and price <= pos.half_target:
+        if not pos.partial_filled and _target_hit(d, price, pos.half_target):
             cover_shares = max(1, int(pos.remaining_shares * self.config.partial_cover_frac))
             if cover_shares > 0:
-                fill_price = price * (1 + slip)
-                pnl = (pos.entry_price - fill_price) * cover_shares
-                pnl_pct = (pos.entry_price - fill_price) / pos.entry_price
-                trades.append(TradeRecord(
-                    symbol=symbol, entry_price=pos.entry_price, exit_price=fill_price,
-                    shares=cover_shares, pnl=pnl, pnl_pct=pnl_pct,
-                    entry_time=pos.entry_time, exit_time=now_str,
-                    exit_reason='partial', holding_minutes=holding_min,
-                ))
-                self._record_trade(trades[-1])
+                trade = _make_trade(price, 'partial', cover_shares)
+                trades.append(trade)
+                self._record_trade(trade)
                 pos.remaining_shares -= cover_shares
                 pos.partial_filled = True
                 # Move stop to breakeven after partial fill
                 pos.stop_price = pos.entry_price
 
         # 3. Full target — cover remaining when price reaches prev_close
-        if price <= pos.full_target and pos.remaining_shares > 0:
-            fill_price = price * (1 + slip)
-            pnl = (pos.entry_price - fill_price) * pos.remaining_shares
-            pnl_pct = (pos.entry_price - fill_price) / pos.entry_price
-            trades.append(TradeRecord(
-                symbol=symbol, entry_price=pos.entry_price, exit_price=fill_price,
-                shares=pos.remaining_shares, pnl=pnl, pnl_pct=pnl_pct,
-                entry_time=pos.entry_time, exit_time=now_str,
-                exit_reason='full_target', holding_minutes=holding_min,
-            ))
-            self._record_trade(trades[-1])
+        if _target_hit(d, price, pos.full_target) and pos.remaining_shares > 0:
+            trade = _make_trade(price, 'full_target', pos.remaining_shares)
+            trades.append(trade)
+            self._record_trade(trade)
             del self.positions[symbol]
             return trades
 
@@ -1906,16 +2452,9 @@ class GapFadeEngine:
         if (et_hour > self.config.time_exit_hour or
             (et_hour == self.config.time_exit_hour and et_min >= self.config.time_exit_min)):
             if pos.remaining_shares > 0:
-                fill_price = price * (1 + slip)
-                pnl = (pos.entry_price - fill_price) * pos.remaining_shares
-                pnl_pct = (pos.entry_price - fill_price) / pos.entry_price
-                trades.append(TradeRecord(
-                    symbol=symbol, entry_price=pos.entry_price, exit_price=fill_price,
-                    shares=pos.remaining_shares, pnl=pnl, pnl_pct=pnl_pct,
-                    entry_time=pos.entry_time, exit_time=now_str,
-                    exit_reason='time_exit', holding_minutes=holding_min,
-                ))
-                self._record_trade(trades[-1])
+                trade = _make_trade(price, 'time_exit', pos.remaining_shares)
+                trades.append(trade)
+                self._record_trade(trade)
                 del self.positions[symbol]
                 return trades
 
@@ -1923,35 +2462,129 @@ class GapFadeEngine:
         if (et_hour > self.config.eod_exit_hour or
             (et_hour == self.config.eod_exit_hour and et_min >= self.config.eod_exit_min)):
             if pos.remaining_shares > 0:
-                fill_price = price * (1 + slip)
-                pnl = (pos.entry_price - fill_price) * pos.remaining_shares
-                pnl_pct = (pos.entry_price - fill_price) / pos.entry_price
-                trades.append(TradeRecord(
-                    symbol=symbol, entry_price=pos.entry_price, exit_price=fill_price,
-                    shares=pos.remaining_shares, pnl=pnl, pnl_pct=pnl_pct,
-                    entry_time=pos.entry_time, exit_time=now_str,
-                    exit_reason='eod', holding_minutes=holding_min,
-                ))
-                self._record_trade(trades[-1])
+                trade = _make_trade(price, 'eod', pos.remaining_shares)
+                trades.append(trade)
+                self._record_trade(trade)
                 del self.positions[symbol]
                 return trades
 
         return trades
 
+    def evaluate_exit(self, symbol: str, price: float, high: float,
+                      current_time: datetime) -> Optional[dict]:
+        """Evaluate if a position should exit WITHOUT mutating state.
+
+        Returns None if no exit, or a dict with:
+          {'reason': str, 'shares': int, 'is_full_close': bool, 'trigger_price': float}
+
+        The live trader calls this, then places the order, then calls
+        confirm_exit() with the actual fill price to finalize.
+        """
+        if symbol not in self.positions:
+            return None
+
+        pos = self.positions[symbol]
+        if pos.closing:
+            return None  # already has a pending cover order
+
+        et_hour = current_time.hour
+        et_min = current_time.minute
+
+        d = pos.direction
+
+        # 1. Stop loss — direction-aware check
+        if _stop_hit(d, high, price, pos.stop_price):
+            return {'reason': 'stop', 'shares': pos.remaining_shares,
+                    'is_full_close': True, 'trigger_price': pos.stop_price}
+
+        # 2. Partial profit — cover fraction at midpoint target
+        if not pos.partial_filled and _target_hit(d, price, pos.half_target):
+            cover_shares = max(1, int(pos.remaining_shares * self.config.partial_cover_frac))
+            if cover_shares > 0:
+                return {'reason': 'partial', 'shares': cover_shares,
+                        'is_full_close': False, 'trigger_price': price}
+
+        # 3. Full target — cover remaining at prev_close
+        if _target_hit(d, price, pos.full_target) and pos.remaining_shares > 0:
+            return {'reason': 'full_target', 'shares': pos.remaining_shares,
+                    'is_full_close': True, 'trigger_price': price}
+
+        # 4. Time exit
+        if (et_hour > self.config.time_exit_hour or
+            (et_hour == self.config.time_exit_hour and et_min >= self.config.time_exit_min)):
+            if pos.remaining_shares > 0:
+                return {'reason': 'time_exit', 'shares': pos.remaining_shares,
+                        'is_full_close': True, 'trigger_price': price}
+
+        # 5. EOD exit
+        if (et_hour > self.config.eod_exit_hour or
+            (et_hour == self.config.eod_exit_hour and et_min >= self.config.eod_exit_min)):
+            if pos.remaining_shares > 0:
+                return {'reason': 'eod', 'shares': pos.remaining_shares,
+                        'is_full_close': True, 'trigger_price': price}
+
+        return None
+
+    def confirm_exit(self, symbol: str, exit_shares: int, fill_price: float,
+                     reason: str, current_time: datetime) -> Optional[TradeRecord]:
+        """Finalize an exit after the cover order has been confirmed filled.
+
+        Mutates position state and records the trade. Call only after broker
+        confirms the fill.
+        """
+        if symbol not in self.positions:
+            logger.warning(f"confirm_exit: {symbol} not in positions")
+            return None
+
+        pos = self.positions[symbol]
+        now_str = current_time.strftime('%Y-%m-%d %H:%M')
+
+        try:
+            entry_dt = datetime.strptime(pos.entry_time, '%Y-%m-%d %H:%M')
+            holding_min = int((current_time - entry_dt).total_seconds() / 60)
+        except (ValueError, TypeError):
+            holding_min = 0
+
+        # Use actual entry fill price if available, fall back to position entry_price
+        entry_px = pos.entry_fill_price if pos.entry_fill_price > 0 else pos.entry_price
+        pnl = _direction_pnl(pos.direction, entry_px, fill_price, exit_shares)
+        pnl_pct = pnl / (entry_px * exit_shares) if entry_px > 0 else 0
+
+        trade = TradeRecord(
+            symbol=symbol, entry_price=entry_px, exit_price=fill_price,
+            shares=exit_shares, pnl=pnl, pnl_pct=pnl_pct,
+            entry_time=pos.entry_time, exit_time=now_str,
+            exit_reason=reason, holding_minutes=holding_min,
+            side=pos.direction,
+        )
+        self._record_trade(trade)
+
+        pos.remaining_shares -= exit_shares
+        pos.closing = False
+
+        if reason == 'partial':
+            pos.partial_filled = True
+            pos.stop_price = entry_px  # move stop to breakeven
+
+        if pos.remaining_shares <= 0:
+            del self.positions[symbol]
+
+        return trade
+
     def force_close_all(self, prices: Dict[str, float], reason: str = 'eod') -> List[TradeRecord]:
-        """Force close all positions at current prices."""
+        """Force close all positions at current prices (backtest mode)."""
         trades = []
         now_str = datetime.now(ET).strftime('%Y-%m-%d %H:%M')
         for sym in list(self.positions.keys()):
             pos = self.positions[sym]
             price = prices.get(sym, pos.entry_price)
-            pnl = (pos.entry_price - price) * pos.remaining_shares
-            pnl_pct = (pos.entry_price - price) / pos.entry_price if pos.entry_price > 0 else 0
+            pnl = _direction_pnl(pos.direction, pos.entry_price, price, pos.remaining_shares)
+            pnl_pct = pnl / (pos.entry_price * pos.remaining_shares) if pos.entry_price > 0 and pos.remaining_shares > 0 else 0
             trades.append(TradeRecord(
                 symbol=sym, entry_price=pos.entry_price, exit_price=price,
                 shares=pos.remaining_shares, pnl=pnl, pnl_pct=pnl_pct,
                 entry_time=pos.entry_time, exit_time=now_str,
-                exit_reason=reason,
+                exit_reason=reason, side=pos.direction,
             ))
             self._record_trade(trades[-1])
             del self.positions[sym]
@@ -1981,6 +2614,7 @@ class GapFadeEngine:
             peak_equity=self.equity,
         )
         self.trade_log = []
+        self._stopped_today = {}
 
     def get_metrics(self) -> dict:
         """Compute performance metrics from all trades."""
@@ -2087,6 +2721,14 @@ class GapFadeBacktester:
         await _log('info', f'Scanning {total_symbols} symbols for gap-ups >= {self.config.gap_threshold:.0%}{max_gap_label}, '
                    f'vol_ratio <= {self.config.vol_ratio_max}x, stop = {self.config.stop_pct:.0%}')
 
+        # Vol filter helper (different limits for gap-ups vs gap-downs)
+        def _vol_ok(g):
+            if g.get('direction') == 'long':
+                if not self.config.trade_gap_downs:
+                    return False  # reject gap-downs when feature disabled
+                return g['vol_ratio'] <= self.config.gap_down_vol_ratio_max
+            return g['vol_ratio'] <= self.config.vol_ratio_max
+
         use_batch = total_symbols > 50  # batch API for large universes
 
         if use_batch:
@@ -2109,8 +2751,8 @@ class GapFadeBacktester:
             if progress_callback:
                 await progress_callback(25, f"Found {raw_gap_count} raw gaps, filtering...")
 
-            # Filter by vol_ratio
-            all_gap_days = [g for g in all_gap_days if g['vol_ratio'] <= self.config.vol_ratio_max]
+            # Filter by vol_ratio (different limits for gap-ups vs gap-downs)
+            all_gap_days = [g for g in all_gap_days if _vol_ok(g)]
             await _log('scan', f'Batch scan: {raw_gap_count} raw gaps → {len(all_gap_days)} pass vol filter '
                        f'(from {total_symbols} symbols)')
             self.progress = 30
@@ -2128,8 +2770,8 @@ class GapFadeBacktester:
                 gaps = await asyncio.to_thread(scanner.scan_historical, sym, start_date, end_date)
                 raw_gap_count += len(gaps)
                 before = len(gaps)
-                # Filter by vol_ratio
-                gaps = [g for g in gaps if g['vol_ratio'] <= self.config.vol_ratio_max]
+                # Filter by vol_ratio (different limits for gap-ups vs gap-downs)
+                gaps = [g for g in gaps if _vol_ok(g)]
                 if gaps:
                     await _log('scan', f'{sym}: {before} gaps found, {len(gaps)} pass vol filter', {
                         'symbol': sym, 'raw': before, 'filtered': len(gaps),
@@ -2164,27 +2806,77 @@ class GapFadeBacktester:
         for gap in all_gap_days:
             gaps_by_date[gap['date']].append(gap)
 
-        # Sort each day's gaps by gap_pct descending (biggest fade opportunity first)
+        # Sort each day's gaps by abs(gap_pct) descending (biggest fade opportunity first)
         for d in gaps_by_date:
-            gaps_by_date[d].sort(key=lambda g: g['gap_pct'], reverse=True)
+            gaps_by_date[d].sort(key=lambda g: abs(g['gap_pct']), reverse=True)
 
         sorted_dates = sorted(gaps_by_date.keys())
         total_gaps = len(all_gap_days)
         trades_by_day = []
         bars_missing = 0
         gi = 0  # global gap counter for progress
+        regime_skipped = 0
+        regime_halved = 0
+
+        # Pre-cache SPY data for market regime filter
+        spy_data: Dict[str, dict] = {}
+        if self.config.regime_filter:
+            try:
+                db = get_price_db()
+                if db:
+                    # Direct SQL: get SPY open + LAG(close) for prev_close
+                    cur = db._conn.execute("""
+                        WITH w AS (
+                            SELECT date, open, close,
+                                   LAG(close) OVER (ORDER BY date) AS prev_close
+                            FROM daily_bars WHERE symbol = 'SPY'
+                              AND date >= ? AND date <= ?
+                        )
+                        SELECT date, open, prev_close FROM w
+                        WHERE date >= ? AND prev_close > 0
+                    """, [
+                        (datetime.strptime(start_date, '%Y-%m-%d') - timedelta(days=5)).strftime('%Y-%m-%d'),
+                        end_date, start_date
+                    ])
+                    for row in cur:
+                        spy_data[row[0]] = {'prev_close': float(row[2]), 'open': float(row[1])}
+                if spy_data:
+                    await _log('info', f'Market regime filter: loaded {len(spy_data)} SPY trading days')
+                else:
+                    await _log('warn', 'Market regime filter: no SPY data in DB — filter disabled for this run')
+            except Exception as e:
+                await _log('warn', f'Market regime filter: failed to load SPY data — {e}')
 
         for date_str in sorted_dates:
             if self._cancel:
                 break
 
             day_gaps = gaps_by_date[date_str]
-            # Enforce max_positions per day — only trade top N gaps
-            max_pos = self.config.max_positions
-            day_gaps = day_gaps[:max_pos]
+            # Thin day: if fewer candidates than threshold, trade all; else cap at max_positions
+            eff_max = engine.effective_max_positions(len(day_gaps))
+            engine._effective_max_positions = eff_max
+
+            # Market regime filter
+            regime = fetch_market_regime_backtest(date_str, spy_data, self.config)
+            if regime and regime.position_reduction == -999:
+                regime_skipped += 1
+                gi += len(day_gaps[:eff_max])
+                await _log('regime', f'{date_str}: BLOCKED — {regime.note} ({len(day_gaps)} candidates skipped)')
+                continue
+            if regime and regime.position_reduction == -1:
+                regime_halved += 1
+                eff_max = max(1, eff_max // 2)
+                engine._effective_max_positions = eff_max
+                await _log('regime', f'{date_str}: HALVED — {regime.note} (max positions → {eff_max})')
+
+            day_gaps = day_gaps[:eff_max]
 
             # Reset daily stats for each new calendar day
             engine.daily_stats = DailyStats(date=date_str, peak_equity=engine.equity)
+
+            # Snapshot equity at day start — all same-day positions size off this
+            # (in reality all entries are simultaneous at 09:31)
+            day_start_equity = engine.equity
 
             for gap in day_gaps:
                 if self._cancel:
@@ -2210,7 +2902,7 @@ class GapFadeBacktester:
                     await asyncio.sleep(0.35)
                 else:
                     # Fast mode: simulate from daily OHLCV already in gap dict
-                    day_trades, day_log = self._simulate_day_daily(engine, gap)
+                    day_trades, day_log = self._simulate_day_daily(engine, gap, day_start_equity, len(day_gaps))
 
                 for entry in day_log:
                     await _log(entry['level'], entry['msg'], entry.get('data'))
@@ -2233,6 +2925,8 @@ class GapFadeBacktester:
         metrics['gap_days_found'] = len(all_gap_days)
         metrics['bars_missing'] = bars_missing
         metrics['gap_days_traded'] = len([d for d in trades_by_day if d['trades'] > 0])
+        metrics['regime_skipped'] = regime_skipped
+        metrics['regime_halved'] = regime_halved
         metrics['symbols_scanned'] = len(syms)
         metrics['start_date'] = start_date
         metrics['end_date'] = end_date
@@ -2275,12 +2969,17 @@ class GapFadeBacktester:
         return metrics
 
     def _simulate_day_daily(self, engine: GapFadeEngine,
-                           gap: dict) -> Tuple[List[TradeRecord], List[dict]]:
+                           gap: dict, day_start_equity: float = None,
+                           n_candidates: int = 1) -> Tuple[List[TradeRecord], List[dict]]:
         """Fast simulation from daily OHLCV — no extra API calls.
 
         Uses the gap dict which already has open/high/low/close from daily bars.
         Realism: slippage on entry/exit, short borrow fee, liquidity cap,
         and adverse fill ordering when both stop and target hit on same bar.
+
+        day_start_equity: snapshot of equity before any same-day trades execute.
+        n_candidates: number of candidates trading this day (for equal-risk sizing).
+        All positions on the same day size off this value since they enter simultaneously.
 
         Order of checks (conservative — stop first):
           1. Stop: high >= stop_price  → loss at stop_price (+slippage)
@@ -2298,25 +2997,29 @@ class GapFadeBacktester:
         log = []
         slip = self.config.slippage_pct
 
+        direction = gap.get('direction', 'short')
+
         candidate = GapCandidate(
             symbol=sym, gap_pct=gap['gap_pct'], prev_close=prev_close,
             premarket_price=day_open, avg_vol_20d=gap.get('avg_vol', 0),
             vol_ratio=gap['vol_ratio'], shortable=True, easy_to_borrow=True,
+            direction=direction,
         )
 
         # Bounce entry: if configured, wait for a small bounce above open before shorting
-        # This gives a better entry price but may miss trades that fade immediately
+        # (only applies to shorts — longs skip this)
         bounce = self.config.bounce_entry_pct
-        if bounce > 0 and day_high >= day_open * (1 + bounce):
-            # Bounce happened — enter at bounce level (minus slippage)
+        if direction == 'short' and bounce > 0 and day_high >= day_open * (1 + bounce):
             entry_price = day_open * (1 + bounce) * (1 - slip)
-        elif bounce > 0:
-            # No bounce reached — skip this trade
+        elif direction == 'short' and bounce > 0:
             log.append({'level': 'skip', 'msg': f'{sym} {gap["date"]}: SKIP — no bounce to {bounce:.1%} above open'})
             return day_trades, log
         else:
-            # Entry with slippage: short sell gets worse (lower) fill
-            entry_price = day_open * (1 - slip)
+            # Entry with slippage: direction-aware adverse fill
+            if direction == 'long':
+                entry_price = day_open * (1 + slip)  # long gets worse (higher) fill
+            else:
+                entry_price = day_open * (1 - slip)  # short gets worse (lower) fill
         entry_time_str = f'{gap["date"]} 09:31'
         # Estimated exit times for daily-bar mode (we don't know exact intrabar timing)
         exit_stop_str = f'{gap["date"]} 10:30'     # stops tend to hit early
@@ -2335,24 +3038,22 @@ class GapFadeBacktester:
                        f'(gap {gap["gap_pct"]:.1%}, vol {gap["vol_ratio"]:.2f}x)'})
             return day_trades, log
 
-        stop_price = entry_price * (1 + self.config.stop_pct)
-        half_target = (entry_price + prev_close) / 2
-        full_target = prev_close
+        eff_stop_pct = compute_adaptive_stop_pct(self.config, gap['gap_pct'])
+        if direction == 'long':
+            stop_price = entry_price * (1 - eff_stop_pct)
+            half_target = (entry_price + prev_close) / 2  # above entry for longs
+            full_target = prev_close  # gap fill = back up to prev close
+        else:
+            stop_price = entry_price * (1 + eff_stop_pct)
+            half_target = (entry_price + prev_close) / 2
+            full_target = prev_close
 
-        risk_per_share = stop_price - entry_price
-        kelly_risk = engine.compute_kelly_size()
-        risk_frac = min(self.config.risk_pct, kelly_risk) if kelly_risk > 0 else self.config.risk_pct
-        dollar_risk = engine.equity * risk_frac
-        shares = int(dollar_risk / risk_per_share) if risk_per_share > 0 else 0
-        # Per-position cap: divide equity evenly across max_positions slots
-        per_slot_equity = engine.equity / max(1, self.config.max_positions)
-        max_shares = int(per_slot_equity / entry_price) if entry_price > 0 else 0
-        shares = min(shares, max_shares)
-        # Absolute notional cap (also per-slot)
-        if entry_price > 0 and self.config.max_notional > 0:
-            notional_limit = min(self.config.max_notional, per_slot_equity)
-            max_shares_notional = int(notional_limit / entry_price)
-            shares = min(shares, max_shares_notional)
+        risk_per_share = abs(stop_price - entry_price)
+        # Equal-risk sizing: total risk budget split evenly across all candidates
+        # shares = (risk_pct * equity / n_candidates) / risk_per_share
+        sizing_equity = day_start_equity if day_start_equity is not None else engine.equity
+        risk_per_position = sizing_equity * self.config.risk_pct / max(1, n_candidates)
+        shares = int(risk_per_position / risk_per_share) if risk_per_share > 0 else 0
         # Liquidity cap: max % of average daily volume
         avg_vol = gap.get('avg_vol', 0)
         if avg_vol > 0 and self.config.max_pct_adv > 0:
@@ -2363,183 +3064,218 @@ class GapFadeBacktester:
             log.append({'level': 'skip', 'msg': f'{sym} {gap["date"]}: position size = 0'})
             return day_trades, log
 
-        # Borrow fee: annualized rate prorated to 1 day
+        # Borrow fee: annualized rate prorated to 1 day (only for shorts)
         notional = shares * entry_price
-        borrow_cost = notional * (self.config.borrow_rate_annual / 252)
+        borrow_cost = notional * (self.config.borrow_rate_annual / 252) if direction == 'short' else 0
 
-        stop_dist = (stop_price - entry_price) / entry_price
-        target_dist = (entry_price - full_target) / entry_price
+        stop_dist = abs(stop_price - entry_price) / entry_price
+        target_dist = abs(entry_price - full_target) / entry_price
+        side_label = 'LONG' if direction == 'long' else 'SHORT'
         cost_note = f' | borrow ${borrow_cost:.0f}' if borrow_cost > 0.5 else ''
         liq_note = f' | liq-capped' if avg_vol > 0 and shares == int(avg_vol * self.config.max_pct_adv) else ''
         log.append({
             'level': 'entry',
-            'msg': (f'{sym} {gap["date"]}: SHORT {shares}sh @ ${entry_price:.2f} (slip {slip:.2%}) '
+            'msg': (f'{sym} {gap["date"]}: {side_label} {shares}sh @ ${entry_price:.2f} (slip {slip:.2%}) '
                     f'| gap {gap["gap_pct"]:.1%} vol {gap["vol_ratio"]:.2f}x '
-                    f'| stop ${stop_price:.2f} (+{stop_dist:.1%}) '
-                    f'| half ${half_target:.2f} full ${full_target:.2f} (-{target_dist:.1%})'
+                    f'| stop ${stop_price:.2f} ({stop_dist:.1%}) '
+                    f'| half ${half_target:.2f} full ${full_target:.2f} ({target_dist:.1%})'
                     f'{cost_note}{liq_note}'),
             'data': {'symbol': sym, 'shares': shares, 'entry': entry_price,
-                     'stop': stop_price, 'gap_pct': gap['gap_pct'], 'vol_ratio': gap['vol_ratio']}
+                     'stop': stop_price, 'gap_pct': gap['gap_pct'], 'vol_ratio': gap['vol_ratio'],
+                     'direction': direction}
         })
 
         remaining = shares
         total_pnl = 0.0
 
-        # 1. Stop check — high breaches stop (conservative: check first)
-        stopped = day_high >= stop_price
-        # 2. Partial target — low reaches midpoint
-        partial_hit = day_low <= half_target
-        # 3. Full target — close at or below prev_close
-        full_hit = day_close <= full_target
+        # Direction-aware exit slippage helper
+        def _exit_slip(px):
+            return px * (1 + slip) if direction == 'short' else px * (1 - slip)
+
+        def _make_bt_trade(exit_px, reason, n_shares, exit_time, hold_min, extra_cost=0):
+            fp = _exit_slip(exit_px)
+            pnl = _direction_pnl(direction, entry_price, fp, n_shares) - extra_cost
+            pnl_pct = pnl / (entry_price * n_shares) if entry_price > 0 and n_shares > 0 else 0
+            return TradeRecord(
+                symbol=sym, entry_price=entry_price, exit_price=fp,
+                shares=n_shares, pnl=pnl, pnl_pct=pnl_pct,
+                entry_time=entry_time_str, exit_time=exit_time,
+                exit_reason=reason, holding_minutes=hold_min,
+                side=direction,
+            ), pnl
+
+        # 1. Stop check — direction-aware
+        stopped = _stop_hit(direction, day_high, day_low, stop_price)
+        # 2. Partial target — direction-aware
+        partial_hit = _target_hit(direction, day_low if direction == 'short' else day_high, half_target)
+        # 3. Full target — close at or past prev_close
+        full_hit = _target_hit(direction, day_close, full_target)
 
         if stopped and partial_hit and self.config.adverse_fill:
             # AMBIGUOUS BAR: both stop and target reachable from daily OHLCV.
-            # Use close as heuristic: close < open → stock dropped (target likely first),
-            # close > open → stock rallied (stop likely first).
-            # Fallback: random with adverse_fill_pct probability of stop-first.
             import random
-            if day_close < day_open:
-                # Bearish close → more likely target hit first, then bounced to stop
+            if direction == 'short':
+                bullish_close = day_close > entry_price
+                bearish_close = day_close < day_open
+            else:
+                bullish_close = day_close > day_open
+                bearish_close = day_close < entry_price
+
+            if bearish_close if direction == 'short' else bullish_close:
                 assume_stop = random.random() < (self.config.adverse_fill_pct * 0.5)
-            elif day_close > entry_price:
-                # Close above entry → stock held up, likely stop hit first
+            elif bullish_close if direction == 'short' else bearish_close:
                 assume_stop = random.random() < min(1.0, self.config.adverse_fill_pct * 1.5)
             else:
-                # Neutral → use base probability
                 assume_stop = random.random() < self.config.adverse_fill_pct
 
             if assume_stop:
-                # Adverse: stop hit first → full loss
-                exit_price = stop_price * (1 + slip)
-                pnl = (entry_price - exit_price) * remaining - borrow_cost
-                pnl_pct = pnl / (entry_price * remaining) if remaining > 0 else 0
-                day_trades.append(TradeRecord(
-                    symbol=sym, entry_price=entry_price, exit_price=exit_price,
-                    shares=remaining, pnl=pnl, pnl_pct=pnl_pct,
-                    entry_time=entry_time_str, exit_time=exit_stop_str,
-                    exit_reason='stop_adverse', holding_minutes=hold_stop,
-                ))
-                engine._record_trade(day_trades[-1])
+                trade, pnl = _make_bt_trade(stop_price, 'stop_adverse', remaining, exit_stop_str, hold_stop, borrow_cost)
+                day_trades.append(trade)
+                engine._record_trade(trade)
                 total_pnl += pnl
                 remaining = 0
+                if self.config.reentry_enabled:
+                    engine._stopped_today[sym] = StopOutRecord(
+                        symbol=sym, stop_time=datetime.strptime(f'{gap["date"]} 09:35', '%Y-%m-%d %H:%M'),
+                        original_entry=entry_price, prev_close=prev_close,
+                        gap_pct=gap['gap_pct'], avg_vol_20d=gap.get('avg_vol', 0),
+                        direction=direction,
+                    )
                 log.append({
                     'level': 'stop',
-                    'msg': (f'{sym} {gap["date"]}: STOP (adverse) {shares}sh @ ${exit_price:.2f} '
-                            f'| P&L ${pnl:.0f} ({pnl_pct:+.1%}) '
+                    'msg': (f'{sym} {gap["date"]}: STOP (adverse) {shares}sh @ ${trade.exit_price:.2f} '
+                            f'| P&L ${pnl:.0f} ({trade.pnl_pct:+.1%}) '
                             f'| ambiguous bar — resolved as stop first'),
                     'data': {'pnl': pnl, 'reason': 'stop_adverse'}
                 })
             else:
-                # Favorable: target hit first → treat as partial_hit path
-                # (fall through to the partial_hit branch below)
                 stopped = False
 
         elif stopped:
-            # Pure stop-out: entire position lost at stop (+slippage)
-            exit_price = stop_price * (1 + slip)
-            pnl = (entry_price - exit_price) * remaining - borrow_cost
-            pnl_pct = pnl / (entry_price * remaining) if remaining > 0 else 0
-            day_trades.append(TradeRecord(
-                symbol=sym, entry_price=entry_price, exit_price=exit_price,
-                shares=remaining, pnl=pnl, pnl_pct=pnl_pct,
-                entry_time=entry_time_str, exit_time=exit_stop_str,
-                exit_reason='stop', holding_minutes=hold_stop,
-            ))
-            engine._record_trade(day_trades[-1])
+            trade, pnl = _make_bt_trade(stop_price, 'stop', remaining, exit_stop_str, hold_stop, borrow_cost)
+            day_trades.append(trade)
+            engine._record_trade(trade)
             total_pnl += pnl
             remaining = 0
+            if self.config.reentry_enabled:
+                engine._stopped_today[sym] = StopOutRecord(
+                    symbol=sym, stop_time=datetime.strptime(f'{gap["date"]} 09:35', '%Y-%m-%d %H:%M'),
+                    original_entry=entry_price, prev_close=prev_close,
+                    gap_pct=gap['gap_pct'], avg_vol_20d=gap.get('avg_vol', 0),
+                    direction=direction,
+                )
             log.append({
                 'level': 'stop',
-                'msg': (f'{sym} {gap["date"]}: STOP {shares}sh @ ${exit_price:.2f} '
-                        f'| P&L ${pnl:.0f} ({pnl_pct:+.1%}) | high ${day_high:.2f}'),
+                'msg': (f'{sym} {gap["date"]}: STOP {shares}sh @ ${trade.exit_price:.2f} '
+                        f'| P&L ${pnl:.0f} ({trade.pnl_pct:+.1%}) | high ${day_high:.2f}'),
                 'data': {'pnl': pnl, 'reason': 'stop'}
             })
 
         elif partial_hit:
-            # Partial fill, no stop hit
             cover_shares = max(1, int(shares * self.config.partial_cover_frac))
             if cover_shares > 0:
-                exit_p = half_target * (1 + slip)
-                pnl1 = (entry_price - exit_p) * cover_shares - (borrow_cost * cover_shares / shares)
-                pnl_pct1 = pnl1 / (entry_price * cover_shares) if cover_shares > 0 else 0
-                day_trades.append(TradeRecord(
-                    symbol=sym, entry_price=entry_price, exit_price=exit_p,
-                    shares=cover_shares, pnl=pnl1, pnl_pct=pnl_pct1,
-                    entry_time=entry_time_str, exit_time=exit_partial_str,
-                    exit_reason='partial', holding_minutes=hold_partial,
-                ))
-                engine._record_trade(day_trades[-1])
+                partial_borrow = borrow_cost * cover_shares / shares if shares > 0 else 0
+                trade, pnl1 = _make_bt_trade(half_target, 'partial', cover_shares, exit_partial_str, hold_partial, partial_borrow)
+                day_trades.append(trade)
+                engine._record_trade(trade)
                 total_pnl += pnl1
                 remaining -= cover_shares
                 log.append({
                     'level': 'exit',
-                    'msg': (f'{sym} {gap["date"]}: PARTIAL {cover_shares}sh @ ${exit_p:.2f} '
-                            f'| P&L ${pnl1:+.0f} ({pnl_pct1:+.1%})'),
+                    'msg': (f'{sym} {gap["date"]}: PARTIAL {cover_shares}sh @ ${trade.exit_price:.2f} '
+                            f'| P&L ${pnl1:+.0f} ({trade.pnl_pct:+.1%})'),
                     'data': {'pnl': pnl1, 'reason': 'partial'}
                 })
 
-            # Check if remaining hits full target
             remaining_borrow = borrow_cost * remaining / shares if shares > 0 else 0
             if remaining > 0 and full_hit:
-                exit_p = full_target * (1 + slip)
-                pnl2 = (entry_price - exit_p) * remaining - remaining_borrow
-                pnl_pct2 = pnl2 / (entry_price * remaining) if remaining > 0 else 0
-                day_trades.append(TradeRecord(
-                    symbol=sym, entry_price=entry_price, exit_price=exit_p,
-                    shares=remaining, pnl=pnl2, pnl_pct=pnl_pct2,
-                    entry_time=entry_time_str, exit_time=exit_full_str,
-                    exit_reason='full_target', holding_minutes=hold_full,
-                ))
-                engine._record_trade(day_trades[-1])
+                trade, pnl2 = _make_bt_trade(full_target, 'full_target', remaining, exit_full_str, hold_full, remaining_borrow)
+                day_trades.append(trade)
+                engine._record_trade(trade)
                 total_pnl += pnl2
                 remaining = 0
                 log.append({
                     'level': 'exit',
-                    'msg': (f'{sym} {gap["date"]}: FULL TARGET {day_trades[-1].shares}sh @ ${exit_p:.2f} '
-                            f'| P&L ${pnl2:+.0f} ({pnl_pct2:+.1%})'),
+                    'msg': (f'{sym} {gap["date"]}: FULL TARGET {trade.shares}sh @ ${trade.exit_price:.2f} '
+                            f'| P&L ${pnl2:+.0f} ({trade.pnl_pct:+.1%})'),
                     'data': {'pnl': pnl2, 'reason': 'full_target'}
                 })
             elif remaining > 0:
-                # Exit at close (time exit)
-                exit_p = day_close * (1 + slip)
-                pnl2 = (entry_price - exit_p) * remaining - remaining_borrow
-                pnl_pct2 = pnl2 / (entry_price * remaining) if remaining > 0 else 0
-                day_trades.append(TradeRecord(
-                    symbol=sym, entry_price=entry_price, exit_price=exit_p,
-                    shares=remaining, pnl=pnl2, pnl_pct=pnl_pct2,
-                    entry_time=entry_time_str, exit_time=exit_close_str,
-                    exit_reason='time_exit', holding_minutes=hold_close,
-                ))
-                engine._record_trade(day_trades[-1])
+                trade, pnl2 = _make_bt_trade(day_close, 'time_exit', remaining, exit_close_str, hold_close, remaining_borrow)
+                day_trades.append(trade)
+                engine._record_trade(trade)
                 total_pnl += pnl2
                 remaining = 0
                 log.append({
                     'level': 'exit' if pnl2 >= 0 else 'stop',
-                    'msg': (f'{sym} {gap["date"]}: TIME EXIT {day_trades[-1].shares}sh @ ${exit_p:.2f} '
-                            f'| P&L ${pnl2:+.0f} ({pnl_pct2:+.1%})'),
+                    'msg': (f'{sym} {gap["date"]}: TIME EXIT {trade.shares}sh @ ${trade.exit_price:.2f} '
+                            f'| P&L ${pnl2:+.0f} ({trade.pnl_pct:+.1%})'),
                     'data': {'pnl': pnl2, 'reason': 'time_exit'}
                 })
 
         else:
-            # No targets hit, no stop — exit at close
-            exit_p = day_close * (1 + slip)
-            pnl = (entry_price - exit_p) * remaining - borrow_cost
-            pnl_pct = pnl / (entry_price * remaining) if remaining > 0 else 0
-            day_trades.append(TradeRecord(
-                symbol=sym, entry_price=entry_price, exit_price=exit_p,
-                shares=remaining, pnl=pnl, pnl_pct=pnl_pct,
-                entry_time=entry_time_str, exit_time=exit_close_str,
-                exit_reason='time_exit', holding_minutes=hold_close,
-            ))
-            engine._record_trade(day_trades[-1])
+            trade, pnl = _make_bt_trade(day_close, 'time_exit', remaining, exit_close_str, hold_close, borrow_cost)
+            day_trades.append(trade)
+            engine._record_trade(trade)
             total_pnl += pnl
             remaining = 0
             log.append({
                 'level': 'exit' if pnl >= 0 else 'stop',
-                'msg': (f'{sym} {gap["date"]}: EXIT @ CLOSE ${exit_p:.2f} '
-                        f'| P&L ${pnl:+.0f} ({pnl_pct:+.1%}) | H ${day_high:.2f} L ${day_low:.2f}'),
+                'msg': (f'{sym} {gap["date"]}: EXIT @ CLOSE ${trade.exit_price:.2f} '
+                        f'| P&L ${pnl:+.0f} ({trade.pnl_pct:+.1%}) | H ${day_high:.2f} L ${day_low:.2f}'),
                 'data': {'pnl': pnl, 'reason': 'time_exit'}
             })
+
+        # Re-entry after stop-out (daily-bar approximation)
+        # If stopped AND close moved favorably vs entry, simulate re-entry
+        re_eligible = (day_close < entry_price) if direction == 'short' else (day_close > entry_price)
+        if (self.config.reentry_enabled and stopped and remaining == 0 and re_eligible):
+            prev_rec = engine._stopped_today.get(sym)
+            reentry_count = (prev_rec.reentry_count if prev_rec else 0)
+            if reentry_count < self.config.reentry_max_per_symbol:
+                # Approximate re-entry price: midpoint between stop and close
+                re_entry = (stop_price + day_close) / 2
+                re_stop_pct = self.config.reentry_stop_pct
+                if direction == 'long':
+                    re_stop = re_entry * (1 - re_stop_pct)
+                else:
+                    re_stop = re_entry * (1 + re_stop_pct)
+                # Check price moved favorably from re-entry
+                re_favorable = (day_close < re_entry) if direction == 'short' else (day_close > re_entry)
+                if re_favorable:
+                    re_exit = _exit_slip(day_close)
+                    re_risk_per_share = abs(re_stop - re_entry)
+                    re_risk_budget = engine.equity * self.config.risk_pct / max(1, n_candidates)
+                    re_shares = int(re_risk_budget / re_risk_per_share) if re_risk_per_share > 0 else 0
+                    if re_shares > 0:
+                        re_pnl = _direction_pnl(direction, re_entry, re_exit, re_shares)
+                        re_pnl_pct = re_pnl / (re_entry * re_shares) if re_entry > 0 else 0
+                        re_borrow = re_shares * re_entry * (self.config.borrow_rate_annual / 252) if direction == 'short' else 0
+                        re_pnl -= re_borrow
+                        day_trades.append(TradeRecord(
+                            symbol=sym, entry_price=re_entry, exit_price=re_exit,
+                            shares=re_shares, pnl=re_pnl, pnl_pct=re_pnl_pct,
+                            entry_time=f'{gap["date"]} 12:00', exit_time=exit_close_str,
+                            exit_reason='reentry_time', holding_minutes=240,
+                            side=direction,
+                        ))
+                        engine._record_trade(day_trades[-1])
+                        total_pnl += re_pnl
+                        engine._stopped_today[sym] = StopOutRecord(
+                            symbol=sym, stop_time=datetime.strptime(f'{gap["date"]} 10:30', '%Y-%m-%d %H:%M'),
+                            original_entry=entry_price, prev_close=prev_close,
+                            gap_pct=gap['gap_pct'], avg_vol_20d=gap.get('avg_vol', 0),
+                            reentry_count=reentry_count + 1,
+                            direction=direction,
+                        )
+                        log.append({
+                            'level': 'entry',
+                            'msg': (f'{sym} {gap["date"]}: RE-ENTRY {re_shares}sh @ ${re_entry:.2f} '
+                                    f'| stop ${re_stop:.2f} (+{re_stop_pct:.1%}) '
+                                    f'| exit @ close ${re_exit:.2f} '
+                                    f'| P&L ${re_pnl:+.0f} ({re_pnl_pct:+.1%})'),
+                            'data': {'pnl': re_pnl, 'reason': 'reentry'}
+                        })
 
         pnl_sign = '+' if total_pnl >= 0 else ''
         log.append({
@@ -2594,10 +3330,12 @@ class GapFadeBacktester:
 
         min_df = self._convert_to_et(min_df)
 
+        direction = gap.get('direction', 'short')
         candidate = GapCandidate(
             symbol=sym, gap_pct=gap['gap_pct'], prev_close=prev_close,
             premarket_price=gap['open'], avg_vol_20d=gap.get('avg_vol', 0),
             vol_ratio=gap['vol_ratio'], shortable=True, easy_to_borrow=True,
+            direction=direction,
         )
 
         opens = min_df['open'].values
@@ -2628,14 +3366,19 @@ class GapFadeBacktester:
             log.append({'level': 'skip', 'msg': f'{sym} {gap["date"]}: position size = 0 (equity=${engine.equity:.0f})'})
             return day_trades, log
 
-        stop_dist = (pos.stop_price - entry_price) / entry_price
-        target_dist = (entry_price - pos.full_target) / entry_price
+        side_label = 'LONG' if direction == 'long' else 'SHORT'
+        if direction == 'long':
+            stop_dist = (entry_price - pos.stop_price) / entry_price
+            target_dist = (pos.full_target - entry_price) / entry_price
+        else:
+            stop_dist = (pos.stop_price - entry_price) / entry_price
+            target_dist = (entry_price - pos.full_target) / entry_price
         log.append({
             'level': 'entry',
-            'msg': (f'{sym} {entry_time_str}: SHORT {pos.shares} shares @ ${entry_price:.2f} '
+            'msg': (f'{sym} {entry_time_str}: {side_label} {pos.shares} shares @ ${entry_price:.2f} '
                     f'| gap {gap["gap_pct"]:.1%} vol {gap["vol_ratio"]:.2f}x '
-                    f'| stop ${pos.stop_price:.2f} (+{stop_dist:.1%}) '
-                    f'| half ${pos.half_target:.2f} full ${pos.full_target:.2f} (-{target_dist:.1%}) '
+                    f'| stop ${pos.stop_price:.2f} ({stop_dist:.1%}) '
+                    f'| half ${pos.half_target:.2f} full ${pos.full_target:.2f} ({target_dist:.1%}) '
                     f'| prev_close ${prev_close:.2f}'),
             'data': {
                 'symbol': sym, 'shares': pos.shares, 'entry': entry_price,
@@ -2675,6 +3418,67 @@ class GapFadeBacktester:
             day_trades.extend(closed)
 
             if sym not in engine.positions:
+                # Check for re-entry opportunity after stop-out
+                if (self.config.reentry_enabled
+                        and any(t.exit_reason == 'stop' for t in closed)
+                        and sym in engine._stopped_today):
+                    stop_bar = bi
+                    rec = engine._stopped_today[sym]
+                    # Scan remaining bars for re-entry trigger
+                    for rbi in range(stop_bar + 1, len(times)):
+                        re_time = times[rbi]
+                        if hasattr(re_time, 'to_pydatetime'):
+                            re_time = re_time.to_pydatetime()
+                        re_price = float(closes[rbi])
+                        ok_re, reason_re = engine.can_reenter(sym, re_price, re_time)
+                        if not ok_re:
+                            continue
+                        # Re-enter with tighter stop
+                        re_candidate = GapCandidate(
+                            symbol=sym, gap_pct=gap['gap_pct'], prev_close=prev_close,
+                            premarket_price=re_price, avg_vol_20d=gap.get('avg_vol', 0),
+                            vol_ratio=gap['vol_ratio'], shortable=True, easy_to_borrow=True,
+                            direction=direction,
+                        )
+                        re_time_str = re_time.strftime('%Y-%m-%d %H:%M')
+                        re_pos = engine.open_position(re_candidate, re_price, re_time_str)
+                        if re_pos is None:
+                            continue
+                        # Override stop with tighter re-entry stop
+                        if direction == 'long':
+                            re_pos.stop_price = re_price * (1 - self.config.reentry_stop_pct)
+                        else:
+                            re_pos.stop_price = re_price * (1 + self.config.reentry_stop_pct)
+                        rec.reentry_count += 1
+                        log.append({
+                            'level': 'entry',
+                            'msg': (f'{sym} {gap["date"]} {re_time.strftime("%H:%M")}: '
+                                    f'RE-ENTRY {re_pos.shares}sh @ ${re_price:.2f} '
+                                    f'| stop ${re_pos.stop_price:.2f} '
+                                    f'(+{self.config.reentry_stop_pct:.1%})'),
+                            'data': {'reason': 'reentry', 'shares': re_pos.shares}
+                        })
+                        # Continue monitoring from re-entry bar
+                        for rbi2 in range(rbi + 1, len(times)):
+                            rt2 = times[rbi2]
+                            if hasattr(rt2, 'to_pydatetime'):
+                                rt2 = rt2.to_pydatetime()
+                            rh2 = float(highs[rbi2])
+                            rl2 = float(lows[rbi2])
+                            re_closed = engine.check_exits(sym, rl2, rh2, rt2)
+                            for t in re_closed:
+                                pnl_s = '+' if t.pnl >= 0 else ''
+                                log.append({
+                                    'level': 'exit' if t.pnl >= 0 else 'stop',
+                                    'msg': (f'{sym} {gap["date"]} {rt2.strftime("%H:%M")}: '
+                                            f'RE-{t.exit_reason.upper()} {t.shares}sh '
+                                            f'@ ${t.exit_price:.2f} | P&L {pnl_s}${t.pnl:.0f}'),
+                                    'data': {'pnl': t.pnl, 'reason': f're_{t.exit_reason}'}
+                                })
+                            day_trades.extend(re_closed)
+                            if sym not in engine.positions:
+                                break
+                        break  # only one re-entry attempt per bar scan
                 break
 
         # Force close if still open
@@ -2740,21 +3544,32 @@ class GapFadeBacktester:
 # =============================================================================
 
 class GapFadeLiveTrader:
-    """Async live paper trading loop for gap fade strategy."""
+    """Async live trading loop for gap fade strategy.
+
+    Production-grade design:
+    - asyncio.Lock serializes all position mutations (no race conditions)
+    - Orders are verified filled before updating internal state
+    - Broker reconciliation on startup and periodic
+    - Atomic state file writes (write-fsync-rename)
+    - EOD close with retry loop and broker verification
+    """
 
     STATE_FILE = 'gap_fade_state.json'
+    RECONCILE_INTERVAL = 300  # seconds between broker reconciliation checks
 
     def __init__(self, config: GapFadeConfig = None):
         self.config = config or GapFadeConfig()
         self.engine = GapFadeEngine(self.config)
         self.scanner = GapScanner(self.config)
         self.streamer: Optional[AlpacaTickStreamer] = None
-        self.status = 'stopped'        # stopped, scanning, trading, paused
+        self.status = 'stopped'        # stopped, scanning, trading, paused, waiting
         self.candidates: List[GapCandidate] = []
         self._task: Optional[asyncio.Task] = None
         self._monitor_task: Optional[asyncio.Task] = None
         self.last_scan_time = ''
         self.messages: List[dict] = []  # decision feed
+        self._position_lock = asyncio.Lock()  # P0-2: serializes ALL position mutations
+        self._last_reconcile = 0.0  # monotonic time of last broker reconciliation
 
         # Load persisted state
         self._load_state()
@@ -2777,6 +3592,8 @@ class GapFadeLiveTrader:
             return
         self.status = 'scanning'
         self.engine.reset_daily()
+        # P0-4: reconcile with broker on startup
+        await self._reconcile_with_broker()
         self._task = asyncio.create_task(self._trading_loop())
         logger.info("Live trader started")
         self._add_message('system', 'Live trader started')
@@ -2785,6 +3602,14 @@ class GapFadeLiveTrader:
     async def stop(self):
         """Stop the live trader and close all positions."""
         self.status = 'stopped'
+        # Cancel all broker-side stop orders
+        for sym, pos in list(self.engine.positions.items()):
+            if pos.stop_order_id:
+                try:
+                    await asyncio.to_thread(alpaca_cancel_order, pos.stop_order_id)
+                    pos.stop_order_id = ''
+                except Exception:
+                    pass
         if self.streamer:
             await self.streamer.stop()
             self.streamer = None
@@ -2815,59 +3640,189 @@ class GapFadeLiveTrader:
             self._add_message('system', 'Live trader resumed')
             await broadcast({'type': 'live_status', 'status': self.status})
 
+    # -------------------------------------------------------------------------
+    # P0-4: Broker Reconciliation
+    # -------------------------------------------------------------------------
+
+    async def _reconcile_with_broker(self):
+        """Compare internal positions with Alpaca broker positions.
+
+        On startup and periodically during trading hours. Broker is source of
+        truth — if we have a position internally that doesn't exist on broker,
+        we remove it. If broker has a position we don't know about, we adopt it.
+        """
+        try:
+            broker_positions = await asyncio.to_thread(alpaca_get_positions)
+        except Exception as e:
+            logger.warning(f"Reconciliation failed (could not reach broker): {e}")
+            return
+
+        broker_map = {}  # symbol -> {qty, avg_entry_price, side}
+        for bp in broker_positions:
+            sym = bp.get('symbol', '')
+            qty = abs(int(bp.get('qty', 0)))
+            side = bp.get('side', '')
+            avg_price = float(bp.get('avg_entry_price', 0))
+            if sym and qty > 0:
+                broker_map[sym] = {'qty': qty, 'avg_entry_price': avg_price, 'side': side}
+
+        internal_syms = set(self.engine.positions.keys())
+        broker_syms = set(broker_map.keys())
+
+        # Positions we think we have but broker doesn't
+        orphaned = internal_syms - broker_syms
+        for sym in orphaned:
+            pos = self.engine.positions[sym]
+            logger.warning(f"RECONCILE: Internal position {sym} ({pos.remaining_shares} shares) "
+                          f"NOT found on broker — removing from internal state")
+            self._add_message('warning', f'RECONCILE: {sym} not on broker — removed internally')
+            del self.engine.positions[sym]
+
+        # Positions broker has that we don't know about
+        unknown = broker_syms - internal_syms
+        for sym in unknown:
+            bp = broker_map[sym]
+            if bp['side'] == 'short':
+                logger.warning(f"RECONCILE: Broker has short {sym} ({bp['qty']} shares @ "
+                              f"${bp['avg_entry_price']:.2f}) — adopting into internal state")
+                self._add_message('warning',
+                    f'RECONCILE: Adopting broker position {sym} ({bp["qty"]} shares)')
+                pos = GapPosition(
+                    symbol=sym, shares=bp['qty'], entry_price=bp['avg_entry_price'],
+                    stop_price=bp['avg_entry_price'] * (1 + self.config.stop_pct),
+                    half_target=bp['avg_entry_price'] * 0.99,  # approx
+                    full_target=bp['avg_entry_price'] * 0.97,  # approx
+                    prev_close=bp['avg_entry_price'] * 0.97,
+                    entry_time=datetime.now(ET).strftime('%Y-%m-%d %H:%M'),
+                    remaining_shares=bp['qty'],
+                    entry_fill_price=bp['avg_entry_price'],
+                )
+                self.engine.positions[sym] = pos
+
+        # Quantity mismatches on shared positions
+        shared = internal_syms & broker_syms
+        for sym in shared:
+            bp = broker_map[sym]
+            pos = self.engine.positions[sym]
+            if bp['qty'] != pos.remaining_shares:
+                logger.warning(f"RECONCILE: {sym} qty mismatch — internal={pos.remaining_shares}, "
+                              f"broker={bp['qty']}. Adopting broker qty.")
+                self._add_message('warning',
+                    f'RECONCILE: {sym} qty adjusted {pos.remaining_shares} → {bp["qty"]}')
+                pos.remaining_shares = bp['qty']
+                pos.shares = bp['qty']
+
+        self._last_reconcile = _time.monotonic()
+        if orphaned or unknown or any(
+            broker_map.get(s, {}).get('qty', 0) != self.engine.positions.get(s, GapPosition(
+                symbol='', shares=0, entry_price=0, stop_price=0,
+                half_target=0, full_target=0, prev_close=0)).remaining_shares
+            for s in shared
+        ):
+            self._save_state()
+
+        logger.info(f"Reconciliation complete: {len(self.engine.positions)} positions, "
+                   f"{len(orphaned)} orphaned, {len(unknown)} adopted")
+
+    # -------------------------------------------------------------------------
+    # Main Trading Loop
+    # -------------------------------------------------------------------------
+
     async def _trading_loop(self):
-        """Main trading loop — runs on schedule."""
+        """Main trading loop — runs on schedule.
+
+        Uses date-stamped flags to track which actions have fired today,
+        so even if the bot oversleeps past the exact minute, it catches up.
+        """
+        # Track what has been done today (reset on new date)
+        _done_date = ''      # YYYY-MM-DD of current tracking day
+        _did_scan_7am = False
+        _did_scan_925 = False
+        _did_enter = False
+        _did_eod = False
+
         try:
             while self.status != 'stopped':
                 now = datetime.now(ET)
+                today = now.strftime('%Y-%m-%d')
 
-                # Pre-market scan (7:00 AM)
-                if now.hour == 7 and now.minute == 0:
+                # Reset flags on new day
+                if today != _done_date:
+                    _done_date = today
+                    _did_scan_7am = False
+                    _did_scan_925 = False
+                    _did_enter = False
+                    _did_eod = False
+
+                # Before pre-market (before 7 AM) — sleep
+                if now.hour < 7:
+                    self.status = 'waiting'
+                    await broadcast({'type': 'live_status', 'status': 'waiting'})
+                    # Sleep until 7:00 AM
+                    target = now.replace(hour=7, minute=0, second=0, microsecond=0)
+                    sleep_sec = max(30, (target - now).total_seconds())
+                    await asyncio.sleep(sleep_sec)
+                    continue
+
+                # Pre-market scan (7:00+ AM, once per day)
+                if 7 <= now.hour < 9 and not _did_scan_7am:
+                    _did_scan_7am = True
                     await self._run_scan()
-                    await asyncio.sleep(60)
+                    await asyncio.sleep(30)
                     continue
 
-                # Re-scan at 9:25 AM
-                if now.hour == 9 and now.minute == 25:
+                # Re-scan at 9:25+ AM (once per day, refine candidates)
+                if now.hour == 9 and now.minute >= 25 and not _did_scan_925:
+                    _did_scan_925 = True
                     await self._run_scan()
-                    await asyncio.sleep(60)
+                    await asyncio.sleep(30)
                     continue
 
-                # Market open — enter positions at 9:31 AM
-                if now.hour == 9 and now.minute == 31 and self.status == 'scanning':
-                    await self._enter_positions()
-                    await asyncio.sleep(60)
-                    continue
+                # Market open — enter positions at 9:31+ AM (once per day)
+                if now.hour == 9 and now.minute >= 31 and not _did_enter:
+                    if self.status in ('scanning', 'waiting'):
+                        _did_enter = True
+                        await self._enter_positions()
+                        await asyncio.sleep(30)
+                        continue
 
                 # During trading hours — monitor every 15 seconds
                 if 9 <= now.hour < 16 and self.status == 'trading':
                     await self._check_positions()
+                    # Periodic broker reconciliation (every 5 minutes)
+                    if _time.monotonic() - self._last_reconcile > self.RECONCILE_INTERVAL:
+                        await self._reconcile_with_broker()
                     await asyncio.sleep(15)
                     continue
 
-                # EOD close at 3:55 PM
-                if now.hour == 15 and now.minute >= 55 and self.engine.positions:
-                    await self._eod_close()
-                    await asyncio.sleep(300)
-                    continue
+                # EOD close at 3:50+ PM (once per day)
+                if now.hour == 15 and now.minute >= 50 and not _did_eod:
+                    if self.engine.positions:
+                        _did_eod = True
+                        await self._eod_close()
+                        await asyncio.sleep(60)
+                        continue
 
-                # After hours — save state and sleep until pre-market
+                # After hours (4 PM+) — save state, sleep until next morning
                 if now.hour >= 16:
+                    # P0-5: Final safety check — never sleep with open positions
+                    if self.engine.positions:
+                        logger.error("CRITICAL: After hours with open positions! Emergency close.")
+                        self._add_message('error', 'EMERGENCY: Positions open after hours — force closing')
+                        await self._eod_close()
                     self._save_state()
                     self.engine.reset_daily()
                     self.status = 'waiting'
                     await broadcast({'type': 'live_status', 'status': 'waiting'})
                     self._add_message('info', 'After hours — sleeping until 7:00 AM ET')
-                    await asyncio.sleep(3600)
+                    # Sleep until 7 AM tomorrow
+                    tomorrow_7am = (now + timedelta(days=1)).replace(
+                        hour=7, minute=0, second=0, microsecond=0)
+                    sleep_sec = max(60, (tomorrow_7am - now).total_seconds())
+                    await asyncio.sleep(sleep_sec)
                     continue
 
-                # Before pre-market — sleep
-                if now.hour < 7:
-                    self.status = 'waiting'
-                    await broadcast({'type': 'live_status', 'status': 'waiting'})
-                    await asyncio.sleep(600)
-                    continue
-
+                # 7-9 AM waiting for next event, or 9-16 without positions
                 await asyncio.sleep(30)
 
         except asyncio.CancelledError:
@@ -2908,14 +3863,26 @@ class GapFadeLiveTrader:
         })
 
     def _apply_catalyst_scores(self):
-        """Adjust candidate scores based on catalyst classification."""
+        """Adjust candidate scores based on catalyst classification.
+
+        Earnings handling: if catalyst_skip_earnings=True, hard-skip (score=-999).
+        Otherwise, apply a heavy penalty (catalyst_earnings_penalty, default 40).
+        This lets high-scoring candidates survive even with an earnings tag,
+        which is important because yfinance earnings data is often inaccurate.
+        """
         filtered = []
         for c in self.candidates:
-            if c.catalyst == 'earnings' and self.config.catalyst_skip_earnings:
-                c.score = -999
-                self._add_message('catalyst',
-                    f'{c.symbol}: SKIP — earnings gap ({c.catalyst_detail})')
-                continue
+            if c.catalyst == 'earnings':
+                if self.config.catalyst_skip_earnings:
+                    c.score = -999
+                    self._add_message('catalyst',
+                        f'{c.symbol}: SKIP — earnings gap ({c.catalyst_detail})')
+                    continue
+                else:
+                    penalty = self.config.catalyst_earnings_penalty
+                    c.score -= penalty
+                    self._add_message('catalyst',
+                        f'{c.symbol}: -{penalty} penalty (earnings: {c.catalyst_detail})')
             elif c.catalyst == 'ma':
                 c.score = -999
                 self._add_message('catalyst',
@@ -2941,50 +3908,146 @@ class GapFadeLiveTrader:
             filtered.append(c)
         self.candidates = filtered
 
+    # -------------------------------------------------------------------------
+    # Entry Flow — with fill verification
+    # -------------------------------------------------------------------------
+
     async def _enter_positions(self):
-        """Enter short positions on top candidates."""
+        """Enter short positions on top candidates with fill verification."""
         self.status = 'trading'
         await broadcast({'type': 'live_status', 'status': 'trading'})
 
+        # Market regime filter (live)
+        regime = await fetch_market_regime_live(self.config)
+        if regime and regime.position_reduction == -999:
+            self._add_message('regime', f'BLOCKED: {regime.note}')
+            self.status = 'regime_blocked'
+            return
+        if regime and regime.position_reduction == -1:
+            self._add_message('regime', f'HALVED: {regime.note}')
+
+        # Thin day logic: if fewer candidates than threshold, trade all of them
+        eff_max = self.engine.effective_max_positions(len(self.candidates))
+        if regime and regime.position_reduction == -1:
+            eff_max = max(1, eff_max // 2)
+        self.engine._effective_max_positions = eff_max
+        self._add_message('entry',
+            f'{len(self.candidates)} candidates, trading top {eff_max}'
+            + (' (thin day — trading all)' if eff_max > self.config.max_positions else '')
+            + (f' ({regime.note})' if regime and regime.note else ''))
+
         symbols_entered = []
-        for candidate in self.candidates[:self.config.max_positions]:
-            ok, reason = self.engine.should_enter(candidate)
-            if not ok:
-                self._add_message('skip', f'Skipping {candidate.symbol}: {reason}')
-                continue
+        for candidate in self.candidates[:eff_max]:
+            async with self._position_lock:
+                ok, reason = self.engine.should_enter(candidate)
+                if not ok:
+                    self._add_message('skip', f'Skipping {candidate.symbol}: {reason}')
+                    continue
 
-            entry_price = candidate.premarket_price
-            entry_time = datetime.now(ET).strftime('%Y-%m-%d %H:%M')
-            pos = self.engine.open_position(candidate, entry_price, entry_time)
-            if pos is None:
-                continue
+                entry_price = candidate.premarket_price
+                entry_time = datetime.now(ET).strftime('%Y-%m-%d %H:%M')
+                pos = self.engine.open_position(candidate, entry_price, entry_time)
+                if pos is None:
+                    continue
 
-            # Place actual order on Alpaca
+            # Submit order and wait for fill (outside lock to not block other ops)
+            direction = candidate.direction
+            entry_side = 'buy' if direction == 'long' else 'sell'
+            side_label = 'LONG' if direction == 'long' else 'SHORT'
+
             if self.config.limit_orders_only:
-                # Limit sell: slightly below current price to get filled quickly
-                limit_px = round(entry_price * (1 - self.config.limit_offset_pct), 2)
-                result = alpaca_place_order(candidate.symbol, pos.shares, 'sell',
-                                           order_type='limit', limit_price=limit_px)
+                if direction == 'long':
+                    limit_px = round(entry_price * (1 + self.config.limit_offset_pct), 2)
+                else:
+                    limit_px = round(entry_price * (1 - self.config.limit_offset_pct), 2)
+                order_type = 'limit'
                 order_label = f'LIMIT @ ${limit_px:.2f}'
             else:
-                result = alpaca_place_order(candidate.symbol, pos.shares, 'sell')
+                limit_px = None
+                order_type = 'market'
                 order_label = 'MARKET'
-            if 'error' in result:
-                self._add_message('error', f'Order failed for {candidate.symbol}: {result["error"]}')
-                del self.engine.positions[candidate.symbol]
-                continue
 
-            self._add_message('entry', f'SHORT {pos.shares} {candidate.symbol} {order_label} '
-                             f'(gap {candidate.gap_pct:.1%}, score {candidate.score:.0f})')
-            symbols_entered.append(candidate.symbol)
-            self._add_message('entry', f'SHORT {pos.shares} {candidate.symbol} @ ${entry_price:.2f} '
-                            f'(gap {candidate.gap_pct:.1%}, vol {candidate.vol_ratio:.1f}x)', {
-                'symbol': candidate.symbol,
-                'shares': pos.shares,
-                'entry_price': entry_price,
-                'stop': pos.stop_price,
-                'target': pos.full_target,
-            })
+            self._add_message('entry',
+                f'Submitting {side_label} {pos.shares} {candidate.symbol} {order_label}...')
+
+            fill = await alpaca_submit_and_confirm(
+                candidate.symbol, pos.shares, entry_side,
+                order_type=order_type, limit_price=limit_px,
+                timeout_sec=15.0 if order_type == 'limit' else 10.0,
+            )
+
+            async with self._position_lock:
+                if fill.is_filled:
+                    # P0-3: Use actual fill price for position tracking
+                    pos.entry_fill_price = fill.filled_avg_price
+                    pos.entry_order_id = fill.order_id
+                    # Recalculate stops/targets based on actual fill price
+                    if fill.filled_avg_price > 0:
+                        eff_stop_pct = compute_adaptive_stop_pct(self.config, candidate.gap_pct)
+                        pos.entry_price = fill.filled_avg_price
+                        if direction == 'long':
+                            pos.stop_price = fill.filled_avg_price * (1 - eff_stop_pct)
+                        else:
+                            pos.stop_price = fill.filled_avg_price * (1 + eff_stop_pct)
+                        pos.half_target = (fill.filled_avg_price + candidate.prev_close) / 2
+
+                    # Place broker-side stop order immediately
+                    stop_result = await asyncio.to_thread(
+                        alpaca_place_stop_order, candidate.symbol,
+                        fill.filled_qty, pos.stop_price, 0.003, direction
+                    )
+                    if 'error' not in stop_result:
+                        pos.stop_order_id = stop_result.get('id', '')
+                        self._add_message('entry',
+                            f'Broker stop set: {candidate.symbol} @ ${pos.stop_price:.2f}')
+                    else:
+                        logger.warning(f"Broker stop failed for {candidate.symbol}: "
+                                      f"{stop_result['error']} — using software stop")
+
+                    symbols_entered.append(candidate.symbol)
+                    self._add_message('entry',
+                        f'FILLED {side_label} {fill.filled_qty} {candidate.symbol} '
+                        f'@ ${fill.filled_avg_price:.2f} {order_label} '
+                        f'(gap {candidate.gap_pct:.1%}, score {candidate.score:.0f})', {
+                        'symbol': candidate.symbol,
+                        'shares': fill.filled_qty,
+                        'entry_price': fill.filled_avg_price,
+                        'stop': pos.stop_price,
+                        'target': pos.full_target,
+                    })
+                elif fill.status == 'partially_filled' and fill.filled_qty > 0:
+                    # Partial fill — adjust position to actual filled quantity
+                    pos.shares = fill.filled_qty
+                    pos.remaining_shares = fill.filled_qty
+                    pos.entry_fill_price = fill.filled_avg_price
+                    pos.entry_order_id = fill.order_id
+                    if fill.filled_avg_price > 0:
+                        eff_stop_pct = compute_adaptive_stop_pct(self.config, candidate.gap_pct)
+                        pos.entry_price = fill.filled_avg_price
+                        if direction == 'long':
+                            pos.stop_price = fill.filled_avg_price * (1 - eff_stop_pct)
+                        else:
+                            pos.stop_price = fill.filled_avg_price * (1 + eff_stop_pct)
+                        pos.half_target = (fill.filled_avg_price + candidate.prev_close) / 2
+
+                    # Place broker-side stop for partial fill too
+                    stop_result = await asyncio.to_thread(
+                        alpaca_place_stop_order, candidate.symbol,
+                        fill.filled_qty, pos.stop_price, 0.003, direction
+                    )
+                    if 'error' not in stop_result:
+                        pos.stop_order_id = stop_result.get('id', '')
+
+                    symbols_entered.append(candidate.symbol)
+                    self._add_message('warning',
+                        f'PARTIAL FILL {fill.filled_qty}/{pos.shares} {candidate.symbol} '
+                        f'@ ${fill.filled_avg_price:.2f}')
+                else:
+                    # Order failed/rejected/timeout — remove position from internal state
+                    self._add_message('error',
+                        f'Entry order FAILED for {candidate.symbol}: {fill.error}')
+                    if candidate.symbol in self.engine.positions:
+                        del self.engine.positions[candidate.symbol]
 
         # Start tick streamer for entered symbols
         if symbols_entered:
@@ -2997,31 +4060,171 @@ class GapFadeLiveTrader:
         })
         self._save_state()
 
+    # -------------------------------------------------------------------------
+    # Exit Flow — evaluate → place order → confirm fill → update state
+    # -------------------------------------------------------------------------
+
+    async def _execute_exit(self, symbol: str, exit_signal: dict, price: float) -> Optional[TradeRecord]:
+        """Execute a single exit: cancel broker stop, place cover order, wait for fill, confirm.
+
+        Must be called with _position_lock already held.
+        Returns the TradeRecord if successful, None if order failed.
+        """
+        pos = self.engine.positions.get(symbol)
+        if pos is None or pos.closing:
+            return None
+
+        reason = exit_signal['reason']
+        shares = exit_signal['shares']
+        is_eod = reason == 'eod'
+        is_stop = reason == 'stop'
+
+        # Mark position as closing to prevent re-entry
+        pos.closing = True
+
+        # Cancel broker-side stop order before placing a new cover order
+        # (except for stop exits where the broker stop may have already filled)
+        if pos.stop_order_id and not is_stop:
+            await asyncio.to_thread(alpaca_cancel_order, pos.stop_order_id)
+            pos.stop_order_id = ''
+
+        # Direction-aware exit side: sell to close longs, buy to cover shorts
+        direction = pos.direction
+        exit_side = 'sell' if direction == 'long' else 'buy'
+
+        # Choose order type: EOD always market for guaranteed execution
+        if is_eod:
+            order_type = 'market'
+            limit_px = None
+        elif self.config.limit_orders_only:
+            if direction == 'long':
+                limit_px = round(price * (1 - self.config.limit_offset_pct), 2)
+            else:
+                limit_px = round(price * (1 + self.config.limit_offset_pct), 2)
+            order_type = 'limit'
+        else:
+            order_type = 'market'
+            limit_px = None
+
+        fill = await alpaca_submit_and_confirm(
+            symbol, shares, exit_side,
+            order_type=order_type, limit_price=limit_px,
+            timeout_sec=10.0 if order_type == 'limit' else 15.0,
+        )
+
+        if fill.is_filled:
+            now = datetime.now(ET)
+            trade = self.engine.confirm_exit(
+                symbol, fill.filled_qty, fill.filled_avg_price, reason, now
+            )
+            if trade:
+                self._add_message('exit',
+                    f'{reason.upper()} {fill.filled_qty} {symbol} '
+                    f'@ ${fill.filled_avg_price:.2f} P&L: ${trade.pnl:.2f} ({trade.pnl_pct:.1%})')
+
+            # If partial profit exit, replace broker stop at breakeven
+            if reason == 'partial' and symbol in self.engine.positions:
+                new_pos = self.engine.positions[symbol]
+                new_stop_result = await alpaca_replace_stop_order(
+                    '', symbol, new_pos.remaining_shares, new_pos.stop_price
+                )
+                if 'error' not in new_stop_result:
+                    new_pos.stop_order_id = new_stop_result.get('id', '')
+                    self._add_message('info',
+                        f'Stop moved to breakeven: {symbol} @ ${new_pos.stop_price:.2f}')
+
+            return trade
+
+        elif fill.status == 'partially_filled' and fill.filled_qty > 0:
+            now = datetime.now(ET)
+            trade = self.engine.confirm_exit(
+                symbol, fill.filled_qty, fill.filled_avg_price, reason, now
+            )
+            if trade:
+                self._add_message('warning',
+                    f'PARTIAL COVER {fill.filled_qty}/{shares} {symbol} '
+                    f'@ ${fill.filled_avg_price:.2f}')
+            return trade
+
+        else:
+            # Order failed — clear closing flag so we can retry
+            if symbol in self.engine.positions:
+                self.engine.positions[symbol].closing = False
+            self._add_message('error',
+                f'Cover order FAILED for {symbol}: {fill.error} — will retry')
+            logger.error(f"Cover order failed: {symbol} {shares} shares: {fill.error}")
+            return None
+
+    async def _check_broker_stops(self):
+        """Check if any broker-side stop orders have been filled.
+
+        This is the primary stop-loss mechanism — Alpaca triggers the stop
+        server-side with zero latency. We just need to detect the fill and
+        update internal state.
+        """
+        for sym in list(self.engine.positions.keys()):
+            pos = self.engine.positions.get(sym)
+            if not pos or not pos.stop_order_id or pos.closing:
+                continue
+
+            order_data = await asyncio.to_thread(alpaca_get_order, pos.stop_order_id)
+            if order_data is None:
+                continue
+
+            status = order_data.get('status', '')
+
+            if status == 'filled':
+                fill_qty = int(order_data.get('filled_qty', pos.remaining_shares))
+                fill_price = float(order_data.get('filled_avg_price', pos.stop_price))
+
+                logger.info(f"Broker stop FILLED: {sym} {fill_qty} shares @ ${fill_price:.2f}")
+                now = datetime.now(ET)
+                trade = self.engine.confirm_exit(sym, fill_qty, fill_price, 'stop', now)
+                pos.stop_order_id = ''
+
+                if trade:
+                    self._add_message('exit',
+                        f'STOP (broker) {fill_qty} {sym} '
+                        f'@ ${fill_price:.2f} P&L: ${trade.pnl:.2f} ({trade.pnl_pct:.1%})')
+                    await broadcast({'type': 'trade', 'trades': [asdict(trade)]})
+                    await broadcast({
+                        'type': 'positions_update',
+                        'positions': {s: asdict(p) for s, p in self.engine.positions.items()},
+                    })
+                    self._save_state()
+
     async def _on_tick(self, symbol: str, price: float):
-        """Tick callback from Alpaca stream."""
+        """Tick callback from Alpaca stream — evaluate non-stop exits under lock.
+
+        Stop losses are handled by broker-side stop orders (zero latency).
+        This only evaluates: partial target, full target, time exit.
+        """
         if self.status != 'trading':
             return
-        if symbol not in self.engine.positions:
-            return
 
-        now = datetime.now(ET)
-        closed = self.engine.check_exits(symbol, price, price, now)
-        for trade in closed:
-            # Place cover order
-            if self.config.limit_orders_only:
-                # Limit buy: slightly above current price for quick fill
-                limit_px = round(price * (1 + self.config.limit_offset_pct), 2)
-                alpaca_place_order(symbol, trade.shares, 'buy',
-                                  order_type='limit', limit_price=limit_px)
-            else:
-                alpaca_place_order(symbol, trade.shares, 'buy')
-            self._add_message('exit', f'{trade.exit_reason.upper()} {trade.shares} {symbol} '
-                            f'@ ${trade.exit_price:.2f} P&L: ${trade.pnl:.2f} ({trade.pnl_pct:.1%})')
+        async with self._position_lock:
+            if symbol not in self.engine.positions:
+                return
 
-        if closed:
+            pos = self.engine.positions[symbol]
+            now = datetime.now(ET)
+
+            # evaluate_exit checks all conditions including stop, but if the
+            # position has a broker stop order, skip the software stop check
+            exit_signal = self.engine.evaluate_exit(symbol, price, price, now)
+            if exit_signal is None:
+                return
+
+            # Skip stop signals — broker handles those
+            if exit_signal['reason'] == 'stop' and pos.stop_order_id:
+                return
+
+            trade = await self._execute_exit(symbol, exit_signal, price)
+
+        if trade:
             await broadcast({
                 'type': 'trade',
-                'trades': [asdict(t) for t in closed],
+                'trades': [asdict(trade)],
             })
             await broadcast({
                 'type': 'positions_update',
@@ -3030,37 +4233,126 @@ class GapFadeLiveTrader:
             self._save_state()
 
     async def _check_positions(self):
-        """Periodic position check (fallback to polling if streamer lags)."""
+        """Periodic position check: poll broker stops + evaluate non-stop exits."""
         if not self.engine.positions:
             return
 
-        now = datetime.now(ET)
+        # Check if any broker-side stop orders have filled
+        await self._check_broker_stops()
 
-        # Use streamer prices if available
-        any_closed = False
+        now = datetime.now(ET)
+        trades_executed = []
+
         if self.streamer and self.streamer.latest_prices:
             for sym in list(self.engine.positions.keys()):
                 price = self.streamer.latest_prices.get(sym)
-                if price:
-                    closed = self.engine.check_exits(sym, price, price, now)
-                    for trade in closed:
-                        if self.config.limit_orders_only:
-                            limit_px = round(price * (1 + self.config.limit_offset_pct), 2)
-                            alpaca_place_order(sym, trade.shares, 'buy',
-                                              order_type='limit', limit_price=limit_px)
-                        else:
-                            alpaca_place_order(sym, trade.shares, 'buy')
-                        self._add_message('exit', f'{trade.exit_reason.upper()} {sym} '
-                                        f'@ ${trade.exit_price:.2f} P&L: ${trade.pnl:.2f}')
-                    if closed:
-                        any_closed = True
-                        await broadcast({
-                            'type': 'trade',
-                            'trades': [asdict(t) for t in closed],
-                        })
+                if not price:
+                    continue
 
-        if any_closed:
+                async with self._position_lock:
+                    pos = self.engine.positions.get(sym)
+                    if not pos:
+                        continue
+
+                    exit_signal = self.engine.evaluate_exit(sym, price, price, now)
+                    if exit_signal is None:
+                        continue
+
+                    # Skip stop signals — broker handles those
+                    if exit_signal['reason'] == 'stop' and pos.stop_order_id:
+                        continue
+
+                    trade = await self._execute_exit(sym, exit_signal, price)
+
+                if trade:
+                    trades_executed.append(trade)
+
+        if trades_executed:
+            await broadcast({
+                'type': 'trade',
+                'trades': [asdict(t) for t in trades_executed],
+            })
             self._save_state()
+
+        # Check for re-entry opportunities on stopped-out symbols
+        if self.config.reentry_enabled and self.engine._stopped_today:
+            now = datetime.now(ET)
+            for sym, rec in list(self.engine._stopped_today.items()):
+                if sym in self.engine.positions:
+                    continue  # already in position
+                if not self.streamer or not self.streamer.latest_prices:
+                    continue
+                price = self.streamer.latest_prices.get(sym)
+                if not price:
+                    continue
+                ok_re, reason_re = self.engine.can_reenter(sym, price, now)
+                if not ok_re:
+                    continue
+                # Build a candidate for re-entry
+                re_dir = rec.direction
+                re_candidate = GapCandidate(
+                    symbol=sym, gap_pct=rec.gap_pct, prev_close=rec.prev_close,
+                    premarket_price=price, avg_vol_20d=rec.avg_vol_20d,
+                    vol_ratio=1.0, shortable=True, easy_to_borrow=True,
+                    direction=re_dir,
+                )
+                async with self._position_lock:
+                    ok, reason = self.engine.should_enter(re_candidate)
+                    if not ok:
+                        continue
+                    re_time = now.strftime('%Y-%m-%d %H:%M')
+                    re_pos = self.engine.open_position(re_candidate, price, re_time)
+                    if re_pos is None:
+                        continue
+                    # Use tighter re-entry stop
+                    if re_dir == 'long':
+                        re_pos.stop_price = price * (1 - self.config.reentry_stop_pct)
+                    else:
+                        re_pos.stop_price = price * (1 + self.config.reentry_stop_pct)
+                    rec.reentry_count += 1
+
+                # Submit re-entry order
+                re_entry_side = 'buy' if re_dir == 'long' else 'sell'
+                re_side_label = 'LONG' if re_dir == 'long' else 'SHORT'
+                self._add_message('entry',
+                    f'RE-ENTRY {re_side_label} {re_pos.shares} {sym} @ ${price:.2f} '
+                    f'(stop ${re_pos.stop_price:.2f}, {self.config.reentry_stop_pct:.1%})')
+
+                if self.config.limit_orders_only:
+                    if re_dir == 'long':
+                        re_limit_px = round(price * (1 + self.config.limit_offset_pct), 2)
+                    else:
+                        re_limit_px = round(price * (1 - self.config.limit_offset_pct), 2)
+                else:
+                    re_limit_px = None
+
+                fill = await alpaca_submit_and_confirm(
+                    sym, re_pos.shares, re_entry_side,
+                    order_type='limit' if self.config.limit_orders_only else 'market',
+                    limit_price=re_limit_px,
+                    timeout_sec=15.0,
+                )
+                async with self._position_lock:
+                    if fill.is_filled:
+                        re_pos.entry_fill_price = fill.filled_avg_price
+                        re_pos.entry_order_id = fill.order_id
+                        if fill.filled_avg_price > 0:
+                            re_pos.entry_price = fill.filled_avg_price
+                            if re_dir == 'long':
+                                re_pos.stop_price = fill.filled_avg_price * (1 - self.config.reentry_stop_pct)
+                            else:
+                                re_pos.stop_price = fill.filled_avg_price * (1 + self.config.reentry_stop_pct)
+                        stop_result = await asyncio.to_thread(
+                            alpaca_place_stop_order, sym, fill.filled_qty, re_pos.stop_price,
+                            0.003, re_dir)
+                        if 'error' not in stop_result:
+                            re_pos.stop_order_id = stop_result.get('id', '')
+                        self._add_message('entry',
+                            f'RE-ENTRY FILLED {fill.filled_qty} {sym} @ ${fill.filled_avg_price:.2f}')
+                    else:
+                        self._add_message('error', f'RE-ENTRY FAILED {sym}: {fill.error}')
+                        if sym in self.engine.positions:
+                            del self.engine.positions[sym]
 
         await broadcast({
             'type': 'positions_update',
@@ -3069,34 +4361,105 @@ class GapFadeLiveTrader:
             'equity': self.engine.equity,
         })
 
+    # -------------------------------------------------------------------------
+    # P0-5: EOD Close — retry loop with broker verification
+    # -------------------------------------------------------------------------
+
     async def _eod_close(self):
-        """Force close all positions at end of day."""
-        self._add_message('system', 'EOD — closing all positions')
+        """Force close all positions at end of day with retry and verification."""
+        self._add_message('system', 'EOD — closing all positions (with verification)')
+        logger.info("EOD close initiated")
 
-        # Get latest prices
-        prices = {}
-        if self.streamer:
-            prices = dict(self.streamer.latest_prices)
+        # Cancel all broker-side stop orders first
+        for sym, pos in list(self.engine.positions.items()):
+            if pos.stop_order_id:
+                await asyncio.to_thread(alpaca_cancel_order, pos.stop_order_id)
+                pos.stop_order_id = ''
 
-        trades = self.engine.force_close_all(prices, 'eod')
-        for trade in trades:
-            # EOD: always use market orders to guarantee close before bell
-            alpaca_place_order(trade.symbol, trade.shares, 'buy')
-            self._add_message('exit', f'EOD close {trade.symbol} @ ${trade.exit_price:.2f} '
-                            f'P&L: ${trade.pnl:.2f}')
+        max_retries = 3
+        for attempt in range(max_retries):
+            if not self.engine.positions:
+                break
+
+            symbols_to_close = list(self.engine.positions.keys())
+            for sym in symbols_to_close:
+                async with self._position_lock:
+                    pos = self.engine.positions.get(sym)
+                    if pos is None or pos.closing:
+                        continue
+
+                    price = 0.0
+                    if self.streamer and self.streamer.latest_prices:
+                        price = self.streamer.latest_prices.get(sym, 0.0)
+                    if price <= 0:
+                        price = pos.entry_price  # fallback
+
+                    exit_signal = {'reason': 'eod', 'shares': pos.remaining_shares,
+                                   'is_full_close': True, 'trigger_price': price}
+                    trade = await self._execute_exit(sym, exit_signal, price)
+
+                if trade:
+                    await broadcast({'type': 'trade', 'trades': [asdict(trade)]})
+
+            # Verify with broker that positions are actually closed
+            await asyncio.sleep(2)  # give broker time to settle
+            broker_positions = await asyncio.to_thread(alpaca_get_positions)
+            # Check for any remaining positions (both long and short)
+            tracked_syms = set(self.engine.positions.keys())
+            broker_remaining = [p for p in broker_positions
+                                if p.get('symbol') in tracked_syms]
+
+            if not broker_remaining:
+                logger.info("EOD close verified: no broker positions remaining")
+                self._add_message('system', 'EOD close verified — all positions closed')
+                break
+
+            remaining = [p['symbol'] for p in broker_remaining]
+            logger.warning(f"EOD close attempt {attempt + 1}/{max_retries}: "
+                          f"broker still has positions: {remaining}")
+            self._add_message('warning',
+                f'EOD retry {attempt + 1}: {len(remaining)} positions still on broker: {remaining}')
+
+            # Clear closing flags for retry
+            async with self._position_lock:
+                for sym in remaining:
+                    if sym in self.engine.positions:
+                        self.engine.positions[sym].closing = False
+
+            if attempt < max_retries - 1:
+                await asyncio.sleep(3)  # wait before retry
+
+        # Final safety check
+        broker_positions = await asyncio.to_thread(alpaca_get_positions)
+        tracked_syms = set(self.engine.positions.keys())
+        broker_remaining = [p for p in broker_positions
+                            if p.get('symbol') in tracked_syms]
+        if broker_remaining:
+            remaining = [(p['symbol'], p.get('qty')) for p in broker_remaining]
+            logger.error(f"CRITICAL: EOD close FAILED after {max_retries} retries! "
+                        f"Remaining broker positions: {remaining}")
+            self._add_message('error',
+                f'CRITICAL: EOD close failed! Still have positions: {remaining}. '
+                f'Manual intervention required!')
 
         if self.streamer:
             await self.streamer.stop()
             self.streamer = None
 
-        await broadcast({
-            'type': 'trade',
-            'trades': [asdict(t) for t in trades],
-        })
+        # Clean up any remaining internal positions (broker is truth)
+        async with self._position_lock:
+            if not broker_remaining:
+                for sym in list(self.engine.positions.keys()):
+                    del self.engine.positions[sym]
+
         self._save_state()
 
+    # -------------------------------------------------------------------------
+    # State Persistence — atomic writes
+    # -------------------------------------------------------------------------
+
     def _save_state(self):
-        """Persist state to JSON."""
+        """Persist state to JSON with atomic write (write-fsync-rename)."""
         state = {
             'status': self.status,
             'equity': self.engine.equity,
@@ -3108,11 +4471,20 @@ class GapFadeLiveTrader:
             'messages': self.messages[-50:],
             'saved_at': datetime.now(ET).strftime('%Y-%m-%d %H:%M:%S'),
         }
+        tmp_path = self.STATE_FILE + '.tmp'
         try:
-            with open(self.STATE_FILE, 'w') as f:
+            with open(tmp_path, 'w') as f:
                 json.dump(state, f, indent=2, default=str)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, self.STATE_FILE)  # atomic on POSIX
         except Exception as e:
             logger.error(f"State save failed: {e}")
+            # Clean up temp file
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
 
     def _load_state(self):
         """Load persisted state on startup."""
@@ -3125,7 +4497,7 @@ class GapFadeLiveTrader:
             self.engine.peak_equity = state.get('peak_equity', self.engine.equity)
             self.messages = state.get('messages', [])
 
-            # Restore positions (crash recovery)
+            # Restore positions
             for sym, pd_dict in state.get('positions', {}).items():
                 try:
                     self.engine.positions[sym] = GapPosition(**{
@@ -3142,6 +4514,7 @@ class GapFadeLiveTrader:
                     }))
 
             logger.info(f"Loaded state: equity=${self.engine.equity:.2f}, "
+                       f"{len(self.engine.positions)} positions, "
                        f"{len(self.engine.all_trade_log)} historical trades")
         except Exception as e:
             logger.warning(f"State load failed: {e}")
@@ -3189,6 +4562,98 @@ async def broadcast(msg: dict):
 app = FastAPI(title="Gap Fade Strategy", version="1.0")
 _app_start_time = _time.time()
 
+# ---------------------------------------------------------------------------
+# P0-6: API Authentication Middleware
+# ---------------------------------------------------------------------------
+# Set GAP_FADE_API_KEY in .env to require X-API-Key header on mutating endpoints.
+# Read-only endpoints (GET, WebSocket, dashboard) remain open.
+
+_API_KEY = None  # loaded lazily
+
+def _get_api_key() -> Optional[str]:
+    global _API_KEY
+    if _API_KEY is None:
+        _load_env_file()
+        _API_KEY = os.environ.get('GAP_FADE_API_KEY', '') or ''
+    return _API_KEY if _API_KEY else None
+
+# Endpoints that DON'T require auth (read-only)
+# Only these paths are accessible without an API key
+_AUTH_EXEMPT_PATHS = {'/', '/api/health', '/docs', '/openapi.json'}
+
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    """Require API key on all /api/ endpoints except health and dashboard."""
+    api_key = _get_api_key()
+    if api_key:
+        path = request.url.path.rstrip('/')
+        if path.startswith('/api/') and path not in _AUTH_EXEMPT_PATHS:
+            provided = request.headers.get('X-API-Key', '')
+            if provided != api_key:
+                logger.warning(f"Auth failed for {request.method} {path} from {request.client.host}")
+                return JSONResponse(
+                    status_code=403,
+                    content={'error': 'Forbidden: invalid or missing X-API-Key header'}
+                )
+    return await call_next(request)
+
+
+# ---------------------------------------------------------------------------
+# P0-8: Config Validation
+# ---------------------------------------------------------------------------
+
+CONFIG_VALID_RANGES = {
+    'stop_pct':           (0.005, 0.10),    # 0.5% to 10%
+    'risk_pct':           (0.001, 0.10),    # 0.1% to 10%
+    'max_positions':      (1, 10),
+    'initial_capital':    (1000, 10_000_000),
+    'gap_threshold':      (0.01, 0.50),     # 1% to 50%
+    'max_gap_pct':        (0.10, 1.0),      # 10% to 100%
+    'vol_ratio_max':      (0.5, 20.0),
+    'daily_loss_limit':   (0.005, 0.10),    # 0.5% to 10%
+    'max_drawdown':       (0.01, 0.30),     # 1% to 30%
+    'max_consec_losses':  (1, 20),
+    'kelly_fraction':     (0.05, 1.0),
+    'max_notional':       (1000, 1_000_000),
+    'slippage_pct':       (0.0, 0.05),      # 0% to 5%
+    'limit_offset_pct':   (0.0, 0.05),      # 0% to 5%
+    'partial_cover_frac': (0.0, 1.0),
+    'min_price':          (0.01, 1000),
+    'min_avg_volume':     (0, 100_000_000),
+    'catalyst_earnings_penalty': (0, 100),
+    'catalyst_news_penalty':     (0, 100),
+    'catalyst_noise_bonus':      (0, 50),
+}
+
+
+def validate_config(updates: dict) -> Tuple[dict, List[str]]:
+    """Validate config updates against safe ranges.
+
+    Returns (validated_updates, errors). validated_updates only contains
+    keys that passed validation.
+    """
+    validated = {}
+    errors = []
+    for key, value in updates.items():
+        if not hasattr(GapFadeConfig, key):
+            continue
+        field_type = type(getattr(GapFadeConfig(), key))
+        try:
+            typed_value = field_type(value)
+        except (ValueError, TypeError):
+            errors.append(f"{key}: invalid type (expected {field_type.__name__})")
+            continue
+
+        if key in CONFIG_VALID_RANGES:
+            lo, hi = CONFIG_VALID_RANGES[key]
+            if not (lo <= typed_value <= hi):
+                errors.append(f"{key}: {typed_value} out of range [{lo}, {hi}]")
+                continue
+
+        validated[key] = typed_value
+    return validated, errors
+
+
 # Singletons
 live_trader = GapFadeLiveTrader()
 backtester = GapFadeBacktester()
@@ -3222,8 +4687,14 @@ async def on_startup():
 
 @app.get("/", response_class=HTMLResponse)
 async def dashboard():
-    """Serve the embedded HTML dashboard."""
-    return HTMLResponse(DASHBOARD_HTML)
+    """Serve the embedded HTML dashboard with API key injected."""
+    api_key = _get_api_key() or ''
+    # Inject the key as a JS variable so the dashboard can authenticate POST requests
+    html = DASHBOARD_HTML.replace(
+        '/*__API_KEY_PLACEHOLDER__*/',
+        f'const __API_KEY__ = "{api_key}";',
+    )
+    return HTMLResponse(html)
 
 
 @app.get("/api/health")
@@ -3310,15 +4781,23 @@ async def reset_trader():
 
 @app.post("/api/config")
 async def update_config(body: dict):
-    """Update strategy configuration."""
+    """Update strategy configuration with validation."""
+    # P0-8: Validate all updates against safe ranges
+    validated, errors = validate_config(body)
+    if errors:
+        logger.warning(f"Config validation errors: {errors}")
+
     config = live_trader.config
-    for key, value in body.items():
-        if hasattr(config, key):
-            field_type = type(getattr(config, key))
-            try:
-                setattr(config, key, field_type(value))
-            except (ValueError, TypeError):
-                pass
+    applied = []
+    for key, value in validated.items():
+        old_val = getattr(config, key, None)
+        setattr(config, key, value)
+        if old_val != value:
+            applied.append(f"{key}: {old_val} → {value}")
+
+    if applied:
+        logger.info(f"Config updated: {', '.join(applied)}")
+
     # Sync capital if changed while idle (no open positions)
     old_capital = live_trader.engine.config.initial_capital
     live_trader.engine.config = config
@@ -3327,7 +4806,10 @@ async def update_config(body: dict):
         live_trader.engine.peak_equity = config.initial_capital
     # Rebuild scanner when universe config changes
     live_trader.scanner = GapScanner(config)
-    return {'config': asdict(config)}
+    result = {'config': asdict(config)}
+    if errors:
+        result['validation_errors'] = errors
+    return result
 
 
 @app.post("/api/backtest")
@@ -3341,8 +4823,41 @@ async def run_backtest(body: dict):
     start_date = body.get('start_date')
     end_date = body.get('end_date')
 
+    # Validate dates
+    for dkey in ['start_date', 'end_date']:
+        val = body.get(dkey)
+        if val:
+            try:
+                datetime.strptime(val, '%Y-%m-%d')
+            except ValueError:
+                return {'error': f'Invalid {dkey}: "{val}" — expected YYYY-MM-DD format'}
+    if start_date and end_date and start_date > end_date:
+        return {'error': f'start_date ({start_date}) must be before end_date ({end_date})'}
+
+    # Validate numeric params
+    validation_errors = []
+    bt_numeric_keys = [
+        'gap_threshold', 'max_gap_pct', 'vol_ratio_max', 'stop_pct', 'risk_pct',
+        'kelly_fraction', 'max_positions', 'initial_capital',
+        'daily_loss_limit', 'max_consec_losses', 'max_drawdown',
+        'max_notional', 'slippage_pct', 'partial_cover_frac',
+        'min_price', 'min_avg_volume',
+    ]
+    for key in bt_numeric_keys:
+        if key in body and key in CONFIG_VALID_RANGES:
+            try:
+                val = float(body[key]) if not isinstance(body[key], bool) else body[key]
+                lo, hi = CONFIG_VALID_RANGES[key]
+                if not (lo <= val <= hi):
+                    validation_errors.append(f"{key}: {val} out of range [{lo}, {hi}]")
+            except (ValueError, TypeError):
+                validation_errors.append(f"{key}: invalid value '{body[key]}'")
+    if validation_errors:
+        return {'error': 'Validation failed: ' + '; '.join(validation_errors)}
+
     # Build config from body
     config = GapFadeConfig()
+    config_errors = []
     for key in ['gap_threshold', 'max_gap_pct', 'vol_ratio_max', 'stop_pct', 'risk_pct',
                 'kelly_fraction', 'max_positions', 'initial_capital',
                 'daily_loss_limit', 'max_consec_losses', 'max_drawdown',
@@ -3350,13 +4865,24 @@ async def run_backtest(body: dict):
                 'max_notional', 'slippage_pct', 'borrow_rate_annual',
                 'max_pct_adv', 'adverse_fill', 'adverse_fill_pct',
                 'partial_cover_frac', 'bounce_entry_pct',
-                'limit_orders_only', 'limit_offset_pct']:
+                'limit_orders_only', 'limit_offset_pct',
+                # Adaptive stops
+                'adaptive_stops', 'stop_gap_fraction', 'stop_min_pct', 'stop_max_pct',
+                # Market regime filter
+                'regime_filter', 'regime_spy_gap_limit', 'regime_spy_block_pct', 'regime_vix_threshold',
+                # Re-entry after stop-out
+                'reentry_enabled', 'reentry_cooldown_minutes', 'reentry_max_per_symbol',
+                'reentry_stop_pct', 'reentry_trigger_pct',
+                # Gap-down fading
+                'trade_gap_downs', 'gap_down_threshold', 'gap_down_max_pct', 'gap_down_vol_ratio_max']:
         if key in body:
             field_type = type(getattr(config, key))
             try:
                 setattr(config, key, field_type(body[key]))
             except (ValueError, TypeError):
-                pass
+                config_errors.append(f"{key}: cannot convert '{body[key]}' to {field_type.__name__}")
+    if config_errors:
+        return {'error': 'Config errors: ' + '; '.join(config_errors)}
 
     if symbols and isinstance(symbols, str):
         symbols = [s.strip() for s in symbols.split(',')]
@@ -3375,12 +4901,22 @@ async def run_backtest(body: dict):
 
     backtester = GapFadeBacktester(config)
     use_1min = body.get('use_1min', False)
-    asyncio.create_task(backtester.run(
-        symbol=symbol, symbols=symbols,
-        start_date=start_date, end_date=end_date,
-        config=config, progress_callback=progress_cb,
-        use_1min=use_1min,
-    ))
+
+    async def _run_bt():
+        try:
+            await backtester.run(
+                symbol=symbol, symbols=symbols,
+                start_date=start_date, end_date=end_date,
+                config=config, progress_callback=progress_cb,
+                use_1min=use_1min,
+            )
+        except Exception as e:
+            logger.error(f"Backtest task crashed: {e}")
+            backtester.status = 'error'
+            backtester.result = {'error': str(e)}
+            await broadcast({'type': 'backtest_complete', 'error': str(e)})
+
+    asyncio.create_task(_run_bt())
     return {'status': 'started'}
 
 
@@ -3448,6 +4984,12 @@ async def db_build(body: dict):
     """
     universe = body.get('universe', 'study')
     start_date = body.get('start_date', (datetime.now() - timedelta(days=5*365)).strftime('%Y-%m-%d'))
+    # Validate start_date
+    if start_date:
+        try:
+            datetime.strptime(start_date, '%Y-%m-%d')
+        except ValueError:
+            return {'error': f'Invalid start_date: "{start_date}" — expected YYYY-MM-DD format'}
     end_date = datetime.now().strftime('%Y-%m-%d')
 
     if universe == 'alpaca':
@@ -3758,6 +5300,27 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   button.success { background: var(--green); border-color: var(--green); color: #fff; }
   button.success:hover { background: #16a34a; }
 
+  /* Toast notifications */
+  .toast {
+    position: fixed;
+    top: 16px;
+    right: 16px;
+    z-index: 9999;
+    padding: 10px 18px;
+    border-radius: 6px;
+    font-size: 13px;
+    font-family: inherit;
+    max-width: 420px;
+    word-wrap: break-word;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+    animation: toastIn 0.25s ease-out;
+    cursor: pointer;
+  }
+  .toast-error { background: #991b1b; color: #fecaca; border: 1px solid #dc2626; }
+  .toast-warning { background: #78350f; color: #fde68a; border: 1px solid #f59e0b; }
+  .toast-success { background: #14532d; color: #bbf7d0; border: 1px solid #22c55e; }
+  @keyframes toastIn { from { opacity: 0; transform: translateY(-12px); } to { opacity: 1; transform: translateY(0); } }
+
   .feed {
     max-height: 350px;
     overflow-y: auto;
@@ -3958,10 +5521,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
     <!-- Candidates tab -->
     <div class="tab-content" id="tab-candidates">
-      <h2>Gap-Up Candidates <span style="color:var(--muted);font-size:11px;" id="scanTime"></span> <span style="color:var(--muted);font-size:11px;" id="universeInfo"></span></h2>
+      <h2>Gap Candidates <span style="color:var(--muted);font-size:11px;" id="scanTime"></span> <span style="color:var(--muted);font-size:11px;" id="universeInfo"></span></h2>
       <table>
         <thead><tr>
-          <th>Symbol</th><th>Gap %</th><th>Prev Close</th><th>Current</th><th>Vol Ratio</th>
+          <th>Symbol</th><th>Dir</th><th>Gap %</th><th>Prev Close</th><th>Current</th><th>Vol Ratio</th>
           <th>Avg Vol</th><th>Shortable</th><th>ETB</th><th>Catalyst</th><th>Score</th>
         </tr></thead>
         <tbody id="candidatesTable"></tbody>
@@ -4006,35 +5569,85 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         </div>
         <div class="config-item">
           <label>Gap %:</label>
-          <input type="number" id="btGap" value="7" step="1" style="width:60px;" title="Min gap % to consider">
+          <input type="number" id="btGap" value="7" step="1" min="1" max="50" style="width:60px;" title="Min gap % to consider">
         </div>
         <div class="config-item">
           <label>Max Gap %:</label>
-          <input type="number" id="btMaxGap" value="50" step="1" style="width:60px;" title="Filter out mega-gaps above this % (M&A, biotech catalysts)">
+          <input type="number" id="btMaxGap" value="50" step="1" min="10" max="100" style="width:60px;" title="Filter out mega-gaps above this % (M&A, biotech catalysts)">
         </div>
         <div class="config-item">
           <label>Vol Max:</label>
-          <input type="number" id="btVol" value="3.0" step="0.1" style="width:60px;" title="Max volume ratio vs 20d avg">
+          <input type="number" id="btVol" value="3.0" step="0.1" min="0.5" max="20" style="width:60px;" title="Max volume ratio vs 20d avg">
         </div>
         <div class="config-item">
           <label>Stop %:</label>
-          <input type="number" id="btStop" value="1.5" step="0.5" style="width:60px;" title="Stop loss above entry">
+          <input type="number" id="btStop" value="1.5" step="0.5" min="0.5" max="10" style="width:60px;" title="Stop loss above entry">
         </div>
         <div class="config-item">
           <label>Max Pos:</label>
-          <input type="number" id="btMaxPos" value="3" step="1" style="width:50px;" title="Max simultaneous positions">
+          <input type="number" id="btMaxPos" value="3" step="1" min="1" max="10" style="width:50px;" title="Max simultaneous positions">
         </div>
         <div class="config-item">
           <label>Slip %:</label>
-          <input type="number" id="btSlip" value="0.05" step="0.01" style="width:60px;" title="Slippage per side (0.05=limit orders, 0.15=market orders)">
+          <input type="number" id="btSlip" value="0.05" step="0.01" min="0" max="5" style="width:60px;" title="Slippage per side (0.05=limit orders, 0.15=market orders)">
         </div>
         <div class="config-item">
           <label>Cover frac:</label>
-          <input type="number" id="btCoverFrac" value="0.33" step="0.01" style="width:60px;" title="Fraction to cover at partial target (0=none, 0.33=1/3, 0.5=half)">
+          <input type="number" id="btCoverFrac" value="0.33" step="0.01" min="0" max="1" style="width:60px;" title="Fraction to cover at partial target (0=none, 0.33=1/3, 0.5=half)">
         </div>
         <label style="display:flex;align-items:center;gap:4px;cursor:pointer;">
           <input type="checkbox" id="bt1min"> 1-min bars (slow, detailed)
         </label>
+      </div>
+      <!-- Feature toggles -->
+      <div style="margin-top:8px;display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start;">
+        <!-- Adaptive Stops -->
+        <div style="padding:8px 10px;background:rgba(168,85,247,0.06);border:1px solid rgba(168,85,247,0.15);border-radius:6px;">
+          <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:12px;font-weight:600;color:var(--purple);">
+            <input type="checkbox" id="btAdaptiveStops" onchange="document.getElementById('btAdaptiveStopsOpts').style.display=this.checked?'flex':'none'"> Adaptive Stops
+          </label>
+          <div id="btAdaptiveStopsOpts" style="display:none;gap:6px;margin-top:6px;flex-wrap:wrap;font-size:11px;">
+            <div class="config-item"><label>Gap Frac:</label><input type="number" id="btStopGapFrac" value="0.15" step="0.01" min="0.01" max="1" style="width:55px;" title="stop = gap% × this"></div>
+            <div class="config-item"><label>Min %:</label><input type="number" id="btStopMin" value="1.0" step="0.1" min="0.1" max="10" style="width:50px;" title="Minimum stop %"></div>
+            <div class="config-item"><label>Max %:</label><input type="number" id="btStopMax" value="5.0" step="0.5" min="0.5" max="20" style="width:50px;" title="Maximum stop %"></div>
+          </div>
+        </div>
+        <!-- Market Regime Filter -->
+        <div style="padding:8px 10px;background:rgba(6,182,212,0.06);border:1px solid rgba(6,182,212,0.15);border-radius:6px;">
+          <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:12px;font-weight:600;color:var(--cyan);">
+            <input type="checkbox" id="btRegimeFilter" onchange="document.getElementById('btRegimeOpts').style.display=this.checked?'flex':'none'"> Market Regime Filter
+          </label>
+          <div id="btRegimeOpts" style="display:none;gap:6px;margin-top:6px;flex-wrap:wrap;font-size:11px;">
+            <div class="config-item"><label>SPY Gap Limit %:</label><input type="number" id="btRegimeSpyGap" value="1.0" step="0.1" min="0.1" max="10" style="width:50px;" title="SPY gap > this → halve positions"></div>
+            <div class="config-item"><label>SPY Block %:</label><input type="number" id="btRegimeSpyBlock" value="1.5" step="0.1" min="0.1" max="10" style="width:50px;" title="SPY gap > this → block all entries"></div>
+            <div class="config-item"><label>VIX Thresh:</label><input type="number" id="btRegimeVix" value="25" step="1" min="10" max="80" style="width:50px;" title="VIX > this → halve positions"></div>
+          </div>
+        </div>
+        <!-- Re-entry After Stop -->
+        <div style="padding:8px 10px;background:rgba(234,179,8,0.06);border:1px solid rgba(234,179,8,0.15);border-radius:6px;">
+          <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:12px;font-weight:600;color:var(--yellow);">
+            <input type="checkbox" id="btReentry" onchange="document.getElementById('btReentryOpts').style.display=this.checked?'flex':'none'"> Re-entry After Stop
+          </label>
+          <div id="btReentryOpts" style="display:none;gap:6px;margin-top:6px;flex-wrap:wrap;font-size:11px;">
+            <div class="config-item"><label>Cooldown min:</label><input type="number" id="btReentryCooldown" value="30" step="5" min="1" max="240" style="width:50px;" title="Minutes to wait after stop-out"></div>
+            <div class="config-item"><label>Max re-entries:</label><input type="number" id="btReentryMax" value="1" step="1" min="1" max="5" style="width:40px;" title="Max re-entries per symbol per day"></div>
+            <div class="config-item"><label>Re-entry stop %:</label><input type="number" id="btReentryStop" value="1.0" step="0.1" min="0.1" max="10" style="width:50px;" title="Tighter stop on re-entry"></div>
+            <div class="config-item"><label>Trigger drop %:</label><input type="number" id="btReentryTrigger" value="0.0" step="0.1" min="0" max="10" style="width:50px;" title="Price must drop this % below original entry"></div>
+          </div>
+        </div>
+        <!-- Gap-Down Fading -->
+        <div style="padding:8px 10px;background:rgba(34,197,94,0.06);border:1px solid rgba(34,197,94,0.15);border-radius:6px;">
+          <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:12px;font-weight:600;color:var(--green);">
+            <input type="checkbox" id="btGapDowns" onchange="document.getElementById('btGapDownOpts').style.display=this.checked?'flex':'none'"> Gap-Down Fading (Longs)
+          </label>
+          <div id="btGapDownOpts" style="display:none;gap:6px;margin-top:6px;flex-wrap:wrap;font-size:11px;">
+            <div class="config-item"><label>Gap Down %:</label><input type="number" id="btGapDownThresh" value="5" step="1" min="1" max="50" style="width:50px;" title="Min gap-down % to consider"></div>
+            <div class="config-item"><label>Max Gap Down %:</label><input type="number" id="btGapDownMax" value="50" step="5" min="10" max="100" style="width:55px;" title="Max gap-down %"></div>
+            <div class="config-item"><label>Vol Max:</label><input type="number" id="btGapDownVol" value="3.0" step="0.1" min="0.5" max="20" style="width:50px;" title="Max vol ratio for gap-downs"></div>
+          </div>
+        </div>
+      </div>
+      <div style="margin-top:8px;display:flex;gap:6px;">
         <button class="primary" onclick="runBacktest()">Run Backtest</button>
         <button onclick="cancelBacktest()">Cancel</button>
       </div>
@@ -4262,6 +5875,22 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 </div>
 
 <script>
+// ── Auth (injected by server) ────────────────────────────────────
+/*__API_KEY_PLACEHOLDER__*/
+
+// ── Toast notifications ──────────────────────────────────────────
+let _toastCount = 0;
+function showToast(msg, type='error') {
+  const t = document.createElement('div');
+  t.className = 'toast toast-' + type;
+  t.textContent = msg;
+  t.style.top = (16 + _toastCount * 56) + 'px';
+  _toastCount++;
+  t.onclick = () => { t.remove(); _toastCount = Math.max(0, _toastCount - 1); };
+  document.body.appendChild(t);
+  setTimeout(() => { if (t.parentNode) { t.remove(); _toastCount = Math.max(0, _toastCount - 1); } }, 5000);
+}
+
 // ── State ────────────────────────────────────────────────────────
 let ws = null;
 let state = {};
@@ -4303,7 +5932,13 @@ function handleMessage(msg) {
     document.getElementById('btProgressBar').style.width = msg.progress + '%';
   } else if (msg.type === 'backtest_complete') {
     document.getElementById('btProgress').style.display = 'none';
-    renderBacktestResults(msg.result);
+    if (msg.error) {
+      showToast('Backtest failed: ' + msg.error, 'error');
+      document.getElementById('btProgressMsg').textContent = 'Error: ' + msg.error;
+      document.getElementById('btProgress').style.display = 'block';
+    } else {
+      renderBacktestResults(msg.result);
+    }
   } else if (msg.type === 'bt_log') {
     appendBtLog(msg.entry);
   } else if (msg.type === 'db_build_progress') {
@@ -4318,7 +5953,11 @@ function handleMessage(msg) {
 
 // ── API calls ────────────────────────────────────────────────────
 async function api(path, method='GET', body=null) {
-  const opts = { method, headers: { 'Content-Type': 'application/json' } };
+  const headers = { 'Content-Type': 'application/json' };
+  if (typeof __API_KEY__ !== 'undefined' && __API_KEY__) {
+    headers['X-API-Key'] = __API_KEY__;
+  }
+  const opts = { method, headers };
   if (body) opts.body = JSON.stringify(body);
   const r = await fetch('/api/' + path, opts);
   return r.json();
@@ -4348,10 +5987,36 @@ async function resetTrader() {
 }
 
 async function runBacktest() {
+  // ── Validate dates ──
+  const btStartVal = document.getElementById('btStart').value;
+  const btEndVal = document.getElementById('btEnd').value;
+  const dateRe = /^\d{4}-\d{2}-\d{2}$/;
+  if (btStartVal && !dateRe.test(btStartVal)) { showToast('Start date must be YYYY-MM-DD format'); return; }
+  if (btEndVal && !dateRe.test(btEndVal)) { showToast('End date must be YYYY-MM-DD format'); return; }
+  if (btStartVal && isNaN(new Date(btStartVal).getTime())) { showToast('Start date is not a valid date'); return; }
+  if (btEndVal && isNaN(new Date(btEndVal).getTime())) { showToast('End date is not a valid date'); return; }
+  if (btStartVal && btEndVal && btStartVal > btEndVal) { showToast('Start date must be before end date'); return; }
+
+  // ── Validate numerics with ranges ──
+  const numFields = [
+    ['btGap',       'Gap %',          1, 50],
+    ['btMaxGap',    'Max Gap %',     10, 100],
+    ['btVol',       'Vol Max',      0.5, 20],
+    ['btStop',      'Stop %',       0.5, 10],
+    ['btMaxPos',    'Max Positions',   1, 10],
+    ['btSlip',      'Slippage %',     0, 5],
+    ['btCoverFrac', 'Cover Fraction',  0, 1],
+  ];
+  for (const [id, label, lo, hi] of numFields) {
+    const v = parseFloat(document.getElementById(id).value);
+    if (isNaN(v)) { showToast(label + ' is not a valid number'); return; }
+    if (v < lo || v > hi) { showToast(label + ': ' + v + ' out of range [' + lo + ', ' + hi + ']'); return; }
+  }
+
   const syms = document.getElementById('btSymbol').value.trim();
   const body = {
-    start_date: document.getElementById('btStart').value,
-    end_date: document.getElementById('btEnd').value,
+    start_date: btStartVal,
+    end_date: btEndVal,
     gap_threshold: parseFloat(document.getElementById('btGap').value) / 100,
     max_gap_pct: parseFloat(document.getElementById('btMaxGap').value) / 100,
     vol_ratio_max: parseFloat(document.getElementById('btVol').value),
@@ -4366,6 +6031,52 @@ async function runBacktest() {
     body.universe = document.getElementById('btUniverse').value;
   }
   if (document.getElementById('bt1min').checked) body.use_1min = true;
+
+  // Feature toggles
+  if (document.getElementById('btAdaptiveStops').checked) {
+    body.adaptive_stops = true;
+    const gapFrac = parseFloat(document.getElementById('btStopGapFrac').value);
+    const stopMin = parseFloat(document.getElementById('btStopMin').value);
+    const stopMax = parseFloat(document.getElementById('btStopMax').value);
+    if (isNaN(gapFrac) || isNaN(stopMin) || isNaN(stopMax)) { showToast('Adaptive stops: invalid number'); return; }
+    if (stopMin >= stopMax) { showToast('Adaptive stops: Min % must be less than Max %'); return; }
+    body.stop_gap_fraction = gapFrac;
+    body.stop_min_pct = stopMin / 100;
+    body.stop_max_pct = stopMax / 100;
+  }
+  if (document.getElementById('btRegimeFilter').checked) {
+    body.regime_filter = true;
+    const spyGap = parseFloat(document.getElementById('btRegimeSpyGap').value);
+    const spyBlock = parseFloat(document.getElementById('btRegimeSpyBlock').value);
+    const vixThresh = parseFloat(document.getElementById('btRegimeVix').value);
+    if (isNaN(spyGap) || isNaN(spyBlock) || isNaN(vixThresh)) { showToast('Regime filter: invalid number'); return; }
+    if (spyGap >= spyBlock) { showToast('Regime filter: SPY Gap Limit must be less than SPY Block %'); return; }
+    body.regime_spy_gap_limit = spyGap / 100;
+    body.regime_spy_block_pct = spyBlock / 100;
+    body.regime_vix_threshold = vixThresh;
+  }
+  if (document.getElementById('btReentry').checked) {
+    body.reentry_enabled = true;
+    const cooldown = parseInt(document.getElementById('btReentryCooldown').value);
+    const maxRe = parseInt(document.getElementById('btReentryMax').value);
+    const reStop = parseFloat(document.getElementById('btReentryStop').value);
+    const reTrig = parseFloat(document.getElementById('btReentryTrigger').value);
+    if (isNaN(cooldown) || isNaN(maxRe) || isNaN(reStop) || isNaN(reTrig)) { showToast('Re-entry: invalid number'); return; }
+    body.reentry_cooldown_minutes = cooldown;
+    body.reentry_max_per_symbol = maxRe;
+    body.reentry_stop_pct = reStop / 100;
+    body.reentry_trigger_pct = reTrig / 100;
+  }
+  if (document.getElementById('btGapDowns').checked) {
+    body.trade_gap_downs = true;
+    const gdThresh = parseFloat(document.getElementById('btGapDownThresh').value);
+    const gdMax = parseFloat(document.getElementById('btGapDownMax').value);
+    const gdVol = parseFloat(document.getElementById('btGapDownVol').value);
+    if (isNaN(gdThresh) || isNaN(gdMax) || isNaN(gdVol)) { showToast('Gap-down: invalid number'); return; }
+    body.gap_down_threshold = gdThresh / 100;
+    body.gap_down_max_pct = gdMax / 100;
+    body.gap_down_vol_ratio_max = gdVol;
+  }
 
   document.getElementById('btProgress').style.display = 'block';
   document.getElementById('btProgressMsg').textContent = 'Starting backtest...';
@@ -4407,13 +6118,20 @@ async function fetchDbStats() {
 async function buildDB() {
   const universe = document.getElementById('dbUniverse').value;
   const startDate = document.getElementById('dbStartDate').value;
+  if (startDate) {
+    const dateRe = /^\d{4}-\d{2}-\d{2}$/;
+    if (!dateRe.test(startDate) || isNaN(new Date(startDate).getTime())) {
+      showToast('DB start date must be a valid YYYY-MM-DD date'); return;
+    }
+  }
   const body = { universe };
   if (startDate) body.start_date = startDate;
   document.getElementById('dbProgress').style.display = 'block';
   document.getElementById('dbProgressMsg').textContent = 'Starting build...';
   document.getElementById('dbProgressBar').style.width = '0%';
   try {
-    await api('db/build', 'POST', body);
+    const r = await api('db/build', 'POST', body);
+    if (r.error) { showToast('DB build error: ' + r.error); }
     fetchDbStats();
   } catch(e) {
     document.getElementById('dbProgressMsg').textContent = 'Error: ' + e.message;
@@ -4454,20 +6172,31 @@ async function polygonUpdate(days) {
 async function saveConfig() {
   const inputs = document.querySelectorAll('#configGrid input');
   const body = {};
+  let hasErr = false;
   inputs.forEach(inp => {
     const key = inp.dataset.key;
     if (!key) return;
     if (inp.type === 'checkbox') {
       body[key] = inp.checked;
+    } else if (inp.type === 'number') {
+      const v = parseFloat(inp.value);
+      if (isNaN(v)) { showToast('Config "' + key + '" is not a valid number'); hasErr = true; return; }
+      body[key] = v;
     } else {
-      body[key] = inp.type === 'number' ? parseFloat(inp.value) : inp.value;
+      body[key] = inp.value;
     }
   });
+  if (hasErr) return;
   // Include scan universe settings
   const univRadio = document.querySelector('input[name="scanUniverse"]:checked');
   if (univRadio) body.scan_universe = univRadio.value;
   body.custom_symbols = document.getElementById('customSymbolsInput').value.trim();
-  await api('config', 'POST', body);
+  const r = await api('config', 'POST', body);
+  if (r.validation_errors && r.validation_errors.length) {
+    r.validation_errors.forEach(e => showToast(e, 'warning'));
+  } else {
+    showToast('Config saved', 'success');
+  }
   fetchState();
 }
 
@@ -4579,8 +6308,13 @@ function renderCandidates(candidates) {
   }
   noC.style.display = 'none';
 
-  tbody.innerHTML = candidates.map(c => `<tr>
+  tbody.innerHTML = candidates.map(c => {
+    const dir = c.direction || 'short';
+    const dirColor = dir === 'long' ? 'var(--green)' : 'var(--red)';
+    const dirLabel = dir === 'long' ? 'LONG' : 'SHORT';
+    return `<tr>
     <td style="font-weight:600;">${c.symbol}</td>
+    <td style="color:${dirColor};font-weight:600;">${dirLabel}</td>
     <td style="color:var(--orange);">${(c.gap_pct*100).toFixed(1)}%</td>
     <td>$${c.prev_close.toFixed(2)}</td>
     <td>$${c.premarket_price.toFixed(2)}</td>
@@ -4591,7 +6325,8 @@ function renderCandidates(candidates) {
     <td>${c.easy_to_borrow ? '✓' : '—'}</td>
     <td>${catalystBadge(c.catalyst || '', c.catalyst_detail || '')}</td>
     <td>${c.score.toFixed(1)}</td>
-  </tr>`).join('');
+  </tr>`;
+  }).join('');
 }
 
 function renderMessages(messages) {
@@ -4606,10 +6341,13 @@ function renderMessages(messages) {
 function renderTrades(todayTrades, totalCount) {
   const tbody = document.getElementById('tradesTable');
   const trades = todayTrades || [];
-  tbody.innerHTML = trades.slice().reverse().map(t => `<tr>
+  tbody.innerHTML = trades.slice().reverse().map(t => {
+    const side = (t.side || 'short').toUpperCase();
+    const sideColor = side === 'LONG' ? 'var(--green)' : 'var(--red)';
+    return `<tr>
     <td>${t.exit_time || ''}</td>
     <td style="font-weight:600;">${t.symbol}</td>
-    <td style="color:var(--red);">SHORT</td>
+    <td style="color:${sideColor};">${side}</td>
     <td>${t.shares}</td>
     <td>$${t.entry_price.toFixed(2)}</td>
     <td>$${t.exit_price.toFixed(2)}</td>
@@ -4617,7 +6355,8 @@ function renderTrades(todayTrades, totalCount) {
     <td class="${t.pnl_pct >= 0 ? 'pnl-pos' : 'pnl-neg'}">${(t.pnl_pct*100).toFixed(2)}%</td>
     <td>${t.exit_reason}</td>
     <td>${t.holding_minutes || 0}m</td>
-  </tr>`).join('');
+  </tr>`;
+  }).join('');
 }
 
 function renderConfig(config) {
@@ -4702,25 +6441,37 @@ function renderBacktestResults(r) {
       <div class="stat"><div class="label">Gap Days</div><div class="value">${r.gap_days_found||0}</div></div>
       <div class="stat"><div class="label">Traded</div><div class="value">${r.gap_days_traded||0}</div></div>
     </div>
-    ${r.trades && r.trades.length > 0 ? `
-    <h2 style="margin-top:12px;">Recent Trades</h2>
-    <table>
-      <thead><tr><th>Entry Time</th><th>Exit Time</th><th>Symbol</th><th>Shares</th><th>Entry</th><th>Exit</th><th>P&L</th><th>P&L %</th><th>Reason</th><th>Hold</th></tr></thead>
-      <tbody>${r.trades.slice(-50).reverse().map(t => `<tr>
-        <td>${t.entry_time||''}</td>
-        <td>${t.exit_time||''}</td>
-        <td style="font-weight:600;">${t.symbol}</td>
-        <td>${t.shares||0}</td>
-        <td>$${(t.entry_price||0).toFixed(2)}</td>
-        <td>$${(t.exit_price||0).toFixed(2)}</td>
-        <td class="${(t.pnl||0)>=0?'pnl-pos':'pnl-neg'}">${pnlFmt(t.pnl||0)}</td>
-        <td class="${(t.pnl_pct||0)>=0?'pnl-pos':'pnl-neg'}">${((t.pnl_pct||0)*100).toFixed(2)}%</td>
-        <td>${t.exit_reason||''}</td>
-        <td>${t.holding_minutes ? t.holding_minutes + 'm' : '—'}</td>
-      </tr>`).join('')}</tbody>
-    </table>` : ''}
+    ${r.trades && r.trades.length > 0 ? '<div id="btTradesSection"></div>' : ''}
   `;
   document.getElementById('btResults').innerHTML = html;
+
+  // Render backtest trades table separately (avoids nested template literal issues)
+  if (r.trades && r.trades.length > 0) {
+    const section = document.getElementById('btTradesSection');
+    if (section) {
+      const rows = r.trades.slice(-50).reverse().map(t => {
+        const s = (t.side||'short').toUpperCase();
+        const sc = s === 'LONG' ? 'var(--green)' : 'var(--red)';
+        return '<tr>' +
+          '<td>' + (t.entry_time||'') + '</td>' +
+          '<td>' + (t.exit_time||'') + '</td>' +
+          '<td style="font-weight:600;">' + t.symbol + '</td>' +
+          '<td style="color:' + sc + ';font-weight:600;">' + s + '</td>' +
+          '<td>' + (t.shares||0) + '</td>' +
+          '<td>$' + (t.entry_price||0).toFixed(2) + '</td>' +
+          '<td>$' + (t.exit_price||0).toFixed(2) + '</td>' +
+          '<td class="' + ((t.pnl||0)>=0?'pnl-pos':'pnl-neg') + '">' + pnlFmt(t.pnl||0) + '</td>' +
+          '<td class="' + ((t.pnl_pct||0)>=0?'pnl-pos':'pnl-neg') + '">' + ((t.pnl_pct||0)*100).toFixed(2) + '%</td>' +
+          '<td>' + (t.exit_reason||'') + '</td>' +
+          '<td>' + (t.holding_minutes ? t.holding_minutes + 'm' : '—') + '</td>' +
+          '</tr>';
+      }).join('');
+      section.innerHTML = '<h2 style="margin-top:12px;">Recent Trades</h2>' +
+        '<table><thead><tr><th>Entry Time</th><th>Exit Time</th><th>Symbol</th><th>Side</th>' +
+        '<th>Shares</th><th>Entry</th><th>Exit</th><th>P&L</th><th>P&L %</th>' +
+        '<th>Reason</th><th>Hold</th></tr></thead><tbody>' + rows + '</tbody></table>';
+    }
+  }
 }
 
 // ── Tabs ─────────────────────────────────────────────────────────
@@ -4871,9 +6622,12 @@ document.addEventListener('DOMContentLoaded', () => {
 # =============================================================================
 
 if __name__ == '__main__':
+    _load_env_file()
+    app_port = int(os.environ.get('GAP_FADE_PORT', '8002'))
+
     print("=" * 60)
     print("  Gap Fade Strategy Dashboard")
-    print("  http://localhost:8002")
+    print(f"  http://localhost:{app_port}")
     print("=" * 60)
     print()
     print("  Strategy: Short gap-ups on below-average volume")
@@ -4895,6 +6649,18 @@ if __name__ == '__main__':
         print("  Polygon:  Configured (grouped daily for bulk DB updates)")
     else:
         print("  Polygon:  NOT configured — set POLYGON_API_KEY in .env (optional)")
+
+    # Auth status
+    api_key = _get_api_key()
+    if api_key:
+        print(f"  Auth:     ENABLED (GAP_FADE_API_KEY set, {len(api_key)} chars)")
+    else:
+        print("  Auth:     DISABLED — set GAP_FADE_API_KEY in .env to protect POST endpoints")
+
+    # P0-6: Bind to localhost by default. Set GAP_FADE_BIND_ALL=1 to listen on all interfaces.
+    bind_host = "0.0.0.0" if os.environ.get('GAP_FADE_BIND_ALL', '') == '1' else "127.0.0.1"
+    print(f"  Bind:     {bind_host}:{app_port}" +
+          (" (use GAP_FADE_BIND_ALL=1 for all interfaces)" if bind_host == "127.0.0.1" else ""))
     print()
 
-    uvicorn.run(app, host="0.0.0.0", port=8002, log_level="info")
+    uvicorn.run(app, host=bind_host, port=app_port, log_level="info")
