@@ -5990,7 +5990,7 @@ async function runBacktest() {
   // ── Validate dates ──
   const btStartVal = document.getElementById('btStart').value;
   const btEndVal = document.getElementById('btEnd').value;
-  const dateRe = /^\d{4}-\d{2}-\d{2}$/;
+  const dateRe = /^\\d{4}-\\d{2}-\\d{2}$/;
   if (btStartVal && !dateRe.test(btStartVal)) { showToast('Start date must be YYYY-MM-DD format'); return; }
   if (btEndVal && !dateRe.test(btEndVal)) { showToast('End date must be YYYY-MM-DD format'); return; }
   if (btStartVal && isNaN(new Date(btStartVal).getTime())) { showToast('Start date is not a valid date'); return; }
@@ -6119,7 +6119,7 @@ async function buildDB() {
   const universe = document.getElementById('dbUniverse').value;
   const startDate = document.getElementById('dbStartDate').value;
   if (startDate) {
-    const dateRe = /^\d{4}-\d{2}-\d{2}$/;
+    const dateRe = /^\\d{4}-\\d{2}-\\d{2}$/;
     if (!dateRe.test(startDate) || isNaN(new Date(startDate).getTime())) {
       showToast('DB start date must be a valid YYYY-MM-DD date'); return;
     }
