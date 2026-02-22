@@ -1281,11 +1281,11 @@ class GapFadeConfig:
     min_avg_volume: int = 5_000         # minimum 20d avg daily volume (IEX ~2-3% of consolidated)
     min_price: float = 10.0            # minimum stock price (low-price stocks have wide spreads/slippage)
 
-    # Position sizing — equal-risk: total risk budget split across all candidates
+    # Position sizing
     initial_capital: float = 25_000
-    risk_pct: float = 0.02             # 2% of equity = total daily risk budget
-    kelly_fraction: float = 0.25       # quarter Kelly (used as risk_pct cap)
-    max_positions: int = 3             # max concurrent shorts
+    risk_pct: float = 0.02             # risk 2% of equity per trade
+    kelly_fraction: float = 0.25       # quarter Kelly
+    max_positions: int = 3             # max concurrent shorts (3 = more capital per trade)
     thin_day_threshold: int = 10       # if fewer candidates than this, trade ALL of them
 
     # Stops and targets (optimized: 2.5% stop, 1/3 partial cover)
@@ -2236,20 +2236,31 @@ class GapFadeEngine:
         return max(0, kelly * self.config.kelly_fraction)
 
     def compute_position_size(self, entry_price: float, stop_price: float) -> int:
-        """Equal-risk sizing: total risk budget split across all candidate slots.
-
-        shares = (risk_pct * equity / n_candidates) / risk_per_share
-        Risk budget is the sole constraint — no notional cap. This allows
-        the strategy to use margin naturally (intraday shorts get 2:1).
-        """
+        """Compute number of shares to short based on risk and Kelly sizing."""
         risk_per_share = abs(stop_price - entry_price)
         if risk_per_share <= 0:
             return 0
 
-        # Risk budget per position = total budget / effective candidates
-        n_slots = max(1, self._effective_max_positions)
-        risk_per_position = self.equity * self.config.risk_pct / n_slots
-        shares = int(risk_per_position / risk_per_share)
+        # Kelly-adjusted risk
+        kelly_risk = self.compute_kelly_size()
+        risk_frac = min(self.config.risk_pct, kelly_risk) if kelly_risk > 0 else self.config.risk_pct
+
+        dollar_risk = self.equity * risk_frac
+        shares = int(dollar_risk / risk_per_share)
+
+        # Per-position cap: divide equity by effective max so all slots fit without leverage
+        eff_max = self._effective_max_positions
+        open_count = len(self.positions)
+        slots = max(1, eff_max - open_count)
+        per_slot_equity = self.equity / max(1, eff_max)
+        max_shares = int(per_slot_equity / entry_price) if entry_price > 0 else 0
+        shares = min(shares, max_shares)
+
+        # Absolute notional cap (also per-slot)
+        if entry_price > 0 and self.config.max_notional > 0:
+            notional_limit = min(self.config.max_notional, per_slot_equity)
+            max_shares_notional = int(notional_limit / entry_price)
+            shares = min(shares, max_shares_notional)
 
         return max(0, shares)
 
@@ -2874,10 +2885,6 @@ class GapFadeBacktester:
             # Reset daily stats for each new calendar day
             engine.daily_stats = DailyStats(date=date_str, peak_equity=engine.equity)
 
-            # Snapshot equity at day start — all same-day positions size off this
-            # (in reality all entries are simultaneous at 09:31)
-            day_start_equity = engine.equity
-
             for gap in day_gaps:
                 if self._cancel:
                     break
@@ -2902,7 +2909,7 @@ class GapFadeBacktester:
                     await asyncio.sleep(0.35)
                 else:
                     # Fast mode: simulate from daily OHLCV already in gap dict
-                    day_trades, day_log = self._simulate_day_daily(engine, gap, day_start_equity, len(day_gaps))
+                    day_trades, day_log = self._simulate_day_daily(engine, gap)
 
                 for entry in day_log:
                     await _log(entry['level'], entry['msg'], entry.get('data'))
@@ -2969,17 +2976,12 @@ class GapFadeBacktester:
         return metrics
 
     def _simulate_day_daily(self, engine: GapFadeEngine,
-                           gap: dict, day_start_equity: float = None,
-                           n_candidates: int = 1) -> Tuple[List[TradeRecord], List[dict]]:
+                           gap: dict) -> Tuple[List[TradeRecord], List[dict]]:
         """Fast simulation from daily OHLCV — no extra API calls.
 
         Uses the gap dict which already has open/high/low/close from daily bars.
         Realism: slippage on entry/exit, short borrow fee, liquidity cap,
         and adverse fill ordering when both stop and target hit on same bar.
-
-        day_start_equity: snapshot of equity before any same-day trades execute.
-        n_candidates: number of candidates trading this day (for equal-risk sizing).
-        All positions on the same day size off this value since they enter simultaneously.
 
         Order of checks (conservative — stop first):
           1. Stop: high >= stop_price  → loss at stop_price (+slippage)
@@ -3049,11 +3051,21 @@ class GapFadeBacktester:
             full_target = prev_close
 
         risk_per_share = abs(stop_price - entry_price)
-        # Equal-risk sizing: total risk budget split evenly across all candidates
-        # shares = (risk_pct * equity / n_candidates) / risk_per_share
-        sizing_equity = day_start_equity if day_start_equity is not None else engine.equity
-        risk_per_position = sizing_equity * self.config.risk_pct / max(1, n_candidates)
-        shares = int(risk_per_position / risk_per_share) if risk_per_share > 0 else 0
+        # Kelly-adjusted risk sizing (mirrors compute_position_size)
+        kelly_risk = engine.compute_kelly_size()
+        risk_frac = min(self.config.risk_pct, kelly_risk) if kelly_risk > 0 else self.config.risk_pct
+        dollar_risk = engine.equity * risk_frac
+        shares = int(dollar_risk / risk_per_share) if risk_per_share > 0 else 0
+        # Per-slot equity cap: divide equity by effective max positions
+        eff_max = engine._effective_max_positions
+        per_slot_equity = engine.equity / max(1, eff_max)
+        max_shares = int(per_slot_equity / entry_price) if entry_price > 0 else 0
+        shares = min(shares, max_shares)
+        # Absolute notional cap (also per-slot)
+        if entry_price > 0 and self.config.max_notional > 0:
+            notional_limit = min(self.config.max_notional, per_slot_equity)
+            max_shares_notional = int(notional_limit / entry_price)
+            shares = min(shares, max_shares_notional)
         # Liquidity cap: max % of average daily volume
         avg_vol = gap.get('avg_vol', 0)
         if avg_vol > 0 and self.config.max_pct_adv > 0:
@@ -3245,8 +3257,18 @@ class GapFadeBacktester:
                 if re_favorable:
                     re_exit = _exit_slip(day_close)
                     re_risk_per_share = abs(re_stop - re_entry)
-                    re_risk_budget = engine.equity * self.config.risk_pct / max(1, n_candidates)
+                    re_kelly = engine.compute_kelly_size()
+                    re_risk_frac = min(self.config.risk_pct, re_kelly) if re_kelly > 0 else self.config.risk_pct
+                    re_risk_budget = engine.equity * re_risk_frac
                     re_shares = int(re_risk_budget / re_risk_per_share) if re_risk_per_share > 0 else 0
+                    # Per-slot notional cap on re-entry
+                    re_eff_max = engine._effective_max_positions
+                    re_per_slot = engine.equity / max(1, re_eff_max)
+                    re_max_shares = int(re_per_slot / re_entry) if re_entry > 0 else 0
+                    re_shares = min(re_shares, re_max_shares)
+                    if re_entry > 0 and self.config.max_notional > 0:
+                        re_notional_limit = min(self.config.max_notional, re_per_slot)
+                        re_shares = min(re_shares, int(re_notional_limit / re_entry))
                     if re_shares > 0:
                         re_pnl = _direction_pnl(direction, re_entry, re_exit, re_shares)
                         re_pnl_pct = re_pnl / (re_entry * re_shares) if re_entry > 0 else 0
