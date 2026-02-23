@@ -2939,7 +2939,8 @@ class GapFadeBacktester:
         metrics['end_date'] = end_date
         metrics['config'] = asdict(self.config)
         metrics['trades'] = [asdict(t) for t in engine.all_trade_log[-200:]]
-        metrics['daily_summary'] = trades_by_day[-100:]
+        metrics['all_trades'] = [asdict(t) for t in engine.all_trade_log]
+        metrics['daily_summary'] = trades_by_day
         metrics['bt_log'] = self.bt_log[-500:]
 
         # Realism adjustments applied
@@ -4593,6 +4594,17 @@ app = FastAPI(title="Gap Fade Strategy", version="1.0", lifespan=lifespan)
 _app_start_time = _time.time()
 
 # ---------------------------------------------------------------------------
+# OAuth session support (authlib needs SessionMiddleware for OAuth state)
+# ---------------------------------------------------------------------------
+from starlette.middleware.sessions import SessionMiddleware
+_load_env_file()
+_session_secret = os.environ.get('AUTH_JWT_SECRET', os.urandom(32).hex())
+app.add_middleware(SessionMiddleware, secret_key=_session_secret)
+
+from auth import router as auth_router, auth_enabled, get_current_user
+app.include_router(auth_router)
+
+# ---------------------------------------------------------------------------
 # P0-6: API Authentication Middleware
 # ---------------------------------------------------------------------------
 # Set GAP_FADE_API_KEY in .env to require X-API-Key header on mutating endpoints.
@@ -4609,22 +4621,43 @@ def _get_api_key() -> Optional[str]:
 
 # Endpoints that DON'T require auth (read-only)
 # Only these paths are accessible without an API key
-_AUTH_EXEMPT_PATHS = {'/', '/api/health', '/docs', '/openapi.json'}
+_AUTH_EXEMPT_PATHS = {'/', '/api/health', '/docs', '/openapi.json', '/ws'}
 
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
-    """Require API key on all /api/ endpoints except health and dashboard."""
+    """Auth gate: exempt paths, then API key header, then JWT cookie."""
+    path = request.url.path.rstrip('/')
+
+    # Always allow exempt paths and auth endpoints
+    if path in _AUTH_EXEMPT_PATHS or path.startswith('/api/auth'):
+        return await call_next(request)
+
+    # Check API key header (backward compat — always works if valid)
     api_key = _get_api_key()
     if api_key:
-        path = request.url.path.rstrip('/')
-        if path.startswith('/api/') and path not in _AUTH_EXEMPT_PATHS:
-            provided = request.headers.get('X-API-Key', '')
-            if provided != api_key:
-                logger.warning(f"Auth failed for {request.method} {path} from {request.client.host}")
-                return JSONResponse(
-                    status_code=403,
-                    content={'error': 'Forbidden: invalid or missing X-API-Key header'}
-                )
+        provided = request.headers.get('X-API-Key', '')
+        if provided == api_key:
+            return await call_next(request)
+
+    # If OAuth auth is enabled, require valid JWT cookie on /api/ paths
+    if auth_enabled() and path.startswith('/api/'):
+        user = get_current_user(request)
+        if not user:
+            return JSONResponse(
+                status_code=401,
+                content={'error': 'Unauthorized: please log in'}
+            )
+
+    # If API key is set but not provided (and no valid JWT), block mutating endpoints
+    if api_key and path.startswith('/api/'):
+        provided = request.headers.get('X-API-Key', '')
+        if provided != api_key and not get_current_user(request):
+            logger.warning(f"Auth failed for {request.method} {path} from {request.client.host}")
+            return JSONResponse(
+                status_code=403,
+                content={'error': 'Forbidden: invalid or missing credentials'}
+            )
+
     return await call_next(request)
 
 
@@ -5179,7 +5212,14 @@ async def db_polygon_update(body: dict = {}):
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    """WebSocket for live updates."""
+    """WebSocket for live updates (checks JWT cookie when auth is enabled)."""
+    if auth_enabled():
+        user = get_current_user(websocket)
+        api_key = _get_api_key()
+        key_in_query = websocket.query_params.get('apiKey', '')
+        if not user and not (api_key and key_in_query == api_key):
+            await websocket.close(code=4401, reason="Unauthorized")
+            return
     await websocket.accept()
     connected_websockets.append(websocket)
     try:
@@ -5223,6 +5263,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     --orange: #f97316;
     --cyan: #00D4FF;
     --grid: 8px;
+    --accent-green: #22c55e;
+    --sidebar-bg: rgba(8, 11, 20, 0.95);
+    --sidebar-hover: rgba(34, 197, 94, 0.08);
+    --sidebar-active: rgba(34, 197, 94, 0.15);
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body {
@@ -5231,10 +5275,76 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     color: var(--text);
     font-size: 13px;
     line-height: 1.5;
-    min-height: 100vh;
+    height: 100vh;
+    overflow: hidden;
     -webkit-font-smoothing: antialiased;
   }
+
+  /* ── Layout Grid ── */
+  #app {
+    display: grid;
+    grid-template-columns: 180px 1fr 300px;
+    grid-template-rows: 48px auto 1fr 28px;
+    grid-template-areas:
+      "sidebar header    rightpanel"
+      "sidebar metrics   rightpanel"
+      "sidebar content   rightpanel"
+      "statusbar statusbar statusbar";
+    height: 100vh;
+  }
+
+  /* ── Sidebar ── */
+  .sidebar {
+    grid-area: sidebar;
+    background: var(--sidebar-bg);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .sidebar-logo {
+    padding: 14px 16px;
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+  }
+  .sidebar-logo .brand-text { font-weight: 700; font-size: 16px; color: #fff; }
+  .sidebar-logo .brand-sub { font-weight: 400; font-size: 11px; color: var(--muted); margin-left: 4px; }
+  .sidebar-actions { padding: 10px 12px 4px; }
+  .sidebar-actions button { width: 100%; padding: 8px 0; font-size: 12px; }
+  .sidebar-nav { flex: 1; padding: 8px 0; overflow-y: auto; }
+  .sidebar-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 16px;
+    cursor: pointer;
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 500;
+    border-left: 3px solid transparent;
+    transition: all 0.15s;
+    user-select: none;
+  }
+  .sidebar-item:hover { background: var(--sidebar-hover); color: var(--text); }
+  .sidebar-item.active {
+    background: var(--sidebar-active);
+    color: var(--accent-green);
+    border-left-color: var(--accent-green);
+  }
+  .sidebar-item svg { width: 16px; height: 16px; flex-shrink: 0; }
+  .sidebar-sep { height: 1px; background: var(--border); margin: 4px 16px; }
+  .sidebar-footer {
+    padding: 12px 16px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 10px;
+  }
+
+  /* ── Top Header ── */
   .top-bar {
+    grid-area: header;
     height: 48px;
     display: flex;
     align-items: center;
@@ -5244,12 +5354,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     background: rgba(10, 14, 23, 0.95);
     backdrop-filter: blur(12px);
   }
-  .top-bar .brand { font-weight: 600; font-size: 18px; color: #fff; }
-  .top-bar .brand span { font-weight: 400; font-size: 12px; color: var(--muted); margin-left: 4px; }
-  .top-bar .summary { display: flex; align-items: center; gap: 24px; font-size: 13px; }
-  .top-bar .summary .item { display: flex; align-items: center; gap: 8px; }
-  .top-bar .summary .label { color: var(--muted); }
-  .top-bar .summary .val { font-family: 'JetBrains Mono', monospace; font-weight: 600; }
+  .top-bar .page-title { font-weight: 600; font-size: 15px; color: #fff; }
+  .top-bar .header-controls { display: flex; align-items: center; gap: 6px; }
   .top-bar .right { display: flex; align-items: center; gap: 16px; }
   .conn-dot {
     width: 8px; height: 8px; border-radius: 50%;
@@ -5281,9 +5387,73 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   .status-paused { background: rgba(234, 179, 8, 0.2); color: var(--yellow); }
   .status-halted { background: rgba(255, 59, 92, 0.2); color: var(--negative); }
 
-  .main { display: grid; grid-template-columns: 1fr 1fr; gap: var(--grid); padding: var(--grid); }
-  .full-width { grid-column: 1 / -1; }
+  /* ── Metrics Bar ── */
+  .metrics-bar {
+    grid-area: metrics;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 16px;
+    border-bottom: 1px solid var(--border);
+    background: rgba(10, 14, 23, 0.8);
+    overflow-x: auto;
+  }
+  .metric-card {
+    display: flex;
+    flex-direction: column;
+    padding: 4px 12px;
+    background: rgba(0, 0, 0, 0.25);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    min-width: 90px;
+    white-space: nowrap;
+  }
+  .metric-card .label { font-size: 9px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
+  .metric-card .value { font-family: 'JetBrains Mono', monospace; font-size: 13px; font-weight: 600; margin-top: 1px; }
+  .metric-card .value.green { color: var(--positive); }
+  .metric-card .value.red { color: var(--negative); }
 
+  /* ── Main Content ── */
+  .main-content {
+    grid-area: content;
+    overflow-y: auto;
+    padding: 12px 16px;
+  }
+  .page { display: none; }
+  .page.active { display: block; }
+
+  /* ── Right Panel ── */
+  .right-panel {
+    grid-area: rightpanel;
+    background: var(--sidebar-bg);
+    border-left: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .right-panel-tabs {
+    display: flex;
+    border-bottom: 1px solid var(--border);
+  }
+  .right-panel-tab {
+    flex: 1;
+    padding: 10px 0;
+    text-align: center;
+    cursor: pointer;
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    border-bottom: 2px solid transparent;
+    transition: all 0.15s;
+  }
+  .right-panel-tab:hover { color: var(--text); }
+  .right-panel-tab.active { color: var(--accent-green); border-bottom-color: var(--accent-green); }
+  .right-tab-content { display: none; flex: 1; overflow: auto; padding: 8px; font-size: 11px; }
+  .right-tab-content.active { display: flex; flex-direction: column; }
+
+  /* ── Cards ── */
   .card {
     background: var(--surface);
     border: 1px solid var(--border);
@@ -5362,8 +5532,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   button.primary:hover { background: rgba(0, 212, 255, 0.25); }
   button.danger { background: rgba(255, 59, 92, 0.15); border-color: rgba(255, 59, 92, 0.4); color: var(--negative); }
   button.danger:hover { background: rgba(255, 59, 92, 0.25); }
-  button.success { background: rgba(0, 212, 255, 0.15); border-color: rgba(0, 212, 255, 0.4); color: var(--positive); }
-  button.success:hover { background: rgba(0, 212, 255, 0.25); }
+  button.success { background: rgba(34, 197, 94, 0.15); border-color: rgba(34, 197, 94, 0.4); color: var(--accent-green); }
+  button.success:hover { background: rgba(34, 197, 94, 0.25); }
 
   .toast {
     position: fixed;
@@ -5387,9 +5557,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   @keyframes toastIn { from { opacity: 0; transform: translateX(24px); } to { opacity: 1; transform: translateX(0); } }
 
   .feed {
-    max-height: 350px;
+    max-height: 100%;
     overflow-y: auto;
     font-size: 12px;
+    flex: 1;
   }
   .feed-item {
     padding: 8px 10px;
@@ -5409,18 +5580,18 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
   .circuit-breakers {
     display: flex;
-    gap: 12px;
+    gap: 8px;
     flex-wrap: wrap;
   }
   .cb-indicator {
     display: flex;
     align-items: center;
     gap: 6px;
-    padding: 6px 10px;
+    padding: 4px 8px;
     border-radius: 6px;
     background: rgba(0, 0, 0, 0.2);
     border: 1px solid var(--border);
-    font-size: 11px;
+    font-size: 10px;
   }
   .cb-dot {
     width: 8px;
@@ -5451,6 +5622,14 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   }
   .config-item { display: flex; align-items: center; gap: 6px; }
 
+  .feature-section { margin-top: 12px; border: 1px solid var(--border); border-radius: 8px; border-left: 3px solid var(--muted); transition: border-color 0.2s; }
+  .feature-section.enabled { border-left-color: var(--positive); }
+  .feature-header { display: flex; align-items: center; gap: 8px; padding: 10px 12px; cursor: pointer; user-select: none; }
+  .feature-header input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--positive); cursor: pointer; flex-shrink: 0; }
+  .feature-title { font-weight: 600; font-size: 13px; color: var(--text); }
+  .feature-desc { font-size: 11px; color: var(--muted); margin-left: auto; }
+  .feature-params { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 6px; padding: 0 12px 10px 12px; }
+
   .pnl-pos { color: var(--positive); }
   .pnl-neg { color: var(--negative); }
 
@@ -5472,29 +5651,6 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   #backtest-panel { display: none; }
   #backtest-panel.active { display: block; }
 
-  .tab-bar {
-    display: flex;
-    gap: 0;
-    border-bottom: 1px solid var(--border);
-    margin-bottom: 12px;
-  }
-  .tab {
-    padding: 8px 16px;
-    cursor: pointer;
-    color: var(--muted);
-    border-bottom: 2px solid transparent;
-    margin-bottom: -1px;
-    transition: all 0.2s;
-    font-size: 12px;
-  }
-  .tab:hover { color: var(--text); }
-  .tab.active {
-    color: var(--positive);
-    border-bottom-color: var(--positive);
-  }
-  .tab-content { display: none; }
-  .tab-content.active { display: block; }
-
   .equity-chart {
     width: 100%;
     height: 200px;
@@ -5505,7 +5661,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     height: 100%;
   }
 
+  /* ── Status Bar ── */
   .status-bar {
+    grid-area: statusbar;
     height: 28px;
     display: flex;
     align-items: center;
@@ -5518,463 +5676,677 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   }
   .status-bar .left { display: flex; gap: 24px; }
   .status-bar .right { display: flex; gap: 16px; }
+
+  /* ── P&L granularity buttons ── */
+  .pnl-gran-btn {
+    padding: 3px 10px;
+    font-size: 11px;
+    border-radius: 4px;
+    background: rgba(0,0,0,0.2);
+    border: 1px solid var(--border);
+    color: var(--muted);
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .pnl-gran-btn:hover { color: var(--text); border-color: var(--border-hover); }
+  .pnl-gran-btn.active { background: rgba(0,212,255,0.15); border-color: rgba(0,212,255,0.4); color: var(--positive); }
+
+  /* ── Right panel table compact ── */
+  .right-panel table { font-size: 11px; }
+  .right-panel th { padding: 6px 6px; font-size: 9px; }
+  .right-panel td { padding: 6px 6px; }
+
+  /* ── Responsive ── */
+  @media (max-width: 1100px) {
+    #app {
+      grid-template-columns: 1fr;
+      grid-template-rows: 48px auto 1fr 28px;
+      grid-template-areas:
+        "header"
+        "metrics"
+        "content"
+        "statusbar";
+    }
+    .sidebar { display: none; }
+    .right-panel { display: none; }
+    .main-content { padding: 8px; }
+  }
 </style>
 </head>
 <body>
 
-<div class="top-bar">
-  <div class="brand">Gap Fade <span>Terminal</span></div>
-  <div class="summary">
-    <div class="item"><span class="label">Equity</span><span class="val" id="statEquityTop">$0</span></div>
-    <div class="item"><span class="label">Today P&L</span><span class="val" id="statTodayPnlTop">$0.00</span></div>
-  </div>
-  <div class="right">
-    <span id="connLabel" style="font-size:11px;color:var(--muted);">Connecting…</span>
-    <span class="conn-dot" id="connectionDot"></span>
-    <span id="statusBadge" class="status-badge status-stopped">STOPPED</span>
-    <span id="clock"></span>
+<!-- ── Auth Login Overlay ── -->
+<div id="authOverlay" style="display:none;position:fixed;inset:0;z-index:9999;background:#0A0E17;display:none;align-items:center;justify-content:center;">
+  <div style="width:100%;max-width:360px;padding:32px;border-radius:16px;border:1px solid rgba(255,255,255,0.08);background:rgba(255,255,255,0.03);backdrop-filter:blur(20px);box-shadow:0 0 80px rgba(0,212,255,0.06);text-align:center;">
+    <h1 style="font-size:24px;font-weight:700;color:#fff;margin-bottom:8px;">Gap Fade Terminal</h1>
+    <span style="display:inline-block;padding:2px 10px;border-radius:4px;font-size:12px;font-weight:600;background:rgba(0,212,255,0.2);color:#00D4FF;border:1px solid rgba(0,212,255,0.3);">Secure</span>
+    <p style="color:#64748b;font-size:14px;margin:16px 0 24px;">Sign in to access your dashboard</p>
+    <div style="display:flex;flex-direction:column;gap:12px;">
+      <a href="/api/auth/login/google" style="display:flex;align-items:center;justify-content:center;gap:10px;width:100%;padding:10px;border-radius:8px;font-size:14px;font-weight:500;background:#fff;color:#1f2937;text-decoration:none;">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none"><path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 0 1-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z" fill="#4285F4"/><path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/><path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18A10.96 10.96 0 0 0 1 12c0 1.77.42 3.45 1.18 4.93l3.66-2.84z" fill="#FBBC05"/><path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/></svg>
+        Continue with Google
+      </a>
+      <a href="/api/auth/login/github" style="display:flex;align-items:center;justify-content:center;gap:10px;width:100%;padding:10px;border-radius:8px;font-size:14px;font-weight:500;background:#24292e;color:#fff;text-decoration:none;">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0 1 12 6.844a9.59 9.59 0 0 1 2.504.337c1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.02 10.02 0 0 0 22 12.017C22 6.484 17.522 2 12 2z"/></svg>
+        Continue with GitHub
+      </a>
+      <a href="/api/auth/login/discord" style="display:flex;align-items:center;justify-content:center;gap:10px;width:100%;padding:10px;border-radius:8px;font-size:14px;font-weight:500;background:#5865F2;color:#fff;text-decoration:none;">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028c.462-.63.874-1.295 1.226-1.994a.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03zM8.02 15.33c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.947 2.418-2.157 2.418z"/></svg>
+        Continue with Discord
+      </a>
+    </div>
   </div>
 </div>
 
-<div class="main">
+<!-- ── Access Denied Overlay ── -->
+<div id="accessDeniedOverlay" style="display:none;position:fixed;inset:0;z-index:9999;background:#0A0E17;align-items:center;justify-content:center;">
+  <div style="width:100%;max-width:360px;padding:32px;border-radius:16px;border:1px solid rgba(255,59,92,0.3);background:rgba(255,59,92,0.04);backdrop-filter:blur(20px);box-shadow:0 0 60px rgba(255,59,92,0.08);text-align:center;">
+    <svg viewBox="0 0 24 24" width="48" height="48" fill="none" stroke="#FF3B5C" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="margin-bottom:16px;"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+    <h1 style="font-size:20px;font-weight:700;color:#fff;margin-bottom:8px;">Access Denied</h1>
+    <p style="color:#64748b;font-size:14px;margin-bottom:24px;">Your account is not authorized. Contact the administrator.</p>
+    <a href="/api/auth/login/google" style="font-size:14px;font-weight:500;color:#00D4FF;text-decoration:none;">Try a different account</a>
+  </div>
+</div>
 
-  <!-- Controls -->
-  <div class="card full-width">
-    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
-      <div class="controls">
-        <button class="primary" onclick="runScan()">Scan Now</button>
-        <button class="success" onclick="startTrading()">Start Trading</button>
-        <button onclick="pauseTrading()">Pause</button>
-        <button onclick="resumeTrading()">Resume</button>
-        <button class="danger" onclick="stopTrading()">Stop</button>
-        <button onclick="resetTrader()">Reset</button>
-        <span style="border-left:1px solid var(--border);margin:0 8px;"></span>
-        <button onclick="showTab('backtest')" style="background:#1e1b4b;">Run Backtest</button>
+<div id="app" style="display:none;">
+
+<!-- ── Sidebar ── -->
+<aside class="sidebar">
+  <div class="sidebar-logo">
+    <span class="brand-text">Gap Fade</span><span class="brand-sub">Terminal</span>
+  </div>
+  <div class="sidebar-actions">
+    <button class="success" onclick="startTrading()">Start Trading</button>
+  </div>
+  <nav class="sidebar-nav">
+    <div class="sidebar-item active" data-page="dashboard" onclick="showPage('dashboard')">
+      <svg viewBox="0 0 16 16" fill="currentColor"><rect x="1" y="1" width="6" height="6" rx="1"/><rect x="9" y="1" width="6" height="6" rx="1"/><rect x="1" y="9" width="6" height="6" rx="1"/><rect x="9" y="9" width="6" height="6" rx="1"/></svg>
+      Dashboard
+    </div>
+    <div class="sidebar-item" data-page="candidates" onclick="showPage('candidates')">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="7" cy="7" r="4.5"/><line x1="10.2" y1="10.2" x2="14" y2="14"/></svg>
+      Scanner
+    </div>
+    <div class="sidebar-item" data-page="trades" onclick="showPage('trades')">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="2" width="12" height="12" rx="1.5"/><line x1="2" y1="6" x2="14" y2="6"/><line x1="6" y1="6" x2="6" y2="14"/></svg>
+      Trade Log
+    </div>
+    <div class="sidebar-item" data-page="backtest" onclick="showPage('backtest')">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="2,12 5,6 9,9 14,3"/><polyline points="10,3 14,3 14,7"/></svg>
+      Backtest
+    </div>
+    <div class="sidebar-sep"></div>
+    <div class="sidebar-item" data-page="config" onclick="showPage('config')">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="2.5"/><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4"/></svg>
+      Config
+    </div>
+    <div class="sidebar-item" data-page="database" onclick="showPage('database')">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><ellipse cx="8" cy="4" rx="5.5" ry="2.5"/><path d="M2.5 4v8c0 1.4 2.5 2.5 5.5 2.5s5.5-1.1 5.5-2.5V4"/><path d="M2.5 8c0 1.4 2.5 2.5 5.5 2.5s5.5-1.1 5.5-2.5"/></svg>
+      Database
+    </div>
+    <div class="sidebar-item" data-page="guide" onclick="showPage('guide')">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2.5" y="1.5" width="11" height="13" rx="1.5"/><line x1="5" y1="5" x2="11" y2="5"/><line x1="5" y1="8" x2="11" y2="8"/><line x1="5" y1="11" x2="9" y2="11"/></svg>
+      Guide
+    </div>
+  </nav>
+  <div class="sidebar-footer">
+    <div class="conn-dot" id="connectionDot"></div>
+    <span id="connLabel" style="color:var(--muted);">Connecting...</span>
+  </div>
+</aside>
+
+<!-- ── Top Header ── -->
+<header class="top-bar">
+  <div style="display:flex;align-items:center;gap:12px;">
+    <span class="page-title" id="pageTitle">Dashboard</span>
+    <span id="statusBadge" class="status-badge status-stopped">STOPPED</span>
+  </div>
+  <div class="header-controls">
+    <button class="primary" onclick="runScan()">Scan</button>
+    <button onclick="pauseTrading()">Pause</button>
+    <button onclick="resumeTrading()">Resume</button>
+    <button class="danger" onclick="stopTrading()">Stop</button>
+    <button onclick="resetTrader()">Reset</button>
+  </div>
+  <div class="right" style="display:flex;align-items:center;gap:12px;">
+    <span id="clock"></span>
+    <div id="userBadge" style="display:none;align-items:center;gap:8px;">
+      <img id="userAvatar" src="" alt="" style="width:24px;height:24px;border-radius:50%;border:1px solid rgba(255,255,255,0.2);display:none;" referrerpolicy="no-referrer">
+      <span id="userInitial" style="display:none;width:24px;height:24px;border-radius:50%;background:rgba(0,212,255,0.2);border:1px solid rgba(0,212,255,0.3);font-size:11px;font-weight:600;color:#00D4FF;line-height:24px;text-align:center;"></span>
+      <span id="userName" style="font-size:12px;color:#94a3b8;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"></span>
+      <button onclick="doLogout()" title="Sign out" style="background:none;border:none;cursor:pointer;padding:4px;border-radius:4px;color:#64748b;display:flex;align-items:center;" onmouseover="this.style.color='#FF3B5C'" onmouseout="this.style.color='#64748b'">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+      </button>
+    </div>
+  </div>
+</header>
+
+<!-- ── Metrics Row ── -->
+<div class="metrics-bar">
+  <div class="metric-card">
+    <div class="label">Equity</div>
+    <div class="value" id="statEquity">$100,000</div>
+  </div>
+  <div class="metric-card">
+    <div class="label">Today P&L</div>
+    <div class="value" id="statTodayPnl">$0.00</div>
+  </div>
+  <div class="metric-card">
+    <div class="label">Total P&L</div>
+    <div class="value" id="statTotalPnl">$0.00</div>
+  </div>
+  <div class="metric-card">
+    <div class="label">Win Rate</div>
+    <div class="value" id="statWinRate">0%</div>
+  </div>
+  <div class="metric-card">
+    <div class="label">Trades</div>
+    <div class="value" id="statTrades">0</div>
+  </div>
+  <div class="metric-card">
+    <div class="label">Profit Factor</div>
+    <div class="value" id="statPF">0</div>
+  </div>
+  <div class="metric-card">
+    <div class="label">Max DD</div>
+    <div class="value" id="statMaxDD">0%</div>
+  </div>
+  <div class="metric-card">
+    <div class="label">Avg Hold</div>
+    <div class="value" id="statAvgHold">0m</div>
+  </div>
+  <div style="margin-left:auto;"></div>
+  <div class="circuit-breakers" id="circuitBreakers">
+    <div class="cb-indicator"><div class="cb-dot ok" id="cbDaily"></div><span id="cbDailyVal">$0</span></div>
+    <div class="cb-indicator"><div class="cb-dot ok" id="cbConsec"></div><span id="cbConsecVal">0</span></div>
+    <div class="cb-indicator"><div class="cb-dot ok" id="cbDD"></div><span id="cbDDVal">0%</span></div>
+  </div>
+</div>
+
+<!-- ── Main Content Area ── -->
+<main class="main-content">
+
+  <!-- Dashboard Page (default) -->
+  <div class="page active" id="page-dashboard">
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px;">
+      <div class="card">
+        <h2>Account Overview</h2>
+        <div style="display:flex;align-items:baseline;gap:20px;">
+          <div>
+            <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;">Equity</div>
+            <div style="font-size:28px;font-family:'JetBrains Mono',monospace;font-weight:700;color:var(--positive);" id="dashEquity">$100,000</div>
+          </div>
+          <div>
+            <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;">Today P&L</div>
+            <div style="font-size:20px;font-family:'JetBrains Mono',monospace;font-weight:600;" id="dashTodayPnl">$0.00</div>
+          </div>
+        </div>
       </div>
-      <div class="circuit-breakers" id="circuitBreakers">
-        <div class="cb-indicator"><div class="cb-dot ok" id="cbDaily"></div>Daily P&L: <span id="cbDailyVal">$0</span></div>
-        <div class="cb-indicator"><div class="cb-dot ok" id="cbConsec"></div>Consec Losses: <span id="cbConsecVal">0</span></div>
-        <div class="cb-indicator"><div class="cb-dot ok" id="cbDD"></div>Drawdown: <span id="cbDDVal">0%</span></div>
+      <div class="card">
+        <h2>Session Stats</h2>
+        <div class="stats-grid" style="grid-template-columns:repeat(2,1fr);">
+          <div class="stat"><div class="label">Win Rate</div><div class="value" id="dashWinRate">0%</div></div>
+          <div class="stat"><div class="label">Trades</div><div class="value" id="dashTrades">0</div></div>
+          <div class="stat"><div class="label">Profit Factor</div><div class="value" id="dashPF">0</div></div>
+          <div class="stat"><div class="label">Max DD</div><div class="value" id="dashMaxDD">0%</div></div>
+        </div>
       </div>
+    </div>
+    <div class="card">
+      <h2>Equity Curve</h2>
+      <div class="equity-chart"><canvas id="equityChart"></canvas></div>
+      <div style="color:var(--muted);text-align:center;padding:16px;font-size:12px;">Equity curve updates as trades execute</div>
     </div>
   </div>
 
-  <!-- Stats -->
-  <div class="card full-width">
-    <div class="stats-grid">
-      <div class="stat"><div class="label">Equity</div><div class="value" id="statEquity">$100,000</div></div>
-      <div class="stat"><div class="label">Today P&L</div><div class="value" id="statTodayPnl">$0.00</div></div>
-      <div class="stat"><div class="label">Total P&L</div><div class="value" id="statTotalPnl">$0.00</div></div>
-      <div class="stat"><div class="label">Win Rate</div><div class="value" id="statWinRate">0%</div></div>
-      <div class="stat"><div class="label">Trades</div><div class="value" id="statTrades">0</div></div>
-      <div class="stat"><div class="label">Profit Factor</div><div class="value" id="statPF">0</div></div>
-      <div class="stat"><div class="label">Max Drawdown</div><div class="value" id="statMaxDD">0%</div></div>
-      <div class="stat"><div class="label">Avg Hold (min)</div><div class="value" id="statAvgHold">0</div></div>
-    </div>
+  <!-- Scanner Page -->
+  <div class="page" id="page-candidates">
+    <h2 style="margin-bottom:10px;">Gap Candidates <span style="color:var(--muted);font-size:11px;" id="scanTime"></span> <span style="color:var(--muted);font-size:11px;" id="universeInfo"></span></h2>
+    <table>
+      <thead><tr>
+        <th>Symbol</th><th>Dir</th><th>Gap %</th><th>Prev Close</th><th>Current</th><th>Vol Ratio</th>
+        <th>Avg Vol</th><th>Shortable</th><th>ETB</th><th>Catalyst</th><th>Score</th>
+      </tr></thead>
+      <tbody id="candidatesTable"></tbody>
+    </table>
+    <div id="noCandidates" style="color:var(--muted);padding:20px;text-align:center;">No candidates — run a scan</div>
   </div>
 
-  <!-- Tabs: Live / Backtest -->
-  <div class="card full-width">
-    <div class="tab-bar">
-      <div class="tab active" data-tab="live" onclick="showTab('live')">Live Trading</div>
-      <div class="tab" data-tab="candidates" onclick="showTab('candidates')">Scanner</div>
-      <div class="tab" data-tab="trades" onclick="showTab('trades')">Trade Log</div>
-      <div class="tab" data-tab="backtest" onclick="showTab('backtest')">Backtest</div>
-      <div class="tab" data-tab="config" onclick="showTab('config')">Config</div>
-      <div class="tab" data-tab="guide" onclick="showTab('guide')">Guide</div>
-    </div>
+  <!-- Trade Log Page -->
+  <div class="page" id="page-trades">
+    <h2 style="margin-bottom:10px;">Trade History</h2>
+    <table>
+      <thead><tr>
+        <th>Time</th><th>Symbol</th><th>Side</th><th>Shares</th><th>Entry</th><th>Exit</th>
+        <th>P&L</th><th>P&L %</th><th>Reason</th><th>Hold</th>
+      </tr></thead>
+      <tbody id="tradesTable"></tbody>
+    </table>
+  </div>
 
-    <!-- Live tab -->
-    <div class="tab-content active" id="tab-live">
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
-        <!-- Positions -->
-        <div>
-          <h2>Active Positions</h2>
-          <table>
-            <thead><tr>
-              <th>Symbol</th><th>Shares</th><th>Entry</th><th>Current</th><th>Stop</th><th>Target</th><th>P&L</th>
-            </tr></thead>
-            <tbody id="positionsTable"></tbody>
-          </table>
-          <div id="noPositions" style="color:var(--muted);padding:20px;text-align:center;">No active positions</div>
+  <!-- Backtest Page -->
+  <div class="page" id="page-backtest">
+    <h2 style="margin-bottom:10px;">Historical Backtest</h2>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;">
+      <div class="config-item">
+        <label>Symbol(s):</label>
+        <input id="btSymbol" value="" placeholder="TSLA,NVDA... (blank=universe)" style="width:200px;">
+      </div>
+      <div class="config-item">
+        <label>Universe:</label>
+        <select id="btUniverse" style="background:var(--bg);color:var(--text);border:1px solid var(--border);padding:4px 6px;border-radius:4px;font-size:12px;">
+          <option value="study">Study (167)</option>
+          <option value="alpaca" selected>All Tradeable (Alpaca)</option>
+        </select>
+      </div>
+      <div class="config-item">
+        <label>Start:</label>
+        <input type="date" id="btStart" style="width:130px;">
+      </div>
+      <div class="config-item">
+        <label>End:</label>
+        <input type="date" id="btEnd" style="width:130px;">
+      </div>
+      <div class="config-item">
+        <label>Gap %:</label>
+        <input type="number" id="btGap" value="7" step="1" min="1" max="50" style="width:60px;" title="Min gap % to consider">
+      </div>
+      <div class="config-item">
+        <label>Max Gap %:</label>
+        <input type="number" id="btMaxGap" value="50" step="1" min="10" max="100" style="width:60px;" title="Filter out mega-gaps above this % (M&A, biotech catalysts)">
+      </div>
+      <div class="config-item">
+        <label>Vol Max:</label>
+        <input type="number" id="btVol" value="3.0" step="0.1" min="0.5" max="20" style="width:60px;" title="Max volume ratio vs 20d avg">
+      </div>
+      <div class="config-item">
+        <label>Stop %:</label>
+        <input type="number" id="btStop" value="1.5" step="0.5" min="0.5" max="10" style="width:60px;" title="Stop loss above entry">
+      </div>
+      <div class="config-item">
+        <label>Max Pos:</label>
+        <input type="number" id="btMaxPos" value="3" step="1" min="1" max="10" style="width:50px;" title="Max simultaneous positions">
+      </div>
+      <div class="config-item">
+        <label>Slip %:</label>
+        <input type="number" id="btSlip" value="0.05" step="0.01" min="0" max="5" style="width:60px;" title="Slippage per side (0.05=limit orders, 0.15=market orders)">
+      </div>
+      <div class="config-item">
+        <label>Cover frac:</label>
+        <input type="number" id="btCoverFrac" value="0.33" step="0.01" min="0" max="1" style="width:60px;" title="Fraction to cover at partial target (0=none, 0.33=1/3, 0.5=half)">
+      </div>
+      <label style="display:flex;align-items:center;gap:4px;cursor:pointer;">
+        <input type="checkbox" id="bt1min"> 1-min bars (slow, detailed)
+      </label>
+    </div>
+    <!-- Feature toggles -->
+    <div style="margin-top:8px;display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start;">
+      <!-- Adaptive Stops -->
+      <div style="padding:8px 10px;background:rgba(168,85,247,0.06);border:1px solid rgba(168,85,247,0.15);border-radius:6px;">
+        <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:12px;font-weight:600;color:var(--purple);">
+          <input type="checkbox" id="btAdaptiveStops" onchange="document.getElementById('btAdaptiveStopsOpts').style.display=this.checked?'flex':'none'"> Adaptive Stops
+        </label>
+        <div id="btAdaptiveStopsOpts" style="display:none;gap:6px;margin-top:6px;flex-wrap:wrap;font-size:11px;">
+          <div class="config-item"><label>Gap Frac:</label><input type="number" id="btStopGapFrac" value="0.15" step="0.01" min="0.01" max="1" style="width:55px;" title="stop = gap% x this"></div>
+          <div class="config-item"><label>Min %:</label><input type="number" id="btStopMin" value="1.0" step="0.1" min="0.1" max="10" style="width:50px;" title="Minimum stop %"></div>
+          <div class="config-item"><label>Max %:</label><input type="number" id="btStopMax" value="5.0" step="0.5" min="0.5" max="20" style="width:50px;" title="Maximum stop %"></div>
         </div>
-        <!-- Decision Feed -->
-        <div>
-          <h2>Decision Feed</h2>
-          <div class="feed" id="feedContainer"></div>
+      </div>
+      <!-- Market Regime Filter -->
+      <div style="padding:8px 10px;background:rgba(6,182,212,0.06);border:1px solid rgba(6,182,212,0.15);border-radius:6px;">
+        <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:12px;font-weight:600;color:var(--cyan);">
+          <input type="checkbox" id="btRegimeFilter" onchange="document.getElementById('btRegimeOpts').style.display=this.checked?'flex':'none'"> Market Regime Filter
+        </label>
+        <div id="btRegimeOpts" style="display:none;gap:6px;margin-top:6px;flex-wrap:wrap;font-size:11px;">
+          <div class="config-item"><label>SPY Gap Limit %:</label><input type="number" id="btRegimeSpyGap" value="1.0" step="0.1" min="0.1" max="10" style="width:50px;" title="SPY gap > this -> halve positions"></div>
+          <div class="config-item"><label>SPY Block %:</label><input type="number" id="btRegimeSpyBlock" value="1.5" step="0.1" min="0.1" max="10" style="width:50px;" title="SPY gap > this -> block all entries"></div>
+          <div class="config-item"><label>VIX Thresh:</label><input type="number" id="btRegimeVix" value="25" step="1" min="10" max="80" style="width:50px;" title="VIX > this -> halve positions"></div>
+        </div>
+      </div>
+      <!-- Re-entry After Stop -->
+      <div style="padding:8px 10px;background:rgba(234,179,8,0.06);border:1px solid rgba(234,179,8,0.15);border-radius:6px;">
+        <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:12px;font-weight:600;color:var(--yellow);">
+          <input type="checkbox" id="btReentry" onchange="document.getElementById('btReentryOpts').style.display=this.checked?'flex':'none'"> Re-entry After Stop
+        </label>
+        <div id="btReentryOpts" style="display:none;gap:6px;margin-top:6px;flex-wrap:wrap;font-size:11px;">
+          <div class="config-item"><label>Cooldown min:</label><input type="number" id="btReentryCooldown" value="30" step="5" min="1" max="240" style="width:50px;" title="Minutes to wait after stop-out"></div>
+          <div class="config-item"><label>Max re-entries:</label><input type="number" id="btReentryMax" value="1" step="1" min="1" max="5" style="width:40px;" title="Max re-entries per symbol per day"></div>
+          <div class="config-item"><label>Re-entry stop %:</label><input type="number" id="btReentryStop" value="1.0" step="0.1" min="0.1" max="10" style="width:50px;" title="Tighter stop on re-entry"></div>
+          <div class="config-item"><label>Trigger drop %:</label><input type="number" id="btReentryTrigger" value="0.0" step="0.1" min="0" max="10" style="width:50px;" title="Price must drop this % below original entry"></div>
+        </div>
+      </div>
+      <!-- Gap-Down Fading -->
+      <div style="padding:8px 10px;background:rgba(34,197,94,0.06);border:1px solid rgba(34,197,94,0.15);border-radius:6px;">
+        <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:12px;font-weight:600;color:var(--green);">
+          <input type="checkbox" id="btGapDowns" onchange="document.getElementById('btGapDownOpts').style.display=this.checked?'flex':'none'"> Gap-Down Fading (Longs)
+        </label>
+        <div id="btGapDownOpts" style="display:none;gap:6px;margin-top:6px;flex-wrap:wrap;font-size:11px;">
+          <div class="config-item"><label>Gap Down %:</label><input type="number" id="btGapDownThresh" value="5" step="1" min="1" max="50" style="width:50px;" title="Min gap-down % to consider"></div>
+          <div class="config-item"><label>Max Gap Down %:</label><input type="number" id="btGapDownMax" value="50" step="5" min="10" max="100" style="width:55px;" title="Max gap-down %"></div>
+          <div class="config-item"><label>Vol Max:</label><input type="number" id="btGapDownVol" value="3.0" step="0.1" min="0.5" max="20" style="width:50px;" title="Max vol ratio for gap-downs"></div>
         </div>
       </div>
     </div>
-
-    <!-- Candidates tab -->
-    <div class="tab-content" id="tab-candidates">
-      <h2>Gap Candidates <span style="color:var(--muted);font-size:11px;" id="scanTime"></span> <span style="color:var(--muted);font-size:11px;" id="universeInfo"></span></h2>
-      <table>
-        <thead><tr>
-          <th>Symbol</th><th>Dir</th><th>Gap %</th><th>Prev Close</th><th>Current</th><th>Vol Ratio</th>
-          <th>Avg Vol</th><th>Shortable</th><th>ETB</th><th>Catalyst</th><th>Score</th>
-        </tr></thead>
-        <tbody id="candidatesTable"></tbody>
-      </table>
-      <div id="noCandidates" style="color:var(--muted);padding:20px;text-align:center;">No candidates — run a scan</div>
+    <div style="margin-top:8px;display:flex;gap:6px;">
+      <button class="primary" onclick="runBacktest()">Run Backtest</button>
+      <button onclick="cancelBacktest()">Cancel</button>
     </div>
-
-    <!-- Trade log tab -->
-    <div class="tab-content" id="tab-trades">
-      <h2>Trade History</h2>
-      <table>
-        <thead><tr>
-          <th>Time</th><th>Symbol</th><th>Side</th><th>Shares</th><th>Entry</th><th>Exit</th>
-          <th>P&L</th><th>P&L %</th><th>Reason</th><th>Hold</th>
-        </tr></thead>
-        <tbody id="tradesTable"></tbody>
-      </table>
+    <div id="btProgress" style="display:none;">
+      <div style="color:var(--muted);font-size:12px;" id="btProgressMsg">Running...</div>
+      <div class="progress-bar"><div class="progress-fill" id="btProgressBar" style="width:0%"></div></div>
     </div>
+    <div id="btLog" style="max-height:300px;overflow-y:auto;font-size:11px;margin-top:8px;
+         background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:8px;display:none;"></div>
+    <div id="btResults" style="margin-top:12px;"></div>
+  </div>
 
-    <!-- Backtest tab -->
-    <div class="tab-content" id="tab-backtest">
-      <h2>Historical Backtest</h2>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;">
-        <div class="config-item">
-          <label>Symbol(s):</label>
-          <input id="btSymbol" value="" placeholder="TSLA,NVDA... (blank=universe)" style="width:200px;">
-        </div>
-        <div class="config-item">
-          <label>Universe:</label>
-          <select id="btUniverse" style="background:var(--bg);color:var(--text);border:1px solid var(--border);padding:4px 6px;border-radius:4px;font-size:12px;">
-            <option value="study">Study (167)</option>
-            <option value="alpaca" selected>All Tradeable (Alpaca)</option>
-          </select>
-        </div>
-        <div class="config-item">
-          <label>Start:</label>
-          <input type="date" id="btStart" style="width:130px;">
-        </div>
-        <div class="config-item">
-          <label>End:</label>
-          <input type="date" id="btEnd" style="width:130px;">
-        </div>
-        <div class="config-item">
-          <label>Gap %:</label>
-          <input type="number" id="btGap" value="7" step="1" min="1" max="50" style="width:60px;" title="Min gap % to consider">
-        </div>
-        <div class="config-item">
-          <label>Max Gap %:</label>
-          <input type="number" id="btMaxGap" value="50" step="1" min="10" max="100" style="width:60px;" title="Filter out mega-gaps above this % (M&A, biotech catalysts)">
-        </div>
-        <div class="config-item">
-          <label>Vol Max:</label>
-          <input type="number" id="btVol" value="3.0" step="0.1" min="0.5" max="20" style="width:60px;" title="Max volume ratio vs 20d avg">
-        </div>
-        <div class="config-item">
-          <label>Stop %:</label>
-          <input type="number" id="btStop" value="1.5" step="0.5" min="0.5" max="10" style="width:60px;" title="Stop loss above entry">
-        </div>
-        <div class="config-item">
-          <label>Max Pos:</label>
-          <input type="number" id="btMaxPos" value="3" step="1" min="1" max="10" style="width:50px;" title="Max simultaneous positions">
-        </div>
-        <div class="config-item">
-          <label>Slip %:</label>
-          <input type="number" id="btSlip" value="0.05" step="0.01" min="0" max="5" style="width:60px;" title="Slippage per side (0.05=limit orders, 0.15=market orders)">
-        </div>
-        <div class="config-item">
-          <label>Cover frac:</label>
-          <input type="number" id="btCoverFrac" value="0.33" step="0.01" min="0" max="1" style="width:60px;" title="Fraction to cover at partial target (0=none, 0.33=1/3, 0.5=half)">
-        </div>
+  <!-- Config Page -->
+  <div class="page" id="page-config">
+    <h2 style="margin-bottom:10px;">Strategy Configuration</h2>
+    <div style="margin-bottom:16px;padding:12px;background:rgba(168,85,247,0.06);border:1px solid rgba(168,85,247,0.2);border-radius:8px;">
+      <div style="font-size:12px;color:var(--purple);font-weight:600;margin-bottom:8px;text-transform:uppercase;">Scan Universe</div>
+      <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
         <label style="display:flex;align-items:center;gap:4px;cursor:pointer;">
-          <input type="checkbox" id="bt1min"> 1-min bars (slow, detailed)
+          <input type="radio" name="scanUniverse" value="alpaca" id="univAlpaca"> All Tradeable (Alpaca ~4000+)
+        </label>
+        <label style="display:flex;align-items:center;gap:4px;cursor:pointer;">
+          <input type="radio" name="scanUniverse" value="study" id="univStudy" checked> Study Universe (167)
+        </label>
+        <label style="display:flex;align-items:center;gap:4px;cursor:pointer;">
+          <input type="radio" name="scanUniverse" value="custom" id="univCustom"> Custom
         </label>
       </div>
-      <!-- Feature toggles -->
-      <div style="margin-top:8px;display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start;">
-        <!-- Adaptive Stops -->
-        <div style="padding:8px 10px;background:rgba(168,85,247,0.06);border:1px solid rgba(168,85,247,0.15);border-radius:6px;">
-          <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:12px;font-weight:600;color:var(--purple);">
-            <input type="checkbox" id="btAdaptiveStops" onchange="document.getElementById('btAdaptiveStopsOpts').style.display=this.checked?'flex':'none'"> Adaptive Stops
-          </label>
-          <div id="btAdaptiveStopsOpts" style="display:none;gap:6px;margin-top:6px;flex-wrap:wrap;font-size:11px;">
-            <div class="config-item"><label>Gap Frac:</label><input type="number" id="btStopGapFrac" value="0.15" step="0.01" min="0.01" max="1" style="width:55px;" title="stop = gap% × this"></div>
-            <div class="config-item"><label>Min %:</label><input type="number" id="btStopMin" value="1.0" step="0.1" min="0.1" max="10" style="width:50px;" title="Minimum stop %"></div>
-            <div class="config-item"><label>Max %:</label><input type="number" id="btStopMax" value="5.0" step="0.5" min="0.5" max="20" style="width:50px;" title="Maximum stop %"></div>
-          </div>
-        </div>
-        <!-- Market Regime Filter -->
-        <div style="padding:8px 10px;background:rgba(6,182,212,0.06);border:1px solid rgba(6,182,212,0.15);border-radius:6px;">
-          <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:12px;font-weight:600;color:var(--cyan);">
-            <input type="checkbox" id="btRegimeFilter" onchange="document.getElementById('btRegimeOpts').style.display=this.checked?'flex':'none'"> Market Regime Filter
-          </label>
-          <div id="btRegimeOpts" style="display:none;gap:6px;margin-top:6px;flex-wrap:wrap;font-size:11px;">
-            <div class="config-item"><label>SPY Gap Limit %:</label><input type="number" id="btRegimeSpyGap" value="1.0" step="0.1" min="0.1" max="10" style="width:50px;" title="SPY gap > this → halve positions"></div>
-            <div class="config-item"><label>SPY Block %:</label><input type="number" id="btRegimeSpyBlock" value="1.5" step="0.1" min="0.1" max="10" style="width:50px;" title="SPY gap > this → block all entries"></div>
-            <div class="config-item"><label>VIX Thresh:</label><input type="number" id="btRegimeVix" value="25" step="1" min="10" max="80" style="width:50px;" title="VIX > this → halve positions"></div>
-          </div>
-        </div>
-        <!-- Re-entry After Stop -->
-        <div style="padding:8px 10px;background:rgba(234,179,8,0.06);border:1px solid rgba(234,179,8,0.15);border-radius:6px;">
-          <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:12px;font-weight:600;color:var(--yellow);">
-            <input type="checkbox" id="btReentry" onchange="document.getElementById('btReentryOpts').style.display=this.checked?'flex':'none'"> Re-entry After Stop
-          </label>
-          <div id="btReentryOpts" style="display:none;gap:6px;margin-top:6px;flex-wrap:wrap;font-size:11px;">
-            <div class="config-item"><label>Cooldown min:</label><input type="number" id="btReentryCooldown" value="30" step="5" min="1" max="240" style="width:50px;" title="Minutes to wait after stop-out"></div>
-            <div class="config-item"><label>Max re-entries:</label><input type="number" id="btReentryMax" value="1" step="1" min="1" max="5" style="width:40px;" title="Max re-entries per symbol per day"></div>
-            <div class="config-item"><label>Re-entry stop %:</label><input type="number" id="btReentryStop" value="1.0" step="0.1" min="0.1" max="10" style="width:50px;" title="Tighter stop on re-entry"></div>
-            <div class="config-item"><label>Trigger drop %:</label><input type="number" id="btReentryTrigger" value="0.0" step="0.1" min="0" max="10" style="width:50px;" title="Price must drop this % below original entry"></div>
-          </div>
-        </div>
-        <!-- Gap-Down Fading -->
-        <div style="padding:8px 10px;background:rgba(34,197,94,0.06);border:1px solid rgba(34,197,94,0.15);border-radius:6px;">
-          <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:12px;font-weight:600;color:var(--green);">
-            <input type="checkbox" id="btGapDowns" onchange="document.getElementById('btGapDownOpts').style.display=this.checked?'flex':'none'"> Gap-Down Fading (Longs)
-          </label>
-          <div id="btGapDownOpts" style="display:none;gap:6px;margin-top:6px;flex-wrap:wrap;font-size:11px;">
-            <div class="config-item"><label>Gap Down %:</label><input type="number" id="btGapDownThresh" value="5" step="1" min="1" max="50" style="width:50px;" title="Min gap-down % to consider"></div>
-            <div class="config-item"><label>Max Gap Down %:</label><input type="number" id="btGapDownMax" value="50" step="5" min="10" max="100" style="width:55px;" title="Max gap-down %"></div>
-            <div class="config-item"><label>Vol Max:</label><input type="number" id="btGapDownVol" value="3.0" step="0.1" min="0.5" max="20" style="width:50px;" title="Max vol ratio for gap-downs"></div>
-          </div>
-        </div>
-      </div>
-      <div style="margin-top:8px;display:flex;gap:6px;">
-        <button class="primary" onclick="runBacktest()">Run Backtest</button>
-        <button onclick="cancelBacktest()">Cancel</button>
-      </div>
-      <div id="btProgress" style="display:none;">
-        <div style="color:var(--muted);font-size:12px;" id="btProgressMsg">Running...</div>
-        <div class="progress-bar"><div class="progress-fill" id="btProgressBar" style="width:0%"></div></div>
-      </div>
-      <div id="btLog" style="max-height:300px;overflow-y:auto;font-size:11px;margin-top:8px;
-           background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:8px;display:none;"></div>
-      <div id="btResults" style="margin-top:12px;"></div>
-    </div>
-
-    <!-- Config tab -->
-    <div class="tab-content" id="tab-config">
-      <h2>Strategy Configuration</h2>
-      <div style="margin-bottom:16px;padding:12px;background:rgba(168,85,247,0.06);border:1px solid rgba(168,85,247,0.2);border-radius:8px;">
-        <div style="font-size:12px;color:var(--purple);font-weight:600;margin-bottom:8px;text-transform:uppercase;">Scan Universe</div>
-        <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
-          <label style="display:flex;align-items:center;gap:4px;cursor:pointer;">
-            <input type="radio" name="scanUniverse" value="alpaca" id="univAlpaca"> All Tradeable (Alpaca ~4000+)
-          </label>
-          <label style="display:flex;align-items:center;gap:4px;cursor:pointer;">
-            <input type="radio" name="scanUniverse" value="study" id="univStudy" checked> Study Universe (167)
-          </label>
-          <label style="display:flex;align-items:center;gap:4px;cursor:pointer;">
-            <input type="radio" name="scanUniverse" value="custom" id="univCustom"> Custom
-          </label>
-        </div>
-        <div id="customSymbolsRow" style="margin-top:8px;display:none;">
-          <input id="customSymbolsInput" placeholder="TSLA,AAPL,NVDA,..." style="width:100%;background:var(--bg);color:var(--text);border:1px solid var(--border);padding:6px 8px;border-radius:4px;font-size:12px;">
-        </div>
-      </div>
-      <!-- Price Database Section -->
-      <div style="margin-bottom:16px;padding:12px;background:rgba(6,182,212,0.06);border:1px solid rgba(6,182,212,0.2);border-radius:8px;">
-        <div style="font-size:12px;color:var(--cyan);font-weight:600;margin-bottom:8px;text-transform:uppercase;">Price Database (Local Cache)</div>
-        <div style="color:var(--muted);font-size:11px;margin-bottom:8px;" id="dbStatus">Loading...</div>
-        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-          <label>Universe:</label>
-          <select id="dbUniverse" style="width:auto;">
-            <option value="study">Study (167)</option>
-            <option value="alpaca">All Tradeable (Alpaca)</option>
-          </select>
-          <label>Start:</label>
-          <input type="date" id="dbStartDate" style="width:130px;">
-          <button class="primary" onclick="buildDB()">Build DB</button>
-          <button onclick="updateDB()">Update (Alpaca)</button>
-          <button onclick="polygonUpdate(1)" style="background:var(--purple);color:white;">Polygon Update</button>
-          <label style="margin-left:8px;font-size:11px;">Days:</label>
-          <input type="number" id="polygonDays" value="1" min="1" max="30" style="width:50px;">
-        </div>
-        <div id="dbProgress" style="display:none;margin-top:8px;">
-          <div style="color:var(--muted);font-size:11px;" id="dbProgressMsg">Building...</div>
-          <div class="progress-bar"><div class="progress-fill" id="dbProgressBar" style="width:0%;background:var(--cyan);"></div></div>
-        </div>
-      </div>
-      <div class="config-grid" id="configGrid"></div>
-      <div style="margin-top:12px;">
-        <button class="primary" onclick="saveConfig()">Save Config</button>
+      <div id="customSymbolsRow" style="margin-top:8px;display:none;">
+        <input id="customSymbolsInput" placeholder="TSLA,AAPL,NVDA,..." style="width:100%;background:var(--bg);color:var(--text);border:1px solid var(--border);padding:6px 8px;border-radius:4px;font-size:12px;">
       </div>
     </div>
-
-    <!-- Guide tab -->
-    <div class="tab-content" id="tab-guide">
-      <h2>How the Bot Works</h2>
-
-      <!-- Section 1: Strategy Overview -->
-      <div style="margin-bottom:20px;padding:16px;background:rgba(168,85,247,0.06);border:1px solid rgba(168,85,247,0.2);border-radius:8px;">
-        <h3 style="color:var(--purple);margin:0 0 10px 0;font-size:14px;">What Is Gap Fading?</h3>
-        <p style="color:var(--text);line-height:1.7;margin:0 0 10px 0;font-size:13px;">
-          When a stock opens significantly higher than yesterday's close, that jump is called a <strong style="color:var(--purple);">gap up</strong>.
-          Most of the time, the price drifts back down toward yesterday's close during the trading day &mdash; this is called <strong style="color:var(--purple);">fading the gap</strong>.
-        </p>
-        <p style="color:var(--text);line-height:1.7;margin:0 0 10px 0;font-size:13px;">
-          This bot finds stocks that gapped up on <em>below-average volume</em> (a sign the move lacks conviction) and shorts them,
-          betting the price will fall back. It closes all positions before market close &mdash; no overnight risk.
-        </p>
-        <div style="display:inline-block;padding:8px 14px;background:rgba(168,85,247,0.12);border-radius:6px;margin-top:4px;">
-          <span style="color:var(--purple);font-weight:600;font-size:13px;">Statistical Edge:</span>
-          <span style="color:var(--text);font-size:13px;"> 71% of low-volume gap-ups fade &mdash; historical study of 12,000+ events across 450 tickers.</span>
-        </div>
-      </div>
-
-      <!-- Section 2: Daily Schedule Timeline -->
-      <div style="margin-bottom:20px;padding:16px;background:rgba(6,182,212,0.06);border:1px solid rgba(6,182,212,0.2);border-radius:8px;">
-        <h3 style="color:var(--cyan);margin:0 0 14px 0;font-size:14px;">Daily Schedule</h3>
-        <div id="guideTimeline">
-          <div class="tl-step" data-phase="premarket" style="display:flex;align-items:flex-start;margin-bottom:14px;position:relative;padding-left:28px;">
-            <div style="position:absolute;left:0;top:2px;width:14px;height:14px;border-radius:50%;background:var(--blue);border:2px solid rgba(59,130,246,0.4);"></div>
-            <div style="border-left:2px solid var(--border);position:absolute;left:6px;top:18px;height:calc(100% - 4px);"></div>
-            <div>
-              <span style="color:var(--blue);font-weight:600;font-size:13px;">7:00 AM ET &mdash; Pre-Market Scan</span>
-              <p style="color:var(--muted);margin:3px 0 0 0;font-size:12px;line-height:1.5;">Bot wakes up and scans for stocks that gapped up overnight. Filters by gap size, volume ratio, and market cap.</p>
-            </div>
-          </div>
-          <div class="tl-step" data-phase="refresh" style="display:flex;align-items:flex-start;margin-bottom:14px;position:relative;padding-left:28px;">
-            <div style="position:absolute;left:0;top:2px;width:14px;height:14px;border-radius:50%;background:var(--blue);border:2px solid rgba(59,130,246,0.4);"></div>
-            <div style="border-left:2px solid var(--border);position:absolute;left:6px;top:18px;height:calc(100% - 4px);"></div>
-            <div>
-              <span style="color:var(--blue);font-weight:600;font-size:13px;">9:25 AM ET &mdash; Final Scan Refresh</span>
-              <p style="color:var(--muted);margin:3px 0 0 0;font-size:12px;line-height:1.5;">Re-checks candidates with the latest pre-market data. Drops any that no longer qualify.</p>
-            </div>
-          </div>
-          <div class="tl-step" data-phase="entry" style="display:flex;align-items:flex-start;margin-bottom:14px;position:relative;padding-left:28px;">
-            <div style="position:absolute;left:0;top:2px;width:14px;height:14px;border-radius:50%;background:var(--red);border:2px solid rgba(239,68,68,0.4);"></div>
-            <div style="border-left:2px solid var(--border);position:absolute;left:6px;top:18px;height:calc(100% - 4px);"></div>
-            <div>
-              <span style="color:var(--red);font-weight:600;font-size:13px;">9:31 AM ET &mdash; Enter Positions</span>
-              <p style="color:var(--muted);margin:3px 0 0 0;font-size:12px;line-height:1.5;">One minute after open, the bot shorts qualified gap-ups. Waits one minute to avoid the chaotic opening auction.</p>
-            </div>
-          </div>
-          <div class="tl-step" data-phase="monitor" style="display:flex;align-items:flex-start;margin-bottom:14px;position:relative;padding-left:28px;">
-            <div style="position:absolute;left:0;top:2px;width:14px;height:14px;border-radius:50%;background:var(--yellow);border:2px solid rgba(234,179,8,0.4);"></div>
-            <div style="border-left:2px solid var(--border);position:absolute;left:6px;top:18px;height:calc(100% - 4px);"></div>
-            <div>
-              <span style="color:var(--yellow);font-weight:600;font-size:13px;">9:31 AM &ndash; 3:55 PM ET &mdash; Monitor &amp; Manage</span>
-              <p style="color:var(--muted);margin:3px 0 0 0;font-size:12px;line-height:1.5;">Watches positions, enforces stop-losses, and checks circuit breakers. The dashboard updates live during this window.</p>
-            </div>
-          </div>
-          <div class="tl-step" data-phase="close" style="display:flex;align-items:flex-start;margin-bottom:14px;position:relative;padding-left:28px;">
-            <div style="position:absolute;left:0;top:2px;width:14px;height:14px;border-radius:50%;background:var(--green);border:2px solid rgba(34,197,94,0.4);"></div>
-            <div style="border-left:2px solid var(--border);position:absolute;left:6px;top:18px;height:calc(100% - 4px);"></div>
-            <div>
-              <span style="color:var(--green);font-weight:600;font-size:13px;">3:55 PM ET &mdash; Close All Positions</span>
-              <p style="color:var(--muted);margin:3px 0 0 0;font-size:12px;line-height:1.5;">All positions are closed before market close. No overnight exposure &mdash; every day starts flat.</p>
-            </div>
-          </div>
-          <div class="tl-step" data-phase="sleep" style="display:flex;align-items:flex-start;position:relative;padding-left:28px;">
-            <div style="position:absolute;left:0;top:2px;width:14px;height:14px;border-radius:50%;background:var(--purple);border:2px solid rgba(168,85,247,0.4);"></div>
-            <div>
-              <span style="color:var(--purple);font-weight:600;font-size:13px;">After 4:00 PM ET &mdash; Save &amp; Sleep</span>
-              <p style="color:var(--muted);margin:3px 0 0 0;font-size:12px;line-height:1.5;">Logs results, updates statistics, and sleeps until the next trading day.</p>
-            </div>
-          </div>
-        </div>
-        <div id="guideNextEvent" style="margin-top:14px;padding:8px 12px;background:rgba(6,182,212,0.10);border-radius:6px;font-size:12px;color:var(--cyan);display:none;"></div>
-      </div>
-
-      <!-- Section 3: Safety Features -->
-      <div style="margin-bottom:20px;padding:16px;background:rgba(34,197,94,0.06);border:1px solid rgba(34,197,94,0.2);border-radius:8px;">
-        <h3 style="color:var(--green);margin:0 0 12px 0;font-size:14px;">Safety Features (Circuit Breakers)</h3>
-        <p style="color:var(--muted);margin:0 0 12px 0;font-size:12px;">The bot has three automatic safety switches that pause or halt trading to protect your account:</p>
-        <div style="display:flex;flex-direction:column;gap:10px;">
-          <div style="display:flex;align-items:flex-start;gap:10px;">
-            <div style="min-width:32px;height:32px;display:flex;align-items:center;justify-content:center;background:rgba(239,68,68,0.12);border-radius:6px;font-size:16px;">&#128721;</div>
-            <div>
-              <span style="color:var(--text);font-weight:600;font-size:13px;">Daily Loss Limit</span>
-              <p style="color:var(--muted);margin:2px 0 0 0;font-size:12px;line-height:1.5;">If total losses for the day exceed the configured limit, trading stops for the rest of the day. Prevents one bad day from wiping out weeks of gains.</p>
-            </div>
-          </div>
-          <div style="display:flex;align-items:flex-start;gap:10px;">
-            <div style="min-width:32px;height:32px;display:flex;align-items:center;justify-content:center;background:rgba(234,179,8,0.12);border-radius:6px;font-size:16px;">&#9208;</div>
-            <div>
-              <span style="color:var(--text);font-weight:600;font-size:13px;">Consecutive Loss Pause</span>
-              <p style="color:var(--muted);margin:2px 0 0 0;font-size:12px;line-height:1.5;">After several losses in a row, the bot pauses to avoid revenge trading. It waits before resuming to let conditions change.</p>
-            </div>
-          </div>
-          <div style="display:flex;align-items:flex-start;gap:10px;">
-            <div style="min-width:32px;height:32px;display:flex;align-items:center;justify-content:center;background:rgba(239,68,68,0.12);border-radius:6px;font-size:16px;">&#9940;</div>
-            <div>
-              <span style="color:var(--text);font-weight:600;font-size:13px;">Max Drawdown Halt</span>
-              <p style="color:var(--muted);margin:2px 0 0 0;font-size:12px;line-height:1.5;">If the account drops below a percentage threshold from its peak, all trading halts until you manually review and restart. This is the final safety net.</p>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Section 4: Quick Start -->
-      <div style="margin-bottom:20px;padding:16px;background:rgba(59,130,246,0.06);border:1px solid rgba(59,130,246,0.2);border-radius:8px;">
-        <h3 style="color:var(--blue);margin:0 0 12px 0;font-size:14px;">Quick Start &mdash; 3 Steps</h3>
-        <div style="display:flex;flex-direction:column;gap:12px;">
-          <div style="display:flex;align-items:flex-start;gap:12px;">
-            <div style="min-width:28px;height:28px;display:flex;align-items:center;justify-content:center;background:var(--blue);border-radius:50%;color:#fff;font-weight:700;font-size:13px;">1</div>
-            <div>
-              <span style="color:var(--text);font-weight:600;font-size:13px;">Configure API Keys</span>
-              <p style="color:var(--muted);margin:2px 0 0 0;font-size:12px;line-height:1.5;">Go to the <strong>Config</strong> tab and enter your Alpaca API credentials. The bot needs these to place real trades. Use a paper-trading key first to practice.</p>
-            </div>
-          </div>
-          <div style="display:flex;align-items:flex-start;gap:12px;">
-            <div style="min-width:28px;height:28px;display:flex;align-items:center;justify-content:center;background:var(--blue);border-radius:50%;color:#fff;font-weight:700;font-size:13px;">2</div>
-            <div>
-              <span style="color:var(--text);font-weight:600;font-size:13px;">Click Start Trading</span>
-              <p style="color:var(--muted);margin:2px 0 0 0;font-size:12px;line-height:1.5;">On the <strong>Live Trading</strong> tab, hit the green Start button. The bot will wait for the right time and begin scanning automatically.</p>
-            </div>
-          </div>
-          <div style="display:flex;align-items:flex-start;gap:12px;">
-            <div style="min-width:28px;height:28px;display:flex;align-items:center;justify-content:center;background:var(--blue);border-radius:50%;color:#fff;font-weight:700;font-size:13px;">3</div>
-            <div>
-              <span style="color:var(--text);font-weight:600;font-size:13px;">Watch the Dashboard</span>
-              <p style="color:var(--muted);margin:2px 0 0 0;font-size:12px;line-height:1.5;">The Live Trading tab shows real-time status, positions, and activity logs. The <strong>Scanner</strong> tab shows today's candidates. Everything updates automatically.</p>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Section 5: Status Badge Legend -->
-      <div style="margin-bottom:10px;padding:16px;background:rgba(148,163,184,0.06);border:1px solid rgba(148,163,184,0.15);border-radius:8px;">
-        <h3 style="color:var(--muted);margin:0 0 12px 0;font-size:14px;">Status Badge Legend</h3>
-        <div style="display:grid;grid-template-columns:repeat(auto-fill, minmax(280px, 1fr));gap:10px;">
-          <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:var(--card);border:1px solid var(--border);border-radius:6px;">
-            <span style="display:inline-block;padding:3px 10px;border-radius:4px;font-size:11px;font-weight:600;background:rgba(148,163,184,0.15);color:var(--muted);">STOPPED</span>
-            <span style="color:var(--muted);font-size:12px;">Bot is idle. Click Start to begin.</span>
-          </div>
-          <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:var(--card);border:1px solid var(--border);border-radius:6px;">
-            <span style="display:inline-block;padding:3px 10px;border-radius:4px;font-size:11px;font-weight:600;background:rgba(6,182,212,0.15);color:var(--cyan);">SCANNING</span>
-            <span style="color:var(--muted);font-size:12px;">Looking for gap-up candidates.</span>
-          </div>
-          <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:var(--card);border:1px solid var(--border);border-radius:6px;">
-            <span style="display:inline-block;padding:3px 10px;border-radius:4px;font-size:11px;font-weight:600;background:rgba(34,197,94,0.15);color:var(--green);">TRADING</span>
-            <span style="color:var(--muted);font-size:12px;">Actively managing positions.</span>
-          </div>
-          <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:var(--card);border:1px solid var(--border);border-radius:6px;">
-            <span style="display:inline-block;padding:3px 10px;border-radius:4px;font-size:11px;font-weight:600;background:rgba(234,179,8,0.15);color:var(--yellow);">PAUSED</span>
-            <span style="color:var(--muted);font-size:12px;">Temporarily paused by a circuit breaker.</span>
-          </div>
-          <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:var(--card);border:1px solid var(--border);border-radius:6px;">
-            <span style="display:inline-block;padding:3px 10px;border-radius:4px;font-size:11px;font-weight:600;background:rgba(239,68,68,0.15);color:var(--red);">HALTED</span>
-            <span style="color:var(--muted);font-size:12px;">Max drawdown hit. Manual review needed.</span>
-          </div>
-        </div>
-      </div>
-
+    <div class="config-grid" id="configGrid"></div>
+    <div style="margin-top:12px;">
+      <button class="primary" onclick="saveConfig()">Save Config</button>
     </div>
   </div>
 
-</div>
+  <!-- Database Page -->
+  <div class="page" id="page-database">
+    <h2 style="margin-bottom:10px;">Price Database (Local Cache)</h2>
+    <div style="margin-bottom:16px;padding:12px;background:rgba(6,182,212,0.06);border:1px solid rgba(6,182,212,0.2);border-radius:8px;">
+      <div style="color:var(--muted);font-size:11px;margin-bottom:8px;" id="dbStatus">Loading...</div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+        <label>Universe:</label>
+        <select id="dbUniverse" style="width:auto;">
+          <option value="study">Study (167)</option>
+          <option value="alpaca">All Tradeable (Alpaca)</option>
+        </select>
+        <label>Start:</label>
+        <input type="date" id="dbStartDate" style="width:130px;">
+        <button class="primary" onclick="buildDB()">Build DB</button>
+        <button onclick="updateDB()">Update (Alpaca)</button>
+        <button onclick="polygonUpdate(1)" style="background:var(--purple);color:white;">Polygon Update</button>
+        <label style="margin-left:8px;font-size:11px;">Days:</label>
+        <input type="number" id="polygonDays" value="1" min="1" max="30" style="width:50px;">
+      </div>
+      <div id="dbProgress" style="display:none;margin-top:8px;">
+        <div style="color:var(--muted);font-size:11px;" id="dbProgressMsg">Building...</div>
+        <div class="progress-bar"><div class="progress-fill" id="dbProgressBar" style="width:0%;background:var(--cyan);"></div></div>
+      </div>
+    </div>
+  </div>
 
+  <!-- Guide Page -->
+  <div class="page" id="page-guide">
+    <h2 style="margin-bottom:10px;">How the Bot Works</h2>
+
+    <!-- Section 1: Strategy Overview -->
+    <div style="margin-bottom:20px;padding:16px;background:rgba(168,85,247,0.06);border:1px solid rgba(168,85,247,0.2);border-radius:8px;">
+      <h3 style="color:var(--purple);margin:0 0 10px 0;font-size:14px;">What Is Gap Fading?</h3>
+      <p style="color:var(--text);line-height:1.7;margin:0 0 10px 0;font-size:13px;">
+        When a stock opens significantly higher than yesterday's close, that jump is called a <strong style="color:var(--purple);">gap up</strong>.
+        Most of the time, the price drifts back down toward yesterday's close during the trading day &mdash; this is called <strong style="color:var(--purple);">fading the gap</strong>.
+      </p>
+      <p style="color:var(--text);line-height:1.7;margin:0 0 10px 0;font-size:13px;">
+        This bot finds stocks that gapped up on <em>below-average volume</em> (a sign the move lacks conviction) and shorts them,
+        betting the price will fall back. It closes all positions before market close &mdash; no overnight risk.
+      </p>
+      <div style="display:inline-block;padding:8px 14px;background:rgba(168,85,247,0.12);border-radius:6px;margin-top:4px;">
+        <span style="color:var(--purple);font-weight:600;font-size:13px;">Statistical Edge:</span>
+        <span style="color:var(--text);font-size:13px;"> 71% of low-volume gap-ups fade &mdash; historical study of 12,000+ events across 450 tickers.</span>
+      </div>
+    </div>
+
+    <!-- Section 2: Daily Schedule Timeline -->
+    <div style="margin-bottom:20px;padding:16px;background:rgba(6,182,212,0.06);border:1px solid rgba(6,182,212,0.2);border-radius:8px;">
+      <h3 style="color:var(--cyan);margin:0 0 14px 0;font-size:14px;">Daily Schedule</h3>
+      <div id="guideTimeline">
+        <div class="tl-step" data-phase="premarket" style="display:flex;align-items:flex-start;margin-bottom:14px;position:relative;padding-left:28px;">
+          <div style="position:absolute;left:0;top:2px;width:14px;height:14px;border-radius:50%;background:var(--blue);border:2px solid rgba(59,130,246,0.4);"></div>
+          <div style="border-left:2px solid var(--border);position:absolute;left:6px;top:18px;height:calc(100% - 4px);"></div>
+          <div>
+            <span style="color:var(--blue);font-weight:600;font-size:13px;">7:00 AM ET &mdash; Pre-Market Scan</span>
+            <p style="color:var(--muted);margin:3px 0 0 0;font-size:12px;line-height:1.5;">Bot wakes up and scans for stocks that gapped up overnight. Filters by gap size, volume ratio, and market cap.</p>
+          </div>
+        </div>
+        <div class="tl-step" data-phase="refresh" style="display:flex;align-items:flex-start;margin-bottom:14px;position:relative;padding-left:28px;">
+          <div style="position:absolute;left:0;top:2px;width:14px;height:14px;border-radius:50%;background:var(--blue);border:2px solid rgba(59,130,246,0.4);"></div>
+          <div style="border-left:2px solid var(--border);position:absolute;left:6px;top:18px;height:calc(100% - 4px);"></div>
+          <div>
+            <span style="color:var(--blue);font-weight:600;font-size:13px;">9:25 AM ET &mdash; Final Scan Refresh</span>
+            <p style="color:var(--muted);margin:3px 0 0 0;font-size:12px;line-height:1.5;">Re-checks candidates with the latest pre-market data. Drops any that no longer qualify.</p>
+          </div>
+        </div>
+        <div class="tl-step" data-phase="entry" style="display:flex;align-items:flex-start;margin-bottom:14px;position:relative;padding-left:28px;">
+          <div style="position:absolute;left:0;top:2px;width:14px;height:14px;border-radius:50%;background:var(--red);border:2px solid rgba(239,68,68,0.4);"></div>
+          <div style="border-left:2px solid var(--border);position:absolute;left:6px;top:18px;height:calc(100% - 4px);"></div>
+          <div>
+            <span style="color:var(--red);font-weight:600;font-size:13px;">9:31 AM ET &mdash; Enter Positions</span>
+            <p style="color:var(--muted);margin:3px 0 0 0;font-size:12px;line-height:1.5;">One minute after open, the bot shorts qualified gap-ups. Waits one minute to avoid the chaotic opening auction.</p>
+          </div>
+        </div>
+        <div class="tl-step" data-phase="monitor" style="display:flex;align-items:flex-start;margin-bottom:14px;position:relative;padding-left:28px;">
+          <div style="position:absolute;left:0;top:2px;width:14px;height:14px;border-radius:50%;background:var(--yellow);border:2px solid rgba(234,179,8,0.4);"></div>
+          <div style="border-left:2px solid var(--border);position:absolute;left:6px;top:18px;height:calc(100% - 4px);"></div>
+          <div>
+            <span style="color:var(--yellow);font-weight:600;font-size:13px;">9:31 AM &ndash; 3:55 PM ET &mdash; Monitor &amp; Manage</span>
+            <p style="color:var(--muted);margin:3px 0 0 0;font-size:12px;line-height:1.5;">Watches positions, enforces stop-losses, and checks circuit breakers. The dashboard updates live during this window.</p>
+          </div>
+        </div>
+        <div class="tl-step" data-phase="close" style="display:flex;align-items:flex-start;margin-bottom:14px;position:relative;padding-left:28px;">
+          <div style="position:absolute;left:0;top:2px;width:14px;height:14px;border-radius:50%;background:var(--green);border:2px solid rgba(34,197,94,0.4);"></div>
+          <div style="border-left:2px solid var(--border);position:absolute;left:6px;top:18px;height:calc(100% - 4px);"></div>
+          <div>
+            <span style="color:var(--green);font-weight:600;font-size:13px;">3:55 PM ET &mdash; Close All Positions</span>
+            <p style="color:var(--muted);margin:3px 0 0 0;font-size:12px;line-height:1.5;">All positions are closed before market close. No overnight exposure &mdash; every day starts flat.</p>
+          </div>
+        </div>
+        <div class="tl-step" data-phase="sleep" style="display:flex;align-items:flex-start;position:relative;padding-left:28px;">
+          <div style="position:absolute;left:0;top:2px;width:14px;height:14px;border-radius:50%;background:var(--purple);border:2px solid rgba(168,85,247,0.4);"></div>
+          <div>
+            <span style="color:var(--purple);font-weight:600;font-size:13px;">After 4:00 PM ET &mdash; Save &amp; Sleep</span>
+            <p style="color:var(--muted);margin:3px 0 0 0;font-size:12px;line-height:1.5;">Logs results, updates statistics, and sleeps until the next trading day.</p>
+          </div>
+        </div>
+      </div>
+      <div id="guideNextEvent" style="margin-top:14px;padding:8px 12px;background:rgba(6,182,212,0.10);border-radius:6px;font-size:12px;color:var(--cyan);display:none;"></div>
+    </div>
+
+    <!-- Section 3: Safety Features -->
+    <div style="margin-bottom:20px;padding:16px;background:rgba(34,197,94,0.06);border:1px solid rgba(34,197,94,0.2);border-radius:8px;">
+      <h3 style="color:var(--green);margin:0 0 12px 0;font-size:14px;">Safety Features (Circuit Breakers)</h3>
+      <p style="color:var(--muted);margin:0 0 12px 0;font-size:12px;">The bot has three automatic safety switches that pause or halt trading to protect your account:</p>
+      <div style="display:flex;flex-direction:column;gap:10px;">
+        <div style="display:flex;align-items:flex-start;gap:10px;">
+          <div style="min-width:32px;height:32px;display:flex;align-items:center;justify-content:center;background:rgba(239,68,68,0.12);border-radius:6px;font-size:16px;">&#128721;</div>
+          <div>
+            <span style="color:var(--text);font-weight:600;font-size:13px;">Daily Loss Limit</span>
+            <p style="color:var(--muted);margin:2px 0 0 0;font-size:12px;line-height:1.5;">If total losses for the day exceed the configured limit, trading stops for the rest of the day. Prevents one bad day from wiping out weeks of gains.</p>
+          </div>
+        </div>
+        <div style="display:flex;align-items:flex-start;gap:10px;">
+          <div style="min-width:32px;height:32px;display:flex;align-items:center;justify-content:center;background:rgba(234,179,8,0.12);border-radius:6px;font-size:16px;">&#9208;</div>
+          <div>
+            <span style="color:var(--text);font-weight:600;font-size:13px;">Consecutive Loss Pause</span>
+            <p style="color:var(--muted);margin:2px 0 0 0;font-size:12px;line-height:1.5;">After several losses in a row, the bot pauses to avoid revenge trading. It waits before resuming to let conditions change.</p>
+          </div>
+        </div>
+        <div style="display:flex;align-items:flex-start;gap:10px;">
+          <div style="min-width:32px;height:32px;display:flex;align-items:center;justify-content:center;background:rgba(239,68,68,0.12);border-radius:6px;font-size:16px;">&#9940;</div>
+          <div>
+            <span style="color:var(--text);font-weight:600;font-size:13px;">Max Drawdown Halt</span>
+            <p style="color:var(--muted);margin:2px 0 0 0;font-size:12px;line-height:1.5;">If the account drops below a percentage threshold from its peak, all trading halts until you manually review and restart. This is the final safety net.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Section 4: Quick Start -->
+    <div style="margin-bottom:20px;padding:16px;background:rgba(59,130,246,0.06);border:1px solid rgba(59,130,246,0.2);border-radius:8px;">
+      <h3 style="color:var(--blue);margin:0 0 12px 0;font-size:14px;">Quick Start &mdash; 3 Steps</h3>
+      <div style="display:flex;flex-direction:column;gap:12px;">
+        <div style="display:flex;align-items:flex-start;gap:12px;">
+          <div style="min-width:28px;height:28px;display:flex;align-items:center;justify-content:center;background:var(--blue);border-radius:50%;color:#fff;font-weight:700;font-size:13px;">1</div>
+          <div>
+            <span style="color:var(--text);font-weight:600;font-size:13px;">Configure API Keys</span>
+            <p style="color:var(--muted);margin:2px 0 0 0;font-size:12px;line-height:1.5;">Go to the <strong>Config</strong> page and enter your Alpaca API credentials. The bot needs these to place real trades. Use a paper-trading key first to practice.</p>
+          </div>
+        </div>
+        <div style="display:flex;align-items:flex-start;gap:12px;">
+          <div style="min-width:28px;height:28px;display:flex;align-items:center;justify-content:center;background:var(--blue);border-radius:50%;color:#fff;font-weight:700;font-size:13px;">2</div>
+          <div>
+            <span style="color:var(--text);font-weight:600;font-size:13px;">Click Start Trading</span>
+            <p style="color:var(--muted);margin:2px 0 0 0;font-size:12px;line-height:1.5;">Hit the green Start button in the sidebar. The bot will wait for the right time and begin scanning automatically.</p>
+          </div>
+        </div>
+        <div style="display:flex;align-items:flex-start;gap:12px;">
+          <div style="min-width:28px;height:28px;display:flex;align-items:center;justify-content:center;background:var(--blue);border-radius:50%;color:#fff;font-weight:700;font-size:13px;">3</div>
+          <div>
+            <span style="color:var(--text);font-weight:600;font-size:13px;">Watch the Dashboard</span>
+            <p style="color:var(--muted);margin:2px 0 0 0;font-size:12px;line-height:1.5;">The right panel shows positions and activity. The <strong>Scanner</strong> page shows today's candidates. Everything updates automatically via WebSocket.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Section 5: Status Badge Legend -->
+    <div style="margin-bottom:10px;padding:16px;background:rgba(148,163,184,0.06);border:1px solid rgba(148,163,184,0.15);border-radius:8px;">
+      <h3 style="color:var(--muted);margin:0 0 12px 0;font-size:14px;">Status Badge Legend</h3>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill, minmax(280px, 1fr));gap:10px;">
+        <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:var(--card);border:1px solid var(--border);border-radius:6px;">
+          <span style="display:inline-block;padding:3px 10px;border-radius:4px;font-size:11px;font-weight:600;background:rgba(148,163,184,0.15);color:var(--muted);">STOPPED</span>
+          <span style="color:var(--muted);font-size:12px;">Bot is idle. Click Start to begin.</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:var(--card);border:1px solid var(--border);border-radius:6px;">
+          <span style="display:inline-block;padding:3px 10px;border-radius:4px;font-size:11px;font-weight:600;background:rgba(6,182,212,0.15);color:var(--cyan);">SCANNING</span>
+          <span style="color:var(--muted);font-size:12px;">Looking for gap-up candidates.</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:var(--card);border:1px solid var(--border);border-radius:6px;">
+          <span style="display:inline-block;padding:3px 10px;border-radius:4px;font-size:11px;font-weight:600;background:rgba(34,197,94,0.15);color:var(--green);">TRADING</span>
+          <span style="color:var(--muted);font-size:12px;">Actively managing positions.</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:var(--card);border:1px solid var(--border);border-radius:6px;">
+          <span style="display:inline-block;padding:3px 10px;border-radius:4px;font-size:11px;font-weight:600;background:rgba(234,179,8,0.15);color:var(--yellow);">PAUSED</span>
+          <span style="color:var(--muted);font-size:12px;">Temporarily paused by a circuit breaker.</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:var(--card);border:1px solid var(--border);border-radius:6px;">
+          <span style="display:inline-block;padding:3px 10px;border-radius:4px;font-size:11px;font-weight:600;background:rgba(239,68,68,0.15);color:var(--red);">HALTED</span>
+          <span style="color:var(--muted);font-size:12px;">Max drawdown hit. Manual review needed.</span>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+</main>
+
+<!-- ── Right Panel ── -->
+<aside class="right-panel">
+  <div class="right-panel-tabs">
+    <div class="right-panel-tab active" data-rtab="positions" onclick="showRightTab('positions')">Positions</div>
+    <div class="right-panel-tab" data-rtab="feed" onclick="showRightTab('feed')">Feed</div>
+  </div>
+  <div class="right-tab-content active" id="rightPositions">
+    <div style="overflow-x:auto;">
+      <table>
+        <thead><tr>
+          <th>Symbol</th><th>Shares</th><th>Entry</th><th>Current</th><th>Stop</th><th>Target</th><th>P&L</th>
+        </tr></thead>
+        <tbody id="positionsTable"></tbody>
+      </table>
+    </div>
+    <div id="noPositions" style="color:var(--muted);padding:20px;text-align:center;font-size:12px;">No active positions</div>
+  </div>
+  <div class="right-tab-content" id="rightFeed">
+    <div class="feed" id="feedContainer"></div>
+  </div>
+</aside>
+
+<!-- ── Status Bar ── -->
 <footer class="status-bar">
   <div class="left">
-    <span>API: — ms</span>
-    <span id="statusLastTrade">Last: —</span>
+    <span>API: &mdash; ms</span>
+    <span id="statusLastTrade">Last: &mdash;</span>
   </div>
   <div class="right">
-    <span id="statusConn" style="color:var(--negative);">○ Offline</span>
+    <span id="statusConn" style="color:var(--negative);">&#9675; Offline</span>
     <span>Gap Fade v1.0</span>
   </div>
 </footer>
 
+</div><!-- #app -->
+
 <script>
 // ── Auth (injected by server) ────────────────────────────────────
 /*__API_KEY_PLACEHOLDER__*/
+
+// ── OAuth Auth Gate ──────────────────────────────────────────────
+let _authUser = null;
+let _authEnabled = false;
+
+async function checkAuth() {
+  try {
+    const r = await fetch('/api/auth/me', { credentials: 'include' });
+    const data = await r.json();
+    _authEnabled = data.auth_enabled || false;
+    if (!_authEnabled) {
+      // Auth not configured — open access
+      document.getElementById('app').style.display = '';
+      return;
+    }
+    if (window.location.hash === '#/access-denied') {
+      document.getElementById('accessDeniedOverlay').style.display = 'flex';
+      return;
+    }
+    if (data.user) {
+      _authUser = data.user;
+      document.getElementById('app').style.display = '';
+      showUserBadge(data.user);
+    } else {
+      document.getElementById('authOverlay').style.display = 'flex';
+    }
+  } catch(e) {
+    // Auth endpoint unreachable — open access
+    document.getElementById('app').style.display = '';
+  }
+}
+
+function showUserBadge(user) {
+  const badge = document.getElementById('userBadge');
+  badge.style.display = 'flex';
+  const nameEl = document.getElementById('userName');
+  nameEl.textContent = user.name || user.email || '';
+  if (user.picture) {
+    const img = document.getElementById('userAvatar');
+    img.src = user.picture;
+    img.style.display = 'block';
+  } else {
+    const init = document.getElementById('userInitial');
+    init.textContent = (user.name || user.email || '?')[0].toUpperCase();
+    init.style.display = 'block';
+  }
+}
+
+async function doLogout() {
+  await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' });
+  window.location.reload();
+}
 
 // ── Toast notifications ──────────────────────────────────────────
 let _toastCount = 0;
@@ -5992,7 +6364,45 @@ function showToast(msg, type='error') {
 // ── State ────────────────────────────────────────────────────────
 let ws = null;
 let state = {};
-let activeTab = 'live';
+let activePage = 'dashboard';
+
+// ── Page Navigation ──────────────────────────────────────────────
+const PAGE_TITLES = {
+  dashboard: 'Dashboard',
+  candidates: 'Scanner',
+  trades: 'Trade Log',
+  backtest: 'Backtest',
+  config: 'Config',
+  database: 'Database',
+  guide: 'Guide'
+};
+
+function showPage(name) {
+  document.querySelectorAll('.sidebar-item').forEach(el => el.classList.remove('active'));
+  document.querySelectorAll('.page').forEach(el => el.classList.remove('active'));
+  const page = document.getElementById('page-' + name);
+  if (page) page.classList.add('active');
+  const navItem = document.querySelector(`.sidebar-item[data-page="${name}"]`);
+  if (navItem) navItem.classList.add('active');
+  const title = document.getElementById('pageTitle');
+  if (title) title.textContent = PAGE_TITLES[name] || name;
+  activePage = name;
+}
+
+// Backward compat: showTab maps to showPage
+function showTab(name) {
+  const map = { live: 'dashboard', candidates: 'candidates', trades: 'trades', backtest: 'backtest', config: 'config', guide: 'guide' };
+  showPage(map[name] || name);
+}
+
+function showRightTab(name) {
+  document.querySelectorAll('.right-panel-tab').forEach(el => el.classList.remove('active'));
+  document.querySelectorAll('.right-tab-content').forEach(el => el.classList.remove('active'));
+  const tab = document.querySelector(`.right-panel-tab[data-rtab="${name}"]`);
+  if (tab) tab.classList.add('active');
+  const content = document.getElementById(name === 'positions' ? 'rightPositions' : 'rightFeed');
+  if (content) content.classList.add('active');
+}
 
 // ── WebSocket ────────────────────────────────────────────────────
 function connectWS() {
@@ -6004,7 +6414,7 @@ function connectWS() {
     const statusConn = document.getElementById('statusConn');
     if (dot) { dot.classList.add('connected'); }
     if (lbl) lbl.textContent = 'Live';
-    if (statusConn) { statusConn.textContent = '● Connected'; statusConn.style.color = 'var(--positive)'; }
+    if (statusConn) { statusConn.textContent = '\u25cf Connected'; statusConn.style.color = 'var(--positive)'; }
   };
   ws.onclose = () => {
     const dot = document.getElementById('connectionDot');
@@ -6012,7 +6422,7 @@ function connectWS() {
     const statusConn = document.getElementById('statusConn');
     if (dot) dot.classList.remove('connected');
     if (lbl) lbl.textContent = 'Offline';
-    if (statusConn) { statusConn.textContent = '○ Disconnected'; statusConn.style.color = 'var(--negative)'; }
+    if (statusConn) { statusConn.textContent = '\u25cb Disconnected'; statusConn.style.color = 'var(--negative)'; }
     setTimeout(connectWS, 2000);
   };
   ws.onmessage = (e) => {
@@ -6221,7 +6631,7 @@ async function fetchDbStats() {
         `<span style="color:var(--text)">${stats.size_mb} MB</span> ` +
         `<span style="color:var(--muted)">(${stats.total_rows.toLocaleString()} rows)</span>`;
     } else {
-      el.textContent = 'Empty — click Build DB to populate';
+      el.textContent = 'Empty \u2014 click Build DB to populate';
     }
   } catch(e) {
     document.getElementById('dbStatus').textContent = 'Error loading stats';
@@ -6328,10 +6738,17 @@ function renderState(s) {
   el('statEquity', '$' + (s.equity||0).toLocaleString(undefined,{minimumFractionDigits:0}));
   el('statTodayPnl', pnlFmt(todayPnl));
   cls('statTodayPnl', todayPnl >= 0 ? 'green' : 'red');
-  const topEquity = document.getElementById('statEquityTop');
-  const topToday = document.getElementById('statTodayPnlTop');
-  if (topEquity) topEquity.textContent = '$' + (s.equity||0).toLocaleString(undefined,{minimumFractionDigits:0});
-  if (topToday) { topToday.textContent = pnlFmt(todayPnl); topToday.style.color = todayPnl >= 0 ? 'var(--positive)' : 'var(--negative)'; }
+
+  // Dashboard page elements
+  el('dashEquity', '$' + (s.equity||0).toLocaleString(undefined,{minimumFractionDigits:0}));
+  el('dashTodayPnl', pnlFmt(todayPnl));
+  const dashPnlEl = document.getElementById('dashTodayPnl');
+  if (dashPnlEl) dashPnlEl.style.color = todayPnl >= 0 ? 'var(--positive)' : 'var(--negative)';
+  el('dashWinRate', ((m.win_rate||0)*100).toFixed(1) + '%');
+  el('dashTrades', m.total_trades || 0);
+  el('dashPF', (m.profit_factor||0).toFixed(2));
+  el('dashMaxDD', (m.max_drawdown_pct||0).toFixed(1) + '%');
+
   el('statTotalPnl', pnlFmt(m.total_pnl||0));
   cls('statTotalPnl', (m.total_pnl||0) >= 0 ? 'green' : 'red');
   el('statWinRate', ((m.win_rate||0)*100).toFixed(1) + '%');
@@ -6345,7 +6762,8 @@ function renderState(s) {
   renderCandidates(s.candidates || []);
   renderMessages(s.messages || []);
   renderTrades(s.today_trades || [], (s.metrics||{}).total_trades||0);
-  renderConfig(s.config || {});
+  const cfgGrid = document.getElementById('configGrid');
+  if (!cfgGrid || !cfgGrid.contains(document.activeElement)) renderConfig(s.config || {});
 }
 
 function updateStatus(status) {
@@ -6356,6 +6774,8 @@ function updateStatus(status) {
 
 function updateEquity(eq) {
   document.getElementById('statEquity').textContent = '$' + (eq||0).toLocaleString(undefined,{minimumFractionDigits:0});
+  const dashEq = document.getElementById('dashEquity');
+  if (dashEq) dashEq.textContent = '$' + (eq||0).toLocaleString(undefined,{minimumFractionDigits:0});
 }
 
 function updateCircuitBreakers(ds) {
@@ -6393,10 +6813,10 @@ function renderPositions(positions) {
       <td style="font-weight:600;color:var(--red);">${sym}</td>
       <td>${p.remaining_shares}</td>
       <td>$${p.entry_price.toFixed(2)}</td>
-      <td>—</td>
+      <td>\u2014</td>
       <td style="color:var(--red);">$${p.stop_price.toFixed(2)}</td>
       <td style="color:var(--green);">$${p.full_target.toFixed(2)}</td>
-      <td>—</td>
+      <td>\u2014</td>
     </tr>`;
   }).join('');
 }
@@ -6407,7 +6827,7 @@ function catalystBadge(cat, detail) {
     earnings:'var(--red)',fda:'var(--red)',ma:'var(--red)',
     offering:'var(--green)',upgrade:'var(--orange)',downgrade:'var(--orange)',
   };
-  if (!cat) return '<span style="color:var(--green);font-weight:600;" title="No catalyst — clean noise gap">NOISE</span>';
+  if (!cat) return '<span style="color:var(--green);font-weight:600;" title="No catalyst \u2014 clean noise gap">NOISE</span>';
   const label = labels[cat] || cat.toUpperCase();
   const color = colors[cat] || 'var(--muted)';
   const tip = detail ? detail.replace(/"/g, '&quot;') : '';
@@ -6438,8 +6858,8 @@ function renderCandidates(candidates) {
     <td style="color:${c.vol_ratio < 0.5 ? 'var(--green)' : (c.vol_ratio < 1 ? 'var(--cyan)' : 'var(--red)')};">
       ${c.vol_ratio.toFixed(2)}x</td>
     <td>${(c.avg_vol_20d/1000).toFixed(0)}K</td>
-    <td>${c.shortable ? '✓' : '✗'}</td>
-    <td>${c.easy_to_borrow ? '✓' : '—'}</td>
+    <td>${c.shortable ? '\u2713' : '\u2717'}</td>
+    <td>${c.easy_to_borrow ? '\u2713' : '\u2014'}</td>
     <td>${catalystBadge(c.catalyst || '', c.catalyst_detail || '')}</td>
     <td>${c.score.toFixed(1)}</td>
   </tr>`;
@@ -6462,7 +6882,7 @@ function renderTrades(todayTrades, totalCount) {
   if (lastEl && trades.length > 0) {
     const t = trades[trades.length - 1];
     lastEl.textContent = 'Last: ' + (t.symbol || '') + ' ' + (t.side || '').toUpperCase() + ' ' + (t.shares || 0) + ' @ $' + (t.exit_price || 0).toFixed(2);
-  } else if (lastEl) lastEl.textContent = 'Last: —';
+  } else if (lastEl) lastEl.textContent = 'Last: \u2014';
   tbody.innerHTML = trades.slice().reverse().map(t => {
     const side = (t.side || 'short').toUpperCase();
     const sideColor = side === 'LONG' ? 'var(--green)' : 'var(--red)';
@@ -6519,6 +6939,41 @@ function renderConfig(config) {
     </div>
   `).join('');
 
+  // Feature toggle sections
+  const features = [
+    { key: 'adaptive_stops', title: 'Adaptive Stops', desc: 'Scale stop-loss with gap size instead of fixed %',
+      params: [['stop_gap_fraction', 'Gap Fraction', 0.15], ['stop_min_pct', 'Stop Min %', 0.01], ['stop_max_pct', 'Stop Max %', 0.05]] },
+    { key: 'regime_filter', title: 'Market Regime Filter', desc: 'Reduce/block entries when SPY gaps up or VIX is elevated',
+      params: [['regime_spy_gap_limit', 'SPY Gap Limit', 0.01], ['regime_spy_block_pct', 'SPY Block %', 0.015], ['regime_vix_threshold', 'VIX Threshold', 25.0]] },
+    { key: 'reentry_enabled', title: 'Re-entry After Stop-out', desc: 'Re-enter a stopped position if price moves favorably',
+      params: [['reentry_cooldown_minutes', 'Cooldown (min)', 30], ['reentry_max_per_symbol', 'Max Per Symbol', 1], ['reentry_stop_pct', 'Stop %', 0.01], ['reentry_trigger_pct', 'Trigger %', 0.0]] },
+    { key: 'trade_gap_downs', title: 'Gap-Down Fading (Longs)', desc: 'Also trade gap-downs — buy long, fade back to prev close',
+      params: [['gap_down_threshold', 'Gap Down Threshold', 0.05], ['gap_down_max_pct', 'Max Gap Down %', 0.50], ['gap_down_vol_ratio_max', 'Vol Ratio Max', 3.0]] },
+  ];
+  features.forEach(f => {
+    const on = !!config[f.key];
+    const secId = 'params-' + f.key;
+    const html = `
+      <div class="feature-section${on ? ' enabled' : ''}" id="sec-${f.key}">
+        <div class="feature-header" onclick="const cb=this.querySelector('input');cb.checked=!cb.checked;cb.dispatchEvent(new Event('change'));">
+          <input type="checkbox" data-key="${f.key}" ${on ? 'checked' : ''}
+            onclick="event.stopPropagation();"
+            onchange="const sec=document.getElementById('sec-${f.key}');const p=document.getElementById('${secId}');p.style.display=this.checked?'grid':'none';sec.classList.toggle('enabled',this.checked);">
+          <span class="feature-title">${f.title}</span>
+          <span class="feature-desc">${f.desc}</span>
+        </div>
+        <div class="feature-params" id="${secId}" style="display:${on ? 'grid' : 'none'}">
+          ${f.params.map(([pk, pl, def]) => `
+            <div class="config-item">
+              <label>${pl}:</label>
+              <input type="number" data-key="${pk}" value="${config[pk] !== undefined ? config[pk] : def}" step="any">
+            </div>
+          `).join('')}
+        </div>
+      </div>`;
+    grid.insertAdjacentHTML('beforeend', html);
+  });
+
   // Set scan universe radio buttons from config
   const univ = config.scan_universe || 'study';
   const radioMap = { alpaca: 'univAlpaca', study: 'univStudy', custom: 'univCustom' };
@@ -6526,6 +6981,202 @@ function renderConfig(config) {
   if (radioEl) radioEl.checked = true;
   document.getElementById('customSymbolsInput').value = config.custom_symbols || '';
   document.getElementById('customSymbolsRow').style.display = univ === 'custom' ? 'block' : 'none';
+}
+
+// ── P&L Bar Chart ────────────────────────────────────────────────
+function setPnlGranularity(gran, btn) {
+  document.querySelectorAll('.pnl-gran-btn').forEach(b => b.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+  renderPnlBarChart(gran);
+}
+
+function _dateToBucket(dateStr, gran) {
+  // dateStr is 'YYYY-MM-DD' (from daily_summary.date) or 'YYYY-MM-DD HH:MM' (from trade)
+  const ds = dateStr.slice(0, 10);
+  if (gran === 'day') return ds;
+  const d = new Date(ds + 'T12:00:00');
+  if (gran === 'year') return d.getFullYear().toString();
+  if (gran === 'month') return ds.slice(0, 7); // YYYY-MM
+  // week: find Monday of that week
+  const tmp = new Date(d);
+  const dow = (tmp.getDay() + 6) % 7; // 0=Mon, 6=Sun
+  tmp.setDate(tmp.getDate() - dow);
+  return tmp.toISOString().slice(0, 10);
+}
+
+function renderPnlBarChart(gran) {
+  const canvas = document.getElementById('pnlBarChart');
+  const wrap = document.getElementById('pnlChartWrap');
+  const tooltip = document.getElementById('pnlTooltip');
+  const countEl = document.getElementById('pnlBarCount');
+  if (!canvas || !wrap) return;
+  const ctx = canvas.getContext('2d');
+
+  // Build daily P&L map from daily_summary (preferred) or all_trades
+  const dailyPnl = {};
+  if (window._btDailySummary && window._btDailySummary.length > 0) {
+    window._btDailySummary.forEach(d => {
+      if (d.date && d.pnl !== undefined) {
+        const key = d.date.slice(0, 10);
+        dailyPnl[key] = (dailyPnl[key] || 0) + d.pnl;
+      }
+    });
+  } else if (window._btAllTrades && window._btAllTrades.length > 0) {
+    window._btAllTrades.forEach(t => {
+      const ds = (t.exit_time || t.entry_time || '').slice(0, 10);
+      if (ds) dailyPnl[ds] = (dailyPnl[ds] || 0) + (t.pnl || 0);
+    });
+  }
+
+  // Re-bucket into chosen granularity
+  const buckets = {};
+  Object.keys(dailyPnl).forEach(day => {
+    const key = _dateToBucket(day, gran);
+    buckets[key] = (buckets[key] || 0) + dailyPnl[day];
+  });
+
+  const keys = Object.keys(buckets).sort();
+  const vals = keys.map(k => buckets[k]);
+  if (countEl) countEl.textContent = keys.length + ' ' + gran + (keys.length !== 1 ? 's' : '');
+  if (keys.length === 0) { ctx.clearRect(0,0,canvas.width,canvas.height); return; }
+
+  const maxAbs = Math.max(Math.abs(Math.min(...vals)), Math.abs(Math.max(...vals)), 1);
+
+  // Sizing: ensure minimum bar width so every label is visible
+  const dpr = window.devicePixelRatio || 1;
+  const visibleW = wrap.clientWidth;
+  const h = wrap.clientHeight;
+  const padL = 58, padR = 14, padT = 12, padB = 52;
+  const minBarStep = 22; // minimum px per bar (bar + gap)
+  const neededW = Math.max(visibleW, padL + padR + keys.length * minBarStep);
+
+  canvas.width = neededW * dpr;
+  canvas.height = h * dpr;
+  canvas.style.width = neededW + 'px';
+  canvas.style.height = h + 'px';
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+  const chartW = neededW - padL - padR;
+  const chartH = h - padT - padB;
+  const step = chartW / keys.length;
+  const barW = Math.max(4, step * 0.7);
+  const barGap = step - barW;
+  const zeroY = padT + chartH / 2;
+
+  ctx.clearRect(0, 0, neededW, h);
+
+  // Store bar rects for hit-testing
+  window._pnlBars = [];
+
+  // Grid lines + Y axis labels
+  ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+  ctx.lineWidth = 1;
+  const ticks = 4;
+  ctx.font = '10px JetBrains Mono, monospace';
+  ctx.textAlign = 'right';
+  for (let i = 0; i <= ticks; i++) {
+    const frac = i / ticks;
+    const y = padT + frac * chartH;
+    const val = maxAbs - frac * 2 * maxAbs;
+    ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(neededW - padR, y); ctx.stroke();
+    ctx.fillStyle = '#64748b';
+    ctx.fillText('$' + val.toFixed(0), padL - 6, y + 4);
+  }
+
+  // Zero line
+  ctx.strokeStyle = 'rgba(255,255,255,0.2)';
+  ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(padL, zeroY); ctx.lineTo(neededW - padR, zeroY); ctx.stroke();
+
+  // Bars + labels
+  keys.forEach((key, i) => {
+    const v = vals[i];
+    const x = padL + barGap / 2 + i * step;
+    const barH = (Math.abs(v) / maxAbs) * (chartH / 2);
+    const y = v >= 0 ? zeroY - barH : zeroY;
+    const colorFade = v >= 0 ? 'rgba(0,212,255,0.7)' : 'rgba(255,59,92,0.7)';
+
+    // Store rect for tooltip hit-test
+    window._pnlBars.push({ x, y: v >= 0 ? y : zeroY, w: barW, h: barH, key, val: v });
+
+    ctx.fillStyle = colorFade;
+    ctx.beginPath();
+    const r = Math.min(3, barW / 2);
+    if (v >= 0) {
+      ctx.moveTo(x, zeroY);
+      ctx.lineTo(x, y + r);
+      ctx.quadraticCurveTo(x, y, x + r, y);
+      ctx.lineTo(x + barW - r, y);
+      ctx.quadraticCurveTo(x + barW, y, x + barW, y + r);
+      ctx.lineTo(x + barW, zeroY);
+    } else {
+      ctx.moveTo(x, zeroY);
+      ctx.lineTo(x, zeroY + barH - r);
+      ctx.quadraticCurveTo(x, zeroY + barH, x + r, zeroY + barH);
+      ctx.lineTo(x + barW - r, zeroY + barH);
+      ctx.quadraticCurveTo(x + barW, zeroY + barH, x + barW, zeroY + barH - r);
+      ctx.lineTo(x + barW, zeroY);
+    }
+    ctx.fill();
+
+    // X label — every bar gets a label, rotated 45deg
+    ctx.save();
+    ctx.fillStyle = '#64748b';
+    ctx.font = '9px JetBrains Mono, monospace';
+    const lx = x + barW / 2;
+    const ly = h - padB + 10;
+    ctx.translate(lx, ly);
+    ctx.rotate(-Math.PI / 4);
+    ctx.textAlign = 'right';
+    ctx.fillText(key, 0, 0);
+    ctx.restore();
+  });
+
+  // ── Tooltip on hover ──
+  // Remove old listeners to avoid stacking
+  canvas._pnlMove && canvas.removeEventListener('mousemove', canvas._pnlMove);
+  canvas._pnlLeave && canvas.removeEventListener('mouseleave', canvas._pnlLeave);
+
+  canvas._pnlMove = function(e) {
+    if (!tooltip || !window._pnlBars) return;
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / dpr / rect.width;
+    const mx = (e.clientX - rect.left) * scaleX;
+    const my = (e.clientY - rect.top) * (canvas.height / dpr / rect.height);
+    let hit = null;
+    for (const bar of window._pnlBars) {
+      if (mx >= bar.x && mx <= bar.x + bar.w && my >= Math.min(bar.y, zeroY) && my <= Math.max(bar.y + bar.h, zeroY)) {
+        hit = bar; break;
+      }
+    }
+    if (!hit) {
+      // Also detect by x-column regardless of y (easier to aim)
+      for (const bar of window._pnlBars) {
+        if (mx >= bar.x - 2 && mx <= bar.x + bar.w + 2) { hit = bar; break; }
+      }
+    }
+    if (hit) {
+      const sign = hit.val >= 0 ? '+' : '-';
+      const color = hit.val >= 0 ? '#00D4FF' : '#FF3B5C';
+      tooltip.innerHTML = '<span style="color:var(--muted);">' + hit.key + '</span> &nbsp; <span style="color:' + color + ';font-weight:600;">' + sign + '$' + Math.abs(hit.val).toFixed(2) + '</span>';
+      tooltip.style.display = 'block';
+      tooltip.style.left = (e.clientX + 12) + 'px';
+      tooltip.style.top = (e.clientY - 10) + 'px';
+      canvas.style.cursor = 'crosshair';
+    } else {
+      tooltip.style.display = 'none';
+      canvas.style.cursor = '';
+    }
+  };
+  canvas._pnlLeave = function() {
+    if (tooltip) tooltip.style.display = 'none';
+    canvas.style.cursor = '';
+  };
+  canvas.addEventListener('mousemove', canvas._pnlMove);
+  canvas.addEventListener('mouseleave', canvas._pnlLeave);
+
+  // Auto-scroll to the right so latest bars are visible
+  wrap.scrollLeft = wrap.scrollWidth;
 }
 
 function renderBacktestResults(r) {
@@ -6563,9 +7214,38 @@ function renderBacktestResults(r) {
       <div class="stat"><div class="label">Gap Days</div><div class="value">${r.gap_days_found||0}</div></div>
       <div class="stat"><div class="label">Traded</div><div class="value">${r.gap_days_traded||0}</div></div>
     </div>
+    ${(r.daily_summary && r.daily_summary.length > 0) || (r.all_trades && r.all_trades.length > 0) ? `
+      <div style="margin-bottom:12px;">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+          <h2 style="margin:0;">P&L Distribution</h2>
+          <span id="pnlBarCount" style="font-size:11px;color:var(--muted);"></span>
+          <div style="display:flex;gap:2px;margin-left:auto;">
+            <button class="pnl-gran-btn active" onclick="setPnlGranularity('day',this)">Day</button>
+            <button class="pnl-gran-btn" onclick="setPnlGranularity('week',this)">Week</button>
+            <button class="pnl-gran-btn" onclick="setPnlGranularity('month',this)">Month</button>
+            <button class="pnl-gran-btn" onclick="setPnlGranularity('year',this)">Year</button>
+          </div>
+        </div>
+        <div id="pnlChartWrap" style="position:relative;height:220px;background:rgba(0,0,0,0.2);border:1px solid var(--border);border-radius:6px;overflow-x:auto;overflow-y:hidden;">
+          <canvas id="pnlBarChart" style="display:block;"></canvas>
+          <div id="pnlTooltip" style="display:none;position:fixed;pointer-events:none;z-index:100;padding:6px 10px;background:rgba(10,14,23,0.95);border:1px solid var(--border-hover);border-radius:6px;font-size:11px;font-family:'JetBrains Mono',monospace;white-space:nowrap;box-shadow:0 4px 16px rgba(0,0,0,0.5);"></div>
+        </div>
+      </div>
+    ` : ''}
     ${r.trades && r.trades.length > 0 ? '<div id="btTradesSection"></div>' : ''}
   `;
   document.getElementById('btResults').innerHTML = html;
+
+  // Render P&L bar chart — use daily_summary (complete, not truncated) or fall back to all_trades
+  if (r.daily_summary && r.daily_summary.length > 0) {
+    window._btDailySummary = r.daily_summary;
+    window._btAllTrades = r.all_trades || r.trades || [];
+    renderPnlBarChart('day');
+  } else if (r.all_trades && r.all_trades.length > 0) {
+    window._btDailySummary = null;
+    window._btAllTrades = r.all_trades;
+    renderPnlBarChart('day');
+  }
 
   // Render backtest trades table separately (avoids nested template literal issues)
   if (r.trades && r.trades.length > 0) {
@@ -6585,7 +7265,7 @@ function renderBacktestResults(r) {
           '<td class="' + ((t.pnl||0)>=0?'pnl-pos':'pnl-neg') + '">' + pnlFmt(t.pnl||0) + '</td>' +
           '<td class="' + ((t.pnl_pct||0)>=0?'pnl-pos':'pnl-neg') + '">' + ((t.pnl_pct||0)*100).toFixed(2) + '%</td>' +
           '<td>' + (t.exit_reason||'') + '</td>' +
-          '<td>' + (t.holding_minutes ? t.holding_minutes + 'm' : '—') + '</td>' +
+          '<td>' + (t.holding_minutes ? t.holding_minutes + 'm' : '\u2014') + '</td>' +
           '</tr>';
       }).join('');
       section.innerHTML = '<h2 style="margin-top:12px;">Recent Trades</h2>' +
@@ -6594,17 +7274,6 @@ function renderBacktestResults(r) {
         '<th>Reason</th><th>Hold</th></tr></thead><tbody>' + rows + '</tbody></table>';
     }
   }
-}
-
-// ── Tabs ─────────────────────────────────────────────────────────
-function showTab(name) {
-  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-  document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
-  document.getElementById('tab-' + name).classList.add('active');
-  // Highlight matching tab button by data-tab attribute
-  const tabBtn = document.querySelector(`.tab[data-tab="${name}"]`);
-  if (tabBtn) tabBtn.classList.add('active');
-  activeTab = name;
 }
 
 // ── Guide Timeline ──────────────────────────────────────────────
@@ -6655,7 +7324,7 @@ function updateGuideTimeline() {
   const evtEl = document.getElementById('guideNextEvent');
   if (isWeekend) {
     evtEl.style.display = 'block';
-    evtEl.textContent = 'Market is closed — trading resumes Monday at 7:00 AM ET';
+    evtEl.textContent = 'Market is closed \u2014 trading resumes Monday at 7:00 AM ET';
   } else if (next) {
     evtEl.style.display = 'block';
     const h = Math.floor(next.start / 60), m = next.start % 60;
@@ -6664,10 +7333,10 @@ function updateGuideTimeline() {
     evtEl.textContent = 'Next: ' + next.label + ' at ' + h12 + ':' + String(m).padStart(2,'0') + ' ' + ampm + ' ET';
   } else if (current && current.name === 'sleep') {
     evtEl.style.display = 'block';
-    evtEl.textContent = 'Trading day complete — next session tomorrow at 7:00 AM ET';
+    evtEl.textContent = 'Trading day complete \u2014 next session tomorrow at 7:00 AM ET';
   } else {
     evtEl.style.display = 'block';
-    evtEl.textContent = 'Waiting for market — pre-market scan starts at 7:00 AM ET';
+    evtEl.textContent = 'Waiting for market \u2014 pre-market scan starts at 7:00 AM ET';
   }
 }
 
@@ -6705,7 +7374,8 @@ function updateClock() {
 }
 
 // ── Init ─────────────────────────────────────────────────────────
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
+  await checkAuth();
   // Set default backtest dates
   const end = new Date();
   const start = new Date(end);
@@ -6733,6 +7403,7 @@ document.addEventListener('DOMContentLoaded', () => {
   setInterval(updateGuideTimeline, 30000);
   updateClock();
   updateGuideTimeline();
+  showPage('dashboard');
 });
 </script>
 </body>
