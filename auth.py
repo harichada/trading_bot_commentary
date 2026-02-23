@@ -279,8 +279,8 @@ async def me(request: Request):
     }
 
 
-@router.post("/logout")
+@router.get("/logout")
 async def logout():
-    response = JSONResponse({"ok": True})
+    response = RedirectResponse("/", status_code=302)
     response.delete_cookie(COOKIE_NAME, path="/")
     return response

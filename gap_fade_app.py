@@ -6343,9 +6343,9 @@ function showUserBadge(user) {
   }
 }
 
-async function doLogout() {
-  await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' });
-  window.location.reload();
+function doLogout() {
+  // Navigate to server logout — server clears httpOnly cookie and redirects back
+  window.location.href = '/api/auth/logout';
 }
 
 // ── Toast notifications ──────────────────────────────────────────
@@ -7376,6 +7376,13 @@ function updateClock() {
 // ── Init ─────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', async () => {
   await checkAuth();
+  // If auth is enabled but user not logged in, stop here — don't poll APIs
+  if (_authEnabled && !_authUser) {
+    setInterval(updateClock, 1000);
+    updateClock();
+    return;
+  }
+
   // Set default backtest dates
   const end = new Date();
   const start = new Date(end);
