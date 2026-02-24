@@ -1362,7 +1362,7 @@ class GapFadeConfig:
     # LLM Supervisor
     llm_enabled: bool = False
     llm_url: str = 'http://localhost:11434'
-    llm_model: str = 'gpt-oss:20b'
+    llm_model: str = 'gapfade-supervisor:latest'
     llm_timeout: float = 10.0               # seconds per LLM call
     llm_max_failures: int = 5               # circuit breaker opens after N failures
     llm_circuit_reset: float = 120.0        # seconds before retrying after circuit opens
@@ -4016,6 +4016,85 @@ Respond with JSON matching this schema:
             parsed['action'] = 'hold'
         return parsed
 
+    _REVIEW_SYSTEM_PROMPT = (
+        "You are the autonomous trading supervisor performing a periodic self-review. "
+        "Analyze the current portfolio state and recommend concrete actions. "
+        "Be decisive — if something should change, say so clearly."
+    )
+
+    _REVIEW_SCHEMA = '{"actions": [{"action": "close"|"tighten_stop"|"adjust_config"|"none", "symbol": "SYM" (if position action), "new_stop": price (if tighten), "config_key": "..." (if config), "config_value": ... (if config), "reasoning": "..."}]}'
+
+    async def autonomous_review(self, state: dict) -> dict:
+        """Periodic self-review: analyze portfolio and recommend/execute improvements.
+
+        Called every N minutes from the trading loop. Returns dict with
+        'actions' list of recommended changes (some may be auto-executed).
+        """
+        fallback = {'actions': [], 'reasoning': 'LLM unavailable'}
+
+        positions_info = 'No open positions.'
+        if state.get('positions'):
+            lines = []
+            for sym, pos in state['positions'].items():
+                lines.append(
+                    f"  {sym} ({pos['direction']}): {pos.get('remaining_shares', pos['shares'])} shares "
+                    f"@ ${pos['entry_price']:.2f}, stop ${pos['stop_price']:.2f}, "
+                    f"target ${pos.get('full_target', 0):.2f}, "
+                    f"last prices: {pos.get('last_prices', 'N/A')}"
+                )
+            positions_info = '\n'.join(lines)
+
+        recent_trades = 'None today.'
+        if state.get('recent_trades'):
+            lines = []
+            for t in state['recent_trades'][-5:]:
+                lines.append(f"  {t.get('symbol', '?')} {t.get('side', '?')}: "
+                           f"${t.get('pnl', 0):+,.2f} ({t.get('exit_reason', '?')})")
+            recent_trades = '\n'.join(lines)
+
+        user_prompt = f"""AUTONOMOUS REVIEW — {state['time_et']}
+
+PORTFOLIO STATUS:
+- Equity: ${state['equity']:,.2f}
+- Daily P&L: ${state['daily_pnl']:+,.2f}
+- Win/Loss: {state['wins']}W / {state['losses']}L
+- Consecutive losses: {state['consecutive_losses']}
+
+OPEN POSITIONS:
+{positions_info}
+
+TODAY'S CLOSED TRADES:
+{recent_trades}
+
+RECENT ACTIVITY:
+{chr(10).join('  ' + m for m in state['recent_messages'][-6:])}
+
+CONFIG HIGHLIGHTS:
+- Stop: {state.get('config', {}).get('stop_pct', 0.015):.1%}
+- Max positions: {state.get('config', {}).get('max_positions', 5)}
+- Gap threshold: {state.get('config', {}).get('gap_threshold', 0.07):.0%}
+
+Review the portfolio. For each position, assess:
+1. Is the stop still appropriate? Should it be tightened to lock in gains?
+2. Should any position be closed now (momentum stalling, reversal)?
+3. Are there config adjustments that would improve today's performance?
+
+Respond with JSON: {self._REVIEW_SCHEMA}"""
+
+        raw = await self._call_ollama(self._REVIEW_SYSTEM_PROMPT, user_prompt)
+        if raw is None:
+            return fallback
+
+        parsed = self._parse_json(raw)
+        if not isinstance(parsed, dict) or 'actions' not in parsed:
+            # Try to extract if it returned a single action
+            if isinstance(parsed, dict) and 'action' in parsed:
+                parsed = {'actions': [parsed]}
+            else:
+                return fallback
+
+        return parsed
+
 
 # =============================================================================
 # SECTION 7: LIVE TRADER
@@ -4048,6 +4127,8 @@ class GapFadeLiveTrader:
         self.messages: List[dict] = []  # decision feed
         self._position_lock = asyncio.Lock()  # P0-2: serializes ALL position mutations
         self._last_reconcile = 0.0  # monotonic time of last broker reconciliation
+        self._last_autonomous_review = 0.0  # monotonic time of last LLM review
+        self._AUTONOMOUS_REVIEW_INTERVAL = 300  # seconds (5 minutes)
 
         # LLM Supervisor
         if self.config.llm_enabled:
@@ -4237,6 +4318,14 @@ class GapFadeLiveTrader:
             'stopped_today': list(self.engine._stopped_today.keys()),
             'status': self.status,
             'recent_messages': [m['text'] for m in self.messages[-10:]],
+            'recent_trades': [asdict(t) for t in self.engine.all_trade_log[-5:]],
+            'config': {
+                'stop_pct': self.config.stop_pct,
+                'max_positions': self.config.max_positions,
+                'gap_threshold': self.config.gap_threshold,
+                'adaptive_stops': self.config.adaptive_stops,
+                'reentry_enabled': self.config.reentry_enabled,
+            },
         }
 
     async def _trading_loop(self):
@@ -4332,6 +4421,8 @@ class GapFadeLiveTrader:
                             await self._check_positions()
                             if _time.monotonic() - self._last_reconcile > self.RECONCILE_INTERVAL:
                                 await self._reconcile_with_broker()
+                            # Autonomous review: periodic portfolio self-check
+                            await self._execute_autonomous_review()
                         await asyncio.sleep(15)
                     continue
 
@@ -4370,6 +4461,9 @@ class GapFadeLiveTrader:
                     await self._check_positions()
                     if _time.monotonic() - self._last_reconcile > self.RECONCILE_INTERVAL:
                         await self._reconcile_with_broker()
+                    # Autonomous review (fallback schedule too)
+                    if self.engine.positions:
+                        await self._execute_autonomous_review()
                     await asyncio.sleep(15)
                     continue
 
@@ -4802,6 +4896,110 @@ class GapFadeLiveTrader:
                 f'Cover order FAILED for {symbol}: {fill.error} — will retry')
             logger.error(f"Cover order failed: {symbol} {shares} shares: {fill.error}")
             return None
+
+    async def _execute_autonomous_review(self):
+        """Run the LLM autonomous review and execute recommended actions."""
+        if not self.llm_supervisor or not self.llm_supervisor.is_available():
+            return
+        if not self.engine.positions:
+            return
+
+        now_mono = _time.monotonic()
+        if now_mono - self._last_autonomous_review < self._AUTONOMOUS_REVIEW_INTERVAL:
+            return
+        self._last_autonomous_review = now_mono
+
+        now = datetime.now(ET)
+        state = self._build_llm_state(now)
+        logger.info(f"Autonomous review starting ({len(self.engine.positions)} positions)")
+        try:
+            review = await self.llm_supervisor.autonomous_review(state)
+        except Exception as e:
+            logger.warning(f"Autonomous review failed: {e}")
+            return
+
+        actions = review.get('actions', [])
+        if not actions:
+            logger.info("Autonomous review: no actions recommended")
+            return
+
+        executed = []
+        for rec in actions:
+            action = rec.get('action', 'none')
+            symbol = rec.get('symbol', '').upper()
+            reasoning = rec.get('reasoning', '')
+
+            if action == 'close' and symbol:
+                pos = self.engine.positions.get(symbol)
+                if pos and not pos.closing:
+                    # Get current price
+                    price = 0.0
+                    if self.streamer and self.streamer.latest_prices:
+                        price = self.streamer.latest_prices.get(symbol, 0.0)
+                    if price <= 0:
+                        price = pos.entry_price
+                    exit_signal = {
+                        'reason': 'llm_profit',
+                        'shares': pos.remaining_shares,
+                        'is_full_close': True,
+                        'trigger_price': price,
+                    }
+                    async with self._position_lock:
+                        trade = await self._execute_exit(symbol, exit_signal, price)
+                    if trade:
+                        self._add_message('llm_review',
+                            f'AUTO-CLOSE {symbol}: ${trade.pnl:+,.2f} — {reasoning}')
+                        executed.append(f'close {symbol}')
+                        await broadcast({'type': 'trade', 'trades': [asdict(trade)]})
+
+            elif action == 'tighten_stop' and symbol:
+                new_stop = rec.get('new_stop')
+                if new_stop:
+                    pos = self.engine.positions.get(symbol)
+                    if pos:
+                        old_stop = pos.stop_price
+                        async with self._position_lock:
+                            pos = self.engine.positions.get(symbol)
+                            if pos:
+                                pos.stop_price = float(new_stop)
+                                # Update broker stop
+                                if pos.stop_order_id:
+                                    try:
+                                        await asyncio.to_thread(alpaca_cancel_order, pos.stop_order_id)
+                                        stop_result = await asyncio.to_thread(
+                                            alpaca_place_stop_order, symbol,
+                                            pos.remaining_shares, float(new_stop),
+                                            0.003, pos.direction)
+                                        if 'error' not in stop_result:
+                                            pos.stop_order_id = stop_result.get('id', '')
+                                    except Exception as e:
+                                        logger.warning(f"Broker stop update failed: {e}")
+                        self._add_message('llm_review',
+                            f'AUTO-TIGHTEN {symbol} stop: ${old_stop:.2f} → ${new_stop:.2f} — {reasoning}')
+                        executed.append(f'tighten {symbol}')
+
+            elif action == 'adjust_config':
+                key = rec.get('config_key')
+                value = rec.get('config_value')
+                if key and value is not None and hasattr(self.config, key):
+                    old_val = getattr(self.config, key)
+                    try:
+                        setattr(self.config, key, type(old_val)(value))
+                        self._add_message('llm_review',
+                            f'AUTO-CONFIG {key}: {old_val} → {value} — {reasoning}')
+                        executed.append(f'config {key}')
+                    except (ValueError, TypeError):
+                        pass
+
+        if executed:
+            self._save_state()
+            logger.info(f"Autonomous review executed: {', '.join(executed)}")
+            await broadcast({
+                'type': 'positions_update',
+                'positions': {s: asdict(p) for s, p in self.engine.positions.items()},
+                'stats': asdict(self.engine.daily_stats),
+                'equity': self.engine.equity,
+            })
 
     async def _check_broker_stops(self):
         """Check if any broker-side stop orders have been filled.
@@ -5754,7 +5952,9 @@ Available actions:
 - Use the live context below to give informed answers with real numbers
 - Be concise. Use tables for position summaries. Use $ and % values.
 - If the user asks a question (not an action), just answer — no action block needed
-- You cannot close a single position directly — use stop (closes all) or advise adjusting the stop price via config"""
+- You CAN close a single position: `{"action": "close_position", "symbol": "TSLA"}`
+- You CAN adjust a single position's stop: `{"action": "adjust_stop", "symbol": "TSLA", "stop_price": 185.50}`
+- The bot runs an autonomous review every 5 minutes — it will auto-tighten stops and close positions when appropriate"""
 
 @app.post("/api/llm/chat")
 async def llm_chat(body: dict):
@@ -5899,6 +6099,21 @@ USER MESSAGE: {message}"""
                 live_trader.engine.trade_log.clear()
                 live_trader._save_state()
                 action_result = {'executed': 'reset', 'equity': cfg.initial_capital}
+            elif act == 'close_position':
+                sym = action.get('symbol', '').upper()
+                if sym and sym in live_trader.engine.positions:
+                    resp = await close_position(sym)
+                    action_result = {'executed': 'close_position', 'symbol': sym, **resp}
+                else:
+                    action_result = {'executed': 'error', 'error': f'No position for {sym}'}
+            elif act == 'adjust_stop':
+                sym = action.get('symbol', '').upper()
+                stop_px = action.get('stop_price')
+                if sym and stop_px:
+                    resp = await adjust_stop(sym, {'stop_price': stop_px})
+                    action_result = {'executed': 'adjust_stop', 'symbol': sym, **resp}
+                else:
+                    action_result = {'executed': 'error', 'error': 'symbol and stop_price required'}
             elif act == 'backtest':
                 params = action.get('params', {})
                 action_result = {'executed': 'backtest', 'note': 'Use the Backtest tab to run backtests with full control.'}
@@ -5912,6 +6127,100 @@ USER MESSAGE: {message}"""
     if action_result:
         result['action_result'] = action_result
     return result
+
+
+@app.post("/api/positions/{symbol}/close")
+async def close_position(symbol: str):
+    """Close a specific position by symbol."""
+    symbol = symbol.upper()
+    pos = live_trader.engine.positions.get(symbol)
+    if pos is None:
+        return {'error': f'No open position for {symbol}'}
+    if pos.closing:
+        return {'error': f'{symbol} is already closing'}
+
+    # Get current price
+    price = 0.0
+    if live_trader.streamer and live_trader.streamer.latest_prices:
+        price = live_trader.streamer.latest_prices.get(symbol, 0.0)
+    if price <= 0:
+        try:
+            snaps = await asyncio.to_thread(fetch_alpaca_snapshots, [symbol])
+            price = snaps.get(symbol, {}).get('latestTrade', {}).get('p', 0.0)
+        except Exception:
+            pass
+    if price <= 0:
+        price = pos.entry_price  # fallback
+
+    exit_signal = {
+        'reason': 'manual',
+        'shares': pos.remaining_shares,
+        'is_full_close': True,
+        'trigger_price': price,
+    }
+
+    async with live_trader._position_lock:
+        trade = await live_trader._execute_exit(symbol, exit_signal, price)
+
+    if trade:
+        live_trader._add_message('manual', f'Closed {symbol}: P&L ${trade.pnl:+,.2f} ({trade.pnl_pct:+.1%})')
+        live_trader._save_state()
+        await broadcast({'type': 'trade', 'trades': [asdict(trade)]})
+        return {'status': 'closed', 'symbol': symbol, 'pnl': trade.pnl, 'pnl_pct': trade.pnl_pct}
+    else:
+        return {'error': f'Failed to close {symbol} — order may not have filled'}
+
+
+@app.post("/api/positions/{symbol}/stop")
+async def adjust_stop(symbol: str, body: dict):
+    """Adjust the stop price for a specific position."""
+    symbol = symbol.upper()
+    new_stop = body.get('stop_price')
+    if new_stop is None:
+        return {'error': 'stop_price is required'}
+    try:
+        new_stop = float(new_stop)
+    except (ValueError, TypeError):
+        return {'error': 'stop_price must be a number'}
+    if new_stop <= 0:
+        return {'error': 'stop_price must be positive'}
+
+    pos = live_trader.engine.positions.get(symbol)
+    if pos is None:
+        return {'error': f'No open position for {symbol}'}
+
+    old_stop = pos.stop_price
+
+    async with live_trader._position_lock:
+        pos = live_trader.engine.positions.get(symbol)
+        if pos is None:
+            return {'error': f'Position {symbol} gone'}
+        pos.stop_price = new_stop
+
+        # Update broker-side stop order if one exists
+        if pos.stop_order_id:
+            try:
+                await asyncio.to_thread(alpaca_cancel_order, pos.stop_order_id)
+                stop_result = await asyncio.to_thread(
+                    alpaca_place_stop_order, symbol,
+                    pos.remaining_shares, new_stop,
+                    0.003, pos.direction)
+                if 'error' not in stop_result:
+                    pos.stop_order_id = stop_result.get('id', '')
+                else:
+                    logger.warning(f"Broker stop update failed for {symbol}: {stop_result}")
+            except Exception as e:
+                logger.warning(f"Broker stop update failed for {symbol}: {e}")
+
+    live_trader._add_message('manual',
+        f'{symbol} stop adjusted: ${old_stop:.2f} → ${new_stop:.2f}')
+    live_trader._save_state()
+    return {
+        'status': 'updated',
+        'symbol': symbol,
+        'old_stop': old_stop,
+        'new_stop': new_stop,
+    }
 
 
 @app.post("/api/backtest")
@@ -6687,6 +6996,22 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   .cb-dot.warn { background: var(--yellow); }
   .cb-dot.halt { background: var(--negative); }
 
+  .pos-close-btn {
+    background: rgba(255,59,48,0.15);
+    border: 1px solid rgba(255,59,48,0.3);
+    color: var(--negative);
+    cursor: pointer;
+    border-radius: 4px;
+    padding: 2px 6px;
+    font-size: 11px;
+    font-weight: 600;
+    transition: all 0.15s;
+  }
+  .pos-close-btn:hover {
+    background: rgba(255,59,48,0.35);
+    border-color: var(--negative);
+  }
+
   input, select {
     background: rgba(0, 0, 0, 0.3);
     border: 1px solid var(--border);
@@ -7397,7 +7722,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     <div style="overflow-x:auto;">
       <table>
         <thead><tr>
-          <th>Symbol</th><th>Shares</th><th>Entry</th><th>Current</th><th>Stop</th><th>Target</th><th>P&L</th>
+          <th>Symbol</th><th>Shares</th><th>Entry</th><th>Current</th><th>Stop</th><th>Target</th><th>P&L</th><th></th>
         </tr></thead>
         <tbody id="positionsTable"></tbody>
       </table>
@@ -8115,12 +8440,53 @@ function renderPositions(positions) {
       <td>${p.remaining_shares}</td>
       <td>$${p.entry_price.toFixed(2)}</td>
       <td>${hasCur ? '$'+curPrice.toFixed(2) : '\u2014'}</td>
-      <td style="color:var(--red);">$${p.stop_price.toFixed(2)}</td>
+      <td style="color:var(--red);cursor:pointer;" title="Click to adjust stop" onclick="promptStopAdjust('${sym}', ${p.stop_price})">$${p.stop_price.toFixed(2)} ✏</td>
       <td style="color:var(--green);">$${p.full_target.toFixed(2)}</td>
       <td style="color:${pnlColor};font-weight:600;">${hasCur ? (pnl>=0?'+':'')+pnl.toFixed(2)+' ('+pnlPct.toFixed(1)+'%)' : '\u2014'}</td>
+      <td><button class="pos-close-btn" onclick="closePosition('${sym}')" title="Close position">✕</button></td>
     </tr>`;
   }).join('');
 }
+
+async function closePosition(sym) {
+  if (!confirm('Close ' + sym + ' at market?')) return;
+  try {
+    const r = await fetch('/api/positions/' + sym + '/close', {method:'POST'});
+    const d = await r.json();
+    if (d.error) { alert('Error: ' + d.error); return; }
+    addActivityMsg('manual', 'Closed ' + sym + ': $' + (d.pnl||0).toFixed(2));
+    refreshState();
+  } catch(e) { alert('Failed: ' + e.message); }
+}
+
+async function promptStopAdjust(sym, curStop) {
+  const newStop = prompt('New stop price for ' + sym + ' (current: $' + curStop.toFixed(2) + '):', curStop.toFixed(2));
+  if (!newStop) return;
+  const px = parseFloat(newStop);
+  if (isNaN(px) || px <= 0) { alert('Invalid price'); return; }
+  try {
+    const r = await fetch('/api/positions/' + sym + '/stop', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({stop_price: px})
+    });
+    const d = await r.json();
+    if (d.error) { alert('Error: ' + d.error); return; }
+    addActivityMsg('manual', sym + ' stop: $' + curStop.toFixed(2) + ' → $' + px.toFixed(2));
+    refreshState();
+  } catch(e) { alert('Failed: ' + e.message); }
+}
+
+function addActivityMsg(type, text) {
+  const feed = document.getElementById('feedContainer');
+  if (!feed) return;
+  const now = new Date().toLocaleTimeString('en-US', {hour12:false, hour:'2-digit', minute:'2-digit', second:'2-digit'});
+  const div = document.createElement('div');
+  div.className = 'feed-item ' + type;
+  div.innerHTML = '<span class="time">' + now + '</span>' + text;
+  feed.prepend(div);
+}
+
+function refreshState() { fetchState(); }
 
 function catalystBadge(cat, detail) {
   const labels = {earnings:'EARN',fda:'FDA',ma:'M&A',offering:'OFFER',upgrade:'UPG',downgrade:'DNG'};
@@ -8171,7 +8537,9 @@ function renderMessages(messages) {
   const feed = document.getElementById('feedContainer');
   const prefix = (type) => {
     if (type === 'llm') return '<span style="color:#c084fc;font-weight:600;margin-right:4px;">LLM</span>';
+    if (type === 'llm_review') return '<span style="color:#06b6d4;font-weight:600;margin-right:4px;">AUTO</span>';
     if (type === 'llm_fallback') return '<span style="color:#fde68a;font-weight:600;margin-right:4px;">LLM</span>';
+    if (type === 'manual') return '<span style="color:#f59e0b;font-weight:600;margin-right:4px;">MANUAL</span>';
     return '';
   };
   feed.innerHTML = messages.slice().reverse().map(m => `
@@ -8270,7 +8638,7 @@ function renderConfig(config) {
     { key: 'trade_gap_downs', title: 'Gap-Down Fading (Longs)', desc: 'Buy gap-downs and fade back toward previous close',
       params: [['gap_down_threshold', 'Gap Down %', 0.05], ['gap_down_max_pct', 'Max Gap Down %', 0.50], ['gap_down_vol_ratio_max', 'Vol Ratio Max', 3.0]] },
     { key: 'llm_enabled', title: 'LLM Supervisor', desc: 'Autonomous decisions via local Ollama model — scan timing, candidate selection, profit-taking, exit overrides',
-      params: [['llm_url', 'Ollama URL', 'http://localhost:11434'], ['llm_model', 'Model', 'gpt-oss:20b'], ['llm_timeout', 'Timeout (sec)', 10], ['llm_max_failures', 'Circuit Breaker Failures', 5], ['llm_circuit_reset', 'Circuit Reset (sec)', 120], ['llm_max_hold_overrides', 'Max Hold Overrides', 2]] },
+      params: [['llm_url', 'Ollama URL', 'http://localhost:11434'], ['llm_model', 'Model', 'gapfade-supervisor:latest'], ['llm_timeout', 'Timeout (sec)', 10], ['llm_max_failures', 'Circuit Breaker Failures', 5], ['llm_circuit_reset', 'Circuit Reset (sec)', 120], ['llm_max_hold_overrides', 'Max Hold Overrides', 2]] },
   ];
 
   // Section header for feature toggles
