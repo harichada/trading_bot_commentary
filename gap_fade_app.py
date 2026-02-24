@@ -1285,7 +1285,7 @@ class GapFadeConfig:
     initial_capital: float = 25_000
     risk_pct: float = 0.02             # risk 2% of equity per trade
     kelly_fraction: float = 0.25       # quarter Kelly
-    max_positions: int = 3             # max concurrent shorts (3 = more capital per trade)
+    max_positions: int = 5             # max concurrent positions
     thin_day_threshold: int = 10       # if fewer candidates than this, trade ALL of them
 
     # Stops and targets (optimized: 2.5% stop, 1/3 partial cover)
@@ -1308,7 +1308,7 @@ class GapFadeConfig:
     regime_vix_threshold: float = 25.0   # VIX > 25 → halve max positions
 
     # Re-entry after stop-out
-    reentry_enabled: bool = False
+    reentry_enabled: bool = True
     reentry_cooldown_minutes: int = 30   # minutes to wait after stop before re-entry
     reentry_max_per_symbol: int = 1      # max re-entries per symbol per day
     reentry_stop_pct: float = 0.01       # tighter stop on re-entry (1%)
@@ -1359,6 +1359,15 @@ class GapFadeConfig:
     catalyst_news_penalty: float = 15.0    # score penalty for news-driven gaps
     catalyst_noise_bonus: float = 5.0      # score bonus for clean noise gaps
 
+    # LLM Supervisor
+    llm_enabled: bool = False
+    llm_url: str = 'http://localhost:11434'
+    llm_model: str = 'gpt-oss:20b'
+    llm_timeout: float = 10.0               # seconds per LLM call
+    llm_max_failures: int = 5               # circuit breaker opens after N failures
+    llm_circuit_reset: float = 120.0        # seconds before retrying after circuit opens
+    llm_max_hold_overrides: int = 2          # max times LLM can override a stop per position
+
 
 @dataclass
 class GapCandidate:
@@ -1396,10 +1405,58 @@ class GapPosition:
     entry_fill_price: float = 0.0     # actual fill price from broker
     stop_order_id: str = ''           # Alpaca broker-side stop order ID
     direction: str = 'short'          # 'short' or 'long'
+    llm_hold_overrides: int = 0       # how many times LLM has overridden stop on this position
+    # Profit tracking (updated on every tick/check)
+    high_water_pnl_pct: float = 0.0   # best unrealized P&L % seen
+    high_water_price: float = 0.0     # price at high water mark
+    high_water_time: str = ''         # time of high water mark
+    partial_fill_time: str = ''       # when partial cover fired
+    last_prices: str = ''             # last 5 prices as comma-separated string (for serialization)
+    last_llm_profit_check: float = 0.0  # monotonic time of last LLM profit eval
 
     def __post_init__(self):
         if self.remaining_shares == 0:
             self.remaining_shares = self.shares
+
+    def update_tracking(self, price: float, now_str: str):
+        """Update high water mark and price history."""
+        # Calculate unrealized P&L %
+        if self.direction == 'short':
+            pnl_pct = (self.entry_price - price) / self.entry_price
+        else:
+            pnl_pct = (price - self.entry_price) / self.entry_price
+
+        if pnl_pct > self.high_water_pnl_pct:
+            self.high_water_pnl_pct = pnl_pct
+            self.high_water_price = price
+            self.high_water_time = now_str
+
+        # Ring buffer of last 5 prices
+        prices = self.last_prices.split(',') if self.last_prices else []
+        prices.append(f'{price:.4f}')
+        if len(prices) > 5:
+            prices = prices[-5:]
+        self.last_prices = ','.join(prices)
+
+    def get_price_history(self) -> List[float]:
+        """Return last 5 prices as list of floats."""
+        if not self.last_prices:
+            return []
+        try:
+            return [float(p) for p in self.last_prices.split(',') if p]
+        except ValueError:
+            return []
+
+    def gap_fill_pct(self, current_price: float) -> float:
+        """How much of the gap has been filled (0.0 = none, 1.0 = full)."""
+        gap = abs(self.entry_price - self.prev_close)
+        if gap < 0.001:
+            return 0.0
+        if self.direction == 'short':
+            filled = self.entry_price - current_price
+        else:
+            filled = current_price - self.entry_price
+        return max(0.0, filled / gap)
 
 
 @dataclass
@@ -2446,6 +2503,7 @@ class GapFadeEngine:
                 self._record_trade(trade)
                 pos.remaining_shares -= cover_shares
                 pos.partial_filled = True
+                pos.partial_fill_time = datetime.now(ET).strftime('%H:%M:%S')
                 # Move stop to breakeven after partial fill
                 pos.stop_price = pos.entry_price
 
@@ -2575,6 +2633,7 @@ class GapFadeEngine:
 
         if reason == 'partial':
             pos.partial_filled = True
+            pos.partial_fill_time = current_time.strftime('%H:%M:%S')
             pos.stop_price = entry_px  # move stop to breakeven
 
         if pos.remaining_shares <= 0:
@@ -3563,6 +3622,402 @@ class GapFadeBacktester:
 
 
 # =============================================================================
+# SECTION 6B: LLM SUPERVISOR
+# =============================================================================
+
+class LLMSupervisor:
+    """Ollama-powered autonomous trading supervisor.
+
+    Sits above the rules engine and controls when to scan, which candidates
+    to trade, and whether to override stops.  Falls back to rules engine
+    if Ollama is unavailable (circuit breaker).
+    """
+
+    _SYSTEM_PROMPT = """You are an autonomous trading supervisor for an intraday gap fade strategy.
+The bot shorts stocks that gap up on low volume, expecting the gap to fade (price to fall back).
+For gap-down candidates, the bot goes long expecting a bounce back up.
+
+You control the bot by returning JSON decisions.  The rules engine handles order execution,
+position sizing, and stop management — you decide WHEN and WHAT to trade.
+
+Key strategy facts:
+- Historically, gap-ups on below-average volume fade 71-81% of the time with +2.5% avg P&L.
+- High-volume gaps (>3x avg) only fade 31% — these are continuation moves, avoid them.
+- Catalyst-driven gaps (earnings, M&A, FDA) are less likely to fade than noise gaps.
+- Sector-wide moves (e.g., all gold stocks up) are macro-driven, not fadeable noise.
+- Best entry window is 9:35-9:45 AM ET after initial volatility settles.
+- Pre-market data before 9:20 AM is unreliable — scans may return stale/empty results.
+
+Your responsibilities:
+1. SCAN TIMING: Decide when to scan. If a scan returns 0 candidates, request re-scans later.
+2. CANDIDATE SELECTION: Pick which candidates to enter. Skip sector-wide moves. Prefer noise gaps.
+3. ENTRY TIMING: Don't rush at market open. Wait for initial chaos to settle (9:35+).
+4. RISK MANAGEMENT: If 2+ consecutive stops hit today, stand down. Strong market trend (SPY >1%) = reduce size.
+5. After 2:00 PM ET, do NOT enter new positions (too late for intraday fades).
+
+Respond ONLY with valid JSON. No text outside the JSON object."""
+
+    _ACTION_SCHEMA = """{
+  "action": "scan" | "enter" | "monitor" | "wait" | "standdown",
+  "reasoning": "brief explanation",
+  "enter_symbols": ["SYM1", "SYM2"],    // only when action=enter
+  "position_size_mult": 1.0,            // 0.5-1.0, scale position size
+  "standdown_minutes": 30               // only when action=standdown
+}"""
+
+    _CANDIDATES_SCHEMA = """[
+  {"symbol": "SYM", "action": "trade" | "skip", "confidence": 0.0-1.0, "reasoning": "brief"}
+]"""
+
+    _EXIT_SCHEMA = """{
+  "action": "close" | "hold" | "tighten",
+  "new_stop": 0.00,
+  "reasoning": "brief explanation"
+}"""
+
+    _PROFIT_SCHEMA = """{
+  "action": "close" | "hold" | "tighten_stop",
+  "new_stop": 0.00,
+  "reasoning": "brief explanation"
+}"""
+
+    _PROFIT_SYSTEM_PROMPT = """You are a profit-taking advisor for an intraday gap fade strategy.
+The bot shorts stocks that gap up (or goes long on gap-downs), expecting the gap to fade back to the previous close.
+
+You evaluate open positions that are IN PROFIT and decide whether to:
+- CLOSE: Take profit now. Use when the fade is stalling, giving back gains, or conditions have changed.
+- HOLD: Let it run toward the target. Use when momentum is strong and the gap is still filling.
+- TIGHTEN_STOP: Lock in gains by moving the stop closer to current price.
+
+Key profit-taking principles:
+- Gap fades work best 9:30-11:30 AM ET. After noon, fades stall — take profits earlier.
+- If the position has faded 70%+ of the gap, the remaining 30% is hardest. Consider taking profit.
+- If high water mark is significantly higher than current P&L, the fade is reversing — close or tighten.
+- If price velocity is flat or reversing (last 3-5 prices trending against you), take profit.
+- If SPY is moving strongly against the trade direction, the broad market is fighting you.
+- After partial cover has already fired and 30+ minutes pass with no progress, close remaining.
+- Protect daily P&L: if the day is already profitable, be more aggressive about locking in gains.
+- NEVER suggest "hold" if the position has given back more than 40% of its peak unrealized P&L.
+
+Respond ONLY with valid JSON. No text outside the JSON object."""
+
+    def __init__(self, config: GapFadeConfig):
+        self.url = config.llm_url
+        self.model = config.llm_model
+        self.timeout = config.llm_timeout
+        self._failure_count = 0
+        self._max_failures = config.llm_max_failures
+        self._circuit_open_until = 0.0
+        self._circuit_reset_seconds = config.llm_circuit_reset
+        self._last_call_time = 0.0
+        self._total_calls = 0
+        self._total_failures = 0
+
+    def is_available(self) -> bool:
+        """Check if LLM is available (circuit breaker not open)."""
+        if self._failure_count >= self._max_failures:
+            if _time.time() < self._circuit_open_until:
+                return False
+            # Reset after cooldown
+            self._failure_count = 0
+        return True
+
+    def get_status(self) -> dict:
+        """Return supervisor status for API/UI consumption."""
+        circuit_open = self._failure_count >= self._max_failures and _time.time() < self._circuit_open_until
+        return {
+            'available': self.is_available(),
+            'model': self.model,
+            'url': self.url,
+            'circuit_open': circuit_open,
+            'failure_count': self._failure_count,
+            'max_failures': self._max_failures,
+            'circuit_resets_in': max(0, self._circuit_open_until - _time.time()) if circuit_open else 0,
+            'last_call_time': self._last_call_time,
+            'total_calls': self._total_calls,
+            'total_failures': self._total_failures,
+        }
+
+    async def _call_ollama(self, system_prompt: str, user_prompt: str) -> Optional[str]:
+        """Call Ollama API. Returns response text or None on failure."""
+        if not self.is_available():
+            return None
+        self._total_calls += 1
+        self._last_call_time = _time.time()
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f'{self.url}/api/chat',
+                    json={
+                        'model': self.model,
+                        'messages': [
+                            {'role': 'system', 'content': system_prompt},
+                            {'role': 'user', 'content': user_prompt},
+                        ],
+                        'stream': False,
+                        'options': {
+                            'temperature': 0.3,
+                            'num_predict': 2048,
+                        },
+                    },
+                    timeout=aiohttp.ClientTimeout(total=self.timeout),
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        content = data.get('message', {}).get('content', '')
+                        # Strip <think> tags (some models emit them)
+                        import re as _re
+                        content = _re.sub(r'<think>.*?</think>', '', content, flags=_re.DOTALL).strip()
+                        self._failure_count = 0
+                        return content
+                    else:
+                        logger.warning(f"LLM Ollama error {resp.status}: {(await resp.text())[:200]}")
+                        self._failure_count += 1
+                        self._total_failures += 1
+                        if self._failure_count >= self._max_failures:
+                            self._circuit_open_until = _time.time() + self._circuit_reset_seconds
+                        return None
+        except Exception as e:
+            logger.warning(f"LLM Ollama call failed: {e}")
+            self._failure_count += 1
+            self._total_failures += 1
+            if self._failure_count >= self._max_failures:
+                self._circuit_open_until = _time.time() + self._circuit_reset_seconds
+            return None
+
+    def _parse_json(self, text: str) -> Optional[dict | list]:
+        """Parse JSON from LLM response, tolerating markdown fences."""
+        if not text:
+            return None
+        # Strip markdown code fences
+        import re as _re
+        text = _re.sub(r'^```(?:json)?\s*', '', text.strip())
+        text = _re.sub(r'\s*```$', '', text.strip())
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            # Try to extract JSON from surrounding text
+            match = _re.search(r'[\[{].*[\]}]', text, _re.DOTALL)
+            if match:
+                try:
+                    return json.loads(match.group())
+                except json.JSONDecodeError:
+                    pass
+            logger.warning(f"LLM JSON parse failed: {text[:200]}")
+            return None
+
+    async def decide_action(self, state: dict) -> dict:
+        """Main decision: what should the bot do right now?
+
+        Returns dict with 'action' key. Falls back to {'action': 'monitor'}
+        if LLM is unavailable or returns invalid response.
+        """
+        fallback = {'action': 'monitor', 'reasoning': 'LLM unavailable, using rules fallback'}
+
+        # Build user prompt with current state
+        positions_summary = 'None'
+        if state.get('positions'):
+            parts = []
+            for sym, pos in state['positions'].items():
+                parts.append(f"{sym}: {pos['direction']} {pos.get('remaining_shares', pos['shares'])} "
+                             f"shares @ ${pos['entry_price']:.2f}, stop ${pos['stop_price']:.2f}")
+            positions_summary = '; '.join(parts)
+
+        candidates_summary = 'None (no scan yet)' if not state.get('top_candidates') else json.dumps(
+            [{'symbol': c['symbol'], 'gap_pct': f"{c['gap_pct']:.1%}", 'direction': c['direction'],
+              'vol_ratio': f"{c['vol_ratio']:.2f}", 'score': f"{c['score']:.0f}",
+              'catalyst': c.get('catalyst', '')} for c in state['top_candidates']], indent=0)
+
+        user_prompt = f"""Current state:
+- Time (ET): {state['time_et']} ({state['day_of_week']})
+- Bot status: {state['status']}
+- Equity: ${state['equity']:,.2f}
+- Today P&L: ${state['daily_pnl']:+,.2f} ({state['wins']}W/{state['losses']}L, {state['consecutive_losses']} consecutive losses)
+- Open positions: {positions_summary}
+- Last scan: {state['last_scan_time'] or 'never'} ({state['candidates_count']} candidates)
+- Stopped out today: {', '.join(state['stopped_today']) or 'none'}
+- Top candidates:
+{candidates_summary}
+
+- Recent activity:
+{chr(10).join('  - ' + m for m in state['recent_messages'][-8:])}
+
+What should the bot do now? Respond with JSON matching this schema:
+{self._ACTION_SCHEMA}"""
+
+        raw = await self._call_ollama(self._SYSTEM_PROMPT, user_prompt)
+        if raw is None:
+            return fallback
+
+        parsed = self._parse_json(raw)
+        if not isinstance(parsed, dict) or 'action' not in parsed:
+            logger.warning(f"LLM returned invalid action: {raw[:200]}")
+            return fallback
+
+        # Validate action
+        valid_actions = {'scan', 'enter', 'monitor', 'wait', 'standdown'}
+        if parsed['action'] not in valid_actions:
+            parsed['action'] = 'monitor'
+
+        return parsed
+
+    async def evaluate_candidates(self, candidates: list, regime: Optional[dict] = None) -> list:
+        """Filter and rank candidates. Returns list of dicts with action/confidence."""
+        if not candidates:
+            return []
+
+        candidates_data = [{'symbol': c['symbol'], 'gap_pct': f"{c['gap_pct']:.1%}",
+                           'direction': c['direction'], 'vol_ratio': f"{c['vol_ratio']:.2f}",
+                           'score': f"{c['score']:.0f}", 'catalyst': c.get('catalyst', ''),
+                           'catalyst_detail': c.get('catalyst_detail', '')[:80]}
+                          for c in candidates[:15]]
+
+        regime_info = ''
+        if regime:
+            regime_info = f"\nMarket regime: SPY gap {regime.get('spy_gap_pct', 0):.2%}, VIX {regime.get('vix_level', 20):.1f}"
+
+        user_prompt = f"""Evaluate these gap fade candidates and decide which to trade:
+{json.dumps(candidates_data, indent=1)}
+{regime_info}
+
+For each candidate, return JSON array matching this schema:
+{self._CANDIDATES_SCHEMA}
+
+Only include candidates with action "trade" or "skip". Rank by confidence."""
+
+        raw = await self._call_ollama(self._SYSTEM_PROMPT, user_prompt)
+        if raw is None:
+            return []
+
+        parsed = self._parse_json(raw)
+        if not isinstance(parsed, list):
+            return []
+        return parsed
+
+    async def evaluate_exit(self, position: dict, current_price: float,
+                            exit_signal: dict) -> dict:
+        """Evaluate whether to close, hold, or tighten a stop."""
+        fallback = {'action': 'close', 'reasoning': 'LLM unavailable, closing per rules'}
+
+        user_prompt = f"""Position about to be stopped out:
+- Symbol: {position['symbol']} ({position['direction']})
+- Entry: ${position['entry_price']:.2f}
+- Current price: ${current_price:.2f}
+- Stop price: ${position['stop_price']:.2f}
+- Exit reason: {exit_signal.get('reason', 'stop')}
+- P&L: ${exit_signal.get('pnl', 0):.2f}
+
+Should we close this position, hold (override the stop), or tighten the stop?
+Only override if you have strong conviction the fade will resume.
+
+Respond with JSON matching this schema:
+{self._EXIT_SCHEMA}"""
+
+        raw = await self._call_ollama(self._SYSTEM_PROMPT, user_prompt)
+        if raw is None:
+            return fallback
+
+        parsed = self._parse_json(raw)
+        if not isinstance(parsed, dict) or 'action' not in parsed:
+            return fallback
+
+        if parsed['action'] not in ('close', 'hold', 'tighten'):
+            parsed['action'] = 'close'
+        return parsed
+
+    async def evaluate_profit(self, position: dict, current_price: float,
+                              spy_change_pct: float, daily_pnl: float) -> dict:
+        """Evaluate whether to take profit on a winning position.
+
+        Called periodically (throttled) for positions with unrealized profit.
+        Returns dict with 'action' key: close, hold, or tighten_stop.
+        """
+        fallback = {'action': 'hold', 'reasoning': 'LLM unavailable, holding per rules'}
+
+        # Calculate enriched metrics
+        entry = position['entry_price']
+        direction = position['direction']
+        if direction == 'short':
+            pnl_pct = (entry - current_price) / entry
+        else:
+            pnl_pct = (current_price - entry) / entry
+
+        high_water = position.get('high_water_pnl_pct', 0)
+        giveback_pct = ((high_water - pnl_pct) / high_water * 100) if high_water > 0.001 else 0
+
+        # Gap fill progress
+        prev_close = position.get('prev_close', entry)
+        gap = abs(entry - prev_close)
+        if gap > 0.001:
+            if direction == 'short':
+                gap_filled = max(0, (entry - current_price) / gap)
+            else:
+                gap_filled = max(0, (current_price - entry) / gap)
+        else:
+            gap_filled = 0
+
+        # Price velocity from last_prices
+        price_history = position.get('last_prices', '')
+        prices = [float(p) for p in price_history.split(',') if p] if price_history else []
+        velocity_desc = 'unknown'
+        if len(prices) >= 3:
+            if direction == 'short':
+                trending_down = all(prices[i] <= prices[i-1] for i in range(1, len(prices)))
+                trending_up = all(prices[i] >= prices[i-1] for i in range(1, len(prices)))
+            else:
+                trending_down = all(prices[i] >= prices[i-1] for i in range(1, len(prices)))
+                trending_up = all(prices[i] <= prices[i-1] for i in range(1, len(prices)))
+            if trending_down:
+                velocity_desc = 'fading well (favorable)'
+            elif trending_up:
+                velocity_desc = 'reversing (unfavorable)'
+            else:
+                velocity_desc = 'choppy/sideways'
+
+        # Time held
+        entry_time = position.get('entry_time', '')
+        time_held = ''
+        if entry_time:
+            try:
+                et = datetime.strptime(entry_time, '%Y-%m-%d %H:%M')
+                minutes = (datetime.now() - et).total_seconds() / 60
+                time_held = f'{int(minutes)} minutes'
+            except Exception:
+                time_held = 'unknown'
+
+        user_prompt = f"""Evaluate this profitable position:
+- Symbol: {position['symbol']} ({direction})
+- Entry: ${entry:.2f}, Current: ${current_price:.2f}
+- Unrealized P&L: {pnl_pct:+.2%} (${pnl_pct * entry * position.get('remaining_shares', 0):+,.2f})
+- High water P&L: {high_water:+.2%} at {position.get('high_water_time', '?')} — giveback: {giveback_pct:.0f}%
+- Gap fill: {gap_filled:.0%} of gap filled (prev close ${prev_close:.2f})
+- Stop: ${position['stop_price']:.2f}
+- Partial cover: {'yes at ' + position.get('partial_fill_time', '?') if position.get('partial_filled') else 'not yet'}
+- Remaining shares: {position.get('remaining_shares', 0)}
+- Time held: {time_held}
+- Price trend (last {len(prices)} ticks): {velocity_desc} — {' → '.join(f'${p:.2f}' for p in prices[-5:])}
+- SPY today: {spy_change_pct:+.2%}
+- Daily P&L: ${daily_pnl:+,.2f}
+- Time now (ET): {datetime.now(ET).strftime('%H:%M')}
+
+Should we close for profit, hold, or tighten the stop to lock in gains?
+Respond with JSON matching this schema:
+{self._PROFIT_SCHEMA}"""
+
+        raw = await self._call_ollama(self._PROFIT_SYSTEM_PROMPT, user_prompt)
+        if raw is None:
+            return fallback
+
+        parsed = self._parse_json(raw)
+        if not isinstance(parsed, dict) or 'action' not in parsed:
+            return fallback
+
+        if parsed['action'] not in ('close', 'hold', 'tighten_stop'):
+            parsed['action'] = 'hold'
+        return parsed
+
+
+# =============================================================================
 # SECTION 7: LIVE TRADER
 # =============================================================================
 
@@ -3594,6 +4049,13 @@ class GapFadeLiveTrader:
         self._position_lock = asyncio.Lock()  # P0-2: serializes ALL position mutations
         self._last_reconcile = 0.0  # monotonic time of last broker reconciliation
 
+        # LLM Supervisor
+        if self.config.llm_enabled:
+            self.llm_supervisor = LLMSupervisor(self.config)
+            logger.info(f"LLM Supervisor enabled: {self.config.llm_model} @ {self.config.llm_url}")
+        else:
+            self.llm_supervisor = None
+
         # Load persisted state
         self._load_state()
 
@@ -3617,6 +4079,12 @@ class GapFadeLiveTrader:
         self.engine.reset_daily()
         # P0-4: reconcile with broker on startup
         await self._reconcile_with_broker()
+        # Start tick streamer for existing positions (e.g. after restart)
+        if self.engine.positions and not self.streamer:
+            syms = list(self.engine.positions.keys())
+            self.streamer = AlpacaTickStreamer(syms, on_tick=self._on_tick)
+            await self.streamer.start()
+            logger.info(f"Tick streamer started for {len(syms)} existing positions: {syms}")
         self._task = asyncio.create_task(self._trading_loop())
         logger.info("Live trader started")
         self._add_message('system', 'Live trader started')
@@ -3751,14 +4219,35 @@ class GapFadeLiveTrader:
     # Main Trading Loop
     # -------------------------------------------------------------------------
 
-    async def _trading_loop(self):
-        """Main trading loop — runs on schedule.
+    def _build_llm_state(self, now: datetime) -> dict:
+        """Build state dict for LLM supervisor context."""
+        return {
+            'time_et': now.strftime('%H:%M:%S'),
+            'day_of_week': now.strftime('%A'),
+            'equity': self.engine.equity,
+            'daily_pnl': self.engine.daily_stats.pnl,
+            'daily_trades': self.engine.daily_stats.trades,
+            'wins': self.engine.daily_stats.wins,
+            'losses': self.engine.daily_stats.losses,
+            'consecutive_losses': self.engine.daily_stats.consecutive_losses,
+            'positions': {s: asdict(p) for s, p in self.engine.positions.items()},
+            'candidates_count': len(self.candidates),
+            'top_candidates': [asdict(c) for c in self.candidates[:10]],
+            'last_scan_time': self.last_scan_time,
+            'stopped_today': list(self.engine._stopped_today.keys()),
+            'status': self.status,
+            'recent_messages': [m['text'] for m in self.messages[-10:]],
+        }
 
-        Uses date-stamped flags to track which actions have fired today,
-        so even if the bot oversleeps past the exact minute, it catches up.
+    async def _trading_loop(self):
+        """Main trading loop — LLM-driven when enabled, schedule-based fallback.
+
+        When LLM supervisor is active, it decides every action (scan, enter,
+        monitor, standdown). Safety nets (before 7AM sleep, EOD close, after-hours
+        shutdown) always run mechanically regardless of LLM.
         """
-        # Track what has been done today (reset on new date)
-        _done_date = ''      # YYYY-MM-DD of current tracking day
+        # Track what has been done today (reset on new date) — used by fallback schedule
+        _done_date = ''
         _did_scan_7am = False
         _did_scan_925 = False
         _did_enter = False
@@ -3777,15 +4266,78 @@ class GapFadeLiveTrader:
                     _did_enter = False
                     _did_eod = False
 
+                # ── SAFETY NETS (always active, LLM cannot override) ──
+
                 # Before pre-market (before 7 AM) — sleep
                 if now.hour < 7:
                     self.status = 'waiting'
                     await broadcast({'type': 'live_status', 'status': 'waiting'})
-                    # Sleep until 7:00 AM
                     target = now.replace(hour=7, minute=0, second=0, microsecond=0)
                     sleep_sec = max(30, (target - now).total_seconds())
                     await asyncio.sleep(sleep_sec)
                     continue
+
+                # EOD close at 3:50+ PM (once per day, mechanical safety net)
+                if now.hour == 15 and now.minute >= 50 and not _did_eod:
+                    if self.engine.positions:
+                        _did_eod = True
+                        await self._eod_close()
+                        await asyncio.sleep(60)
+                        continue
+
+                # After hours (4 PM+) — save state, sleep until next morning
+                if now.hour >= 16:
+                    if self.engine.positions:
+                        logger.error("CRITICAL: After hours with open positions! Emergency close.")
+                        self._add_message('error', 'EMERGENCY: Positions open after hours — force closing')
+                        await self._eod_close()
+                    self._save_state()
+                    self.engine.reset_daily()
+                    self.status = 'waiting'
+                    await broadcast({'type': 'live_status', 'status': 'waiting'})
+                    self._add_message('info', 'After hours — sleeping until 7:00 AM ET')
+                    tomorrow_7am = (now + timedelta(days=1)).replace(
+                        hour=7, minute=0, second=0, microsecond=0)
+                    sleep_sec = max(60, (tomorrow_7am - now).total_seconds())
+                    await asyncio.sleep(sleep_sec)
+                    continue
+
+                # ── LLM SUPERVISOR MODE ──
+                if self.llm_supervisor and self.llm_supervisor.is_available():
+                    state = self._build_llm_state(now)
+                    decision = await self.llm_supervisor.decide_action(state)
+                    action = decision.get('action', 'monitor')
+                    reasoning = decision.get('reasoning', '')
+                    self._add_message('llm', f'{action}: {reasoning}')
+
+                    if action == 'scan':
+                        await self._run_scan()
+                        await asyncio.sleep(15)
+                    elif action == 'enter':
+                        llm_symbols = decision.get('enter_symbols')
+                        size_mult = decision.get('position_size_mult', 1.0)
+                        await self._enter_positions(llm_symbols=llm_symbols, size_mult=size_mult)
+                        await asyncio.sleep(15)
+                    elif action == 'standdown':
+                        standdown_min = decision.get('standdown_minutes', 30)
+                        self.status = 'standdown'
+                        await broadcast({'type': 'live_status', 'status': 'standdown'})
+                        self._add_message('llm', f'Standing down for {standdown_min} minutes')
+                        await asyncio.sleep(min(standdown_min * 60, 1800))
+                        self.status = 'scanning'
+                    elif action == 'wait':
+                        await asyncio.sleep(30)
+                    else:  # monitor
+                        if self.engine.positions:
+                            await self._check_positions()
+                            if _time.monotonic() - self._last_reconcile > self.RECONCILE_INTERVAL:
+                                await self._reconcile_with_broker()
+                        await asyncio.sleep(15)
+                    continue
+
+                # ── FALLBACK: original schedule (LLM disabled or circuit open) ──
+                if self.llm_supervisor and not self.llm_supervisor.is_available():
+                    self._add_message('llm_fallback', 'LLM unavailable (circuit breaker), using rules schedule')
 
                 # Pre-market scan (7:00+ AM, once per day)
                 if 7 <= now.hour < 9 and not _did_scan_7am:
@@ -3801,9 +4353,13 @@ class GapFadeLiveTrader:
                     await asyncio.sleep(30)
                     continue
 
-                # Market open — enter positions at 9:31+ AM (once per day)
-                if now.hour == 9 and now.minute >= 31 and not _did_enter:
+                # Market open — enter positions at 9:31+ AM
+                if ((now.hour == 9 and now.minute >= 31) or (now.hour >= 10 and now.hour < 16)) and not _did_enter:
                     if self.status in ('scanning', 'waiting'):
+                        # If no candidates (e.g. mid-day restart), scan first
+                        if not self.candidates:
+                            self._add_message('scan', 'No candidates cached — running fresh scan before entry')
+                            await self._run_scan()
                         _did_enter = True
                         await self._enter_positions()
                         await asyncio.sleep(30)
@@ -3812,40 +4368,12 @@ class GapFadeLiveTrader:
                 # During trading hours — monitor every 15 seconds
                 if 9 <= now.hour < 16 and self.status == 'trading':
                     await self._check_positions()
-                    # Periodic broker reconciliation (every 5 minutes)
                     if _time.monotonic() - self._last_reconcile > self.RECONCILE_INTERVAL:
                         await self._reconcile_with_broker()
                     await asyncio.sleep(15)
                     continue
 
-                # EOD close at 3:50+ PM (once per day)
-                if now.hour == 15 and now.minute >= 50 and not _did_eod:
-                    if self.engine.positions:
-                        _did_eod = True
-                        await self._eod_close()
-                        await asyncio.sleep(60)
-                        continue
-
-                # After hours (4 PM+) — save state, sleep until next morning
-                if now.hour >= 16:
-                    # P0-5: Final safety check — never sleep with open positions
-                    if self.engine.positions:
-                        logger.error("CRITICAL: After hours with open positions! Emergency close.")
-                        self._add_message('error', 'EMERGENCY: Positions open after hours — force closing')
-                        await self._eod_close()
-                    self._save_state()
-                    self.engine.reset_daily()
-                    self.status = 'waiting'
-                    await broadcast({'type': 'live_status', 'status': 'waiting'})
-                    self._add_message('info', 'After hours — sleeping until 7:00 AM ET')
-                    # Sleep until 7 AM tomorrow
-                    tomorrow_7am = (now + timedelta(days=1)).replace(
-                        hour=7, minute=0, second=0, microsecond=0)
-                    sleep_sec = max(60, (tomorrow_7am - now).total_seconds())
-                    await asyncio.sleep(sleep_sec)
-                    continue
-
-                # 7-9 AM waiting for next event, or 9-16 without positions
+                # Waiting for next event
                 await asyncio.sleep(30)
 
         except asyncio.CancelledError:
@@ -3884,6 +4412,36 @@ class GapFadeLiveTrader:
             'scan_time': self.last_scan_time,
             'universe_size': universe_size,
         })
+
+        # LLM candidate evaluation (non-fatal, best-effort)
+        if self.llm_supervisor and self.llm_supervisor.is_available() and self.candidates:
+            try:
+                regime_info = None
+                try:
+                    regime = await fetch_market_regime_live(self.config)
+                    if regime:
+                        regime_info = {'spy_gap_pct': regime.spy_gap_pct, 'vix_level': regime.vix_level}
+                except Exception:
+                    pass
+                evals = await self.llm_supervisor.evaluate_candidates(
+                    [asdict(c) for c in self.candidates[:15]], regime=regime_info)
+                if evals:
+                    skip_syms = {e['symbol'] for e in evals
+                                 if isinstance(e, dict) and e.get('action') == 'skip'}
+                    trade_syms = [e for e in evals
+                                  if isinstance(e, dict) and e.get('action') == 'trade']
+                    if skip_syms:
+                        before = len(self.candidates)
+                        self.candidates = [c for c in self.candidates if c.symbol not in skip_syms]
+                        self._add_message('llm',
+                            f'Filtered {before - len(self.candidates)} candidates: '
+                            f'skip {skip_syms}')
+                    if trade_syms:
+                        self._add_message('llm',
+                            f'LLM favors: {", ".join(e["symbol"] for e in trade_syms[:5])}'
+                            + (f' (+{len(trade_syms)-5} more)' if len(trade_syms) > 5 else ''))
+            except Exception as e:
+                logger.warning(f"LLM candidate evaluation failed (non-fatal): {e}")
 
     def _apply_catalyst_scores(self):
         """Adjust candidate scores based on catalyst classification.
@@ -3935,8 +4493,13 @@ class GapFadeLiveTrader:
     # Entry Flow — with fill verification
     # -------------------------------------------------------------------------
 
-    async def _enter_positions(self):
-        """Enter short positions on top candidates with fill verification."""
+    async def _enter_positions(self, llm_symbols=None, size_mult=1.0):
+        """Enter positions on top candidates with fill verification.
+
+        Args:
+            llm_symbols: if set, only enter these symbols (LLM-selected, in order)
+            size_mult: scale position size by this factor (0.5-1.0, LLM confidence)
+        """
         self.status = 'trading'
         await broadcast({'type': 'live_status', 'status': 'trading'})
 
@@ -3949,18 +4512,28 @@ class GapFadeLiveTrader:
         if regime and regime.position_reduction == -1:
             self._add_message('regime', f'HALVED: {regime.note}')
 
+        # Apply LLM symbol filter if provided
+        candidates_to_trade = self.candidates
+        if llm_symbols:
+            sym_set = set(llm_symbols)
+            candidates_to_trade = [c for c in self.candidates if c.symbol in sym_set]
+            sym_order = {s: i for i, s in enumerate(llm_symbols)}
+            candidates_to_trade.sort(key=lambda c: sym_order.get(c.symbol, 999))
+            self._add_message('llm', f'LLM selected {len(candidates_to_trade)} symbols: {llm_symbols}')
+
         # Thin day logic: if fewer candidates than threshold, trade all of them
-        eff_max = self.engine.effective_max_positions(len(self.candidates))
+        eff_max = self.engine.effective_max_positions(len(candidates_to_trade))
         if regime and regime.position_reduction == -1:
             eff_max = max(1, eff_max // 2)
         self.engine._effective_max_positions = eff_max
         self._add_message('entry',
-            f'{len(self.candidates)} candidates, trading top {eff_max}'
+            f'{len(candidates_to_trade)} candidates, trading top {eff_max}'
             + (' (thin day — trading all)' if eff_max > self.config.max_positions else '')
-            + (f' ({regime.note})' if regime and regime.note else ''))
+            + (f' ({regime.note})' if regime and regime.note else '')
+            + (f' (size x{size_mult:.1f})' if size_mult != 1.0 else ''))
 
         symbols_entered = []
-        for candidate in self.candidates[:eff_max]:
+        for candidate in candidates_to_trade[:eff_max]:
             async with self._position_lock:
                 ok, reason = self.engine.should_enter(candidate)
                 if not ok:
@@ -3972,6 +4545,11 @@ class GapFadeLiveTrader:
                 pos = self.engine.open_position(candidate, entry_price, entry_time)
                 if pos is None:
                     continue
+
+                # LLM size adjustment
+                if size_mult != 1.0 and pos.shares > 1:
+                    pos.shares = max(1, int(pos.shares * size_mult))
+                    pos.remaining_shares = pos.shares
 
             # Submit order and wait for fill (outside lock to not block other ops)
             direction = candidate.direction
@@ -4065,8 +4643,45 @@ class GapFadeLiveTrader:
                     self._add_message('warning',
                         f'PARTIAL FILL {fill.filled_qty}/{pos.shares} {candidate.symbol} '
                         f'@ ${fill.filled_avg_price:.2f}')
+                elif fill.status == 'timeout' and order_type == 'limit':
+                    # Limit order timed out — retry with market order
+                    self._add_message('warning',
+                        f'{candidate.symbol} limit timed out, retrying MARKET...')
+                    fill = await alpaca_submit_and_confirm(
+                        candidate.symbol, pos.shares, entry_side,
+                        order_type='market', timeout_sec=10.0,
+                    )
+                    if fill.is_filled:
+                        pos.entry_fill_price = fill.filled_avg_price
+                        pos.entry_order_id = fill.order_id
+                        if fill.filled_avg_price > 0:
+                            eff_stop_pct = compute_adaptive_stop_pct(self.config, candidate.gap_pct)
+                            pos.entry_price = fill.filled_avg_price
+                            if direction == 'long':
+                                pos.stop_price = fill.filled_avg_price * (1 - eff_stop_pct)
+                            else:
+                                pos.stop_price = fill.filled_avg_price * (1 + eff_stop_pct)
+                            pos.half_target = (fill.filled_avg_price + candidate.prev_close) / 2
+                        stop_result = await asyncio.to_thread(
+                            alpaca_place_stop_order, candidate.symbol,
+                            fill.filled_qty, pos.stop_price, 0.003, direction
+                        )
+                        if 'error' not in stop_result:
+                            pos.stop_order_id = stop_result.get('id', '')
+                            self._add_message('entry',
+                                f'Broker stop set: {candidate.symbol} @ ${pos.stop_price:.2f}')
+                        symbols_entered.append(candidate.symbol)
+                        self._add_message('entry',
+                            f'FILLED {side_label} {fill.filled_qty} {candidate.symbol} '
+                            f'@ ${fill.filled_avg_price:.2f} MARKET (retry) '
+                            f'(gap {candidate.gap_pct:.1%}, score {candidate.score:.0f})')
+                    else:
+                        self._add_message('error',
+                            f'Entry MARKET retry also FAILED for {candidate.symbol}: {fill.error}')
+                        if candidate.symbol in self.engine.positions:
+                            del self.engine.positions[candidate.symbol]
                 else:
-                    # Order failed/rejected/timeout — remove position from internal state
+                    # Order failed/rejected — remove position from internal state
                     self._add_message('error',
                         f'Entry order FAILED for {candidate.symbol}: {fill.error}')
                     if candidate.symbol in self.engine.positions:
@@ -4134,6 +4749,16 @@ class GapFadeLiveTrader:
             order_type=order_type, limit_price=limit_px,
             timeout_sec=10.0 if order_type == 'limit' else 15.0,
         )
+
+        # Market fallback: if limit cover timed out, retry with market order
+        if fill.status == 'timeout' and order_type == 'limit':
+            self._add_message('warning',
+                f'{symbol} limit cover timed out, retrying MARKET...')
+            await asyncio.sleep(1)  # brief pause for broker to clear the cancel hold
+            fill = await alpaca_submit_and_confirm(
+                symbol, shares, exit_side,
+                order_type='market', timeout_sec=15.0,
+            )
 
         if fill.is_filled:
             now = datetime.now(ET)
@@ -4231,6 +4856,7 @@ class GapFadeLiveTrader:
 
             pos = self.engine.positions[symbol]
             now = datetime.now(ET)
+            pos.update_tracking(price, now.strftime('%H:%M:%S'))
 
             # evaluate_exit checks all conditions including stop, but if the
             # position has a broker stop order, skip the software stop check
@@ -4255,8 +4881,30 @@ class GapFadeLiveTrader:
             })
             self._save_state()
 
+    _spy_cache: Tuple[float, float] = (0.0, 0.0)  # (timestamp, change_pct)
+    _SPY_CACHE_TTL = 60.0  # refresh SPY every 60 seconds
+    _LLM_PROFIT_INTERVAL = 60.0  # seconds between LLM profit evals per position
+
+    async def _get_spy_change(self) -> float:
+        """Get SPY intraday change %. Cached for 60s."""
+        now_mono = _time.monotonic()
+        if now_mono - self._spy_cache[0] < self._SPY_CACHE_TTL:
+            return self._spy_cache[1]
+        try:
+            snaps = await asyncio.to_thread(fetch_alpaca_snapshots, ['SPY'])
+            spy = snaps.get('SPY', {})
+            daily = spy.get('dailyBar', {})
+            prev = spy.get('prevDailyBar', {})
+            if daily.get('c') and prev.get('c'):
+                change = (daily['c'] - prev['c']) / prev['c']
+                self._spy_cache = (now_mono, change)
+                return change
+        except Exception:
+            pass
+        return self._spy_cache[1]
+
     async def _check_positions(self):
-        """Periodic position check: poll broker stops + evaluate non-stop exits."""
+        """Periodic position check: poll broker stops + evaluate non-stop exits + LLM profit."""
         if not self.engine.positions:
             return
 
@@ -4264,11 +4912,36 @@ class GapFadeLiveTrader:
         await self._check_broker_stops()
 
         now = datetime.now(ET)
+        now_str = now.strftime('%H:%M:%S')
+        now_mono = _time.monotonic()
         trades_executed = []
 
+        # Fetch SPY once per cycle (cached)
+        spy_change = 0.0
+        if self.llm_supervisor and self.llm_supervisor.is_available():
+            spy_change = await self._get_spy_change()
+
+        # Get prices: prefer streamer, fall back to REST snapshots
+        prices: dict = {}
         if self.streamer and self.streamer.latest_prices:
+            prices = dict(self.streamer.latest_prices)
+        if not prices and self.engine.positions:
+            # REST fallback when WebSocket is down
+            try:
+                syms = list(self.engine.positions.keys())
+                snaps = await asyncio.to_thread(fetch_alpaca_snapshots, syms)
+                for sym, snap in snaps.items():
+                    lt = snap.get('latestTrade', {})
+                    if lt.get('p'):
+                        prices[sym] = lt['p']
+                if prices:
+                    logger.debug(f"Using REST snapshot prices for {len(prices)} positions")
+            except Exception as e:
+                logger.warning(f"REST snapshot fallback failed: {e}")
+
+        if prices:
             for sym in list(self.engine.positions.keys()):
-                price = self.streamer.latest_prices.get(sym)
+                price = prices.get(sym)
                 if not price:
                     continue
 
@@ -4277,13 +4950,87 @@ class GapFadeLiveTrader:
                     if not pos:
                         continue
 
+                    pos.update_tracking(price, now_str)
+
                     exit_signal = self.engine.evaluate_exit(sym, price, price, now)
+
+                    # No exit signal from rules — check LLM for profit-taking
+                    if exit_signal is None:
+                        if (self.llm_supervisor and self.llm_supervisor.is_available()
+                                and not pos.closing
+                                and now_mono - pos.last_llm_profit_check >= self._LLM_PROFIT_INTERVAL):
+                            # Only ask LLM if position is in profit
+                            if pos.direction == 'short':
+                                in_profit = price < pos.entry_price
+                            else:
+                                in_profit = price > pos.entry_price
+                            if in_profit:
+                                pos.last_llm_profit_check = now_mono
+                                llm_profit = await self.llm_supervisor.evaluate_profit(
+                                    asdict(pos), price, spy_change,
+                                    self.engine.daily_stats.pnl)
+                                action = llm_profit.get('action', 'hold')
+                                reasoning = llm_profit.get('reasoning', '')
+                                if action == 'close':
+                                    pnl_pct = pos.gap_fill_pct(price)
+                                    self._add_message('llm',
+                                        f'TAKE PROFIT {sym} ({pnl_pct:.0%} gap filled): {reasoning}')
+                                    exit_signal = {
+                                        'action': 'close', 'reason': 'llm_profit',
+                                        'shares': pos.remaining_shares,
+                                    }
+                                elif action == 'tighten_stop':
+                                    new_stop = llm_profit.get('new_stop', pos.stop_price)
+                                    if new_stop and new_stop != pos.stop_price:
+                                        old_stop = pos.stop_price
+                                        pos.stop_price = new_stop
+                                        self._add_message('llm',
+                                            f'Lock profit {sym}: stop ${old_stop:.2f} → ${new_stop:.2f}: {reasoning}')
+                                        # Update broker stop if we have one
+                                        if pos.stop_order_id:
+                                            try:
+                                                await asyncio.to_thread(alpaca_cancel_order, pos.stop_order_id)
+                                                stop_result = await asyncio.to_thread(
+                                                    alpaca_place_stop_order, sym,
+                                                    pos.remaining_shares, new_stop,
+                                                    0.003, pos.direction)
+                                                if 'error' not in stop_result:
+                                                    pos.stop_order_id = stop_result.get('id', '')
+                                            except Exception as e:
+                                                logger.warning(f"Broker stop update failed for {sym}: {e}")
+                                # else: hold — do nothing
+
                     if exit_signal is None:
                         continue
 
                     # Skip stop signals — broker handles those
                     if exit_signal['reason'] == 'stop' and pos.stop_order_id:
                         continue
+
+                    # LLM exit override (software stops only, not broker/EOD/time)
+                    if (self.llm_supervisor and self.llm_supervisor.is_available()
+                            and exit_signal['reason'] == 'stop'
+                            and not pos.stop_order_id
+                            and pos.llm_hold_overrides < self.config.llm_max_hold_overrides):
+                        llm_exit = await self.llm_supervisor.evaluate_exit(
+                            asdict(pos), price, exit_signal)
+                        llm_action = llm_exit.get('action', 'close')
+                        if llm_action == 'hold':
+                            pos.llm_hold_overrides += 1
+                            self._add_message('llm',
+                                f'Override stop {sym} ({pos.llm_hold_overrides}/'
+                                f'{self.config.llm_max_hold_overrides}): '
+                                f'{llm_exit.get("reasoning", "")}')
+                            continue
+                        elif llm_action == 'tighten':
+                            pos.llm_hold_overrides += 1
+                            new_stop = llm_exit.get('new_stop', pos.stop_price)
+                            self._add_message('llm',
+                                f'Tighten {sym} stop ${pos.stop_price:.2f} → ${new_stop:.2f} '
+                                f'({pos.llm_hold_overrides}/{self.config.llm_max_hold_overrides}): '
+                                f'{llm_exit.get("reasoning", "")}')
+                            pos.stop_price = new_stop
+                            continue
 
                     trade = await self._execute_exit(sym, exit_signal, price)
 
@@ -4303,9 +5050,7 @@ class GapFadeLiveTrader:
             for sym, rec in list(self.engine._stopped_today.items()):
                 if sym in self.engine.positions:
                     continue  # already in position
-                if not self.streamer or not self.streamer.latest_prices:
-                    continue
-                price = self.streamer.latest_prices.get(sym)
+                price = prices.get(sym) if prices else None
                 if not price:
                     continue
                 ok_re, reason_re = self.engine.can_reenter(sym, price, now)
@@ -4414,6 +5159,12 @@ class GapFadeLiveTrader:
                     price = 0.0
                     if self.streamer and self.streamer.latest_prices:
                         price = self.streamer.latest_prices.get(sym, 0.0)
+                    if price <= 0:
+                        try:
+                            snaps = await asyncio.to_thread(fetch_alpaca_snapshots, [sym])
+                            price = snaps.get(sym, {}).get('latestTrade', {}).get('p', 0.0)
+                        except Exception:
+                            pass
                     if price <= 0:
                         price = pos.entry_price  # fallback
 
@@ -4544,6 +5295,12 @@ class GapFadeLiveTrader:
 
     def get_state(self) -> dict:
         """Get current state for API response."""
+        llm_state = None
+        if self.llm_supervisor:
+            llm_state = self.llm_supervisor.get_status()
+            llm_state['enabled'] = True
+        else:
+            llm_state = {'enabled': False}
         return {
             'status': self.status,
             'equity': round(self.engine.equity, 2),
@@ -4556,6 +5313,7 @@ class GapFadeLiveTrader:
             'messages': self.messages[-30:],
             'config': asdict(self.config),
             'today_trades': [asdict(t) for t in self.engine.trade_log],
+            'llm': llm_state,
         }
 
 
@@ -4686,6 +5444,10 @@ CONFIG_VALID_RANGES = {
     'catalyst_earnings_penalty': (0, 100),
     'catalyst_news_penalty':     (0, 100),
     'catalyst_noise_bonus':      (0, 50),
+    'llm_timeout':               (1.0, 60.0),
+    'llm_max_failures':          (1, 50),
+    'llm_circuit_reset':         (10.0, 600.0),
+    'llm_max_hold_overrides':    (0, 10),
 }
 
 
@@ -4791,11 +5553,28 @@ async def run_scan():
         except Exception as e:
             logger.warning(f"Catalyst detection failed (non-fatal): {e}")
 
+    # LLM candidate evaluation
+    llm_evals = []
+    if live_trader.llm_supervisor and live_trader.llm_supervisor.is_available() and candidates:
+        try:
+            llm_evals = await live_trader.llm_supervisor.evaluate_candidates(
+                [asdict(c) for c in candidates[:15]])
+            if llm_evals:
+                skip_syms = {e['symbol'] for e in llm_evals
+                             if isinstance(e, dict) and e.get('action') == 'skip'}
+                if skip_syms:
+                    live_trader.candidates = [c for c in live_trader.candidates
+                                              if c.symbol not in skip_syms]
+                    candidates = live_trader.candidates
+        except Exception as e:
+            logger.warning(f"LLM candidate evaluation failed (non-fatal): {e}")
+
     return {
         'candidates': [asdict(c) for c in candidates[:15]],
         'scan_time': live_trader.last_scan_time,
         'count': len(candidates),
         'universe_size': universe_size,
+        'llm_evals': llm_evals if llm_evals else None,
     }
 
 
@@ -4804,6 +5583,28 @@ async def start_trading():
     """Start the live trading loop."""
     await live_trader.start()
     return {'status': live_trader.status}
+
+
+@app.post("/api/enter")
+async def enter_positions(body: dict = None):
+    """Manually trigger entry on current candidates.
+
+    Optional body: {"symbols": ["SYM1", "SYM2"]} to enter specific symbols.
+    Without body, enters top candidates up to max_positions.
+    """
+    if live_trader.status == 'stopped':
+        return {'error': 'Trader is stopped. Start it first.'}
+    body = body or {}
+    llm_symbols = body.get('symbols')
+    size_mult = body.get('size_mult', 1.0)
+    # Scan first if no candidates cached
+    if not live_trader.candidates:
+        await live_trader._run_scan()
+    await live_trader._enter_positions(llm_symbols=llm_symbols, size_mult=size_mult)
+    return {
+        'status': live_trader.status,
+        'positions': {s: asdict(p) for s, p in live_trader.engine.positions.items()},
+    }
 
 
 @app.post("/api/stop")
@@ -4863,10 +5664,48 @@ async def update_config(body: dict):
         live_trader.engine.peak_equity = config.initial_capital
     # Rebuild scanner when universe config changes
     live_trader.scanner = GapScanner(config)
+    # Toggle LLM supervisor on/off at runtime
+    if config.llm_enabled and live_trader.llm_supervisor is None:
+        live_trader.llm_supervisor = LLMSupervisor(config)
+        logger.info(f"LLM Supervisor enabled: {config.llm_model}")
+    elif not config.llm_enabled and live_trader.llm_supervisor is not None:
+        live_trader.llm_supervisor = None
+        logger.info("LLM Supervisor disabled")
     result = {'config': asdict(config)}
     if errors:
         result['validation_errors'] = errors
     return result
+
+
+@app.get("/api/llm/status")
+async def llm_status():
+    """Get LLM supervisor status (circuit breaker, call stats)."""
+    if live_trader.llm_supervisor is None:
+        return {
+            'enabled': False,
+            'available': False,
+            'model': live_trader.config.llm_model,
+            'url': live_trader.config.llm_url,
+        }
+    status = live_trader.llm_supervisor.get_status()
+    status['enabled'] = True
+    return status
+
+
+@app.post("/api/llm/test")
+async def llm_test():
+    """Test LLM connectivity by sending a simple ping prompt."""
+    if not live_trader.config.llm_enabled:
+        return {'error': 'LLM not enabled. Set llm_enabled=true via /api/config first.'}
+    if live_trader.llm_supervisor is None:
+        live_trader.llm_supervisor = LLMSupervisor(live_trader.config)
+    raw = await live_trader.llm_supervisor._call_ollama(
+        'You are a test assistant.', 'Respond with exactly: {"status": "ok"}')
+    if raw is None:
+        return {'status': 'error', 'message': 'Could not reach Ollama. Check url/model.',
+                'supervisor': live_trader.llm_supervisor.get_status()}
+    return {'status': 'ok', 'response': raw[:200],
+            'supervisor': live_trader.llm_supervisor.get_status()}
 
 
 @app.post("/api/backtest")
@@ -5386,6 +6225,18 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   .status-trading { background: rgba(0, 212, 255, 0.2); color: var(--positive); }
   .status-paused { background: rgba(234, 179, 8, 0.2); color: var(--yellow); }
   .status-halted { background: rgba(255, 59, 92, 0.2); color: var(--negative); }
+  .status-standdown { background: rgba(168, 85, 247, 0.2); color: #c084fc; }
+  .llm-badge {
+    padding: 3px 8px;
+    border-radius: 6px;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    font-family: 'JetBrains Mono', monospace;
+  }
+  .llm-badge.llm-on { background: rgba(168, 85, 247, 0.2); color: #c084fc; }
+  .llm-badge.llm-circuit { background: rgba(234, 179, 8, 0.2); color: #fde68a; }
+  .llm-badge.llm-off { background: rgba(255,255,255,0.06); color: var(--muted); }
 
   /* ── Metrics Bar ── */
   .metrics-bar {
@@ -5576,6 +6427,11 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   .feed-item.scan { border-left-color: var(--positive); }
   .feed-item.system { border-left-color: var(--purple); }
   .feed-item.error { border-left-color: var(--negative); }
+  .feed-item.warning { border-left-color: #eab308; }
+  .feed-item.catalyst { border-left-color: #f97316; }
+  .feed-item.regime { border-left-color: #f97316; }
+  .feed-item.llm { border-left-color: #a855f7; background: rgba(168, 85, 247, 0.06); }
+  .feed-item.llm_fallback { border-left-color: #eab308; background: rgba(234, 179, 8, 0.06); }
   .feed-item .time { color: var(--muted); font-size: 10px; margin-right: 8px; font-family: 'JetBrains Mono', monospace; }
 
   .circuit-breakers {
@@ -5800,6 +6656,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   <div style="display:flex;align-items:center;gap:12px;">
     <span class="page-title" id="pageTitle">Dashboard</span>
     <span id="statusBadge" class="status-badge status-stopped">STOPPED</span>
+    <span id="llmBadge" class="llm-badge" style="display:none;" title="LLM Supervisor">LLM</span>
   </div>
   <div class="header-controls">
     <button class="primary" onclick="runScan()">Scan</button>
@@ -6723,10 +7580,30 @@ async function saveConfig() {
   fetchState();
 }
 
+async function testLlm() {
+  const el = document.getElementById('llmTestResult');
+  el.textContent = 'Testing...';
+  el.style.color = 'var(--muted)';
+  try {
+    const r = await api('llm/test', 'POST');
+    if (r.status === 'ok') {
+      el.textContent = 'Connected — ' + (r.supervisor?.model || 'ok');
+      el.style.color = '#c084fc';
+    } else {
+      el.textContent = r.message || 'Connection failed';
+      el.style.color = 'var(--negative)';
+    }
+  } catch(e) {
+    el.textContent = 'Error: ' + e.message;
+    el.style.color = 'var(--negative)';
+  }
+}
+
 // ── Rendering ────────────────────────────────────────────────────
 function renderState(s) {
   updateStatus(s.status);
   updateEquity(s.equity);
+  if (s.llm) updateLlmBadge(s.llm);
 
   const m = s.metrics || {};
   const ds = s.daily_stats || {};
@@ -6770,6 +7647,28 @@ function updateStatus(status) {
   const badge = document.getElementById('statusBadge');
   badge.textContent = status.toUpperCase();
   badge.className = 'status-badge status-' + status;
+}
+
+function updateLlmBadge(llm) {
+  const badge = document.getElementById('llmBadge');
+  if (!llm || !llm.enabled) {
+    badge.style.display = 'none';
+    return;
+  }
+  badge.style.display = 'inline-block';
+  if (llm.circuit_open) {
+    badge.className = 'llm-badge llm-circuit';
+    badge.textContent = 'LLM CIRCUIT';
+    badge.title = 'LLM circuit breaker open — ' + Math.round(llm.circuit_resets_in) + 's until retry';
+  } else if (llm.available) {
+    badge.className = 'llm-badge llm-on';
+    badge.textContent = 'LLM';
+    badge.title = 'LLM Supervisor active: ' + llm.model + ' (' + llm.total_calls + ' calls)';
+  } else {
+    badge.className = 'llm-badge llm-off';
+    badge.textContent = 'LLM OFF';
+    badge.title = 'LLM unavailable';
+  }
 }
 
 function updateEquity(eq) {
@@ -6868,9 +7767,14 @@ function renderCandidates(candidates) {
 
 function renderMessages(messages) {
   const feed = document.getElementById('feedContainer');
+  const prefix = (type) => {
+    if (type === 'llm') return '<span style="color:#c084fc;font-weight:600;margin-right:4px;">LLM</span>';
+    if (type === 'llm_fallback') return '<span style="color:#fde68a;font-weight:600;margin-right:4px;">LLM</span>';
+    return '';
+  };
   feed.innerHTML = messages.slice().reverse().map(m => `
     <div class="feed-item ${m.type}">
-      <span class="time">${m.time}</span>${m.text}
+      <span class="time">${m.time}</span>${prefix(m.type)}${m.text}
     </div>
   `).join('');
 }
@@ -6949,6 +7853,8 @@ function renderConfig(config) {
       params: [['reentry_cooldown_minutes', 'Cooldown (min)', 30], ['reentry_max_per_symbol', 'Max Per Symbol', 1], ['reentry_stop_pct', 'Stop %', 0.01], ['reentry_trigger_pct', 'Trigger %', 0.0]] },
     { key: 'trade_gap_downs', title: 'Gap-Down Fading (Longs)', desc: 'Also trade gap-downs — buy long, fade back to prev close',
       params: [['gap_down_threshold', 'Gap Down Threshold', 0.05], ['gap_down_max_pct', 'Max Gap Down %', 0.50], ['gap_down_vol_ratio_max', 'Vol Ratio Max', 3.0]] },
+    { key: 'llm_enabled', title: 'LLM Supervisor (Ollama)', desc: 'Autonomous trading decisions via local LLM — scan timing, candidate selection, exit overrides',
+      params: [['llm_url', 'Ollama URL', 'http://localhost:11434'], ['llm_model', 'Model', 'gpt-oss:20b'], ['llm_timeout', 'Timeout (sec)', 10], ['llm_max_failures', 'Circuit Breaker Failures', 5], ['llm_circuit_reset', 'Circuit Reset (sec)', 120], ['llm_max_hold_overrides', 'Max Hold Overrides', 2]] },
   ];
   features.forEach(f => {
     const on = !!config[f.key];
@@ -6963,16 +7869,31 @@ function renderConfig(config) {
           <span class="feature-desc">${f.desc}</span>
         </div>
         <div class="feature-params" id="${secId}" style="display:${on ? 'grid' : 'none'}">
-          ${f.params.map(([pk, pl, def]) => `
-            <div class="config-item">
+          ${f.params.map(([pk, pl, def]) => {
+            const val = config[pk] !== undefined ? config[pk] : def;
+            const inputType = typeof val === 'string' ? 'text' : 'number';
+            return `<div class="config-item">
               <label>${pl}:</label>
-              <input type="number" data-key="${pk}" value="${config[pk] !== undefined ? config[pk] : def}" step="any">
-            </div>
-          `).join('')}
+              <input type="${inputType}" data-key="${pk}" value="${val}" ${inputType === 'number' ? 'step="any"' : ''}>
+            </div>`;
+          }).join('')}
         </div>
       </div>`;
     grid.insertAdjacentHTML('beforeend', html);
   });
+
+  // Add LLM test button inside the LLM params section
+  const llmParams = document.getElementById('params-llm_enabled');
+  if (llmParams) {
+    llmParams.insertAdjacentHTML('beforeend', `
+      <div class="config-item" style="grid-column: span 2;">
+        <button onclick="testLlm()" style="padding:6px 16px;border-radius:6px;background:rgba(168,85,247,0.2);color:#c084fc;border:1px solid rgba(168,85,247,0.3);cursor:pointer;font-size:12px;font-weight:600;">
+          Test Connection
+        </button>
+        <span id="llmTestResult" style="font-size:11px;margin-left:8px;color:var(--muted);"></span>
+      </div>
+    `);
+  }
 
   // Set scan universe radio buttons from config
   const univ = config.scan_universe || 'study';
@@ -7456,6 +8377,12 @@ if __name__ == '__main__':
         print(f"  Auth:     ENABLED (GAP_FADE_API_KEY set, {len(api_key)} chars)")
     else:
         print("  Auth:     DISABLED — set GAP_FADE_API_KEY in .env to protect POST endpoints")
+
+    # LLM status
+    if live_trader.config.llm_enabled:
+        print(f"  LLM:      ENABLED ({live_trader.config.llm_model} @ {live_trader.config.llm_url})")
+    else:
+        print("  LLM:      DISABLED — set llm_enabled=true via /api/config to activate")
 
     # P0-6: Bind to localhost by default. Set GAP_FADE_BIND_ALL=1 to listen on all interfaces.
     bind_host = "0.0.0.0" if os.environ.get('GAP_FADE_BIND_ALL', '') == '1' else "127.0.0.1"
