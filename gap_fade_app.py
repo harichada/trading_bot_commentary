@@ -5664,11 +5664,19 @@ async def update_config(body: dict):
         live_trader.engine.peak_equity = config.initial_capital
     # Rebuild scanner when universe config changes
     live_trader.scanner = GapScanner(config)
-    # Toggle LLM supervisor on/off at runtime
-    if config.llm_enabled and live_trader.llm_supervisor is None:
-        live_trader.llm_supervisor = LLMSupervisor(config)
-        logger.info(f"LLM Supervisor enabled: {config.llm_model}")
-    elif not config.llm_enabled and live_trader.llm_supervisor is not None:
+    # Toggle LLM supervisor on/off at runtime, rebuild if config changed
+    if config.llm_enabled:
+        if live_trader.llm_supervisor is None:
+            live_trader.llm_supervisor = LLMSupervisor(config)
+            logger.info(f"LLM Supervisor enabled: {config.llm_model}")
+        else:
+            # Rebuild if url/model/timeout changed
+            sup = live_trader.llm_supervisor
+            if (sup.url != config.llm_url or sup.model != config.llm_model
+                    or sup.timeout != config.llm_timeout):
+                live_trader.llm_supervisor = LLMSupervisor(config)
+                logger.info(f"LLM Supervisor rebuilt: {config.llm_model} @ {config.llm_url}")
+    elif live_trader.llm_supervisor is not None:
         live_trader.llm_supervisor = None
         logger.info("LLM Supervisor disabled")
     result = {'config': asdict(config)}
@@ -5706,6 +5714,204 @@ async def llm_test():
                 'supervisor': live_trader.llm_supervisor.get_status()}
     return {'status': 'ok', 'response': raw[:200],
             'supervisor': live_trader.llm_supervisor.get_status()}
+
+
+_CHAT_SYSTEM_PROMPT = """You are the AI trading supervisor for a gap fade bot. You have full access to the bot's live state and can EXECUTE actions by returning a JSON action block.
+
+## YOUR CAPABILITIES
+You can both advise AND act. When the user asks you to DO something, execute it.
+
+## EXECUTABLE ACTIONS
+To execute an action, include a JSON block at the END of your response in this exact format:
+```action
+{"action": "ACTION_NAME", ...params}
+```
+
+Available actions:
+
+1. START TRADING: `{"action": "start"}`
+2. STOP TRADING (closes all positions): `{"action": "stop"}`
+3. PAUSE (keep positions, stop new trades): `{"action": "pause"}`
+4. RESUME after pause: `{"action": "resume"}`
+5. RUN SCAN for candidates: `{"action": "scan"}`
+6. ENTER POSITIONS: `{"action": "enter"}` or `{"action": "enter", "symbols": ["AAPL","MSFT"], "size_mult": 0.5}`
+7. UPDATE CONFIG: `{"action": "config", "params": {"max_positions": 5, "stop_pct": 0.02, ...}}`
+   Settable config fields: gap_threshold, max_gap_pct, vol_ratio_max, stop_pct, risk_pct,
+   kelly_fraction, max_positions, initial_capital, daily_loss_limit, max_consec_losses,
+   max_drawdown, time_exit_hour, min_avg_volume, min_price, max_notional, slippage_pct,
+   borrow_rate_annual, max_pct_adv, limit_offset_pct, limit_orders_only,
+   adaptive_stops, stop_gap_fraction, stop_min_pct, stop_max_pct,
+   regime_filter, regime_spy_gap_limit, regime_spy_block_pct, regime_vix_threshold,
+   reentry_enabled, reentry_cooldown_minutes, reentry_max_per_symbol, reentry_stop_pct,
+   trade_gap_downs, gap_down_threshold, gap_down_max_pct, gap_down_vol_ratio_max,
+   llm_enabled, llm_model, llm_url, llm_timeout, catalyst_enabled
+8. RESET equity & trade log: `{"action": "reset"}`
+9. RUN BACKTEST: `{"action": "backtest", "params": {"symbols": "TSLA,NVDA", "start_date": "2024-01-01", "end_date": "2024-12-31", "gap_threshold": 0.07}}`
+
+## RULES
+- Always explain WHAT you're doing and WHY before the action block
+- For destructive actions (stop, reset), confirm with the user first unless they're explicit
+- Use the live context below to give informed answers with real numbers
+- Be concise. Use tables for position summaries. Use $ and % values.
+- If the user asks a question (not an action), just answer — no action block needed
+- You cannot close a single position directly — use stop (closes all) or advise adjusting the stop price via config"""
+
+@app.post("/api/llm/chat")
+async def llm_chat(body: dict):
+    """Chat with the LLM trading supervisor. Injects live context, executes actions."""
+    message = (body.get('message') or '').strip()
+    if not message:
+        return {'error': 'message is required'}
+    if not live_trader.config.llm_enabled:
+        return {'error': 'LLM not enabled. Set llm_enabled=true via /api/config first.'}
+    if live_trader.llm_supervisor is None:
+        live_trader.llm_supervisor = LLMSupervisor(live_trader.config)
+
+    # Build live context
+    now = datetime.now(ET)
+    positions_text = 'No open positions.'
+    if live_trader.engine.positions:
+        lines = []
+        for sym, pos in live_trader.engine.positions.items():
+            cur_price = 0.0
+            if live_trader.streamer and live_trader.streamer.latest_prices:
+                cur_price = live_trader.streamer.latest_prices.get(sym, 0.0)
+            if cur_price <= 0:
+                try:
+                    snaps = await asyncio.to_thread(fetch_alpaca_snapshots, [sym])
+                    cur_price = snaps.get(sym, {}).get('latestTrade', {}).get('p', 0.0)
+                except Exception:
+                    pass
+            if cur_price > 0:
+                if pos.direction == 'short':
+                    pnl_pct = (pos.entry_price - cur_price) / pos.entry_price * 100
+                    pnl_dollar = (pos.entry_price - cur_price) * pos.remaining_shares
+                else:
+                    pnl_pct = (cur_price - pos.entry_price) / pos.entry_price * 100
+                    pnl_dollar = (cur_price - pos.entry_price) * pos.remaining_shares
+                lines.append(
+                    f"  {sym}: {pos.direction} {pos.remaining_shares} shares, "
+                    f"entry ${pos.entry_price:.2f}, current ${cur_price:.2f}, "
+                    f"stop ${pos.stop_price:.2f}, P&L {pnl_pct:+.1f}% (${pnl_dollar:+,.2f}), "
+                    f"HWM {pos.high_water_pnl_pct*100:.1f}%, gap fill {pos.gap_fill_pct(cur_price):.0%}")
+            else:
+                lines.append(
+                    f"  {sym}: {pos.direction} {pos.remaining_shares} shares, "
+                    f"entry ${pos.entry_price:.2f}, stop ${pos.stop_price:.2f}")
+        positions_text = '\n'.join(lines)
+
+    candidates_text = 'No candidates scanned yet.'
+    if live_trader.candidates:
+        cands = live_trader.candidates[:8]
+        candidates_text = '\n'.join(
+            f"  {c.symbol}: gap {c.gap_pct:.1%}, vol_ratio {c.vol_ratio:.2f}, "
+            f"score {c.score:.0f}, dir={c.direction}"
+            for c in cands)
+
+    recent_msgs = '\n'.join(
+        f"  [{m['type']}] {m['text'][:120]}"
+        for m in live_trader.messages[-12:])
+
+    stats = live_trader.engine.daily_stats
+    trades_today = live_trader.engine.trade_log[-10:] if live_trader.engine.trade_log else []
+    trades_text = 'None today.'
+    if trades_today:
+        trades_text = '\n'.join(
+            f"  {t.symbol}: {t.side} {t.shares}sh, "
+            f"entry ${t.entry_price:.2f} -> exit ${t.exit_price:.2f}, "
+            f"P&L ${t.pnl:+,.2f} ({t.pnl_pct:+.1%}), reason={t.exit_reason}"
+            for t in trades_today)
+
+    cfg = live_trader.config
+    context = f"""LIVE TRADING CONTEXT (as of {now.strftime('%H:%M:%S ET, %A %B %d')}):
+
+Bot status: {live_trader.status}
+Equity: ${live_trader.engine.equity:,.2f}
+Today P&L: ${stats.pnl:+,.2f} ({stats.wins}W/{stats.losses}L)
+Consecutive losses: {stats.consecutive_losses}
+
+Open positions ({len(live_trader.engine.positions)}/{cfg.max_positions}):
+{positions_text}
+
+Top candidates:
+{candidates_text}
+
+Completed trades today:
+{trades_text}
+
+Recent activity:
+{recent_msgs}
+
+Config: max_positions={cfg.max_positions}, stop_pct={cfg.stop_pct}, risk_pct={cfg.risk_pct}, \
+reentry={cfg.reentry_enabled}, adaptive_stops={cfg.adaptive_stops}, regime_filter={cfg.regime_filter}, \
+llm_enabled={cfg.llm_enabled}, llm_model={cfg.llm_model}, limit_orders={cfg.limit_orders_only}, \
+gap_threshold={cfg.gap_threshold}, initial_capital={cfg.initial_capital}
+
+USER MESSAGE: {message}"""
+
+    raw = await live_trader.llm_supervisor._call_ollama(_CHAT_SYSTEM_PROMPT, context)
+    if raw is None:
+        return {'error': 'LLM call failed. Check Ollama connectivity.'}
+
+    # Parse and execute any action block from the response
+    import re as _re
+    action_result = None
+    action_match = _re.search(r'```action\s*\n(\{.*?\})\s*\n```', raw, _re.DOTALL)
+    if action_match:
+        try:
+            action = json.loads(action_match.group(1))
+            act = action.get('action', '')
+            if act == 'start':
+                await live_trader.start()
+                action_result = {'executed': 'start', 'status': live_trader.status}
+            elif act == 'stop':
+                await live_trader.stop()
+                action_result = {'executed': 'stop', 'status': live_trader.status}
+            elif act == 'pause':
+                live_trader.status = 'paused'
+                action_result = {'executed': 'pause', 'status': 'paused'}
+            elif act == 'resume':
+                if live_trader.status == 'paused':
+                    live_trader.status = 'trading'
+                action_result = {'executed': 'resume', 'status': live_trader.status}
+            elif act == 'scan':
+                candidates = await live_trader._run_scan()
+                action_result = {'executed': 'scan', 'candidates': len(live_trader.candidates)}
+            elif act == 'enter':
+                syms = action.get('symbols')
+                mult = action.get('size_mult', 1.0)
+                await live_trader._enter_positions(llm_symbols=syms, size_mult=mult)
+                action_result = {'executed': 'enter',
+                                 'positions': list(live_trader.engine.positions.keys())}
+            elif act == 'config':
+                params = action.get('params', {})
+                if params:
+                    for k, v in params.items():
+                        if hasattr(cfg, k):
+                            setattr(cfg, k, type(getattr(cfg, k))(v))
+                    live_trader.engine.config = cfg
+                    live_trader.scanner = GapScanner(cfg)
+                    live_trader._save_state()
+                    action_result = {'executed': 'config', 'updated': list(params.keys())}
+            elif act == 'reset':
+                live_trader.engine.equity = cfg.initial_capital
+                live_trader.engine.peak_equity = cfg.initial_capital
+                live_trader.engine.trade_log.clear()
+                live_trader._save_state()
+                action_result = {'executed': 'reset', 'equity': cfg.initial_capital}
+            elif act == 'backtest':
+                params = action.get('params', {})
+                action_result = {'executed': 'backtest', 'note': 'Use the Backtest tab to run backtests with full control.'}
+        except Exception as e:
+            action_result = {'executed': 'error', 'error': str(e)}
+
+    # Strip the action block from displayed response
+    display_text = _re.sub(r'\n?```action\s*\n\{.*?\}\s*\n```', '', raw, flags=_re.DOTALL).strip()
+
+    result = {'response': display_text}
+    if action_result:
+        result['action_result'] = action_result
+    return result
 
 
 @app.post("/api/backtest")
@@ -6238,6 +6444,17 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   .llm-badge.llm-circuit { background: rgba(234, 179, 8, 0.2); color: #fde68a; }
   .llm-badge.llm-off { background: rgba(255,255,255,0.06); color: var(--muted); }
 
+  /* ── Chat ── */
+  .chat-msg { padding: 10px 14px; border-radius: 10px; font-size: 13px; line-height: 1.6; max-width: 85%; white-space: pre-wrap; word-wrap: break-word; }
+  .chat-user { background: rgba(168, 85, 247, 0.15); color: var(--text); align-self: flex-end; border-bottom-right-radius: 2px; }
+  .chat-assistant { background: var(--surface); color: var(--text); align-self: flex-start; border: 1px solid var(--border); border-bottom-left-radius: 2px; }
+  .chat-system { background: rgba(6,182,212,0.08); color: var(--muted); align-self: center; text-align: center; font-size: 12px; border-radius: 6px; }
+  .chat-error { background: rgba(239,68,68,0.12); color: #fca5a5; align-self: center; text-align: center; font-size: 12px; }
+  .chat-thinking { background: var(--surface); color: var(--muted); align-self: flex-start; font-style: italic; animation: pulse 1.5s ease-in-out infinite; }
+  @keyframes pulse { 0%,100% { opacity: 0.5; } 50% { opacity: 1; } }
+  .chat-suggestion { padding: 6px 12px; background: rgba(168,85,247,0.1); border: 1px solid rgba(168,85,247,0.25); border-radius: 16px; color: #c084fc; font-size: 12px; cursor: pointer; transition: all 0.15s; }
+  .chat-suggestion:hover { background: rgba(168,85,247,0.2); border-color: rgba(168,85,247,0.4); }
+
   /* ── Metrics Bar ── */
   .metrics-bar {
     grid-area: metrics;
@@ -6281,7 +6498,19 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     display: flex;
     flex-direction: column;
     overflow: hidden;
+    position: relative;
   }
+  .right-panel-resize {
+    position: absolute;
+    left: -3px;
+    top: 0;
+    width: 6px;
+    height: 100%;
+    cursor: col-resize;
+    z-index: 10;
+  }
+  .right-panel-resize:hover,
+  .right-panel-resize.dragging { background: var(--accent-green); opacity: 0.4; }
   .right-panel-tabs {
     display: flex;
     border-bottom: 1px solid var(--border);
@@ -6471,20 +6700,37 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   input:focus, select:focus { outline: none; border-color: var(--positive); }
   label { font-size: 11px; color: var(--muted); margin-right: 4px; }
 
-  .config-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-    gap: var(--grid);
+  .config-grid { display: flex; flex-direction: column; gap: 16px; }
+  .cfg-section {
+    border: 1px solid var(--border); border-radius: 8px; overflow: hidden;
+    background: rgba(255,255,255,0.02);
   }
-  .config-item { display: flex; align-items: center; gap: 6px; }
+  .cfg-section-head {
+    padding: 10px 14px; font-size: 11px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.8px; color: var(--muted); background: rgba(255,255,255,0.03);
+    border-bottom: 1px solid var(--border);
+  }
+  .cfg-section-body {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 2px; padding: 10px 12px;
+  }
+  .config-item { display: flex; flex-direction: column; gap: 3px; padding: 4px 0; }
+  .config-item label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.3px; font-weight: 600; white-space: nowrap; }
+  .config-item input[type="number"],
+  .config-item input[type="text"] {
+    background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 4px;
+    padding: 6px 8px; font-size: 13px; font-family: 'JetBrains Mono', monospace; width: 100%;
+    box-sizing: border-box; transition: border-color 0.15s;
+  }
+  .config-item input:focus { border-color: var(--accent-green); outline: none; }
 
-  .feature-section { margin-top: 12px; border: 1px solid var(--border); border-radius: 8px; border-left: 3px solid var(--muted); transition: border-color 0.2s; }
-  .feature-section.enabled { border-left-color: var(--positive); }
-  .feature-header { display: flex; align-items: center; gap: 8px; padding: 10px 12px; cursor: pointer; user-select: none; }
-  .feature-header input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--positive); cursor: pointer; flex-shrink: 0; }
-  .feature-title { font-weight: 600; font-size: 13px; color: var(--text); }
-  .feature-desc { font-size: 11px; color: var(--muted); margin-left: auto; }
-  .feature-params { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 6px; padding: 0 12px 10px 12px; }
+  .feature-section { border: 1px solid var(--border); border-radius: 8px; border-left: 3px solid var(--muted); transition: border-color 0.2s; overflow: hidden; }
+  .feature-section.enabled { border-left-color: var(--accent-green); }
+  .feature-header { display: flex; align-items: center; gap: 10px; padding: 12px 14px; cursor: pointer; user-select: none; }
+  .feature-header input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent-green); cursor: pointer; flex-shrink: 0; }
+  .feature-title { font-weight: 700; font-size: 13px; color: var(--text); white-space: nowrap; }
+  .feature-desc { font-size: 11px; color: var(--muted); line-height: 1.4; }
+  .feature-params { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 2px; padding: 4px 14px 12px 14px; border-top: 1px solid var(--border); background: rgba(0,0,0,0.15); }
 
   .pnl-pos { color: var(--positive); }
   .pnl-neg { color: var(--negative); }
@@ -6639,6 +6885,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     <div class="sidebar-item" data-page="database" onclick="showPage('database')">
       <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><ellipse cx="8" cy="4" rx="5.5" ry="2.5"/><path d="M2.5 4v8c0 1.4 2.5 2.5 5.5 2.5s5.5-1.1 5.5-2.5V4"/><path d="M2.5 8c0 1.4 2.5 2.5 5.5 2.5s5.5-1.1 5.5-2.5"/></svg>
       Database
+    </div>
+    <div class="sidebar-item" data-page="chat" onclick="showPage('chat')">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 3h12v8H5l-3 3V3z" rx="1.5"/><line x1="5" y1="6" x2="11" y2="6"/><line x1="5" y1="9" x2="9" y2="9"/></svg>
+      LLM Chat
     </div>
     <div class="sidebar-item" data-page="guide" onclick="showPage('guide')">
       <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2.5" y="1.5" width="11" height="13" rx="1.5"/><line x1="5" y1="5" x2="11" y2="5"/><line x1="5" y1="8" x2="11" y2="8"/><line x1="5" y1="11" x2="9" y2="11"/></svg>
@@ -6950,6 +7200,29 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   </div>
 
   <!-- Guide Page -->
+  <div class="page" id="page-chat">
+    <div style="display:flex;flex-direction:column;height:calc(100vh - 180px);max-width:800px;">
+      <div id="chatMessages" style="flex:1;overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:10px;border:1px solid var(--border);border-radius:8px;background:rgba(0,0,0,0.2);margin-bottom:12px;">
+        <div class="chat-msg chat-system">Ask the LLM anything about your positions, strategy, or market conditions. It has full access to live trading state.</div>
+      </div>
+      <div style="display:flex;gap:8px;">
+        <input type="text" id="chatInput" placeholder="Ask about positions, strategy, market..."
+          style="flex:1;padding:10px 14px;background:var(--surface);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:14px;font-family:'Inter',sans-serif;outline:none;"
+          onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendChat();}"/>
+        <button onclick="sendChat()" id="chatSendBtn"
+          style="padding:10px 20px;background:var(--purple);color:#fff;border:none;border-radius:8px;font-weight:600;cursor:pointer;font-size:14px;white-space:nowrap;">
+          Send
+        </button>
+      </div>
+      <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap;" id="chatSuggestions">
+        <button class="chat-suggestion" onclick="sendPreset(this)">How are my positions doing?</button>
+        <button class="chat-suggestion" onclick="sendPreset(this)">Should I close anything?</button>
+        <button class="chat-suggestion" onclick="sendPreset(this)">What's the best candidate right now?</button>
+        <button class="chat-suggestion" onclick="sendPreset(this)">Summarize today's trading</button>
+      </div>
+    </div>
+  </div>
+
   <div class="page" id="page-guide">
     <h2 style="margin-bottom:10px;">How the Bot Works</h2>
 
@@ -7114,7 +7387,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 </main>
 
 <!-- ── Right Panel ── -->
-<aside class="right-panel">
+<aside class="right-panel" id="rightPanel">
+  <div class="right-panel-resize" id="rightPanelResize"></div>
   <div class="right-panel-tabs">
     <div class="right-panel-tab active" data-rtab="positions" onclick="showRightTab('positions')">Positions</div>
     <div class="right-panel-tab" data-rtab="feed" onclick="showRightTab('feed')">Feed</div>
@@ -7231,6 +7505,7 @@ const PAGE_TITLES = {
   backtest: 'Backtest',
   config: 'Config',
   database: 'Database',
+  chat: 'LLM Chat',
   guide: 'Guide'
 };
 
@@ -7248,7 +7523,7 @@ function showPage(name) {
 
 // Backward compat: showTab maps to showPage
 function showTab(name) {
-  const map = { live: 'dashboard', candidates: 'candidates', trades: 'trades', backtest: 'backtest', config: 'config', guide: 'guide' };
+  const map = { live: 'dashboard', candidates: 'candidates', trades: 'trades', backtest: 'backtest', config: 'config', chat: 'chat', guide: 'guide' };
   showPage(map[name] || name);
 }
 
@@ -7260,6 +7535,35 @@ function showRightTab(name) {
   const content = document.getElementById(name === 'positions' ? 'rightPositions' : 'rightFeed');
   if (content) content.classList.add('active');
 }
+
+// ── Right Panel Resize ───────────────────────────────────────────
+(function() {
+  const handle = document.getElementById('rightPanelResize');
+  const app = document.getElementById('app');
+  if (!handle || !app) return;
+  let dragging = false, startX = 0, startW = 0;
+  handle.addEventListener('mousedown', e => {
+    e.preventDefault();
+    dragging = true;
+    startX = e.clientX;
+    startW = document.getElementById('rightPanel').offsetWidth;
+    handle.classList.add('dragging');
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+  });
+  document.addEventListener('mousemove', e => {
+    if (!dragging) return;
+    const w = Math.max(200, Math.min(window.innerWidth - 400, startW + (startX - e.clientX)));
+    app.style.gridTemplateColumns = `180px 1fr ${w}px`;
+  });
+  document.addEventListener('mouseup', () => {
+    if (!dragging) return;
+    dragging = false;
+    handle.classList.remove('dragging');
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+  });
+})();
 
 // ── WebSocket ────────────────────────────────────────────────────
 function connectWS() {
@@ -7599,6 +7903,85 @@ async function testLlm() {
   }
 }
 
+// ── LLM Chat ─────────────────────────────────────────────────────
+async function sendChat() {
+  const input = document.getElementById('chatInput');
+  const msg = input.value.trim();
+  if (!msg) return;
+  input.value = '';
+
+  const container = document.getElementById('chatMessages');
+  // Hide suggestions after first message
+  const sug = document.getElementById('chatSuggestions');
+  if (sug) sug.style.display = 'none';
+
+  // Add user message
+  const userDiv = document.createElement('div');
+  userDiv.className = 'chat-msg chat-user';
+  userDiv.textContent = msg;
+  container.appendChild(userDiv);
+
+  // Add thinking indicator
+  const thinkDiv = document.createElement('div');
+  thinkDiv.className = 'chat-msg chat-thinking';
+  thinkDiv.textContent = 'Thinking...';
+  container.appendChild(thinkDiv);
+  container.scrollTop = container.scrollHeight;
+
+  // Disable send
+  const btn = document.getElementById('chatSendBtn');
+  btn.disabled = true;
+  btn.style.opacity = '0.5';
+
+  try {
+    const r = await api('llm/chat', 'POST', { message: msg });
+    thinkDiv.remove();
+    const respDiv = document.createElement('div');
+    if (r.error) {
+      respDiv.className = 'chat-msg chat-error';
+      respDiv.textContent = r.error;
+    } else {
+      respDiv.className = 'chat-msg chat-assistant';
+      respDiv.textContent = r.response || 'No response';
+    }
+    container.appendChild(respDiv);
+    // Show action result badge if an action was executed
+    if (r.action_result) {
+      const actDiv = document.createElement('div');
+      actDiv.className = 'chat-msg chat-system';
+      const ar = r.action_result;
+      if (ar.error) {
+        actDiv.style.background = 'rgba(239,68,68,0.12)';
+        actDiv.textContent = 'Action failed: ' + ar.error;
+      } else {
+        actDiv.style.background = 'rgba(16,185,129,0.12)';
+        actDiv.textContent = 'Executed: ' + ar.executed + (ar.status ? ' (status: '+ar.status+')' : '')
+          + (ar.candidates !== undefined ? ' — '+ar.candidates+' candidates found' : '')
+          + (ar.positions ? ' — positions: '+ar.positions.join(', ') : '')
+          + (ar.updated ? ' — updated: '+ar.updated.join(', ') : '');
+      }
+      container.appendChild(actDiv);
+      // Refresh state after action
+      fetchState();
+    }
+  } catch (e) {
+    thinkDiv.remove();
+    const errDiv = document.createElement('div');
+    errDiv.className = 'chat-msg chat-error';
+    errDiv.textContent = 'Error: ' + e.message;
+    container.appendChild(errDiv);
+  }
+
+  btn.disabled = false;
+  btn.style.opacity = '1';
+  container.scrollTop = container.scrollHeight;
+}
+
+function sendPreset(el) {
+  document.getElementById('chatInput').value = el.textContent;
+  sendChat();
+}
+
 // ── Rendering ────────────────────────────────────────────────────
 function renderState(s) {
   updateStatus(s.status);
@@ -7707,15 +8090,34 @@ function renderPositions(positions) {
 
   tbody.innerHTML = keys.map(sym => {
     const p = positions[sym];
-    const unrealized = ((p.entry_price - (p.entry_price * 0.99)) * p.remaining_shares); // placeholder
+    const dir = p.direction || 'short';
+    // Current price from last_prices ring buffer
+    let curPrice = 0;
+    if (p.last_prices) {
+      const parts = p.last_prices.split(',').filter(Boolean);
+      if (parts.length) curPrice = parseFloat(parts[parts.length - 1]);
+    }
+    const hasCur = curPrice > 0;
+    // P&L calculation
+    let pnl = 0, pnlPct = 0;
+    if (hasCur) {
+      pnl = dir === 'short'
+        ? (p.entry_price - curPrice) * p.remaining_shares
+        : (curPrice - p.entry_price) * p.remaining_shares;
+      pnlPct = dir === 'short'
+        ? (p.entry_price - curPrice) / p.entry_price * 100
+        : (curPrice - p.entry_price) / p.entry_price * 100;
+    }
+    const pnlColor = pnl >= 0 ? 'var(--green)' : 'var(--red)';
+    const dirColor = dir === 'long' ? 'var(--green)' : 'var(--red)';
     return `<tr>
-      <td style="font-weight:600;color:var(--red);">${sym}</td>
+      <td style="font-weight:600;color:${dirColor};">${sym} <span style="font-size:10px;opacity:0.7;">${dir.toUpperCase()}</span></td>
       <td>${p.remaining_shares}</td>
       <td>$${p.entry_price.toFixed(2)}</td>
-      <td>\u2014</td>
+      <td>${hasCur ? '$'+curPrice.toFixed(2) : '\u2014'}</td>
       <td style="color:var(--red);">$${p.stop_price.toFixed(2)}</td>
       <td style="color:var(--green);">$${p.full_target.toFixed(2)}</td>
-      <td>\u2014</td>
+      <td style="color:${pnlColor};font-weight:600;">${hasCur ? (pnl>=0?'+':'')+pnl.toFixed(2)+' ('+pnlPct.toFixed(1)+'%)' : '\u2014'}</td>
     </tr>`;
   }).join('');
 }
@@ -7807,55 +8209,75 @@ function renderTrades(todayTrades, totalCount) {
 
 function renderConfig(config) {
   const grid = document.getElementById('configGrid');
-  const fields = [
-    ['gap_threshold', 'Gap Threshold', 'number'],
-    ['max_gap_pct', 'Max Gap % (0=no cap)', 'number'],
-    ['vol_ratio_max', 'Vol Ratio Max', 'number'],
-    ['stop_pct', 'Stop %', 'number'],
-    ['risk_pct', 'Risk %', 'number'],
-    ['kelly_fraction', 'Kelly Fraction', 'number'],
-    ['max_positions', 'Max Positions', 'number'],
-    ['initial_capital', 'Initial Capital', 'number'],
-    ['daily_loss_limit', 'Daily Loss Limit', 'number'],
-    ['max_consec_losses', 'Max Consec Losses', 'number'],
-    ['max_drawdown', 'Max Drawdown', 'number'],
-    ['time_exit_hour', 'Time Exit Hour', 'number'],
-    ['min_avg_volume', 'Min Avg Volume', 'number'],
-    ['min_price', 'Min Price', 'number'],
-    ['max_notional', 'Max Notional $', 'number'],
-    ['slippage_pct', 'Slippage % (per side)', 'number'],
-    ['borrow_rate_annual', 'Borrow Rate (annual)', 'number'],
-    ['max_pct_adv', 'Max % of ADV', 'number'],
-    ['limit_offset_pct', 'Limit Offset %', 'number'],
+  const v = (k, def) => config[k] !== undefined ? config[k] : def;
+  const inp = (key, label, def) => {
+    const val = v(key, def);
+    const t = typeof val === 'string' ? 'text' : 'number';
+    return `<div class="config-item"><label>${label}</label>
+      <input type="${t}" data-key="${key}" value="${val}" ${t==='number'?'step="any"':''}></div>`;
+  };
+
+  // Grouped sections
+  const sections = [
+    { title: 'Gap Detection', fields: [
+      ['gap_threshold', 'Gap Threshold', 0.07], ['max_gap_pct', 'Max Gap %', 0.5],
+      ['vol_ratio_max', 'Vol Ratio Max', 3], ['min_avg_volume', 'Min Avg Volume', 5000],
+      ['min_price', 'Min Price', 10],
+    ]},
+    { title: 'Position Sizing', fields: [
+      ['max_positions', 'Max Positions', 5], ['initial_capital', 'Initial Capital', 25000],
+      ['risk_pct', 'Risk Per Trade %', 0.02], ['kelly_fraction', 'Kelly Fraction', 0.25],
+      ['max_notional', 'Max Notional $', 50000],
+    ]},
+    { title: 'Risk Management', fields: [
+      ['stop_pct', 'Stop Loss %', 0.015], ['daily_loss_limit', 'Daily Loss Limit', 0.02],
+      ['max_consec_losses', 'Max Consec Losses', 3], ['max_drawdown', 'Max Drawdown', 0.05],
+      ['time_exit_hour', 'Time Exit Hour', 15],
+    ]},
+    { title: 'Order Execution', fields: [
+      ['slippage_pct', 'Slippage %', 0.0015], ['borrow_rate_annual', 'Borrow Rate', 0.02],
+      ['max_pct_adv', 'Max % ADV', 0.02], ['limit_offset_pct', 'Limit Offset %', 0.001],
+    ]},
   ];
-  grid.innerHTML = `
-    <div class="config-item" style="grid-column: span 2; display:flex; align-items:center; gap:8px;">
-      <label style="font-weight:600;">Limit Orders Only:</label>
-      <input type="checkbox" id="cfgLimitOrders" data-key="limit_orders_only"
-             ${config.limit_orders_only ? 'checked' : ''}
-             style="width:18px;height:18px;">
-      <span style="font-size:11px;color:var(--muted);">Less slippage, better fills. Disable for guaranteed execution.</span>
-    </div>
-  ` + fields.map(([key, label, type]) => `
-    <div class="config-item">
-      <label>${label}:</label>
-      <input type="${type}" data-key="${key}" value="${config[key] !== undefined ? config[key] : ''}" step="any">
+
+  grid.innerHTML = sections.map(s => `
+    <div class="cfg-section">
+      <div class="cfg-section-head">${s.title}</div>
+      <div class="cfg-section-body">
+        ${s.title === 'Order Execution' ? `
+          <div class="config-item">
+            <label>Limit Orders Only</label>
+            <div style="display:flex;align-items:center;gap:8px;padding:4px 0;">
+              <input type="checkbox" id="cfgLimitOrders" data-key="limit_orders_only"
+                ${config.limit_orders_only ? 'checked' : ''}
+                style="width:16px;height:16px;accent-color:var(--accent-green);">
+              <span style="font-size:11px;color:var(--muted);">Better fills, less slippage</span>
+            </div>
+          </div>` : ''}
+        ${s.fields.map(f => inp(...f)).join('')}
+      </div>
     </div>
   `).join('');
 
   // Feature toggle sections
   const features = [
-    { key: 'adaptive_stops', title: 'Adaptive Stops', desc: 'Scale stop-loss with gap size instead of fixed %',
-      params: [['stop_gap_fraction', 'Gap Fraction', 0.15], ['stop_min_pct', 'Stop Min %', 0.01], ['stop_max_pct', 'Stop Max %', 0.05]] },
-    { key: 'regime_filter', title: 'Market Regime Filter', desc: 'Reduce/block entries when SPY gaps up or VIX is elevated',
+    { key: 'adaptive_stops', title: 'Adaptive Stops', desc: 'Scale stop-loss with gap size instead of fixed percentage',
+      params: [['stop_gap_fraction', 'Gap Fraction', 0.15], ['stop_min_pct', 'Min Stop %', 0.01], ['stop_max_pct', 'Max Stop %', 0.05]] },
+    { key: 'regime_filter', title: 'Market Regime Filter', desc: 'Reduce or block entries when SPY gaps up or VIX is elevated',
       params: [['regime_spy_gap_limit', 'SPY Gap Limit', 0.01], ['regime_spy_block_pct', 'SPY Block %', 0.015], ['regime_vix_threshold', 'VIX Threshold', 25.0]] },
-    { key: 'reentry_enabled', title: 'Re-entry After Stop-out', desc: 'Re-enter a stopped position if price moves favorably',
+    { key: 'reentry_enabled', title: 'Re-entry After Stop-out', desc: 'Re-enter a stopped position if price reverses favorably',
       params: [['reentry_cooldown_minutes', 'Cooldown (min)', 30], ['reentry_max_per_symbol', 'Max Per Symbol', 1], ['reentry_stop_pct', 'Stop %', 0.01], ['reentry_trigger_pct', 'Trigger %', 0.0]] },
-    { key: 'trade_gap_downs', title: 'Gap-Down Fading (Longs)', desc: 'Also trade gap-downs — buy long, fade back to prev close',
-      params: [['gap_down_threshold', 'Gap Down Threshold', 0.05], ['gap_down_max_pct', 'Max Gap Down %', 0.50], ['gap_down_vol_ratio_max', 'Vol Ratio Max', 3.0]] },
-    { key: 'llm_enabled', title: 'LLM Supervisor (Ollama)', desc: 'Autonomous trading decisions via local LLM — scan timing, candidate selection, exit overrides',
+    { key: 'trade_gap_downs', title: 'Gap-Down Fading (Longs)', desc: 'Buy gap-downs and fade back toward previous close',
+      params: [['gap_down_threshold', 'Gap Down %', 0.05], ['gap_down_max_pct', 'Max Gap Down %', 0.50], ['gap_down_vol_ratio_max', 'Vol Ratio Max', 3.0]] },
+    { key: 'llm_enabled', title: 'LLM Supervisor', desc: 'Autonomous decisions via local Ollama model — scan timing, candidate selection, profit-taking, exit overrides',
       params: [['llm_url', 'Ollama URL', 'http://localhost:11434'], ['llm_model', 'Model', 'gpt-oss:20b'], ['llm_timeout', 'Timeout (sec)', 10], ['llm_max_failures', 'Circuit Breaker Failures', 5], ['llm_circuit_reset', 'Circuit Reset (sec)', 120], ['llm_max_hold_overrides', 'Max Hold Overrides', 2]] },
   ];
+
+  // Section header for feature toggles
+  grid.insertAdjacentHTML('beforeend', `
+    <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;color:var(--muted);padding:4px 0;">Feature Toggles</div>
+  `);
+
   features.forEach(f => {
     const on = !!config[f.key];
     const secId = 'params-' + f.key;
@@ -7869,33 +8291,30 @@ function renderConfig(config) {
           <span class="feature-desc">${f.desc}</span>
         </div>
         <div class="feature-params" id="${secId}" style="display:${on ? 'grid' : 'none'}">
-          ${f.params.map(([pk, pl, def]) => {
-            const val = config[pk] !== undefined ? config[pk] : def;
-            const inputType = typeof val === 'string' ? 'text' : 'number';
-            return `<div class="config-item">
-              <label>${pl}:</label>
-              <input type="${inputType}" data-key="${pk}" value="${val}" ${inputType === 'number' ? 'step="any"' : ''}>
-            </div>`;
-          }).join('')}
+          ${f.params.map(([pk, pl, def]) => inp(pk, pl, def)).join('')}
         </div>
       </div>`;
     grid.insertAdjacentHTML('beforeend', html);
   });
 
-  // Add LLM test button inside the LLM params section
+  // LLM test button
   const llmParams = document.getElementById('params-llm_enabled');
   if (llmParams) {
     llmParams.insertAdjacentHTML('beforeend', `
-      <div class="config-item" style="grid-column: span 2;">
-        <button onclick="testLlm()" style="padding:6px 16px;border-radius:6px;background:rgba(168,85,247,0.2);color:#c084fc;border:1px solid rgba(168,85,247,0.3);cursor:pointer;font-size:12px;font-weight:600;">
-          Test Connection
-        </button>
-        <span id="llmTestResult" style="font-size:11px;margin-left:8px;color:var(--muted);"></span>
+      <div class="config-item" style="grid-column:1/-1;">
+        <label>&nbsp;</label>
+        <div style="display:flex;align-items:center;gap:10px;">
+          <button onclick="testLlm()" style="padding:7px 18px;border-radius:6px;background:rgba(168,85,247,0.15);color:#c084fc;border:1px solid rgba(168,85,247,0.25);cursor:pointer;font-size:12px;font-weight:600;transition:all 0.15s;"
+            onmouseenter="this.style.background='rgba(168,85,247,0.25)'" onmouseleave="this.style.background='rgba(168,85,247,0.15)'">
+            Test Connection
+          </button>
+          <span id="llmTestResult" style="font-size:11px;color:var(--muted);"></span>
+        </div>
       </div>
     `);
   }
 
-  // Set scan universe radio buttons from config
+  // Scan universe radio buttons
   const univ = config.scan_universe || 'study';
   const radioMap = { alpaca: 'univAlpaca', study: 'univStudy', custom: 'univCustom' };
   const radioEl = document.getElementById(radioMap[univ] || 'univStudy');
