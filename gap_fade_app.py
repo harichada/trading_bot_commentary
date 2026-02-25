@@ -1320,6 +1320,17 @@ class GapFadeConfig:
     gap_down_max_pct: float = 0.50       # maximum gap-down %
     gap_down_vol_ratio_max: float = 3.0  # max vol ratio for gap-down candidates
 
+    # Entry cutoff — stop opening new positions after this time
+    entry_cutoff_hour: int = 11
+    entry_cutoff_min: int = 30
+
+    # Minimum hold time before LLM can take profit (mechanical exits unaffected)
+    min_hold_minutes: int = 15
+
+    # Minimum profit thresholds before LLM can close (both must be below to block)
+    min_profit_take_pct: float = 0.005   # 0.5% minimum unrealized P&L
+    min_gap_fill_pct: float = 0.15       # 15% minimum gap fill
+
     # Time exits
     time_exit_hour: int = 15           # close remaining by 3:00 PM ET (study edge = full day)
     time_exit_min: int = 0
@@ -1413,6 +1424,11 @@ class GapPosition:
     partial_fill_time: str = ''       # when partial cover fired
     last_prices: str = ''             # last 5 prices as comma-separated string (for serialization)
     last_llm_profit_check: float = 0.0  # monotonic time of last LLM profit eval
+    # Candidate metadata (copied from GapCandidate on open)
+    gap_pct: float = 0.0
+    vol_ratio: float = 0.0
+    score: float = 0.0
+    catalyst: str = ''
 
     def __post_init__(self):
         if self.remaining_shares == 0:
@@ -1487,6 +1503,11 @@ class TradeRecord:
     exit_reason: str                   # 'stop', 'partial', 'full_target', 'time_exit', 'eod', 'manual'
     holding_minutes: int = 0
     side: str = 'short'                # 'short' or 'long' (for gap-down fading)
+    # Candidate metadata (for learning from outcomes)
+    gap_pct: float = 0.0
+    vol_ratio: float = 0.0
+    score: float = 0.0
+    catalyst: str = ''
 
 
 @dataclass
@@ -2354,9 +2375,23 @@ class GapFadeEngine:
         if candidate.catalyst in ('earnings', 'ma'):
             return False, f"catalyst-driven gap ({candidate.catalyst})"
 
+        # Entry cutoff — no new positions after configured time (live mode only)
+        if not self.backtest_mode:
+            now = datetime.now(ET)
+            cutoff = now.replace(hour=self.config.entry_cutoff_hour,
+                                 minute=self.config.entry_cutoff_min, second=0, microsecond=0)
+            if now >= cutoff:
+                return False, f"past entry cutoff ({self.config.entry_cutoff_hour}:{self.config.entry_cutoff_min:02d})"
+
         # Already in this symbol?
         if candidate.symbol in self.positions:
             return False, "already in position"
+
+        # Re-entry cap — prevent churning stopped-out symbols
+        if candidate.symbol in self._stopped_today:
+            rec = self._stopped_today[candidate.symbol]
+            if rec.reentry_count >= self.config.reentry_max_per_symbol:
+                return False, f"re-entry cap reached for {candidate.symbol} ({rec.reentry_count}/{self.config.reentry_max_per_symbol})"
 
         # Max positions (applies in both modes) — uses effective max for thin days
         eff_max = self._effective_max_positions
@@ -2431,6 +2466,10 @@ class GapFadeEngine:
             entry_time=entry_time,
             remaining_shares=shares,
             direction=direction,
+            gap_pct=candidate.gap_pct,
+            vol_ratio=candidate.vol_ratio,
+            score=candidate.score,
+            catalyst=candidate.catalyst,
         )
         self.positions[candidate.symbol] = pos
         self.daily_stats.trades += 1
@@ -2451,6 +2490,8 @@ class GapFadeEngine:
         # Parse entry time for holding duration
         try:
             entry_dt = datetime.strptime(pos.entry_time, '%Y-%m-%d %H:%M')
+            if current_time.tzinfo and not entry_dt.tzinfo:
+                entry_dt = entry_dt.replace(tzinfo=current_time.tzinfo)
             holding_min = int((current_time - entry_dt).total_seconds() / 60)
         except (ValueError, TypeError):
             holding_min = 0
@@ -2471,6 +2512,8 @@ class GapFadeEngine:
                 entry_time=pos.entry_time, exit_time=now_str,
                 exit_reason=reason, holding_minutes=holding_min,
                 side=d,
+                gap_pct=pos.gap_pct, vol_ratio=pos.vol_ratio,
+                score=pos.score, catalyst=pos.catalyst,
             )
 
         # 1. Stop loss — direction-aware check
@@ -2486,7 +2529,7 @@ class GapFadeEngine:
                     symbol=symbol, stop_time=current_time,
                     original_entry=pos.entry_price,
                     prev_close=pos.prev_close,
-                    gap_pct=0.0,
+                    gap_pct=pos.gap_pct,
                     avg_vol_20d=0.0,
                     reentry_count=cnt,
                     direction=d,
@@ -2610,6 +2653,8 @@ class GapFadeEngine:
 
         try:
             entry_dt = datetime.strptime(pos.entry_time, '%Y-%m-%d %H:%M')
+            if current_time.tzinfo and not entry_dt.tzinfo:
+                entry_dt = entry_dt.replace(tzinfo=current_time.tzinfo)
             holding_min = int((current_time - entry_dt).total_seconds() / 60)
         except (ValueError, TypeError):
             holding_min = 0
@@ -2625,6 +2670,8 @@ class GapFadeEngine:
             entry_time=pos.entry_time, exit_time=now_str,
             exit_reason=reason, holding_minutes=holding_min,
             side=pos.direction,
+            gap_pct=pos.gap_pct, vol_ratio=pos.vol_ratio,
+            score=pos.score, catalyst=pos.catalyst,
         )
         self._record_trade(trade)
 
@@ -2644,17 +2691,27 @@ class GapFadeEngine:
     def force_close_all(self, prices: Dict[str, float], reason: str = 'eod') -> List[TradeRecord]:
         """Force close all positions at current prices (backtest mode)."""
         trades = []
-        now_str = datetime.now(ET).strftime('%Y-%m-%d %H:%M')
+        now = datetime.now(ET)
+        now_str = now.strftime('%Y-%m-%d %H:%M')
         for sym in list(self.positions.keys()):
             pos = self.positions[sym]
             price = prices.get(sym, pos.entry_price)
             pnl = _direction_pnl(pos.direction, pos.entry_price, price, pos.remaining_shares)
             pnl_pct = pnl / (pos.entry_price * pos.remaining_shares) if pos.entry_price > 0 and pos.remaining_shares > 0 else 0
+            try:
+                entry_dt = datetime.strptime(pos.entry_time, '%Y-%m-%d %H:%M')
+                if now.tzinfo and not entry_dt.tzinfo:
+                    entry_dt = entry_dt.replace(tzinfo=now.tzinfo)
+                holding_min = int((now - entry_dt).total_seconds() / 60)
+            except (ValueError, TypeError):
+                holding_min = 0
             trades.append(TradeRecord(
                 symbol=sym, entry_price=pos.entry_price, exit_price=price,
                 shares=pos.remaining_shares, pnl=pnl, pnl_pct=pnl_pct,
                 entry_time=pos.entry_time, exit_time=now_str,
-                exit_reason=reason, side=pos.direction,
+                exit_reason=reason, holding_minutes=holding_min, side=pos.direction,
+                gap_pct=pos.gap_pct, vol_ratio=pos.vol_ratio,
+                score=pos.score, catalyst=pos.catalyst,
             ))
             self._record_trade(trades[-1])
             del self.positions[sym]
@@ -3653,7 +3710,7 @@ Your responsibilities:
 2. CANDIDATE SELECTION: Pick which candidates to enter. Skip sector-wide moves. Prefer noise gaps.
 3. ENTRY TIMING: Don't rush at market open. Wait for initial chaos to settle (9:35+).
 4. RISK MANAGEMENT: If 2+ consecutive stops hit today, stand down. Strong market trend (SPY >1%) = reduce size.
-5. After 2:00 PM ET, do NOT enter new positions (too late for intraday fades).
+5. After 11:30 AM ET, do NOT enter new positions. Data shows morning entries (before 11 AM) win 83% vs 44% for afternoon — the edge disappears after the morning session.
 
 Respond ONLY with valid JSON. No text outside the JSON object."""
 
@@ -3690,6 +3747,8 @@ You evaluate open positions that are IN PROFIT and decide whether to:
 - TIGHTEN_STOP: Lock in gains by moving the stop closer to current price.
 
 Key profit-taking principles:
+- A minimum hold time is enforced mechanically — you will only see positions that have been held long enough.
+- Winners need time to develop: data shows $170+ winners were held 60+ min, $1-$24 losers closed in 2-16 min. Be patient.
 - Gap fades work best 9:30-11:30 AM ET. After noon, fades stall — take profits earlier.
 - If the position has faded 70%+ of the gap, the remaining 30% is hardest. Consider taking profit.
 - If high water mark is significantly higher than current P&L, the fade is reversing — close or tighten.
@@ -3702,6 +3761,7 @@ Key profit-taking principles:
 Respond ONLY with valid JSON. No text outside the JSON object."""
 
     def __init__(self, config: GapFadeConfig):
+        self.config = config
         self.url = config.llm_url
         self.model = config.llm_model
         self.timeout = config.llm_timeout
@@ -3712,6 +3772,7 @@ Respond ONLY with valid JSON. No text outside the JSON object."""
         self._last_call_time = 0.0
         self._total_calls = 0
         self._total_failures = 0
+        self.lessons_context: str = ''
 
     def is_available(self) -> bool:
         """Check if LLM is available (circuit breaker not open)."""
@@ -3845,7 +3906,11 @@ Respond ONLY with valid JSON. No text outside the JSON object."""
 What should the bot do now? Respond with JSON matching this schema:
 {self._ACTION_SCHEMA}"""
 
-        raw = await self._call_ollama(self._SYSTEM_PROMPT, user_prompt)
+        system_prompt = self._SYSTEM_PROMPT
+        if self.lessons_context:
+            system_prompt = system_prompt + '\n\n' + self.lessons_context
+
+        raw = await self._call_ollama(system_prompt, user_prompt)
         if raw is None:
             return fallback
 
@@ -3977,11 +4042,15 @@ Respond with JSON matching this schema:
         # Time held
         entry_time = position.get('entry_time', '')
         time_held = ''
+        held_minutes = 0
         if entry_time:
             try:
                 et = datetime.strptime(entry_time, '%Y-%m-%d %H:%M')
-                minutes = (datetime.now() - et).total_seconds() / 60
-                time_held = f'{int(minutes)} minutes'
+                now_et = datetime.now(ET)
+                if now_et.tzinfo and not et.tzinfo:
+                    et = et.replace(tzinfo=now_et.tzinfo)
+                held_minutes = int((now_et - et).total_seconds() / 60)
+                time_held = f'{held_minutes} minutes'
             except Exception:
                 time_held = 'unknown'
 
@@ -4000,11 +4069,17 @@ Respond with JSON matching this schema:
 - Daily P&L: ${daily_pnl:+,.2f}
 - Time now (ET): {datetime.now(ET).strftime('%H:%M')}
 
+Policy: minimum hold {self.config.min_hold_minutes} min, minimum profit {self.config.min_profit_take_pct:.1%} or gap fill {self.config.min_gap_fill_pct:.0%} before closing.
 Should we close for profit, hold, or tighten the stop to lock in gains?
 Respond with JSON matching this schema:
 {self._PROFIT_SCHEMA}"""
 
-        raw = await self._call_ollama(self._PROFIT_SYSTEM_PROMPT, user_prompt)
+        # Inject lessons learned if available
+        system_prompt = self._PROFIT_SYSTEM_PROMPT
+        if self.lessons_context:
+            system_prompt = system_prompt + '\n\n' + self.lessons_context
+
+        raw = await self._call_ollama(system_prompt, user_prompt)
         if raw is None:
             return fallback
 
@@ -4081,7 +4156,11 @@ Review the portfolio. For each position, assess:
 
 Respond with JSON: {self._REVIEW_SCHEMA}"""
 
-        raw = await self._call_ollama(self._REVIEW_SYSTEM_PROMPT, user_prompt)
+        system_prompt = self._REVIEW_SYSTEM_PROMPT
+        if self.lessons_context:
+            system_prompt = system_prompt + '\n\n' + self.lessons_context
+
+        raw = await self._call_ollama(system_prompt, user_prompt)
         if raw is None:
             return fallback
 
@@ -4328,6 +4407,86 @@ class GapFadeLiveTrader:
             },
         }
 
+    def _build_lessons_learned(self) -> str:
+        """Analyze trade history and build a concise lessons-learned summary for LLM context.
+
+        Returns a 5-10 line string summarizing patterns from all_trade_log.
+        Cached for 5 minutes via _lessons_cache.
+        """
+        now_mono = _time.monotonic()
+        if hasattr(self, '_lessons_cache') and self._lessons_cache:
+            cached_time, cached_text = self._lessons_cache
+            if now_mono - cached_time < 300:  # 5 min cache
+                return cached_text
+
+        trades = self.engine.all_trade_log
+        if len(trades) < 3:
+            return ''
+
+        lines = ['## LESSONS FROM TRADE HISTORY']
+
+        # Win rate by entry hour
+        hour_wins = {}
+        hour_total = {}
+        for t in trades:
+            try:
+                h = int(t.entry_time.split(' ')[1].split(':')[0])
+            except (IndexError, ValueError):
+                continue
+            hour_total[h] = hour_total.get(h, 0) + 1
+            if t.pnl > 0:
+                hour_wins[h] = hour_wins.get(h, 0) + 1
+        if hour_total:
+            parts = []
+            for h in sorted(hour_total.keys()):
+                wr = hour_wins.get(h, 0) / hour_total[h] * 100
+                parts.append(f'{h}:00={wr:.0f}%({hour_total[h]})')
+            lines.append(f'- Win rate by hour: {", ".join(parts)}')
+
+        # Avg holding time: winners vs losers
+        winner_mins = [t.holding_minutes for t in trades if t.pnl > 0 and t.holding_minutes > 0]
+        loser_mins = [t.holding_minutes for t in trades if t.pnl <= 0 and t.holding_minutes > 0]
+        if winner_mins and loser_mins:
+            avg_w = sum(winner_mins) / len(winner_mins)
+            avg_l = sum(loser_mins) / len(loser_mins)
+            lines.append(f'- Avg hold: winners {avg_w:.0f} min, losers {avg_l:.0f} min')
+
+        # P&L by exit reason
+        reason_pnl = {}
+        reason_cnt = {}
+        for t in trades:
+            r = t.exit_reason
+            reason_pnl[r] = reason_pnl.get(r, 0) + t.pnl
+            reason_cnt[r] = reason_cnt.get(r, 0) + 1
+        if reason_pnl:
+            parts = []
+            for r in sorted(reason_pnl.keys(), key=lambda x: reason_pnl[x]):
+                parts.append(f'{r}=${reason_pnl[r]:+,.0f}({reason_cnt[r]})')
+            lines.append(f'- P&L by exit: {", ".join(parts)}')
+
+        # Churning symbols (traded 3+ times with net loss)
+        sym_pnl = {}
+        sym_cnt = {}
+        for t in trades:
+            sym_pnl[t.symbol] = sym_pnl.get(t.symbol, 0) + t.pnl
+            sym_cnt[t.symbol] = sym_cnt.get(t.symbol, 0) + 1
+        churners = [(s, sym_cnt[s], sym_pnl[s]) for s in sym_pnl
+                     if sym_cnt[s] >= 3 and sym_pnl[s] < 0]
+        if churners:
+            churners.sort(key=lambda x: x[2])
+            parts = [f'{s}({cnt}x, ${pnl:+,.0f})' for s, cnt, pnl in churners[:5]]
+            lines.append(f'- Churning symbols (net loss): {", ".join(parts)}')
+
+        # Overall stats
+        total = len(trades)
+        wins = sum(1 for t in trades if t.pnl > 0)
+        total_pnl = sum(t.pnl for t in trades)
+        lines.append(f'- Overall: {total} trades, {wins/total*100:.0f}% win rate, ${total_pnl:+,.0f} total P&L')
+
+        result = '\n'.join(lines)
+        self._lessons_cache = (now_mono, result)
+        return result
+
     async def _trading_loop(self):
         """Main trading loop — LLM-driven when enabled, schedule-based fallback.
 
@@ -4393,6 +4552,8 @@ class GapFadeLiveTrader:
 
                 # ── LLM SUPERVISOR MODE ──
                 if self.llm_supervisor and self.llm_supervisor.is_available():
+                    # Update lessons learned from trade history
+                    self.llm_supervisor.lessons_context = self._build_lessons_learned()
                     state = self._build_llm_state(now)
                     decision = await self.llm_supervisor.decide_action(state)
                     action = decision.get('action', 'monitor')
@@ -4445,7 +4606,11 @@ class GapFadeLiveTrader:
                     continue
 
                 # Market open — enter positions at 9:31+ AM
-                if ((now.hour == 9 and now.minute >= 31) or (now.hour >= 10 and now.hour < 16)) and not _did_enter:
+                _cutoff_h = self.config.entry_cutoff_hour
+                _cutoff_m = self.config.entry_cutoff_min
+                _before_cutoff = (now.hour < _cutoff_h or
+                                  (now.hour == _cutoff_h and now.minute < _cutoff_m))
+                if ((now.hour == 9 and now.minute >= 31) or (now.hour >= 10 and _before_cutoff)) and not _did_enter:
                     if self.status in ('scanning', 'waiting'):
                         # If no candidates (e.g. mid-day restart), scan first
                         if not self.candidates:
@@ -4863,6 +5028,8 @@ class GapFadeLiveTrader:
                 self._add_message('exit',
                     f'{reason.upper()} {fill.filled_qty} {symbol} '
                     f'@ ${fill.filled_avg_price:.2f} P&L: ${trade.pnl:.2f} ({trade.pnl_pct:.1%})')
+                # Invalidate lessons cache so next LLM call includes this trade
+                self._lessons_cache = None
 
             # If partial profit exit, replace broker stop at breakeven
             if reason == 'partial' and symbol in self.engine.positions:
@@ -5157,12 +5324,34 @@ class GapFadeLiveTrader:
                         if (self.llm_supervisor and self.llm_supervisor.is_available()
                                 and not pos.closing
                                 and now_mono - pos.last_llm_profit_check >= self._LLM_PROFIT_INTERVAL):
-                            # Only ask LLM if position is in profit
+                            # Minimum hold time gate — let positions develop
+                            _skip_llm_profit = False
+                            try:
+                                _entry_dt = datetime.strptime(pos.entry_time, '%Y-%m-%d %H:%M')
+                                if now.tzinfo and not _entry_dt.tzinfo:
+                                    _entry_dt = _entry_dt.replace(tzinfo=now.tzinfo)
+                                _held_min = (now - _entry_dt).total_seconds() / 60
+                                if _held_min < self.config.min_hold_minutes:
+                                    _skip_llm_profit = True
+                            except (ValueError, TypeError):
+                                pass
+
+                            # Minimum profit / gap fill gate
+                            if not _skip_llm_profit:
+                                if pos.direction == 'short':
+                                    _pnl_pct = (pos.entry_price - price) / pos.entry_price if pos.entry_price > 0 else 0
+                                else:
+                                    _pnl_pct = (price - pos.entry_price) / pos.entry_price if pos.entry_price > 0 else 0
+                                _gap_fill = pos.gap_fill_pct(price)
+                                if _pnl_pct < self.config.min_profit_take_pct and _gap_fill < self.config.min_gap_fill_pct:
+                                    _skip_llm_profit = True
+
+                            # Only ask LLM if position is in profit and gates pass
                             if pos.direction == 'short':
                                 in_profit = price < pos.entry_price
                             else:
                                 in_profit = price > pos.entry_price
-                            if in_profit:
+                            if in_profit and not _skip_llm_profit:
                                 pos.last_llm_profit_check = now_mono
                                 llm_profit = await self.llm_supervisor.evaluate_profit(
                                     asdict(pos), price, spy_change,
@@ -5942,7 +6131,8 @@ Available actions:
    regime_filter, regime_spy_gap_limit, regime_spy_block_pct, regime_vix_threshold,
    reentry_enabled, reentry_cooldown_minutes, reentry_max_per_symbol, reentry_stop_pct,
    trade_gap_downs, gap_down_threshold, gap_down_max_pct, gap_down_vol_ratio_max,
-   llm_enabled, llm_model, llm_url, llm_timeout, catalyst_enabled
+   llm_enabled, llm_model, llm_url, llm_timeout, catalyst_enabled,
+   entry_cutoff_hour, entry_cutoff_min, min_hold_minutes, min_profit_take_pct, min_gap_fill_pct
 8. RESET equity & trade log: `{"action": "reset"}`
 9. RUN BACKTEST: `{"action": "backtest", "params": {"symbols": "TSLA,NVDA", "start_date": "2024-01-01", "end_date": "2024-12-31", "gap_threshold": 0.07}}`
 
@@ -6049,7 +6239,11 @@ gap_threshold={cfg.gap_threshold}, initial_capital={cfg.initial_capital}
 
 USER MESSAGE: {message}"""
 
-    raw = await live_trader.llm_supervisor._call_ollama(_CHAT_SYSTEM_PROMPT, context)
+    chat_system = _CHAT_SYSTEM_PROMPT
+    if live_trader.llm_supervisor.lessons_context:
+        chat_system = chat_system + '\n\n' + live_trader.llm_supervisor.lessons_context
+
+    raw = await live_trader.llm_supervisor._call_ollama(chat_system, context)
     if raw is None:
         return {'error': 'LLM call failed. Check Ollama connectivity.'}
 
