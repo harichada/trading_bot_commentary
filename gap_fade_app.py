@@ -3775,21 +3775,24 @@ Respond ONLY with valid JSON. No text outside the JSON object."""
 The bot shorts stocks that gap up (or goes long on gap-downs), expecting the gap to fade back to the previous close.
 
 You evaluate open positions that are IN PROFIT and decide whether to:
-- CLOSE: Take profit now. Use when the fade is stalling, giving back gains, or conditions have changed.
-- HOLD: Let it run toward the target. Use when momentum is strong and the gap is still filling.
-- TIGHTEN_STOP: Lock in gains by moving the stop closer to current price.
+- CLOSE: Take profit now. ONLY when clear evidence the fade is exhausted.
+- HOLD: Let it run toward the target. This should be your DEFAULT bias.
+- TIGHTEN_STOP: Lock in gains by moving the stop closer to current price. Prefer this over closing.
 
-Key profit-taking principles:
-- A minimum hold time is enforced mechanically — you will only see positions that have been held long enough.
-- Winners need time to develop: data shows $170+ winners were held 60+ min, $1-$24 losers closed in 2-16 min. Be patient.
-- Gap fades work best 9:30-11:30 AM ET. After noon, fades stall — take profits earlier.
-- If the position has faded 70%+ of the gap, the remaining 30% is hardest. Consider taking profit.
-- If high water mark is significantly higher than current P&L, the fade is reversing — close or tighten.
-- If price velocity is flat or reversing (last 3-5 prices trending against you), take profit.
-- If SPY is moving strongly against the trade direction, the broad market is fighting you.
-- After partial cover has already fired and 30+ minutes pass with no progress, close remaining.
-- Protect daily P&L: if the day is already profitable, be more aggressive about locking in gains.
-- NEVER suggest "hold" if the position has given back more than 40% of its peak unrealized P&L.
+CRITICAL PRINCIPLES — READ CAREFULLY:
+- YOUR DEFAULT SHOULD BE HOLD. The biggest mistake is closing winners too early.
+- Backtesting shows the best trades are held 3-6 HOURS. A $2,680 winner was held until 3:55 PM close.
+- Positions closed in under 2 hours typically leave $500-$2000 on the table.
+- Gap fades are a slow grind — do NOT panic-close on small bounces or 15-minute reversals.
+- Before noon: almost ALWAYS hold. The fade is just getting started.
+- 12:00-2:00 PM: prefer TIGHTEN_STOP over close. Let the stop do the work.
+- After 2:00 PM: only close if the fade has clearly stalled for 30+ minutes AND is reversing.
+- If gap fill is below 60%, HOLD — the trade hasn't reached its potential.
+- If gap fill is 60-90%, TIGHTEN_STOP to lock in gains while letting it run further.
+- If gap fill is 90%+, you may CLOSE — the easy money is made.
+- Small bounces (giving back 10-20% of gains) are NORMAL. Hold through them.
+- Only close on giveback if >50% of peak P&L has been lost AND price velocity is reversing.
+- NEVER close a position just because it's profitable. Wait for exhaustion signals.
 
 Respond ONLY with valid JSON. No text outside the JSON object."""
 
@@ -4891,7 +4894,11 @@ class GapFadeLiveTrader:
                 if now.hour == 9 and now.minute >= 25 and not _did_scan_925:
                     _did_scan_925 = True
                     await self._run_scan()
-                    await asyncio.sleep(30)
+                    # Fast-poll until 9:31 instead of sleeping 30s
+                    seconds_to_931 = max(0, (31 - now.minute) * 60 - now.second)
+                    if seconds_to_931 > 0:
+                        self._add_message('info', f'Scan done — waiting {seconds_to_931}s for 9:31 entry')
+                        await asyncio.sleep(min(seconds_to_931, 5))
                     continue
 
                 # Market open — enter positions at 9:31+ AM
