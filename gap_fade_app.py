@@ -1370,10 +1370,18 @@ class GapFadeConfig:
     catalyst_news_penalty: float = 15.0    # score penalty for news-driven gaps
     catalyst_noise_bonus: float = 5.0      # score bonus for clean noise gaps
 
+    # Automation
+    auto_start: bool = True              # auto-start trading loop on app boot
+
+    # Telegram alerts
+    alert_telegram_enabled: bool = False
+    alert_telegram_token: str = ''       # env TELEGRAM_BOT_TOKEN
+    alert_telegram_chat_id: str = ''     # env TELEGRAM_CHAT_ID
+
     # LLM Supervisor
     llm_enabled: bool = False
     llm_url: str = 'http://localhost:11434'
-    llm_model: str = 'gapfade-supervisor:latest'
+    llm_model: str = 'rudra:latest'
     llm_timeout: float = 10.0               # seconds per LLM call
     llm_max_failures: int = 5               # circuit breaker opens after N failures
     llm_circuit_reset: float = 120.0        # seconds before retrying after circuit opens
@@ -3832,14 +3840,14 @@ Respond ONLY with valid JSON. No text outside the JSON object."""
                         self._failure_count = 0
                         return content
                     else:
-                        logger.warning(f"LLM Ollama error {resp.status}: {(await resp.text())[:200]}")
+                        logger.warning(f"Rudra error {resp.status}: {(await resp.text())[:200]}")
                         self._failure_count += 1
                         self._total_failures += 1
                         if self._failure_count >= self._max_failures:
                             self._circuit_open_until = _time.time() + self._circuit_reset_seconds
                         return None
         except Exception as e:
-            logger.warning(f"LLM Ollama call failed: {e}")
+            logger.warning(f"Rudra call failed: {e}")
             self._failure_count += 1
             self._total_failures += 1
             if self._failure_count >= self._max_failures:
@@ -3864,7 +3872,7 @@ Respond ONLY with valid JSON. No text outside the JSON object."""
                     return json.loads(match.group())
                 except json.JSONDecodeError:
                     pass
-            logger.warning(f"LLM JSON parse failed: {text[:200]}")
+            logger.warning(f"Rudra JSON parse failed: {text[:200]}")
             return None
 
     async def decide_action(self, state: dict) -> dict:
@@ -3873,7 +3881,7 @@ Respond ONLY with valid JSON. No text outside the JSON object."""
         Returns dict with 'action' key. Falls back to {'action': 'monitor'}
         if LLM is unavailable or returns invalid response.
         """
-        fallback = {'action': 'monitor', 'reasoning': 'LLM unavailable, using rules fallback'}
+        fallback = {'action': 'monitor', 'reasoning': 'Rudra unavailable, using rules fallback'}
 
         # Build user prompt with current state
         positions_summary = 'None'
@@ -3916,7 +3924,7 @@ What should the bot do now? Respond with JSON matching this schema:
 
         parsed = self._parse_json(raw)
         if not isinstance(parsed, dict) or 'action' not in parsed:
-            logger.warning(f"LLM returned invalid action: {raw[:200]}")
+            logger.warning(f"Rudra returned invalid action: {raw[:200]}")
             return fallback
 
         # Validate action
@@ -3962,7 +3970,7 @@ Only include candidates with action "trade" or "skip". Rank by confidence."""
     async def evaluate_exit(self, position: dict, current_price: float,
                             exit_signal: dict) -> dict:
         """Evaluate whether to close, hold, or tighten a stop."""
-        fallback = {'action': 'close', 'reasoning': 'LLM unavailable, closing per rules'}
+        fallback = {'action': 'close', 'reasoning': 'Rudra unavailable, closing per rules'}
 
         user_prompt = f"""Position about to be stopped out:
 - Symbol: {position['symbol']} ({position['direction']})
@@ -3997,7 +4005,7 @@ Respond with JSON matching this schema:
         Called periodically (throttled) for positions with unrealized profit.
         Returns dict with 'action' key: close, hold, or tighten_stop.
         """
-        fallback = {'action': 'hold', 'reasoning': 'LLM unavailable, holding per rules'}
+        fallback = {'action': 'hold', 'reasoning': 'Rudra unavailable, holding per rules'}
 
         # Calculate enriched metrics
         entry = position['entry_price']
@@ -4105,7 +4113,7 @@ Respond with JSON matching this schema:
         Called every N minutes from the trading loop. Returns dict with
         'actions' list of recommended changes (some may be auto-executed).
         """
-        fallback = {'actions': [], 'reasoning': 'LLM unavailable'}
+        fallback = {'actions': [], 'reasoning': 'Rudra unavailable'}
 
         positions_info = 'No open positions.'
         if state.get('positions'):
@@ -4179,6 +4187,38 @@ Respond with JSON: {self._REVIEW_SCHEMA}"""
 # SECTION 7: LIVE TRADER
 # =============================================================================
 
+class AlertNotifier:
+    """Lightweight Telegram alerter for trading events."""
+
+    def __init__(self, config: GapFadeConfig):
+        self.enabled = config.alert_telegram_enabled
+        self.token = config.alert_telegram_token or os.environ.get('TELEGRAM_BOT_TOKEN', '')
+        self.chat_id = config.alert_telegram_chat_id or os.environ.get('TELEGRAM_CHAT_ID', '')
+        self._throttle: Dict[str, float] = {}
+        self._THROTTLE_SECONDS = 60
+
+    async def send(self, title: str, message: str, level: str = 'info', throttle_key: str = ''):
+        """Send a Telegram alert. Levels: info, trade, warning, error, summary."""
+        if not self.enabled or not self.token or not self.chat_id:
+            return
+        if throttle_key:
+            last = self._throttle.get(throttle_key, 0)
+            if _time.time() - last < self._THROTTLE_SECONDS:
+                return
+            self._throttle[throttle_key] = _time.time()
+        emoji = {'info': '\u2139\ufe0f', 'trade': '\U0001f4b0', 'warning': '\u26a0\ufe0f',
+                 'error': '\U0001f6a8', 'summary': '\U0001f4ca'}.get(level, '')
+        text = f"<b>{emoji} {title}</b>\n{message}"
+        try:
+            async with aiohttp.ClientSession() as session:
+                await session.post(
+                    f'https://api.telegram.org/bot{self.token}/sendMessage',
+                    json={'chat_id': self.chat_id, 'text': text, 'parse_mode': 'HTML'},
+                    timeout=aiohttp.ClientTimeout(total=5))
+        except Exception as e:
+            logger.warning(f"Telegram alert failed: {e}")
+
+
 class GapFadeLiveTrader:
     """Async live trading loop for gap fade strategy.
 
@@ -4208,11 +4248,16 @@ class GapFadeLiveTrader:
         self._last_reconcile = 0.0  # monotonic time of last broker reconciliation
         self._last_autonomous_review = 0.0  # monotonic time of last LLM review
         self._AUTONOMOUS_REVIEW_INTERVAL = 300  # seconds (5 minutes)
+        self._last_loop_heartbeat = _time.monotonic()  # watchdog: trading loop health
+        self._last_model_rebuild = ''  # ISO date of last model rebuild
+
+        # Telegram alerts
+        self.alerter = AlertNotifier(self.config)
 
         # LLM Supervisor
         if self.config.llm_enabled:
             self.llm_supervisor = LLMSupervisor(self.config)
-            logger.info(f"LLM Supervisor enabled: {self.config.llm_model} @ {self.config.llm_url}")
+            logger.info(f"Rudra enabled: {self.config.llm_model} @ {self.config.llm_url}")
         else:
             self.llm_supervisor = None
 
@@ -4236,7 +4281,10 @@ class GapFadeLiveTrader:
         if self.status == 'trading':
             return
         self.status = 'scanning'
-        self.engine.reset_daily()
+        # Only reset daily stats on a genuinely new day (not mid-day restart)
+        today_str = datetime.now(ET).strftime('%Y-%m-%d')
+        if self.engine.daily_stats.date != today_str:
+            self.engine.reset_daily()
         # P0-4: reconcile with broker on startup
         await self._reconcile_with_broker()
         # Start tick streamer for existing positions (e.g. after restart)
@@ -4306,6 +4354,9 @@ class GapFadeLiveTrader:
             broker_positions = await asyncio.to_thread(alpaca_get_positions)
         except Exception as e:
             logger.warning(f"Reconciliation failed (could not reach broker): {e}")
+            await self.alerter.send('Broker API Failure',
+                f'Could not reach Alpaca broker: {e}',
+                level='error', throttle_key='broker_api')
             return
 
         broker_map = {}  # symbol -> {qty, avg_entry_price, side}
@@ -4333,22 +4384,36 @@ class GapFadeLiveTrader:
         unknown = broker_syms - internal_syms
         for sym in unknown:
             bp = broker_map[sym]
-            if bp['side'] == 'short':
-                logger.warning(f"RECONCILE: Broker has short {sym} ({bp['qty']} shares @ "
-                              f"${bp['avg_entry_price']:.2f}) — adopting into internal state")
-                self._add_message('warning',
-                    f'RECONCILE: Adopting broker position {sym} ({bp["qty"]} shares)')
-                pos = GapPosition(
-                    symbol=sym, shares=bp['qty'], entry_price=bp['avg_entry_price'],
-                    stop_price=bp['avg_entry_price'] * (1 + self.config.stop_pct),
-                    half_target=bp['avg_entry_price'] * 0.99,  # approx
-                    full_target=bp['avg_entry_price'] * 0.97,  # approx
-                    prev_close=bp['avg_entry_price'] * 0.97,
-                    entry_time=datetime.now(ET).strftime('%Y-%m-%d %H:%M'),
-                    remaining_shares=bp['qty'],
-                    entry_fill_price=bp['avg_entry_price'],
-                )
-                self.engine.positions[sym] = pos
+            direction = bp['side']  # 'long' or 'short'
+            if direction not in ('long', 'short'):
+                logger.warning(f"RECONCILE: Unknown side '{direction}' for {sym} — skipping")
+                continue
+            logger.warning(f"RECONCILE: Broker has {direction} {sym} ({bp['qty']} shares @ "
+                          f"${bp['avg_entry_price']:.2f}) — adopting into internal state")
+            self._add_message('warning',
+                f'RECONCILE: Adopting broker {direction} {sym} ({bp["qty"]} shares)')
+            if direction == 'short':
+                stop_price = bp['avg_entry_price'] * (1 + self.config.stop_pct)
+                half_target = bp['avg_entry_price'] * 0.99
+                full_target = bp['avg_entry_price'] * 0.97
+                prev_close = bp['avg_entry_price'] * 0.97
+            else:
+                stop_price = bp['avg_entry_price'] * (1 - self.config.stop_pct)
+                half_target = bp['avg_entry_price'] * 1.01
+                full_target = bp['avg_entry_price'] * 1.03
+                prev_close = bp['avg_entry_price'] * 1.03
+            pos = GapPosition(
+                symbol=sym, shares=bp['qty'], entry_price=bp['avg_entry_price'],
+                stop_price=stop_price,
+                half_target=half_target,
+                full_target=full_target,
+                prev_close=prev_close,
+                entry_time=datetime.now(ET).strftime('%Y-%m-%d %H:%M'),
+                remaining_shares=bp['qty'],
+                entry_fill_price=bp['avg_entry_price'],
+                direction=direction,
+            )
+            self.engine.positions[sym] = pos
 
         # Quantity mismatches on shared positions
         shared = internal_syms & broker_syms
@@ -4487,6 +4552,166 @@ class GapFadeLiveTrader:
         self._lessons_cache = (now_mono, result)
         return result
 
+    async def _weekly_model_maintenance(self):
+        """Rebuild LLM training data and model weekly (Friday after hours).
+
+        Only runs if >= 20 new trades since last rebuild.
+        """
+        try:
+            # Check if already rebuilt this week
+            today_str = datetime.now(ET).strftime('%Y-%m-%d')
+            if self._last_model_rebuild == today_str:
+                return
+
+            # Need enough trades to make rebuilding worthwhile
+            total_trades = len(self.engine.all_trade_log)
+            if total_trades < 20:
+                logger.info(f"Model rebuild skipped: only {total_trades} trades (need 20+)")
+                return
+
+            logger.info(f"Starting weekly model maintenance ({total_trades} trades)")
+            self._add_message('system', f'Weekly model rebuild starting ({total_trades} trades)')
+
+            # Save state first
+            self._save_state()
+
+            # Generate training data
+            import subprocess
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            gen_script = os.path.join(script_dir, 'generate_training_data.py')
+            if os.path.exists(gen_script):
+                result = await asyncio.to_thread(
+                    subprocess.run,
+                    ['python', gen_script],
+                    cwd=script_dir,
+                    capture_output=True, text=True, timeout=120)
+                if result.returncode != 0:
+                    logger.error(f"Training data generation failed: {result.stderr[:500]}")
+                    await self.alerter.send('Model Rebuild Failed',
+                        f'generate_training_data.py failed:\n{result.stderr[:200]}',
+                        level='error')
+                    return
+                logger.info(f"Training data generated: {result.stdout[:200]}")
+
+            # Rebuild Ollama model
+            modelfile = os.path.join(script_dir, 'Modelfile.gapfade')
+            if os.path.exists(modelfile):
+                result = await asyncio.to_thread(
+                    subprocess.run,
+                    ['ollama', 'create', 'rudra', '-f', modelfile],
+                    cwd=script_dir,
+                    capture_output=True, text=True, timeout=300)
+                if result.returncode != 0:
+                    logger.error(f"Ollama model rebuild failed: {result.stderr[:500]}")
+                    await self.alerter.send('Model Rebuild Failed',
+                        f'ollama create failed:\n{result.stderr[:200]}',
+                        level='error')
+                    return
+                logger.info(f"Ollama model rebuilt: {result.stdout[:200]}")
+
+            self._last_model_rebuild = today_str
+            self._add_message('system', f'Weekly model rebuild complete ({total_trades} trades)')
+            await self.alerter.send('Model Rebuilt',
+                f'Training data regenerated and model rebuilt\nTrades: {total_trades}',
+                level='info')
+            logger.info("Weekly model maintenance complete")
+
+        except Exception as e:
+            logger.error(f"Weekly model maintenance failed: {e}\n{traceback.format_exc()}")
+            await self.alerter.send('Model Maintenance Error',
+                f'{type(e).__name__}: {e}', level='error')
+
+    def _is_market_day(self, now: datetime) -> tuple:
+        """Check if today is a market trading day.
+
+        Returns (is_market_day: bool, next_open: datetime).
+        """
+        # Weekend check
+        if now.weekday() >= 5:
+            days_until_monday = 7 - now.weekday()
+            next_open = (now + timedelta(days=days_until_monday)).replace(
+                hour=7, minute=0, second=0, microsecond=0)
+            return False, next_open
+
+        # US market holidays (fixed + observed)
+        year = now.year
+        holidays = set()
+
+        # Fixed-date holidays
+        fixed = [
+            (1, 1),   # New Year's Day
+            (6, 19),  # Juneteenth
+            (7, 4),   # Independence Day
+            (12, 25), # Christmas
+        ]
+        for m, d in fixed:
+            dt = date(year, m, d)
+            if dt.weekday() == 5:    # Saturday → observe Friday
+                holidays.add(date(year, m, d - 1))
+            elif dt.weekday() == 6:  # Sunday → observe Monday
+                holidays.add(date(year, m, d + 1))
+            else:
+                holidays.add(dt)
+
+        # MLK Day: 3rd Monday of January
+        holidays.add(self._nth_weekday(year, 1, 0, 3))
+        # Presidents' Day: 3rd Monday of February
+        holidays.add(self._nth_weekday(year, 2, 0, 3))
+        # Memorial Day: last Monday of May
+        holidays.add(self._last_weekday(year, 5, 0))
+        # Labor Day: 1st Monday of September
+        holidays.add(self._nth_weekday(year, 9, 0, 1))
+        # Thanksgiving: 4th Thursday of November
+        holidays.add(self._nth_weekday(year, 11, 3, 4))
+
+        # Good Friday (Easter - 2 days)
+        holidays.add(self._good_friday(year))
+
+        today = now.date()
+        if today in holidays:
+            # Find next non-holiday weekday
+            next_day = now + timedelta(days=1)
+            while next_day.weekday() >= 5 or next_day.date() in holidays:
+                next_day += timedelta(days=1)
+            next_open = next_day.replace(hour=7, minute=0, second=0, microsecond=0)
+            return False, next_open
+
+        return True, now
+
+    @staticmethod
+    def _nth_weekday(year: int, month: int, weekday: int, n: int) -> date:
+        """Get the nth occurrence of a weekday in a month (weekday: 0=Mon, 3=Thu)."""
+        first = date(year, month, 1)
+        day_of_week = first.weekday()
+        diff = (weekday - day_of_week) % 7
+        return first + timedelta(days=diff + 7 * (n - 1))
+
+    @staticmethod
+    def _last_weekday(year: int, month: int, weekday: int) -> date:
+        """Get the last occurrence of a weekday in a month."""
+        if month == 12:
+            last_day = date(year + 1, 1, 1) - timedelta(days=1)
+        else:
+            last_day = date(year, month + 1, 1) - timedelta(days=1)
+        diff = (last_day.weekday() - weekday) % 7
+        return last_day - timedelta(days=diff)
+
+    @staticmethod
+    def _good_friday(year: int) -> date:
+        """Compute Good Friday using anonymous Gregorian algorithm for Easter."""
+        a = year % 19
+        b, c = divmod(year, 100)
+        d, e = divmod(b, 4)
+        f = (b + 8) // 25
+        g = (b - f + 1) // 3
+        h = (19 * a + b - d - g + 15) % 30
+        i, k = divmod(c, 4)
+        l = (32 + 2 * e + 2 * i - h - k) % 7
+        m = (a + 11 * h + 22 * l) // 451
+        month, day = divmod(h + l - 7 * m + 114, 31)
+        easter = date(year, month, day + 1)
+        return easter - timedelta(days=2)
+
     async def _trading_loop(self):
         """Main trading loop — LLM-driven when enabled, schedule-based fallback.
 
@@ -4503,6 +4728,7 @@ class GapFadeLiveTrader:
 
         try:
             while self.status != 'stopped':
+                self._last_loop_heartbeat = _time.monotonic()
                 now = datetime.now(ET)
                 today = now.strftime('%Y-%m-%d')
 
@@ -4525,6 +4751,18 @@ class GapFadeLiveTrader:
                     await asyncio.sleep(sleep_sec)
                     continue
 
+                # Weekend / holiday check — sleep until next market day
+                is_market, next_open = self._is_market_day(now)
+                if not is_market:
+                    self.status = 'waiting'
+                    await broadcast({'type': 'live_status', 'status': 'waiting'})
+                    self._add_message('info',
+                        f'Market closed ({now.strftime("%A")}). '
+                        f'Next open: {next_open.strftime("%a %b %d %H:%M")}')
+                    sleep_sec = max(60, (next_open - now).total_seconds())
+                    await asyncio.sleep(min(sleep_sec, 86400))  # cap at 24h
+                    continue
+
                 # EOD close at 3:50+ PM (once per day, mechanical safety net)
                 if now.hour == 15 and now.minute >= 50 and not _did_eod:
                     if self.engine.positions:
@@ -4539,6 +4777,28 @@ class GapFadeLiveTrader:
                         logger.error("CRITICAL: After hours with open positions! Emergency close.")
                         self._add_message('error', 'EMERGENCY: Positions open after hours — force closing')
                         await self._eod_close()
+
+                    # Send daily P&L summary before resetting
+                    stats = self.engine.daily_stats
+                    today_trades = [t for t in self.engine.all_trade_log
+                                    if hasattr(t, 'exit_time') and t.exit_time
+                                    and t.exit_time.startswith(today)]
+                    wins = sum(1 for t in today_trades if t.pnl > 0)
+                    losses = len(today_trades) - wins
+                    trade_details = ', '.join(
+                        f'{t.symbol} {"+" if t.pnl >= 0 else ""}${t.pnl:.0f}'
+                        for t in today_trades[:10])
+                    await self.alerter.send(
+                        f'Daily Summary \u2014 {now.strftime("%a %b %d")}',
+                        f'Equity: ${self.engine.equity:,.2f}\n'
+                        f'Today: {"+" if stats.pnl >= 0 else ""}${stats.pnl:.2f} ({wins}W/{losses}L)\n'
+                        f'Trades: {trade_details or "none"}',
+                        level='summary')
+
+                    # Weekly model maintenance (Friday after hours)
+                    if now.weekday() == 4:
+                        await self._weekly_model_maintenance()
+
                     self._save_state()
                     self.engine.reset_daily()
                     self.status = 'waiting'
@@ -4589,7 +4849,11 @@ class GapFadeLiveTrader:
 
                 # ── FALLBACK: original schedule (LLM disabled or circuit open) ──
                 if self.llm_supervisor and not self.llm_supervisor.is_available():
-                    self._add_message('llm_fallback', 'LLM unavailable (circuit breaker), using rules schedule')
+                    self._add_message('llm_fallback', 'Rudra unavailable (circuit breaker), using rules schedule')
+                    await self.alerter.send('Rudra Circuit Breaker',
+                        f'Rudra unavailable — falling back to rules schedule\n'
+                        f'Failures: {self.llm_supervisor._failure_count}/{self.llm_supervisor._max_failures}',
+                        level='warning', throttle_key='llm_circuit')
 
                 # Pre-market scan (7:00+ AM, once per day)
                 if 7 <= now.hour < 9 and not _did_scan_7am:
@@ -4640,6 +4904,8 @@ class GapFadeLiveTrader:
         except Exception as e:
             logger.error(f"Trading loop error: {e}\n{traceback.format_exc()}")
             self._add_message('error', f'Trading loop error: {e}')
+            await self.alerter.send('Trading Loop Error',
+                f'{type(e).__name__}: {e}', level='error')
 
     async def _run_scan(self):
         """Run the pre-market scanner (non-blocking)."""
@@ -4697,10 +4963,10 @@ class GapFadeLiveTrader:
                             f'skip {skip_syms}')
                     if trade_syms:
                         self._add_message('llm',
-                            f'LLM favors: {", ".join(e["symbol"] for e in trade_syms[:5])}'
+                            f'Rudra favors: {", ".join(e["symbol"] for e in trade_syms[:5])}'
                             + (f' (+{len(trade_syms)-5} more)' if len(trade_syms) > 5 else ''))
             except Exception as e:
-                logger.warning(f"LLM candidate evaluation failed (non-fatal): {e}")
+                logger.warning(f"Rudra candidate evaluation failed (non-fatal): {e}")
 
     def _apply_catalyst_scores(self):
         """Adjust candidate scores based on catalyst classification.
@@ -4778,7 +5044,7 @@ class GapFadeLiveTrader:
             candidates_to_trade = [c for c in self.candidates if c.symbol in sym_set]
             sym_order = {s: i for i, s in enumerate(llm_symbols)}
             candidates_to_trade.sort(key=lambda c: sym_order.get(c.symbol, 999))
-            self._add_message('llm', f'LLM selected {len(candidates_to_trade)} symbols: {llm_symbols}')
+            self._add_message('llm', f'Rudra selected {len(candidates_to_trade)} symbols: {llm_symbols}')
 
         # Thin day logic: if fewer candidates than threshold, trade all of them
         eff_max = self.engine.effective_max_positions(len(candidates_to_trade))
@@ -4797,6 +5063,10 @@ class GapFadeLiveTrader:
                 ok, reason = self.engine.should_enter(candidate)
                 if not ok:
                     self._add_message('skip', f'Skipping {candidate.symbol}: {reason}')
+                    if 'halted' in reason or 'daily loss' in reason or 'drawdown' in reason:
+                        await self.alerter.send('Circuit Breaker',
+                            f'Entries blocked: {reason}',
+                            level='warning', throttle_key='circuit_breaker')
                     continue
 
                 entry_price = candidate.premarket_price
@@ -4875,6 +5145,10 @@ class GapFadeLiveTrader:
                         'stop': pos.stop_price,
                         'target': pos.full_target,
                     })
+                    await self.alerter.send('Entry Fill',
+                        f'{side_label} {fill.filled_qty} {candidate.symbol} @ ${fill.filled_avg_price:.2f}\n'
+                        f'Gap: {candidate.gap_pct:.1%} | Stop: ${pos.stop_price:.2f}',
+                        level='trade')
                 elif fill.status == 'partially_filled' and fill.filled_qty > 0:
                     # Partial fill — adjust position to actual filled quantity
                     pos.shares = fill.filled_qty
@@ -5030,6 +5304,11 @@ class GapFadeLiveTrader:
                     f'@ ${fill.filled_avg_price:.2f} P&L: ${trade.pnl:.2f} ({trade.pnl_pct:.1%})')
                 # Invalidate lessons cache so next LLM call includes this trade
                 self._lessons_cache = None
+                pnl_sign = '+' if trade.pnl >= 0 else ''
+                await self.alerter.send(f'Exit: {symbol}',
+                    f'{reason.upper()} {fill.filled_qty} {symbol} @ ${fill.filled_avg_price:.2f}\n'
+                    f'P&L: {pnl_sign}${trade.pnl:.2f} ({trade.pnl_pct:+.1%})',
+                    level='trade')
 
             # If partial profit exit, replace broker stop at breakeven
             if reason == 'partial' and symbol in self.engine.positions:
@@ -5602,6 +5881,10 @@ class GapFadeLiveTrader:
             self._add_message('error',
                 f'CRITICAL: EOD close failed! Still have positions: {remaining}. '
                 f'Manual intervention required!')
+            await self.alerter.send('EOD CLOSE FAILED',
+                f'Positions still open after {max_retries} retries!\n'
+                f'Remaining: {remaining}\nManual intervention required!',
+                level='error')
 
         if self.streamer:
             await self.streamer.stop()
@@ -5630,6 +5913,7 @@ class GapFadeLiveTrader:
             'config': asdict(self.config),
             'trade_log': [asdict(t) for t in self.engine.all_trade_log[-500:]],
             'messages': self.messages[-50:],
+            'last_model_rebuild': self._last_model_rebuild,
             'saved_at': datetime.now(ET).strftime('%Y-%m-%d %H:%M:%S'),
         }
         tmp_path = self.STATE_FILE + '.tmp'
@@ -5674,11 +5958,81 @@ class GapFadeLiveTrader:
                         k: v for k, v in td.items() if k in TradeRecord.__dataclass_fields__
                     }))
 
+            # Restore daily stats (survive mid-day restarts)
+            saved_daily = state.get('daily_stats', {})
+            today_str = datetime.now(ET).strftime('%Y-%m-%d')
+            if saved_daily.get('date') == today_str and saved_daily.get('trades', 0) > 0:
+                # Same day with actual data — restore the saved counters
+                for key, value in saved_daily.items():
+                    if hasattr(self.engine.daily_stats, key) and key in DailyStats.__dataclass_fields__:
+                        try:
+                            field_type = type(getattr(self.engine.daily_stats, key))
+                            setattr(self.engine.daily_stats, key, field_type(value))
+                        except (TypeError, ValueError):
+                            pass
+                logger.info(f"Restored daily stats: {saved_daily.get('trades', 0)} trades, "
+                           f"${saved_daily.get('pnl', 0):.2f} P&L")
+            else:
+                # Zero/stale stats or different day — recalculate from trade log
+                self._recalculate_daily_stats(today_str)
+
+            # Restore saved config (user-tuned parameters survive restarts)
+            saved_config = state.get('config', {})
+            restored_keys = []
+            for key, value in saved_config.items():
+                if hasattr(self.config, key) and key in GapFadeConfig.__dataclass_fields__:
+                    try:
+                        field_type = type(getattr(self.config, key))
+                        setattr(self.config, key, field_type(value))
+                        restored_keys.append(key)
+                    except (TypeError, ValueError):
+                        pass
+            if restored_keys:
+                # Sync engine config reference
+                self.engine.config = self.config
+                logger.info(f"Restored {len(restored_keys)} config parameters from state")
+
+            # Restore model rebuild timestamp
+            self._last_model_rebuild = state.get('last_model_rebuild', '')
+
             logger.info(f"Loaded state: equity=${self.engine.equity:.2f}, "
                        f"{len(self.engine.positions)} positions, "
                        f"{len(self.engine.all_trade_log)} historical trades")
         except Exception as e:
             logger.warning(f"State load failed: {e}")
+
+    def _recalculate_daily_stats(self, today_str: str = ''):
+        """Recalculate daily stats from trade_log for today.
+
+        Fallback for when daily_stats weren't saved or are from a different day.
+        """
+        if not today_str:
+            today_str = datetime.now(ET).strftime('%Y-%m-%d')
+        stats = self.engine.daily_stats
+        stats.date = today_str
+        stats.trades = 0
+        stats.wins = 0
+        stats.losses = 0
+        stats.pnl = 0.0
+        stats.consecutive_losses = 0
+        stats.halted = False
+        stats.halt_reason = ''
+
+        for t in self.engine.all_trade_log:
+            if hasattr(t, 'exit_time') and t.exit_time and t.exit_time.startswith(today_str):
+                stats.trades += 1
+                stats.pnl += t.pnl
+                if t.pnl > 0:
+                    stats.wins += 1
+                    stats.consecutive_losses = 0
+                elif t.pnl < 0:
+                    stats.losses += 1
+                    stats.consecutive_losses += 1
+
+        stats.peak_equity = self.engine.equity
+        if stats.trades > 0:
+            logger.info(f"Recalculated daily stats from trade log: {stats.trades} trades, "
+                       f"{stats.wins}W/{stats.losses}L, ${stats.pnl:+.2f} P&L")
 
     def get_state(self) -> dict:
         """Get current state for API response."""
@@ -5729,9 +6083,63 @@ async def broadcast(msg: dict):
 
 from contextlib import asynccontextmanager
 
+async def _delayed_auto_start():
+    """Auto-start the trading loop after a short delay (lets FastAPI fully initialize)."""
+    await asyncio.sleep(5)
+    try:
+        if not live_trader.config.auto_start:
+            return
+        now = datetime.now(ET)
+        # Only auto-start on weekdays within the trading window
+        if now.weekday() >= 5:
+            logger.info(f"Auto-start skipped: weekend ({now.strftime('%A')})")
+            return
+        # Allow auto-start between 6:55 AM and 3:45 PM ET
+        start_ok = now.hour > 6 or (now.hour == 6 and now.minute >= 55)
+        end_ok = now.hour < 15 or (now.hour == 15 and now.minute <= 45)
+        if not (start_ok and end_ok):
+            logger.info(f"Auto-start skipped: outside trading window ({now.strftime('%H:%M')} ET)")
+            return
+        if live_trader.status == 'trading':
+            return
+        logger.info("Auto-starting trading loop")
+        live_trader._add_message('system', 'Auto-started trading loop on app boot')
+        await live_trader.start()
+        if hasattr(live_trader, 'alerter'):
+            await live_trader.alerter.send('Bot Auto-Started',
+                f'Trading loop started automatically at {now.strftime("%H:%M ET")}',
+                level='info')
+    except Exception as e:
+        logger.error(f"Auto-start failed: {e}\n{traceback.format_exc()}")
+
+
+async def _startup_reconcile():
+    """Always reconcile with broker on startup, regardless of trading hours.
+
+    The bot must know about any open broker positions at all times.
+    Runs after a short delay to let the event loop settle.
+    """
+    await asyncio.sleep(2)
+    try:
+        await live_trader._reconcile_with_broker()
+        if live_trader.engine.positions:
+            syms = list(live_trader.engine.positions.keys())
+            logger.info(f"Startup reconciliation: {len(syms)} positions: {syms}")
+            await live_trader.alerter.send('Bot Restarted With Positions',
+                f'Reconciled {len(syms)} open positions: {", ".join(syms)}',
+                level='warning')
+    except Exception as e:
+        logger.error(f"Startup reconciliation failed: {e}")
+
+
 @asynccontextmanager
 async def lifespan(app):
     asyncio.create_task(_watchdog_heartbeat())
+    # Always reconcile with broker on boot (catch orphaned positions)
+    asyncio.create_task(_startup_reconcile())
+    # Auto-start trading loop if configured
+    if live_trader.config.auto_start:
+        asyncio.create_task(_delayed_auto_start())
     logger.info("Gap Fade app started")
     yield
 
@@ -5872,7 +6280,12 @@ backtester = GapFadeBacktester()
 
 
 async def _watchdog_heartbeat():
-    """Ping systemd watchdog every 30s so it knows we're alive."""
+    """Ping systemd watchdog every 30s so it knows we're alive.
+
+    Validates that the trading loop is actually progressing during market hours.
+    If the loop is stale (>90s since last iteration), skip the watchdog ping
+    so systemd will restart us.
+    """
     try:
         import socket
         addr = os.environ.get('NOTIFY_SOCKET')
@@ -5885,6 +6298,17 @@ async def _watchdog_heartbeat():
         sock.sendto(b'READY=1', addr)
         logger.info("systemd watchdog: READY sent")
         while True:
+            # Check if trading loop is alive (during market hours, when running)
+            now = datetime.now(ET)
+            if 7 <= now.hour < 17 and live_trader.status not in ('stopped', 'waiting'):
+                age = _time.monotonic() - live_trader._last_loop_heartbeat
+                if age > 90:
+                    logger.error(f"Trading loop stale ({age:.0f}s) — NOT sending watchdog ping")
+                    await live_trader.alerter.send('Watchdog: Loop Stale',
+                        f'Trading loop has not iterated in {age:.0f}s — systemd will restart',
+                        level='error')
+                    await asyncio.sleep(30)
+                    continue  # skip ping → systemd will restart us
             sock.sendto(b'WATCHDOG=1', addr)
             await asyncio.sleep(30)
     except Exception as e:
@@ -5954,7 +6378,7 @@ async def run_scan():
                                               if c.symbol not in skip_syms]
                     candidates = live_trader.candidates
         except Exception as e:
-            logger.warning(f"LLM candidate evaluation failed (non-fatal): {e}")
+            logger.warning(f"Rudra candidate evaluation failed (non-fatal): {e}")
 
     return {
         'candidates': [asdict(c) for c in candidates[:15]],
@@ -6055,17 +6479,20 @@ async def update_config(body: dict):
     if config.llm_enabled:
         if live_trader.llm_supervisor is None:
             live_trader.llm_supervisor = LLMSupervisor(config)
-            logger.info(f"LLM Supervisor enabled: {config.llm_model}")
+            logger.info(f"Rudra enabled: {config.llm_model}")
         else:
             # Rebuild if url/model/timeout changed
             sup = live_trader.llm_supervisor
             if (sup.url != config.llm_url or sup.model != config.llm_model
                     or sup.timeout != config.llm_timeout):
                 live_trader.llm_supervisor = LLMSupervisor(config)
-                logger.info(f"LLM Supervisor rebuilt: {config.llm_model} @ {config.llm_url}")
+                logger.info(f"Rudra rebuilt: {config.llm_model} @ {config.llm_url}")
     elif live_trader.llm_supervisor is not None:
         live_trader.llm_supervisor = None
-        logger.info("LLM Supervisor disabled")
+        logger.info("Rudra disabled")
+    # Persist config changes immediately (survive restarts)
+    live_trader._save_state()
+
     result = {'config': asdict(config)}
     if errors:
         result['validation_errors'] = errors
@@ -6091,7 +6518,7 @@ async def llm_status():
 async def llm_test():
     """Test LLM connectivity by sending a simple ping prompt."""
     if not live_trader.config.llm_enabled:
-        return {'error': 'LLM not enabled. Set llm_enabled=true via /api/config first.'}
+        return {'error': 'Rudra not enabled. Set llm_enabled=true via /api/config first.'}
     if live_trader.llm_supervisor is None:
         live_trader.llm_supervisor = LLMSupervisor(live_trader.config)
     raw = await live_trader.llm_supervisor._call_ollama(
@@ -6103,7 +6530,7 @@ async def llm_test():
             'supervisor': live_trader.llm_supervisor.get_status()}
 
 
-_CHAT_SYSTEM_PROMPT = """You are the AI trading supervisor for a gap fade bot. You have full access to the bot's live state and can EXECUTE actions by returning a JSON action block.
+_CHAT_SYSTEM_PROMPT = """You are Rudra, the AI trading supervisor for a gap fade bot. You have full access to the bot's live state and can EXECUTE actions by returning a JSON action block.
 
 ## YOUR CAPABILITIES
 You can both advise AND act. When the user asks you to DO something, execute it.
@@ -6153,7 +6580,7 @@ async def llm_chat(body: dict):
     if not message:
         return {'error': 'message is required'}
     if not live_trader.config.llm_enabled:
-        return {'error': 'LLM not enabled. Set llm_enabled=true via /api/config first.'}
+        return {'error': 'Rudra not enabled. Set llm_enabled=true via /api/config first.'}
     if live_trader.llm_supervisor is None:
         live_trader.llm_supervisor = LLMSupervisor(live_trader.config)
 
@@ -6245,7 +6672,7 @@ USER MESSAGE: {message}"""
 
     raw = await live_trader.llm_supervisor._call_ollama(chat_system, context)
     if raw is None:
-        return {'error': 'LLM call failed. Check Ollama connectivity.'}
+        return {'error': 'Rudra call failed. Check Ollama connectivity.'}
 
     # Parse and execute any action block from the response
     import re as _re
@@ -7407,7 +7834,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     </div>
     <div class="sidebar-item" data-page="chat" onclick="showPage('chat')">
       <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 3h12v8H5l-3 3V3z" rx="1.5"/><line x1="5" y1="6" x2="11" y2="6"/><line x1="5" y1="9" x2="9" y2="9"/></svg>
-      LLM Chat
+      Rudra Chat
     </div>
     <div class="sidebar-item" data-page="guide" onclick="showPage('guide')">
       <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2.5" y="1.5" width="11" height="13" rx="1.5"/><line x1="5" y1="5" x2="11" y2="5"/><line x1="5" y1="8" x2="11" y2="8"/><line x1="5" y1="11" x2="9" y2="11"/></svg>
@@ -7425,7 +7852,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   <div style="display:flex;align-items:center;gap:12px;">
     <span class="page-title" id="pageTitle">Dashboard</span>
     <span id="statusBadge" class="status-badge status-stopped">STOPPED</span>
-    <span id="llmBadge" class="llm-badge" style="display:none;" title="LLM Supervisor">LLM</span>
+    <span id="llmBadge" class="llm-badge" style="display:none;" title="Rudra">Rudra</span>
   </div>
   <div class="header-controls">
     <button class="primary" onclick="runScan()">Scan</button>
@@ -7722,7 +8149,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   <div class="page" id="page-chat">
     <div style="display:flex;flex-direction:column;height:calc(100vh - 180px);max-width:800px;">
       <div id="chatMessages" style="flex:1;overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:10px;border:1px solid var(--border);border-radius:8px;background:rgba(0,0,0,0.2);margin-bottom:12px;">
-        <div class="chat-msg chat-system">Ask the LLM anything about your positions, strategy, or market conditions. It has full access to live trading state.</div>
+        <div class="chat-msg chat-system">Ask Rudra anything about your positions, strategy, or market conditions. It has full access to live trading state.</div>
       </div>
       <div style="display:flex;gap:8px;">
         <input type="text" id="chatInput" placeholder="Ask about positions, strategy, market..."
@@ -8024,7 +8451,7 @@ const PAGE_TITLES = {
   backtest: 'Backtest',
   config: 'Config',
   database: 'Database',
-  chat: 'LLM Chat',
+  chat: 'Rudra Chat',
   guide: 'Guide'
 };
 
@@ -8422,7 +8849,7 @@ async function testLlm() {
   }
 }
 
-// ── LLM Chat ─────────────────────────────────────────────────────
+// ── Rudra Chat ───────────────────────────────────────────────────
 async function sendChat() {
   const input = document.getElementById('chatInput');
   const msg = input.value.trim();
@@ -8560,16 +8987,16 @@ function updateLlmBadge(llm) {
   badge.style.display = 'inline-block';
   if (llm.circuit_open) {
     badge.className = 'llm-badge llm-circuit';
-    badge.textContent = 'LLM CIRCUIT';
-    badge.title = 'LLM circuit breaker open — ' + Math.round(llm.circuit_resets_in) + 's until retry';
+    badge.textContent = 'RUDRA CIRCUIT';
+    badge.title = 'Rudra circuit breaker open — ' + Math.round(llm.circuit_resets_in) + 's until retry';
   } else if (llm.available) {
     badge.className = 'llm-badge llm-on';
-    badge.textContent = 'LLM';
-    badge.title = 'LLM Supervisor active: ' + llm.model + ' (' + llm.total_calls + ' calls)';
+    badge.textContent = 'Rudra';
+    badge.title = 'Rudra active: ' + llm.model + ' (' + llm.total_calls + ' calls)';
   } else {
     badge.className = 'llm-badge llm-off';
-    badge.textContent = 'LLM OFF';
-    badge.title = 'LLM unavailable';
+    badge.textContent = 'RUDRA OFF';
+    badge.title = 'Rudra unavailable';
   }
 }
 
@@ -8730,9 +9157,9 @@ function renderCandidates(candidates) {
 function renderMessages(messages) {
   const feed = document.getElementById('feedContainer');
   const prefix = (type) => {
-    if (type === 'llm') return '<span style="color:#c084fc;font-weight:600;margin-right:4px;">LLM</span>';
+    if (type === 'llm') return '<span style="color:#c084fc;font-weight:600;margin-right:4px;">RUDRA</span>';
     if (type === 'llm_review') return '<span style="color:#06b6d4;font-weight:600;margin-right:4px;">AUTO</span>';
-    if (type === 'llm_fallback') return '<span style="color:#fde68a;font-weight:600;margin-right:4px;">LLM</span>';
+    if (type === 'llm_fallback') return '<span style="color:#fde68a;font-weight:600;margin-right:4px;">RUDRA</span>';
     if (type === 'manual') return '<span style="color:#f59e0b;font-weight:600;margin-right:4px;">MANUAL</span>';
     return '';
   };
@@ -8831,8 +9258,8 @@ function renderConfig(config) {
       params: [['reentry_cooldown_minutes', 'Cooldown (min)', 30], ['reentry_max_per_symbol', 'Max Per Symbol', 1], ['reentry_stop_pct', 'Stop %', 0.01], ['reentry_trigger_pct', 'Trigger %', 0.0]] },
     { key: 'trade_gap_downs', title: 'Gap-Down Fading (Longs)', desc: 'Buy gap-downs and fade back toward previous close',
       params: [['gap_down_threshold', 'Gap Down %', 0.05], ['gap_down_max_pct', 'Max Gap Down %', 0.50], ['gap_down_vol_ratio_max', 'Vol Ratio Max', 3.0]] },
-    { key: 'llm_enabled', title: 'LLM Supervisor', desc: 'Autonomous decisions via local Ollama model — scan timing, candidate selection, profit-taking, exit overrides',
-      params: [['llm_url', 'Ollama URL', 'http://localhost:11434'], ['llm_model', 'Model', 'gapfade-supervisor:latest'], ['llm_timeout', 'Timeout (sec)', 10], ['llm_max_failures', 'Circuit Breaker Failures', 5], ['llm_circuit_reset', 'Circuit Reset (sec)', 120], ['llm_max_hold_overrides', 'Max Hold Overrides', 2]] },
+    { key: 'llm_enabled', title: 'Rudra (LLM Supervisor)', desc: 'Autonomous decisions via local Ollama model — scan timing, candidate selection, profit-taking, exit overrides',
+      params: [['llm_url', 'Ollama URL', 'http://localhost:11434'], ['llm_model', 'Model', 'rudra:latest'], ['llm_timeout', 'Timeout (sec)', 10], ['llm_max_failures', 'Circuit Breaker Failures', 5], ['llm_circuit_reset', 'Circuit Reset (sec)', 120], ['llm_max_hold_overrides', 'Max Hold Overrides', 2]] },
   ];
 
   // Section header for feature toggles
@@ -9359,11 +9786,11 @@ if __name__ == '__main__':
     else:
         print("  Auth:     DISABLED — set GAP_FADE_API_KEY in .env to protect POST endpoints")
 
-    # LLM status
+    # Rudra (LLM) status
     if live_trader.config.llm_enabled:
-        print(f"  LLM:      ENABLED ({live_trader.config.llm_model} @ {live_trader.config.llm_url})")
+        print(f"  Rudra:    ENABLED ({live_trader.config.llm_model} @ {live_trader.config.llm_url})")
     else:
-        print("  LLM:      DISABLED — set llm_enabled=true via /api/config to activate")
+        print("  Rudra:    DISABLED — set llm_enabled=true via /api/config to activate")
 
     # P0-6: Bind to localhost by default. Set GAP_FADE_BIND_ALL=1 to listen on all interfaces.
     bind_host = "0.0.0.0" if os.environ.get('GAP_FADE_BIND_ALL', '') == '1' else "127.0.0.1"

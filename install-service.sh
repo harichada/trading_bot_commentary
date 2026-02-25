@@ -12,11 +12,12 @@ echo "  Dir:     $SCRIPT_DIR"
 echo "  Python:  $PYTHON_PATH"
 echo ""
 
-# Generate service file with correct paths
+# Generate main service file with correct paths
 cat > /tmp/gap-fade.service <<EOF
 [Unit]
 Description=Gap Fade Trading Strategy Dashboard
 After=network.target
+OnFailure=gap-fade-notify-failure@%n.service
 
 [Service]
 Type=simple
@@ -47,11 +48,23 @@ CPUQuota=80%
 WantedBy=multi-user.target
 EOF
 
+# Generate failure notification service
+cat > /tmp/gap-fade-notify-failure@.service <<EOF
+[Unit]
+Description=Send failure notification for %i
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'curl -s -X POST "https://api.telegram.org/bot\${TELEGRAM_BOT_TOKEN}/sendMessage" -d chat_id="\${TELEGRAM_CHAT_ID}" -d "text=SYSTEMD: %i crashed and is restarting"'
+EnvironmentFile=$SCRIPT_DIR/.env
+EOF
+
 # Stop if already running
 sudo systemctl stop gap-fade 2>/dev/null || true
 
-# Copy service file
+# Copy service files
 sudo cp /tmp/gap-fade.service /etc/systemd/system/gap-fade.service
+sudo cp /tmp/gap-fade-notify-failure@.service /etc/systemd/system/gap-fade-notify-failure@.service
 
 # Reload systemd
 sudo systemctl daemon-reload

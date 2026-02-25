@@ -1,6 +1,7 @@
 [Unit]
 Description=Gap Fade Trading Strategy Dashboard
 After=network.target
+OnFailure=gap-fade-notify-failure@%n.service
 
 [Service]
 Type=simple
