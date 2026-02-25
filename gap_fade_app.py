@@ -714,13 +714,34 @@ class AlpacaTickStreamer:
     def __init__(self, symbols, on_tick=None):
         if isinstance(symbols, str):
             symbols = [symbols]
-        self.symbols = symbols
+        self.symbols = list(symbols)
         self.on_tick = on_tick
         self.latest_prices: Dict[str, float] = {}
         self.connected = False
         self._task: Optional[asyncio.Task] = None
         self._session: Optional[aiohttp.ClientSession] = None
         self._last_push: Dict[str, float] = {}
+        self._ws = None  # reference to live websocket for dynamic subscriptions
+
+    async def add_symbols(self, symbols: List[str]):
+        """Dynamically subscribe to additional symbols on the live connection."""
+        new_syms = [s for s in symbols if s not in self.symbols]
+        if not new_syms:
+            return
+        self.symbols.extend(new_syms)
+        if self._ws and not self._ws.closed:
+            await self._ws.send_json({'action': 'subscribe', 'trades': new_syms})
+            logger.info(f"Alpaca stream: dynamically subscribed to {new_syms}")
+
+    async def remove_symbols(self, symbols: List[str]):
+        """Dynamically unsubscribe from symbols on the live connection."""
+        rm_syms = [s for s in symbols if s in self.symbols]
+        if not rm_syms:
+            return
+        self.symbols = [s for s in self.symbols if s not in rm_syms]
+        if self._ws and not self._ws.closed:
+            await self._ws.send_json({'action': 'unsubscribe', 'trades': rm_syms})
+            logger.info(f"Alpaca stream: dynamically unsubscribed from {rm_syms}")
 
     async def start(self):
         cfg = _get_alpaca_config()
@@ -738,6 +759,7 @@ class AlpacaTickStreamer:
                 pass
         if self._session and not self._session.closed:
             await self._session.close()
+        self._ws = None
         self.connected = False
 
     async def _run(self, cfg: dict):
@@ -745,6 +767,7 @@ class AlpacaTickStreamer:
             try:
                 self._session = aiohttp.ClientSession()
                 async with self._session.ws_connect(self.WS_URL) as ws:
+                    self._ws = ws
                     await ws.receive_json()
                     await ws.send_json({
                         'action': 'auth',
@@ -756,6 +779,7 @@ class AlpacaTickStreamer:
                         is_limit = any(m.get('code') == 406 for m in auth_resp)
                         wait = 60 if is_limit else 5
                         logger.error(f"Alpaca stream auth failed: {auth_resp} — retry in {wait}s")
+                        self._ws = None
                         await self._session.close()
                         await asyncio.sleep(wait)
                         continue
@@ -790,6 +814,7 @@ class AlpacaTickStreamer:
                 logger.warning(f"Alpaca stream error: {e}, reconnecting in 3s...")
             finally:
                 self.connected = False
+                self._ws = None
                 if self._session and not self._session.closed:
                     await self._session.close()
             await asyncio.sleep(3)
@@ -7185,6 +7210,131 @@ async def db_polygon_update(body: dict = {}):
     return stats
 
 
+# =============================================================================
+# SECTION 9b: POSITION TRACKER API
+# =============================================================================
+
+_tracker_watchlist: set = set()
+
+
+@app.get("/api/tracker/bars")
+async def get_tracker_bars(symbol: str, timeframe: str = '1Min', limit: int = 390):
+    """Fetch historical OHLCV bars from Alpaca for a symbol/timeframe."""
+    allowed_tf = {'1Min', '5Min', '15Min', '1Hour', '1Day'}
+    if timeframe not in allowed_tf:
+        return {'error': f'Invalid timeframe. Use: {allowed_tf}'}
+    if limit < 1 or limit > 2000:
+        limit = min(max(limit, 1), 2000)
+
+    today = datetime.now()
+    if timeframe == '1Day':
+        days_back = int(limit * 1.5) + 10
+    elif timeframe == '1Hour':
+        days_back = int(limit / 6.5) + 5
+    else:
+        days_back = 5
+
+    start_date = (today - timedelta(days=days_back)).strftime('%Y-%m-%d')
+    end_date = today.strftime('%Y-%m-%d')
+
+    df = await asyncio.to_thread(
+        fetch_alpaca_bars, symbol, start_date, end_date, timeframe, 'iex'
+    )
+    if df is None or df.empty:
+        return {'symbol': symbol, 'timeframe': timeframe, 'bars': []}
+
+    bars = []
+    for idx, row in df.tail(limit).iterrows():
+        ts = int(idx.timestamp()) if hasattr(idx, 'timestamp') else int(pd.Timestamp(idx).timestamp())
+        bars.append({
+            't': ts,
+            'o': round(float(row['open']), 4),
+            'h': round(float(row['high']), 4),
+            'l': round(float(row['low']), 4),
+            'c': round(float(row['close']), 4),
+            'v': int(row['volume']),
+        })
+
+    return {'symbol': symbol, 'timeframe': timeframe, 'bars': bars}
+
+
+@app.get("/api/tracker/positions")
+async def get_tracker_positions():
+    """Get all Alpaca broker positions + account info."""
+    positions = await asyncio.to_thread(alpaca_get_positions)
+    account = await asyncio.to_thread(alpaca_get_account)
+    return {
+        'positions': positions or [],
+        'equity': float(account.get('equity', 0)) if account else 0,
+        'buying_power': float(account.get('buying_power', 0)) if account else 0,
+    }
+
+
+@app.post("/api/tracker/order")
+async def place_tracker_order(request: Request):
+    """Place a market order via Alpaca (Buy/Short from tracker UI)."""
+    body = await request.json()
+    symbol = (body.get('symbol') or '').upper().strip()
+    side = body.get('side', '')
+    qty = int(body.get('qty', 0))
+
+    if not symbol:
+        return {'error': 'Symbol required'}
+    if side not in ('buy', 'sell'):
+        return {'error': 'Side must be buy or sell'}
+    if qty <= 0:
+        return {'error': 'Qty must be positive'}
+
+    result = await alpaca_submit_and_confirm(symbol, qty, side)
+    return {
+        'status': result.status,
+        'filled_qty': result.filled_qty,
+        'filled_avg_price': result.filled_avg_price,
+        'error': result.error,
+        'order_id': result.order_id,
+    }
+
+
+@app.post("/api/tracker/watchlist")
+async def update_tracker_watchlist(request: Request):
+    """Update symbols being tracked for real-time ticks."""
+    global _tracker_watchlist
+    body = await request.json()
+    symbols = [s.upper().strip() for s in body.get('symbols', []) if s.strip()]
+    _tracker_watchlist = set(symbols)
+
+    streamer = getattr(live_trader, 'streamer', None)
+    if streamer and streamer.connected:
+        new_syms = _tracker_watchlist - set(streamer.symbols)
+        if new_syms:
+            await streamer.add_symbols(list(new_syms))
+    elif _tracker_watchlist:
+        cfg = _get_alpaca_config()
+        if cfg:
+            streamer = AlpacaTickStreamer(list(_tracker_watchlist), on_tick=_tracker_on_tick)
+            live_trader.streamer = streamer
+            await streamer.start()
+
+    return {'watchlist': sorted(_tracker_watchlist), 'streaming': bool(streamer and streamer.connected)}
+
+
+async def _tracker_on_tick(symbol: str, price: float):
+    """Tick handler that broadcasts tracker ticks and forwards to live trader."""
+    engine = getattr(live_trader, 'engine', None)
+    if engine and symbol in getattr(engine, 'positions', {}):
+        orig_handler = getattr(live_trader, '_on_tick_impl', None)
+        if orig_handler:
+            await orig_handler(symbol, price)
+
+    if symbol in _tracker_watchlist:
+        await broadcast({
+            'type': 'tracker_tick',
+            'symbol': symbol,
+            'price': price,
+            'timestamp': _time.time(),
+        })
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     """WebSocket for live updates (checks JWT cookie when auth is enabled)."""
@@ -7220,6 +7370,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
 <style>
   :root {
     --bg: #0A0E17;
@@ -7759,6 +7910,93 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     .right-panel { display: none; }
     .main-content { padding: 8px; }
   }
+
+  /* ── Position Tracker ── */
+  .tracker-controls {
+    display: flex; align-items: center; gap: 8px; margin-bottom: 12px;
+  }
+  .tracker-controls input {
+    background: var(--surface); border: 1px solid var(--border); color: var(--text);
+    padding: 6px 12px; border-radius: 6px; font-size: 12px; font-family: 'JetBrains Mono', monospace;
+    outline: none; width: 180px;
+  }
+  .tracker-controls input:focus { border-color: var(--positive); }
+  .tracker-controls .add-btn {
+    padding: 6px 16px; background: rgba(0,212,255,0.12); color: var(--positive);
+    border: 1px solid rgba(0,212,255,0.3); border-radius: 6px; font-size: 12px;
+    font-weight: 600; cursor: pointer;
+  }
+  .tracker-controls .add-btn:hover { background: rgba(0,212,255,0.2); }
+  .tracker-positions-card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+    padding: 12px; margin-bottom: 12px;
+  }
+  .tracker-positions-card h3 {
+    font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase;
+    letter-spacing: 0.5px; margin-bottom: 8px;
+  }
+  .tracker-positions-card table { width: 100%; border-collapse: collapse; font-size: 11px; }
+  .tracker-positions-card th {
+    text-align: left; color: var(--muted); font-weight: 500; padding: 4px 8px;
+    border-bottom: 1px solid var(--border); font-size: 10px; text-transform: uppercase;
+  }
+  .tracker-positions-card td {
+    padding: 5px 8px; border-bottom: 1px solid rgba(255,255,255,0.03);
+    font-family: 'JetBrains Mono', monospace;
+  }
+  #trackerChartGrid {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;
+  }
+  @media (max-width: 1200px) { #trackerChartGrid { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 800px) { #trackerChartGrid { grid-template-columns: 1fr; } }
+  .tracker-chart-panel {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+    overflow: hidden; transition: border-color 0.2s;
+  }
+  .tracker-chart-panel:hover { border-color: var(--border-hover); }
+  .tracker-chart-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 6px 10px; border-bottom: 1px solid var(--border); background: rgba(0,0,0,0.2);
+  }
+  .tracker-symbol {
+    font-weight: 700; font-size: 14px; color: #fff; font-family: 'JetBrains Mono', monospace;
+  }
+  .tracker-price {
+    font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 600; margin-left: 8px;
+  }
+  .tracker-ohlc {
+    font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--muted);
+    flex: 1; text-align: center; white-space: nowrap; overflow: hidden;
+  }
+  .tracker-actions { display: flex; gap: 4px; }
+  .tracker-buy {
+    padding: 3px 10px; font-size: 10px; font-weight: 600;
+    background: rgba(34,197,94,0.15); color: var(--accent-green);
+    border: 1px solid rgba(34,197,94,0.3); border-radius: 4px; cursor: pointer;
+  }
+  .tracker-buy:hover { background: rgba(34,197,94,0.25); }
+  .tracker-short {
+    padding: 3px 10px; font-size: 10px; font-weight: 600;
+    background: rgba(255,59,92,0.15); color: var(--red);
+    border: 1px solid rgba(255,59,92,0.3); border-radius: 4px; cursor: pointer;
+  }
+  .tracker-short:hover { background: rgba(255,59,92,0.25); }
+  .tracker-remove {
+    padding: 3px 6px; background: none; border: 1px solid var(--border);
+    color: var(--muted); border-radius: 4px; cursor: pointer; font-size: 12px; line-height: 1;
+  }
+  .tracker-remove:hover { color: var(--red); border-color: var(--red); }
+  .tracker-tf-bar {
+    display: flex; gap: 2px; padding: 4px 10px; background: rgba(0,0,0,0.15);
+  }
+  .tf-btn {
+    padding: 2px 8px; font-size: 10px; font-weight: 600; background: none;
+    border: 1px solid transparent; color: var(--muted); border-radius: 3px; cursor: pointer;
+  }
+  .tf-btn:hover { color: var(--text); }
+  .tf-btn.active {
+    background: rgba(0,212,255,0.12); color: var(--positive); border-color: rgba(0,212,255,0.3);
+  }
 </style>
 </head>
 <body>
@@ -7831,6 +8069,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     <div class="sidebar-item" data-page="database" onclick="showPage('database')">
       <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><ellipse cx="8" cy="4" rx="5.5" ry="2.5"/><path d="M2.5 4v8c0 1.4 2.5 2.5 5.5 2.5s5.5-1.1 5.5-2.5V4"/><path d="M2.5 8c0 1.4 2.5 2.5 5.5 2.5s5.5-1.1 5.5-2.5"/></svg>
       Database
+    </div>
+    <div class="sidebar-item" data-page="tracker" onclick="showPage('tracker')">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="1,12 4,5 7,8 10,3 13,7 15,4"/><line x1="1" y1="14" x2="15" y2="14"/></svg>
+      Tracker
     </div>
     <div class="sidebar-item" data-page="chat" onclick="showPage('chat')">
       <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 3h12v8H5l-3 3V3z" rx="1.5"/><line x1="5" y1="6" x2="11" y2="6"/><line x1="5" y1="9" x2="9" y2="9"/></svg>
@@ -8330,6 +8572,33 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
   </div>
 
+  <!-- ── Position Tracker Page ── -->
+  <div class="page" id="page-tracker">
+    <div class="tracker-controls">
+      <input id="trackerSymbolInput" placeholder="Add symbol (e.g. AAPL)" onkeydown="if(event.key==='Enter')addWatchSymbol()">
+      <button class="add-btn" onclick="addWatchSymbol()">+ Add</button>
+      <span style="color:var(--muted);font-size:11px;margin-left:8px;" id="trackerWatchCount">0 / 6 symbols</span>
+    </div>
+
+    <div class="tracker-positions-card">
+      <h3>Broker Positions</h3>
+      <div style="overflow-x:auto;">
+        <table>
+          <thead><tr>
+            <th>Symbol</th><th>Qty</th><th>Mkt Value</th><th>Mark</th>
+            <th>Avg Price</th><th>Last</th><th>1D P&amp;L</th>
+          </tr></thead>
+          <tbody id="trackerPositionsBody"></tbody>
+        </table>
+      </div>
+      <div id="trackerNoPositions" style="color:var(--muted);padding:12px;text-align:center;font-size:12px;">
+        No broker positions
+      </div>
+    </div>
+
+    <div id="trackerChartGrid"></div>
+  </div>
+
 </main>
 
 <!-- ── Right Panel ── -->
@@ -8451,6 +8720,7 @@ const PAGE_TITLES = {
   backtest: 'Backtest',
   config: 'Config',
   database: 'Database',
+  tracker: 'Position Tracker',
   chat: 'Rudra Chat',
   guide: 'Guide'
 };
@@ -8578,6 +8848,8 @@ function handleMessage(msg) {
     if (msg.progress >= 100) {
       setTimeout(() => { document.getElementById('dbProgress').style.display = 'none'; fetchDbStats(); }, 2000);
     }
+  } else if (msg.type === 'tracker_tick') {
+    handleTrackerTick(msg.symbol, msg.price, msg.timestamp);
   }
 }
 
@@ -9740,7 +10012,332 @@ document.addEventListener('DOMContentLoaded', async () => {
   updateClock();
   updateGuideTimeline();
   showPage('dashboard');
+
+  // ── Position Tracker Init ──
+  trackerInit();
 });
+
+// ==========================================================================
+// POSITION TRACKER
+// ==========================================================================
+
+const trackerCharts = {};
+let trackerWatchlist = [];
+const trackerTickBuffers = {};
+const TRACKER_MAX = 6;
+
+function trackerInit() {
+  try {
+    trackerWatchlist = JSON.parse(localStorage.getItem('gf_tracker_wl') || '[]');
+  } catch(e) { trackerWatchlist = []; }
+  document.getElementById('trackerWatchCount').textContent = trackerWatchlist.length + ' / ' + TRACKER_MAX + ' symbols';
+  if (trackerWatchlist.length > 0) {
+    trackerWatchlist.forEach(sym => createTrackerPanel(sym));
+    setTimeout(() => {
+      trackerWatchlist.forEach((sym, i) => setTimeout(() => loadTrackerBars(sym, '1Min'), i * 150));
+      updateTrackerWatchlistServer();
+    }, 500);
+  }
+  fetchTrackerPositions();
+  setInterval(fetchTrackerPositions, 10000);
+}
+
+function saveTrackerWatchlist() {
+  localStorage.setItem('gf_tracker_wl', JSON.stringify(trackerWatchlist));
+  document.getElementById('trackerWatchCount').textContent = trackerWatchlist.length + ' / ' + TRACKER_MAX + ' symbols';
+}
+
+async function addWatchSymbol() {
+  const inp = document.getElementById('trackerSymbolInput');
+  const sym = inp.value.trim().toUpperCase();
+  if (!sym || trackerWatchlist.includes(sym)) { inp.value = ''; return; }
+  if (trackerWatchlist.length >= TRACKER_MAX) { showToast('Maximum ' + TRACKER_MAX + ' symbols', 'error'); return; }
+  trackerWatchlist.push(sym);
+  inp.value = '';
+  saveTrackerWatchlist();
+  createTrackerPanel(sym);
+  await loadTrackerBars(sym, '1Min');
+  updateTrackerWatchlistServer();
+}
+
+function addWatchSymbolDirect(sym) {
+  sym = sym.toUpperCase();
+  if (trackerWatchlist.includes(sym)) return;
+  if (trackerWatchlist.length >= TRACKER_MAX) return;
+  trackerWatchlist.push(sym);
+  saveTrackerWatchlist();
+  createTrackerPanel(sym);
+  loadTrackerBars(sym, '1Min');
+  updateTrackerWatchlistServer();
+}
+
+function removeWatchSymbol(sym) {
+  trackerWatchlist = trackerWatchlist.filter(s => s !== sym);
+  saveTrackerWatchlist();
+  const tc = trackerCharts[sym];
+  if (tc) {
+    try { tc.chart.remove(); } catch(e) {}
+    try { tc.macdChart.remove(); } catch(e) {}
+    delete trackerCharts[sym];
+  }
+  const panel = document.getElementById('tp-' + sym);
+  if (panel) panel.remove();
+  delete trackerTickBuffers[sym];
+  updateTrackerWatchlistServer();
+}
+
+async function updateTrackerWatchlistServer() {
+  try { await api('tracker/watchlist', 'POST', { symbols: trackerWatchlist }); } catch(e) {}
+}
+
+function createTrackerPanel(sym) {
+  const grid = document.getElementById('trackerChartGrid');
+  const panel = document.createElement('div');
+  panel.className = 'tracker-chart-panel';
+  panel.id = 'tp-' + sym;
+  panel.innerHTML = `
+    <div class="tracker-chart-header">
+      <span class="tracker-symbol">${sym}</span>
+      <span class="tracker-price" id="tp-price-${sym}"></span>
+      <span class="tracker-ohlc" id="tp-ohlc-${sym}">O: -- H: -- L: -- C: --</span>
+      <div class="tracker-actions">
+        <button class="tracker-buy" onclick="trackerBuy('${sym}')">Buy</button>
+        <button class="tracker-short" onclick="trackerShort('${sym}')">Short</button>
+        <button class="tracker-remove" onclick="removeWatchSymbol('${sym}')">&times;</button>
+      </div>
+    </div>
+    <div class="tracker-tf-bar">
+      <button class="tf-btn active" onclick="changeTrackerTF('${sym}','1Min',this)">1m</button>
+      <button class="tf-btn" onclick="changeTrackerTF('${sym}','5Min',this)">5m</button>
+      <button class="tf-btn" onclick="changeTrackerTF('${sym}','15Min',this)">15m</button>
+      <button class="tf-btn" onclick="changeTrackerTF('${sym}','1Hour',this)">1H</button>
+      <button class="tf-btn" onclick="changeTrackerTF('${sym}','1Day',this)">1D</button>
+    </div>
+    <div id="tp-chart-${sym}" style="height:200px;"></div>
+    <div id="tp-macd-${sym}" style="height:60px;border-top:1px solid var(--border);"></div>
+  `;
+  grid.appendChild(panel);
+  requestAnimationFrame(() => initTrackerCharts(sym));
+}
+
+function initTrackerCharts(sym) {
+  const chartEl = document.getElementById('tp-chart-' + sym);
+  const macdEl = document.getElementById('tp-macd-' + sym);
+  if (!chartEl || !macdEl || typeof LightweightCharts === 'undefined') return;
+
+  const chart = LightweightCharts.createChart(chartEl, {
+    width: chartEl.clientWidth, height: 200,
+    layout: { background: { type: 'solid', color: 'transparent' }, textColor: '#64748b', fontSize: 10 },
+    grid: { vertLines: { color: 'rgba(0,212,255,0.06)' }, horzLines: { color: 'rgba(0,212,255,0.06)' } },
+    crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+    rightPriceScale: { borderColor: 'rgba(0,212,255,0.15)', scaleMargins: { top: 0.05, bottom: 0.25 } },
+    timeScale: { borderColor: 'rgba(0,212,255,0.15)', timeVisible: true, secondsVisible: false },
+  });
+
+  const candleSeries = chart.addCandlestickSeries({
+    upColor: '#00D4FF', downColor: '#FF3B5C',
+    borderUpColor: '#00D4FF', borderDownColor: '#FF3B5C',
+    wickUpColor: '#00D4FF', wickDownColor: '#FF3B5C',
+  });
+
+  const volumeSeries = chart.addHistogramSeries({
+    priceFormat: { type: 'volume' }, priceScaleId: 'vol',
+  });
+  chart.priceScale('vol').applyOptions({ scaleMargins: { top: 0.8, bottom: 0 } });
+
+  const macdChart = LightweightCharts.createChart(macdEl, {
+    width: macdEl.clientWidth, height: 60,
+    layout: { background: { type: 'solid', color: 'transparent' }, textColor: '#64748b', fontSize: 9 },
+    grid: { vertLines: { color: 'rgba(0,212,255,0.04)' }, horzLines: { color: 'rgba(0,212,255,0.04)' } },
+    rightPriceScale: { borderColor: 'rgba(0,212,255,0.1)' },
+    timeScale: { visible: false },
+  });
+  const macdLine = macdChart.addLineSeries({ color: '#00D4FF', lineWidth: 1.5 });
+  const signalLine = macdChart.addLineSeries({ color: '#FF3B5C', lineWidth: 1 });
+  const histSeries = macdChart.addHistogramSeries({});
+
+  chart.timeScale().subscribeVisibleLogicalRangeChange(range => {
+    if (range) macdChart.timeScale().setVisibleLogicalRange(range);
+  });
+
+  chart.subscribeCrosshairMove(param => {
+    const data = param.seriesData?.get(candleSeries);
+    if (data && data.open !== undefined) {
+      document.getElementById('tp-ohlc-' + sym).textContent =
+        'O:' + data.open.toFixed(2) + ' H:' + data.high.toFixed(2) + ' L:' + data.low.toFixed(2) + ' C:' + data.close.toFixed(2);
+    }
+  });
+
+  trackerCharts[sym] = { chart, candleSeries, volumeSeries, macdChart, macdLine, signalLine, histSeries, timeframe: '1Min', bars: [] };
+
+  new ResizeObserver(() => {
+    chart.applyOptions({ width: chartEl.clientWidth });
+    macdChart.applyOptions({ width: macdEl.clientWidth });
+  }).observe(chartEl);
+}
+
+async function loadTrackerBars(sym, timeframe) {
+  const tc = trackerCharts[sym];
+  if (!tc) return;
+  tc.timeframe = timeframe;
+  const limits = { '1Min': 390, '5Min': 390, '15Min': 200, '1Hour': 200, '1Day': 365 };
+  const limit = limits[timeframe] || 390;
+
+  let data;
+  try { data = await api('tracker/bars?symbol=' + sym + '&timeframe=' + timeframe + '&limit=' + limit); }
+  catch(e) { showToast('Failed to load bars for ' + sym, 'error'); return; }
+
+  const bars = data.bars || [];
+  if (!bars.length) { showToast('No data for ' + sym, 'error'); return; }
+  tc.bars = bars;
+
+  tc.candleSeries.setData(bars.map(b => ({ time: b.t, open: b.o, high: b.h, low: b.l, close: b.c })));
+  tc.volumeSeries.setData(bars.map(b => ({
+    time: b.t, value: b.v,
+    color: b.c >= b.o ? 'rgba(0,212,255,0.3)' : 'rgba(255,59,92,0.3)'
+  })));
+
+  const last = bars[bars.length - 1];
+  const prev = bars.length > 1 ? bars[bars.length - 2] : last;
+  const chg = last.c - prev.c;
+  const pctChg = prev.c ? ((chg / prev.c) * 100).toFixed(2) : '0.00';
+  const priceEl = document.getElementById('tp-price-' + sym);
+  if (priceEl) {
+    priceEl.textContent = '$' + last.c.toFixed(2) + ' ' + (chg >= 0 ? '+' : '') + pctChg + '%';
+    priceEl.style.color = chg >= 0 ? 'var(--positive)' : 'var(--negative)';
+  }
+
+  const closes = bars.map(b => b.c);
+  const macd = computeTrackerMACD(closes);
+  const times = bars.map(b => b.t);
+  tc.macdLine.setData(macd.macd.map((v,i) => ({ time: times[i], value: v })).filter(d => d.value !== null));
+  tc.signalLine.setData(macd.signal.map((v,i) => ({ time: times[i], value: v })).filter(d => d.value !== null));
+  tc.histSeries.setData(macd.histogram.map((v,i) => ({
+    time: times[i], value: v,
+    color: v >= 0 ? 'rgba(0,212,255,0.5)' : 'rgba(255,59,92,0.5)'
+  })).filter(d => d.value !== null));
+}
+
+function computeTrackerMACD(closes, fast=12, slow=26, sig=9) {
+  function ema(data, period) {
+    const k = 2 / (period + 1);
+    const r = new Array(data.length).fill(null);
+    let prev = data[0];
+    r[0] = prev;
+    for (let i = 1; i < data.length; i++) {
+      prev = data[i] * k + prev * (1 - k);
+      r[i] = i >= period - 1 ? prev : null;
+    }
+    return r;
+  }
+  const emaF = ema(closes, fast), emaS = ema(closes, slow);
+  const macdArr = closes.map((_, i) => (emaF[i] !== null && emaS[i] !== null) ? emaF[i] - emaS[i] : null);
+  const validM = macdArr.filter(v => v !== null);
+  const sigEma = ema(validM, sig);
+  const signalArr = new Array(closes.length).fill(null);
+  let si = 0;
+  for (let i = 0; i < closes.length; i++) { if (macdArr[i] !== null) signalArr[i] = sigEma[si++]; }
+  const hist = closes.map((_, i) => (macdArr[i] !== null && signalArr[i] !== null) ? macdArr[i] - signalArr[i] : null);
+  return { macd: macdArr, signal: signalArr, histogram: hist };
+}
+
+function changeTrackerTF(sym, tf, btn) {
+  const panel = document.getElementById('tp-' + sym);
+  if (panel) panel.querySelectorAll('.tf-btn').forEach(b => b.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+  loadTrackerBars(sym, tf);
+}
+
+function handleTrackerTick(sym, price, timestamp) {
+  const tc = trackerCharts[sym];
+  if (!tc) return;
+
+  const priceEl = document.getElementById('tp-price-' + sym);
+  if (priceEl) {
+    const prevClose = tc.bars.length > 0 ? tc.bars[tc.bars.length - 1].c : price;
+    const chg = price - prevClose;
+    const pct = prevClose ? ((chg / prevClose) * 100).toFixed(2) : '0.00';
+    priceEl.textContent = '$' + price.toFixed(2) + ' ' + (chg >= 0 ? '+' : '') + pct + '%';
+    priceEl.style.color = chg >= 0 ? 'var(--positive)' : 'var(--negative)';
+  }
+
+  const tf = tc.timeframe;
+  const intervalSec = { '1Min': 60, '5Min': 300, '15Min': 900, '1Hour': 3600, '1Day': 86400 };
+  const interval = intervalSec[tf] || 60;
+  const candleTime = Math.floor(timestamp / interval) * interval;
+
+  const buf = trackerTickBuffers[sym];
+  if (!buf || buf.t !== candleTime) {
+    trackerTickBuffers[sym] = { t: candleTime, o: price, h: price, l: price, c: price, v: 0 };
+  } else {
+    buf.h = Math.max(buf.h, price);
+    buf.l = Math.min(buf.l, price);
+    buf.c = price;
+  }
+
+  const candle = trackerTickBuffers[sym];
+  tc.candleSeries.update({ time: candle.t, open: candle.o, high: candle.h, low: candle.l, close: candle.c });
+
+  document.getElementById('tp-ohlc-' + sym).textContent =
+    'O:' + candle.o.toFixed(2) + ' H:' + candle.h.toFixed(2) + ' L:' + candle.l.toFixed(2) + ' C:' + candle.c.toFixed(2);
+}
+
+async function fetchTrackerPositions() {
+  try {
+    const data = await api('tracker/positions');
+    renderTrackerPositions(data.positions || []);
+  } catch(e) {}
+}
+
+function renderTrackerPositions(positions) {
+  const tbody = document.getElementById('trackerPositionsBody');
+  const noPos = document.getElementById('trackerNoPositions');
+  if (!positions.length) {
+    tbody.innerHTML = '';
+    noPos.style.display = 'block';
+    return;
+  }
+  noPos.style.display = 'none';
+  tbody.innerHTML = positions.map(p => {
+    const pl = parseFloat(p.unrealized_pl || 0);
+    const plPct = parseFloat(p.unrealized_plpc || 0) * 100;
+    const color = pl >= 0 ? 'var(--positive)' : 'var(--negative)';
+    return '<tr>' +
+      '<td style="font-weight:600;color:var(--positive);cursor:pointer;" onclick="addWatchSymbolDirect(\'' + p.symbol + '\')">' + p.symbol + '</td>' +
+      '<td>' + p.qty + '</td>' +
+      '<td>$' + parseFloat(p.market_value).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}) + '</td>' +
+      '<td>$' + parseFloat(p.current_price).toFixed(2) + '</td>' +
+      '<td>$' + parseFloat(p.avg_entry_price).toFixed(2) + '</td>' +
+      '<td>$' + parseFloat(p.current_price).toFixed(2) + '</td>' +
+      '<td style="color:' + color + ';font-weight:600;">$' + pl.toFixed(2) + ' (' + plPct.toFixed(2) + '%)</td>' +
+    '</tr>';
+  }).join('');
+}
+
+async function trackerBuy(sym) {
+  const qty = prompt('Buy how many shares of ' + sym + '?', '10');
+  if (!qty) return;
+  const q = parseInt(qty);
+  if (isNaN(q) || q <= 0) { alert('Invalid quantity'); return; }
+  showToast('Submitting buy order...', 'info');
+  const r = await api('tracker/order', 'POST', { symbol: sym, side: 'buy', qty: q });
+  if (r.error) { showToast('Order failed: ' + r.error, 'error'); return; }
+  showToast('Bought ' + (r.filled_qty || q) + ' ' + sym + ' @ $' + (r.filled_avg_price ? r.filled_avg_price.toFixed(2) : '?'), 'success');
+  fetchTrackerPositions();
+}
+
+async function trackerShort(sym) {
+  const qty = prompt('Short how many shares of ' + sym + '?', '10');
+  if (!qty) return;
+  const q = parseInt(qty);
+  if (isNaN(q) || q <= 0) { alert('Invalid quantity'); return; }
+  showToast('Submitting short order...', 'info');
+  const r = await api('tracker/order', 'POST', { symbol: sym, side: 'sell', qty: q });
+  if (r.error) { showToast('Order failed: ' + r.error, 'error'); return; }
+  showToast('Shorted ' + (r.filled_qty || q) + ' ' + sym + ' @ $' + (r.filled_avg_price ? r.filled_avg_price.toFixed(2) : '?'), 'success');
+  fetchTrackerPositions();
+}
+
 </script>
 </body>
 </html>"""
