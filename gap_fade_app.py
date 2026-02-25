@@ -5515,7 +5515,17 @@ class GapFadeLiveTrader:
 
         Stop losses are handled by broker-side stop orders (zero latency).
         This only evaluates: partial target, full target, time exit.
+        Also broadcasts tracker_tick for the position tracker UI.
         """
+        # Broadcast to position tracker (even when trading is paused)
+        if symbol in _tracker_watchlist:
+            await broadcast({
+                'type': 'tracker_tick',
+                'symbol': symbol,
+                'price': price,
+                'timestamp': _time.time(),
+            })
+
         if self.status != 'trading':
             return
 
@@ -7297,18 +7307,25 @@ async def place_tracker_order(request: Request):
 
 @app.post("/api/tracker/watchlist")
 async def update_tracker_watchlist(request: Request):
-    """Update symbols being tracked for real-time ticks."""
+    """Update symbols being tracked for real-time ticks.
+
+    Reuses the live trader's existing AlpacaTickStreamer connection
+    (Alpaca IEX allows only ONE WebSocket per API key). Dynamically
+    subscribes tracker symbols on the shared connection.
+    """
     global _tracker_watchlist
     body = await request.json()
     symbols = [s.upper().strip() for s in body.get('symbols', []) if s.strip()]
     _tracker_watchlist = set(symbols)
 
     streamer = getattr(live_trader, 'streamer', None)
-    if streamer and streamer.connected:
+    if streamer:
+        # Reuse existing streamer — add new symbols dynamically
         new_syms = _tracker_watchlist - set(streamer.symbols)
         if new_syms:
             await streamer.add_symbols(list(new_syms))
     elif _tracker_watchlist:
+        # No streamer exists yet — create one (only if trading loop hasn't started)
         cfg = _get_alpaca_config()
         if cfg:
             streamer = AlpacaTickStreamer(list(_tracker_watchlist), on_tick=_tracker_on_tick)
