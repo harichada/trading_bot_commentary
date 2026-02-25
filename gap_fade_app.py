@@ -10303,7 +10303,7 @@ function renderTrackerPositions(positions) {
     const plPct = parseFloat(p.unrealized_plpc || 0) * 100;
     const color = pl >= 0 ? 'var(--positive)' : 'var(--negative)';
     return '<tr>' +
-      '<td style="font-weight:600;color:var(--positive);cursor:pointer;" onclick="addWatchSymbolDirect(\'' + p.symbol + '\')">' + p.symbol + '</td>' +
+      '<td style="font-weight:600;color:var(--positive);cursor:pointer;" onclick="addWatchSymbolDirect(\\x27' + p.symbol + '\\x27)">' + p.symbol + '</td>' +
       '<td>' + p.qty + '</td>' +
       '<td>$' + parseFloat(p.market_value).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}) + '</td>' +
       '<td>$' + parseFloat(p.current_price).toFixed(2) + '</td>' +
