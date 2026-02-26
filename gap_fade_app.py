@@ -29,6 +29,7 @@ import json
 import logging
 import os
 import sqlite3
+import subprocess
 import time as _time
 import traceback
 from collections import defaultdict
@@ -50,6 +51,21 @@ import uvicorn
 
 logger = logging.getLogger('GapFadeApp')
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(name)s] %(levelname)s: %(message)s')
+
+# App version from git tag (e.g. v5-loop-fixes -> v5.0)
+def _get_version() -> str:
+    try:
+        tag = subprocess.check_output(
+            ['git', 'describe', '--tags', '--abbrev=0'],
+            stderr=subprocess.DEVNULL, text=True
+        ).strip()
+        # Extract version number: "v5-loop-fixes" -> "5"
+        num = tag.lstrip('v').split('-')[0]
+        return f'v{num}.0'
+    except Exception:
+        return 'v0.0'
+
+APP_VERSION = _get_version()
 
 # Eastern timezone offset (UTC-5 standard, UTC-4 DST)
 try:
@@ -4282,15 +4298,16 @@ class GapFadeLiveTrader:
         # Telegram alerts
         self.alerter = AlertNotifier(self.config)
 
-        # LLM Supervisor
+        # Load persisted state (before LLM init so config overrides apply)
+        self.llm_supervisor = None
+        self._load_state()
+
+        # LLM Supervisor (after state load so llm_enabled from saved config takes effect)
         if self.config.llm_enabled:
             self.llm_supervisor = LLMSupervisor(self.config)
             logger.info(f"Rudra enabled: {self.config.llm_model} @ {self.config.llm_url}")
         else:
-            self.llm_supervisor = None
-
-        # Load persisted state
-        self._load_state()
+            logger.info("Rudra disabled (llm_enabled=false)")
 
     def _add_message(self, msg_type: str, text: str, data: dict = None):
         """Add a message to the decision feed."""
@@ -4306,7 +4323,8 @@ class GapFadeLiveTrader:
 
     async def start(self):
         """Start the live trading loop."""
-        if self.status == 'trading':
+        if self.status in ('trading', 'scanning'):
+            logger.info(f"Start called but already {self.status}, skipping")
             return
         self.status = 'scanning'
         # Only reset daily stats on a genuinely new day (not mid-day restart)
@@ -4756,6 +4774,7 @@ class GapFadeLiveTrader:
 
         try:
             while self.status != 'stopped':
+              try:
                 self._last_loop_heartbeat = _time.monotonic()
                 now = datetime.now(ET)
                 today = now.strftime('%Y-%m-%d')
@@ -4863,15 +4882,27 @@ class GapFadeLiveTrader:
                         self._add_message('llm', f'Standing down for {standdown_min} minutes')
                         await asyncio.sleep(min(standdown_min * 60, 1800))
                         self.status = 'scanning'
+                        await broadcast({'type': 'live_status', 'status': 'scanning'})
                     elif action == 'wait':
+                        new_status = 'trading' if self.engine.positions else 'scanning'
+                        if self.status != new_status:
+                            self.status = new_status
+                            await broadcast({'type': 'live_status', 'status': new_status})
                         await asyncio.sleep(30)
                     else:  # monitor
                         if self.engine.positions:
+                            if self.status != 'trading':
+                                self.status = 'trading'
+                                await broadcast({'type': 'live_status', 'status': 'trading'})
                             await self._check_positions()
                             if _time.monotonic() - self._last_reconcile > self.RECONCILE_INTERVAL:
                                 await self._reconcile_with_broker()
                             # Autonomous review: periodic portfolio self-check
                             await self._execute_autonomous_review()
+                        else:
+                            if self.status != 'scanning':
+                                self.status = 'scanning'
+                                await broadcast({'type': 'live_status', 'status': 'scanning'})
                         await asyncio.sleep(15)
                     continue
 
@@ -4931,11 +4962,18 @@ class GapFadeLiveTrader:
                 # Waiting for next event
                 await asyncio.sleep(30)
 
+              except asyncio.CancelledError:
+                raise
+              except Exception as e:
+                logger.error(f"Trading loop iteration error: {e}\n{traceback.format_exc()}")
+                self._add_message('error', f'Loop error (retrying): {e}')
+                await asyncio.sleep(15)  # backoff before retrying
+
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            logger.error(f"Trading loop error: {e}\n{traceback.format_exc()}")
-            self._add_message('error', f'Trading loop error: {e}')
+            logger.error(f"Trading loop fatal error: {e}\n{traceback.format_exc()}")
+            self._add_message('error', f'Trading loop fatal error: {e}')
             await self.alerter.send('Trading Loop Error',
                 f'{type(e).__name__}: {e}', level='error')
 
@@ -6185,7 +6223,7 @@ async def lifespan(app):
     logger.info("Gap Fade app started")
     yield
 
-app = FastAPI(title="Gap Fade Strategy", version="1.0", lifespan=lifespan)
+app = FastAPI(title="Gap Fade Strategy", version=APP_VERSION, lifespan=lifespan)
 _app_start_time = _time.time()
 
 # ---------------------------------------------------------------------------
@@ -6365,7 +6403,7 @@ async def dashboard():
     html = DASHBOARD_HTML.replace(
         '/*__API_KEY_PLACEHOLDER__*/',
         f'const __API_KEY__ = "{api_key}";',
-    )
+    ).replace('__APP_VERSION__', APP_VERSION)
     return HTMLResponse(html)
 
 
@@ -7899,6 +7937,23 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   }
   .status-bar .left { display: flex; gap: 24px; }
   .status-bar .right { display: flex; gap: 16px; }
+  .version-link { cursor: pointer; text-decoration: underline; text-decoration-style: dotted; text-underline-offset: 3px; }
+  .version-link:hover { color: var(--cyan); }
+
+  /* ── Release Notes Modal ── */
+  .rn-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,0.7); z-index:9999; justify-content:center; align-items:center; }
+  .rn-overlay.open { display:flex; }
+  .rn-modal { background:var(--surface); border:1px solid var(--border); border-radius:8px; width:540px; max-height:80vh; display:flex; flex-direction:column; }
+  .rn-header { display:flex; justify-content:space-between; align-items:center; padding:16px 20px; border-bottom:1px solid var(--border); }
+  .rn-header h3 { margin:0; font-size:16px; color:var(--cyan); }
+  .rn-close { background:none; border:none; color:var(--muted); font-size:20px; cursor:pointer; padding:0 4px; }
+  .rn-close:hover { color:var(--text); }
+  .rn-body { padding:20px; overflow-y:auto; font-size:13px; line-height:1.7; }
+  .rn-body h4 { color:var(--cyan); margin:16px 0 8px 0; font-size:14px; }
+  .rn-body h4:first-child { margin-top:0; }
+  .rn-body ul { margin:4px 0 12px 0; padding-left:20px; }
+  .rn-body li { margin:2px 0; color:var(--text); }
+  .rn-body .rn-tag { display:inline-block; background:rgba(0,212,255,0.15); color:var(--cyan); padding:1px 8px; border-radius:4px; font-size:11px; font-family:var(--mono); margin-left:6px; }
 
   /* ── P&L granularity buttons ── */
   .pnl-gran-btn {
@@ -8656,9 +8711,57 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   </div>
   <div class="right">
     <span id="statusConn" style="color:var(--negative);">&#9675; Offline</span>
-    <span>Gap Fade v1.0</span>
+    <span class="version-link" onclick="document.getElementById('releaseNotesModal').classList.add('open')">Gap Fade __APP_VERSION__</span>
   </div>
 </footer>
+
+<!-- ── Release Notes Modal ── -->
+<div id="releaseNotesModal" class="rn-overlay" onclick="if(event.target===this)this.classList.remove('open')">
+  <div class="rn-modal">
+    <div class="rn-header">
+      <h3>Release Notes</h3>
+      <button class="rn-close" onclick="document.getElementById('releaseNotesModal').classList.remove('open')">&times;</button>
+    </div>
+    <div class="rn-body">
+      <h4>v5.0 <span class="rn-tag">current</span></h4>
+      <ul>
+        <li>Fix LLM supervisor not initializing from saved config</li>
+        <li>Status badge now updates for all LLM actions (wait, monitor)</li>
+        <li>Trading loop resilience &mdash; single errors no longer kill the loop</li>
+        <li>Double-start guard prevents duplicate trading loops</li>
+        <li>Relaxed standdown rules &mdash; consecutive losses alone don't halt trading</li>
+        <li>Version number displayed in UI from git tags</li>
+      </ul>
+      <h4>v4.0</h4>
+      <ul>
+        <li>Real-time position tracker with candlestick charts</li>
+        <li>Watchlist with live price streaming</li>
+        <li>Per-position controls and autonomous LLM review loop</li>
+        <li>LLM learning from trades: metadata tracking, dynamic lessons</li>
+        <li>Full zero-human-intervention automation</li>
+      </ul>
+      <h4>v3.0</h4>
+      <ul>
+        <li>LLM chat interface for interactive trading conversations</li>
+        <li>Ask Rudra questions, trigger actions via natural language</li>
+      </ul>
+      <h4>v2.0</h4>
+      <ul>
+        <li>LLM supervisor (Rudra) for autonomous trading decisions</li>
+        <li>Scan, enter, monitor, standdown &mdash; all LLM-driven</li>
+        <li>Circuit breaker with fallback to rules-based schedule</li>
+      </ul>
+      <h4>v1.0</h4>
+      <ul>
+        <li>Gap fade strategy dashboard with embedded UI</li>
+        <li>OAuth authentication (Google/GitHub/Discord)</li>
+        <li>Alpaca paper trading integration</li>
+        <li>SQLite price database with historical backtesting</li>
+        <li>Catalyst detection (earnings, FDA, M&amp;A filtering)</li>
+      </ul>
+    </div>
+  </div>
+</div>
 
 </div><!-- #app -->
 
@@ -10376,7 +10479,7 @@ if __name__ == '__main__':
     app_port = int(os.environ.get('GAP_FADE_PORT', '8002'))
 
     print("=" * 60)
-    print("  Gap Fade Strategy Dashboard")
+    print(f"  Gap Fade Strategy Dashboard ({APP_VERSION})")
     print(f"  http://localhost:{app_port}")
     print("=" * 60)
     print()
