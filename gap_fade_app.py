@@ -814,13 +814,14 @@ class AlpacaTickStreamer:
                                 if item.get('T') == 't':
                                     sym = item.get('S', '')
                                     price = float(item['p'])
+                                    size = int(item.get('s', 0))
                                     self.latest_prices[sym] = price
                                     if self.on_tick:
                                         now = _time.monotonic()
                                         last = self._last_push.get(sym, 0.0)
                                         if now - last >= self.THROTTLE_SEC:
                                             self._last_push[sym] = now
-                                            await self.on_tick(sym, price)
+                                            await self.on_tick(sym, price, size)
                         elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
                             break
 
@@ -965,9 +966,39 @@ class PriceDB:
             CREATE INDEX IF NOT EXISTS idx_bars_date_symbol
             ON daily_bars (date, symbol)
         ''')
+        # Persistent trade storage — all completed trades survive restarts
+        self._conn.execute('''
+            CREATE TABLE IF NOT EXISTS trades (
+                trade_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol        TEXT NOT NULL,
+                entry_price   REAL NOT NULL,
+                exit_price    REAL NOT NULL,
+                shares        INTEGER NOT NULL,
+                pnl           REAL NOT NULL,
+                pnl_pct       REAL NOT NULL,
+                entry_time    TEXT NOT NULL,
+                exit_time     TEXT NOT NULL,
+                exit_reason   TEXT NOT NULL,
+                holding_minutes INTEGER DEFAULT 0,
+                side          TEXT DEFAULT 'short',
+                gap_pct       REAL DEFAULT 0.0,
+                vol_ratio     REAL DEFAULT 0.0,
+                score         REAL DEFAULT 0.0,
+                catalyst      TEXT DEFAULT '',
+                UNIQUE(symbol, entry_time, exit_time, shares, exit_reason)
+            )
+        ''')
+        self._conn.execute('''
+            CREATE INDEX IF NOT EXISTS idx_trades_entry_time
+            ON trades (entry_time)
+        ''')
+        self._conn.execute('''
+            CREATE INDEX IF NOT EXISTS idx_trades_symbol_entry
+            ON trades (symbol, entry_time)
+        ''')
         self._conn.commit()
         # Update query planner statistics (fast on subsequent runs)
-        self._conn.execute('ANALYZE daily_bars')
+        self._conn.execute('ANALYZE')
 
     def upsert_bars(self, symbol: str, df: pd.DataFrame):
         """Insert or replace bars for a single symbol from a DataFrame."""
@@ -1235,6 +1266,92 @@ class PriceDB:
 
         return all_gaps
 
+    # ── Trade persistence ─────────────────────────────────────────────
+
+    def insert_trade(self, trade) -> bool:
+        """INSERT OR IGNORE a TradeRecord (or dict) into the trades table.
+        Returns True if a row was inserted, False if duplicate/ignored."""
+        d = trade if isinstance(trade, dict) else asdict(trade)
+        try:
+            cur = self._conn.execute(
+                '''INSERT OR IGNORE INTO trades
+                   (symbol, entry_price, exit_price, shares, pnl, pnl_pct,
+                    entry_time, exit_time, exit_reason, holding_minutes,
+                    side, gap_pct, vol_ratio, score, catalyst)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                (d['symbol'], d['entry_price'], d['exit_price'], d['shares'],
+                 d['pnl'], d['pnl_pct'], d['entry_time'], d['exit_time'],
+                 d['exit_reason'], d.get('holding_minutes', 0),
+                 d.get('side', 'short'), d.get('gap_pct', 0.0),
+                 d.get('vol_ratio', 0.0), d.get('score', 0.0),
+                 d.get('catalyst', '')))
+            self._conn.commit()
+            return cur.rowcount > 0
+        except Exception as e:
+            logger.error(f"PriceDB.insert_trade failed: {e}")
+            return False
+
+    def load_all_trades(self) -> List[dict]:
+        """Load all trades ordered by trade_id (insertion order)."""
+        try:
+            cur = self._conn.execute(
+                '''SELECT symbol, entry_price, exit_price, shares, pnl, pnl_pct,
+                          entry_time, exit_time, exit_reason, holding_minutes,
+                          side, gap_pct, vol_ratio, score, catalyst
+                   FROM trades ORDER BY trade_id''')
+            cols = ['symbol', 'entry_price', 'exit_price', 'shares', 'pnl', 'pnl_pct',
+                    'entry_time', 'exit_time', 'exit_reason', 'holding_minutes',
+                    'side', 'gap_pct', 'vol_ratio', 'score', 'catalyst']
+            return [dict(zip(cols, row)) for row in cur]
+        except Exception as e:
+            logger.error(f"PriceDB.load_all_trades failed: {e}")
+            return []
+
+    def query_trades(self, start_date: str = None, end_date: str = None,
+                     symbol: str = None, limit: int = 100, offset: int = 0) -> dict:
+        """Paginated trade query. Returns {trades, total, limit, offset}."""
+        try:
+            where_clauses = []
+            params: list = []
+            if start_date:
+                where_clauses.append('entry_time >= ?')
+                params.append(start_date)
+            if end_date:
+                where_clauses.append('entry_time <= ?')
+                params.append(end_date)
+            if symbol:
+                where_clauses.append('symbol = ?')
+                params.append(symbol.upper())
+            where_sql = (' WHERE ' + ' AND '.join(where_clauses)) if where_clauses else ''
+
+            # Total count
+            total = self._conn.execute(
+                f'SELECT COUNT(*) FROM trades{where_sql}', params).fetchone()[0]
+
+            # Paginated results (newest first)
+            cur = self._conn.execute(
+                f'''SELECT symbol, entry_price, exit_price, shares, pnl, pnl_pct,
+                           entry_time, exit_time, exit_reason, holding_minutes,
+                           side, gap_pct, vol_ratio, score, catalyst
+                    FROM trades{where_sql}
+                    ORDER BY trade_id DESC LIMIT ? OFFSET ?''',
+                params + [limit, offset])
+            cols = ['symbol', 'entry_price', 'exit_price', 'shares', 'pnl', 'pnl_pct',
+                    'entry_time', 'exit_time', 'exit_reason', 'holding_minutes',
+                    'side', 'gap_pct', 'vol_ratio', 'score', 'catalyst']
+            trades = [dict(zip(cols, row)) for row in cur]
+            return {'trades': trades, 'total': total, 'limit': limit, 'offset': offset}
+        except Exception as e:
+            logger.error(f"PriceDB.query_trades failed: {e}")
+            return {'trades': [], 'total': 0, 'limit': limit, 'offset': offset}
+
+    def count_trades(self) -> int:
+        """Return total number of trades in the database."""
+        try:
+            return self._conn.execute('SELECT COUNT(*) FROM trades').fetchone()[0]
+        except Exception:
+            return 0
+
     @staticmethod
     def _gap_row_to_dict(row) -> dict:
         """Convert a gap SQL row tuple to a dict."""
@@ -1422,11 +1539,14 @@ class GapFadeConfig:
     # LLM Supervisor
     llm_enabled: bool = False
     llm_url: str = 'http://localhost:11434'
-    llm_model: str = 'rudra:latest'
-    llm_timeout: float = 10.0               # seconds per LLM call
+    llm_model: str = 'gpt-oss:20b'
+    llm_timeout: float = 30.0               # seconds per LLM call
     llm_max_failures: int = 5               # circuit breaker opens after N failures
     llm_circuit_reset: float = 120.0        # seconds before retrying after circuit opens
     llm_max_hold_overrides: int = 2          # max times LLM can override a stop per position
+
+    # Strategy plugin
+    active_strategy: str = 'classic_gap_fade'  # strategy ID from registry
 
 
 @dataclass
@@ -1478,6 +1598,7 @@ class GapPosition:
     vol_ratio: float = 0.0
     score: float = 0.0
     catalyst: str = ''
+    strategy_id: str = ''                # which strategy opened this position
 
     def __post_init__(self):
         if self.remaining_shares == 0:
@@ -2783,6 +2904,13 @@ class GapFadeEngine:
         self.trade_log.append(trade)
         self.all_trade_log.append(trade)
 
+        # Persist to SQLite (live trades only — backtests stay out)
+        if not self.backtest_mode:
+            try:
+                get_price_db().insert_trade(trade)
+            except Exception as e:
+                logger.error(f"SQLite trade persist failed (non-fatal): {e}")
+
     def reset_daily(self):
         """Reset daily stats for new trading day."""
         self.daily_stats = DailyStats(
@@ -2849,20 +2977,52 @@ class GapFadeEngine:
 class GapFadeBacktester:
     """Backtest gap fade strategy using 1-minute Alpaca bars."""
 
-    def __init__(self, config: GapFadeConfig = None):
+    def __init__(self, config: GapFadeConfig = None, strategy_id: str = ''):
         self.config = config or GapFadeConfig()
         self.progress = 0.0
         self.status = 'idle'
         self._cancel = False
         self.result = None
+        self.strategy = None
+        self.strategy_id = strategy_id
+        if strategy_id:
+            self._load_strategy(strategy_id)
+
+    def _load_strategy(self, strategy_id: str, strategy_config: dict = None):
+        """Load a strategy for backtest use."""
+        try:
+            from gap_fade_strategies import GapFadeStrategyRegistry
+            if GapFadeStrategyRegistry.has_strategy(strategy_id):
+                self.strategy = GapFadeStrategyRegistry.create_strategy(strategy_id, strategy_config)
+                self.strategy_id = strategy_id
+                logger.info(f"Backtest strategy: {self.strategy.name} ({strategy_id})")
+            else:
+                logger.warning(f"Backtest strategy '{strategy_id}' not found, using engine defaults")
+                self.strategy = None
+                self.strategy_id = ''
+        except Exception as e:
+            logger.warning(f"Failed to load backtest strategy '{strategy_id}': {e}")
+            self.strategy = None
+            self.strategy_id = ''
 
     async def run(self, symbol: str = None, symbols: List[str] = None,
                   start_date: str = None, end_date: str = None,
                   config: GapFadeConfig = None,
                   progress_callback=None, **kwargs) -> dict:
-        """Run backtest. use_1min=True for detailed 1-min bar simulation (slow)."""
+        """Run backtest. use_1min=True for detailed 1-min bar simulation (slow).
+
+        kwargs:
+            strategy_id: str — strategy to use (default: engine defaults)
+            strategy_config: dict — strategy-specific config overrides
+        """
         if config:
             self.config = config
+
+        # Load strategy if specified
+        strategy_id = kwargs.get('strategy_id', self.strategy_id or '')
+        strategy_config = kwargs.get('strategy_config')
+        if strategy_id:
+            self._load_strategy(strategy_id, strategy_config)
 
         self.status = 'running'
         self._cancel = False
@@ -3028,6 +3188,24 @@ class GapFadeBacktester:
                 break
 
             day_gaps = gaps_by_date[date_str]
+
+            # Strategy plugin: filter and re-score candidates for this day
+            if self.strategy:
+                filtered_gaps = []
+                for g in day_gaps:
+                    ok, reason = self.strategy.filter_candidate(g)
+                    if ok:
+                        new_score = self.strategy.score_candidate(g)
+                        if new_score is not None:
+                            g['score'] = new_score
+                        filtered_gaps.append(g)
+                if len(filtered_gaps) < len(day_gaps):
+                    await _log('strategy',
+                        f'{date_str}: {self.strategy.name} filtered '
+                        f'{len(day_gaps) - len(filtered_gaps)} candidates '
+                        f'({len(filtered_gaps)} remain)')
+                day_gaps = filtered_gaps
+
             # Thin day: if fewer candidates than threshold, trade all; else cap at max_positions
             eff_max = engine.effective_max_positions(len(day_gaps))
             engine._effective_max_positions = eff_max
@@ -3117,6 +3295,12 @@ class GapFadeBacktester:
             'adverse_fill_pct': self.config.adverse_fill_pct,
         }
 
+        # Strategy info
+        metrics['strategy'] = {
+            'id': self.strategy_id or 'classic_gap_fade',
+            'name': self.strategy.name if self.strategy else 'Classic Gap Fade (engine defaults)',
+        }
+
         # Survivorship bias warning
         warnings = []
         if len(syms) > 50:
@@ -3188,17 +3372,21 @@ class GapFadeBacktester:
                 entry_price = day_open * (1 + slip)  # long gets worse (higher) fill
             else:
                 entry_price = day_open * (1 - slip)  # short gets worse (lower) fill
-        entry_time_str = f'{gap["date"]} 09:31'
+        # Entry time: strategy can override (e.g. VWAP enters at 9:45)
+        _ew = self.strategy.get_entry_window() if self.strategy else None
+        _entry_min = _ew[1] if _ew else 31
+        entry_time_str = f'{gap["date"]} 09:{_entry_min:02d}'
         # Estimated exit times for daily-bar mode (we don't know exact intrabar timing)
         exit_stop_str = f'{gap["date"]} 10:30'     # stops tend to hit early
         exit_partial_str = f'{gap["date"]} 12:00'   # partial midday
         exit_full_str = f'{gap["date"]} 14:00'      # full target afternoon
         exit_close_str = f'{gap["date"]} 15:55'     # EOD exit
-        # Holding minutes estimates (from 09:31)
-        hold_stop = 59       # ~1h
-        hold_partial = 149   # ~2.5h
-        hold_full = 269      # ~4.5h
-        hold_close = 384     # ~6.5h
+        # Holding minutes estimates (from entry time)
+        _base_min = _entry_min  # 31 for classic, 45 for VWAP
+        hold_stop = 60 + (31 - _base_min)    # ~1h from entry
+        hold_partial = 150 + (31 - _base_min)
+        hold_full = 270 + (31 - _base_min)
+        hold_close = 385 + (31 - _base_min)
 
         ok, reason = engine.should_enter(candidate)
         if not ok:
@@ -3215,6 +3403,19 @@ class GapFadeBacktester:
             stop_price = entry_price * (1 + eff_stop_pct)
             half_target = (entry_price + prev_close) / 2
             full_target = prev_close
+
+        # Strategy plugin: override stop and targets
+        if self.strategy:
+            # Build synthetic tick_data from daily bar for strategy stop computation
+            # Use estimated HOD at entry time (not full day's high — that's look-ahead bias)
+            _est_hod = max(day_open, entry_price) * 1.01  # ~1% above open, typical HOD at ~9:45
+            _bt_tick_data = {'day_high': _est_hod, 'vwap': 0, 'or_high': 0, 'or_low': 0, 'or_complete': False}
+            strat_stop = self.strategy.compute_stop_price(entry_price, gap, _bt_tick_data)
+            if strat_stop is not None:
+                stop_price = strat_stop
+            strat_targets = self.strategy.compute_targets(entry_price, gap, _bt_tick_data)
+            if strat_targets is not None:
+                half_target, full_target = strat_targets
 
         risk_per_share = abs(stop_price - entry_price)
         # Kelly-adjusted risk sizing (mirrors compute_position_size)
@@ -3492,14 +3693,21 @@ class GapFadeBacktester:
         return min_df
 
     def _find_entry_bar(self, times) -> int:
-        """Find first bar at/after 9:31 ET."""
+        """Find first bar at/after entry window start.
+
+        Uses strategy entry window if available (e.g. 9:45 for VWAP),
+        otherwise defaults to 9:31.
+        """
+        _ew = self.strategy.get_entry_window() if self.strategy else None
+        _entry_h = _ew[0] if _ew else 9
+        _entry_m = _ew[1] if _ew else 31
         for bi in range(len(times)):
             t = times[bi]
             h = t.hour if hasattr(t, 'hour') else t.to_pydatetime().hour
             m = t.minute if hasattr(t, 'minute') else t.to_pydatetime().minute
-            if h == 9 and m >= 31:
+            if h == _entry_h and m >= _entry_m:
                 return bi
-            elif h > 9:
+            elif h > _entry_h:
                 return bi
         return -1
 
@@ -3553,6 +3761,17 @@ class GapFadeBacktester:
         if pos is None:
             log.append({'level': 'skip', 'msg': f'{sym} {gap["date"]}: position size = 0 (equity=${engine.equity:.0f})'})
             return day_trades, log
+
+        # Strategy plugin: override stop and targets
+        if self.strategy:
+            _bt_tick_data = {'day_high': float(max(highs[:entry_bar+1])) if entry_bar > 0 else float(highs[0]),
+                             'vwap': 0, 'or_high': 0, 'or_low': 0, 'or_complete': False}
+            strat_stop = self.strategy.compute_stop_price(entry_price, gap, _bt_tick_data)
+            if strat_stop is not None:
+                pos.stop_price = strat_stop
+            strat_targets = self.strategy.compute_targets(entry_price, gap, _bt_tick_data)
+            if strat_targets is not None:
+                pos.half_target, pos.full_target = strat_targets
 
         side_label = 'LONG' if direction == 'long' else 'SHORT'
         if direction == 'long':
@@ -4302,9 +4521,23 @@ class GapFadeLiveTrader:
         self.llm_supervisor = None
         self._load_state()
 
+        # Strategy plugin system
+        self.strategy = None
+        self.indicator_engine = None
+        self._strategy_config = {}  # strategy-specific config from state
+        self._load_strategy(self.config.active_strategy)
+
         # LLM Supervisor (after state load so llm_enabled from saved config takes effect)
         if self.config.llm_enabled:
             self.llm_supervisor = LLMSupervisor(self.config)
+            # Apply strategy-specific LLM prompts
+            if self.strategy:
+                sys_prompt = self.strategy.get_llm_system_prompt()
+                if sys_prompt:
+                    self.llm_supervisor._SYSTEM_PROMPT = sys_prompt
+                profit_prompt = self.strategy.get_llm_profit_prompt()
+                if profit_prompt:
+                    self.llm_supervisor._PROFIT_SYSTEM_PROMPT = profit_prompt
             logger.info(f"Rudra enabled: {self.config.llm_model} @ {self.config.llm_url}")
         else:
             logger.info("Rudra disabled (llm_enabled=false)")
@@ -4320,6 +4553,60 @@ class GapFadeLiveTrader:
         self.messages.append(msg)
         if len(self.messages) > 200:
             self.messages = self.messages[-100:]
+
+    def _load_strategy(self, strategy_id: str):
+        """Load a strategy by ID, creating indicator engine if needed."""
+        try:
+            from gap_fade_strategies import GapFadeStrategyRegistry, TickIndicatorEngine
+            if not GapFadeStrategyRegistry.has_strategy(strategy_id):
+                logger.warning(f"Strategy '{strategy_id}' not found, falling back to classic_gap_fade")
+                strategy_id = 'classic_gap_fade'
+            self.strategy = GapFadeStrategyRegistry.create_strategy(
+                strategy_id, config=self._strategy_config.get(strategy_id))
+            self.config.active_strategy = strategy_id
+
+            # Create indicator engine if strategy needs it
+            required = self.strategy.get_required_indicators()
+            if required:
+                ema_period = self.strategy.config.get('ema_trailing_period', 9)
+                or_minutes = self.strategy.config.get('opening_range_minutes', 5)
+                ema_buffer = self.strategy.config.get('ema_trailing_buffer_pct', 0.001)
+                self.indicator_engine = TickIndicatorEngine(
+                    indicators=required,
+                    ema_period=ema_period,
+                    or_minutes=or_minutes,
+                    ema_buffer_pct=ema_buffer,
+                )
+                logger.info(f"Indicator engine created: {required}")
+            else:
+                self.indicator_engine = None
+
+            logger.info(f"Strategy loaded: {self.strategy.name} ({strategy_id})")
+        except Exception as e:
+            logger.error(f"Failed to load strategy '{strategy_id}': {e}")
+            self.strategy = None
+            self.indicator_engine = None
+
+    def switch_strategy(self, strategy_id: str, strategy_config: dict = None):
+        """Hot-swap the active strategy (no restart needed).
+
+        Existing positions continue with engine defaults.
+        """
+        if strategy_config:
+            self._strategy_config[strategy_id] = strategy_config
+        self._load_strategy(strategy_id)
+
+        # Update LLM prompts if supervisor is active
+        if self.llm_supervisor and self.strategy:
+            sys_prompt = self.strategy.get_llm_system_prompt()
+            if sys_prompt:
+                self.llm_supervisor._SYSTEM_PROMPT = sys_prompt
+            profit_prompt = self.strategy.get_llm_profit_prompt()
+            if profit_prompt:
+                self.llm_supervisor._PROFIT_SYSTEM_PROMPT = profit_prompt
+
+        self._save_state()
+        self._add_message('strategy', f'Switched to: {self.strategy.name if self.strategy else strategy_id}')
 
     async def start(self):
         """Start the live trading loop."""
@@ -4925,19 +5212,28 @@ class GapFadeLiveTrader:
                 if now.hour == 9 and now.minute >= 25 and not _did_scan_925:
                     _did_scan_925 = True
                     await self._run_scan()
-                    # Fast-poll until 9:31 instead of sleeping 30s
-                    seconds_to_931 = max(0, (31 - now.minute) * 60 - now.second)
-                    if seconds_to_931 > 0:
-                        self._add_message('info', f'Scan done — waiting {seconds_to_931}s for 9:31 entry')
-                        await asyncio.sleep(min(seconds_to_931, 5))
+                    # Fast-poll until entry window opens
+                    _ew = self.strategy.get_entry_window() if self.strategy else None
+                    _ew_min = _ew[1] if _ew else 31
+                    _seconds_to_entry = max(0, (_ew_min - now.minute) * 60 - now.second)
+                    if _seconds_to_entry > 0:
+                        self._add_message('info', f'Scan done — waiting {_seconds_to_entry}s for 9:{_ew_min:02d} entry')
+                        await asyncio.sleep(min(_seconds_to_entry, 5))
                     continue
 
-                # Market open — enter positions at 9:31+ AM
-                _cutoff_h = self.config.entry_cutoff_hour
-                _cutoff_m = self.config.entry_cutoff_min
+                # Market open — enter positions (strategy controls entry window)
+                _entry_window = self.strategy.get_entry_window() if self.strategy else None
+                if _entry_window:
+                    _entry_start_h, _entry_start_m, _cutoff_h, _cutoff_m = _entry_window
+                else:
+                    _entry_start_h, _entry_start_m = 9, 31
+                    _cutoff_h = self.config.entry_cutoff_hour
+                    _cutoff_m = self.config.entry_cutoff_min
                 _before_cutoff = (now.hour < _cutoff_h or
                                   (now.hour == _cutoff_h and now.minute < _cutoff_m))
-                if ((now.hour == 9 and now.minute >= 31) or (now.hour >= 10 and _before_cutoff)) and not _did_enter:
+                _after_entry_start = (now.hour > _entry_start_h or
+                                      (now.hour == _entry_start_h and now.minute >= _entry_start_m))
+                if _after_entry_start and _before_cutoff and not _did_enter:
                     if self.status in ('scanning', 'waiting'):
                         # If no candidates (e.g. mid-day restart), scan first
                         if not self.candidates:
@@ -4997,6 +5293,27 @@ class GapFadeLiveTrader:
                 self._add_message('catalyst', f'Catalyst scan: {dict(cat_counts)}')
             except Exception as e:
                 logger.warning(f"Catalyst detection failed (non-fatal): {e}")
+
+        # Strategy plugin: filter and re-score candidates
+        if self.strategy and self.candidates:
+            pre_count = len(self.candidates)
+            filtered = []
+            for c in self.candidates:
+                ok, reason = self.strategy.filter_candidate(asdict(c))
+                if ok:
+                    # Strategy scoring override
+                    new_score = self.strategy.score_candidate(asdict(c))
+                    if new_score is not None:
+                        c.score = new_score
+                    filtered.append(c)
+                else:
+                    logger.debug(f"Strategy filtered {c.symbol}: {reason}")
+            if len(filtered) < pre_count:
+                self._add_message('strategy',
+                    f'{self.strategy.name}: filtered {pre_count - len(filtered)} candidates '
+                    f'({len(filtered)} remain)')
+            self.candidates = filtered
+            self.candidates.sort(key=lambda c: c.score, reverse=True)
 
         self._add_message('scan', f'Found {len(self.candidates)} candidates from {universe_size} symbols', {
             'candidates': [asdict(c) for c in self.candidates[:10]]
@@ -5139,11 +5456,24 @@ class GapFadeLiveTrader:
                             level='warning', throttle_key='circuit_breaker')
                     continue
 
+                # Strategy plugin: should_enter_now gate
+                if self.strategy:
+                    tick_data = self.indicator_engine.get_data(candidate.symbol) if self.indicator_engine else None
+                    strat_ok, strat_reason = self.strategy.should_enter_now(
+                        asdict(candidate), candidate.premarket_price, tick_data, datetime.now(ET))
+                    if not strat_ok:
+                        self._add_message('strategy',
+                            f'Strategy skip {candidate.symbol}: {strat_reason}')
+                        continue
+
                 entry_price = candidate.premarket_price
                 entry_time = datetime.now(ET).strftime('%Y-%m-%d %H:%M')
                 pos = self.engine.open_position(candidate, entry_price, entry_time)
                 if pos is None:
                     continue
+
+                # Tag position with strategy
+                pos.strategy_id = self.config.active_strategy
 
                 # LLM size adjustment
                 if size_mult != 1.0 and pos.shares > 1:
@@ -5190,6 +5520,18 @@ class GapFadeLiveTrader:
                         else:
                             pos.stop_price = fill.filled_avg_price * (1 + eff_stop_pct)
                         pos.half_target = (fill.filled_avg_price + candidate.prev_close) / 2
+
+                        # Strategy plugin: override stop and targets
+                        if self.strategy:
+                            tick_data = self.indicator_engine.get_data(candidate.symbol) if self.indicator_engine else None
+                            strat_stop = self.strategy.compute_stop_price(
+                                fill.filled_avg_price, asdict(candidate), tick_data)
+                            if strat_stop is not None:
+                                pos.stop_price = strat_stop
+                            strat_targets = self.strategy.compute_targets(
+                                fill.filled_avg_price, asdict(candidate), tick_data)
+                            if strat_targets is not None:
+                                pos.half_target, pos.full_target = strat_targets
 
                     # Place broker-side stop order immediately
                     stop_result = await asyncio.to_thread(
@@ -5555,13 +5897,18 @@ class GapFadeLiveTrader:
                     })
                     self._save_state()
 
-    async def _on_tick(self, symbol: str, price: float):
+    async def _on_tick(self, symbol: str, price: float, size: int = 0):
         """Tick callback from Alpaca stream — evaluate non-stop exits under lock.
 
         Stop losses are handled by broker-side stop orders (zero latency).
-        This only evaluates: partial target, full target, time exit.
+        This only evaluates: partial target, full target, time exit,
+        and strategy-specific exits (EMA cross, trailing stop).
         Also broadcasts tracker_tick for the position tracker UI.
         """
+        # Feed indicator engine (if active)
+        if self.indicator_engine and size > 0:
+            self.indicator_engine.on_tick(symbol, price, size)
+
         # Broadcast to position tracker (even when trading is paused)
         if symbol in _tracker_watchlist:
             await broadcast({
@@ -5582,9 +5929,47 @@ class GapFadeLiveTrader:
             now = datetime.now(ET)
             pos.update_tracking(price, now.strftime('%H:%M:%S'))
 
-            # evaluate_exit checks all conditions including stop, but if the
-            # position has a broker stop order, skip the software stop check
-            exit_signal = self.engine.evaluate_exit(symbol, price, price, now)
+            # Strategy-specific trailing stop update
+            if self.strategy and self.indicator_engine:
+                tick_data = self.indicator_engine.get_data(symbol)
+                new_stop = self.strategy.update_trailing_stop(
+                    asdict(pos), price, tick_data, now)
+                if new_stop is not None:
+                    old_stop = pos.stop_price
+                    pos.stop_price = new_stop
+                    if abs(new_stop - old_stop) > 0.001:
+                        self._add_message('strategy',
+                            f'Trailing stop {symbol}: ${old_stop:.2f} -> ${new_stop:.2f}')
+                        # Update broker stop if we have one
+                        if pos.stop_order_id:
+                            try:
+                                await asyncio.to_thread(alpaca_cancel_order, pos.stop_order_id)
+                                stop_result = await asyncio.to_thread(
+                                    alpaca_place_stop_order, symbol,
+                                    pos.remaining_shares, new_stop,
+                                    0.003, pos.direction)
+                                if 'error' not in stop_result:
+                                    pos.stop_order_id = stop_result.get('id', '')
+                            except Exception as e:
+                                logger.warning(f"Broker trailing stop update failed for {symbol}: {e}")
+
+            # Strategy-specific exit check (before engine exits)
+            exit_signal = None
+            if self.strategy and self.indicator_engine:
+                tick_data = self.indicator_engine.get_data(symbol)
+                strat_exit = self.strategy.evaluate_exit(
+                    asdict(pos), price, price, tick_data, now)
+                if strat_exit is not None:
+                    exit_signal = {
+                        'reason': strat_exit.reason,
+                        'shares': strat_exit.shares or pos.remaining_shares,
+                        'is_full_close': True,
+                        'trigger_price': price,
+                    }
+
+            # Engine exit check (stop, partial, full target, time)
+            if exit_signal is None:
+                exit_signal = self.engine.evaluate_exit(symbol, price, price, now)
             if exit_signal is None:
                 return
 
@@ -5676,7 +6061,46 @@ class GapFadeLiveTrader:
 
                     pos.update_tracking(price, now_str)
 
-                    exit_signal = self.engine.evaluate_exit(sym, price, price, now)
+                    # Strategy plugin: trailing stop update
+                    if self.strategy and self.indicator_engine:
+                        tick_data = self.indicator_engine.get_data(sym)
+                        new_stop = self.strategy.update_trailing_stop(
+                            asdict(pos), price, tick_data, now)
+                        if new_stop is not None:
+                            old_stop = pos.stop_price
+                            pos.stop_price = new_stop
+                            if abs(new_stop - old_stop) > 0.001:
+                                self._add_message('strategy',
+                                    f'Trailing stop {sym}: ${old_stop:.2f} -> ${new_stop:.2f}')
+                                if pos.stop_order_id:
+                                    try:
+                                        await asyncio.to_thread(alpaca_cancel_order, pos.stop_order_id)
+                                        stop_result = await asyncio.to_thread(
+                                            alpaca_place_stop_order, sym,
+                                            pos.remaining_shares, new_stop,
+                                            0.003, pos.direction)
+                                        if 'error' not in stop_result:
+                                            pos.stop_order_id = stop_result.get('id', '')
+                                    except Exception as e:
+                                        logger.warning(f"Broker trailing stop update failed for {sym}: {e}")
+
+                    # Strategy plugin: evaluate exit (before engine)
+                    exit_signal = None
+                    if self.strategy and self.indicator_engine:
+                        tick_data = self.indicator_engine.get_data(sym)
+                        strat_exit = self.strategy.evaluate_exit(
+                            asdict(pos), price, price, tick_data, now)
+                        if strat_exit is not None:
+                            exit_signal = {
+                                'reason': strat_exit.reason,
+                                'shares': strat_exit.shares or pos.remaining_shares,
+                                'is_full_close': True,
+                                'trigger_price': price,
+                            }
+
+                    # Engine exit check (stop, partial, full target, time)
+                    if exit_signal is None:
+                        exit_signal = self.engine.evaluate_exit(sym, price, price, now)
 
                     # No exit signal from rules — check LLM for profit-taking
                     if exit_signal is None:
@@ -5995,6 +6419,8 @@ class GapFadeLiveTrader:
             'messages': self.messages[-50:],
             'last_model_rebuild': self._last_model_rebuild,
             'saved_at': datetime.now(ET).strftime('%Y-%m-%d %H:%M:%S'),
+            'active_strategy': self.config.active_strategy,
+            'strategy_config': self._strategy_config,
         }
         tmp_path = self.STATE_FILE + '.tmp'
         try:
@@ -6031,12 +6457,40 @@ class GapFadeLiveTrader:
                 except Exception as e:
                     logger.warning(f"Could not restore position {sym}: {e}")
 
-            # Restore trade log (only if empty to prevent duplication on restarts)
+            # Restore trade log — SQLite is source of truth, JSON is fallback
             if not self.engine.all_trade_log:
-                for td in state.get('trade_log', []):
-                    self.engine.all_trade_log.append(TradeRecord(**{
-                        k: v for k, v in td.items() if k in TradeRecord.__dataclass_fields__
-                    }))
+                loaded_from = 'none'
+                try:
+                    db = get_price_db()
+                    db_trades = db.load_all_trades()
+                    if db_trades:
+                        for td in db_trades:
+                            self.engine.all_trade_log.append(TradeRecord(**{
+                                k: v for k, v in td.items() if k in TradeRecord.__dataclass_fields__
+                            }))
+                        loaded_from = 'sqlite'
+                        logger.info(f"Restored {len(db_trades)} trades from SQLite")
+                except Exception as e:
+                    logger.warning(f"SQLite trade load failed, falling back to JSON: {e}")
+
+                if loaded_from == 'none':
+                    # Fall back to JSON
+                    json_trades = state.get('trade_log', [])
+                    for td in json_trades:
+                        self.engine.all_trade_log.append(TradeRecord(**{
+                            k: v for k, v in td.items() if k in TradeRecord.__dataclass_fields__
+                        }))
+                    # Auto-migrate JSON trades into SQLite for future restarts
+                    if json_trades:
+                        try:
+                            db = get_price_db()
+                            migrated = 0
+                            for td in json_trades:
+                                if db.insert_trade(td):
+                                    migrated += 1
+                            logger.info(f"Auto-migrated {migrated}/{len(json_trades)} trades from JSON to SQLite")
+                        except Exception as e:
+                            logger.warning(f"Trade migration to SQLite failed (non-fatal): {e}")
 
             # Restore daily stats (survive mid-day restarts)
             saved_daily = state.get('daily_stats', {})
@@ -6074,6 +6528,12 @@ class GapFadeLiveTrader:
 
             # Restore model rebuild timestamp
             self._last_model_rebuild = state.get('last_model_rebuild', '')
+
+            # Restore strategy config
+            self._strategy_config = state.get('strategy_config', {})
+            saved_strategy = state.get('active_strategy', '')
+            if saved_strategy:
+                self.config.active_strategy = saved_strategy
 
             logger.info(f"Loaded state: equity=${self.engine.equity:.2f}, "
                        f"{len(self.engine.positions)} positions, "
@@ -6122,6 +6582,11 @@ class GapFadeLiveTrader:
             llm_state['enabled'] = True
         else:
             llm_state = {'enabled': False}
+        strategy_state = {
+            'active': self.config.active_strategy,
+            'name': self.strategy.name if self.strategy else 'none',
+            'has_indicators': self.indicator_engine is not None,
+        }
         return {
             'status': self.status,
             'equity': round(self.engine.equity, 2),
@@ -6135,6 +6600,7 @@ class GapFadeLiveTrader:
             'config': asdict(self.config),
             'today_trades': [asdict(t) for t in self.engine.trade_log],
             'llm': llm_state,
+            'strategy': strategy_state,
         }
 
 
@@ -6526,6 +6992,68 @@ async def reset_trader():
     live_trader.candidates = []
     live_trader.messages = []
     return {'status': 'reset', 'equity': config.initial_capital}
+
+
+@app.get("/api/strategies")
+async def list_strategies():
+    """List available strategies and active strategy."""
+    try:
+        from gap_fade_strategies import GapFadeStrategyRegistry
+        strategies = GapFadeStrategyRegistry.list_strategies()
+    except Exception as e:
+        strategies = []
+        logger.warning(f"Failed to list strategies: {e}")
+    return {
+        'strategies': strategies,
+        'active': live_trader.config.active_strategy,
+        'active_name': live_trader.strategy.name if live_trader.strategy else 'none',
+        'has_indicators': live_trader.indicator_engine is not None,
+        'strategy_config': live_trader._strategy_config,
+    }
+
+
+@app.post("/api/strategy/switch")
+async def switch_strategy(body: dict):
+    """Switch the active strategy.
+
+    Body: {"strategy_id": "vwap_gap_fade", "config": {...optional overrides...}}
+    """
+    strategy_id = body.get('strategy_id', '')
+    if not strategy_id:
+        return {'error': 'Missing strategy_id'}
+    try:
+        from gap_fade_strategies import GapFadeStrategyRegistry
+        if not GapFadeStrategyRegistry.has_strategy(strategy_id):
+            available = [s['id'] for s in GapFadeStrategyRegistry.list_strategies()]
+            return {'error': f"Unknown strategy '{strategy_id}'. Available: {available}"}
+    except Exception as e:
+        return {'error': f'Strategy system unavailable: {e}'}
+
+    strat_config = body.get('config')
+    live_trader.switch_strategy(strategy_id, strat_config)
+    return {
+        'active': live_trader.config.active_strategy,
+        'name': live_trader.strategy.name if live_trader.strategy else 'unknown',
+        'has_indicators': live_trader.indicator_engine is not None,
+    }
+
+
+@app.post("/api/strategy/config")
+async def update_strategy_config(body: dict):
+    """Update strategy-specific config parameters.
+
+    Body: {"param_name": value, ...}
+    """
+    if not live_trader.strategy:
+        return {'error': 'No strategy loaded'}
+    strategy_id = live_trader.config.active_strategy
+    live_trader.strategy.update_config(body)
+    live_trader._strategy_config[strategy_id] = dict(live_trader.strategy.config)
+    live_trader._save_state()
+    return {
+        'strategy': strategy_id,
+        'config': live_trader.strategy.config,
+    }
 
 
 @app.post("/api/config")
@@ -7011,7 +7539,8 @@ async def run_backtest(body: dict):
     async def progress_cb(pct, msg):
         await broadcast({'type': 'backtest_progress', 'progress': round(pct, 1), 'message': msg})
 
-    backtester = GapFadeBacktester(config)
+    bt_strategy_id = body.get('strategy_id', '')
+    backtester = GapFadeBacktester(config, strategy_id=bt_strategy_id)
     use_1min = body.get('use_1min', False)
 
     async def _run_bt():
@@ -7021,6 +7550,8 @@ async def run_backtest(body: dict):
                 start_date=start_date, end_date=end_date,
                 config=config, progress_callback=progress_cb,
                 use_1min=use_1min,
+                strategy_id=bt_strategy_id,
+                strategy_config=body.get('strategy_config'),
             )
         except Exception as e:
             logger.error(f"Backtest task crashed: {e}")
@@ -7058,10 +7589,28 @@ async def get_metrics():
 
 @app.get("/api/trades")
 async def get_trades():
+    try:
+        total_trades = get_price_db().count_trades()
+    except Exception:
+        total_trades = len(live_trader.engine.all_trade_log)
     return {
         'trades': [asdict(t) for t in live_trader.engine.all_trade_log[-200:]],
         'today': [asdict(t) for t in live_trader.engine.trade_log],
+        'total_trades': total_trades,
     }
+
+
+@app.get("/api/trades/history")
+async def get_trades_history(
+    start: str = None, end: str = None, symbol: str = None,
+    limit: int = 100, offset: int = 0
+):
+    """Paginated full trade history from SQLite."""
+    limit = max(1, min(limit, 1000))
+    offset = max(0, offset)
+    db = get_price_db()
+    return db.query_trades(start_date=start, end_date=end,
+                           symbol=symbol, limit=limit, offset=offset)
 
 
 @app.get("/api/account")
@@ -7380,13 +7929,13 @@ async def update_tracker_watchlist(request: Request):
     return {'watchlist': sorted(_tracker_watchlist), 'streaming': bool(streamer and streamer.connected)}
 
 
-async def _tracker_on_tick(symbol: str, price: float):
+async def _tracker_on_tick(symbol: str, price: float, size: int = 0):
     """Tick handler that broadcasts tracker ticks and forwards to live trader."""
     engine = getattr(live_trader, 'engine', None)
     if engine and symbol in getattr(engine, 'positions', {}):
         orig_handler = getattr(live_trader, '_on_tick_impl', None)
         if orig_handler:
-            await orig_handler(symbol, price)
+            await orig_handler(symbol, price, size)
 
     if symbol in _tracker_watchlist:
         await broadcast({
@@ -7587,6 +8136,18 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   .llm-badge.llm-circuit { background: rgba(234, 179, 8, 0.2); color: #fde68a; }
   .llm-badge.llm-off { background: rgba(255,255,255,0.06); color: var(--muted); }
 
+  .strategy-badge {
+    padding: 3px 8px;
+    border-radius: 6px;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    font-family: 'JetBrains Mono', monospace;
+    background: rgba(59, 130, 246, 0.15);
+    color: #60a5fa;
+    border: 1px solid rgba(59, 130, 246, 0.2);
+  }
+
   /* ── Chat ── */
   .chat-msg { padding: 10px 14px; border-radius: 10px; font-size: 13px; line-height: 1.6; max-width: 85%; white-space: pre-wrap; word-wrap: break-word; }
   .chat-user { background: rgba(168, 85, 247, 0.15); color: var(--text); align-self: flex-end; border-bottom-right-radius: 2px; }
@@ -7774,9 +8335,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     cursor: pointer;
     border: 1px solid;
   }
-  .toast-error { background: rgba(255, 59, 92, 0.15); color: #ff8fa3; border-color: rgba(255, 59, 92, 0.4); }
-  .toast-warning { background: rgba(234, 179, 8, 0.15); color: #fde68a; border-color: rgba(234, 179, 8, 0.4); }
-  .toast-success { background: rgba(0, 212, 255, 0.15); color: #7dd3fc; border-color: rgba(0, 212, 255, 0.4); }
+  .toast-error { background: rgba(255, 59, 92, 0.92); color: #fff; border-color: rgba(255, 59, 92, 0.8); }
+  .toast-warning { background: rgba(234, 179, 8, 0.92); color: #000; border-color: rgba(234, 179, 8, 0.8); }
+  .toast-success { background: rgba(0, 160, 200, 0.92); color: #fff; border-color: rgba(0, 212, 255, 0.8); }
   @keyframes toastIn { from { opacity: 0; transform: translateX(24px); } to { opacity: 1; transform: translateX(0); } }
 
   .feed {
@@ -8174,8 +8735,13 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     <span class="page-title" id="pageTitle">Dashboard</span>
     <span id="statusBadge" class="status-badge status-stopped">STOPPED</span>
     <span id="llmBadge" class="llm-badge" style="display:none;" title="Rudra">Rudra</span>
+    <span id="strategyBadge" class="strategy-badge" title="Active strategy">Classic</span>
   </div>
   <div class="header-controls">
+    <select id="strategySelect" onchange="switchStrategy(this.value)" title="Strategy"
+      style="background:#1a1f2e;color:#e2e8f0;border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:4px 8px;font-size:12px;cursor:pointer;max-width:160px;">
+      <option value="classic_gap_fade">Classic Gap Fade</option>
+    </select>
     <button class="primary" onclick="runScan()">Scan</button>
     <button onclick="pauseTrading()">Pause</button>
     <button onclick="resumeTrading()">Resume</button>
@@ -8268,7 +8834,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     </div>
     <div class="card">
       <h2>Equity Curve</h2>
-      <div class="equity-chart"><canvas id="equityChart"></canvas></div>
+      <div class="equity-chart" style="position:relative;"><canvas id="equityChart"></canvas>
+        <div id="eqTooltip" style="display:none;position:absolute;pointer-events:none;background:rgba(20,20,30,0.95);border:1px solid rgba(255,255,255,0.2);border-radius:4px;padding:4px 8px;font-size:11px;font-family:'JetBrains Mono',monospace;color:#fff;white-space:nowrap;z-index:10;"></div>
+        <div id="eqCrosshair" style="display:none;position:absolute;top:0;width:1px;height:100%;background:rgba(255,255,255,0.25);pointer-events:none;z-index:9;"></div>
+      </div>
       <div style="color:var(--muted);text-align:center;padding:16px;font-size:12px;">Equity curve updates as trades execute</div>
     </div>
   </div>
@@ -8288,7 +8857,14 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
   <!-- Trade Log Page -->
   <div class="page" id="page-trades">
-    <h2 style="margin-bottom:10px;">Trade History</h2>
+    <h2 style="margin-bottom:10px;">Trade History <span id="tradeHistCount" style="font-size:13px;color:var(--muted);font-weight:400;"></span></h2>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;align-items:flex-end;">
+      <div class="config-item"><label>Start</label><input type="date" id="thStart" style="width:130px;"></div>
+      <div class="config-item"><label>End</label><input type="date" id="thEnd" style="width:130px;"></div>
+      <div class="config-item"><label>Symbol</label><input type="text" id="thSymbol" placeholder="e.g. TSLA" style="width:80px;text-transform:uppercase;"></div>
+      <button onclick="tradeHistSearch(0)" style="padding:4px 14px;background:var(--green);color:#000;border:none;border-radius:4px;cursor:pointer;font-weight:600;font-size:12px;">Search</button>
+      <button onclick="tradeHistReset()" style="padding:4px 10px;background:var(--border);color:var(--text);border:none;border-radius:4px;cursor:pointer;font-size:12px;">Reset</button>
+    </div>
     <table>
       <thead><tr>
         <th>Time</th><th>Symbol</th><th>Side</th><th>Shares</th><th>Entry</th><th>Exit</th>
@@ -8296,6 +8872,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       </tr></thead>
       <tbody id="tradesTable"></tbody>
     </table>
+    <div id="tradeHistPager" style="display:flex;gap:8px;align-items:center;margin-top:8px;font-size:12px;"></div>
   </div>
 
   <!-- Backtest Page -->
@@ -8311,6 +8888,12 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         <select id="btUniverse" style="background:var(--bg);color:var(--text);border:1px solid var(--border);padding:4px 6px;border-radius:4px;font-size:12px;">
           <option value="study">Study (167)</option>
           <option value="alpaca" selected>All Tradeable (Alpaca)</option>
+        </select>
+      </div>
+      <div class="config-item">
+        <label>Strategy:</label>
+        <select id="btStrategy" style="background:var(--bg);color:var(--text);border:1px solid var(--border);padding:4px 6px;border-radius:4px;font-size:12px;">
+          <option value="">Engine Default</option>
         </select>
       </div>
       <div class="config-item">
@@ -9015,6 +9598,48 @@ async function resetTrader() {
   fetchState();
 }
 
+// ── Strategy Plugin System ──
+async function loadStrategies() {
+  try {
+    const r = await api('strategies');
+    const sel = document.getElementById('strategySelect');
+    if (!sel || !r.strategies) return;
+    sel.innerHTML = '';
+    for (const s of r.strategies) {
+      const opt = document.createElement('option');
+      opt.value = s.id;
+      opt.textContent = s.name;
+      if (s.id === r.active) opt.selected = true;
+      sel.appendChild(opt);
+    }
+    const badge = document.getElementById('strategyBadge');
+    if (badge) badge.textContent = r.active_name || 'Classic';
+    // Also populate backtest strategy dropdown
+    const btSel = document.getElementById('btStrategy');
+    if (btSel) {
+      btSel.innerHTML = '<option value="">Engine Default</option>';
+      for (const s of r.strategies) {
+        const opt = document.createElement('option');
+        opt.value = s.id;
+        opt.textContent = s.name;
+        btSel.appendChild(opt);
+      }
+    }
+  } catch(e) { console.warn('Strategy load failed:', e); }
+}
+
+async function switchStrategy(strategyId) {
+  if (!strategyId) return;
+  try {
+    const r = await api('strategy/switch', 'POST', {strategy_id: strategyId});
+    if (r.error) { showToast(r.error); return; }
+    const badge = document.getElementById('strategyBadge');
+    if (badge) badge.textContent = r.name || strategyId;
+    showToast('Strategy: ' + (r.name || strategyId));
+    fetchState();
+  } catch(e) { showToast('Strategy switch failed: ' + e.message); }
+}
+
 async function runBacktest() {
   // ── Validate dates ──
   const btStartVal = document.getElementById('btStart').value;
@@ -9060,6 +9685,8 @@ async function runBacktest() {
     body.universe = document.getElementById('btUniverse').value;
   }
   if (document.getElementById('bt1min').checked) body.use_1min = true;
+  const btStratEl = document.getElementById('btStrategy');
+  if (btStratEl && btStratEl.value) body.strategy_id = btStratEl.value;
 
   // Feature toggles
   if (document.getElementById('btAdaptiveStops').checked) {
@@ -9332,6 +9959,12 @@ function renderState(s) {
   updateStatus(s.status);
   updateEquity(s.equity);
   if (s.llm) updateLlmBadge(s.llm);
+  if (s.strategy) {
+    const badge = document.getElementById('strategyBadge');
+    if (badge) badge.textContent = s.strategy.name || 'Classic';
+    const sel = document.getElementById('strategySelect');
+    if (sel && sel.value !== s.strategy.active) sel.value = s.strategy.active;
+  }
 
   const m = s.metrics || {};
   const ds = s.daily_stats || {};
@@ -9367,6 +10000,7 @@ function renderState(s) {
   renderCandidates(s.candidates || []);
   renderMessages(s.messages || []);
   renderTrades(s.today_trades || [], (s.metrics||{}).total_trades||0);
+  renderEquityCurve((s.config || {}).initial_capital || 25000);
   const cfgGrid = document.getElementById('configGrid');
   if (!cfgGrid || !cfgGrid.contains(document.activeElement)) renderConfig(s.config || {});
 }
@@ -9569,30 +10203,213 @@ function renderMessages(messages) {
   `).join('');
 }
 
+// ── Equity Curve (canvas, fetched from SQLite) ──
+let _eqLoaded = false, _eqState = null;
+function renderEquityCurve(initialCapital) {
+  if (_eqLoaded) return;
+  _eqLoaded = true;
+  fetch('/api/trades/history?limit=1000&offset=0').then(r => r.json()).then(d => {
+    const trades = (d.trades || []).slice().reverse(); // oldest first
+    if (!trades.length) return;
+    const canvas = document.getElementById('equityChart');
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    const dpr = window.devicePixelRatio || 1;
+    const rect = canvas.parentElement.getBoundingClientRect();
+    canvas.width = rect.width * dpr;
+    canvas.height = rect.height * dpr;
+    ctx.scale(dpr, dpr);
+    const W = rect.width, H = rect.height;
+    const pad = { top: 16, right: 12, bottom: 24, left: 55 };
+
+    // Build equity points: [label, equity, symbol, pnl]
+    const cap = initialCapital || 25000;
+    let eq = cap;
+    const pts = [[trades[0].entry_time.slice(0,10), cap, '', 0]];
+    trades.forEach(t => { eq += t.pnl; pts.push([t.exit_time.slice(0,10), eq, t.symbol, t.pnl]); });
+
+    const vals = pts.map(p => p[1]);
+    const minY = Math.min(...vals) * 0.998;
+    const maxY = Math.max(...vals) * 1.002;
+    const rangeY = maxY - minY || 1;
+    const xStep = (W - pad.left - pad.right) / Math.max(pts.length - 1, 1);
+    const toX = i => pad.left + i * xStep;
+    const toY = v => pad.top + (1 - (v - minY) / rangeY) * (H - pad.top - pad.bottom);
+
+    // Store state for mouseover
+    _eqState = { pts, toX, toY, pad, W, H, cap };
+
+    // Background
+    ctx.fillStyle = 'rgba(0,0,0,0.2)';
+    ctx.fillRect(0, 0, W, H);
+
+    // Grid lines
+    ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+    ctx.lineWidth = 1;
+    const nGrid = 4;
+    for (let i = 0; i <= nGrid; i++) {
+      const y = pad.top + i * (H - pad.top - pad.bottom) / nGrid;
+      ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(W - pad.right, y); ctx.stroke();
+      const val = maxY - i * rangeY / nGrid;
+      ctx.fillStyle = 'rgba(255,255,255,0.4)';
+      ctx.font = '10px monospace';
+      ctx.textAlign = 'right';
+      ctx.fillText('$' + val.toFixed(0), pad.left - 4, y + 3);
+    }
+
+    // Baseline at initial capital
+    const baseY = toY(cap);
+    ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+    ctx.setLineDash([4,4]);
+    ctx.beginPath(); ctx.moveTo(pad.left, baseY); ctx.lineTo(W - pad.right, baseY); ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Fill gradient
+    const grad = ctx.createLinearGradient(0, pad.top, 0, H - pad.bottom);
+    const finalEq = pts[pts.length-1][1];
+    if (finalEq >= cap) {
+      grad.addColorStop(0, 'rgba(34,197,94,0.25)');
+      grad.addColorStop(1, 'rgba(34,197,94,0.02)');
+    } else {
+      grad.addColorStop(0, 'rgba(239,68,68,0.02)');
+      grad.addColorStop(1, 'rgba(239,68,68,0.25)');
+    }
+    ctx.beginPath();
+    ctx.moveTo(toX(0), toY(pts[0][1]));
+    pts.forEach((p, i) => ctx.lineTo(toX(i), toY(p[1])));
+    ctx.lineTo(toX(pts.length-1), H - pad.bottom);
+    ctx.lineTo(toX(0), H - pad.bottom);
+    ctx.closePath();
+    ctx.fillStyle = grad;
+    ctx.fill();
+
+    // Line
+    ctx.strokeStyle = finalEq >= cap ? '#22c55e' : '#ef4444';
+    ctx.lineWidth = 1.5;
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    pts.forEach((p, i) => { i === 0 ? ctx.moveTo(toX(i), toY(p[1])) : ctx.lineTo(toX(i), toY(p[1])); });
+    ctx.stroke();
+
+    // X-axis labels (sparse)
+    ctx.fillStyle = 'rgba(255,255,255,0.4)';
+    ctx.font = '9px monospace';
+    ctx.textAlign = 'center';
+    const labelEvery = Math.max(1, Math.floor(pts.length / 6));
+    pts.forEach((p, i) => {
+      if (i % labelEvery === 0 || i === pts.length - 1) {
+        ctx.fillText(p[0].slice(5), toX(i), H - 4); // MM-DD
+      }
+    });
+
+    // Final equity label
+    ctx.fillStyle = finalEq >= cap ? '#22c55e' : '#ef4444';
+    ctx.font = 'bold 11px monospace';
+    ctx.textAlign = 'left';
+    ctx.fillText('$' + finalEq.toFixed(0), toX(pts.length-1) + 4, toY(finalEq) + 3);
+
+    // Mouse interaction
+    const tooltip = document.getElementById('eqTooltip');
+    const crosshair = document.getElementById('eqCrosshair');
+    const parent = canvas.parentElement;
+    canvas.addEventListener('mousemove', e => {
+      if (!_eqState) return;
+      const br = canvas.getBoundingClientRect();
+      const mx = e.clientX - br.left;
+      // Find nearest point
+      let best = 0, bestDist = Infinity;
+      for (let i = 0; i < _eqState.pts.length; i++) {
+        const dist = Math.abs(_eqState.toX(i) - mx);
+        if (dist < bestDist) { bestDist = dist; best = i; }
+      }
+      const p = _eqState.pts[best];
+      const px = _eqState.toX(best);
+      const py = _eqState.toY(p[1]);
+      const pnlFromStart = p[1] - _eqState.cap;
+      const sign = pnlFromStart >= 0 ? '+' : '';
+      const clr = pnlFromStart >= 0 ? '#22c55e' : '#ef4444';
+      let html = '<div style="color:var(--muted)">' + p[0] + '</div>';
+      html += '<div style="font-weight:600;">$' + p[1].toFixed(2) + '</div>';
+      html += '<div style="color:' + clr + '">' + sign + '$' + pnlFromStart.toFixed(2) + '</div>';
+      if (p[2]) html += '<div style="color:var(--muted)">' + p[2] + ' ' + (p[3]>=0?'+':'') + '$' + p[3].toFixed(2) + '</div>';
+      tooltip.innerHTML = html;
+      tooltip.style.display = 'block';
+      // px/py are in canvas CSS coordinates (same as parent-relative)
+      const tipLeft = (px + 12 + 140 > _eqState.W) ? px - 140 : px + 12;
+      tooltip.style.left = tipLeft + 'px';
+      tooltip.style.top = Math.max(0, py - 10) + 'px';
+      crosshair.style.display = 'block';
+      crosshair.style.left = px + 'px';
+    });
+    canvas.addEventListener('mouseleave', () => {
+      tooltip.style.display = 'none';
+      crosshair.style.display = 'none';
+    });
+  }).catch(e => console.error('Equity curve fetch error:', e));
+}
+
+// ── Trade History (SQLite-backed, paginated) ──
+let _thOffset = 0, _thLimit = 50, _thLoaded = false;
+function tradeHistSearch(offset) {
+  _thOffset = offset || 0;
+  const start = document.getElementById('thStart').value || '';
+  const end = document.getElementById('thEnd').value || '';
+  const sym = document.getElementById('thSymbol').value.trim().toUpperCase() || '';
+  let url = '/api/trades/history?limit=' + _thLimit + '&offset=' + _thOffset;
+  if (start) url += '&start=' + start;
+  if (end) url += '&end=' + end + 'T23:59:59';
+  if (sym) url += '&symbol=' + sym;
+  fetch(url).then(r => r.json()).then(d => {
+    _thLoaded = true;
+    const tbody = document.getElementById('tradesTable');
+    const trades = d.trades || [];
+    const total = d.total || 0;
+    document.getElementById('tradeHistCount').textContent = '(' + total + ' trades)';
+    tbody.innerHTML = trades.map(t => {
+      const side = (t.side || 'short').toUpperCase();
+      const sideColor = side === 'LONG' ? 'var(--green)' : 'var(--red)';
+      return `<tr>
+        <td>${t.exit_time || ''}</td>
+        <td style="font-weight:600;">${t.symbol}</td>
+        <td style="color:${sideColor};">${side}</td>
+        <td>${t.shares}</td>
+        <td>$${t.entry_price.toFixed(2)}</td>
+        <td>$${t.exit_price.toFixed(2)}</td>
+        <td class="${t.pnl >= 0 ? 'pnl-pos' : 'pnl-neg'}">${pnlFmt(t.pnl)}</td>
+        <td class="${t.pnl_pct >= 0 ? 'pnl-pos' : 'pnl-neg'}">${(t.pnl_pct*100).toFixed(2)}%</td>
+        <td>${t.exit_reason}</td>
+        <td>${t.holding_minutes || 0}m</td>
+      </tr>`;
+    }).join('') || '<tr><td colspan="10" style="text-align:center;color:var(--muted);">No trades found</td></tr>';
+    // Pager
+    const pager = document.getElementById('tradeHistPager');
+    const page = Math.floor(_thOffset / _thLimit) + 1;
+    const pages = Math.ceil(total / _thLimit);
+    let html = '';
+    if (_thOffset > 0)
+      html += '<button onclick="tradeHistSearch(' + (_thOffset - _thLimit) + ')" style="padding:3px 10px;background:var(--border);color:var(--text);border:none;border-radius:4px;cursor:pointer;">&laquo; Prev</button>';
+    html += '<span style="color:var(--muted);">Page ' + page + ' / ' + pages + '</span>';
+    if (_thOffset + _thLimit < total)
+      html += '<button onclick="tradeHistSearch(' + (_thOffset + _thLimit) + ')" style="padding:3px 10px;background:var(--border);color:var(--text);border:none;border-radius:4px;cursor:pointer;">Next &raquo;</button>';
+    pager.innerHTML = html;
+  }).catch(e => console.error('Trade history fetch error:', e));
+}
+function tradeHistReset() {
+  document.getElementById('thStart').value = '';
+  document.getElementById('thEnd').value = '';
+  document.getElementById('thSymbol').value = '';
+  tradeHistSearch(0);
+}
 function renderTrades(todayTrades, totalCount) {
-  const tbody = document.getElementById('tradesTable');
+  // Update last-trade status badge from today's trades
   const trades = todayTrades || [];
   const lastEl = document.getElementById('statusLastTrade');
   if (lastEl && trades.length > 0) {
     const t = trades[trades.length - 1];
     lastEl.textContent = 'Last: ' + (t.symbol || '') + ' ' + (t.side || '').toUpperCase() + ' ' + (t.shares || 0) + ' @ $' + (t.exit_price || 0).toFixed(2);
   } else if (lastEl) lastEl.textContent = 'Last: \u2014';
-  tbody.innerHTML = trades.slice().reverse().map(t => {
-    const side = (t.side || 'short').toUpperCase();
-    const sideColor = side === 'LONG' ? 'var(--green)' : 'var(--red)';
-    return `<tr>
-    <td>${t.exit_time || ''}</td>
-    <td style="font-weight:600;">${t.symbol}</td>
-    <td style="color:${sideColor};">${side}</td>
-    <td>${t.shares}</td>
-    <td>$${t.entry_price.toFixed(2)}</td>
-    <td>$${t.exit_price.toFixed(2)}</td>
-    <td class="${t.pnl >= 0 ? 'pnl-pos' : 'pnl-neg'}">${pnlFmt(t.pnl)}</td>
-    <td class="${t.pnl_pct >= 0 ? 'pnl-pos' : 'pnl-neg'}">${(t.pnl_pct*100).toFixed(2)}%</td>
-    <td>${t.exit_reason}</td>
-    <td>${t.holding_minutes || 0}m</td>
-  </tr>`;
-  }).join('');
+  // Auto-load full history on first render
+  if (!_thLoaded) tradeHistSearch(0);
 }
 
 function renderConfig(config) {
@@ -9658,7 +10475,7 @@ function renderConfig(config) {
     { key: 'trade_gap_downs', title: 'Gap-Down Fading (Longs)', desc: 'Buy gap-downs and fade back toward previous close',
       params: [['gap_down_threshold', 'Gap Down %', 0.05], ['gap_down_max_pct', 'Max Gap Down %', 0.50], ['gap_down_vol_ratio_max', 'Vol Ratio Max', 3.0]] },
     { key: 'llm_enabled', title: 'Rudra (LLM Supervisor)', desc: 'Autonomous decisions via local Ollama model — scan timing, candidate selection, profit-taking, exit overrides',
-      params: [['llm_url', 'Ollama URL', 'http://localhost:11434'], ['llm_model', 'Model', 'rudra:latest'], ['llm_timeout', 'Timeout (sec)', 10], ['llm_max_failures', 'Circuit Breaker Failures', 5], ['llm_circuit_reset', 'Circuit Reset (sec)', 120], ['llm_max_hold_overrides', 'Max Hold Overrides', 2]] },
+      params: [['llm_url', 'Ollama URL', 'http://localhost:11434'], ['llm_model', 'Model', 'gpt-oss:20b'], ['llm_timeout', 'Timeout (sec)', 30], ['llm_max_failures', 'Circuit Breaker Failures', 5], ['llm_circuit_reset', 'Circuit Reset (sec)', 120], ['llm_max_hold_overrides', 'Max Hold Overrides', 2]] },
   ];
 
   // Section header for feature toggles
@@ -9916,6 +10733,9 @@ function renderBacktestResults(r) {
   const warnings = r.warnings || [];
   const realism = r.realism || {};
   const html = `
+    ${r.strategy ? `<div style="margin-bottom:8px;padding:6px 12px;background:rgba(59,130,246,0.08);border:1px solid rgba(59,130,246,0.15);border-radius:6px;font-size:12px;color:#60a5fa;">
+      Strategy: <strong>${r.strategy.name}</strong>
+    </div>` : ''}
     ${warnings.length > 0 ? `<div style="margin-bottom:10px;padding:10px 14px;background:rgba(234,179,8,0.10);border:1px solid rgba(234,179,8,0.3);border-radius:6px;font-size:12px;color:var(--yellow);">
       <strong>Warnings:</strong><br>${warnings.map(w => '&bull; ' + w).join('<br>')}
     </div>` : ''}
@@ -10133,6 +10953,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   connectWS();
   fetchState();
   fetchDbStats();
+  loadStrategies();
   setInterval(updateClock, 1000);
   setInterval(fetchState, 10000);
   setInterval(updateGuideTimeline, 30000);
