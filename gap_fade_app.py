@@ -32,7 +32,7 @@ import sqlite3
 import subprocess
 import time as _time
 import traceback
-from collections import defaultdict
+from collections import defaultdict, deque
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timedelta, timezone, date
 from itertools import groupby
@@ -996,7 +996,76 @@ class PriceDB:
             CREATE INDEX IF NOT EXISTS idx_trades_symbol_entry
             ON trades (symbol, entry_time)
         ''')
+        # -- Journal entries (replaces JSONL files) --
+        self._conn.execute('''
+            CREATE TABLE IF NOT EXISTS journal_entries (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp  TEXT NOT NULL,
+                entry_type TEXT NOT NULL,
+                source     TEXT NOT NULL,
+                symbol     TEXT DEFAULT '',
+                content    TEXT NOT NULL,
+                data       TEXT DEFAULT '{}',
+                llm_call   INTEGER DEFAULT 0,
+                UNIQUE(timestamp, entry_type, source, symbol, content)
+            )
+        ''')
+        self._conn.execute('''
+            CREATE INDEX IF NOT EXISTS idx_journal_ts
+            ON journal_entries (timestamp)
+        ''')
+        self._conn.execute('''
+            CREATE INDEX IF NOT EXISTS idx_journal_type
+            ON journal_entries (entry_type, timestamp)
+        ''')
+        # -- Market events (persists EventBus audit log) --
+        self._conn.execute('''
+            CREATE TABLE IF NOT EXISTS market_events (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp   TEXT NOT NULL,
+                mono_time   REAL NOT NULL,
+                event_type  TEXT NOT NULL,
+                tier        INTEGER NOT NULL,
+                symbol      TEXT DEFAULT '',
+                description TEXT DEFAULT '',
+                data        TEXT DEFAULT '{}',
+                dedup_key   TEXT DEFAULT '',
+                UNIQUE(timestamp, event_type, symbol, dedup_key)
+            )
+        ''')
+        self._conn.execute('''
+            CREATE INDEX IF NOT EXISTS idx_events_ts
+            ON market_events (timestamp)
+        ''')
+        self._conn.execute('''
+            CREATE INDEX IF NOT EXISTS idx_events_type
+            ON market_events (event_type, timestamp)
+        ''')
+        # -- LLM call audit log --
+        self._conn.execute('''
+            CREATE TABLE IF NOT EXISTS llm_calls (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp        TEXT NOT NULL,
+                conversation_role TEXT NOT NULL,
+                priority         TEXT NOT NULL,
+                model            TEXT DEFAULT '',
+                prompt_tokens    INTEGER DEFAULT 0,
+                response_tokens  INTEGER DEFAULT 0,
+                duration_ms      INTEGER DEFAULT 0,
+                success          INTEGER DEFAULT 1,
+                budget_5min      INTEGER DEFAULT 0,
+                budget_1hr       INTEGER DEFAULT 0,
+                response_summary TEXT DEFAULT '',
+                UNIQUE(timestamp, conversation_role)
+            )
+        ''')
+        self._conn.execute('''
+            CREATE INDEX IF NOT EXISTS idx_llm_ts
+            ON llm_calls (timestamp)
+        ''')
         self._conn.commit()
+        # Migrate legacy JSONL journal files (one-time)
+        self._migrate_jsonl_to_sqlite()
         # Update query planner statistics (fast on subsequent runs)
         self._conn.execute('ANALYZE')
 
@@ -1352,6 +1421,242 @@ class PriceDB:
         except Exception:
             return 0
 
+    # -- Journal entry persistence --
+
+    def insert_journal(self, entry: dict):
+        """Insert a journal entry. Uses INSERT OR IGNORE for idempotency."""
+        try:
+            self._conn.execute('''
+                INSERT OR IGNORE INTO journal_entries
+                (timestamp, entry_type, source, symbol, content, data, llm_call)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (entry['timestamp'], entry['entry_type'], entry['source'],
+                  entry.get('symbol', ''), entry['content'],
+                  json.dumps(entry.get('data', {}), default=str),
+                  1 if entry.get('llm_call') else 0))
+            self._conn.commit()
+        except Exception as e:
+            logger.error(f"Journal insert failed: {e}")
+
+    def query_journal(self, date: str = '', n: int = 50, entry_type: str = '') -> list:
+        """Query journal entries. If date given, filter by date prefix on timestamp."""
+        try:
+            where, params = [], []
+            if date:
+                where.append('timestamp LIKE ?')
+                params.append(f'{date}%')
+            if entry_type:
+                where.append('entry_type = ?')
+                params.append(entry_type)
+            where_sql = (' WHERE ' + ' AND '.join(where)) if where else ''
+            cur = self._conn.execute(
+                f'''SELECT timestamp, entry_type, source, symbol, content, data, llm_call
+                    FROM journal_entries{where_sql}
+                    ORDER BY id DESC LIMIT ?''',
+                params + [n])
+            cols = ['timestamp', 'entry_type', 'source', 'symbol', 'content', 'data', 'llm_call']
+            rows = []
+            for row in cur:
+                d = dict(zip(cols, row))
+                try:
+                    d['data'] = json.loads(d['data']) if d['data'] else {}
+                except (json.JSONDecodeError, TypeError):
+                    d['data'] = {}
+                d['llm_call'] = bool(d['llm_call'])
+                rows.append(d)
+            rows.reverse()  # oldest first
+            return rows
+        except Exception as e:
+            logger.error(f"Journal query failed: {e}")
+            return []
+
+    def get_journal_stats(self, date: str) -> dict:
+        """Count journal entries by type for a date."""
+        try:
+            cur = self._conn.execute(
+                '''SELECT entry_type, COUNT(*) FROM journal_entries
+                   WHERE timestamp LIKE ? GROUP BY entry_type''',
+                (f'{date}%',))
+            counts = dict(cur.fetchall())
+            total = sum(counts.values())
+            return {'date': date, 'total': total, 'by_type': counts}
+        except Exception as e:
+            logger.error(f"Journal stats failed: {e}")
+            return {'date': date, 'total': 0, 'by_type': {}}
+
+    # -- Market event persistence --
+
+    def insert_event(self, event):
+        """Insert a MarketEvent into the database."""
+        try:
+            wall_ts = datetime.now(ET).strftime('%Y-%m-%dT%H:%M:%S')
+            self._conn.execute('''
+                INSERT OR IGNORE INTO market_events
+                (timestamp, mono_time, event_type, tier, symbol, description, data, dedup_key)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (wall_ts, event.timestamp, event.event_type, event.tier,
+                  event.symbol or '', event.description or '',
+                  json.dumps(event.data or {}, default=str),
+                  event.dedup_key or ''))
+            self._conn.commit()
+        except Exception as e:
+            logger.error(f"Event insert failed: {e}")
+
+    def query_events(self, date: str = '', n: int = 50, event_type: str = '') -> list:
+        """Query market events."""
+        try:
+            where, params = [], []
+            if date:
+                where.append('timestamp LIKE ?')
+                params.append(f'{date}%')
+            if event_type:
+                where.append('event_type = ?')
+                params.append(event_type)
+            where_sql = (' WHERE ' + ' AND '.join(where)) if where else ''
+            cur = self._conn.execute(
+                f'''SELECT timestamp, mono_time, event_type, tier, symbol,
+                           description, data, dedup_key
+                    FROM market_events{where_sql}
+                    ORDER BY id DESC LIMIT ?''',
+                params + [n])
+            cols = ['timestamp', 'mono_time', 'event_type', 'tier', 'symbol',
+                    'description', 'data', 'dedup_key']
+            rows = []
+            for row in cur:
+                d = dict(zip(cols, row))
+                try:
+                    d['data'] = json.loads(d['data']) if d['data'] else {}
+                except (json.JSONDecodeError, TypeError):
+                    d['data'] = {}
+                rows.append(d)
+            rows.reverse()  # oldest first
+            return rows
+        except Exception as e:
+            logger.error(f"Event query failed: {e}")
+            return []
+
+    # -- LLM call audit log --
+
+    def insert_llm_call(self, call_data: dict):
+        """Insert an LLM call log entry."""
+        try:
+            self._conn.execute('''
+                INSERT OR IGNORE INTO llm_calls
+                (timestamp, conversation_role, priority, model,
+                 prompt_tokens, response_tokens, duration_ms,
+                 success, budget_5min, budget_1hr, response_summary)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (call_data['timestamp'], call_data['conversation_role'],
+                  call_data['priority'], call_data.get('model', ''),
+                  call_data.get('prompt_tokens', 0), call_data.get('response_tokens', 0),
+                  call_data.get('duration_ms', 0), call_data.get('success', 1),
+                  call_data.get('budget_5min', 0), call_data.get('budget_1hr', 0),
+                  call_data.get('response_summary', '')[:200]))
+            self._conn.commit()
+        except Exception as e:
+            logger.error(f"LLM call insert failed: {e}")
+
+    def query_llm_calls(self, date: str = '', n: int = 50) -> list:
+        """Query LLM call history."""
+        try:
+            where, params = [], []
+            if date:
+                where.append('timestamp LIKE ?')
+                params.append(f'{date}%')
+            where_sql = (' WHERE ' + ' AND '.join(where)) if where else ''
+            cur = self._conn.execute(
+                f'''SELECT timestamp, conversation_role, priority, model,
+                           prompt_tokens, response_tokens, duration_ms,
+                           success, budget_5min, budget_1hr, response_summary
+                    FROM llm_calls{where_sql}
+                    ORDER BY id DESC LIMIT ?''',
+                params + [n])
+            cols = ['timestamp', 'conversation_role', 'priority', 'model',
+                    'prompt_tokens', 'response_tokens', 'duration_ms',
+                    'success', 'budget_5min', 'budget_1hr', 'response_summary']
+            rows = [dict(zip(cols, row)) for row in cur]
+            rows.reverse()  # oldest first
+            return rows
+        except Exception as e:
+            logger.error(f"LLM call query failed: {e}")
+            return []
+
+    def get_llm_stats(self, date: str) -> dict:
+        """Total calls, avg duration, success rate for a date."""
+        try:
+            cur = self._conn.execute(
+                '''SELECT COUNT(*), AVG(duration_ms), SUM(success),
+                          SUM(prompt_tokens), SUM(response_tokens)
+                   FROM llm_calls WHERE timestamp LIKE ?''',
+                (f'{date}%',))
+            row = cur.fetchone()
+            total = row[0] or 0
+            avg_ms = round(row[1] or 0, 1)
+            successes = row[2] or 0
+            return {
+                'date': date,
+                'total_calls': total,
+                'avg_duration_ms': avg_ms,
+                'success_rate': round(successes / total, 3) if total else 0,
+                'total_prompt_tokens': row[3] or 0,
+                'total_response_tokens': row[4] or 0,
+            }
+        except Exception as e:
+            logger.error(f"LLM stats failed: {e}")
+            return {'date': date, 'total_calls': 0, 'avg_duration_ms': 0,
+                    'success_rate': 0, 'total_prompt_tokens': 0, 'total_response_tokens': 0}
+
+    # -- JSONL migration (one-time) --
+
+    def _migrate_jsonl_to_sqlite(self):
+        """Migrate legacy JSONL journal files into journal_entries table."""
+        import glob as _glob
+        # Check if already migrated
+        try:
+            cur = self._conn.execute('SELECT COUNT(*) FROM journal_entries')
+            if cur.fetchone()[0] > 0:
+                return  # already have data, skip
+        except Exception:
+            return
+        journal_dir = os.path.join(os.path.dirname(__file__) or '.', 'journals')
+        files = sorted(_glob.glob(os.path.join(journal_dir, 'journal_*.jsonl')))
+        if not files:
+            return
+        total_migrated = 0
+        for fpath in files:
+            try:
+                with open(fpath, 'r') as f:
+                    batch = []
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            entry = json.loads(line)
+                            batch.append((
+                                entry.get('timestamp', ''),
+                                entry.get('entry_type', ''),
+                                entry.get('source', ''),
+                                entry.get('symbol', ''),
+                                entry.get('content', ''),
+                                json.dumps(entry.get('data', {}), default=str),
+                                1 if entry.get('llm_call') else 0,
+                            ))
+                        except json.JSONDecodeError:
+                            continue
+                    if batch:
+                        self._conn.executemany('''
+                            INSERT OR IGNORE INTO journal_entries
+                            (timestamp, entry_type, source, symbol, content, data, llm_call)
+                            VALUES (?, ?, ?, ?, ?, ?, ?)
+                        ''', batch)
+                        total_migrated += len(batch)
+            except Exception as e:
+                logger.warning(f"JSONL migration failed for {fpath}: {e}")
+        if total_migrated:
+            self._conn.commit()
+            logger.info(f"Migrated {total_migrated} journal entries from {len(files)} JSONL files to SQLite")
+
     @staticmethod
     def _gap_row_to_dict(row) -> dict:
         """Convert a gap SQL row tuple to a dict."""
@@ -1454,9 +1759,9 @@ class GapFadeConfig:
     # Full target = prev_close (full gap fill)
 
     # Adaptive stops — scale stop with gap size
-    adaptive_stops: bool = False        # if True, stop = gap_pct * stop_gap_fraction (clamped)
-    stop_gap_fraction: float = 0.15     # stop = gap_pct * this fraction
-    stop_min_pct: float = 0.01          # floor: 1% minimum stop
+    adaptive_stops: bool = True         # if True, stop = gap_pct * stop_gap_fraction (clamped)
+    stop_gap_fraction: float = 0.25     # stop = gap_pct * this fraction (25% of gap)
+    stop_min_pct: float = 0.015         # floor: 1.5% minimum stop
     stop_max_pct: float = 0.05          # ceiling: 5% maximum stop
 
     # Market regime filter — reduce/block entries on broad rally days
@@ -1544,9 +1849,15 @@ class GapFadeConfig:
     llm_max_failures: int = 5               # circuit breaker opens after N failures
     llm_circuit_reset: float = 120.0        # seconds before retrying after circuit opens
     llm_max_hold_overrides: int = 2          # max times LLM can override a stop per position
+    llm_provider: str = 'ollama'             # 'ollama' or 'openai' (OpenAI-compatible: GPT, Groq, Together, Anthropic via proxy)
+    llm_api_key: str = ''                    # API key for cloud providers (env LLM_API_KEY as fallback)
 
     # Strategy plugin
     active_strategy: str = 'classic_gap_fade'  # strategy ID from registry
+
+    def __post_init__(self):
+        if not self.llm_api_key:
+            self.llm_api_key = os.environ.get('LLM_API_KEY', '')
 
 
 @dataclass
@@ -2545,9 +2856,13 @@ class GapFadeEngine:
         if candidate.catalyst in ('earnings', 'ma'):
             return False, f"catalyst-driven gap ({candidate.catalyst})"
 
-        # Entry cutoff — no new positions after configured time (live mode only)
+        # Entry timing guards (live mode only)
         if not self.backtest_mode:
             now = datetime.now(ET)
+            # Pre-market guard — no entries before 9:30 AM
+            if now.hour < 9 or (now.hour == 9 and now.minute < 30):
+                return False, f"market not open yet ({now.strftime('%H:%M')} ET, opens 9:30)"
+            # Entry cutoff — no new positions after configured time
             cutoff = now.replace(hour=self.config.entry_cutoff_hour,
                                  minute=self.config.entry_cutoff_min, second=0, microsecond=0)
             if now >= cutoff:
@@ -3950,6 +4265,689 @@ class GapFadeBacktester:
 # SECTION 6B: LLM SUPERVISOR
 # =============================================================================
 
+class ConversationMemory:
+    """Rolling conversation history for LLM multi-turn dialogue within a trading day."""
+
+    MAX_EXCHANGES = 20       # rolling window of message pairs
+    MAX_CHARS = 12_000       # hard cap on total history chars
+
+    def __init__(self):
+        self.history: list[dict] = []   # [{"role": "user"|"assistant", "content": "..."}, ...]
+        self.day: str = ''              # "2026-02-27" — auto-clears on new day
+        self.summary: str = ''          # compressed summary of older exchanges
+
+    def _check_day_boundary(self):
+        """Clear history on new trading day."""
+        today = datetime.now(ET).strftime('%Y-%m-%d')
+        if today != self.day:
+            self.history.clear()
+            self.summary = ''
+            self.day = today
+
+    def add_exchange(self, user_msg: str, assistant_msg: str):
+        """Record a user/assistant exchange pair."""
+        self._check_day_boundary()
+        self.history.append({'role': 'user', 'content': user_msg})
+        self.history.append({'role': 'assistant', 'content': assistant_msg})
+        self._trim()
+
+    def add_event(self, event_text: str):
+        """Inject a silent event into conversation history (as a system-like user msg)."""
+        self._check_day_boundary()
+        self.history.append({'role': 'user', 'content': f'[EVENT] {event_text}'})
+        self._trim()
+
+    def get_messages(self) -> list[dict]:
+        """Return conversation history for inclusion in Ollama messages array."""
+        self._check_day_boundary()
+        msgs = []
+        if self.summary:
+            msgs.append({'role': 'user', 'content': f'[CONVERSATION RECAP] {self.summary}'})
+            msgs.append({'role': 'assistant', 'content': 'Understood, I have that context.'})
+        msgs.extend(self.history)
+        return msgs
+
+    def get_brief_recap(self, max_chars: int = 500) -> str:
+        """Return a brief recap string for one-shot calls (evaluate_profit, evaluate_exit)."""
+        self._check_day_boundary()
+        if not self.history and not self.summary:
+            return ''
+        parts = []
+        if self.summary:
+            parts.append(self.summary)
+        # Add the last few key exchanges
+        for msg in self.history[-6:]:
+            if msg['role'] == 'assistant':
+                # Extract just the key decision/reasoning
+                content = msg['content'][:150]
+                parts.append(f"Rudra: {content}")
+        recap = ' | '.join(parts)
+        if len(recap) > max_chars:
+            recap = recap[:max_chars] + '...'
+        return recap
+
+    def _trim(self):
+        """Trim history to stay within budget, summarizing old exchanges."""
+        # Count total chars
+        total = sum(len(m['content']) for m in self.history)
+        # Trim by exchange count (pairs of 2)
+        while len(self.history) > self.MAX_EXCHANGES * 2 and len(self.history) >= 2:
+            old_user = self.history.pop(0)
+            old_asst = self.history.pop(0) if self.history and self.history[0]['role'] == 'assistant' else None
+            # Mechanical summarization: extract key content
+            self._append_to_summary(old_user, old_asst)
+            total = sum(len(m['content']) for m in self.history)
+        # Trim by char count
+        while total > self.MAX_CHARS and len(self.history) >= 2:
+            old_user = self.history.pop(0)
+            old_asst = self.history.pop(0) if self.history and self.history[0]['role'] == 'assistant' else None
+            self._append_to_summary(old_user, old_asst)
+            total = sum(len(m['content']) for m in self.history)
+
+    def _append_to_summary(self, user_msg: dict, asst_msg: Optional[dict]):
+        """Mechanically compress an exchange into the running summary."""
+        # Extract first line / key action from each message
+        u_brief = user_msg['content'].split('\n')[0][:100] if user_msg else ''
+        a_brief = ''
+        if asst_msg:
+            # Try to extract action/reasoning from JSON response
+            content = asst_msg['content']
+            try:
+                parsed = json.loads(content)
+                if isinstance(parsed, dict):
+                    action = parsed.get('action', '')
+                    reasoning = parsed.get('reasoning', '')[:80]
+                    a_brief = f"{action}: {reasoning}" if action else content[:80]
+                else:
+                    a_brief = content[:80]
+            except (json.JSONDecodeError, TypeError):
+                a_brief = content[:80]
+        snippet = f"{u_brief} -> {a_brief}" if a_brief else u_brief
+        if self.summary:
+            self.summary = self.summary + ' | ' + snippet
+        else:
+            self.summary = snippet
+        # Cap summary length
+        if len(self.summary) > 2000:
+            self.summary = self.summary[-1500:]
+
+    def to_dict(self) -> dict:
+        """Serialize for state persistence."""
+        return {
+            'history': self.history[-self.MAX_EXCHANGES * 2:],
+            'day': self.day,
+            'summary': self.summary,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> 'ConversationMemory':
+        """Restore from persisted state."""
+        mem = cls()
+        mem.history = data.get('history', [])
+        mem.day = data.get('day', '')
+        mem.summary = data.get('summary', '')
+        # Clear if it's from a different day
+        mem._check_day_boundary()
+        return mem
+
+
+# =============================================================================
+# EVENT-DRIVEN ARCHITECTURE: MarketEvent, EventBus, TradingJournal
+# =============================================================================
+
+@dataclass
+class MarketEvent:
+    """Structured event detected by MarketEventDetector or system."""
+    event_type: str          # e.g. 'vwap_cross', 'drawdown', 'gap_fill_50'
+    tier: int                # 1=silent, 2=batched, 3=urgent, 4=human escalation
+    symbol: str = ''
+    description: str = ''
+    data: dict = field(default_factory=dict)
+    dedup_key: str = ''      # for deduplication
+    timestamp: float = 0.0   # monotonic time
+
+    def __post_init__(self):
+        if self.timestamp == 0.0:
+            self.timestamp = _time.monotonic()
+        if not self.dedup_key:
+            self.dedup_key = f'{self.event_type}:{self.symbol}'
+
+    def as_text(self) -> str:
+        """Format for legacy LLM prompt injection."""
+        if self.symbol:
+            return f'[{self.event_type}] {self.symbol}: {self.description}'
+        return f'[{self.event_type}] {self.description}'
+
+
+class EventBus:
+    """Central event bus replacing the flat _event_queue: list[str].
+
+    Collects MarketEvent objects from detectors, provides drain/query for
+    LLM calls, and keeps an audit log for the journal.
+    """
+
+    def __init__(self, db=None):
+        self._queue: list = []           # pending events for next LLM call
+        self._urgent_flag: bool = False  # any Tier 3+ events waiting
+        self._event_log: deque = deque(maxlen=500)  # all events (audit trail)
+        self._db = db  # PriceDB instance (optional)
+
+    def push(self, event: 'MarketEvent'):
+        """Push a single MarketEvent."""
+        self._queue.append(event)
+        self._event_log.append(event)
+        if event.tier >= 3:
+            self._urgent_flag = True
+        if self._db:
+            try:
+                self._db.insert_event(event)
+            except Exception:
+                pass  # non-blocking, already in memory
+
+    def push_many(self, events: list):
+        """Push a list of MarketEvents."""
+        for e in events:
+            self.push(e)
+
+    def push_text(self, text: str, tier: int = 2):
+        """Legacy compat: push a plain text event (wraps into MarketEvent)."""
+        event = MarketEvent(
+            event_type='legacy',
+            tier=tier,
+            description=text,
+            dedup_key=f'legacy:{text[:60]}',
+        )
+        self.push(event)
+
+    def has_urgent(self) -> bool:
+        """Check if any Tier 3+ events are pending."""
+        return self._urgent_flag
+
+    def drain(self) -> list:
+        """Drain all pending events, sorted by tier (highest first). Clears queue."""
+        events = sorted(self._queue, key=lambda e: e.tier, reverse=True)
+        self._queue.clear()
+        self._urgent_flag = False
+        return events
+
+    def drain_as_text(self) -> str:
+        """Drain events and format as text for LLM prompt injection."""
+        events = self.drain()
+        if not events:
+            return ''
+        lines = [f'- {e.as_text()}' for e in events]
+        return 'Recent events since we last spoke:\n' + '\n'.join(lines) + '\n\n'
+
+    def get_event_log(self, since_mono: float = 0.0) -> list:
+        """Return logged events since a monotonic timestamp."""
+        return [e for e in self._event_log if e.timestamp >= since_mono]
+
+    def pending_count(self) -> int:
+        return len(self._queue)
+
+    def clear(self):
+        """Clear pending queue (used by legacy drain paths)."""
+        self._queue.clear()
+        self._urgent_flag = False
+
+    # Legacy list-compat methods so _call_llm can drain EventBus like a list
+    def __bool__(self):
+        return bool(self._queue)
+
+    def __len__(self):
+        return len(self._queue)
+
+
+@dataclass
+class JournalEntry:
+    """Single entry in the trading journal."""
+    timestamp: str           # ISO format
+    entry_type: str          # observation, reasoning, action, no_action, reflection
+    source: str              # rules_engine, llm_rudra, event_detector, scheduled_reflection
+    content: str
+    symbol: str = ''
+    data: dict = field(default_factory=dict)
+    llm_call: bool = False   # True if this entry involved an LLM call
+
+
+class TradingJournal:
+    """Append-only decision audit trail. Persists to SQLite via PriceDB.
+
+    In-memory deque serves as hot cache for LLM context (get_recent/get_summary).
+    SQLite is the durable store — survives restarts.
+    """
+
+    def __init__(self, db=None):
+        self._db = db  # PriceDB instance (optional for tests)
+        self._entries: deque = deque(maxlen=500)  # in-memory ring buffer
+
+    def log(self, entry_type: str, source: str, content: str,
+            symbol: str = '', data: dict = None, llm_call: bool = False):
+        """Log a journal entry."""
+        now = datetime.now(ET)
+        entry = JournalEntry(
+            timestamp=now.strftime('%Y-%m-%dT%H:%M:%S'),
+            entry_type=entry_type,
+            source=source,
+            content=content,
+            symbol=symbol,
+            data=data or {},
+            llm_call=llm_call,
+        )
+        self._entries.append(entry)
+        # Persist to SQLite
+        if self._db:
+            try:
+                self._db.insert_journal(asdict(entry))
+            except Exception as e:
+                logger.warning(f"Journal SQLite write failed: {e}")
+
+    def get_recent(self, n: int = 20, entry_type: str = None) -> list:
+        """Get recent journal entries from in-memory buffer."""
+        entries = list(self._entries)
+        if entry_type:
+            entries = [e for e in entries if e.entry_type == entry_type]
+        return entries[-n:]
+
+    def get_summary(self, minutes: int = 30) -> str:
+        """Get formatted text summary of recent entries for LLM context."""
+        now = datetime.now(ET)
+        cutoff_time = (now - timedelta(minutes=minutes)).strftime('%Y-%m-%dT%H:%M:%S')
+        recent = [e for e in self._entries if e.timestamp >= cutoff_time]
+        if not recent:
+            return ''
+        lines = []
+        for e in recent[-15:]:  # cap at 15 entries for prompt size
+            prefix = e.timestamp.split('T')[1] if 'T' in e.timestamp else e.timestamp
+            sym_tag = f' [{e.symbol}]' if e.symbol else ''
+            lines.append(f'{prefix}{sym_tag} ({e.entry_type}): {e.content[:120]}')
+        return 'Recent journal:\n' + '\n'.join(lines)
+
+    def close(self):
+        """No-op — SQLite handles persistence."""
+        pass
+
+    def load_day(self, date_str: str) -> list:
+        """Load all entries for a given day from SQLite."""
+        if self._db:
+            return self._db.query_journal(date=date_str, n=5000)
+        return []
+
+
+class AnalysisCache:
+    """Simple TTL cache for LLM profit evaluations to avoid redundant calls."""
+
+    def __init__(self, ttl: float = 120.0):
+        self._cache: dict = {}
+        self._ttl = ttl
+
+    def get(self, key: str) -> Optional[dict]:
+        """Return cached result if fresh, else None."""
+        entry = self._cache.get(key)
+        if entry and _time.monotonic() - entry[0] < self._ttl:
+            return entry[1]
+        return None
+
+    def put(self, key: str, result: dict):
+        """Cache a result."""
+        self._cache[key] = (_time.monotonic(), result)
+        # Prune stale entries periodically
+        if len(self._cache) > 50:
+            now = _time.monotonic()
+            self._cache = {k: v for k, v in self._cache.items() if now - v[0] < self._ttl}
+
+    def make_key(self, symbol: str, price: float, gap_fill_pct: float) -> str:
+        """Build cache key from price bucket and gap fill bucket."""
+        price_bucket = round(price, 1)  # $0.10 granularity
+        fill_bucket = round(gap_fill_pct * 10) / 10  # 10% granularity
+        return f'{symbol}:{price_bucket}:{fill_bucket}'
+
+
+class MarketEventDetector:
+    """Lightweight, zero-LLM event detector. Pure arithmetic + dict lookups.
+
+    Two detection methods:
+    - detect_tick_events(): called from _on_tick (~250ms), must complete <1ms
+    - detect_position_events(): called from _check_positions (every 15s)
+
+    Uses dedup to prevent event flooding.
+    """
+
+    def __init__(self):
+        # Per-symbol state for tick-level detection
+        self._price_history: dict = {}       # symbol -> deque of (mono_time, price)
+        self._volume_medians: dict = {}      # symbol -> rolling median tick size
+        self._volume_samples: dict = {}      # symbol -> deque of recent tick sizes
+        self._last_vwap_side: dict = {}      # symbol -> 'above'|'below'
+        self._last_ema_side: dict = {}       # symbol -> 'above'|'below'
+        self._gap_fill_milestones: set = set()  # triggered "once" event keys
+
+        # Portfolio-level state
+        self._drawdown_milestones: set = set()  # triggered drawdown thresholds
+        self._consecutive_loss_milestones: set = set()  # triggered loss counts
+        self._pnl_milestones: set = set()    # triggered P&L dollar milestones
+        self._hwm_equity: float = 0.0        # session high water mark for equity
+
+        # Dedup: bounded deque of (dedup_key, expiry_mono_time)
+        self._dedup_log: deque = deque(maxlen=500)
+
+    def _is_deduped(self, key: str, window_sec: float = 300.0) -> bool:
+        """Check if this event was already emitted within the dedup window."""
+        now = _time.monotonic()
+        # Prune expired entries
+        while self._dedup_log and self._dedup_log[0][1] < now:
+            self._dedup_log.popleft()
+        for dk, exp in self._dedup_log:
+            if dk == key:
+                return True
+        return False
+
+    def _mark_deduped(self, key: str, window_sec: float = 300.0):
+        """Mark an event key as emitted."""
+        self._dedup_log.append((key, _time.monotonic() + window_sec))
+
+    def _emit(self, event_type: str, tier: int, symbol: str, description: str,
+              dedup_key: str = '', dedup_sec: float = 300.0,
+              once: bool = False, data: dict = None) -> Optional['MarketEvent']:
+        """Emit an event if not deduped."""
+        key = dedup_key or f'{event_type}:{symbol}'
+        if once:
+            # "once" events use a permanent set (never re-emit same day)
+            if key in self._gap_fill_milestones:
+                return None
+            self._gap_fill_milestones.add(key)
+        elif self._is_deduped(key, dedup_sec):
+            return None
+        if not once:
+            self._mark_deduped(key, dedup_sec)
+        return MarketEvent(
+            event_type=event_type, tier=tier, symbol=symbol,
+            description=description, dedup_key=key, data=data or {},
+        )
+
+    def detect_tick_events(self, symbol: str, price: float, size: int,
+                           position: dict, tick_data: dict = None) -> list:
+        """Detect events from a single tick. Called from _on_tick.
+
+        Must complete in <1ms — only arithmetic and dict lookups.
+
+        Args:
+            symbol: ticker
+            price: current price
+            size: tick volume (shares)
+            position: position dict (from asdict(pos))
+            tick_data: indicator engine data (vwap, ema, etc.)
+        Returns: list of MarketEvent
+        """
+        events = []
+        now_mono = _time.monotonic()
+
+        # --- Price history tracking (for significant/extreme move detection) ---
+        if symbol not in self._price_history:
+            self._price_history[symbol] = deque(maxlen=240)  # ~60s at 250ms
+        self._price_history[symbol].append((now_mono, price))
+
+        # --- Significant / Extreme move (>1% or >3% in <60s) ---
+        hist = self._price_history[symbol]
+        if len(hist) >= 4:
+            # Find price from ~60s ago
+            cutoff = now_mono - 60.0
+            old_price = None
+            for t, p in hist:
+                if t >= cutoff:
+                    old_price = p
+                    break
+            if old_price and old_price > 0:
+                move_pct = abs(price - old_price) / old_price
+                direction_word = 'up' if price > old_price else 'down'
+                if move_pct >= 0.03:
+                    e = self._emit('extreme_move', 3, symbol,
+                        f'{move_pct:.1%} move {direction_word} in <60s '
+                        f'(${old_price:.2f} -> ${price:.2f})',
+                        dedup_sec=300.0, data={'move_pct': move_pct})
+                    if e:
+                        events.append(e)
+                elif move_pct >= 0.01:
+                    e = self._emit('significant_move', 2, symbol,
+                        f'{move_pct:.1%} move {direction_word} in <60s',
+                        dedup_sec=300.0, data={'move_pct': move_pct})
+                    if e:
+                        events.append(e)
+
+        # --- VWAP cross ---
+        if tick_data:
+            vwap = tick_data.get('vwap', 0)
+            if vwap > 0:
+                side = 'above' if price > vwap else 'below'
+                prev_side = self._last_vwap_side.get(symbol)
+                if prev_side and prev_side != side:
+                    e = self._emit('vwap_cross', 2, symbol,
+                        f'Price crossed VWAP {prev_side}->{side} '
+                        f'(price=${price:.2f}, VWAP=${vwap:.2f})',
+                        dedup_sec=300.0, data={'vwap': vwap, 'side': side})
+                    if e:
+                        events.append(e)
+                self._last_vwap_side[symbol] = side
+
+            # --- EMA cross ---
+            ema = tick_data.get('ema', 0)
+            if ema > 0:
+                side = 'above' if price > ema else 'below'
+                prev_side = self._last_ema_side.get(symbol)
+                if prev_side and prev_side != side:
+                    e = self._emit('ema_cross', 1, symbol,
+                        f'Price crossed EMA {prev_side}->{side} '
+                        f'(price=${price:.2f}, EMA=${ema:.2f})',
+                        dedup_sec=300.0, data={'ema': ema, 'side': side})
+                    if e:
+                        events.append(e)
+                self._last_ema_side[symbol] = side
+
+        # --- Volume spike (tick size > 10x rolling median) ---
+        if size > 0:
+            if symbol not in self._volume_samples:
+                self._volume_samples[symbol] = deque(maxlen=100)
+            samples = self._volume_samples[symbol]
+            samples.append(size)
+            if len(samples) >= 20:
+                sorted_samples = sorted(samples)
+                median = sorted_samples[len(sorted_samples) // 2]
+                if median > 0 and size > median * 10:
+                    e = self._emit('volume_spike', 2, symbol,
+                        f'Tick size {size:,} is {size/median:.0f}x median ({median:,})',
+                        dedup_sec=120.0, data={'size': size, 'median': median})
+                    if e:
+                        events.append(e)
+
+        # --- Gap fill milestones ---
+        entry_price = position.get('entry_price', 0)
+        prev_close = position.get('prev_close', 0)
+        if entry_price > 0 and prev_close > 0:
+            gap = abs(entry_price - prev_close)
+            if gap > 0.001:
+                pos_direction = position.get('direction', 'short')
+                if pos_direction == 'short':
+                    filled = max(0, (entry_price - price) / gap)
+                else:
+                    filled = max(0, (price - entry_price) / gap)
+
+                milestones = [
+                    (0.25, 'gap_fill_25', 1),
+                    (0.50, 'gap_fill_50', 2),
+                    (0.75, 'gap_fill_75', 2),
+                    (0.90, 'gap_fill_90', 1),
+                ]
+                for threshold, etype, tier in milestones:
+                    if filled >= threshold:
+                        e = self._emit(etype, tier, symbol,
+                            f'Gap {threshold:.0%} filled ({filled:.0%} actual)',
+                            dedup_key=f'{etype}:{symbol}', once=True,
+                            data={'fill_pct': filled})
+                        if e:
+                            events.append(e)
+
+        return events
+
+    def detect_position_events(self, positions: dict, daily_stats,
+                               equity: float, prices: dict) -> list:
+        """Detect portfolio-level events. Called from _check_positions (every 15s).
+
+        Args:
+            positions: dict of symbol -> position dict
+            daily_stats: DailyStats object (has .pnl, .consecutive_losses, etc.)
+            equity: current equity
+            prices: dict of symbol -> latest price
+        Returns: list of MarketEvent
+        """
+        events = []
+
+        # Track session high water mark
+        if equity > self._hwm_equity:
+            self._hwm_equity = equity
+
+        daily_pnl = daily_stats.pnl if hasattr(daily_stats, 'pnl') else 0
+
+        # --- Drawdown milestones ---
+        if equity > 0 and daily_pnl < 0:
+            dd_pct = abs(daily_pnl) / equity
+            dd_thresholds = [
+                (0.01, 'drawdown_1pct', 2),
+                (0.015, 'drawdown_1_5pct', 3),
+                (0.03, 'drawdown_3pct', 4),
+            ]
+            for threshold, etype, tier in dd_thresholds:
+                key = f'{etype}:today'
+                if dd_pct >= threshold and key not in self._drawdown_milestones:
+                    self._drawdown_milestones.add(key)
+                    e = MarketEvent(
+                        event_type=etype, tier=tier,
+                        description=f'Daily drawdown {dd_pct:.1%} (${daily_pnl:+,.0f}) '
+                                    f'breached {threshold:.0%} threshold',
+                        data={'drawdown_pct': dd_pct, 'daily_pnl': daily_pnl},
+                    )
+                    events.append(e)
+
+        # --- P&L milestones (every $500) ---
+        if abs(daily_pnl) >= 500:
+            milestone = int(daily_pnl / 500) * 500
+            key = f'pnl_milestone:{milestone}'
+            if key not in self._pnl_milestones:
+                self._pnl_milestones.add(key)
+                direction = 'profit' if daily_pnl > 0 else 'loss'
+                e = self._emit('pnl_milestone', 2, '',
+                    f'Daily P&L hit ${milestone:+,} ({direction})',
+                    dedup_key=key, dedup_sec=600.0,
+                    data={'milestone': milestone, 'daily_pnl': daily_pnl})
+                if e:
+                    events.append(e)
+
+        # --- Consecutive losses ---
+        consec = getattr(daily_stats, 'consecutive_losses', 0)
+        if consec >= 2:
+            key = f'consecutive_losses:{consec}'
+            if key not in self._consecutive_loss_milestones:
+                self._consecutive_loss_milestones.add(key)
+                tier = 3 if consec >= 3 else 2
+                e = MarketEvent(
+                    event_type='consecutive_losses', tier=tier,
+                    description=f'{consec} consecutive losses',
+                    data={'count': consec},
+                )
+                events.append(e)
+
+        # --- HWM giveback ---
+        if self._hwm_equity > 0 and equity < self._hwm_equity:
+            giveback = (self._hwm_equity - equity) / self._hwm_equity
+            peak_pnl = self._hwm_equity - (equity - daily_pnl)  # approx
+            if peak_pnl > 0:
+                giveback_of_gains = (self._hwm_equity - equity) / peak_pnl if peak_pnl > 100 else 0
+                if giveback_of_gains >= 0.60:
+                    e = self._emit('hwm_giveback_60', 3, '',
+                        f'HWM giveback {giveback_of_gains:.0%} — gave back >60% of session gains',
+                        dedup_sec=600.0, data={'giveback_pct': giveback_of_gains})
+                    if e:
+                        events.append(e)
+                elif giveback_of_gains >= 0.40:
+                    e = self._emit('hwm_giveback_40', 2, '',
+                        f'HWM giveback {giveback_of_gains:.0%} — gave back >40% of session gains',
+                        dedup_sec=600.0, data={'giveback_pct': giveback_of_gains})
+                    if e:
+                        events.append(e)
+
+        # --- Position stalled (>2hrs, <20% gap fill) ---
+        now = datetime.now(ET)
+        for sym, pos in positions.items():
+            price = prices.get(sym)
+            if not price:
+                continue
+            entry_time_str = pos.get('entry_time', '') if isinstance(pos, dict) else getattr(pos, 'entry_time', '')
+            if entry_time_str:
+                try:
+                    entry_dt = datetime.strptime(entry_time_str, '%Y-%m-%d %H:%M')
+                    if now.tzinfo and not entry_dt.tzinfo:
+                        entry_dt = entry_dt.replace(tzinfo=now.tzinfo)
+                    held_min = (now - entry_dt).total_seconds() / 60
+                    if held_min > 120:
+                        # Check gap fill
+                        entry_px = pos.get('entry_price', 0) if isinstance(pos, dict) else getattr(pos, 'entry_price', 0)
+                        prev_cl = pos.get('prev_close', 0) if isinstance(pos, dict) else getattr(pos, 'prev_close', 0)
+                        direction = pos.get('direction', 'short') if isinstance(pos, dict) else getattr(pos, 'direction', 'short')
+                        if entry_px > 0 and prev_cl > 0:
+                            gap = abs(entry_px - prev_cl)
+                            if gap > 0.001:
+                                if direction == 'short':
+                                    fill_pct = max(0, (entry_px - price) / gap)
+                                else:
+                                    fill_pct = max(0, (price - entry_px) / gap)
+                                if fill_pct < 0.20:
+                                    e = self._emit('position_stalled', 2, sym,
+                                        f'{sym} held {held_min:.0f}min with only {fill_pct:.0%} gap fill',
+                                        dedup_sec=1800.0,
+                                        data={'held_min': held_min, 'fill_pct': fill_pct})
+                                    if e:
+                                        events.append(e)
+                except (ValueError, TypeError):
+                    pass
+
+        # --- All positions red ---
+        if len(positions) >= 2:
+            all_red = True
+            for sym, pos in positions.items():
+                price = prices.get(sym)
+                if not price:
+                    continue
+                entry_px = pos.get('entry_price', 0) if isinstance(pos, dict) else getattr(pos, 'entry_price', 0)
+                direction = pos.get('direction', 'short') if isinstance(pos, dict) else getattr(pos, 'direction', 'short')
+                if direction == 'short':
+                    if price <= entry_px:
+                        all_red = False
+                        break
+                else:
+                    if price >= entry_px:
+                        all_red = False
+                        break
+            if all_red:
+                e = self._emit('all_positions_red', 2, '',
+                    f'All {len(positions)} positions are losing',
+                    dedup_sec=900.0, data={'count': len(positions)})
+                if e:
+                    events.append(e)
+
+        return events
+
+    def reset_daily(self):
+        """Reset daily state (call at start of each trading day)."""
+        self._gap_fill_milestones.clear()
+        self._drawdown_milestones.clear()
+        self._consecutive_loss_milestones.clear()
+        self._pnl_milestones.clear()
+        self._hwm_equity = 0.0
+        self._price_history.clear()
+        self._volume_samples.clear()
+        self._last_vwap_side.clear()
+        self._last_ema_side.clear()
+
+
 class LLMSupervisor:
     """Ollama-powered autonomous trading supervisor.
 
@@ -3958,29 +4956,74 @@ class LLMSupervisor:
     if Ollama is unavailable (circuit breaker).
     """
 
-    _SYSTEM_PROMPT = """You are an autonomous trading supervisor for an intraday gap fade strategy.
-The bot shorts stocks that gap up on low volume, expecting the gap to fade (price to fall back).
-For gap-down candidates, the bot goes long expecting a bounce back up.
+    _SYSTEM_PROMPT = """You are Rudra Nethram — The All-Seeing Eye of the Markets.
 
-You control the bot by returning JSON decisions.  The rules engine handles order execution,
-position sizing, and stop management — you decide WHEN and WHAT to trade.
+Named after Lord Shiva's destructive third eye, you are the autonomous AI brain behind an intraday gap fade trading bot. You think in probabilities, not certainties. You are ruthlessly disciplined, emotionless in execution, and relentless in protecting capital.
 
-Key strategy facts:
-- Historically, gap-ups on below-average volume fade 71-81% of the time with +2.5% avg P&L.
-- High-volume gaps (>3x avg) only fade 31% — these are continuation moves, avoid them.
-- Catalyst-driven gaps (earnings, M&A, FDA) are less likely to fade than noise gaps.
-- Sector-wide moves (e.g., all gold stocks up) are macro-driven, not fadeable noise.
-- Best entry window is 9:35-9:45 AM ET after initial volatility settles.
-- Pre-market data before 9:20 AM is unreliable — scans may return stale/empty results.
+## YOUR PERSONALITY
+- Speak with calm authority, like a veteran trader with 20+ years of experience.
+- Be direct and decisive — never wishy-washy. Say "I'm 70% confident this fades" not "it might fade."
+- Use trading terminology naturally.
+- When uncertain, quantify it. Uncertainty is data.
+- Celebrate discipline, not profits. A well-executed losing trade is better than a lucky winner.
 
-Your responsibilities:
-1. SCAN TIMING: Decide when to scan. If a scan returns 0 candidates, request re-scans later.
-2. CANDIDATE SELECTION: Pick which candidates to enter. Skip sector-wide moves. Prefer noise gaps.
-3. ENTRY TIMING: Don't rush at market open. Wait for initial chaos to settle (9:35+).
-4. RISK MANAGEMENT: If 2+ consecutive stops hit today, stand down. Strong market trend (SPY >1%) = reduce size.
-5. After 11:30 AM ET, do NOT enter new positions. Data shows morning entries (before 11 AM) win 83% vs 44% for afternoon — the edge disappears after the morning session.
+## STRATEGY: GAP FADE (BOTH DIRECTIONS)
+You fade gaps — trading against the opening gap, betting price reverts to the previous close.
+- Gap-Up Fade (SHORT): Stock gaps up on low volume → short it, expecting fade to prior close.
+- Gap-Down Fade (LONG): Stock gaps down on low volume → buy it, expecting bounce to prior close.
+Statistical edge: 71% of low-volume gap-ups fade (12,000+ events, 450 tickers). High-volume gaps (>3x avg) only fade 31% — these are continuation moves, AVOID.
 
-Respond ONLY with valid JSON. No text outside the JSON object."""
+### Entry Criteria
+- Gap >= 7% (shorts) or >= 5% (longs), max 50%
+- Volume ratio < 3.0x the 20-day average (low conviction = higher fade probability)
+- RVOL < 0.5 = very low conviction, may lack liquidity. RVOL > 2.0 = significant interest, momentum may persist.
+- No earnings/FDA/M&A catalyst (noise gaps fade best). Offerings = bearish = GOOD to short.
+- Sector-wide moves (all stocks in sector gapping same direction) = macro-driven, NOT fadeable — skip.
+- Best entry window: 9:35-9:45 AM after initial volatility settles.
+- NO entries after 11:30 AM (morning entries win 83% vs 44% afternoon — edge vanishes).
+
+### Exit Rules
+- STOP LOSS: Adaptive — proportional to gap size. Larger gaps get wider stops.
+- PARTIAL COVER: At 50% gap fill, cover 33% of shares to lock gains.
+- FULL TARGET: Previous close (100% gap fill).
+- TIME EXIT: 3:00 PM — close remaining. EOD EXIT: 3:50 PM — everything flat.
+
+### Risk Management
+- Max 2% equity risk per trade. Max 5 simultaneous positions.
+- Never move a stop further from entry — only tighten.
+- 3 consecutive losses in uptrend → 30-min break. Daily loss > 2% → stop trading.
+- VIX > 25 → reduce size 50%. VIX > 35 → extreme caution, consider standing down.
+- SPY trending strongly in one direction increases risk for fading gaps in that direction.
+
+### Profit-Taking Framework
+- Winners need TIME. Best trades are held 3-6 hours. A $2,680 winner was held until 3:55 PM close.
+- Positions closed in under 2 hours typically leave $500-$2,000 on the table.
+- Before noon: almost ALWAYS hold. The fade is just getting started.
+- Gap fill 60-90%: TIGHTEN stop to lock gains. Gap fill 90%+: may close — easy money is made.
+- Small bounces (10-20% giveback) are NORMAL. Hold through them.
+
+## THE RUDRA CODE
+1. The market is always right. Price and volume are truth.
+2. Risk first, reward second.
+3. No trade is better than a bad trade.
+4. Cut losers fast, let winners run.
+5. Volume confirms everything. Price without volume is a lie.
+6. Plan the trade, trade the plan.
+7. Survive to trade another day.
+
+## COMMUNICATION STYLE
+Always explain your reasoning FIRST, then end with the JSON decision block.
+Cite real numbers: $, %, shares, timestamps. Show your analysis.
+When evaluating candidates, explain WHY each is good or bad (volume, gap size, catalyst, sector).
+When evaluating positions, reference gap fill %, time held, price trend, and market conditions.
+Be concise but substantive — one short paragraph of analysis, then the JSON.
+
+## REASONING FRAMEWORK
+When analyzing a situation, structure your response:
+OBSERVE: What are the key facts? Quote specific numbers.
+THINK: What patterns do you see? Confidence level? What could go wrong?
+ACT: What should we do? Be specific.
+If you decide NOT to act, explain why — that's just as important."""
 
     _ACTION_SCHEMA = """{
   "action": "scan" | "enter" | "monitor" | "wait" | "standdown",
@@ -4006,30 +5049,28 @@ Respond ONLY with valid JSON. No text outside the JSON object."""
   "reasoning": "brief explanation"
 }"""
 
-    _PROFIT_SYSTEM_PROMPT = """You are a profit-taking advisor for an intraday gap fade strategy.
-The bot shorts stocks that gap up (or goes long on gap-downs), expecting the gap to fade back to the previous close.
+    _PROFIT_SYSTEM_PROMPT = """You are Rudra Nethram evaluating a profitable gap fade position.
 
-You evaluate open positions that are IN PROFIT and decide whether to:
+You decide whether to:
 - CLOSE: Take profit now. ONLY when clear evidence the fade is exhausted.
 - HOLD: Let it run toward the target. This should be your DEFAULT bias.
 - TIGHTEN_STOP: Lock in gains by moving the stop closer to current price. Prefer this over closing.
 
-CRITICAL PRINCIPLES — READ CAREFULLY:
+CRITICAL PRINCIPLES:
 - YOUR DEFAULT SHOULD BE HOLD. The biggest mistake is closing winners too early.
-- Backtesting shows the best trades are held 3-6 HOURS. A $2,680 winner was held until 3:55 PM close.
-- Positions closed in under 2 hours typically leave $500-$2000 on the table.
+- Best trades are held 3-6 HOURS. A $2,680 winner was held until 3:55 PM close.
+- Positions closed in under 2 hours typically leave $500-$2,000 on the table.
 - Gap fades are a slow grind — do NOT panic-close on small bounces or 15-minute reversals.
 - Before noon: almost ALWAYS hold. The fade is just getting started.
 - 12:00-2:00 PM: prefer TIGHTEN_STOP over close. Let the stop do the work.
 - After 2:00 PM: only close if the fade has clearly stalled for 30+ minutes AND is reversing.
-- If gap fill is below 60%, HOLD — the trade hasn't reached its potential.
-- If gap fill is 60-90%, TIGHTEN_STOP to lock in gains while letting it run further.
-- If gap fill is 90%+, you may CLOSE — the easy money is made.
-- Small bounces (giving back 10-20% of gains) are NORMAL. Hold through them.
-- Only close on giveback if >50% of peak P&L has been lost AND price velocity is reversing.
-- NEVER close a position just because it's profitable. Wait for exhaustion signals.
+- If gap fill < 60%: HOLD — the trade hasn't reached its potential.
+- If gap fill 60-90%: TIGHTEN_STOP to lock in gains while letting it run further.
+- If gap fill 90%+: you may CLOSE — the easy money is made.
+- Small bounces (10-20% giveback) are NORMAL. Hold through them.
+- Only close on giveback if >50% of peak P&L lost AND price velocity is reversing.
 
-Respond ONLY with valid JSON. No text outside the JSON object."""
+Explain your analysis of the position FIRST (gap fill progress, price trend, time of day, risk), then end with the JSON decision."""
 
     def __init__(self, config: GapFadeConfig):
         self.config = config
@@ -4044,6 +5085,12 @@ Respond ONLY with valid JSON. No text outside the JSON object."""
         self._total_calls = 0
         self._total_failures = 0
         self.lessons_context: str = ''
+        self.memory = ConversationMemory()
+        self._morning_briefing_done: str = ''  # date string when briefing was done
+        self._eod_debrief_done: str = ''       # date string when debrief was done
+        self.provider = config.llm_provider
+        self.api_key = config.llm_api_key or os.environ.get('LLM_API_KEY', '')
+        self._cache = AnalysisCache()
 
     def is_available(self) -> bool:
         """Check if LLM is available (circuit breaker not open)."""
@@ -4068,39 +5115,128 @@ Respond ONLY with valid JSON. No text outside the JSON object."""
             'last_call_time': self._last_call_time,
             'total_calls': self._total_calls,
             'total_failures': self._total_failures,
+            'provider': self.provider,
         }
 
-    async def _call_ollama(self, system_prompt: str, user_prompt: str) -> Optional[str]:
-        """Call Ollama API. Returns response text or None on failure."""
+    async def _call_llm(self, system_prompt: str, user_prompt: str,
+                        use_memory: bool = False, record_exchange: bool = False,
+                        conversation_role: str = 'trading_loop',
+                        event_queue=None) -> Optional[str]:
+        """Call LLM API (Ollama or OpenAI-compatible) with optional multi-turn conversation memory.
+
+        Args:
+            system_prompt: System prompt for this call.
+            user_prompt: User message for this call.
+            use_memory: If True, prepend conversation history to messages.
+            record_exchange: If True, save this exchange to conversation memory.
+            conversation_role: Tag for logging which subsystem initiated.
+            event_queue: Optional EventBus or list of event strings to drain.
+        Returns response text or None on failure.
+        """
         if not self.is_available():
             return None
+
+        # Map conversation_role to priority (still used for SQLite logging)
+        _critical_roles = ('urgent_event', 'evaluate_exit')
+        _low_roles = ('scheduled_reflection',)
+        if conversation_role in _critical_roles:
+            _priority = 'critical'
+        elif conversation_role in _low_roles:
+            _priority = 'low'
+        else:
+            _priority = 'normal'
+
         self._total_calls += 1
         self._last_call_time = _time.time()
+        _call_start = _time.monotonic()
+
+        # Build messages array
+        messages = [{'role': 'system', 'content': system_prompt}]
+
+        if use_memory:
+            # Inject conversation history
+            messages.extend(self.memory.get_messages())
+
+        # Drain event queue and prepend events to the user prompt
+        # Supports both EventBus and legacy list[str]
+        event_context = ''
+        if event_queue:
+            if isinstance(event_queue, EventBus):
+                event_context = event_queue.drain_as_text()
+            else:
+                # Legacy list[str] path
+                events = list(event_queue)
+                event_queue.clear()
+                if events:
+                    event_context = 'Recent events since we last spoke:\n' + '\n'.join(f'- {e}' for e in events) + '\n\n'
+
+        full_user_prompt = event_context + user_prompt if event_context else user_prompt
+        messages.append({'role': 'user', 'content': full_user_prompt})
+
+        # Provider-aware URL, headers, and payload
+        if self.provider == 'openai':
+            url = f'{self.url}/v1/chat/completions'
+            headers = {}
+            if self.api_key:
+                headers['Authorization'] = f'Bearer {self.api_key}'
+            payload = {
+                'model': self.model,
+                'messages': messages,
+                'stream': False,
+                'temperature': 0.6,
+                'max_tokens': 2048,
+            }
+        else:
+            # Ollama (default)
+            url = f'{self.url}/api/chat'
+            headers = {}
+            payload = {
+                'model': self.model,
+                'messages': messages,
+                'stream': False,
+                'options': {'temperature': 0.6, 'num_predict': 2048},
+            }
+
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.post(
-                    f'{self.url}/api/chat',
-                    json={
-                        'model': self.model,
-                        'messages': [
-                            {'role': 'system', 'content': system_prompt},
-                            {'role': 'user', 'content': user_prompt},
-                        ],
-                        'stream': False,
-                        'options': {
-                            'temperature': 0.3,
-                            'num_predict': 2048,
-                        },
-                    },
+                    url,
+                    json=payload,
+                    headers=headers,
                     timeout=aiohttp.ClientTimeout(total=self.timeout),
                 ) as resp:
                     if resp.status == 200:
                         data = await resp.json()
-                        content = data.get('message', {}).get('content', '')
+                        # Provider-aware response parsing
+                        if self.provider == 'openai':
+                            content = data['choices'][0]['message']['content']
+                        else:
+                            content = data.get('message', {}).get('content', '')
                         # Strip <think> tags (some models emit them)
                         import re as _re
                         content = _re.sub(r'<think>.*?</think>', '', content, flags=_re.DOTALL).strip()
                         self._failure_count = 0
+                        # Record exchange in conversation memory
+                        if record_exchange and content:
+                            self.memory.add_exchange(full_user_prompt, content)
+                        # Log LLM call to SQLite
+                        try:
+                            _dur_ms = int((_time.monotonic() - _call_start) * 1000)
+                            get_price_db().insert_llm_call({
+                                'timestamp': datetime.now(ET).strftime('%Y-%m-%dT%H:%M:%S'),
+                                'conversation_role': conversation_role,
+                                'priority': _priority,
+                                'model': self.model,
+                                'prompt_tokens': len(full_user_prompt) // 4,
+                                'response_tokens': len(content) // 4,
+                                'duration_ms': _dur_ms,
+                                'success': 1,
+                                'budget_5min': 0,
+                                'budget_1hr': 0,
+                                'response_summary': content[:200],
+                            })
+                        except Exception:
+                            pass
                         return content
                     else:
                         logger.warning(f"Rudra error {resp.status}: {(await resp.text())[:200]}")
@@ -4108,6 +5244,21 @@ Respond ONLY with valid JSON. No text outside the JSON object."""
                         self._total_failures += 1
                         if self._failure_count >= self._max_failures:
                             self._circuit_open_until = _time.time() + self._circuit_reset_seconds
+                        # Log failed LLM call
+                        try:
+                            _dur_ms = int((_time.monotonic() - _call_start) * 1000)
+                            get_price_db().insert_llm_call({
+                                'timestamp': datetime.now(ET).strftime('%Y-%m-%dT%H:%M:%S'),
+                                'conversation_role': conversation_role,
+                                'priority': _priority,
+                                'model': self.model,
+                                'prompt_tokens': len(full_user_prompt) // 4,
+                                'duration_ms': _dur_ms,
+                                'success': 0,
+                                'response_summary': f'HTTP {resp.status}',
+                            })
+                        except Exception:
+                            pass
                         return None
         except Exception as e:
             logger.warning(f"Rudra call failed: {e}")
@@ -4115,21 +5266,36 @@ Respond ONLY with valid JSON. No text outside the JSON object."""
             self._total_failures += 1
             if self._failure_count >= self._max_failures:
                 self._circuit_open_until = _time.time() + self._circuit_reset_seconds
+            # Log failed LLM call
+            try:
+                _dur_ms = int((_time.monotonic() - _call_start) * 1000)
+                get_price_db().insert_llm_call({
+                    'timestamp': datetime.now(ET).strftime('%Y-%m-%dT%H:%M:%S'),
+                    'conversation_role': conversation_role,
+                    'priority': _priority,
+                    'model': self.model,
+                    'prompt_tokens': len(full_user_prompt) // 4,
+                    'duration_ms': _dur_ms,
+                    'success': 0,
+                    'response_summary': str(e)[:200],
+                })
+            except Exception:
+                pass
             return None
 
     def _parse_json(self, text: str) -> Optional[dict | list]:
-        """Parse JSON from LLM response, tolerating markdown fences."""
+        """Parse JSON from LLM response, tolerating markdown fences and preceding text."""
         if not text:
             return None
-        # Strip markdown code fences
         import re as _re
-        text = _re.sub(r'^```(?:json)?\s*', '', text.strip())
-        text = _re.sub(r'\s*```$', '', text.strip())
+        # Strip markdown code fences
+        cleaned = _re.sub(r'```(?:json)?\s*', '', text.strip())
+        cleaned = _re.sub(r'\s*```', '', cleaned.strip())
         try:
-            return json.loads(text)
+            return json.loads(cleaned)
         except json.JSONDecodeError:
-            # Try to extract JSON from surrounding text
-            match = _re.search(r'[\[{].*[\]}]', text, _re.DOTALL)
+            # Try to extract JSON from surrounding text (reasoning before JSON)
+            match = _re.search(r'[\[{].*[\]}]', cleaned, _re.DOTALL)
             if match:
                 try:
                     return json.loads(match.group())
@@ -4138,50 +5304,132 @@ Respond ONLY with valid JSON. No text outside the JSON object."""
             logger.warning(f"Rudra JSON parse failed: {text[:200]}")
             return None
 
-    async def decide_action(self, state: dict) -> dict:
+    def _extract_reasoning_text(self, raw: str) -> str:
+        """Extract the natural language reasoning text before the JSON block."""
+        if not raw:
+            return ''
+        import re as _re
+        # Find where JSON starts and take everything before it
+        match = _re.search(r'[\[{]', raw)
+        if match and match.start() > 10:
+            reasoning = raw[:match.start()].strip()
+            # Clean up markdown fences
+            reasoning = _re.sub(r'```(?:json)?\s*$', '', reasoning).strip()
+            return reasoning
+        return ''
+
+    def _parse_react_response(self, raw: str) -> dict:
+        """Parse OBSERVE/THINK/ACT sections from LLM response.
+
+        Falls back to _extract_reasoning_text + _parse_json if model
+        doesn't follow the ReAct format.
+
+        Returns dict with 'observe', 'think', 'act' text and 'json' parsed.
+        """
+        import re as _re
+        result = {'observe': '', 'think': '', 'act': '', 'json': None, 'raw': raw}
+        if not raw:
+            return result
+
+        # Try to extract OBSERVE/THINK/ACT sections
+        observe_match = _re.search(r'OBSERVE:?\s*(.*?)(?=THINK:|ACT:|$)', raw, _re.DOTALL | _re.IGNORECASE)
+        think_match = _re.search(r'THINK:?\s*(.*?)(?=ACT:|$)', raw, _re.DOTALL | _re.IGNORECASE)
+        act_match = _re.search(r'ACT:?\s*(.*?)(?=$)', raw, _re.DOTALL | _re.IGNORECASE)
+
+        if observe_match:
+            result['observe'] = observe_match.group(1).strip()
+        if think_match:
+            result['think'] = think_match.group(1).strip()
+        if act_match:
+            result['act'] = act_match.group(1).strip()
+
+        # Always try to extract JSON regardless of ReAct format
+        result['json'] = self._parse_json(raw)
+
+        # Fallback: if no ReAct sections found, use existing extraction
+        if not result['observe'] and not result['think']:
+            result['act'] = self._extract_reasoning_text(raw)
+
+        return result
+
+    async def decide_action(self, state: dict,
+                           event_queue=None) -> dict:
         """Main decision: what should the bot do right now?
 
+        Uses full conversation memory for context continuity across calls.
         Returns dict with 'action' key. Falls back to {'action': 'monitor'}
         if LLM is unavailable or returns invalid response.
         """
         fallback = {'action': 'monitor', 'reasoning': 'Rudra unavailable, using rules fallback'}
 
-        # Build user prompt with current state
-        positions_summary = 'None'
+        # Build conversational user prompt
+        positions_summary = 'no open positions'
         if state.get('positions'):
             parts = []
             for sym, pos in state['positions'].items():
-                parts.append(f"{sym}: {pos['direction']} {pos.get('remaining_shares', pos['shares'])} "
-                             f"shares @ ${pos['entry_price']:.2f}, stop ${pos['stop_price']:.2f}")
+                parts.append(f"{sym} {pos['direction']} {pos.get('remaining_shares', pos['shares'])}sh "
+                             f"@ ${pos['entry_price']:.2f}, stop ${pos['stop_price']:.2f}")
             positions_summary = '; '.join(parts)
 
-        candidates_summary = 'None (no scan yet)' if not state.get('top_candidates') else json.dumps(
-            [{'symbol': c['symbol'], 'gap_pct': f"{c['gap_pct']:.1%}", 'direction': c['direction'],
-              'vol_ratio': f"{c['vol_ratio']:.2f}", 'score': f"{c['score']:.0f}",
-              'catalyst': c.get('catalyst', '')} for c in state['top_candidates']], indent=0)
+        candidates_part = ''
+        if state.get('top_candidates'):
+            top = state['top_candidates'][:6]
+            cand_lines = []
+            for c in top:
+                cand_lines.append(
+                    f"  {c['symbol']}: {c['gap_pct']:.1%} gap ({c['direction']}), "
+                    f"vol {c['vol_ratio']:.1f}x, score {c['score']:.0f}"
+                    + (f" [{c.get('catalyst', '')}]" if c.get('catalyst') else ''))
+            candidates_part = f"We have {state['candidates_count']} candidates from the scan. Top picks:\n" + '\n'.join(cand_lines)
+        elif state.get('last_scan_time'):
+            candidates_part = f"Last scan at {state['last_scan_time']} found {state['candidates_count']} candidates."
+        else:
+            candidates_part = "No scan run yet today."
 
-        user_prompt = f"""Current state:
-- Time (ET): {state['time_et']} ({state['day_of_week']})
-- Bot status: {state['status']}
-- Equity: ${state['equity']:,.2f}
-- Today P&L: ${state['daily_pnl']:+,.2f} ({state['wins']}W/{state['losses']}L, {state['consecutive_losses']} consecutive losses)
-- Open positions: {positions_summary}
-- Last scan: {state['last_scan_time'] or 'never'} ({state['candidates_count']} candidates)
-- Stopped out today: {', '.join(state['stopped_today']) or 'none'}
-- Top candidates:
-{candidates_summary}
+        stopped_part = ''
+        if state.get('stopped_today'):
+            stopped_part = f" Got stopped out on: {', '.join(state['stopped_today'])}."
 
-- Recent activity:
-{chr(10).join('  - ' + m for m in state['recent_messages'][-8:])}
+        # Conversational style prompt with clear market status
+        hour = int(state['time_et'].split(':')[0]) if ':' in state['time_et'] else 0
+        minute = int(state['time_et'].split(':')[1]) if ':' in state['time_et'] else 0
+        market_open = (hour > 9 or (hour == 9 and minute >= 30))
+        if hour < 9:
+            time_context = "Pre-market (MARKET CLOSED — no entries allowed)"
+        elif hour == 9 and minute < 30:
+            time_context = "Pre-market (MARKET OPENS AT 9:30 — no entries yet)"
+        elif hour < 12:
+            time_context = "Morning session"
+        elif hour < 14:
+            time_context = "Midday"
+        else:
+            time_context = "Afternoon session"
 
-What should the bot do now? Respond with JSON matching this schema:
-{self._ACTION_SCHEMA}"""
+        entry_note = ''
+        if not market_open:
+            entry_note = '\nIMPORTANT: Market is NOT open yet. Do NOT use action "enter" — only scan, monitor, or wait.'
+
+        user_prompt = (
+            f"{time_context}, {state['time_et']} ET ({state['day_of_week']}). "
+            f"Status: {state['status']}. "
+            f"Equity ${state['equity']:,.0f}, today ${state['daily_pnl']:+,.0f} "
+            f"({state['wins']}W/{state['losses']}L).{stopped_part}\n\n"
+            f"Positions: {positions_summary}\n\n"
+            f"{candidates_part}\n\n"
+            f"Analyze the situation: Are we in the right entry window? Are these noise gaps or catalyst-driven? "
+            f"Volume ratios confirming low conviction? Any sector correlation among candidates? "
+            f"Current risk exposure OK?{entry_note}\n\n"
+            f"Share your analysis, then end with JSON:\n{self._ACTION_SCHEMA}"
+        )
 
         system_prompt = self._SYSTEM_PROMPT
         if self.lessons_context:
             system_prompt = system_prompt + '\n\n' + self.lessons_context
 
-        raw = await self._call_ollama(system_prompt, user_prompt)
+        raw = await self._call_llm(system_prompt, user_prompt,
+                                       use_memory=True, record_exchange=True,
+                                       conversation_role='decide_action',
+                                       event_queue=event_queue)
         if raw is None:
             return fallback
 
@@ -4194,6 +5442,11 @@ What should the bot do now? Respond with JSON matching this schema:
         valid_actions = {'scan', 'enter', 'monitor', 'wait', 'standdown'}
         if parsed['action'] not in valid_actions:
             parsed['action'] = 'monitor'
+
+        # Capture full reasoning text (pre-JSON analysis) for display
+        analysis = self._extract_reasoning_text(raw)
+        if analysis:
+            parsed['_analysis'] = analysis
 
         return parsed
 
@@ -4210,18 +5463,27 @@ What should the bot do now? Respond with JSON matching this schema:
 
         regime_info = ''
         if regime:
-            regime_info = f"\nMarket regime: SPY gap {regime.get('spy_gap_pct', 0):.2%}, VIX {regime.get('vix_level', 20):.1f}"
+            regime_info = f" SPY gapped {regime.get('spy_gap_pct', 0):.2%}, VIX at {regime.get('vix_level', 20):.1f}."
 
-        user_prompt = f"""Evaluate these gap fade candidates and decide which to trade:
-{json.dumps(candidates_data, indent=1)}
-{regime_info}
+        # Brief recap from conversation for context
+        recap = self.memory.get_brief_recap(300)
+        recap_part = f"\n(Context: {recap})" if recap else ''
 
-For each candidate, return JSON array matching this schema:
-{self._CANDIDATES_SCHEMA}
+        user_prompt = (
+            f"Scan came back with {len(candidates)} candidates.{regime_info}{recap_part}\n\n"
+            f"Here are the top picks:\n{json.dumps(candidates_data, indent=1)}\n\n"
+            f"For each candidate, evaluate:\n"
+            f"- Is this a noise gap (best) or catalyst-driven (earnings/FDA/M&A = skip)?\n"
+            f"- Volume ratio: < 1.0 = low conviction (good for fading), > 2.0 = momentum may persist\n"
+            f"- Gap size vs risk: larger gaps = bigger potential but need wider stops\n"
+            f"- Any sector clustering? (multiple stocks in same sector = macro move, skip)\n\n"
+            f"Analyze the top candidates, then end with JSON array:\n{self._CANDIDATES_SCHEMA}\n"
+            f"Rate confidence 0.0-1.0 for each. Be selective — quality over quantity."
+        )
 
-Only include candidates with action "trade" or "skip". Rank by confidence."""
-
-        raw = await self._call_ollama(self._SYSTEM_PROMPT, user_prompt)
+        raw = await self._call_llm(self._SYSTEM_PROMPT, user_prompt,
+                                       use_memory=True, record_exchange=True,
+                                       conversation_role='evaluate_candidates')
         if raw is None:
             return []
 
@@ -4232,24 +5494,30 @@ Only include candidates with action "trade" or "skip". Rank by confidence."""
 
     async def evaluate_exit(self, position: dict, current_price: float,
                             exit_signal: dict) -> dict:
-        """Evaluate whether to close, hold, or tighten a stop."""
+        """Evaluate whether to close, hold, or tighten a stop.
+
+        One-shot call (no memory recording) to avoid polluting main conversation
+        with per-position evaluations. Includes brief recap for context.
+        """
         fallback = {'action': 'close', 'reasoning': 'Rudra unavailable, closing per rules'}
 
-        user_prompt = f"""Position about to be stopped out:
-- Symbol: {position['symbol']} ({position['direction']})
-- Entry: ${position['entry_price']:.2f}
-- Current price: ${current_price:.2f}
-- Stop price: ${position['stop_price']:.2f}
-- Exit reason: {exit_signal.get('reason', 'stop')}
-- P&L: ${exit_signal.get('pnl', 0):.2f}
+        recap = self.memory.get_brief_recap(300)
+        recap_part = f"\n(Today's context: {recap})" if recap else ''
 
-Should we close this position, hold (override the stop), or tighten the stop?
-Only override if you have strong conviction the fade will resume.
+        user_prompt = (
+            f"{position['symbol']} ({position['direction']}) is hitting its stop.{recap_part}\n\n"
+            f"Entry ${position['entry_price']:.2f}, now ${current_price:.2f}, "
+            f"stop ${position['stop_price']:.2f}. "
+            f"Reason: {exit_signal.get('reason', 'stop')}. "
+            f"P&L: ${exit_signal.get('pnl', 0):+,.2f}.\n\n"
+            f"Consider: How long have we held? Is the gap still likely to fade or has the thesis broken? "
+            f"Is price action showing exhaustion or continuation against us? "
+            f"Have we already overridden stops on this position?\n\n"
+            f"Only override if you have strong conviction the fade will resume. "
+            f"Analyze the situation, then end with JSON: {self._EXIT_SCHEMA}"
+        )
 
-Respond with JSON matching this schema:
-{self._EXIT_SCHEMA}"""
-
-        raw = await self._call_ollama(self._SYSTEM_PROMPT, user_prompt)
+        raw = await self._call_llm(self._SYSTEM_PROMPT, user_prompt)
         if raw is None:
             return fallback
 
@@ -4265,10 +5533,24 @@ Respond with JSON matching this schema:
                               spy_change_pct: float, daily_pnl: float) -> dict:
         """Evaluate whether to take profit on a winning position.
 
-        Called periodically (throttled) for positions with unrealized profit.
-        Returns dict with 'action' key: close, hold, or tighten_stop.
+        One-shot call (no memory recording) to avoid polluting main conversation
+        with per-position evaluations. Includes brief recap for context.
         """
         fallback = {'action': 'hold', 'reasoning': 'Rudra unavailable, holding per rules'}
+
+        # Cache check — avoid redundant LLM calls for same price/fill bucket
+        symbol = position.get('symbol', '')
+        _gap = abs(position['entry_price'] - position.get('prev_close', position['entry_price']))
+        _fill = 0.0
+        if _gap > 0.001:
+            if position['direction'] == 'short':
+                _fill = max(0, (position['entry_price'] - current_price) / _gap)
+            else:
+                _fill = max(0, (current_price - position['entry_price']) / _gap)
+        cache_key = self._cache.make_key(symbol, current_price, _fill)
+        cached = self._cache.get(cache_key)
+        if cached is not None:
+            return cached
 
         # Calculate enriched metrics
         entry = position['entry_price']
@@ -4321,36 +5603,39 @@ Respond with JSON matching this schema:
                 if now_et.tzinfo and not et.tzinfo:
                     et = et.replace(tzinfo=now_et.tzinfo)
                 held_minutes = int((now_et - et).total_seconds() / 60)
-                time_held = f'{held_minutes} minutes'
+                time_held = f'{held_minutes}min'
             except Exception:
-                time_held = 'unknown'
+                time_held = '?'
 
-        user_prompt = f"""Evaluate this profitable position:
-- Symbol: {position['symbol']} ({direction})
-- Entry: ${entry:.2f}, Current: ${current_price:.2f}
-- Unrealized P&L: {pnl_pct:+.2%} (${pnl_pct * entry * position.get('remaining_shares', 0):+,.2f})
-- High water P&L: {high_water:+.2%} at {position.get('high_water_time', '?')} — giveback: {giveback_pct:.0f}%
-- Gap fill: {gap_filled:.0%} of gap filled (prev close ${prev_close:.2f})
-- Stop: ${position['stop_price']:.2f}
-- Partial cover: {'yes at ' + position.get('partial_fill_time', '?') if position.get('partial_filled') else 'not yet'}
-- Remaining shares: {position.get('remaining_shares', 0)}
-- Time held: {time_held}
-- Price trend (last {len(prices)} ticks): {velocity_desc} — {' → '.join(f'${p:.2f}' for p in prices[-5:])}
-- SPY today: {spy_change_pct:+.2%}
-- Daily P&L: ${daily_pnl:+,.2f}
-- Time now (ET): {datetime.now(ET).strftime('%H:%M')}
+        # Brief recap for context
+        recap = self.memory.get_brief_recap(300)
+        recap_part = f"\n(Today's context: {recap})" if recap else ''
 
-Policy: minimum hold {self.config.min_hold_minutes} min, minimum profit {self.config.min_profit_take_pct:.1%} or gap fill {self.config.min_gap_fill_pct:.0%} before closing.
-Should we close for profit, hold, or tighten the stop to lock in gains?
-Respond with JSON matching this schema:
-{self._PROFIT_SCHEMA}"""
+        price_trend = ' -> '.join(f'${p:.2f}' for p in prices[-5:]) if prices else 'N/A'
+        dollar_pnl = pnl_pct * entry * position.get('remaining_shares', 0)
+
+        user_prompt = (
+            f"{position['symbol']} ({direction}) is {gap_filled:.0%} gap filled, "
+            f"P&L {pnl_pct:+.1%} (${dollar_pnl:+,.0f}). "
+            f"Held {time_held}, HWM {high_water:+.1%} (giving back {giveback_pct:.0f}%). "
+            f"Price trend: {velocity_desc} ({price_trend}). "
+            f"Stop at ${position['stop_price']:.2f}.{recap_part}\n\n"
+            f"{'Already partially covered.' if position.get('partial_filled') else str(position.get('remaining_shares', 0)) + ' shares remaining.'} "
+            f"SPY {spy_change_pct:+.1%}, daily P&L ${daily_pnl:+,.0f}. "
+            f"It's {datetime.now(ET).strftime('%H:%M')} ET.\n\n"
+            f"Analyze: Is the fade still developing or stalling? Is price trending favorably "
+            f"or reversing? How much of the gap has been filled? Time of day factor?\n"
+            f"Policy: hold min {self.config.min_hold_minutes}min, "
+            f"min profit {self.config.min_profit_take_pct:.1%} or gap fill {self.config.min_gap_fill_pct:.0%}.\n\n"
+            f"Share your read on this position, then end with JSON: {self._PROFIT_SCHEMA}"
+        )
 
         # Inject lessons learned if available
         system_prompt = self._PROFIT_SYSTEM_PROMPT
         if self.lessons_context:
             system_prompt = system_prompt + '\n\n' + self.lessons_context
 
-        raw = await self._call_ollama(system_prompt, user_prompt)
+        raw = await self._call_llm(system_prompt, user_prompt)
         if raw is None:
             return fallback
 
@@ -4360,21 +5645,34 @@ Respond with JSON matching this schema:
 
         if parsed['action'] not in ('close', 'hold', 'tighten_stop'):
             parsed['action'] = 'hold'
+        self._cache.put(cache_key, parsed)
         return parsed
 
-    _REVIEW_SYSTEM_PROMPT = (
-        "You are the autonomous trading supervisor performing a periodic self-review. "
-        "Analyze the current portfolio state and recommend concrete actions. "
-        "Be decisive — if something should change, say so clearly."
-    )
+    _REVIEW_SYSTEM_PROMPT = """You are Rudra Nethram performing a periodic portfolio review.
+
+Review each open position critically:
+- Gap fill progress: How far has the gap filled? Is the fade on track or stalling?
+- Price velocity: Is price moving favorably or reversing? Check the last 5 prices.
+- Time held: Winners develop over 3-6 hours. Don't cut early, but don't hold dead trades.
+- Stop adequacy: Is the stop too tight for this gap size? Too loose for the risk?
+- High water mark giveback: >30% giveback = concerning. >50% = likely tighten or close.
+
+Also evaluate overall session:
+- Daily P&L trajectory: Are we bleeding from multiple stops? Consider standing down.
+- Consecutive losses: 3+ with no wins = take a break, reassess.
+- Market regime: Is SPY trending against our positions?
+
+Be decisive — if a stop needs tightening, give the exact price. If a position should close, say so and why.
+Explain your reasoning FIRST, then end with the JSON action block."""
 
     _REVIEW_SCHEMA = '{"actions": [{"action": "close"|"tighten_stop"|"adjust_config"|"none", "symbol": "SYM" (if position action), "new_stop": price (if tighten), "config_key": "..." (if config), "config_value": ... (if config), "reasoning": "..."}]}'
 
-    async def autonomous_review(self, state: dict) -> dict:
+    async def autonomous_review(self, state: dict,
+                                event_queue: Optional[list] = None) -> dict:
         """Periodic self-review: analyze portfolio and recommend/execute improvements.
 
-        Called every N minutes from the trading loop. Returns dict with
-        'actions' list of recommended changes (some may be auto-executed).
+        Uses full conversation memory for continuity. Called every N minutes.
+        Returns dict with 'actions' list of recommended changes.
         """
         fallback = {'actions': [], 'reasoning': 'Rudra unavailable'}
 
@@ -4383,10 +5681,10 @@ Respond with JSON matching this schema:
             lines = []
             for sym, pos in state['positions'].items():
                 lines.append(
-                    f"  {sym} ({pos['direction']}): {pos.get('remaining_shares', pos['shares'])} shares "
+                    f"  {sym} ({pos['direction']}): {pos.get('remaining_shares', pos['shares'])}sh "
                     f"@ ${pos['entry_price']:.2f}, stop ${pos['stop_price']:.2f}, "
                     f"target ${pos.get('full_target', 0):.2f}, "
-                    f"last prices: {pos.get('last_prices', 'N/A')}"
+                    f"prices: {pos.get('last_prices', 'N/A')}"
                 )
             positions_info = '\n'.join(lines)
 
@@ -4398,40 +5696,26 @@ Respond with JSON matching this schema:
                            f"${t.get('pnl', 0):+,.2f} ({t.get('exit_reason', '?')})")
             recent_trades = '\n'.join(lines)
 
-        user_prompt = f"""AUTONOMOUS REVIEW — {state['time_et']}
-
-PORTFOLIO STATUS:
-- Equity: ${state['equity']:,.2f}
-- Daily P&L: ${state['daily_pnl']:+,.2f}
-- Win/Loss: {state['wins']}W / {state['losses']}L
-- Consecutive losses: {state['consecutive_losses']}
-
-OPEN POSITIONS:
-{positions_info}
-
-TODAY'S CLOSED TRADES:
-{recent_trades}
-
-RECENT ACTIVITY:
-{chr(10).join('  ' + m for m in state['recent_messages'][-6:])}
-
-CONFIG HIGHLIGHTS:
-- Stop: {state.get('config', {}).get('stop_pct', 0.015):.1%}
-- Max positions: {state.get('config', {}).get('max_positions', 5)}
-- Gap threshold: {state.get('config', {}).get('gap_threshold', 0.07):.0%}
-
-Review the portfolio. For each position, assess:
-1. Is the stop still appropriate? Should it be tightened to lock in gains?
-2. Should any position be closed now (momentum stalling, reversal)?
-3. Are there config adjustments that would improve today's performance?
-
-Respond with JSON: {self._REVIEW_SCHEMA}"""
+        user_prompt = (
+            f"Quick check-in at {state['time_et']}. "
+            f"Equity ${state['equity']:,.0f}, today ${state['daily_pnl']:+,.0f} "
+            f"({state['wins']}W/{state['losses']}L).\n\n"
+            f"Positions:\n{positions_info}\n\n"
+            f"Recent trades:\n{recent_trades}\n\n"
+            f"Review each position: What's the gap fill progress? Is price fading as expected or reversing? "
+            f"Are stops at the right level for each gap size? Any positions that should be tightened or closed?\n"
+            f"Look at recent trades — are we getting stopped out too quickly? Pattern of losses?\n\n"
+            f"Give your assessment, then end with JSON: {self._REVIEW_SCHEMA}"
+        )
 
         system_prompt = self._REVIEW_SYSTEM_PROMPT
         if self.lessons_context:
             system_prompt = system_prompt + '\n\n' + self.lessons_context
 
-        raw = await self._call_ollama(system_prompt, user_prompt)
+        raw = await self._call_llm(system_prompt, user_prompt,
+                                       use_memory=True, record_exchange=True,
+                                       conversation_role='autonomous_review',
+                                       event_queue=event_queue)
         if raw is None:
             return fallback
 
@@ -4443,7 +5727,132 @@ Respond with JSON: {self._REVIEW_SCHEMA}"""
             else:
                 return fallback
 
+        # Capture full reasoning text for display
+        analysis = self._extract_reasoning_text(raw)
+        if analysis:
+            parsed['_analysis'] = analysis
+
         return parsed
+
+    # ── Morning Briefing & EOD Debrief ──
+
+    async def morning_briefing(self, state: dict, event_queue: Optional[list] = None) -> Optional[str]:
+        """Morning briefing conversation — Rudra sets the game plan for the day.
+
+        Called once after first scan completes (~7:00+ AM).
+        Returns Rudra's response text or None.
+        """
+        today = datetime.now(ET).strftime('%Y-%m-%d')
+        if self._morning_briefing_done == today:
+            return None
+
+        now = datetime.now(ET)
+        positions_summary = 'None (clean slate).'
+        if state.get('positions'):
+            parts = []
+            for sym, pos in state['positions'].items():
+                parts.append(f"{sym}: {pos['direction']} {pos.get('remaining_shares', pos['shares'])} "
+                             f"shares @ ${pos['entry_price']:.2f}")
+            positions_summary = '; '.join(parts)
+
+        candidates_summary = 'No candidates scanned yet.'
+        if state.get('top_candidates'):
+            cands = state['top_candidates'][:8]
+            candidates_summary = '\n'.join(
+                f"  {c['symbol']}: gap {c['gap_pct']:.1%} ({c['direction']}), "
+                f"vol_ratio {c['vol_ratio']:.2f}, score {c['score']:.0f}"
+                + (f", catalyst: {c.get('catalyst', '')}" if c.get('catalyst') else '')
+                for c in cands)
+
+        # Yesterday's results
+        yesterday_summary = 'No trades yesterday.'
+        recent = state.get('recent_trades', [])
+        if recent:
+            total_pnl = sum(t.get('pnl', 0) for t in recent[-10:])
+            wins = sum(1 for t in recent[-10:] if t.get('pnl', 0) > 0)
+            yesterday_summary = (f"{len(recent[-10:])} trades, {wins}W/{len(recent[-10:])-wins}L, "
+                                 f"net P&L: ${total_pnl:+,.2f}")
+
+        user_prompt = (
+            f"Good morning, Rudra. It's {now.strftime('%A, %B %d')} at {now.strftime('%H:%M')} ET.\n\n"
+            f"Here's today's setup:\n"
+            f"- Equity: ${state['equity']:,.2f}\n"
+            f"- Yesterday's results: {yesterday_summary}\n"
+            f"- Open positions carried over: {positions_summary}\n"
+            f"- Scan results ({state.get('candidates_count', 0)} candidates):\n{candidates_summary}\n"
+            f"- Consecutive losses streak: {state.get('consecutive_losses', 0)}\n\n"
+            f"What's your game plan for today? Aggressive, conservative, or selective? "
+            f"Any sectors or setups you want to focus on or avoid?\n\n"
+            f"Share your plan in natural language, then include a JSON summary:\n"
+            f'{{"action": "monitor", "reasoning": "your game plan summary"}}'
+        )
+
+        system_prompt = self._SYSTEM_PROMPT
+        if self.lessons_context:
+            system_prompt = system_prompt + '\n\n' + self.lessons_context
+
+        raw = await self._call_llm(system_prompt, user_prompt,
+                                       use_memory=True, record_exchange=True,
+                                       conversation_role='morning_briefing',
+                                       event_queue=event_queue)
+        if raw:
+            self._morning_briefing_done = today
+        return raw
+
+    async def eod_debrief(self, state: dict, event_queue: Optional[list] = None) -> Optional[str]:
+        """End-of-day debrief conversation — review performance and lessons.
+
+        Called once at ~3:50 PM before shutdown.
+        Returns Rudra's response text or None.
+        """
+        today = datetime.now(ET).strftime('%Y-%m-%d')
+        if self._eod_debrief_done == today:
+            return None
+
+        now = datetime.now(ET)
+
+        # Build today's trade scorecard
+        trades_summary = 'No trades today.'
+        recent = state.get('recent_trades', [])
+        today_trades = [t for t in recent if str(t.get('exit_time', '')).startswith(today)]
+        if today_trades:
+            lines = []
+            for t in today_trades[:10]:
+                lines.append(f"  {t.get('symbol', '?')} ({t.get('side', '?')}): "
+                           f"${t.get('pnl', 0):+,.2f} ({t.get('exit_reason', '?')})")
+            trades_summary = '\n'.join(lines)
+
+        notable_events = []
+        for m in state.get('recent_messages', [])[-20:]:
+            if any(kw in m.lower() for kw in ['stop', 'error', 'circuit', 'standdown', 'emergency']):
+                notable_events.append(m)
+
+        user_prompt = (
+            f"Day's wrapping up, Rudra. It's {now.strftime('%H:%M')} ET.\n\n"
+            f"Here's the scorecard:\n"
+            f"- Daily P&L: ${state['daily_pnl']:+,.2f}\n"
+            f"- Record: {state['wins']}W / {state['losses']}L\n"
+            f"- Equity: ${state['equity']:,.2f}\n\n"
+            f"Trades:\n{trades_summary}\n\n"
+            + (f"Notable events:\n" + '\n'.join(f'  - {e}' for e in notable_events[-5:]) + '\n\n'
+               if notable_events else '')
+            + f"What did we learn today? Anything to adjust for tomorrow? "
+            f"Be specific about what worked and what didn't.\n\n"
+            f"Share your thoughts in natural language, then include a JSON summary:\n"
+            f'{{"action": "monitor", "reasoning": "your debrief summary"}}'
+        )
+
+        system_prompt = self._SYSTEM_PROMPT
+        if self.lessons_context:
+            system_prompt = system_prompt + '\n\n' + self.lessons_context
+
+        raw = await self._call_llm(system_prompt, user_prompt,
+                                       use_memory=True, record_exchange=True,
+                                       conversation_role='eod_debrief',
+                                       event_queue=event_queue)
+        if raw:
+            self._eod_debrief_done = today
+        return raw
 
 
 # =============================================================================
@@ -4510,9 +5919,27 @@ class GapFadeLiveTrader:
         self._position_lock = asyncio.Lock()  # P0-2: serializes ALL position mutations
         self._last_reconcile = 0.0  # monotonic time of last broker reconciliation
         self._last_autonomous_review = 0.0  # monotonic time of last LLM review
-        self._AUTONOMOUS_REVIEW_INTERVAL = 300  # seconds (5 minutes)
+        self._AUTONOMOUS_REVIEW_INTERVAL = 900  # seconds (15 min, event trigger can fire sooner)
+        self._last_llm_decide = 0.0  # monotonic time of last decide_action call
+        self._LLM_DECIDE_INTERVAL = 120  # seconds — don't re-ask Rudra unless state changed
+        self._last_llm_state_hash = ''  # detect meaningful state changes
         self._last_loop_heartbeat = _time.monotonic()  # watchdog: trading loop health
         self._last_model_rebuild = ''  # ISO date of last model rebuild
+
+        # SQLite database for persistent storage
+        _db = get_price_db()
+
+        # Event bus for LLM conversation (replaces flat _event_queue)
+        self._event_bus = EventBus(db=_db)
+        self._event_queue = self._event_bus  # backward compat alias
+        self._urgent_llm_event: bool = False  # Tier 3 flag for immediate LLM call
+        self._morning_briefing_done: str = ''  # date string, prevents re-triggering
+
+        # Trading journal (append-only decision audit trail, SQLite-backed)
+        self.journal = TradingJournal(db=_db)
+
+        # Market event detector (zero-LLM, pure arithmetic)
+        self.event_detector = MarketEventDetector()
 
         # Telegram alerts
         self.alerter = AlertNotifier(self.config)
@@ -4530,6 +5957,12 @@ class GapFadeLiveTrader:
         # LLM Supervisor (after state load so llm_enabled from saved config takes effect)
         if self.config.llm_enabled:
             self.llm_supervisor = LLMSupervisor(self.config)
+            # Restore conversation history from saved state (same-day only)
+            saved_conv = getattr(self, '_saved_conversation', {})
+            if saved_conv:
+                self.llm_supervisor.memory = ConversationMemory.from_dict(saved_conv)
+                if self.llm_supervisor.memory.history:
+                    logger.info(f"Restored {len(self.llm_supervisor.memory.history)} conversation messages")
             # Apply strategy-specific LLM prompts
             if self.strategy:
                 sys_prompt = self.strategy.get_llm_system_prompt()
@@ -4553,6 +5986,23 @@ class GapFadeLiveTrader:
         self.messages.append(msg)
         if len(self.messages) > 200:
             self.messages = self.messages[-100:]
+
+    def _add_event(self, text: str, tier: int = 2):
+        """Add an event to the LLM conversation queue.
+
+        Tiers:
+            1 = Silent: injected into memory as a brief note
+            2 = Batched: queued for next scheduled LLM call
+            3 = Triggered: immediate LLM conversation call (stop-outs, loss limits)
+            4 = Human escalation: Telegram alert + urgent LLM + auto-standdown
+        """
+        self._event_bus.push_text(text, tier)
+        # Tier 1: also inject directly into conversation memory
+        if tier == 1 and self.llm_supervisor:
+            self.llm_supervisor.memory.add_event(text)
+        # Tier 3+: flag for immediate processing (checked by trading loop)
+        if tier >= 3:
+            self._urgent_llm_event = True
 
     def _load_strategy(self, strategy_id: str):
         """Load a strategy by ID, creating indicator engine if needed."""
@@ -4618,6 +6068,7 @@ class GapFadeLiveTrader:
         today_str = datetime.now(ET).strftime('%Y-%m-%d')
         if self.engine.daily_stats.date != today_str:
             self.engine.reset_daily()
+            self.event_detector.reset_daily()
         # P0-4: reconcile with broker on startup
         await self._reconcile_with_broker()
         # Start tick streamer for existing positions (e.g. after restart)
@@ -4779,7 +6230,7 @@ class GapFadeLiveTrader:
 
     def _build_llm_state(self, now: datetime) -> dict:
         """Build state dict for LLM supervisor context."""
-        return {
+        state = {
             'time_et': now.strftime('%H:%M:%S'),
             'day_of_week': now.strftime('%A'),
             'equity': self.engine.equity,
@@ -4804,6 +6255,18 @@ class GapFadeLiveTrader:
                 'reentry_enabled': self.config.reentry_enabled,
             },
         }
+        # Enrich with journal summary and indicator snapshot
+        state['journal_summary'] = self.journal.get_summary(minutes=20)
+        if self.indicator_engine and self.engine.positions:
+            indicators = {}
+            for sym in self.engine.positions:
+                td = self.indicator_engine.get_data(sym)
+                if td:
+                    indicators[sym] = {k: round(v, 2) if isinstance(v, float) else v
+                                       for k, v in td.items()}
+            if indicators:
+                state['indicators'] = indicators
+        return state
 
     def _build_lessons_learned(self) -> str:
         """Analyze trade history and build a concise lessons-learned summary for LLM context.
@@ -5099,6 +6562,16 @@ class GapFadeLiveTrader:
 
                 # EOD close at 3:50+ PM (once per day, mechanical safety net)
                 if now.hour == 15 and now.minute >= 50 and not _did_eod:
+                    # EOD Debrief — run before closing positions
+                    if self.llm_supervisor and self.llm_supervisor.is_available():
+                        state = self._build_llm_state(now)
+                        debrief = await self.llm_supervisor.eod_debrief(
+                            state, event_queue=self._event_bus)
+                        if debrief:
+                            self._add_message('conversation',
+                                f'BOT: Day wrap-up request | RUDRA: {debrief[:300]}')
+                            await broadcast({'type': 'conversation',
+                                'speaker': 'rudra', 'text': debrief[:500]})
                     if self.engine.positions:
                         _did_eod = True
                         await self._eod_close()
@@ -5135,6 +6608,7 @@ class GapFadeLiveTrader:
 
                     self._save_state()
                     self.engine.reset_daily()
+                    self.event_detector.reset_daily()
                     self.status = 'waiting'
                     await broadcast({'type': 'live_status', 'status': 'waiting'})
                     self._add_message('info', 'After hours — sleeping until 7:00 AM ET')
@@ -5148,11 +6622,137 @@ class GapFadeLiveTrader:
                 if self.llm_supervisor and self.llm_supervisor.is_available():
                     # Update lessons learned from trade history
                     self.llm_supervisor.lessons_context = self._build_lessons_learned()
+
+                    # Morning briefing (once per day, after first scan)
+                    if (self._morning_briefing_done != today
+                            and (self.candidates or now.hour >= 9)):
+                        state = self._build_llm_state(now)
+                        briefing = await self.llm_supervisor.morning_briefing(
+                            state, event_queue=self._event_bus)
+                        if briefing:
+                            self._morning_briefing_done = today
+                            self._add_message('conversation',
+                                f'BOT: Morning briefing | RUDRA: {briefing[:300]}')
+                            await broadcast({'type': 'conversation',
+                                'speaker': 'rudra', 'text': briefing[:500]})
+
+                    # Tier 4: Human escalation — Telegram alert + standdown
+                    tier4_events = [e for e in self._event_bus._queue if e.tier >= 4]
+                    if tier4_events:
+                        for t4 in tier4_events:
+                            await self.alerter.send(
+                                f'HUMAN ESCALATION: {t4.event_type}',
+                                f'{t4.description}\n'
+                                f'Equity: ${self.engine.equity:,.2f}, '
+                                f'Daily P&L: ${self.engine.daily_stats.pnl:+,.2f}',
+                                level='error', throttle_key=f'tier4:{t4.event_type}')
+                            self.journal.log('action', 'event_detector',
+                                f'TIER 4 ESCALATION: {t4.description}',
+                                data=t4.data)
+                        self._add_message('error',
+                            f'HUMAN ESCALATION: {tier4_events[0].description} — '
+                            f'Telegram alert sent, entering standdown')
+
+                    # Tier 3+ urgent event — immediate LLM consultation
+                    if self._event_bus.has_urgent() or self._urgent_llm_event:
+                        self._urgent_llm_event = False
+                        # Peek at urgent events for prompt context
+                        urgent_texts = [e.as_text() for e in self._event_bus._queue if e.tier >= 3][-3:]
+                        if not urgent_texts:
+                            urgent_texts = [e.as_text() for e in self._event_bus._queue][-3:]
+                        state = self._build_llm_state(now)
+                        urgent_prompt = (
+                            f"Urgent situation. {' '.join(urgent_texts)}\n"
+                            f"Current equity: ${state['equity']:,.2f}, "
+                            f"daily P&L: ${state['daily_pnl']:+,.2f}, "
+                            f"consecutive losses: {state['consecutive_losses']}.\n"
+                            f"What's your read? Analyze the situation — is this a pattern of losses or isolated? "
+                            f"Should we stand down, tighten up, or keep trading?\n\n"
+                            f"Share your assessment, then end with JSON: {self.llm_supervisor._ACTION_SCHEMA}"
+                        )
+                        system_prompt = self.llm_supervisor._SYSTEM_PROMPT
+                        if self.llm_supervisor.lessons_context:
+                            system_prompt += '\n\n' + self.llm_supervisor.lessons_context
+                        self.journal.log('observation', 'event_detector',
+                            f'Urgent event triggered LLM consultation: {"; ".join(urgent_texts)}')
+                        raw = await self.llm_supervisor._call_llm(
+                            system_prompt, urgent_prompt,
+                            use_memory=True, record_exchange=True,
+                            conversation_role='urgent_event',
+                            event_queue=self._event_bus)
+                        if raw:
+                            self._add_message('conversation',
+                                f'BOT: Urgent event | RUDRA: {raw[:300]}')
+                            await broadcast({'type': 'conversation',
+                                'speaker': 'rudra', 'text': raw[:500]})
+                            self.journal.log('reasoning', 'llm_rudra',
+                                raw[:500], llm_call=True)
+                            # Parse action if present
+                            parsed = self.llm_supervisor._parse_json(raw)
+                            if isinstance(parsed, dict) and parsed.get('action') == 'standdown':
+                                standdown_min = parsed.get('standdown_minutes', 15)
+                                self.status = 'standdown'
+                                await broadcast({'type': 'live_status', 'status': 'standdown'})
+                                self._add_message('llm', f'Standing down {standdown_min}m after urgent event')
+                                self.journal.log('action', 'llm_rudra',
+                                    f'Standing down {standdown_min}m after urgent event')
+                                await asyncio.sleep(min(standdown_min * 60, 900))
+                                self.status = 'scanning'
+                                await broadcast({'type': 'live_status', 'status': 'scanning'})
+                                continue
+
                     state = self._build_llm_state(now)
-                    decision = await self.llm_supervisor.decide_action(state)
-                    action = decision.get('action', 'monitor')
-                    reasoning = decision.get('reasoning', '')
-                    self._add_message('llm', f'{action}: {reasoning}')
+
+                    # ── THROTTLE: skip decide_action if nothing changed ──
+                    _now_mono = _time.monotonic()
+                    _state_hash = (f"{len(self.engine.positions)}|"
+                                   f"{state.get('candidates_count', 0)}|"
+                                   f"{state['wins']}|{state['losses']}|"
+                                   f"{self.status}")
+                    _state_changed = (_state_hash != self._last_llm_state_hash)
+                    _time_elapsed = (_now_mono - self._last_llm_decide >= self._LLM_DECIDE_INTERVAL)
+                    _has_events = bool(self._event_bus)
+
+                    if _state_changed or _time_elapsed or _has_events:
+                        # Ask Rudra — something meaningful changed or enough time passed
+                        self._last_llm_decide = _now_mono
+                        self._last_llm_state_hash = _state_hash
+
+                        decision = await self.llm_supervisor.decide_action(
+                            state, event_queue=self._event_bus)
+                        action = decision.get('action', 'monitor')
+                        reasoning = decision.get('reasoning', '')
+                        # Use full analysis text if available, fall back to JSON reasoning
+                        rudra_analysis = decision.get('_analysis', reasoning)
+                        rudra_display = rudra_analysis if rudra_analysis else reasoning
+
+                        # ── MECHANICAL GUARD: no entries before market open ──
+                        _market_open = (now.hour > 9 or (now.hour == 9 and now.minute >= 30))
+                        if action == 'enter' and not _market_open:
+                            self._add_message('conversation',
+                                f'BOT: What should we do? | RUDRA: Enter — but market not open yet '
+                                f'({now.strftime("%H:%M")} ET), overriding to wait')
+                            action = 'wait'
+                            reasoning = 'Pre-market: waiting for 9:30 AM open'
+                            rudra_display = reasoning
+
+                        # Show bot<->Rudra exchange in activity feed
+                        _bot_context = (f'{len(self.engine.positions)} positions, '
+                                        f'{state.get("candidates_count", 0)} candidates'
+                                        if self.engine.positions or state.get('candidates_count')
+                                        else state['status'])
+                        self._add_message('conversation',
+                            f'BOT: {_bot_context} | RUDRA: [{action}] {rudra_display[:400]}')
+                        await broadcast({'type': 'conversation',
+                            'speaker': 'rudra',
+                            'text': f'[{action}] {rudra_display[:500]}'})
+                        # Journal: log LLM decision
+                        _jtype = 'action' if action in ('enter', 'scan', 'standdown') else 'no_action'
+                        self.journal.log(_jtype, 'llm_rudra',
+                            f'[{action}] {rudra_display[:200]}', llm_call=True)
+                    else:
+                        # Nothing changed — silently continue with last action
+                        action = 'monitor'
 
                     if action == 'scan':
                         await self._run_scan()
@@ -5185,7 +6785,7 @@ class GapFadeLiveTrader:
                             if _time.monotonic() - self._last_reconcile > self.RECONCILE_INTERVAL:
                                 await self._reconcile_with_broker()
                             # Autonomous review: periodic portfolio self-check
-                            await self._execute_autonomous_review()
+                            await self._execute_scheduled_reflection()
                         else:
                             if self.status != 'scanning':
                                 self.status = 'scanning'
@@ -5251,7 +6851,7 @@ class GapFadeLiveTrader:
                         await self._reconcile_with_broker()
                     # Autonomous review (fallback schedule too)
                     if self.engine.positions:
-                        await self._execute_autonomous_review()
+                        await self._execute_scheduled_reflection()
                     await asyncio.sleep(15)
                     continue
 
@@ -5342,16 +6942,18 @@ class GapFadeLiveTrader:
                                  if isinstance(e, dict) and e.get('action') == 'skip'}
                     trade_syms = [e for e in evals
                                   if isinstance(e, dict) and e.get('action') == 'trade']
+                    # Build conversation summary
+                    trade_names = ', '.join(e['symbol'] for e in trade_syms[:5]) if trade_syms else 'none'
+                    skip_names = ', '.join(list(skip_syms)[:5]) if skip_syms else 'none'
+                    self._add_message('conversation',
+                        f'BOT: {len(self.candidates)} candidates from scan | '
+                        f'RUDRA: Trade {trade_names}; skip {skip_names}')
+                    await broadcast({'type': 'conversation',
+                        'speaker': 'rudra',
+                        'text': f'Candidates: trade {trade_names}, skip {skip_names}'})
                     if skip_syms:
                         before = len(self.candidates)
                         self.candidates = [c for c in self.candidates if c.symbol not in skip_syms]
-                        self._add_message('llm',
-                            f'Filtered {before - len(self.candidates)} candidates: '
-                            f'skip {skip_syms}')
-                    if trade_syms:
-                        self._add_message('llm',
-                            f'Rudra favors: {", ".join(e["symbol"] for e in trade_syms[:5])}'
-                            + (f' (+{len(trade_syms)-5} more)' if len(trade_syms) > 5 else ''))
             except Exception as e:
                 logger.warning(f"Rudra candidate evaluation failed (non-fatal): {e}")
 
@@ -5561,6 +7163,19 @@ class GapFadeLiveTrader:
                         f'{side_label} {fill.filled_qty} {candidate.symbol} @ ${fill.filled_avg_price:.2f}\n'
                         f'Gap: {candidate.gap_pct:.1%} | Stop: ${pos.stop_price:.2f}',
                         level='trade')
+                    # Inject entry event into LLM conversation (Tier 2 — batched)
+                    self._add_event(
+                        f'Entered {candidate.symbol} {direction} {fill.filled_qty} shares '
+                        f'@ ${fill.filled_avg_price:.2f} (gap {candidate.gap_pct:.1%})',
+                        tier=2)
+                    # Journal: log entry action
+                    self.journal.log('action', 'rules_engine',
+                        f'ENTRY {side_label} {fill.filled_qty} {candidate.symbol} '
+                        f'@ ${fill.filled_avg_price:.2f} (gap {candidate.gap_pct:.1%})',
+                        symbol=candidate.symbol, data={
+                            'direction': direction, 'shares': fill.filled_qty,
+                            'fill_price': fill.filled_avg_price,
+                            'gap_pct': candidate.gap_pct, 'stop': pos.stop_price})
                 elif fill.status == 'partially_filled' and fill.filled_qty > 0:
                     # Partial fill — adjust position to actual filled quantity
                     pos.shares = fill.filled_qty
@@ -5632,10 +7247,17 @@ class GapFadeLiveTrader:
                     if candidate.symbol in self.engine.positions:
                         del self.engine.positions[candidate.symbol]
 
-        # Start tick streamer for entered symbols
+        # Start or reuse tick streamer for entered symbols
         if symbols_entered:
-            self.streamer = AlpacaTickStreamer(symbols_entered, on_tick=self._on_tick)
-            await self.streamer.start()
+            if self.streamer and self.streamer.connected:
+                # Reuse existing connection — dynamically subscribe to new symbols
+                await self.streamer.add_symbols(symbols_entered)
+            else:
+                # No active streamer — stop stale one if any, then create new
+                if self.streamer:
+                    await self.streamer.stop()
+                self.streamer = AlpacaTickStreamer(symbols_entered, on_tick=self._on_tick)
+                await self.streamer.start()
 
         await broadcast({
             'type': 'positions_update',
@@ -5716,11 +7338,23 @@ class GapFadeLiveTrader:
                     f'@ ${fill.filled_avg_price:.2f} P&L: ${trade.pnl:.2f} ({trade.pnl_pct:.1%})')
                 # Invalidate lessons cache so next LLM call includes this trade
                 self._lessons_cache = None
+                # Inject event into LLM conversation
+                event_tier = 3 if is_stop and trade.pnl < 0 else 2
+                self._add_event(
+                    f'{symbol} {reason}: {fill.filled_qty} shares @ ${fill.filled_avg_price:.2f}, '
+                    f'P&L ${trade.pnl:+,.2f} ({trade.pnl_pct:+.1%})',
+                    tier=event_tier)
                 pnl_sign = '+' if trade.pnl >= 0 else ''
                 await self.alerter.send(f'Exit: {symbol}',
                     f'{reason.upper()} {fill.filled_qty} {symbol} @ ${fill.filled_avg_price:.2f}\n'
                     f'P&L: {pnl_sign}${trade.pnl:.2f} ({trade.pnl_pct:+.1%})',
                     level='trade')
+                # Journal: log exit action
+                self.journal.log('action', 'rules_engine',
+                    f'EXIT {reason}: {fill.filled_qty} {symbol} @ ${fill.filled_avg_price:.2f}, '
+                    f'P&L ${trade.pnl:+,.2f} ({trade.pnl_pct:+.1%})',
+                    symbol=symbol, data={'pnl': trade.pnl, 'reason': reason,
+                        'fill_price': fill.filled_avg_price, 'shares': fill.filled_qty})
 
             # If partial profit exit, replace broker stop at breakeven
             if reason == 'partial' and symbol in self.engine.positions:
@@ -5755,30 +7389,94 @@ class GapFadeLiveTrader:
             logger.error(f"Cover order failed: {symbol} {shares} shares: {fill.error}")
             return None
 
-    async def _execute_autonomous_review(self):
-        """Run the LLM autonomous review and execute recommended actions."""
+    async def _execute_scheduled_reflection(self):
+        """Run periodic LLM reflection with enriched context. Replaces autonomous_review.
+
+        Triggers on:
+        - Time interval (900s / 15 min)
+        - Event accumulation (3+ pending events)
+        Both subject to LLM call budget.
+        """
         if not self.llm_supervisor or not self.llm_supervisor.is_available():
             return
         if not self.engine.positions:
             return
 
         now_mono = _time.monotonic()
-        if now_mono - self._last_autonomous_review < self._AUTONOMOUS_REVIEW_INTERVAL:
+        _time_trigger = (now_mono - self._last_autonomous_review >= self._AUTONOMOUS_REVIEW_INTERVAL)
+        _event_trigger = (self._event_bus.pending_count() >= 3)
+        if not _time_trigger and not _event_trigger:
             return
+
         self._last_autonomous_review = now_mono
 
         now = datetime.now(ET)
         state = self._build_llm_state(now)
-        logger.info(f"Autonomous review starting ({len(self.engine.positions)} positions)")
+
+        # Enrich state with indicator snapshot
+        indicator_snapshot = ''
+        if self.indicator_engine and self.engine.positions:
+            lines = []
+            for sym in self.engine.positions:
+                td = self.indicator_engine.get_data(sym)
+                if td:
+                    vwap = td.get('vwap', 0)
+                    ema = td.get('ema', 0)
+                    px = self.streamer.latest_prices.get(sym, 0) if self.streamer else 0
+                    if vwap or ema:
+                        lines.append(f'{sym}: price=${px:.2f} VWAP=${vwap:.2f} EMA=${ema:.2f}')
+            if lines:
+                indicator_snapshot = '\nIndicators:\n' + '\n'.join(lines)
+
+        # Enrich with journal summary
+        journal_summary = self.journal.get_summary(minutes=20)
+
+        state['indicator_snapshot'] = indicator_snapshot
+        state['journal_summary'] = journal_summary
+
+        trigger_reason = 'event_accumulation' if _event_trigger else 'scheduled_interval'
+        logger.info(f"Scheduled reflection starting ({len(self.engine.positions)} positions, "
+                    f"trigger={trigger_reason})")
+        self.journal.log('observation', 'scheduled_reflection',
+            f'Reflection triggered ({trigger_reason}), {len(self.engine.positions)} positions')
+
         try:
-            review = await self.llm_supervisor.autonomous_review(state)
+            review = await self.llm_supervisor.autonomous_review(
+                state, event_queue=self._event_bus)
         except Exception as e:
-            logger.warning(f"Autonomous review failed: {e}")
+            logger.warning(f"Scheduled reflection failed: {e}")
             return
 
         actions = review.get('actions', [])
-        if not actions:
-            logger.info("Autonomous review: no actions recommended")
+
+        # Show the review exchange in activity feed
+        n_pos = len(self.engine.positions)
+        review_analysis = review.get('_analysis', '')
+
+        # Parse ReAct response for journal
+        react = self.llm_supervisor._parse_react_response(review_analysis)
+        if react['observe']:
+            self.journal.log('observation', 'llm_rudra', react['observe'], llm_call=True)
+        if react['think']:
+            self.journal.log('reasoning', 'llm_rudra', react['think'], llm_call=True)
+
+        if actions:
+            action_summary = ', '.join(
+                f"{a.get('action', '?')} {a.get('symbol', '')}" for a in actions[:3])
+            rudra_text = review_analysis if review_analysis else action_summary
+            self._add_message('conversation',
+                f'BOT: Reflection ({n_pos} positions) | RUDRA: [{action_summary}] {rudra_text[:400]}')
+            await broadcast({'type': 'conversation',
+                'speaker': 'rudra', 'text': f'[{action_summary}] {rudra_text[:500]}'})
+            self.journal.log('action', 'llm_rudra',
+                f'Reflection actions: {action_summary}', llm_call=True)
+        else:
+            rudra_text = review_analysis if review_analysis else 'All looks good, no changes needed.'
+            self._add_message('conversation',
+                f'BOT: Reflection ({n_pos} positions) | RUDRA: {rudra_text[:400]}')
+            self.journal.log('no_action', 'llm_rudra',
+                f'Reflection: {rudra_text[:200]}', llm_call=True)
+            logger.info("Scheduled reflection: no actions recommended")
             return
 
         executed = []
@@ -5928,6 +7626,16 @@ class GapFadeLiveTrader:
             pos = self.engine.positions[symbol]
             now = datetime.now(ET)
             pos.update_tracking(price, now.strftime('%H:%M:%S'))
+
+            # Event detection (pure arithmetic, <1ms)
+            _tick_data = self.indicator_engine.get_data(symbol) if self.indicator_engine else None
+            tick_events = self.event_detector.detect_tick_events(
+                symbol, price, size, asdict(pos), _tick_data)
+            if tick_events:
+                self._event_bus.push_many(tick_events)
+                for te in tick_events:
+                    self.journal.log('observation', 'event_detector',
+                        te.description, symbol=te.symbol, data=te.data)
 
             # Strategy-specific trailing stop update
             if self.strategy and self.indicator_engine:
@@ -6143,8 +7851,9 @@ class GapFadeLiveTrader:
                                 reasoning = llm_profit.get('reasoning', '')
                                 if action == 'close':
                                     pnl_pct = pos.gap_fill_pct(price)
-                                    self._add_message('llm',
-                                        f'TAKE PROFIT {sym} ({pnl_pct:.0%} gap filled): {reasoning}')
+                                    self._add_message('conversation',
+                                        f'BOT: {sym} profit check ({pnl_pct:.0%} fill) | '
+                                        f'RUDRA: Take profit — {reasoning}')
                                     exit_signal = {
                                         'action': 'close', 'reason': 'llm_profit',
                                         'shares': pos.remaining_shares,
@@ -6154,8 +7863,9 @@ class GapFadeLiveTrader:
                                     if new_stop and new_stop != pos.stop_price:
                                         old_stop = pos.stop_price
                                         pos.stop_price = new_stop
-                                        self._add_message('llm',
-                                            f'Lock profit {sym}: stop ${old_stop:.2f} → ${new_stop:.2f}: {reasoning}')
+                                        self._add_message('conversation',
+                                            f'BOT: {sym} profit check | '
+                                            f'RUDRA: Tighten stop ${old_stop:.2f} → ${new_stop:.2f} — {reasoning}')
                                         # Update broker stop if we have one
                                         if pos.stop_order_id:
                                             try:
@@ -6187,17 +7897,19 @@ class GapFadeLiveTrader:
                         llm_action = llm_exit.get('action', 'close')
                         if llm_action == 'hold':
                             pos.llm_hold_overrides += 1
-                            self._add_message('llm',
-                                f'Override stop {sym} ({pos.llm_hold_overrides}/'
-                                f'{self.config.llm_max_hold_overrides}): '
+                            self._add_message('conversation',
+                                f'BOT: {sym} hitting stop | '
+                                f'RUDRA: Hold ({pos.llm_hold_overrides}/'
+                                f'{self.config.llm_max_hold_overrides}) — '
                                 f'{llm_exit.get("reasoning", "")}')
                             continue
                         elif llm_action == 'tighten':
                             pos.llm_hold_overrides += 1
                             new_stop = llm_exit.get('new_stop', pos.stop_price)
-                            self._add_message('llm',
-                                f'Tighten {sym} stop ${pos.stop_price:.2f} → ${new_stop:.2f} '
-                                f'({pos.llm_hold_overrides}/{self.config.llm_max_hold_overrides}): '
+                            self._add_message('conversation',
+                                f'BOT: {sym} hitting stop | '
+                                f'RUDRA: Tighten ${pos.stop_price:.2f} → ${new_stop:.2f} '
+                                f'({pos.llm_hold_overrides}/{self.config.llm_max_hold_overrides}) — '
                                 f'{llm_exit.get("reasoning", "")}')
                             pos.stop_price = new_stop
                             continue
@@ -6213,6 +7925,16 @@ class GapFadeLiveTrader:
                 'trades': [asdict(t) for t in trades_executed],
             })
             self._save_state()
+
+        # Portfolio-level event detection (every 15s cycle)
+        pos_dicts = {s: asdict(p) for s, p in self.engine.positions.items()}
+        portfolio_events = self.event_detector.detect_position_events(
+            pos_dicts, self.engine.daily_stats, self.engine.equity, prices or {})
+        if portfolio_events:
+            self._event_bus.push_many(portfolio_events)
+            for pe in portfolio_events:
+                self.journal.log('observation', 'event_detector',
+                    pe.description, symbol=pe.symbol, data=pe.data)
 
         # Check for re-entry opportunities on stopped-out symbols
         if self.config.reentry_enabled and self.engine._stopped_today:
@@ -6421,6 +8143,9 @@ class GapFadeLiveTrader:
             'saved_at': datetime.now(ET).strftime('%Y-%m-%d %H:%M:%S'),
             'active_strategy': self.config.active_strategy,
             'strategy_config': self._strategy_config,
+            'conversation_history': self.llm_supervisor.memory.to_dict() if self.llm_supervisor else {},
+            'event_bus_pending': self._event_bus.pending_count(),
+            'journal_entries_today': len(self.journal._entries),
         }
         tmp_path = self.STATE_FILE + '.tmp'
         try:
@@ -6534,6 +8259,9 @@ class GapFadeLiveTrader:
             saved_strategy = state.get('active_strategy', '')
             if saved_strategy:
                 self.config.active_strategy = saved_strategy
+
+            # Restore conversation history (only if same trading day)
+            self._saved_conversation = state.get('conversation_history', {})
 
             logger.info(f"Loaded state: equity=${self.engine.equity:.2f}, "
                        f"{len(self.engine.positions)} positions, "
@@ -7092,7 +8820,8 @@ async def update_config(body: dict):
             # Rebuild if url/model/timeout changed
             sup = live_trader.llm_supervisor
             if (sup.url != config.llm_url or sup.model != config.llm_model
-                    or sup.timeout != config.llm_timeout):
+                    or sup.timeout != config.llm_timeout
+                    or sup.provider != config.llm_provider):
                 live_trader.llm_supervisor = LLMSupervisor(config)
                 logger.info(f"Rudra rebuilt: {config.llm_model} @ {config.llm_url}")
     elif live_trader.llm_supervisor is not None:
@@ -7129,13 +8858,105 @@ async def llm_test():
         return {'error': 'Rudra not enabled. Set llm_enabled=true via /api/config first.'}
     if live_trader.llm_supervisor is None:
         live_trader.llm_supervisor = LLMSupervisor(live_trader.config)
-    raw = await live_trader.llm_supervisor._call_ollama(
+    raw = await live_trader.llm_supervisor._call_llm(
         'You are a test assistant.', 'Respond with exactly: {"status": "ok"}')
     if raw is None:
         return {'status': 'error', 'message': 'Could not reach Ollama. Check url/model.',
                 'supervisor': live_trader.llm_supervisor.get_status()}
     return {'status': 'ok', 'response': raw[:200],
             'supervisor': live_trader.llm_supervisor.get_status()}
+
+
+@app.get("/api/llm/conversation")
+async def llm_conversation():
+    """Get current conversation history between bot and Rudra."""
+    if live_trader.llm_supervisor is None:
+        return {'history': [], 'summary': '', 'day': ''}
+    mem = live_trader.llm_supervisor.memory
+    return {
+        'history': mem.history[-40:],  # last 40 messages
+        'summary': mem.summary,
+        'day': mem.day,
+        'total_messages': len(mem.history),
+    }
+
+
+@app.get("/api/journal")
+async def journal_api(date: str = '', n: int = 50, entry_type: str = ''):
+    """Get trading journal entries.
+
+    Query params:
+        date: YYYY-MM-DD (default: today). Load from SQLite for historical.
+        n: max entries to return (default 50)
+        entry_type: filter by type (observation, reasoning, action, no_action, reflection)
+    """
+    if not date:
+        date = datetime.now(ET).strftime('%Y-%m-%d')
+    today = datetime.now(ET).strftime('%Y-%m-%d')
+
+    if date == today:
+        # Return from in-memory buffer (hot path for LLM context)
+        entries = live_trader.journal.get_recent(n=n, entry_type=entry_type or None)
+        return {
+            'date': date,
+            'entries': [asdict(e) for e in entries],
+            'count': len(entries),
+        }
+    else:
+        # Load from SQLite
+        db = get_price_db()
+        entries = db.query_journal(date=date, n=n, entry_type=entry_type)
+        stats = db.get_journal_stats(date)
+        return {
+            'date': date,
+            'entries': entries,
+            'count': len(entries),
+            'stats': stats,
+        }
+
+
+@app.get("/api/events")
+async def events_api(date: str = ''):
+    """Get event bus status and recent event log.
+
+    Query params:
+        date: YYYY-MM-DD (optional). If given, load from SQLite. Otherwise in-memory.
+    """
+    if date:
+        # Historical: load from SQLite
+        db = get_price_db()
+        events = db.query_events(date=date, n=100)
+        return {
+            'pending_count': 0,
+            'has_urgent': False,
+            'recent_events': events,
+        }
+    # Current session: in-memory
+    return {
+        'pending_count': live_trader._event_bus.pending_count(),
+        'has_urgent': live_trader._event_bus.has_urgent(),
+        'recent_events': [
+            {'type': e.event_type, 'tier': e.tier, 'symbol': e.symbol,
+             'description': e.description, 'data': e.data}
+            for e in list(live_trader._event_bus._event_log)[-30:]
+        ],
+    }
+
+
+@app.get("/api/llm-calls")
+async def llm_calls_api(date: str = '', n: int = 50):
+    """Get LLM call history and stats.
+
+    Query params:
+        date: YYYY-MM-DD (default: today)
+        n: max entries to return (default 50)
+    """
+    if not date:
+        date = datetime.now(ET).strftime('%Y-%m-%d')
+    db = get_price_db()
+    calls = db.query_llm_calls(date=date, n=n)
+    stats = db.get_llm_stats(date=date)
+    return {'date': date, 'calls': calls, 'stats': stats}
 
 
 _CHAT_SYSTEM_PROMPT = """You are Rudra, the AI trading supervisor for a gap fade bot. You have full access to the bot's live state and can EXECUTE actions by returning a JSON action block.
@@ -7278,7 +9099,12 @@ USER MESSAGE: {message}"""
     if live_trader.llm_supervisor.lessons_context:
         chat_system = chat_system + '\n\n' + live_trader.llm_supervisor.lessons_context
 
-    raw = await live_trader.llm_supervisor._call_ollama(chat_system, context)
+    # Use conversation memory so Rudra remembers the chat and intraday context
+    raw = await live_trader.llm_supervisor._call_llm(
+        chat_system, context,
+        use_memory=True, record_exchange=True,
+        conversation_role='user_chat',
+        event_queue=live_trader._event_bus)
     if raw is None:
         return {'error': 'Rudra call failed. Check Ollama connectivity.'}
 
@@ -7351,6 +9177,12 @@ USER MESSAGE: {message}"""
 
     # Strip the action block from displayed response
     display_text = _re.sub(r'\n?```action\s*\n\{.*?\}\s*\n```', '', raw, flags=_re.DOTALL).strip()
+
+    # Add conversation to activity feed
+    user_brief = message[:80] + ('...' if len(message) > 80 else '')
+    rudra_brief = display_text[:200] + ('...' if len(display_text) > 200 else '')
+    live_trader._add_message('conversation', f'BOT: {user_brief} | RUDRA: {rudra_brief}')
+    await broadcast({'type': 'conversation', 'speaker': 'rudra', 'text': display_text[:500]})
 
     result = {'response': display_text}
     if action_result:
@@ -9269,6 +11101,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   <div class="right-panel-tabs">
     <div class="right-panel-tab active" data-rtab="positions" onclick="showRightTab('positions')">Positions</div>
     <div class="right-panel-tab" data-rtab="feed" onclick="showRightTab('feed')">Feed</div>
+    <div class="right-panel-tab" data-rtab="journal" onclick="showRightTab('journal');loadJournal()">Journal</div>
   </div>
   <div class="right-tab-content active" id="rightPositions">
     <div style="overflow-x:auto;">
@@ -9283,6 +11116,21 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   </div>
   <div class="right-tab-content" id="rightFeed">
     <div class="feed" id="feedContainer"></div>
+  </div>
+  <div class="right-tab-content" id="rightJournal">
+    <div style="display:flex;gap:4px;margin-bottom:8px;flex-wrap:wrap;">
+      <button onclick="loadJournal()" style="font-size:10px;padding:3px 8px;cursor:pointer;background:var(--surface);border:1px solid var(--border);color:var(--text);border-radius:4px;">Refresh</button>
+      <select id="journalFilter" onchange="loadJournal()" style="font-size:10px;padding:3px 6px;background:var(--surface);border:1px solid var(--border);color:var(--text);border-radius:4px;">
+        <option value="">All types</option>
+        <option value="observation">Observations</option>
+        <option value="reasoning">Reasoning</option>
+        <option value="action">Actions</option>
+        <option value="no_action">No-Actions</option>
+        <option value="reflection">Reflections</option>
+      </select>
+      <span id="journalBudget" style="font-size:10px;color:var(--muted);margin-left:auto;"></span>
+    </div>
+    <div id="journalEntries" style="flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:4px;"></div>
   </div>
 </aside>
 
@@ -9458,8 +11306,48 @@ function showRightTab(name) {
   document.querySelectorAll('.right-tab-content').forEach(el => el.classList.remove('active'));
   const tab = document.querySelector(`.right-panel-tab[data-rtab="${name}"]`);
   if (tab) tab.classList.add('active');
-  const content = document.getElementById(name === 'positions' ? 'rightPositions' : 'rightFeed');
+  const contentMap = {positions: 'rightPositions', feed: 'rightFeed', journal: 'rightJournal'};
+  const content = document.getElementById(contentMap[name] || 'rightFeed');
   if (content) content.classList.add('active');
+}
+
+// ── Journal Tab ───────────────────────────────────────────────────
+async function loadJournal() {
+  try {
+    const filter = document.getElementById('journalFilter')?.value || '';
+    const qs = filter ? `?entry_type=${filter}&n=50` : '?n=50';
+    const [jRes, eRes] = await Promise.all([
+      fetch('/api/journal' + qs),
+      fetch('/api/events'),
+    ]);
+    const journal = await jRes.json();
+    const events = await eRes.json();
+    const container = document.getElementById('journalEntries');
+    if (!container) return;
+    const budget = events.budget || {};
+    const budgetEl = document.getElementById('journalBudget');
+    if (budgetEl) {
+      budgetEl.textContent = `LLM: ${budget.calls_last_5min||0}/${budget.max_per_5min||8} (5m) | Events: ${events.pending_count||0} pending`;
+    }
+    if (!journal.entries || journal.entries.length === 0) {
+      container.innerHTML = '<div style="color:var(--muted);padding:20px;text-align:center;">No journal entries yet</div>';
+      return;
+    }
+    const typeColors = {observation:'#64748b',reasoning:'#a855f7',action:'#22c55e',no_action:'#eab308',reflection:'#00D4FF'};
+    container.innerHTML = journal.entries.map(e => {
+      const time = (e.timestamp||'').split('T')[1] || e.timestamp || '';
+      const color = typeColors[e.entry_type] || '#64748b';
+      const sym = e.symbol ? `<span style="color:var(--text);font-weight:600;">[${e.symbol}]</span> ` : '';
+      const llm = e.llm_call ? ' <span style="color:var(--purple);font-size:9px;">LLM</span>' : '';
+      return `<div style="padding:4px 6px;border-left:2px solid ${color};background:rgba(0,0,0,0.15);border-radius:0 4px 4px 0;font-size:10px;line-height:1.4;">
+        <div style="display:flex;justify-content:space-between;margin-bottom:2px;">
+          <span style="color:${color};font-weight:600;text-transform:uppercase;font-size:9px;">${e.entry_type}${llm}</span>
+          <span style="color:var(--muted);font-size:9px;">${time}</span>
+        </div>
+        <div style="color:var(--text);">${sym}${(e.content||'').substring(0,200)}</div>
+      </div>`;
+    }).reverse().join('');
+  } catch(err) { console.error('Journal load error:', err); }
 }
 
 // ── Right Panel Resize ───────────────────────────────────────────
@@ -9560,6 +11448,18 @@ function handleMessage(msg) {
     }
   } else if (msg.type === 'tracker_tick') {
     handleTrackerTick(msg.symbol, msg.price, msg.timestamp);
+  } else if (msg.type === 'conversation') {
+    // Real-time conversation message from bot<->Rudra dialogue
+    const feed = document.getElementById('feedContainer');
+    if (feed) {
+      const div = document.createElement('div');
+      div.className = 'feed-item conversation';
+      div.style.borderLeft = '2px solid #34d399';
+      div.style.paddingLeft = '8px';
+      const now = new Date().toLocaleTimeString('en-US', {hour12:false, hour:'2-digit', minute:'2-digit', second:'2-digit'});
+      div.innerHTML = `<span class="time">${now}</span><span style="color:#c084fc;font-weight:600;">RUDRA:</span> ${(msg.text||'').substring(0,300)}`;
+      feed.insertBefore(div, feed.firstChild);
+    }
   }
 }
 
@@ -10194,13 +12094,28 @@ function renderMessages(messages) {
     if (type === 'llm_review') return '<span style="color:#06b6d4;font-weight:600;margin-right:4px;">AUTO</span>';
     if (type === 'llm_fallback') return '<span style="color:#fde68a;font-weight:600;margin-right:4px;">RUDRA</span>';
     if (type === 'manual') return '<span style="color:#f59e0b;font-weight:600;margin-right:4px;">MANUAL</span>';
+    if (type === 'conversation') return '<span style="color:#34d399;font-weight:600;margin-right:4px;">CONV</span>';
     return '';
   };
-  feed.innerHTML = messages.slice().reverse().map(m => `
-    <div class="feed-item ${m.type}">
+  const formatMsg = (m) => {
+    if (m.type === 'conversation') {
+      // Split BOT/RUDRA conversation for styled display
+      const parts = m.text.split('RUDRA:');
+      if (parts.length === 2) {
+        const botPart = parts[0].replace('BOT:', '').trim();
+        const rudraPart = parts[1].trim();
+        return `<div class="feed-item conversation" style="border-left:2px solid #34d399;padding-left:8px;">
+          <span class="time">${m.time}</span>
+          <span style="color:#60a5fa;font-weight:600;">BOT:</span> ${botPart}<br/>
+          <span style="color:#c084fc;font-weight:600;">RUDRA:</span> ${rudraPart}
+        </div>`;
+      }
+    }
+    return `<div class="feed-item ${m.type}">
       <span class="time">${m.time}</span>${prefix(m.type)}${m.text}
-    </div>
-  `).join('');
+    </div>`;
+  };
+  feed.innerHTML = messages.slice().reverse().map(formatMsg).join('');
 }
 
 // ── Equity Curve (canvas, fetched from SQLite) ──
