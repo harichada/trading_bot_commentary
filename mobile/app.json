@@ -1,0 +1,45 @@
+{
+  "expo": {
+    "name": "Gap Fade",
+    "slug": "gap-fade-mobile",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "newArchEnabled": true,
+    "splash": {
+      "backgroundColor": "#0A0E17"
+    },
+    "scheme": "gapfade",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.gapfade.mobile"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#0A0E17"
+      },
+      "package": "com.gapfade.mobile",
+      "intentFilters": [
+        {
+          "action": "VIEW",
+          "data": [
+            {
+              "scheme": "gapfade"
+            }
+          ],
+          "category": [
+            "BROWSABLE",
+            "DEFAULT"
+          ]
+        }
+      ]
+    },
+    "plugins": [
+      "expo-secure-store",
+      "expo-asset",
+      "expo-font",
+      "expo-web-browser"
+    ]
+  }
+}
