@@ -1,4 +1,4 @@
-import React, {useState, useEffect} from 'react';
+import React, {useState, useEffect, useMemo, useRef, useCallback} from 'react';
 import {
   View,
   Text,
@@ -6,6 +6,7 @@ import {
   TextInput,
   StyleSheet,
 } from 'react-native';
+import {format, subMonths} from 'date-fns';
 import {useNavigation} from '@react-navigation/native';
 import Animated, {FadeInDown} from 'react-native-reanimated';
 import type {NativeStackNavigationProp} from '@react-navigation/native-stack';
@@ -25,15 +26,53 @@ export function BacktestScreen() {
   const {state} = useTradingState();
   const {apiClient} = useAuth();
 
+  const defaults = useMemo(() => {
+    const now = new Date();
+    return {
+      start: format(subMonths(now, 3), 'yyyy-MM-dd'),
+      end: format(now, 'yyyy-MM-dd'),
+    };
+  }, []);
+
   const [symbols, setSymbols] = useState('');
-  const [startDate, setStartDate] = useState('');
-  const [endDate, setEndDate] = useState('');
+  const [startDate, setStartDate] = useState(defaults.start);
+  const [endDate, setEndDate] = useState(defaults.end);
   const [running, setRunning] = useState(false);
 
+  const [polledProgress, setPolledProgress] = useState(0);
+  const [polledRunning, setPolledRunning] = useState(false);
+  const [polledMessage, setPolledMessage] = useState('');
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const pollStatus = useCallback(async () => {
+    try {
+      const s = await apiClient.getBacktestStatus();
+      const isRunning = s.running || (s as any).status === 'running';
+      setPolledRunning(isRunning);
+      setPolledProgress(s.progress ?? 0);
+      setPolledMessage(s.message ?? (s as any).status ?? '');
+      if (!isRunning && polledRunning) {
+        // Just finished — try fetching results
+        try {
+          const r = await apiClient.getBacktestResults();
+          if (r) navigation.navigate('BacktestResult');
+        } catch {}
+      }
+    } catch {}
+  }, [apiClient, polledRunning, navigation]);
+
+  // Poll backtest status every 2s when on this screen
+  useEffect(() => {
+    pollStatus();
+    pollRef.current = setInterval(pollStatus, 2000);
+    return () => { if (pollRef.current) clearInterval(pollRef.current); };
+  }, [pollStatus]);
+
   const bt = state.backtest;
-  const progress = bt?.progress ?? 0;
-  const btRunning = bt?.running ?? false;
-  const btMessage = bt?.message ?? '';
+  // Prefer WS state if it has data, otherwise use polled state
+  const btRunning = (bt?.running) || polledRunning;
+  const progress = (bt?.running ? bt.progress : polledProgress) ?? 0;
+  const btMessage = (bt?.running ? bt.message : polledMessage) ?? '';
 
   useEffect(() => {
     if (bt?.result && !bt.running && progress >= 100) {

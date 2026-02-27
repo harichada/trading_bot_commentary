@@ -85,10 +85,10 @@ export function DatabaseScreen() {
           <Text style={styles.sectionTitle}>Database Stats</Text>
           {stats ? (
             <>
-              <DetailRow label="Total Symbols" value={String(stats.total_symbols ?? 0)} mono />
-              <DetailRow label="Total Bars" value={(stats.total_bars ?? 0).toLocaleString()} mono />
-              <DetailRow label="Date Range" value={stats.date_range || '-'} />
-              <DetailRow label="Last Updated" value={stats.last_updated || '-'} />
+              <DetailRow label="Symbols" value={String(stats.symbol_count ?? 0)} mono />
+              <DetailRow label="Total Bars" value={(stats.total_rows ?? 0).toLocaleString()} mono />
+              <DetailRow label="Date Range" value={stats.min_date && stats.max_date ? `${stats.min_date} → ${stats.max_date}` : '-'} />
+              <DetailRow label="Size" value={`${stats.size_mb ?? 0} MB`} mono />
             </>
           ) : (
             <Text style={styles.emptyText}>Unable to load stats</Text>

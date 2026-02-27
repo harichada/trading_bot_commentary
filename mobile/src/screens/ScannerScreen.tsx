@@ -131,12 +131,19 @@ export function ScannerScreen() {
     }
   }, [apiClient, refreshState]);
 
+  const [scanning, setScanning] = useState(false);
+
   const handleScan = async () => {
+    setScanning(true);
     try {
       await apiClient.scan();
-      Toast.show({type: 'success', text1: 'Scan triggered'});
+      await refreshState();
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      Toast.show({type: 'success', text1: 'Scan complete'});
     } catch (err: any) {
       Toast.show({type: 'error', text1: 'Scan failed', text2: err.message});
+    } finally {
+      setScanning(false);
     }
   };
 
@@ -150,9 +157,7 @@ export function ScannerScreen() {
     }
   });
 
-  const lastScan = state.last_scan_time
-    ? new Date(state.last_scan_time).toLocaleTimeString()
-    : 'Never';
+  const lastScan = state.last_scan_time || 'Never';
 
   return (
     <View style={styles.container}>
@@ -181,9 +186,9 @@ export function ScannerScreen() {
         {filtered.length === 0 ? (
           <EmptyState
             icon="search-outline"
-            title="No Candidates Found"
-            subtitle="Pull down to scan or tap the button below"
-            actionLabel="Scan Now"
+            title={scanning ? 'Scanning...' : 'No Candidates Found'}
+            subtitle={scanning ? 'Looking for gap candidates' : 'Pull down to scan or tap the button below'}
+            actionLabel={scanning ? 'Scanning...' : 'Scan Now'}
             onAction={handleScan}
           />
         ) : (
@@ -203,7 +208,7 @@ export function ScannerScreen() {
       {/* Floating Scan Button */}
       {filtered.length > 0 && (
         <View style={styles.fab}>
-          <HapticButton label="Scan Now" icon="scan" onPress={handleScan} size="md" />
+          <HapticButton label={scanning ? 'Scanning...' : 'Scan Now'} icon="scan" onPress={handleScan} loading={scanning} disabled={scanning} size="md" />
         </View>
       )}
     </View>

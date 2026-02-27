@@ -231,17 +231,25 @@ export type TraderStatus =
 
 export interface Metrics {
   total_trades: number;
+  wins: number;
+  losses: number;
   win_rate: number;
   profit_factor: number;
   total_pnl: number;
+  return_pct: number;
   avg_pnl: number;
+  avg_win: number;
+  avg_loss: number;
   avg_winner: number;
   avg_loser: number;
   best_trade: number;
   worst_trade: number;
   sharpe: number;
   max_drawdown: number;
+  max_drawdown_pct: number;
+  avg_holding_min: number;
   avg_holding_minutes: number;
+  final_equity: number;
 }
 
 export interface Message {
@@ -323,11 +331,10 @@ export interface HealthResponse {
 }
 
 export interface AccountInfo {
-  equity: number;
-  buying_power: number;
-  cash: number;
-  portfolio_value: number;
-  pattern_day_trader: boolean;
+  equity: number | string;
+  buying_power: number | string;
+  cash: number | string;
+  portfolio_value: number | string;
 }
 
 export interface TrackerBar {
@@ -340,8 +347,9 @@ export interface TrackerBar {
 }
 
 export interface DBStats {
-  total_symbols: number;
-  total_bars: number;
-  date_range: string;
-  last_updated: string;
+  symbol_count: number;
+  total_rows: number;
+  min_date: string;
+  max_date: string;
+  size_mb: number;
 }

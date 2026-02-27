@@ -59,17 +59,25 @@ const initialState: AppTradingState = {
   last_scan_time: '',
   metrics: {
     total_trades: 0,
+    wins: 0,
+    losses: 0,
     win_rate: 0,
     profit_factor: 0,
     total_pnl: 0,
+    return_pct: 0,
     avg_pnl: 0,
+    avg_win: 0,
+    avg_loss: 0,
     avg_winner: 0,
     avg_loser: 0,
     best_trade: 0,
     worst_trade: 0,
     sharpe: 0,
     max_drawdown: 0,
+    max_drawdown_pct: 0,
+    avg_holding_min: 0,
     avg_holding_minutes: 0,
+    final_equity: 0,
   },
   messages: [],
   config: {} as GapFadeConfig,
@@ -111,13 +119,20 @@ type Action =
 
 function reducer(state: AppTradingState, action: Action): AppTradingState {
   switch (action.type) {
-    case 'SET_FULL_STATE':
+    case 'SET_FULL_STATE': {
+      const incoming = action.payload;
+      // Keep existing candidates if the poll returns empty (backend clears them between scans)
+      const candidates = (incoming.candidates?.length ?? 0) > 0
+        ? incoming.candidates
+        : state.candidates;
       return {
         ...state,
-        ...action.payload,
+        ...incoming,
+        candidates,
         // Merge metrics with defaults so .toFixed() never hits undefined
-        metrics: {...state.metrics, ...(action.payload.metrics ?? {})},
+        metrics: {...state.metrics, ...(incoming.metrics ?? {})},
       };
+    }
     case 'SET_STATUS':
       return {...state, status: action.payload};
     case 'SET_POSITIONS':
@@ -311,7 +326,7 @@ export function TradingStateProvider({children}: {children: React.ReactNode}) {
         case 'backtest_progress':
           dispatch({
             type: 'SET_BACKTEST_PROGRESS',
-            payload: {pct: (msg as any).pct, message: (msg as any).message},
+            payload: {pct: (msg as any).progress ?? (msg as any).pct ?? 0, message: (msg as any).message ?? ''},
           });
           break;
         case 'backtest_complete':

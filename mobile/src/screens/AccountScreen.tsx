@@ -16,7 +16,7 @@ import {EmptyState} from '../components/EmptyState';
 import {colors, typography, spacing} from '../theme';
 import type {AccountInfo} from '../types/trading';
 
-const fmt = (v: number | undefined | null, d = 2) => (v ?? 0).toFixed(d);
+const fmt = (v: number | string | undefined | null, d = 2) => Number(v ?? 0).toFixed(d);
 
 export function AccountScreen() {
   const {apiClient} = useAuth();
@@ -80,11 +80,6 @@ export function AccountScreen() {
           <DetailRow label="Buying Power" value={`$${fmt(account.buying_power, 0)}`} mono />
           <DetailRow label="Cash" value={`$${fmt(account.cash, 0)}`} mono />
           <DetailRow label="Portfolio Value" value={`$${fmt(account.portfolio_value, 0)}`} mono />
-          <DetailRow
-            label="PDT Status"
-            value={account.pattern_day_trader ? 'Yes' : 'No'}
-            valueColor={account.pattern_day_trader ? colors.red : colors.green}
-          />
         </GradientCard>
       </Animated.View>
     </ScrollView>
