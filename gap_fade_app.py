@@ -11453,7 +11453,21 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       <button class="rn-close" onclick="document.getElementById('releaseNotesModal').classList.remove('open')">&times;</button>
     </div>
     <div class="rn-body">
-      <h4>v10.0 <span class="rn-tag">current</span></h4>
+      <h4>v10.2 <span class="rn-tag">current</span></h4>
+      <ul>
+        <li>Fix backtest feature toggles not sending <code>false</code> when unchecked</li>
+        <li>Adaptive stops, regime filter, re-entry, gap-downs now explicitly disabled when unchecked</li>
+        <li>Previously, unchecked toggles silently used config defaults (e.g. adaptive_stops=True)</li>
+      </ul>
+      <h4>v10.1</h4>
+      <ul>
+        <li>Rudra LLM supervisor now aware of drawdown circuit breakers</li>
+        <li>Live DD% and tier status shown in Rudra chat and review context</li>
+        <li>Rudra can proactively recommend de-risking as DD approaches thresholds</li>
+        <li>DD config fields (thresholds, scales) settable via Rudra chat commands</li>
+        <li><code>peak_equity</code> and DD config added to LLM state dict</li>
+      </ul>
+      <h4>v10.0</h4>
       <ul>
         <li>Drawdown circuit breakers &mdash; graduated Tier 1/Tier 2/Hard Stop response</li>
         <li>Position size reduction during drawdowns (backtest + live)</li>
