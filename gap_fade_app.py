@@ -11519,7 +11519,20 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       <button class="rn-close" onclick="document.getElementById('releaseNotesModal').classList.remove('open')">&times;</button>
     </div>
     <div class="rn-body">
-      <h4>v10.4 <span class="rn-tag">current</span></h4>
+      <h4>v10.5 <span class="rn-tag">current</span></h4>
+      <ul>
+        <li><strong>Sharpe ratio fix:</strong> now uses daily equity returns instead of per-trade returns</li>
+        <li><strong>Max drawdown fix:</strong> equity curve peak-to-trough (%) instead of cumsum of trade P&L</li>
+        <li><strong>Re-entry stop fix:</strong> re-entry trades now properly check stop levels</li>
+        <li><strong>Equity curve fix:</strong> regime-skipped days no longer create gaps in curve</li>
+        <li><strong>Position lock fix:</strong> lock released during LLM calls (was blocking 5&ndash;30s)</li>
+        <li><strong>XSS fix:</strong> all innerHTML with user/LLM content now escaped</li>
+        <li><strong>Auth fix:</strong> close position &amp; stop adjust buttons now send API key</li>
+        <li><strong>Config validation:</strong> Rudra chat &amp; review config changes use range validation</li>
+        <li><strong>Chat actions fix:</strong> pause/resume use proper methods with broadcasts; reset blocked with open positions</li>
+        <li><strong>Rudra parse fix:</strong> text-only LLM responses treated as wait/no-action instead of warnings</li>
+      </ul>
+      <h4>v10.4</h4>
       <ul>
         <li>Rudra can now switch strategies via chat (e.g. &ldquo;switch to classic gap fade&rdquo;)</li>
         <li>Unrealized P&L shown in dashboard metrics bar alongside Total P&L</li>
