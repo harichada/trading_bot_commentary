@@ -5056,6 +5056,15 @@ Statistical edge: 71% of low-volume gap-ups fade (12,000+ events, 450 tickers). 
 - VIX > 25 → reduce size 50%. VIX > 35 → extreme caution, consider standing down.
 - SPY trending strongly in one direction increases risk for fading gaps in that direction.
 
+### Drawdown Circuit Breakers
+The bot has a graduated drawdown response system that YOU should be aware of and actively manage:
+- DD is measured as (peak_equity - equity) / initial_capital — same scale as the dashboard Max DD metric.
+- Tier 1 (default 15% DD): Position size reduced (default 0.5x). You are still trading but smaller. OBSERVE this — if drawdown is approaching Tier 1, proactively tighten stops and be more selective with entries.
+- Tier 2 (default 25% DD): Position size slashed (default 0.25x), max 1 position. You are in survival mode. Only take the BEST setups. Recommend standdown if quality candidates are scarce.
+- Hard Stop (if configured): ALL trading halted permanently until manual reset. If DD is approaching hard stop, recommend aggressive de-risking.
+- Recovery: Tiers deactivate automatically as equity recovers. After leaving Tier 1/2, don't immediately size back up aggressively — ease back in.
+- You can adjust these thresholds via config: dd_circuit_breaker (on/off), dd_tier1_threshold, dd_tier1_scale, dd_tier2_threshold, dd_tier2_scale, dd_tier2_max_positions, dd_hard_stop.
+
 ### Profit-Taking Framework
 - Winners need TIME. Best trades are held 3-6 hours. A $2,680 winner was held until 3:55 PM close.
 - Positions closed in under 2 hours typically leave $500-$2,000 on the table.
@@ -5722,6 +5731,7 @@ Also evaluate overall session:
 - Daily P&L trajectory: Are we bleeding from multiple stops? Consider standing down.
 - Consecutive losses: 3+ with no wins = take a break, reassess.
 - Market regime: Is SPY trending against our positions?
+- Drawdown tier: If in Tier 1 or 2, note the reduced position sizing. If approaching the next tier, recommend proactive de-risking (tighten stops, skip marginal candidates, consider standdown). If recovering from a drawdown tier, advise cautious re-entry rather than immediately going full size.
 
 Be decisive — if a stop needs tightening, give the exact price. If a position should close, say so and why.
 Explain your reasoning FIRST, then end with the JSON action block."""
@@ -5757,15 +5767,25 @@ Explain your reasoning FIRST, then end with the JSON action block."""
                            f"${t.get('pnl', 0):+,.2f} ({t.get('exit_reason', '?')})")
             recent_trades = '\n'.join(lines)
 
+        dd_pct = (state.get('peak_equity', state['equity']) - state['equity']) / self.config.initial_capital * 100 if self.config.initial_capital > 0 else 0
+        dd_tier_info = ''
+        if self.config.dd_circuit_breaker:
+            if dd_pct >= self.config.dd_tier2_threshold * 100:
+                dd_tier_info = f' — TIER 2 ACTIVE (size {self.config.dd_tier2_scale}x, max {self.config.dd_tier2_max_positions} pos)'
+            elif dd_pct >= self.config.dd_tier1_threshold * 100:
+                dd_tier_info = f' — TIER 1 ACTIVE (size {self.config.dd_tier1_scale}x)'
+
         user_prompt = (
             f"Quick check-in at {state['time_et']}. "
             f"Equity ${state['equity']:,.0f}, today ${state['daily_pnl']:+,.0f} "
-            f"({state['wins']}W/{state['losses']}L).\n\n"
+            f"({state['wins']}W/{state['losses']}L).\n"
+            f"Drawdown: {dd_pct:.1f}% of initial capital (peak ${state.get('peak_equity', state['equity']):,.0f}){dd_tier_info}\n\n"
             f"Positions:\n{positions_info}\n\n"
             f"Recent trades:\n{recent_trades}\n\n"
             f"Review each position: What's the gap fill progress? Is price fading as expected or reversing? "
             f"Are stops at the right level for each gap size? Any positions that should be tightened or closed?\n"
-            f"Look at recent trades — are we getting stopped out too quickly? Pattern of losses?\n\n"
+            f"Look at recent trades — are we getting stopped out too quickly? Pattern of losses?\n"
+            f"Check drawdown level — are we approaching a circuit breaker tier? Should we de-risk?\n\n"
             f"Give your assessment, then end with JSON: {self._REVIEW_SCHEMA}"
         )
 
@@ -6308,12 +6328,17 @@ class GapFadeLiveTrader:
             'status': self.status,
             'recent_messages': [m['text'] for m in self.messages[-10:]],
             'recent_trades': [asdict(t) for t in self.engine.all_trade_log[-5:]],
+            'peak_equity': self.engine.peak_equity,
             'config': {
                 'stop_pct': self.config.stop_pct,
                 'max_positions': self.config.max_positions,
                 'gap_threshold': self.config.gap_threshold,
                 'adaptive_stops': self.config.adaptive_stops,
                 'reentry_enabled': self.config.reentry_enabled,
+                'dd_circuit_breaker': self.config.dd_circuit_breaker,
+                'dd_tier1_threshold': self.config.dd_tier1_threshold,
+                'dd_tier2_threshold': self.config.dd_tier2_threshold,
+                'dd_hard_stop': self.config.dd_hard_stop,
             },
         }
         # Enrich with journal summary and indicator snapshot
@@ -9056,6 +9081,8 @@ Available actions:
    regime_filter, regime_spy_gap_limit, regime_spy_block_pct, regime_vix_threshold,
    reentry_enabled, reentry_cooldown_minutes, reentry_max_per_symbol, reentry_stop_pct,
    trade_gap_downs, gap_down_threshold, gap_down_max_pct, gap_down_vol_ratio_max,
+   dd_circuit_breaker, dd_tier1_threshold, dd_tier1_scale, dd_tier2_threshold,
+   dd_tier2_scale, dd_tier2_max_positions, dd_hard_stop,
    llm_enabled, llm_model, llm_url, llm_timeout, catalyst_enabled,
    entry_cutoff_hour, entry_cutoff_min, min_hold_minutes, min_profit_take_pct, min_gap_fill_pct
 8. RESET equity & trade log: `{"action": "reset"}`
@@ -9161,6 +9188,10 @@ Config: max_positions={cfg.max_positions}, stop_pct={cfg.stop_pct}, risk_pct={cf
 reentry={cfg.reentry_enabled}, adaptive_stops={cfg.adaptive_stops}, regime_filter={cfg.regime_filter}, \
 llm_enabled={cfg.llm_enabled}, llm_model={cfg.llm_model}, limit_orders={cfg.limit_orders_only}, \
 gap_threshold={cfg.gap_threshold}, initial_capital={cfg.initial_capital}
+
+Drawdown: {((live_trader.engine.peak_equity - live_trader.engine.equity) / cfg.initial_capital * 100) if cfg.initial_capital > 0 else 0:.1f}% of initial capital \
+(peak=${live_trader.engine.peak_equity:,.0f}, current=${live_trader.engine.equity:,.0f})
+DD Circuit Breaker: {"ON" if cfg.dd_circuit_breaker else "OFF"}{f", Tier 1 at {cfg.dd_tier1_threshold:.0%} (scale {cfg.dd_tier1_scale}), Tier 2 at {cfg.dd_tier2_threshold:.0%} (scale {cfg.dd_tier2_scale}, max {cfg.dd_tier2_max_positions} pos), Hard Stop at {cfg.dd_hard_stop:.0%}" if cfg.dd_circuit_breaker else ""}
 
 USER MESSAGE: {message}"""
 
