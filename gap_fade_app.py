@@ -28,6 +28,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import sqlite3
 import subprocess
 import time as _time
@@ -46,7 +47,7 @@ import feedparser
 import yfinance as yf
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 import uvicorn
 
 logger = logging.getLogger('GapFadeApp')
@@ -1762,7 +1763,7 @@ class GapFadeConfig:
     adaptive_stops: bool = True         # if True, stop = gap_pct * stop_gap_fraction (clamped)
     stop_gap_fraction: float = 0.25     # stop = gap_pct * this fraction (25% of gap)
     stop_min_pct: float = 0.015         # floor: 1.5% minimum stop
-    stop_max_pct: float = 0.05          # ceiling: 5% maximum stop
+    stop_max_pct: float = 0.025         # ceiling: 2.5% maximum stop
 
     # Market regime filter — reduce/block entries on broad rally days
     regime_filter: bool = False
@@ -1804,6 +1805,15 @@ class GapFadeConfig:
     daily_loss_limit: float = 0.02     # halt if daily P&L <= -2%
     max_consec_losses: int = 3         # pause after N consecutive losses
     max_drawdown: float = 0.05         # halt if drawdown >= 5%
+
+    # Drawdown circuit breakers (backtest + live)
+    dd_circuit_breaker: bool = False           # master toggle (off = backward compat)
+    dd_tier1_threshold: float = 0.15           # 15% DD → reduce position size
+    dd_tier1_scale: float = 0.50               # position size multiplier (0.5 = half)
+    dd_tier2_threshold: float = 0.25           # 25% DD → minimal trading
+    dd_tier2_scale: float = 0.25               # position size multiplier (0.25 = quarter)
+    dd_tier2_max_positions: int = 1            # max concurrent positions in Tier 2
+    dd_hard_stop: float = 0.0                  # permanent halt threshold (0 = disabled)
 
     # Scanner universe
     scan_universe: str = 'alpaca'      # 'alpaca' = all tradeable, 'study' = original 167, 'custom' = user list
@@ -2903,7 +2913,7 @@ class GapFadeEngine:
                     self.daily_stats.halt_reason = f"daily loss limit ({daily_return:.1%})"
                     return False, self.daily_stats.halt_reason
 
-            dd = (self.peak_equity - self.equity) / self.peak_equity if self.peak_equity > 0 else 0
+            dd = (self.peak_equity - self.equity) / self.config.initial_capital if self.config.initial_capital > 0 else 0
             if dd >= self.config.max_drawdown:
                 self.daily_stats.halted = True
                 self.daily_stats.halt_reason = f"max drawdown ({dd:.1%})"
@@ -3250,7 +3260,7 @@ class GapFadeEngine:
         win_rate = len(wins) / len(trades) if trades else 0
         avg_win = np.mean(wins) if wins else 0
         avg_loss = np.mean(losses) if losses else 0
-        profit_factor = abs(sum(wins) / sum(losses)) if losses and sum(losses) != 0 else float('inf')
+        profit_factor = abs(sum(wins) / sum(losses)) if losses and sum(losses) != 0 else 9999.99
 
         # Max drawdown from cumulative P&L
         cum_pnl = np.cumsum(pnls)
@@ -3288,6 +3298,14 @@ class GapFadeEngine:
 # =============================================================================
 # SECTION 6: BACKTESTER
 # =============================================================================
+
+# Use vectorbt-powered backtester if available, else keep original
+try:
+    from gap_fade_backtester import VbtGapFadeBacktester as _VbtBacktester
+    _USE_VBT_BACKTESTER = True
+except ImportError:
+    _USE_VBT_BACKTESTER = False
+
 
 class GapFadeBacktester:
     """Backtest gap fade strategy using 1-minute Alpaca bars."""
@@ -3350,6 +3368,8 @@ class GapFadeBacktester:
             start_date = (datetime.now() - timedelta(days=self.config.backtest_years * 365)).strftime('%Y-%m-%d')
 
         syms = symbols or ([symbol] if symbol else UNIVERSE)
+        logger.info(f"BACKTEST START: strategy={strategy_id or 'engine'}, "
+                     f"symbols={len(syms)}, range={start_date} to {end_date}")
 
         engine = GapFadeEngine(self.config, backtest_mode=True)
         scanner = GapScanner(self.config, syms)
@@ -3505,19 +3525,32 @@ class GapFadeBacktester:
             day_gaps = gaps_by_date[date_str]
 
             # Strategy plugin: filter and re-score candidates for this day
+            day_gap_count = len(day_gaps)
             if self.strategy:
                 filtered_gaps = []
-                for g in day_gaps:
-                    ok, reason = self.strategy.filter_candidate(g)
+                for gi_f, g in enumerate(day_gaps):
+                    try:
+                        ok, reason = self.strategy.filter_candidate(g)
+                    except Exception as e:
+                        logger.error(f"Strategy filter_candidate error for {g.get('symbol','?')} {date_str}: {e}")
+                        ok, reason = True, f'filter error: {e}'  # pass through on error
                     if ok:
-                        new_score = self.strategy.score_candidate(g)
+                        try:
+                            new_score = self.strategy.score_candidate(g)
+                        except Exception as e:
+                            logger.error(f"Strategy score_candidate error for {g.get('symbol','?')}: {e}")
+                            new_score = None
                         if new_score is not None:
                             g['score'] = new_score
                         filtered_gaps.append(g)
-                if len(filtered_gaps) < len(day_gaps):
+                    # Yield to event loop every 20 candidates so WS/progress stays alive
+                    if gi_f % 20 == 19:
+                        await asyncio.sleep(0)
+                filtered_out = day_gap_count - len(filtered_gaps)
+                if filtered_out > 0:
                     await _log('strategy',
                         f'{date_str}: {self.strategy.name} filtered '
-                        f'{len(day_gaps) - len(filtered_gaps)} candidates '
+                        f'{filtered_out} candidates '
                         f'({len(filtered_gaps)} remain)')
                 day_gaps = filtered_gaps
 
@@ -3529,8 +3562,11 @@ class GapFadeBacktester:
             regime = fetch_market_regime_backtest(date_str, spy_data, self.config)
             if regime and regime.position_reduction == -999:
                 regime_skipped += 1
-                gi += len(day_gaps[:eff_max])
-                await _log('regime', f'{date_str}: BLOCKED — {regime.note} ({len(day_gaps)} candidates skipped)')
+                gi += day_gap_count  # count ALL original candidates (including filtered)
+                self.progress = 30 + (gi / total_gaps) * 65
+                if progress_callback:
+                    await progress_callback(self.progress, f"Regime blocked {date_str} ({gi}/{total_gaps})")
+                await _log('regime', f'{date_str}: BLOCKED — {regime.note} ({day_gap_count} candidates skipped)')
                 continue
             if regime and regime.position_reduction == -1:
                 regime_halved += 1
@@ -3538,12 +3574,13 @@ class GapFadeBacktester:
                 engine._effective_max_positions = eff_max
                 await _log('regime', f'{date_str}: HALVED — {regime.note} (max positions → {eff_max})')
 
-            day_gaps = day_gaps[:eff_max]
+            simulated_gaps = day_gaps[:eff_max]
+            skipped_count = day_gap_count - len(simulated_gaps)
 
             # Reset daily stats for each new calendar day
             engine.daily_stats = DailyStats(date=date_str, peak_equity=engine.equity)
 
-            for gap in day_gaps:
+            for gap in simulated_gaps:
                 if self._cancel:
                     break
 
@@ -3552,8 +3589,10 @@ class GapFadeBacktester:
                 sym = gap['symbol']
                 gap_date = gap['date']
 
-                if progress_callback and gi % max(1, total_gaps // 40) == 0:
+                if progress_callback and gi % max(1, total_gaps // 100) == 0:
                     await progress_callback(self.progress, f"Simulating {sym} {gap_date} ({gi+1}/{total_gaps})")
+                elif gi % 50 == 0:
+                    await asyncio.sleep(0)  # yield to event loop for WS updates
 
                 if use_1min:
                     # Detailed mode: fetch 1-min bars per day (slow)
@@ -3581,8 +3620,15 @@ class GapFadeBacktester:
                     'pnl': sum(t.pnl for t in day_trades),
                 })
 
+            # Advance gi for filtered/skipped candidates so progress stays accurate
+            gi += skipped_count
+            self.progress = 30 + (gi / total_gaps) * 65
+
         self.progress = 100
         self.status = 'done'
+        logger.info(f"BACKTEST DONE: processed {gi}/{total_gaps} gaps, "
+                     f"{len(trades_by_day)} day-entries, "
+                     f"regime_skipped={regime_skipped}")
 
         metrics = engine.get_metrics()
         # Funnel reporting: raw → vol-filtered → data available → traded
@@ -3635,6 +3681,21 @@ class GapFadeBacktester:
         if warnings:
             for w in warnings:
                 await _log('warn', f'WARNING: {w}')
+
+        # Sanitize non-JSON-safe floats (inf/nan → finite) before WS broadcast
+        import math
+        def _sanitize(obj):
+            if isinstance(obj, float):
+                if math.isinf(obj):
+                    return 9999.99 if obj > 0 else -9999.99
+                if math.isnan(obj):
+                    return 0.0
+            if isinstance(obj, dict):
+                return {k: _sanitize(v) for k, v in obj.items()}
+            if isinstance(obj, (list, tuple)):
+                return [_sanitize(v) for v in obj]
+            return obj
+        metrics = _sanitize(metrics)
 
         self.result = metrics
         await broadcast({'type': 'backtest_complete', 'result': metrics})
@@ -7638,8 +7699,8 @@ class GapFadeLiveTrader:
                         te.description, symbol=te.symbol, data=te.data)
 
             # Strategy-specific trailing stop update
-            if self.strategy and self.indicator_engine:
-                tick_data = self.indicator_engine.get_data(symbol)
+            if self.strategy:
+                tick_data = self.indicator_engine.get_data(symbol) if self.indicator_engine else None
                 new_stop = self.strategy.update_trailing_stop(
                     asdict(pos), price, tick_data, now)
                 if new_stop is not None:
@@ -7663,8 +7724,8 @@ class GapFadeLiveTrader:
 
             # Strategy-specific exit check (before engine exits)
             exit_signal = None
-            if self.strategy and self.indicator_engine:
-                tick_data = self.indicator_engine.get_data(symbol)
+            if self.strategy:
+                tick_data = self.indicator_engine.get_data(symbol) if self.indicator_engine else None
                 strat_exit = self.strategy.evaluate_exit(
                     asdict(pos), price, price, tick_data, now)
                 if strat_exit is not None:
@@ -8345,7 +8406,8 @@ async def broadcast(msg: dict):
     for ws in connected_websockets:
         try:
             await ws.send_json(msg)
-        except Exception:
+        except Exception as e:
+            logger.warning(f"WS broadcast failed ({msg.get('type','?')}): {e}")
             dead.append(ws)
     for ws in dead:
         connected_websockets.remove(ws)
@@ -8448,7 +8510,7 @@ def _get_api_key() -> Optional[str]:
 
 # Endpoints that DON'T require auth (read-only)
 # Only these paths are accessible without an API key
-_AUTH_EXEMPT_PATHS = {'/', '/api/health', '/docs', '/openapi.json', '/ws'}
+_AUTH_EXEMPT_PATHS = {'/', '/api/health', '/api/backtest/status', '/api/backtest/results', '/docs', '/openapi.json', '/ws'}
 
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
@@ -8517,6 +8579,13 @@ CONFIG_VALID_RANGES = {
     'llm_max_failures':          (1, 50),
     'llm_circuit_reset':         (10.0, 600.0),
     'llm_max_hold_overrides':    (0, 10),
+    # Drawdown circuit breakers
+    'dd_tier1_threshold':    (0.05, 0.50),
+    'dd_tier1_scale':        (0.01, 1.0),
+    'dd_tier2_threshold':    (0.10, 0.70),
+    'dd_tier2_scale':        (0.01, 1.0),
+    'dd_tier2_max_positions':(1, 5),
+    'dd_hard_stop':          (0.0, 1.0),
 }
 
 
@@ -9346,7 +9415,11 @@ async def run_backtest(body: dict):
                 'reentry_enabled', 'reentry_cooldown_minutes', 'reentry_max_per_symbol',
                 'reentry_stop_pct', 'reentry_trigger_pct',
                 # Gap-down fading
-                'trade_gap_downs', 'gap_down_threshold', 'gap_down_max_pct', 'gap_down_vol_ratio_max']:
+                'trade_gap_downs', 'gap_down_threshold', 'gap_down_max_pct', 'gap_down_vol_ratio_max',
+                # Drawdown circuit breakers
+                'dd_circuit_breaker', 'dd_tier1_threshold', 'dd_tier1_scale',
+                'dd_tier2_threshold', 'dd_tier2_scale', 'dd_tier2_max_positions',
+                'dd_hard_stop']:
         if key in body:
             field_type = type(getattr(config, key))
             try:
@@ -9355,6 +9428,13 @@ async def run_backtest(body: dict):
                 config_errors.append(f"{key}: cannot convert '{body[key]}' to {field_type.__name__}")
     if config_errors:
         return {'error': 'Config errors: ' + '; '.join(config_errors)}
+
+    # Cross-field validation for drawdown circuit breakers
+    if config.dd_circuit_breaker:
+        if config.dd_tier1_threshold >= config.dd_tier2_threshold:
+            return {'error': f'DD Tier 1 ({config.dd_tier1_threshold:.0%}) must be less than Tier 2 ({config.dd_tier2_threshold:.0%})'}
+        if config.dd_hard_stop > 0 and config.dd_hard_stop <= config.dd_tier2_threshold:
+            return {'error': f'DD Hard Stop ({config.dd_hard_stop:.0%}) must be greater than Tier 2 ({config.dd_tier2_threshold:.0%})'}
 
     if symbols and isinstance(symbols, str):
         symbols = [s.strip() for s in symbols.split(',')]
@@ -9372,12 +9452,16 @@ async def run_backtest(body: dict):
         await broadcast({'type': 'backtest_progress', 'progress': round(pct, 1), 'message': msg})
 
     bt_strategy_id = body.get('strategy_id', '')
-    backtester = GapFadeBacktester(config, strategy_id=bt_strategy_id)
     use_1min = body.get('use_1min', False)
+    if _USE_VBT_BACKTESTER and not use_1min:
+        backtester = _VbtBacktester(config, strategy_id=bt_strategy_id)
+    else:
+        backtester = GapFadeBacktester(config, strategy_id=bt_strategy_id)
 
     async def _run_bt():
         try:
-            await backtester.run(
+            logger.info(f"[BT-TASK] Starting backtest run (vbt={_USE_VBT_BACKTESTER}, type={type(backtester).__name__})")
+            result = await backtester.run(
                 symbol=symbol, symbols=symbols,
                 start_date=start_date, end_date=end_date,
                 config=config, progress_callback=progress_cb,
@@ -9385,11 +9469,14 @@ async def run_backtest(body: dict):
                 strategy_id=bt_strategy_id,
                 strategy_config=body.get('strategy_config'),
             )
+            logger.info(f"[BT-TASK] Backtest run() returned: {result.get('total_trades', '?')} trades, status={backtester.status}")
         except Exception as e:
-            logger.error(f"Backtest task crashed: {e}")
+            import traceback
+            tb = traceback.format_exc()
+            logger.error(f"Backtest task crashed: {e}\n{tb}")
             backtester.status = 'error'
-            backtester.result = {'error': str(e)}
-            await broadcast({'type': 'backtest_complete', 'error': str(e)})
+            backtester.result = {'error': str(e), 'traceback': tb}
+            await broadcast({'type': 'backtest_complete', 'error': str(e), 'traceback': tb})
 
     asyncio.create_task(_run_bt())
     return {'status': 'started'}
@@ -9412,6 +9499,104 @@ async def backtest_results():
 async def cancel_backtest():
     backtester.cancel()
     return {'status': 'cancelled'}
+
+
+# ---------------------------------------------------------------------------
+# Backtrader visual backtester (1-20 symbols, chart generation)
+# ---------------------------------------------------------------------------
+bt_runner_status: dict = {'status': 'idle'}
+
+
+@app.post("/api/backtest/bt")
+async def run_bt_backtest(request: Request):
+    """Start a backtrader backtest for chart generation (max 20 symbols)."""
+    global bt_runner_status
+    try:
+        from bt_backtest import run_backtrader_backtest, HAS_BACKTRADER
+    except ImportError:
+        return JSONResponse({'status': 'error', 'error': 'bt_backtest module not found'}, 500)
+
+    if not HAS_BACKTRADER:
+        return JSONResponse({'status': 'error', 'error': 'backtrader not installed. Run: pip install backtrader'}, 500)
+
+    if bt_runner_status.get('status') == 'running':
+        return JSONResponse({'status': 'error', 'error': 'Backtrader backtest already running'}, 409)
+
+    body = await request.json()
+    symbols_raw = body.get('symbols', '')
+    if isinstance(symbols_raw, str):
+        symbols = [s.strip().upper() for s in symbols_raw.split(',') if s.strip()]
+    else:
+        symbols = [s.strip().upper() for s in symbols_raw if s.strip()]
+
+    if not symbols:
+        return JSONResponse({'status': 'error', 'error': 'No symbols provided'}, 400)
+    if len(symbols) > 20:
+        return JSONResponse({'status': 'error', 'error': f'Too many symbols ({len(symbols)}). Max 20.'}, 400)
+
+    start_date = body.get('start_date', '')
+    end_date = body.get('end_date', '')
+    if not start_date or not end_date:
+        return JSONResponse({'status': 'error', 'error': 'start_date and end_date required'}, 400)
+
+    # Build config from defaults + overrides
+    config = {}
+    cfg = live_trader.engine.config
+    for key in ('gap_threshold', 'max_gap_pct', 'vol_ratio_max', 'stop_pct',
+                'adaptive_stops', 'stop_gap_fraction', 'stop_min_pct', 'stop_max_pct',
+                'partial_cover_frac', 'trade_gap_downs', 'gap_down_threshold',
+                'risk_pct', 'max_positions', 'slippage_pct', 'initial_capital'):
+        config[key] = getattr(cfg, key, None)
+    # Apply body overrides
+    for k, v in body.get('config', {}).items():
+        config[k] = v
+
+    db_path = get_price_db().DB_PATH
+    charts_dir = os.path.join(os.path.dirname(__file__) or '.', 'bt_charts')
+
+    bt_runner_status = {'status': 'running', 'symbols': symbols, 'start': start_date, 'end': end_date}
+
+    async def _run():
+        global bt_runner_status
+        try:
+            result = await asyncio.to_thread(
+                run_backtrader_backtest, symbols, start_date, end_date, config, db_path, charts_dir
+            )
+            if result['status'] == 'ok':
+                bt_runner_status = {
+                    'status': 'ok',
+                    'metrics': result['metrics'],
+                    'charts': result['charts'],
+                    'trades': result['trades'],
+                    'symbols_loaded': result['symbols_loaded'],
+                    'errors': result.get('errors', []),
+                }
+            else:
+                bt_runner_status = {'status': 'error', 'error': result.get('error', 'Unknown error')}
+        except Exception as exc:
+            logger.exception('Backtrader backtest failed')
+            bt_runner_status = {'status': 'error', 'error': str(exc)}
+
+    asyncio.create_task(_run())
+    return {'status': 'started'}
+
+
+@app.get("/api/backtest/bt/status")
+async def bt_backtest_status():
+    """Return backtrader backtest status, metrics, and chart paths."""
+    return bt_runner_status
+
+
+@app.get("/api/backtest/bt/charts/{filename}")
+async def bt_chart_file(filename: str):
+    """Serve a backtrader chart PNG."""
+    if not re.match(r'^[a-zA-Z0-9_.-]+\.png$', filename):
+        return JSONResponse({'error': 'Invalid filename'}, 400)
+    charts_dir = os.path.join(os.path.dirname(__file__) or '.', 'bt_charts')
+    path = os.path.join(charts_dir, filename)
+    if not os.path.isfile(path):
+        return JSONResponse({'error': 'Chart not found'}, 404)
+    return FileResponse(path, media_type='image/png')
 
 
 @app.get("/api/metrics")
@@ -10815,6 +11000,20 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           <div class="config-item"><label>Vol Max:</label><input type="number" id="btGapDownVol" value="3.0" step="0.1" min="0.5" max="20" style="width:50px;" title="Max vol ratio for gap-downs"></div>
         </div>
       </div>
+      <!-- Drawdown Circuit Breaker -->
+      <div style="padding:8px 10px;background:rgba(239,68,68,0.06);border:1px solid rgba(239,68,68,0.15);border-radius:6px;">
+        <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:12px;font-weight:600;color:var(--red);">
+          <input type="checkbox" id="btDDCircuitBreaker" onchange="document.getElementById('btDDOpts').style.display=this.checked?'flex':'none'"> Drawdown Circuit Breaker
+        </label>
+        <div id="btDDOpts" style="display:none;gap:6px;margin-top:6px;flex-wrap:wrap;font-size:11px;">
+          <div class="config-item"><label>Tier 1 DD%:</label><input type="number" id="btDDTier1" value="15" step="1" min="5" max="50" style="width:50px;" title="DD% to reduce position size"></div>
+          <div class="config-item"><label>Tier 1 Scale:</label><input type="number" id="btDDScale1" value="0.50" step="0.05" min="0.01" max="1" style="width:55px;" title="Position size multiplier at Tier 1"></div>
+          <div class="config-item"><label>Tier 2 DD%:</label><input type="number" id="btDDTier2" value="25" step="1" min="10" max="70" style="width:50px;" title="DD% for minimal trading"></div>
+          <div class="config-item"><label>Tier 2 Scale:</label><input type="number" id="btDDScale2" value="0.25" step="0.05" min="0.01" max="1" style="width:55px;" title="Position size multiplier at Tier 2"></div>
+          <div class="config-item"><label>Tier 2 Max Pos:</label><input type="number" id="btDDMaxPos" value="1" step="1" min="1" max="5" style="width:40px;" title="Max concurrent positions in Tier 2"></div>
+          <div class="config-item"><label>Hard Stop DD%:</label><input type="number" id="btDDHardStop" value="0" step="5" min="0" max="100" style="width:50px;" title="Permanent halt (0=disabled)"></div>
+        </div>
+      </div>
     </div>
     <div style="margin-top:8px;display:flex;gap:6px;">
       <button class="primary" onclick="runBacktest()">Run Backtest</button>
@@ -10827,6 +11026,75 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     <div id="btLog" style="max-height:300px;overflow-y:auto;font-size:11px;margin-top:8px;
          background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:8px;display:none;"></div>
     <div id="btResults" style="margin-top:12px;"></div>
+
+    <!-- Backtrader Visual Charts Section -->
+    <div style="margin-top:20px;padding-top:16px;border-top:1px solid var(--border);">
+      <h3 style="margin-bottom:10px;font-size:15px;">Backtrader Charts <span style="font-size:11px;color:var(--muted);font-weight:normal;">(1-20 symbols, visual analysis)</span></h3>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:8px;">
+        <div>
+          <label style="font-size:11px;color:var(--muted);">Symbols (comma-separated)</label>
+          <input id="btChartSymbols" value="AAPL, TSLA, NVDA" style="width:100%;padding:6px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px;">
+        </div>
+        <div>
+          <label style="font-size:11px;color:var(--muted);">Start Date</label>
+          <input type="date" id="btChartStart" style="width:100%;padding:6px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px;">
+        </div>
+        <div>
+          <label style="font-size:11px;color:var(--muted);">End Date</label>
+          <input type="date" id="btChartEnd" style="width:100%;padding:6px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px;">
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;">
+        <button class="primary" onclick="runBtBacktest()" id="btChartRunBtn">Run Backtrader</button>
+        <span id="btChartStatus" style="font-size:12px;color:var(--muted);"></span>
+      </div>
+
+      <!-- Metrics cards -->
+      <div id="btChartMetrics" style="display:none;margin-top:12px;">
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;">
+          <div class="metric-card" style="text-align:center;padding:10px;">
+            <div style="font-size:11px;color:var(--muted);">Total Return</div>
+            <div id="btmReturn" style="font-size:18px;font-weight:700;">—</div>
+          </div>
+          <div class="metric-card" style="text-align:center;padding:10px;">
+            <div style="font-size:11px;color:var(--muted);">Sharpe Ratio</div>
+            <div id="btmSharpe" style="font-size:18px;font-weight:700;">—</div>
+          </div>
+          <div class="metric-card" style="text-align:center;padding:10px;">
+            <div style="font-size:11px;color:var(--muted);">Max Drawdown</div>
+            <div id="btmDD" style="font-size:18px;font-weight:700;">—</div>
+          </div>
+          <div class="metric-card" style="text-align:center;padding:10px;">
+            <div style="font-size:11px;color:var(--muted);">Win Rate</div>
+            <div id="btmWinRate" style="font-size:18px;font-weight:700;">—</div>
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:8px;">
+          <div class="metric-card" style="text-align:center;padding:10px;">
+            <div style="font-size:11px;color:var(--muted);">Total Trades</div>
+            <div id="btmTrades" style="font-size:18px;font-weight:700;">—</div>
+          </div>
+          <div class="metric-card" style="text-align:center;padding:10px;">
+            <div style="font-size:11px;color:var(--muted);">Profit Factor</div>
+            <div id="btmPF" style="font-size:18px;font-weight:700;">—</div>
+          </div>
+          <div class="metric-card" style="text-align:center;padding:10px;">
+            <div style="font-size:11px;color:var(--muted);">Net P&L</div>
+            <div id="btmPnL" style="font-size:18px;font-weight:700;">—</div>
+          </div>
+          <div class="metric-card" style="text-align:center;padding:10px;">
+            <div style="font-size:11px;color:var(--muted);">Final Equity</div>
+            <div id="btmEquity" style="font-size:18px;font-weight:700;">—</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Charts display -->
+      <div id="btChartImages" style="display:none;margin-top:12px;"></div>
+
+      <!-- Trade table -->
+      <div id="btChartTrades" style="display:none;margin-top:12px;"></div>
+    </div>
   </div>
 
   <!-- Config Page -->
@@ -11154,7 +11422,41 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       <button class="rn-close" onclick="document.getElementById('releaseNotesModal').classList.remove('open')">&times;</button>
     </div>
     <div class="rn-body">
-      <h4>v5.0 <span class="rn-tag">current</span></h4>
+      <h4>v10.0 <span class="rn-tag">current</span></h4>
+      <ul>
+        <li>Drawdown circuit breakers &mdash; graduated Tier 1/Tier 2/Hard Stop response</li>
+        <li>Position size reduction during drawdowns (backtest + live)</li>
+        <li>Circuit breaker stats in backtest results (days in tier, trades skipped)</li>
+        <li>New UI toggle and config fields for DD thresholds and scales</li>
+        <li>DD metric aligned: circuit breaker and dashboard Max DD use same formula</li>
+      </ul>
+      <h4>v9.0</h4>
+      <ul>
+        <li>Vectorbt-powered backtesting module with bulk SQLite data loading</li>
+        <li>Vectorized gap scanning with pandas &mdash; 10x faster than row-by-row</li>
+        <li>SimulationState engine with Kelly sizing, adaptive stops, regime filter</li>
+        <li>Strategy plugin support in backtester (classic, VWAP, confluence, Minervini)</li>
+        <li>MetricsAdapter for dashboard-compatible result format</li>
+        <li>Full test suite (43 tests)</li>
+      </ul>
+      <h4>v8.0</h4>
+      <ul>
+        <li>Multi-provider LLM support (Ollama, OpenAI-compatible: GPT, Groq, Together)</li>
+        <li>Remove LLM budget rate-limiting for faster autonomous decisions</li>
+        <li>Provider-specific API key and endpoint configuration</li>
+      </ul>
+      <h4>v7.0</h4>
+      <ul>
+        <li>Upgrade Rudra LLM to gpt-oss:20b with full persona</li>
+        <li>Gap-down fading strategy (long entries on gap-downs)</li>
+        <li>Direction-aware position sizing, stops, and targets</li>
+      </ul>
+      <h4>v6.0</h4>
+      <ul>
+        <li>Mobile OAuth flow with dynamic redirect URL detection</li>
+        <li>Responsive auth UI for mobile devices</li>
+      </ul>
+      <h4>v5.0</h4>
       <ul>
         <li>Fix LLM supervisor not initializing from saved config</li>
         <li>Status badge now updates for all LLM actions (wait, monitor)</li>
@@ -11405,7 +11707,7 @@ function connectWS() {
     try {
       const msg = JSON.parse(e.data);
       handleMessage(msg);
-    } catch(err) {}
+    } catch(err) { console.error('WS parse error:', err, e.data?.substring(0, 200)); }
   };
 }
 // Keep alive (single interval, not inside connectWS to avoid stacking)
@@ -11429,13 +11731,17 @@ function handleMessage(msg) {
     document.getElementById('btProgressMsg').textContent = msg.message || 'Running...';
     document.getElementById('btProgressBar').style.width = msg.progress + '%';
   } else if (msg.type === 'backtest_complete') {
+    if (window._btResultPoll) { clearTimeout(window._btResultPoll); window._btResultPoll = null; }
     document.getElementById('btProgress').style.display = 'none';
     if (msg.error) {
       showToast('Backtest failed: ' + msg.error, 'error');
       document.getElementById('btProgressMsg').textContent = 'Error: ' + msg.error;
       document.getElementById('btProgress').style.display = 'block';
     } else {
-      renderBacktestResults(msg.result);
+      try { renderBacktestResults(msg.result); } catch(e) {
+        console.error('renderBacktestResults failed:', e);
+        showToast('Error rendering results: ' + e.message, 'error');
+      }
     }
   } else if (msg.type === 'bt_log') {
     appendBtLog(msg.entry);
@@ -11633,6 +11939,24 @@ async function runBacktest() {
     body.gap_down_max_pct = gdMax / 100;
     body.gap_down_vol_ratio_max = gdVol;
   }
+  if (document.getElementById('btDDCircuitBreaker').checked) {
+    body.dd_circuit_breaker = true;
+    const t1 = parseFloat(document.getElementById('btDDTier1').value);
+    const s1 = parseFloat(document.getElementById('btDDScale1').value);
+    const t2 = parseFloat(document.getElementById('btDDTier2').value);
+    const s2 = parseFloat(document.getElementById('btDDScale2').value);
+    const mp = parseInt(document.getElementById('btDDMaxPos').value);
+    const hs = parseFloat(document.getElementById('btDDHardStop').value);
+    if (isNaN(t1) || isNaN(s1) || isNaN(t2) || isNaN(s2) || isNaN(mp) || isNaN(hs)) { showToast('DD Circuit Breaker: invalid number'); return; }
+    if (t1 >= t2) { showToast('DD Circuit Breaker: Tier 1 DD% must be less than Tier 2 DD%'); return; }
+    if (hs > 0 && hs <= t2) { showToast('DD Circuit Breaker: Hard Stop must be greater than Tier 2 DD%'); return; }
+    body.dd_tier1_threshold = t1 / 100;
+    body.dd_tier1_scale = s1;
+    body.dd_tier2_threshold = t2 / 100;
+    body.dd_tier2_scale = s2;
+    body.dd_tier2_max_positions = mp;
+    body.dd_hard_stop = hs / 100;
+  }
 
   document.getElementById('btProgress').style.display = 'block';
   document.getElementById('btProgressMsg').textContent = 'Starting backtest...';
@@ -11645,14 +11969,176 @@ async function runBacktest() {
     const r = await api('backtest', 'POST', body);
     if (r.error) {
       document.getElementById('btProgressMsg').textContent = 'Error: ' + r.error;
+      return;
     }
-    // Results will arrive via WebSocket 'backtest_complete' message
+    // Results arrive via WebSocket 'backtest_complete', but poll as fallback
+    if (window._btResultPoll) clearTimeout(window._btResultPoll);
+    window._btResultPollCount = 0;
+    window._btResultPoll = setTimeout(async function pollResult() {
+      try {
+        const sr = await api('backtest/status', 'GET');
+        if (sr && sr.status === 'done') {
+          const rr = await api('backtest/results', 'GET');
+          if (rr && rr.total_trades !== undefined) {
+            window._btResultPoll = null;
+            document.getElementById('btProgress').style.display = 'none';
+            try { renderBacktestResults(rr); } catch(e) {
+              console.error('renderBacktestResults failed:', e);
+              showToast('Error rendering: ' + e.message, 'error');
+            }
+            return;
+          }
+        } else if (sr && sr.status === 'error') {
+          window._btResultPoll = null;
+          const rr = await api('backtest/results', 'GET');
+          showToast('Backtest error: ' + (rr.error || 'unknown'), 'error');
+          document.getElementById('btProgressMsg').textContent = 'Error: ' + (rr.error || 'unknown');
+          return;
+        }
+      } catch(e) {}
+      window._btResultPollCount = (window._btResultPollCount || 0) + 1;
+      if (window._btResultPollCount < 120) {
+        window._btResultPoll = setTimeout(pollResult, 2000);
+      } else {
+        window._btResultPoll = null;
+        document.getElementById('btProgressMsg').textContent = 'Timed out waiting for results';
+      }
+    }, 3000);
   } catch(e) {
     document.getElementById('btProgressMsg').textContent = 'Error: ' + e.message;
   }
 }
 
 async function cancelBacktest() { await api('backtest/cancel', 'POST'); }
+
+// ── Backtrader Charts ──
+let btChartPoll = null;
+function initBtChartDates() {
+  const end = new Date();
+  const start = new Date();
+  start.setFullYear(end.getFullYear() - 1);
+  const fmt = d => d.toISOString().slice(0,10);
+  const elS = document.getElementById('btChartStart');
+  const elE = document.getElementById('btChartEnd');
+  if (elS && !elS.value) elS.value = fmt(start);
+  if (elE && !elE.value) elE.value = fmt(end);
+}
+setTimeout(initBtChartDates, 500);
+
+async function runBtBacktest() {
+  const symbols = document.getElementById('btChartSymbols').value;
+  const startDate = document.getElementById('btChartStart').value;
+  const endDate = document.getElementById('btChartEnd').value;
+  if (!symbols.trim()) { showToast('Enter at least one symbol'); return; }
+  if (!startDate || !endDate) { showToast('Set start and end dates'); return; }
+
+  document.getElementById('btChartRunBtn').disabled = true;
+  document.getElementById('btChartStatus').textContent = 'Starting...';
+  document.getElementById('btChartMetrics').style.display = 'none';
+  document.getElementById('btChartImages').style.display = 'none';
+  document.getElementById('btChartTrades').style.display = 'none';
+
+  try {
+    await fetch('/api/backtest/bt', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({symbols, start_date: startDate, end_date: endDate, config: {}})
+    });
+    if (btChartPoll) clearInterval(btChartPoll);
+    btChartPoll = setInterval(pollBtStatus, 2000);
+    document.getElementById('btChartStatus').textContent = 'Running...';
+  } catch(e) {
+    showToast('Failed to start backtrader: ' + e.message);
+    document.getElementById('btChartRunBtn').disabled = false;
+    document.getElementById('btChartStatus').textContent = '';
+  }
+}
+
+async function pollBtStatus() {
+  try {
+    const r = await fetch('/api/backtest/bt/status');
+    const d = await r.json();
+    if (d.status === 'running') {
+      document.getElementById('btChartStatus').textContent = 'Running backtrader...';
+      return;
+    }
+    clearInterval(btChartPoll);
+    btChartPoll = null;
+    document.getElementById('btChartRunBtn').disabled = false;
+
+    if (d.status === 'ok') {
+      document.getElementById('btChartStatus').textContent = 'Done!';
+      showBtResults(d);
+    } else if (d.status === 'error') {
+      document.getElementById('btChartStatus').textContent = 'Error: ' + (d.error || 'unknown');
+      showToast('Backtrader error: ' + (d.error || 'unknown'));
+    } else {
+      document.getElementById('btChartStatus').textContent = '';
+    }
+  } catch(e) {
+    clearInterval(btChartPoll);
+    btChartPoll = null;
+    document.getElementById('btChartRunBtn').disabled = false;
+    document.getElementById('btChartStatus').textContent = 'Poll error';
+  }
+}
+
+function showBtResults(d) {
+  const m = d.metrics || {};
+  const retColor = m.total_return_pct >= 0 ? 'var(--green)' : 'var(--red)';
+  const pnlColor = m.net_pnl >= 0 ? 'var(--green)' : 'var(--red)';
+  document.getElementById('btmReturn').innerHTML = `<span style="color:${retColor}">${m.total_return_pct||0}%</span>`;
+  document.getElementById('btmSharpe').textContent = m.sharpe_ratio || '—';
+  document.getElementById('btmDD').innerHTML = `<span style="color:var(--red)">-${m.max_drawdown_pct||0}%</span>`;
+  document.getElementById('btmWinRate').textContent = (m.win_rate||0) + '%';
+  document.getElementById('btmTrades').textContent = m.total_trades || 0;
+  document.getElementById('btmPF').textContent = m.profit_factor || '—';
+  document.getElementById('btmPnL').innerHTML = `<span style="color:${pnlColor}">$${(m.net_pnl||0).toLocaleString()}</span>`;
+  document.getElementById('btmEquity').textContent = '$' + (m.final_equity||0).toLocaleString();
+  document.getElementById('btChartMetrics').style.display = 'block';
+
+  // Charts
+  const charts = d.charts || {};
+  const imgDiv = document.getElementById('btChartImages');
+  imgDiv.innerHTML = '';
+  const ts = Date.now();
+  const chartOrder = ['equity_curve', 'drawdown'];
+  // Add equity + drawdown first, then trade charts
+  for (const key of chartOrder) {
+    if (charts[key]) {
+      imgDiv.innerHTML += `<img src="/api/backtest/bt/charts/${charts[key]}?t=${ts}" style="width:100%;border-radius:8px;margin-bottom:8px;">`;
+    }
+  }
+  // Per-symbol trade charts
+  const tradeCharts = Object.entries(charts).filter(([k]) => k.startsWith('trades_'));
+  if (tradeCharts.length) {
+    imgDiv.innerHTML += '<div style="font-size:13px;font-weight:600;margin:8px 0 4px;">Per-Symbol Trade Charts</div>';
+    imgDiv.innerHTML += '<div style="max-height:600px;overflow-y:auto;">';
+    for (const [k, v] of tradeCharts) {
+      imgDiv.innerHTML += `<img src="/api/backtest/bt/charts/${v}?t=${ts}" style="width:100%;border-radius:8px;margin-bottom:8px;">`;
+    }
+    imgDiv.innerHTML += '</div>';
+  }
+  imgDiv.style.display = 'block';
+
+  // Trade table
+  const trades = d.trades || [];
+  if (trades.length) {
+    let html = '<div style="font-size:13px;font-weight:600;margin-bottom:4px;">Trades (' + trades.length + ')</div>';
+    html += '<div style="max-height:300px;overflow-y:auto;"><table style="width:100%;font-size:11px;border-collapse:collapse;">';
+    html += '<tr style="border-bottom:1px solid var(--border);"><th>Symbol</th><th>Side</th><th>Entry</th><th>Exit</th><th>Entry$</th><th>Exit$</th><th>P&L%</th><th>Reason</th></tr>';
+    for (const t of trades) {
+      const c = t.pnl_pct >= 0 ? 'var(--green)' : 'var(--red)';
+      html += `<tr style="border-bottom:1px solid var(--border);">
+        <td>${t.symbol}</td><td>${t.side}</td><td>${t.entry_date}</td><td>${t.exit_date}</td>
+        <td>$${t.entry_price}</td><td>$${t.exit_price}</td>
+        <td style="color:${c}">${t.pnl_pct>0?'+':''}${t.pnl_pct}%</td><td>${t.exit_reason}</td></tr>`;
+    }
+    html += '</table></div>';
+    document.getElementById('btChartTrades').innerHTML = html;
+    document.getElementById('btChartTrades').style.display = 'block';
+  }
+}
 
 async function fetchDbStats() {
   try {
@@ -12350,7 +12836,7 @@ function renderConfig(config) {
       ['max_notional', 'Max Notional $', 50000],
     ]},
     { title: 'Risk Management', fields: [
-      ['stop_pct', 'Stop Loss %', 0.015], ['daily_loss_limit', 'Daily Loss Limit', 0.02],
+      ['stop_pct', 'Fixed Stop Loss %', 0.015], ['daily_loss_limit', 'Daily Loss Limit', 0.02],
       ['max_consec_losses', 'Max Consec Losses', 3], ['max_drawdown', 'Max Drawdown', 0.05],
       ['time_exit_hour', 'Time Exit Hour', 15],
     ]},
@@ -12374,6 +12860,10 @@ function renderConfig(config) {
               <span style="font-size:11px;color:var(--muted);">Better fills, less slippage</span>
             </div>
           </div>` : ''}
+        ${s.title === 'Risk Management' && config.adaptive_stops ? `
+          <div style="grid-column:1/-1;font-size:10px;color:#f59e0b;padding:2px 6px;background:rgba(245,158,11,0.08);border-radius:4px;margin-bottom:4px;">
+            Adaptive Stops ON — Fixed Stop Loss is overridden. Actual stop = gap% \u00d7 ${(config.stop_gap_fraction||0.25).toFixed(2)}, clamped to [${((config.stop_min_pct||0.015)*100).toFixed(1)}%, ${((config.stop_max_pct||0.05)*100).toFixed(1)}%]
+          </div>` : ''}
         ${s.fields.map(f => inp(...f)).join('')}
       </div>
     </div>
@@ -12381,14 +12871,16 @@ function renderConfig(config) {
 
   // Feature toggle sections
   const features = [
-    { key: 'adaptive_stops', title: 'Adaptive Stops', desc: 'Scale stop-loss with gap size instead of fixed percentage',
-      params: [['stop_gap_fraction', 'Gap Fraction', 0.15], ['stop_min_pct', 'Min Stop %', 0.01], ['stop_max_pct', 'Max Stop %', 0.05]] },
+    { key: 'adaptive_stops', title: 'Adaptive Stops', desc: 'Scale stop with gap size (overrides Fixed Stop Loss %). Stop = gap% \u00d7 fraction, clamped to [min, max]',
+      params: [['stop_gap_fraction', 'Gap Fraction', 0.25], ['stop_min_pct', 'Min Stop %', 0.015], ['stop_max_pct', 'Max Stop %', 0.05]] },
     { key: 'regime_filter', title: 'Market Regime Filter', desc: 'Reduce or block entries when SPY gaps up or VIX is elevated',
       params: [['regime_spy_gap_limit', 'SPY Gap Limit', 0.01], ['regime_spy_block_pct', 'SPY Block %', 0.015], ['regime_vix_threshold', 'VIX Threshold', 25.0]] },
     { key: 'reentry_enabled', title: 'Re-entry After Stop-out', desc: 'Re-enter a stopped position if price reverses favorably',
       params: [['reentry_cooldown_minutes', 'Cooldown (min)', 30], ['reentry_max_per_symbol', 'Max Per Symbol', 1], ['reentry_stop_pct', 'Stop %', 0.01], ['reentry_trigger_pct', 'Trigger %', 0.0]] },
     { key: 'trade_gap_downs', title: 'Gap-Down Fading (Longs)', desc: 'Buy gap-downs and fade back toward previous close',
       params: [['gap_down_threshold', 'Gap Down %', 0.05], ['gap_down_max_pct', 'Max Gap Down %', 0.50], ['gap_down_vol_ratio_max', 'Vol Ratio Max', 3.0]] },
+    { key: 'dd_circuit_breaker', title: 'Drawdown Circuit Breaker', desc: 'Graduated position size reduction during drawdowns — Tier 1 reduces size, Tier 2 caps to 1 position, Hard Stop halts trading',
+      params: [['dd_tier1_threshold', 'Tier 1 DD%', 0.15], ['dd_tier1_scale', 'Tier 1 Scale', 0.50], ['dd_tier2_threshold', 'Tier 2 DD%', 0.25], ['dd_tier2_scale', 'Tier 2 Scale', 0.25], ['dd_tier2_max_positions', 'Tier 2 Max Pos', 1], ['dd_hard_stop', 'Hard Stop DD%', 0.0]] },
     { key: 'llm_enabled', title: 'Rudra (LLM Supervisor)', desc: 'Autonomous decisions via local Ollama model — scan timing, candidate selection, profit-taking, exit overrides',
       params: [['llm_url', 'Ollama URL', 'http://localhost:11434'], ['llm_model', 'Model', 'gpt-oss:20b'], ['llm_timeout', 'Timeout (sec)', 30], ['llm_max_failures', 'Circuit Breaker Failures', 5], ['llm_circuit_reset', 'Circuit Reset (sec)', 120], ['llm_max_hold_overrides', 'Max Hold Overrides', 2]] },
   ];
@@ -12664,6 +13156,14 @@ function renderBacktestResults(r) {
       &nbsp;|&nbsp; ADV cap: ${((realism.max_pct_adv||0)*100).toFixed(0)}%
       &nbsp;|&nbsp; Adverse fill: ${realism.adverse_fill ? ((realism.adverse_fill_pct||1)*100).toFixed(0)+'%' : 'OFF'}
     </div>
+    ${r.circuit_breaker ? `<div style="margin-bottom:10px;padding:8px 12px;background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.15);border-radius:6px;font-size:12px;color:var(--muted);">
+      <strong style="color:var(--red);">Circuit Breaker:</strong>
+      &nbsp; Tier 1 (${(r.circuit_breaker.tier1_threshold*100).toFixed(0)}% DD): <span style="color:var(--yellow)">${r.circuit_breaker.days_in_tier1}</span> days
+      &nbsp;|&nbsp; Tier 2 (${(r.circuit_breaker.tier2_threshold*100).toFixed(0)}% DD): <span style="color:var(--orange)">${r.circuit_breaker.days_in_tier2}</span> days
+      &nbsp;|&nbsp; Hard Stop: <span style="color:${r.circuit_breaker.hard_stopped?'var(--red)':'var(--green)'}">${r.circuit_breaker.hard_stopped ? 'TRIGGERED ' + r.circuit_breaker.hard_stop_date : (r.circuit_breaker.hard_stop > 0 ? 'Not triggered' : 'Disabled')}</span>
+      ${r.circuit_breaker.trades_skipped_hard_stop > 0 ? '&nbsp;|&nbsp; Skipped: <span style="color:var(--red)">' + r.circuit_breaker.trades_skipped_hard_stop + '</span> trades' : ''}
+      &nbsp;|&nbsp; Final DD: <span style="color:var(--red)">${r.circuit_breaker.final_drawdown.toFixed(1)}%</span>
+    </div>` : ''}
     <div class="stats-grid" style="margin-bottom:12px;">
       <div class="stat"><div class="label">Trades</div><div class="value">${r.total_trades||0}</div></div>
       <div class="stat"><div class="label">Win Rate</div><div class="value">${((r.win_rate||0)*100).toFixed(1)}%</div></div>
