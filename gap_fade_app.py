@@ -10824,6 +10824,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     <div class="value" id="statTotalPnl">$0.00</div>
   </div>
   <div class="metric-card">
+    <div class="label">Unrealized</div>
+    <div class="value" id="statUnrealPnl">$0.00</div>
+  </div>
+  <div class="metric-card">
     <div class="label">Win Rate</div>
     <div class="value" id="statWinRate">0%</div>
   </div>
@@ -12428,6 +12432,26 @@ function renderState(s) {
 
   el('statTotalPnl', pnlFmt(m.total_pnl||0));
   cls('statTotalPnl', (m.total_pnl||0) >= 0 ? 'green' : 'red');
+
+  // Unrealized P&L from open positions
+  let unrealPnl = 0;
+  const posObj = s.positions || {};
+  for (const sym of Object.keys(posObj)) {
+    const p = posObj[sym];
+    const dir = p.direction || 'short';
+    let curPrice = 0;
+    if (p.last_prices) {
+      const parts = p.last_prices.split(',').filter(Boolean);
+      if (parts.length) curPrice = parseFloat(parts[parts.length - 1]);
+    }
+    if (curPrice > 0) {
+      unrealPnl += dir === 'short'
+        ? (p.entry_price - curPrice) * p.remaining_shares
+        : (curPrice - p.entry_price) * p.remaining_shares;
+    }
+  }
+  el('statUnrealPnl', pnlFmt(unrealPnl));
+  cls('statUnrealPnl', unrealPnl >= 0 ? 'green' : 'red');
   el('statWinRate', ((m.win_rate||0)*100).toFixed(1) + '%');
   el('statTrades', m.total_trades || 0);
   el('statPF', (m.profit_factor||0).toFixed(2));
