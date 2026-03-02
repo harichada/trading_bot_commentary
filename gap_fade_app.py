@@ -9085,8 +9085,9 @@ Available actions:
    dd_tier2_scale, dd_tier2_max_positions, dd_hard_stop,
    llm_enabled, llm_model, llm_url, llm_timeout, catalyst_enabled,
    entry_cutoff_hour, entry_cutoff_min, min_hold_minutes, min_profit_take_pct, min_gap_fill_pct
-8. RESET equity & trade log: `{"action": "reset"}`
-9. RUN BACKTEST: `{"action": "backtest", "params": {"symbols": "TSLA,NVDA", "start_date": "2024-01-01", "end_date": "2024-12-31", "gap_threshold": 0.07}}`
+8. SWITCH STRATEGY: `{"action": "switch_strategy", "strategy_id": "classic_gap_fade"}` — available: classic_gap_fade, confluence_gap, vwap_fade, minervini_trend
+9. RESET equity & trade log: `{"action": "reset"}`
+10. RUN BACKTEST: `{"action": "backtest", "params": {"symbols": "TSLA,NVDA", "start_date": "2024-01-01", "end_date": "2024-12-31", "gap_threshold": 0.07}}`
 
 ## RULES
 - Always explain WHAT you're doing and WHY before the action block
@@ -9248,6 +9249,16 @@ USER MESSAGE: {message}"""
                     live_trader.scanner = GapScanner(cfg)
                     live_trader._save_state()
                     action_result = {'executed': 'config', 'updated': list(params.keys())}
+            elif act == 'switch_strategy':
+                strat_id = action.get('strategy_id', '')
+                if strat_id:
+                    live_trader.switch_strategy(strat_id, action.get('strategy_config'))
+                    live_trader._save_state()
+                    action_result = {'executed': 'switch_strategy', 'active': live_trader.config.active_strategy,
+                                     'name': live_trader.strategy.name if live_trader.strategy else strat_id}
+                    await broadcast({'type': 'strategy_switch', 'active': live_trader.config.active_strategy})
+                else:
+                    action_result = {'executed': 'error', 'error': 'strategy_id required'}
             elif act == 'reset':
                 live_trader.engine.equity = cfg.initial_capital
                 live_trader.engine.peak_equity = cfg.initial_capital
