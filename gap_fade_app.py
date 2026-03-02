@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Gap Fade Trading Strategy — Standalone FastAPI App
+Rudra Trading Engine — Standalone FastAPI App
 
-Data-driven gap fade strategy: short gap-ups that occur on below-average volume.
+Multi-strategy trading engine with LLM supervisor.
 Study of 3,754 Alpaca SIP events (5 years, 156 stocks) showed gap-ups on low volume
 (<1x avg) fade 71-81% with +2.5% avg P&L. High-volume gaps (>3x) only fade 31%.
 
@@ -8544,10 +8544,10 @@ async def lifespan(app):
     # Auto-start trading loop if configured
     if live_trader.config.auto_start:
         asyncio.create_task(_delayed_auto_start())
-    logger.info("Gap Fade app started")
+    logger.info("Rudra Trading Engine started")
     yield
 
-app = FastAPI(title="Gap Fade Strategy", version=APP_VERSION, lifespan=lifespan)
+app = FastAPI(title="Rudra Trading Engine", version=APP_VERSION, lifespan=lifespan)
 _app_start_time = _time.time()
 
 # ---------------------------------------------------------------------------
@@ -10087,7 +10087,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Gap Fade Terminal</title>
+<title>Rudra Trading Engine</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
@@ -10754,7 +10754,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 <!-- ── Auth Login Overlay ── -->
 <div id="authOverlay" style="display:none;position:fixed;inset:0;z-index:9999;background:#0A0E17;display:none;align-items:center;justify-content:center;">
   <div style="width:100%;max-width:360px;padding:32px;border-radius:16px;border:1px solid rgba(255,255,255,0.08);background:rgba(255,255,255,0.03);backdrop-filter:blur(20px);box-shadow:0 0 80px rgba(0,212,255,0.06);text-align:center;">
-    <h1 style="font-size:24px;font-weight:700;color:#fff;margin-bottom:8px;">Gap Fade Terminal</h1>
+    <h1 style="font-size:24px;font-weight:700;color:#fff;margin-bottom:8px;">Rudra Trading Engine</h1>
     <span style="display:inline-block;padding:2px 10px;border-radius:4px;font-size:12px;font-weight:600;background:rgba(0,212,255,0.2);color:#00D4FF;border:1px solid rgba(0,212,255,0.3);">Secure</span>
     <p style="color:#64748b;font-size:14px;margin:16px 0 24px;">Sign in to access your dashboard</p>
     <div style="display:flex;flex-direction:column;gap:12px;">
@@ -10789,7 +10789,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 <!-- ── Sidebar ── -->
 <aside class="sidebar">
   <div class="sidebar-logo">
-    <span class="brand-text">Gap Fade</span><span class="brand-sub">Terminal</span>
+    <span class="brand-text">Rudra</span><span class="brand-sub">Trading Engine</span>
   </div>
   <div class="sidebar-actions">
     <button class="success" onclick="startTrading()">Start Trading</button>
@@ -11507,7 +11507,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   </div>
   <div class="right">
     <span id="statusConn" style="color:var(--negative);">&#9675; Offline</span>
-    <span class="version-link" onclick="document.getElementById('releaseNotesModal').classList.add('open')">Gap Fade __APP_VERSION__</span>
+    <span class="version-link" onclick="document.getElementById('releaseNotesModal').classList.add('open')">Rudra __APP_VERSION__</span>
   </div>
 </footer>
 
@@ -11519,7 +11519,12 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       <button class="rn-close" onclick="document.getElementById('releaseNotesModal').classList.remove('open')">&times;</button>
     </div>
     <div class="rn-body">
-      <h4>v10.5 <span class="rn-tag">current</span></h4>
+      <h4>v10.6 <span class="rn-tag">current</span></h4>
+      <ul>
+        <li><strong>Rebrand:</strong> &ldquo;Gap Fade&rdquo; renamed to <strong>Rudra Trading Engine</strong> across all user-facing strings (titles, headers, docs)</li>
+        <li>Internal code identifiers, file names, env vars, and strategy names unchanged</li>
+      </ul>
+      <h4>v10.5</h4>
       <ul>
         <li><strong>Sharpe ratio fix:</strong> now uses daily equity returns instead of per-trade returns</li>
         <li><strong>Max drawdown fix:</strong> equity curve peak-to-trough (%) instead of cumsum of trade P&L</li>
@@ -13868,7 +13873,7 @@ if __name__ == '__main__':
     app_port = int(os.environ.get('GAP_FADE_PORT', '8002'))
 
     print("=" * 60)
-    print(f"  Gap Fade Strategy Dashboard ({APP_VERSION})")
+    print(f"  Rudra Trading Engine ({APP_VERSION})")
     print(f"  http://localhost:{app_port}")
     print("=" * 60)
     print()

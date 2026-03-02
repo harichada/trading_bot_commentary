@@ -171,7 +171,7 @@ function GuideView() {
   return (
     <div className="flex-1 overflow-auto p-6">
       <Panel title="Guide">
-        <p className="text-[#64748b] text-sm mb-2">Gap Fade: Short gap-ups on below-average volume. Study: 71% fade rate.</p>
+        <p className="text-[#64748b] text-sm mb-2">Rudra Trading Engine: Multi-strategy automated trading with LLM supervisor.</p>
         <ul className="text-sm text-[#64748b] space-y-1 list-disc list-inside">
           <li>Scan: Pre-market scan for gap candidates</li>
           <li>Start: Begin live trading loop</li>

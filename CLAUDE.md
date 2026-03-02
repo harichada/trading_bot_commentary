@@ -11,7 +11,7 @@ python trading_bot_commentary_updated.py
 # Claude rules-engine backtest dashboard (port 8001)
 python claude_backtest_app.py
 
-# Gap fade bot (port 8002 default, env GAP_FADE_PORT)
+# Rudra Trading Engine (port 8002 default, env GAP_FADE_PORT)
 python gap_fade_app.py
 
 # Professional bot (wraps main bot with safe_imports to block xgboost/lightgbm)
@@ -46,7 +46,7 @@ Each app is a standalone monolith (single `.py` file with embedded HTML dashboar
 |-----|------|------|-----|
 | Main Bot | `trading_bot_commentary_updated.py` (~15K lines) | 8000 | Schwab |
 | Backtest Dashboard | `claude_backtest_app.py` (~10K lines) | 8001 | Schwab (optional) |
-| Gap Fade | `gap_fade_app.py` (~7.5K lines) | 8002 (env `GAP_FADE_PORT`) | Alpaca |
+| Rudra Trading Engine | `gap_fade_app.py` (~7.5K lines) | 8002 (env `GAP_FADE_PORT`) | Alpaca |
 
 **Import flow**: `claude_backtest_app.py` imports from `trading_bot_commentary_updated.py` (TradingBrain) and `claude_strategy.py`. `run_professional_bot.py` wraps the main bot. `gap_fade_app.py` is fully standalone.
 
@@ -58,7 +58,7 @@ Each app is a standalone monolith (single `.py` file with embedded HTML dashboar
 - **`institutional_core.py`** — `TradingStateMachine`, `AtomicStateManager` — used by institutional_trading_system
 - **`risk_management.py`** / **`ml_model_manager_safe.py`** / **`paper_trading.py`** / **`advanced_orders.py`** — used by run_professional_bot and test suites
 
-### Gap Fade App Internals
+### Rudra Trading Engine Internals
 
 - SQLite price DB: `gap_fade_prices.db` with `daily_bars` table (`WITHOUT ROWID`, PK `(symbol, date)`, index on `(date, symbol)`)
 - Data sources: 2006-2015 Yahoo (normalized), 2016+ Alpaca
@@ -68,7 +68,7 @@ Each app is a standalone monolith (single `.py` file with embedded HTML dashboar
 - `scan_gaps_sql()`: >2000 symbols uses single-pass scan, <2000 uses chunked IN-clause
 - Binding: localhost only by default; set `GAP_FADE_BIND_ALL=1` for all interfaces
 
-### Authentication (Gap Fade frontend)
+### Authentication (Rudra frontend)
 
 `auth.py` — OAuth2 (Google/GitHub/Discord) with JWT session cookies via `authlib`. Graceful degradation: fully disabled when `AUTH_JWT_SECRET` env var is unset. Frontend is React/TypeScript in `frontend/src/` (no package.json checked in — built separately).
 
@@ -92,7 +92,7 @@ Monkey-patches `builtins.__import__` to block xgboost/lightgbm (segfault prevent
 
 ### Deployment
 
-`gap-fade.service` — systemd unit for gap fade app. Reads `.env` via `EnvironmentFile`, has watchdog (120s), memory cap (2G). Install script: `install-service.sh`.
+`gap-fade.service` — systemd unit for Rudra Trading Engine. Reads `.env` via `EnvironmentFile`, has watchdog (120s), memory cap (2G). Install script: `install-service.sh`.
 
 ## Compaction Instructions
 

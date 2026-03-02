@@ -6,7 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CURRENT_USER="$(whoami)"
 PYTHON_PATH="$(which python3 || which python)"
 
-echo "Installing Gap Fade service..."
+echo "Installing Rudra Trading Engine service..."
 echo "  User:    $CURRENT_USER"
 echo "  Dir:     $SCRIPT_DIR"
 echo "  Python:  $PYTHON_PATH"
@@ -15,7 +15,7 @@ echo ""
 # Generate main service file with correct paths
 cat > /tmp/gap-fade.service <<EOF
 [Unit]
-Description=Gap Fade Trading Strategy Dashboard
+Description=Rudra Trading Engine
 After=network.target
 OnFailure=gap-fade-notify-failure@%n.service
 
@@ -79,7 +79,7 @@ sleep 2
 sudo systemctl status gap-fade --no-pager
 
 echo ""
-echo "Done! Gap Fade is running as a systemd service."
+echo "Done! Rudra Trading Engine is running as a systemd service."
 echo ""
 echo "Useful commands:"
 echo "  sudo systemctl status gap-fade    # Check status"

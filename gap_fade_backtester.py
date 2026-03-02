@@ -1,5 +1,5 @@
 """
-Vectorbt-powered gap-fade backtester module.
+Vectorbt-powered backtester module for Rudra Trading Engine.
 
 Bulk-loads all daily bars into RAM, uses numpy for gap scanning, and
 optionally leverages vectorbt for portfolio analytics.  Drop-in replacement

@@ -1,5 +1,5 @@
 [Unit]
-Description=Gap Fade Trading Strategy Dashboard
+Description=Rudra Trading Engine
 After=network.target
 OnFailure=gap-fade-notify-failure@%n.service
 
