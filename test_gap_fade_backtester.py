@@ -473,11 +473,11 @@ class TestSimulation:
         state.reset_daily('2023-06-15', 3)
         trades, log = simulate_gap_day(gap, state, config)
 
-        # Should have stop + re-entry
+        # Should have stop + re-entry (re-entry may also stop out)
         reasons = [t.exit_reason for t in trades]
         assert 'stop' in reasons
         if len(trades) >= 2:
-            assert 'reentry_time' in reasons
+            assert 'reentry_time' in reasons or 'reentry_stop' in reasons
 
     def test_position_size_zero_skips(self):
         """Zero position size → skip (no crash)."""

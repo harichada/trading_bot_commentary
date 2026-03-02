@@ -3262,16 +3262,27 @@ class GapFadeEngine:
         avg_loss = np.mean(losses) if losses else 0
         profit_factor = abs(sum(wins) / sum(losses)) if losses and sum(losses) != 0 else 9999.99
 
-        # Max drawdown from cumulative P&L
-        cum_pnl = np.cumsum(pnls)
-        peak = np.maximum.accumulate(cum_pnl)
-        drawdowns = peak - cum_pnl
-        max_dd = float(np.max(drawdowns)) if len(drawdowns) > 0 else 0
-        max_dd_pct = max_dd / self.config.initial_capital if self.config.initial_capital > 0 else 0
+        # Max drawdown from running equity (not cumsum of trade P&L)
+        # Reconstruct equity curve from trades
+        eq_vals = [self.config.initial_capital]
+        for p in pnls:
+            eq_vals.append(eq_vals[-1] + p)
+        eq_arr = np.array(eq_vals)
+        peak_eq = np.maximum.accumulate(eq_arr)
+        dd_arr = (peak_eq - eq_arr) / np.where(peak_eq > 0, peak_eq, 1)
+        max_dd_pct = float(np.max(dd_arr)) if len(dd_arr) > 0 else 0
+        max_dd = max_dd_pct * self.config.initial_capital
 
-        # Sharpe (daily, annualized rough estimate)
-        if len(pnl_pcts) > 1:
-            sharpe = np.mean(pnl_pcts) / np.std(pnl_pcts) * np.sqrt(252) if np.std(pnl_pcts) > 0 else 0
+        # Sharpe from daily aggregated returns (not per-trade)
+        from collections import defaultdict
+        daily_pnl = defaultdict(float)
+        for t in trades:
+            day = t.entry_time[:10] if t.entry_time else ''
+            if day:
+                daily_pnl[day] += t.pnl
+        if len(daily_pnl) > 1:
+            daily_rets = np.array([v / self.config.initial_capital for v in daily_pnl.values()])
+            sharpe = float(np.mean(daily_rets) / np.std(daily_rets) * np.sqrt(252)) if np.std(daily_rets) > 0 else 0
         else:
             sharpe = 0
 
@@ -5371,7 +5382,7 @@ Explain your analysis of the position FIRST (gap fill progress, price trend, tim
                     return json.loads(match.group())
                 except json.JSONDecodeError:
                     pass
-            logger.warning(f"Rudra JSON parse failed: {text[:200]}")
+            logger.debug(f"Rudra JSON parse failed (text-only response): {text[:200]}")
             return None
 
     def _extract_reasoning_text(self, raw: str) -> str:
@@ -5505,7 +5516,11 @@ Explain your analysis of the position FIRST (gap fill progress, price trend, tim
 
         parsed = self._parse_json(raw)
         if not isinstance(parsed, dict) or 'action' not in parsed:
-            logger.warning(f"Rudra returned invalid action: {raw[:200]}")
+            # LLM returned analysis text without JSON — treat as wait/monitor
+            # with the text as reasoning (common when nothing to do)
+            analysis = raw.strip()[:300] if raw else ''
+            if analysis:
+                return {'action': 'wait', 'reasoning': analysis, '_analysis': analysis}
             return fallback
 
         # Validate action
@@ -5806,7 +5821,12 @@ Explain your reasoning FIRST, then end with the JSON action block."""
             if isinstance(parsed, dict) and 'action' in parsed:
                 parsed = {'actions': [parsed]}
             else:
-                return fallback
+                # LLM returned analysis without JSON — use as no-action with reasoning
+                analysis = raw.strip()[:300] if raw else ''
+                result = dict(fallback)
+                if analysis:
+                    result['_analysis'] = analysis
+                return result
 
         # Capture full reasoning text for display
         analysis = self._extract_reasoning_text(raw)
@@ -7623,15 +7643,16 @@ class GapFadeLiveTrader:
             elif action == 'adjust_config':
                 key = rec.get('config_key')
                 value = rec.get('config_value')
-                if key and value is not None and hasattr(self.config, key):
-                    old_val = getattr(self.config, key)
-                    try:
-                        setattr(self.config, key, type(old_val)(value))
+                if key and value is not None:
+                    validated, errors = validate_config({key: value})
+                    if validated:
+                        old_val = getattr(self.config, key)
+                        setattr(self.config, key, validated[key])
                         self._add_message('llm_review',
-                            f'AUTO-CONFIG {key}: {old_val} → {value} — {reasoning}')
+                            f'AUTO-CONFIG {key}: {old_val} → {validated[key]} — {reasoning}')
                         executed.append(f'config {key}')
-                    except (ValueError, TypeError):
-                        pass
+                    elif errors:
+                        logger.warning(f"LLM config rejected: {errors}")
 
         if executed:
             self._save_state()
@@ -7848,6 +7869,14 @@ class GapFadeLiveTrader:
                 if not price:
                     continue
 
+                # Phase 1: Fast checks under lock — trailing stop, strategy/engine exit
+                trade = None
+                exit_signal = None
+                need_llm_profit = False
+                need_llm_exit = False
+                pos_snapshot = None
+                llm_exit_signal = None
+
                 async with self._position_lock:
                     pos = self.engine.positions.get(sym)
                     if not pos:
@@ -7879,7 +7908,6 @@ class GapFadeLiveTrader:
                                         logger.warning(f"Broker trailing stop update failed for {sym}: {e}")
 
                     # Strategy plugin: evaluate exit (before engine)
-                    exit_signal = None
                     if self.strategy and self.indicator_engine:
                         tick_data = self.indicator_engine.get_data(sym)
                         strat_exit = self.strategy.evaluate_exit(
@@ -7896,12 +7924,11 @@ class GapFadeLiveTrader:
                     if exit_signal is None:
                         exit_signal = self.engine.evaluate_exit(sym, price, price, now)
 
-                    # No exit signal from rules — check LLM for profit-taking
+                    # No exit signal from rules — check if LLM profit check needed
                     if exit_signal is None:
                         if (self.llm_supervisor and self.llm_supervisor.is_available()
                                 and not pos.closing
                                 and now_mono - pos.last_llm_profit_check >= self._LLM_PROFIT_INTERVAL):
-                            # Minimum hold time gate — let positions develop
                             _skip_llm_profit = False
                             try:
                                 _entry_dt = datetime.strptime(pos.entry_time, '%Y-%m-%d %H:%M')
@@ -7913,7 +7940,6 @@ class GapFadeLiveTrader:
                             except (ValueError, TypeError):
                                 pass
 
-                            # Minimum profit / gap fill gate
                             if not _skip_llm_profit:
                                 if pos.direction == 'short':
                                     _pnl_pct = (pos.entry_price - price) / pos.entry_price if pos.entry_price > 0 else 0
@@ -7923,84 +7949,101 @@ class GapFadeLiveTrader:
                                 if _pnl_pct < self.config.min_profit_take_pct and _gap_fill < self.config.min_gap_fill_pct:
                                     _skip_llm_profit = True
 
-                            # Only ask LLM if position is in profit and gates pass
                             if pos.direction == 'short':
                                 in_profit = price < pos.entry_price
                             else:
                                 in_profit = price > pos.entry_price
                             if in_profit and not _skip_llm_profit:
                                 pos.last_llm_profit_check = now_mono
-                                llm_profit = await self.llm_supervisor.evaluate_profit(
-                                    asdict(pos), price, spy_change,
-                                    self.engine.daily_stats.pnl)
-                                action = llm_profit.get('action', 'hold')
-                                reasoning = llm_profit.get('reasoning', '')
-                                if action == 'close':
-                                    pnl_pct = pos.gap_fill_pct(price)
-                                    self._add_message('conversation',
-                                        f'BOT: {sym} profit check ({pnl_pct:.0%} fill) | '
-                                        f'RUDRA: Take profit — {reasoning}')
-                                    exit_signal = {
-                                        'action': 'close', 'reason': 'llm_profit',
-                                        'shares': pos.remaining_shares,
-                                    }
-                                elif action == 'tighten_stop':
-                                    new_stop = llm_profit.get('new_stop', pos.stop_price)
-                                    if new_stop and new_stop != pos.stop_price:
-                                        old_stop = pos.stop_price
-                                        pos.stop_price = new_stop
-                                        self._add_message('conversation',
-                                            f'BOT: {sym} profit check | '
-                                            f'RUDRA: Tighten stop ${old_stop:.2f} → ${new_stop:.2f} — {reasoning}')
-                                        # Update broker stop if we have one
-                                        if pos.stop_order_id:
-                                            try:
-                                                await asyncio.to_thread(alpaca_cancel_order, pos.stop_order_id)
-                                                stop_result = await asyncio.to_thread(
-                                                    alpaca_place_stop_order, sym,
-                                                    pos.remaining_shares, new_stop,
-                                                    0.003, pos.direction)
-                                                if 'error' not in stop_result:
-                                                    pos.stop_order_id = stop_result.get('id', '')
-                                            except Exception as e:
-                                                logger.warning(f"Broker stop update failed for {sym}: {e}")
-                                # else: hold — do nothing
+                                need_llm_profit = True
+                                pos_snapshot = asdict(pos)
 
-                    if exit_signal is None:
-                        continue
-
-                    # Skip stop signals — broker handles those
-                    if exit_signal['reason'] == 'stop' and pos.stop_order_id:
-                        continue
-
-                    # LLM exit override (software stops only, not broker/EOD/time)
-                    if (self.llm_supervisor and self.llm_supervisor.is_available()
+                    # Check if LLM exit override needed for software stops
+                    if (exit_signal is not None
                             and exit_signal['reason'] == 'stop'
-                            and not pos.stop_order_id
+                            and not (pos.stop_order_id)
+                            and self.llm_supervisor and self.llm_supervisor.is_available()
                             and pos.llm_hold_overrides < self.config.llm_max_hold_overrides):
-                        llm_exit = await self.llm_supervisor.evaluate_exit(
-                            asdict(pos), price, exit_signal)
-                        llm_action = llm_exit.get('action', 'close')
-                        if llm_action == 'hold':
-                            pos.llm_hold_overrides += 1
-                            self._add_message('conversation',
-                                f'BOT: {sym} hitting stop | '
-                                f'RUDRA: Hold ({pos.llm_hold_overrides}/'
-                                f'{self.config.llm_max_hold_overrides}) — '
-                                f'{llm_exit.get("reasoning", "")}')
-                            continue
-                        elif llm_action == 'tighten':
-                            pos.llm_hold_overrides += 1
-                            new_stop = llm_exit.get('new_stop', pos.stop_price)
-                            self._add_message('conversation',
-                                f'BOT: {sym} hitting stop | '
-                                f'RUDRA: Tighten ${pos.stop_price:.2f} → ${new_stop:.2f} '
-                                f'({pos.llm_hold_overrides}/{self.config.llm_max_hold_overrides}) — '
-                                f'{llm_exit.get("reasoning", "")}')
-                            pos.stop_price = new_stop
-                            continue
+                        need_llm_exit = True
+                        pos_snapshot = asdict(pos)
+                        llm_exit_signal = dict(exit_signal)
 
-                    trade = await self._execute_exit(sym, exit_signal, price)
+                    # Fast path: non-LLM exits execute immediately under lock
+                    if exit_signal is not None and not need_llm_exit:
+                        if exit_signal['reason'] == 'stop' and pos.stop_order_id:
+                            pass  # broker handles
+                        else:
+                            trade = await self._execute_exit(sym, exit_signal, price)
+
+                # Phase 2: LLM calls OUTSIDE the lock (5-30s each)
+                if need_llm_profit:
+                    llm_profit = await self.llm_supervisor.evaluate_profit(
+                        pos_snapshot, price, spy_change,
+                        self.engine.daily_stats.pnl)
+                    action = llm_profit.get('action', 'hold')
+                    reasoning = llm_profit.get('reasoning', '')
+
+                    # Phase 3: Re-acquire lock to apply LLM profit decision
+                    async with self._position_lock:
+                        pos = self.engine.positions.get(sym)
+                        if pos and not pos.closing:
+                            if action == 'close':
+                                pnl_pct = pos.gap_fill_pct(price)
+                                self._add_message('conversation',
+                                    f'BOT: {sym} profit check ({pnl_pct:.0%} fill) | '
+                                    f'RUDRA: Take profit — {reasoning}')
+                                exit_signal = {
+                                    'action': 'close', 'reason': 'llm_profit',
+                                    'shares': pos.remaining_shares,
+                                }
+                                trade = await self._execute_exit(sym, exit_signal, price)
+                            elif action == 'tighten_stop':
+                                new_stop = llm_profit.get('new_stop', pos.stop_price)
+                                if new_stop and new_stop != pos.stop_price:
+                                    old_stop = pos.stop_price
+                                    pos.stop_price = new_stop
+                                    self._add_message('conversation',
+                                        f'BOT: {sym} profit check | '
+                                        f'RUDRA: Tighten stop ${old_stop:.2f} → ${new_stop:.2f} — {reasoning}')
+                                    if pos.stop_order_id:
+                                        try:
+                                            await asyncio.to_thread(alpaca_cancel_order, pos.stop_order_id)
+                                            stop_result = await asyncio.to_thread(
+                                                alpaca_place_stop_order, sym,
+                                                pos.remaining_shares, new_stop,
+                                                0.003, pos.direction)
+                                            if 'error' not in stop_result:
+                                                pos.stop_order_id = stop_result.get('id', '')
+                                        except Exception as e:
+                                            logger.warning(f"Broker stop update failed for {sym}: {e}")
+
+                elif need_llm_exit:
+                    llm_exit = await self.llm_supervisor.evaluate_exit(
+                        pos_snapshot, price, llm_exit_signal)
+                    llm_action = llm_exit.get('action', 'close')
+
+                    # Re-acquire lock to apply LLM exit decision
+                    async with self._position_lock:
+                        pos = self.engine.positions.get(sym)
+                        if pos and not pos.closing:
+                            if llm_action == 'hold':
+                                pos.llm_hold_overrides += 1
+                                self._add_message('conversation',
+                                    f'BOT: {sym} hitting stop | '
+                                    f'RUDRA: Hold ({pos.llm_hold_overrides}/'
+                                    f'{self.config.llm_max_hold_overrides}) — '
+                                    f'{llm_exit.get("reasoning", "")}')
+                            elif llm_action == 'tighten':
+                                pos.llm_hold_overrides += 1
+                                new_stop = llm_exit.get('new_stop', pos.stop_price)
+                                self._add_message('conversation',
+                                    f'BOT: {sym} hitting stop | '
+                                    f'RUDRA: Tighten ${pos.stop_price:.2f} → ${new_stop:.2f} '
+                                    f'({pos.llm_hold_overrides}/{self.config.llm_max_hold_overrides}) — '
+                                    f'{llm_exit.get("reasoning", "")}')
+                                pos.stop_price = new_stop
+                            else:
+                                trade = await self._execute_exit(sym, llm_exit_signal, price)
 
                 if trade:
                     trades_executed.append(trade)
@@ -9224,11 +9267,10 @@ USER MESSAGE: {message}"""
                 await live_trader.stop()
                 action_result = {'executed': 'stop', 'status': live_trader.status}
             elif act == 'pause':
-                live_trader.status = 'paused'
-                action_result = {'executed': 'pause', 'status': 'paused'}
+                await live_trader.pause()
+                action_result = {'executed': 'pause', 'status': live_trader.status}
             elif act == 'resume':
-                if live_trader.status == 'paused':
-                    live_trader.status = 'trading'
+                await live_trader.resume()
                 action_result = {'executed': 'resume', 'status': live_trader.status}
             elif act == 'scan':
                 candidates = await live_trader._run_scan()
@@ -9242,13 +9284,18 @@ USER MESSAGE: {message}"""
             elif act == 'config':
                 params = action.get('params', {})
                 if params:
-                    for k, v in params.items():
-                        if hasattr(cfg, k):
-                            setattr(cfg, k, type(getattr(cfg, k))(v))
-                    live_trader.engine.config = cfg
-                    live_trader.scanner = GapScanner(cfg)
-                    live_trader._save_state()
-                    action_result = {'executed': 'config', 'updated': list(params.keys())}
+                    validated, errors = validate_config(params)
+                    if validated:
+                        for k, v in validated.items():
+                            setattr(cfg, k, v)
+                        live_trader.engine.config = cfg
+                        live_trader.scanner = GapScanner(cfg)
+                        live_trader._save_state()
+                        action_result = {'executed': 'config', 'updated': list(validated.keys())}
+                        if errors:
+                            action_result['rejected'] = errors
+                    elif errors:
+                        action_result = {'executed': 'error', 'error': f'Config rejected: {"; ".join(errors)}'}
             elif act == 'switch_strategy':
                 strat_id = action.get('strategy_id', '')
                 if strat_id:
@@ -9260,11 +9307,16 @@ USER MESSAGE: {message}"""
                 else:
                     action_result = {'executed': 'error', 'error': 'strategy_id required'}
             elif act == 'reset':
-                live_trader.engine.equity = cfg.initial_capital
-                live_trader.engine.peak_equity = cfg.initial_capital
-                live_trader.engine.trade_log.clear()
-                live_trader._save_state()
-                action_result = {'executed': 'reset', 'equity': cfg.initial_capital}
+                if live_trader.engine.positions:
+                    action_result = {'executed': 'error', 'error': f'Cannot reset with {len(live_trader.engine.positions)} open positions'}
+                else:
+                    live_trader.engine.equity = cfg.initial_capital
+                    live_trader.engine.peak_equity = cfg.initial_capital
+                    live_trader.engine.trade_log.clear()
+                    live_trader._save_state()
+                    live_trader._add_message('system', f'Equity reset to ${cfg.initial_capital:,.0f}')
+                    await broadcast({'type': 'live_status', 'status': live_trader.status})
+                    action_result = {'executed': 'reset', 'equity': cfg.initial_capital}
             elif act == 'close_position':
                 sym = action.get('symbol', '').upper()
                 if sym and sym in live_trader.engine.positions:
@@ -11704,14 +11756,14 @@ async function loadJournal() {
     container.innerHTML = journal.entries.map(e => {
       const time = (e.timestamp||'').split('T')[1] || e.timestamp || '';
       const color = typeColors[e.entry_type] || '#64748b';
-      const sym = e.symbol ? `<span style="color:var(--text);font-weight:600;">[${e.symbol}]</span> ` : '';
+      const sym = e.symbol ? `<span style="color:var(--text);font-weight:600;">[${escHtml(e.symbol)}]</span> ` : '';
       const llm = e.llm_call ? ' <span style="color:var(--purple);font-size:9px;">LLM</span>' : '';
       return `<div style="padding:4px 6px;border-left:2px solid ${color};background:rgba(0,0,0,0.15);border-radius:0 4px 4px 0;font-size:10px;line-height:1.4;">
         <div style="display:flex;justify-content:space-between;margin-bottom:2px;">
-          <span style="color:${color};font-weight:600;text-transform:uppercase;font-size:9px;">${e.entry_type}${llm}</span>
-          <span style="color:var(--muted);font-size:9px;">${time}</span>
+          <span style="color:${color};font-weight:600;text-transform:uppercase;font-size:9px;">${escHtml(e.entry_type||'')}${llm}</span>
+          <span style="color:var(--muted);font-size:9px;">${escHtml(time)}</span>
         </div>
-        <div style="color:var(--text);">${sym}${(e.content||'').substring(0,200)}</div>
+        <div style="color:var(--text);">${sym}${escHtml((e.content||'').substring(0,200))}</div>
       </div>`;
     }).reverse().join('');
   } catch(err) { console.error('Journal load error:', err); }
@@ -11828,7 +11880,7 @@ function handleMessage(msg) {
       div.style.borderLeft = '2px solid #34d399';
       div.style.paddingLeft = '8px';
       const now = new Date().toLocaleTimeString('en-US', {hour12:false, hour:'2-digit', minute:'2-digit', second:'2-digit'});
-      div.innerHTML = `<span class="time">${now}</span><span style="color:#c084fc;font-weight:600;">RUDRA:</span> ${(msg.text||'').substring(0,300)}`;
+      div.innerHTML = `<span class="time">${now}</span><span style="color:#c084fc;font-weight:600;">RUDRA:</span> ${escHtml((msg.text||'').substring(0,300))}`;
       feed.insertBefore(div, feed.firstChild);
     }
   }
@@ -12584,8 +12636,7 @@ function renderPositions(positions) {
 async function closePosition(sym) {
   if (!confirm('Close ' + sym + ' at market?')) return;
   try {
-    const r = await fetch('/api/positions/' + sym + '/close', {method:'POST'});
-    const d = await r.json();
+    const d = await api('positions/' + sym + '/close', 'POST');
     if (d.error) { alert('Error: ' + d.error); return; }
     addActivityMsg('manual', 'Closed ' + sym + ': $' + (d.pnl||0).toFixed(2));
     refreshState();
@@ -12598,11 +12649,7 @@ async function promptStopAdjust(sym, curStop) {
   const px = parseFloat(newStop);
   if (isNaN(px) || px <= 0) { alert('Invalid price'); return; }
   try {
-    const r = await fetch('/api/positions/' + sym + '/stop', {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({stop_price: px})
-    });
-    const d = await r.json();
+    const d = await api('positions/' + sym + '/stop', 'POST', {stop_price: px});
     if (d.error) { alert('Error: ' + d.error); return; }
     addActivityMsg('manual', sym + ' stop: $' + curStop.toFixed(2) + ' → $' + px.toFixed(2));
     refreshState();
@@ -12615,7 +12662,7 @@ function addActivityMsg(type, text) {
   const now = new Date().toLocaleTimeString('en-US', {hour12:false, hour:'2-digit', minute:'2-digit', second:'2-digit'});
   const div = document.createElement('div');
   div.className = 'feed-item ' + type;
-  div.innerHTML = '<span class="time">' + now + '</span>' + text;
+  div.innerHTML = '<span class="time">' + now + '</span>' + escHtml(text);
   feed.prepend(div);
 }
 
@@ -12684,14 +12731,14 @@ function renderMessages(messages) {
         const botPart = parts[0].replace('BOT:', '').trim();
         const rudraPart = parts[1].trim();
         return `<div class="feed-item conversation" style="border-left:2px solid #34d399;padding-left:8px;">
-          <span class="time">${m.time}</span>
-          <span style="color:#60a5fa;font-weight:600;">BOT:</span> ${botPart}<br/>
-          <span style="color:#c084fc;font-weight:600;">RUDRA:</span> ${rudraPart}
+          <span class="time">${escHtml(m.time)}</span>
+          <span style="color:#60a5fa;font-weight:600;">BOT:</span> ${escHtml(botPart)}<br/>
+          <span style="color:#c084fc;font-weight:600;">RUDRA:</span> ${escHtml(rudraPart)}
         </div>`;
       }
     }
-    return `<div class="feed-item ${m.type}">
-      <span class="time">${m.time}</span>${prefix(m.type)}${m.text}
+    return `<div class="feed-item ${escHtml(m.type)}">
+      <span class="time">${escHtml(m.time)}</span>${prefix(m.type)}${escHtml(m.text)}
     </div>`;
   };
   feed.innerHTML = messages.slice().reverse().map(formatMsg).join('');
@@ -13203,7 +13250,7 @@ function renderPnlBarChart(gran) {
     if (hit) {
       const sign = hit.val >= 0 ? '+' : '-';
       const color = hit.val >= 0 ? '#00D4FF' : '#FF3B5C';
-      tooltip.innerHTML = '<span style="color:var(--muted);">' + hit.key + '</span> &nbsp; <span style="color:' + color + ';font-weight:600;">' + sign + '$' + Math.abs(hit.val).toFixed(2) + '</span>';
+      tooltip.innerHTML = '<span style="color:var(--muted);">' + escHtml(hit.key) + '</span> &nbsp; <span style="color:' + color + ';font-weight:600;">' + sign + '$' + Math.abs(hit.val).toFixed(2) + '</span>';
       tooltip.style.display = 'block';
       tooltip.style.left = (e.clientX + 12) + 'px';
       tooltip.style.top = (e.clientY - 10) + 'px';
@@ -13226,7 +13273,7 @@ function renderPnlBarChart(gran) {
 
 function renderBacktestResults(r) {
   if (r.error) {
-    document.getElementById('btResults').innerHTML = `<div style="color:var(--red);">${r.error}</div>`;
+    document.getElementById('btResults').innerHTML = `<div style="color:var(--red);">${escHtml(r.error)}</div>`;
     return;
   }
 

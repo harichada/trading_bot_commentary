@@ -741,7 +741,18 @@ def simulate_gap_day(gap: dict, state: SimulationState, config: GapFadeConfig,
 
             re_favorable = (day_close < re_entry) if direction == 'short' else (day_close > re_entry)
             if re_favorable:
-                re_exit = _exit_slip(day_close)
+                # Check if re-entry stop was hit
+                re_stopped = _stop_hit(direction, day_high, day_low, re_stop)
+                if re_stopped:
+                    re_exit = _exit_slip(re_stop)
+                    re_exit_reason = 'reentry_stop'
+                    re_hold = 120  # assume ~2hr hold if stopped
+                    re_exit_time = f'{gap["date"]} 14:00'
+                else:
+                    re_exit = _exit_slip(day_close)
+                    re_exit_reason = 'reentry_time'
+                    re_hold = 240
+                    re_exit_time = exit_close_str
                 re_risk_per_share = abs(re_stop - re_entry)
                 re_kelly = state.compute_kelly_size()
                 re_risk_frac = min(config.risk_pct, re_kelly) if re_kelly > 0 else config.risk_pct
@@ -758,14 +769,14 @@ def simulate_gap_day(gap: dict, state: SimulationState, config: GapFadeConfig,
 
                 if re_shares > 0:
                     re_pnl = _direction_pnl(direction, re_entry, re_exit, re_shares)
-                    re_pnl_pct = re_pnl / (re_entry * re_shares) if re_entry > 0 else 0
                     re_borrow = re_shares * re_entry * (config.borrow_rate_annual / 252) if direction == 'short' else 0
                     re_pnl -= re_borrow
+                    re_pnl_pct = re_pnl / (re_entry * re_shares) if re_entry > 0 else 0
                     re_trade = TradeRecord(
                         symbol=sym, entry_price=re_entry, exit_price=re_exit,
                         shares=re_shares, pnl=re_pnl, pnl_pct=re_pnl_pct,
-                        entry_time=f'{gap["date"]} 12:00', exit_time=exit_close_str,
-                        exit_reason='reentry_time', holding_minutes=240,
+                        entry_time=f'{gap["date"]} 12:00', exit_time=re_exit_time,
+                        exit_reason=re_exit_reason, holding_minutes=re_hold,
                         side=direction,
                     )
                     day_trades.append(re_trade)
@@ -835,14 +846,28 @@ class MetricsAdapter:
         avg_loss = float(np.mean(losses)) if losses else 0
         profit_factor = abs(sum(wins) / sum(losses)) if losses and sum(losses) != 0 else 9999.99
 
-        cum_pnl = np.cumsum(pnls)
-        peak = np.maximum.accumulate(cum_pnl)
-        drawdowns = peak - cum_pnl
-        max_dd = float(np.max(drawdowns)) if len(drawdowns) > 0 else 0
-        max_dd_pct = max_dd / config.initial_capital if config.initial_capital > 0 else 0
+        # Max drawdown from equity curve (not cumsum of trade P&L)
+        eq = state.equity_curve
+        if len(eq) > 1:
+            eq_arr = np.array(eq)
+            peak_eq = np.maximum.accumulate(eq_arr)
+            dd_arr = (peak_eq - eq_arr) / np.where(peak_eq > 0, peak_eq, 1)
+            max_dd_pct = float(np.max(dd_arr))
+            max_dd = max_dd_pct * config.initial_capital  # approximate $ DD for backward compat
+        else:
+            max_dd = 0
+            max_dd_pct = 0
 
-        if len(pnl_pcts) > 1:
-            sharpe = float(np.mean(pnl_pcts) / np.std(pnl_pcts) * np.sqrt(252)) if np.std(pnl_pcts) > 0 else 0
+        # Sharpe from daily equity curve returns (not per-trade returns)
+        eq = state.equity_curve
+        if len(eq) > 2:
+            eq_arr = np.array(eq)
+            daily_rets = np.diff(eq_arr) / eq_arr[:-1]
+            daily_rets = daily_rets[np.isfinite(daily_rets)]
+            if len(daily_rets) > 1 and np.std(daily_rets) > 0:
+                sharpe = float(np.mean(daily_rets) / np.std(daily_rets) * np.sqrt(252))
+            else:
+                sharpe = 0
         else:
             sharpe = 0
 
@@ -1192,6 +1217,7 @@ class VbtGapFadeBacktester:
                 if regime and regime.position_reduction == -999:
                     regime_skipped += 1
                     gi += day_gap_count
+                    state.equity_curve.append(state.equity)
                     continue
                 if regime and regime.position_reduction == -1:
                     regime_halved += 1
