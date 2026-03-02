@@ -11467,7 +11467,13 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       <button class="rn-close" onclick="document.getElementById('releaseNotesModal').classList.remove('open')">&times;</button>
     </div>
     <div class="rn-body">
-      <h4>v10.2 <span class="rn-tag">current</span></h4>
+      <h4>v10.4 <span class="rn-tag">current</span></h4>
+      <ul>
+        <li>Rudra can now switch strategies via chat (e.g. &ldquo;switch to classic gap fade&rdquo;)</li>
+        <li>Unrealized P&L shown in dashboard metrics bar alongside Total P&L</li>
+        <li>Rudra messages no longer truncated in activity feed &mdash; full responses visible</li>
+      </ul>
+      <h4>v10.2</h4>
       <ul>
         <li>Fix backtest feature toggles not sending <code>false</code> when unchecked</li>
         <li>Adaptive stops, regime filter, re-entry, gap-downs now explicitly disabled when unchecked</li>
