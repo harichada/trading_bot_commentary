@@ -6655,9 +6655,9 @@ class GapFadeLiveTrader:
                             state, event_queue=self._event_bus)
                         if debrief:
                             self._add_message('conversation',
-                                f'BOT: Day wrap-up request | RUDRA: {debrief[:300]}')
+                                f'BOT: Day wrap-up request | RUDRA: {debrief}')
                             await broadcast({'type': 'conversation',
-                                'speaker': 'rudra', 'text': debrief[:500]})
+                                'speaker': 'rudra', 'text': debrief})
                     if self.engine.positions:
                         _did_eod = True
                         await self._eod_close()
@@ -6718,9 +6718,9 @@ class GapFadeLiveTrader:
                         if briefing:
                             self._morning_briefing_done = today
                             self._add_message('conversation',
-                                f'BOT: Morning briefing | RUDRA: {briefing[:300]}')
+                                f'BOT: Morning briefing | RUDRA: {briefing}')
                             await broadcast({'type': 'conversation',
-                                'speaker': 'rudra', 'text': briefing[:500]})
+                                'speaker': 'rudra', 'text': briefing})
 
                     # Tier 4: Human escalation — Telegram alert + standdown
                     tier4_events = [e for e in self._event_bus._queue if e.tier >= 4]
@@ -6768,9 +6768,9 @@ class GapFadeLiveTrader:
                             event_queue=self._event_bus)
                         if raw:
                             self._add_message('conversation',
-                                f'BOT: Urgent event | RUDRA: {raw[:300]}')
+                                f'BOT: Urgent event | RUDRA: {raw}')
                             await broadcast({'type': 'conversation',
-                                'speaker': 'rudra', 'text': raw[:500]})
+                                'speaker': 'rudra', 'text': raw})
                             self.journal.log('reasoning', 'llm_rudra',
                                 raw[:500], llm_call=True)
                             # Parse action if present
@@ -6828,10 +6828,10 @@ class GapFadeLiveTrader:
                                         if self.engine.positions or state.get('candidates_count')
                                         else state['status'])
                         self._add_message('conversation',
-                            f'BOT: {_bot_context} | RUDRA: [{action}] {rudra_display[:400]}')
+                            f'BOT: {_bot_context} | RUDRA: [{action}] {rudra_display}')
                         await broadcast({'type': 'conversation',
                             'speaker': 'rudra',
-                            'text': f'[{action}] {rudra_display[:500]}'})
+                            'text': f'[{action}] {rudra_display}'})
                         # Journal: log LLM decision
                         _jtype = 'action' if action in ('enter', 'scan', 'standdown') else 'no_action'
                         self.journal.log(_jtype, 'llm_rudra',
@@ -7551,15 +7551,15 @@ class GapFadeLiveTrader:
                 f"{a.get('action', '?')} {a.get('symbol', '')}" for a in actions[:3])
             rudra_text = review_analysis if review_analysis else action_summary
             self._add_message('conversation',
-                f'BOT: Reflection ({n_pos} positions) | RUDRA: [{action_summary}] {rudra_text[:400]}')
+                f'BOT: Reflection ({n_pos} positions) | RUDRA: [{action_summary}] {rudra_text}')
             await broadcast({'type': 'conversation',
-                'speaker': 'rudra', 'text': f'[{action_summary}] {rudra_text[:500]}'})
+                'speaker': 'rudra', 'text': f'[{action_summary}] {rudra_text}'})
             self.journal.log('action', 'llm_rudra',
                 f'Reflection actions: {action_summary}', llm_call=True)
         else:
             rudra_text = review_analysis if review_analysis else 'All looks good, no changes needed.'
             self._add_message('conversation',
-                f'BOT: Reflection ({n_pos} positions) | RUDRA: {rudra_text[:400]}')
+                f'BOT: Reflection ({n_pos} positions) | RUDRA: {rudra_text}')
             self.journal.log('no_action', 'llm_rudra',
                 f'Reflection: {rudra_text[:200]}', llm_call=True)
             logger.info("Scheduled reflection: no actions recommended")
@@ -9278,11 +9278,10 @@ USER MESSAGE: {message}"""
     # Strip the action block from displayed response
     display_text = _re.sub(r'\n?```action\s*\n\{.*?\}\s*\n```', '', raw, flags=_re.DOTALL).strip()
 
-    # Add conversation to activity feed
+    # Add conversation to activity feed (full text for chat, user wants to see complete response)
     user_brief = message[:80] + ('...' if len(message) > 80 else '')
-    rudra_brief = display_text[:200] + ('...' if len(display_text) > 200 else '')
-    live_trader._add_message('conversation', f'BOT: {user_brief} | RUDRA: {rudra_brief}')
-    await broadcast({'type': 'conversation', 'speaker': 'rudra', 'text': display_text[:500]})
+    live_trader._add_message('conversation', f'BOT: {user_brief} | RUDRA: {display_text}')
+    await broadcast({'type': 'conversation', 'speaker': 'rudra', 'text': display_text})
 
     result = {'response': display_text}
     if action_result:
