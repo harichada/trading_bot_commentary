@@ -11936,6 +11936,8 @@ async function runBacktest() {
     body.stop_gap_fraction = gapFrac;
     body.stop_min_pct = stopMin / 100;
     body.stop_max_pct = stopMax / 100;
+  } else {
+    body.adaptive_stops = false;
   }
   if (document.getElementById('btRegimeFilter').checked) {
     body.regime_filter = true;
@@ -11947,6 +11949,8 @@ async function runBacktest() {
     body.regime_spy_gap_limit = spyGap / 100;
     body.regime_spy_block_pct = spyBlock / 100;
     body.regime_vix_threshold = vixThresh;
+  } else {
+    body.regime_filter = false;
   }
   if (document.getElementById('btReentry').checked) {
     body.reentry_enabled = true;
@@ -11959,6 +11963,8 @@ async function runBacktest() {
     body.reentry_max_per_symbol = maxRe;
     body.reentry_stop_pct = reStop / 100;
     body.reentry_trigger_pct = reTrig / 100;
+  } else {
+    body.reentry_enabled = false;
   }
   if (document.getElementById('btGapDowns').checked) {
     body.trade_gap_downs = true;
@@ -11969,6 +11975,8 @@ async function runBacktest() {
     body.gap_down_threshold = gdThresh / 100;
     body.gap_down_max_pct = gdMax / 100;
     body.gap_down_vol_ratio_max = gdVol;
+  } else {
+    body.trade_gap_downs = false;
   }
   if (document.getElementById('btDDCircuitBreaker').checked) {
     body.dd_circuit_breaker = true;

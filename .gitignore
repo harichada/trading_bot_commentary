@@ -20,6 +20,9 @@ token_*.json
 *.pkl
 *.pickle
 
+# Backtrader chart output
+bt_charts/
+
 # Python
 __pycache__/
 *.py[cod]
