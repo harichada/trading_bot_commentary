@@ -11519,7 +11519,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       <button class="rn-close" onclick="document.getElementById('releaseNotesModal').classList.remove('open')">&times;</button>
     </div>
     <div class="rn-body">
-      <h4>v10.6 <span class="rn-tag">current</span></h4>
+      <h4>v11 <span class="rn-tag">current</span></h4>
       <ul>
         <li><strong>Rebrand:</strong> &ldquo;Gap Fade&rdquo; renamed to <strong>Rudra Trading Engine</strong> across all user-facing strings (titles, headers, docs)</li>
         <li>Internal code identifiers, file names, env vars, and strategy names unchanged</li>
