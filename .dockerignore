@@ -1,0 +1,42 @@
+# Large files — DB is mounted at runtime, not baked into image
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Git
+.git/
+.gitignore
+
+# Python caches
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+*.egg-info/
+
+# Virtual envs
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs and temp
+*.log
+logs/
+tmp/
+
+# Docker
+Dockerfile*
+docker-compose*
+.dockerignore
