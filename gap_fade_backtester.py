@@ -13,8 +13,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import os
 import random
-import sqlite3
+import psycopg2
 import time as _time
 from collections import defaultdict
 from dataclasses import asdict, dataclass, field
@@ -59,8 +60,8 @@ logger = logging.getLogger(__name__)
 class DataLoader:
     """Bulk-loads all daily bars for a symbol universe into a wide DataFrame."""
 
-    def __init__(self, db_path: str = None):
-        self._db_path = db_path or PriceDB.DB_PATH
+    def __init__(self, db_url: str = None):
+        self._db_url = db_url or os.environ.get('DATABASE_URL', PriceDB.DEFAULT_DB_URL)
 
     def load_universe(self, symbols: List[str], start: str, end: str,
                       warmup_days: int = 252) -> pd.DataFrame:
@@ -72,30 +73,29 @@ class DataLoader:
         adj_start = (datetime.strptime(start, '%Y-%m-%d')
                      - timedelta(days=int(warmup_days * 1.5))).strftime('%Y-%m-%d')
 
-        conn = sqlite3.connect(self._db_path)
+        conn = psycopg2.connect(self._db_url)
         try:
-            # For smaller universes, use IN-clause for targeted SQL.
-            # For very large universes (>2000), full scan + Python filter is faster.
+            cur = conn.cursor()
             if len(symbols) <= 2000:
                 rows = []
                 chunk_size = 500
                 for i in range(0, len(symbols), chunk_size):
                     chunk = symbols[i:i + chunk_size]
-                    placeholders = ','.join('?' * len(chunk))
+                    placeholders = ','.join(['%s'] * len(chunk))
                     sql = (
                         f'SELECT symbol, date, open, high, low, close, volume '
                         f'FROM daily_bars WHERE symbol IN ({placeholders}) '
-                        f'AND date >= ? AND date <= ? ORDER BY symbol, date'
+                        f'AND date >= %s AND date <= %s ORDER BY symbol, date'
                     )
-                    cur = conn.execute(sql, chunk + [adj_start, end])
+                    cur.execute(sql, chunk + [adj_start, end])
                     rows.extend(cur.fetchall())
             else:
                 sql = (
                     'SELECT symbol, date, open, high, low, close, volume '
-                    'FROM daily_bars WHERE date >= ? AND date <= ? '
+                    'FROM daily_bars WHERE date >= %s AND date <= %s '
                     'ORDER BY symbol, date'
                 )
-                cur = conn.execute(sql, (adj_start, end))
+                cur.execute(sql, (adj_start, end))
                 rows = cur.fetchall()
         finally:
             conn.close()
@@ -128,12 +128,13 @@ class DataLoader:
 
         Returns DataFrame with DatetimeIndex, columns=[open, high, low, close, volume].
         """
-        conn = sqlite3.connect(self._db_path)
+        conn = psycopg2.connect(self._db_url)
         try:
             adj_start = (datetime.strptime(start, '%Y-%m-%d') - timedelta(days=10)).strftime('%Y-%m-%d')
-            cur = conn.execute(
+            cur = conn.cursor()
+            cur.execute(
                 'SELECT date, open, high, low, close, volume FROM daily_bars '
-                'WHERE symbol = ? AND date >= ? AND date <= ? ORDER BY date',
+                'WHERE symbol = %s AND date >= %s AND date <= %s ORDER BY date',
                 ('SPY', adj_start, end)
             )
             rows = cur.fetchall()
@@ -741,18 +742,11 @@ def simulate_gap_day(gap: dict, state: SimulationState, config: GapFadeConfig,
 
             re_favorable = (day_close < re_entry) if direction == 'short' else (day_close > re_entry)
             if re_favorable:
-                # Check if re-entry stop was hit
-                re_stopped = _stop_hit(direction, day_high, day_low, re_stop)
-                if re_stopped:
-                    re_exit = _exit_slip(re_stop)
-                    re_exit_reason = 'reentry_stop'
-                    re_hold = 120  # assume ~2hr hold if stopped
-                    re_exit_time = f'{gap["date"]} 14:00'
-                else:
-                    re_exit = _exit_slip(day_close)
-                    re_exit_reason = 'reentry_time'
-                    re_hold = 240
-                    re_exit_time = exit_close_str
+                # Exit at close (matches original _simulate_day_daily)
+                re_exit = _exit_slip(day_close)
+                re_exit_reason = 'reentry_time'
+                re_hold = 240
+                re_exit_time = exit_close_str
                 re_risk_per_share = abs(re_stop - re_entry)
                 re_kelly = state.compute_kelly_size()
                 re_risk_frac = min(config.risk_pct, re_kelly) if re_kelly > 0 else config.risk_pct
@@ -769,9 +763,9 @@ def simulate_gap_day(gap: dict, state: SimulationState, config: GapFadeConfig,
 
                 if re_shares > 0:
                     re_pnl = _direction_pnl(direction, re_entry, re_exit, re_shares)
+                    re_pnl_pct = re_pnl / (re_entry * re_shares) if re_entry > 0 else 0
                     re_borrow = re_shares * re_entry * (config.borrow_rate_annual / 252) if direction == 'short' else 0
                     re_pnl -= re_borrow
-                    re_pnl_pct = re_pnl / (re_entry * re_shares) if re_entry > 0 else 0
                     re_trade = TradeRecord(
                         symbol=sym, entry_price=re_entry, exit_price=re_exit,
                         shares=re_shares, pnl=re_pnl, pnl_pct=re_pnl_pct,
@@ -1068,58 +1062,59 @@ class VbtGapFadeBacktester:
         # Seed random for reproducible adverse fill resolution
         random.seed(42)
 
-        # ---- Phase 1 (0-15%): Bulk data load ----
-        await _log('info', f'Loading bulk data for {len(syms)} symbols...')
-        await _progress(2, f"Loading bulk data for {len(syms)} symbols...")
+        # ---- Phase 1 (0-25%): SQL gap scan (identical to GapFadeBacktester) ----
+        await _log('info', f'Scanning {len(syms)} symbols via SQL...')
+        await _progress(2, f"SQL gap scan for {len(syms)} symbols...")
 
-        loader = DataLoader()
+        from gap_fade_app import GapScanner
+        scanner_sql = GapScanner(self.config, syms)
         t0 = _time.time()
-        all_data = await asyncio.to_thread(loader.load_universe, syms, start_date, end_date)
-        elapsed_load = _time.time() - t0
+        all_gap_days_raw = await asyncio.to_thread(
+            scanner_sql.scan_historical_batch,
+            syms, start_date, end_date,
+        )
+        elapsed_scan = _time.time() - t0
+        raw_gap_count = len(all_gap_days_raw)
+        await _log('info', f'SQL scan found {raw_gap_count} raw gaps in {elapsed_scan:.1f}s')
+        await _progress(15, f"Found {raw_gap_count} raw gaps. Filtering...")
 
-        if all_data.empty:
-            self.status = 'done'
-            no_gaps = {'error': 'No data found in DB', 'total_trades': 0, 'bt_log': bt_log}
-            self.result = no_gaps
-            await broadcast({'type': 'backtest_complete', 'result': no_gaps})
-            return no_gaps
+        # Vol filter (direction-aware, same as original backtester)
+        def _vol_ok(g):
+            if g.get('direction') == 'long':
+                if not self.config.trade_gap_downs:
+                    return False
+                return g['vol_ratio'] <= self.config.gap_down_vol_ratio_max
+            return g['vol_ratio'] <= self.config.vol_ratio_max
 
-        n_syms_loaded = len(all_data.columns.get_level_values(1).unique())
-        await _log('info', f'Loaded {n_syms_loaded} symbols in {elapsed_load:.1f}s '
-                   f'({all_data.shape[0]} dates × {all_data.shape[1]} columns)')
-        await _progress(15, f"Data loaded. Scanning for gaps...")
+        all_gap_days = [g for g in all_gap_days_raw if _vol_ok(g)]
+        await _log('scan', f'After vol filter: {len(all_gap_days)} gaps (from {raw_gap_count} raw)')
+        await _progress(25, f"Found {len(all_gap_days)} gaps. Filtering...")
 
-        # ---- Phase 2 (15-25%): Vectorized gap scan ----
-        scanner = VectorizedGapScanner(self.config)
-        t1 = _time.time()
-        gaps_df = await asyncio.to_thread(scanner.scan, all_data, start_date, end_date)
-        elapsed_scan = _time.time() - t1
-
-        raw_gap_count = len(gaps_df)
-        await _log('info', f'Vectorized scan found {raw_gap_count} raw gaps in {elapsed_scan:.2f}s')
-
-        # Vol filter
-        gaps_df = scanner.apply_vol_filter(gaps_df)
-        await _log('scan', f'After vol filter: {len(gaps_df)} gaps (from {raw_gap_count} raw)')
-        await _progress(25, f"Found {len(gaps_df)} gaps. Filtering...")
-
-        if gaps_df.empty:
+        if not all_gap_days:
             self.status = 'done'
             no_gaps = {'error': 'No qualifying gap days found', 'total_trades': 0, 'bt_log': bt_log}
             self.result = no_gaps
             await broadcast({'type': 'backtest_complete', 'result': no_gaps})
             return no_gaps
 
-        # ---- Phase 3 (25-35%): Strategy filter with BatchDataProvider ----
-        all_gap_days = gaps_df.to_dict('records')
-        batch_provider = BatchDataProvider(all_data)
+        # ---- Phase 2 (25-35%): Bulk data load for strategy filter ----
+        # Load wide DataFrame only if strategy needs it (for BatchDataProvider)
+        loader = DataLoader()
+        all_data = None
+        batch_provider = None
 
         if self.strategy:
             await _log('info', f'Applying {self.strategy.name} strategy filter...')
+            # Load bulk data for BatchDataProvider (strategy needs get_bars)
+            if all_data is None:
+                await _progress(26, f"Loading bulk data for strategy filter...")
+                all_data = await asyncio.to_thread(loader.load_universe, syms, start_date, end_date)
+                batch_provider = BatchDataProvider(all_data) if not all_data.empty else None
             # Monkey-patch PriceDB.get_bars temporarily
             db = get_price_db()
             original_get_bars = db.get_bars
-            db.get_bars = batch_provider.get_bars
+            if batch_provider:
+                db.get_bars = batch_provider.get_bars
             try:
                 filtered_gaps = []
                 for i, g in enumerate(all_gap_days):
@@ -1361,7 +1356,7 @@ class VbtGapFadeBacktester:
 
         elapsed_total = _time.time() - t0
         logger.info(f"VBT BACKTEST DONE: {result.get('total_trades', 0)} trades in {elapsed_total:.1f}s "
-                     f"(load={elapsed_load:.1f}s, scan={elapsed_scan:.2f}s)")
+                     f"(scan={elapsed_scan:.1f}s)")
 
         try:
             await _log('info', f'Backtest complete: {result.get("total_trades", 0)} trades, '
@@ -1384,3 +1379,1625 @@ class VbtGapFadeBacktester:
         """Cancel running backtest."""
         self._cancel = True
         self.status = 'cancelled'
+
+
+# ---------------------------------------------------------------------------
+# IntradayBacktester — backtest intraday strategies on daily OHLCV data
+# ---------------------------------------------------------------------------
+
+@dataclass
+class IntradayBarSim:
+    """Simulated 5-min bar derived from daily OHLCV."""
+    timestamp: datetime
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float
+
+
+def synthesize_intraday_bars(date_str: str, day_open: float, day_high: float,
+                              day_low: float, day_close: float,
+                              day_volume: float, prev_close: float,
+                              n_bars: int = 78) -> List[IntradayBarSim]:
+    """Synthesize plausible 5-min bars from daily OHLCV data.
+
+    Creates a realistic intraday price path:
+    - First 3 bars (9:30-9:45): opening range from open to ~15-min extremes
+    - Middle bars: random walk constrained by day high/low
+    - Final bars: converge toward close
+
+    Returns list of IntradayBarSim (78 bars = 6.5 hours, 9:30 to 16:00).
+    """
+    from zoneinfo import ZoneInfo
+    ET = ZoneInfo('US/Eastern')
+    base_dt = datetime.strptime(date_str, '%Y-%m-%d').replace(
+        hour=9, minute=30, tzinfo=ET)
+
+    if n_bars <= 0 or day_open <= 0:
+        return []
+
+    bars: List[IntradayBarSim] = []
+    bar_vol = day_volume / n_bars if day_volume > 0 else 1000
+
+    # Generate price path with n_bars+1 price points
+    prices = [day_open]
+    rng = np.random.RandomState(hash(date_str) % (2**31))
+
+    # Phase 1: Opening range (bars 0-2, 9:30-9:45)
+    # Determine OR extremes (fraction of day range)
+    day_range = day_high - day_low
+    or_fraction = 0.4 + rng.random() * 0.3  # OR captures 40-70% of day range
+    or_range = day_range * or_fraction
+
+    # OR high/low centered around open
+    or_mid = day_open
+    or_high = min(day_high, or_mid + or_range * 0.5)
+    or_low = max(day_low, or_mid - or_range * 0.5)
+
+    # Generate OR path
+    or_prices = [day_open]
+    for i in range(3):
+        if i == 0:
+            # First bar: volatile, move toward one extreme
+            target = or_low if rng.random() < 0.5 else or_high
+            p = day_open + (target - day_open) * (0.3 + rng.random() * 0.4)
+        elif i == 1:
+            # Second bar: move toward the other extreme
+            if or_prices[-1] < or_mid:
+                p = or_mid + (or_high - or_mid) * rng.random() * 0.7
+            else:
+                p = or_mid - (or_mid - or_low) * rng.random() * 0.7
+        else:
+            # Third bar: settle near or_mid
+            p = or_mid + (rng.random() - 0.5) * or_range * 0.3
+        or_prices.append(np.clip(p, day_low, day_high))
+
+    prices = or_prices  # 4 points (open + 3 closes)
+
+    # Phase 2: Mid-session (bars 3 to n_bars-10)
+    mid_end = max(4, n_bars - 10)
+    current = prices[-1]
+    drift = (day_close - current) / max(1, mid_end - 3)  # gentle drift toward close
+    volatility = day_range / n_bars * 1.5
+
+    for i in range(3, mid_end):
+        noise = rng.normal(0, volatility)
+        current = current + drift + noise
+        current = np.clip(current, day_low, day_high)
+        prices.append(float(current))
+
+    # Phase 3: Convergence to close (last ~10 bars)
+    remaining_bars = n_bars - len(prices) + 1
+    current = prices[-1]
+    for i in range(remaining_bars):
+        progress = (i + 1) / remaining_bars
+        target = day_close
+        # Increase pull toward close as we approach end
+        current = current + (target - current) * (0.1 + 0.3 * progress)
+        noise = rng.normal(0, volatility * (1 - progress * 0.7))
+        current = np.clip(current + noise, day_low, day_high)
+        prices.append(float(current))
+
+    # Force last price to be close
+    prices[-1] = day_close
+
+    # Build bars from consecutive price points
+    for i in range(min(n_bars, len(prices) - 1)):
+        bar_open = prices[i]
+        bar_close = prices[i + 1]
+        bar_high = max(bar_open, bar_close) + abs(rng.normal(0, volatility * 0.3))
+        bar_low = min(bar_open, bar_close) - abs(rng.normal(0, volatility * 0.3))
+        bar_high = min(bar_high, day_high)
+        bar_low = max(bar_low, day_low)
+
+        # Volume: higher at open and close
+        time_frac = i / n_bars
+        vol_mult = 1.0
+        if time_frac < 0.1:
+            vol_mult = 2.0 + rng.random()  # Opening volume surge
+        elif time_frac > 0.85:
+            vol_mult = 1.5 + rng.random() * 0.5  # Closing volume
+        else:
+            vol_mult = 0.5 + rng.random() * 0.8
+
+        ts = base_dt + timedelta(minutes=5 * i)
+        bars.append(IntradayBarSim(
+            timestamp=ts,
+            open=round(bar_open, 2),
+            high=round(bar_high, 2),
+            low=round(bar_low, 2),
+            close=round(bar_close, 2),
+            volume=round(bar_vol * vol_mult),
+        ))
+
+    return bars
+
+
+@dataclass
+class IntradayPosition:
+    """Tracks an open intraday position during backtest."""
+    symbol: str
+    strategy_id: str
+    direction: str
+    entry_price: float
+    stop_price: float
+    target_price: float
+    shares: int
+    entry_time: datetime
+    setup_type: str = ''
+
+
+class IntradayBacktester:
+    """Backtests intraday strategies (ORB, Momentum, Pullback, Range) on daily bars.
+
+    Synthesizes plausible 5-min bar paths from daily OHLCV, feeds them through
+    the indicator engine and each strategy's scan_for_setups(), then simulates
+    entry/exit with proper stop/target logic.
+    """
+
+    def __init__(self, config: GapFadeConfig = None,
+                 strategy_ids: List[str] = None):
+        self.config = config or GapFadeConfig()
+        self.strategy_ids = strategy_ids or ['orb_breakout', 'momentum_surge',
+                                              'pullback_entry', 'range_trade']
+        self.progress = 0.0
+        self.status = 'idle'
+        self._cancel = False
+        self.result = None
+
+    def _load_strategies(self) -> Dict[str, Any]:
+        """Load intraday strategy instances."""
+        from gap_fade_strategies import IntradayStrategyRegistry
+        strategies = {}
+        for sid in self.strategy_ids:
+            if IntradayStrategyRegistry.has_strategy(sid):
+                strategies[sid] = IntradayStrategyRegistry.create_strategy(sid)
+        return strategies
+
+    def _build_tick_data(self, bars: List[IntradayBarSim], bar_idx: int,
+                         prev_close: float) -> Dict:
+        """Build tick_data dict from simulated bars up to bar_idx.
+
+        Computes EMAs, RSI, VWAP, ATR, volume stats from the bars seen so far.
+        """
+        if bar_idx < 0 or not bars:
+            return {}
+
+        visible_bars = bars[:bar_idx + 1]
+        current = visible_bars[-1]
+
+        # VWAP: cumulative (price * volume) / cumulative volume
+        cum_pv = sum(b.close * b.volume for b in visible_bars)
+        cum_vol = sum(b.volume for b in visible_bars)
+        vwap = cum_pv / cum_vol if cum_vol > 0 else current.close
+
+        # Day high/low
+        day_high = max(b.high for b in visible_bars)
+        day_low = min(b.low for b in visible_bars)
+
+        # Opening range (first 3 bars = 15 min)
+        or_bars = visible_bars[:min(3, len(visible_bars))]
+        or_high = max(b.high for b in or_bars)
+        or_low = min(b.low for b in or_bars)
+        or_complete = len(visible_bars) >= 3
+
+        # Simple EMAs (exponential smoothing over close prices)
+        closes = [b.close for b in visible_bars]
+        n = len(closes)
+
+        def _ema(period):
+            if n == 0:
+                return current.close
+            if n < period:
+                return sum(closes) / n
+            mult = 2.0 / (period + 1)
+            ema_val = closes[0]
+            for c in closes[1:]:
+                ema_val = c * mult + ema_val * (1 - mult)
+            return ema_val
+
+        ema9 = _ema(9)
+        ema20 = _ema(20)
+        ema50 = _ema(50)
+
+        # RSI (Wilder's smoothed, 14-period)
+        rsi = 50.0
+        rsi_initialized = False
+        rsi_history = []
+        if n >= 2:
+            changes = [closes[i] - closes[i-1] for i in range(1, n)]
+            gains = [max(0, c) for c in changes]
+            losses = [max(0, -c) for c in changes]
+
+            if len(changes) >= 14:
+                avg_gain = sum(gains[:14]) / 14
+                avg_loss = sum(losses[:14]) / 14
+                for i in range(14, len(changes)):
+                    avg_gain = (avg_gain * 13 + gains[i]) / 14
+                    avg_loss = (avg_loss * 13 + losses[i]) / 14
+                if avg_loss > 0:
+                    rs = avg_gain / avg_loss
+                    rsi = 100 - (100 / (1 + rs))
+                else:
+                    rsi = 100.0 if avg_gain > 0 else 50.0
+                rsi_initialized = True
+            elif len(changes) >= 5:
+                avg_gain = sum(gains) / len(gains)
+                avg_loss = sum(losses) / len(losses)
+                if avg_loss > 0:
+                    rs = avg_gain / avg_loss
+                    rsi = 100 - (100 / (1 + rs))
+                rsi_initialized = True
+
+        # ATR (14-period)
+        atr = 0.0
+        if n >= 2:
+            trs = []
+            for i in range(1, n):
+                prev_c = visible_bars[i-1].close
+                tr = max(
+                    visible_bars[i].high - visible_bars[i].low,
+                    abs(visible_bars[i].high - prev_c),
+                    abs(visible_bars[i].low - prev_c)
+                )
+                trs.append(tr)
+            if trs:
+                atr = sum(trs[-min(14, len(trs)):]) / min(14, len(trs))
+
+        # Volume surge
+        volumes = [b.volume for b in visible_bars]
+        vol_avg_20 = sum(volumes[-min(20, n):]) / min(20, n) if n > 0 else 1
+        volume_surge = current.volume / vol_avg_20 if vol_avg_20 > 0 else 1.0
+
+        return {
+            'ema9': ema9, 'ema20': ema20, 'ema50': ema50,
+            'rsi': rsi, 'rsi_initialized': rsi_initialized,
+            'rsi_history': rsi_history,
+            'atr': atr, 'atr_initialized': n >= 15,
+            'vwap': vwap,
+            'day_high': day_high, 'day_low': day_low,
+            'or_high': or_high, 'or_low': or_low, 'or_complete': or_complete,
+            'volume_surge_ratio': volume_surge,
+            'volume_avg_20bar': vol_avg_20,
+            'bar_count': n,
+            'bar_history': [],
+        }
+
+    async def run(self, symbols: List[str] = None,
+                  start_date: str = None, end_date: str = None,
+                  config: GapFadeConfig = None,
+                  progress_callback=None, **kwargs) -> dict:
+        """Run intraday strategy backtest.
+
+        Synthesizes 5-min bars from daily data, runs each strategy's
+        scan_for_setups() per bar, simulates positions.
+
+        Returns result dict with performance metrics.
+        """
+        if config:
+            self.config = config
+
+        self.status = 'running'
+        self._cancel = False
+        self.progress = 0
+
+        if not end_date:
+            end_date = datetime.now().strftime('%Y-%m-%d')
+        if not start_date:
+            start_date = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
+
+        syms = symbols or UNIVERSE[:50]  # Default to top 50 symbols
+        strategy_ids = kwargs.get('strategy_ids', self.strategy_ids)
+
+        async def _progress(pct, msg):
+            self.progress = pct
+            if progress_callback:
+                await progress_callback(pct, msg)
+
+        # Load strategies
+        strategies = self._load_strategies()
+        if not strategies:
+            self.status = 'done'
+            self.result = {'error': 'No strategies found', 'total_trades': 0}
+            return self.result
+
+        await _progress(5, f"Loading data for {len(syms)} symbols...")
+
+        # Load daily data
+        loader = DataLoader()
+        all_data = await asyncio.to_thread(
+            loader.load_universe, syms, start_date, end_date, warmup_days=30)
+
+        if all_data.empty:
+            self.status = 'done'
+            self.result = {'error': 'No data found', 'total_trades': 0}
+            return self.result
+
+        # Load SPY for market condition detection
+        spy_df = await asyncio.to_thread(loader.load_spy, start_date, end_date)
+
+        await _progress(15, "Data loaded. Building simulation schedule...")
+
+        # Get trading dates in range
+        start_dt = pd.Timestamp(start_date)
+        end_dt = pd.Timestamp(end_date)
+        date_mask = (all_data.index >= start_dt) & (all_data.index <= end_dt)
+        trading_dates = all_data.index[date_mask].unique()
+
+        if len(trading_dates) == 0:
+            self.status = 'done'
+            self.result = {'error': 'No trading dates in range', 'total_trades': 0}
+            return self.result
+
+        logger.info(f"INTRADAY BACKTEST: {len(strategy_ids)} strategies, "
+                    f"{len(syms)} symbols, {len(trading_dates)} days")
+
+        # Initialize market condition detector
+        from gap_fade_strategies import MarketConditionDetector, StrategySelector
+        selector = StrategySelector(strategies)
+
+        # Simulation state
+        initial_capital = self.config.initial_capital
+        equity = initial_capital
+        peak_equity = initial_capital
+        equity_curve = [initial_capital]
+        all_trades: List[TradeRecord] = []
+        bt_log: List[dict] = []
+        trades_by_strategy: Dict[str, List[TradeRecord]] = defaultdict(list)
+        daily_pnl: List[float] = []
+        setups_found = 0
+        setups_entered = 0
+        risk_pct = self.config.intraday_risk_pct or 0.01
+        max_entries = self.config.intraday_max_entries or 3
+        daily_loss_limit = self.config.intraday_daily_loss_limit or 0.02
+        slippage = self.config.slippage_pct
+
+        await _progress(20, f"Simulating {len(trading_dates)} trading days...")
+
+        def _simulate():
+            nonlocal equity, peak_equity, setups_found, setups_entered
+
+            for di, trade_date in enumerate(trading_dates):
+                if self._cancel:
+                    break
+
+                date_str = trade_date.strftime('%Y-%m-%d')
+                day_entries = 0
+                day_pnl = 0.0
+                positions: Dict[str, IntradayPosition] = {}
+
+                # Reset strategies for the day
+                for strat in strategies.values():
+                    strat.on_day_start()
+
+                # Get SPY data for market condition
+                spy_tick_data = None
+                if not spy_df.empty and trade_date in spy_df.index:
+                    spy_row = spy_df.loc[trade_date]
+                    # Build minimal SPY tick data for condition detection
+                    spy_o = float(spy_row['open'])
+                    spy_h = float(spy_row['high'])
+                    spy_l = float(spy_row['low'])
+                    spy_c = float(spy_row['close'])
+                    spy_range = spy_h - spy_l
+                    spy_mid = (spy_h + spy_l) / 2
+                    spy_tick_data = {
+                        'ema9': spy_c * 1.001 if spy_c > spy_o else spy_c * 0.999,
+                        'ema20': spy_mid,
+                        'ema50': spy_mid * 0.998,
+                        'rsi': 60 if spy_c > spy_o else 40,
+                        'rsi_initialized': True,
+                        'rsi_history': [50, 52, 48, 51, 49],
+                        'day_high': spy_h,
+                        'day_low': spy_l,
+                        'vwap': spy_mid,
+                        'bar_history': [],
+                    }
+
+                # Determine active strategies via selector
+                if spy_tick_data:
+                    from zoneinfo import ZoneInfo
+                    ET = ZoneInfo('US/Eastern')
+                    mid_ts = datetime.strptime(date_str, '%Y-%m-%d').replace(
+                        hour=11, minute=0, tzinfo=ET)
+                    selector.update(spy_tick_data, mid_ts, force=True)
+                    active_strategies = selector.active_strategies
+                    size_mult = selector.size_multiplier
+                else:
+                    active_strategies = strategies
+                    size_mult = 1.0
+
+                if not active_strategies:
+                    equity_curve.append(equity)
+                    daily_pnl.append(0.0)
+                    continue
+
+                # Iterate over symbols for this day
+                for sym in syms:
+                    if self._cancel:
+                        break
+                    if day_entries >= max_entries:
+                        break
+                    if abs(day_pnl) > equity * daily_loss_limit:
+                        break
+
+                    sym_bars_df = DataLoader.get_symbol_bars(sym, all_data)
+                    if sym_bars_df is None or trade_date not in sym_bars_df.index:
+                        continue
+
+                    row = sym_bars_df.loc[trade_date]
+                    day_open = float(row['open'])
+                    day_high = float(row['high'])
+                    day_low = float(row['low'])
+                    day_close = float(row['close'])
+                    day_volume = float(row['volume'])
+
+                    if day_open <= 0 or day_high <= 0:
+                        continue
+
+                    # Get previous close for context
+                    date_idx = sym_bars_df.index.get_loc(trade_date)
+                    if date_idx == 0:
+                        prev_close = day_open
+                    else:
+                        prev_close = float(sym_bars_df.iloc[date_idx - 1]['close'])
+
+                    # Synthesize intraday bars
+                    intraday_bars = synthesize_intraday_bars(
+                        date_str, day_open, day_high, day_low,
+                        day_close, day_volume, prev_close)
+
+                    if not intraday_bars:
+                        continue
+
+                    # Skip first 3 bars (opening range build-up)
+                    # Scan bars 3+ for setups
+                    for bi in range(3, len(intraday_bars)):
+                        if day_entries >= max_entries:
+                            break
+                        if abs(day_pnl) > equity * daily_loss_limit:
+                            break
+
+                        bar = intraday_bars[bi]
+                        tick_data = self._build_tick_data(
+                            intraday_bars, bi, prev_close)
+                        snapshot = {'price': bar.close}
+
+                        # Check if already in position for this symbol
+                        if sym in positions:
+                            pos = positions[sym]
+                            # Check stop hit
+                            if pos.direction == 'long':
+                                if bar.low <= pos.stop_price:
+                                    exit_price = pos.stop_price * (1 - slippage)
+                                    pnl = (exit_price - pos.entry_price) * pos.shares
+                                    trade = TradeRecord(
+                                        symbol=sym, entry_price=pos.entry_price,
+                                        exit_price=exit_price, shares=pos.shares,
+                                        pnl=pnl, pnl_pct=pnl / (pos.entry_price * pos.shares),
+                                        entry_time=pos.entry_time.strftime('%Y-%m-%d %H:%M'),
+                                        exit_time=bar.timestamp.strftime('%Y-%m-%d %H:%M'),
+                                        exit_reason='stop', holding_minutes=(bi - 3) * 5,
+                                        side='long',
+                                    )
+                                    all_trades.append(trade)
+                                    trades_by_strategy[pos.strategy_id].append(trade)
+                                    equity += pnl
+                                    day_pnl += pnl
+                                    del positions[sym]
+                                    continue
+
+                                # Check target hit
+                                if bar.high >= pos.target_price:
+                                    exit_price = pos.target_price * (1 - slippage)
+                                    pnl = (exit_price - pos.entry_price) * pos.shares
+                                    trade = TradeRecord(
+                                        symbol=sym, entry_price=pos.entry_price,
+                                        exit_price=exit_price, shares=pos.shares,
+                                        pnl=pnl, pnl_pct=pnl / (pos.entry_price * pos.shares),
+                                        entry_time=pos.entry_time.strftime('%Y-%m-%d %H:%M'),
+                                        exit_time=bar.timestamp.strftime('%Y-%m-%d %H:%M'),
+                                        exit_reason='target', holding_minutes=(bi - 3) * 5,
+                                        side='long',
+                                    )
+                                    all_trades.append(trade)
+                                    trades_by_strategy[pos.strategy_id].append(trade)
+                                    equity += pnl
+                                    day_pnl += pnl
+                                    del positions[sym]
+                                    continue
+
+                                # Update trailing stop via strategy
+                                strat = active_strategies.get(pos.strategy_id) or strategies.get(pos.strategy_id)
+                                if strat:
+                                    pos_dict = {
+                                        'direction': pos.direction,
+                                        'entry_price': pos.entry_price,
+                                        'stop_price': pos.stop_price,
+                                    }
+                                    new_stop = strat.update_trailing_stop(
+                                        pos_dict, bar.close, tick_data, bar.timestamp)
+                                    if new_stop is not None and new_stop > pos.stop_price:
+                                        pos.stop_price = new_stop
+
+                            else:  # short
+                                if bar.high >= pos.stop_price:
+                                    exit_price = pos.stop_price * (1 + slippage)
+                                    pnl = (pos.entry_price - exit_price) * pos.shares
+                                    trade = TradeRecord(
+                                        symbol=sym, entry_price=pos.entry_price,
+                                        exit_price=exit_price, shares=pos.shares,
+                                        pnl=pnl, pnl_pct=pnl / (pos.entry_price * pos.shares),
+                                        entry_time=pos.entry_time.strftime('%Y-%m-%d %H:%M'),
+                                        exit_time=bar.timestamp.strftime('%Y-%m-%d %H:%M'),
+                                        exit_reason='stop', holding_minutes=(bi - 3) * 5,
+                                        side='short',
+                                    )
+                                    all_trades.append(trade)
+                                    trades_by_strategy[pos.strategy_id].append(trade)
+                                    equity += pnl
+                                    day_pnl += pnl
+                                    del positions[sym]
+                                    continue
+
+                                if bar.low <= pos.target_price:
+                                    exit_price = pos.target_price * (1 + slippage)
+                                    pnl = (pos.entry_price - exit_price) * pos.shares
+                                    trade = TradeRecord(
+                                        symbol=sym, entry_price=pos.entry_price,
+                                        exit_price=exit_price, shares=pos.shares,
+                                        pnl=pnl, pnl_pct=pnl / (pos.entry_price * pos.shares),
+                                        entry_time=pos.entry_time.strftime('%Y-%m-%d %H:%M'),
+                                        exit_time=bar.timestamp.strftime('%Y-%m-%d %H:%M'),
+                                        exit_reason='target', holding_minutes=(bi - 3) * 5,
+                                        side='short',
+                                    )
+                                    all_trades.append(trade)
+                                    trades_by_strategy[pos.strategy_id].append(trade)
+                                    equity += pnl
+                                    day_pnl += pnl
+                                    del positions[sym]
+                                    continue
+
+                                strat = active_strategies.get(pos.strategy_id) or strategies.get(pos.strategy_id)
+                                if strat:
+                                    pos_dict = {
+                                        'direction': pos.direction,
+                                        'entry_price': pos.entry_price,
+                                        'stop_price': pos.stop_price,
+                                    }
+                                    new_stop = strat.update_trailing_stop(
+                                        pos_dict, bar.close, tick_data, bar.timestamp)
+                                    if new_stop is not None and new_stop < pos.stop_price:
+                                        pos.stop_price = new_stop
+
+                            continue  # Still in position, skip scanning
+
+                        # Scan for setups with active strategies
+                        for sid, strat in active_strategies.items():
+                            if day_entries >= max_entries:
+                                break
+
+                            setup = strat.scan_for_setups(
+                                sym, tick_data, snapshot, bar.timestamp)
+                            if setup is None:
+                                continue
+
+                            setups_found += 1
+
+                            # Validate R:R and confidence
+                            valid, reason = strat.validate_setup(
+                                setup, tick_data, bar.timestamp)
+                            if not valid:
+                                continue
+
+                            # Position sizing
+                            risk_per_share = abs(setup.entry_price - setup.stop_price)
+                            if risk_per_share <= 0:
+                                continue
+
+                            dollar_risk = equity * risk_pct * size_mult
+                            shares = int(dollar_risk / risk_per_share)
+                            if shares <= 0:
+                                continue
+
+                            # Entry slippage
+                            if setup.direction == 'long':
+                                entry_price = setup.entry_price * (1 + slippage)
+                            else:
+                                entry_price = setup.entry_price * (1 - slippage)
+
+                            positions[sym] = IntradayPosition(
+                                symbol=sym,
+                                strategy_id=sid,
+                                direction=setup.direction,
+                                entry_price=entry_price,
+                                stop_price=setup.stop_price,
+                                target_price=setup.target_price,
+                                shares=shares,
+                                entry_time=bar.timestamp,
+                                setup_type=setup.setup_type,
+                            )
+                            day_entries += 1
+                            setups_entered += 1
+                            break  # One setup per symbol per scan
+
+                    # EOD: close any remaining positions
+                    if sym in positions:
+                        pos = positions[sym]
+                        exit_price = day_close
+                        if pos.direction == 'long':
+                            exit_price *= (1 - slippage)
+                            pnl = (exit_price - pos.entry_price) * pos.shares
+                        else:
+                            exit_price *= (1 + slippage)
+                            pnl = (pos.entry_price - exit_price) * pos.shares
+
+                        trade = TradeRecord(
+                            symbol=sym, entry_price=pos.entry_price,
+                            exit_price=exit_price, shares=pos.shares,
+                            pnl=pnl, pnl_pct=pnl / (pos.entry_price * pos.shares),
+                            entry_time=pos.entry_time.strftime('%Y-%m-%d %H:%M'),
+                            exit_time=f'{date_str} 15:55',
+                            exit_reason='eod', holding_minutes=375,
+                            side=pos.direction,
+                        )
+                        all_trades.append(trade)
+                        trades_by_strategy[pos.strategy_id].append(trade)
+                        equity += pnl
+                        day_pnl += pnl
+                        del positions[sym]
+
+                if equity > peak_equity:
+                    peak_equity = equity
+                equity_curve.append(equity)
+                daily_pnl.append(day_pnl)
+
+        # Run simulation in thread
+        await _progress(25, "Running simulation...")
+        await asyncio.to_thread(_simulate)
+        await _progress(90, "Computing metrics...")
+
+        # Build metrics
+        if not all_trades:
+            self.status = 'done'
+            self.result = {
+                'total_trades': 0,
+                'setups_found': setups_found,
+                'start_date': start_date,
+                'end_date': end_date,
+                'strategies': list(strategy_ids),
+                'symbols_count': len(syms),
+                'trading_days': len(trading_dates),
+            }
+            return self.result
+
+        pnls = [t.pnl for t in all_trades]
+        wins = [p for p in pnls if p > 0]
+        losses = [p for p in pnls if p <= 0]
+        total_pnl = sum(pnls)
+        win_rate = len(wins) / len(all_trades)
+        avg_win = float(np.mean(wins)) if wins else 0
+        avg_loss = float(np.mean(losses)) if losses else 0
+        profit_factor = abs(sum(wins) / sum(losses)) if losses and sum(losses) != 0 else 9999.99
+
+        # Max drawdown
+        eq_arr = np.array(equity_curve)
+        peak_arr = np.maximum.accumulate(eq_arr)
+        dd_arr = (peak_arr - eq_arr) / np.where(peak_arr > 0, peak_arr, 1)
+        max_dd_pct = float(np.max(dd_arr)) if len(dd_arr) > 0 else 0
+
+        # Sharpe
+        if len(equity_curve) > 2:
+            eq_np = np.array(equity_curve)
+            daily_rets = np.diff(eq_np) / eq_np[:-1]
+            daily_rets = daily_rets[np.isfinite(daily_rets)]
+            if len(daily_rets) > 1 and np.std(daily_rets) > 0:
+                sharpe = float(np.mean(daily_rets) / np.std(daily_rets) * np.sqrt(252))
+            else:
+                sharpe = 0
+        else:
+            sharpe = 0
+
+        # Per-strategy breakdown
+        strategy_metrics = {}
+        for sid, strades in trades_by_strategy.items():
+            if not strades:
+                continue
+            s_pnls = [t.pnl for t in strades]
+            s_wins = [p for p in s_pnls if p > 0]
+            s_losses = [p for p in s_pnls if p <= 0]
+            strategy_metrics[sid] = {
+                'trades': len(strades),
+                'wins': len(s_wins),
+                'losses': len(s_losses),
+                'win_rate': round(len(s_wins) / len(strades), 4),
+                'total_pnl': round(sum(s_pnls), 2),
+                'avg_win': round(float(np.mean(s_wins)), 2) if s_wins else 0,
+                'avg_loss': round(float(np.mean(s_losses)), 2) if s_losses else 0,
+                'profit_factor': round(abs(sum(s_wins) / sum(s_losses)), 2) if s_losses and sum(s_losses) != 0 else 9999.99,
+            }
+
+        # Exit reason breakdown
+        exit_reasons = defaultdict(int)
+        for t in all_trades:
+            exit_reasons[t.exit_reason] += 1
+
+        result = {
+            'total_trades': len(all_trades),
+            'wins': len(wins),
+            'losses': len(losses),
+            'win_rate': round(win_rate, 4),
+            'total_pnl': round(total_pnl, 2),
+            'return_pct': round(total_pnl / initial_capital * 100, 2),
+            'avg_win': round(avg_win, 2),
+            'avg_loss': round(avg_loss, 2),
+            'profit_factor': round(profit_factor, 2),
+            'max_drawdown_pct': round(max_dd_pct * 100, 2),
+            'sharpe': round(sharpe, 2),
+            'final_equity': round(equity, 2),
+
+            'setups_found': setups_found,
+            'setups_entered': setups_entered,
+            'trading_days': len(trading_dates),
+            'symbols_count': len(syms),
+            'start_date': start_date,
+            'end_date': end_date,
+
+            'strategy_breakdown': strategy_metrics,
+            'exit_reasons': dict(exit_reasons),
+            'strategies': list(strategy_ids),
+
+            'trades': [asdict(t) for t in all_trades[-200:]],
+            'all_trades': [asdict(t) for t in all_trades],
+            'equity_curve': [round(e, 2) for e in equity_curve[-500:]],
+
+            'config': {
+                'risk_pct': risk_pct,
+                'max_entries': max_entries,
+                'daily_loss_limit': daily_loss_limit,
+                'slippage_pct': slippage,
+                'size_multiplier_source': 'strategy_selector',
+            },
+        }
+
+        self.progress = 100
+        self.status = 'done'
+        self.result = result
+
+        logger.info(f"INTRADAY BACKTEST DONE: {result['total_trades']} trades, "
+                    f"{result['win_rate']:.1%} win rate, "
+                    f"${result['total_pnl']:,.0f} P&L ({result['return_pct']:.1f}%)")
+
+        return result
+
+    def cancel(self):
+        """Cancel running backtest."""
+        self._cancel = True
+        self.status = 'cancelled'
+
+
+# ---------------------------------------------------------------------------
+# Intraday Walk-Forward Optimization
+# ---------------------------------------------------------------------------
+
+DEFAULT_INTRADAY_WF_GRIDS = {
+    'orb_breakout': {
+        'breakout_buffer_pct': [0.0005, 0.001, 0.002],
+        'volume_confirm_ratio': [1.2, 1.5, 2.0],
+        'stop_buffer_pct': [0.001, 0.002, 0.003],
+        'target_rr': [1.5, 2.0, 2.5],
+    },  # 81 combos
+    'momentum_surge': {
+        'volume_surge_ratio': [1.5, 2.0, 3.0],
+        'rsi_min_long': [45, 50, 55],
+        'atr_stop_mult': [1.0, 1.5, 2.0],
+        'target_rr': [1.5, 2.0, 3.0],
+    },  # 81 combos
+    'pullback_entry': {
+        'pullback_proximity_pct': [0.005, 0.01, 0.015],
+        'rsi_pullback_min': [35, 40, 45],
+        'rsi_pullback_max': [50, 55, 60],
+        'target_rr': [1.5, 2.0, 2.5],
+    },  # 81 combos
+    'range_trade': {
+        'boundary_proximity_pct': [0.002, 0.003, 0.005],
+        'stop_buffer_pct': [0.003, 0.005, 0.008],
+        'rsi_support_max': [35, 40, 45],
+        'target_rr': [1.5, 2.0, 2.5],
+    },  # 81 combos
+}
+
+
+@dataclass
+class IntradayDayCache:
+    """Pre-computed intraday data for one symbol on one day."""
+    date_str: str
+    symbol: str
+    bars: List[IntradayBarSim]
+    tick_data_by_bar: List[Dict]    # tick_data for bars 3..77
+    market_condition: str           # trending_up/down/choppy/sideways
+    day_data: dict                  # raw OHLCV
+
+
+# Market condition routing (mirrors StrategySelector.DEFAULT_STRATEGY_MAP)
+_CONDITION_STRATEGY_MAP = {
+    'trending_up': ['orb_breakout', 'momentum_surge', 'pullback_entry'],
+    'trending_down': ['orb_breakout', 'momentum_surge', 'pullback_entry'],
+    'choppy': ['orb_breakout'],
+    'sideways': ['range_trade'],
+}
+
+
+def _classify_market_condition(spy_row: dict) -> str:
+    """Classify market condition from SPY daily bar."""
+    if not spy_row:
+        return 'sideways'
+    o = spy_row.get('open', 0)
+    h = spy_row.get('high', 0)
+    l = spy_row.get('low', 0)
+    c = spy_row.get('close', 0)
+    if o <= 0 or c <= 0:
+        return 'sideways'
+    change_pct = (c - o) / o
+    day_range = (h - l) / o if o > 0 else 0
+    body_pct = abs(c - o) / o
+    # Trending: strong directional move
+    if change_pct > 0.005 and body_pct > day_range * 0.4:
+        return 'trending_up'
+    if change_pct < -0.005 and body_pct > day_range * 0.4:
+        return 'trending_down'
+    # Choppy: wide range but small body
+    if day_range > 0.015 and body_pct < day_range * 0.3:
+        return 'choppy'
+    return 'sideways'
+
+
+def _precompute_intraday_data(
+    symbols: List[str],
+    all_data: pd.DataFrame,
+    spy_df: pd.DataFrame,
+    start_date: str,
+    end_date: str,
+    cancel_check: Callable = None,
+) -> List[IntradayDayCache]:
+    """Synthesize bars and build tick_data once for all symbols/days.
+
+    This is the expensive step. Runs once per fold window, then reused
+    across all grid combos.
+    """
+    start_dt = pd.Timestamp(start_date)
+    end_dt = pd.Timestamp(end_date)
+    date_mask = (all_data.index >= start_dt) & (all_data.index <= end_dt)
+    trading_dates = sorted(all_data.index[date_mask].unique())
+
+    caches: List[IntradayDayCache] = []
+
+    # Build a quick helper for _build_tick_data
+    bt = IntradayBacktester()
+
+    for trade_date in trading_dates:
+        if cancel_check and cancel_check():
+            break
+        date_str = trade_date.strftime('%Y-%m-%d')
+
+        # SPY market condition
+        spy_row = {}
+        if not spy_df.empty and trade_date in spy_df.index:
+            sr = spy_df.loc[trade_date]
+            spy_row = {
+                'open': float(sr['open']),
+                'high': float(sr['high']),
+                'low': float(sr['low']),
+                'close': float(sr['close']),
+            }
+        condition = _classify_market_condition(spy_row)
+
+        for sym in symbols:
+            sym_bars_df = DataLoader.get_symbol_bars(sym, all_data)
+            if sym_bars_df is None or trade_date not in sym_bars_df.index:
+                continue
+
+            row = sym_bars_df.loc[trade_date]
+            day_open = float(row['open'])
+            day_high = float(row['high'])
+            day_low = float(row['low'])
+            day_close = float(row['close'])
+            day_volume = float(row['volume'])
+
+            if day_open <= 0 or day_high <= 0:
+                continue
+
+            # Previous close
+            date_idx = sym_bars_df.index.get_loc(trade_date)
+            prev_close = float(sym_bars_df.iloc[date_idx - 1]['close']) if date_idx > 0 else day_open
+
+            # Synthesize bars
+            bars = synthesize_intraday_bars(
+                date_str, day_open, day_high, day_low,
+                day_close, day_volume, prev_close)
+            if not bars:
+                continue
+
+            # Pre-compute tick_data for bars 3..77
+            tick_data_list = []
+            for bi in range(3, len(bars)):
+                td = bt._build_tick_data(bars, bi, prev_close)
+                tick_data_list.append(td)
+
+            caches.append(IntradayDayCache(
+                date_str=date_str,
+                symbol=sym,
+                bars=bars,
+                tick_data_by_bar=tick_data_list,
+                market_condition=condition,
+                day_data={
+                    'open': day_open, 'high': day_high,
+                    'low': day_low, 'close': day_close,
+                    'volume': day_volume, 'prev_close': prev_close,
+                },
+            ))
+
+    return caches
+
+
+def _simulate_intraday_strategy_fast(
+    strategy_id: str,
+    day_caches: List[IntradayDayCache],
+    config_overrides: Dict,
+    base_config: GapFadeConfig = None,
+) -> dict:
+    """Fast sync simulation of one strategy with given config overrides.
+
+    Uses pre-computed bars and tick_data. Only re-runs strategy logic.
+    Returns metrics dict.
+    """
+    from gap_fade_strategies import IntradayStrategyRegistry
+
+    config = base_config or GapFadeConfig()
+    risk_pct = config.intraday_risk_pct or 0.01
+    slippage = config.slippage_pct
+    initial_capital = config.initial_capital
+    max_entries = config.intraday_max_entries or 3
+    daily_loss_limit = config.intraday_daily_loss_limit or 0.02
+
+    # Instantiate strategy with merged config
+    strategy = IntradayStrategyRegistry.create_strategy(strategy_id, config=config_overrides)
+
+    equity = initial_capital
+    peak_equity = initial_capital
+    equity_curve = [initial_capital]
+    trades = []
+    trades_by_condition = defaultdict(list)
+
+    # Group caches by date for day-level simulation
+    from itertools import groupby as _gb
+    caches_sorted = sorted(day_caches, key=lambda c: c.date_str)
+
+    for date_str, day_group in _gb(caches_sorted, key=lambda c: c.date_str):
+        day_caches_list = list(day_group)
+        if not day_caches_list:
+            continue
+
+        condition = day_caches_list[0].market_condition
+
+        # Check if this strategy should be active in this market condition
+        allowed = _CONDITION_STRATEGY_MAP.get(condition, [])
+        if strategy_id not in allowed:
+            equity_curve.append(equity)
+            continue
+
+        strategy.on_day_start()
+        day_entries = 0
+        day_pnl = 0.0
+        positions: Dict[str, IntradayPosition] = {}
+
+        for cache in day_caches_list:
+            if day_entries >= max_entries:
+                break
+            if abs(day_pnl) > equity * daily_loss_limit:
+                break
+
+            sym = cache.symbol
+            bars = cache.bars
+            tick_data_list = cache.tick_data_by_bar
+
+            for ti, td in enumerate(tick_data_list):
+                bi = ti + 3  # actual bar index
+                if day_entries >= max_entries:
+                    break
+                if abs(day_pnl) > equity * daily_loss_limit:
+                    break
+
+                bar = bars[bi]
+                snapshot = {'price': bar.close}
+
+                # Position management
+                if sym in positions:
+                    pos = positions[sym]
+                    exited = False
+                    if pos.direction == 'long':
+                        if bar.low <= pos.stop_price:
+                            exit_price = pos.stop_price * (1 - slippage)
+                            pnl = (exit_price - pos.entry_price) * pos.shares
+                            trades.append({'pnl': pnl, 'exit_reason': 'stop', 'direction': 'long', 'condition': condition})
+                            trades_by_condition[condition].append(pnl)
+                            equity += pnl; day_pnl += pnl
+                            del positions[sym]; exited = True
+                        elif bar.high >= pos.target_price:
+                            exit_price = pos.target_price * (1 - slippage)
+                            pnl = (exit_price - pos.entry_price) * pos.shares
+                            trades.append({'pnl': pnl, 'exit_reason': 'target', 'direction': 'long', 'condition': condition})
+                            trades_by_condition[condition].append(pnl)
+                            equity += pnl; day_pnl += pnl
+                            del positions[sym]; exited = True
+                        else:
+                            pos_dict = {'direction': 'long', 'entry_price': pos.entry_price, 'stop_price': pos.stop_price}
+                            new_stop = strategy.update_trailing_stop(pos_dict, bar.close, td, bar.timestamp)
+                            if new_stop is not None and new_stop > pos.stop_price:
+                                pos.stop_price = new_stop
+                    else:  # short
+                        if bar.high >= pos.stop_price:
+                            exit_price = pos.stop_price * (1 + slippage)
+                            pnl = (pos.entry_price - exit_price) * pos.shares
+                            trades.append({'pnl': pnl, 'exit_reason': 'stop', 'direction': 'short', 'condition': condition})
+                            trades_by_condition[condition].append(pnl)
+                            equity += pnl; day_pnl += pnl
+                            del positions[sym]; exited = True
+                        elif bar.low <= pos.target_price:
+                            exit_price = pos.target_price * (1 + slippage)
+                            pnl = (pos.entry_price - exit_price) * pos.shares
+                            trades.append({'pnl': pnl, 'exit_reason': 'target', 'direction': 'short', 'condition': condition})
+                            trades_by_condition[condition].append(pnl)
+                            equity += pnl; day_pnl += pnl
+                            del positions[sym]; exited = True
+                        else:
+                            pos_dict = {'direction': 'short', 'entry_price': pos.entry_price, 'stop_price': pos.stop_price}
+                            new_stop = strategy.update_trailing_stop(pos_dict, bar.close, td, bar.timestamp)
+                            if new_stop is not None and new_stop < pos.stop_price:
+                                pos.stop_price = new_stop
+                    if exited:
+                        continue
+                    continue  # still in position
+
+                # Scan for setup
+                setup = strategy.scan_for_setups(sym, td, snapshot, bar.timestamp)
+                if setup is None:
+                    continue
+
+                valid, _ = strategy.validate_setup(setup, td, bar.timestamp)
+                if not valid:
+                    continue
+
+                risk_per_share = abs(setup.entry_price - setup.stop_price)
+                if risk_per_share <= 0:
+                    continue
+
+                dollar_risk = equity * risk_pct
+                shares = int(dollar_risk / risk_per_share)
+                if shares <= 0:
+                    continue
+
+                entry_price = setup.entry_price * (1 + slippage) if setup.direction == 'long' else setup.entry_price * (1 - slippage)
+                positions[sym] = IntradayPosition(
+                    symbol=sym, strategy_id=strategy_id,
+                    direction=setup.direction, entry_price=entry_price,
+                    stop_price=setup.stop_price, target_price=setup.target_price,
+                    shares=shares, entry_time=bar.timestamp,
+                )
+                day_entries += 1
+                break  # one setup per symbol per scan
+
+            # EOD close
+            if sym in positions:
+                pos = positions[sym]
+                exit_price = cache.day_data['close']
+                if pos.direction == 'long':
+                    exit_price *= (1 - slippage)
+                    pnl = (exit_price - pos.entry_price) * pos.shares
+                else:
+                    exit_price *= (1 + slippage)
+                    pnl = (pos.entry_price - exit_price) * pos.shares
+                trades.append({'pnl': pnl, 'exit_reason': 'eod', 'direction': pos.direction, 'condition': condition})
+                trades_by_condition[condition].append(pnl)
+                equity += pnl; day_pnl += pnl
+                del positions[sym]
+
+        if equity > peak_equity:
+            peak_equity = equity
+        equity_curve.append(equity)
+
+    # Compute metrics
+    num_trades = len(trades)
+    if num_trades == 0:
+        return {
+            'return_pct': 0, 'num_trades': 0, 'win_rate': 0,
+            'profit_factor': 0, 'max_drawdown_pct': 0, 'sharpe': 0,
+            'trades_by_condition': {},
+        }
+
+    pnls = [t['pnl'] for t in trades]
+    wins = [p for p in pnls if p > 0]
+    losses = [p for p in pnls if p <= 0]
+    win_rate = len(wins) / num_trades
+    pf = abs(sum(wins) / sum(losses)) if losses and sum(losses) != 0 else 9999.99
+
+    eq_arr = np.array(equity_curve)
+    peak_arr = np.maximum.accumulate(eq_arr)
+    dd_arr = (peak_arr - eq_arr) / np.where(peak_arr > 0, peak_arr, 1)
+    max_dd = float(np.max(dd_arr)) * 100 if len(dd_arr) > 0 else 0
+
+    sharpe = 0
+    if len(equity_curve) > 2:
+        eq_np = np.array(equity_curve)
+        daily_rets = np.diff(eq_np) / eq_np[:-1]
+        daily_rets = daily_rets[np.isfinite(daily_rets)]
+        if len(daily_rets) > 1 and np.std(daily_rets) > 0:
+            sharpe = float(np.mean(daily_rets) / np.std(daily_rets) * np.sqrt(252))
+
+    ret_pct = (equity - initial_capital) / initial_capital * 100
+
+    # Per-condition breakdown
+    cond_breakdown = {}
+    for cond, cond_pnls in trades_by_condition.items():
+        cond_wins = [p for p in cond_pnls if p > 0]
+        cond_breakdown[cond] = {
+            'trades': len(cond_pnls),
+            'win_rate': round(len(cond_wins) / len(cond_pnls), 4) if cond_pnls else 0,
+            'avg_pnl': round(float(np.mean(cond_pnls)), 2) if cond_pnls else 0,
+            'total_pnl': round(sum(cond_pnls), 2),
+        }
+
+    return {
+        'return_pct': round(ret_pct, 2),
+        'num_trades': num_trades,
+        'win_rate': round(win_rate, 4),
+        'profit_factor': round(pf, 2),
+        'max_drawdown_pct': round(max_dd, 2),
+        'sharpe': round(sharpe, 2),
+        'trades_by_condition': cond_breakdown,
+    }
+
+
+# Deployment gate criteria
+INTRADAY_GATE_CRITERIA = {
+    'min_oos_trades': 30,
+    'min_oos_win_rate': 0.45,
+    'min_oos_profit_factor': 1.1,
+    'max_oos_drawdown': -15.0,
+    'min_overfit_ratio': 0.4,
+    'min_param_stability': 0.5,
+}
+
+
+def _check_deployment_gate(results: dict) -> dict:
+    """Check if strategy passes deployment criteria."""
+    agg = results.get('aggregate_oos', {})
+    stability = results.get('param_stability', {})
+
+    criteria_results = {}
+    failures = 0
+
+    # OOS trades
+    actual = agg.get('num_trades', 0)
+    passed = actual >= INTRADAY_GATE_CRITERIA['min_oos_trades']
+    criteria_results['min_oos_trades'] = {
+        'required': INTRADAY_GATE_CRITERIA['min_oos_trades'],
+        'actual': actual, 'passed': passed,
+    }
+    if not passed:
+        failures += 1
+
+    # OOS win rate
+    actual = agg.get('win_rate', 0)
+    passed = actual >= INTRADAY_GATE_CRITERIA['min_oos_win_rate']
+    criteria_results['min_oos_win_rate'] = {
+        'required': INTRADAY_GATE_CRITERIA['min_oos_win_rate'],
+        'actual': round(actual, 4), 'passed': passed,
+    }
+    if not passed:
+        failures += 1
+
+    # OOS profit factor
+    actual = agg.get('profit_factor', 0)
+    passed = actual >= INTRADAY_GATE_CRITERIA['min_oos_profit_factor']
+    criteria_results['min_oos_profit_factor'] = {
+        'required': INTRADAY_GATE_CRITERIA['min_oos_profit_factor'],
+        'actual': round(actual, 2), 'passed': passed,
+    }
+    if not passed:
+        failures += 1
+
+    # OOS max drawdown
+    actual_dd = -abs(agg.get('max_drawdown_pct', 0))
+    passed = actual_dd >= INTRADAY_GATE_CRITERIA['max_oos_drawdown']
+    criteria_results['max_oos_drawdown'] = {
+        'required': INTRADAY_GATE_CRITERIA['max_oos_drawdown'],
+        'actual': round(actual_dd, 2), 'passed': passed,
+    }
+    if not passed:
+        failures += 1
+
+    # Overfit ratio
+    actual = agg.get('avg_overfit_ratio', 0)
+    passed = actual >= INTRADAY_GATE_CRITERIA['min_overfit_ratio']
+    criteria_results['min_overfit_ratio'] = {
+        'required': INTRADAY_GATE_CRITERIA['min_overfit_ratio'],
+        'actual': round(actual, 2), 'passed': passed,
+    }
+    if not passed:
+        failures += 1
+
+    # Parameter stability
+    if stability:
+        agreements = [v.get('agreement', 0) for v in stability.values()]
+        avg_stability = sum(agreements) / len(agreements) if agreements else 0
+    else:
+        avg_stability = 0
+    passed = avg_stability >= INTRADAY_GATE_CRITERIA['min_param_stability']
+    criteria_results['min_param_stability'] = {
+        'required': INTRADAY_GATE_CRITERIA['min_param_stability'],
+        'actual': round(avg_stability, 2), 'passed': passed,
+    }
+    if not passed:
+        failures += 1
+
+    if failures == 0:
+        recommendation = 'DEPLOY'
+        size_mult = 1.0
+    elif failures <= 2:
+        recommendation = 'PAPER_TRADE_FIRST'
+        size_mult = 0.5
+    else:
+        recommendation = 'DO_NOT_DEPLOY'
+        size_mult = 0.0
+
+    return {
+        'passed': failures == 0,
+        'failures': failures,
+        'criteria': criteria_results,
+        'recommendation': recommendation,
+        'suggested_size_mult': size_mult,
+    }
+
+
+def run_intraday_walk_forward(
+    strategy_id: str,
+    symbols: List[str],
+    full_start: str,
+    full_end: str,
+    train_days: int = 504,
+    test_days: int = 252,
+    step_days: int = 126,
+    base_config: GapFadeConfig = None,
+    param_grid: dict = None,
+    progress_callback: Callable = None,
+    cancel_check: Callable = None,
+) -> dict:
+    """Walk-forward optimization for a single intraday strategy.
+
+    Slides train/test windows, optimizes strategy params in-sample,
+    validates out-of-sample. Returns per-strategy results with
+    param stability, market condition breakdown, and deployment gate.
+    """
+    from itertools import product as _product
+
+    config = base_config or GapFadeConfig()
+    grid = param_grid or DEFAULT_INTRADAY_WF_GRIDS.get(strategy_id, {})
+
+    if not grid:
+        return {'status': 'error', 'error': f'No parameter grid for strategy {strategy_id}'}
+
+    def _progress(pct, msg):
+        if progress_callback:
+            progress_callback(pct, msg)
+
+    _progress(1, f'Loading data for {strategy_id}...')
+
+    # Load daily data
+    loader = DataLoader()
+    all_data = loader.load_universe(symbols, full_start, full_end, warmup_days=30)
+    if all_data.empty:
+        return {'status': 'error', 'error': 'No data found in date range'}
+
+    spy_df = loader.load_spy(full_start, full_end)
+
+    _progress(5, 'Building trading date schedule...')
+
+    # Get sorted trading dates
+    start_dt = pd.Timestamp(full_start)
+    end_dt = pd.Timestamp(full_end)
+    date_mask = (all_data.index >= start_dt) & (all_data.index <= end_dt)
+    trading_dates = sorted(all_data.index[date_mask].unique())
+    total_dates = len(trading_dates)
+
+    if total_dates < train_days + test_days:
+        return {
+            'status': 'error',
+            'error': f'Not enough data: {total_dates} trading days, need {train_days + test_days}',
+        }
+
+    # Generate folds
+    folds = []
+    fold_num = 0
+    i = 0
+    while i + train_days + test_days <= total_dates:
+        fold_num += 1
+        train_start = trading_dates[i].strftime('%Y-%m-%d')
+        train_end = trading_dates[i + train_days - 1].strftime('%Y-%m-%d')
+        test_start = trading_dates[i + train_days].strftime('%Y-%m-%d')
+        test_end_idx = min(i + train_days + test_days - 1, total_dates - 1)
+        test_end = trading_dates[test_end_idx].strftime('%Y-%m-%d')
+        folds.append({
+            'fold': fold_num,
+            'train_start': train_start, 'train_end': train_end,
+            'test_start': test_start, 'test_end': test_end,
+        })
+        i += step_days
+
+    if not folds:
+        return {'status': 'error', 'error': 'Not enough data to generate folds'}
+
+    # Build param combos
+    param_names = sorted(grid.keys())
+    param_values = [grid[k] for k in param_names]
+    combos = list(_product(*param_values))
+    total_combos = len(combos)
+
+    _progress(8, f'{len(folds)} folds x {total_combos} combos = {len(folds) * total_combos} trials')
+
+    fold_results = []
+    total_work = len(folds) * 2  # precompute + grid per fold
+    work_done = 0
+
+    for fold_info in folds:
+        if cancel_check and cancel_check():
+            break
+
+        fold_n = fold_info['fold']
+        train_start = fold_info['train_start']
+        train_end = fold_info['train_end']
+        test_start = fold_info['test_start']
+        test_end = fold_info['test_end']
+
+        _progress(10 + (work_done / total_work) * 80,
+                  f'Fold {fold_n}/{len(folds)}: pre-computing bars for {train_start}..{train_end}')
+
+        # Pre-compute bar cache for train window
+        train_caches = _precompute_intraday_data(
+            symbols, all_data, spy_df, train_start, train_end, cancel_check)
+
+        if not train_caches:
+            fold_results.append({
+                'fold': fold_n,
+                'train_range': f'{train_start} to {train_end}',
+                'test_range': f'{test_start} to {test_end}',
+                'best_params': {}, 'skipped': True,
+                'is_return': 0, 'is_trades': 0, 'is_win_rate': 0,
+                'is_max_dd': 0, 'is_sharpe': 0, 'is_pf': 0,
+                'oos_return': 0, 'oos_trades': 0, 'oos_win_rate': 0,
+                'oos_max_dd': 0, 'oos_sharpe': 0, 'oos_pf': 0,
+                'overfit_ratio': 0, 'condition_breakdown': {},
+            })
+            work_done += 2
+            continue
+
+        # Grid search
+        _progress(10 + (work_done / total_work) * 80,
+                  f'Fold {fold_n}/{len(folds)}: grid search ({total_combos} combos)...')
+
+        best_fitness = -999
+        best_params = {}
+        best_is_metrics = {}
+
+        for combo in combos:
+            if cancel_check and cancel_check():
+                break
+            overrides = dict(zip(param_names, combo))
+            metrics = _simulate_intraday_strategy_fast(
+                strategy_id, train_caches, overrides, config)
+            if metrics['num_trades'] < 5:
+                continue
+            fitness = metrics['return_pct'] - metrics['max_drawdown_pct'] * 0.5
+            if fitness > best_fitness:
+                best_fitness = fitness
+                best_params = overrides.copy()
+                best_is_metrics = metrics
+
+        work_done += 1
+
+        if not best_params:
+            fold_results.append({
+                'fold': fold_n,
+                'train_range': f'{train_start} to {train_end}',
+                'test_range': f'{test_start} to {test_end}',
+                'best_params': {}, 'skipped': True,
+                'is_return': 0, 'is_trades': 0, 'is_win_rate': 0,
+                'is_max_dd': 0, 'is_sharpe': 0, 'is_pf': 0,
+                'oos_return': 0, 'oos_trades': 0, 'oos_win_rate': 0,
+                'oos_max_dd': 0, 'oos_sharpe': 0, 'oos_pf': 0,
+                'overfit_ratio': 0, 'condition_breakdown': {},
+            })
+            work_done += 1
+            continue
+
+        # OOS validation
+        _progress(10 + (work_done / total_work) * 80,
+                  f'Fold {fold_n}/{len(folds)}: OOS on {test_start}..{test_end}')
+
+        test_caches = _precompute_intraday_data(
+            symbols, all_data, spy_df, test_start, test_end, cancel_check)
+        oos_metrics = _simulate_intraday_strategy_fast(
+            strategy_id, test_caches, best_params, config)
+
+        is_ret = best_is_metrics.get('return_pct', 0)
+        oos_ret = oos_metrics.get('return_pct', 0)
+        overfit = oos_ret / is_ret if is_ret != 0 else 0
+
+        fold_results.append({
+            'fold': fold_n,
+            'train_range': f'{train_start} to {train_end}',
+            'test_range': f'{test_start} to {test_end}',
+            'best_params': best_params,
+            'is_return': round(is_ret, 2),
+            'is_trades': best_is_metrics.get('num_trades', 0),
+            'is_win_rate': round(best_is_metrics.get('win_rate', 0), 4),
+            'is_max_dd': round(-best_is_metrics.get('max_drawdown_pct', 0), 2),
+            'is_sharpe': round(best_is_metrics.get('sharpe', 0), 2),
+            'is_pf': round(best_is_metrics.get('profit_factor', 0), 2),
+            'oos_return': round(oos_ret, 2),
+            'oos_trades': oos_metrics.get('num_trades', 0),
+            'oos_win_rate': round(oos_metrics.get('win_rate', 0), 4),
+            'oos_max_dd': round(-oos_metrics.get('max_drawdown_pct', 0), 2),
+            'oos_sharpe': round(oos_metrics.get('sharpe', 0), 2),
+            'oos_pf': round(oos_metrics.get('profit_factor', 0), 2),
+            'overfit_ratio': round(overfit, 2),
+            'condition_breakdown': oos_metrics.get('trades_by_condition', {}),
+        })
+        work_done += 1
+
+    # Aggregate OOS results
+    valid_folds = [f for f in fold_results if not f.get('skipped')]
+    if valid_folds:
+        agg_oos_pnl = sum(f['oos_return'] for f in valid_folds)
+        agg_oos_trades = sum(f['oos_trades'] for f in valid_folds)
+        agg_oos_wins = sum(f['oos_trades'] * f['oos_win_rate'] for f in valid_folds)
+        agg_win_rate = agg_oos_wins / agg_oos_trades if agg_oos_trades > 0 else 0
+        agg_pfs = [f['oos_pf'] for f in valid_folds if f['oos_trades'] > 0]
+        agg_pf = sum(agg_pfs) / len(agg_pfs) if agg_pfs else 0
+        agg_dds = [abs(f['oos_max_dd']) for f in valid_folds]
+        agg_max_dd = max(agg_dds) if agg_dds else 0
+        agg_sharpes = [f['oos_sharpe'] for f in valid_folds if f['oos_trades'] > 0]
+        agg_sharpe = sum(agg_sharpes) / len(agg_sharpes) if agg_sharpes else 0
+        agg_overfit = [f['overfit_ratio'] for f in valid_folds if f['overfit_ratio'] != 0]
+        avg_overfit = sum(agg_overfit) / len(agg_overfit) if agg_overfit else 0
+
+        aggregate_oos = {
+            'total_return_pct': round(agg_oos_pnl, 2),
+            'total_pnl': round(agg_oos_pnl * config.initial_capital / 100, 2),
+            'num_trades': agg_oos_trades,
+            'win_rate': round(agg_win_rate, 4),
+            'profit_factor': round(agg_pf, 2),
+            'max_drawdown_pct': round(agg_max_dd, 2),
+            'sharpe_ratio': round(agg_sharpe, 2),
+            'avg_overfit_ratio': round(avg_overfit, 2),
+        }
+    else:
+        aggregate_oos = {
+            'total_return_pct': 0, 'total_pnl': 0, 'num_trades': 0,
+            'win_rate': 0, 'profit_factor': 0, 'max_drawdown_pct': 0,
+            'sharpe_ratio': 0, 'avg_overfit_ratio': 0,
+        }
+
+    # Parameter stability
+    param_stability = {}
+    for pname in param_names:
+        values = [f['best_params'].get(pname) for f in valid_folds if f.get('best_params')]
+        if values:
+            from collections import Counter
+            counts = Counter(values)
+            most_common_val = counts.most_common(1)[0][0]
+            param_stability[pname] = {
+                'values': [str(v) for v in values],
+                'most_common': most_common_val,
+                'agreement': round(counts[most_common_val] / len(values), 2),
+            }
+
+    # Market condition breakdown (aggregate across folds)
+    all_condition_data = defaultdict(lambda: {'trades': 0, 'wins': 0, 'total_pnl': 0.0})
+    for f in valid_folds:
+        for cond, cdata in f.get('condition_breakdown', {}).items():
+            all_condition_data[cond]['trades'] += cdata.get('trades', 0)
+            all_condition_data[cond]['wins'] += int(cdata.get('win_rate', 0) * cdata.get('trades', 0))
+            all_condition_data[cond]['total_pnl'] += cdata.get('total_pnl', 0)
+
+    condition_breakdown = {}
+    for cond, cdata in all_condition_data.items():
+        t = cdata['trades']
+        condition_breakdown[cond] = {
+            'trades': t,
+            'win_rate': round(cdata['wins'] / t, 4) if t > 0 else 0,
+            'avg_pnl': round(cdata['total_pnl'] / t, 2) if t > 0 else 0,
+            'total_pnl': round(cdata['total_pnl'], 2),
+        }
+
+    # Recommendations
+    recommendations = []
+    n_folds = len(valid_folds)
+    if n_folds > 0:
+        for pname, pdata in param_stability.items():
+            agreement = pdata['agreement']
+            mc = pdata['most_common']
+            n_same = int(agreement * n_folds)
+            if agreement >= 0.75:
+                recommendations.append({
+                    'type': 'stable', 'level': 'green',
+                    'text': f"{pname}={mc} selected in {n_same}/{n_folds} folds — stable",
+                })
+            elif agreement < 0.5:
+                recommendations.append({
+                    'type': 'unstable', 'level': 'red',
+                    'text': f"{pname} unstable ({len(set(pdata['values']))} different values) — consider fixing at {mc}",
+                })
+            else:
+                recommendations.append({
+                    'type': 'moderate', 'level': 'yellow',
+                    'text': f"{pname}={mc} selected in {n_same}/{n_folds} folds — moderate stability",
+                })
+
+        avg_is_wr = sum(f['is_win_rate'] for f in valid_folds) / n_folds
+        avg_oos_wr = sum(f['oos_win_rate'] for f in valid_folds) / n_folds
+        wr_deg = avg_is_wr - avg_oos_wr
+        if wr_deg < 0.05:
+            recommendations.append({
+                'type': 'performance', 'level': 'green',
+                'text': f"OOS win rate {avg_oos_wr:.0%} vs IS {avg_is_wr:.0%} — minimal degradation",
+            })
+        elif wr_deg < 0.10:
+            recommendations.append({
+                'type': 'performance', 'level': 'yellow',
+                'text': f"OOS win rate {avg_oos_wr:.0%} vs IS {avg_is_wr:.0%} — moderate degradation",
+            })
+        else:
+            recommendations.append({
+                'type': 'performance', 'level': 'red',
+                'text': f"OOS win rate {avg_oos_wr:.0%} vs IS {avg_is_wr:.0%} — significant degradation, possible overfit",
+            })
+
+        for cond, cdata in condition_breakdown.items():
+            if cdata['trades'] >= 5 and cdata['win_rate'] < 0.40:
+                recommendations.append({
+                    'type': 'condition', 'level': 'red',
+                    'text': f"{strategy_id} underperforms in {cond} markets ({cdata['win_rate']:.0%} win rate) — consider disabling",
+                })
+            elif cdata['trades'] >= 5 and cdata['win_rate'] >= 0.60:
+                recommendations.append({
+                    'type': 'condition', 'level': 'green',
+                    'text': f"{strategy_id} excels in {cond} markets ({cdata['win_rate']:.0%} win rate)",
+                })
+
+    _progress(95, 'Running deployment gate...')
+
+    results = {
+        'strategy_id': strategy_id,
+        'folds': fold_results,
+        'aggregate_oos': aggregate_oos,
+        'param_stability': param_stability,
+        'condition_breakdown': condition_breakdown,
+        'recommendations': recommendations,
+        'status': 'done',
+        'num_folds': len(folds),
+        'num_valid_folds': len(valid_folds),
+        'param_grid': grid,
+        'config_base': {
+            'initial_capital': config.initial_capital,
+            'slippage_pct': config.slippage_pct,
+            'risk_pct': config.intraday_risk_pct,
+        },
+    }
+
+    results['deployment_gate'] = _check_deployment_gate(results)
+
+    _progress(100, f'Walk-forward complete for {strategy_id}')
+    return results

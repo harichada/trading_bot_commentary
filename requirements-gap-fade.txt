@@ -25,4 +25,10 @@ pytest>=7.3.0
 pytest-asyncio>=0.21.0
 httpx>=0.24.0
 
+# OANDA forex broker
+oandapyV20>=0.7.2
+
+# PostgreSQL
+psycopg2-binary>=2.9.9
+
 # Quality: install in CI with: pip install ruff

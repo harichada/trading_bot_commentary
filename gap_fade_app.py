@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Rudra Trading Engine — Standalone FastAPI App
+Gap Fade Trading Strategy — Standalone FastAPI App
 
-Multi-strategy trading engine with LLM supervisor.
+Data-driven gap fade strategy: short gap-ups that occur on below-average volume.
 Study of 3,754 Alpaca SIP events (5 years, 156 stocks) showed gap-ups on low volume
 (<1x avg) fade 71-81% with +2.5% avg P&L. High-volume gaps (>3x) only fade 31%.
 
@@ -29,11 +29,14 @@ import json
 import logging
 import os
 import re
-import sqlite3
+import psycopg2
+import psycopg2.extras
 import subprocess
+import threading
 import time as _time
 import traceback
 from collections import defaultdict, deque
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timedelta, timezone, date
 from itertools import groupby
@@ -47,7 +50,7 @@ import feedparser
 import yfinance as yf
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
-from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
+from fastapi.responses import HTMLResponse, JSONResponse, FileResponse, StreamingResponse
 import uvicorn
 
 logger = logging.getLogger('GapFadeApp')
@@ -123,6 +126,166 @@ def _alpaca_headers(cfg: dict) -> dict:
     }
 
 
+def _log_api_call(endpoint: str, method: str = 'GET', symbols: str = '',
+                  status_code: int = 0, response_time_ms: float = 0,
+                  error: str = '', rate_limit_remaining: int = -1,
+                  params_json: str = '{}'):
+    """Fire-and-forget API call logger (safe to call from any thread)."""
+    try:
+        db = get_price_db()
+        db.insert_api_call(endpoint=endpoint, method=method, symbols=symbols,
+                           params_json=params_json, status_code=status_code,
+                           response_time_ms=response_time_ms, error=error,
+                           rate_limit_remaining=rate_limit_remaining)
+    except Exception:
+        pass
+
+
+def _log_rejected_candidate(candidate, stage: str, reason: str,
+                             strategy_id: str = ''):
+    """Fire-and-forget rejected candidate logger."""
+    try:
+        db = get_price_db()
+        if isinstance(candidate, dict):
+            c = candidate
+        else:
+            c = asdict(candidate) if hasattr(candidate, '__dataclass_fields__') else {}
+        db.insert_rejected_candidate(
+            symbol=c.get('symbol', ''),
+            gap_pct=c.get('gap_pct', 0),
+            vol_ratio=c.get('vol_ratio', 0),
+            score=c.get('score', 0),
+            direction=c.get('direction', ''),
+            rejection_stage=stage,
+            rejection_reason=reason,
+            catalyst=c.get('catalyst', ''),
+            prev_close=c.get('prev_close', 0),
+            open_price=c.get('open_price', 0),
+            strategy_id=strategy_id,
+        )
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# Multi-key API pool for parallel data fetching
+# ---------------------------------------------------------------------------
+
+@dataclass
+class AlpacaKeySlot:
+    """One Alpaca API key pair with per-minute rate tracking."""
+    api_key: str
+    secret_key: str
+    slot_id: int = 0
+    is_primary: bool = False  # Only primary key is used for order placement
+    _calls_this_minute: int = field(default=0, repr=False)
+    _minute_start: float = field(default=0.0, repr=False)
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
+    # Alpaca free tier: 200 requests/min per key
+    RATE_LIMIT = 180  # stay under limit
+
+    def can_use(self) -> bool:
+        """Check if this key has rate budget remaining."""
+        with self._lock:
+            now = _time.time()
+            if now - self._minute_start >= 60:
+                self._calls_this_minute = 0
+                self._minute_start = now
+            return self._calls_this_minute < self.RATE_LIMIT
+
+    def record_use(self, n: int = 1):
+        """Record N API calls against this key's rate budget."""
+        with self._lock:
+            now = _time.time()
+            if now - self._minute_start >= 60:
+                self._calls_this_minute = 0
+                self._minute_start = now
+            self._calls_this_minute += n
+
+    def headers(self) -> dict:
+        return {
+            'APCA-API-KEY-ID': self.api_key,
+            'APCA-API-SECRET-KEY': self.secret_key,
+        }
+
+
+class AlpacaKeyPool:
+    """Pool of Alpaca API keys for parallel data fetching.
+
+    Reads env vars:
+      ALPACA_API_KEY / ALPACA_SECRET_KEY          — primary (slot 0)
+      ALPACA_DATA_KEY_1..9 / ALPACA_DATA_SECRET_1..9 — additional data-only keys
+
+    Primary key is the only one used for order placement.
+    All keys are available for data fetching.
+    """
+
+    def __init__(self):
+        self._slots: List[AlpacaKeySlot] = []
+        self._robin_idx = 0
+        self._lock = threading.Lock()
+        self._load_keys()
+
+    def _load_keys(self):
+        _load_env_file()
+        # Slot 0: primary trading key
+        pk = os.environ.get('ALPACA_API_KEY', '')
+        sk = os.environ.get('ALPACA_SECRET_KEY', '')
+        if pk and sk:
+            self._slots.append(AlpacaKeySlot(
+                api_key=pk, secret_key=sk, slot_id=0, is_primary=True))
+
+        # Slots 1-9: additional data-only keys
+        for i in range(1, 10):
+            dk = os.environ.get(f'ALPACA_DATA_KEY_{i}', '')
+            ds = os.environ.get(f'ALPACA_DATA_SECRET_{i}', '')
+            if dk and ds:
+                self._slots.append(AlpacaKeySlot(
+                    api_key=dk, secret_key=ds, slot_id=i, is_primary=False))
+
+        if self._slots:
+            logger.info(f"AlpacaKeyPool: {len(self._slots)} API key(s) loaded"
+                        f" ({sum(1 for s in self._slots if not s.is_primary)} data-only)")
+
+    @property
+    def size(self) -> int:
+        return len(self._slots)
+
+    @property
+    def primary(self) -> Optional[AlpacaKeySlot]:
+        return self._slots[0] if self._slots else None
+
+    def get_all(self) -> List[AlpacaKeySlot]:
+        """Return all key slots (for parallel dispatching)."""
+        return list(self._slots)
+
+    def next_available(self) -> Optional[AlpacaKeySlot]:
+        """Round-robin to next key that has rate budget."""
+        if not self._slots:
+            return None
+        with self._lock:
+            n = len(self._slots)
+            for _ in range(n):
+                slot = self._slots[self._robin_idx % n]
+                self._robin_idx += 1
+                if slot.can_use():
+                    return slot
+        # All slots exhausted — return first anyway (will 429)
+        return self._slots[0]
+
+
+# Module-level singleton — lazy-initialized on first access
+_key_pool: Optional[AlpacaKeyPool] = None
+
+
+def _get_key_pool() -> AlpacaKeyPool:
+    global _key_pool
+    if _key_pool is None:
+        _key_pool = AlpacaKeyPool()
+    return _key_pool
+
+
 def fetch_alpaca_bars(symbol: str, start_date: str, end_date: str,
                       interval: str = '1Day', feed: str = 'iex') -> Optional[pd.DataFrame]:
     """Fetch historical bars from Alpaca Data API v2 with pagination."""
@@ -146,6 +309,8 @@ def fetch_alpaca_bars(symbol: str, start_date: str, end_date: str,
     url = f'{cfg["data_url"]}/v2/stocks/{symbol}/bars'
 
     retries_429 = 0
+    _t0 = _time.monotonic()
+    _last_status = 0
     try:
         while True:
             params = {
@@ -160,16 +325,21 @@ def fetch_alpaca_bars(symbol: str, start_date: str, end_date: str,
                 params['page_token'] = page_token
 
             resp = requests.get(url, headers=headers, params=params, timeout=15)
+            _last_status = resp.status_code
             if resp.status_code == 429:
                 retries_429 += 1
                 if retries_429 > 5:
                     logger.warning(f"Alpaca rate limit exceeded for {symbol} after 5 retries")
+                    _log_api_call('/v2/stocks/bars', 'GET', symbol, 429,
+                                  (_time.monotonic() - _t0) * 1000, 'rate_limit_exceeded')
                     return None
                 _time.sleep(min(2 ** retries_429, 30))
                 continue
             retries_429 = 0
             if resp.status_code != 200:
                 logger.error(f"Alpaca API returned {resp.status_code}: {resp.text[:200]}")
+                _log_api_call('/v2/stocks/bars', 'GET', symbol, resp.status_code,
+                              (_time.monotonic() - _t0) * 1000, resp.text[:200])
                 return None
 
             data = resp.json()
@@ -179,6 +349,9 @@ def fetch_alpaca_bars(symbol: str, start_date: str, end_date: str,
             page_token = data.get('next_page_token')
             if not page_token:
                 break
+
+        _log_api_call('/v2/stocks/bars', 'GET', symbol, _last_status,
+                      (_time.monotonic() - _t0) * 1000)
 
         if not all_bars:
             return None
@@ -198,6 +371,8 @@ def fetch_alpaca_bars(symbol: str, start_date: str, end_date: str,
 
     except Exception as e:
         logger.error(f"Alpaca data fetch failed for {symbol}: {e}")
+        _log_api_call('/v2/stocks/bars', 'GET', symbol, _last_status,
+                      (_time.monotonic() - _t0) * 1000, str(e))
         return None
 
 
@@ -309,6 +484,136 @@ def fetch_alpaca_bars_multi(symbols: List[str], start_date: str, end_date: str,
             logger.info(f"Multi-bar progress: batch {batch_num}/{total_batches}, {len(results)} symbols so far")
 
     logger.info(f"Multi-bar fetch: {len(results)} symbols with data out of {len(symbols)} requested")
+    _log_api_call('/v2/stocks/bars (multi)', 'GET',
+                  f'{len(symbols)} symbols', 200, 0)
+    return results
+
+
+def _fetch_bars_multi_parallel(symbols: List[str], start_date: str, end_date: str,
+                                interval: str = '1Day', feed: str = 'iex',
+                                batch_size: int = 100) -> Dict[str, pd.DataFrame]:
+    """Parallel multi-key version of fetch_alpaca_bars_multi.
+
+    Splits symbol batches across available API keys using ThreadPoolExecutor.
+    Falls back to single-key fetch_alpaca_bars_multi if only 1 key.
+    Safe to call from asyncio.to_thread (scanner already does this).
+    """
+    pool = _get_key_pool()
+    keys = pool.get_all()
+
+    # Single key or no keys: use original function
+    if len(keys) <= 1:
+        return fetch_alpaca_bars_multi(symbols, start_date, end_date, interval, feed, batch_size)
+
+    # Split symbols into chunks, one per key (round-robin)
+    key_batches: Dict[int, List[str]] = defaultdict(list)
+    for i, sym in enumerate(symbols):
+        slot_idx = i % len(keys)
+        key_batches[slot_idx].append(sym)
+
+    results: Dict[str, pd.DataFrame] = {}
+    max_workers = min(len(keys) * 2, 8)
+
+    def _fetch_with_key(slot: AlpacaKeySlot, syms: List[str]) -> Dict[str, pd.DataFrame]:
+        """Fetch bars using a specific API key slot."""
+        cfg = {
+            'api_key': slot.api_key,
+            'secret_key': slot.secret_key,
+            'data_url': 'https://data.alpaca.markets',
+        }
+        interval_map = {
+            '1m': '1Min', '5m': '5Min', '10m': '10Min', '15m': '15Min',
+            '30m': '30Min', '1h': '1Hour', '1d': '1Day', '1Day': '1Day',
+        }
+        timeframe = interval_map.get(interval, interval)
+        headers = slot.headers()
+        start_rfc = datetime.strptime(start_date, '%Y-%m-%d').strftime('%Y-%m-%dT00:00:00Z')
+        end_rfc = (datetime.strptime(end_date, '%Y-%m-%d') + timedelta(days=1)).strftime('%Y-%m-%dT00:00:00Z')
+        url = f'{cfg["data_url"]}/v2/stocks/bars'
+        local_results: Dict[str, pd.DataFrame] = {}
+
+        for bi in range(0, len(syms), batch_size):
+            batch = syms[bi:bi + batch_size]
+            slot.record_use()
+            batch_bars: Dict[str, list] = defaultdict(list)
+
+            try:
+                page_token = None
+                while True:
+                    params = {
+                        'symbols': ','.join(batch),
+                        'timeframe': timeframe,
+                        'start': start_rfc,
+                        'end': end_rfc,
+                        'limit': 10000,
+                        'feed': feed,
+                        'adjustment': 'split',
+                    }
+                    if page_token:
+                        params['page_token'] = page_token
+
+                    resp = requests.get(url, headers=headers, params=params, timeout=45)
+                    if resp.status_code == 429:
+                        _time.sleep(2)
+                        continue
+                    if resp.status_code != 200:
+                        break
+
+                    data = resp.json()
+                    for sym, bars in (data.get('bars') or {}).items():
+                        batch_bars[sym].extend(bars)
+
+                    page_token = data.get('next_page_token')
+                    if not page_token:
+                        break
+
+            except Exception as e:
+                logger.warning(f"Parallel fetch (key {slot.slot_id}) batch error: {e}")
+
+            # Convert to DataFrames
+            for sym, bars in batch_bars.items():
+                if not bars:
+                    continue
+                try:
+                    df = pd.DataFrame(bars)
+                    df['datetime'] = pd.to_datetime(df['t'])
+                    df.rename(columns={'o': 'open', 'h': 'high', 'l': 'low',
+                                       'c': 'close', 'v': 'volume'}, inplace=True)
+                    df = df[['datetime', 'open', 'high', 'low', 'close', 'volume']].dropna()
+                    for col in ['open', 'high', 'low', 'close', 'volume']:
+                        df[col] = pd.to_numeric(df[col], errors='coerce').astype(np.float64)
+                    df.set_index('datetime', inplace=True)
+                    df.sort_index(inplace=True)
+                    if df.index.tz is not None:
+                        df.index = df.index.tz_convert(None)
+                    df.index.name = sym
+                    local_results[sym] = df
+                except Exception:
+                    pass
+
+            # Rate limit between batches
+            if bi + batch_size < len(syms):
+                _time.sleep(0.2)
+
+        return local_results
+
+    logger.info(f"Parallel bars fetch: {len(symbols)} symbols across {len(keys)} keys "
+                f"({max_workers} workers)")
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {}
+        for slot_idx, syms in key_batches.items():
+            if syms:
+                f = executor.submit(_fetch_with_key, keys[slot_idx], syms)
+                futures[f] = slot_idx
+
+        for future in as_completed(futures):
+            try:
+                results.update(future.result())
+            except Exception as e:
+                logger.warning(f"Parallel fetch thread error: {e}")
+
+    logger.info(f"Parallel bars fetch complete: {len(results)}/{len(symbols)} symbols")
     return results
 
 
@@ -323,33 +628,136 @@ def fetch_alpaca_snapshots(symbols: List[str]) -> dict:
     headers = _alpaca_headers(cfg)
     results = {}
 
-    # Batch 500 symbols per request (Alpaca supports ~2000 per URL, 500 is safe)
-    for i in range(0, len(symbols), 500):
-        batch = symbols[i:i+500]
+    # Batch 1500 symbols per request (Alpaca supports ~2000 per URL)
+    batch_size = 1500
+    for i in range(0, len(symbols), batch_size):
+        batch = symbols[i:i+batch_size]
         params = {
             'symbols': ','.join(batch),
             'feed': 'iex',
         }
+        _t0 = _time.monotonic()
         try:
             resp = requests.get(
                 f'{cfg["data_url"]}/v2/stocks/snapshots',
                 headers=headers, params=params, timeout=15
             )
+            _log_api_call('/v2/stocks/snapshots', 'GET', f'{len(batch)} symbols',
+                          resp.status_code, (_time.monotonic() - _t0) * 1000)
             if resp.status_code == 200:
                 results.update(resp.json())
             else:
                 logger.warning(f"Snapshot batch failed ({resp.status_code}): {resp.text[:200]}")
         except Exception as e:
             logger.warning(f"Snapshot fetch error: {e}")
+            _log_api_call('/v2/stocks/snapshots', 'GET', f'{len(batch)} symbols',
+                          0, (_time.monotonic() - _t0) * 1000, str(e))
 
-        if i + 500 < len(symbols):
+        if i + batch_size < len(symbols):
             _time.sleep(0.1)
 
     return results
 
 
-# Module-level cache for Alpaca assets list
-_assets_cache: Dict[str, Any] = {'symbols': [], 'timestamp': 0.0}
+# --- Alpaca Screener: Most Active & Top Movers ---
+
+_movers_cache: Dict[str, Any] = {
+    'symbols': [],
+    'timestamp': 0.0,
+}
+
+
+def fetch_alpaca_movers(top_n: int = 20) -> List[str]:
+    """Fetch today's most active stocks + top movers via Alpaca screener API.
+
+    Combines most-actives (by volume) and top movers (gainers + losers)
+    into a deduplicated list. Cached for 5 minutes.
+    Returns list of symbols.
+    """
+    now = _time.time()
+    if _movers_cache['symbols'] and (now - _movers_cache['timestamp']) < 300:
+        return _movers_cache['symbols']
+
+    cfg = _get_alpaca_config()
+    if cfg is None:
+        return []
+
+    headers = _alpaca_headers(cfg)
+    data_url = cfg['data_url']
+    symbols = []
+
+    # 1) Most active by volume
+    _t0 = _time.monotonic()
+    try:
+        resp = requests.get(
+            f'{data_url}/v1beta1/screener/stocks/most-actives',
+            headers=headers,
+            params={'by': 'volume', 'top': top_n},
+            timeout=10
+        )
+        _log_api_call('/v1beta1/screener/stocks/most-actives', 'GET', '',
+                      resp.status_code, (_time.monotonic() - _t0) * 1000)
+        if resp.status_code == 200:
+            data = resp.json()
+            for item in data.get('most_actives', []):
+                sym = item.get('symbol', '')
+                if sym:
+                    symbols.append(sym)
+        else:
+            logger.warning(f"Alpaca most-actives returned {resp.status_code}: {resp.text[:200]}")
+    except Exception as e:
+        logger.warning(f"Alpaca most-actives fetch error: {e}")
+        _log_api_call('/v1beta1/screener/stocks/most-actives', 'GET', '',
+                      0, (_time.monotonic() - _t0) * 1000, str(e))
+
+    # 2) Top movers (gainers + losers)
+    _t0 = _time.monotonic()
+    try:
+        resp = requests.get(
+            f'{data_url}/v1beta1/screener/stocks/movers',
+            headers=headers,
+            params={'top': top_n},
+            timeout=10
+        )
+        _log_api_call('/v1beta1/screener/stocks/movers', 'GET', '',
+                      resp.status_code, (_time.monotonic() - _t0) * 1000)
+        if resp.status_code == 200:
+            data = resp.json()
+            for item in data.get('gainers', []):
+                sym = item.get('symbol', '')
+                if sym:
+                    symbols.append(sym)
+            for item in data.get('losers', []):
+                sym = item.get('symbol', '')
+                if sym:
+                    symbols.append(sym)
+        else:
+            logger.warning(f"Alpaca movers returned {resp.status_code}: {resp.text[:200]}")
+    except Exception as e:
+        logger.warning(f"Alpaca movers fetch error: {e}")
+        _log_api_call('/v1beta1/screener/stocks/movers', 'GET', '',
+                      0, (_time.monotonic() - _t0) * 1000, str(e))
+
+    # Deduplicate, filter bad symbols
+    seen = set()
+    clean = []
+    for s in symbols:
+        if s not in seen and '/' not in s and '.' not in s and len(s) <= 5:
+            seen.add(s)
+            clean.append(s)
+
+    _movers_cache['symbols'] = clean
+    _movers_cache['timestamp'] = now
+    logger.info(f"Alpaca screener: fetched {len(clean)} unique movers/most-active symbols")
+    return clean
+
+
+# Module-level cache for Alpaca assets list (includes shortability data)
+_assets_cache: Dict[str, Any] = {
+    'symbols': [],
+    'shortable': {},    # {symbol: (shortable, easy_to_borrow)}
+    'timestamp': 0.0,
+}
 
 
 def fetch_alpaca_assets(min_price: float = 1.0,
@@ -357,7 +765,7 @@ def fetch_alpaca_assets(min_price: float = 1.0,
     """Fetch all active, tradeable symbols from Alpaca.
 
     Filters: active, tradeable, major exchanges (NYSE, NASDAQ, ARCA, AMEX, BATS).
-    Cached for 24 hours.
+    Cached for 24 hours. Also caches shortable/easy_to_borrow per symbol.
     """
     now = _time.time()
     if _assets_cache['symbols'] and (now - _assets_cache['timestamp']) < 86400:
@@ -371,6 +779,7 @@ def fetch_alpaca_assets(min_price: float = 1.0,
     headers = _alpaca_headers(cfg)
     valid_exchanges = {'NYSE', 'NASDAQ', 'ARCA', 'AMEX', 'BATS', 'NYSEARCA'}
 
+    _t0 = _time.monotonic()
     try:
         resp = requests.get(
             f'{cfg["base_url"]}/v2/assets',
@@ -378,12 +787,15 @@ def fetch_alpaca_assets(min_price: float = 1.0,
             params={'status': 'active', 'asset_class': asset_class},
             timeout=60
         )
+        _log_api_call('/v2/assets', 'GET', '', resp.status_code,
+                      (_time.monotonic() - _t0) * 1000)
         if resp.status_code != 200:
             logger.error(f"Alpaca assets API returned {resp.status_code}: {resp.text[:200]}")
             return []
 
         assets = resp.json()
         symbols = []
+        shortable_map = {}
         for a in assets:
             if not a.get('tradable', False):
                 continue
@@ -397,20 +809,35 @@ def fetch_alpaca_assets(min_price: float = 1.0,
             if not sym or '/' in sym or '.' in sym or '-' in sym or len(sym) > 5:
                 continue
             symbols.append(sym)
+            shortable_map[sym] = (
+                bool(a.get('shortable', False)),
+                bool(a.get('easy_to_borrow', False)),
+            )
 
         symbols = sorted(set(symbols))
         _assets_cache['symbols'] = symbols
+        _assets_cache['shortable'] = shortable_map
         _assets_cache['timestamp'] = now
-        logger.info(f"Fetched {len(symbols)} tradeable assets from Alpaca")
+        logger.info(f"Fetched {len(symbols)} tradeable assets from Alpaca "
+                    f"({sum(1 for v in shortable_map.values() if v[0])} shortable)")
         return symbols
 
     except Exception as e:
         logger.error(f"fetch_alpaca_assets failed: {e}")
+        _log_api_call('/v2/assets', 'GET', '', 0,
+                      (_time.monotonic() - _t0) * 1000, str(e))
         return []
 
 
 def alpaca_check_shortable(symbol: str) -> Tuple[bool, bool]:
-    """Check if symbol is shortable on Alpaca. Returns (shortable, easy_to_borrow)."""
+    """Check if symbol is shortable on Alpaca. Returns (shortable, easy_to_borrow).
+    Uses cached data from fetch_alpaca_assets() if available, else falls back to API.
+    """
+    # Try cache first (zero API calls)
+    cached = _assets_cache.get('shortable', {}).get(symbol)
+    if cached is not None:
+        return cached
+
     cfg = _get_alpaca_config()
     if cfg is None:
         return False, False
@@ -423,10 +850,22 @@ def alpaca_check_shortable(symbol: str) -> Tuple[bool, bool]:
         )
         if resp.status_code == 200:
             data = resp.json()
-            return data.get('shortable', False), data.get('easy_to_borrow', False)
+            result = (data.get('shortable', False), data.get('easy_to_borrow', False))
+            # Cache for future use
+            _assets_cache.setdefault('shortable', {})[symbol] = result
+            return result
     except Exception as e:
         logger.warning(f"Shortable check failed for {symbol}: {e}")
     return False, False
+
+
+def alpaca_check_shortable_batch(symbols: List[str]) -> Dict[str, Tuple[bool, bool]]:
+    """Batch shortability lookup — pure cache, zero API calls.
+    Returns {symbol: (shortable, easy_to_borrow)} for all symbols.
+    Falls back to (False, False) for symbols not in cache.
+    """
+    shortable_map = _assets_cache.get('shortable', {})
+    return {sym: shortable_map.get(sym, (False, False)) for sym in symbols}
 
 
 @dataclass
@@ -472,11 +911,14 @@ def alpaca_place_order(symbol: str, qty: int, side: str, order_type: str = 'mark
     if stop_price is not None:
         payload['stop_price'] = str(round(stop_price, 2))
 
+    _t0 = _time.monotonic()
     try:
         resp = requests.post(
             f'{cfg["base_url"]}/v2/orders',
             headers=headers, json=payload, timeout=10
         )
+        _log_api_call('/v2/orders', 'POST', symbol, resp.status_code,
+                      (_time.monotonic() - _t0) * 1000)
         if resp.status_code in (200, 201):
             data = resp.json()
             logger.info(f"Alpaca order placed: {side} {qty} {symbol} -> {data.get('id', '?')}")
@@ -488,6 +930,8 @@ def alpaca_place_order(symbol: str, qty: int, side: str, order_type: str = 'mark
             return {'error': f"HTTP {resp.status_code}: {err}"}
     except Exception as e:
         logger.warning(f"Alpaca order error: {e}")
+        _log_api_call('/v2/orders', 'POST', symbol, 0,
+                      (_time.monotonic() - _t0) * 1000, str(e))
         return {'error': str(e)}
 
 
@@ -509,16 +953,111 @@ def alpaca_get_order(order_id: str) -> Optional[dict]:
     return None
 
 
+def alpaca_cancel_open_orders_for_symbol(symbol: str) -> int:
+    """Cancel all open orders for a specific symbol. Returns count of orders cancelled."""
+    cfg = _get_alpaca_config()
+    if cfg is None:
+        return 0
+    _t0 = _time.monotonic()
+    try:
+        resp = requests.get(
+            f'{cfg["base_url"]}/v2/orders',
+            headers=_alpaca_headers(cfg),
+            params={'status': 'open', 'symbols': symbol, 'limit': 50},
+            timeout=10,
+        )
+        if resp.status_code != 200:
+            _log_api_call('/v2/orders (cancel-list)', 'GET', symbol, resp.status_code,
+                          (_time.monotonic() - _t0) * 1000)
+            return 0
+        orders = resp.json()
+        cancelled = 0
+        for order in orders:
+            oid = order.get('id', '')
+            if oid:
+                try:
+                    r = requests.delete(
+                        f'{cfg["base_url"]}/v2/orders/{oid}',
+                        headers=_alpaca_headers(cfg), timeout=10,
+                    )
+                    if r.status_code in (200, 204):
+                        cancelled += 1
+                except Exception:
+                    pass
+        _log_api_call('/v2/orders (cancel-batch)', 'DELETE', symbol, 200,
+                      (_time.monotonic() - _t0) * 1000)
+        return cancelled
+    except Exception as e:
+        logger.warning(f"Cancel open orders for {symbol} error: {e}")
+        _log_api_call('/v2/orders (cancel-batch)', 'DELETE', symbol, 0,
+                      (_time.monotonic() - _t0) * 1000, str(e))
+        return 0
+
+
+def alpaca_close_position_api(symbol: str) -> dict:
+    """Close a position using Alpaca's DELETE /v2/positions/{symbol} endpoint.
+
+    This is a last-resort method that tells Alpaca to liquidate the position
+    directly, bypassing order submission. Works even when shares are held for orders.
+    """
+    cfg = _get_alpaca_config()
+    if cfg is None:
+        return {'error': 'no config'}
+    _t0 = _time.monotonic()
+    try:
+        resp = requests.delete(
+            f'{cfg["base_url"]}/v2/positions/{symbol}',
+            headers=_alpaca_headers(cfg), timeout=15,
+        )
+        _log_api_call('/v2/positions (close)', 'DELETE', symbol, resp.status_code,
+                      (_time.monotonic() - _t0) * 1000)
+        if resp.status_code in (200, 204):
+            data = resp.json() if resp.text else {}
+            logger.info(f"Alpaca close position API: {symbol} -> {resp.status_code}")
+            return data
+        return {'error': f'HTTP {resp.status_code}: {resp.text[:200]}'}
+    except Exception as e:
+        logger.warning(f"Alpaca close position API {symbol} error: {e}")
+        _log_api_call('/v2/positions (close)', 'DELETE', symbol, 0,
+                      (_time.monotonic() - _t0) * 1000, str(e))
+        return {'error': str(e)}
+
+
+def _alpaca_open_order_count(symbol: str) -> int:
+    """Check how many open orders exist for a symbol on Alpaca."""
+    cfg = _get_alpaca_config()
+    if cfg is None:
+        return 0
+    _t0 = _time.monotonic()
+    try:
+        resp = requests.get(
+            f'{cfg["base_url"]}/v2/orders',
+            headers=_alpaca_headers(cfg),
+            params={'status': 'open', 'symbols': symbol, 'limit': 50},
+            timeout=10,
+        )
+        _log_api_call('/v2/orders (count)', 'GET', symbol, resp.status_code,
+                      (_time.monotonic() - _t0) * 1000)
+        if resp.status_code == 200:
+            return len(resp.json())
+    except Exception:
+        pass
+    return 0
+
+
 def alpaca_cancel_order(order_id: str) -> bool:
     """Cancel an open order on Alpaca. Returns True if successfully cancelled."""
     cfg = _get_alpaca_config()
     if cfg is None:
         return False
+    _t0 = _time.monotonic()
     try:
         resp = requests.delete(
             f'{cfg["base_url"]}/v2/orders/{order_id}',
             headers=_alpaca_headers(cfg), timeout=10
         )
+        _log_api_call('/v2/orders (cancel)', 'DELETE', order_id, resp.status_code,
+                      (_time.monotonic() - _t0) * 1000)
         return resp.status_code in (200, 204)
     except Exception as e:
         logger.warning(f"Cancel order {order_id} error: {e}")
@@ -618,11 +1157,14 @@ def alpaca_get_positions() -> List[dict]:
         return []
 
     headers = _alpaca_headers(cfg)
+    _t0 = _time.monotonic()
     try:
         resp = requests.get(
             f'{cfg["base_url"]}/v2/positions',
             headers=headers, timeout=10
         )
+        _log_api_call('/v2/positions', 'GET', '', resp.status_code,
+                      (_time.monotonic() - _t0) * 1000)
         if resp.status_code == 200:
             return resp.json()
     except Exception as e:
@@ -664,11 +1206,14 @@ def alpaca_place_stop_order(symbol: str, qty: int, stop_price: float,
         'time_in_force': 'day',
     }
 
+    _t0 = _time.monotonic()
     try:
         resp = requests.post(
             f'{cfg["base_url"]}/v2/orders',
             headers=headers, json=payload, timeout=10
         )
+        _log_api_call('/v2/orders (stop)', 'POST', symbol, resp.status_code,
+                      (_time.monotonic() - _t0) * 1000)
         if resp.status_code in (200, 201):
             data = resp.json()
             logger.info(f"Broker stop placed: {side.upper()} {qty} {symbol} stop=${stop_price:.2f} "
@@ -681,6 +1226,8 @@ def alpaca_place_stop_order(symbol: str, qty: int, stop_price: float,
             return {'error': f"HTTP {resp.status_code}: {err}"}
     except Exception as e:
         logger.warning(f"Broker stop error: {e}")
+        _log_api_call('/v2/orders (stop)', 'POST', symbol, 0,
+                      (_time.monotonic() - _t0) * 1000, str(e))
         return {'error': str(e)}
 
 
@@ -710,11 +1257,14 @@ def alpaca_get_account() -> Optional[dict]:
         return None
 
     headers = _alpaca_headers(cfg)
+    _t0 = _time.monotonic()
     try:
         resp = requests.get(
             f'{cfg["base_url"]}/v2/account',
             headers=headers, timeout=10
         )
+        _log_api_call('/v2/account', 'GET', '', resp.status_code,
+                      (_time.monotonic() - _t0) * 1000)
         if resp.status_code == 200:
             return resp.json()
     except Exception as e:
@@ -942,65 +1492,69 @@ def fetch_polygon_daily_range(start_date: str, end_date: str,
 # =============================================================================
 
 class PriceDB:
-    """SQLite cache for daily bars — eliminates repeated Alpaca fetches."""
+    """PostgreSQL cache for daily bars — eliminates repeated Alpaca fetches."""
 
-    DB_PATH = os.path.join(os.path.dirname(__file__) or '.', 'gap_fade_prices.db')
+    DEFAULT_DB_URL = 'postgresql://rudra:rudra_dev_2024@localhost:5432/rudra_dev'
 
     def __init__(self):
-        self._conn = sqlite3.connect(self.DB_PATH, check_same_thread=False)
-        self._conn.execute('PRAGMA journal_mode=WAL')
-        self._conn.execute('PRAGMA synchronous=NORMAL')
-        self._conn.execute('''
+        db_url = os.environ.get('DATABASE_URL', self.DEFAULT_DB_URL)
+        self._conn = psycopg2.connect(db_url)
+        self._conn.autocommit = False
+        self._lock = threading.Lock()
+        cur = self._conn.cursor()
+        cur.execute('''
             CREATE TABLE IF NOT EXISTS daily_bars (
                 symbol TEXT NOT NULL,
                 date   TEXT NOT NULL,
-                open   REAL,
-                high   REAL,
-                low    REAL,
-                close  REAL,
-                volume REAL,
+                open   DOUBLE PRECISION,
+                high   DOUBLE PRECISION,
+                low    DOUBLE PRECISION,
+                close  DOUBLE PRECISION,
+                volume DOUBLE PRECISION,
                 PRIMARY KEY (symbol, date)
-            ) WITHOUT ROWID
+            )
         ''')
         # Covering index for date-range scans (used by SQL gap scanner)
-        self._conn.execute('''
+        cur.execute('''
             CREATE INDEX IF NOT EXISTS idx_bars_date_symbol
             ON daily_bars (date, symbol)
         ''')
         # Persistent trade storage — all completed trades survive restarts
-        self._conn.execute('''
+        cur.execute('''
             CREATE TABLE IF NOT EXISTS trades (
-                trade_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+                trade_id      SERIAL PRIMARY KEY,
                 symbol        TEXT NOT NULL,
-                entry_price   REAL NOT NULL,
-                exit_price    REAL NOT NULL,
+                entry_price   DOUBLE PRECISION NOT NULL,
+                exit_price    DOUBLE PRECISION NOT NULL,
                 shares        INTEGER NOT NULL,
-                pnl           REAL NOT NULL,
-                pnl_pct       REAL NOT NULL,
+                pnl           DOUBLE PRECISION NOT NULL,
+                pnl_pct       DOUBLE PRECISION NOT NULL,
                 entry_time    TEXT NOT NULL,
                 exit_time     TEXT NOT NULL,
                 exit_reason   TEXT NOT NULL,
                 holding_minutes INTEGER DEFAULT 0,
                 side          TEXT DEFAULT 'short',
-                gap_pct       REAL DEFAULT 0.0,
-                vol_ratio     REAL DEFAULT 0.0,
-                score         REAL DEFAULT 0.0,
+                gap_pct       DOUBLE PRECISION DEFAULT 0.0,
+                vol_ratio     DOUBLE PRECISION DEFAULT 0.0,
+                score         DOUBLE PRECISION DEFAULT 0.0,
                 catalyst      TEXT DEFAULT '',
+                strategy_id   TEXT DEFAULT '',
+                setup_type    TEXT DEFAULT '',
                 UNIQUE(symbol, entry_time, exit_time, shares, exit_reason)
             )
         ''')
-        self._conn.execute('''
+        cur.execute('''
             CREATE INDEX IF NOT EXISTS idx_trades_entry_time
             ON trades (entry_time)
         ''')
-        self._conn.execute('''
+        cur.execute('''
             CREATE INDEX IF NOT EXISTS idx_trades_symbol_entry
             ON trades (symbol, entry_time)
         ''')
         # -- Journal entries (replaces JSONL files) --
-        self._conn.execute('''
+        cur.execute('''
             CREATE TABLE IF NOT EXISTS journal_entries (
-                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                id         SERIAL PRIMARY KEY,
                 timestamp  TEXT NOT NULL,
                 entry_type TEXT NOT NULL,
                 source     TEXT NOT NULL,
@@ -1011,20 +1565,20 @@ class PriceDB:
                 UNIQUE(timestamp, entry_type, source, symbol, content)
             )
         ''')
-        self._conn.execute('''
+        cur.execute('''
             CREATE INDEX IF NOT EXISTS idx_journal_ts
             ON journal_entries (timestamp)
         ''')
-        self._conn.execute('''
+        cur.execute('''
             CREATE INDEX IF NOT EXISTS idx_journal_type
             ON journal_entries (entry_type, timestamp)
         ''')
         # -- Market events (persists EventBus audit log) --
-        self._conn.execute('''
+        cur.execute('''
             CREATE TABLE IF NOT EXISTS market_events (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                id          SERIAL PRIMARY KEY,
                 timestamp   TEXT NOT NULL,
-                mono_time   REAL NOT NULL,
+                mono_time   DOUBLE PRECISION NOT NULL,
                 event_type  TEXT NOT NULL,
                 tier        INTEGER NOT NULL,
                 symbol      TEXT DEFAULT '',
@@ -1034,18 +1588,18 @@ class PriceDB:
                 UNIQUE(timestamp, event_type, symbol, dedup_key)
             )
         ''')
-        self._conn.execute('''
+        cur.execute('''
             CREATE INDEX IF NOT EXISTS idx_events_ts
             ON market_events (timestamp)
         ''')
-        self._conn.execute('''
+        cur.execute('''
             CREATE INDEX IF NOT EXISTS idx_events_type
             ON market_events (event_type, timestamp)
         ''')
         # -- LLM call audit log --
-        self._conn.execute('''
+        cur.execute('''
             CREATE TABLE IF NOT EXISTS llm_calls (
-                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                id               SERIAL PRIMARY KEY,
                 timestamp        TEXT NOT NULL,
                 conversation_role TEXT NOT NULL,
                 priority         TEXT NOT NULL,
@@ -1060,15 +1614,174 @@ class PriceDB:
                 UNIQUE(timestamp, conversation_role)
             )
         ''')
-        self._conn.execute('''
+        cur.execute('''
             CREATE INDEX IF NOT EXISTS idx_llm_ts
             ON llm_calls (timestamp)
         ''')
+        # -- Config profiles (named snapshots of full config) --
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS config_profiles (
+                name        TEXT PRIMARY KEY,
+                config_json TEXT NOT NULL,
+                description TEXT DEFAULT '',
+                created_at  TEXT NOT NULL,
+                updated_at  TEXT NOT NULL
+            )
+        ''')
+        # -- Config change history (audit trail) --
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS config_history (
+                id              SERIAL PRIMARY KEY,
+                timestamp       TEXT NOT NULL,
+                source          TEXT NOT NULL,
+                changes_json    TEXT NOT NULL,
+                config_snapshot TEXT NOT NULL
+            )
+        ''')
+        cur.execute('''
+            CREATE INDEX IF NOT EXISTS idx_config_history_ts
+            ON config_history (timestamp)
+        ''')
+        # -- API call audit log --
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS api_calls (
+                id                  SERIAL PRIMARY KEY,
+                timestamp           TEXT NOT NULL,
+                endpoint            TEXT NOT NULL,
+                method              TEXT NOT NULL DEFAULT 'GET',
+                symbols             TEXT DEFAULT '',
+                params_json         TEXT DEFAULT '{}',
+                status_code         INTEGER DEFAULT 0,
+                response_time_ms    DOUBLE PRECISION DEFAULT 0,
+                error               TEXT DEFAULT '',
+                rate_limit_remaining INTEGER DEFAULT -1
+            )
+        ''')
+        cur.execute('''
+            CREATE INDEX IF NOT EXISTS idx_api_calls_ts
+            ON api_calls (timestamp)
+        ''')
+        cur.execute('''
+            CREATE INDEX IF NOT EXISTS idx_api_calls_endpoint_ts
+            ON api_calls (endpoint, timestamp)
+        ''')
+        # -- Performance snapshots --
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS performance_snapshots (
+                id                      SERIAL PRIMARY KEY,
+                timestamp               TEXT NOT NULL,
+                interval_type           TEXT NOT NULL DEFAULT 'hourly',
+                equity                  DOUBLE PRECISION DEFAULT 0,
+                cash                    DOUBLE PRECISION DEFAULT 0,
+                open_positions          INTEGER DEFAULT 0,
+                unrealized_pnl          DOUBLE PRECISION DEFAULT 0,
+                realized_pnl_today      DOUBLE PRECISION DEFAULT 0,
+                trades_today            INTEGER DEFAULT 0,
+                wins                    INTEGER DEFAULT 0,
+                losses                  INTEGER DEFAULT 0,
+                win_rate                DOUBLE PRECISION DEFAULT 0,
+                max_drawdown            DOUBLE PRECISION DEFAULT 0,
+                strategy_breakdown_json TEXT DEFAULT '{}',
+                top_symbols_json        TEXT DEFAULT '[]'
+            )
+        ''')
+        cur.execute('''
+            CREATE INDEX IF NOT EXISTS idx_perf_snap_ts
+            ON performance_snapshots (timestamp)
+        ''')
+        cur.execute('''
+            CREATE INDEX IF NOT EXISTS idx_perf_snap_interval_ts
+            ON performance_snapshots (interval_type, timestamp)
+        ''')
+        # -- Intraday signals (persistent) --
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS signals_intraday (
+                id                SERIAL PRIMARY KEY,
+                timestamp         TEXT NOT NULL,
+                symbol            TEXT NOT NULL,
+                strategy_id       TEXT DEFAULT '',
+                signal            TEXT DEFAULT '',
+                direction         TEXT DEFAULT '',
+                confidence        DOUBLE PRECISION DEFAULT 0,
+                entry_price       DOUBLE PRECISION DEFAULT 0,
+                stop_price        DOUBLE PRECISION DEFAULT 0,
+                target_price      DOUBLE PRECISION DEFAULT 0,
+                risk_reward       DOUBLE PRECISION DEFAULT 0,
+                reason            TEXT DEFAULT '',
+                action            TEXT DEFAULT 'pending',
+                market_condition  TEXT DEFAULT '',
+                indicators_json   TEXT DEFAULT '{}',
+                trade_id          TEXT DEFAULT ''
+            )
+        ''')
+        cur.execute('''
+            CREATE INDEX IF NOT EXISTS idx_signals_ts
+            ON signals_intraday (timestamp)
+        ''')
+        cur.execute('''
+            CREATE INDEX IF NOT EXISTS idx_signals_sym_ts
+            ON signals_intraday (symbol, timestamp)
+        ''')
+        cur.execute('''
+            CREATE INDEX IF NOT EXISTS idx_signals_action_ts
+            ON signals_intraday (action, timestamp)
+        ''')
+        # -- Rejected candidates --
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS candidates_rejected (
+                id                SERIAL PRIMARY KEY,
+                timestamp         TEXT NOT NULL,
+                symbol            TEXT NOT NULL,
+                gap_pct           DOUBLE PRECISION DEFAULT 0,
+                vol_ratio         DOUBLE PRECISION DEFAULT 0,
+                score             DOUBLE PRECISION DEFAULT 0,
+                direction         TEXT DEFAULT '',
+                rejection_stage   TEXT NOT NULL,
+                rejection_reason  TEXT DEFAULT '',
+                catalyst          TEXT DEFAULT '',
+                prev_close        DOUBLE PRECISION DEFAULT 0,
+                open_price        DOUBLE PRECISION DEFAULT 0,
+                strategy_id       TEXT DEFAULT '',
+                market_condition  TEXT DEFAULT ''
+            )
+        ''')
+        cur.execute('''
+            CREATE INDEX IF NOT EXISTS idx_rejected_ts
+            ON candidates_rejected (timestamp)
+        ''')
+        cur.execute('''
+            CREATE INDEX IF NOT EXISTS idx_rejected_stage_ts
+            ON candidates_rejected (rejection_stage, timestamp)
+        ''')
+        cur.execute('''
+            CREATE INDEX IF NOT EXISTS idx_rejected_sym_ts
+            ON candidates_rejected (symbol, timestamp)
+        ''')
         self._conn.commit()
+        # Add strategy_id and setup_type columns if missing (migration for existing DBs)
+        try:
+            cur.execute('SELECT strategy_id FROM trades LIMIT 1')
+            cur.fetchone()
+        except psycopg2.Error:
+            self._conn.rollback()
+            cur.execute("ALTER TABLE trades ADD COLUMN strategy_id TEXT DEFAULT ''")
+            cur.execute("ALTER TABLE trades ADD COLUMN setup_type TEXT DEFAULT ''")
+            self._conn.commit()
+            logger.info("PriceDB: migrated trades table — added strategy_id, setup_type columns")
         # Migrate legacy JSONL journal files (one-time)
-        self._migrate_jsonl_to_sqlite()
+        self._migrate_jsonl_to_db()
         # Update query planner statistics (fast on subsequent runs)
-        self._conn.execute('ANALYZE')
+        cur.execute('ANALYZE')
+        self._conn.commit()
+        # Purge old audit data (api_calls > 90d, candidates_rejected > 1y)
+        self.cleanup_old_data()
+
+    _UPSERT_BARS_SQL = (
+        'INSERT INTO daily_bars (symbol, date, open, high, low, close, volume) '
+        'VALUES %s ON CONFLICT (symbol, date) DO UPDATE SET '
+        'open=EXCLUDED.open, high=EXCLUDED.high, low=EXCLUDED.low, '
+        'close=EXCLUDED.close, volume=EXCLUDED.volume'
+    )
 
     def upsert_bars(self, symbol: str, df: pd.DataFrame):
         """Insert or replace bars for a single symbol from a DataFrame."""
@@ -1083,11 +1796,11 @@ class PriceDB:
                 date_str = str(dt)[:10]
             rows.append((symbol, date_str, float(row['open']), float(row['high']),
                          float(row['low']), float(row['close']), float(row['volume'])))
-        self._conn.executemany(
-            'INSERT OR REPLACE INTO daily_bars (symbol, date, open, high, low, close, volume) '
-            'VALUES (?, ?, ?, ?, ?, ?, ?)', rows
-        )
-        self._conn.commit()
+        with self._lock:
+            psycopg2.extras.execute_values(
+                self._conn.cursor(), self._UPSERT_BARS_SQL, rows, page_size=5000
+            )
+            self._conn.commit()
 
     def upsert_bars_batch(self, dfs: Dict[str, pd.DataFrame]):
         """Bulk insert bars for many symbols at once (single transaction)."""
@@ -1104,11 +1817,11 @@ class PriceDB:
                 rows.append((symbol, date_str, float(row['open']), float(row['high']),
                              float(row['low']), float(row['close']), float(row['volume'])))
         if rows:
-            self._conn.executemany(
-                'INSERT OR REPLACE INTO daily_bars (symbol, date, open, high, low, close, volume) '
-                'VALUES (?, ?, ?, ?, ?, ?, ?)', rows
-            )
-            self._conn.commit()
+            with self._lock:
+                psycopg2.extras.execute_values(
+                    self._conn.cursor(), self._UPSERT_BARS_SQL, rows, page_size=5000
+                )
+                self._conn.commit()
         logger.info(f"PriceDB: upserted {len(rows)} rows for {len(dfs)} symbols")
 
     def upsert_bars_dicts(self, bars: List[dict]):
@@ -1120,18 +1833,19 @@ class PriceDB:
             return
         rows = [(b['symbol'], b['date'], b['open'], b['high'],
                  b['low'], b['close'], b['volume']) for b in bars]
-        self._conn.executemany(
-            'INSERT OR REPLACE INTO daily_bars (symbol, date, open, high, low, close, volume) '
-            'VALUES (?, ?, ?, ?, ?, ?, ?)', rows
-        )
-        self._conn.commit()
+        with self._lock:
+            psycopg2.extras.execute_values(
+                self._conn.cursor(), self._UPSERT_BARS_SQL, rows, page_size=5000
+            )
+            self._conn.commit()
         logger.info(f"PriceDB: upserted {len(rows)} rows from Polygon data")
 
     def get_bars(self, symbol: str, start: str, end: str) -> Optional[pd.DataFrame]:
         """Get daily bars for one symbol in [start, end] date range."""
-        cur = self._conn.execute(
+        cur = self._conn.cursor()
+        cur.execute(
             'SELECT date, open, high, low, close, volume FROM daily_bars '
-            'WHERE symbol = ? AND date >= ? AND date <= ? ORDER BY date',
+            'WHERE symbol = %s AND date >= %s AND date <= %s ORDER BY date',
             (symbol, start, end)
         )
         rows = cur.fetchall()
@@ -1149,18 +1863,17 @@ class PriceDB:
     def get_bars_batch(self, symbols: List[str], start: str, end: str) -> Dict[str, pd.DataFrame]:
         """Get daily bars for many symbols at once. Returns {symbol: DataFrame}."""
         results = {}
-        # Use chunked IN queries for efficiency
+        cur = self._conn.cursor()
         chunk_size = 500
         for i in range(0, len(symbols), chunk_size):
             chunk = symbols[i:i + chunk_size]
-            placeholders = ','.join('?' * len(chunk))
-            cur = self._conn.execute(
+            placeholders = ','.join(['%s'] * len(chunk))
+            cur.execute(
                 f'SELECT symbol, date, open, high, low, close, volume FROM daily_bars '
-                f'WHERE symbol IN ({placeholders}) AND date >= ? AND date <= ? ORDER BY symbol, date',
+                f'WHERE symbol IN ({placeholders}) AND date >= %s AND date <= %s ORDER BY symbol, date',
                 chunk + [start, end]
             )
             rows = cur.fetchall()
-            # Group by symbol
             for sym, group in groupby(rows, key=lambda r: r[0]):
                 bar_rows = list(group)
                 df = pd.DataFrame(bar_rows, columns=['symbol', 'datetime', 'open', 'high', 'low', 'close', 'volume'])
@@ -1176,35 +1889,79 @@ class PriceDB:
 
     def get_last_date(self, symbol: str) -> Optional[str]:
         """Get the most recent date stored for a symbol."""
-        cur = self._conn.execute(
-            'SELECT MAX(date) FROM daily_bars WHERE symbol = ?', (symbol,)
+        cur = self._conn.cursor()
+        cur.execute(
+            'SELECT MAX(date) FROM daily_bars WHERE symbol = %s', (symbol,)
         )
         row = cur.fetchone()
         return row[0] if row and row[0] else None
 
     def get_last_dates_batch(self) -> Dict[str, str]:
         """Get the most recent date for every symbol in the DB."""
-        cur = self._conn.execute(
+        cur = self._conn.cursor()
+        cur.execute(
             'SELECT symbol, MAX(date) FROM daily_bars GROUP BY symbol'
         )
         return {row[0]: row[1] for row in cur.fetchall()}
 
     def get_symbols(self) -> List[str]:
         """Get all symbols stored in the DB."""
-        cur = self._conn.execute('SELECT DISTINCT symbol FROM daily_bars ORDER BY symbol')
+        cur = self._conn.cursor()
+        cur.execute('SELECT DISTINCT symbol FROM daily_bars ORDER BY symbol')
         return [row[0] for row in cur.fetchall()]
 
+    def get_avg_volumes_sql(self, symbols: List[str], n_bars: int = 20) -> Dict[str, float]:
+        """Batch compute average volume for many symbols using a single SQL query.
+
+        Uses ROW_NUMBER() window function to get the last `n_bars` bars per symbol,
+        then AVG(volume). Returns {symbol: avg_volume}.
+        Filters to last 60 days of data to avoid scanning the full 25M-row table.
+        """
+        if not symbols:
+            return {}
+
+        cutoff_date = (datetime.now() - timedelta(days=60)).strftime('%Y-%m-%d')
+        results: Dict[str, float] = {}
+        chunk_size = 500
+        cur = self._conn.cursor()
+
+        for i in range(0, len(symbols), chunk_size):
+            chunk = symbols[i:i + chunk_size]
+            placeholders = ','.join(['%s'] * len(chunk))
+            sql = f"""
+                SELECT symbol, AVG(volume) as avg_vol
+                FROM (
+                    SELECT symbol, volume,
+                           ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY date DESC) as rn
+                    FROM daily_bars
+                    WHERE symbol IN ({placeholders}) AND date >= %s
+                ) sub
+                WHERE rn <= %s
+                GROUP BY symbol
+                HAVING COUNT(*) >= 5
+            """
+            try:
+                cur.execute(sql, chunk + [cutoff_date, n_bars])
+                for row in cur.fetchall():
+                    results[row[0]] = float(row[1])
+            except Exception as e:
+                logger.warning(f"get_avg_volumes_sql chunk error: {e}")
+
+        return results
+
     def get_stats(self) -> dict:
-        """Get DB statistics: symbol count, date range, file size."""
-        cur = self._conn.execute('SELECT COUNT(DISTINCT symbol), MIN(date), MAX(date), COUNT(*) FROM daily_bars')
+        """Get DB statistics: symbol count, date range, DB size."""
+        cur = self._conn.cursor()
+        cur.execute('SELECT COUNT(DISTINCT symbol), MIN(date), MAX(date), COUNT(*) FROM daily_bars')
         row = cur.fetchone()
         symbol_count = row[0] or 0
         min_date = row[1] or ''
         max_date = row[2] or ''
         total_rows = row[3] or 0
         try:
-            size_bytes = os.path.getsize(self.DB_PATH)
-        except OSError:
+            cur.execute("SELECT pg_database_size(current_database())")
+            size_bytes = cur.fetchone()[0] or 0
+        except Exception:
             size_bytes = 0
         return {
             'symbol_count': symbol_count,
@@ -1236,10 +1993,10 @@ class PriceDB:
         adj_start = (datetime.strptime(start, '%Y-%m-%d') - timedelta(days=60)).strftime('%Y-%m-%d')
 
         # --- Build gap filter clauses (shared by both paths) ---
-        gap_up_where = "(open - prev_close) / prev_close >= ?"
+        gap_up_where = "(open - prev_close) / prev_close >= %s"
         gap_up_params = [gap_threshold]
         if max_gap_pct:
-            gap_up_where += " AND (open - prev_close) / prev_close <= ?"
+            gap_up_where += " AND (open - prev_close) / prev_close <= %s"
             gap_up_params.append(max_gap_pct)
 
         if gap_down_config:
@@ -1250,8 +2007,8 @@ class PriceDB:
                 ({gap_up_where})
                 OR
                 (
-                    (prev_close - open) / prev_close >= ?
-                    AND (prev_close - open) / prev_close <= ?
+                    (prev_close - open) / prev_close >= %s
+                    AND (prev_close - open) / prev_close <= %s
                 )
             )
             """
@@ -1261,14 +2018,12 @@ class PriceDB:
             gap_params = gap_up_params
 
         # --- Choose scan strategy based on universe size ---
-        # Large universe (>2000): single pass over date range, no IN clause
-        # Small universe: chunked IN-clause for targeted scans
         use_full_scan = len(symbols) > 2000
 
         all_gaps = []
+        cur = self._conn.cursor()
 
         if use_full_scan:
-            # Build a set for post-filter (faster than 12K-element IN clause)
             symbol_set = set(symbols)
             sql = f"""
             WITH w AS (
@@ -1280,32 +2035,31 @@ class PriceDB:
                            ROWS BETWEEN {vol_window} PRECEDING AND 1 PRECEDING
                        ) AS avg_vol
                 FROM daily_bars
-                WHERE date >= ? AND date <= ?
+                WHERE date >= %s AND date <= %s
             )
             SELECT symbol, date, open, high, low, close, volume,
                    prev_close, prev_volume, avg_vol
             FROM w
-            WHERE date >= ?
+            WHERE date >= %s
               AND prev_close > 0
               AND open > 0
               AND {gap_filter}
-              AND open >= ?
-              AND avg_vol >= ?
+              AND open >= %s
+              AND avg_vol >= %s
             ORDER BY date, symbol
             """
             params = [adj_start, end, start] + gap_params + [min_price, min_avg_volume]
-            cur = self._conn.execute(sql, params)
+            cur.execute(sql, params)
             for row in cur:
                 sym = row[0]
                 if sym not in symbol_set:
                     continue
                 all_gaps.append(self._gap_row_to_dict(row))
         else:
-            # Chunked approach for small symbol lists
             chunk_size = 500
             for i in range(0, len(symbols), chunk_size):
                 chunk = symbols[i:i + chunk_size]
-                placeholders = ','.join('?' * len(chunk))
+                placeholders = ','.join(['%s'] * len(chunk))
                 sql = f"""
                 WITH w AS (
                     SELECT symbol, date, open, high, low, close, volume,
@@ -1316,21 +2070,21 @@ class PriceDB:
                                ROWS BETWEEN {vol_window} PRECEDING AND 1 PRECEDING
                            ) AS avg_vol
                     FROM daily_bars
-                    WHERE symbol IN ({placeholders}) AND date >= ? AND date <= ?
+                    WHERE symbol IN ({placeholders}) AND date >= %s AND date <= %s
                 )
                 SELECT symbol, date, open, high, low, close, volume,
                        prev_close, prev_volume, avg_vol
                 FROM w
-                WHERE date >= ?
+                WHERE date >= %s
                   AND prev_close > 0
                   AND open > 0
                   AND {gap_filter}
-                  AND open >= ?
-                  AND avg_vol >= ?
+                  AND open >= %s
+                  AND avg_vol >= %s
                 ORDER BY date, symbol
                 """
                 params = chunk + [adj_start, end, start] + gap_params + [min_price, min_avg_volume]
-                cur = self._conn.execute(sql, params)
+                cur.execute(sql, params)
                 for row in cur:
                     all_gaps.append(self._gap_row_to_dict(row))
 
@@ -1339,32 +2093,38 @@ class PriceDB:
     # ── Trade persistence ─────────────────────────────────────────────
 
     def insert_trade(self, trade) -> bool:
-        """INSERT OR IGNORE a TradeRecord (or dict) into the trades table.
+        """INSERT a TradeRecord (or dict) into the trades table, ignoring duplicates.
         Returns True if a row was inserted, False if duplicate/ignored."""
         d = trade if isinstance(trade, dict) else asdict(trade)
         try:
-            cur = self._conn.execute(
-                '''INSERT OR IGNORE INTO trades
+            cur = self._conn.cursor()
+            cur.execute(
+                '''INSERT INTO trades
                    (symbol, entry_price, exit_price, shares, pnl, pnl_pct,
                     entry_time, exit_time, exit_reason, holding_minutes,
-                    side, gap_pct, vol_ratio, score, catalyst)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                    side, gap_pct, vol_ratio, score, catalyst,
+                    strategy_id, setup_type)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                   ON CONFLICT (symbol, entry_time, exit_time, shares, exit_reason) DO NOTHING''',
                 (d['symbol'], d['entry_price'], d['exit_price'], d['shares'],
                  d['pnl'], d['pnl_pct'], d['entry_time'], d['exit_time'],
                  d['exit_reason'], d.get('holding_minutes', 0),
                  d.get('side', 'short'), d.get('gap_pct', 0.0),
                  d.get('vol_ratio', 0.0), d.get('score', 0.0),
-                 d.get('catalyst', '')))
+                 d.get('catalyst', ''),
+                 d.get('strategy_id', ''), d.get('setup_type', '')))
             self._conn.commit()
             return cur.rowcount > 0
         except Exception as e:
+            self._conn.rollback()
             logger.error(f"PriceDB.insert_trade failed: {e}")
             return False
 
     def load_all_trades(self) -> List[dict]:
         """Load all trades ordered by trade_id (insertion order)."""
         try:
-            cur = self._conn.execute(
+            cur = self._conn.cursor()
+            cur.execute(
                 '''SELECT symbol, entry_price, exit_price, shares, pnl, pnl_pct,
                           entry_time, exit_time, exit_reason, holding_minutes,
                           side, gap_pct, vol_ratio, score, catalyst
@@ -1384,27 +2144,27 @@ class PriceDB:
             where_clauses = []
             params: list = []
             if start_date:
-                where_clauses.append('entry_time >= ?')
+                where_clauses.append('entry_time >= %s')
                 params.append(start_date)
             if end_date:
-                where_clauses.append('entry_time <= ?')
+                where_clauses.append('entry_time <= %s')
                 params.append(end_date)
             if symbol:
-                where_clauses.append('symbol = ?')
+                where_clauses.append('symbol = %s')
                 params.append(symbol.upper())
             where_sql = (' WHERE ' + ' AND '.join(where_clauses)) if where_clauses else ''
 
-            # Total count
-            total = self._conn.execute(
-                f'SELECT COUNT(*) FROM trades{where_sql}', params).fetchone()[0]
+            cur = self._conn.cursor()
+            cur.execute(
+                f'SELECT COUNT(*) FROM trades{where_sql}', params)
+            total = cur.fetchone()[0]
 
-            # Paginated results (newest first)
-            cur = self._conn.execute(
+            cur.execute(
                 f'''SELECT symbol, entry_price, exit_price, shares, pnl, pnl_pct,
                            entry_time, exit_time, exit_reason, holding_minutes,
                            side, gap_pct, vol_ratio, score, catalyst
                     FROM trades{where_sql}
-                    ORDER BY trade_id DESC LIMIT ? OFFSET ?''',
+                    ORDER BY trade_id DESC LIMIT %s OFFSET %s''',
                 params + [limit, offset])
             cols = ['symbol', 'entry_price', 'exit_price', 'shares', 'pnl', 'pnl_pct',
                     'entry_time', 'exit_time', 'exit_reason', 'holding_minutes',
@@ -1418,25 +2178,30 @@ class PriceDB:
     def count_trades(self) -> int:
         """Return total number of trades in the database."""
         try:
-            return self._conn.execute('SELECT COUNT(*) FROM trades').fetchone()[0]
+            cur = self._conn.cursor()
+            cur.execute('SELECT COUNT(*) FROM trades')
+            return cur.fetchone()[0]
         except Exception:
             return 0
 
     # -- Journal entry persistence --
 
     def insert_journal(self, entry: dict):
-        """Insert a journal entry. Uses INSERT OR IGNORE for idempotency."""
+        """Insert a journal entry, ignoring duplicates."""
         try:
-            self._conn.execute('''
-                INSERT OR IGNORE INTO journal_entries
+            cur = self._conn.cursor()
+            cur.execute('''
+                INSERT INTO journal_entries
                 (timestamp, entry_type, source, symbol, content, data, llm_call)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (timestamp, entry_type, source, symbol, content) DO NOTHING
             ''', (entry['timestamp'], entry['entry_type'], entry['source'],
                   entry.get('symbol', ''), entry['content'],
                   json.dumps(entry.get('data', {}), default=str),
                   1 if entry.get('llm_call') else 0))
             self._conn.commit()
         except Exception as e:
+            self._conn.rollback()
             logger.error(f"Journal insert failed: {e}")
 
     def query_journal(self, date: str = '', n: int = 50, entry_type: str = '') -> list:
@@ -1444,16 +2209,17 @@ class PriceDB:
         try:
             where, params = [], []
             if date:
-                where.append('timestamp LIKE ?')
+                where.append('timestamp LIKE %s')
                 params.append(f'{date}%')
             if entry_type:
-                where.append('entry_type = ?')
+                where.append('entry_type = %s')
                 params.append(entry_type)
             where_sql = (' WHERE ' + ' AND '.join(where)) if where else ''
-            cur = self._conn.execute(
+            cur = self._conn.cursor()
+            cur.execute(
                 f'''SELECT timestamp, entry_type, source, symbol, content, data, llm_call
                     FROM journal_entries{where_sql}
-                    ORDER BY id DESC LIMIT ?''',
+                    ORDER BY id DESC LIMIT %s''',
                 params + [n])
             cols = ['timestamp', 'entry_type', 'source', 'symbol', 'content', 'data', 'llm_call']
             rows = []
@@ -1474,9 +2240,10 @@ class PriceDB:
     def get_journal_stats(self, date: str) -> dict:
         """Count journal entries by type for a date."""
         try:
-            cur = self._conn.execute(
+            cur = self._conn.cursor()
+            cur.execute(
                 '''SELECT entry_type, COUNT(*) FROM journal_entries
-                   WHERE timestamp LIKE ? GROUP BY entry_type''',
+                   WHERE timestamp LIKE %s GROUP BY entry_type''',
                 (f'{date}%',))
             counts = dict(cur.fetchall())
             total = sum(counts.values())
@@ -1491,16 +2258,19 @@ class PriceDB:
         """Insert a MarketEvent into the database."""
         try:
             wall_ts = datetime.now(ET).strftime('%Y-%m-%dT%H:%M:%S')
-            self._conn.execute('''
-                INSERT OR IGNORE INTO market_events
+            cur = self._conn.cursor()
+            cur.execute('''
+                INSERT INTO market_events
                 (timestamp, mono_time, event_type, tier, symbol, description, data, dedup_key)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (timestamp, event_type, symbol, dedup_key) DO NOTHING
             ''', (wall_ts, event.timestamp, event.event_type, event.tier,
                   event.symbol or '', event.description or '',
                   json.dumps(event.data or {}, default=str),
                   event.dedup_key or ''))
             self._conn.commit()
         except Exception as e:
+            self._conn.rollback()
             logger.error(f"Event insert failed: {e}")
 
     def query_events(self, date: str = '', n: int = 50, event_type: str = '') -> list:
@@ -1508,17 +2278,18 @@ class PriceDB:
         try:
             where, params = [], []
             if date:
-                where.append('timestamp LIKE ?')
+                where.append('timestamp LIKE %s')
                 params.append(f'{date}%')
             if event_type:
-                where.append('event_type = ?')
+                where.append('event_type = %s')
                 params.append(event_type)
             where_sql = (' WHERE ' + ' AND '.join(where)) if where else ''
-            cur = self._conn.execute(
+            cur = self._conn.cursor()
+            cur.execute(
                 f'''SELECT timestamp, mono_time, event_type, tier, symbol,
                            description, data, dedup_key
                     FROM market_events{where_sql}
-                    ORDER BY id DESC LIMIT ?''',
+                    ORDER BY id DESC LIMIT %s''',
                 params + [n])
             cols = ['timestamp', 'mono_time', 'event_type', 'tier', 'symbol',
                     'description', 'data', 'dedup_key']
@@ -1541,12 +2312,14 @@ class PriceDB:
     def insert_llm_call(self, call_data: dict):
         """Insert an LLM call log entry."""
         try:
-            self._conn.execute('''
-                INSERT OR IGNORE INTO llm_calls
+            cur = self._conn.cursor()
+            cur.execute('''
+                INSERT INTO llm_calls
                 (timestamp, conversation_role, priority, model,
                  prompt_tokens, response_tokens, duration_ms,
                  success, budget_5min, budget_1hr, response_summary)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (timestamp, conversation_role) DO NOTHING
             ''', (call_data['timestamp'], call_data['conversation_role'],
                   call_data['priority'], call_data.get('model', ''),
                   call_data.get('prompt_tokens', 0), call_data.get('response_tokens', 0),
@@ -1555,6 +2328,7 @@ class PriceDB:
                   call_data.get('response_summary', '')[:200]))
             self._conn.commit()
         except Exception as e:
+            self._conn.rollback()
             logger.error(f"LLM call insert failed: {e}")
 
     def query_llm_calls(self, date: str = '', n: int = 50) -> list:
@@ -1562,15 +2336,16 @@ class PriceDB:
         try:
             where, params = [], []
             if date:
-                where.append('timestamp LIKE ?')
+                where.append('timestamp LIKE %s')
                 params.append(f'{date}%')
             where_sql = (' WHERE ' + ' AND '.join(where)) if where else ''
-            cur = self._conn.execute(
+            cur = self._conn.cursor()
+            cur.execute(
                 f'''SELECT timestamp, conversation_role, priority, model,
                            prompt_tokens, response_tokens, duration_ms,
                            success, budget_5min, budget_1hr, response_summary
                     FROM llm_calls{where_sql}
-                    ORDER BY id DESC LIMIT ?''',
+                    ORDER BY id DESC LIMIT %s''',
                 params + [n])
             cols = ['timestamp', 'conversation_role', 'priority', 'model',
                     'prompt_tokens', 'response_tokens', 'duration_ms',
@@ -1585,10 +2360,11 @@ class PriceDB:
     def get_llm_stats(self, date: str) -> dict:
         """Total calls, avg duration, success rate for a date."""
         try:
-            cur = self._conn.execute(
+            cur = self._conn.cursor()
+            cur.execute(
                 '''SELECT COUNT(*), AVG(duration_ms), SUM(success),
                           SUM(prompt_tokens), SUM(response_tokens)
-                   FROM llm_calls WHERE timestamp LIKE ?''',
+                   FROM llm_calls WHERE timestamp LIKE %s''',
                 (f'{date}%',))
             row = cur.fetchone()
             total = row[0] or 0
@@ -1607,14 +2383,295 @@ class PriceDB:
             return {'date': date, 'total_calls': 0, 'avg_duration_ms': 0,
                     'success_rate': 0, 'total_prompt_tokens': 0, 'total_response_tokens': 0}
 
+    # -- API call logging --
+
+    def insert_api_call(self, endpoint: str, method: str = 'GET',
+                        symbols: str = '', params_json: str = '{}',
+                        status_code: int = 0, response_time_ms: float = 0,
+                        error: str = '', rate_limit_remaining: int = -1):
+        """Log an API call to the database."""
+        try:
+            cur = self._conn.cursor()
+            cur.execute(
+                '''INSERT INTO api_calls
+                   (timestamp, endpoint, method, symbols, params_json,
+                    status_code, response_time_ms, error, rate_limit_remaining)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)''',
+                (datetime.now(ET).isoformat(), endpoint, method, symbols,
+                 params_json, status_code, round(response_time_ms, 1),
+                 error, rate_limit_remaining))
+            self._conn.commit()
+        except Exception as e:
+            self._conn.rollback()
+            logger.debug(f"insert_api_call failed: {e}")
+
+    def query_api_calls(self, date: str = '', endpoint: str = '', n: int = 100) -> list:
+        """Query API calls with optional filters."""
+        try:
+            clauses, params = [], []
+            if date:
+                clauses.append("timestamp LIKE %s")
+                params.append(f"{date}%")
+            if endpoint:
+                clauses.append("endpoint LIKE %s")
+                params.append(f"%{endpoint}%")
+            where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+            cur = self._conn.cursor()
+            cur.execute(
+                f"SELECT * FROM api_calls {where} ORDER BY id DESC LIMIT %s",
+                params + [n])
+            cols = [d[0] for d in cur.description]
+            return [dict(zip(cols, row)) for row in cur.fetchall()]
+        except Exception as e:
+            logger.error(f"query_api_calls failed: {e}")
+            return []
+
+    def get_api_call_stats(self, date: str) -> dict:
+        """Aggregate stats for API calls on a given date."""
+        try:
+            cur = self._conn.cursor()
+            cur.execute(
+                '''SELECT COUNT(*), AVG(response_time_ms),
+                          SUM(CASE WHEN status_code BETWEEN 200 AND 299 THEN 1 ELSE 0 END),
+                          SUM(CASE WHEN status_code = 429 THEN 1 ELSE 0 END),
+                          SUM(CASE WHEN error != '' THEN 1 ELSE 0 END)
+                   FROM api_calls WHERE timestamp LIKE %s''',
+                (f'{date}%',))
+            row = cur.fetchone()
+            total = row[0] or 0
+            return {
+                'date': date, 'total_calls': total,
+                'avg_response_ms': round(row[1] or 0, 1),
+                'success_count': row[2] or 0,
+                'rate_limited': row[3] or 0,
+                'error_count': row[4] or 0,
+            }
+        except Exception as e:
+            logger.error(f"get_api_call_stats failed: {e}")
+            return {'date': date, 'total_calls': 0}
+
+    # -- Performance snapshots --
+
+    def insert_performance_snapshot(self, interval_type: str, equity: float = 0,
+                                     cash: float = 0, open_positions: int = 0,
+                                     unrealized_pnl: float = 0, realized_pnl_today: float = 0,
+                                     trades_today: int = 0, wins: int = 0, losses: int = 0,
+                                     win_rate: float = 0, max_drawdown: float = 0,
+                                     strategy_breakdown_json: str = '{}',
+                                     top_symbols_json: str = '[]'):
+        """Record a performance snapshot."""
+        try:
+            cur = self._conn.cursor()
+            cur.execute(
+                '''INSERT INTO performance_snapshots
+                   (timestamp, interval_type, equity, cash, open_positions,
+                    unrealized_pnl, realized_pnl_today, trades_today,
+                    wins, losses, win_rate, max_drawdown,
+                    strategy_breakdown_json, top_symbols_json)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)''',
+                (datetime.now(ET).isoformat(), interval_type,
+                 round(equity, 2), round(cash, 2), open_positions,
+                 round(unrealized_pnl, 2), round(realized_pnl_today, 2),
+                 trades_today, wins, losses, round(win_rate, 4),
+                 round(max_drawdown, 4), strategy_breakdown_json, top_symbols_json))
+            self._conn.commit()
+        except Exception as e:
+            self._conn.rollback()
+            logger.debug(f"insert_performance_snapshot failed: {e}")
+
+    def query_performance_snapshots(self, date: str = '', interval_type: str = '',
+                                      n: int = 50) -> list:
+        """Query performance snapshots with optional filters."""
+        try:
+            clauses, params = [], []
+            if date:
+                clauses.append("timestamp LIKE %s")
+                params.append(f"{date}%")
+            if interval_type:
+                clauses.append("interval_type = %s")
+                params.append(interval_type)
+            where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+            cur = self._conn.cursor()
+            cur.execute(
+                f"SELECT * FROM performance_snapshots {where} ORDER BY id DESC LIMIT %s",
+                params + [n])
+            cols = [d[0] for d in cur.description]
+            return [dict(zip(cols, row)) for row in cur.fetchall()]
+        except Exception as e:
+            logger.error(f"query_performance_snapshots failed: {e}")
+            return []
+
+    # -- Intraday signals --
+
+    def insert_signal(self, timestamp: str, symbol: str, strategy_id: str = '',
+                      signal: str = '', direction: str = '', confidence: float = 0,
+                      entry_price: float = 0, stop_price: float = 0,
+                      target_price: float = 0, risk_reward: float = 0,
+                      reason: str = '', action: str = 'pending',
+                      market_condition: str = '', indicators_json: str = '{}',
+                      trade_id: str = '') -> Optional[int]:
+        """Insert a signal record. Returns the row id."""
+        try:
+            cur = self._conn.cursor()
+            cur.execute(
+                '''INSERT INTO signals_intraday
+                   (timestamp, symbol, strategy_id, signal, direction, confidence,
+                    entry_price, stop_price, target_price, risk_reward,
+                    reason, action, market_condition, indicators_json, trade_id)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                   RETURNING id''',
+                (timestamp, symbol, strategy_id, signal, direction,
+                 round(confidence, 4), round(entry_price, 2), round(stop_price, 2),
+                 round(target_price, 2), round(risk_reward, 2),
+                 reason, action, market_condition, indicators_json, trade_id))
+            row = cur.fetchone()
+            self._conn.commit()
+            return row[0] if row else None
+        except Exception as e:
+            self._conn.rollback()
+            logger.debug(f"insert_signal failed: {e}")
+            return None
+
+    def update_signal_action(self, signal_db_id: int, action: str,
+                              reason: str = '', trade_id: str = ''):
+        """Update a signal's action (entered/skipped/skipped_capacity)."""
+        try:
+            cur = self._conn.cursor()
+            if trade_id:
+                cur.execute(
+                    "UPDATE signals_intraday SET action=%s, reason=%s, trade_id=%s WHERE id=%s",
+                    (action, reason, trade_id, signal_db_id))
+            else:
+                cur.execute(
+                    "UPDATE signals_intraday SET action=%s, reason=%s WHERE id=%s",
+                    (action, reason, signal_db_id))
+            self._conn.commit()
+        except Exception as e:
+            self._conn.rollback()
+            logger.debug(f"update_signal_action failed: {e}")
+
+    def query_signals(self, date: str = '', symbol: str = '', action: str = '',
+                      n: int = 100) -> list:
+        """Query intraday signals with optional filters."""
+        try:
+            clauses, params = [], []
+            if date:
+                clauses.append("timestamp LIKE %s")
+                params.append(f"{date}%")
+            if symbol:
+                clauses.append("symbol = %s")
+                params.append(symbol.upper())
+            if action:
+                clauses.append("action = %s")
+                params.append(action)
+            where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+            cur = self._conn.cursor()
+            cur.execute(
+                f"SELECT * FROM signals_intraday {where} ORDER BY id DESC LIMIT %s",
+                params + [n])
+            cols = [d[0] for d in cur.description]
+            return [dict(zip(cols, row)) for row in cur.fetchall()]
+        except Exception as e:
+            logger.error(f"query_signals failed: {e}")
+            return []
+
+    # -- Rejected candidates --
+
+    def insert_rejected_candidate(self, symbol: str, gap_pct: float = 0,
+                                   vol_ratio: float = 0, score: float = 0,
+                                   direction: str = '', rejection_stage: str = '',
+                                   rejection_reason: str = '', catalyst: str = '',
+                                   prev_close: float = 0, open_price: float = 0,
+                                   strategy_id: str = '', market_condition: str = ''):
+        """Log a rejected candidate."""
+        try:
+            cur = self._conn.cursor()
+            cur.execute(
+                '''INSERT INTO candidates_rejected
+                   (timestamp, symbol, gap_pct, vol_ratio, score, direction,
+                    rejection_stage, rejection_reason, catalyst,
+                    prev_close, open_price, strategy_id, market_condition)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)''',
+                (datetime.now(ET).isoformat(), symbol,
+                 round(gap_pct, 4), round(vol_ratio, 2), round(score, 2),
+                 direction, rejection_stage, rejection_reason, catalyst,
+                 round(prev_close, 2), round(open_price, 2),
+                 strategy_id, market_condition))
+            self._conn.commit()
+        except Exception as e:
+            self._conn.rollback()
+            logger.debug(f"insert_rejected_candidate failed: {e}")
+
+    def query_rejected_candidates(self, date: str = '', stage: str = '',
+                                    symbol: str = '', n: int = 100) -> list:
+        """Query rejected candidates with optional filters."""
+        try:
+            clauses, params = [], []
+            if date:
+                clauses.append("timestamp LIKE %s")
+                params.append(f"{date}%")
+            if stage:
+                clauses.append("rejection_stage = %s")
+                params.append(stage)
+            if symbol:
+                clauses.append("symbol = %s")
+                params.append(symbol.upper())
+            where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+            cur = self._conn.cursor()
+            cur.execute(
+                f"SELECT * FROM candidates_rejected {where} ORDER BY id DESC LIMIT %s",
+                params + [n])
+            cols = [d[0] for d in cur.description]
+            return [dict(zip(cols, row)) for row in cur.fetchall()]
+        except Exception as e:
+            logger.error(f"query_rejected_candidates failed: {e}")
+            return []
+
+    def get_rejected_stats(self, date: str) -> dict:
+        """Aggregate rejection stats for a given date."""
+        try:
+            cur = self._conn.cursor()
+            cur.execute(
+                '''SELECT rejection_stage, COUNT(*)
+                   FROM candidates_rejected WHERE timestamp LIKE %s
+                   GROUP BY rejection_stage''',
+                (f'{date}%',))
+            by_stage = {row[0]: row[1] for row in cur.fetchall()}
+            return {'date': date, 'total': sum(by_stage.values()), 'by_stage': by_stage}
+        except Exception as e:
+            logger.error(f"get_rejected_stats failed: {e}")
+            return {'date': date, 'total': 0, 'by_stage': {}}
+
+    # -- Cleanup old audit data --
+
+    def cleanup_old_data(self):
+        """Purge api_calls > 90 days and candidates_rejected > 1 year."""
+        try:
+            cutoff_90d = (datetime.now(ET) - timedelta(days=90)).strftime('%Y-%m-%d')
+            cutoff_1y = (datetime.now(ET) - timedelta(days=365)).strftime('%Y-%m-%d')
+            cur = self._conn.cursor()
+            cur.execute(
+                "DELETE FROM api_calls WHERE timestamp < %s", (cutoff_90d,))
+            deleted_api = cur.rowcount
+            cur.execute(
+                "DELETE FROM candidates_rejected WHERE timestamp < %s", (cutoff_1y,))
+            deleted_rej = cur.rowcount
+            self._conn.commit()
+            if deleted_api or deleted_rej:
+                logger.info(f"PriceDB cleanup: {deleted_api} old api_calls, "
+                           f"{deleted_rej} old rejected candidates purged")
+        except Exception as e:
+            self._conn.rollback()
+            logger.debug(f"cleanup_old_data failed: {e}")
+
     # -- JSONL migration (one-time) --
 
-    def _migrate_jsonl_to_sqlite(self):
+    def _migrate_jsonl_to_db(self):
         """Migrate legacy JSONL journal files into journal_entries table."""
         import glob as _glob
-        # Check if already migrated
         try:
-            cur = self._conn.execute('SELECT COUNT(*) FROM journal_entries')
+            cur = self._conn.cursor()
+            cur.execute('SELECT COUNT(*) FROM journal_entries')
             if cur.fetchone()[0] > 0:
                 return  # already have data, skip
         except Exception:
@@ -1646,17 +2703,20 @@ class PriceDB:
                         except json.JSONDecodeError:
                             continue
                     if batch:
-                        self._conn.executemany('''
-                            INSERT OR IGNORE INTO journal_entries
-                            (timestamp, entry_type, source, symbol, content, data, llm_call)
-                            VALUES (?, ?, ?, ?, ?, ?, ?)
-                        ''', batch)
+                        psycopg2.extras.execute_values(
+                            self._conn.cursor(),
+                            '''INSERT INTO journal_entries
+                               (timestamp, entry_type, source, symbol, content, data, llm_call)
+                               VALUES %s
+                               ON CONFLICT (timestamp, entry_type, source, symbol, content) DO NOTHING''',
+                            batch, page_size=1000
+                        )
                         total_migrated += len(batch)
             except Exception as e:
                 logger.warning(f"JSONL migration failed for {fpath}: {e}")
         if total_migrated:
             self._conn.commit()
-            logger.info(f"Migrated {total_migrated} journal entries from {len(files)} JSONL files to SQLite")
+            logger.info(f"Migrated {total_migrated} journal entries from {len(files)} JSONL files to PostgreSQL")
 
     @staticmethod
     def _gap_row_to_dict(row) -> dict:
@@ -1742,7 +2802,7 @@ class GapFadeConfig:
     gap_threshold: float = 0.07        # minimum gap-up % to consider (7%)
     max_gap_pct: float = 0.50          # maximum gap-up % to consider (50%) — filter out M&A/catalyst mega-gaps
     vol_ratio_max: float = 3.0         # only short when gap-day vol < this × avg vol
-    min_avg_volume: int = 5_000         # minimum 20d avg daily volume (IEX ~2-3% of consolidated)
+    min_avg_volume: int = 50_000        # minimum 20d avg daily volume (reject illiquid stocks)
     min_price: float = 10.0            # minimum stock price (low-price stocks have wide spreads/slippage)
 
     # Position sizing
@@ -1803,7 +2863,7 @@ class GapFadeConfig:
 
     # Circuit breakers
     daily_loss_limit: float = 0.02     # halt if daily P&L <= -2%
-    max_consec_losses: int = 3         # pause after N consecutive losses
+    max_consec_losses: int = 2         # pause after 2 consecutive losses (prevents cascading)
     max_drawdown: float = 0.05         # halt if drawdown >= 5%
 
     # Drawdown circuit breakers (backtest + live)
@@ -1865,6 +2925,16 @@ class GapFadeConfig:
     # Strategy plugin
     active_strategy: str = 'classic_gap_fade'  # strategy ID from registry
 
+    # Intraday strategies
+    intraday_enabled: bool = True            # master toggle
+    intraday_strategies: str = 'orb_breakout,momentum_surge,pullback_entry,range_trade'
+    intraday_scan_interval: int = 30         # seconds between scans
+    intraday_watchlist_size: int = 50        # max symbols to watch
+    intraday_max_entries: int = 3            # max intraday entries per day
+    intraday_risk_pct: float = 0.01          # 1% risk per intraday trade
+    intraday_daily_loss_limit: float = 0.02  # 2% max daily loss from intraday
+    intraday_max_position_pct: float = 0.20  # max 20% of equity per intraday position
+
     def __post_init__(self):
         if not self.llm_api_key:
             self.llm_api_key = os.environ.get('LLM_API_KEY', '')
@@ -1907,6 +2977,7 @@ class GapPosition:
     stop_order_id: str = ''           # Alpaca broker-side stop order ID
     direction: str = 'short'          # 'short' or 'long'
     llm_hold_overrides: int = 0       # how many times LLM has overridden stop on this position
+    close_on_open: bool = False       # True = failed EOD close, liquidate at next market open
     # Profit tracking (updated on every tick/check)
     high_water_pnl_pct: float = 0.0   # best unrealized P&L % seen
     high_water_price: float = 0.0     # price at high water mark
@@ -1999,6 +3070,9 @@ class TradeRecord:
     vol_ratio: float = 0.0
     score: float = 0.0
     catalyst: str = ''
+    # Intraday strategy tracking
+    strategy_id: str = ''              # e.g. 'orb_breakout', 'momentum_surge', '' for gap fade
+    setup_type: str = ''               # e.g. 'orb_breakout', 'pullback_entry'
 
 
 @dataclass
@@ -2347,54 +3421,61 @@ class GapScanner:
             return UNIVERSE
 
     def _fetch_volume_for_candidates(self, symbols: List[str]) -> Dict[str, float]:
-        """Fetch 20d avg volume only for symbols that have a gap. Much faster than caching all."""
+        """Fetch 20d avg volume for gap candidates.
+
+        Flow: memory cache → SQL batch → parallel API batch for misses.
+        """
         today = datetime.now(ET).strftime('%Y-%m-%d')
         end = datetime.now(ET)
-        start = end - timedelta(days=45)
-        start_str = start.strftime('%Y-%m-%d')
+        start_str = (end - timedelta(days=45)).strftime('%Y-%m-%d')
         end_str = end.strftime('%Y-%m-%d')
 
         avg_volumes = {}
-        need_api = []
-        db = get_price_db()
+        need_sql = []
 
+        # Step 1: In-memory cache hits
         for sym in symbols:
-            # Use in-memory cache if available today
             if self._cache_date == today and sym in self._avg_volumes:
                 avg_volumes[sym] = self._avg_volumes[sym]
-                continue
-            # Try local DB
-            df = db.get_bars(sym, start_str, end_str)
-            if df is not None and len(df) >= 5:
-                vol_20 = df['volume'].tail(20).mean()
-                avg_volumes[sym] = vol_20
-                self._avg_volumes[sym] = vol_20
             else:
-                need_api.append(sym)
+                need_sql.append(sym)
 
-        # Fall back to API for symbols not in DB
-        for i, sym in enumerate(need_api):
-            try:
-                df = fetch_alpaca_bars(sym, start_str, end_str, '1Day', 'iex')
-                if df is not None and len(df) >= 5:
-                    vol_20 = df['volume'].tail(20).mean()
-                    avg_volumes[sym] = vol_20
-                    self._avg_volumes[sym] = vol_20
-                    # Cache into DB
-                    db.upsert_bars(sym, df)
-            except Exception:
-                pass
+        # Step 2: SQL batch lookup for all cache misses
+        if need_sql:
+            db = get_price_db()
+            t0 = _time.time()
+            sql_vols = db.get_avg_volumes_sql(need_sql)
+            elapsed = _time.time() - t0
+            logger.info(f"SQL volume lookup: {len(sql_vols)}/{len(need_sql)} symbols in {elapsed:.2f}s")
 
-            # Rate limit
-            if (i + 1) % 80 == 0:
-                _time.sleep(1)
+            for sym, vol in sql_vols.items():
+                avg_volumes[sym] = vol
+                self._avg_volumes[sym] = vol
+
+            # Step 3: API batch fetch for symbols not in DB
+            need_api = [s for s in need_sql if s not in sql_vols]
+            if need_api:
+                logger.info(f"Fetching {len(need_api)} symbols from API (not in DB)...")
+                t0 = _time.time()
+                api_dfs = _fetch_bars_multi_parallel(need_api, start_str, end_str, '1Day', 'iex')
+                elapsed = _time.time() - t0
+                logger.info(f"API volume fetch: {len(api_dfs)}/{len(need_api)} symbols in {elapsed:.1f}s")
+
+                for sym, df in api_dfs.items():
+                    if df is not None and len(df) >= 5:
+                        vol_20 = float(df['volume'].tail(20).mean())
+                        avg_volumes[sym] = vol_20
+                        self._avg_volumes[sym] = vol_20
+                        # Cache into DB for next time
+                        db.upsert_bars(sym, df)
 
         self._cache_date = today
         return avg_volumes
 
     def _ensure_volume_cache(self):
-        """Fetch 30d daily bars to compute 20d avg volume (cached per day).
-        Used for study/custom universes where the set is small enough to pre-cache.
+        """Build 20d avg volume cache for small universes (study/custom).
+
+        Flow: memory cache → SQL batch → parallel API batch for misses.
         """
         universe = self._resolve_universe()
         today = datetime.now(ET).strftime('%Y-%m-%d')
@@ -2402,27 +3483,37 @@ class GapScanner:
             return
 
         logger.info(f"Building volume cache for {len(universe)} symbols...")
+        t_start = _time.time()
         end = datetime.now(ET)
-        start = end - timedelta(days=45)
-        start_str = start.strftime('%Y-%m-%d')
+        start_str = (end - timedelta(days=45)).strftime('%Y-%m-%d')
         end_str = end.strftime('%Y-%m-%d')
 
-        for i, sym in enumerate(universe):
-            try:
-                df = fetch_alpaca_bars(sym, start_str, end_str, '1Day', 'iex')
+        db = get_price_db()
+
+        # Step 1: SQL batch lookup (instant for all DB-cached symbols)
+        sql_vols = db.get_avg_volumes_sql(universe)
+        logger.info(f"SQL cache hit: {len(sql_vols)}/{len(universe)} symbols")
+
+        for sym, vol in sql_vols.items():
+            self._avg_volumes[sym] = vol
+
+        # Step 2: Parallel API batch for missing symbols
+        need_api = [s for s in universe if s not in sql_vols]
+        if need_api:
+            logger.info(f"Fetching {len(need_api)} symbols from API...")
+            api_dfs = _fetch_bars_multi_parallel(need_api, start_str, end_str, '1Day', 'iex')
+
+            for sym, df in api_dfs.items():
                 if df is not None and len(df) >= 5:
-                    vol_20 = df['volume'].tail(20).mean()
+                    vol_20 = float(df['volume'].tail(20).mean())
                     self._avg_volumes[sym] = vol_20
                     self._prev_closes[sym] = float(df['close'].iloc[-1])
-            except Exception:
-                pass
-
-            # Rate limit
-            if (i + 1) % 80 == 0:
-                _time.sleep(1)
+                    # Cache into DB
+                    db.upsert_bars(sym, df)
 
         self._cache_date = today
-        logger.info(f"Volume cache built: {len(self._avg_volumes)} symbols")
+        elapsed = _time.time() - t_start
+        logger.info(f"Volume cache built: {len(self._avg_volumes)} symbols in {elapsed:.1f}s")
 
     def scan_premarket(self) -> Tuple[List[GapCandidate], int]:
         """Scan for gap-up candidates using Alpaca snapshots.
@@ -2551,14 +3642,18 @@ class GapScanner:
         candidates = [c for c in raw_candidates if _vol_ok_live(c)]
 
         # Check shortability for short candidates (longs don't need shortability)
+        # Uses batch cache lookup — zero API calls (data from fetch_alpaca_assets)
         shorts = [c for c in candidates if c.direction == 'short']
         longs = [c for c in candidates if c.direction == 'long']
         shorts.sort(key=lambda c: c.gap_pct, reverse=True)
-        for c in shorts[:20]:
-            shortable, etb = alpaca_check_shortable(c.symbol)
-            c.shortable = shortable
-            c.easy_to_borrow = etb
-            _time.sleep(0.15)
+        top_shorts = shorts[:30]
+        if top_shorts:
+            short_syms = [c.symbol for c in top_shorts]
+            shortable_map = alpaca_check_shortable_batch(short_syms)
+            for c in top_shorts:
+                s, etb = shortable_map.get(c.symbol, (False, False))
+                c.shortable = s
+                c.easy_to_borrow = etb
         shorts = [c for c in shorts if c.shortable]
         candidates = shorts + longs
 
@@ -3009,6 +4104,8 @@ class GapFadeEngine:
                 side=d,
                 gap_pct=pos.gap_pct, vol_ratio=pos.vol_ratio,
                 score=pos.score, catalyst=pos.catalyst,
+                strategy_id=getattr(pos, 'strategy_id', ''),
+                setup_type=getattr(pos, 'strategy_id', ''),
             )
 
         # 1. Stop loss — direction-aware check
@@ -3167,6 +4264,8 @@ class GapFadeEngine:
             side=pos.direction,
             gap_pct=pos.gap_pct, vol_ratio=pos.vol_ratio,
             score=pos.score, catalyst=pos.catalyst,
+            strategy_id=getattr(pos, 'strategy_id', ''),
+            setup_type=getattr(pos, 'strategy_id', ''),
         )
         self._record_trade(trade)
 
@@ -3207,6 +4306,8 @@ class GapFadeEngine:
                 exit_reason=reason, holding_minutes=holding_min, side=pos.direction,
                 gap_pct=pos.gap_pct, vol_ratio=pos.vol_ratio,
                 score=pos.score, catalyst=pos.catalyst,
+                strategy_id=getattr(pos, 'strategy_id', ''),
+                setup_type=getattr(pos, 'strategy_id', ''),
             ))
             self._record_trade(trades[-1])
             del self.positions[sym]
@@ -3251,8 +4352,8 @@ class GapFadeEngine:
         if not trades:
             return {'total_trades': 0}
 
-        pnls = [t.pnl for t in trades]
-        pnl_pcts = [t.pnl_pct for t in trades]
+        pnls = [float(t.pnl) for t in trades]
+        pnl_pcts = [float(t.pnl_pct) for t in trades]
         wins = [p for p in pnls if p > 0]
         losses = [p for p in pnls if p <= 0]
 
@@ -3277,9 +4378,9 @@ class GapFadeEngine:
         from collections import defaultdict
         daily_pnl = defaultdict(float)
         for t in trades:
-            day = t.entry_time[:10] if t.entry_time else ''
+            day = str(t.entry_time)[:10] if t.entry_time else ''
             if day:
-                daily_pnl[day] += t.pnl
+                daily_pnl[day] += float(t.pnl)
         if len(daily_pnl) > 1:
             daily_rets = np.array([v / self.config.initial_capital for v in daily_pnl.values()])
             sharpe = float(np.mean(daily_rets) / np.std(daily_rets) * np.sqrt(252)) if np.std(daily_rets) > 0 else 0
@@ -3507,19 +4608,21 @@ class GapFadeBacktester:
                 db = get_price_db()
                 if db:
                     # Direct SQL: get SPY open + LAG(close) for prev_close
-                    cur = db._conn.execute("""
+                    _cur = db._conn.cursor()
+                    _cur.execute("""
                         WITH w AS (
                             SELECT date, open, close,
                                    LAG(close) OVER (ORDER BY date) AS prev_close
                             FROM daily_bars WHERE symbol = 'SPY'
-                              AND date >= ? AND date <= ?
+                              AND date >= %s AND date <= %s
                         )
                         SELECT date, open, prev_close FROM w
-                        WHERE date >= ? AND prev_close > 0
+                        WHERE date >= %s AND prev_close > 0
                     """, [
                         (datetime.strptime(start_date, '%Y-%m-%d') - timedelta(days=5)).strftime('%Y-%m-%d'),
                         end_date, start_date
                     ])
+                    cur = _cur
                     for row in cur:
                         spy_data[row[0]] = {'prev_close': float(row[2]), 'open': float(row[1])}
                 if spy_data:
@@ -3588,8 +4691,11 @@ class GapFadeBacktester:
             simulated_gaps = day_gaps[:eff_max]
             skipped_count = day_gap_count - len(simulated_gaps)
 
-            # Reset daily stats for each new calendar day
+            # Reset daily state for each new calendar day
             engine.daily_stats = DailyStats(date=date_str, peak_equity=engine.equity)
+            engine.trade_log = []
+            engine._stopped_today = {}
+            engine.positions = {}
 
             for gap in simulated_gaps:
                 if self._cancel:
@@ -4331,6 +5437,641 @@ class GapFadeBacktester:
     def cancel(self):
         self._cancel = True
         self.status = 'cancelled'
+
+
+# =============================================================================
+# SECTION 6A-WF: WALK-FORWARD BACKTEST
+# =============================================================================
+
+DEFAULT_WF_PARAM_GRID = {
+    'gap_threshold': [0.05, 0.07, 0.10],
+    'vol_ratio_max': [1.5, 2.0, 3.0],
+    'stop_pct': [0.010, 0.015, 0.020, 0.025],
+    'risk_pct': [0.01, 0.02, 0.03],
+}
+# 3 × 3 × 4 × 3 = 108 combinations per fold
+
+# Module-level walk-forward status tracker
+_wf_runner: dict = {'status': 'idle'}
+
+
+def _simulate_trades_fast(
+    gaps: List[dict],
+    config: GapFadeConfig,
+) -> dict:
+    """Fast, synchronous trade simulation for walk-forward grid search.
+
+    Runs the same logic as GapFadeBacktester._simulate_day_daily() but stripped
+    of async, broadcast, logging, and strategy plugins for speed.
+
+    Args:
+        gaps: pre-filtered gap dicts (already sorted by date)
+        config: GapFadeConfig with parameters to test
+
+    Returns:
+        dict with: total_pnl, return_pct, num_trades, wins, losses,
+                   win_rate, profit_factor, max_drawdown_pct, sharpe
+    """
+    import random as _rng
+    _rng.seed(42)
+
+    equity = config.initial_capital
+    peak_equity = config.initial_capital
+    max_dd = 0.0
+    trades: List[float] = []  # pnl_pct per trade
+    gross_wins = 0.0
+    gross_losses = 0.0
+    wins = 0
+    losses = 0
+    slip = config.slippage_pct
+
+    # Group by date for max_positions enforcement
+    gaps_by_date: Dict[str, List[dict]] = defaultdict(list)
+    for g in gaps:
+        gaps_by_date[g['date']].append(g)
+    for d in gaps_by_date:
+        gaps_by_date[d].sort(key=lambda g: abs(g['gap_pct']), reverse=True)
+
+    for date_str in sorted(gaps_by_date.keys()):
+        day_gaps = gaps_by_date[date_str]
+        n_candidates = len(day_gaps)
+        eff_max = n_candidates if n_candidates < config.thin_day_threshold else config.max_positions
+        day_gaps = day_gaps[:eff_max]
+
+        for gap in day_gaps:
+            direction = gap.get('direction', 'short')
+            day_open = gap['open']
+            day_high = gap['high']
+            day_low = gap['low']
+            day_close = gap['close']
+            prev_close = gap['prev_close']
+            avg_vol = gap.get('avg_vol', 0)
+
+            # Entry with slippage
+            if direction == 'long':
+                entry_price = day_open * (1 + slip)
+            else:
+                entry_price = day_open * (1 - slip)
+
+            # Adaptive stop
+            eff_stop_pct = compute_adaptive_stop_pct(config, gap['gap_pct'])
+            if direction == 'long':
+                stop_price = entry_price * (1 - eff_stop_pct)
+                half_target = (entry_price + prev_close) / 2
+            else:
+                stop_price = entry_price * (1 + eff_stop_pct)
+                half_target = (entry_price + prev_close) / 2
+            full_target = prev_close
+
+            # Position sizing (simplified Kelly)
+            risk_per_share = abs(stop_price - entry_price)
+            if risk_per_share <= 0 or entry_price <= 0:
+                continue
+            # Kelly
+            p = 0.709
+            b = abs(2.5 / 3.0)
+            kelly = max(0, (p * b - (1 - p)) / b) * config.kelly_fraction
+            risk_frac = min(config.risk_pct, kelly) if kelly > 0 else config.risk_pct
+            dollar_risk = equity * risk_frac
+            shares = int(dollar_risk / risk_per_share)
+            # Per-slot equity cap
+            per_slot_equity = equity / max(1, eff_max)
+            max_shares = int(per_slot_equity / entry_price)
+            shares = min(shares, max_shares)
+            # Notional cap
+            if config.max_notional > 0:
+                notional_limit = min(config.max_notional, per_slot_equity)
+                shares = min(shares, int(notional_limit / entry_price))
+            # Liquidity cap
+            if avg_vol > 0 and config.max_pct_adv > 0:
+                shares = min(shares, int(avg_vol * config.max_pct_adv))
+            if shares <= 0:
+                continue
+
+            # Borrow cost (shorts only)
+            borrow_cost = (shares * entry_price * config.borrow_rate_annual / 252) if direction == 'short' else 0.0
+
+            # Exit slippage helper
+            def _exit_slip(px):
+                return px * (1 + slip) if direction == 'short' else px * (1 - slip)
+
+            # Check exits (same priority as _simulate_day_daily)
+            stopped = _stop_hit(direction, day_high, day_low, stop_price)
+            partial_hit = _target_hit(direction, day_low if direction == 'short' else day_high, half_target)
+            full_hit = _target_hit(direction, day_close, full_target)
+
+            total_pnl = 0.0
+            remaining = shares
+
+            if stopped and partial_hit and config.adverse_fill:
+                # Ambiguous bar resolution
+                if direction == 'short':
+                    bearish_close = day_close < day_open
+                    bullish_close = day_close > entry_price
+                else:
+                    bullish_close = day_close > day_open
+                    bearish_close = day_close < entry_price
+
+                fav_close = bearish_close if direction == 'short' else bullish_close
+                unfav_close = bullish_close if direction == 'short' else bearish_close
+
+                if fav_close:
+                    assume_stop = _rng.random() < (config.adverse_fill_pct * 0.5)
+                elif unfav_close:
+                    assume_stop = _rng.random() < min(1.0, config.adverse_fill_pct * 1.5)
+                else:
+                    assume_stop = _rng.random() < config.adverse_fill_pct
+
+                if assume_stop:
+                    fp = _exit_slip(stop_price)
+                    total_pnl = _direction_pnl(direction, entry_price, fp, remaining) - borrow_cost
+                    remaining = 0
+                else:
+                    stopped = False
+
+            if stopped and remaining > 0:
+                fp = _exit_slip(stop_price)
+                total_pnl = _direction_pnl(direction, entry_price, fp, remaining) - borrow_cost
+                remaining = 0
+
+            elif not stopped and partial_hit and remaining > 0:
+                cover_shares = max(1, int(shares * config.partial_cover_frac))
+                partial_borrow = borrow_cost * cover_shares / shares if shares > 0 else 0
+                fp_p = _exit_slip(half_target)
+                pnl1 = _direction_pnl(direction, entry_price, fp_p, cover_shares) - partial_borrow
+                total_pnl += pnl1
+                remaining -= cover_shares
+
+                remaining_borrow = borrow_cost * remaining / shares if shares > 0 else 0
+                if remaining > 0 and full_hit:
+                    fp_f = _exit_slip(full_target)
+                    pnl2 = _direction_pnl(direction, entry_price, fp_f, remaining) - remaining_borrow
+                    total_pnl += pnl2
+                elif remaining > 0:
+                    fp_c = _exit_slip(day_close)
+                    pnl2 = _direction_pnl(direction, entry_price, fp_c, remaining) - remaining_borrow
+                    total_pnl += pnl2
+                remaining = 0
+
+            elif remaining > 0:
+                fp = _exit_slip(day_close)
+                total_pnl = _direction_pnl(direction, entry_price, fp, remaining) - borrow_cost
+                remaining = 0
+
+            # Re-entry logic (simplified)
+            re_eligible = (day_close < entry_price) if direction == 'short' else (day_close > entry_price)
+            if config.reentry_enabled and stopped and re_eligible:
+                re_entry = (stop_price + day_close) / 2
+                re_stop_pct = config.reentry_stop_pct
+                re_favorable = (day_close < re_entry) if direction == 'short' else (day_close > re_entry)
+                if re_favorable and re_entry > 0:
+                    re_exit = _exit_slip(day_close)
+                    re_risk = abs(re_entry * re_stop_pct)
+                    re_shares = int((equity * risk_frac) / re_risk) if re_risk > 0 else 0
+                    re_max = int(per_slot_equity / re_entry)
+                    re_shares = min(re_shares, re_max)
+                    if config.max_notional > 0:
+                        re_shares = min(re_shares, int(min(config.max_notional, per_slot_equity) / re_entry))
+                    if re_shares > 0:
+                        re_borrow = (re_shares * re_entry * config.borrow_rate_annual / 252) if direction == 'short' else 0
+                        re_pnl = _direction_pnl(direction, re_entry, re_exit, re_shares) - re_borrow
+                        total_pnl += re_pnl
+                        pnl_pct = re_pnl / (re_entry * re_shares) if re_entry > 0 else 0
+                        trades.append(pnl_pct)
+                        if re_pnl >= 0:
+                            gross_wins += re_pnl
+                            wins += 1
+                        else:
+                            gross_losses += abs(re_pnl)
+                            losses += 1
+                        equity += re_pnl
+
+            # Record primary trade
+            pnl_pct = total_pnl / (entry_price * shares) if entry_price > 0 and shares > 0 else 0
+            trades.append(pnl_pct)
+            if total_pnl >= 0:
+                gross_wins += total_pnl
+                wins += 1
+            else:
+                gross_losses += abs(total_pnl)
+                losses += 1
+
+            equity += total_pnl
+            if equity > peak_equity:
+                peak_equity = equity
+            dd = (peak_equity - equity) / peak_equity if peak_equity > 0 else 0
+            if dd > max_dd:
+                max_dd = dd
+
+    num_trades = wins + losses
+    return_pct = ((equity - config.initial_capital) / config.initial_capital * 100) if config.initial_capital > 0 else 0
+    win_rate = wins / num_trades if num_trades > 0 else 0
+    pf = gross_wins / gross_losses if gross_losses > 0 else (99.0 if gross_wins > 0 else 0.0)
+
+    # Sharpe (annualized from daily pnl_pct returns)
+    if len(trades) >= 2:
+        arr = np.array(trades)
+        mean_r = np.mean(arr)
+        std_r = np.std(arr, ddof=1)
+        sharpe = (mean_r / std_r * np.sqrt(252)) if std_r > 0 else 0.0
+    else:
+        sharpe = 0.0
+
+    return {
+        'total_pnl': round(equity - config.initial_capital, 2),
+        'return_pct': round(return_pct, 2),
+        'num_trades': num_trades,
+        'wins': wins,
+        'losses': losses,
+        'win_rate': round(win_rate, 4),
+        'profit_factor': round(pf, 2),
+        'max_drawdown_pct': round(max_dd * 100, 2),
+        'sharpe': round(sharpe, 2),
+        'final_equity': round(equity, 2),
+    }
+
+
+def run_gap_fade_walk_forward(
+    symbols: List[str],
+    full_start: str,
+    full_end: str,
+    train_days: int = 504,
+    test_days: int = 252,
+    step_days: int = 126,
+    base_config: GapFadeConfig = None,
+    param_grid: dict = None,
+    progress_callback=None,
+) -> dict:
+    """Walk-forward optimization for gap fade strategy.
+
+    Slides train/test windows over historical gap days, optimizing parameters
+    in-sample and validating out-of-sample to detect overfitting.
+
+    Args:
+        symbols: list of ticker symbols
+        full_start, full_end: date range (YYYY-MM-DD)
+        train_days: trading days per train window (~504 = 2 years)
+        test_days: trading days per test window (~252 = 1 year)
+        step_days: trading days to slide between folds (~126 = 6 months)
+        base_config: starting config (non-swept params kept)
+        param_grid: {param_name: [values]} to sweep (default: DEFAULT_WF_PARAM_GRID)
+        progress_callback: callable(pct: float, msg: str) for progress updates
+
+    Returns:
+        dict with folds, aggregate_oos, param_stability, recommendations, status
+    """
+    import random as _rng
+    from itertools import product as _product
+
+    config = base_config or GapFadeConfig()
+    grid = param_grid or DEFAULT_WF_PARAM_GRID
+
+    def _progress(pct, msg):
+        if progress_callback:
+            progress_callback(pct, msg)
+
+    _progress(1, 'Scanning all gap days...')
+
+    # Step 1: Scan all gaps upfront (one SQL call)
+    db = get_price_db()
+    gd_cfg = None
+    if config.trade_gap_downs:
+        gd_cfg = {
+            'threshold': config.gap_down_threshold,
+            'max_pct': config.gap_down_max_pct,
+            'vol_ratio_max': config.gap_down_vol_ratio_max,
+        }
+
+    # Use lowest gap_threshold from grid so we capture all candidates
+    min_gap_threshold = min(grid.get('gap_threshold', [config.gap_threshold]))
+    all_gaps = db.scan_gaps_sql(
+        symbols, full_start, full_end,
+        gap_threshold=min_gap_threshold,
+        max_gap_pct=config.max_gap_pct if config.max_gap_pct > 0 else None,
+        min_price=config.min_price,
+        min_avg_volume=config.min_avg_volume,
+        gap_down_config=gd_cfg,
+    )
+
+    if not all_gaps:
+        return {'status': 'error', 'error': 'No gap days found in date range', 'folds': []}
+
+    # Sort by date, build unique trading day list
+    all_gaps.sort(key=lambda g: g['date'])
+    unique_dates = sorted(set(g['date'] for g in all_gaps))
+    total_dates = len(unique_dates)
+
+    _progress(5, f'Found {len(all_gaps)} gaps across {total_dates} trading days')
+
+    # Step 2: Generate folds
+    folds = []
+    fold_num = 0
+    i = 0
+    while i + train_days + test_days <= total_dates:
+        fold_num += 1
+        train_start_idx = i
+        train_end_idx = i + train_days - 1
+        test_start_idx = i + train_days
+        test_end_idx = min(i + train_days + test_days - 1, total_dates - 1)
+
+        folds.append({
+            'fold': fold_num,
+            'train_start': unique_dates[train_start_idx],
+            'train_end': unique_dates[train_end_idx],
+            'test_start': unique_dates[test_start_idx],
+            'test_end': unique_dates[test_end_idx],
+        })
+        i += step_days
+
+    if not folds:
+        return {
+            'status': 'error',
+            'error': f'Not enough data for walk-forward: {total_dates} trading days, '
+                     f'need at least {train_days + test_days}',
+            'folds': [],
+        }
+
+    _progress(8, f'Generated {len(folds)} folds')
+
+    # Pre-index gaps by date for fast filtering
+    gaps_by_date: Dict[str, List[dict]] = defaultdict(list)
+    for g in all_gaps:
+        gaps_by_date[g['date']].append(g)
+
+    def _filter_gaps_for_window(start_date: str, end_date: str,
+                                gap_threshold: float, vol_ratio_max: float) -> List[dict]:
+        """Filter pre-scanned gaps for a date window and param combo."""
+        filtered = []
+        for d in unique_dates:
+            if d < start_date or d > end_date:
+                continue
+            for g in gaps_by_date[d]:
+                direction = g.get('direction', 'short')
+                # Apply gap_threshold filter
+                if direction == 'short' and abs(g['gap_pct']) < gap_threshold:
+                    continue
+                if direction == 'long':
+                    if not config.trade_gap_downs:
+                        continue
+                    if abs(g['gap_pct']) < config.gap_down_threshold:
+                        continue
+                # Apply vol_ratio filter
+                if direction == 'short' and g['vol_ratio'] > vol_ratio_max:
+                    continue
+                if direction == 'long' and g['vol_ratio'] > config.gap_down_vol_ratio_max:
+                    continue
+                filtered.append(g)
+        return filtered
+
+    # Step 3: Build parameter combinations
+    param_names = sorted(grid.keys())
+    param_values = [grid[k] for k in param_names]
+    combos = list(_product(*param_values))
+    total_combos = len(combos)
+
+    _progress(10, f'Grid: {total_combos} param combos × {len(folds)} folds')
+
+    # Step 4: Run walk-forward
+    fold_results = []
+    total_work = len(folds) * (total_combos + 1)  # +1 for OOS per fold
+    work_done = 0
+
+    for fold_info in folds:
+        fold_n = fold_info['fold']
+        train_start = fold_info['train_start']
+        train_end = fold_info['train_end']
+        test_start = fold_info['test_start']
+        test_end = fold_info['test_end']
+
+        _progress(10 + (work_done / total_work) * 80,
+                  f'Fold {fold_n}/{len(folds)}: optimizing {total_combos} combos on {train_start}..{train_end}')
+
+        # In-sample optimization
+        best_fitness = -999
+        best_params = {}
+        best_is_metrics = {}
+
+        for combo in combos:
+            # Build trial config
+            trial = GapFadeConfig()
+            # Copy base config non-grid params
+            for attr in ['initial_capital', 'adaptive_stops', 'stop_gap_fraction',
+                         'stop_min_pct', 'stop_max_pct', 'partial_target_pct',
+                         'partial_cover_frac', 'bounce_entry_pct', 'max_positions',
+                         'thin_day_threshold', 'max_notional', 'slippage_pct',
+                         'borrow_rate_annual', 'max_pct_adv', 'adverse_fill',
+                         'adverse_fill_pct', 'kelly_fraction', 'min_price',
+                         'min_avg_volume', 'reentry_enabled', 'reentry_cooldown_minutes',
+                         'reentry_max_per_symbol', 'reentry_stop_pct',
+                         'trade_gap_downs', 'gap_down_threshold', 'gap_down_max_pct',
+                         'gap_down_vol_ratio_max', 'max_gap_pct',
+                         'dd_circuit_breaker', 'dd_tier1_threshold', 'dd_tier1_scale',
+                         'dd_tier2_threshold', 'dd_tier2_scale']:
+                setattr(trial, attr, getattr(config, attr))
+
+            # Apply grid params
+            for pname, pval in zip(param_names, combo):
+                setattr(trial, pname, pval)
+
+            # Filter gaps for this combo's thresholds
+            gt = getattr(trial, 'gap_threshold', config.gap_threshold)
+            vr = getattr(trial, 'vol_ratio_max', config.vol_ratio_max)
+            train_gaps = _filter_gaps_for_window(train_start, train_end, gt, vr)
+
+            if len(train_gaps) < 5:
+                work_done += 1
+                continue
+
+            metrics = _simulate_trades_fast(train_gaps, trial)
+            if metrics['num_trades'] < 5:
+                work_done += 1
+                continue
+
+            fitness = metrics['return_pct'] - metrics['max_drawdown_pct'] * 0.5
+            if fitness > best_fitness:
+                best_fitness = fitness
+                best_params = dict(zip(param_names, combo))
+                best_is_metrics = metrics
+
+            work_done += 1
+
+        if not best_params:
+            # No valid combo found — skip fold
+            fold_results.append({
+                'fold': fold_n,
+                'train_range': f'{train_start} to {train_end}',
+                'test_range': f'{test_start} to {test_end}',
+                'best_params': {},
+                'is_return': 0, 'is_trades': 0, 'is_win_rate': 0,
+                'is_max_dd': 0, 'is_sharpe': 0, 'is_pf': 0,
+                'oos_return': 0, 'oos_trades': 0, 'oos_win_rate': 0,
+                'oos_max_dd': 0, 'oos_sharpe': 0, 'oos_pf': 0,
+                'overfit_ratio': 0,
+                'skipped': True,
+            })
+            work_done += 1
+            continue
+
+        # Out-of-sample validation with best IS params
+        _progress(10 + (work_done / total_work) * 80,
+                  f'Fold {fold_n}/{len(folds)}: OOS validation on {test_start}..{test_end}')
+
+        oos_config = GapFadeConfig()
+        for attr in ['initial_capital', 'adaptive_stops', 'stop_gap_fraction',
+                     'stop_min_pct', 'stop_max_pct', 'partial_target_pct',
+                     'partial_cover_frac', 'bounce_entry_pct', 'max_positions',
+                     'thin_day_threshold', 'max_notional', 'slippage_pct',
+                     'borrow_rate_annual', 'max_pct_adv', 'adverse_fill',
+                     'adverse_fill_pct', 'kelly_fraction', 'min_price',
+                     'min_avg_volume', 'reentry_enabled', 'reentry_cooldown_minutes',
+                     'reentry_max_per_symbol', 'reentry_stop_pct',
+                     'trade_gap_downs', 'gap_down_threshold', 'gap_down_max_pct',
+                     'gap_down_vol_ratio_max', 'max_gap_pct',
+                     'dd_circuit_breaker', 'dd_tier1_threshold', 'dd_tier1_scale',
+                     'dd_tier2_threshold', 'dd_tier2_scale']:
+            setattr(oos_config, attr, getattr(config, attr))
+        for pname, pval in best_params.items():
+            setattr(oos_config, pname, pval)
+
+        gt = best_params.get('gap_threshold', config.gap_threshold)
+        vr = best_params.get('vol_ratio_max', config.vol_ratio_max)
+        test_gaps = _filter_gaps_for_window(test_start, test_end, gt, vr)
+        oos_metrics = _simulate_trades_fast(test_gaps, oos_config)
+
+        # Overfit ratio
+        is_ret = best_is_metrics.get('return_pct', 0)
+        oos_ret = oos_metrics.get('return_pct', 0)
+        overfit = oos_ret / is_ret if is_ret != 0 else 0
+
+        fold_results.append({
+            'fold': fold_n,
+            'train_range': f'{train_start} to {train_end}',
+            'test_range': f'{test_start} to {test_end}',
+            'best_params': best_params,
+            'is_return': round(is_ret, 2),
+            'is_trades': best_is_metrics.get('num_trades', 0),
+            'is_win_rate': round(best_is_metrics.get('win_rate', 0), 4),
+            'is_max_dd': round(-best_is_metrics.get('max_drawdown_pct', 0), 2),
+            'is_sharpe': round(best_is_metrics.get('sharpe', 0), 2),
+            'is_pf': round(best_is_metrics.get('profit_factor', 0), 2),
+            'oos_return': round(oos_ret, 2),
+            'oos_trades': oos_metrics.get('num_trades', 0),
+            'oos_win_rate': round(oos_metrics.get('win_rate', 0), 4),
+            'oos_max_dd': round(-oos_metrics.get('max_drawdown_pct', 0), 2),
+            'oos_sharpe': round(oos_metrics.get('sharpe', 0), 2),
+            'oos_pf': round(oos_metrics.get('profit_factor', 0), 2),
+            'overfit_ratio': round(overfit, 2),
+        })
+        work_done += 1
+
+    # Step 5: Aggregate OOS results
+    valid_folds = [f for f in fold_results if not f.get('skipped')]
+    if valid_folds:
+        agg_oos_pnl = sum(f['oos_return'] for f in valid_folds)
+        agg_oos_trades = sum(f['oos_trades'] for f in valid_folds)
+        agg_oos_wins = sum(f['oos_trades'] * f['oos_win_rate'] for f in valid_folds)
+        agg_win_rate = agg_oos_wins / agg_oos_trades if agg_oos_trades > 0 else 0
+        agg_pfs = [f['oos_pf'] for f in valid_folds if f['oos_trades'] > 0]
+        agg_pf = sum(agg_pfs) / len(agg_pfs) if agg_pfs else 0
+        agg_dds = [abs(f['oos_max_dd']) for f in valid_folds]
+        agg_max_dd = max(agg_dds) if agg_dds else 0
+        agg_sharpes = [f['oos_sharpe'] for f in valid_folds if f['oos_trades'] > 0]
+        agg_sharpe = sum(agg_sharpes) / len(agg_sharpes) if agg_sharpes else 0
+        agg_overfit = [f['overfit_ratio'] for f in valid_folds if f['overfit_ratio'] != 0]
+        avg_overfit = sum(agg_overfit) / len(agg_overfit) if agg_overfit else 0
+
+        aggregate_oos = {
+            'total_return_pct': round(agg_oos_pnl, 2),
+            'total_pnl': round(agg_oos_pnl * config.initial_capital / 100, 2),
+            'num_trades': agg_oos_trades,
+            'win_rate': round(agg_win_rate, 4),
+            'profit_factor': round(agg_pf, 2),
+            'max_drawdown_pct': round(agg_max_dd, 2),
+            'sharpe_ratio': round(agg_sharpe, 2),
+            'avg_overfit_ratio': round(avg_overfit, 2),
+        }
+    else:
+        aggregate_oos = {
+            'total_return_pct': 0, 'total_pnl': 0, 'num_trades': 0,
+            'win_rate': 0, 'profit_factor': 0, 'max_drawdown_pct': 0,
+            'sharpe_ratio': 0, 'avg_overfit_ratio': 0,
+        }
+
+    # Step 6: Parameter stability analysis
+    param_stability = {}
+    for pname in param_names:
+        values = [f['best_params'].get(pname) for f in valid_folds if f.get('best_params')]
+        if values:
+            from collections import Counter
+            counts = Counter(values)
+            most_common_val = counts.most_common(1)[0][0]
+            param_stability[pname] = {
+                'values': values,
+                'most_common': most_common_val,
+                'agreement': round(counts[most_common_val] / len(values), 2),
+            }
+
+    # Step 7: Auto-generated recommendations
+    recommendations = []
+    n_folds = len(valid_folds)
+    if n_folds > 0:
+        for pname, pdata in param_stability.items():
+            agreement = pdata['agreement']
+            mc = pdata['most_common']
+            n_same = int(agreement * n_folds)
+            if agreement >= 0.75:
+                recommendations.append(
+                    f"{pname}={mc} selected in {n_same}/{n_folds} folds — stable"
+                )
+            elif agreement < 0.5:
+                recommendations.append(
+                    f"{pname} unstable ({len(set(pdata['values']))} different values "
+                    f"across {n_folds} folds) — consider fixing at {mc}"
+                )
+
+        avg_is_wr = sum(f['is_win_rate'] for f in valid_folds) / n_folds
+        avg_oos_wr = sum(f['oos_win_rate'] for f in valid_folds) / n_folds
+        wr_degradation = avg_is_wr - avg_oos_wr
+        if wr_degradation < 0.05:
+            recommendations.append(
+                f"OOS win rate {avg_oos_wr:.0%} vs IS {avg_is_wr:.0%} — minimal degradation"
+            )
+        elif wr_degradation < 0.10:
+            recommendations.append(
+                f"OOS win rate {avg_oos_wr:.0%} vs IS {avg_is_wr:.0%} — moderate degradation"
+            )
+        else:
+            recommendations.append(
+                f"OOS win rate {avg_oos_wr:.0%} vs IS {avg_is_wr:.0%} — significant degradation, possible overfit"
+            )
+
+        avg_of = aggregate_oos['avg_overfit_ratio']
+        if avg_of > 0.7:
+            recommendations.append(f"Overfit ratio {avg_of:.2f} — good (>0.7 is strong)")
+        elif avg_of > 0.5:
+            recommendations.append(f"Overfit ratio {avg_of:.2f} — moderate (>0.5 is acceptable)")
+        elif avg_of > 0:
+            recommendations.append(f"Overfit ratio {avg_of:.2f} — poor (<0.5 suggests overfitting)")
+
+    _progress(100, 'Walk-forward complete')
+
+    return {
+        'folds': fold_results,
+        'aggregate_oos': aggregate_oos,
+        'param_stability': param_stability,
+        'recommendations': recommendations,
+        'status': 'done',
+        'num_folds': len(folds),
+        'num_valid_folds': len(valid_folds),
+        'total_gaps_scanned': len(all_gaps),
+        'param_grid': grid,
+        'config_base': {
+            'initial_capital': config.initial_capital,
+            'adaptive_stops': config.adaptive_stops,
+            'slippage_pct': config.slippage_pct,
+            'reentry_enabled': config.reentry_enabled,
+        },
+    }
 
 
 # =============================================================================
@@ -6055,6 +7796,24 @@ class GapFadeLiveTrader:
         self._strategy_config = {}  # strategy-specific config from state
         self._load_strategy(self.config.active_strategy)
 
+        # Intraday strategy system
+        self._intraday_strategies: Dict[str, 'IntradayStrategy'] = {}
+        self._strategy_selector = None  # StrategySelector instance
+        self._intraday_watchlist: List[str] = []
+        self._intraday_entries_today: int = 0
+        self._intraday_pnl_today: float = 0.0
+        self._last_intraday_scan: float = 0.0
+        self._last_intraday_watchlist_refresh: float = 0.0
+        self._intraday_date: str = ''  # for daily reset
+
+        # Signal log ring buffer for intraday page
+        self._signal_log: deque = deque(maxlen=200)
+        self._signal_log_counter: int = 0
+        self._last_perf_snapshot_hour: int = -1
+        self._last_sse_tick: Dict[str, float] = {}  # throttle SSE ticks per symbol
+        if self.config.intraday_enabled:
+            self._init_intraday_strategies()
+
         # LLM Supervisor (after state load so llm_enabled from saved config takes effect)
         if self.config.llm_enabled:
             self.llm_supervisor = LLMSupervisor(self.config)
@@ -6087,6 +7846,107 @@ class GapFadeLiveTrader:
         self.messages.append(msg)
         if len(self.messages) > 200:
             self.messages = self.messages[-100:]
+
+    def _record_performance_snapshot(self, interval_type: str = 'hourly'):
+        """Record a performance snapshot to the database."""
+        try:
+            db = get_price_db()
+            # Gather stats from engine
+            eng = self.engine
+            today = datetime.now(ET).strftime('%Y-%m-%d')
+            wins = eng.daily_stats.wins if hasattr(eng, 'daily_stats') else 0
+            losses = eng.daily_stats.losses if hasattr(eng, 'daily_stats') else 0
+            total = wins + losses
+            win_rate = wins / total if total > 0 else 0
+            realized_pnl = eng.daily_stats.pnl if hasattr(eng, 'daily_stats') else 0
+            trades_today = eng.daily_stats.trade_count if hasattr(eng, 'daily_stats') else 0
+
+            # Unrealized P&L from open positions
+            unrealized = 0.0
+            for sym, pos in eng.positions.items():
+                if hasattr(pos, 'current_price') and pos.current_price > 0:
+                    if pos.direction == 'long':
+                        unrealized += (pos.current_price - pos.entry_price) * pos.remaining_shares
+                    else:
+                        unrealized += (pos.entry_price - pos.current_price) * pos.remaining_shares
+
+            # Max drawdown
+            dd = 0.0
+            if eng.peak_equity > 0 and eng.equity < eng.peak_equity:
+                dd = (eng.peak_equity - eng.equity) / eng.peak_equity
+
+            # Top symbols by P&L today
+            top_symbols = []
+            if hasattr(eng, 'trade_history') and eng.trade_history:
+                sym_pnl: dict = {}
+                for t in eng.trade_history:
+                    if hasattr(t, 'exit_time') and t.exit_time and today in str(t.exit_time):
+                        sym_pnl[t.symbol] = sym_pnl.get(t.symbol, 0) + t.pnl
+                top_symbols = sorted(sym_pnl.items(), key=lambda x: abs(x[1]), reverse=True)[:5]
+
+            db.insert_performance_snapshot(
+                interval_type=interval_type,
+                equity=eng.equity,
+                cash=getattr(eng, 'cash', eng.equity),
+                open_positions=len(eng.positions),
+                unrealized_pnl=unrealized,
+                realized_pnl_today=realized_pnl,
+                trades_today=trades_today,
+                wins=wins, losses=losses, win_rate=win_rate,
+                max_drawdown=dd,
+                strategy_breakdown_json=json.dumps({'active': self.config.active_strategy}),
+                top_symbols_json=json.dumps(top_symbols, default=str),
+            )
+            logger.info(f"Performance snapshot ({interval_type}): equity=${eng.equity:,.0f}, "
+                       f"pnl=${realized_pnl:+,.2f}, positions={len(eng.positions)}")
+        except Exception as e:
+            logger.debug(f"Performance snapshot failed: {e}")
+
+    def _log_signal(self, symbol: str, strategy_id: str, signal: str,
+                    direction: str = '', confidence: float = 0.0,
+                    entry: float = 0.0, stop: float = 0.0, target: float = 0.0,
+                    risk_reward: float = 0.0, reason: str = '', action: str = 'pending',
+                    market_condition: str = '', indicators: dict = None):
+        """Log an intraday signal to the ring buffer, broadcast via SSE, and persist to DB."""
+        self._signal_log_counter += 1
+        now_ts = datetime.now(ET)
+        entry_obj = {
+            'id': self._signal_log_counter,
+            'timestamp': now_ts.strftime('%H:%M:%S'),
+            'symbol': symbol,
+            'strategy_id': strategy_id,
+            'signal': signal,
+            'direction': direction,
+            'confidence': round(confidence, 4),
+            'entry_price': round(entry, 2),
+            'stop_price': round(stop, 2),
+            'target_price': round(target, 2),
+            'risk_reward': round(risk_reward, 2),
+            'reason': reason,
+            'action': action,
+            'market_condition': market_condition,
+            'indicators': indicators or {},
+        }
+        self._signal_log.append(entry_obj)
+        # Persist signal to database
+        try:
+            db_id = get_price_db().insert_signal(
+                timestamp=now_ts.isoformat(),
+                symbol=symbol, strategy_id=strategy_id,
+                signal=signal, direction=direction, confidence=confidence,
+                entry_price=entry, stop_price=stop, target_price=target,
+                risk_reward=risk_reward, reason=reason, action=action,
+                market_condition=market_condition,
+                indicators_json=json.dumps(indicators or {}, default=str),
+            )
+            entry_obj['_db_id'] = db_id
+        except Exception:
+            pass
+        # Fire-and-forget SSE broadcast
+        try:
+            _intraday_sse_broadcast({'type': 'intraday_signal', 'signal': entry_obj})
+        except Exception:
+            pass
 
     def _add_event(self, text: str, tier: int = 2):
         """Add an event to the LLM conversation queue.
@@ -6159,6 +8019,507 @@ class GapFadeLiveTrader:
         self._save_state()
         self._add_message('strategy', f'Switched to: {self.strategy.name if self.strategy else strategy_id}')
 
+    # ── Intraday Strategy Methods ────────────────────────────────────
+
+    def _init_intraday_strategies(self):
+        """Initialize enabled intraday strategies from config."""
+        try:
+            from gap_fade_strategies import IntradayStrategyRegistry
+        except ImportError:
+            logger.warning("Intraday strategy module not available")
+            return
+
+        strategy_ids = [s.strip() for s in self.config.intraday_strategies.split(',')
+                        if s.strip()]
+        if not strategy_ids:
+            logger.info("Intraday enabled but no strategies specified")
+            return
+
+        for sid in strategy_ids:
+            if IntradayStrategyRegistry.has_strategy(sid):
+                strat = IntradayStrategyRegistry.create_strategy(sid)
+                self._intraday_strategies[sid] = strat
+                logger.info(f"Loaded intraday strategy: {strat.name} ({sid})")
+            else:
+                logger.warning(f"Intraday strategy '{sid}' not found in registry")
+
+        # Ensure indicator engine covers intraday strategy requirements
+        if self._intraday_strategies:
+            self._expand_indicator_engine_for_intraday()
+
+        # Create strategy selector for condition-based routing
+        if self._intraday_strategies:
+            try:
+                from gap_fade_strategies import StrategySelector
+                self._strategy_selector = StrategySelector(self._intraday_strategies)
+                logger.info("Strategy selector initialized for condition-based routing")
+            except Exception as e:
+                logger.warning(f"Failed to create strategy selector: {e}")
+
+        logger.info(f"Intraday system initialized: {len(self._intraday_strategies)} strategies")
+
+    def _expand_indicator_engine_for_intraday(self):
+        """Expand indicator engine to cover intraday strategy requirements."""
+        from gap_fade_strategies import TickIndicatorEngine
+
+        all_indicators = set()
+        all_ema_periods = set()
+
+        # Collect from gap fade strategy
+        if self.strategy:
+            all_indicators.update(self.strategy.get_required_indicators())
+
+        # Collect from all intraday strategies
+        for strat in self._intraday_strategies.values():
+            all_indicators.update(strat.get_required_indicators())
+            all_ema_periods.update(strat.get_ema_periods())
+
+        if not all_indicators:
+            return
+
+        # Rebuild indicator engine with expanded requirements
+        ema_period = 9  # primary period
+        or_minutes = 15  # intraday strategies need 15-min OR
+        for strat in self._intraday_strategies.values():
+            cfg_or = strat.config.get('or_minutes', 15)
+            or_minutes = max(or_minutes, cfg_or)
+
+        self.indicator_engine = TickIndicatorEngine(
+            indicators=list(all_indicators),
+            ema_period=ema_period,
+            or_minutes=or_minutes,
+            ema_periods=list(all_ema_periods),
+        )
+        logger.info(f"Indicator engine expanded: {all_indicators}, "
+                     f"EMA periods: {sorted(all_ema_periods)}, OR: {or_minutes}min")
+
+    def _reset_intraday_daily(self):
+        """Reset intraday daily state."""
+        self._intraday_entries_today = 0
+        self._intraday_pnl_today = 0.0
+        self._last_intraday_scan = 0.0
+        self._last_intraday_watchlist_refresh = 0.0
+        self._intraday_watchlist.clear()
+        for strat in self._intraday_strategies.values():
+            strat.on_day_start()
+        # Reset indicator engine accumulated state for clean new day
+        if self.indicator_engine:
+            self.indicator_engine.reset()
+        self._intraday_date = datetime.now(ET).strftime('%Y-%m-%d')
+        logger.info("Intraday daily reset complete")
+
+    async def _intraday_scan_and_enter(self):
+        """Scan watchlist for intraday setups and enter qualifying ones.
+
+        Called from _trading_loop after gap entry window closes.
+        Throttled to config.intraday_scan_interval.
+        Uses StrategySelector to pick strategies based on SPY market condition.
+        """
+        now_mono = _time.monotonic()
+        now = datetime.now(ET)
+        today = now.strftime('%Y-%m-%d')
+
+        # Daily reset
+        if today != self._intraday_date:
+            self._reset_intraday_daily()
+            if self._strategy_selector:
+                self._strategy_selector.reset_daily()
+
+        # Throttle scans
+        if now_mono - self._last_intraday_scan < self.config.intraday_scan_interval:
+            return
+        self._last_intraday_scan = now_mono
+
+        # Wait for streamer to connect and accumulate some tick data
+        if self.streamer and not self.streamer.connected:
+            return  # WS not connected yet, skip this scan
+
+        # Check daily limits
+        if self._intraday_entries_today >= self.config.intraday_max_entries:
+            return
+
+        # Check daily loss limit for intraday trades
+        if self.engine.equity > 0:
+            intraday_loss_pct = abs(self._intraday_pnl_today) / self.engine.equity
+            if self._intraday_pnl_today < 0 and intraday_loss_pct >= self.config.intraday_daily_loss_limit:
+                return
+
+        # Refresh watchlist periodically (every 5 minutes)
+        if now_mono - self._last_intraday_watchlist_refresh > 300:
+            await self._build_intraday_watchlist()
+            self._last_intraday_watchlist_refresh = now_mono
+
+        if not self._intraday_watchlist:
+            return
+
+        # Use strategy selector to pick strategies based on market condition
+        active_strategies = self._intraday_strategies  # fallback: all strategies
+        size_multiplier = 1.0
+
+        if self._strategy_selector and self.indicator_engine:
+            spy_data = self.indicator_engine.get_data('SPY')
+            if spy_data and spy_data.get('rsi_initialized'):
+                try:
+                    active_strategies = self._strategy_selector.update(spy_data, now)
+                    size_multiplier = self._strategy_selector.size_multiplier
+                except Exception as e:
+                    logger.warning(f"Strategy selector error: {e}")
+
+        if not active_strategies:
+            return
+
+        # Scan each watchlist symbol with each active strategy
+        setups: List['IntradaySetup'] = []
+        _symbols_with_data = 0
+        _symbols_no_data = 0
+        for symbol in self._intraday_watchlist:
+            if symbol == 'SPY':
+                continue  # SPY is for condition detection, not trading
+
+            tick_data = self.indicator_engine.get_data(symbol) if self.indicator_engine else {}
+            if not tick_data:
+                _symbols_no_data += 1
+                continue
+
+            _symbols_with_data += 1
+
+            # Build snapshot dict from streamer prices
+            snapshot = None
+            if self.streamer and self.streamer.latest_prices.get(symbol):
+                snapshot = {'price': self.streamer.latest_prices[symbol]}
+
+            for sid, strat in active_strategies.items():
+                # Check active window
+                h1, m1, h2, m2 = strat.get_active_window()
+                if (now.hour, now.minute) < (h1, m1):
+                    continue
+                if (now.hour, now.minute) > (h2, m2):
+                    continue
+
+                try:
+                    setup = strat.scan_for_setups(symbol, tick_data, snapshot, now)
+                    if setup is not None:
+                        # Validate
+                        valid, reason = strat.validate_setup(setup, tick_data, now)
+                        _mkt_cond = ''
+                        if self._strategy_selector and self._strategy_selector.current_condition:
+                            _mkt_cond = self._strategy_selector.current_condition.condition
+                        _ind_snap = {k: round(v, 4) if isinstance(v, float) else v
+                                     for k, v in (tick_data or {}).items()
+                                     if k in ('rsi', 'vwap', 'atr', 'volume_surge', 'ema9', 'ema21')}
+                        if valid:
+                            setups.append(setup)
+                            self._log_signal(symbol, sid, signal=setup.direction.upper(),
+                                             direction=setup.direction,
+                                             confidence=setup.confidence,
+                                             entry=setup.entry_price, stop=setup.stop_price,
+                                             target=setup.target_price, risk_reward=setup.risk_reward,
+                                             action='pending', market_condition=_mkt_cond,
+                                             indicators=_ind_snap)
+                        else:
+                            logger.debug(f"Intraday setup rejected {symbol}/{sid}: {reason}")
+                            self._log_signal(symbol, sid, signal='REJECTED',
+                                             direction=setup.direction,
+                                             confidence=setup.confidence,
+                                             entry=setup.entry_price, stop=setup.stop_price,
+                                             target=setup.target_price, risk_reward=setup.risk_reward,
+                                             reason=reason, action='rejected',
+                                             market_condition=_mkt_cond, indicators=_ind_snap)
+                except Exception as e:
+                    logger.warning(f"Intraday scan error {symbol}/{sid}: {e}")
+
+        # Diagnostic logging (periodic, not every scan)
+        if _symbols_no_data > 0 and _symbols_with_data == 0:
+            logger.info(f"Intraday scan: {_symbols_no_data} symbols have no indicator data yet "
+                         f"(streamer warming up) — {len(active_strategies)} strategies active")
+        elif _symbols_with_data > 0:
+            logger.debug(f"Intraday scan: {_symbols_with_data} symbols scanned, "
+                          f"{_symbols_no_data} no data, {len(setups)} setups found")
+
+        if not setups:
+            return
+
+        # Rank setups by confidence (descending)
+        setups.sort(key=lambda s: s.confidence, reverse=True)
+
+        # Enter the best setups (up to remaining capacity)
+        remaining = self.config.intraday_max_entries - self._intraday_entries_today
+        max_positions = self.config.max_positions - len(self.engine.positions)
+        entries_allowed = min(remaining, max_positions)
+
+        for setup in setups[:entries_allowed]:
+            entered = await self._enter_intraday_position(setup, size_multiplier)
+            if entered:
+                self._intraday_entries_today += 1
+                condition_str = ''
+                if self._strategy_selector and self._strategy_selector.current_condition:
+                    condition_str = f' [{self._strategy_selector.current_condition.condition}]'
+                self._add_message('intraday',
+                    f'Intraday {setup.direction.upper()} {setup.symbol} '
+                    f'[{setup.setup_type}] @ ${setup.entry_price:.2f} '
+                    f'(conf={setup.confidence:.0%}, R:R={setup.risk_reward:.1f}){condition_str}')
+                # Update the most recent pending signal for this symbol to 'entered'
+                for sig in reversed(self._signal_log):
+                    if sig['symbol'] == setup.symbol and sig['action'] == 'pending':
+                        sig['action'] = 'entered'
+                        if sig.get('_db_id'):
+                            get_price_db().update_signal_action(sig['_db_id'], 'entered')
+                        break
+            else:
+                # Mark as skipped (capacity or entry failure)
+                for sig in reversed(self._signal_log):
+                    if sig['symbol'] == setup.symbol and sig['action'] == 'pending':
+                        sig['action'] = 'skipped'
+                        sig['reason'] = 'entry_failed_or_capacity'
+                        if sig.get('_db_id'):
+                            get_price_db().update_signal_action(
+                                sig['_db_id'], 'skipped', 'entry_failed_or_capacity')
+                        break
+        # Mark remaining pending setups beyond entries_allowed as skipped_capacity
+        for setup in setups[entries_allowed:]:
+            for sig in reversed(self._signal_log):
+                if sig['symbol'] == setup.symbol and sig['action'] == 'pending':
+                    sig['action'] = 'skipped_capacity'
+                    sig['reason'] = 'max_entries_reached'
+                    if sig.get('_db_id'):
+                        get_price_db().update_signal_action(
+                            sig['_db_id'], 'skipped_capacity', 'max_entries_reached')
+                    break
+
+    async def _enter_intraday_position(self, setup: 'IntradaySetup',
+                                        size_multiplier: float = 1.0) -> bool:
+        """Enter a position from an intraday setup.
+
+        Uses the setup's stop/target directly (not gap-based).
+        Position sizing: equity * intraday_risk_pct * size_multiplier / risk_per_share.
+        """
+        # Don't enter if already in this symbol
+        if setup.symbol in self.engine.positions:
+            return False
+
+        # Position sizing based on risk
+        equity = self.engine.equity
+        risk_per_share = abs(setup.entry_price - setup.stop_price)
+        if risk_per_share <= 0:
+            return False
+
+        risk_amount = equity * self.config.intraday_risk_pct * size_multiplier
+        shares = int(risk_amount / risk_per_share)
+        shares = max(1, shares)
+
+        # Cap at max % of equity per position (prevents over-concentration)
+        max_position_value = equity * self.config.intraday_max_position_pct
+        if shares * setup.entry_price > max_position_value:
+            shares = max(1, int(max_position_value / setup.entry_price))
+
+        # Apply notional cap
+        notional = shares * setup.entry_price
+        if notional > self.config.max_notional:
+            shares = max(1, int(self.config.max_notional / setup.entry_price))
+
+        # Create position
+        async with self._position_lock:
+            # Re-check capacity under lock
+            if len(self.engine.positions) >= self.config.max_positions:
+                return False
+            if setup.symbol in self.engine.positions:
+                return False
+
+            pos = GapPosition(
+                symbol=setup.symbol,
+                shares=shares,
+                entry_price=setup.entry_price,
+                stop_price=setup.stop_price,
+                half_target=(setup.entry_price + setup.target_price) / 2,
+                full_target=setup.target_price,
+                prev_close=setup.entry_price,  # no gap concept for intraday
+                entry_time=setup.timestamp.strftime('%Y-%m-%d %H:%M') if setup.timestamp else '',
+                direction=setup.direction,
+                strategy_id=setup.strategy_id,
+            )
+            self.engine.positions[setup.symbol] = pos
+
+        # Submit order
+        entry_side = 'buy' if setup.direction == 'long' else 'sell'
+        if self.config.limit_orders_only:
+            if setup.direction == 'long':
+                limit_px = round(setup.entry_price * (1 + self.config.limit_offset_pct), 2)
+            else:
+                limit_px = round(setup.entry_price * (1 - self.config.limit_offset_pct), 2)
+            order_type = 'limit'
+        else:
+            limit_px = None
+            order_type = 'market'
+
+        fill = await alpaca_submit_and_confirm(
+            setup.symbol, shares, entry_side,
+            order_type=order_type, limit_price=limit_px,
+            timeout_sec=15.0 if order_type == 'limit' else 10.0,
+        )
+
+        async with self._position_lock:
+            pos = self.engine.positions.get(setup.symbol)
+            if not pos:
+                return False
+
+            if fill.is_filled:
+                pos.entry_fill_price = fill.filled_avg_price
+                pos.entry_order_id = fill.order_id
+                if fill.filled_avg_price > 0:
+                    pos.entry_price = fill.filled_avg_price
+
+                # Place broker-side stop order
+                try:
+                    stop_result = await asyncio.to_thread(
+                        alpaca_place_stop_order, setup.symbol,
+                        pos.remaining_shares, setup.stop_price,
+                        0.003, setup.direction)
+                    if 'error' not in stop_result:
+                        pos.stop_order_id = stop_result.get('id', '')
+                except Exception as e:
+                    logger.warning(f"Broker stop order failed for intraday {setup.symbol}: {e}")
+
+                # Subscribe to tick stream
+                if self.streamer:
+                    await self.streamer.add_symbols([setup.symbol])
+
+                # Record entry in strategy
+                strat = self._intraday_strategies.get(setup.strategy_id)
+                if strat and hasattr(strat, 'record_entry'):
+                    strat.record_entry(setup.symbol)
+
+                self.journal.log('action', f'intraday:{setup.strategy_id}',
+                    f'Entered {setup.direction} {shares} {setup.symbol} @ '
+                    f'${fill.filled_avg_price:.2f} (stop ${setup.stop_price:.2f}, '
+                    f'target ${setup.target_price:.2f})',
+                    symbol=setup.symbol)
+
+                self._save_state()
+                return True
+            else:
+                # Fill failed — remove position
+                self.engine.positions.pop(setup.symbol, None)
+                logger.warning(f"Intraday order fill failed for {setup.symbol}: {fill.status}")
+                return False
+
+    async def _build_intraday_watchlist(self):
+        """Build the intraday watchlist from multiple sources.
+
+        Priority order (earlier sources get slots first):
+        1. SPY (always, for market condition detection)
+        2. Existing positions (must always watch)
+        3. Morning gap candidates
+        4. Alpaca screener: most-active + top movers (dynamic, refreshed every 5 min)
+        5. Static liquid symbols (always included as baseline)
+        """
+        # Use ordered list to preserve priority — earlier sources get priority
+        priority_syms: List[str] = ['SPY']
+
+        # Source 1: Existing positions (always watch)
+        for sym in self.engine.positions:
+            if sym not in priority_syms:
+                priority_syms.append(sym)
+
+        # Source 2: Morning gap candidates
+        for c in self.candidates:
+            if c.symbol not in priority_syms:
+                priority_syms.append(c.symbol)
+
+        # Source 3: Dynamic movers from Alpaca screener API
+        try:
+            movers = await asyncio.to_thread(fetch_alpaca_movers, 20)
+            _added_movers = 0
+            for sym in movers:
+                if sym not in priority_syms:
+                    priority_syms.append(sym)
+                    _added_movers += 1
+            if _added_movers:
+                logger.info(f"Intraday watchlist: added {_added_movers} symbols from Alpaca screener")
+        except Exception as e:
+            logger.warning(f"Intraday watchlist: screener fetch failed: {e}")
+
+        # Source 4: Static liquid symbols (always included as baseline)
+        _liquid_syms = [
+            'AAPL', 'MSFT', 'NVDA', 'AMZN', 'META', 'GOOGL', 'TSLA',
+            'AMD', 'NFLX', 'QQQ', 'IWM', 'SOFI', 'PLTR', 'COIN',
+            'MARA', 'RIVN', 'SNAP', 'UBER', 'SQ', 'SHOP',
+        ]
+        for sym in _liquid_syms:
+            if sym not in priority_syms:
+                priority_syms.append(sym)
+
+        # Cap at config limit
+        max_size = self.config.intraday_watchlist_size
+        self._intraday_watchlist = priority_syms[:max_size]
+
+        # Subscribe new symbols to tick streamer
+        if self.streamer and self._intraday_watchlist:
+            await self.streamer.add_symbols(self._intraday_watchlist)
+            logger.info(f"Subscribed {len(self._intraday_watchlist)} watchlist symbols to streamer")
+        elif not self.streamer:
+            logger.warning("Intraday watchlist built but no streamer — symbols won't receive ticks")
+
+        logger.info(f"Intraday watchlist: {len(self._intraday_watchlist)} symbols: "
+                     f"{self._intraday_watchlist[:10]}{'...' if len(self._intraday_watchlist) > 10 else ''}")
+
+    async def _seed_indicator_engine(self):
+        """Fetch today's 5-min bars from Alpaca and seed the indicator engine.
+
+        This eliminates the ~75-minute cold-start wait for RSI initialization
+        when the app starts (or restarts) mid-day.
+        """
+        if not self.indicator_engine:
+            return
+        symbols = list(self._intraday_watchlist) if self._intraday_watchlist else []
+        if not symbols:
+            return
+
+        today_str = datetime.now(ET).strftime('%Y-%m-%d')
+        try:
+            bars_dict = await asyncio.to_thread(
+                fetch_alpaca_bars_multi, symbols, today_str, today_str,
+                '5Min', 'sip',
+            )
+            total_bars = 0
+            seeded = 0
+            for sym, df in bars_dict.items():
+                if df is None or df.empty:
+                    continue
+                bars_list = []
+                for _, row in df.iterrows():
+                    ts = row.get('timestamp') or row.name
+                    if hasattr(ts, 'astimezone'):
+                        ts_et = ts.astimezone(ET)
+                    else:
+                        ts_et = None
+                    bar_time = ''
+                    if ts_et is not None:
+                        bar_min = (ts_et.minute // 5) * 5
+                        bar_time = f'{ts_et.hour}:{bar_min:02d}'
+                    bars_list.append({
+                        'open': float(row['open']),
+                        'high': float(row['high']),
+                        'low': float(row['low']),
+                        'close': float(row['close']),
+                        'volume': int(row.get('volume', 0)),
+                        'bar_time': bar_time,
+                    })
+                if bars_list:
+                    self.indicator_engine.seed_bars(sym, bars_list, today_str)
+                    total_bars += len(bars_list)
+                    seeded += 1
+            logger.info(f"Indicator engine seeded: {seeded} symbols, {total_bars} total bars")
+            # Immediately classify market condition so dashboard doesn't show "Waiting for data"
+            if seeded > 0 and self._strategy_selector and self.indicator_engine:
+                spy_data = self.indicator_engine.get_data('SPY')
+                if spy_data and spy_data.get('rsi_initialized'):
+                    now = datetime.now(ET)
+                    self._strategy_selector.update(spy_data, now)
+                    cond = self._strategy_selector.current_condition
+                    logger.info(f"Market condition after seed: {cond.condition if cond else 'unknown'}")
+        except Exception as e:
+            logger.warning(f"Indicator engine seeding failed (non-fatal): {e}")
+
     async def start(self):
         """Start the live trading loop."""
         if self.status in ('trading', 'scanning'):
@@ -6172,12 +8533,32 @@ class GapFadeLiveTrader:
             self.event_detector.reset_daily()
         # P0-4: reconcile with broker on startup
         await self._reconcile_with_broker()
-        # Start tick streamer for existing positions (e.g. after restart)
-        if self.engine.positions and not self.streamer:
-            syms = list(self.engine.positions.keys())
-            self.streamer = AlpacaTickStreamer(syms, on_tick=self._on_tick)
+        # Build intraday watchlist before creating streamer so we can include
+        # all symbols in the initial WS subscription (avoids add_symbols race)
+        if self.config.intraday_enabled and self._intraday_strategies:
+            await self._build_intraday_watchlist()
+            self._last_intraday_watchlist_refresh = _time.monotonic()
+            # Seed indicator engine with today's historical bars so RSI/EMA are warm
+            await self._seed_indicator_engine()
+
+        # Start tick streamer — combine existing positions + intraday watchlist
+        _stream_syms = set()
+        if self.engine.positions:
+            _stream_syms.update(self.engine.positions.keys())
+        if self.config.intraday_enabled and self._intraday_watchlist:
+            _stream_syms.update(self._intraday_watchlist)
+
+        if _stream_syms and not self.streamer:
+            self.streamer = AlpacaTickStreamer(
+                list(_stream_syms), on_tick=self._on_tick)
             await self.streamer.start()
-            logger.info(f"Tick streamer started for {len(syms)} existing positions: {syms}")
+            logger.info(f"Tick streamer started for {len(_stream_syms)} symbols "
+                         f"(positions + intraday watchlist)")
+
+        if self.config.intraday_enabled and self._intraday_strategies:
+            logger.info(f"Intraday system bootstrapped: {len(self._intraday_strategies)} "
+                         f"strategies, {len(self._intraday_watchlist)} watchlist symbols")
+
         self._task = asyncio.create_task(self._trading_loop())
         logger.info("Live trader started")
         self._add_message('system', 'Live trader started')
@@ -6627,6 +9008,7 @@ class GapFadeLiveTrader:
         _did_scan_925 = False
         _did_enter = False
         _did_eod = False
+        _did_close_on_open = False
 
         try:
             while self.status != 'stopped':
@@ -6642,6 +9024,16 @@ class GapFadeLiveTrader:
                     _did_scan_925 = False
                     _did_enter = False
                     _did_eod = False
+                    _did_close_on_open = False
+                    self._last_perf_snapshot_hour = -1
+
+                # Hourly performance snapshot (9:30-16:00, once per hour)
+                if (now.hour >= 10 and now.hour <= 15
+                        and now.hour != self._last_perf_snapshot_hour):
+                    _market_hours = (now.hour > 9 or (now.hour == 9 and now.minute >= 30))
+                    if _market_hours:
+                        self._last_perf_snapshot_hour = now.hour
+                        self._record_performance_snapshot('hourly')
 
                 # ── SAFETY NETS (always active, LLM cannot override) ──
 
@@ -6666,6 +9058,59 @@ class GapFadeLiveTrader:
                     await asyncio.sleep(min(sleep_sec, 86400))  # cap at 24h
                     continue
 
+                # Close-on-open: liquidate positions that failed to close yesterday
+                _market_is_open = (now.hour > 9 or (now.hour == 9 and now.minute >= 30))
+                if _market_is_open and not _did_close_on_open:
+                    coo_syms = [sym for sym, pos in self.engine.positions.items()
+                                if pos.close_on_open]
+                    if coo_syms:
+                        _did_close_on_open = True
+                        logger.info(f"Close-on-open: liquidating {len(coo_syms)} overnight positions: {coo_syms}")
+                        self._add_message('system',
+                            f'Close-on-open: liquidating {len(coo_syms)} positions from yesterday: {coo_syms}')
+                        for sym in coo_syms:
+                            async with self._position_lock:
+                                pos = self.engine.positions.get(sym)
+                                if pos is None:
+                                    continue
+                                # Get current price
+                                price = 0.0
+                                try:
+                                    snaps = await asyncio.to_thread(fetch_alpaca_snapshots, [sym])
+                                    price = snaps.get(sym, {}).get('latestTrade', {}).get('p', 0.0)
+                                except Exception:
+                                    pass
+                                if price <= 0:
+                                    price = pos.entry_price
+                                exit_signal = {'reason': 'eod', 'shares': pos.remaining_shares,
+                                               'is_full_close': True, 'trigger_price': price}
+                                trade = await self._execute_exit(sym, exit_signal, price)
+                            if trade:
+                                self._add_message('exit',
+                                    f'Close-on-open: {sym} closed @ ${trade.exit_price:.2f} '
+                                    f'P&L: ${trade.pnl:+,.2f}')
+                                await broadcast({'type': 'trade', 'trades': [asdict(trade)]})
+                            else:
+                                # Last resort: Alpaca close position API
+                                result = await asyncio.to_thread(alpaca_close_position_api, sym)
+                                if 'error' not in result:
+                                    logger.info(f"Close-on-open fallback: {sym} closed via Alpaca API")
+                                    pos = self.engine.positions.get(sym)
+                                    if pos:
+                                        fill_price = float(result.get('filled_avg_price', 0)) or price
+                                        trade = self.engine.confirm_exit(
+                                            sym, pos.remaining_shares, fill_price, 'eod', now)
+                                        if trade:
+                                            self._add_message('exit',
+                                                f'Close-on-open fallback: {sym} @ ${fill_price:.2f} '
+                                                f'P&L: ${trade.pnl:+,.2f}')
+                                else:
+                                    logger.error(f"Close-on-open FAILED for {sym}: {result.get('error')}")
+                                    self._add_message('error', f'Close-on-open FAILED for {sym} — manual action needed')
+                        self._save_state()
+                    else:
+                        _did_close_on_open = True  # nothing to close
+
                 # EOD close at 3:50+ PM (once per day, mechanical safety net)
                 if now.hour == 15 and now.minute >= 50 and not _did_eod:
                     # EOD Debrief — run before closing positions
@@ -6678,6 +9123,8 @@ class GapFadeLiveTrader:
                                 f'BOT: Day wrap-up request | RUDRA: {debrief}')
                             await broadcast({'type': 'conversation',
                                 'speaker': 'rudra', 'text': debrief})
+                    # EOD performance snapshot
+                    self._record_performance_snapshot('eod')
                     if self.engine.positions:
                         _did_eod = True
                         await self._eod_close()
@@ -6707,6 +9154,10 @@ class GapFadeLiveTrader:
                         f'Today: {"+" if stats.pnl >= 0 else ""}${stats.pnl:.2f} ({wins}W/{losses}L)\n'
                         f'Trades: {trade_details or "none"}',
                         level='summary')
+
+                    # Store today's closing bars for the full universe
+                    # so tomorrow's gap scanner can use prev_close from DB
+                    await self._store_eod_bars(today)
 
                     # Weekly model maintenance (Friday after hours)
                     if now.weekday() == 4:
@@ -6881,6 +9332,11 @@ class GapFadeLiveTrader:
                         if self.status != new_status:
                             self.status = new_status
                             await broadcast({'type': 'live_status', 'status': new_status})
+                        # Intraday scanning during wait (LLM mode)
+                        if (self.config.intraday_enabled and self._intraday_strategies
+                                and (now.hour, now.minute) >= (9, 45)
+                                and (now.hour, now.minute) <= (15, 30)):
+                            await self._intraday_scan_and_enter()
                         await asyncio.sleep(30)
                     else:  # monitor
                         if self.engine.positions:
@@ -6896,6 +9352,11 @@ class GapFadeLiveTrader:
                             if self.status != 'scanning':
                                 self.status = 'scanning'
                                 await broadcast({'type': 'live_status', 'status': 'scanning'})
+                        # Intraday scanning during monitor (LLM mode)
+                        if (self.config.intraday_enabled and self._intraday_strategies
+                                and (now.hour, now.minute) >= (9, 45)
+                                and (now.hour, now.minute) <= (15, 30)):
+                            await self._intraday_scan_and_enter()
                         await asyncio.sleep(15)
                     continue
 
@@ -6958,8 +9419,20 @@ class GapFadeLiveTrader:
                     # Autonomous review (fallback schedule too)
                     if self.engine.positions:
                         await self._execute_scheduled_reflection()
+                    # Intraday scanning during monitoring (fallback schedule)
+                    if (self.config.intraday_enabled and self._intraday_strategies
+                            and (now.hour, now.minute) >= (9, 45)
+                            and (now.hour, now.minute) <= (15, 30)):
+                        await self._intraday_scan_and_enter()
                     await asyncio.sleep(15)
                     continue
+
+                # Intraday scanning during idle periods (after gap cutoff, no positions)
+                if (self.config.intraday_enabled and self._intraday_strategies
+                        and (now.hour, now.minute) >= (9, 45)
+                        and (now.hour, now.minute) <= (15, 30)
+                        and self.status not in ('stopped', 'standdown')):
+                    await self._intraday_scan_and_enter()
 
                 # Waiting for next event
                 await asyncio.sleep(30)
@@ -7013,6 +9486,8 @@ class GapFadeLiveTrader:
                         c.score = new_score
                     filtered.append(c)
                 else:
+                    _log_rejected_candidate(c, 'strategy_filter', reason,
+                                            self.config.active_strategy)
                     logger.debug(f"Strategy filtered {c.symbol}: {reason}")
             if len(filtered) < pre_count:
                 self._add_message('strategy',
@@ -7059,6 +9534,10 @@ class GapFadeLiveTrader:
                         'text': f'Candidates: trade {trade_names}, skip {skip_names}'})
                     if skip_syms:
                         before = len(self.candidates)
+                        for c in self.candidates:
+                            if c.symbol in skip_syms:
+                                _log_rejected_candidate(c, 'llm_skip', 'LLM supervisor skip',
+                                                        self.config.active_strategy)
                         self.candidates = [c for c in self.candidates if c.symbol not in skip_syms]
             except Exception as e:
                 logger.warning(f"Rudra candidate evaluation failed (non-fatal): {e}")
@@ -7076,6 +9555,8 @@ class GapFadeLiveTrader:
             if c.catalyst == 'earnings':
                 if self.config.catalyst_skip_earnings:
                     c.score = -999
+                    _log_rejected_candidate(c, 'catalyst',
+                        f'earnings gap: {c.catalyst_detail}', self.config.active_strategy)
                     self._add_message('catalyst',
                         f'{c.symbol}: SKIP — earnings gap ({c.catalyst_detail})')
                     continue
@@ -7086,6 +9567,8 @@ class GapFadeLiveTrader:
                         f'{c.symbol}: -{penalty} penalty (earnings: {c.catalyst_detail})')
             elif c.catalyst == 'ma':
                 c.score = -999
+                _log_rejected_candidate(c, 'catalyst',
+                    f'M&A gap: {c.catalyst_detail}', self.config.active_strategy)
                 self._add_message('catalyst',
                     f'{c.symbol}: SKIP — M&A gap ({c.catalyst_detail})')
                 continue
@@ -7157,6 +9640,8 @@ class GapFadeLiveTrader:
             async with self._position_lock:
                 ok, reason = self.engine.should_enter(candidate)
                 if not ok:
+                    _log_rejected_candidate(candidate, 'entry', reason,
+                                            self.config.active_strategy)
                     self._add_message('skip', f'Skipping {candidate.symbol}: {reason}')
                     if 'halted' in reason or 'daily loss' in reason or 'drawdown' in reason:
                         await self.alerter.send('Circuit Breaker',
@@ -7170,6 +9655,8 @@ class GapFadeLiveTrader:
                     strat_ok, strat_reason = self.strategy.should_enter_now(
                         asdict(candidate), candidate.premarket_price, tick_data, datetime.now(ET))
                     if not strat_ok:
+                        _log_rejected_candidate(candidate, 'strategy_gate', strat_reason,
+                                                self.config.active_strategy)
                         self._add_message('strategy',
                             f'Strategy skip {candidate.symbol}: {strat_reason}')
                         continue
@@ -7393,10 +9880,24 @@ class GapFadeLiveTrader:
         # Mark position as closing to prevent re-entry
         pos.closing = True
 
-        # Cancel broker-side stop order before placing a new cover order
-        # (except for stop exits where the broker stop may have already filled)
-        if pos.stop_order_id and not is_stop:
-            await asyncio.to_thread(alpaca_cancel_order, pos.stop_order_id)
+        # Cancel ALL open orders for this symbol before placing the cover order.
+        # Alpaca holds shares for pending orders (including stops), which causes
+        # "insufficient qty available" if we submit a cover while orders are active.
+        # Skip only for stop exits where the broker stop triggered the exit.
+        if not is_stop:
+            _cancelled = await asyncio.to_thread(
+                alpaca_cancel_open_orders_for_symbol, symbol)
+            if _cancelled > 0:
+                logger.info(f"Cancelled {_cancelled} open orders for {symbol} before cover")
+                # Poll until Alpaca confirms no open orders remain for this symbol
+                for _wait in range(8):
+                    await asyncio.sleep(0.5)
+                    _remaining = await asyncio.to_thread(
+                        _alpaca_open_order_count, symbol)
+                    if _remaining == 0:
+                        break
+                else:
+                    logger.warning(f"{symbol}: open orders still present after 4s, proceeding anyway")
             pos.stop_order_id = ''
 
         # Direction-aware exit side: sell to close longs, buy to cover shorts
@@ -7723,6 +10224,21 @@ class GapFadeLiveTrader:
                 'timestamp': _time.time(),
             })
 
+        # Broadcast to intraday SSE (throttled 1/sec per symbol)
+        if symbol in self._intraday_watchlist and _intraday_sse_queues:
+            _now_mono = _time.monotonic()
+            if _now_mono - self._last_sse_tick.get(symbol, 0) >= 1.0:
+                self._last_sse_tick[symbol] = _now_mono
+                _td = self.indicator_engine.get_data(symbol) if self.indicator_engine else {}
+                _intraday_sse_broadcast({
+                    'type': 'tick',
+                    'symbol': symbol,
+                    'price': price,
+                    'rsi': round(_td.get('rsi', 0), 2) if _td else 0,
+                    'vwap': round(_td.get('vwap', 0), 2) if _td else 0,
+                    'volume_surge': round(_td.get('volume_surge', 0), 2) if _td else 0,
+                })
+
         if self.status != 'trading':
             return
 
@@ -7744,10 +10260,14 @@ class GapFadeLiveTrader:
                     self.journal.log('observation', 'event_detector',
                         te.description, symbol=te.symbol, data=te.data)
 
+            # Determine which strategy to use for this position
+            _intraday_strat = self._intraday_strategies.get(pos.strategy_id)
+            _active_strat = _intraday_strat or self.strategy
+
             # Strategy-specific trailing stop update
-            if self.strategy:
+            if _active_strat:
                 tick_data = self.indicator_engine.get_data(symbol) if self.indicator_engine else None
-                new_stop = self.strategy.update_trailing_stop(
+                new_stop = _active_strat.update_trailing_stop(
                     asdict(pos), price, tick_data, now)
                 if new_stop is not None:
                     old_stop = pos.stop_price
@@ -7770,10 +10290,10 @@ class GapFadeLiveTrader:
 
             # Strategy-specific exit check (before engine exits)
             exit_signal = None
-            if self.strategy:
+            if _active_strat:
                 tick_data = self.indicator_engine.get_data(symbol) if self.indicator_engine else None
-                strat_exit = self.strategy.evaluate_exit(
-                    asdict(pos), price, price, tick_data, now)
+                strat_exit = _active_strat.evaluate_exit(
+                    asdict(pos), price, tick_data, now)
                 if strat_exit is not None:
                     exit_signal = {
                         'reason': strat_exit.reason,
@@ -7884,10 +10404,14 @@ class GapFadeLiveTrader:
 
                     pos.update_tracking(price, now_str)
 
+                    # Determine which strategy to use for this position
+                    _intraday_strat = self._intraday_strategies.get(pos.strategy_id)
+                    _active_strat = _intraday_strat or self.strategy
+
                     # Strategy plugin: trailing stop update
-                    if self.strategy and self.indicator_engine:
+                    if _active_strat and self.indicator_engine:
                         tick_data = self.indicator_engine.get_data(sym)
-                        new_stop = self.strategy.update_trailing_stop(
+                        new_stop = _active_strat.update_trailing_stop(
                             asdict(pos), price, tick_data, now)
                         if new_stop is not None:
                             old_stop = pos.stop_price
@@ -7908,10 +10432,10 @@ class GapFadeLiveTrader:
                                         logger.warning(f"Broker trailing stop update failed for {sym}: {e}")
 
                     # Strategy plugin: evaluate exit (before engine)
-                    if self.strategy and self.indicator_engine:
+                    if _active_strat and self.indicator_engine:
                         tick_data = self.indicator_engine.get_data(sym)
-                        strat_exit = self.strategy.evaluate_exit(
-                            asdict(pos), price, price, tick_data, now)
+                        strat_exit = _active_strat.evaluate_exit(
+                            asdict(pos), price, tick_data, now)
                         if strat_exit is not None:
                             exit_signal = {
                                 'reason': strat_exit.reason,
@@ -8159,11 +10683,19 @@ class GapFadeLiveTrader:
         self._add_message('system', 'EOD — closing all positions (with verification)')
         logger.info("EOD close initiated")
 
-        # Cancel all broker-side stop orders first
-        for sym, pos in list(self.engine.positions.items()):
-            if pos.stop_order_id:
-                await asyncio.to_thread(alpaca_cancel_order, pos.stop_order_id)
+        # Cancel ALL open orders for each position symbol (stops, pending entries, etc.)
+        # This ensures shares are not held_for_orders when we submit the cover.
+        symbols_with_positions = list(self.engine.positions.keys())
+        _total_cancelled = 0
+        for sym in symbols_with_positions:
+            n = await asyncio.to_thread(alpaca_cancel_open_orders_for_symbol, sym)
+            _total_cancelled += n
+            pos = self.engine.positions.get(sym)
+            if pos:
                 pos.stop_order_id = ''
+        if _total_cancelled > 0:
+            logger.info(f"EOD: cancelled {_total_cancelled} open orders, waiting for release")
+            await asyncio.sleep(2)  # let Alpaca release held shares
 
         max_retries = 3
         for attempt in range(max_retries):
@@ -8171,6 +10703,13 @@ class GapFadeLiveTrader:
                 break
 
             symbols_to_close = list(self.engine.positions.keys())
+
+            # On retry, cancel any new open orders that may have appeared
+            if attempt > 0:
+                for sym in symbols_to_close:
+                    await asyncio.to_thread(alpaca_cancel_open_orders_for_symbol, sym)
+                await asyncio.sleep(2)
+
             for sym in symbols_to_close:
                 async with self._position_lock:
                     pos = self.engine.positions.get(sym)
@@ -8199,7 +10738,6 @@ class GapFadeLiveTrader:
             # Verify with broker that positions are actually closed
             await asyncio.sleep(2)  # give broker time to settle
             broker_positions = await asyncio.to_thread(alpaca_get_positions)
-            # Check for any remaining positions (both long and short)
             tracked_syms = set(self.engine.positions.keys())
             broker_remaining = [p for p in broker_positions
                                 if p.get('symbol') in tracked_syms]
@@ -8224,22 +10762,58 @@ class GapFadeLiveTrader:
             if attempt < max_retries - 1:
                 await asyncio.sleep(3)  # wait before retry
 
-        # Final safety check
+        # Final safety: use Alpaca's DELETE /v2/positions/{symbol} API as last resort
         broker_positions = await asyncio.to_thread(alpaca_get_positions)
         tracked_syms = set(self.engine.positions.keys())
         broker_remaining = [p for p in broker_positions
                             if p.get('symbol') in tracked_syms]
         if broker_remaining:
-            remaining = [(p['symbol'], p.get('qty')) for p in broker_remaining]
-            logger.error(f"CRITICAL: EOD close FAILED after {max_retries} retries! "
-                        f"Remaining broker positions: {remaining}")
-            self._add_message('error',
-                f'CRITICAL: EOD close failed! Still have positions: {remaining}. '
-                f'Manual intervention required!')
-            await self.alerter.send('EOD CLOSE FAILED',
-                f'Positions still open after {max_retries} retries!\n'
-                f'Remaining: {remaining}\nManual intervention required!',
-                level='error')
+            remaining_syms = [p['symbol'] for p in broker_remaining]
+            logger.warning(f"EOD: using Alpaca close-position API for stubborn positions: {remaining_syms}")
+            self._add_message('warning', f'EOD fallback: using Alpaca liquidation API for {remaining_syms}')
+            for sym in remaining_syms:
+                # Cancel any remaining orders first
+                await asyncio.to_thread(alpaca_cancel_open_orders_for_symbol, sym)
+                await asyncio.sleep(1)
+                result = await asyncio.to_thread(alpaca_close_position_api, sym)
+                if 'error' not in result:
+                    logger.info(f"EOD fallback: {sym} closed via Alpaca API")
+                    # Reconcile engine state
+                    pos = self.engine.positions.get(sym)
+                    if pos:
+                        fill_price = float(result.get('filled_avg_price', 0)) or pos.entry_price
+                        now = datetime.now(ET)
+                        trade = self.engine.confirm_exit(sym, pos.remaining_shares, fill_price, 'eod', now)
+                        if trade:
+                            self._add_message('exit',
+                                f'EOD FALLBACK {sym} @ ${fill_price:.2f} P&L: ${trade.pnl:.2f}')
+                            await broadcast({'type': 'trade', 'trades': [asdict(trade)]})
+                else:
+                    logger.error(f"EOD fallback FAILED for {sym}: {result['error']}")
+
+            # Final verification
+            await asyncio.sleep(2)
+            broker_positions = await asyncio.to_thread(alpaca_get_positions)
+            broker_remaining = [p for p in broker_positions
+                                if p.get('symbol') in tracked_syms]
+            if broker_remaining:
+                remaining = [(p['symbol'], p.get('qty')) for p in broker_remaining]
+                logger.error(f"CRITICAL: EOD close FAILED after all retries + fallback! "
+                            f"Remaining broker positions: {remaining}")
+                # Mark surviving positions for close-on-open next trading day
+                for sym, _qty in remaining:
+                    if sym in self.engine.positions:
+                        self.engine.positions[sym].close_on_open = True
+                        self.engine.positions[sym].closing = False
+                        logger.info(f"Marked {sym} for close-on-open")
+                self._save_state()
+                self._add_message('error',
+                    f'EOD close failed — {len(remaining)} positions marked for close at next market open: '
+                    f'{[s for s, _ in remaining]}')
+                await self.alerter.send('EOD CLOSE FAILED — will retry at open',
+                    f'Positions marked for close-on-open:\n'
+                    f'{remaining}\nWill auto-close when market opens.',
+                    level='error')
 
         if self.streamer:
             await self.streamer.stop()
@@ -8254,6 +10828,49 @@ class GapFadeLiveTrader:
         self._save_state()
 
     # -------------------------------------------------------------------------
+    # EOD bar storage — store today's closing prices for next-day gap scan
+    # -------------------------------------------------------------------------
+
+    async def _store_eod_bars(self, today: str):
+        """Fetch and store today's daily bars for the full universe.
+
+        Called once after market close so tomorrow's gap scanner can use
+        prev_close directly from the DB instead of re-fetching from the API.
+        """
+        try:
+            universe = self.scanner._resolve_universe()
+            db = get_price_db()
+
+            # Check which symbols already have today's bar
+            existing = set()
+            cur = db._conn.cursor()
+            cur.execute(
+                'SELECT symbol FROM daily_bars WHERE date = %s', (today,)
+            )
+            existing = {row[0] for row in cur.fetchall()}
+
+            need_fetch = [s for s in universe if s not in existing]
+            if not need_fetch:
+                logger.info(f"EOD bars: all {len(universe)} symbols already have {today} data")
+                return
+
+            logger.info(f"EOD bars: fetching {len(need_fetch)}/{len(universe)} symbols for {today}")
+            t0 = _time.monotonic()
+
+            dfs = await asyncio.to_thread(
+                _fetch_bars_multi_parallel, need_fetch, today, today, '1Day', 'iex'
+            )
+
+            stored = 0
+            if dfs:
+                db.upsert_bars_batch(dfs)
+                stored = len(dfs)
+
+            elapsed = _time.monotonic() - t0
+            logger.info(f"EOD bars: stored {stored} symbols in {elapsed:.1f}s")
+        except Exception as e:
+            logger.warning(f"EOD bar storage failed (non-critical): {e}")
+
     # State Persistence — atomic writes
     # -------------------------------------------------------------------------
 
@@ -8467,6 +11084,21 @@ class GapFadeLiveTrader:
 
 connected_websockets: List[WebSocket] = []
 
+# SSE infrastructure for intraday page
+_intraday_sse_queues: List[asyncio.Queue] = []
+
+
+def _intraday_sse_broadcast(event: dict):
+    """Push event to all SSE subscriber queues (fire-and-forget)."""
+    dead = []
+    for q in _intraday_sse_queues:
+        try:
+            q.put_nowait(event)
+        except asyncio.QueueFull:
+            dead.append(q)
+    for q in dead:
+        _intraday_sse_queues.remove(q)
+
 
 async def broadcast(msg: dict):
     """Send message to all connected WebSocket clients."""
@@ -8536,18 +11168,49 @@ async def _startup_reconcile():
         logger.error(f"Startup reconciliation failed: {e}")
 
 
+async def _prewarm_volume_cache():
+    """Pre-warm the scanner volume cache on startup.
+
+    Runs 3s after boot to let FastAPI settle. Uses SQL batch + parallel API
+    so the first scan of the day is instant (cache already hot).
+    """
+    await asyncio.sleep(3)
+    try:
+        scanner = live_trader.scanner
+        universe = scanner._resolve_universe()
+        if not universe:
+            return
+
+        t0 = _time.time()
+        logger.info(f"Pre-warming volume cache for {len(universe)} symbols...")
+
+        # Ensure assets cache is populated (also loads shortability data)
+        if live_trader.config.scan_universe == 'alpaca':
+            await asyncio.to_thread(fetch_alpaca_assets, live_trader.config.min_price)
+
+        # Build volume cache using batch SQL + parallel API
+        await asyncio.to_thread(scanner._ensure_volume_cache)
+
+        elapsed = _time.time() - t0
+        logger.info(f"Volume cache pre-warmed: {len(scanner._avg_volumes)} symbols in {elapsed:.1f}s")
+    except Exception as e:
+        logger.warning(f"Volume cache pre-warm failed (non-fatal): {e}")
+
+
 @asynccontextmanager
 async def lifespan(app):
     asyncio.create_task(_watchdog_heartbeat())
     # Always reconcile with broker on boot (catch orphaned positions)
     asyncio.create_task(_startup_reconcile())
+    # Pre-warm volume cache for fast first scan
+    asyncio.create_task(_prewarm_volume_cache())
     # Auto-start trading loop if configured
     if live_trader.config.auto_start:
         asyncio.create_task(_delayed_auto_start())
-    logger.info("Rudra Trading Engine started")
+    logger.info("Gap Fade app started")
     yield
 
-app = FastAPI(title="Rudra Trading Engine", version=APP_VERSION, lifespan=lifespan)
+app = FastAPI(title="Gap Fade Strategy", version=APP_VERSION, lifespan=lifespan)
 _app_start_time = _time.time()
 
 # ---------------------------------------------------------------------------
@@ -8654,6 +11317,28 @@ CONFIG_VALID_RANGES = {
     'dd_tier2_scale':        (0.01, 1.0),
     'dd_tier2_max_positions':(1, 5),
     'dd_hard_stop':          (0.0, 1.0),
+    # Entry & exit timing
+    'entry_cutoff_hour':     (9, 15),
+    'entry_cutoff_min':      (0, 59),
+    'time_exit_hour':        (10, 16),
+    'time_exit_min':         (0, 59),
+    'eod_exit_hour':         (14, 16),
+    'eod_exit_min':          (0, 59),
+    'bounce_entry_pct':      (0.0, 0.10),
+    'partial_target_pct':    (0.0, 1.0),
+    'adverse_fill_pct':      (0.0, 1.0),
+    'thin_day_threshold':    (1, 50),
+    # Catalyst
+    'catalyst_earnings_penalty': (0, 100),
+    'catalyst_news_penalty':     (0, 100),
+    'catalyst_noise_bonus':      (0, 50),
+    # Intraday strategies
+    'intraday_scan_interval':   (5, 300),
+    'intraday_watchlist_size':  (1, 100),
+    'intraday_max_entries':     (1, 20),
+    'intraday_risk_pct':        (0.001, 0.10),
+    'intraday_daily_loss_limit':(0.005, 0.10),
+    'intraday_max_position_pct':(0.02, 0.50),
 }
 
 
@@ -8688,6 +11373,27 @@ def validate_config(updates: dict) -> Tuple[dict, List[str]]:
 # Singletons
 live_trader = GapFadeLiveTrader()
 backtester = GapFadeBacktester()
+
+# ---------------------------------------------------------------------------
+# Infrastructure integration (Prometheus metrics, health checks, correlation IDs)
+# ---------------------------------------------------------------------------
+try:
+    import sys as _sys
+    _infra_dir = os.path.join(os.path.dirname(__file__) or '.', 'infra_src')
+    _local_dir = os.path.join(os.path.dirname(__file__) or '.', '..', 'infra')
+    for _p in [_infra_dir, _local_dir]:
+        if os.path.isdir(_p) and _p not in _sys.path:
+            _sys.path.insert(0, _p)
+    try:
+        from integration import integrate_infra
+    except ImportError:
+        from src.integration import integrate_infra
+    integrate_infra(app, live_trader)
+    logger.info("Infrastructure modules integrated (metrics, health, logging)")
+except ImportError as _ie:
+    logger.info(f"Infrastructure modules not available — running standalone ({_ie})")
+except Exception as _e:
+    logger.warning(f"Infrastructure integration failed: {_e}")
 
 
 async def _watchdog_heartbeat():
@@ -8896,11 +11602,22 @@ async def switch_strategy(body: dict):
 
     strat_config = body.get('config')
     live_trader.switch_strategy(strategy_id, strat_config)
-    return {
+    result = {
         'active': live_trader.config.active_strategy,
         'name': live_trader.strategy.name if live_trader.strategy else 'unknown',
         'has_indicators': live_trader.indicator_engine is not None,
     }
+    # Broadcast strategy switch via WebSocket
+    try:
+        import asyncio
+        asyncio.ensure_future(broadcast({
+            'type': 'strategy_switched',
+            'strategy_id': live_trader.config.active_strategy,
+            'name': result['name'],
+        }))
+    except Exception:
+        pass
+    return result
 
 
 @app.post("/api/strategy/config")
@@ -8921,6 +11638,323 @@ async def update_strategy_config(body: dict):
     }
 
 
+@app.get("/api/intraday/strategies")
+async def list_intraday_strategies():
+    """List available and active intraday strategies."""
+    try:
+        from gap_fade_strategies import IntradayStrategyRegistry
+        all_strategies = IntradayStrategyRegistry.list_strategies()
+    except Exception as e:
+        all_strategies = []
+        logger.warning(f"Failed to list intraday strategies: {e}")
+    selector_status = None
+    if live_trader._strategy_selector:
+        selector_status = live_trader._strategy_selector.get_status()
+    return {
+        'available': all_strategies,
+        'active': list(live_trader._intraday_strategies.keys()),
+        'enabled': live_trader.config.intraday_enabled,
+        'entries_today': live_trader._intraday_entries_today,
+        'max_entries': live_trader.config.intraday_max_entries,
+        'watchlist': live_trader._intraday_watchlist,
+        'watchlist_size': len(live_trader._intraday_watchlist),
+        'selector_status': selector_status,
+    }
+
+
+@app.post("/api/intraday/enable")
+async def toggle_intraday(body: dict):
+    """Enable/disable intraday strategies.
+
+    Body: {"enabled": true, "strategies": "orb_breakout,momentum_surge"}
+    """
+    if 'enabled' in body:
+        live_trader.config.intraday_enabled = bool(body['enabled'])
+    if 'strategies' in body:
+        live_trader.config.intraday_strategies = body['strategies']
+    # Reinitialize if enabled
+    if live_trader.config.intraday_enabled:
+        live_trader._intraday_strategies.clear()
+        live_trader._strategy_selector = None
+        live_trader._init_intraday_strategies()
+    else:
+        live_trader._intraday_strategies.clear()
+        live_trader._strategy_selector = None
+    live_trader._save_state()
+    return {
+        'enabled': live_trader.config.intraday_enabled,
+        'active': list(live_trader._intraday_strategies.keys()),
+    }
+
+
+@app.get("/api/intraday/watchlist")
+async def get_intraday_watchlist():
+    """Get the current intraday watchlist with indicator snapshots."""
+    watchlist_data = []
+    for sym in live_trader._intraday_watchlist:
+        tick_data = live_trader.indicator_engine.get_data(sym) if live_trader.indicator_engine else {}
+        price = None
+        if live_trader.streamer:
+            price = live_trader.streamer.latest_prices.get(sym)
+        watchlist_data.append({
+            'symbol': sym,
+            'price': price,
+            'indicators': tick_data,
+        })
+    return {
+        'watchlist': watchlist_data,
+        'size': len(live_trader._intraday_watchlist),
+        'max_size': live_trader.config.intraday_watchlist_size,
+    }
+
+
+@app.get("/api/intraday/performance")
+async def get_intraday_performance():
+    """Get intraday strategy performance metrics (in-memory + DB historical)."""
+    intraday_ids = set(live_trader._intraday_strategies.keys())
+
+    # In-memory trades from current session
+    intraday_trades = [t for t in live_trader.engine.all_trade_log
+                       if hasattr(t, 'strategy_id') and t.strategy_id in intraday_ids]
+
+    # DB historical trades (if available)
+    db_trades = []
+    try:
+        db = get_price_db()
+        cur = db._conn.cursor()
+        cur.execute(
+            "SELECT strategy_id, pnl, side, exit_reason FROM trades "
+            "WHERE strategy_id != '' AND strategy_id IS NOT NULL")
+        for row in cur.fetchall():
+            db_trades.append({
+                'strategy_id': row[0], 'pnl': row[1],
+                'side': row[2], 'exit_reason': row[3],
+            })
+    except Exception:
+        pass  # DB may not have the column yet
+
+    per_strategy = {}
+    for sid in intraday_ids:
+        # Combine in-memory and DB trades
+        mem_trades = [t for t in intraday_trades if t.strategy_id == sid]
+        hist_trades = [t for t in db_trades if t['strategy_id'] == sid]
+
+        all_pnls = [t.pnl for t in mem_trades] + [t['pnl'] for t in hist_trades]
+        wins = sum(1 for p in all_pnls if p > 0)
+        losses = len(all_pnls) - wins
+        total_pnl = sum(all_pnls)
+        win_pnls = [p for p in all_pnls if p > 0]
+        loss_pnls = [p for p in all_pnls if p <= 0]
+
+        per_strategy[sid] = {
+            'trades': len(all_pnls),
+            'wins': wins,
+            'losses': losses,
+            'win_rate': round(wins / len(all_pnls), 4) if all_pnls else 0,
+            'total_pnl': round(total_pnl, 2),
+            'avg_win': round(sum(win_pnls) / len(win_pnls), 2) if win_pnls else 0,
+            'avg_loss': round(sum(loss_pnls) / len(loss_pnls), 2) if loss_pnls else 0,
+            'profit_factor': round(abs(sum(win_pnls) / sum(loss_pnls)), 2) if loss_pnls and sum(loss_pnls) != 0 else 0,
+            'today_trades': len(mem_trades),
+            'historical_trades': len(hist_trades),
+        }
+    return {
+        'entries_today': live_trader._intraday_entries_today,
+        'pnl_today': round(live_trader._intraday_pnl_today, 2),
+        'per_strategy': per_strategy,
+    }
+
+
+@app.get("/api/intraday/stream")
+async def intraday_sse_stream(request: Request):
+    """SSE stream for real-time intraday ticks and signals."""
+    q: asyncio.Queue = asyncio.Queue(maxsize=256)
+    _intraday_sse_queues.append(q)
+
+    async def event_generator():
+        try:
+            while True:
+                try:
+                    event = await asyncio.wait_for(q.get(), timeout=15.0)
+                    yield f"data: {json.dumps(event)}\n\n"
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+                if await request.is_disconnected():
+                    break
+        finally:
+            if q in _intraday_sse_queues:
+                _intraday_sse_queues.remove(q)
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@app.get("/api/intraday/state")
+async def get_intraday_state():
+    """Consolidated intraday state: watchlist, active trades, closed today, signals, performance."""
+    # Watchlist with indicators
+    watchlist_data = []
+    for sym in live_trader._intraday_watchlist:
+        tick_data = live_trader.indicator_engine.get_data(sym) if live_trader.indicator_engine else {}
+        price = None
+        chg_pct = 0.0
+        if live_trader.streamer:
+            price = live_trader.streamer.latest_prices.get(sym)
+        watchlist_data.append({
+            'symbol': sym,
+            'price': price,
+            'rsi': round(tick_data.get('rsi', 0), 2) if tick_data else 0,
+            'vwap': round(tick_data.get('vwap', 0), 2) if tick_data else 0,
+            'volume_surge': round(tick_data.get('volume_surge', 0), 2) if tick_data else 0,
+            'ema9': round(tick_data.get('ema9', 0), 2) if tick_data else 0,
+            'ema21': round(tick_data.get('ema21', 0), 2) if tick_data else 0,
+            'atr': round(tick_data.get('atr', 0), 4) if tick_data else 0,
+            'trend': 'up' if tick_data and tick_data.get('ema9', 0) > tick_data.get('ema21', 0) else 'down',
+        })
+
+    # Active intraday trades
+    active_trades = []
+    now = datetime.now(ET)
+    for sym, pos in live_trader.engine.positions.items():
+        if not hasattr(pos, 'strategy_id') or not pos.strategy_id:
+            continue
+        if pos.strategy_id not in live_trader._intraday_strategies:
+            continue
+        current_price = None
+        if live_trader.streamer:
+            current_price = live_trader.streamer.latest_prices.get(sym)
+        unrealized = 0.0
+        if current_price and pos.entry_price:
+            if pos.direction == 'long':
+                unrealized = (current_price - pos.entry_price) * pos.shares
+            else:
+                unrealized = (pos.entry_price - current_price) * pos.shares
+        hold_seconds = 0
+        if hasattr(pos, 'entry_time') and pos.entry_time:
+            try:
+                entry_dt = datetime.strptime(pos.entry_time, '%H:%M:%S').replace(
+                    year=now.year, month=now.month, day=now.day, tzinfo=ET)
+                hold_seconds = int((now - entry_dt).total_seconds())
+            except Exception:
+                pass
+        active_trades.append({
+            'symbol': sym,
+            'direction': pos.direction,
+            'strategy_id': pos.strategy_id,
+            'entry_price': round(pos.entry_price, 2),
+            'current_price': round(current_price, 2) if current_price else None,
+            'stop_price': round(pos.stop_price, 2),
+            'target_price': round(pos.target_price, 2) if hasattr(pos, 'target_price') else None,
+            'shares': pos.shares,
+            'unrealized_pnl': round(unrealized, 2),
+            'hold_time': hold_seconds,
+        })
+
+    # Closed intraday trades today
+    today_str = now.strftime('%Y-%m-%d')
+    intraday_ids = set(live_trader._intraday_strategies.keys())
+    closed_today = []
+    for t in live_trader.engine.all_trade_log:
+        if hasattr(t, 'strategy_id') and t.strategy_id in intraday_ids:
+            if hasattr(t, 'exit_date') and t.exit_date and t.exit_date.startswith(today_str):
+                closed_today.append({
+                    'symbol': t.symbol,
+                    'direction': getattr(t, 'direction', 'long'),
+                    'strategy_id': t.strategy_id,
+                    'entry_price': round(t.entry_price, 2),
+                    'exit_price': round(t.exit_price, 2),
+                    'pnl': round(t.pnl, 2),
+                    'exit_reason': getattr(t, 'exit_reason', ''),
+                    'shares': getattr(t, 'shares', 0),
+                })
+
+    # Recent signals
+    signals = list(live_trader._signal_log)[-50:]
+
+    # Market condition
+    mkt_condition = ''
+    active_strats = []
+    if live_trader._strategy_selector:
+        status = live_trader._strategy_selector.get_status()
+        mkt_condition = status.get('condition', '')
+        active_strats = status.get('active_strategies', [])
+
+    # Win rate
+    wins = sum(1 for t in closed_today if t['pnl'] > 0)
+    win_rate = round(wins / len(closed_today), 4) if closed_today else 0
+
+    return {
+        'watchlist': watchlist_data,
+        'active_trades': active_trades,
+        'closed_today': closed_today,
+        'signals': signals,
+        'market_condition': mkt_condition,
+        'active_strategies': active_strats,
+        'entries_today': live_trader._intraday_entries_today,
+        'pnl_today': round(live_trader._intraday_pnl_today, 2),
+        'win_rate': win_rate,
+        'watchlist_size': len(live_trader._intraday_watchlist),
+        'max_watchlist': live_trader.config.intraday_watchlist_size,
+    }
+
+
+@app.get("/api/intraday/signals")
+async def get_intraday_signals(since_id: int = 0, limit: int = 50):
+    """Get signal log entries, optionally incremental since a given ID."""
+    signals = [s for s in live_trader._signal_log if s['id'] > since_id]
+    return {'signals': signals[-limit:]}
+
+
+@app.get("/api/intraday/analysis/{symbol}")
+async def get_intraday_analysis(symbol: str):
+    """Deep analysis: run all 4 strategies' scan + validate for a symbol."""
+    symbol = symbol.upper()
+    tick_data = live_trader.indicator_engine.get_data(symbol) if live_trader.indicator_engine else {}
+    snapshot = None
+    if live_trader.streamer and live_trader.streamer.latest_prices.get(symbol):
+        snapshot = {'price': live_trader.streamer.latest_prices[symbol]}
+
+    now = datetime.now(ET)
+    results = {}
+    for sid, strat in live_trader._intraday_strategies.items():
+        try:
+            setup = strat.scan_for_setups(symbol, tick_data, snapshot, now)
+            if setup is not None:
+                valid, reason = strat.validate_setup(setup, tick_data, now)
+                results[sid] = {
+                    'has_setup': True,
+                    'valid': valid,
+                    'reason': reason if not valid else 'valid',
+                    'direction': setup.direction,
+                    'confidence': round(setup.confidence, 4),
+                    'entry_price': round(setup.entry_price, 2),
+                    'stop_price': round(setup.stop_price, 2),
+                    'target_price': round(setup.target_price, 2),
+                    'risk_reward': round(setup.risk_reward, 2),
+                }
+            else:
+                results[sid] = {'has_setup': False, 'valid': False, 'reason': 'no_setup'}
+        except Exception as e:
+            results[sid] = {'has_setup': False, 'valid': False, 'reason': str(e)}
+
+    # Indicator snapshot
+    ind = {}
+    if tick_data:
+        for k in ('rsi', 'vwap', 'atr', 'volume_surge', 'ema9', 'ema21',
+                   'rsi_initialized', 'high_of_day', 'low_of_day', 'open_price',
+                   'tick_count', 'cumulative_volume'):
+            if k in tick_data:
+                v = tick_data[k]
+                ind[k] = round(v, 4) if isinstance(v, float) else v
+
+    return {
+        'symbol': symbol,
+        'price': snapshot['price'] if snapshot else None,
+        'indicators': ind,
+        'strategies': results,
+    }
+
+
 @app.post("/api/config")
 async def update_config(body: dict):
     """Update strategy configuration with validation."""
@@ -8931,14 +11965,29 @@ async def update_config(body: dict):
 
     config = live_trader.config
     applied = []
+    changes = {}
     for key, value in validated.items():
         old_val = getattr(config, key, None)
         setattr(config, key, value)
         if old_val != value:
             applied.append(f"{key}: {old_val} → {value}")
+            changes[key] = {'old': old_val, 'new': value}
 
     if applied:
         logger.info(f"Config updated: {', '.join(applied)}")
+
+    # Log to config history
+    if changes:
+        try:
+            db = get_price_db()
+            _cur = db._conn.cursor()
+            _cur.execute(
+                'INSERT INTO config_history (timestamp, source, changes_json, config_snapshot) VALUES (%s, %s, %s, %s)',
+                (datetime.now(ET).isoformat(), 'ui', json.dumps(changes, default=str), json.dumps(asdict(config), default=str))
+            )
+            db._conn.commit()
+        except Exception as e:
+            logger.warning(f"Config history log failed: {e}")
 
     # Sync capital if changed while idle (no open positions)
     old_capital = live_trader.engine.config.initial_capital
@@ -8970,7 +12019,272 @@ async def update_config(body: dict):
     result = {'config': asdict(config)}
     if errors:
         result['validation_errors'] = errors
+
+    # Broadcast config change via WebSocket
+    if changes:
+        try:
+            import asyncio
+            asyncio.ensure_future(broadcast({
+                'type': 'config_changed',
+                'changes': changes,
+                'source': 'ui',
+            }))
+        except Exception:
+            pass
+
     return result
+
+
+# ── Config Schema, Profiles, & History ────────────────────────────
+
+@app.get("/api/config/schema")
+async def get_config_schema():
+    """Return full typed schema for all config fields."""
+    schema = {}
+    default_config = GapFadeConfig()
+    for field_name, field_obj in GapFadeConfig.__dataclass_fields__.items():
+        field_type = field_obj.type
+        default_val = getattr(default_config, field_name)
+        current_val = getattr(live_trader.config, field_name, default_val)
+        type_name = field_type if isinstance(field_type, str) else getattr(field_type, '__name__', str(field_type))
+        entry = {
+            'type': type_name,
+            'default': default_val,
+            'current': current_val,
+        }
+        if field_name in CONFIG_VALID_RANGES:
+            entry['min'], entry['max'] = CONFIG_VALID_RANGES[field_name]
+        schema[field_name] = entry
+
+    strategy_schemas = {}
+    try:
+        from gap_fade_strategies import GapFadeStrategyRegistry, IntradayStrategyRegistry
+        for s in GapFadeStrategyRegistry.list_strategies():
+            strategy_schemas[s['id']] = {
+                'type': 'gap_fade', 'name': s['name'],
+                'parameters': s.get('parameters', {}), 'defaults': s.get('defaults', {}),
+            }
+        for sid in IntradayStrategyRegistry.get_all_ids():
+            strat = IntradayStrategyRegistry.create_strategy(sid)
+            strategy_schemas[sid] = {
+                'type': 'intraday', 'name': strat.name,
+                'parameters': strat.get_parameter_schema(), 'defaults': strat.get_default_config(),
+            }
+    except Exception:
+        pass
+
+    return {'config_schema': schema, 'strategy_schemas': strategy_schemas}
+
+
+@app.get("/api/config/defaults")
+async def get_config_defaults():
+    """Return factory default GapFadeConfig values."""
+    return {'defaults': asdict(GapFadeConfig())}
+
+
+@app.get("/api/config/profiles")
+async def list_config_profiles():
+    """List all saved config profiles."""
+    db = get_price_db()
+    cur = db._conn.cursor()
+    cur.execute(
+        'SELECT name, description, created_at, updated_at FROM config_profiles ORDER BY updated_at DESC'
+    )
+    rows = cur.fetchall()
+    profiles = [{'name': r[0], 'description': r[1], 'created_at': r[2], 'updated_at': r[3]} for r in rows]
+    return {'profiles': profiles}
+
+
+@app.post("/api/config/profiles")
+async def save_config_profile(body: dict):
+    """Save current config as a named profile."""
+    name = body.get('name', '').strip()
+    if not name:
+        return {'error': 'Profile name is required'}
+    if len(name) > 100:
+        return {'error': 'Profile name too long (max 100 chars)'}
+    description = body.get('description', '').strip()
+    config_json = json.dumps(asdict(live_trader.config), default=str)
+    now = datetime.now(ET).isoformat()
+    db = get_price_db()
+    _cur = db._conn.cursor()
+    _cur.execute(
+        'INSERT INTO config_profiles (name, config_json, description, created_at, updated_at) '
+        'VALUES (%s, %s, %s, %s, %s) '
+        'ON CONFLICT (name) DO UPDATE SET config_json=EXCLUDED.config_json, '
+        'description=EXCLUDED.description, updated_at=EXCLUDED.updated_at',
+        (name, config_json, description, now, now)
+    )
+    db._conn.commit()
+    return {'saved': name, 'description': description}
+
+
+@app.post("/api/config/profiles/{name}/load")
+async def load_config_profile(name: str):
+    """Load a saved profile into the active config."""
+    db = get_price_db()
+    _cur = db._conn.cursor()
+    _cur.execute(
+        'SELECT config_json FROM config_profiles WHERE name = %s', (name,)
+    )
+    row = _cur.fetchone()
+    if not row:
+        return {'error': f"Profile '{name}' not found"}
+    saved_config = json.loads(row[0])
+    # Track changes
+    current = asdict(live_trader.config)
+    changes = []
+    for key, new_val in saved_config.items():
+        if hasattr(live_trader.config, key):
+            old_val = current.get(key)
+            if old_val != new_val:
+                changes.append({'key': key, 'old': old_val, 'new': new_val})
+                setattr(live_trader.config, key, new_val)
+    # Sync engine
+    live_trader.engine.config = live_trader.config
+    live_trader.scanner = GapScanner(live_trader.config)
+    live_trader._save_state()
+    # Log to history
+    if changes:
+        changes_dict = {c['key']: {'old': c['old'], 'new': c['new']} for c in changes}
+        try:
+            _cur2 = db._conn.cursor()
+            _cur2.execute(
+                'INSERT INTO config_history (timestamp, source, changes_json, config_snapshot) VALUES (%s, %s, %s, %s)',
+                (datetime.now(ET).isoformat(), 'profile_load', json.dumps(changes_dict, default=str),
+                 json.dumps(asdict(live_trader.config), default=str))
+            )
+            db._conn.commit()
+        except Exception as e:
+            logger.warning(f"Config history log failed: {e}")
+        # Broadcast
+        try:
+            import asyncio
+            asyncio.ensure_future(broadcast({
+                'type': 'config_changed', 'changes': changes_dict, 'source': 'profile_load',
+            }))
+        except Exception:
+            pass
+    return {'loaded': name, 'config': asdict(live_trader.config), 'changes': changes}
+
+
+@app.delete("/api/config/profiles/{name}")
+async def delete_config_profile(name: str):
+    """Delete a saved config profile."""
+    db = get_price_db()
+    cursor = db._conn.cursor()
+    cursor.execute('DELETE FROM config_profiles WHERE name = %s', (name,))
+    db._conn.commit()
+    if cursor.rowcount == 0:
+        return {'error': f"Profile '{name}' not found"}
+    return {'deleted': name}
+
+
+@app.get("/api/config/profiles/{name}/export")
+async def export_config_profile(name: str):
+    """Export a profile as JSON."""
+    db = get_price_db()
+    _cur = db._conn.cursor()
+    _cur.execute(
+        'SELECT config_json, description, created_at, updated_at FROM config_profiles WHERE name = %s', (name,)
+    )
+    row = _cur.fetchone()
+    if not row:
+        return {'error': f"Profile '{name}' not found"}
+    return {
+        'name': name,
+        'config': json.loads(row[0]),
+        'description': row[1],
+        'created_at': row[2],
+        'updated_at': row[3],
+        'export_version': 1,
+    }
+
+
+@app.post("/api/config/profiles/import")
+async def import_config_profile(body: dict):
+    """Import a profile from exported JSON."""
+    name = body.get('name', '').strip()
+    config_data = body.get('config')
+    if not name or not config_data:
+        return {'error': 'Missing name or config data'}
+    if len(name) > 100:
+        return {'error': 'Profile name too long (max 100 chars)'}
+    valid_keys = {f for f in GapFadeConfig.__dataclass_fields__}
+    filtered = {k: v for k, v in config_data.items() if k in valid_keys}
+    if not filtered:
+        return {'error': 'No valid config keys found in import data'}
+    description = body.get('description', '').strip()
+    now = datetime.now(ET).isoformat()
+    db = get_price_db()
+    _cur = db._conn.cursor()
+    _cur.execute(
+        'INSERT INTO config_profiles (name, config_json, description, created_at, updated_at) '
+        'VALUES (%s, %s, %s, %s, %s) '
+        'ON CONFLICT (name) DO UPDATE SET config_json=EXCLUDED.config_json, '
+        'description=EXCLUDED.description, updated_at=EXCLUDED.updated_at',
+        (name, json.dumps(filtered, default=str), description, now, now)
+    )
+    db._conn.commit()
+    return {'imported': name, 'keys': len(filtered)}
+
+
+@app.get("/api/config/history")
+async def get_config_history():
+    """Get config change history (last 100 entries)."""
+    db = get_price_db()
+    _cur = db._conn.cursor()
+    _cur.execute(
+        'SELECT id, timestamp, source, changes_json, config_snapshot '
+        'FROM config_history ORDER BY id DESC LIMIT 100'
+    )
+    rows = _cur.fetchall()
+    history = []
+    for r in rows:
+        history.append({
+            'id': r[0], 'timestamp': r[1], 'source': r[2],
+            'changes': json.loads(r[3]),
+            'snapshot': json.loads(r[4]) if r[4] else None,
+        })
+    return {'history': history}
+
+
+@app.post("/api/config/rollback/{history_id}")
+async def rollback_config(history_id: int):
+    """Rollback config to a specific history version."""
+    db = get_price_db()
+    _cur = db._conn.cursor()
+    _cur.execute(
+        'SELECT config_snapshot FROM config_history WHERE id = %s', (history_id,)
+    )
+    row = _cur.fetchone()
+    if not row:
+        return {'error': f"History entry {history_id} not found"}
+    snapshot = json.loads(row[0])
+    current = asdict(live_trader.config)
+    changes = {}
+    for key, new_val in snapshot.items():
+        if hasattr(live_trader.config, key):
+            old_val = current.get(key)
+            if old_val != new_val:
+                changes[key] = {'old': old_val, 'new': new_val}
+                setattr(live_trader.config, key, new_val)
+    live_trader.engine.config = live_trader.config
+    live_trader.scanner = GapScanner(live_trader.config)
+    live_trader._save_state()
+    # Log rollback to history
+    if changes:
+        try:
+            _cur2 = db._conn.cursor()
+            _cur2.execute(
+                'INSERT INTO config_history (timestamp, source, changes_json, config_snapshot) VALUES (%s, %s, %s, %s)',
+                (datetime.now(ET).isoformat(), f'rollback_{history_id}',
+                 json.dumps(changes, default=str), json.dumps(asdict(live_trader.config), default=str))
+            )
+            db._conn.commit()
+        except Exception as e:
+            logger.warning(f"Config history log failed: {e}")
+    return {'rolled_back_to': history_id, 'changes': changes, 'config': asdict(live_trader.config)}
 
 
 @app.get("/api/llm/status")
@@ -9595,6 +12909,450 @@ async def cancel_backtest():
 
 
 # ---------------------------------------------------------------------------
+# Intraday strategy backtester
+# ---------------------------------------------------------------------------
+_intraday_backtester = None
+
+@app.post("/api/backtest/intraday")
+async def run_intraday_backtest(body: dict):
+    """Run an intraday strategy backtest on daily data."""
+    global _intraday_backtester
+    from gap_fade_backtester import IntradayBacktester
+
+    if _intraday_backtester and _intraday_backtester.status == 'running':
+        return {'error': 'Intraday backtest already running'}
+
+    strategy_ids = body.get('strategies', ['orb_breakout', 'momentum_surge',
+                                            'pullback_entry', 'range_trade'])
+    start_date = body.get('start_date')
+    end_date = body.get('end_date')
+    symbols = body.get('symbols')
+
+    config = live_trader.config
+    _intraday_backtester = IntradayBacktester(config, strategy_ids)
+
+    async def _run():
+        try:
+            result = await _intraday_backtester.run(
+                symbols=symbols,
+                start_date=start_date,
+                end_date=end_date,
+            )
+            await broadcast({'type': 'intraday_backtest_complete', 'result': result})
+        except Exception as e:
+            logger.error(f"Intraday backtest error: {e}")
+            _intraday_backtester.status = 'error'
+
+    asyncio.create_task(_run())
+    return {'status': 'started', 'strategies': strategy_ids}
+
+@app.get("/api/backtest/intraday/status")
+async def intraday_backtest_status():
+    if _intraday_backtester:
+        return {
+            'status': _intraday_backtester.status,
+            'progress': _intraday_backtester.progress,
+        }
+    return {'status': 'idle', 'progress': 0}
+
+@app.get("/api/backtest/intraday/results")
+async def intraday_backtest_results():
+    if _intraday_backtester and _intraday_backtester.status == 'done':
+        return _intraday_backtester.result
+    return {'status': _intraday_backtester.status if _intraday_backtester else 'idle'}
+
+@app.post("/api/backtest/intraday/cancel")
+async def cancel_intraday_backtest():
+    if _intraday_backtester:
+        _intraday_backtester.cancel()
+    return {'status': 'cancelled'}
+
+
+# ---------------------------------------------------------------------------
+# Walk-forward backtest (parameter optimization + OOS validation)
+# ---------------------------------------------------------------------------
+
+@app.post("/api/backtest/walkforward")
+async def run_walkforward(body: dict):
+    """Run walk-forward optimization for gap fade strategy.
+
+    Slides train/test windows over history, optimizes parameters in-sample,
+    validates out-of-sample to detect overfitting.
+    """
+    global _wf_runner
+    if _wf_runner.get('status') == 'running':
+        return {'error': 'Walk-forward already running. Cancel it first.'}
+
+    start_date = body.get('start_date')
+    end_date = body.get('end_date')
+
+    # Validate dates
+    for dkey in ['start_date', 'end_date']:
+        val = body.get(dkey)
+        if val:
+            try:
+                datetime.strptime(val, '%Y-%m-%d')
+            except ValueError:
+                return {'error': f'Invalid {dkey}: "{val}" — expected YYYY-MM-DD format'}
+    if start_date and end_date and start_date > end_date:
+        return {'error': f'start_date ({start_date}) must be before end_date ({end_date})'}
+
+    if not start_date:
+        start_date = (datetime.now() - timedelta(days=7 * 365)).strftime('%Y-%m-%d')
+    if not end_date:
+        end_date = datetime.now().strftime('%Y-%m-%d')
+
+    # Window sizes
+    train_days = int(body.get('train_days', 504))
+    test_days = int(body.get('test_days', 252))
+    step_days = int(body.get('step_days', 126))
+
+    # Symbols
+    symbols = body.get('symbols')
+    if symbols and isinstance(symbols, str):
+        symbols = [s.strip() for s in symbols.split(',')]
+    universe = body.get('universe', 'study')
+    if not symbols:
+        if universe == 'alpaca':
+            symbols = fetch_alpaca_assets(min_price=10.0)
+        else:
+            symbols = UNIVERSE
+
+    # Build base config from body
+    config = GapFadeConfig()
+    for key in ['initial_capital', 'adaptive_stops', 'stop_gap_fraction',
+                'stop_min_pct', 'stop_max_pct', 'partial_cover_frac',
+                'bounce_entry_pct', 'max_positions', 'thin_day_threshold',
+                'max_notional', 'slippage_pct', 'borrow_rate_annual',
+                'max_pct_adv', 'adverse_fill', 'adverse_fill_pct',
+                'kelly_fraction', 'min_price', 'min_avg_volume', 'max_gap_pct',
+                'reentry_enabled', 'reentry_cooldown_minutes',
+                'reentry_max_per_symbol', 'reentry_stop_pct',
+                'trade_gap_downs', 'gap_down_threshold', 'gap_down_max_pct',
+                'gap_down_vol_ratio_max',
+                'dd_circuit_breaker', 'dd_tier1_threshold', 'dd_tier1_scale',
+                'dd_tier2_threshold', 'dd_tier2_scale']:
+        if key in body:
+            field_type = type(getattr(config, key))
+            try:
+                setattr(config, key, field_type(body[key]))
+            except (ValueError, TypeError):
+                pass
+
+    # Custom param grid
+    param_grid = body.get('param_grid')
+
+    _wf_runner = {
+        'status': 'running',
+        'progress': 0,
+        'message': 'Starting...',
+        'result': None,
+        'cancel': False,
+    }
+
+    def progress_cb(pct, msg):
+        _wf_runner['progress'] = round(pct, 1)
+        _wf_runner['message'] = msg
+
+    async def _run_wf():
+        global _wf_runner
+        try:
+            result = await asyncio.to_thread(
+                run_gap_fade_walk_forward,
+                symbols=symbols,
+                full_start=start_date,
+                full_end=end_date,
+                train_days=train_days,
+                test_days=test_days,
+                step_days=step_days,
+                base_config=config,
+                param_grid=param_grid,
+                progress_callback=progress_cb,
+            )
+            _wf_runner['status'] = 'done'
+            _wf_runner['progress'] = 100
+            _wf_runner['result'] = result
+            await broadcast({'type': 'walkforward_complete', 'result': result})
+        except Exception as e:
+            import traceback
+            tb = traceback.format_exc()
+            logger.error(f"Walk-forward crashed: {e}\n{tb}")
+            _wf_runner['status'] = 'error'
+            _wf_runner['result'] = {'error': str(e), 'traceback': tb}
+
+    asyncio.create_task(_run_wf())
+    return {'status': 'started', 'symbols': len(symbols),
+            'train_days': train_days, 'test_days': test_days, 'step_days': step_days}
+
+
+@app.get("/api/backtest/walkforward/status")
+async def walkforward_status():
+    """Get walk-forward optimization progress."""
+    return {
+        'status': _wf_runner.get('status', 'idle'),
+        'progress': _wf_runner.get('progress', 0),
+        'message': _wf_runner.get('message', ''),
+    }
+
+
+@app.get("/api/backtest/walkforward/results")
+async def walkforward_results():
+    """Get walk-forward results once complete."""
+    if _wf_runner.get('status') == 'done' and _wf_runner.get('result'):
+        return _wf_runner['result']
+    return {
+        'status': _wf_runner.get('status', 'idle'),
+        'progress': _wf_runner.get('progress', 0),
+    }
+
+
+@app.post("/api/backtest/walkforward/cancel")
+async def cancel_walkforward():
+    """Cancel a running walk-forward optimization."""
+    global _wf_runner
+    if _wf_runner.get('status') == 'running':
+        _wf_runner['status'] = 'cancelled'
+        _wf_runner['cancel'] = True
+    return {'status': 'cancelled'}
+
+
+# ---------------------------------------------------------------------------
+# Intraday Walk-Forward Optimization endpoints
+# ---------------------------------------------------------------------------
+_intraday_wf_runner: dict = {'status': 'idle'}
+
+VALID_INTRADAY_STRATEGIES = ['orb_breakout', 'momentum_surge', 'pullback_entry', 'range_trade']
+
+
+@app.post("/api/backtest/intraday-walkforward")
+async def run_intraday_walkforward(request: Request):
+    """Run walk-forward optimization for a single intraday strategy."""
+    global _intraday_wf_runner
+    if _intraday_wf_runner.get('status') == 'running':
+        return JSONResponse({'status': 'error', 'error': 'Intraday WF already running'}, 409)
+
+    body = await request.json()
+    strategy_id = body.get('strategy_id', '')
+    if strategy_id not in VALID_INTRADAY_STRATEGIES:
+        return JSONResponse({'status': 'error', 'error': f'Invalid strategy: {strategy_id}. Use: {VALID_INTRADAY_STRATEGIES}'}, 400)
+
+    start_date = body.get('start_date', '2018-01-01')
+    end_date = body.get('end_date', datetime.now().strftime('%Y-%m-%d'))
+    train_days = int(body.get('train_days', 504))
+    test_days = int(body.get('test_days', 252))
+    step_days = int(body.get('step_days', 126))
+
+    # Symbols
+    universe = body.get('universe', 'study')
+    custom_symbols = body.get('symbols', '')
+    if custom_symbols:
+        if isinstance(custom_symbols, list):
+            symbols = custom_symbols
+        else:
+            symbols = [s.strip().upper() for s in custom_symbols.split(',') if s.strip()]
+    elif universe == 'alpaca':
+        symbols = list(UNIVERSE)
+    else:
+        symbols = list(UNIVERSE[:167])
+
+    # Config
+    cfg = GapFadeConfig()
+    cfg.initial_capital = float(body.get('initial_capital', 25000))
+
+    # Custom param grid (optional)
+    param_grid = body.get('param_grid', None)
+
+    _intraday_wf_runner = {
+        'status': 'running', 'progress': 0, 'message': 'Starting...',
+        'result': None, 'cancel': False,
+    }
+
+    def progress_cb(pct, msg):
+        _intraday_wf_runner['progress'] = round(pct, 1)
+        _intraday_wf_runner['message'] = msg
+
+    async def _run_iwf():
+        try:
+            from gap_fade_backtester import run_intraday_walk_forward
+            result = await asyncio.to_thread(
+                run_intraday_walk_forward,
+                strategy_id=strategy_id,
+                symbols=symbols,
+                full_start=start_date,
+                full_end=end_date,
+                train_days=train_days,
+                test_days=test_days,
+                step_days=step_days,
+                base_config=cfg,
+                param_grid=param_grid,
+                progress_callback=progress_cb,
+                cancel_check=lambda: _intraday_wf_runner.get('cancel', False),
+            )
+            _intraday_wf_runner['result'] = result
+            _intraday_wf_runner['status'] = 'done'
+            _intraday_wf_runner['progress'] = 100
+            _intraday_wf_runner['message'] = 'Complete'
+            try:
+                await broadcast({'type': 'intraday_walkforward_complete', 'result': result})
+            except Exception:
+                pass
+        except Exception as e:
+            logger.error(f"Intraday WF error: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            _intraday_wf_runner['status'] = 'error'
+            _intraday_wf_runner['message'] = str(e)
+            _intraday_wf_runner['result'] = {'status': 'error', 'error': str(e)}
+
+    asyncio.create_task(_run_iwf())
+    return {
+        'status': 'started', 'strategy_id': strategy_id,
+        'symbols': len(symbols), 'train_days': train_days,
+        'test_days': test_days, 'step_days': step_days,
+    }
+
+
+@app.get("/api/backtest/intraday-walkforward/status")
+async def intraday_walkforward_status():
+    """Get intraday walk-forward status."""
+    return {
+        'status': _intraday_wf_runner.get('status', 'idle'),
+        'progress': _intraday_wf_runner.get('progress', 0),
+        'message': _intraday_wf_runner.get('message', ''),
+    }
+
+
+@app.get("/api/backtest/intraday-walkforward/results")
+async def intraday_walkforward_results():
+    """Get intraday walk-forward results."""
+    if _intraday_wf_runner.get('status') == 'done':
+        return _intraday_wf_runner.get('result', {})
+    return {
+        'status': _intraday_wf_runner.get('status', 'idle'),
+        'progress': _intraday_wf_runner.get('progress', 0),
+        'message': _intraday_wf_runner.get('message', ''),
+    }
+
+
+@app.post("/api/backtest/intraday-walkforward/cancel")
+async def cancel_intraday_walkforward():
+    """Cancel a running intraday walk-forward."""
+    global _intraday_wf_runner
+    if _intraday_wf_runner.get('status') == 'running':
+        _intraday_wf_runner['status'] = 'cancelled'
+        _intraday_wf_runner['cancel'] = True
+    return {'status': 'cancelled'}
+
+
+@app.post("/api/backtest/intraday-walkforward/batch")
+async def run_intraday_walkforward_batch(request: Request):
+    """Run walk-forward for all 4 intraday strategies sequentially."""
+    global _intraday_wf_runner
+    if _intraday_wf_runner.get('status') == 'running':
+        return JSONResponse({'status': 'error', 'error': 'Intraday WF already running'}, 409)
+
+    body = await request.json()
+    start_date = body.get('start_date', '2018-01-01')
+    end_date = body.get('end_date', datetime.now().strftime('%Y-%m-%d'))
+    train_days = int(body.get('train_days', 504))
+    test_days = int(body.get('test_days', 252))
+    step_days = int(body.get('step_days', 126))
+
+    universe = body.get('universe', 'study')
+    custom_symbols = body.get('symbols', '')
+    if custom_symbols:
+        if isinstance(custom_symbols, list):
+            symbols = custom_symbols
+        else:
+            symbols = [s.strip().upper() for s in custom_symbols.split(',') if s.strip()]
+    elif universe == 'alpaca':
+        symbols = list(UNIVERSE)
+    else:
+        symbols = list(UNIVERSE[:167])
+
+    cfg = GapFadeConfig()
+    cfg.initial_capital = float(body.get('initial_capital', 25000))
+
+    _intraday_wf_runner = {
+        'status': 'running', 'progress': 0, 'message': 'Batch starting...',
+        'result': None, 'cancel': False,
+    }
+
+    def progress_cb(pct, msg):
+        _intraday_wf_runner['progress'] = round(pct, 1)
+        _intraday_wf_runner['message'] = msg
+
+    async def _run_batch():
+        try:
+            from gap_fade_backtester import run_intraday_walk_forward
+            batch_results = {}
+            strategies = VALID_INTRADAY_STRATEGIES
+
+            for si, sid in enumerate(strategies):
+                if _intraday_wf_runner.get('cancel', False):
+                    break
+                base_pct = si / len(strategies) * 100
+                def strat_progress(pct, msg, _base=base_pct, _sid=sid):
+                    overall = _base + pct / len(strategies)
+                    _intraday_wf_runner['progress'] = round(overall, 1)
+                    _intraday_wf_runner['message'] = f'[{_sid}] {msg}'
+
+                result = await asyncio.to_thread(
+                    run_intraday_walk_forward,
+                    strategy_id=sid,
+                    symbols=symbols,
+                    full_start=start_date,
+                    full_end=end_date,
+                    train_days=train_days,
+                    test_days=test_days,
+                    step_days=step_days,
+                    base_config=cfg,
+                    progress_callback=strat_progress,
+                    cancel_check=lambda: _intraday_wf_runner.get('cancel', False),
+                )
+                batch_results[sid] = result
+
+            combined = {
+                'status': 'done',
+                'batch': True,
+                'strategies': batch_results,
+                'summary': {},
+            }
+            for sid, r in batch_results.items():
+                gate = r.get('deployment_gate', {})
+                agg = r.get('aggregate_oos', {})
+                combined['summary'][sid] = {
+                    'recommendation': gate.get('recommendation', 'N/A'),
+                    'oos_return': agg.get('total_return_pct', 0),
+                    'oos_trades': agg.get('num_trades', 0),
+                    'oos_win_rate': agg.get('win_rate', 0),
+                }
+
+            _intraday_wf_runner['result'] = combined
+            _intraday_wf_runner['status'] = 'done'
+            _intraday_wf_runner['progress'] = 100
+            _intraday_wf_runner['message'] = 'Batch complete'
+            try:
+                await broadcast({'type': 'intraday_walkforward_complete', 'result': combined})
+            except Exception:
+                pass
+        except Exception as e:
+            logger.error(f"Intraday WF batch error: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            _intraday_wf_runner['status'] = 'error'
+            _intraday_wf_runner['message'] = str(e)
+            _intraday_wf_runner['result'] = {'status': 'error', 'error': str(e)}
+
+    asyncio.create_task(_run_batch())
+    return {
+        'status': 'started', 'batch': True,
+        'strategies': VALID_INTRADAY_STRATEGIES,
+        'symbols': len(symbols),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Backtrader visual backtester (1-20 symbols, chart generation)
 # ---------------------------------------------------------------------------
 bt_runner_status: dict = {'status': 'idle'}
@@ -9644,7 +13402,7 @@ async def run_bt_backtest(request: Request):
     for k, v in body.get('config', {}).items():
         config[k] = v
 
-    db_path = get_price_db().DB_PATH
+    db_url = os.environ.get('DATABASE_URL', PriceDB.DEFAULT_DB_URL)
     charts_dir = os.path.join(os.path.dirname(__file__) or '.', 'bt_charts')
 
     bt_runner_status = {'status': 'running', 'symbols': symbols, 'start': start_date, 'end': end_date}
@@ -9653,7 +13411,7 @@ async def run_bt_backtest(request: Request):
         global bt_runner_status
         try:
             result = await asyncio.to_thread(
-                run_backtrader_backtest, symbols, start_date, end_date, config, db_path, charts_dir
+                run_backtrader_backtest, symbols, start_date, end_date, config, db_url, charts_dir
             )
             if result['status'] == 'ok':
                 bt_runner_status = {
@@ -10039,6 +13797,58 @@ async def update_tracker_watchlist(request: Request):
     return {'watchlist': sorted(_tracker_watchlist), 'streaming': bool(streamer and streamer.connected)}
 
 
+# -------------------------------------------------------------------------
+# Audit Trail API Endpoints
+# -------------------------------------------------------------------------
+
+@app.get("/api/api-calls")
+async def get_api_calls(request: Request):
+    """Query API call audit log."""
+    date = request.query_params.get('date', '')
+    endpoint = request.query_params.get('endpoint', '')
+    n = min(int(request.query_params.get('n', '100')), 1000)
+    db = get_price_db()
+    rows = db.query_api_calls(date=date, endpoint=endpoint, n=n)
+    stats = db.get_api_call_stats(date) if date else {}
+    return {'calls': rows, 'stats': stats, 'count': len(rows)}
+
+
+@app.get("/api/performance-snapshots")
+async def get_performance_snapshots(request: Request):
+    """Query performance snapshots."""
+    date = request.query_params.get('date', '')
+    interval_type = request.query_params.get('interval_type', '')
+    n = min(int(request.query_params.get('n', '50')), 500)
+    db = get_price_db()
+    rows = db.query_performance_snapshots(date=date, interval_type=interval_type, n=n)
+    return {'snapshots': rows, 'count': len(rows)}
+
+
+@app.get("/api/signals")
+async def get_signals(request: Request):
+    """Query persisted intraday signals."""
+    date = request.query_params.get('date', '')
+    symbol = request.query_params.get('symbol', '')
+    action = request.query_params.get('action', '')
+    n = min(int(request.query_params.get('n', '100')), 1000)
+    db = get_price_db()
+    rows = db.query_signals(date=date, symbol=symbol, action=action, n=n)
+    return {'signals': rows, 'count': len(rows)}
+
+
+@app.get("/api/rejected-candidates")
+async def get_rejected_candidates(request: Request):
+    """Query rejected candidates."""
+    date = request.query_params.get('date', '')
+    stage = request.query_params.get('stage', '')
+    symbol = request.query_params.get('symbol', '')
+    n = min(int(request.query_params.get('n', '100')), 1000)
+    db = get_price_db()
+    rows = db.query_rejected_candidates(date=date, stage=stage, symbol=symbol, n=n)
+    stats = db.get_rejected_stats(date) if date else {}
+    return {'candidates': rows, 'stats': stats, 'count': len(rows)}
+
+
 async def _tracker_on_tick(symbol: str, price: float, size: int = 0):
     """Tick handler that broadcasts tracker ticks and forwards to live trader."""
     engine = getattr(live_trader, 'engine', None)
@@ -10087,7 +13897,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Rudra Trading Engine</title>
+<title>Gap Fade Terminal</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
@@ -10562,6 +14372,147 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   .feature-desc { font-size: 11px; color: var(--muted); line-height: 1.4; }
   .feature-params { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 2px; padding: 4px 14px 12px 14px; border-top: 1px solid var(--border); background: rgba(0,0,0,0.15); }
 
+  /* ── Strategy Cards ── */
+  .strategy-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; margin-bottom: 20px; }
+  .strategy-card {
+    border: 1px solid var(--border); border-radius: 8px; padding: 14px;
+    background: rgba(255,255,255,0.02); cursor: pointer; transition: all 0.2s;
+    position: relative;
+  }
+  .strategy-card:hover { border-color: var(--border-hover); background: rgba(255,255,255,0.04); }
+  .strategy-card.active { border-color: var(--cyan); box-shadow: 0 0 12px rgba(0,212,255,0.15); background: rgba(0,212,255,0.04); }
+  .strategy-card .sc-name { font-weight: 700; font-size: 13px; color: var(--text); margin-bottom: 4px; }
+  .strategy-card .sc-desc { font-size: 11px; color: var(--muted); line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .strategy-card .sc-badge {
+    position: absolute; top: 8px; right: 8px; font-size: 9px; font-weight: 700;
+    padding: 2px 6px; border-radius: 4px; text-transform: uppercase; letter-spacing: 0.5px;
+  }
+  .sc-badge.active-badge { background: rgba(0,212,255,0.15); color: var(--cyan); }
+  .sc-badge.indicator-badge { background: rgba(168,85,247,0.15); color: var(--purple); }
+
+  .strategy-toggle-wrap { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+  .strategy-toggle {
+    position: relative; width: 36px; height: 20px; background: rgba(255,255,255,0.1);
+    border-radius: 10px; cursor: pointer; transition: background 0.2s; flex-shrink: 0;
+  }
+  .strategy-toggle::after {
+    content: ''; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px;
+    background: white; border-radius: 50%; transition: transform 0.2s;
+  }
+  .strategy-toggle.on { background: var(--accent-green); }
+  .strategy-toggle.on::after { transform: translateX(16px); }
+  .strategy-toggle-label { font-size: 11px; color: var(--muted); }
+
+  .strategy-section-header {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px solid var(--border);
+  }
+  .strategy-section-title { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.8px; color: var(--muted); }
+  .market-condition-badge {
+    font-size: 10px; font-weight: 700; padding: 3px 8px; border-radius: 4px;
+    text-transform: uppercase; letter-spacing: 0.5px;
+  }
+  .market-condition-badge.trending { background: rgba(34,197,94,0.15); color: var(--accent-green); }
+  .market-condition-badge.choppy { background: rgba(249,115,22,0.15); color: var(--orange); }
+  .market-condition-badge.sideways { background: rgba(100,116,139,0.15); color: var(--muted); }
+  .market-condition-badge.volatile { background: rgba(255,59,92,0.15); color: var(--negative); }
+
+  .strategy-params-editor {
+    margin-top: 16px; border: 1px solid var(--border); border-radius: 8px;
+    overflow: hidden; background: rgba(255,255,255,0.02);
+  }
+  .spe-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 14px; background: rgba(255,255,255,0.03); border-bottom: 1px solid var(--border);
+  }
+  .spe-header h4 { font-size: 12px; font-weight: 700; color: var(--text); margin: 0; }
+  .spe-body { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 2px; padding: 12px 14px; }
+  .spe-actions { display: flex; gap: 8px; padding: 10px 14px; border-top: 1px solid var(--border); background: rgba(0,0,0,0.1); }
+
+  .strategy-perf-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 10px; margin-top: 16px; }
+  .sp-metric {
+    border: 1px solid var(--border); border-radius: 8px; padding: 12px; text-align: center;
+    background: rgba(255,255,255,0.02);
+  }
+  .sp-metric .sp-label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; }
+  .sp-metric .sp-value { font-size: 18px; font-weight: 700; font-family: 'JetBrains Mono', monospace; }
+
+  /* ── Config Profiles Bar ── */
+  .config-profiles-bar {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    margin-bottom: 16px; padding: 12px; background: rgba(0,212,255,0.04);
+    border: 1px solid rgba(0,212,255,0.15); border-radius: 8px;
+  }
+  .config-profiles-bar select {
+    background: var(--bg); color: var(--text); border: 1px solid var(--border);
+    padding: 6px 8px; border-radius: 4px; font-size: 12px; min-width: 160px;
+  }
+  .config-profiles-bar button {
+    padding: 5px 10px; font-size: 11px; border-radius: 4px; cursor: pointer;
+    border: 1px solid var(--border); background: rgba(255,255,255,0.05); color: var(--text);
+    transition: all 0.15s;
+  }
+  .config-profiles-bar button:hover { background: rgba(255,255,255,0.1); border-color: var(--border-hover); }
+
+  /* ── Config Search ── */
+  .config-search-wrap {
+    margin-bottom: 12px;
+  }
+  .config-search-wrap input {
+    width: 100%; background: var(--bg); color: var(--text); border: 1px solid var(--border);
+    padding: 8px 12px 8px 32px; border-radius: 6px; font-size: 13px;
+    transition: border-color 0.15s;
+  }
+  .config-search-wrap input:focus { border-color: var(--accent-green); outline: none; }
+  .config-search-wrap { position: relative; }
+  .config-search-wrap svg { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); width: 14px; height: 14px; color: var(--muted); }
+
+  /* ── Config History Panel ── */
+  .config-history-item {
+    padding: 8px 10px; border-bottom: 1px solid var(--border); font-size: 11px;
+  }
+  .config-history-item:last-child { border-bottom: none; }
+  .config-history-item .chi-time { color: var(--muted); font-size: 10px; }
+  .config-history-item .chi-source { font-size: 9px; padding: 1px 5px; border-radius: 3px; background: rgba(168,85,247,0.1); color: var(--purple); margin-left: 6px; }
+  .config-history-item .chi-changes { margin-top: 4px; }
+  .config-history-item .chi-change { color: var(--text); }
+  .config-history-item .chi-old { color: var(--negative); text-decoration: line-through; }
+  .config-history-item .chi-new { color: var(--accent-green); }
+  .config-history-item .chi-rollback { font-size: 10px; color: var(--cyan); cursor: pointer; background: none; border: none; padding: 2px 4px; margin-left: 4px; }
+  .config-history-item .chi-rollback:hover { text-decoration: underline; }
+
+  /* ── Modal System ── */
+  .modal-overlay {
+    display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.7);
+    z-index: 9998; justify-content: center; align-items: center;
+  }
+  .modal-overlay.open { display: flex; }
+  .modal-box {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+    width: 480px; max-width: 90vw; max-height: 80vh; display: flex; flex-direction: column;
+  }
+  .modal-header {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 14px 18px; border-bottom: 1px solid var(--border);
+  }
+  .modal-header h3 { margin: 0; font-size: 15px; color: var(--cyan); }
+  .modal-close {
+    background: none; border: none; color: var(--muted); font-size: 20px;
+    cursor: pointer; padding: 0 4px; line-height: 1;
+  }
+  .modal-close:hover { color: var(--text); }
+  .modal-body { padding: 18px; overflow-y: auto; font-size: 13px; line-height: 1.6; }
+  .modal-footer {
+    display: flex; gap: 8px; justify-content: flex-end;
+    padding: 12px 18px; border-top: 1px solid var(--border);
+  }
+
+  /* ── Keyboard Shortcuts ── */
+  .kbd { display: inline-block; background: rgba(255,255,255,0.08); border: 1px solid var(--border); border-radius: 4px; padding: 1px 6px; font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--text); }
+  .shortcuts-grid { display: grid; grid-template-columns: auto 1fr; gap: 6px 16px; align-items: center; }
+  .shortcuts-grid .sc-key { text-align: right; }
+  .shortcuts-grid .sc-desc { font-size: 12px; color: var(--muted); }
+
   .pnl-pos { color: var(--positive); }
   .pnl-neg { color: var(--negative); }
 
@@ -10747,6 +14698,33 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   .tf-btn.active {
     background: rgba(0,212,255,0.12); color: var(--positive); border-color: rgba(0,212,255,0.3);
   }
+
+  /* ── Responsive Design ── */
+  @media (max-width: 1024px) {
+    .sidebar { width: 56px; }
+    .sidebar-logo .brand-text, .sidebar-logo .brand-sub { display: none; }
+    .sidebar-item svg { margin: 0 auto; }
+    .sidebar-nav { font-size: 0; }
+    .sidebar-nav .sidebar-item { padding: 10px; justify-content: center; }
+    .sidebar-footer { padding: 8px; }
+    .sidebar-footer span { display: none; }
+    .main-area { margin-left: 56px; }
+    .right-panel { display: none; position: fixed; right: 0; top: 0; bottom: 0; z-index: 100; width: 320px; }
+    .right-panel.rp-open { display: flex; }
+    .strategy-cards { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+    .config-profiles-bar { flex-direction: column; align-items: stretch; }
+  }
+  @media (max-width: 768px) {
+    .sidebar { display: none; }
+    .main-area { margin-left: 0; }
+    .right-panel { display: none; }
+    .strategy-cards { grid-template-columns: 1fr; }
+    .spe-body { grid-template-columns: 1fr; }
+    .strategy-perf-grid { grid-template-columns: repeat(2, 1fr); }
+    .cfg-section-body { grid-template-columns: 1fr; }
+    .config-profiles-bar { flex-direction: column; align-items: stretch; }
+    .modal-box { width: 95vw; }
+  }
 </style>
 </head>
 <body>
@@ -10754,7 +14732,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 <!-- ── Auth Login Overlay ── -->
 <div id="authOverlay" style="display:none;position:fixed;inset:0;z-index:9999;background:#0A0E17;display:none;align-items:center;justify-content:center;">
   <div style="width:100%;max-width:360px;padding:32px;border-radius:16px;border:1px solid rgba(255,255,255,0.08);background:rgba(255,255,255,0.03);backdrop-filter:blur(20px);box-shadow:0 0 80px rgba(0,212,255,0.06);text-align:center;">
-    <h1 style="font-size:24px;font-weight:700;color:#fff;margin-bottom:8px;">Rudra Trading Engine</h1>
+    <h1 style="font-size:24px;font-weight:700;color:#fff;margin-bottom:8px;">Gap Fade Terminal</h1>
     <span style="display:inline-block;padding:2px 10px;border-radius:4px;font-size:12px;font-weight:600;background:rgba(0,212,255,0.2);color:#00D4FF;border:1px solid rgba(0,212,255,0.3);">Secure</span>
     <p style="color:#64748b;font-size:14px;margin:16px 0 24px;">Sign in to access your dashboard</p>
     <div style="display:flex;flex-direction:column;gap:12px;">
@@ -10789,7 +14767,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 <!-- ── Sidebar ── -->
 <aside class="sidebar">
   <div class="sidebar-logo">
-    <span class="brand-text">Rudra</span><span class="brand-sub">Trading Engine</span>
+    <span class="brand-text">Gap Fade</span><span class="brand-sub">Terminal</span>
   </div>
   <div class="sidebar-actions">
     <button class="success" onclick="startTrading()">Start Trading</button>
@@ -10811,7 +14789,19 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="2,12 5,6 9,9 14,3"/><polyline points="10,3 14,3 14,7"/></svg>
       Backtest
     </div>
+    <div class="sidebar-item" data-page="walkforward" onclick="showPage('walkforward')">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="1,12 4,8 7,10 10,4 13,7"/><line x1="1" y1="14" x2="15" y2="14"/><line x1="5" y1="14" x2="5" y2="12" stroke-dasharray="1,1"/><line x1="9" y1="14" x2="9" y2="12" stroke-dasharray="1,1"/></svg>
+      Walk-Forward
+    </div>
+    <div class="sidebar-item" data-page="intraday-wf" onclick="showPage('intraday-wf')">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="1,12 4,8 7,10 10,4 13,7"/><circle cx="13" cy="7" r="1.5"/><line x1="1" y1="14" x2="15" y2="14"/><rect x="4" y="11" width="2" height="3" rx="0.5" fill="currentColor" opacity="0.3"/><rect x="9" y="9" width="2" height="5" rx="0.5" fill="currentColor" opacity="0.3"/></svg>
+      Intraday WF
+    </div>
     <div class="sidebar-sep"></div>
+    <div class="sidebar-item" data-page="strategies" onclick="showPage('strategies')">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1" y="1" width="6" height="4" rx="1"/><rect x="9" y="1" width="6" height="4" rx="1"/><rect x="1" y="7" width="6" height="4" rx="1"/><rect x="9" y="7" width="6" height="4" rx="1"/><line x1="4" y1="12" x2="4" y2="15"/><line x1="12" y1="12" x2="12" y2="15"/></svg>
+      Strategies
+    </div>
     <div class="sidebar-item" data-page="config" onclick="showPage('config')">
       <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="2.5"/><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4"/></svg>
       Config
@@ -10823,6 +14813,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     <div class="sidebar-item" data-page="tracker" onclick="showPage('tracker')">
       <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="1,12 4,5 7,8 10,3 13,7 15,4"/><line x1="1" y1="14" x2="15" y2="14"/></svg>
       Tracker
+    </div>
+    <div class="sidebar-item" data-page="intraday" onclick="showPage('intraday')">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="2,11 5,7 8,9 11,4 14,6"/><circle cx="8" cy="8" r="1" fill="currentColor"/><line x1="2" y1="13" x2="14" y2="13"/><line x1="2" y1="2" x2="2" y2="13"/></svg>
+      Intraday
     </div>
     <div class="sidebar-item" data-page="chat" onclick="showPage('chat')">
       <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 3h12v8H5l-3 3V3z" rx="1.5"/><line x1="5" y1="6" x2="11" y2="6"/><line x1="5" y1="9" x2="9" y2="9"/></svg>
@@ -10953,6 +14947,24 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         <div id="eqCrosshair" style="display:none;position:absolute;top:0;width:1px;height:100%;background:rgba(255,255,255,0.25);pointer-events:none;z-index:9;"></div>
       </div>
       <div style="color:var(--muted);text-align:center;padding:16px;font-size:12px;">Equity curve updates as trades execute</div>
+    </div>
+
+    <!-- Intraday Strategies Panel -->
+    <div class="card" id="intradayPanel" style="display:none;">
+      <h2>Intraday Strategies <span style="font-size:11px;color:var(--muted);font-weight:400;" id="intradayCondition"></span></h2>
+      <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-bottom:10px;">
+        <div class="stat"><div class="label">Market Condition</div><div class="value" id="idxCondition">—</div></div>
+        <div class="stat"><div class="label">Size Multiplier</div><div class="value" id="idxSizeMult">1.0x</div></div>
+        <div class="stat"><div class="label">Entries Today</div><div class="value" id="idxEntriesToday">0</div></div>
+        <div class="stat"><div class="label">Intraday P&L</div><div class="value" id="idxPnlToday">$0</div></div>
+      </div>
+      <div style="font-size:11px;margin-bottom:6px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;">Active Strategies</div>
+      <div id="idxActiveStrategies" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;"></div>
+      <div style="font-size:11px;margin-bottom:6px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;">Per-Strategy Performance</div>
+      <table style="width:100%;font-size:12px;">
+        <thead><tr><th>Strategy</th><th>Trades</th><th>Win Rate</th><th>P&L</th><th>PF</th></tr></thead>
+        <tbody id="idxStrategyTable"></tbody>
+      </table>
     </div>
   </div>
 
@@ -11194,9 +15206,287 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     </div>
   </div>
 
+  <!-- Walk-Forward Page -->
+  <div class="page" id="page-walkforward">
+    <h2 style="margin-bottom:4px;">Walk-Forward Optimization</h2>
+    <p style="color:var(--muted);font-size:12px;margin-bottom:12px;">Train on history, test on unseen data, roll forward. Detects parameter overfitting.</p>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;">
+      <div class="config-item">
+        <label>Universe:</label>
+        <select id="wfUniverse" style="padding:4px;">
+          <option value="study">Study (167)</option>
+          <option value="alpaca">All Tradeable (Alpaca)</option>
+        </select>
+      </div>
+      <div class="config-item">
+        <label>Start:</label>
+        <input type="date" id="wfStart" style="width:130px;">
+      </div>
+      <div class="config-item">
+        <label>End:</label>
+        <input type="date" id="wfEnd" style="width:130px;">
+      </div>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;">
+      <div class="config-item">
+        <label>Train days:</label>
+        <input id="wfTrainDays" value="504" style="width:60px;" title="~2 years of trading days">
+      </div>
+      <div class="config-item">
+        <label>Test days:</label>
+        <input id="wfTestDays" value="252" style="width:60px;" title="~1 year OOS">
+      </div>
+      <div class="config-item">
+        <label>Step days:</label>
+        <input id="wfStepDays" value="126" style="width:60px;" title="~6 months between folds">
+      </div>
+      <div class="config-item">
+        <label>Initial Capital:</label>
+        <input id="wfCapital" value="25000" style="width:80px;">
+      </div>
+    </div>
+    <details style="margin-bottom:10px;font-size:12px;">
+      <summary style="cursor:pointer;color:var(--accent);">Parameter Grid (advanced)</summary>
+      <div style="margin-top:6px;display:flex;gap:8px;flex-wrap:wrap;">
+        <div class="config-item">
+          <label>Gap % values:</label>
+          <input id="wfGridGap" value="5, 7, 10" style="width:120px;" title="Comma-separated, in %">
+        </div>
+        <div class="config-item">
+          <label>Vol Max values:</label>
+          <input id="wfGridVol" value="1.5, 2.0, 3.0" style="width:120px;">
+        </div>
+        <div class="config-item">
+          <label>Stop % values:</label>
+          <input id="wfGridStop" value="1.0, 1.5, 2.0, 2.5" style="width:120px;" title="Comma-separated, in %">
+        </div>
+        <div class="config-item">
+          <label>Risk % values:</label>
+          <input id="wfGridRisk" value="1, 2, 3" style="width:120px;" title="Comma-separated, in %">
+        </div>
+      </div>
+      <div style="margin-top:4px;color:var(--muted);" id="wfGridCount">108 combinations per fold</div>
+    </details>
+    <div style="display:flex;gap:6px;margin-bottom:8px;">
+      <button class="primary" onclick="runWalkForward()">Run Walk-Forward</button>
+      <button onclick="cancelWalkForward()">Cancel</button>
+    </div>
+    <div id="wfProgress" style="display:none;">
+      <div style="color:var(--muted);font-size:12px;" id="wfProgressMsg">Starting...</div>
+      <div class="progress-bar"><div class="progress-fill" id="wfProgressBar" style="width:0%"></div></div>
+    </div>
+    <div id="wfResults" style="margin-top:12px;"></div>
+  </div>
+
+  <!-- Intraday Walk-Forward Page -->
+  <div class="page" id="page-intraday-wf">
+    <h2 style="margin-bottom:4px;">Intraday Walk-Forward Optimization</h2>
+    <p style="color:var(--muted);font-size:12px;margin-bottom:12px;">Per-strategy walk-forward: optimize params in-sample, validate out-of-sample, check deployment readiness.</p>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;">
+      <div class="config-item">
+        <label>Strategy:</label>
+        <select id="iwfStrategy" onchange="updateIwfGrid()" style="padding:4px;">
+          <option value="orb_breakout">ORB Breakout</option>
+          <option value="momentum_surge">Momentum Surge</option>
+          <option value="pullback_entry">Pullback Entry</option>
+          <option value="range_trade">Range Trade</option>
+          <option value="batch">All Strategies (batch)</option>
+        </select>
+      </div>
+      <div class="config-item">
+        <label>Universe:</label>
+        <select id="iwfUniverse" style="padding:4px;">
+          <option value="study">Study (167)</option>
+          <option value="alpaca">All Tradeable (Alpaca)</option>
+        </select>
+      </div>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;">
+      <div class="config-item">
+        <label>Start:</label>
+        <input type="date" id="iwfStart" style="width:130px;">
+      </div>
+      <div class="config-item">
+        <label>End:</label>
+        <input type="date" id="iwfEnd" style="width:130px;">
+      </div>
+      <div class="config-item">
+        <label>Train days:</label>
+        <input id="iwfTrainDays" value="504" style="width:60px;" title="~2 years">
+      </div>
+      <div class="config-item">
+        <label>Test days:</label>
+        <input id="iwfTestDays" value="252" style="width:60px;" title="~1 year OOS">
+      </div>
+      <div class="config-item">
+        <label>Step days:</label>
+        <input id="iwfStepDays" value="126" style="width:60px;" title="~6 months between folds">
+      </div>
+      <div class="config-item">
+        <label>Capital:</label>
+        <input id="iwfCapital" value="25000" style="width:80px;">
+      </div>
+    </div>
+    <details id="iwfGridDetails" style="margin-bottom:10px;font-size:12px;">
+      <summary style="cursor:pointer;color:var(--accent);">Parameter Grid (strategy-specific)</summary>
+      <div id="iwfGridContainer" style="margin-top:6px;display:flex;gap:8px;flex-wrap:wrap;"></div>
+      <div style="margin-top:4px;color:var(--muted);" id="iwfGridCount">81 combinations per fold</div>
+    </details>
+    <div style="display:flex;gap:6px;margin-bottom:8px;">
+      <button class="primary" onclick="runIntradayWalkForward()">Run Intraday WF</button>
+      <button onclick="cancelIntradayWalkForward()">Cancel</button>
+    </div>
+    <div id="iwfProgress" style="display:none;">
+      <div style="color:var(--muted);font-size:12px;" id="iwfProgressMsg">Starting...</div>
+      <div class="progress-bar"><div class="progress-fill" id="iwfProgressBar" style="width:0%"></div></div>
+    </div>
+    <div id="iwfResults" style="margin-top:12px;"></div>
+  </div>
+
+  <!-- Intraday Trading Page -->
+  <div class="page" id="page-intraday">
+    <!-- Status Bar -->
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap;">
+      <span id="intradaySseStatus" style="font-size:11px;padding:2px 8px;border-radius:10px;background:var(--border);color:var(--muted);">SSE: Connecting...</span>
+      <span id="intradayMktCondition" class="market-condition-badge"></span>
+      <span id="intradayActiveStrats" style="font-size:11px;color:var(--muted);"></span>
+      <div style="flex:1;"></div>
+      <div style="display:flex;gap:12px;">
+        <div class="metric-card" style="padding:4px 10px;min-width:auto;">
+          <div style="font-size:10px;color:var(--muted);">Entries</div>
+          <div id="intradayEntries" style="font-size:14px;font-weight:700;">0</div>
+        </div>
+        <div class="metric-card" style="padding:4px 10px;min-width:auto;">
+          <div style="font-size:10px;color:var(--muted);">P&L</div>
+          <div id="intradayPnl" style="font-size:14px;font-weight:700;">$0.00</div>
+        </div>
+        <div class="metric-card" style="padding:4px 10px;min-width:auto;">
+          <div style="font-size:10px;color:var(--muted);">Win Rate</div>
+          <div id="intradayWinRate" style="font-size:14px;font-weight:700;">0%</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 2-column grid -->
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+      <!-- Left: Watchlist -->
+      <div class="card" style="max-height:340px;overflow-y:auto;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+          <span style="font-weight:600;font-size:13px;">Watchlist</span>
+          <span id="intradayWlCount" style="font-size:11px;color:var(--muted);">0 / 50</span>
+        </div>
+        <table style="width:100%;font-size:11px;border-collapse:collapse;">
+          <thead><tr style="color:var(--muted);border-bottom:1px solid var(--border);">
+            <th style="text-align:left;padding:2px 4px;">Symbol</th>
+            <th style="text-align:right;padding:2px 4px;">Price</th>
+            <th style="text-align:right;padding:2px 4px;">RSI</th>
+            <th style="text-align:right;padding:2px 4px;">Vol</th>
+            <th style="text-align:center;padding:2px 4px;">Trend</th>
+          </tr></thead>
+          <tbody id="intradayWatchlistBody"></tbody>
+        </table>
+      </div>
+
+      <!-- Right: Active Trades -->
+      <div class="card" style="max-height:340px;overflow-y:auto;">
+        <span style="font-weight:600;font-size:13px;display:block;margin-bottom:6px;">Active Trades</span>
+        <div id="intradayActiveTrades" style="font-size:12px;color:var(--muted);">No active intraday trades</div>
+      </div>
+
+      <!-- Left: Signal Log -->
+      <div class="card" style="max-height:340px;overflow-y:auto;">
+        <span style="font-weight:600;font-size:13px;display:block;margin-bottom:6px;">Signal Log</span>
+        <table style="width:100%;font-size:11px;border-collapse:collapse;">
+          <thead><tr style="color:var(--muted);border-bottom:1px solid var(--border);">
+            <th style="text-align:left;padding:2px 4px;">Time</th>
+            <th style="text-align:left;padding:2px 4px;">Symbol</th>
+            <th style="text-align:left;padding:2px 4px;">Strategy</th>
+            <th style="text-align:center;padding:2px 4px;">Signal</th>
+            <th style="text-align:right;padding:2px 4px;">Conf</th>
+            <th style="text-align:left;padding:2px 4px;">Action</th>
+          </tr></thead>
+          <tbody id="intradaySignalLogBody"></tbody>
+        </table>
+      </div>
+
+      <!-- Right: Closed Today + Strategy Performance -->
+      <div class="card" style="max-height:340px;overflow-y:auto;">
+        <span style="font-weight:600;font-size:13px;display:block;margin-bottom:6px;">Closed Today</span>
+        <div id="intradayClosedTrades" style="font-size:12px;color:var(--muted);margin-bottom:10px;">No closed trades today</div>
+        <span style="font-weight:600;font-size:13px;display:block;margin-bottom:6px;">Strategy Performance</span>
+        <div id="intradayStratPerf" style="font-size:12px;color:var(--muted);">Loading...</div>
+      </div>
+    </div>
+
+    <!-- Deep Analysis Modal (hidden by default) -->
+    <div id="intradayAnalysisModal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.7);z-index:1000;justify-content:center;align-items:center;">
+      <div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:20px;max-width:600px;width:90%;max-height:80vh;overflow-y:auto;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+          <span id="analysisModalTitle" style="font-weight:700;font-size:16px;"></span>
+          <button onclick="document.getElementById('intradayAnalysisModal').style.display='none'" style="background:none;border:none;color:var(--muted);font-size:18px;cursor:pointer;">&#x2715;</button>
+        </div>
+        <div id="analysisModalBody" style="font-size:12px;">Loading...</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Strategies Page -->
+  <div class="page" id="page-strategies">
+    <div class="strategy-section-header">
+      <span class="strategy-section-title">Gap Fade Strategies</span>
+      <span id="gfStrategyBadge" class="sc-badge active-badge"></span>
+    </div>
+    <div class="strategy-cards" id="gapFadeCards"></div>
+
+    <div class="strategy-section-header">
+      <span class="strategy-section-title">Intraday Strategies</span>
+      <span id="marketConditionBadge" class="market-condition-badge"></span>
+    </div>
+    <div class="strategy-cards" id="intradayCards"></div>
+
+    <div id="strategyParamsEditor" class="strategy-params-editor" style="display:none;">
+      <div class="spe-header">
+        <h4 id="speTitle">Parameters</h4>
+        <span id="speStrategyId" style="font-size:10px;color:var(--muted);font-family:'JetBrains Mono',monospace;"></span>
+      </div>
+      <div class="spe-body" id="speBody"></div>
+      <div class="spe-actions">
+        <button class="primary" onclick="saveStrategyParams()">Save Parameters</button>
+        <button onclick="resetStrategyDefaults()">Reset Defaults</button>
+      </div>
+    </div>
+
+    <div id="strategyPerfSection" style="margin-top:20px;">
+      <div class="strategy-section-header">
+        <span class="strategy-section-title">Performance</span>
+      </div>
+      <div class="strategy-perf-grid" id="strategyPerfGrid"></div>
+    </div>
+  </div>
+
   <!-- Config Page -->
   <div class="page" id="page-config">
     <h2 style="margin-bottom:10px;">Strategy Configuration</h2>
+
+    <!-- Config Search -->
+    <div class="config-search-wrap" id="configSearchWrap">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="6.5" cy="6.5" r="4"/><line x1="10" y1="10" x2="14" y2="14"/></svg>
+      <input id="configSearch" placeholder="Search parameters... (Ctrl+K)" oninput="filterConfig(this.value)">
+    </div>
+
+    <!-- Config Profiles Bar -->
+    <div class="config-profiles-bar">
+      <label style="font-size:11px;color:var(--muted);font-weight:600;">Profile:</label>
+      <select id="profileSelect" onchange="onProfileSelect(this.value)">
+        <option value="">-- Current --</option>
+      </select>
+      <button onclick="saveProfileDialog()">Save As</button>
+      <button onclick="loadSelectedProfile()">Load</button>
+      <button onclick="exportSelectedProfile()">Export</button>
+      <button onclick="importProfileDialog()">Import</button>
+      <button onclick="resetToDefaults()" style="color:var(--negative);border-color:rgba(255,59,92,0.3);">Reset Defaults</button>
+    </div>
+
     <div style="margin-bottom:16px;padding:12px;background:rgba(168,85,247,0.06);border:1px solid rgba(168,85,247,0.2);border-radius:8px;">
       <div style="font-size:12px;color:var(--purple);font-weight:600;margin-bottom:8px;text-transform:uppercase;">Scan Universe</div>
       <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
@@ -11215,8 +15505,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       </div>
     </div>
     <div class="config-grid" id="configGrid"></div>
-    <div style="margin-top:12px;">
+    <div style="margin-top:12px;display:flex;gap:8px;">
       <button class="primary" onclick="saveConfig()">Save Config</button>
+      <button onclick="showConfigHistory()" style="background:rgba(168,85,247,0.1);color:var(--purple);border:1px solid rgba(168,85,247,0.25);border-radius:6px;padding:7px 14px;cursor:pointer;font-size:12px;">History</button>
     </div>
   </div>
 
@@ -11467,6 +15758,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     <div class="right-panel-tab active" data-rtab="positions" onclick="showRightTab('positions')">Positions</div>
     <div class="right-panel-tab" data-rtab="feed" onclick="showRightTab('feed')">Feed</div>
     <div class="right-panel-tab" data-rtab="journal" onclick="showRightTab('journal');loadJournal()">Journal</div>
+    <div class="right-panel-tab" data-rtab="history" onclick="showRightTab('history');loadConfigHistory()">History</div>
   </div>
   <div class="right-tab-content active" id="rightPositions">
     <div style="overflow-x:auto;">
@@ -11480,6 +15772,20 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     <div id="noPositions" style="color:var(--muted);padding:20px;text-align:center;font-size:12px;">No active positions</div>
   </div>
   <div class="right-tab-content" id="rightFeed">
+    <div style="display:flex;gap:4px;margin-bottom:6px;flex-wrap:wrap;align-items:center;">
+      <input id="feedSearch" placeholder="Filter..." oninput="filterFeed()" style="flex:1;min-width:60px;font-size:10px;padding:3px 6px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;">
+      <select id="feedLevelFilter" onchange="filterFeed()" style="font-size:10px;padding:3px 4px;background:var(--surface);border:1px solid var(--border);color:var(--text);border-radius:4px;">
+        <option value="">All levels</option>
+        <option value="info">Info</option>
+        <option value="warning">Warning</option>
+        <option value="error">Error</option>
+        <option value="trade">Trade</option>
+      </select>
+      <label style="font-size:10px;color:var(--muted);display:flex;align-items:center;gap:3px;cursor:pointer;">
+        <input type="checkbox" id="feedAutoScroll" checked style="width:12px;height:12px;"> Auto
+      </label>
+      <button onclick="document.getElementById('feedContainer').innerHTML=''" style="font-size:10px;padding:2px 6px;cursor:pointer;background:var(--surface);border:1px solid var(--border);color:var(--muted);border-radius:4px;">Clear</button>
+    </div>
     <div class="feed" id="feedContainer"></div>
   </div>
   <div class="right-tab-content" id="rightJournal">
@@ -11497,7 +15803,26 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     </div>
     <div id="journalEntries" style="flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:4px;"></div>
   </div>
+  <div class="right-tab-content" id="rightHistory">
+    <div style="font-size:10px;color:var(--muted);padding:4px 0 8px;display:flex;justify-content:space-between;align-items:center;">
+      <span>Config Change History</span>
+      <button onclick="loadConfigHistory()" style="font-size:10px;padding:2px 6px;cursor:pointer;background:var(--surface);border:1px solid var(--border);color:var(--text);border-radius:4px;">Refresh</button>
+    </div>
+    <div id="configHistoryList" style="flex:1;overflow-y:auto;display:flex;flex-direction:column;"></div>
+  </div>
 </aside>
+
+<!-- ── Modal System ── -->
+<div id="appModal" class="modal-overlay" onclick="if(event.target===this)closeModal()">
+  <div class="modal-box">
+    <div class="modal-header">
+      <h3 id="modalTitle">Dialog</h3>
+      <button class="modal-close" onclick="closeModal()">&times;</button>
+    </div>
+    <div class="modal-body" id="modalBody"></div>
+    <div class="modal-footer" id="modalFooter"></div>
+  </div>
+</div>
 
 <!-- ── Status Bar ── -->
 <footer class="status-bar">
@@ -11507,7 +15832,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   </div>
   <div class="right">
     <span id="statusConn" style="color:var(--negative);">&#9675; Offline</span>
-    <span class="version-link" onclick="document.getElementById('releaseNotesModal').classList.add('open')">Rudra __APP_VERSION__</span>
+    <span class="version-link" onclick="document.getElementById('releaseNotesModal').classList.add('open')">Gap Fade __APP_VERSION__</span>
   </div>
 </footer>
 
@@ -11519,25 +15844,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       <button class="rn-close" onclick="document.getElementById('releaseNotesModal').classList.remove('open')">&times;</button>
     </div>
     <div class="rn-body">
-      <h4>v11 <span class="rn-tag">current</span></h4>
-      <ul>
-        <li><strong>Rebrand:</strong> &ldquo;Gap Fade&rdquo; renamed to <strong>Rudra Trading Engine</strong> across all user-facing strings (titles, headers, docs)</li>
-        <li>Internal code identifiers, file names, env vars, and strategy names unchanged</li>
-      </ul>
-      <h4>v10.5</h4>
-      <ul>
-        <li><strong>Sharpe ratio fix:</strong> now uses daily equity returns instead of per-trade returns</li>
-        <li><strong>Max drawdown fix:</strong> equity curve peak-to-trough (%) instead of cumsum of trade P&L</li>
-        <li><strong>Re-entry stop fix:</strong> re-entry trades now properly check stop levels</li>
-        <li><strong>Equity curve fix:</strong> regime-skipped days no longer create gaps in curve</li>
-        <li><strong>Position lock fix:</strong> lock released during LLM calls (was blocking 5&ndash;30s)</li>
-        <li><strong>XSS fix:</strong> all innerHTML with user/LLM content now escaped</li>
-        <li><strong>Auth fix:</strong> close position &amp; stop adjust buttons now send API key</li>
-        <li><strong>Config validation:</strong> Rudra chat &amp; review config changes use range validation</li>
-        <li><strong>Chat actions fix:</strong> pause/resume use proper methods with broadcasts; reset blocked with open positions</li>
-        <li><strong>Rudra parse fix:</strong> text-only LLM responses treated as wait/no-action instead of warnings</li>
-      </ul>
-      <h4>v10.4</h4>
+      <h4>v10.4 <span class="rn-tag">current</span></h4>
       <ul>
         <li>Rudra can now switch strategies via chat (e.g. &ldquo;switch to classic gap fade&rdquo;)</li>
         <li>Unrealized P&L shown in dashboard metrics bar alongside Total P&L</li>
@@ -11713,6 +16020,10 @@ const PAGE_TITLES = {
   candidates: 'Scanner',
   trades: 'Trade Log',
   backtest: 'Backtest',
+  walkforward: 'Walk-Forward',
+  'intraday-wf': 'Intraday WF',
+  intraday: 'Intraday Trading',
+  strategies: 'Strategies',
   config: 'Config',
   database: 'Database',
   tracker: 'Position Tracker',
@@ -11730,6 +16041,10 @@ function showPage(name) {
   const title = document.getElementById('pageTitle');
   if (title) title.textContent = PAGE_TITLES[name] || name;
   activePage = name;
+  // Page-specific data loading
+  if (name === 'strategies') loadStrategyPage();
+  if (name === 'intraday') initIntradayPage();
+  if (name === 'config') { loadProfileList(); if (state && state.config) _lastConfigSnapshot = JSON.stringify(state.config); }
 }
 
 // Backward compat: showTab maps to showPage
@@ -11743,9 +16058,21 @@ function showRightTab(name) {
   document.querySelectorAll('.right-tab-content').forEach(el => el.classList.remove('active'));
   const tab = document.querySelector(`.right-panel-tab[data-rtab="${name}"]`);
   if (tab) tab.classList.add('active');
-  const contentMap = {positions: 'rightPositions', feed: 'rightFeed', journal: 'rightJournal'};
+  const contentMap = {positions: 'rightPositions', feed: 'rightFeed', journal: 'rightJournal', history: 'rightHistory'};
   const content = document.getElementById(contentMap[name] || 'rightFeed');
   if (content) content.classList.add('active');
+}
+
+// ── Feed Filter ──────────────────────────────────────────────────
+function filterFeed() {
+  const query = (document.getElementById('feedSearch')?.value || '').toLowerCase();
+  const level = document.getElementById('feedLevelFilter')?.value || '';
+  document.querySelectorAll('#feedContainer .feed-item').forEach(item => {
+    const text = item.textContent.toLowerCase();
+    const matchQuery = !query || text.includes(query);
+    const matchLevel = !level || text.includes(level) || item.classList.contains(level);
+    item.style.display = (matchQuery && matchLevel) ? '' : 'none';
+  });
 }
 
 // ── Journal Tab ───────────────────────────────────────────────────
@@ -11880,6 +16207,28 @@ function handleMessage(msg) {
     }
   } else if (msg.type === 'bt_log') {
     appendBtLog(msg.entry);
+  } else if (msg.type === 'walkforward_complete') {
+    if (window._wfPoll) { clearTimeout(window._wfPoll); window._wfPoll = null; }
+    document.getElementById('wfProgress').style.display = 'none';
+    if (msg.result && msg.result.error) {
+      showToast('Walk-forward error: ' + msg.result.error, 'error');
+    } else if (msg.result) {
+      try { renderWalkForwardResults(msg.result); } catch(e) {
+        console.error('renderWalkForwardResults failed:', e);
+        showToast('Error rendering WF results: ' + e.message, 'error');
+      }
+    }
+  } else if (msg.type === 'intraday_walkforward_complete') {
+    if (window._iwfPoll) { clearTimeout(window._iwfPoll); window._iwfPoll = null; }
+    document.getElementById('iwfProgress').style.display = 'none';
+    if (msg.result && msg.result.error) {
+      showToast('Intraday WF error: ' + msg.result.error, 'error');
+    } else if (msg.result) {
+      try { renderIwfResults(msg.result); } catch(e) {
+        console.error('renderIwfResults failed:', e);
+        showToast('Error rendering Intraday WF: ' + e.message, 'error');
+      }
+    }
   } else if (msg.type === 'db_build_progress') {
     document.getElementById('dbProgress').style.display = 'block';
     document.getElementById('dbProgressMsg').textContent = msg.message || 'Working...';
@@ -11900,6 +16249,23 @@ function handleMessage(msg) {
       const now = new Date().toLocaleTimeString('en-US', {hour12:false, hour:'2-digit', minute:'2-digit', second:'2-digit'});
       div.innerHTML = `<span class="time">${now}</span><span style="color:#c084fc;font-weight:600;">RUDRA:</span> ${escHtml((msg.text||'').substring(0,300))}`;
       feed.insertBefore(div, feed.firstChild);
+    }
+  } else if (msg.type === 'config_changed') {
+    // Config was changed (possibly from another tab or API)
+    if (activePage === 'config') fetchState();
+    const changeCount = Object.keys(msg.changes || {}).length;
+    if (msg.source !== 'ui') showToast(`Config updated (${changeCount} changes) via ${msg.source}`, 'info');
+  } else if (msg.type === 'strategy_switched') {
+    if (activePage === 'strategies') loadStrategyPage();
+    showToast(`Strategy switched to ${msg.name || msg.strategy_id}`, 'info');
+  } else if (msg.type === 'intraday_status') {
+    // Periodic intraday update
+    if (activePage === 'strategies') {
+      const badge = document.getElementById('marketConditionBadge');
+      if (badge && msg.market_condition) {
+        badge.textContent = msg.market_condition;
+        badge.className = 'market-condition-badge ' + msg.market_condition;
+      }
     }
   }
 }
@@ -11930,7 +16296,16 @@ async function runScan() {
 }
 
 async function startTrading() { await api('start', 'POST'); fetchState(); }
-async function stopTrading() { await api('stop', 'POST'); fetchState(); }
+async function stopTrading() {
+  if (state && state.status === 'trading') {
+    showModal('Stop Trading', '<p>Are you sure you want to stop all trading? Open positions will remain but no new trades will be placed.</p>', [
+      {label: 'Cancel', action: closeModal},
+      {label: 'Stop Trading', primary: true, action: async () => { closeModal(); await api('stop', 'POST'); fetchState(); showToast('Trading stopped', 'info'); }},
+    ]);
+  } else {
+    await api('stop', 'POST'); fetchState();
+  }
+}
 async function pauseTrading() { await api('pause', 'POST'); fetchState(); }
 async function resumeTrading() { await api('resume', 'POST'); fetchState(); }
 async function resetTrader() {
@@ -12154,6 +16529,575 @@ async function runBacktest() {
 
 async function cancelBacktest() { await api('backtest/cancel', 'POST'); }
 
+// ── Walk-Forward Optimization ──
+function initWfDates() {
+  const end = new Date();
+  const start = new Date();
+  start.setFullYear(end.getFullYear() - 7);
+  document.getElementById('wfStart').value = start.toISOString().slice(0,10);
+  document.getElementById('wfEnd').value = end.toISOString().slice(0,10);
+}
+
+function updateWfGridCount() {
+  const parse = id => document.getElementById(id).value.split(',').filter(v => v.trim()).length;
+  const count = parse('wfGridGap') * parse('wfGridVol') * parse('wfGridStop') * parse('wfGridRisk');
+  document.getElementById('wfGridCount').textContent = count + ' combinations per fold';
+}
+
+async function runWalkForward() {
+  const startVal = document.getElementById('wfStart').value;
+  const endVal = document.getElementById('wfEnd').value;
+  if (!startVal || !endVal) { showToast('Set start and end dates'); return; }
+  if (startVal > endVal) { showToast('Start must be before end'); return; }
+
+  const trainDays = parseInt(document.getElementById('wfTrainDays').value);
+  const testDays = parseInt(document.getElementById('wfTestDays').value);
+  const stepDays = parseInt(document.getElementById('wfStepDays').value);
+  if (isNaN(trainDays) || isNaN(testDays) || isNaN(stepDays)) { showToast('Invalid window sizes'); return; }
+  if (trainDays < 50 || testDays < 20 || stepDays < 10) { showToast('Window sizes too small'); return; }
+
+  const parseGrid = (id, divisor) => {
+    return document.getElementById(id).value.split(',').map(v => parseFloat(v.trim()) / divisor).filter(v => !isNaN(v));
+  };
+  const gridGap = parseGrid('wfGridGap', 100);
+  const gridVol = document.getElementById('wfGridVol').value.split(',').map(v => parseFloat(v.trim())).filter(v => !isNaN(v));
+  const gridStop = parseGrid('wfGridStop', 100);
+  const gridRisk = parseGrid('wfGridRisk', 100);
+  if (!gridGap.length || !gridVol.length || !gridStop.length || !gridRisk.length) {
+    showToast('Parameter grid has empty values'); return;
+  }
+
+  const body = {
+    start_date: startVal,
+    end_date: endVal,
+    universe: document.getElementById('wfUniverse').value,
+    train_days: trainDays,
+    test_days: testDays,
+    step_days: stepDays,
+    initial_capital: parseFloat(document.getElementById('wfCapital').value) || 25000,
+    param_grid: {
+      gap_threshold: gridGap,
+      vol_ratio_max: gridVol,
+      stop_pct: gridStop,
+      risk_pct: gridRisk,
+    },
+  };
+
+  document.getElementById('wfProgress').style.display = 'block';
+  document.getElementById('wfProgressMsg').textContent = 'Starting walk-forward...';
+  document.getElementById('wfProgressBar').style.width = '0%';
+  document.getElementById('wfResults').innerHTML = '';
+
+  try {
+    const r = await api('backtest/walkforward', 'POST', body);
+    if (r.error) {
+      document.getElementById('wfProgressMsg').textContent = 'Error: ' + r.error;
+      return;
+    }
+    // Poll for results as fallback (primary delivery via WebSocket)
+    if (window._wfPoll) clearTimeout(window._wfPoll);
+    window._wfPollCount = 0;
+    window._wfPoll = setTimeout(async function pollWf() {
+      try {
+        const sr = await api('backtest/walkforward/status', 'GET');
+        if (sr) {
+          document.getElementById('wfProgressMsg').textContent = sr.message || 'Running...';
+          document.getElementById('wfProgressBar').style.width = (sr.progress || 0) + '%';
+        }
+        if (sr && sr.status === 'done') {
+          window._wfPoll = null;
+          document.getElementById('wfProgress').style.display = 'none';
+          const rr = await api('backtest/walkforward/results', 'GET');
+          if (rr && rr.folds) {
+            try { renderWalkForwardResults(rr); } catch(e) {
+              console.error('renderWalkForwardResults failed:', e);
+              showToast('Error rendering WF: ' + e.message, 'error');
+            }
+          }
+          return;
+        } else if (sr && sr.status === 'error') {
+          window._wfPoll = null;
+          const rr = await api('backtest/walkforward/results', 'GET');
+          showToast('Walk-forward error: ' + (rr.error || 'unknown'), 'error');
+          document.getElementById('wfProgressMsg').textContent = 'Error: ' + (rr.error || 'unknown');
+          return;
+        } else if (sr && sr.status === 'cancelled') {
+          window._wfPoll = null;
+          document.getElementById('wfProgressMsg').textContent = 'Cancelled';
+          return;
+        }
+      } catch(e) {}
+      window._wfPollCount = (window._wfPollCount || 0) + 1;
+      if (window._wfPollCount < 120) {
+        window._wfPoll = setTimeout(pollWf, 2000);
+      } else {
+        window._wfPoll = null;
+        document.getElementById('wfProgressMsg').textContent = 'Timed out';
+      }
+    }, 2000);
+  } catch(e) {
+    document.getElementById('wfProgressMsg').textContent = 'Error: ' + e.message;
+  }
+}
+
+async function cancelWalkForward() {
+  await api('backtest/walkforward/cancel', 'POST');
+  if (window._wfPoll) { clearTimeout(window._wfPoll); window._wfPoll = null; }
+  document.getElementById('wfProgressMsg').textContent = 'Cancelled';
+}
+
+function renderWalkForwardResults(r) {
+  const el = document.getElementById('wfResults');
+  if (!r || !r.folds) { el.innerHTML = '<div style="color:var(--loss);">No results</div>'; return; }
+
+  const agg = r.aggregate_oos || {};
+  const stability = r.param_stability || {};
+  const recs = r.recommendations || [];
+
+  // Header stats
+  let html = '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:12px;">';
+  const stats = [
+    ['OOS Trades', agg.num_trades || 0],
+    ['OOS Win Rate', ((agg.win_rate || 0) * 100).toFixed(1) + '%'],
+    ['OOS PF', (agg.profit_factor || 0).toFixed(2)],
+    ['OOS Sharpe', (agg.sharpe_ratio || 0).toFixed(2)],
+    ['OOS Return', (agg.total_return_pct || 0).toFixed(1) + '%'],
+    ['Max DD', '-' + (agg.max_drawdown_pct || 0).toFixed(1) + '%'],
+    ['Overfit Ratio', (agg.avg_overfit_ratio || 0).toFixed(2)],
+    ['Folds', (r.num_valid_folds || 0) + '/' + (r.num_folds || 0)],
+  ];
+  for (const [label, val] of stats) {
+    const color = label === 'Max DD' ? 'var(--loss)' :
+                  label === 'Overfit Ratio' ? ((agg.avg_overfit_ratio || 0) > 0.5 ? 'var(--gain)' : 'var(--loss)') : '';
+    html += '<div class="stat" style="text-align:center;"><div style="font-size:11px;color:var(--muted);">' + label +
+            '</div><div style="font-size:16px;font-weight:700;' + (color ? 'color:'+color : '') + ';">' + val + '</div></div>';
+  }
+  html += '</div>';
+
+  // Recommendations
+  if (recs.length) {
+    html += '<div style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:10px;margin-bottom:12px;">';
+    html += '<div style="font-size:12px;font-weight:600;margin-bottom:6px;">Recommendations</div>';
+    for (const rec of recs) {
+      const icon = rec.includes('stable') ? '&#9679;' : rec.includes('poor') || rec.includes('unstable') || rec.includes('significant') ? '&#9888;' : '&#8226;';
+      const color = rec.includes('stable') || rec.includes('good') || rec.includes('minimal') ? 'var(--gain)' :
+                    rec.includes('poor') || rec.includes('unstable') || rec.includes('significant') ? 'var(--loss)' : 'var(--muted)';
+      html += '<div style="font-size:12px;margin:3px 0;color:' + color + ';">' + icon + ' ' + rec + '</div>';
+    }
+    html += '</div>';
+  }
+
+  // Parameter stability
+  const pkeys = Object.keys(stability);
+  if (pkeys.length) {
+    html += '<div style="margin-bottom:12px;"><div style="font-size:13px;font-weight:600;margin-bottom:6px;">Parameter Stability</div>';
+    html += '<table style="width:100%;font-size:12px;border-collapse:collapse;">';
+    html += '<tr style="border-bottom:1px solid var(--border);"><th style="text-align:left;padding:4px;">Param</th>' +
+            '<th style="text-align:left;padding:4px;">Best</th><th style="text-align:left;padding:4px;">Agreement</th>' +
+            '<th style="text-align:left;padding:4px;">Values by Fold</th></tr>';
+    for (const pk of pkeys) {
+      const p = stability[pk];
+      const agr = ((p.agreement || 0) * 100).toFixed(0) + '%';
+      const agrColor = (p.agreement || 0) >= 0.75 ? 'var(--gain)' : (p.agreement || 0) < 0.5 ? 'var(--loss)' : 'var(--muted)';
+      html += '<tr style="border-bottom:1px solid var(--border);">' +
+              '<td style="padding:4px;font-weight:600;">' + pk + '</td>' +
+              '<td style="padding:4px;">' + p.most_common + '</td>' +
+              '<td style="padding:4px;color:' + agrColor + ';">' + agr + '</td>' +
+              '<td style="padding:4px;color:var(--muted);">' + (p.values || []).join(', ') + '</td></tr>';
+    }
+    html += '</table></div>';
+  }
+
+  // Fold details table
+  html += '<div style="font-size:13px;font-weight:600;margin-bottom:6px;">Fold Details</div>';
+  html += '<div style="overflow-x:auto;"><table style="width:100%;font-size:11px;border-collapse:collapse;white-space:nowrap;">';
+  html += '<tr style="border-bottom:1px solid var(--border);background:var(--bg);">' +
+          '<th style="padding:4px;">Fold</th><th style="padding:4px;">Train</th><th style="padding:4px;">Test</th>' +
+          '<th style="padding:4px;">IS Ret%</th><th style="padding:4px;">IS WR</th><th style="padding:4px;">IS PF</th><th style="padding:4px;">IS Sharpe</th>' +
+          '<th style="padding:4px;">OOS Ret%</th><th style="padding:4px;">OOS WR</th><th style="padding:4px;">OOS PF</th><th style="padding:4px;">OOS Sharpe</th>' +
+          '<th style="padding:4px;">OOS DD</th><th style="padding:4px;">Overfit</th><th style="padding:4px;">Best Params</th></tr>';
+  for (const f of r.folds) {
+    if (f.skipped) {
+      html += '<tr style="border-bottom:1px solid var(--border);color:var(--muted);"><td style="padding:4px;">' + f.fold + '</td>' +
+              '<td colspan="13" style="padding:4px;">Skipped (not enough valid combinations)</td></tr>';
+      continue;
+    }
+    const ofColor = (f.overfit_ratio || 0) > 0.5 ? 'var(--gain)' : 'var(--loss)';
+    const params = Object.entries(f.best_params || {}).map(([k,v]) => k.replace('_pct','%').replace('gap_threshold','gap') + '=' + v).join(', ');
+    html += '<tr style="border-bottom:1px solid var(--border);">' +
+            '<td style="padding:4px;font-weight:600;">' + f.fold + '</td>' +
+            '<td style="padding:4px;font-size:10px;">' + (f.train_range || '') + '</td>' +
+            '<td style="padding:4px;font-size:10px;">' + (f.test_range || '') + '</td>' +
+            '<td style="padding:4px;">' + (f.is_return || 0).toFixed(1) + '%</td>' +
+            '<td style="padding:4px;">' + ((f.is_win_rate || 0) * 100).toFixed(1) + '%</td>' +
+            '<td style="padding:4px;">' + (f.is_pf || 0).toFixed(2) + '</td>' +
+            '<td style="padding:4px;">' + (f.is_sharpe || 0).toFixed(2) + '</td>' +
+            '<td style="padding:4px;font-weight:600;">' + (f.oos_return || 0).toFixed(1) + '%</td>' +
+            '<td style="padding:4px;">' + ((f.oos_win_rate || 0) * 100).toFixed(1) + '%</td>' +
+            '<td style="padding:4px;">' + (f.oos_pf || 0).toFixed(2) + '</td>' +
+            '<td style="padding:4px;">' + (f.oos_sharpe || 0).toFixed(2) + '</td>' +
+            '<td style="padding:4px;color:var(--loss);">' + (f.oos_max_dd || 0).toFixed(1) + '%</td>' +
+            '<td style="padding:4px;color:' + ofColor + ';">' + (f.overfit_ratio || 0).toFixed(2) + '</td>' +
+            '<td style="padding:4px;font-size:10px;color:var(--muted);">' + params + '</td></tr>';
+  }
+  html += '</table></div>';
+
+  // Grid info
+  if (r.param_grid) {
+    const g = r.param_grid;
+    const total = Object.values(g).reduce((a, v) => a * v.length, 1);
+    html += '<div style="margin-top:8px;font-size:11px;color:var(--muted);">' +
+            'Grid: ' + total + ' combos | ' + (r.total_gaps_scanned || 0) + ' gaps scanned</div>';
+  }
+
+  el.innerHTML = html;
+}
+
+// ── Intraday Walk-Forward ──
+const IWF_GRIDS = {
+  orb_breakout: {
+    breakout_buffer_pct: {label:'Breakout Buffer %', values:[0.0005,0.001,0.002], fmt:v=>v*100+'%'},
+    volume_confirm_ratio: {label:'Vol Confirm Ratio', values:[1.2,1.5,2.0], fmt:v=>v+'x'},
+    stop_buffer_pct: {label:'Stop Buffer %', values:[0.001,0.002,0.003], fmt:v=>v*100+'%'},
+    target_rr: {label:'Target R:R', values:[1.5,2.0,2.5], fmt:v=>v+':1'},
+  },
+  momentum_surge: {
+    volume_surge_ratio: {label:'Vol Surge Ratio', values:[1.5,2.0,3.0], fmt:v=>v+'x'},
+    rsi_min_long: {label:'RSI Min (Long)', values:[45,50,55], fmt:v=>v},
+    atr_stop_mult: {label:'ATR Stop Mult', values:[1.0,1.5,2.0], fmt:v=>v+'x'},
+    target_rr: {label:'Target R:R', values:[1.5,2.0,3.0], fmt:v=>v+':1'},
+  },
+  pullback_entry: {
+    pullback_proximity_pct: {label:'Pullback Prox %', values:[0.005,0.01,0.015], fmt:v=>v*100+'%'},
+    rsi_pullback_min: {label:'RSI PB Min', values:[35,40,45], fmt:v=>v},
+    rsi_pullback_max: {label:'RSI PB Max', values:[50,55,60], fmt:v=>v},
+    target_rr: {label:'Target R:R', values:[1.5,2.0,2.5], fmt:v=>v+':1'},
+  },
+  range_trade: {
+    boundary_proximity_pct: {label:'Boundary Prox %', values:[0.002,0.003,0.005], fmt:v=>v*100+'%'},
+    stop_buffer_pct: {label:'Stop Buffer %', values:[0.003,0.005,0.008], fmt:v=>v*100+'%'},
+    rsi_support_max: {label:'RSI Support Max', values:[35,40,45], fmt:v=>v},
+    target_rr: {label:'Target R:R', values:[1.5,2.0,2.5], fmt:v=>v+':1'},
+  },
+};
+
+function initIwfDates() {
+  const end = new Date();
+  const start = new Date();
+  start.setFullYear(end.getFullYear() - 7);
+  const fmt = d => d.toISOString().slice(0,10);
+  const s = document.getElementById('iwfStart');
+  const e = document.getElementById('iwfEnd');
+  if (s && !s.value) s.value = fmt(start);
+  if (e && !e.value) e.value = fmt(end);
+  updateIwfGrid();
+}
+setTimeout(initIwfDates, 600);
+
+function updateIwfGrid() {
+  const sid = document.getElementById('iwfStrategy').value;
+  const container = document.getElementById('iwfGridContainer');
+  const countEl = document.getElementById('iwfGridCount');
+  if (sid === 'batch') {
+    container.innerHTML = '<div style="color:var(--muted);">All 4 strategy grids will be used (81 combos each)</div>';
+    countEl.textContent = '4 x 81 = 324 total combinations';
+    return;
+  }
+  const grid = IWF_GRIDS[sid];
+  if (!grid) { container.innerHTML = ''; countEl.textContent = ''; return; }
+  let html = '';
+  let combos = 1;
+  for (const [key, info] of Object.entries(grid)) {
+    const vals = info.values.join(', ');
+    html += '<div class="config-item"><label>' + info.label + ':</label>' +
+            '<input id="iwfGrid_' + key + '" value="' + vals + '" style="width:120px;" title="Comma-separated"></div>';
+    combos *= info.values.length;
+  }
+  container.innerHTML = html;
+  countEl.textContent = combos + ' combinations per fold';
+}
+
+function parseIwfGrid() {
+  const sid = document.getElementById('iwfStrategy').value;
+  if (sid === 'batch') return null;
+  const grid = IWF_GRIDS[sid];
+  if (!grid) return null;
+  const result = {};
+  for (const key of Object.keys(grid)) {
+    const el = document.getElementById('iwfGrid_' + key);
+    if (!el) continue;
+    const vals = el.value.split(',').map(v => parseFloat(v.trim())).filter(v => !isNaN(v));
+    if (vals.length === 0) return null;
+    result[key] = vals;
+  }
+  return result;
+}
+
+async function runIntradayWalkForward() {
+  const sid = document.getElementById('iwfStrategy').value;
+  const startVal = document.getElementById('iwfStart').value;
+  const endVal = document.getElementById('iwfEnd').value;
+  if (!startVal || !endVal) { showToast('Set start and end dates'); return; }
+
+  const trainDays = parseInt(document.getElementById('iwfTrainDays').value);
+  const testDays = parseInt(document.getElementById('iwfTestDays').value);
+  const stepDays = parseInt(document.getElementById('iwfStepDays').value);
+  if (isNaN(trainDays) || isNaN(testDays) || isNaN(stepDays)) { showToast('Invalid window sizes'); return; }
+
+  const body = {
+    start_date: startVal, end_date: endVal,
+    universe: document.getElementById('iwfUniverse').value,
+    train_days: trainDays, test_days: testDays, step_days: stepDays,
+    initial_capital: parseFloat(document.getElementById('iwfCapital').value) || 25000,
+  };
+
+  const isBatch = sid === 'batch';
+  if (!isBatch) {
+    body.strategy_id = sid;
+    const paramGrid = parseIwfGrid();
+    if (paramGrid) body.param_grid = paramGrid;
+  }
+
+  document.getElementById('iwfProgress').style.display = 'block';
+  document.getElementById('iwfProgressMsg').textContent = 'Starting...';
+  document.getElementById('iwfProgressBar').style.width = '0%';
+  document.getElementById('iwfResults').innerHTML = '';
+
+  try {
+    const endpoint = isBatch ? 'backtest/intraday-walkforward/batch' : 'backtest/intraday-walkforward';
+    const r = await api(endpoint, 'POST', body);
+    if (r.error) {
+      document.getElementById('iwfProgressMsg').textContent = 'Error: ' + r.error;
+      return;
+    }
+    // Poll
+    if (window._iwfPoll) clearTimeout(window._iwfPoll);
+    window._iwfPollCount = 0;
+    window._iwfPoll = setTimeout(async function pollIwf() {
+      try {
+        const sr = await api('backtest/intraday-walkforward/status', 'GET');
+        if (sr) {
+          document.getElementById('iwfProgressMsg').textContent = sr.message || 'Running...';
+          document.getElementById('iwfProgressBar').style.width = (sr.progress || 0) + '%';
+        }
+        if (sr && sr.status === 'done') {
+          window._iwfPoll = null;
+          document.getElementById('iwfProgress').style.display = 'none';
+          const rr = await api('backtest/intraday-walkforward/results', 'GET');
+          if (rr) { try { renderIwfResults(rr); } catch(e) { console.error('renderIwfResults:', e); showToast('Render error: '+e.message,'error'); } }
+          return;
+        } else if (sr && (sr.status === 'error' || sr.status === 'cancelled')) {
+          window._iwfPoll = null;
+          document.getElementById('iwfProgressMsg').textContent = sr.status === 'error' ? 'Error: ' + sr.message : 'Cancelled';
+          return;
+        }
+      } catch(e) {}
+      window._iwfPollCount = (window._iwfPollCount || 0) + 1;
+      if (window._iwfPollCount < 300) { window._iwfPoll = setTimeout(pollIwf, 2000); }
+      else { window._iwfPoll = null; document.getElementById('iwfProgressMsg').textContent = 'Timed out'; }
+    }, 2000);
+  } catch(e) { document.getElementById('iwfProgressMsg').textContent = 'Error: ' + e.message; }
+}
+
+async function cancelIntradayWalkForward() {
+  await api('backtest/intraday-walkforward/cancel', 'POST');
+  if (window._iwfPoll) { clearTimeout(window._iwfPoll); window._iwfPoll = null; }
+  document.getElementById('iwfProgressMsg').textContent = 'Cancelled';
+}
+
+function renderIwfResults(r) {
+  const el = document.getElementById('iwfResults');
+  if (!r) { el.innerHTML = '<div style="color:var(--loss);">No results</div>'; return; }
+
+  // Batch mode: render each strategy
+  if (r.batch && r.strategies) {
+    let html = '<h3 style="margin-bottom:8px;">Batch Results</h3>';
+    // Summary table
+    html += '<div style="overflow-x:auto;margin-bottom:16px;"><table style="width:100%;font-size:12px;border-collapse:collapse;">';
+    html += '<tr style="border-bottom:2px solid var(--border);background:var(--bg);">' +
+            '<th style="padding:6px;">Strategy</th><th style="padding:6px;">Verdict</th>' +
+            '<th style="padding:6px;">OOS Return</th><th style="padding:6px;">OOS Trades</th>' +
+            '<th style="padding:6px;">OOS Win Rate</th></tr>';
+    for (const [sid, summary] of Object.entries(r.summary || {})) {
+      const rec = summary.recommendation || 'N/A';
+      const badge = rec === 'DEPLOY' ? 'background:#22c55e20;color:#22c55e;' :
+                    rec === 'PAPER_TRADE_FIRST' ? 'background:#eab30820;color:#eab308;' :
+                    'background:#ef444420;color:#ef4444;';
+      html += '<tr style="border-bottom:1px solid var(--border);">' +
+              '<td style="padding:6px;font-weight:600;">' + sid.replace(/_/g,' ') + '</td>' +
+              '<td style="padding:6px;"><span style="padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600;' + badge + '">' + rec + '</span></td>' +
+              '<td style="padding:6px;">' + (summary.oos_return || 0).toFixed(1) + '%</td>' +
+              '<td style="padding:6px;">' + (summary.oos_trades || 0) + '</td>' +
+              '<td style="padding:6px;">' + ((summary.oos_win_rate || 0) * 100).toFixed(1) + '%</td></tr>';
+    }
+    html += '</table></div>';
+
+    // Render each strategy detail in collapsible sections
+    for (const [sid, stratResult] of Object.entries(r.strategies || {})) {
+      html += '<details style="margin-bottom:12px;border:1px solid var(--border);border-radius:6px;padding:8px;">';
+      html += '<summary style="cursor:pointer;font-weight:600;">' + sid.replace(/_/g,' ') + ' — Details</summary>';
+      html += '<div id="iwfBatch_' + sid + '" style="margin-top:8px;"></div>';
+      html += '</details>';
+    }
+    el.innerHTML = html;
+    // Render each strategy into its container
+    for (const [sid, stratResult] of Object.entries(r.strategies || {})) {
+      const subEl = document.getElementById('iwfBatch_' + sid);
+      if (subEl) subEl.innerHTML = buildIwfStrategyHtml(stratResult);
+    }
+    return;
+  }
+
+  // Single strategy mode
+  if (!r.folds) { el.innerHTML = '<div style="color:var(--loss);">No results (error: ' + (r.error||'unknown') + ')</div>'; return; }
+  el.innerHTML = buildIwfStrategyHtml(r);
+}
+
+function buildIwfStrategyHtml(r) {
+  const agg = r.aggregate_oos || {};
+  const stability = r.param_stability || {};
+  const recs = r.recommendations || [];
+  const gate = r.deployment_gate || {};
+  const condBreak = r.condition_breakdown || {};
+
+  let html = '';
+
+  // Header stats
+  html += '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:12px;">';
+  const stats = [
+    ['OOS Trades', agg.num_trades || 0],
+    ['OOS Win Rate', ((agg.win_rate || 0) * 100).toFixed(1) + '%'],
+    ['OOS PF', (agg.profit_factor || 0).toFixed(2)],
+    ['OOS Sharpe', (agg.sharpe_ratio || 0).toFixed(2)],
+    ['OOS Return', (agg.total_return_pct || 0).toFixed(1) + '%'],
+    ['Max DD', '-' + (agg.max_drawdown_pct || 0).toFixed(1) + '%'],
+    ['Overfit', (agg.avg_overfit_ratio || 0).toFixed(2)],
+    ['Folds', (r.num_valid_folds || 0) + '/' + (r.num_folds || 0)],
+  ];
+  for (const [label, val] of stats) {
+    const color = label === 'Max DD' ? 'var(--loss)' :
+                  label === 'Overfit' ? ((agg.avg_overfit_ratio || 0) > 0.5 ? 'var(--gain)' : 'var(--loss)') : '';
+    html += '<div class="stat" style="text-align:center;"><div style="font-size:11px;color:var(--muted);">' + label +
+            '</div><div style="font-size:16px;font-weight:700;' + (color ? 'color:'+color : '') + ';">' + val + '</div></div>';
+  }
+  html += '</div>';
+
+  // Deployment gate card
+  if (gate.recommendation) {
+    const rec = gate.recommendation;
+    const badgeStyle = rec === 'DEPLOY' ? 'background:#22c55e20;color:#22c55e;border:1px solid #22c55e40;' :
+                       rec === 'PAPER_TRADE_FIRST' ? 'background:#eab30820;color:#eab308;border:1px solid #eab30840;' :
+                       'background:#ef444420;color:#ef4444;border:1px solid #ef444440;';
+    html += '<div style="border-radius:6px;padding:12px;margin-bottom:12px;' + badgeStyle + '">';
+    html += '<div style="font-size:14px;font-weight:700;margin-bottom:6px;">' + rec.replace(/_/g, ' ') + '</div>';
+    if (gate.suggested_size_mult !== undefined && gate.suggested_size_mult < 1) {
+      html += '<div style="font-size:12px;margin-bottom:6px;">Suggested position size: ' + (gate.suggested_size_mult * 100) + '%</div>';
+    }
+    // Criteria table
+    if (gate.criteria) {
+      html += '<table style="width:100%;font-size:11px;border-collapse:collapse;">';
+      html += '<tr><th style="text-align:left;padding:3px;">Criterion</th><th style="padding:3px;">Required</th><th style="padding:3px;">Actual</th><th style="padding:3px;">Pass</th></tr>';
+      for (const [ck, cv] of Object.entries(gate.criteria)) {
+        const icon = cv.passed ? '<span style="color:#22c55e;">&#10003;</span>' : '<span style="color:#ef4444;">&#10007;</span>';
+        html += '<tr><td style="padding:3px;">' + ck.replace(/_/g,' ') + '</td>' +
+                '<td style="padding:3px;text-align:center;">' + cv.required + '</td>' +
+                '<td style="padding:3px;text-align:center;">' + cv.actual + '</td>' +
+                '<td style="padding:3px;text-align:center;">' + icon + '</td></tr>';
+      }
+      html += '</table>';
+    }
+    html += '</div>';
+  }
+
+  // Market condition breakdown
+  const condKeys = Object.keys(condBreak);
+  if (condKeys.length) {
+    html += '<div style="margin-bottom:12px;"><div style="font-size:13px;font-weight:600;margin-bottom:6px;">Market Condition Breakdown</div>';
+    html += '<table style="width:100%;font-size:12px;border-collapse:collapse;">';
+    html += '<tr style="border-bottom:1px solid var(--border);"><th style="text-align:left;padding:4px;">Condition</th>' +
+            '<th style="padding:4px;">Trades</th><th style="padding:4px;">Win Rate</th><th style="padding:4px;">Avg P&L</th><th style="padding:4px;">Total P&L</th></tr>';
+    for (const ck of condKeys) {
+      const cd = condBreak[ck];
+      const wrColor = (cd.win_rate || 0) >= 0.55 ? 'var(--gain)' : (cd.win_rate || 0) < 0.40 ? 'var(--loss)' : '';
+      html += '<tr style="border-bottom:1px solid var(--border);">' +
+              '<td style="padding:4px;font-weight:600;">' + ck.replace(/_/g,' ') + '</td>' +
+              '<td style="padding:4px;text-align:center;">' + (cd.trades || 0) + '</td>' +
+              '<td style="padding:4px;text-align:center;' + (wrColor ? 'color:'+wrColor : '') + ';">' + ((cd.win_rate||0)*100).toFixed(1) + '%</td>' +
+              '<td style="padding:4px;text-align:center;">$' + (cd.avg_pnl || 0).toFixed(2) + '</td>' +
+              '<td style="padding:4px;text-align:center;color:' + ((cd.total_pnl||0)>=0?'var(--gain)':'var(--loss)') + ';">$' + (cd.total_pnl || 0).toFixed(0) + '</td></tr>';
+    }
+    html += '</table></div>';
+  }
+
+  // Recommendations
+  if (recs.length) {
+    html += '<div style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:10px;margin-bottom:12px;">';
+    html += '<div style="font-size:12px;font-weight:600;margin-bottom:6px;">Recommendations</div>';
+    for (const rec of recs) {
+      const color = rec.level === 'green' ? 'var(--gain)' : rec.level === 'red' ? 'var(--loss)' : 'var(--muted)';
+      const icon = rec.level === 'green' ? '&#9679;' : rec.level === 'red' ? '&#9888;' : '&#8226;';
+      html += '<div style="font-size:12px;margin:3px 0;color:' + color + ';">' + icon + ' ' + rec.text + '</div>';
+    }
+    html += '</div>';
+  }
+
+  // Parameter stability
+  const pkeys = Object.keys(stability);
+  if (pkeys.length) {
+    html += '<div style="margin-bottom:12px;"><div style="font-size:13px;font-weight:600;margin-bottom:6px;">Parameter Stability</div>';
+    html += '<table style="width:100%;font-size:12px;border-collapse:collapse;">';
+    html += '<tr style="border-bottom:1px solid var(--border);"><th style="text-align:left;padding:4px;">Param</th>' +
+            '<th style="padding:4px;">Best</th><th style="padding:4px;">Agreement</th><th style="text-align:left;padding:4px;">Values</th></tr>';
+    for (const pk of pkeys) {
+      const p = stability[pk];
+      const agr = ((p.agreement||0)*100).toFixed(0) + '%';
+      const agrColor = (p.agreement||0) >= 0.75 ? 'var(--gain)' : (p.agreement||0) < 0.5 ? 'var(--loss)' : 'var(--muted)';
+      html += '<tr style="border-bottom:1px solid var(--border);">' +
+              '<td style="padding:4px;font-weight:600;">' + pk + '</td>' +
+              '<td style="padding:4px;text-align:center;">' + p.most_common + '</td>' +
+              '<td style="padding:4px;text-align:center;color:' + agrColor + ';">' + agr + '</td>' +
+              '<td style="padding:4px;color:var(--muted);">' + (p.values||[]).join(', ') + '</td></tr>';
+    }
+    html += '</table></div>';
+  }
+
+  // Fold details
+  if (r.folds && r.folds.length) {
+    html += '<div style="font-size:13px;font-weight:600;margin-bottom:6px;">Fold Details</div>';
+    html += '<div style="overflow-x:auto;"><table style="width:100%;font-size:11px;border-collapse:collapse;white-space:nowrap;">';
+    html += '<tr style="border-bottom:1px solid var(--border);background:var(--bg);">' +
+            '<th style="padding:4px;">Fold</th><th style="padding:4px;">Train</th><th style="padding:4px;">Test</th>' +
+            '<th style="padding:4px;">IS Ret%</th><th style="padding:4px;">IS WR</th><th style="padding:4px;">IS PF</th>' +
+            '<th style="padding:4px;">OOS Ret%</th><th style="padding:4px;">OOS WR</th><th style="padding:4px;">OOS PF</th>' +
+            '<th style="padding:4px;">OOS DD</th><th style="padding:4px;">Overfit</th><th style="padding:4px;">Params</th></tr>';
+    for (const f of r.folds) {
+      if (f.skipped) {
+        html += '<tr style="border-bottom:1px solid var(--border);color:var(--muted);"><td style="padding:4px;">' + f.fold + '</td>' +
+                '<td colspan="11" style="padding:4px;">Skipped</td></tr>';
+        continue;
+      }
+      const ofColor = (f.overfit_ratio||0) > 0.5 ? 'var(--gain)' : 'var(--loss)';
+      const params = Object.entries(f.best_params||{}).map(([k,v]) => k.split('_').pop()+'='+v).join(', ');
+      html += '<tr style="border-bottom:1px solid var(--border);">' +
+              '<td style="padding:4px;font-weight:600;">' + f.fold + '</td>' +
+              '<td style="padding:4px;font-size:10px;">' + (f.train_range||'') + '</td>' +
+              '<td style="padding:4px;font-size:10px;">' + (f.test_range||'') + '</td>' +
+              '<td style="padding:4px;">' + (f.is_return||0).toFixed(1) + '%</td>' +
+              '<td style="padding:4px;">' + ((f.is_win_rate||0)*100).toFixed(1) + '%</td>' +
+              '<td style="padding:4px;">' + (f.is_pf||0).toFixed(2) + '</td>' +
+              '<td style="padding:4px;font-weight:600;">' + (f.oos_return||0).toFixed(1) + '%</td>' +
+              '<td style="padding:4px;">' + ((f.oos_win_rate||0)*100).toFixed(1) + '%</td>' +
+              '<td style="padding:4px;">' + (f.oos_pf||0).toFixed(2) + '</td>' +
+              '<td style="padding:4px;color:var(--loss);">' + (f.oos_max_dd||0).toFixed(1) + '%</td>' +
+              '<td style="padding:4px;color:' + ofColor + ';">' + (f.overfit_ratio||0).toFixed(2) + '</td>' +
+              '<td style="padding:4px;font-size:10px;color:var(--muted);">' + params + '</td></tr>';
+    }
+    html += '</table></div>';
+  }
+
+  return html;
+}
+
 // ── Backtrader Charts ──
 let btChartPoll = null;
 function initBtChartDates() {
@@ -12355,6 +17299,7 @@ async function polygonUpdate(days) {
 }
 
 async function saveConfig() {
+  pushConfigSnapshot();
   const inputs = document.querySelectorAll('#configGrid input');
   const body = {};
   let hasErr = false;
@@ -12380,7 +17325,7 @@ async function saveConfig() {
   if (r.validation_errors && r.validation_errors.length) {
     r.validation_errors.forEach(e => showToast(e, 'warning'));
   } else {
-    showToast('Config saved', 'success');
+    showToast('Config saved', 'success', {action: 'Undo', callback: undoConfig});
   }
   fetchState();
 }
@@ -12552,6 +17497,69 @@ function renderState(s) {
   renderEquityCurve((s.config || {}).initial_capital || 25000);
   const cfgGrid = document.getElementById('configGrid');
   if (!cfgGrid || !cfgGrid.contains(document.activeElement)) renderConfig(s.config || {});
+
+  // Intraday strategies panel
+  if (s.config && s.config.intraday_enabled) {
+    const panel = document.getElementById('intradayPanel');
+    if (panel) panel.style.display = '';
+    fetchIntradayStatus();
+  }
+}
+
+async function fetchIntradayStatus() {
+  try {
+    const [stratResp, perfResp] = await Promise.all([
+      api('intraday/strategies'),
+      api('intraday/performance'),
+    ]);
+
+    const el = (id, val) => { const e = document.getElementById(id); if(e) e.textContent = val; };
+
+    // Market condition from strategy selector
+    if (stratResp.selector_status) {
+      const ss = stratResp.selector_status;
+      el('idxCondition', (ss.condition || '—').replace('_', ' '));
+      el('idxSizeMult', (ss.size_multiplier || 1.0).toFixed(1) + 'x');
+
+      // Active strategies badges
+      const container = document.getElementById('idxActiveStrategies');
+      if (container) {
+        container.innerHTML = '';
+        (ss.active_strategies || []).forEach(sid => {
+          const badge = document.createElement('span');
+          badge.style.cssText = 'padding:2px 8px;border-radius:3px;font-size:11px;font-family:JetBrains Mono,monospace;background:rgba(99,102,241,0.2);color:#818cf8;';
+          badge.textContent = sid.replace('_', ' ');
+          container.appendChild(badge);
+        });
+        if (!ss.active_strategies || ss.active_strategies.length === 0) {
+          container.innerHTML = '<span style="color:var(--muted);font-size:11px;">None active</span>';
+        }
+      }
+    }
+
+    // Performance metrics
+    if (perfResp) {
+      el('idxEntriesToday', perfResp.entries_today || 0);
+      const pnl = perfResp.pnl_today || 0;
+      const pnlEl = document.getElementById('idxPnlToday');
+      if (pnlEl) {
+        pnlEl.textContent = pnlFmt(pnl);
+        pnlEl.style.color = pnl >= 0 ? 'var(--positive)' : 'var(--negative)';
+      }
+
+      // Per-strategy table
+      const tbody = document.getElementById('idxStrategyTable');
+      if (tbody && perfResp.per_strategy) {
+        tbody.innerHTML = '';
+        for (const [sid, m] of Object.entries(perfResp.per_strategy)) {
+          const tr = document.createElement('tr');
+          const pnlColor = m.total_pnl >= 0 ? 'var(--positive)' : 'var(--negative)';
+          tr.innerHTML = `<td>${sid.replace(/_/g,' ')}</td><td>${m.trades}</td><td>${(m.win_rate*100).toFixed(0)}%</td><td style="color:${pnlColor}">${pnlFmt(m.total_pnl)}</td><td>${m.profit_factor.toFixed(1)}</td>`;
+          tbody.appendChild(tr);
+        }
+      }
+    }
+  } catch(e) { /* silently skip if not available */ }
 }
 
 function updateStatus(status) {
@@ -12638,8 +17646,9 @@ function renderPositions(positions) {
     }
     const pnlColor = pnl >= 0 ? 'var(--green)' : 'var(--red)';
     const dirColor = dir === 'long' ? 'var(--green)' : 'var(--red)';
+    const stratTag = p.strategy_id ? `<span style="font-size:9px;padding:1px 4px;border-radius:2px;background:rgba(99,102,241,0.2);color:#818cf8;margin-left:4px;">${p.strategy_id.replace(/_/g,' ')}</span>` : '';
     return `<tr>
-      <td style="font-weight:600;color:${dirColor};">${sym} <span style="font-size:10px;opacity:0.7;">${dir.toUpperCase()}</span></td>
+      <td style="font-weight:600;color:${dirColor};">${sym} <span style="font-size:10px;opacity:0.7;">${dir.toUpperCase()}</span>${stratTag}</td>
       <td>${p.remaining_shares}</td>
       <td>$${p.entry_price.toFixed(2)}</td>
       <td>${hasCur ? '$'+curPrice.toFixed(2) : '\u2014'}</td>
@@ -12971,14 +17980,50 @@ function renderTrades(todayTrades, totalCount) {
   if (!_thLoaded) tradeHistSearch(0);
 }
 
+function validateConfigInput(inp) {
+  if (inp.type !== 'number') return;
+  const val = parseFloat(inp.value);
+  const min = parseFloat(inp.min);
+  const max = parseFloat(inp.max);
+  if (isNaN(val) || (!isNaN(min) && val < min) || (!isNaN(max) && val > max)) {
+    inp.style.borderColor = 'var(--negative)';
+    inp.title = `Valid range: [${inp.min || '?'} – ${inp.max || '?'}]`;
+  } else {
+    inp.style.borderColor = '';
+    inp.title = '';
+  }
+}
+
 function renderConfig(config) {
   const grid = document.getElementById('configGrid');
   const v = (k, def) => config[k] !== undefined ? config[k] : def;
+  // Validation ranges (mirror of backend CONFIG_VALID_RANGES)
+  const ranges = {
+    stop_pct:[0.005,0.10], risk_pct:[0.001,0.10], max_positions:[1,10], initial_capital:[1000,10000000],
+    gap_threshold:[0.01,0.50], max_gap_pct:[0.10,1.0], vol_ratio_max:[0.5,20.0], daily_loss_limit:[0.005,0.10],
+    max_drawdown:[0.01,0.30], max_consec_losses:[1,20], kelly_fraction:[0.05,1.0], max_notional:[1000,1000000],
+    slippage_pct:[0.0,0.05], limit_offset_pct:[0.0,0.05], partial_cover_frac:[0.0,1.0], min_price:[0.01,1000],
+    min_avg_volume:[0,100000000], llm_timeout:[1.0,60.0], dd_tier1_threshold:[0.05,0.50], dd_tier1_scale:[0.01,1.0],
+    dd_tier2_threshold:[0.10,0.70], dd_tier2_scale:[0.01,1.0], dd_tier2_max_positions:[1,5], dd_hard_stop:[0.0,1.0],
+    entry_cutoff_hour:[9,15], entry_cutoff_min:[0,59], time_exit_hour:[10,16], time_exit_min:[0,59],
+    eod_exit_hour:[14,16], eod_exit_min:[0,59], bounce_entry_pct:[0.0,0.10], partial_target_pct:[0.0,1.0],
+    adverse_fill_pct:[0.0,1.0], thin_day_threshold:[1,50],
+    catalyst_earnings_penalty:[0,100], catalyst_news_penalty:[0,100], catalyst_noise_bonus:[0,50],
+    intraday_scan_interval:[5,300], intraday_watchlist_size:[1,100], intraday_max_entries:[1,20],
+    intraday_risk_pct:[0.001,0.10], intraday_daily_loss_limit:[0.005,0.10], intraday_max_position_pct:[0.02,0.50],
+  };
   const inp = (key, label, def) => {
     const val = v(key, def);
     const t = typeof val === 'string' ? 'text' : 'number';
-    return `<div class="config-item"><label>${label}</label>
-      <input type="${t}" data-key="${key}" value="${val}" ${t==='number'?'step="any"':''}></div>`;
+    let attrs = t === 'number' ? 'step="any"' : '';
+    let hint = '';
+    if (ranges[key]) {
+      attrs += ` min="${ranges[key][0]}" max="${ranges[key][1]}"`;
+      hint = `<span style="font-size:9px;color:var(--muted);display:block;">[${ranges[key][0]} – ${ranges[key][1]}]</span>`;
+    }
+    return `<div class="config-item"><label>${label}${hint}</label>
+      <input type="${t}" data-key="${key}" value="${val}" ${attrs}
+        oninput="validateConfigInput(this)"></div>`;
   };
 
   // Grouped sections
@@ -12996,17 +18041,24 @@ function renderConfig(config) {
     { title: 'Risk Management', fields: [
       ['stop_pct', 'Fixed Stop Loss %', 0.015], ['daily_loss_limit', 'Daily Loss Limit', 0.02],
       ['max_consec_losses', 'Max Consec Losses', 3], ['max_drawdown', 'Max Drawdown', 0.05],
-      ['time_exit_hour', 'Time Exit Hour', 15],
+      ['thin_day_threshold', 'Thin Day Threshold', 10],
+    ]},
+    { title: 'Entry & Exit Timing', fields: [
+      ['entry_cutoff_hour', 'Entry Cutoff Hour', 11], ['entry_cutoff_min', 'Entry Cutoff Min', 30],
+      ['time_exit_hour', 'Time Exit Hour', 15], ['time_exit_min', 'Time Exit Min', 0],
+      ['eod_exit_hour', 'EOD Exit Hour', 15], ['eod_exit_min', 'EOD Exit Min', 50],
+      ['bounce_entry_pct', 'Bounce Entry %', 0.0], ['partial_target_pct', 'Partial Target %', 0.50],
     ]},
     { title: 'Order Execution', fields: [
       ['slippage_pct', 'Slippage %', 0.0015], ['borrow_rate_annual', 'Borrow Rate', 0.02],
       ['max_pct_adv', 'Max % ADV', 0.02], ['limit_offset_pct', 'Limit Offset %', 0.001],
+      ['adverse_fill_pct', 'Adverse Fill %', 0.50],
     ]},
   ];
 
   grid.innerHTML = sections.map(s => `
-    <div class="cfg-section">
-      <div class="cfg-section-head">${s.title}</div>
+    <details class="cfg-section" open>
+      <summary class="cfg-section-head" style="cursor:pointer;list-style:none;user-select:none;">${s.title} <span style="float:right;font-size:10px;color:var(--muted);">&#x25BC;</span></summary>
       <div class="cfg-section-body">
         ${s.title === 'Order Execution' ? `
           <div class="config-item">
@@ -13020,17 +18072,17 @@ function renderConfig(config) {
           </div>` : ''}
         ${s.title === 'Risk Management' && config.adaptive_stops ? `
           <div style="grid-column:1/-1;font-size:10px;color:#f59e0b;padding:2px 6px;background:rgba(245,158,11,0.08);border-radius:4px;margin-bottom:4px;">
-            Adaptive Stops ON — Fixed Stop Loss is overridden. Actual stop = gap% \u00d7 ${(config.stop_gap_fraction||0.25).toFixed(2)}, clamped to [${((config.stop_min_pct||0.015)*100).toFixed(1)}%, ${((config.stop_max_pct||0.05)*100).toFixed(1)}%]
+            Adaptive Stops ON — Fixed Stop Loss is overridden. Actual stop = gap% \u00d7 ${(config.stop_gap_fraction||0.25).toFixed(2)}, clamped to [${((config.stop_min_pct||0.015)*100).toFixed(1)}%, ${((config.stop_max_pct||0.025)*100).toFixed(1)}%]
           </div>` : ''}
         ${s.fields.map(f => inp(...f)).join('')}
       </div>
-    </div>
+    </details>
   `).join('');
 
   // Feature toggle sections
   const features = [
     { key: 'adaptive_stops', title: 'Adaptive Stops', desc: 'Scale stop with gap size (overrides Fixed Stop Loss %). Stop = gap% \u00d7 fraction, clamped to [min, max]',
-      params: [['stop_gap_fraction', 'Gap Fraction', 0.25], ['stop_min_pct', 'Min Stop %', 0.015], ['stop_max_pct', 'Max Stop %', 0.05]] },
+      params: [['stop_gap_fraction', 'Gap Fraction', 0.25], ['stop_min_pct', 'Min Stop %', 0.015], ['stop_max_pct', 'Max Stop %', 0.025]] },
     { key: 'regime_filter', title: 'Market Regime Filter', desc: 'Reduce or block entries when SPY gaps up or VIX is elevated',
       params: [['regime_spy_gap_limit', 'SPY Gap Limit', 0.01], ['regime_spy_block_pct', 'SPY Block %', 0.015], ['regime_vix_threshold', 'VIX Threshold', 25.0]] },
     { key: 'reentry_enabled', title: 'Re-entry After Stop-out', desc: 'Re-enter a stopped position if price reverses favorably',
@@ -13041,6 +18093,12 @@ function renderConfig(config) {
       params: [['dd_tier1_threshold', 'Tier 1 DD%', 0.15], ['dd_tier1_scale', 'Tier 1 Scale', 0.50], ['dd_tier2_threshold', 'Tier 2 DD%', 0.25], ['dd_tier2_scale', 'Tier 2 Scale', 0.25], ['dd_tier2_max_positions', 'Tier 2 Max Pos', 1], ['dd_hard_stop', 'Hard Stop DD%', 0.0]] },
     { key: 'llm_enabled', title: 'Rudra (LLM Supervisor)', desc: 'Autonomous decisions via local Ollama model — scan timing, candidate selection, profit-taking, exit overrides',
       params: [['llm_url', 'Ollama URL', 'http://localhost:11434'], ['llm_model', 'Model', 'gpt-oss:20b'], ['llm_timeout', 'Timeout (sec)', 30], ['llm_max_failures', 'Circuit Breaker Failures', 5], ['llm_circuit_reset', 'Circuit Reset (sec)', 120], ['llm_max_hold_overrides', 'Max Hold Overrides', 2]] },
+    { key: 'intraday_enabled', title: 'Intraday Strategies', desc: 'Run ORB, Momentum, Pullback, Range strategies alongside gap fade during market hours',
+      params: [['intraday_strategies', 'Active Strategies', 'orb_breakout,momentum_surge,pullback_entry,range_trade'], ['intraday_scan_interval', 'Scan Interval (sec)', 30], ['intraday_watchlist_size', 'Watchlist Size', 40], ['intraday_max_entries', 'Max Entries/Day', 3], ['intraday_risk_pct', 'Risk Per Trade %', 0.01], ['intraday_daily_loss_limit', 'Daily Loss Limit %', 0.02], ['intraday_max_position_pct', 'Max Position % Equity', 0.20]] },
+    { key: 'catalyst_enabled', title: 'Catalyst Detection', desc: 'Score candidates by news catalyst (earnings, FDA, offerings) — penalize known catalysts, bonus unknown gaps',
+      params: [['catalyst_skip_earnings', 'Skip Earnings', false], ['catalyst_earnings_penalty', 'Earnings Penalty', 30], ['catalyst_news_penalty', 'News Penalty', 15], ['catalyst_noise_bonus', 'No-Catalyst Bonus', 10]] },
+    { key: 'auto_start', title: 'Auto-Start Trading', desc: 'Automatically start the trading loop when the app launches (no manual Start needed)',
+      params: [] },
   ];
 
   // Section header for feature toggles
@@ -13092,6 +18150,495 @@ function renderConfig(config) {
   document.getElementById('customSymbolsInput').value = config.custom_symbols || '';
   document.getElementById('customSymbolsRow').style.display = univ === 'custom' ? 'block' : 'none';
 }
+
+// ── Strategy Page ────────────────────────────────────────────────
+let _selectedStrategy = null;
+let _selectedStrategyType = null;
+let _strategySchemas = {};
+
+async function loadStrategyPage() {
+  try {
+    const [gfData, intData, schemaData] = await Promise.all([
+      api('strategies'),
+      api('intraday/strategies'),
+      api('config/schema'),
+    ]);
+    _strategySchemas = schemaData.strategy_schemas || {};
+    renderGapFadeCards(gfData);
+    renderIntradayCards(intData);
+    loadStrategyPerformance();
+  } catch(e) {
+    console.error('Failed to load strategy page:', e);
+  }
+}
+
+function renderGapFadeCards(data) {
+  const container = document.getElementById('gapFadeCards');
+  if (!container || !data.strategies) return;
+  const badge = document.getElementById('gfStrategyBadge');
+  if (badge) badge.textContent = data.active_name || 'Classic';
+  container.innerHTML = data.strategies.map(s => `
+    <div class="strategy-card${s.id === data.active ? ' active' : ''}" onclick="selectGapFadeStrategy('${s.id}')">
+      ${s.id === data.active ? '<span class="sc-badge active-badge">Active</span>' : ''}
+      <div class="sc-name">${s.name || s.id}</div>
+      <div class="sc-desc">${s.description || ''}</div>
+    </div>
+  `).join('');
+}
+
+function renderIntradayCards(data) {
+  const container = document.getElementById('intradayCards');
+  if (!container) return;
+  const badge = document.getElementById('marketConditionBadge');
+  if (badge && data.selector_status) {
+    const cond = data.selector_status.market_condition || '';
+    badge.textContent = cond || 'Waiting for data';
+    badge.className = 'market-condition-badge ' + (cond === 'trending' ? 'trending' : cond === 'choppy' ? 'choppy' : cond === 'volatile' ? 'volatile' : cond ? 'sideways' : '');
+  }
+  const activeSet = new Set(data.active || []);
+  const all = data.available || [];
+  container.innerHTML = all.map(s => {
+    const isOn = activeSet.has(s.id);
+    return `
+    <div class="strategy-card${isOn ? ' active' : ''}" onclick="selectIntradayStrategy('${s.id}')">
+      <div class="sc-name">${s.name || s.id}</div>
+      <div class="sc-desc">${s.description || ''}</div>
+      <div class="strategy-toggle-wrap">
+        <div class="strategy-toggle${isOn ? ' on' : ''}" onclick="event.stopPropagation();toggleIntradayStrategy('${s.id}', ${!isOn})"></div>
+        <span class="strategy-toggle-label">${isOn ? 'Enabled' : 'Disabled'}</span>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+async function selectGapFadeStrategy(strategyId) {
+  _selectedStrategy = strategyId;
+  _selectedStrategyType = 'gap_fade';
+  // Switch to this strategy
+  await api('strategy/switch', 'POST', {strategy_id: strategyId});
+  // Refresh cards
+  const gfData = await api('strategies');
+  renderGapFadeCards(gfData);
+  // Show params
+  showStrategyParams(strategyId, 'gap_fade', gfData.strategy_config || {});
+}
+
+function selectIntradayStrategy(strategyId) {
+  _selectedStrategy = strategyId;
+  _selectedStrategyType = 'intraday';
+  const schema = _strategySchemas[strategyId];
+  showStrategyParams(strategyId, 'intraday', schema ? schema.defaults : {});
+}
+
+function showStrategyParams(strategyId, type, currentConfig) {
+  const editor = document.getElementById('strategyParamsEditor');
+  const title = document.getElementById('speTitle');
+  const idLabel = document.getElementById('speStrategyId');
+  const body = document.getElementById('speBody');
+  if (!editor) return;
+
+  const schema = _strategySchemas[strategyId];
+  title.textContent = (schema ? schema.name : strategyId) + ' Parameters';
+  idLabel.textContent = strategyId;
+
+  const params = schema ? schema.parameters : {};
+  const defaults = schema ? schema.defaults : {};
+  const config = currentConfig[strategyId] || currentConfig || {};
+
+  if (!params || Object.keys(params).length === 0) {
+    body.innerHTML = '<div style="grid-column:1/-1;color:var(--muted);font-size:12px;padding:8px;">No configurable parameters</div>';
+    editor.style.display = 'block';
+    return;
+  }
+
+  body.innerHTML = Object.entries(params).map(([key, info]) => {
+    const val = config[key] !== undefined ? config[key] : (defaults[key] !== undefined ? defaults[key] : '');
+    const pType = (info && info.type) || typeof val;
+    if (pType === 'bool' || pType === 'boolean' || typeof val === 'boolean') {
+      return `<div class="config-item"><label>${info?.label || key}</label>
+        <input type="checkbox" data-skey="${key}" ${val ? 'checked' : ''} style="width:16px;height:16px;accent-color:var(--accent-green);"></div>`;
+    }
+    const inputType = (pType === 'int' || pType === 'float' || pType === 'number' || typeof val === 'number') ? 'number' : 'text';
+    let attrs = inputType === 'number' ? 'step="any"' : '';
+    if (info && info.min !== undefined) attrs += ` min="${info.min}"`;
+    if (info && info.max !== undefined) attrs += ` max="${info.max}"`;
+    return `<div class="config-item"><label>${info?.label || key}</label>
+      <input type="${inputType}" data-skey="${key}" value="${val}" ${attrs}></div>`;
+  }).join('');
+  editor.style.display = 'block';
+}
+
+async function saveStrategyParams() {
+  if (!_selectedStrategy) return;
+  const body = {};
+  document.querySelectorAll('#speBody input[data-skey]').forEach(inp => {
+    const key = inp.dataset.skey;
+    if (inp.type === 'checkbox') body[key] = inp.checked;
+    else if (inp.type === 'number') body[key] = parseFloat(inp.value);
+    else body[key] = inp.value;
+  });
+  if (_selectedStrategyType === 'gap_fade') {
+    await api('strategy/config', 'POST', body);
+  } else {
+    await api('intraday/enable', 'POST', {strategies: _selectedStrategy, config: body});
+  }
+  showToast('Parameters saved', 'success');
+}
+
+async function resetStrategyDefaults() {
+  if (!_selectedStrategy) return;
+  const schema = _strategySchemas[_selectedStrategy];
+  if (schema && schema.defaults) {
+    showStrategyParams(_selectedStrategy, _selectedStrategyType, {[_selectedStrategy]: schema.defaults});
+    showToast('Reset to defaults (unsaved)', 'info');
+  }
+}
+
+async function toggleIntradayStrategy(strategyId, enable) {
+  const current = await api('intraday/strategies');
+  const activeSet = new Set(current.active || []);
+  if (enable) activeSet.add(strategyId);
+  else activeSet.delete(strategyId);
+  await api('intraday/enable', 'POST', {
+    enabled: activeSet.size > 0,
+    strategies: Array.from(activeSet).join(',')
+  });
+  const updated = await api('intraday/strategies');
+  renderIntradayCards(updated);
+  showToast(enable ? `${strategyId} enabled` : `${strategyId} disabled`, 'success');
+}
+
+async function loadStrategyPerformance() {
+  try {
+    const perf = await api('intraday/performance');
+    const grid = document.getElementById('strategyPerfGrid');
+    if (!grid) return;
+    const entries = perf.pnl_today !== undefined ? perf.entries_today || 0 : 0;
+    const pnl = perf.pnl_today || 0;
+    const perStrategy = perf.per_strategy || {};
+    let totalWins = 0, totalTrades = 0;
+    Object.values(perStrategy).forEach(s => {
+      totalWins += (s.wins || 0);
+      totalTrades += (s.trades || 0);
+    });
+    const winRate = totalTrades > 0 ? ((totalWins / totalTrades) * 100).toFixed(1) : '--';
+    grid.innerHTML = `
+      <div class="sp-metric"><div class="sp-label">Win Rate</div><div class="sp-value">${winRate}%</div></div>
+      <div class="sp-metric"><div class="sp-label">Trades Today</div><div class="sp-value">${entries}</div></div>
+      <div class="sp-metric"><div class="sp-label">P&L Today</div><div class="sp-value ${pnl >= 0 ? 'pnl-pos' : 'pnl-neg'}">$${pnl.toFixed(2)}</div></div>
+      <div class="sp-metric"><div class="sp-label">Strategies</div><div class="sp-value">${Object.keys(perStrategy).length}</div></div>
+    `;
+  } catch(e) {
+    console.error('Failed to load strategy performance:', e);
+  }
+}
+
+// ── Config Search & Filter ───────────────────────────────────────
+function filterConfig(query) {
+  const q = query.toLowerCase().trim();
+  document.querySelectorAll('#configGrid .cfg-section').forEach(sec => {
+    let hasVisible = false;
+    sec.querySelectorAll('.config-item').forEach(item => {
+      const match = !q || item.textContent.toLowerCase().includes(q);
+      item.style.display = match ? '' : 'none';
+      if (match) hasVisible = true;
+    });
+    sec.style.display = (!q || hasVisible) ? '' : 'none';
+  });
+  document.querySelectorAll('#configGrid .feature-section').forEach(sec => {
+    const match = !q || sec.textContent.toLowerCase().includes(q);
+    sec.style.display = match ? '' : 'none';
+  });
+}
+
+// ── Config Profiles ──────────────────────────────────────────────
+async function loadProfileList() {
+  try {
+    const r = await api('config/profiles');
+    const sel = document.getElementById('profileSelect');
+    if (!sel) return;
+    sel.innerHTML = '<option value="">-- Current --</option>';
+    (r.profiles || []).forEach(p => {
+      const opt = document.createElement('option');
+      opt.value = p.name;
+      opt.textContent = p.name + (p.description ? ` (${p.description})` : '');
+      sel.appendChild(opt);
+    });
+  } catch(e) { console.error('Failed to load profiles:', e); }
+}
+
+function onProfileSelect(name) {
+  // Just selection change - user clicks Load to apply
+}
+
+function saveProfileDialog() {
+  showModal('Save Config Profile', `
+    <div style="display:flex;flex-direction:column;gap:12px;">
+      <div><label style="font-size:11px;color:var(--muted);font-weight:600;display:block;margin-bottom:4px;">Profile Name</label>
+        <input id="profileNameInput" placeholder="e.g. aggressive_gap_up" style="width:100%;background:var(--bg);color:var(--text);border:1px solid var(--border);padding:8px;border-radius:4px;font-size:13px;"></div>
+      <div><label style="font-size:11px;color:var(--muted);font-weight:600;display:block;margin-bottom:4px;">Description (optional)</label>
+        <input id="profileDescInput" placeholder="e.g. High risk gap fading" style="width:100%;background:var(--bg);color:var(--text);border:1px solid var(--border);padding:8px;border-radius:4px;font-size:13px;"></div>
+    </div>
+  `, [
+    {label: 'Cancel', action: closeModal},
+    {label: 'Save', primary: true, action: async () => {
+      const name = document.getElementById('profileNameInput').value.trim();
+      if (!name) { showToast('Profile name is required'); return; }
+      const r = await api('config/profiles', 'POST', {
+        name, description: document.getElementById('profileDescInput').value.trim()
+      });
+      if (r.error) { showToast(r.error); return; }
+      showToast('Profile saved: ' + name, 'success');
+      closeModal();
+      loadProfileList();
+    }},
+  ]);
+}
+
+async function loadSelectedProfile() {
+  const sel = document.getElementById('profileSelect');
+  const name = sel ? sel.value : '';
+  if (!name) { showToast('Select a profile first'); return; }
+  if (!confirm(`Load profile "${name}"? This will replace current config.`)) return;
+  const r = await api(`config/profiles/${encodeURIComponent(name)}/load`, 'POST');
+  if (r.error) { showToast(r.error); return; }
+  showToast(`Profile "${name}" loaded (${(r.changes || []).length} changes)`, 'success');
+  fetchState();
+}
+
+async function exportSelectedProfile() {
+  const sel = document.getElementById('profileSelect');
+  const name = sel ? sel.value : '';
+  if (!name) {
+    // Export current config
+    const r = await api('config/defaults');
+    const current = state && state.config ? state.config : r.defaults;
+    const blob = new Blob([JSON.stringify({name: 'current', config: current, export_version: 1}, null, 2)], {type: 'application/json'});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'config_current.json';
+    a.click();
+    return;
+  }
+  const r = await api(`config/profiles/${encodeURIComponent(name)}/export`);
+  if (r.error) { showToast(r.error); return; }
+  const blob = new Blob([JSON.stringify(r, null, 2)], {type: 'application/json'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `config_${name}.json`;
+  a.click();
+  showToast('Exported: ' + name, 'success');
+}
+
+function importProfileDialog() {
+  showModal('Import Config Profile', `
+    <div style="display:flex;flex-direction:column;gap:12px;">
+      <div><label style="font-size:11px;color:var(--muted);font-weight:600;display:block;margin-bottom:4px;">JSON File</label>
+        <input type="file" id="profileFileInput" accept=".json" style="font-size:12px;color:var(--text);"></div>
+      <div><label style="font-size:11px;color:var(--muted);font-weight:600;display:block;margin-bottom:4px;">Profile Name (override)</label>
+        <input id="importProfileName" placeholder="Leave empty to use name from file" style="width:100%;background:var(--bg);color:var(--text);border:1px solid var(--border);padding:8px;border-radius:4px;font-size:13px;"></div>
+    </div>
+  `, [
+    {label: 'Cancel', action: closeModal},
+    {label: 'Import', primary: true, action: async () => {
+      const fileInput = document.getElementById('profileFileInput');
+      if (!fileInput.files.length) { showToast('Select a file'); return; }
+      const text = await fileInput.files[0].text();
+      let data;
+      try { data = JSON.parse(text); } catch(e) { showToast('Invalid JSON file'); return; }
+      const name = document.getElementById('importProfileName').value.trim() || data.name || 'imported';
+      const r = await api('config/profiles/import', 'POST', {
+        name, config: data.config || data, description: data.description || ''
+      });
+      if (r.error) { showToast(r.error); return; }
+      showToast(`Imported "${name}" (${r.keys} keys)`, 'success');
+      closeModal();
+      loadProfileList();
+    }},
+  ]);
+}
+
+async function resetToDefaults() {
+  if (!confirm('Reset ALL config to factory defaults? This cannot be undone.')) return;
+  const r = await api('config/defaults');
+  if (r.defaults) {
+    await api('config', 'POST', r.defaults);
+    showToast('Config reset to defaults', 'success');
+    fetchState();
+  }
+}
+
+// ── Config History ───────────────────────────────────────────────
+async function loadConfigHistory() {
+  try {
+    const r = await api('config/history');
+    const container = document.getElementById('configHistoryList');
+    if (!container) return;
+    const items = r.history || [];
+    if (!items.length) {
+      container.innerHTML = '<div style="color:var(--muted);padding:16px;text-align:center;font-size:11px;">No config changes recorded</div>';
+      return;
+    }
+    container.innerHTML = items.slice(0, 50).map(h => {
+      const changes = h.changes || {};
+      const changeKeys = Object.keys(changes).slice(0, 5);
+      const moreCount = Object.keys(changes).length - changeKeys.length;
+      return `<div class="config-history-item">
+        <span class="chi-time">${new Date(h.timestamp).toLocaleString()}</span>
+        <span class="chi-source">${h.source}</span>
+        <button class="chi-rollback" onclick="rollbackConfig(${h.id})">Rollback</button>
+        <div class="chi-changes">${changeKeys.map(k => {
+          const c = changes[k];
+          return `<div class="chi-change"><span style="color:var(--text);font-weight:600;font-size:10px;">${k}:</span> <span class="chi-old">${c.old}</span> &rarr; <span class="chi-new">${c.new}</span></div>`;
+        }).join('')}${moreCount > 0 ? `<div style="font-size:10px;color:var(--muted);">+${moreCount} more</div>` : ''}</div>
+      </div>`;
+    }).join('');
+  } catch(e) { console.error('Failed to load config history:', e); }
+}
+
+function showConfigHistory() {
+  showRightTab('history');
+  loadConfigHistory();
+}
+
+async function rollbackConfig(historyId) {
+  if (!confirm(`Rollback config to version #${historyId}?`)) return;
+  const r = await api(`config/rollback/${historyId}`, 'POST');
+  if (r.error) { showToast(r.error); return; }
+  showToast(`Rolled back to version #${historyId}`, 'success');
+  fetchState();
+  loadConfigHistory();
+}
+
+// ── Config Undo/Redo ─────────────────────────────────────────────
+const _configUndoStack = [];
+const _configRedoStack = [];
+let _lastConfigSnapshot = null;
+
+function pushConfigSnapshot() {
+  if (!state || !state.config) return;
+  const snap = JSON.stringify(state.config);
+  if (snap === _lastConfigSnapshot) return;
+  _configUndoStack.push(_lastConfigSnapshot);
+  if (_configUndoStack.length > 50) _configUndoStack.shift();
+  _configRedoStack.length = 0;
+  _lastConfigSnapshot = snap;
+}
+
+async function undoConfig() {
+  if (!_configUndoStack.length) { showToast('Nothing to undo', 'info'); return; }
+  _configRedoStack.push(_lastConfigSnapshot);
+  _lastConfigSnapshot = _configUndoStack.pop();
+  const config = JSON.parse(_lastConfigSnapshot);
+  await api('config', 'POST', config);
+  showToast('Config change undone', 'success');
+  fetchState();
+}
+
+async function redoConfig() {
+  if (!_configRedoStack.length) { showToast('Nothing to redo', 'info'); return; }
+  _configUndoStack.push(_lastConfigSnapshot);
+  _lastConfigSnapshot = _configRedoStack.pop();
+  const config = JSON.parse(_lastConfigSnapshot);
+  await api('config', 'POST', config);
+  showToast('Config change redone', 'success');
+  fetchState();
+}
+
+// ── Modal System ─────────────────────────────────────────────────
+function showModal(title, bodyHtml, actions) {
+  const modal = document.getElementById('appModal');
+  document.getElementById('modalTitle').textContent = title;
+  document.getElementById('modalBody').innerHTML = bodyHtml;
+  const footer = document.getElementById('modalFooter');
+  footer.innerHTML = '';
+  (actions || []).forEach(a => {
+    const btn = document.createElement('button');
+    btn.textContent = a.label;
+    btn.onclick = a.action;
+    if (a.primary) {
+      btn.className = 'primary';
+    } else {
+      btn.style.cssText = 'background:rgba(255,255,255,0.05);border:1px solid var(--border);color:var(--text);padding:7px 14px;border-radius:6px;cursor:pointer;font-size:12px;';
+    }
+    footer.appendChild(btn);
+  });
+  modal.classList.add('open');
+}
+
+function closeModal() {
+  document.getElementById('appModal').classList.remove('open');
+}
+
+// ── Keyboard Shortcuts ───────────────────────────────────────────
+document.addEventListener('keydown', (e) => {
+  // Don't intercept when typing in inputs (unless it's a shortcut with Ctrl)
+  const isInput = ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName);
+
+  if (e.ctrlKey && e.key === 's') {
+    e.preventDefault();
+    if (activePage === 'config') saveConfig();
+  } else if (e.ctrlKey && e.key === 'z' && !e.shiftKey) {
+    if (activePage === 'config') { e.preventDefault(); undoConfig(); }
+  } else if (e.ctrlKey && e.key === 'Z') {
+    if (activePage === 'config') { e.preventDefault(); redoConfig(); }
+  } else if (e.ctrlKey && (e.key === 'k' || e.key === 'K')) {
+    e.preventDefault();
+    showPage('config');
+    setTimeout(() => document.getElementById('configSearch')?.focus(), 100);
+  } else if (e.ctrlKey && (e.key === 'e' || e.key === 'E')) {
+    e.preventDefault();
+    if (confirm('Emergency Stop — halt all trading?')) stopTrading();
+  } else if (e.key === 'Escape') {
+    closeModal();
+    document.getElementById('configSearch')?.blur();
+  } else if (e.key === '?' && !isInput) {
+    e.preventDefault();
+    showShortcutsHelp();
+  } else if (e.key === '/' && !isInput && !e.ctrlKey) {
+    e.preventDefault();
+    showPage('config');
+    setTimeout(() => document.getElementById('configSearch')?.focus(), 100);
+  } else if (!isInput && !e.ctrlKey && !e.altKey && !e.metaKey && e.key >= '1' && e.key <= '9') {
+    const pages = ['dashboard', 'candidates', 'trades', 'backtest', 'strategies', 'config', 'database', 'tracker', 'chat'];
+    const idx = parseInt(e.key) - 1;
+    if (idx < pages.length) showPage(pages[idx]);
+  }
+});
+
+function showShortcutsHelp() {
+  showModal('Keyboard Shortcuts', `
+    <div class="shortcuts-grid">
+      <div class="sc-key"><span class="kbd">Ctrl</span>+<span class="kbd">S</span></div><div class="sc-desc">Save config</div>
+      <div class="sc-key"><span class="kbd">Ctrl</span>+<span class="kbd">Z</span></div><div class="sc-desc">Undo config change</div>
+      <div class="sc-key"><span class="kbd">Ctrl</span>+<span class="kbd">Shift</span>+<span class="kbd">Z</span></div><div class="sc-desc">Redo config change</div>
+      <div class="sc-key"><span class="kbd">Ctrl</span>+<span class="kbd">K</span></div><div class="sc-desc">Search config</div>
+      <div class="sc-key"><span class="kbd">Ctrl</span>+<span class="kbd">E</span></div><div class="sc-desc">Emergency stop</div>
+      <div class="sc-key"><span class="kbd">/</span></div><div class="sc-desc">Focus config search</div>
+      <div class="sc-key"><span class="kbd">?</span></div><div class="sc-desc">Show this help</div>
+      <div class="sc-key"><span class="kbd">Esc</span></div><div class="sc-desc">Close dialog</div>
+      <div class="sc-key"><span class="kbd">1</span>-<span class="kbd">9</span></div><div class="sc-desc">Quick page navigation</div>
+    </div>
+  `, [{label: 'Close', action: closeModal}]);
+}
+
+// ── Enhanced Toast ───────────────────────────────────────────────
+// Override showToast to support undo action
+const _origShowToast = showToast;
+showToast = function(msg, type='error', opts={}) {
+  const t = document.createElement('div');
+  t.className = 'toast toast-' + type;
+  t.style.top = (16 + _toastCount * 56) + 'px';
+  _toastCount++;
+  if (opts.action && opts.callback) {
+    t.innerHTML = `<span>${msg}</span> <button onclick="event.stopPropagation();this.parentElement.remove();_toastCount=Math.max(0,_toastCount-1);(${opts.callback.toString()})()" style="margin-left:8px;background:rgba(255,255,255,0.15);border:1px solid rgba(255,255,255,0.2);color:white;padding:2px 8px;border-radius:3px;cursor:pointer;font-size:11px;">${opts.action}</button>`;
+  } else {
+    t.textContent = msg;
+  }
+  t.onclick = (e) => { if(e.target === t) { t.remove(); _toastCount = Math.max(0, _toastCount - 1); }};
+  document.body.appendChild(t);
+  setTimeout(() => { if (t.parentNode) { t.remove(); _toastCount = Math.max(0, _toastCount - 1); } }, 5000);
+};
 
 // ── P&L Bar Chart ────────────────────────────────────────────────
 function setPnlGranularity(gran, btn) {
@@ -13494,6 +19041,290 @@ function updateClock() {
   document.getElementById('clock').textContent = now.toLocaleTimeString('en-US', { timeZone: 'America/New_York' }) + ' ET';
 }
 
+// ── Intraday Trading Page ─────────────────────────────────────────
+let _intradaySse = null;
+let _intradayPollTimer = null;
+let _intradayInitialized = false;
+
+function initIntradayPage() {
+  fetchIntradayState();
+  fetchIntradayPerformance();
+  connectIntradaySse();
+  if (!_intradayPollTimer) {
+    _intradayPollTimer = setInterval(() => {
+      if (activePage === 'intraday') fetchIntradayState();
+    }, 5000);
+  }
+}
+
+function connectIntradaySse() {
+  if (_intradaySse) { _intradaySse.close(); _intradaySse = null; }
+  const badge = document.getElementById('intradaySseStatus');
+  _intradaySse = new EventSource('/api/intraday/stream');
+  _intradaySse.onopen = () => {
+    if (badge) { badge.textContent = 'SSE: Connected'; badge.style.background = 'var(--positive)'; badge.style.color = '#000'; }
+  };
+  _intradaySse.onerror = () => {
+    if (badge) { badge.textContent = 'SSE: Reconnecting...'; badge.style.background = 'var(--border)'; badge.style.color = 'var(--muted)'; }
+  };
+  _intradaySse.onmessage = (e) => {
+    try {
+      const msg = JSON.parse(e.data);
+      if (msg.type === 'tick') {
+        updateWatchlistTick(msg.symbol, msg.price, msg.rsi, msg.volume_surge);
+        updateActiveTradePrice(msg.symbol, msg.price);
+      } else if (msg.type === 'intraday_signal') {
+        prependSignalLogRow(msg.signal);
+        flashWatchlistRow(msg.signal.symbol);
+      }
+    } catch(err) { console.error('SSE parse:', err); }
+  };
+}
+
+async function fetchIntradayState() {
+  try {
+    const r = await fetch('/api/intraday/state');
+    const s = await r.json();
+    renderIntradayState(s);
+  } catch(e) { console.error('fetchIntradayState:', e); }
+}
+
+function renderIntradayState(s) {
+  // Status bar
+  const condEl = document.getElementById('intradayMktCondition');
+  if (condEl) { condEl.textContent = s.market_condition || 'Waiting for data'; condEl.className = 'market-condition-badge ' + (s.market_condition || ''); }
+  const stratsEl = document.getElementById('intradayActiveStrats');
+  if (stratsEl) stratsEl.textContent = (s.active_strategies || []).map(x => x.replace('_', ' ')).join(', ');
+  document.getElementById('intradayEntries').textContent = s.entries_today || 0;
+  const pnlEl = document.getElementById('intradayPnl');
+  pnlEl.textContent = pnlFmt(s.pnl_today || 0);
+  pnlEl.style.color = (s.pnl_today || 0) >= 0 ? 'var(--positive)' : 'var(--negative)';
+  const wrEl = document.getElementById('intradayWinRate');
+  wrEl.textContent = ((s.win_rate || 0) * 100).toFixed(0) + '%';
+  document.getElementById('intradayWlCount').textContent = (s.watchlist_size || 0) + ' / ' + (s.max_watchlist || 50);
+
+  renderIntradayWatchlist(s.watchlist || []);
+  renderActiveTrades(s.active_trades || []);
+  renderSignalLog(s.signals || []);
+  renderClosedTrades(s.closed_today || []);
+}
+
+function renderIntradayWatchlist(list) {
+  const tbody = document.getElementById('intradayWatchlistBody');
+  if (!tbody) return;
+  tbody.innerHTML = list.map(w => {
+    const rsiColor = w.rsi > 70 ? 'var(--negative)' : w.rsi < 30 ? 'var(--positive)' : 'var(--text)';
+    const trendArrow = w.trend === 'up' ? '<span style="color:var(--positive)">&#9650;</span>' : '<span style="color:var(--negative)">&#9660;</span>';
+    const volColor = w.volume_surge > 2 ? 'var(--positive)' : 'var(--muted)';
+    return `<tr class="intraday-wl-row" data-sym="${w.symbol}" onclick="openAnalysis('${w.symbol}')" style="cursor:pointer;border-bottom:1px solid var(--border);">
+      <td style="padding:3px 4px;font-weight:600;">${w.symbol}</td>
+      <td style="padding:3px 4px;text-align:right;" class="wl-price">${w.price ? w.price.toFixed(2) : '-'}</td>
+      <td style="padding:3px 4px;text-align:right;color:${rsiColor};">${w.rsi || '-'}</td>
+      <td style="padding:3px 4px;text-align:right;color:${volColor};">${w.volume_surge ? w.volume_surge.toFixed(1) + 'x' : '-'}</td>
+      <td style="padding:3px 4px;text-align:center;">${trendArrow}</td>
+    </tr>`;
+  }).join('');
+}
+
+function updateWatchlistTick(sym, price, rsi, volSurge) {
+  const row = document.querySelector(`.intraday-wl-row[data-sym="${sym}"]`);
+  if (!row) return;
+  const priceCell = row.querySelector('.wl-price');
+  if (priceCell && price) {
+    const old = parseFloat(priceCell.textContent);
+    priceCell.textContent = price.toFixed(2);
+    if (old && price > old) { priceCell.style.color = 'var(--positive)'; setTimeout(() => priceCell.style.color = '', 600); }
+    else if (old && price < old) { priceCell.style.color = 'var(--negative)'; setTimeout(() => priceCell.style.color = '', 600); }
+  }
+}
+
+function updateActiveTradePrice(sym, price) {
+  const el = document.querySelector(`.intraday-trade-card[data-sym="${sym}"]`);
+  if (!el || !price) return;
+  const curEl = el.querySelector('.trade-cur-price');
+  const pnlEl = el.querySelector('.trade-pnl');
+  if (curEl) curEl.textContent = '$' + price.toFixed(2);
+  if (pnlEl) {
+    const entry = parseFloat(el.dataset.entry);
+    const shares = parseInt(el.dataset.shares);
+    const dir = el.dataset.dir;
+    const pnl = dir === 'long' ? (price - entry) * shares : (entry - price) * shares;
+    pnlEl.textContent = pnlFmt(pnl);
+    pnlEl.style.color = pnl >= 0 ? 'var(--positive)' : 'var(--negative)';
+  }
+}
+
+function renderSignalLog(signals) {
+  const tbody = document.getElementById('intradaySignalLogBody');
+  if (!tbody) return;
+  const rows = signals.slice().reverse().slice(0, 50);
+  tbody.innerHTML = rows.map(s => {
+    const sigColor = s.signal === 'REJECTED' ? 'var(--negative)' : s.direction === 'long' ? 'var(--positive)' : 'var(--negative)';
+    const actColor = s.action === 'entered' ? 'var(--positive)' : s.action === 'rejected' ? 'var(--negative)' : 'var(--muted)';
+    return `<tr style="border-bottom:1px solid var(--border);">
+      <td style="padding:2px 4px;">${s.timestamp}</td>
+      <td style="padding:2px 4px;font-weight:600;">${s.symbol}</td>
+      <td style="padding:2px 4px;font-size:10px;">${s.strategy_id.replace('_',' ')}</td>
+      <td style="padding:2px 4px;text-align:center;color:${sigColor};font-weight:600;">${s.signal}</td>
+      <td style="padding:2px 4px;text-align:right;">${(s.confidence*100).toFixed(0)}%</td>
+      <td style="padding:2px 4px;color:${actColor};">${s.action}${s.reason ? ' - '+s.reason.substring(0,30) : ''}</td>
+    </tr>`;
+  }).join('');
+}
+
+function prependSignalLogRow(s) {
+  const tbody = document.getElementById('intradaySignalLogBody');
+  if (!tbody || activePage !== 'intraday') return;
+  const sigColor = s.signal === 'REJECTED' ? 'var(--negative)' : s.direction === 'long' ? 'var(--positive)' : 'var(--negative)';
+  const actColor = s.action === 'entered' ? 'var(--positive)' : s.action === 'rejected' ? 'var(--negative)' : 'var(--muted)';
+  const tr = document.createElement('tr');
+  tr.style.cssText = 'border-bottom:1px solid var(--border);animation:fadeIn 0.3s;';
+  tr.innerHTML = `
+    <td style="padding:2px 4px;">${s.timestamp}</td>
+    <td style="padding:2px 4px;font-weight:600;">${s.symbol}</td>
+    <td style="padding:2px 4px;font-size:10px;">${s.strategy_id.replace('_',' ')}</td>
+    <td style="padding:2px 4px;text-align:center;color:${sigColor};font-weight:600;">${s.signal}</td>
+    <td style="padding:2px 4px;text-align:right;">${(s.confidence*100).toFixed(0)}%</td>
+    <td style="padding:2px 4px;color:${actColor};">${s.action}${s.reason ? ' - '+s.reason.substring(0,30) : ''}</td>`;
+  tbody.insertBefore(tr, tbody.firstChild);
+  // Keep only 50 rows
+  while (tbody.children.length > 50) tbody.removeChild(tbody.lastChild);
+}
+
+function renderActiveTrades(trades) {
+  const el = document.getElementById('intradayActiveTrades');
+  if (!el) return;
+  if (!trades.length) { el.innerHTML = '<div style="color:var(--muted);">No active intraday trades</div>'; return; }
+  el.innerHTML = trades.map(t => {
+    const pnlColor = t.unrealized_pnl >= 0 ? 'var(--positive)' : 'var(--negative)';
+    const holdMin = Math.floor(t.hold_time / 60);
+    const dirIcon = t.direction === 'long' ? '&#9650;' : '&#9660;';
+    const dirColor = t.direction === 'long' ? 'var(--positive)' : 'var(--negative)';
+    return `<div class="intraday-trade-card" data-sym="${t.symbol}" data-entry="${t.entry_price}" data-shares="${t.shares}" data-dir="${t.direction}" style="border:1px solid var(--border);border-radius:6px;padding:8px;margin-bottom:6px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;">
+        <span style="font-weight:700;">${t.symbol} <span style="color:${dirColor}">${dirIcon}</span></span>
+        <span class="trade-pnl" style="font-weight:700;color:${pnlColor};">${pnlFmt(t.unrealized_pnl)}</span>
+      </div>
+      <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin-top:4px;">
+        <span>Entry: $${t.entry_price} | Cur: <span class="trade-cur-price">$${t.current_price || '-'}</span></span>
+        <span>${holdMin}m</span>
+      </div>
+      <div style="font-size:10px;color:var(--muted);margin-top:2px;">
+        Stop: $${t.stop_price} | Target: $${t.target_price || '-'} | ${t.strategy_id.replace('_',' ')} | ${t.shares} shares
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function renderClosedTrades(trades) {
+  const el = document.getElementById('intradayClosedTrades');
+  if (!el) return;
+  if (!trades.length) { el.innerHTML = '<div style="color:var(--muted);">No closed trades today</div>'; return; }
+  el.innerHTML = '<table style="width:100%;font-size:11px;border-collapse:collapse;">' +
+    '<tr style="color:var(--muted);border-bottom:1px solid var(--border);"><th style="text-align:left;padding:2px 4px;">Symbol</th><th>Dir</th><th>Strategy</th><th style="text-align:right;">P&L</th><th style="text-align:left;">Reason</th></tr>' +
+    trades.map(t => {
+      const color = t.pnl >= 0 ? 'var(--positive)' : 'var(--negative)';
+      return `<tr style="border-bottom:1px solid var(--border);">
+        <td style="padding:2px 4px;font-weight:600;">${t.symbol}</td>
+        <td style="padding:2px 4px;text-align:center;">${t.direction === 'long' ? '&#9650;' : '&#9660;'}</td>
+        <td style="padding:2px 4px;font-size:10px;">${t.strategy_id.replace('_',' ')}</td>
+        <td style="padding:2px 4px;text-align:right;color:${color};font-weight:600;">${pnlFmt(t.pnl)}</td>
+        <td style="padding:2px 4px;font-size:10px;">${t.exit_reason}</td>
+      </tr>`;
+    }).join('') + '</table>';
+}
+
+async function fetchIntradayPerformance() {
+  try {
+    const r = await fetch('/api/intraday/performance');
+    const d = await r.json();
+    renderIntradayPerformance(d);
+  } catch(e) { console.error('fetchIntradayPerformance:', e); }
+}
+
+function renderIntradayPerformance(d) {
+  const el = document.getElementById('intradayStratPerf');
+  if (!el) return;
+  const strats = d.per_strategy || {};
+  if (!Object.keys(strats).length) { el.innerHTML = '<div style="color:var(--muted);">No strategy data</div>'; return; }
+  let html = '<table style="width:100%;font-size:11px;border-collapse:collapse;">';
+  html += '<tr style="color:var(--muted);border-bottom:1px solid var(--border);"><th style="text-align:left;padding:2px 4px;">Strategy</th><th>W</th><th>L</th><th>WR%</th><th style="text-align:right;">PnL</th><th style="text-align:right;">PF</th></tr>';
+  for (const [sid, s] of Object.entries(strats)) {
+    const pnlColor = s.total_pnl >= 0 ? 'var(--positive)' : 'var(--negative)';
+    html += `<tr style="border-bottom:1px solid var(--border);">
+      <td style="padding:2px 4px;">${sid.replace('_',' ')}</td>
+      <td style="padding:2px 4px;text-align:center;color:var(--positive);">${s.wins}</td>
+      <td style="padding:2px 4px;text-align:center;color:var(--negative);">${s.losses}</td>
+      <td style="padding:2px 4px;text-align:center;">${(s.win_rate*100).toFixed(0)}%</td>
+      <td style="padding:2px 4px;text-align:right;color:${pnlColor};">${pnlFmt(s.total_pnl)}</td>
+      <td style="padding:2px 4px;text-align:right;">${s.profit_factor.toFixed(1)}</td>
+    </tr>`;
+  }
+  html += '</table>';
+  el.innerHTML = html;
+}
+
+async function openAnalysis(symbol) {
+  const modal = document.getElementById('intradayAnalysisModal');
+  const title = document.getElementById('analysisModalTitle');
+  const body = document.getElementById('analysisModalBody');
+  if (!modal) return;
+  modal.style.display = 'flex';
+  title.textContent = symbol + ' Deep Analysis';
+  body.innerHTML = '<div style="color:var(--muted);">Loading...</div>';
+  try {
+    const r = await fetch('/api/intraday/analysis/' + symbol);
+    const d = await r.json();
+    renderAnalysisModal(d);
+  } catch(e) { body.innerHTML = '<div style="color:var(--negative);">Error: ' + e.message + '</div>'; }
+}
+
+function renderAnalysisModal(d) {
+  const body = document.getElementById('analysisModalBody');
+  if (!body) return;
+  let html = '<div style="margin-bottom:12px;">';
+  html += '<span style="font-weight:600;">Price:</span> ' + (d.price ? '$' + d.price.toFixed(2) : 'N/A');
+  html += '</div>';
+
+  // Indicators
+  const ind = d.indicators || {};
+  if (Object.keys(ind).length) {
+    html += '<div style="margin-bottom:12px;"><span style="font-weight:600;">Indicators</span>';
+    html += '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:6px;">';
+    for (const [k, v] of Object.entries(ind)) {
+      html += `<div style="background:var(--bg);padding:4px 8px;border-radius:4px;"><span style="color:var(--muted);font-size:10px;">${k}</span><br><span style="font-weight:600;">${typeof v === 'number' ? v.toFixed(v > 100 ? 2 : 4) : v}</span></div>`;
+    }
+    html += '</div></div>';
+  }
+
+  // Strategy verdicts
+  html += '<div><span style="font-weight:600;">Strategy Verdicts</span>';
+  for (const [sid, s] of Object.entries(d.strategies || {})) {
+    const color = s.valid ? 'var(--positive)' : s.has_setup ? 'var(--yellow, #f0c040)' : 'var(--muted)';
+    const icon = s.valid ? '&#10003;' : s.has_setup ? '&#9888;' : '&#10007;';
+    html += `<div style="border:1px solid var(--border);border-radius:6px;padding:8px;margin-top:6px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;">
+        <span style="font-weight:600;">${sid.replace('_',' ')}</span>
+        <span style="color:${color};font-weight:700;">${icon} ${s.valid ? 'VALID' : s.has_setup ? 'SETUP (invalid)' : 'NO SETUP'}</span>
+      </div>`;
+    if (s.has_setup) {
+      html += `<div style="font-size:11px;color:var(--muted);margin-top:4px;">
+        ${s.direction.toUpperCase()} | Conf: ${(s.confidence*100).toFixed(0)}% | R:R ${s.risk_reward.toFixed(1)} |
+        Entry: $${s.entry_price} | Stop: $${s.stop_price} | Target: $${s.target_price}</div>`;
+    }
+    html += `<div style="font-size:11px;margin-top:2px;color:${s.valid ? 'var(--positive)' : 'var(--muted)'};">${s.reason}</div></div>`;
+  }
+  html += '</div>';
+  body.innerHTML = html;
+}
+
+function flashWatchlistRow(sym) {
+  const row = document.querySelector(`.intraday-wl-row[data-sym="${sym}"]`);
+  if (!row) return;
+  row.style.background = 'rgba(0,212,255,0.15)';
+  setTimeout(() => { row.style.background = ''; }, 1000);
+}
+
 // ── Init ─────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', async () => {
   await checkAuth();
@@ -13510,6 +19341,13 @@ document.addEventListener('DOMContentLoaded', async () => {
   start.setFullYear(start.getFullYear() - 2);
   document.getElementById('btEnd').value = end.toISOString().slice(0,10);
   document.getElementById('btStart').value = start.toISOString().slice(0,10);
+
+  // Set default walk-forward dates (7 years back)
+  initWfDates();
+  // Update grid count on input change
+  ['wfGridGap','wfGridVol','wfGridStop','wfGridRisk'].forEach(id => {
+    document.getElementById(id).addEventListener('input', updateWfGridCount);
+  });
 
   // Toggle custom symbols input visibility
   document.querySelectorAll('input[name="scanUniverse"]').forEach(r => {
@@ -13873,7 +19711,7 @@ if __name__ == '__main__':
     app_port = int(os.environ.get('GAP_FADE_PORT', '8002'))
 
     print("=" * 60)
-    print(f"  Rudra Trading Engine ({APP_VERSION})")
+    print(f"  Gap Fade Strategy Dashboard ({APP_VERSION})")
     print(f"  http://localhost:{app_port}")
     print("=" * 60)
     print()
