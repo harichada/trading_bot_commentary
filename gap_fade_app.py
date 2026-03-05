@@ -56,20 +56,86 @@ import uvicorn
 logger = logging.getLogger('GapFadeApp')
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(name)s] %(levelname)s: %(message)s')
 
-# App version from git tag (e.g. v5-loop-fixes -> v5.0)
+# App version: Docker reads build_info.json (baked by build.sh), local dev falls back to git tags
 def _get_version() -> str:
+    # Docker: read from build_info.json (baked by build.sh)
+    try:
+        with open(os.path.join(os.path.dirname(__file__) or '.', 'build_info.json')) as f:
+            v = json.load(f).get('version', '')
+            if v and v != 'unknown':
+                return v if v.startswith('v') else f'v{v}'
+    except (FileNotFoundError, json.JSONDecodeError, ValueError):
+        pass
+    # Local dev: fall back to git tags
     try:
         tag = subprocess.check_output(
             ['git', 'describe', '--tags', '--abbrev=0'],
             stderr=subprocess.DEVNULL, text=True
         ).strip()
-        # Extract version number: "v5-loop-fixes" -> "5"
         num = tag.lstrip('v').split('-')[0]
         return f'v{num}.0'
     except Exception:
         return 'v0.0'
 
 APP_VERSION = _get_version()
+
+
+def _load_release_notes_html() -> str:
+    """Load CHANGELOG.md and convert to HTML for the release notes modal."""
+    try:
+        changelog_path = os.path.join(os.path.dirname(__file__) or '.', 'CHANGELOG.md')
+        with open(changelog_path, 'r') as f:
+            lines = f.readlines()
+    except FileNotFoundError:
+        return '<p>Release notes unavailable.</p>'
+
+    html_parts = []
+    in_list = False
+    # Extract major.minor from APP_VERSION (e.g. "v12.0" -> "12.0", "v10.5" -> "10.5")
+    current_ver = APP_VERSION.lstrip('v')
+
+    for line in lines:
+        line = line.rstrip('\n')
+
+        # Section heading: ## v12.0 — 2026-03-05
+        if line.startswith('## '):
+            if in_list:
+                html_parts.append('</ul>')
+                in_list = False
+            heading_text = line[3:].strip()
+            # Check if this version matches current APP_VERSION
+            ver_match = heading_text.lstrip('v').split(' ')[0].split('—')[0].strip()
+            tag = f' <span class="rn-tag">current</span>' if ver_match == current_ver else ''
+            html_parts.append(f'<h4>{heading_text}{tag}</h4>')
+            continue
+
+        # List item: - **Fix**: description
+        if line.startswith('- '):
+            if not in_list:
+                html_parts.append('<ul>')
+                in_list = True
+            item = line[2:]
+            # Convert **bold** -> <strong>
+            item = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', item)
+            # Convert `code` -> <code>
+            item = re.sub(r'`(.+?)`', r'<code>\1</code>', item)
+            # Convert &, <, > for safety (but preserve our tags)
+            item = item.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+            # Restore our HTML tags
+            item = item.replace('&lt;strong&gt;', '<strong>').replace('&lt;/strong&gt;', '</strong>')
+            item = item.replace('&lt;code&gt;', '<code>').replace('&lt;/code&gt;', '</code>')
+            html_parts.append(f'<li>{item}</li>')
+            continue
+
+        # Skip title line, blank lines, etc.
+
+    if in_list:
+        html_parts.append('</ul>')
+
+    return '\n      '.join(html_parts)
+
+
+RELEASE_NOTES_HTML = _load_release_notes_html()
 
 # Eastern timezone offset (UTC-5 standard, UTC-4 DST)
 try:
@@ -11440,7 +11506,8 @@ async def dashboard():
     html = DASHBOARD_HTML.replace(
         '/*__API_KEY_PLACEHOLDER__*/',
         f'const __API_KEY__ = "{api_key}";',
-    ).replace('__APP_VERSION__', APP_VERSION)
+    ).replace('__APP_VERSION__', APP_VERSION
+    ).replace('__RELEASE_NOTES__', RELEASE_NOTES_HTML)
     return HTMLResponse(html)
 
 
@@ -15844,96 +15911,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       <button class="rn-close" onclick="document.getElementById('releaseNotesModal').classList.remove('open')">&times;</button>
     </div>
     <div class="rn-body">
-      <h4>v10.4 <span class="rn-tag">current</span></h4>
-      <ul>
-        <li>Rudra can now switch strategies via chat (e.g. &ldquo;switch to classic gap fade&rdquo;)</li>
-        <li>Unrealized P&L shown in dashboard metrics bar alongside Total P&L</li>
-        <li>Rudra messages no longer truncated in activity feed &mdash; full responses visible</li>
-      </ul>
-      <h4>v10.2</h4>
-      <ul>
-        <li>Fix backtest feature toggles not sending <code>false</code> when unchecked</li>
-        <li>Adaptive stops, regime filter, re-entry, gap-downs now explicitly disabled when unchecked</li>
-        <li>Previously, unchecked toggles silently used config defaults (e.g. adaptive_stops=True)</li>
-      </ul>
-      <h4>v10.1</h4>
-      <ul>
-        <li>Rudra LLM supervisor now aware of drawdown circuit breakers</li>
-        <li>Live DD% and tier status shown in Rudra chat and review context</li>
-        <li>Rudra can proactively recommend de-risking as DD approaches thresholds</li>
-        <li>DD config fields (thresholds, scales) settable via Rudra chat commands</li>
-        <li><code>peak_equity</code> and DD config added to LLM state dict</li>
-      </ul>
-      <h4>v10.0</h4>
-      <ul>
-        <li>Drawdown circuit breakers &mdash; graduated Tier 1/Tier 2/Hard Stop response</li>
-        <li>Position size reduction during drawdowns (backtest + live)</li>
-        <li>Circuit breaker stats in backtest results (days in tier, trades skipped)</li>
-        <li>New UI toggle and config fields for DD thresholds and scales</li>
-        <li>DD metric aligned: circuit breaker and dashboard Max DD use same formula</li>
-      </ul>
-      <h4>v9.0</h4>
-      <ul>
-        <li>Vectorbt-powered backtesting module with bulk SQLite data loading</li>
-        <li>Vectorized gap scanning with pandas &mdash; 10x faster than row-by-row</li>
-        <li>SimulationState engine with Kelly sizing, adaptive stops, regime filter</li>
-        <li>Strategy plugin support in backtester (classic, VWAP, confluence, Minervini)</li>
-        <li>MetricsAdapter for dashboard-compatible result format</li>
-        <li>Full test suite (43 tests)</li>
-      </ul>
-      <h4>v8.0</h4>
-      <ul>
-        <li>Multi-provider LLM support (Ollama, OpenAI-compatible: GPT, Groq, Together)</li>
-        <li>Remove LLM budget rate-limiting for faster autonomous decisions</li>
-        <li>Provider-specific API key and endpoint configuration</li>
-      </ul>
-      <h4>v7.0</h4>
-      <ul>
-        <li>Upgrade Rudra LLM to gpt-oss:20b with full persona</li>
-        <li>Gap-down fading strategy (long entries on gap-downs)</li>
-        <li>Direction-aware position sizing, stops, and targets</li>
-      </ul>
-      <h4>v6.0</h4>
-      <ul>
-        <li>Mobile OAuth flow with dynamic redirect URL detection</li>
-        <li>Responsive auth UI for mobile devices</li>
-      </ul>
-      <h4>v5.0</h4>
-      <ul>
-        <li>Fix LLM supervisor not initializing from saved config</li>
-        <li>Status badge now updates for all LLM actions (wait, monitor)</li>
-        <li>Trading loop resilience &mdash; single errors no longer kill the loop</li>
-        <li>Double-start guard prevents duplicate trading loops</li>
-        <li>Relaxed standdown rules &mdash; consecutive losses alone don't halt trading</li>
-        <li>Version number displayed in UI from git tags</li>
-      </ul>
-      <h4>v4.0</h4>
-      <ul>
-        <li>Real-time position tracker with candlestick charts</li>
-        <li>Watchlist with live price streaming</li>
-        <li>Per-position controls and autonomous LLM review loop</li>
-        <li>LLM learning from trades: metadata tracking, dynamic lessons</li>
-        <li>Full zero-human-intervention automation</li>
-      </ul>
-      <h4>v3.0</h4>
-      <ul>
-        <li>LLM chat interface for interactive trading conversations</li>
-        <li>Ask Rudra questions, trigger actions via natural language</li>
-      </ul>
-      <h4>v2.0</h4>
-      <ul>
-        <li>LLM supervisor (Rudra) for autonomous trading decisions</li>
-        <li>Scan, enter, monitor, standdown &mdash; all LLM-driven</li>
-        <li>Circuit breaker with fallback to rules-based schedule</li>
-      </ul>
-      <h4>v1.0</h4>
-      <ul>
-        <li>Gap fade strategy dashboard with embedded UI</li>
-        <li>OAuth authentication (Google/GitHub/Discord)</li>
-        <li>Alpaca paper trading integration</li>
-        <li>SQLite price database with historical backtesting</li>
-        <li>Catalyst detection (earnings, FDA, M&amp;A filtering)</li>
-      </ul>
+__RELEASE_NOTES__
     </div>
   </div>
 </div>
