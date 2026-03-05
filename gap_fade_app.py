@@ -13658,7 +13658,9 @@ async def db_update():
         start_dates = []
         for sym in batch:
             ld = last_dates.get(sym, '2020-01-01')
-            next_day = (datetime.strptime(ld, '%Y-%m-%d') + timedelta(days=1)).strftime('%Y-%m-%d')
+            # PostgreSQL returns datetime.date, SQLite returns str
+            ld_str = ld.strftime('%Y-%m-%d') if hasattr(ld, 'strftime') else str(ld)
+            next_day = (datetime.strptime(ld_str, '%Y-%m-%d') + timedelta(days=1)).strftime('%Y-%m-%d')
             start_dates.append(next_day)
         batch_start = min(start_dates)
 
