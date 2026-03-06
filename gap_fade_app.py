@@ -1388,15 +1388,41 @@ class AlpacaTickStreamer:
         self._last_push: Dict[str, float] = {}
         self._ws = None  # reference to live websocket for dynamic subscriptions
 
-    async def add_symbols(self, symbols: List[str]):
-        """Dynamically subscribe to additional symbols on the live connection."""
+    _MAX_SYMBOLS = 25  # Alpaca free tier WebSocket limit
+
+    async def add_symbols(self, symbols: List[str],
+                          priority_symbols: Optional[set] = None):
+        """Dynamically subscribe to additional symbols on the live connection.
+
+        If at the 25-symbol limit, non-priority symbols are removed to make room.
+        priority_symbols: set of symbols that must not be evicted (e.g. open positions).
+        """
         new_syms = [s for s in symbols if s not in self.symbols]
         if not new_syms:
             return
+
+        # Evict non-priority symbols if at the limit
+        if len(self.symbols) + len(new_syms) > self._MAX_SYMBOLS and priority_symbols:
+            needed = len(self.symbols) + len(new_syms) - self._MAX_SYMBOLS
+            evict = [s for s in self.symbols if s not in priority_symbols and s != 'SPY']
+            evict = evict[-needed:]  # evict from the end (lowest priority)
+            if evict:
+                await self.remove_symbols(evict)
+                logger.info(f"Alpaca stream: evicted {evict} to make room for {new_syms}")
+
+        # Respect limit — only subscribe what fits
+        room = max(0, self._MAX_SYMBOLS - len(self.symbols))
+        if room == 0:
+            logger.warning(f"Alpaca stream: at {self._MAX_SYMBOLS} symbol limit, "
+                           f"cannot add {new_syms}")
+            return
+        new_syms = new_syms[:room]
+
         self.symbols.extend(new_syms)
         if self._ws and not self._ws.closed:
             await self._ws.send_json({'action': 'subscribe', 'trades': new_syms})
-            logger.info(f"Alpaca stream: dynamically subscribed to {new_syms}")
+            logger.info(f"Alpaca stream: subscribed to {new_syms} "
+                        f"({len(self.symbols)}/{self._MAX_SYMBOLS})")
 
     async def remove_symbols(self, symbols: List[str]):
         """Dynamically unsubscribe from symbols on the live connection."""
@@ -8380,9 +8406,11 @@ class GapFadeLiveTrader:
                 except Exception as e:
                     logger.warning(f"Broker stop order failed for intraday {setup.symbol}: {e}")
 
-                # Subscribe to tick stream
+                # Subscribe to tick stream (evict watchlist symbols if at limit)
                 if self.streamer:
-                    await self.streamer.add_symbols([setup.symbol])
+                    await self.streamer.add_symbols(
+                        [setup.symbol],
+                        priority_symbols=set(self.engine.positions.keys()))
 
                 # Record entry in strategy
                 strat = self._intraday_strategies.get(setup.strategy_id)
@@ -9851,7 +9879,9 @@ class GapFadeLiveTrader:
         if symbols_entered:
             if self.streamer and self.streamer.connected:
                 # Reuse existing connection — dynamically subscribe to new symbols
-                await self.streamer.add_symbols(symbols_entered)
+                await self.streamer.add_symbols(
+                    symbols_entered,
+                    priority_symbols=set(self.engine.positions.keys()))
             else:
                 # No active streamer — stop stale one if any, then create new
                 if self.streamer:
