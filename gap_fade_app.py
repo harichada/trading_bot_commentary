@@ -63,10 +63,11 @@ def _get_version() -> str:
         with open(os.path.join(os.path.dirname(__file__) or '.', 'build_info.json')) as f:
             info = json.load(f)
             v = info.get('version', '')
-            sha = info.get('git_sha', '')[:7]  # short SHA
+            # Prefer codename over SHA for display
+            build_id = info.get('codename', '') or info.get('git_sha', '')[:7]
             if v and v != 'unknown':
                 ver = v if v.startswith('v') else f'v{v}'
-                return f'{ver} ({sha})' if sha and sha != 'unknown' else ver
+                return f'{ver} ({build_id})' if build_id and build_id != 'unknown' else ver
     except (FileNotFoundError, json.JSONDecodeError, ValueError):
         pass
     # Local dev: fall back to git tags + short SHA
