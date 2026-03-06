@@ -1422,13 +1422,17 @@ class AlpacaTickStreamer:
                         'trades': self.symbols,
                     })
                     sub_resp = await ws.receive_json()
-                    logger.info(f"Alpaca stream: subscribed to {len(self.symbols)} symbols")
+                    logger.info(f"Alpaca stream: subscribed to {len(self.symbols)} symbols "
+                                f"(sub response: {sub_resp})")
                     self.connected = True
+                    _tick_count = 0
+                    _last_tick_log = _time.monotonic()
 
                     async for msg in ws:
                         if msg.type == aiohttp.WSMsgType.TEXT:
                             for item in json.loads(msg.data):
                                 if item.get('T') == 't':
+                                    _tick_count += 1
                                     sym = item.get('S', '')
                                     price = float(item['p'])
                                     size = int(item.get('s', 0))
@@ -1441,6 +1445,20 @@ class AlpacaTickStreamer:
                                             await self.on_tick(sym, price, size)
                         elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
                             break
+                        # Periodic health log — detect silent connection death
+                        now_mono = _time.monotonic()
+                        if now_mono - _last_tick_log >= 60:
+                            if _tick_count == 0:
+                                logger.warning(
+                                    f"Alpaca stream: 0 ticks in last 60s "
+                                    f"({len(self.symbols)} symbols subscribed, "
+                                    f"{len(self.latest_prices)} with prices). "
+                                    f"Check: only 1 IEX stream allowed per API key.")
+                            else:
+                                logger.info(f"Alpaca stream: {_tick_count} ticks in last 60s, "
+                                            f"{len(self.latest_prices)} symbols with prices")
+                            _tick_count = 0
+                            _last_tick_log = now_mono
 
             except asyncio.CancelledError:
                 raise
@@ -8418,7 +8436,7 @@ class GapFadeLiveTrader:
         try:
             bars_dict = await asyncio.to_thread(
                 fetch_alpaca_bars_multi, symbols, today_str, today_str,
-                '5Min', 'sip',
+                '5Min', 'iex',
             )
             total_bars = 0
             seeded = 0
