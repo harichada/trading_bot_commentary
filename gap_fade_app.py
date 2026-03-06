@@ -18296,6 +18296,7 @@ function renderConfig(config) {
   };
   const inp = (key, label, def) => {
     const val = v(key, def);
+    if (typeof val === 'boolean') return '';  // booleans rendered as checkboxes elsewhere
     const t = typeof val === 'string' ? 'text' : 'number';
     let attrs = t === 'number' ? 'step="any"' : '';
     let hint = '';
