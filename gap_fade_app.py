@@ -8511,6 +8511,9 @@ class GapFadeLiveTrader:
             self._last_intraday_watchlist_refresh = _time.monotonic()
             # Seed indicator engine with today's historical bars so RSI/EMA are warm
             await self._seed_indicator_engine()
+            # Set intraday date so the daily-reset check in _intraday_scan_and_enter
+            # doesn't immediately wipe the seeded data on its first call
+            self._intraday_date = datetime.now(ET).strftime('%Y-%m-%d')
 
         # Start tick streamer — combine existing positions + intraday watchlist
         _stream_syms = set()
