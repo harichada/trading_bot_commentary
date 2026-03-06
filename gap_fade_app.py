@@ -11856,6 +11856,40 @@ async def get_intraday_state():
     }
 
 
+@app.get("/api/intraday/diagnostics")
+async def get_intraday_diagnostics():
+    """Diagnostic endpoint: indicator engine, streamer, and tick pipeline health."""
+    ie = live_trader.indicator_engine
+    streamer = live_trader.streamer
+    diag = {
+        'indicator_engine': {
+            'exists': ie is not None,
+            'date': ie._date if ie else None,
+            'symbols_tracked': len(ie._symbols) if ie else 0,
+            'symbols': {},
+        },
+        'streamer': {
+            'exists': streamer is not None,
+            'connected': streamer.connected if streamer else False,
+            'symbols_subscribed': len(streamer.symbols) if streamer else 0,
+            'latest_prices_count': len(streamer.latest_prices) if streamer else 0,
+            'latest_prices_sample': dict(list(streamer.latest_prices.items())[:10]) if streamer else {},
+        },
+    }
+    if ie:
+        for sym in list(ie._symbols.keys())[:20]:
+            si = ie._symbols[sym]
+            diag['indicator_engine']['symbols'][sym] = {
+                'completed_bars': len(si.completed_bars),
+                'vwap': round(si.vwap, 2),
+                'rsi': round(si.rsi, 2),
+                'rsi_initialized': si.rsi_initialized,
+                'day_high': round(si.day_high, 2),
+                'cum_volume': si.cum_volume,
+            }
+    return diag
+
+
 @app.get("/api/intraday/signals")
 async def get_intraday_signals(since_id: int = 0, limit: int = 50):
     """Get signal log entries, optionally incremental since a given ID."""
