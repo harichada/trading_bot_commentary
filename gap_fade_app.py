@@ -1823,6 +1823,14 @@ class PriceDB:
             CREATE INDEX IF NOT EXISTS idx_rejected_sym_ts
             ON candidates_rejected (symbol, timestamp)
         ''')
+        # -- Trader state (replaces gap_fade_state.json) --
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS trader_state (
+                key         TEXT PRIMARY KEY,
+                state_json  TEXT NOT NULL,
+                saved_at    TEXT NOT NULL
+            )
+        ''')
         self._conn.commit()
         # Add strategy_id and setup_type columns if missing (migration for existing DBs)
         try:
@@ -2317,6 +2325,39 @@ class PriceDB:
         except Exception as e:
             logger.error(f"Journal stats failed: {e}")
             return {'date': date, 'total': 0, 'by_type': {}}
+
+    # -- Trader state persistence (replaces gap_fade_state.json) --
+
+    def save_trader_state(self, state: dict, key: str = 'default'):
+        """Persist trader state to PostgreSQL (replaces JSON file writes)."""
+        try:
+            saved_at = state.get('saved_at', '')
+            with self._lock:
+                cur = self._conn.cursor()
+                cur.execute('''
+                    INSERT INTO trader_state (key, state_json, saved_at)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (key) DO UPDATE SET
+                        state_json = EXCLUDED.state_json,
+                        saved_at = EXCLUDED.saved_at
+                ''', (key, json.dumps(state, default=str), saved_at))
+                self._conn.commit()
+        except Exception as e:
+            self._conn.rollback()
+            logger.error(f"Trader state save failed: {e}")
+
+    def load_trader_state(self, key: str = 'default') -> Optional[dict]:
+        """Load trader state from PostgreSQL. Returns None if not found."""
+        try:
+            cur = self._conn.cursor()
+            cur.execute('SELECT state_json FROM trader_state WHERE key = %s', (key,))
+            row = cur.fetchone()
+            if row:
+                return json.loads(row[0])
+            return None
+        except Exception as e:
+            logger.error(f"Trader state load failed: {e}")
+            return None
 
     # -- Market event persistence --
 
@@ -7810,7 +7851,7 @@ class GapFadeLiveTrader:
     - EOD close with retry loop and broker verification
     """
 
-    STATE_FILE = 'gap_fade_state.json'
+    STATE_KEY = 'gap_fade_state'
     RECONCILE_INTERVAL = 300  # seconds between broker reconciliation checks
 
     def __init__(self, config: GapFadeConfig = None):
@@ -10937,11 +10978,11 @@ class GapFadeLiveTrader:
         except Exception as e:
             logger.warning(f"EOD bar storage failed (non-critical): {e}")
 
-    # State Persistence — atomic writes
+    # State Persistence — PostgreSQL
     # -------------------------------------------------------------------------
 
     def _save_state(self):
-        """Persist state to JSON with atomic write (write-fsync-rename)."""
+        """Persist state to PostgreSQL (no disk writes)."""
         state = {
             'status': self.status,
             'equity': self.engine.equity,
@@ -10959,28 +11000,27 @@ class GapFadeLiveTrader:
             'event_bus_pending': self._event_bus.pending_count(),
             'journal_entries_today': len(self.journal._entries),
         }
-        tmp_path = self.STATE_FILE + '.tmp'
         try:
-            with open(tmp_path, 'w') as f:
-                json.dump(state, f, indent=2, default=str)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp_path, self.STATE_FILE)  # atomic on POSIX
+            db = get_price_db()
+            db.save_trader_state(state, key=self.STATE_KEY)
         except Exception as e:
             logger.error(f"State save failed: {e}")
-            # Clean up temp file
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
 
     def _load_state(self):
-        """Load persisted state on startup."""
-        if not os.path.exists(self.STATE_FILE):
-            return
+        """Load persisted state from PostgreSQL."""
+        state = None
         try:
-            with open(self.STATE_FILE, 'r') as f:
-                state = json.load(f)
+            db = get_price_db()
+            state = db.load_trader_state(key=self.STATE_KEY)
+            if state:
+                logger.info("Loaded state from PostgreSQL")
+        except Exception as e:
+            logger.warning(f"PostgreSQL state load failed: {e}")
+
+        if state is None:
+            return
+
+        try:
             self.engine.equity = state.get('equity', self.config.initial_capital)
             self.engine.peak_equity = state.get('peak_equity', self.engine.equity)
             self.messages = state.get('messages', [])
