@@ -2,6 +2,9 @@
 
 All notable changes to the Rudra Trading Engine.
 
+## v12.1 — 2026-03-05
+- **Migration**: Trader state persistence moved from `gap_fade_state.json` to PostgreSQL — zero disk writes
+
 ## v12.0 — 2026-03-05
 - **Fix**: `evaluate_exit()` bug — duplicate price arg broke pullback exit management (caused -$261 TTD loss)
 - **Fix**: Raise `min_avg_volume` 5K → 50K — filters illiquid stocks (e.g. PKX at 1.8K vol)
