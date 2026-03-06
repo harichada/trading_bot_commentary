@@ -7811,6 +7811,7 @@ class GapFadeLiveTrader:
         self._signal_log_counter: int = 0
         self._last_perf_snapshot_hour: int = -1
         self._last_sse_tick: Dict[str, float] = {}  # throttle SSE ticks per symbol
+        self._last_pos_broadcast: float = 0.0  # throttle WS position updates
         if self.config.intraday_enabled:
             self._init_intraday_strategies()
 
@@ -10255,6 +10256,16 @@ class GapFadeLiveTrader:
             pos = self.engine.positions[symbol]
             now = datetime.now(ET)
             pos.update_tracking(price, now.strftime('%H:%M:%S'))
+
+            # Broadcast updated positions to UI (throttled 1/sec)
+            if connected_websockets:
+                _now_mono = _time.monotonic()
+                if _now_mono - self._last_pos_broadcast >= 1.0:
+                    self._last_pos_broadcast = _now_mono
+                    await broadcast({
+                        'type': 'positions_update',
+                        'positions': {s: asdict(p) for s, p in self.engine.positions.items()},
+                    })
 
             # Event detection (pure arithmetic, <1ms)
             _tick_data = self.indicator_engine.get_data(symbol) if self.indicator_engine else None
@@ -19567,7 +19578,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   fetchDbStats();
   loadStrategies();
   setInterval(updateClock, 1000);
-  setInterval(fetchState, 10000);
+  setInterval(fetchState, 2000);
   setInterval(updateGuideTimeline, 30000);
   updateClock();
   updateGuideTimeline();
