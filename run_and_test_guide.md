@@ -1,576 +1,663 @@
-# Professional Trading Bot - Run and Test Guide
+# Rudra Trading Engine — Getting Started Guide
+
+Complete guide for setting up, running, testing, and deploying the Rudra Trading Engine.
 
 ## Table of Contents
-1. [Quick Start](#quick-start)
-2. [Testing Individual Components](#testing-individual-components)
-3. [Integration with Main Bot](#integration-with-main-bot)
-4. [Running Different Modes](#running-different-modes)
-5. [Testing Strategies](#testing-strategies)
-6. [Performance Analysis](#performance-analysis)
-7. [Troubleshooting](#troubleshooting)
 
-## Quick Start
+1. [Overview](#overview)
+2. [Prerequisites](#prerequisites)
+3. [First-Time Setup](#first-time-setup)
+4. [Running the Apps](#running-the-apps)
+5. [Configuration](#configuration)
+6. [Testing](#testing)
+7. [Backtesting](#backtesting)
+8. [LLM Supervisor (Rudra)](#llm-supervisor-rudra)
+9. [Multi-Broker Trading](#multi-broker-trading)
+10. [Secret Management](#secret-management)
+11. [Building & Deploying (Docker)](#building--deploying-docker)
+12. [Monitoring & Operations](#monitoring--operations)
+13. [Troubleshooting](#troubleshooting)
+14. [Project Structure](#project-structure)
 
-### 1. Install Dependencies
+---
+
+## Overview
+
+Three independent FastAPI apps, each a standalone monolith with an embedded HTML dashboard:
+
+| App | File | Default Port | Broker API | Purpose |
+|-----|------|-------------|------------|---------|
+| **Rudra Trading Engine** | `gap_fade_app.py` | 8002 (`GAP_FADE_PORT`) | Alpaca, OANDA | Gap fade + intraday strategies, LLM supervisor |
+| **Main Trading Bot** | `trading_bot_commentary_updated.py` | 8000 | Schwab | Commentary-driven trading bot |
+| **Backtest Dashboard** | `claude_backtest_app.py` | 8001 | Schwab (optional) | Rules-engine backtesting UI |
+
+The **Rudra Trading Engine** (`gap_fade_app.py`) is the primary, actively developed app. This guide focuses on it.
+
+---
+
+## Prerequisites
+
+| Requirement | Version | Notes |
+|-------------|---------|-------|
+| Python | 3.10+ | Tested on 3.11, 3.12 |
+| PostgreSQL | 14+ | Database for price data, trades, state |
+| Git | 2.30+ | With git-crypt for secret management |
+| git-crypt | 0.7+ | `sudo apt install git-crypt` |
+| GPG | 2.2+ | For git-crypt key management |
+
+**Broker accounts** (at least one):
+- [Alpaca](https://alpaca.markets) — Free paper trading account (US equities)
+- [OANDA](https://www.oanda.com) — Free practice account (forex)
+- [Schwab](https://developer.schwab.com) — For main bot only
+
+---
+
+## First-Time Setup
+
+### 1. Clone and Decrypt Secrets
 
 ```bash
-# Install all required packages
+git clone git@github.com:harichada/trading_bot_commentary.git
+cd trading_bot_commentary
+
+# Unlock encrypted .env files (requires authorized GPG key)
+./scripts/setup-encryption.sh
+
+# If you don't have a GPG key yet, the script will generate one.
+# Ask the repo owner to add your key: ./scripts/onboard-team-member.sh your@email.com
+```
+
+See [docs/SECRETS.md](docs/SECRETS.md) for full details on secret management.
+
+### 2. Install Dependencies
+
+```bash
+# Rudra Trading Engine only (recommended for most users)
+pip install -r requirements-gap-fade.txt
+
+# Full stack (all three apps, ML, NLP, etc.)
 pip install -r requirements.txt
 
-# Or install manually
-pip install numpy pandas scipy ta scikit-learn xgboost lightgbm matplotlib seaborn
-pip install fastapi uvicorn websockets requests textblob pyyaml rich
-pip install schwab-py torch  # torch is optional for neural networks
+# PostgreSQL driver (included in requirements but listed for clarity)
+pip install psycopg2-binary
 ```
 
-### 2. Create Configuration File
-
-Create `professional_config.json`:
-
-```json
-{
-  "symbols": ["SPY", "QQQ", "IWM"],
-  "timeframe": "5min",
-  "paper_trading": true,
-  "starting_capital": 100000,
-  "risk_limits": {
-    "max_positions": 5,
-    "max_position_size": 0.1,
-    "max_daily_loss": 0.02,
-    "max_drawdown": 0.05
-  },
-  "strategies": {
-    "enabled": ["ma_cross", "rsi_momentum", "bollinger_bands"],
-    "use_consensus": true,
-    "min_consensus_strategies": 2
-  },
-  "ml_models": {
-    "enabled": ["random_forest", "xgboost"],
-    "use_ensemble": true,
-    "retrain_interval_days": 7
-  },
-  "order_types": {
-    "use_bracket_orders": true,
-    "use_trailing_stops": true,
-    "default_stop_loss": 0.02,
-    "default_take_profit": 0.05
-  }
-}
-```
-
-### 3. Update Main Configuration
-
-Edit your `Config().yaml` to enable professional mode:
-
-```yaml
-# Professional Trading Features
-professional_mode: true
-use_advanced_orders: true
-use_multi_timeframe: true
-use_ml_models: true
-
-# Risk Management
-risk_management:
-  position_sizing_method: "VOLATILITY_BASED"  # or "KELLY_CRITERION", "ATR_BASED"
-  max_portfolio_risk: 0.02
-  use_circuit_breakers: true
-```
-
-## Testing Individual Components
-
-### Test 1: Strategy System
-
-```python
-#!/usr/bin/env python3
-"""Test the strategy system"""
-
-import pandas as pd
-import numpy as np
-from datetime import datetime, timedelta
-from strategy_system import StrategyManager, StrategyConfig
-
-# Create sample data
-dates = pd.date_range(end=datetime.now(), periods=100, freq='5min')
-data = pd.DataFrame({
-    'open': np.random.randn(100).cumsum() + 100,
-    'high': np.random.randn(100).cumsum() + 101,
-    'low': np.random.randn(100).cumsum() + 99,
-    'close': np.random.randn(100).cumsum() + 100,
-    'volume': np.random.randint(1000000, 5000000, 100)
-}, index=dates)
-
-# Initialize strategy manager
-manager = StrategyManager()
-
-# Test individual strategies
-print("Testing Moving Average Cross Strategy...")
-signals = manager.strategies['ma_cross'].analyze(data, {})
-for signal in signals:
-    print(f"Signal: {signal.signal_type} at {signal.entry_price:.2f}")
-
-# Test consensus signals
-print("\nTesting Consensus Signals...")
-all_signals = manager.analyze_all(data, {})
-consensus = manager.get_consensus_signal(all_signals)
-if consensus:
-    print(f"Consensus: {consensus.signal_type} with strength {consensus.strength:.2f}")
-
-# Save configuration
-manager.save_configs("strategy_configs.json")
-```
-
-### Test 2: ML Models
-
-```python
-#!/usr/bin/env python3
-"""Test ML model manager"""
-
-from ml_model_manager import ModelManager
-import pandas as pd
-import numpy as np
-
-# Create sample training data
-n_samples = 1000
-X = pd.DataFrame({
-    'returns_1': np.random.randn(n_samples),
-    'returns_5': np.random.randn(n_samples),
-    'returns_20': np.random.randn(n_samples),
-    'rsi': np.random.uniform(20, 80, n_samples),
-    'volume_ratio': np.random.uniform(0.5, 2, n_samples)
-})
-
-# Create target (1 for profitable, 0 for not)
-y = pd.Series(np.random.randint(0, 2, n_samples))
-
-# Initialize model manager
-manager = ModelManager()
-
-# Train all models
-print("Training models...")
-manager.train_all_models(X, y)
-
-# Compare performance
-print("\nModel Comparison:")
-comparison = manager.compare_models(X, y)
-print(comparison)
-
-# Create ensemble
-print("\nCreating ensemble...")
-ensemble = manager.create_ensemble(['random_forest', 'xgboost'])
-manager.set_active_model('ensemble')
-
-# Make predictions
-predictions = manager.predict(X.head(10))
-print(f"\nSample predictions: {predictions}")
-
-# Save models
-manager.save_all_models()
-```
-
-### Test 3: Paper Trading
-
-```python
-#!/usr/bin/env python3
-"""Test paper trading system"""
-
-from paper_trading import PaperTradingEngine, ExecutionModel
-from advanced_orders import Order, OrderType, OrderSide
-import pandas as pd
-
-# Initialize paper trading
-engine = PaperTradingEngine(
-    initial_balance=100000,
-    execution_model=ExecutionModel.REALISTIC
-)
-
-# Load saved state (if exists)
-engine.load_state()
-
-# Create sample market data
-data = pd.DataFrame({
-    'open': [100, 101, 102],
-    'high': [101, 102, 103],
-    'low': [99, 100, 101],
-    'close': [101, 102, 102.5],
-    'volume': [1000000, 1200000, 900000]
-})
-
-# Update market data
-engine.update_market_data('SPY', data)
-
-# Place a market order
-order = Order(
-    symbol='SPY',
-    side=OrderSide.BUY,
-    quantity=100,
-    order_type=OrderType.MARKET
-)
-order_id = engine.place_order(order)
-print(f"Order placed: {order_id}")
-
-# Check account
-summary = engine.get_account_summary()
-print(f"\nAccount Summary:")
-print(f"Balance: ${summary['balance']:,.2f}")
-print(f"Equity: ${summary['equity']:,.2f}")
-print(f"Positions: {summary['positions']}")
-
-# Save state
-engine.save_state()
-```
-
-### Test 4: Backtesting
-
-```python
-#!/usr/bin/env python3
-"""Run a backtest"""
-
-from backtesting_engine import BacktestingEngine, BacktestConfig, BacktestReport
-from strategy_system import StrategyManager
-from datetime import datetime, timedelta
-import pandas as pd
-
-# Configure backtest
-config = BacktestConfig(
-    start_date=datetime.now() - timedelta(days=30),
-    end_date=datetime.now(),
-    initial_capital=100000,
-    commission=0.001,
-    slippage=0.0005,
-    symbols=['SPY', 'QQQ']
-)
-
-# Initialize backtesting engine
-engine = BacktestingEngine(config)
-
-# Load historical data (you'll need to provide this)
-# For testing, create synthetic data
-market_data = {}
-for symbol in config.symbols:
-    dates = pd.date_range(start=config.start_date, end=config.end_date, freq='5min')
-    prices = 100 * (1 + np.random.randn(len(dates)).cumsum() * 0.0001)
-    
-    market_data[symbol] = pd.DataFrame({
-        'open': prices * (1 + np.random.randn(len(dates)) * 0.001),
-        'high': prices * (1 + abs(np.random.randn(len(dates)) * 0.002)),
-        'low': prices * (1 - abs(np.random.randn(len(dates)) * 0.002)),
-        'close': prices,
-        'volume': np.random.randint(1000000, 5000000, len(dates))
-    }, index=dates)
-
-# Run backtest
-print("Running backtest...")
-results = engine.run(market_data)
-
-# Generate report
-BacktestReport.generate_html_report(results, "backtest_report.html")
-BacktestReport.generate_json_report(results, "backtest_results.json")
-
-print(f"\nBacktest Results:")
-print(f"Total Return: {results.total_return:.2%}")
-print(f"Sharpe Ratio: {results.sharpe_ratio:.2f}")
-print(f"Max Drawdown: {results.max_drawdown:.2%}")
-print(f"Win Rate: {results.win_rate:.2%}")
-print(f"\nReport saved to backtest_report.html")
-```
-
-## Integration with Main Bot
-
-### Step 1: Create Integration Module
-
-Create `professional_integration.py`:
-
-```python
-#!/usr/bin/env python3
-"""Integration module for professional features"""
-
-from trading_bot_commentary_updated import TradingEngineWithCommentary
-from strategy_system import StrategyManager
-from ml_model_manager import ModelManager
-from risk_management import RiskManager, PositionSizingMethod
-from paper_trading import PaperTradingEngine
-from performance_analytics import PerformanceAnalyzer
-import asyncio
-
-class ProfessionalTradingBot(TradingEngineWithCommentary):
-    """Enhanced trading bot with professional features"""
-    
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        
-        # Initialize professional components
-        self.strategy_manager = StrategyManager()
-        self.model_manager = ModelManager()
-        self.risk_manager = RiskManager(
-            initial_capital=self.account_balance,
-            risk_limits=self.config.get('risk_limits', {})
-        )
-        self.performance_analyzer = PerformanceAnalyzer()
-        
-        # Paper trading mode
-        if self.config.get('paper_trading', True):
-            self.paper_engine = PaperTradingEngine()
-            self.paper_engine.load_state()
-    
-    async def generate_trading_signals(self, market_data):
-        """Override to use professional strategy system"""
-        all_signals = []
-        
-        for symbol, data in market_data.items():
-            # Multi-timeframe analysis if enabled
-            if self.config.get('use_multi_timeframe', False):
-                # Would need to implement timeframe data collection
-                pass
-            
-            # Get strategy signals
-            strategy_signals = self.strategy_manager.analyze_all(data, self.positions)
-            
-            # Get consensus if configured
-            if self.config['strategies'].get('use_consensus', False):
-                consensus = self.strategy_manager.get_consensus_signal(strategy_signals)
-                if consensus:
-                    all_signals.append(consensus)
-            else:
-                all_signals.extend(strategy_signals)
-        
-        # Filter with ML if enabled
-        if self.config['ml_models'].get('enabled'):
-            all_signals = self._filter_signals_with_ml(all_signals)
-        
-        return all_signals
-    
-    def calculate_position_size(self, signal):
-        """Use professional position sizing"""
-        method = PositionSizingMethod[
-            self.config['risk_management'].get('position_sizing_method', 'FIXED_PERCENTAGE')
-        ]
-        
-        signal_data = {
-            'symbol': signal.symbol,
-            'price': signal.entry_price,
-            'volatility': self._calculate_volatility(signal.symbol),
-            'atr': self._calculate_atr(signal.symbol),
-            'stop_loss_distance': abs(signal.entry_price - signal.stop_loss) if signal.stop_loss else signal.entry_price * 0.02
-        }
-        
-        return self.risk_manager.calculate_position_size(method, signal_data)
-
-# Run the professional bot
-async def main():
-    bot = ProfessionalTradingBot()
-    await bot.start()
-
-if __name__ == "__main__":
-    asyncio.run(main())
-```
-
-### Step 2: Run with Professional Dashboard
-
-```python
-# Add to your main trading bot file
-from professional_dashboard import PROFESSIONAL_DASHBOARD_HTML
-
-@app.get("/")
-async def get_dashboard():
-    if Config().get('professional_mode', False):
-        return HTMLResponse(content=PROFESSIONAL_DASHBOARD_HTML)
-    else:
-        return HTMLResponse(content=DASHBOARD_HTML_WITH_COMMENTARY)
-
-# Add professional API endpoints
-from professional_trading_engine import create_api_endpoints
-create_api_endpoints(app, trading_engine)
-```
-
-## Running Different Modes
-
-### 1. Paper Trading Mode
+### 3. Set Up PostgreSQL
 
 ```bash
-# Start in paper trading mode
-python trading_bot_commentary_updated.py
+# Create database and user
+sudo -u postgres psql <<SQL
+CREATE USER rudra WITH PASSWORD 'rudra_dev_2024';
+CREATE DATABASE rudra_dev OWNER rudra;
+SQL
 
-# Access dashboard at http://localhost:8000
-# All trades will be simulated
+# Or use Docker (from infra):
+# make deploy-monitoring  → starts PostgreSQL at localhost:5432
 ```
 
-### 2. Backtesting Mode
+The app auto-creates all 14 tables on first startup. No manual schema migration needed.
 
-```python
-# Create backtest script
-python run_backtest.py --symbols SPY,QQQ --days 30 --strategy ma_cross
-```
-
-### 3. Live Trading Mode
+### 4. Configure Environment
 
 ```bash
-# Update Config().yaml
-# Set paper_trading: false
-# Ensure Schwab credentials are configured
+# Copy the template
+cp .env.example .env_dev
 
+# Edit with your API keys
+nano .env_dev
+```
+
+**Minimum required** for paper trading:
+
+```bash
+# Alpaca (get from https://app.alpaca.markets → Paper Trading → API Keys)
+ALPACA_API_KEY=PK...
+ALPACA_SECRET_KEY=...
+
+# PostgreSQL
+DATABASE_URL=postgresql://rudra:rudra_dev_2024@localhost:5432/rudra_dev
+
+# System
+GAP_FADE_PORT=8003
+```
+
+### 5. Load Historical Price Data
+
+The app needs historical daily bars for gap scanning and backtesting:
+
+```bash
+# Start the app — it will scan and cache data from Alpaca on first run
+python gap_fade_app.py
+
+# Or use the migration script for bulk loading from an existing SQLite DB:
+python migrate_sqlite_to_pg.py
+```
+
+The database currently holds ~25M rows of daily bars (2006–present, ~2000+ symbols).
+
+---
+
+## Running the Apps
+
+### Rudra Trading Engine (primary)
+
+```bash
+# Load env vars and start
+export $(grep -v '^#' .env_dev | xargs)
+python gap_fade_app.py
+
+# Dashboard: http://localhost:8003
+```
+
+The dashboard shows:
+- Live equity curve and P&L
+- Active positions with real-time prices
+- Gap scan candidates
+- Rudra LLM chat interface
+- Backtest controls
+- Configuration panel
+- Activity feed and trading journal
+
+### Main Trading Bot
+
+```bash
+export $(grep -v '^#' .env_dev | xargs)
 python trading_bot_commentary_updated.py
+# Dashboard: http://localhost:8000
 ```
 
-### 4. Strategy Testing Mode
+### Backtest Dashboard
 
-```python
-# Test individual strategies
-python test_strategies.py --strategy rsi_momentum --symbol SPY
+```bash
+export $(grep -v '^#' .env_dev | xargs)
+python claude_backtest_app.py
+# Dashboard: http://localhost:8001
 ```
 
-## Testing Strategies
+### Professional Bot (safe mode)
 
-### 1. Test Strategy Combinations
+Wraps the main bot with `safe_imports.py` to block xgboost/lightgbm (prevents segfaults):
 
-```python
-# Enable different strategy combinations
-strategies = ['ma_cross', 'rsi_momentum', 'bollinger_bands']
-
-for combo in itertools.combinations(strategies, 2):
-    manager.strategy_configs = {s: manager.strategy_configs[s] for s in combo}
-    # Run backtest and compare results
+```bash
+python run_professional_bot.py
 ```
 
-### 2. Optimize Strategy Parameters
+---
 
-```python
-# Grid search for optimal parameters
-param_grid = {
-    'fast_period': [10, 15, 20],
-    'slow_period': [30, 40, 50]
-}
+## Configuration
 
-best_sharpe = 0
-best_params = {}
+### Runtime Config (via Dashboard)
 
-for fast in param_grid['fast_period']:
-    for slow in param_grid['slow_period']:
-        # Update strategy parameters
-        config.parameters['fast_period'] = fast
-        config.parameters['slow_period'] = slow
-        
-        # Run backtest
-        results = engine.run(market_data)
-        
-        if results.sharpe_ratio > best_sharpe:
-            best_sharpe = results.sharpe_ratio
-            best_params = {'fast': fast, 'slow': slow}
+All trading parameters are tunable at runtime through the dashboard's **Config** panel. Changes take effect immediately and persist across restarts (stored in PostgreSQL).
+
+Key parameters:
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `gap_threshold` | 0.02 | Minimum gap % to qualify (2%) |
+| `min_avg_volume` | 50000 | Minimum 20-day average volume |
+| `max_positions` | 3 | Maximum concurrent positions |
+| `stop_loss_pct` | 0.03 | Stop loss distance (3%) |
+| `position_size_pct` | 0.10 | Position size as % of equity |
+| `adaptive_stops` | true | ATR-based dynamic stops |
+| `regime_filter` | true | Skip trades in unfavorable regimes |
+| `reentry_enabled` | true | Re-enter after stop-out if reversal |
+| `gap_down_enabled` | true | Long entries on gap-downs |
+| `llm_enabled` | false | Enable Rudra LLM supervisor |
+
+### Config Profiles
+
+Save and load named config snapshots via the dashboard:
+
+- **Save**: Config panel → "Save Profile" → name it
+- **Load**: Config panel → "Load Profile" → select one
+- **Export/Import**: Download as JSON, upload to another instance
+
+### Drawdown Circuit Breakers
+
+Graduated risk reduction during drawdowns:
+
+| Tier | Drawdown | Action |
+|------|----------|--------|
+| Tier 1 | 5% | Reduce position sizes by 50% |
+| Tier 2 | 8% | Reduce by 75%, skip new entries |
+| Hard Stop | 10% | Halt all trading |
+
+---
+
+## Testing
+
+Tests use `pytest` + `pytest-asyncio`. Each test file is self-contained (no shared conftest).
+
+```bash
+# Run the most comprehensive test suite
+python -m pytest test_institutional_core.py -v
+
+# Run all test files
+python -m pytest test_*.py -v
+
+# Specific test suites
+python -m pytest test_coordinator.py -v          # Multi-broker coordinator
+python -m pytest test_oanda_adapter.py -v         # OANDA broker adapter
+python -m pytest test_broker_adapter.py -v        # Alpaca broker adapter
+python -m pytest test_indicator_engine.py -v      # Technical indicators
+python -m pytest test_strategy_selector.py -v     # Strategy routing
+python -m pytest test_intraday_orb.py -v          # ORB breakout strategy
+python -m pytest test_momentum_strategy.py -v     # Momentum surge strategy
+python -m pytest test_pullback_strategy.py -v     # Pullback entry strategy
+python -m pytest test_range_strategy.py -v        # Range trade strategy
+python -m pytest test_classic_profit_protection.py -v  # Profit protection
+python -m pytest test_gap_fade_backtester.py -v   # Backtester
+python -m pytest test_professional_bot.py -v      # Professional bot
+python -m pytest test_components_isolated.py -v   # Isolated components
+python -m pytest test_safe_imports.py -v          # xgboost/lightgbm blocking
+
+# Run with coverage
+python -m pytest test_institutional_core.py -v --cov=. --cov-report=term-missing
 ```
 
-### 3. Test Risk Management
+### Syntax Check (quick validation)
 
-```python
-# Test different position sizing methods
-methods = [
-    PositionSizingMethod.FIXED_PERCENTAGE,
-    PositionSizingMethod.KELLY_CRITERION,
-    PositionSizingMethod.VOLATILITY_BASED
-]
-
-for method in methods:
-    risk_manager = RiskManager(initial_capital=100000)
-    # Run backtest with each method
-    print(f"{method.value}: Sharpe = {results.sharpe_ratio:.2f}")
+```bash
+python -c "import ast; ast.parse(open('gap_fade_app.py').read()); print('OK')"
 ```
 
-## Performance Analysis
+### Smoke Test (imports and startup)
 
-### 1. Generate Performance Reports
-
-```python
-# After running live or paper trading
-analyzer = trading_engine.performance_analyzer
-
-# Generate HTML report
-analyzer.generate_report("performance_report.html")
-
-# Get specific metrics
-metrics = analyzer.calculate_metrics()
-print(f"Sharpe Ratio: {metrics.sharpe_ratio:.2f}")
-print(f"Win Rate: {metrics.win_rate:.2%}")
-
-# Analyze by strategy
-strategy_performance = analyzer.analyze_by_strategy()
-for strategy, perf in strategy_performance.items():
-    print(f"{strategy}: {perf.metrics.total_return:.2%}")
+```bash
+python -c "
+from gap_fade_app import APP_VERSION, RELEASE_NOTES_HTML, get_price_db
+print(f'Version: {APP_VERSION}')
+print(f'Release notes: {len(RELEASE_NOTES_HTML)} chars')
+db = get_price_db()
+print(f'DB connected, trades: {db.count_trades()}')
+"
 ```
 
-### 2. Real-time Monitoring
+---
 
-Access the dashboard at `http://localhost:8000` to see:
-- Live performance metrics
-- Strategy performance breakdown
-- Position management
-- Risk metrics
-- ML model performance
+## Backtesting
 
-### 3. Export Results
+### Via Dashboard
 
-```python
-# Export to CSV
-trades_df = pd.DataFrame(analyzer.trades)
-trades_df.to_csv('trades_history.csv')
+1. Open the dashboard → **Backtest** tab
+2. Set date range, symbols, and strategy parameters
+3. Toggle feature flags (adaptive stops, regime filter, etc.)
+4. Click **Run Backtest**
+5. Results show equity curve, trade list, and performance metrics
 
-# Export to JSON
-with open('performance_metrics.json', 'w') as f:
-    json.dump(metrics.to_dict(), f, indent=2)
+### Via CLI
+
+```bash
+# Gap fade backtester (PostgreSQL data source)
+python gap_fade_backtester.py
+
+# Vectorbt-powered backtester
+python bt_backtest.py
 ```
+
+### Key Metrics
+
+| Metric | Calculation |
+|--------|-------------|
+| Sharpe Ratio | Daily equity returns (not per-trade) |
+| Max Drawdown | Equity curve peak-to-trough |
+| Win Rate | Winning trades / total trades |
+| Profit Factor | Gross profit / gross loss |
+| Average R | Average P&L / average risk |
+
+---
+
+## LLM Supervisor (Rudra)
+
+Rudra is an autonomous LLM that monitors positions, makes trading decisions, and manages risk.
+
+### Setup
+
+```bash
+# Install Ollama (https://ollama.ai)
+curl -fsSL https://ollama.ai/install.sh | sh
+
+# Build the Rudra model
+ollama create rudra -f Modelfile.gapfade
+
+# Enable in config (dashboard or env)
+# Set llm_enabled=true in the Config panel
+```
+
+### Supported LLM Providers
+
+| Provider | Config | Model |
+|----------|--------|-------|
+| Ollama (local) | `llm_provider=ollama` | `rudra` or `gpt-oss:20b` |
+| OpenAI-compatible | `llm_provider=openai` | Any GPT model |
+| Groq | `llm_provider=groq` | Llama, Mixtral |
+| Together | `llm_provider=together` | Any hosted model |
+
+### What Rudra Does
+
+- **Scans** for gap candidates and evaluates entry quality
+- **Enters** positions with LLM-reasoned sizing and stop placement
+- **Monitors** open positions and adjusts stops
+- **Exits** based on target, pullback, or reversal signals
+- **Reflects** on trades and updates its decision journal
+- **Learns** from past trades and adapts strategy
+
+### Chat Interface
+
+The dashboard has a built-in chat. Example commands:
+
+```
+"What positions are open?"
+"Close AAPL position"
+"Switch to classic gap fade strategy"
+"Review current risk exposure"
+"Pause trading for 30 minutes"
+```
+
+---
+
+## Multi-Broker Trading
+
+The engine supports simultaneous trading across multiple brokers via the `MultiBrokerCoordinator`.
+
+### Supported Brokers
+
+| Broker | Asset Class | Adapter | Env Vars |
+|--------|-------------|---------|----------|
+| Alpaca | US Equities | `AlpacaBrokerAdapter` | `ALPACA_API_KEY`, `ALPACA_SECRET_KEY` |
+| OANDA | Forex | `OandaBrokerAdapter` | `OANDA_ACCOUNT_ID`, `OANDA_TOKEN` |
+
+### How It Works
+
+- Alpaca is always created as the primary broker
+- OANDA is automatically added if its env vars are set
+- Each broker gets its own `GapFadeLiveTrader` with separate state
+- `CombinedRiskManager` checks cross-broker daily loss, drawdown, and position count
+
+### API Endpoints
+
+```
+GET  /api/brokers                    # List all brokers and status
+GET  /api/state/combined             # Combined state across all brokers
+GET  /api/state/{broker_id}          # State for a specific broker
+POST /api/brokers/{id}/enable        # Enable a broker
+POST /api/brokers/{id}/disable       # Disable a broker
+POST /api/brokers/{id}/start         # Start trading on a broker
+POST /api/brokers/{id}/stop          # Stop trading on a broker
+```
+
+---
+
+## Secret Management
+
+All `.env` files are encrypted in the repo using **git-crypt** (AES-256). See [docs/SECRETS.md](docs/SECRETS.md) for full documentation.
+
+### Quick Reference
+
+```bash
+# First-time setup (after clone)
+./scripts/setup-encryption.sh
+
+# Add a team member
+./scripts/onboard-team-member.sh their@email.com their-key.gpg
+
+# Daily use — edit normally, encryption is transparent
+nano .env_dev
+git add .env_dev && git commit -m "Update keys"  # encrypted in git
+```
+
+### Backup Your GPG Key
+
+```bash
+# Export (store securely — password manager, encrypted drive)
+gpg --armor --export-secret-keys harikishorereddy@gmail.com > gpg-private-key.gpg
+
+# Also export the git-crypt symmetric key
+git-crypt export-key ~/git-crypt-key.bin
+```
+
+---
+
+## Building & Deploying (Docker)
+
+### Build Pipeline
+
+```bash
+cd ~/claude/infra
+
+# Build image from current branch
+make build
+
+# Test the image
+make test-image
+
+# Deploy to environments
+make deploy-dev                    # Dev (port 8004)
+make deploy-sit TAG=<sha>          # SIT (port 8005)
+make deploy-prod TAG=<sha>         # Prod (port 8003, requires confirmation)
+```
+
+### How Builds Work
+
+1. **Infra bootstrap** (`infra/scripts/build.sh`) clones/fetches the trading bot repo
+2. **Repo build script** (`scripts/build.sh`) runs:
+   - Resolves version from git tags → `build_info.json`
+   - Auto-generates `CHANGELOG.md` entry from git commit messages
+   - Copies infra modules into build context
+   - Runs `docker build` with version args
+3. Docker image tagged with git SHA, version, and `latest`
+
+### Version & Release Notes
+
+- **Version**: Auto-detected from git tags (e.g., `v12.2` → shown in dashboard footer)
+- **Release notes**: Parsed from `CHANGELOG.md` at app startup → displayed in dashboard modal
+- **CHANGELOG.md**: Auto-updated by `scripts/build.sh` from commit messages on new tags
+
+```bash
+# Typical release workflow
+git commit -m "Fix: description of fix"
+git tag -a v13.0 -m "v13.0: summary"
+git push origin feature/backtesting --tags
+cd ~/claude/infra && make build    # CHANGELOG auto-generated, version baked in
+```
+
+### Environments
+
+| Environment | Port | Env File | Database |
+|-------------|------|----------|----------|
+| Dev | 8004 | `.env_dev` | `rudra_dev` |
+| SIT | 8005 | `.env_sit` | `rudra_sit` |
+| Prod | 8003 | `.env_prod` | `rudra_prod` |
+
+### Systemd (bare-metal alternative)
+
+```bash
+# Install as a systemd service
+sudo ./install-service.sh
+
+# Manage
+sudo systemctl start gap-fade
+sudo systemctl status gap-fade
+journalctl -u gap-fade -f
+```
+
+---
+
+## Monitoring & Operations
+
+### Health Check
+
+```bash
+curl http://localhost:8003/api/health
+```
+
+### Key API Endpoints
+
+```
+GET  /api/health                     # Health check
+GET  /api/state                      # Current trading state
+GET  /api/positions                  # Active positions
+GET  /api/trades/history             # Trade history
+GET  /api/config                     # Current config
+POST /api/config                     # Update config
+POST /api/start                      # Start trading
+POST /api/stop                       # Stop trading
+GET  /api/backtest/status            # Backtest progress
+GET  /api/journal                    # Trading journal entries
+WS   /ws                            # WebSocket for live updates
+```
+
+### Database
+
+```bash
+# Connect to dev database
+psql -U rudra -d rudra_dev
+
+# Key tables
+\dt                                  # List all tables (14 total)
+SELECT COUNT(*) FROM daily_bars;     # ~25M rows of price data
+SELECT COUNT(*) FROM trades;         # Completed trades
+SELECT * FROM trader_state;          # App state (replaces JSON files)
+SELECT * FROM config_history ORDER BY id DESC LIMIT 5;  # Config audit trail
+```
+
+### Logs
+
+```bash
+# App logs (stdout)
+python gap_fade_app.py 2>&1 | tee app.log
+
+# Docker logs
+make logs-dev    # or logs-sit, logs-prod
+
+# Systemd logs
+journalctl -u gap-fade -f --since "1 hour ago"
+```
+
+---
 
 ## Troubleshooting
 
-### Common Issues
+### App Won't Start
 
-1. **Import Errors**
-   ```bash
-   # Ensure all files are in the same directory
-   ls *.py | grep -E "(strategy|ml_model|risk|paper|performance)"
-   ```
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| `psycopg2.OperationalError: connection refused` | PostgreSQL not running | `sudo systemctl start postgresql` |
+| `ModuleNotFoundError: No module named 'psycopg2'` | Missing driver | `pip install psycopg2-binary` |
+| `ALPACA_API_KEY not set` | Missing env vars | `export $(grep -v '^#' .env_dev \| xargs)` |
+| Port already in use | Another instance running | `lsof -i :8003` → kill it, or change `GAP_FADE_PORT` |
 
-2. **No Trading Signals**
-   - Check strategy parameters
-   - Ensure sufficient historical data
-   - Verify market data updates
+### Trading Issues
 
-3. **ML Model Errors**
-   - Train models before use
-   - Check feature engineering
-   - Verify data quality
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| No gap candidates | Market closed or filters too strict | Lower `gap_threshold`, check market hours |
+| Positions not opening | `max_positions` reached or halted | Check daily stats, circuit breaker status |
+| LLM not responding | Ollama not running or wrong model | `ollama list`, check `llm_model` config |
+| State not persisting | Database connection lost | Check `DATABASE_URL`, verify PostgreSQL |
 
-4. **Performance Issues**
-   - Reduce number of active strategies
-   - Increase data update intervals
-   - Use faster ML models (Random Forest vs Neural Network)
+### Git-Crypt Issues
 
-### Debug Mode
+| Symptom | Fix |
+|---------|-----|
+| `.env_dev` shows binary | Run `git-crypt unlock` |
+| "no GPG secret key" | Import your key: `gpg --import private-key.gpg` |
+| New clone can't decrypt | Ask repo owner to run `onboard-team-member.sh` |
 
-```python
-# Enable debug logging
-import logging
-logging.basicConfig(level=logging.DEBUG)
+See [docs/SECRETS.md](docs/SECRETS.md) for more troubleshooting.
 
-# Add debug prints in strategies
-def analyze(self, market_data, positions):
-    logger.debug(f"Analyzing {len(market_data)} bars")
-    # ... strategy logic
+### Reset State
+
+```bash
+# Clear trader state in database (keeps price data and trades)
+psql -U rudra -d rudra_dev -c "DELETE FROM trader_state;"
+
+# Full reset (careful — deletes trade history too)
+psql -U rudra -d rudra_dev -c "DELETE FROM trades; DELETE FROM trader_state; DELETE FROM journal_entries;"
 ```
 
-### Testing Checklist
+---
 
-- [ ] All dependencies installed
-- [ ] Configuration files created
-- [ ] Paper trading working
-- [ ] Strategies generating signals
-- [ ] ML models trained
-- [ ] Risk limits enforced
-- [ ] Performance tracking active
-- [ ] Dashboard accessible
+## Project Structure
 
-## Next Steps
+```
+trading_bot_commentary/
+├── gap_fade_app.py                  # Rudra Trading Engine (main app, ~20K lines)
+├── trading_bot_commentary_updated.py # Main trading bot (~16K lines)
+├── claude_backtest_app.py           # Backtest dashboard (~10K lines)
+├── run_professional_bot.py          # Safe-mode wrapper for main bot
+│
+├── .env_dev                         # Dev secrets (encrypted via git-crypt)
+├── .env.example                     # Template showing required env vars
+├── .gitattributes                   # git-crypt encryption rules
+│
+├── CHANGELOG.md                     # Release notes (auto-updated by build)
+├── CLAUDE.md                        # AI assistant instructions
+│
+├── brokers/                         # Multi-broker adapters
+│   ├── base.py                      #   AbstractBroker interface
+│   ├── alpaca_adapter.py            #   Alpaca (US equities)
+│   ├── oanda_adapter.py             #   OANDA (forex)
+│   ├── coordinator.py               #   MultiBrokerCoordinator
+│   └── market_hours.py              #   Market session detection
+│
+├── gap_fade_strategies/             # Pluggable trading strategies
+│   ├── classic_gap_fade.py          #   Core gap fade strategy
+│   ├── orb_breakout.py              #   Opening range breakout
+│   ├── momentum_surge.py            #   Momentum surge
+│   ├── pullback_entry.py            #   Pullback entry
+│   ├── range_trade.py               #   Range trading
+│   ├── vwap_gap_fade.py             #   VWAP-based gap fade
+│   ├── confluence_gap.py            #   Multi-signal confluence
+│   ├── minervini_trend.py           #   Minervini trend template
+│   ├── strategy_selector.py         #   Condition-based routing
+│   └── indicators.py                #   Technical indicator engine
+│
+├── scripts/
+│   ├── build.sh                     # Docker build (version, changelog, image)
+│   ├── setup-encryption.sh          # One-time git-crypt setup
+│   └── onboard-team-member.sh       # Add GPG user to git-crypt
+│
+├── docs/
+│   └── SECRETS.md                   # Secret management documentation
+│
+├── auth.py                          # OAuth2 (Google/GitHub/Discord)
+├── safe_imports.py                  # Block xgboost/lightgbm (segfault fix)
+├── Modelfile.gapfade                # Ollama model definition for Rudra
+├── migrate_sqlite_to_pg.py          # One-time SQLite → PostgreSQL migration
+│
+├── requirements-gap-fade.txt        # Minimal deps (Rudra engine only)
+├── requirements.txt                 # Full deps (all apps)
+│
+├── gap-fade.service                 # systemd unit file
+├── install-service.sh               # systemd installer
+│
+└── test_*.py                        # Test suites (self-contained, pytest)
+```
 
-1. **Collect Historical Data**: Get real market data for better testing
-2. **Train ML Models**: Use your historical trades to train models
-3. **Optimize Strategies**: Run parameter optimization
-4. **Set Risk Limits**: Configure appropriate risk parameters
-5. **Monitor Performance**: Track results and adjust
+### Database Schema (14 tables)
 
-Remember to always start with paper trading before going live!
+| Table | Purpose | Key Columns |
+|-------|---------|-------------|
+| `daily_bars` | Historical price data (~25M rows) | `symbol, date, OHLCV` |
+| `trades` | Completed trade records | `symbol, entry/exit price, pnl` |
+| `trader_state` | App state persistence | `key, state_json` |
+| `journal_entries` | Decision audit trail | `timestamp, type, content` |
+| `config_profiles` | Named config snapshots | `name, config_json` |
+| `config_history` | Config change audit log | `timestamp, changes_json` |
+| `llm_calls` | LLM call log | `timestamp, prompt, response` |
+| `market_events` | Detected market events | `timestamp, type, data` |
+| `api_calls` | API call audit log | `endpoint, status, response_time` |
+| `performance_snapshots` | Periodic equity snapshots | `equity, trades, drawdown` |
+| `signals_intraday` | Intraday strategy signals | `symbol, strategy, direction` |
+| `candidates_rejected` | Filtered-out candidates | `symbol, rejection_reason` |
+
+---
+
+## Getting Help
+
+- **CLAUDE.md**: AI assistant instructions and architecture reference
+- **CHANGELOG.md**: Version history and recent changes
+- **docs/SECRETS.md**: Secret management with git-crypt
+- **Dashboard**: Click the version number in the footer for release notes
