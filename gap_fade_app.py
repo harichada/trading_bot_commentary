@@ -1853,6 +1853,17 @@ class PriceDB:
             logger.info("PriceDB: added unique constraint to market_events")
         except psycopg2.Error:
             self._conn.rollback()  # constraint already exists
+        # Ensure journal_entries unique constraint exists (migration for existing DBs)
+        try:
+            cur.execute('''
+                ALTER TABLE journal_entries
+                ADD CONSTRAINT journal_entries_dedup
+                UNIQUE (timestamp, entry_type, source, symbol, content)
+            ''')
+            self._conn.commit()
+            logger.info("PriceDB: added unique constraint to journal_entries")
+        except psycopg2.Error:
+            self._conn.rollback()  # constraint already exists
         # Ensure journal_entries.llm_call is BOOLEAN (migration for INTEGER columns)
         try:
             cur.execute('''
