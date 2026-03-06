@@ -1417,13 +1417,23 @@ class AlpacaTickStreamer:
                         await asyncio.sleep(wait)
                         continue
 
-                    await ws.send_json({
-                        'action': 'subscribe',
-                        'trades': self.symbols,
-                    })
-                    sub_resp = await ws.receive_json()
-                    logger.info(f"Alpaca stream: subscribed to {len(self.symbols)} symbols "
-                                f"(sub response: {sub_resp})")
+                    # Subscribe in batches (Alpaca free tier limits ~30 symbols)
+                    _sub_batch = 25
+                    _sub_ok = 0
+                    for _si in range(0, len(self.symbols), _sub_batch):
+                        _batch = self.symbols[_si:_si + _sub_batch]
+                        await ws.send_json({
+                            'action': 'subscribe',
+                            'trades': _batch,
+                        })
+                        sub_resp = await ws.receive_json()
+                        _has_err = any(m.get('T') == 'error' for m in sub_resp)
+                        if _has_err:
+                            logger.warning(f"Alpaca stream: subscribe batch {_si//25} "
+                                           f"error: {sub_resp}")
+                            break
+                        _sub_ok += len(_batch)
+                    logger.info(f"Alpaca stream: subscribed to {_sub_ok}/{len(self.symbols)} symbols")
                     self.connected = True
                     _tick_count = 0
                     _last_tick_log = _time.monotonic()
@@ -8446,10 +8456,13 @@ class GapFadeLiveTrader:
                 bars_list = []
                 for _, row in df.iterrows():
                     ts = row.get('timestamp') or row.name
+                    ts_et = None
                     if hasattr(ts, 'astimezone'):
-                        ts_et = ts.astimezone(ET)
-                    else:
-                        ts_et = None
+                        try:
+                            ts_et = ts.astimezone(ET)
+                        except TypeError:
+                            # tz-naive timestamp (IEX feed) — assume UTC
+                            ts_et = ts.tz_localize('UTC').astimezone(ET)
                     bar_time = ''
                     if ts_et is not None:
                         bar_min = (ts_et.minute // 5) * 5
