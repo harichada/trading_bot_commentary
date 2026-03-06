@@ -1,8 +1,8 @@
-# Sensitive files
+# Sensitive files (env files tracked encrypted via git-crypt)
 Config().yaml
 config.yaml
-*.env
-.env.*
+*.unencrypted
+credentials.local.json
 
 # Authentication tokens
 token_*.json

@@ -1,0 +1,7 @@
+# Encrypt env files with git-crypt (AES-256)
+.env filter=git-crypt diff=git-crypt
+.env_* filter=git-crypt diff=git-crypt
+
+# Encrypt any standalone key/secret files
+*.key filter=git-crypt diff=git-crypt
+secrets/** filter=git-crypt diff=git-crypt
