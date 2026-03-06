@@ -15671,28 +15671,99 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   </div>
 
   <div class="page" id="page-guide">
-    <h2 style="margin-bottom:10px;">How the Bot Works</h2>
+    <h2 style="margin-bottom:10px;">Rudra Trading Engine &mdash; Guide</h2>
+    <p style="color:var(--muted);margin:0 0 16px 0;font-size:12px;">Everything you need to know about trading with Rudra. Click any section to expand.</p>
 
     <!-- Section 1: Strategy Overview -->
-    <div style="margin-bottom:20px;padding:16px;background:rgba(168,85,247,0.06);border:1px solid rgba(168,85,247,0.2);border-radius:8px;">
-      <h3 style="color:var(--purple);margin:0 0 10px 0;font-size:14px;">What Is Gap Fading?</h3>
+    <details open style="margin-bottom:12px;">
+    <summary style="cursor:pointer;padding:12px 16px;background:rgba(168,85,247,0.06);border:1px solid rgba(168,85,247,0.2);border-radius:8px;color:var(--purple);font-weight:600;font-size:14px;list-style:none;">
+      &#9660; What Is Gap Fading?
+    </summary>
+    <div style="padding:12px 16px;border:1px solid rgba(168,85,247,0.1);border-top:none;border-radius:0 0 8px 8px;">
       <p style="color:var(--text);line-height:1.7;margin:0 0 10px 0;font-size:13px;">
         When a stock opens significantly higher than yesterday's close, that jump is called a <strong style="color:var(--purple);">gap up</strong>.
         Most of the time, the price drifts back down toward yesterday's close during the trading day &mdash; this is called <strong style="color:var(--purple);">fading the gap</strong>.
       </p>
       <p style="color:var(--text);line-height:1.7;margin:0 0 10px 0;font-size:13px;">
         This bot finds stocks that gapped up on <em>below-average volume</em> (a sign the move lacks conviction) and shorts them,
-        betting the price will fall back. It closes all positions before market close &mdash; no overnight risk.
+        betting the price will fall back. It also goes <strong style="color:var(--green);">long on gap-downs</strong> when enabled. All positions are closed before market close &mdash; no overnight risk.
       </p>
       <div style="display:inline-block;padding:8px 14px;background:rgba(168,85,247,0.12);border-radius:6px;margin-top:4px;">
         <span style="color:var(--purple);font-weight:600;font-size:13px;">Statistical Edge:</span>
         <span style="color:var(--text);font-size:13px;"> 71% of low-volume gap-ups fade &mdash; historical study of 12,000+ events across 450 tickers.</span>
       </div>
     </div>
+    </details>
+
+    <!-- Section: Available Strategies -->
+    <details style="margin-bottom:12px;">
+    <summary style="cursor:pointer;padding:12px 16px;background:rgba(168,85,247,0.06);border:1px solid rgba(168,85,247,0.2);border-radius:8px;color:var(--purple);font-weight:600;font-size:14px;list-style:none;">
+      &#9654; Trading Strategies
+    </summary>
+    <div style="padding:12px 16px;border:1px solid rgba(168,85,247,0.1);border-top:none;border-radius:0 0 8px 8px;">
+      <p style="color:var(--muted);margin:0 0 10px 0;font-size:12px;">Rudra supports multiple strategies. The active strategy can be switched via Config or Rudra chat.</p>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill, minmax(240px, 1fr));gap:8px;">
+        <div style="padding:8px 12px;background:var(--card);border:1px solid var(--border);border-radius:6px;">
+          <span style="color:var(--cyan);font-weight:600;font-size:12px;">Classic Gap Fade</span>
+          <p style="color:var(--muted);margin:3px 0 0;font-size:11px;">Core strategy. Short gap-ups, long gap-downs. Daily bars, mean reversion.</p>
+        </div>
+        <div style="padding:8px 12px;background:var(--card);border:1px solid var(--border);border-radius:6px;">
+          <span style="color:var(--cyan);font-weight:600;font-size:12px;">ORB Breakout</span>
+          <p style="color:var(--muted);margin:3px 0 0;font-size:11px;">Opening range breakout. Enters when price breaks the first 15-min high/low.</p>
+        </div>
+        <div style="padding:8px 12px;background:var(--card);border:1px solid var(--border);border-radius:6px;">
+          <span style="color:var(--cyan);font-weight:600;font-size:12px;">Momentum Surge</span>
+          <p style="color:var(--muted);margin:3px 0 0;font-size:11px;">Rides strong intraday moves with volume confirmation and EMA alignment.</p>
+        </div>
+        <div style="padding:8px 12px;background:var(--card);border:1px solid var(--border);border-radius:6px;">
+          <span style="color:var(--cyan);font-weight:600;font-size:12px;">Pullback Entry</span>
+          <p style="color:var(--muted);margin:3px 0 0;font-size:11px;">Enters on pullbacks to VWAP or EMA support within a trending move.</p>
+        </div>
+        <div style="padding:8px 12px;background:var(--card);border:1px solid var(--border);border-radius:6px;">
+          <span style="color:var(--cyan);font-weight:600;font-size:12px;">Range Trade</span>
+          <p style="color:var(--muted);margin:3px 0 0;font-size:11px;">Mean-reversion within defined ranges. Buys support, sells resistance.</p>
+        </div>
+        <div style="padding:8px 12px;background:var(--card);border:1px solid var(--border);border-radius:6px;">
+          <span style="color:var(--cyan);font-weight:600;font-size:12px;">VWAP Gap Fade</span>
+          <p style="color:var(--muted);margin:3px 0 0;font-size:11px;">Gap fade with VWAP confirmation. Waits for price to reject at VWAP.</p>
+        </div>
+      </div>
+    </div>
+    </details>
+
+    <!-- Section: Feature Toggles -->
+    <details style="margin-bottom:12px;">
+    <summary style="cursor:pointer;padding:12px 16px;background:rgba(59,130,246,0.06);border:1px solid rgba(59,130,246,0.2);border-radius:8px;color:var(--blue);font-weight:600;font-size:14px;list-style:none;">
+      &#9654; Feature Toggles &amp; Config
+    </summary>
+    <div style="padding:12px 16px;border:1px solid rgba(59,130,246,0.1);border-top:none;border-radius:0 0 8px 8px;">
+      <p style="color:var(--muted);margin:0 0 10px 0;font-size:12px;">All parameters can be changed at runtime via the <strong>Config</strong> page. Changes persist across restarts.</p>
+      <table style="width:100%;font-size:12px;border-collapse:collapse;">
+        <thead><tr style="color:var(--cyan);text-align:left;border-bottom:1px solid var(--border);">
+          <th style="padding:6px 8px;">Parameter</th><th style="padding:6px 8px;">Default</th><th style="padding:6px 8px;">Description</th>
+        </tr></thead>
+        <tbody style="color:var(--text);">
+          <tr style="border-bottom:1px solid rgba(148,163,184,0.1);"><td style="padding:5px 8px;"><code style="color:var(--cyan);">gap_threshold</code></td><td style="padding:5px 8px;">0.02</td><td style="padding:5px 8px;color:var(--muted);">Minimum gap % to qualify (2%)</td></tr>
+          <tr style="border-bottom:1px solid rgba(148,163,184,0.1);"><td style="padding:5px 8px;"><code style="color:var(--cyan);">min_avg_volume</code></td><td style="padding:5px 8px;">50,000</td><td style="padding:5px 8px;color:var(--muted);">Minimum 20-day avg volume filter</td></tr>
+          <tr style="border-bottom:1px solid rgba(148,163,184,0.1);"><td style="padding:5px 8px;"><code style="color:var(--cyan);">max_positions</code></td><td style="padding:5px 8px;">3</td><td style="padding:5px 8px;color:var(--muted);">Maximum concurrent positions</td></tr>
+          <tr style="border-bottom:1px solid rgba(148,163,184,0.1);"><td style="padding:5px 8px;"><code style="color:var(--cyan);">position_size_pct</code></td><td style="padding:5px 8px;">0.10</td><td style="padding:5px 8px;color:var(--muted);">Position size as % of equity</td></tr>
+          <tr style="border-bottom:1px solid rgba(148,163,184,0.1);"><td style="padding:5px 8px;"><code style="color:var(--cyan);">stop_loss_pct</code></td><td style="padding:5px 8px;">0.03</td><td style="padding:5px 8px;color:var(--muted);">Stop-loss distance (3%)</td></tr>
+          <tr style="border-bottom:1px solid rgba(148,163,184,0.1);"><td style="padding:5px 8px;"><code style="color:var(--cyan);">adaptive_stops</code></td><td style="padding:5px 8px;">true</td><td style="padding:5px 8px;color:var(--muted);">ATR-based dynamic stop adjustment</td></tr>
+          <tr style="border-bottom:1px solid rgba(148,163,184,0.1);"><td style="padding:5px 8px;"><code style="color:var(--cyan);">regime_filter</code></td><td style="padding:5px 8px;">true</td><td style="padding:5px 8px;color:var(--muted);">Skip trades in unfavorable market regimes</td></tr>
+          <tr style="border-bottom:1px solid rgba(148,163,184,0.1);"><td style="padding:5px 8px;"><code style="color:var(--cyan);">reentry_enabled</code></td><td style="padding:5px 8px;">true</td><td style="padding:5px 8px;color:var(--muted);">Re-enter after stop-out if price reverses</td></tr>
+          <tr style="border-bottom:1px solid rgba(148,163,184,0.1);"><td style="padding:5px 8px;"><code style="color:var(--cyan);">gap_down_enabled</code></td><td style="padding:5px 8px;">true</td><td style="padding:5px 8px;color:var(--muted);">Long entries on gap-downs</td></tr>
+          <tr><td style="padding:5px 8px;"><code style="color:var(--cyan);">llm_enabled</code></td><td style="padding:5px 8px;">false</td><td style="padding:5px 8px;color:var(--muted);">Enable Rudra LLM autonomous decisions</td></tr>
+        </tbody>
+      </table>
+    </div>
+    </details>
 
     <!-- Section 2: Daily Schedule Timeline -->
-    <div style="margin-bottom:20px;padding:16px;background:rgba(6,182,212,0.06);border:1px solid rgba(6,182,212,0.2);border-radius:8px;">
-      <h3 style="color:var(--cyan);margin:0 0 14px 0;font-size:14px;">Daily Schedule</h3>
+    <details open style="margin-bottom:12px;">
+    <summary style="cursor:pointer;padding:12px 16px;background:rgba(6,182,212,0.06);border:1px solid rgba(6,182,212,0.2);border-radius:8px;color:var(--cyan);font-weight:600;font-size:14px;list-style:none;">
+      &#9660; Daily Schedule
+    </summary>
+    <div style="padding:12px 16px;border:1px solid rgba(6,182,212,0.1);border-top:none;border-radius:0 0 8px 8px;">
       <div id="guideTimeline">
         <div class="tl-step" data-phase="premarket" style="display:flex;align-items:flex-start;margin-bottom:14px;position:relative;padding-left:28px;">
           <div style="position:absolute;left:0;top:2px;width:14px;height:14px;border-radius:50%;background:var(--blue);border:2px solid rgba(59,130,246,0.4);"></div>
@@ -15744,10 +15815,14 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       </div>
       <div id="guideNextEvent" style="margin-top:14px;padding:8px 12px;background:rgba(6,182,212,0.10);border-radius:6px;font-size:12px;color:var(--cyan);display:none;"></div>
     </div>
+    </details>
 
     <!-- Section 3: Safety Features -->
-    <div style="margin-bottom:20px;padding:16px;background:rgba(34,197,94,0.06);border:1px solid rgba(34,197,94,0.2);border-radius:8px;">
-      <h3 style="color:var(--green);margin:0 0 12px 0;font-size:14px;">Safety Features (Circuit Breakers)</h3>
+    <details style="margin-bottom:12px;">
+    <summary style="cursor:pointer;padding:12px 16px;background:rgba(34,197,94,0.06);border:1px solid rgba(34,197,94,0.2);border-radius:8px;color:var(--green);font-weight:600;font-size:14px;list-style:none;">
+      &#9654; Safety Features (Circuit Breakers)
+    </summary>
+    <div style="padding:12px 16px;border:1px solid rgba(34,197,94,0.1);border-top:none;border-radius:0 0 8px 8px;">
       <p style="color:var(--muted);margin:0 0 12px 0;font-size:12px;">The bot has three automatic safety switches that pause or halt trading to protect your account:</p>
       <div style="display:flex;flex-direction:column;gap:10px;">
         <div style="display:flex;align-items:flex-start;gap:10px;">
@@ -15772,11 +15847,134 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           </div>
         </div>
       </div>
+      <div style="margin-top:12px;padding:10px 12px;background:rgba(34,197,94,0.08);border-radius:6px;">
+        <span style="color:var(--green);font-weight:600;font-size:12px;">Drawdown Tiers:</span>
+        <span style="color:var(--muted);font-size:12px;">Tier 1 (5% DD) &rarr; reduce size 50% | Tier 2 (8%) &rarr; reduce 75%, skip entries | Hard Stop (10%) &rarr; halt all trading</span>
+      </div>
     </div>
+    </details>
+
+    <!-- Section: Rudra LLM Supervisor -->
+    <details style="margin-bottom:12px;">
+    <summary style="cursor:pointer;padding:12px 16px;background:rgba(168,85,247,0.06);border:1px solid rgba(168,85,247,0.2);border-radius:8px;color:var(--purple);font-weight:600;font-size:14px;list-style:none;">
+      &#9654; Rudra LLM Supervisor
+    </summary>
+    <div style="padding:12px 16px;border:1px solid rgba(168,85,247,0.1);border-top:none;border-radius:0 0 8px 8px;">
+      <p style="color:var(--text);line-height:1.7;margin:0 0 10px 0;font-size:13px;">
+        Rudra is an autonomous LLM that monitors positions, makes trading decisions, and manages risk in real-time.
+        Enable it by setting <code style="color:var(--cyan);">llm_enabled = true</code> in Config.
+      </p>
+      <p style="color:var(--muted);margin:0 0 10px 0;font-size:12px;font-weight:600;">What Rudra does:</p>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill, minmax(200px, 1fr));gap:6px;margin-bottom:10px;">
+        <div style="padding:6px 10px;background:var(--card);border:1px solid var(--border);border-radius:5px;font-size:11px;color:var(--text);">&#128269; <strong>Scans</strong> &mdash; evaluates gap candidates</div>
+        <div style="padding:6px 10px;background:var(--card);border:1px solid var(--border);border-radius:5px;font-size:11px;color:var(--text);">&#128200; <strong>Enters</strong> &mdash; sizes positions with reasoning</div>
+        <div style="padding:6px 10px;background:var(--card);border:1px solid var(--border);border-radius:5px;font-size:11px;color:var(--text);">&#128065; <strong>Monitors</strong> &mdash; adjusts stops dynamically</div>
+        <div style="padding:6px 10px;background:var(--card);border:1px solid var(--border);border-radius:5px;font-size:11px;color:var(--text);">&#128683; <strong>Exits</strong> &mdash; targets, pullbacks, reversals</div>
+        <div style="padding:6px 10px;background:var(--card);border:1px solid var(--border);border-radius:5px;font-size:11px;color:var(--text);">&#128214; <strong>Journals</strong> &mdash; logs every decision</div>
+        <div style="padding:6px 10px;background:var(--card);border:1px solid var(--border);border-radius:5px;font-size:11px;color:var(--text);">&#127891; <strong>Learns</strong> &mdash; adapts from past trades</div>
+      </div>
+      <p style="color:var(--muted);margin:0 0 8px 0;font-size:12px;font-weight:600;">Chat commands (use the Chat page):</p>
+      <div style="display:flex;flex-wrap:wrap;gap:6px;">
+        <code style="padding:3px 8px;background:var(--card);border:1px solid var(--border);border-radius:4px;font-size:11px;color:var(--cyan);">How are my positions?</code>
+        <code style="padding:3px 8px;background:var(--card);border:1px solid var(--border);border-radius:4px;font-size:11px;color:var(--cyan);">Close AAPL</code>
+        <code style="padding:3px 8px;background:var(--card);border:1px solid var(--border);border-radius:4px;font-size:11px;color:var(--cyan);">Switch to ORB strategy</code>
+        <code style="padding:3px 8px;background:var(--card);border:1px solid var(--border);border-radius:4px;font-size:11px;color:var(--cyan);">Pause trading 30 min</code>
+        <code style="padding:3px 8px;background:var(--card);border:1px solid var(--border);border-radius:4px;font-size:11px;color:var(--cyan);">Review risk exposure</code>
+      </div>
+      <div style="margin-top:10px;padding:8px 12px;background:rgba(168,85,247,0.08);border-radius:6px;font-size:11px;color:var(--muted);">
+        <strong style="color:var(--purple);">Providers:</strong> Ollama (local), OpenAI, Groq, Together &mdash; set <code style="color:var(--cyan);">llm_provider</code> and <code style="color:var(--cyan);">llm_model</code> in Config.
+      </div>
+    </div>
+    </details>
+
+    <!-- Section: Multi-Broker -->
+    <details style="margin-bottom:12px;">
+    <summary style="cursor:pointer;padding:12px 16px;background:rgba(59,130,246,0.06);border:1px solid rgba(59,130,246,0.2);border-radius:8px;color:var(--blue);font-weight:600;font-size:14px;list-style:none;">
+      &#9654; Multi-Broker Trading
+    </summary>
+    <div style="padding:12px 16px;border:1px solid rgba(59,130,246,0.1);border-top:none;border-radius:0 0 8px 8px;">
+      <p style="color:var(--text);line-height:1.7;margin:0 0 10px 0;font-size:13px;">
+        Trade across multiple brokers simultaneously. Each broker runs its own strategy instance with separate state and P&amp;L tracking.
+        A combined risk manager enforces cross-broker limits.
+      </p>
+      <table style="width:100%;font-size:12px;border-collapse:collapse;margin-bottom:10px;">
+        <thead><tr style="color:var(--cyan);text-align:left;border-bottom:1px solid var(--border);">
+          <th style="padding:5px 8px;">Broker</th><th style="padding:5px 8px;">Asset Class</th><th style="padding:5px 8px;">Env Vars</th><th style="padding:5px 8px;">Status</th>
+        </tr></thead>
+        <tbody style="color:var(--text);">
+          <tr style="border-bottom:1px solid rgba(148,163,184,0.1);"><td style="padding:5px 8px;">Alpaca</td><td style="padding:5px 8px;">US Equities</td><td style="padding:5px 8px;"><code style="color:var(--cyan);font-size:11px;">ALPACA_API_KEY</code></td><td style="padding:5px 8px;color:var(--green);">Primary (always active)</td></tr>
+          <tr><td style="padding:5px 8px;">OANDA</td><td style="padding:5px 8px;">Forex</td><td style="padding:5px 8px;"><code style="color:var(--cyan);font-size:11px;">OANDA_ACCOUNT_ID</code></td><td style="padding:5px 8px;color:var(--muted);">Added if env vars set</td></tr>
+        </tbody>
+      </table>
+      <div style="padding:8px 12px;background:rgba(59,130,246,0.08);border-radius:6px;font-size:11px;color:var(--muted);">
+        <strong style="color:var(--blue);">Cross-broker safety:</strong> Combined daily loss limit, max drawdown, and position count checked across all brokers before any new entry.
+      </div>
+    </div>
+    </details>
+
+    <!-- Section: Backtesting -->
+    <details style="margin-bottom:12px;">
+    <summary style="cursor:pointer;padding:12px 16px;background:rgba(234,179,8,0.06);border:1px solid rgba(234,179,8,0.2);border-radius:8px;color:var(--yellow);font-weight:600;font-size:14px;list-style:none;">
+      &#9654; Backtesting
+    </summary>
+    <div style="padding:12px 16px;border:1px solid rgba(234,179,8,0.1);border-top:none;border-radius:0 0 8px 8px;">
+      <p style="color:var(--text);line-height:1.7;margin:0 0 10px 0;font-size:13px;">
+        Test strategies against historical data before risking real capital. The <strong>Backtest</strong> page lets you configure date ranges, symbols, and feature toggles.
+      </p>
+      <p style="color:var(--muted);margin:0 0 8px 0;font-size:12px;font-weight:600;">How to run a backtest:</p>
+      <div style="display:flex;flex-direction:column;gap:6px;margin-bottom:10px;">
+        <div style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text);">
+          <span style="min-width:20px;height:20px;display:flex;align-items:center;justify-content:center;background:var(--yellow);border-radius:50%;color:#000;font-weight:700;font-size:10px;">1</span>
+          Go to the <strong>Backtest</strong> page in the sidebar
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text);">
+          <span style="min-width:20px;height:20px;display:flex;align-items:center;justify-content:center;background:var(--yellow);border-radius:50%;color:#000;font-weight:700;font-size:10px;">2</span>
+          Set date range, initial capital, and toggle features (adaptive stops, regime filter, etc.)
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text);">
+          <span style="min-width:20px;height:20px;display:flex;align-items:center;justify-content:center;background:var(--yellow);border-radius:50%;color:#000;font-weight:700;font-size:10px;">3</span>
+          Click <strong>Run Backtest</strong> &mdash; results show equity curve, trade list, and metrics
+        </div>
+      </div>
+      <p style="color:var(--muted);margin:0 0 6px 0;font-size:12px;font-weight:600;">Key metrics explained:</p>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill, minmax(180px, 1fr));gap:6px;">
+        <div style="padding:5px 8px;background:var(--card);border:1px solid var(--border);border-radius:4px;font-size:11px;"><strong style="color:var(--yellow);">Sharpe Ratio</strong><br><span style="color:var(--muted);">Risk-adjusted return. &gt;1.0 is good, &gt;2.0 is excellent.</span></div>
+        <div style="padding:5px 8px;background:var(--card);border:1px solid var(--border);border-radius:4px;font-size:11px;"><strong style="color:var(--yellow);">Max Drawdown</strong><br><span style="color:var(--muted);">Largest peak-to-trough drop. Lower is better.</span></div>
+        <div style="padding:5px 8px;background:var(--card);border:1px solid var(--border);border-radius:4px;font-size:11px;"><strong style="color:var(--yellow);">Win Rate</strong><br><span style="color:var(--muted);">% of profitable trades. 50%+ is solid for this strategy.</span></div>
+        <div style="padding:5px 8px;background:var(--card);border:1px solid var(--border);border-radius:4px;font-size:11px;"><strong style="color:var(--yellow);">Profit Factor</strong><br><span style="color:var(--muted);">Gross profit / gross loss. &gt;1.5 is target.</span></div>
+      </div>
+      <div style="margin-top:10px;padding:8px 12px;background:rgba(234,179,8,0.08);border-radius:6px;font-size:11px;color:var(--muted);">
+        <strong style="color:var(--yellow);">Data:</strong> 25M+ daily bars in PostgreSQL (2006&ndash;present, 2000+ symbols). Sources: Yahoo (2006&ndash;2015), Alpaca (2016+).
+      </div>
+    </div>
+    </details>
+
+    <!-- Section: Database & State -->
+    <details style="margin-bottom:12px;">
+    <summary style="cursor:pointer;padding:12px 16px;background:rgba(148,163,184,0.06);border:1px solid rgba(148,163,184,0.15);border-radius:8px;color:var(--muted);font-weight:600;font-size:14px;list-style:none;">
+      &#9654; Database &amp; State
+    </summary>
+    <div style="padding:12px 16px;border:1px solid rgba(148,163,184,0.1);border-top:none;border-radius:0 0 8px 8px;">
+      <p style="color:var(--text);line-height:1.7;margin:0 0 10px 0;font-size:13px;">
+        Everything is stored in PostgreSQL &mdash; no files written to disk. Price data, trades, config, state, journal, and audit logs all live in the database.
+      </p>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill, minmax(220px, 1fr));gap:6px;">
+        <div style="padding:5px 8px;background:var(--card);border:1px solid var(--border);border-radius:4px;font-size:11px;"><strong style="color:var(--cyan);">daily_bars</strong><span style="color:var(--muted);"> &mdash; ~25M rows of OHLCV data</span></div>
+        <div style="padding:5px 8px;background:var(--card);border:1px solid var(--border);border-radius:4px;font-size:11px;"><strong style="color:var(--cyan);">trades</strong><span style="color:var(--muted);"> &mdash; all completed trades</span></div>
+        <div style="padding:5px 8px;background:var(--card);border:1px solid var(--border);border-radius:4px;font-size:11px;"><strong style="color:var(--cyan);">trader_state</strong><span style="color:var(--muted);"> &mdash; positions, equity, config</span></div>
+        <div style="padding:5px 8px;background:var(--card);border:1px solid var(--border);border-radius:4px;font-size:11px;"><strong style="color:var(--cyan);">journal_entries</strong><span style="color:var(--muted);"> &mdash; decision audit trail</span></div>
+        <div style="padding:5px 8px;background:var(--card);border:1px solid var(--border);border-radius:4px;font-size:11px;"><strong style="color:var(--cyan);">config_history</strong><span style="color:var(--muted);"> &mdash; config change log</span></div>
+        <div style="padding:5px 8px;background:var(--card);border:1px solid var(--border);border-radius:4px;font-size:11px;"><strong style="color:var(--cyan);">llm_calls</strong><span style="color:var(--muted);"> &mdash; Rudra decision log</span></div>
+      </div>
+    </div>
+    </details>
 
     <!-- Section 4: Quick Start -->
-    <div style="margin-bottom:20px;padding:16px;background:rgba(59,130,246,0.06);border:1px solid rgba(59,130,246,0.2);border-radius:8px;">
-      <h3 style="color:var(--blue);margin:0 0 12px 0;font-size:14px;">Quick Start &mdash; 3 Steps</h3>
+    <details open style="margin-bottom:12px;">
+    <summary style="cursor:pointer;padding:12px 16px;background:rgba(59,130,246,0.06);border:1px solid rgba(59,130,246,0.2);border-radius:8px;color:var(--blue);font-weight:600;font-size:14px;list-style:none;">
+      &#9660; Quick Start &mdash; 3 Steps
+    </summary>
+    <div style="padding:12px 16px;border:1px solid rgba(59,130,246,0.1);border-top:none;border-radius:0 0 8px 8px;">
       <div style="display:flex;flex-direction:column;gap:12px;">
         <div style="display:flex;align-items:flex-start;gap:12px;">
           <div style="min-width:28px;height:28px;display:flex;align-items:center;justify-content:center;background:var(--blue);border-radius:50%;color:#fff;font-weight:700;font-size:13px;">1</div>
@@ -15801,10 +15999,14 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         </div>
       </div>
     </div>
+    </details>
 
     <!-- Section 5: Status Badge Legend -->
-    <div style="margin-bottom:10px;padding:16px;background:rgba(148,163,184,0.06);border:1px solid rgba(148,163,184,0.15);border-radius:8px;">
-      <h3 style="color:var(--muted);margin:0 0 12px 0;font-size:14px;">Status Badge Legend</h3>
+    <details style="margin-bottom:12px;">
+    <summary style="cursor:pointer;padding:12px 16px;background:rgba(148,163,184,0.06);border:1px solid rgba(148,163,184,0.15);border-radius:8px;color:var(--muted);font-weight:600;font-size:14px;list-style:none;">
+      &#9654; Status Badge Legend
+    </summary>
+    <div style="padding:12px 16px;border:1px solid rgba(148,163,184,0.08);border-top:none;border-radius:0 0 8px 8px;">
       <div style="display:grid;grid-template-columns:repeat(auto-fill, minmax(280px, 1fr));gap:10px;">
         <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:var(--card);border:1px solid var(--border);border-radius:6px;">
           <span style="display:inline-block;padding:3px 10px;border-radius:4px;font-size:11px;font-weight:600;background:rgba(148,163,184,0.15);color:var(--muted);">STOPPED</span>
@@ -15828,6 +16030,33 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         </div>
       </div>
     </div>
+    </details>
+
+    <!-- Section: Version & Docs -->
+    <details style="margin-bottom:12px;">
+    <summary style="cursor:pointer;padding:12px 16px;background:rgba(148,163,184,0.06);border:1px solid rgba(148,163,184,0.15);border-radius:8px;color:var(--muted);font-weight:600;font-size:14px;list-style:none;">
+      &#9654; Version, Builds &amp; Documentation
+    </summary>
+    <div style="padding:12px 16px;border:1px solid rgba(148,163,184,0.08);border-top:none;border-radius:0 0 8px 8px;">
+      <p style="color:var(--text);line-height:1.7;margin:0 0 10px 0;font-size:13px;">
+        Click the version number in the <strong>footer bar</strong> to see full release notes for every version.
+      </p>
+      <p style="color:var(--muted);margin:0 0 8px 0;font-size:12px;font-weight:600;">How versioning works:</p>
+      <div style="display:flex;flex-direction:column;gap:6px;margin-bottom:10px;">
+        <div style="font-size:12px;color:var(--text);padding:4px 0;"><code style="color:var(--cyan);">CHANGELOG.md</code> &mdash; single source of truth for release notes (auto-updated by build script)</div>
+        <div style="font-size:12px;color:var(--text);padding:4px 0;"><code style="color:var(--cyan);">build_info.json</code> &mdash; version, git SHA, build time (baked into Docker image)</div>
+        <div style="font-size:12px;color:var(--text);padding:4px 0;"><code style="color:var(--cyan);">git tags</code> &mdash; version detected from tags in dev, from build_info.json in Docker</div>
+      </div>
+      <p style="color:var(--muted);margin:0 0 8px 0;font-size:12px;font-weight:600;">Deployment pipeline:</p>
+      <div style="padding:8px 12px;background:var(--card);border:1px solid var(--border);border-radius:6px;font-size:12px;color:var(--text);font-family:var(--mono);">
+        git tag v13.0 &rarr; make build &rarr; make test-image &rarr; make deploy-sit &rarr; make deploy-prod
+      </div>
+      <p style="color:var(--muted);margin:10px 0 0 0;font-size:12px;">
+        Full setup guide: <code style="color:var(--cyan);">run_and_test_guide.md</code> in the repo root.
+        Secret management: <code style="color:var(--cyan);">docs/SECRETS.md</code>.
+      </p>
+    </div>
+    </details>
 
   </div>
 
