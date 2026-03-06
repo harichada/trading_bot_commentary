@@ -1627,7 +1627,7 @@ class PriceDB:
                 symbol     TEXT DEFAULT '',
                 content    TEXT NOT NULL,
                 data       TEXT DEFAULT '{}',
-                llm_call   INTEGER DEFAULT 0,
+                llm_call   BOOLEAN DEFAULT FALSE,
                 UNIQUE(timestamp, entry_type, source, symbol, content)
             )
         ''')
@@ -1842,6 +1842,28 @@ class PriceDB:
             cur.execute("ALTER TABLE trades ADD COLUMN setup_type TEXT DEFAULT ''")
             self._conn.commit()
             logger.info("PriceDB: migrated trades table — added strategy_id, setup_type columns")
+        # Ensure market_events unique constraint exists (migration for existing DBs)
+        try:
+            cur.execute('''
+                ALTER TABLE market_events
+                ADD CONSTRAINT market_events_dedup
+                UNIQUE (timestamp, event_type, symbol, dedup_key)
+            ''')
+            self._conn.commit()
+            logger.info("PriceDB: added unique constraint to market_events")
+        except psycopg2.Error:
+            self._conn.rollback()  # constraint already exists
+        # Ensure journal_entries.llm_call is BOOLEAN (migration for INTEGER columns)
+        try:
+            cur.execute('''
+                ALTER TABLE journal_entries
+                ALTER COLUMN llm_call TYPE BOOLEAN
+                USING llm_call::boolean
+            ''')
+            self._conn.commit()
+            logger.info("PriceDB: migrated journal_entries.llm_call to BOOLEAN")
+        except psycopg2.Error:
+            self._conn.rollback()  # already BOOLEAN or doesn't need migration
         # Migrate legacy JSONL journal files (one-time)
         self._migrate_jsonl_to_db()
         # Update query planner statistics (fast on subsequent runs)
@@ -2272,7 +2294,7 @@ class PriceDB:
             ''', (entry['timestamp'], entry['entry_type'], entry['source'],
                   entry.get('symbol', ''), entry['content'],
                   json.dumps(entry.get('data', {}), default=str),
-                  1 if entry.get('llm_call') else 0))
+                  bool(entry.get('llm_call'))))
             self._conn.commit()
         except Exception as e:
             self._conn.rollback()
@@ -2805,7 +2827,7 @@ class PriceDB:
                                 entry.get('symbol', ''),
                                 entry.get('content', ''),
                                 json.dumps(entry.get('data', {}), default=str),
-                                1 if entry.get('llm_call') else 0,
+                                bool(entry.get('llm_call')),
                             ))
                         except json.JSONDecodeError:
                             continue
