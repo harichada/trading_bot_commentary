@@ -7793,6 +7793,8 @@ class GapFadeLiveTrader:
         self._last_llm_state_hash = ''  # detect meaningful state changes
         self._last_loop_heartbeat = _time.monotonic()  # watchdog: trading loop health
         self._last_model_rebuild = ''  # ISO date of last model rebuild
+        self._trading_halted: bool = False  # EOD circuit breaker — set by watchdog, blocks new entries
+        self._eod_watchdog_task: Optional[asyncio.Task] = None  # independent EOD guardian
 
         # SQLite database for persistent storage
         _db = get_price_db()
@@ -8142,6 +8144,10 @@ class GapFadeLiveTrader:
         Throttled to config.intraday_scan_interval.
         Uses StrategySelector to pick strategies based on SPY market condition.
         """
+        # Circuit breaker: EOD watchdog has halted trading
+        if self._trading_halted:
+            return
+
         now_mono = _time.monotonic()
         now = datetime.now(ET)
         today = now.strftime('%Y-%m-%d')
@@ -8595,6 +8601,10 @@ class GapFadeLiveTrader:
                          f"strategies, {len(self._intraday_watchlist)} watchlist symbols")
 
         self._task = asyncio.create_task(self._trading_loop())
+        # Start independent EOD watchdog (if not already running)
+        if (self._eod_watchdog_task is None or self._eod_watchdog_task.done()):
+            self._eod_watchdog_task = asyncio.create_task(self._eod_watchdog())
+            logger.info("EOD watchdog task started (independent of trading loop)")
         logger.info("Live trader started")
         self._add_message('system', 'Live trader started')
         await broadcast({'type': 'live_status', 'status': self.status})
@@ -8625,6 +8635,13 @@ class GapFadeLiveTrader:
                 await self._monitor_task
             except asyncio.CancelledError:
                 pass
+        if self._eod_watchdog_task and not self._eod_watchdog_task.done():
+            self._eod_watchdog_task.cancel()
+            try:
+                await self._eod_watchdog_task
+            except asyncio.CancelledError:
+                pass
+        self._trading_halted = False
         self._add_message('system', 'Live trader stopped')
         self._save_state()
         await broadcast({'type': 'live_status', 'status': self.status})
@@ -9034,15 +9051,14 @@ class GapFadeLiveTrader:
         """Main trading loop — LLM-driven when enabled, schedule-based fallback.
 
         When LLM supervisor is active, it decides every action (scan, enter,
-        monitor, standdown). Safety nets (before 7AM sleep, EOD close, after-hours
-        shutdown) always run mechanically regardless of LLM.
+        monitor, standdown). EOD close is handled by independent _eod_watchdog
+        task — this loop only respects the circuit breaker flag.
         """
         # Track what has been done today (reset on new date) — used by fallback schedule
         _done_date = ''
         _did_scan_7am = False
         _did_scan_925 = False
         _did_enter = False
-        _did_eod = False
         _did_close_on_open = False
 
         try:
@@ -9058,7 +9074,6 @@ class GapFadeLiveTrader:
                     _did_scan_7am = False
                     _did_scan_925 = False
                     _did_enter = False
-                    _did_eod = False
                     _did_close_on_open = False
                     self._last_perf_snapshot_hour = -1
 
@@ -9146,31 +9161,28 @@ class GapFadeLiveTrader:
                     else:
                         _did_close_on_open = True  # nothing to close
 
-                # EOD close at 3:50+ PM (once per day, mechanical safety net)
-                if now.hour == 15 and now.minute >= 50 and not _did_eod:
-                    # EOD Debrief — run before closing positions
-                    if self.llm_supervisor and self.llm_supervisor.is_available():
-                        state = self._build_llm_state(now)
-                        debrief = await self.llm_supervisor.eod_debrief(
-                            state, event_queue=self._event_bus)
-                        if debrief:
-                            self._add_message('conversation',
-                                f'BOT: Day wrap-up request | RUDRA: {debrief}')
-                            await broadcast({'type': 'conversation',
-                                'speaker': 'rudra', 'text': debrief})
-                    # EOD performance snapshot
-                    self._record_performance_snapshot('eod')
+                # EOD close is handled by independent _eod_watchdog task.
+                # Trading loop just respects the circuit breaker flag.
+                if self._trading_halted:
                     if self.engine.positions:
-                        _did_eod = True
-                        await self._eod_close()
-                        await asyncio.sleep(60)
+                        # Watchdog is handling close — yield control
+                        await asyncio.sleep(5)
                         continue
+                    # No positions, halted — fall through to after-hours sleep
 
                 # After hours (4 PM+) — save state, sleep until next morning
                 if now.hour >= 16:
+                    # Reset circuit breaker for next day
+                    self._trading_halted = False
+
+                    # If watchdog somehow missed positions, last-resort close
                     if self.engine.positions:
-                        logger.error("CRITICAL: After hours with open positions! Emergency close.")
-                        self._add_message('error', 'EMERGENCY: Positions open after hours — force closing')
+                        logger.error("EOD WATCHDOG FAILURE: positions still open at 4 PM — emergency close")
+                        self._add_message('error', 'WATCHDOG FAILURE: Positions open after hours — force closing')
+                        await self.alerter.send('EOD WATCHDOG FAILURE',
+                            f'Positions still open at {now.strftime("%H:%M")} after watchdog should have closed them.\n'
+                            f'Symbols: {list(self.engine.positions.keys())}',
+                            level='error')
                         await self._eod_close()
 
                     # Send daily P&L summary before resetting
@@ -9638,6 +9650,12 @@ class GapFadeLiveTrader:
             llm_symbols: if set, only enter these symbols (LLM-selected, in order)
             size_mult: scale position size by this factor (0.5-1.0, LLM confidence)
         """
+        # Circuit breaker: EOD watchdog has halted trading
+        if self._trading_halted:
+            self._add_message('system', 'Entry blocked — EOD circuit breaker active')
+            logger.info("_enter_positions blocked by EOD circuit breaker")
+            return
+
         self.status = 'trading'
         await broadcast({'type': 'live_status', 'status': 'trading'})
 
@@ -10875,6 +10893,227 @@ class GapFadeLiveTrader:
         self._save_state()
 
     # -------------------------------------------------------------------------
+    # EOD Watchdog — independent task guaranteeing position close
+    # -------------------------------------------------------------------------
+
+    async def _eod_watchdog(self) -> None:
+        """Independent EOD guardian task. Runs as a separate asyncio.Task.
+
+        Architecture: This task is completely independent of the trading loop.
+        It cannot be blocked by LLM calls, standdown sleeps, or any other
+        trading loop operation. It fires on a wall-clock schedule.
+
+        Timeline (all times Eastern):
+            3:45 PM — Circuit breaker: block new entries
+            3:50 PM — EOD close: cancel stops, close all positions
+            3:55 PM — Force close: retry any remaining positions
+            4:00 PM — Emergency liquidation: Alpaca DELETE API
+            4:05 PM — Final audit: alert if anything remains
+
+        SLA: 100% execution rate. Zero tolerance for missed deadlines.
+        """
+        logger.info("EOD watchdog started — independent guardian task active")
+        _last_date = ''
+
+        while True:
+            try:
+                now = datetime.now(ET)
+                today = now.strftime('%Y-%m-%d')
+
+                # Reset for new day
+                if today != _last_date:
+                    _last_date = today
+                    self._trading_halted = False
+
+                # Only run on weekdays
+                if now.weekday() >= 5:
+                    # Weekend — sleep until Monday 6 AM
+                    days_until_monday = 7 - now.weekday()
+                    monday_6am = (now + timedelta(days=days_until_monday)).replace(
+                        hour=6, minute=0, second=0, microsecond=0)
+                    await asyncio.sleep(max(1, (monday_6am - now).total_seconds()))
+                    continue
+
+                # ── PHASE 1: Wait until 3:45 PM ET ──
+                target_345 = now.replace(hour=15, minute=45, second=0, microsecond=0)
+                if now < target_345:
+                    sleep_sec = (target_345 - now).total_seconds()
+                    # Sleep in 60s chunks so we don't miss day transitions
+                    await asyncio.sleep(min(sleep_sec, 60))
+                    continue
+
+                # ── PHASE 2: 3:45 PM — Circuit Breaker ──
+                if not self._trading_halted and now.hour == 15 and now.minute >= 45:
+                    self._trading_halted = True
+                    logger.info("EOD WATCHDOG [3:45 PM]: Circuit breaker ENGAGED — new entries blocked")
+                    self._add_message('system',
+                        'EOD circuit breaker active — no new entries allowed')
+                    await self.alerter.send('EOD Circuit Breaker',
+                        'Trading halted at 3:45 PM. EOD close sequence starting in 5 minutes.',
+                        level='info', throttle_key='eod_cb')
+                    await broadcast({'type': 'live_status', 'status': 'eod_closing'})
+
+                # ── PHASE 3: 3:50 PM — Primary EOD Close ──
+                target_350 = now.replace(hour=15, minute=50, second=0, microsecond=0)
+                if now >= target_350 and now.hour == 15 and now.minute >= 50:
+                    if self.engine.positions:
+                        n_pos = len(self.engine.positions)
+                        symbols = list(self.engine.positions.keys())
+                        logger.info(f"EOD WATCHDOG [3:50 PM]: Closing {n_pos} positions: {symbols}")
+                        self._add_message('system',
+                            f'EOD watchdog: closing {n_pos} positions: {symbols}')
+
+                        # Performance snapshot before close
+                        self._record_performance_snapshot('eod')
+
+                        # Execute close with 60-second hard timeout
+                        try:
+                            await asyncio.wait_for(self._eod_close(), timeout=60)
+                            logger.info("EOD WATCHDOG [3:50 PM]: _eod_close completed")
+                        except asyncio.TimeoutError:
+                            logger.error("EOD WATCHDOG: _eod_close TIMED OUT after 60s — "
+                                        "escalating to force close")
+                            self._add_message('error',
+                                'EOD close timed out after 60s — escalating')
+                            await self.alerter.send('EOD Close Timeout',
+                                f'_eod_close did not complete in 60s. '
+                                f'Remaining: {list(self.engine.positions.keys())}',
+                                level='error')
+                    else:
+                        logger.info("EOD WATCHDOG [3:50 PM]: No positions to close")
+                        self._record_performance_snapshot('eod')
+
+                    # Run LLM debrief (non-critical, 15s timeout, fire-and-forget)
+                    try:
+                        if self.llm_supervisor and self.llm_supervisor.is_available():
+                            state = self._build_llm_state(datetime.now(ET))
+                            debrief = await asyncio.wait_for(
+                                self.llm_supervisor.eod_debrief(
+                                    state, event_queue=self._event_bus),
+                                timeout=15)
+                            if debrief:
+                                self._add_message('conversation',
+                                    f'BOT: Day wrap-up | RUDRA: {debrief}')
+                                await broadcast({'type': 'conversation',
+                                    'speaker': 'rudra', 'text': debrief})
+                    except (asyncio.TimeoutError, Exception) as e:
+                        logger.warning(f"EOD debrief skipped: {e}")
+
+                    # Wait for force-close window
+                    await asyncio.sleep(5)
+
+                # ── PHASE 4: 3:55 PM — Force Close (retry remaining) ──
+                target_355 = now.replace(hour=15, minute=55, second=0, microsecond=0)
+                now = datetime.now(ET)  # refresh
+                if now >= target_355 and now.hour == 15 and now.minute >= 55:
+                    if self.engine.positions:
+                        remaining = list(self.engine.positions.keys())
+                        logger.error(f"EOD WATCHDOG [3:55 PM]: FORCE CLOSE — "
+                                    f"{len(remaining)} positions still open: {remaining}")
+                        self._add_message('error',
+                            f'EOD force close: {remaining} still open after primary close')
+                        await self.alerter.send('EOD FORCE CLOSE',
+                            f'Positions still open at 3:55 PM after primary close.\n'
+                            f'Symbols: {remaining}\nForce closing via Alpaca API.',
+                            level='error')
+
+                        # Use Alpaca's DELETE /v2/positions/{symbol} directly
+                        for sym in remaining:
+                            try:
+                                await asyncio.to_thread(
+                                    alpaca_cancel_open_orders_for_symbol, sym)
+                                await asyncio.sleep(1)
+                                result = await asyncio.to_thread(
+                                    alpaca_close_position_api, sym)
+                                if 'error' not in result:
+                                    logger.info(f"EOD WATCHDOG: {sym} force-closed via API")
+                                    pos = self.engine.positions.get(sym)
+                                    if pos:
+                                        fill = float(result.get('filled_avg_price', 0)
+                                                     ) or pos.entry_price
+                                        trade = self.engine.confirm_exit(
+                                            sym, pos.remaining_shares, fill, 'eod_force',
+                                            datetime.now(ET))
+                                        if trade:
+                                            self._add_message('exit',
+                                                f'FORCE CLOSE {sym} @ ${fill:.2f} '
+                                                f'P&L: ${trade.pnl:+,.2f}')
+                                            await broadcast({
+                                                'type': 'trade',
+                                                'trades': [asdict(trade)]})
+                                else:
+                                    logger.error(f"EOD WATCHDOG: force close FAILED "
+                                                f"for {sym}: {result.get('error')}")
+                            except Exception as e:
+                                logger.error(f"EOD WATCHDOG: force close exception "
+                                            f"for {sym}: {e}")
+
+                # ── PHASE 5: 4:00 PM — Emergency Liquidation ──
+                now = datetime.now(ET)
+                if now.hour >= 16 and self.engine.positions:
+                    remaining = list(self.engine.positions.keys())
+                    logger.error(f"EOD WATCHDOG [4:00 PM]: EMERGENCY — "
+                                f"{len(remaining)} positions STILL open after all attempts")
+                    self._add_message('error',
+                        f'EMERGENCY: {remaining} open after 4 PM — marking for close-on-open')
+                    await self.alerter.send('EMERGENCY: Positions Open After Hours',
+                        f'All EOD close attempts failed.\n'
+                        f'Positions: {remaining}\n'
+                        f'Marked for close-on-open next trading day.\n'
+                        f'MANUAL INTERVENTION MAY BE REQUIRED.',
+                        level='error')
+
+                    # Mark for close-on-open
+                    for sym in remaining:
+                        if sym in self.engine.positions:
+                            self.engine.positions[sym].close_on_open = True
+                            self.engine.positions[sym].closing = False
+                    self._save_state()
+
+                # ── PHASE 6: 4:05 PM — Final Audit ──
+                now = datetime.now(ET)
+                if now.hour >= 16 and now.minute >= 5:
+                    # Verify with broker directly
+                    try:
+                        broker_positions = await asyncio.to_thread(alpaca_get_positions)
+                        if broker_positions:
+                            broker_syms = [p.get('symbol') for p in broker_positions]
+                            logger.error(f"EOD WATCHDOG AUDIT: Broker still has "
+                                        f"positions: {broker_syms}")
+                            await self.alerter.send('EOD Audit: Broker Positions Remain',
+                                f'After all close attempts, broker reports:\n'
+                                f'{broker_syms}\nManual action required.',
+                                level='error')
+                        else:
+                            logger.info("EOD WATCHDOG AUDIT: Broker confirms zero positions")
+                    except Exception as e:
+                        logger.error(f"EOD WATCHDOG AUDIT: Could not verify broker: {e}")
+
+                    # Done for today — sleep until tomorrow 6 AM
+                    tomorrow_6am = (now + timedelta(days=1)).replace(
+                        hour=6, minute=0, second=0, microsecond=0)
+                    sleep_sec = max(60, (tomorrow_6am - now).total_seconds())
+                    logger.info(f"EOD watchdog: day complete, sleeping until "
+                               f"{tomorrow_6am.strftime('%Y-%m-%d %H:%M')} ET")
+                    await asyncio.sleep(sleep_sec)
+                    continue
+
+                # Between phases — short sleep to stay responsive
+                await asyncio.sleep(5)
+
+            except asyncio.CancelledError:
+                logger.info("EOD watchdog cancelled")
+                raise
+            except Exception as e:
+                logger.error(f"EOD WATCHDOG ERROR (will retry in 10s): {e}",
+                            exc_info=True)
+                self._add_message('error', f'EOD watchdog error: {e}')
+                await self.alerter.send('EOD Watchdog Error',
+                    f'EOD watchdog encountered error: {e}\nWill retry in 10s.',
+                    level='error')
+                await asyncio.sleep(10)
+
+    # -------------------------------------------------------------------------
     # EOD bar storage — store today's closing prices for next-day gap scan
     # -------------------------------------------------------------------------
 
@@ -11445,9 +11684,12 @@ except Exception as _e:
 async def _watchdog_heartbeat():
     """Ping systemd watchdog every 30s so it knows we're alive.
 
-    Validates that the trading loop is actually progressing during market hours.
-    If the loop is stale (>90s since last iteration), skip the watchdog ping
-    so systemd will restart us.
+    Monitors:
+    1. Trading loop health — stale loop (>90s) skips watchdog ping → systemd restart
+    2. EOD watchdog health — alerts if the independent EOD task has died
+
+    SLA: Trading loop must iterate within 90s during market hours.
+    SLA: EOD watchdog must be alive whenever trading loop is active.
     """
     try:
         import socket
@@ -11461,8 +11703,8 @@ async def _watchdog_heartbeat():
         sock.sendto(b'READY=1', addr)
         logger.info("systemd watchdog: READY sent")
         while True:
-            # Check if trading loop is alive (during market hours, when running)
             now = datetime.now(ET)
+            # Check if trading loop is alive (during market hours, when running)
             if 7 <= now.hour < 17 and live_trader.status not in ('stopped', 'waiting'):
                 age = _time.monotonic() - live_trader._last_loop_heartbeat
                 if age > 90:
@@ -11472,6 +11714,21 @@ async def _watchdog_heartbeat():
                         level='error')
                     await asyncio.sleep(30)
                     continue  # skip ping → systemd will restart us
+
+            # Monitor EOD watchdog health — critical during pre-close window
+            if (live_trader._eod_watchdog_task is not None
+                    and live_trader._eod_watchdog_task.done()):
+                exc = live_trader._eod_watchdog_task.exception() if not \
+                    live_trader._eod_watchdog_task.cancelled() else None
+                logger.error(f"EOD WATCHDOG DIED! Exception: {exc} — restarting")
+                await live_trader.alerter.send('CRITICAL: EOD Watchdog Dead',
+                    f'EOD watchdog task terminated unexpectedly.\n'
+                    f'Exception: {exc}\nRestarting immediately.',
+                    level='error')
+                # Restart the watchdog
+                live_trader._eod_watchdog_task = asyncio.create_task(
+                    live_trader._eod_watchdog())
+
             sock.sendto(b'WATCHDOG=1', addr)
             await asyncio.sleep(30)
     except Exception as e:
@@ -11495,12 +11752,21 @@ async def dashboard():
 async def health_check():
     """Health check for monitoring / watchdog."""
     now = datetime.now(ET)
+    eod_task = live_trader._eod_watchdog_task
+    eod_status = 'not_started'
+    if eod_task is not None:
+        if eod_task.done():
+            eod_status = 'dead'
+        else:
+            eod_status = 'running'
     return {
         'status': 'ok',
         'timestamp': now.isoformat(),
         'trader_status': live_trader.status,
         'uptime_seconds': int((_time.time() - _app_start_time)),
         'positions': len(live_trader.engine.positions) if live_trader.engine else 0,
+        'eod_watchdog': eod_status,
+        'trading_halted': live_trader._trading_halted,
     }
 
 
