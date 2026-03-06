@@ -61,19 +61,26 @@ def _get_version() -> str:
     # Docker: read from build_info.json (baked by build.sh)
     try:
         with open(os.path.join(os.path.dirname(__file__) or '.', 'build_info.json')) as f:
-            v = json.load(f).get('version', '')
+            info = json.load(f)
+            v = info.get('version', '')
+            sha = info.get('git_sha', '')[:7]  # short SHA
             if v and v != 'unknown':
-                return v if v.startswith('v') else f'v{v}'
+                ver = v if v.startswith('v') else f'v{v}'
+                return f'{ver} ({sha})' if sha and sha != 'unknown' else ver
     except (FileNotFoundError, json.JSONDecodeError, ValueError):
         pass
-    # Local dev: fall back to git tags
+    # Local dev: fall back to git tags + short SHA
     try:
         tag = subprocess.check_output(
             ['git', 'describe', '--tags', '--abbrev=0'],
             stderr=subprocess.DEVNULL, text=True
         ).strip()
         num = tag.lstrip('v').split('-')[0]
-        return f'v{num}.0'
+        sha = subprocess.check_output(
+            ['git', 'rev-parse', '--short', 'HEAD'],
+            stderr=subprocess.DEVNULL, text=True
+        ).strip()
+        return f'v{num}.0 ({sha})'
     except Exception:
         return 'v0.0'
 
