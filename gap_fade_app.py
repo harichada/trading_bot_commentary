@@ -16232,7 +16232,7 @@ let _authEnabled = false;
 
 async function checkAuth() {
   try {
-    const r = await fetch('/api/auth/me', { credentials: 'include' });
+    const r = await apiFetch('/api/auth/me', { credentials: 'include' });
     const data = await r.json();
     _authEnabled = data.auth_enabled || false;
     if (!_authEnabled) {
@@ -16363,8 +16363,8 @@ async function loadJournal() {
     const filter = document.getElementById('journalFilter')?.value || '';
     const qs = filter ? `?entry_type=${filter}&n=50` : '?n=50';
     const [jRes, eRes] = await Promise.all([
-      fetch('/api/journal' + qs),
-      fetch('/api/events'),
+      apiFetch('/api/journal' + qs),
+      apiFetch('/api/events'),
     ]);
     const journal = await jRes.json();
     const events = await eRes.json();
@@ -16553,6 +16553,12 @@ function handleMessage(msg) {
 }
 
 // ── API calls ────────────────────────────────────────────────────
+function apiFetch(url, opts) {
+  opts = opts || {};
+  opts.headers = opts.headers || {};
+  if (typeof __API_KEY__ !== 'undefined' && __API_KEY__) opts.headers['X-API-Key'] = __API_KEY__;
+  return fetch(url, opts);
+}
 async function api(path, method='GET', body=null) {
   const headers = { 'Content-Type': 'application/json' };
   if (typeof __API_KEY__ !== 'undefined' && __API_KEY__) {
@@ -17408,7 +17414,7 @@ async function runBtBacktest() {
   document.getElementById('btChartTrades').style.display = 'none';
 
   try {
-    await fetch('/api/backtest/bt', {
+    await apiFetch('/api/backtest/bt', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({symbols, start_date: startDate, end_date: endDate, config: {}})
@@ -17425,7 +17431,7 @@ async function runBtBacktest() {
 
 async function pollBtStatus() {
   try {
-    const r = await fetch('/api/backtest/bt/status');
+    const r = await apiFetch('/api/backtest/bt/status');
     const d = await r.json();
     if (d.status === 'running') {
       document.getElementById('btChartStatus').textContent = 'Running backtrader...';
@@ -18058,7 +18064,7 @@ let _eqLoaded = false, _eqState = null;
 function renderEquityCurve(initialCapital) {
   if (_eqLoaded) return;
   _eqLoaded = true;
-  fetch('/api/trades/history?limit=1000&offset=0').then(r => r.json()).then(d => {
+  apiFetch('/api/trades/history?limit=1000&offset=0').then(r => r.json()).then(d => {
     const trades = (d.trades || []).slice().reverse(); // oldest first
     if (!trades.length) return;
     const canvas = document.getElementById('equityChart');
@@ -18209,7 +18215,7 @@ function tradeHistSearch(offset) {
   if (start) url += '&start=' + start;
   if (end) url += '&end=' + end + 'T23:59:59';
   if (sym) url += '&symbol=' + sym;
-  fetch(url).then(r => r.json()).then(d => {
+  apiFetch(url).then(r => r.json()).then(d => {
     _thLoaded = true;
     const tbody = document.getElementById('tradesTable');
     const trades = d.trades || [];
@@ -19378,7 +19384,7 @@ function connectIntradaySse() {
 
 async function fetchIntradayState() {
   try {
-    const r = await fetch('/api/intraday/state');
+    const r = await apiFetch('/api/intraday/state');
     const s = await r.json();
     renderIntradayState(s);
   } catch(e) { console.error('fetchIntradayState:', e); }
@@ -19531,7 +19537,7 @@ function renderClosedTrades(trades) {
 
 async function fetchIntradayPerformance() {
   try {
-    const r = await fetch('/api/intraday/performance');
+    const r = await apiFetch('/api/intraday/performance');
     const d = await r.json();
     renderIntradayPerformance(d);
   } catch(e) { console.error('fetchIntradayPerformance:', e); }
@@ -19568,7 +19574,7 @@ async function openAnalysis(symbol) {
   title.textContent = symbol + ' Deep Analysis';
   body.innerHTML = '<div style="color:var(--muted);">Loading...</div>';
   try {
-    const r = await fetch('/api/intraday/analysis/' + symbol);
+    const r = await apiFetch('/api/intraday/analysis/' + symbol);
     const d = await r.json();
     renderAnalysisModal(d);
   } catch(e) { body.innerHTML = '<div style="color:var(--negative);">Error: ' + e.message + '</div>'; }
