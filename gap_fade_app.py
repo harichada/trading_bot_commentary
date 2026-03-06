@@ -2921,7 +2921,7 @@ class GapFadeConfig:
     intraday_enabled: bool = True            # master toggle
     intraday_strategies: str = 'orb_breakout,momentum_surge,pullback_entry,range_trade'
     intraday_scan_interval: int = 30         # seconds between scans
-    intraday_watchlist_size: int = 50        # max symbols to watch
+    intraday_watchlist_size: int = 25        # max symbols to watch (Alpaca free tier: 25 WS limit)
     intraday_max_entries: int = 3            # max intraday entries per day
     intraday_risk_pct: float = 0.01          # 1% risk per intraday trade
     intraday_daily_loss_limit: float = 0.02  # 2% max daily loss from intraday
@@ -18275,7 +18275,7 @@ function renderConfig(config) {
     { key: 'llm_enabled', title: 'Rudra (LLM Supervisor)', desc: 'Autonomous decisions via local Ollama model — scan timing, candidate selection, profit-taking, exit overrides',
       params: [['llm_url', 'Ollama URL', 'http://localhost:11434'], ['llm_model', 'Model', 'gpt-oss:20b'], ['llm_timeout', 'Timeout (sec)', 30], ['llm_max_failures', 'Circuit Breaker Failures', 5], ['llm_circuit_reset', 'Circuit Reset (sec)', 120], ['llm_max_hold_overrides', 'Max Hold Overrides', 2]] },
     { key: 'intraday_enabled', title: 'Intraday Strategies', desc: 'Run ORB, Momentum, Pullback, Range strategies alongside gap fade during market hours',
-      params: [['intraday_strategies', 'Active Strategies', 'orb_breakout,momentum_surge,pullback_entry,range_trade'], ['intraday_scan_interval', 'Scan Interval (sec)', 30], ['intraday_watchlist_size', 'Watchlist Size', 40], ['intraday_max_entries', 'Max Entries/Day', 3], ['intraday_risk_pct', 'Risk Per Trade %', 0.01], ['intraday_daily_loss_limit', 'Daily Loss Limit %', 0.02], ['intraday_max_position_pct', 'Max Position % Equity', 0.20]] },
+      params: [['intraday_strategies', 'Active Strategies', 'orb_breakout,momentum_surge,pullback_entry,range_trade'], ['intraday_scan_interval', 'Scan Interval (sec)', 30], ['intraday_watchlist_size', 'Watchlist Size', 25], ['intraday_max_entries', 'Max Entries/Day', 3], ['intraday_risk_pct', 'Risk Per Trade %', 0.01], ['intraday_daily_loss_limit', 'Daily Loss Limit %', 0.02], ['intraday_max_position_pct', 'Max Position % Equity', 0.20]] },
     { key: 'catalyst_enabled', title: 'Catalyst Detection', desc: 'Score candidates by news catalyst (earnings, FDA, offerings) — penalize known catalysts, bonus unknown gaps',
       params: [['catalyst_skip_earnings', 'Skip Earnings', false], ['catalyst_earnings_penalty', 'Earnings Penalty', 30], ['catalyst_news_penalty', 'News Penalty', 15], ['catalyst_noise_bonus', 'No-Catalyst Bonus', 10]] },
     { key: 'auto_start', title: 'Auto-Start Trading', desc: 'Automatically start the trading loop when the app launches (no manual Start needed)',
