@@ -1842,6 +1842,17 @@ class PriceDB:
             cur.execute("ALTER TABLE trades ADD COLUMN setup_type TEXT DEFAULT ''")
             self._conn.commit()
             logger.info("PriceDB: migrated trades table — added strategy_id, setup_type columns")
+        # Ensure trades unique constraint exists (migration for existing DBs)
+        try:
+            cur.execute('''
+                ALTER TABLE trades
+                ADD CONSTRAINT trades_dedup
+                UNIQUE (symbol, entry_time, exit_time, shares, exit_reason)
+            ''')
+            self._conn.commit()
+            logger.info("PriceDB: added unique constraint to trades")
+        except psycopg2.Error:
+            self._conn.rollback()  # constraint already exists
         # Ensure market_events unique constraint exists (migration for existing DBs)
         try:
             cur.execute('''
