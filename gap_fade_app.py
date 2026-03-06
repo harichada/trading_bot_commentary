@@ -2271,7 +2271,7 @@ class PriceDB:
                            entry_time, exit_time, exit_reason, holding_minutes,
                            side, gap_pct, vol_ratio, score, catalyst
                     FROM trades{where_sql}
-                    ORDER BY trade_id DESC LIMIT %s OFFSET %s''',
+                    ORDER BY exit_time DESC, trade_id DESC LIMIT %s OFFSET %s''',
                 params + [limit, offset])
             cols = ['symbol', 'entry_price', 'exit_price', 'shares', 'pnl', 'pnl_pct',
                     'entry_time', 'exit_time', 'exit_reason', 'holding_minutes',
@@ -18219,7 +18219,7 @@ function tradeHistSearch(offset) {
       const side = (t.side || 'short').toUpperCase();
       const sideColor = side === 'LONG' ? 'var(--green)' : 'var(--red)';
       return `<tr>
-        <td>${t.exit_time || ''}</td>
+        <td>${fmtTradeTime(t.exit_time)}</td>
         <td style="font-weight:600;">${t.symbol}</td>
         <td style="color:${sideColor};">${side}</td>
         <td>${t.shares}</td>
@@ -19294,6 +19294,18 @@ function updateGuideTimeline() {
 function pnlFmt(v) {
   const sign = v >= 0 ? '+' : '-';
   return sign + '$' + Math.abs(v).toFixed(2).replace(/\\B(?=(\\d{3})+(?!\\d))/g, ',');
+}
+function fmtTradeTime(iso) {
+  if (!iso) return '';
+  try {
+    const d = new Date(iso);
+    if (isNaN(d)) return iso.slice(0, 16).replace('T', ' ');
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    const hh = String(d.getHours()).padStart(2, '0');
+    const mi = String(d.getMinutes()).padStart(2, '0');
+    return mm + '/' + dd + ' ' + hh + ':' + mi;
+  } catch(e) { return iso.slice(0, 16).replace('T', ' '); }
 }
 
 const LOG_COLORS = {
