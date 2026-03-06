@@ -19608,7 +19608,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   fetchDbStats();
   loadStrategies();
   setInterval(updateClock, 1000);
-  setInterval(fetchState, 2000);
+  setInterval(fetchState, 5000);
   setInterval(updateGuideTimeline, 30000);
   updateClock();
   updateGuideTimeline();
