@@ -804,13 +804,37 @@ def fetch_alpaca_movers(top_n: int = 20) -> List[str]:
         _log_api_call('/v1beta1/screener/stocks/movers', 'GET', '',
                       0, (_time.monotonic() - _t0) * 1000, str(e))
 
-    # Deduplicate, filter bad symbols
+    # Deduplicate, filter bad symbols and penny stocks
     seen = set()
     clean = []
     for s in symbols:
         if s not in seen and '/' not in s and '.' not in s and len(s) <= 5:
             seen.add(s)
             clean.append(s)
+
+    # Filter out penny stocks (price < $5) using snapshot API
+    if clean:
+        try:
+            snap_url = f'{data_url}/v2/stocks/snapshots'
+            resp = requests.get(snap_url, headers=headers,
+                                params={'symbols': ','.join(clean), 'feed': 'iex'},
+                                timeout=10)
+            if resp.status_code == 200:
+                snaps = resp.json()
+                filtered = []
+                for s in clean:
+                    snap = snaps.get(s, {})
+                    price = snap.get('latestTrade', {}).get('p', 0) or \
+                            snap.get('minuteBar', {}).get('c', 0) or \
+                            snap.get('dailyBar', {}).get('c', 0)
+                    if price >= 5.0:
+                        filtered.append(s)
+                _removed = len(clean) - len(filtered)
+                if _removed:
+                    logger.info(f"Alpaca movers: filtered {_removed} penny stocks (price < $5)")
+                clean = filtered
+        except Exception as e:
+            logger.warning(f"Alpaca movers price filter failed (keeping all): {e}")
 
     _movers_cache['symbols'] = clean
     _movers_cache['timestamp'] = now
