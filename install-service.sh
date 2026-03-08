@@ -17,8 +17,8 @@ echo "  Port:      $GAP_FADE_PORT"
 echo ""
 
 # Verify docker compose is available
-if ! docker compose version &>/dev/null; then
-    echo "ERROR: 'docker compose' not found. Install Docker with Compose plugin."
+if ! docker-compose version &>/dev/null; then
+    echo "ERROR: 'docker-compose' not found. Install Docker Compose."
     exit 1
 fi
 
