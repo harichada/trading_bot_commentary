@@ -1,33 +1,39 @@
 [Unit]
-Description=Rudra Trading Engine
-After=network.target
+Description=Rudra Trading Engine (Docker)
+After=docker.service network-online.target
+Requires=docker.service
+Wants=network-online.target
 OnFailure=gap-fade-notify-failure@%n.service
 
 [Service]
 Type=simple
-# EDIT THESE for your system:
-User=botuser
-WorkingDirectory=/home/botuser/claude/trading_bot_commentary
-ExecStart=/home/botuser/claude/trading_bot_commentary/venv/bin/python gap_fade_app.py
+User=nvidia
+WorkingDirectory=/home/nvidia/claude/infra
+EnvironmentFile=/home/nvidia/claude/infra/.env_dev
+
+# Pull latest and start (--remove-orphans cleans stale containers)
+ExecStartPre=/usr/bin/docker compose up -d --remove-orphans rudra
+ExecStart=/usr/bin/docker compose logs -f rudra
+ExecStop=/usr/bin/docker compose stop rudra
+ExecStopPost=/usr/bin/docker compose down --timeout 30
+
 Restart=always
 RestartSec=10
 StartLimitIntervalSec=300
 StartLimitBurst=5
 
-# Environment
-EnvironmentFile=/home/botuser/claude/trading_bot_commentary/.env
+# Watchdog — Docker healthcheck handles container-level restarts,
+# systemd watchdog handles compose-level failures
+WatchdogSec=120
+ExecReload=/usr/bin/docker compose restart rudra
 
-# Logging — stdout/stderr go to journalctl
+# Logging — docker logs forwarded via ExecStart
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=gap-fade
 
-# Watchdog — systemd kills+restarts if no ping in 120s
-WatchdogSec=120
-
-# Resource limits
-MemoryMax=2G
-CPUQuota=80%
+# Resource limits (container-level limits in docker-compose.yml take precedence)
+MemoryMax=5G
 
 [Install]
 WantedBy=multi-user.target
