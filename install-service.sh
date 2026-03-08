@@ -1,5 +1,6 @@
 #!/bin/bash
 # Install gap-fade as a systemd service for 24/7 operation (Docker mode)
+# Uses the infra Makefile targets: deploy-dev, down-dev, restart-dev, logs-dev
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -21,9 +22,9 @@ if ! docker compose version &>/dev/null; then
     exit 1
 fi
 
-# Verify infra directory exists
-if [ ! -f "$INFRA_DIR/docker-compose.yml" ]; then
-    echo "ERROR: docker-compose.yml not found in $INFRA_DIR"
+# Verify infra directory and Makefile exist
+if [ ! -f "$INFRA_DIR/Makefile" ]; then
+    echo "ERROR: Makefile not found in $INFRA_DIR"
     echo "Set INFRA_DIR to the correct path."
     exit 1
 fi
@@ -41,13 +42,12 @@ OnFailure=gap-fade-notify-failure@%n.service
 Type=simple
 User=$CURRENT_USER
 WorkingDirectory=$INFRA_DIR
-EnvironmentFile=$INFRA_DIR/.env_$RUDRA_ENV
 
-# Start container and follow logs
-ExecStartPre=/usr/bin/docker compose up -d --remove-orphans rudra
-ExecStart=/usr/bin/docker compose logs -f rudra
-ExecStop=/usr/bin/docker compose stop rudra
-ExecStopPost=/usr/bin/docker compose down --timeout 30
+# Use the infra Makefile targets
+ExecStartPre=/usr/bin/make deploy-$RUDRA_ENV
+ExecStart=/usr/bin/make logs-$RUDRA_ENV
+ExecStop=/usr/bin/make down-$RUDRA_ENV
+ExecReload=/usr/bin/make restart-$RUDRA_ENV
 
 Restart=always
 RestartSec=10
@@ -56,7 +56,6 @@ StartLimitBurst=5
 
 # Watchdog
 WatchdogSec=120
-ExecReload=/usr/bin/docker compose restart rudra
 
 # Logging
 StandardOutput=journal
@@ -108,5 +107,6 @@ echo "  sudo systemctl status gap-fade       # Check service status"
 echo "  sudo systemctl restart gap-fade      # Restart container"
 echo "  sudo systemctl stop gap-fade         # Stop container"
 echo "  journalctl -u gap-fade -f            # Follow logs (journald)"
-echo "  docker compose -f $INFRA_DIR/docker-compose.yml logs -f rudra  # Docker logs"
+echo "  cd $INFRA_DIR && make logs-$RUDRA_ENV   # Docker logs"
+echo "  cd $INFRA_DIR && make status         # All environments"
 echo "  curl localhost:$GAP_FADE_PORT/api/health  # Health check"
