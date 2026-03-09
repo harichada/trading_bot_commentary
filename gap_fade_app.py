@@ -15512,6 +15512,23 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           <div class="config-item"><label>Vol Max:</label><input type="number" id="btGapDownVol" value="3.0" step="0.1" min="0.5" max="20" style="width:50px;" title="Max vol ratio for gap-downs"></div>
         </div>
       </div>
+      <!-- ORB Confirmation Filter -->
+      <div style="padding:8px 10px;background:rgba(59,130,246,0.06);border:1px solid rgba(59,130,246,0.15);border-radius:6px;">
+        <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:12px;font-weight:600;color:var(--blue);">
+          <input type="checkbox" id="btORB" checked onchange="document.getElementById('btORBOpts').style.display=this.checked?'flex':'none'"> ORB Confirmation
+        </label>
+        <div id="btORBOpts" style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap;font-size:11px;">
+          <div class="config-item"><label>ATR Frac:</label><input type="number" id="btORBFrac" value="0.35" step="0.05" min="0.05" max="1" style="width:55px;" title="OR range = gap% x this fraction"></div>
+          <div class="config-item"><label>Min %:</label><input type="number" id="btORBMin" value="0.3" step="0.1" min="0.1" max="5" style="width:50px;" title="Minimum OR range %"></div>
+          <div class="config-item"><label>Max %:</label><input type="number" id="btORBMax" value="2.5" step="0.5" min="0.5" max="10" style="width:50px;" title="Maximum OR range %"></div>
+        </div>
+      </div>
+      <!-- Leveraged ETF Exclusion -->
+      <div style="padding:8px 10px;background:rgba(251,146,60,0.06);border:1px solid rgba(251,146,60,0.15);border-radius:6px;">
+        <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:12px;font-weight:600;color:var(--orange,#fb923c);">
+          <input type="checkbox" id="btExcludeLev" checked> Exclude Leveraged ETFs
+        </label>
+      </div>
       <!-- Drawdown Circuit Breaker -->
       <div style="padding:8px 10px;background:rgba(239,68,68,0.06);border:1px solid rgba(239,68,68,0.15);border-radius:6px;">
         <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:12px;font-weight:600;color:var(--red);">
@@ -17024,6 +17041,22 @@ async function runBacktest() {
     body.dd_tier2_max_positions = mp;
     body.dd_hard_stop = hs / 100;
   }
+  // ORB Confirmation Filter
+  if (document.getElementById('btORB').checked) {
+    body.orb_enabled = true;
+    const orbFrac = parseFloat(document.getElementById('btORBFrac').value);
+    const orbMin = parseFloat(document.getElementById('btORBMin').value);
+    const orbMax = parseFloat(document.getElementById('btORBMax').value);
+    if (isNaN(orbFrac) || isNaN(orbMin) || isNaN(orbMax)) { showToast('ORB: invalid number'); return; }
+    if (orbMin >= orbMax) { showToast('ORB: Min % must be less than Max %'); return; }
+    body.orb_atr_fraction = orbFrac;
+    body.orb_min_range_pct = orbMin / 100;
+    body.orb_max_range_pct = orbMax / 100;
+  } else {
+    body.orb_enabled = false;
+  }
+  // Leveraged ETF exclusion
+  body.exclude_leveraged = document.getElementById('btExcludeLev').checked;
 
   document.getElementById('btProgress').style.display = 'block';
   document.getElementById('btProgressMsg').textContent = 'Starting backtest...';
