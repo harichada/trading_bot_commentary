@@ -861,6 +861,337 @@ def simulate_gap_day(gap: dict, state: SimulationState, config: GapFadeConfig,
 
 
 # ---------------------------------------------------------------------------
+# simulate_gap_day_orb_1min — ORB simulation with real 1-minute bars
+# ---------------------------------------------------------------------------
+
+def simulate_gap_day_orb_1min(gap: dict, min_bars: pd.DataFrame,
+                               state: SimulationState, config: GapFadeConfig,
+                               dd_scale: float = 1.0) -> Tuple[List[TradeRecord], List[dict]]:
+    """Simulate one gap day with real ORB confirmation from 1-min bars.
+
+    Uses actual 1-min OHLCV to:
+    1. Build opening range from first N minutes (orb_atr_period used as OR minutes)
+    2. Wait for price to break through OR level
+    3. Enter at breakdown price with stop at opposite OR extreme
+    4. Walk forward through remaining bars for exits
+    """
+    sym = gap['symbol']
+    prev_close = gap['prev_close']
+    direction = gap.get('direction', 'short')
+    day_trades: List[TradeRecord] = []
+    log: List[dict] = []
+    slip = config.slippage_pct
+
+    # --- Pre-entry checks ---
+    candidate = GapCandidate(
+        symbol=sym, gap_pct=gap['gap_pct'], prev_close=prev_close,
+        premarket_price=gap['open'], avg_vol_20d=gap.get('avg_vol', 0),
+        vol_ratio=gap['vol_ratio'], shortable=True, easy_to_borrow=True,
+        direction=direction,
+    )
+
+    if config.exclude_leveraged and sym in LEVERAGED_ETFS:
+        log.append({'level': 'skip', 'msg': f'{sym} {gap["date"]}: SKIP — leveraged/inverse ETF'})
+        return day_trades, log
+
+    if candidate.catalyst in ('earnings', 'ma'):
+        log.append({'level': 'skip', 'msg': f'{sym} {gap["date"]}: SKIP — catalyst-driven gap ({candidate.catalyst})'})
+        return day_trades, log
+
+    if sym in state.positions:
+        return day_trades, log
+
+    if sym in state.stopped_today:
+        rec = state.stopped_today[sym]
+        if rec.reentry_count >= config.reentry_max_per_symbol:
+            return day_trades, log
+
+    eff_max = state.effective_max_positions
+    if len(state.positions) >= eff_max:
+        return day_trades, log
+
+    vol_limit = config.gap_down_vol_ratio_max if direction == 'long' else config.vol_ratio_max
+    if candidate.vol_ratio > vol_limit:
+        return day_trades, log
+
+    # --- Parse 1-min bars ---
+    if min_bars is None or len(min_bars) < 10:
+        log.append({'level': 'skip', 'msg': f'{sym} {gap["date"]}: SKIP — insufficient 1-min data ({len(min_bars) if min_bars is not None else 0} bars)'})
+        return day_trades, log
+
+    opens = min_bars['open'].values.astype(float)
+    highs = min_bars['high'].values.astype(float)
+    lows = min_bars['low'].values.astype(float)
+    closes = min_bars['close'].values.astype(float)
+    times = min_bars.index
+
+    # Convert times to hours/minutes for comparison
+    def _hm(t):
+        if hasattr(t, 'hour'):
+            return t.hour, t.minute
+        t = t.to_pydatetime()
+        return t.hour, t.minute
+
+    # --- Build Opening Range from first 30 min (9:30-10:00) ---
+    or_minutes = 30  # fixed 30-min opening range
+    or_end_h, or_end_m = 10, 0  # OR complete at 10:00
+
+    or_high = -1e9
+    or_low = 1e9
+    or_end_bar = -1
+
+    for bi in range(len(times)):
+        h, m = _hm(times[bi])
+        if h < 9 or (h == 9 and m < 30):
+            continue  # pre-market bars
+        if (h, m) >= (or_end_h, or_end_m):
+            or_end_bar = bi
+            break
+        or_high = max(or_high, highs[bi])
+        or_low = min(or_low, lows[bi])
+
+    if or_end_bar < 0 or or_high <= 0 or or_low >= 1e9:
+        log.append({'level': 'skip', 'msg': f'{sym} {gap["date"]}: SKIP — could not build opening range'})
+        return day_trades, log
+
+    or_range_pct = (or_high - or_low) / gap['open'] if gap['open'] > 0 else 0
+    log.append({'level': 'info', 'msg': f'{sym} {gap["date"]}: OR formed — high ${or_high:.2f} low ${or_low:.2f} range {or_range_pct:.2%}'})
+
+    # --- Scan for ORB entry after OR completes ---
+    entry_bar = -1
+    entry_price = 0.0
+
+    for bi in range(or_end_bar, len(times)):
+        h, m = _hm(times[bi])
+        # Entry cutoff
+        if h > config.entry_cutoff_hour or (h == config.entry_cutoff_hour and m >= config.entry_cutoff_min):
+            break
+
+        if direction == 'short':
+            # Short entry: price breaks below OR low
+            if lows[bi] <= or_low:
+                entry_bar = bi
+                entry_price = or_low * (1 - slip)  # fill at OR low with slippage
+                break
+        else:
+            # Long entry: price breaks above OR high
+            if highs[bi] >= or_high:
+                entry_bar = bi
+                entry_price = or_high * (1 + slip)
+                break
+
+    if entry_bar < 0:
+        log.append({'level': 'skip', 'msg': f'{sym} {gap["date"]}: SKIP — no OR breakdown by {config.entry_cutoff_hour}:{config.entry_cutoff_min:02d}'})
+        return day_trades, log
+
+    entry_time = times[entry_bar]
+    if hasattr(entry_time, 'to_pydatetime'):
+        entry_time = entry_time.to_pydatetime()
+    entry_time_str = entry_time.strftime('%Y-%m-%d %H:%M')
+
+    # --- Compute stop and targets ---
+    if config.orb_dynamic_stop:
+        # Dynamic stop at opposite side of opening range
+        if direction == 'short':
+            stop_price = or_high * (1 + slip)
+        else:
+            stop_price = or_low * (1 - slip)
+    else:
+        eff_stop_pct = compute_adaptive_stop_pct(config, gap['gap_pct'])
+        if direction == 'short':
+            stop_price = entry_price * (1 + eff_stop_pct)
+        else:
+            stop_price = entry_price * (1 - eff_stop_pct)
+
+    if direction == 'long':
+        half_target = (entry_price + prev_close) / 2
+        full_target = prev_close
+    else:
+        half_target = (entry_price + prev_close) / 2
+        full_target = prev_close
+
+    # --- Position sizing ---
+    risk_per_share = abs(stop_price - entry_price)
+    kelly_risk = state.compute_kelly_size()
+    risk_frac = min(config.risk_pct, kelly_risk) if kelly_risk > 0 else config.risk_pct
+    dollar_risk = state.equity * risk_frac
+    shares = int(dollar_risk / risk_per_share) if risk_per_share > 0 else 0
+
+    per_slot_equity = state.equity / max(1, eff_max)
+    max_shares = int(per_slot_equity / entry_price) if entry_price > 0 else 0
+    shares = min(shares, max_shares)
+
+    if entry_price > 0 and config.max_notional > 0:
+        notional_limit = min(config.max_notional, per_slot_equity)
+        shares = min(shares, int(notional_limit / entry_price))
+
+    avg_vol = gap.get('avg_vol', 0)
+    if avg_vol > 0 and config.max_pct_adv > 0:
+        shares = min(shares, int(avg_vol * config.max_pct_adv))
+
+    if dd_scale < 1.0:
+        shares = int(shares * dd_scale)
+
+    if shares <= 0:
+        log.append({'level': 'skip', 'msg': f'{sym} {gap["date"]}: position size = 0'})
+        return day_trades, log
+
+    state.positions[sym] = True
+    notional = shares * entry_price
+    borrow_cost = notional * (config.borrow_rate_annual / 252) if direction == 'short' else 0
+
+    side_label = 'LONG' if direction == 'long' else 'SHORT'
+    stop_dist = abs(stop_price - entry_price) / entry_price
+    target_dist = abs(entry_price - full_target) / entry_price
+    log.append({
+        'level': 'entry',
+        'msg': (f'{sym} {entry_time_str}: ORB {side_label} {shares}sh @ ${entry_price:.2f} '
+                f'| gap {gap["gap_pct"]:.1%} vol {gap["vol_ratio"]:.2f}x '
+                f'| OR [{or_low:.2f}-{or_high:.2f}] '
+                f'| stop ${stop_price:.2f} ({stop_dist:.1%}) '
+                f'| target ${full_target:.2f} ({target_dist:.1%})'),
+        'data': {'symbol': sym, 'shares': shares, 'entry': entry_price,
+                 'stop': stop_price, 'direction': direction}
+    })
+
+    # --- Walk forward through remaining 1-min bars for exits ---
+    remaining = shares
+    total_pnl = 0.0
+    partial_done = False
+
+    def _exit_slip(px):
+        return px * (1 + slip) if direction == 'short' else px * (1 - slip)
+
+    for bi in range(entry_bar + 1, len(times)):
+        if remaining <= 0:
+            break
+
+        bar_high = float(highs[bi])
+        bar_low = float(lows[bi])
+        bar_close = float(closes[bi])
+        bar_time = times[bi]
+        if hasattr(bar_time, 'to_pydatetime'):
+            bar_time = bar_time.to_pydatetime()
+        bar_h, bar_m = bar_time.hour, bar_time.minute
+
+        # Check stop hit
+        stopped = _stop_hit(direction, bar_high, bar_low, stop_price)
+        if stopped:
+            fp = _exit_slip(stop_price)
+            pnl = _direction_pnl(direction, entry_price, fp, remaining) - borrow_cost
+            pnl_pct = pnl / (entry_price * remaining) if entry_price > 0 else 0
+            hold_min = int((bar_time - entry_time).total_seconds() / 60)
+            trade = TradeRecord(
+                symbol=sym, entry_price=entry_price, exit_price=fp,
+                shares=remaining, pnl=pnl, pnl_pct=pnl_pct,
+                entry_time=entry_time_str, exit_time=bar_time.strftime('%Y-%m-%d %H:%M'),
+                exit_reason='stop', holding_minutes=hold_min, side=direction,
+            )
+            day_trades.append(trade)
+            state.record_trade(trade)
+            total_pnl += pnl
+            remaining = 0
+            log.append({'level': 'stop', 'msg': f'{sym} {bar_time.strftime("%H:%M")}: STOP {shares}sh @ ${fp:.2f} | P&L ${pnl:.0f} ({pnl_pct:+.1%})',
+                        'data': {'pnl': pnl, 'reason': 'stop'}})
+            break
+
+        # Check partial target
+        partial_hit = _target_hit(direction, bar_low if direction == 'short' else bar_high, half_target)
+        if partial_hit and not partial_done:
+            cover_shares = max(1, int(shares * config.partial_cover_frac))
+            partial_borrow = borrow_cost * cover_shares / shares if shares > 0 else 0
+            fp = _exit_slip(half_target)
+            pnl = _direction_pnl(direction, entry_price, fp, cover_shares) - partial_borrow
+            pnl_pct = pnl / (entry_price * cover_shares) if entry_price > 0 else 0
+            hold_min = int((bar_time - entry_time).total_seconds() / 60)
+            trade = TradeRecord(
+                symbol=sym, entry_price=entry_price, exit_price=fp,
+                shares=cover_shares, pnl=pnl, pnl_pct=pnl_pct,
+                entry_time=entry_time_str, exit_time=bar_time.strftime('%Y-%m-%d %H:%M'),
+                exit_reason='partial', holding_minutes=hold_min, side=direction,
+            )
+            day_trades.append(trade)
+            state.record_trade(trade)
+            total_pnl += pnl
+            remaining -= cover_shares
+            partial_done = True
+            log.append({'level': 'exit', 'msg': f'{sym} {bar_time.strftime("%H:%M")}: PARTIAL {cover_shares}sh @ ${fp:.2f} | P&L ${pnl:+.0f}',
+                        'data': {'pnl': pnl, 'reason': 'partial'}})
+
+        # Check full target
+        full_hit = _target_hit(direction, bar_close, full_target)
+        if full_hit and remaining > 0:
+            remaining_borrow = borrow_cost * remaining / shares if shares > 0 else 0
+            fp = _exit_slip(full_target)
+            pnl = _direction_pnl(direction, entry_price, fp, remaining) - remaining_borrow
+            pnl_pct = pnl / (entry_price * remaining) if entry_price > 0 else 0
+            hold_min = int((bar_time - entry_time).total_seconds() / 60)
+            trade = TradeRecord(
+                symbol=sym, entry_price=entry_price, exit_price=fp,
+                shares=remaining, pnl=pnl, pnl_pct=pnl_pct,
+                entry_time=entry_time_str, exit_time=bar_time.strftime('%Y-%m-%d %H:%M'),
+                exit_reason='full_target', holding_minutes=hold_min, side=direction,
+            )
+            day_trades.append(trade)
+            state.record_trade(trade)
+            total_pnl += pnl
+            remaining = 0
+            log.append({'level': 'exit', 'msg': f'{sym} {bar_time.strftime("%H:%M")}: FULL TARGET {trade.shares}sh @ ${fp:.2f} | P&L ${pnl:+.0f}',
+                        'data': {'pnl': pnl, 'reason': 'full_target'}})
+            break
+
+        # Time exit at 15:55
+        if bar_h >= 15 and bar_m >= 55 and remaining > 0:
+            remaining_borrow = borrow_cost * remaining / shares if shares > 0 else 0
+            fp = _exit_slip(bar_close)
+            pnl = _direction_pnl(direction, entry_price, fp, remaining) - remaining_borrow
+            pnl_pct = pnl / (entry_price * remaining) if entry_price > 0 else 0
+            hold_min = int((bar_time - entry_time).total_seconds() / 60)
+            trade = TradeRecord(
+                symbol=sym, entry_price=entry_price, exit_price=fp,
+                shares=remaining, pnl=pnl, pnl_pct=pnl_pct,
+                entry_time=entry_time_str, exit_time=bar_time.strftime('%Y-%m-%d %H:%M'),
+                exit_reason='time_exit', holding_minutes=hold_min, side=direction,
+            )
+            day_trades.append(trade)
+            state.record_trade(trade)
+            total_pnl += pnl
+            remaining = 0
+            log.append({'level': 'exit', 'msg': f'{sym} {bar_time.strftime("%H:%M")}: TIME EXIT {trade.shares}sh @ ${fp:.2f} | P&L ${pnl:+.0f}',
+                        'data': {'pnl': pnl, 'reason': 'time_exit'}})
+            break
+
+    # If still holding (shouldn't happen with time exit, but safety)
+    if remaining > 0:
+        last_close = float(closes[-1])
+        fp = _exit_slip(last_close)
+        pnl = _direction_pnl(direction, entry_price, fp, remaining) - borrow_cost
+        pnl_pct = pnl / (entry_price * remaining) if entry_price > 0 else 0
+        trade = TradeRecord(
+            symbol=sym, entry_price=entry_price, exit_price=fp,
+            shares=remaining, pnl=pnl, pnl_pct=pnl_pct,
+            entry_time=entry_time_str, exit_time=f'{gap["date"]} 16:00',
+            exit_reason='time_exit', holding_minutes=360, side=direction,
+        )
+        day_trades.append(trade)
+        state.record_trade(trade)
+        total_pnl += pnl
+        remaining = 0
+
+    state.positions.pop(sym, None)
+
+    pnl_sign = '+' if total_pnl >= 0 else ''
+    log.append({
+        'level': 'summary',
+        'msg': (f'{sym} {gap["date"]}: {len(day_trades)} fills, '
+                f'net {pnl_sign}${total_pnl:.0f} | equity ${state.equity:,.0f}'),
+        'data': {'total_pnl': total_pnl, 'equity': state.equity}
+    })
+
+    return day_trades, log
+
+
+# ---------------------------------------------------------------------------
 # MetricsAdapter — converts simulation results to dashboard-compatible dict
 # ---------------------------------------------------------------------------
 
@@ -1237,7 +1568,47 @@ class VbtGapFadeBacktester:
 
         await _progress(40, f"Simulating {len(all_gap_days)} gaps...")
 
-        # ---- Phase 5 (40-95%): Simulation loop ----
+        # ---- Phase 4b (40-50%): Fetch 1-min bars for ORB if enabled ----
+        min_bar_cache: Dict[str, Dict[str, pd.DataFrame]] = {}  # {date: {symbol: df}}
+        if self.config.orb_enabled:
+            from gap_fade_app import fetch_alpaca_bars
+            # Collect unique (symbol, date) pairs
+            orb_pairs = [(g['symbol'], g['date']) for g in all_gap_days]
+            unique_dates = sorted(set(d for _, d in orb_pairs))
+            symbols_by_date = defaultdict(list)
+            for sym, dt in orb_pairs:
+                symbols_by_date[dt].append(sym)
+
+            total_fetches = len(orb_pairs)
+            fetched = 0
+            await _log('info', f'ORB mode: fetching 1-min bars for {total_fetches} gap events across {len(unique_dates)} days...')
+
+            for dt in unique_dates:
+                if self._cancel:
+                    break
+                dt_syms = symbols_by_date[dt]
+                min_bar_cache[dt] = {}
+                for sym in dt_syms:
+                    if self._cancel:
+                        break
+                    try:
+                        df = await asyncio.to_thread(fetch_alpaca_bars, sym, dt, dt, '1Min', 'sip')
+                        if df is not None and len(df) >= 10:
+                            min_bar_cache[dt][sym] = df
+                    except Exception as e:
+                        logger.debug(f"1-min fetch failed for {sym} {dt}: {e}")
+                    fetched += 1
+                    if fetched % 20 == 0:
+                        pct = 40 + (fetched / total_fetches) * 10
+                        await _progress(pct, f"Fetching 1-min bars: {fetched}/{total_fetches}")
+                        await asyncio.sleep(0)
+
+            cached_count = sum(len(v) for v in min_bar_cache.values())
+            await _log('info', f'ORB: fetched 1-min bars for {cached_count}/{total_fetches} gap events')
+
+        await _progress(50, f"Simulating {len(all_gap_days)} gaps...")
+
+        # ---- Phase 5 (50-95%): Simulation loop ----
         state = SimulationState(config=self.config)
         sorted_dates = sorted(gaps_by_date.keys())
         total_gaps = len(all_gap_days)
@@ -1302,7 +1673,13 @@ class VbtGapFadeBacktester:
                     if self._cancel:
                         break
                     gi += 1
-                    day_trades_result, day_log = simulate_gap_day(gap, state, self.config, self.strategy, dd_scale=dd_scale)
+                    # Use 1-min ORB simulation when enabled and data available
+                    if self.config.orb_enabled and date_str in min_bar_cache and gap['symbol'] in min_bar_cache.get(date_str, {}):
+                        day_trades_result, day_log = simulate_gap_day_orb_1min(
+                            gap, min_bar_cache[date_str][gap['symbol']],
+                            state, self.config, dd_scale=dd_scale)
+                    else:
+                        day_trades_result, day_log = simulate_gap_day(gap, state, self.config, self.strategy, dd_scale=dd_scale)
                     for entry in day_log:
                         bt_log.append(entry)
                     trades_by_day.append({
