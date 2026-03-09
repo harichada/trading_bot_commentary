@@ -44,6 +44,7 @@ from gap_fade_app import (
     PriceDB,
     get_price_db,
     UNIVERSE,
+    LEVERAGED_ETFS,
     compute_adaptive_stop_pct,
     _direction_pnl,
     _stop_hit,
@@ -462,34 +463,77 @@ def simulate_gap_day(gap: dict, state: SimulationState, config: GapFadeConfig,
         direction=direction,
     )
 
-    # Bounce entry: if configured, wait for bounce above open before shorting
-    bounce = config.bounce_entry_pct
-    if direction == 'short' and bounce > 0 and day_high >= day_open * (1 + bounce):
-        entry_price = day_open * (1 + bounce) * (1 - slip)
-    elif direction == 'short' and bounce > 0:
-        log.append({'level': 'skip', 'msg': f'{sym} {gap["date"]}: SKIP — no bounce to {bounce:.1%} above open'})
-        return day_trades, log
-    else:
-        if direction == 'long':
-            entry_price = day_open * (1 + slip)
-        else:
-            entry_price = day_open * (1 - slip)
+    # --- ORB confirmation: simulate opening range breakout ---
+    if config.orb_enabled:
+        # Estimate OR range: use gap_pct-proportional range, clamped
+        or_range_pct = abs(gap['gap_pct']) * config.orb_atr_fraction
+        or_range_pct = max(config.orb_min_range_pct, min(config.orb_max_range_pct, or_range_pct))
 
-    # Entry time estimates
+        if direction == 'short':
+            # For gap-up short: confirmation = price broke BELOW opening range low
+            or_low = day_open * (1 - or_range_pct)
+            or_high = day_open * (1 + or_range_pct)
+            if day_low > or_low:
+                # Price never broke below OR floor — gap held, skip
+                log.append({'level': 'skip', 'msg': f'{sym} {gap["date"]}: SKIP — no OR breakdown (low ${day_low:.2f} > OR_low ${or_low:.2f})'})
+                return day_trades, log
+            # ORB confirmed — enter at open (filter-only mode: confirmation is the filter,
+            # entry price stays at open for better risk/reward)
+            entry_price = day_open * (1 - slip)
+        else:
+            # For gap-down long: confirmation = price broke ABOVE opening range high
+            or_high = day_open * (1 + or_range_pct)
+            or_low = day_open * (1 - or_range_pct)
+            if day_high < or_high:
+                # Price never broke above OR ceiling — gap held, skip
+                log.append({'level': 'skip', 'msg': f'{sym} {gap["date"]}: SKIP — no OR breakout (high ${day_high:.2f} < OR_high ${or_high:.2f})'})
+                return day_trades, log
+            entry_price = day_open * (1 + slip)
+    else:
+        # Legacy: blind entry at open
+        or_low = or_high = None
+        # Bounce entry: if configured, wait for bounce above open before shorting
+        bounce = config.bounce_entry_pct
+        if direction == 'short' and bounce > 0 and day_high >= day_open * (1 + bounce):
+            entry_price = day_open * (1 + bounce) * (1 - slip)
+        elif direction == 'short' and bounce > 0:
+            log.append({'level': 'skip', 'msg': f'{sym} {gap["date"]}: SKIP — no bounce to {bounce:.1%} above open'})
+            return day_trades, log
+        else:
+            if direction == 'long':
+                entry_price = day_open * (1 + slip)
+            else:
+                entry_price = day_open * (1 - slip)
+
+    # Entry time estimates — ORB entry is delayed (~10:00 after OR forms)
     _ew = strategy.get_entry_window() if strategy else None
-    _entry_min = _ew[1] if _ew else 31
-    entry_time_str = f'{gap["date"]} 09:{_entry_min:02d}'
+    if config.orb_enabled:
+        _entry_min = 0  # 10:00 AM (after 30-min OR)
+        entry_time_str = f'{gap["date"]} 10:00'
+    else:
+        _entry_min = _ew[1] if _ew else 31
+        entry_time_str = f'{gap["date"]} 09:{_entry_min:02d}'
     exit_stop_str = f'{gap["date"]} 10:30'
     exit_partial_str = f'{gap["date"]} 12:00'
     exit_full_str = f'{gap["date"]} 14:00'
     exit_close_str = f'{gap["date"]} 15:55'
-    _base_min = _entry_min
-    hold_stop = 60 + (31 - _base_min)
-    hold_partial = 150 + (31 - _base_min)
-    hold_full = 270 + (31 - _base_min)
-    hold_close = 385 + (31 - _base_min)
+    if config.orb_enabled:
+        hold_stop = 30       # 10:00 → 10:30
+        hold_partial = 120   # 10:00 → 12:00
+        hold_full = 240      # 10:00 → 14:00
+        hold_close = 355     # 10:00 → 15:55
+    else:
+        _base_min = _entry_min
+        hold_stop = 60 + (31 - _base_min)
+        hold_partial = 150 + (31 - _base_min)
+        hold_full = 270 + (31 - _base_min)
+        hold_close = 385 + (31 - _base_min)
 
     # --- should_enter checks (replaces GapFadeEngine.should_enter) ---
+    if config.exclude_leveraged and sym in LEVERAGED_ETFS:
+        log.append({'level': 'skip', 'msg': f'{sym} {gap["date"]}: SKIP — leveraged/inverse ETF'})
+        return day_trades, log
+
     if candidate.catalyst in ('earnings', 'ma'):
         log.append({'level': 'skip', 'msg': f'{sym} {gap["date"]}: SKIP — catalyst-driven gap ({candidate.catalyst})'})
         return day_trades, log
@@ -515,13 +559,23 @@ def simulate_gap_day(gap: dict, state: SimulationState, config: GapFadeConfig,
         return day_trades, log
 
     # --- Compute stop and targets ---
-    eff_stop_pct = compute_adaptive_stop_pct(config, gap['gap_pct'])
+    if config.orb_enabled and config.orb_dynamic_stop and or_high is not None:
+        # Dynamic stop at opposite side of opening range
+        if direction == 'short':
+            stop_price = or_high * (1 + slip)  # stop above OR high
+        else:
+            stop_price = or_low * (1 - slip)   # stop below OR low
+    else:
+        eff_stop_pct = compute_adaptive_stop_pct(config, gap['gap_pct'])
+        if direction == 'long':
+            stop_price = entry_price * (1 - eff_stop_pct)
+        else:
+            stop_price = entry_price * (1 + eff_stop_pct)
+
     if direction == 'long':
-        stop_price = entry_price * (1 - eff_stop_pct)
         half_target = (entry_price + prev_close) / 2
         full_target = prev_close
     else:
-        stop_price = entry_price * (1 + eff_stop_pct)
         half_target = (entry_price + prev_close) / 2
         full_target = prev_close
 
@@ -1087,7 +1141,16 @@ class VbtGapFadeBacktester:
             return g['vol_ratio'] <= self.config.vol_ratio_max
 
         all_gap_days = [g for g in all_gap_days_raw if _vol_ok(g)]
-        await _log('scan', f'After vol filter: {len(all_gap_days)} gaps (from {raw_gap_count} raw)')
+        after_vol = len(all_gap_days)
+
+        # Leveraged ETF filter
+        if self.config.exclude_leveraged:
+            all_gap_days = [g for g in all_gap_days if g['symbol'] not in LEVERAGED_ETFS]
+            lev_filtered = after_vol - len(all_gap_days)
+            if lev_filtered:
+                await _log('scan', f'Excluded {lev_filtered} leveraged/inverse ETF gaps')
+
+        await _log('scan', f'After filters: {len(all_gap_days)} gaps (from {raw_gap_count} raw)')
         await _progress(25, f"Found {len(all_gap_days)} gaps. Filtering...")
 
         if not all_gap_days:

@@ -2818,6 +2818,36 @@ SMALL_CAP = [
 
 ETFS = ['SPY', 'QQQ', 'IWM', 'ARKK', 'XBI']
 
+# Leveraged / inverse ETFs — gap by design, almost never fill. Exclude from fading.
+LEVERAGED_ETFS = {
+    # Volatility
+    'VXX', 'UVXY', 'SVXY', 'VIXY', 'UVIX', 'SVOL',
+    # Equity leveraged (bull)
+    'TQQQ', 'SOXL', 'SPXL', 'UPRO', 'TECL', 'TNA', 'FNGU', 'BULZ', 'NAIL',
+    'LABU', 'FAS', 'DFEN', 'DPST', 'DUSL', 'MIDU', 'RETL', 'UDOW', 'UMDD',
+    'URTY', 'WANT', 'PILL', 'HIBL', 'TPOR', 'WEBL',
+    # Equity leveraged (bear / inverse)
+    'SQQQ', 'SOXS', 'SPXS', 'SPXU', 'TECS', 'TZA', 'FNGD', 'FAZ', 'SDOW',
+    'SRTY', 'SMDD', 'SDS', 'QID', 'TWM', 'HIBS', 'WEBS',
+    # Commodity leveraged
+    'BOIL', 'KOLD', 'UCO', 'SCO', 'GUSH', 'DRIP', 'JNUG', 'JDST',
+    'NUGT', 'DUST', 'AGQ', 'ZSL', 'UGL', 'GLL', 'UNG',
+    # Crypto leveraged
+    'BITX', 'BITU', 'SBIT', 'CONL',
+    # Bond leveraged
+    'TMF', 'TMV', 'TBT', 'TYD', 'TYO',
+    # Single-stock leveraged
+    'TSLL', 'NVDL', 'NVDX', 'MSFU', 'AMZU', 'GGLL', 'AAPD', 'AAPB',
+    'TSLS', 'NVDS', 'MSFD', 'AMZD',
+    # 2x leveraged
+    'SSO', 'SH', 'QLD', 'PSQ', 'UWM', 'RWM', 'DDM', 'DXD', 'MVV', 'MZZ',
+    'SAA', 'SDD', 'USD', 'UBT', 'TBF',
+    # Regional leveraged
+    'YINN', 'YANG', 'EDC', 'EDZ', 'EURL', 'DZZ', 'EUO',
+    # Other inverse / leveraged
+    'SARK', 'LABD', 'CURE', 'ERX', 'ERY', 'DIG', 'DUG',
+}
+
 UNIVERSE = sorted(set(LARGE_CAP + MID_CAP + SMALL_CAP + ETFS))
 
 
@@ -2921,6 +2951,18 @@ class GapFadeConfig:
     max_pct_adv: float = 0.02           # max 2% of avg daily volume per position
     adverse_fill: bool = True            # assume adverse ordering on ambiguous bars
     adverse_fill_pct: float = 0.50       # probability of adverse fill when ambiguous (0=always favorable, 1=always adverse)
+
+    # Opening Range Breakout (ORB) confirmation — backtest only
+    # Simulates waiting for price to break below opening range before entering short
+    orb_enabled: bool = True              # master toggle for ORB confirmation
+    orb_atr_fraction: float = 0.35        # OR range = ATR × this fraction (typical: 30-50% of daily ATR)
+    orb_atr_period: int = 14              # ATR lookback period for OR range estimation
+    orb_dynamic_stop: bool = False        # False=adaptive stops (tested better), True=OR extreme as stop
+    orb_min_range_pct: float = 0.003      # minimum OR range (0.3%) — prevents too-tight entries
+    orb_max_range_pct: float = 0.025      # maximum OR range (2.5%) — prevents too-wide entries
+
+    # Leveraged ETF exclusion
+    exclude_leveraged: bool = True        # exclude leveraged/inverse ETFs from gap fading
 
     # Catalyst detection
     catalyst_enabled: bool = True
@@ -3983,6 +4025,10 @@ class GapFadeEngine:
 
     def should_enter(self, candidate: GapCandidate) -> Tuple[bool, str]:
         """Check if we should enter a new short. Returns (ok, reason)."""
+        # Leveraged/inverse ETFs: gap by design, almost never fill
+        if self.config.exclude_leveraged and candidate.symbol in LEVERAGED_ETFS:
+            return False, f"leveraged/inverse ETF excluded"
+
         # Catalyst-driven gaps: never short into earnings or M&A
         if candidate.catalyst in ('earnings', 'ma'):
             return False, f"catalyst-driven gap ({candidate.catalyst})"
@@ -13150,8 +13196,11 @@ async def run_backtest(body: dict):
     if validation_errors:
         return {'error': 'Validation failed: ' + '; '.join(validation_errors)}
 
-    # Build config from body
+    # Build config from body (support both top-level and nested 'config' object)
     config = GapFadeConfig()
+    config_overrides = dict(body)
+    if 'config' in body and isinstance(body['config'], dict):
+        config_overrides.update(body['config'])
     config_errors = []
     for key in ['gap_threshold', 'max_gap_pct', 'vol_ratio_max', 'stop_pct', 'risk_pct',
                 'kelly_fraction', 'max_positions', 'initial_capital',
@@ -13173,13 +13222,18 @@ async def run_backtest(body: dict):
                 # Drawdown circuit breakers
                 'dd_circuit_breaker', 'dd_tier1_threshold', 'dd_tier1_scale',
                 'dd_tier2_threshold', 'dd_tier2_scale', 'dd_tier2_max_positions',
-                'dd_hard_stop']:
-        if key in body:
+                'dd_hard_stop',
+                # ORB confirmation
+                'orb_enabled', 'orb_atr_fraction', 'orb_atr_period',
+                'orb_dynamic_stop', 'orb_min_range_pct', 'orb_max_range_pct',
+                # Leveraged ETF exclusion
+                'exclude_leveraged']:
+        if key in config_overrides:
             field_type = type(getattr(config, key))
             try:
-                setattr(config, key, field_type(body[key]))
+                setattr(config, key, field_type(config_overrides[key]))
             except (ValueError, TypeError):
-                config_errors.append(f"{key}: cannot convert '{body[key]}' to {field_type.__name__}")
+                config_errors.append(f"{key}: cannot convert '{config_overrides[key]}' to {field_type.__name__}")
     if config_errors:
         return {'error': 'Config errors: ' + '; '.join(config_errors)}
 
