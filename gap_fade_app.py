@@ -2954,7 +2954,7 @@ class GapFadeConfig:
 
     # Opening Range Breakout (ORB) confirmation — backtest only
     # Simulates waiting for price to break below opening range before entering short
-    orb_enabled: bool = True              # master toggle for ORB confirmation
+    orb_enabled: bool = False             # requires 1-min data for honest results; daily-bar ORB has look-ahead bias
     orb_atr_fraction: float = 0.35        # OR range = ATR × this fraction (typical: 30-50% of daily ATR)
     orb_atr_period: int = 14              # ATR lookback period for OR range estimation
     orb_dynamic_stop: bool = False        # False=adaptive stops (tested better), True=OR extreme as stop
@@ -15515,9 +15515,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       <!-- ORB Confirmation Filter -->
       <div style="padding:8px 10px;background:rgba(59,130,246,0.06);border:1px solid rgba(59,130,246,0.15);border-radius:6px;">
         <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:12px;font-weight:600;color:var(--blue);">
-          <input type="checkbox" id="btORB" checked onchange="document.getElementById('btORBOpts').style.display=this.checked?'flex':'none'"> ORB Confirmation
+          <input type="checkbox" id="btORB" onchange="document.getElementById('btORBOpts').style.display=this.checked?'flex':'none'"> ORB Confirmation <span style="font-size:10px;color:var(--muted);font-weight:normal;">(needs 1-min data)</span>
         </label>
-        <div id="btORBOpts" style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap;font-size:11px;">
+        <div id="btORBOpts" style="display:none;gap:6px;margin-top:6px;flex-wrap:wrap;font-size:11px;">
           <div class="config-item"><label>ATR Frac:</label><input type="number" id="btORBFrac" value="0.35" step="0.05" min="0.05" max="1" style="width:55px;" title="OR range = gap% x this fraction"></div>
           <div class="config-item"><label>Min %:</label><input type="number" id="btORBMin" value="0.3" step="0.1" min="0.1" max="5" style="width:50px;" title="Minimum OR range %"></div>
           <div class="config-item"><label>Max %:</label><input type="number" id="btORBMax" value="2.5" step="0.5" min="0.5" max="10" style="width:50px;" title="Maximum OR range %"></div>

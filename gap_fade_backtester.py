@@ -470,25 +470,25 @@ def simulate_gap_day(gap: dict, state: SimulationState, config: GapFadeConfig,
         or_range_pct = max(config.orb_min_range_pct, min(config.orb_max_range_pct, or_range_pct))
 
         if direction == 'short':
-            # For gap-up short: confirmation = price broke BELOW opening range low
+            # For gap-up short: entry triggers on break BELOW opening range low
             or_low = day_open * (1 - or_range_pct)
             or_high = day_open * (1 + or_range_pct)
             if day_low > or_low:
                 # Price never broke below OR floor — gap held, skip
                 log.append({'level': 'skip', 'msg': f'{sym} {gap["date"]}: SKIP — no OR breakdown (low ${day_low:.2f} > OR_low ${or_low:.2f})'})
                 return day_trades, log
-            # ORB confirmed — enter at open (filter-only mode: confirmation is the filter,
-            # entry price stays at open for better risk/reward)
-            entry_price = day_open * (1 - slip)
+            # Enter at breakdown price (honest: this is where a live ORB order fills)
+            entry_price = or_low * (1 - slip)
         else:
-            # For gap-down long: confirmation = price broke ABOVE opening range high
+            # For gap-down long: entry triggers on break ABOVE opening range high
             or_high = day_open * (1 + or_range_pct)
             or_low = day_open * (1 - or_range_pct)
             if day_high < or_high:
                 # Price never broke above OR ceiling — gap held, skip
                 log.append({'level': 'skip', 'msg': f'{sym} {gap["date"]}: SKIP — no OR breakout (high ${day_high:.2f} < OR_high ${or_high:.2f})'})
                 return day_trades, log
-            entry_price = day_open * (1 + slip)
+            # Enter at breakout price (honest: this is where a live ORB order fills)
+            entry_price = or_high * (1 + slip)
     else:
         # Legacy: blind entry at open
         or_low = or_high = None
