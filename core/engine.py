@@ -635,8 +635,8 @@ class TradingEngineWithCommentary:
             legs = order.get('orderLegCollection', [])
             if legs:
                 return legs[0].get('instrument', {}).get('symbol')
-        except:
-            pass
+        except (KeyError, IndexError, TypeError) as e:
+            logger.debug(f"Could not extract symbol from order: {e}")
         return None
 
     async def _cancel_existing_orders(self, symbol: str) -> bool:
@@ -843,9 +843,9 @@ class TradingEngineWithCommentary:
                         'message': 'Order price is invalid (check stop/limit prices)',
                         'details': error_data
                     }
-        except:
-            pass
-        
+        except Exception as e:
+            logger.debug(f"Could not parse order rejection details: {e}")
+
         return {
             'reason': 'UNKNOWN',
             'message': f'Order rejected - Status: {response.status_code}',
@@ -1120,8 +1120,8 @@ class TradingEngineWithCommentary:
         try:
             self.schwab_client.cancel_order(self.account_hash, order_id)
             del self.pending_orders[order_id]
-        except:
-            pass
+        except Exception as e:
+            logger.warning(f"Failed to cancel unfilled order {order_id}: {e}")
         return False
     
     async def _check_order_status(self):

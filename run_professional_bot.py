@@ -583,7 +583,7 @@ async def get_dashboard():
     # Try enhanced dashboard first
     enhanced_dashboard = Path("professional_dashboard_enhanced.html")
     if enhanced_dashboard.exists():
-        print(f"Serving enhanced dashboard from: {enhanced_dashboard}")
+        logger.info(f"Serving enhanced dashboard from: {enhanced_dashboard}")
         with open(enhanced_dashboard, 'r') as f:
             content = f.read()
             # Add no-cache headers
@@ -599,34 +599,30 @@ async def get_dashboard():
     # Then try original professional dashboard
     dashboard_file = Path("professional_dashboard.html")
     if dashboard_file.exists():
-        print(f"Serving original professional dashboard from: {dashboard_file}")
+        logger.info(f"Serving original professional dashboard from: {dashboard_file}")
         with open(dashboard_file, 'r') as f:
             return HTMLResponse(content=f.read())
     else:
         # Fallback to original dashboard
-        print("Serving fallback dashboard")
+        logger.info("Serving fallback dashboard")
         from trading_bot_commentary_updated import DASHBOARD_HTML_WITH_COMMENTARY
         return HTMLResponse(content=DASHBOARD_HTML_WITH_COMMENTARY)
 
 async def main():
     """Main entry point"""
-    print("\n" + "="*50)
-    print("PROFESSIONAL TRADING BOT")
-    print("="*50)
-    
+    logger.info("PROFESSIONAL TRADING BOT starting")
+
     # Load configuration
     config = ProfessionalConfig.load()
-    print(f"Mode: {'Paper Trading' if config['paper_trading'] else 'Live Trading'}")
-    print(f"Strategies: {', '.join(config['strategies']['enabled'])}")
-    print(f"Risk Management: {config['risk_management']['position_sizing_method']}")
-    
+    logger.info(f"Mode: {'Paper Trading' if config['paper_trading'] else 'Live Trading'}")
+    logger.info(f"Strategies: {', '.join(config['strategies']['enabled'])}")
+    logger.info(f"Risk Management: {config['risk_management']['position_sizing_method']}")
+
     # Create professional trading engine
     global trading_engine
     trading_engine = ProfessionalTradingEngine(connection_manager=connection_manager)
-    
-    print("\nStarting server...")
-    print("Dashboard: http://localhost:8000")
-    print("API Docs: http://localhost:8000/docs")
+
+    logger.info("Starting server on http://localhost:8000")
     
     # Run the FastAPI server
     config = uvicorn.Config(app, host="0.0.0.0", port=8000, log_level="info")

@@ -270,7 +270,7 @@ class CommentarySystem:
                         # Close fd if still open
                         try:
                             os.close(fd)
-                        except:
+                        except OSError:
                             pass
                         raise write_error
                     finally:
@@ -278,7 +278,7 @@ class CommentarySystem:
                         if os.path.exists(temp_path_str):
                             try:
                                 os.unlink(temp_path_str)
-                            except:
+                            except OSError:
                                 pass
 
                 except Exception as write_error:
@@ -335,7 +335,7 @@ class CommentarySystem:
                                 obj_str = obj_str[:-1]
                             obj = json.loads(obj_str)
                             valid_objects.append(obj)
-                        except:
+                        except (json.JSONDecodeError, ValueError):
                             pass
                         break
             else:

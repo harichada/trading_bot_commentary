@@ -224,7 +224,8 @@ class TechnicalAnalyzerWithCommentary:
                     'volume_ratio': 1.0,
                     'high_low_ratio': 0.02
                 }
-            except:
+            except Exception as e:
+                logger.debug(f"Error computing default indicators: {e}")
                 indicators = {}
 
         return indicators

@@ -2190,46 +2190,48 @@ async def record_execution(request: dict):
 
 def main():
     """Main entry point"""
-    print("""
+    logger.info("""
     \u2554\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2557
     \u2551        Trading Bot with Live Commentary - Educational Mode           \u2551
     \u2551     Learn How Professional Trading Algorithms Make Decisions         \u2551
     \u255a\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u255d
     """)
 
-    print("\nStarting Trading Bot in Commentary Mode...")
-    print("The bot will explain its thinking process in real-time.")
-    print("\n\U0001f4ca Features:")
-    print("  \u2022 Real-time market analysis with explanations")
-    print("  \u2022 Detailed reasoning for every trading decision")
-    print("  \u2022 Risk management explanations")
-    print("  \u2022 Post-trade analysis and lessons")
-    print("  \u2022 Works even during margin calls (simulation only)")
-
-    print("\n\U0001f310 Open http://localhost:8000 in your browser")
-    print("\U0001f4f1 Click 'Start Commentary' to begin")
-    print("\u274c Press Ctrl+C to stop\n")
+    logger.info("Starting Trading Bot in Commentary Mode...")
+    logger.info("The bot will explain its thinking process in real-time.")
+    logger.info("Open http://localhost:8000 in your browser")
+    logger.info("Press Ctrl+C or send SIGTERM to stop")
 
     def shutdown_handler(signum, frame):
-        print("\n\n\U0001f6d1 Shutting down gracefully...")
+        sig_name = signal.Signals(signum).name
+        logger.info(f"Received {sig_name}, shutting down gracefully...")
         if trading_engine:
-            trading_engine._save_state()
-            trading_engine.brain.save_memories()
+            try:
+                trading_engine._save_state()
+                logger.info("Trading state saved")
+            except Exception as e:
+                logger.error(f"Failed to save trading state: {e}")
 
-            # CRITICAL: Save ML model with buffer
-            if hasattr(trading_engine, 'ml_predictor') and trading_engine.ml_predictor:
-                if hasattr(trading_engine.ml_predictor, 'save_model'):
-                    trading_engine.ml_predictor.save_model()
-                    buffer_size = len(getattr(trading_engine.ml_predictor, 'online_buffer', []))
-                    if buffer_size > 0:
-                        print(f"\u2705 ML model saved with {buffer_size} training samples in buffer")
-                    else:
-                        print("\u2705 ML model saved")
+            try:
+                trading_engine.brain.save_memories()
+                logger.info("Brain memories saved")
+            except Exception as e:
+                logger.error(f"Failed to save brain memories: {e}")
 
-            print("\u2705 State saved successfully")
+            try:
+                if hasattr(trading_engine, 'ml_predictor') and trading_engine.ml_predictor:
+                    if hasattr(trading_engine.ml_predictor, 'save_model'):
+                        trading_engine.ml_predictor.save_model()
+                        buffer_size = len(getattr(trading_engine.ml_predictor, 'online_buffer', []))
+                        logger.info(f"ML model saved (buffer: {buffer_size} samples)")
+            except Exception as e:
+                logger.error(f"Failed to save ML model: {e}")
+
+        logger.info("Shutdown complete")
         sys.exit(0)
 
     signal.signal(signal.SIGINT, shutdown_handler)
+    signal.signal(signal.SIGTERM, shutdown_handler)
 
     # Run the server
     uvicorn.run(app, host="0.0.0.0", port=8000)

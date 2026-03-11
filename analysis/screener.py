@@ -142,7 +142,8 @@ class StockScreener:
                 quote = self._get_quote_data(symbol)
                 if quote and quote.get('volume', 0) > 500000:
                     volatile_stocks.append(quote)
-            except:
+            except Exception as e:
+                logger.debug(f"Failed to get quote for {symbol}: {e}")
                 continue
 
         return volatile_stocks

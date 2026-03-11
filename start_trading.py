@@ -8,17 +8,15 @@ Usage: python start_trading.py [--paper] [--live] [--monitor-only]
 
 import os
 import sys
+import signal
+import asyncio
 import argparse
 from pathlib import Path
 from datetime import datetime
 
 # Load environment variables
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-except ImportError:
-    pass  # dotenv not required if env vars are set another way
-
+from dotenv import load_dotenv
+load_dotenv()
 
 def print_banner():
     banner = """
@@ -30,51 +28,38 @@ def print_banner():
     """
     print(banner)
 
-
 def check_prerequisites():
     """Check all required files and credentials"""
     errors = []
-    warnings = []
 
     # Check .env file
     if not Path(".env").exists():
-        warnings.append("No .env file - using environment variables")
+        errors.append("Missing .env file - run setup_wizard.py first")
 
     # Check token file
     if not Path("token_1.json").exists():
         errors.append("Missing token_1.json - run setup_wizard.py first")
 
     # Check API credentials
-    if not os.getenv("SCHWAB_API_KEY") and not os.getenv("SCHWAB_APP_KEY"):
-        errors.append("SCHWAB_API_KEY or SCHWAB_APP_KEY not set")
+    if not os.getenv("SCHWAB_API_KEY"):
+        errors.append("SCHWAB_API_KEY not set")
+    if not os.getenv("SCHWAB_APP_SECRET"):
+        errors.append("SCHWAB_APP_SECRET not set")
 
-    return errors, warnings
-
+    return errors
 
 def main():
     parser = argparse.ArgumentParser(description='Start the Trading Bot')
-    parser.add_argument('--paper', action='store_true',
-                        help='Run in paper trading mode (default)')
-    parser.add_argument('--live', action='store_true',
-                        help='Run in live trading mode')
-    parser.add_argument('--monitor-only', action='store_true',
-                        help='Monitor only, no trading')
-    parser.add_argument('--port', type=int, default=8000,
-                        help='Web interface port')
-    parser.add_argument('--host', default='0.0.0.0',
-                        help='Host to bind to')
-    parser.add_argument('--no-browser', action='store_true',
-                        help='Do not open browser on start')
+    parser.add_argument('--paper', action='store_true', help='Run in paper trading mode (default)')
+    parser.add_argument('--live', action='store_true', help='Run in live trading mode')
+    parser.add_argument('--monitor-only', action='store_true', help='Monitor only, no trading')
+    parser.add_argument('--port', type=int, default=8000, help='Web interface port')
     args = parser.parse_args()
 
     print_banner()
 
     # Check prerequisites
-    errors, warnings = check_prerequisites()
-
-    for warning in warnings:
-        print(f"⚠️  {warning}")
-
+    errors = check_prerequisites()
     if errors:
         print("\n❌ Setup incomplete:")
         for error in errors:
@@ -106,29 +91,28 @@ def main():
     print(f"⏰ Started at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("\n" + "─" * 60)
 
+    # Register signal handlers for graceful shutdown
+    def shutdown_handler(signum, frame):
+        sig_name = signal.Signals(signum).name
+        print(f"\n🛑 Received {sig_name}, shutting down gracefully...")
+        print("   Saving state and closing positions if needed...")
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, shutdown_handler)
+    signal.signal(signal.SIGTERM, shutdown_handler)
+
     # Import and run the trading bot
     try:
         from trading_bot_commentary_updated import app
         import uvicorn
 
-        uvicorn.run(
-            app,
-            host=args.host,
-            port=args.port,
-            log_level="info"
-        )
+        uvicorn.run(app, host="0.0.0.0", port=args.port, log_level="info")
 
-    except KeyboardInterrupt:
-        print("\n\n🛑 Shutting down gracefully...")
-        print("   Saving state and closing positions if needed...")
-    except ImportError as e:
-        print(f"\n❌ Import error: {e}")
-        print("   Run: pip install -r requirements.txt")
-        sys.exit(1)
+    except SystemExit:
+        pass  # Expected from shutdown_handler
     except Exception as e:
         print(f"\n❌ Error: {e}")
         sys.exit(1)
-
 
 if __name__ == "__main__":
     main()

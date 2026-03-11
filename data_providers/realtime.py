@@ -145,8 +145,8 @@ class RealTimeDataProvider:
                             advances += 1
                         else:
                             declines += 1
-                except:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Failed to get ticker data for {symbol}: {e}")
 
             total = advances + declines
             breadth = {

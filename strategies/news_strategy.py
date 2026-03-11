@@ -192,7 +192,8 @@ class FreeNewsAggregator:
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
             }
 
-            async with aiohttp.ClientSession() as session:
+            timeout = aiohttp.ClientTimeout(total=15)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
                 for url in urls:
                     try:
                         async with session.get(url, headers=headers) as response:
@@ -303,11 +304,11 @@ class FreeNewsAggregator:
             for fmt in ['%b. %d, %Y', '%B %d, %Y', '%m/%d/%Y']:
                 try:
                     return datetime.strptime(time_text, fmt)
-                except:
+                except ValueError:
                     continue
 
-        except:
-            pass
+        except (ValueError, AttributeError) as e:
+            logger.debug(f"Could not parse time text: {e}")
 
         return datetime.now()  # Default to now
 

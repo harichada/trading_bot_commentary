@@ -202,7 +202,8 @@ class SchwabDataProvider:
             try:
                 gainers = self._get_movers('$SPX.X', 'up')
                 losers = self._get_movers('$SPX.X', 'down')
-            except:
+            except Exception as e:
+                logger.debug(f"Failed to fetch movers: {e}")
                 gainers = []
                 losers = []
 
@@ -224,8 +225,8 @@ class SchwabDataProvider:
                                     vix_quote = vix_data['quote'].get('lastPrice', 20)
                                 elif 'lastPrice' in vix_data:
                                     vix_quote = vix_data.get('lastPrice', 20)
-                    except:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"VIX index endpoint failed: {e}")
             except Exception as e:
                 logger.debug(f"VIX fetch failed, using default: {e}")
 
@@ -268,6 +269,6 @@ class SchwabDataProvider:
             response = self.client.get_movers(index, direction=direction, change='percent')
             if response.status_code == 200:
                 return response.json()
-        except:
-            pass
+        except Exception as e:
+            logger.debug(f"Failed to get movers for {index} {direction}: {e}")
         return []
