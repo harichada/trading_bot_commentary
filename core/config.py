@@ -50,7 +50,11 @@ class ConfigManager:
                 'reserve_cash_percent': 0.1,
                 'min_position_size': 1,
                 'max_position_value': 10000,
-                'min_buying_power': 100
+                'min_buying_power': 100,
+                'limit_order_slippage': 0.001,
+                'default_stop_loss_pct': 0.05,
+                'default_take_profit_pct': 0.10,
+                'max_position_value_pct': 0.25
             },
             'commentary': {
                 'enabled': True,
@@ -108,6 +112,20 @@ class ConfigManager:
         for section in required_sections:
             if section not in self.config:
                 raise ValueError(f"Missing required configuration section: {section}")
+
+        # Validate trading parameters are within safe ranges
+        trading = self.config.get('trading', {})
+        validations = [
+            ('max_risk_per_trade', 0.001, 0.10, 'Max risk per trade must be 0.1%-10%'),
+            ('min_risk_reward_ratio', 0.5, 10.0, 'Risk/reward ratio must be 0.5-10.0'),
+            ('max_daily_loss', 0.01, 0.20, 'Max daily loss must be 1%-20%'),
+            ('max_positions', 1, 50, 'Max positions must be 1-50'),
+            ('reserve_cash_percent', 0.0, 0.50, 'Reserve cash must be 0%-50%'),
+        ]
+        for key, min_val, max_val, msg in validations:
+            val = trading.get(key)
+            if val is not None and not (min_val <= val <= max_val):
+                raise ValueError(f"Config validation error: {msg} (got {val})")
 
     def get(self, key: str, default=None):
         """Get configuration value using dot notation"""
@@ -224,35 +242,35 @@ class Config:
 
     @property
     def MAX_RISK_PER_TRADE(self):
-        return self.manager.get('trading.max_risk_per_trade')
+        return self.manager.get('trading.max_risk_per_trade', 0.02)
 
     @property
     def MIN_RISK_REWARD_RATIO(self):
-        return self.manager.get('trading.min_risk_reward_ratio')
+        return self.manager.get('trading.min_risk_reward_ratio', 2.0)
 
     @property
     def MAX_DAILY_LOSS(self):
-        return self.manager.get('trading.max_daily_loss')
+        return self.manager.get('trading.max_daily_loss', 0.05)
 
     @property
     def MAX_CONSECUTIVE_LOSSES(self):
-        return self.manager.get('trading.max_consecutive_losses')
+        return self.manager.get('trading.max_consecutive_losses', 3)
 
     @property
     def POSITION_SIZE_KELLY_FRACTION(self):
-        return self.manager.get('trading.position_size_kelly_fraction')
+        return self.manager.get('trading.position_size_kelly_fraction', 0.25)
 
     @property
     def COMMENTARY_ENABLED(self):
-        return self.manager.get('commentary.enabled')
+        return self.manager.get('commentary.enabled', True)
 
     @property
     def COMMENTARY_DETAIL_LEVEL(self):
-        return self.manager.get('commentary.detail_level')
+        return self.manager.get('commentary.detail_level', 'verbose')
 
     @property
     def MAX_COMMENTARY_HISTORY(self):
-        return self.manager.get('commentary.max_history')
+        return self.manager.get('commentary.max_history', 100)
 
     @property
     def TIMEFRAMES(self):
@@ -284,39 +302,60 @@ class Config:
 
     @property
     def MAX_POSITIONS(self):
-        return self.manager.get('trading.max_positions')
+        return self.manager.get('trading.max_positions', 5)
 
     @property
     def RESERVE_CASH_PERCENT(self):
-        return self.manager.get('trading.reserve_cash_percent')
+        return self.manager.get('trading.reserve_cash_percent', 0.10)
 
     @property
     def MIN_POSITION_SIZE(self):
-        return self.manager.get('trading.min_position_size')
+        return self.manager.get('trading.min_position_size', 1)
 
     @property
     def MAX_POSITION_VALUE(self):
-        return self.manager.get('trading.max_position_value')
+        return self.manager.get('trading.max_position_value', 10000)
 
     @property
     def MIN_BUYING_POWER(self):
-        return self.manager.get('trading.min_buying_power')
+        return self.manager.get('trading.min_buying_power', 100)
 
     @property
     def REQUIRE_CLOSE_CONFIRMATION(self):
-        return self.manager.get('order_management.require_close_confirmation')
+        return self.manager.get('order_management.require_close_confirmation', True)
 
     @property
     def CONFIRM_ONLY_LOSSES(self):
-        return self.manager.get('order_management.confirm_only_losses')
+        return self.manager.get('order_management.confirm_only_losses', False)
 
     @property
     def CONFIRM_THRESHOLD_PERCENT(self):
-        return self.manager.get('order_management.confirm_threshold_percent')
+        return self.manager.get('order_management.confirm_threshold_percent', 5)
 
     @property
     def ML_PREDICTION_ENABLED(self):
-        return self.manager.get('trading.ml_prediction_enabled')
+        return self.manager.get('trading.ml_prediction_enabled', True)
+
+    # Order execution constants
+    @property
+    def LIMIT_ORDER_SLIPPAGE(self):
+        """Slippage factor for limit orders (e.g., 0.001 = 0.1%)"""
+        return self.manager.get('trading.limit_order_slippage', 0.001)
+
+    @property
+    def DEFAULT_STOP_LOSS_PCT(self):
+        """Default stop loss percentage for positions without explicit stops"""
+        return self.manager.get('trading.default_stop_loss_pct', 0.05)
+
+    @property
+    def DEFAULT_TAKE_PROFIT_PCT(self):
+        """Default take profit percentage for positions without explicit targets"""
+        return self.manager.get('trading.default_take_profit_pct', 0.10)
+
+    @property
+    def MAX_POSITION_VALUE_PCT(self):
+        """Maximum position value as fraction of portfolio"""
+        return self.manager.get('trading.max_position_value_pct', 0.25)
 
 # Initialize configuration
 config = Config()

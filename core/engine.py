@@ -339,13 +339,12 @@ class TradingEngineWithCommentary:
                     importance=7
                 ))
                 
+                slippage = Config().LIMIT_ORDER_SLIPPAGE
                 if signal.signal_type == SignalType.BUY:
-                    # Add small buffer above current price for buys
-                    limit_price = current_price * 1.001  # 0.1% above current
+                    limit_price = current_price * (1 + slippage)
                     order_builder = equity_buy_limit(signal.symbol, signal.position_size, limit_price)
                 else:  # SELL/SHORT
-                    # Subtract small buffer below current price for sells
-                    limit_price = current_price * 0.999  # 0.1% below current
+                    limit_price = current_price * (1 - slippage)
                     try:
                         order_builder = equity_sell_short_limit(signal.symbol, signal.position_size, limit_price)
                     except AttributeError:
@@ -1828,7 +1827,7 @@ class TradingEngineWithCommentary:
         if self.mode == TradingMode.LIVE and self.schwab_client:
             await self.sync_positions_with_schwab()
 
-        risk_per_trade = Config().MAX_RISK_PER_TRADE or 0.02  # Default to 2% if not set
+        risk_per_trade = Config().MAX_RISK_PER_TRADE
         self.commentary.add_commentary(TradingCommentary(
             timestamp=datetime.now(),
             type=CommentaryType.MARKET_ANALYSIS,
@@ -2444,8 +2443,8 @@ class TradingEngineWithCommentary:
                         current_price=existing_position['current_price'],
                         quantity=existing_position['quantity'],
                         side='long' if existing_position['quantity'] > 0 else 'short',
-                        stop_loss=existing_position['average_price'] * 0.95,
-                        take_profit=existing_position['average_price'] * 1.10,
+                        stop_loss=existing_position['average_price'] * (1 - Config().DEFAULT_STOP_LOSS_PCT),
+                        take_profit=existing_position['average_price'] * (1 + Config().DEFAULT_TAKE_PROFIT_PCT),
                         entry_time=datetime.now(),
                         unrealized_pnl=existing_position['total_pnl'],
                         reasoning={'source': 'existing_schwab_position'}
@@ -2744,7 +2743,7 @@ class TradingEngineWithCommentary:
         # Check portfolio concentration
         if self.positions:
             total_value = sum(p.current_price * p.quantity for p in self.positions.values()) 
-            max_position_value = total_value * 0.25  # 25% max
+            max_position_value = total_value * Config().MAX_POSITION_VALUE_PCT
             
             if signal.position_size * signal.entry_price > max_position_value:
                 signal.position_size = int(max_position_value / signal.entry_price)
@@ -3737,8 +3736,8 @@ class TradingEngineWithCommentary:
                         current_price=pos_data['current_price'],
                         quantity=pos_data['quantity'],
                         side='long' if pos_data['quantity'] > 0 else 'short',
-                        stop_loss=pos_data['average_price'] * 0.95,  # Default 5% stop
-                        take_profit=pos_data['average_price'] * 1.10,  # Default 10% target
+                        stop_loss=pos_data['average_price'] * (1 - Config().DEFAULT_STOP_LOSS_PCT),
+                        take_profit=pos_data['average_price'] * (1 + Config().DEFAULT_TAKE_PROFIT_PCT),
                         entry_time=datetime.now(),  # We don't know actual entry time
                         unrealized_pnl=pos_data['total_pnl'],
                         reasoning={'source': 'existing_position', 'tracked_from': datetime.now().isoformat()}
