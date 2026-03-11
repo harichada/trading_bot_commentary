@@ -1,24 +1,36 @@
-# Sensitive files
+# Sensitive files - NEVER commit credentials
+.env
+.env.local
+.env.production
+*.env.secret
+!.env.example
+token_*.json
+
+# Config with potential secrets
 Config().yaml
 config.yaml
-*.env
-.env.*
-
-# Authentication tokens
-token_*.json
+pro_trading_config.yaml
 
 # Logs
 *.log
 *.log.*
+nohup.out
+logs/
 
-# State files (optional - you may want to track these)
-# trading_state.json
-# trading_brain.json
-# trading_commentary.json
+# State files (runtime data, not code)
+trading_state.json
+trading_brain.json
+trading_commentary.json
+error_recovery_state.json
 
 # ML models
 *.pkl
 *.pickle
+model_versions/
+models/
+
+# Backtest results (regenerable)
+backtest_results/
 
 # Python
 __pycache__/
@@ -28,3 +40,15 @@ __pycache__/
 .Python
 venv/
 env/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
