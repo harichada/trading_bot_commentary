@@ -1,12 +1,8 @@
 import os
 import logging
-import time
-import asyncio
 import yaml
-import traceback
 from pathlib import Path
 from datetime import datetime, timedelta
-from functools import wraps
 
 
 class ConfigManager:
@@ -139,11 +135,13 @@ class ConfigManager:
 config_manager = ConfigManager()
 
 # ============================================================================
-# ENHANCED ERROR RECOVERY AND CIRCUIT BREAKERS
+# TRADING LOSS CIRCUIT BREAKER
 # ============================================================================
+# Note: This is distinct from circuit_breaker.py which handles API failures.
+# This class monitors daily P&L and halts trading on excessive losses.
 
-class CircuitBreaker:
-    """Circuit breaker pattern for risk management"""
+class TradingLossBreaker:
+    """Circuit breaker that halts trading when daily losses exceed thresholds"""
 
     def __init__(self, max_daily_loss: float = 0.10, emergency_stop: float = 0.15):
         self.max_daily_loss = max_daily_loss
@@ -155,98 +153,43 @@ class CircuitBreaker:
 
     def update_daily_pnl(self, pnl: float, account_balance: float = 100000):
         """Update daily P&L and check circuit breaker"""
-        self.daily_pnl = pnl  # Use the actual P&L, not accumulate
+        self.daily_pnl = pnl
 
-        # Only check if we have a loss
         if self.daily_pnl >= 0:
-            return  # No loss, no circuit breaker needed
+            return
 
         daily_loss_ratio = abs(self.daily_pnl) / account_balance
 
         if daily_loss_ratio >= self.emergency_stop:
-            self._trip_circuit_breaker("EMERGENCY_STOP", daily_loss_ratio)
+            self._trip("EMERGENCY_STOP", daily_loss_ratio)
         elif daily_loss_ratio >= self.max_daily_loss:
-            self._trip_circuit_breaker("MAX_DAILY_LOSS", daily_loss_ratio)
+            self._trip("MAX_DAILY_LOSS", daily_loss_ratio)
 
-    def _trip_circuit_breaker(self, reason: str, loss_ratio: float):
+    def _trip(self, reason: str, loss_ratio: float):
         """Trip the circuit breaker"""
         self.is_tripped = True
         self.trip_time = datetime.now()
         self.reset_time = self.trip_time + timedelta(hours=24)
-        logger.critical(f"Circuit breaker tripped: {reason} - Loss ratio: {loss_ratio:.2%}")
+        logger.critical(f"Trading loss breaker tripped: {reason} - Loss ratio: {loss_ratio:.2%}")
 
     def can_trade(self) -> bool:
         """Check if trading is allowed"""
         if not self.is_tripped:
             return True
-
         if datetime.now() >= self.reset_time:
-            self._reset_circuit_breaker()
+            self._reset()
             return True
-
         return False
 
-    def _reset_circuit_breaker(self):
+    def _reset(self):
         """Reset the circuit breaker"""
         self.is_tripped = False
         self.trip_time = None
         self.reset_time = None
-        logger.info("Circuit breaker reset")
+        logger.info("Trading loss breaker reset")
 
-class ErrorRecovery:
-    """Enhanced error recovery with exponential backoff"""
-
-    def __init__(self, max_retries: int = 3, base_delay: float = 1.0):
-        self.max_retries = max_retries
-        self.base_delay = base_delay
-        self.error_counts = {}
-
-    async def retry_async(self, func, *args, **kwargs):
-        """Retry async function with exponential backoff"""
-        last_exception = None
-
-        for attempt in range(self.max_retries + 1):
-            try:
-                return await func(*args, **kwargs)
-            except Exception as e:
-                last_exception = e
-                if attempt < self.max_retries:
-                    delay = self.base_delay * (2 ** attempt)
-                    logger.warning(f"Attempt {attempt + 1} failed: {e}. Retrying in {delay}s...")
-                    await asyncio.sleep(delay)
-                else:
-                    logger.error(f"All {self.max_retries + 1} attempts failed: {e}")
-                    raise last_exception
-
-    def retry_sync(self, func, *args, **kwargs):
-        """Retry sync function with exponential backoff"""
-        last_exception = None
-
-        for attempt in range(self.max_retries + 1):
-            try:
-                return func(*args, **kwargs)
-            except Exception as e:
-                last_exception = e
-                if attempt < self.max_retries:
-                    delay = self.base_delay * (2 ** attempt)
-                    logger.warning(f"Attempt {attempt + 1} failed: {e}. Retrying in {delay}s...")
-                    time.sleep(delay)
-                else:
-                    logger.error(f"All {self.max_retries + 1} attempts failed: {e}")
-                    raise last_exception
-
-def error_handler(func):
-    """Decorator for error handling and recovery"""
-    @wraps(func)
-    async def wrapper(*args, **kwargs):
-        try:
-            return await func(*args, **kwargs)
-        except Exception as e:
-            logger.error(f"Error in {func.__name__}: {e}")
-            logger.error(f"Traceback: {traceback.format_exc()}")
-            # Add error recovery logic here
-            raise
-    return wrapper
+# Backward compatibility alias
+CircuitBreaker = TradingLossBreaker
 
 # ============================================================================
 # CONFIGURATION AND CONSTANTS

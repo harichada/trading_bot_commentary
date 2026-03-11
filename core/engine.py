@@ -16,7 +16,7 @@ from scipy import stats
 
 from core.models import (TradingMode, CommentaryType, SignalType, NewsImpact,
                          TradingSignal, Position, MarketData, NewsItem)
-from core.config import Config, config, logger
+from core.config import Config, config, logger, TradingLossBreaker
 from core.commentary import TradingCommentary, CommentarySystem
 from core.brain import TradingBrain
 from core.websocket_manager import ConnectionManager
@@ -139,7 +139,7 @@ class TradingEngineWithCommentary:
         }
         
         # Enhanced error recovery and circuit breakers
-        self.circuit_breaker = CircuitBreaker()
+        self.circuit_breaker = TradingLossBreaker()
         self.error_recovery = ErrorRecovery()
         self.error_counts = {}
         self.last_error_time = None

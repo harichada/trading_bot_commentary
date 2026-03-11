@@ -41,10 +41,10 @@ from core.config import (
     config,
     setup_logging,
     logger,
-    CircuitBreaker,
-    ErrorRecovery,
-    error_handler,
+    TradingLossBreaker,
 )
+# Backward compat aliases
+CircuitBreaker = TradingLossBreaker
 
 # Commentary system
 from core.commentary import TradingCommentary, CommentarySystem
