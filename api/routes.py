@@ -327,7 +327,7 @@ async def get_dashboard():
     # This is NOT safe for internet-facing deployments. For multi-user or remote access,
     # replace with a proper login flow (e.g. session cookie from POST /api/login).
     api_key = os.getenv("TRADING_API_KEY", "")
-    auth_script = f'<script>window.TRADING_API_KEY="{api_key}";</script>'
+    auth_script = f'<script>window.TRADING_API_KEY={json.dumps(api_key)};</script>'
     html = DASHBOARD_HTML_WITH_COMMENTARY.replace("</head>", f"{auth_script}</head>", 1)
     return HTMLResponse(content=html)
 
