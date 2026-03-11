@@ -513,9 +513,30 @@ class RiskManager:
         return (current_var + new_var_contribution) > self.risk_limits.max_var_95
     
     def _calculate_correlation(self, symbol: str, market_data: pd.DataFrame) -> float:
-        """Calculate correlation to portfolio"""
-        # Simplified - returns default value
-        return 0.5
+        """Calculate correlation of symbol returns to existing portfolio returns"""
+        if not self.positions or market_data is None or len(market_data) < 20:
+            return 0.0  # No correlation data available
+
+        try:
+            symbol_returns = market_data['close'].pct_change().dropna()
+            if len(symbol_returns) < 10:
+                return 0.0
+
+            # Average correlation across existing positions
+            correlations = []
+            for pos_symbol, pos in self.positions.items():
+                if hasattr(pos, 'returns_history') and len(pos.returns_history) >= 10:
+                    common_len = min(len(symbol_returns), len(pos.returns_history))
+                    corr = np.corrcoef(
+                        symbol_returns.values[-common_len:],
+                        pos.returns_history[-common_len:]
+                    )[0, 1]
+                    if not np.isnan(corr):
+                        correlations.append(abs(corr))
+
+            return float(np.mean(correlations)) if correlations else 0.0
+        except Exception:
+            return 0.0
     
     def _calculate_concentration_risk(self) -> float:
         """Calculate Herfindahl index for concentration"""
@@ -528,9 +549,19 @@ class RiskManager:
         return herfindahl
     
     def _calculate_correlation_risk_score(self) -> float:
-        """Calculate overall correlation risk score"""
-        # Simplified - in practice would use correlation matrix
-        return 0.5
+        """Calculate overall correlation risk score based on position concentration"""
+        if len(self.positions) < 2:
+            return 0.0
+
+        # Use concentration as a proxy when full correlation matrix isn't available
+        concentration = self._calculate_concentration_risk()
+        # Herfindahl of 1.0 = single position (max risk), 1/n = equal weight (min risk)
+        n = len(self.positions)
+        min_herfindahl = 1.0 / n if n > 0 else 1.0
+        # Normalize to 0-1 range
+        if min_herfindahl >= 1.0:
+            return 0.0
+        return min(1.0, (concentration - min_herfindahl) / (1.0 - min_herfindahl))
     
     def _calculate_sharpe_ratio(self, returns: pd.Series) -> float:
         """Calculate Sharpe ratio"""

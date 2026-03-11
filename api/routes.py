@@ -1862,7 +1862,8 @@ async def reset_brain():
 async def run_backtest_legacy(request: dict):
     """Run backtest on historical data using Schwab API"""
     try:
-        from trading_bot_commentary_updated import config_manager, FixedBacktestEngine, BacktestBreakoutStrategy, BacktestMeanReversionStrategy
+        from trading_bot_commentary_updated import config_manager
+        from backtesting_engine import BacktestingEngine, BacktestConfig
 
         start_date = request.get('start_date', '2023-01-01')
         end_date = request.get('end_date', '2024-01-01')
@@ -1906,73 +1907,22 @@ async def run_backtest_legacy(request: dict):
         if not data:
             return {"status": "error", "message": "No data available for backtesting"}
 
-        # Create backtest strategy
-        if strategy_name == 'breakout':
-            strategy = BacktestBreakoutStrategy()
-        elif strategy_name == 'mean_reversion':
-            strategy = BacktestMeanReversionStrategy()
-        else:
-            strategy = BacktestBreakoutStrategy()
+        # Use the simulate_backtest helper
+        backtest_config = {
+            'initial_capital': request.get('initial_capital', 100000),
+            'commission': request.get('commission', 0.001),
+            'strategy': strategy_name,
+        }
+        result = await simulate_backtest(data, backtest_config)
 
-        # Run backtest
-        result = backtest_engine.run_backtest(data, strategy, start_date, end_date)
-
-        # Format results (rest of the code remains the same)
+        # simulate_backtest returns a dict with metrics already formatted
         response_data = {
             "status": "success",
             "message": "Backtest completed successfully",
-            "results": {
-                'total_return': f"{result.total_return:.2%}",
-                'annualized_return': f"{result.annualized_return:.2%}",
-                'sharpe_ratio': f"{result.sharpe_ratio:.2f}",
-                'sortino_ratio': f"{result.sortino_ratio:.2f}",
-                'max_drawdown': f"{result.max_drawdown:.2%}",
-                'win_rate': f"{result.win_rate:.2%}",
-                'profit_factor': f"{result.profit_factor:.2f}" if result.profit_factor != float('inf') else "N/A",
-                'total_trades': result.total_trades,
-                'winning_trades': result.winning_trades,
-                'losing_trades': result.losing_trades,
-                'average_win': f"${result.average_win:.2f}",
-                'average_loss': f"${result.average_loss:.2f}",
-                'largest_win': f"${result.largest_win:.2f}",
-                'largest_loss': f"${result.largest_loss:.2f}",
-                'consecutive_wins': result.consecutive_wins,
-                'consecutive_losses': result.consecutive_losses,
-                'initial_capital': f"${result.initial_capital:,.2f}",
-                'final_capital': f"${result.final_capital:,.2f}"
-            },
-            'equity_curve': result.equity_curve[-100:],
-            'trade_count_by_symbol': {}
+            "results": result.get('metrics', {}),
+            "equity_curve": result.get('equity_curve', [])[-100:],
+            "trades": result.get('trades', []),
         }
-
-        # Count trades by symbol
-        for trade in result.trade_history:
-            symbol = trade.get('symbol', 'UNKNOWN')
-            if symbol not in response_data['trade_count_by_symbol']:
-                response_data['trade_count_by_symbol'][symbol] = 0
-            response_data['trade_count_by_symbol'][symbol] += 1
-
-        # Save results
-        save_data = {
-            'config': request,
-            'results': response_data['results'],
-            'equity_curve': result.equity_curve,
-            'trade_history': [
-                {
-                    'date': trade['date'].isoformat() if isinstance(trade['date'], pd.Timestamp) else str(trade['date']),
-                    'symbol': trade['symbol'],
-                    'side': trade['side'],
-                    'price': float(trade['price']),
-                    'quantity': int(trade['quantity']),
-                    'pnl': float(trade.get('pnl', 0)),
-                    'capital': float(trade['capital'])
-                }
-                for trade in result.trade_history
-            ]
-        }
-
-        with open(config_manager.get('paths.backtest_results'), 'w') as f:
-            json.dump(save_data, f, indent=2)
 
         return response_data
 

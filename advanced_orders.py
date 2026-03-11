@@ -222,6 +222,8 @@ class OrderManager:
         self.active_orders: List[str] = []
         self.execute_callback = execute_callback  # Function to execute orders
         self.market_data_callbacks: Dict[str, Callable] = {}
+        self._last_prices: Dict[str, float] = {}  # Track last known prices
+        self._scheduled_tasks: List = []  # Track scheduled tasks
         
     def place_order(self, order: Order) -> str:
         """Place an order"""
@@ -464,17 +466,29 @@ class OrderManager:
             order2.metadata['on_fill_callback'] = cancel_other
     
     def _get_current_price(self, symbol: str) -> float:
-        """Get current market price (placeholder)"""
-        # In real implementation, this would fetch from market data
-        return 100.0
-    
+        """Get last known market price for a symbol"""
+        if symbol in self._last_prices:
+            return self._last_prices[symbol]
+        logger.warning(f"No price data for {symbol}, cannot determine current price")
+        return 0.0
+
     def _schedule_order(self, when: datetime, callback: Callable):
-        """Schedule an order for future execution (placeholder)"""
-        # In real implementation, this would use a scheduler
-        pass
-    
+        """Schedule an order for future execution using asyncio"""
+        delay = (when - datetime.now()).total_seconds()
+        if delay <= 0:
+            callback()
+            return
+        try:
+            loop = asyncio.get_event_loop()
+            handle = loop.call_later(delay, callback)
+            self._scheduled_tasks.append(handle)
+        except RuntimeError:
+            logger.warning("No event loop available for scheduling, executing immediately")
+            callback()
+
     def update_market_data(self, symbol: str, price: float):
-        """Update market data and trigger callbacks"""
+        """Update market data, track price, and trigger callbacks"""
+        self._last_prices[symbol] = price
         if symbol in self.market_data_callbacks:
             self.market_data_callbacks[symbol](symbol, price)
     
