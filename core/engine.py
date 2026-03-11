@@ -385,11 +385,18 @@ class TradingEngineWithCommentary:
             ))
             
             response = self.schwab_client.place_order(self.account_hash, order)
-            
+
             if response.status_code in [200, 201]:
                 # Extract order ID from Location header
                 order_id = response.headers.get('Location', '').split('/')[-1]
-                
+
+                logger.info(
+                    f"Order placed: {signal.signal_type.value} {signal.position_size} {signal.symbol}",
+                    extra={'symbol': signal.symbol, 'action': signal.signal_type.value,
+                           'quantity': signal.position_size, 'order_id': order_id,
+                           'price': getattr(signal, 'price', None)}
+                )
+
                 # Track pending order
                 self.pending_orders[order_id] = {
                     'symbol': signal.symbol,
@@ -1275,7 +1282,14 @@ class TradingEngineWithCommentary:
             
             if response.status_code in [200, 201]:
                 order_id = response.headers.get('Location', '').split('/')[-1]
-                
+
+                logger.info(
+                    f"Close order placed: SELL {quantity_to_sell} {position.symbol}",
+                    extra={'symbol': position.symbol, 'action': 'SELL',
+                           'quantity': quantity_to_sell, 'order_id': order_id,
+                           'reason': reason}
+                )
+
                 self.commentary.add_commentary(TradingCommentary(
                     timestamp=datetime.now(),
                     type=CommentaryType.DECISION,
@@ -1284,7 +1298,7 @@ class TradingEngineWithCommentary:
                     message=f"Selling {quantity_to_sell} shares at market",
                     importance=9
                 ))
-                
+
                 # Track this as a closing order
                 self.pending_orders[order_id] = {
                     'symbol': position.symbol,
@@ -2398,7 +2412,13 @@ class TradingEngineWithCommentary:
     
     async def _process_signal_with_commentary(self, signal, ml_signal, ml_explanation):
         """Process trading signal with detailed explanation"""
-        
+        logger.info(
+            f"Processing signal: {signal.signal_type.value} {signal.symbol} "
+            f"confidence={getattr(signal, 'confidence', 'N/A')}",
+            extra={'symbol': signal.symbol, 'signal_type': signal.signal_type.value,
+                   'action': 'signal_received'}
+        )
+
         # CRITICAL: Check real Schwab positions FIRST before internal tracking
         if self.mode == TradingMode.LIVE and self.schwab_client:
             schwab_positions = await self.get_schwab_positions()

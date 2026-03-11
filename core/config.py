@@ -324,10 +324,38 @@ config = Config()
 # LOGGING SETUP
 # ============================================================================
 
+class JSONFormatter(logging.Formatter):
+    """Structured JSON log formatter for file output"""
+
+    def format(self, record):
+        import json as _json
+        log_entry = {
+            'timestamp': self.formatTime(record, self.datefmt),
+            'level': record.levelname,
+            'logger': record.name,
+            'message': record.getMessage(),
+            'module': record.module,
+            'function': record.funcName,
+            'line': record.lineno,
+        }
+        if record.exc_info and record.exc_info[0]:
+            log_entry['exception'] = self.formatException(record.exc_info)
+        # Include extra fields for trade events
+        for key in ('symbol', 'action', 'signal_type', 'order_id', 'price',
+                     'quantity', 'pnl', 'reason'):
+            if hasattr(record, key):
+                log_entry[key] = getattr(record, key)
+        return _json.dumps(log_entry)
+
+
 def setup_logging():
-    """Configure logging"""
+    """Configure logging with JSON file output and human-readable console output"""
     logger = logging.getLogger('TradingBot')
     logger.setLevel(logging.DEBUG)
+
+    # Avoid duplicate handlers on re-import
+    if logger.handlers:
+        return logger
 
     from logging.handlers import RotatingFileHandler
     file_handler = RotatingFileHandler(
@@ -336,15 +364,13 @@ def setup_logging():
         backupCount=5
     )
     file_handler.setLevel(logging.INFO)
+    file_handler.setFormatter(JSONFormatter())
 
     console_handler = logging.StreamHandler()
     console_handler.setLevel(logging.INFO)
-
-    formatter = logging.Formatter(
+    console_handler.setFormatter(logging.Formatter(
         '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    )
-    file_handler.setFormatter(formatter)
-    console_handler.setFormatter(formatter)
+    ))
 
     logger.addHandler(file_handler)
     logger.addHandler(console_handler)
