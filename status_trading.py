@@ -6,52 +6,50 @@ Check the current status of the trading bot.
 """
 
 import os
-import sys
 import json
 import logging
 import requests
 from datetime import datetime
 from dotenv import load_dotenv
 
+from cli_utils import auth_headers
+
 load_dotenv()
 logger = logging.getLogger('TradingBot')
-
-
-def _auth_headers():
-    """Build auth headers from TRADING_API_KEY if set."""
-    key = os.getenv("TRADING_API_KEY", "")
-    return {"Authorization": f"Bearer {key}"} if key else {}
 
 
 def get_status():
     """Get bot status from API"""
     try:
-        response = requests.get("http://localhost:8000/api/status", timeout=5, headers=_auth_headers())
+        response = requests.get("http://localhost:8000/api/status", timeout=5, headers=auth_headers())
         if response.status_code == 200:
             return response.json()
     except requests.RequestException as e:
         logger.debug(f"Status API unavailable: {e}")
         return None
 
+
 def get_positions():
     """Get current positions"""
     try:
-        response = requests.get("http://localhost:8000/api/positions", timeout=5, headers=_auth_headers())
+        response = requests.get("http://localhost:8000/api/positions", timeout=5, headers=auth_headers())
         if response.status_code == 200:
             return response.json()
     except requests.RequestException as e:
         logger.debug(f"Positions API unavailable: {e}")
         return None
 
+
 def get_pnl():
     """Get P&L"""
     try:
-        response = requests.get("http://localhost:8000/api/pnl", timeout=5, headers=_auth_headers())
+        response = requests.get("http://localhost:8000/api/pnl", timeout=5, headers=auth_headers())
         if response.status_code == 200:
             return response.json()
     except requests.RequestException as e:
         logger.debug(f"P&L API unavailable: {e}")
         return None
+
 
 def main():
     print("\n" + "═" * 60)
@@ -96,6 +94,7 @@ def main():
     print(f"   Dashboard: http://localhost:8000")
     print(f"   Checked at: {datetime.now().strftime('%H:%M:%S')}")
     print("═" * 60 + "\n")
+
 
 if __name__ == "__main__":
     main()

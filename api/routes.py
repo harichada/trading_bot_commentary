@@ -17,7 +17,9 @@ import pandas as pd
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from starlette.middleware.base import BaseHTTPMiddleware
+import secrets as _secrets
+from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
+from starlette.responses import Response
 from websockets.exceptions import ConnectionClosedError
 import uvicorn
 
@@ -56,22 +58,29 @@ class APIAuthMiddleware(BaseHTTPMiddleware):
     When TRADING_API_KEY is unset, all requests are allowed (dev mode).
     """
 
-    async def dispatch(self, request: Request, call_next):
+    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         path = request.url.path
         # Skip auth for public routes
         if path == "/" or path.startswith("/docs") or path.startswith("/openapi") or path.startswith("/redoc"):
             return await call_next(request)
         # Only protect /api/* routes
         if path.startswith("/api/"):
-            import secrets as _secrets
             api_key = os.getenv("TRADING_API_KEY")
             if api_key:
                 auth_header = request.headers.get("authorization", "")
                 if not auth_header.startswith("Bearer "):
-                    return JSONResponse(status_code=401, content={"detail": "Missing authorization header"})
+                    return JSONResponse(
+                        status_code=401,
+                        content={"detail": "Missing authorization header"},
+                        headers={"WWW-Authenticate": "Bearer"},
+                    )
                 token = auth_header[7:]
                 if not _secrets.compare_digest(token, api_key):
-                    return JSONResponse(status_code=401, content={"detail": "Invalid API key"})
+                    return JSONResponse(
+                        status_code=401,
+                        content={"detail": "Invalid API key"},
+                        headers={"WWW-Authenticate": "Bearer"},
+                    )
         return await call_next(request)
 
 
@@ -314,7 +323,9 @@ async def toggle_confirmations(request: dict):
 
 @app.get("/")
 async def get_dashboard():
-    # Inject API key into dashboard so JS can authenticate fetch/WebSocket calls
+    # SECURITY NOTE: API key is injected into the page for single-user localhost use.
+    # This is NOT safe for internet-facing deployments. For multi-user or remote access,
+    # replace with a proper login flow (e.g. session cookie from POST /api/login).
     api_key = os.getenv("TRADING_API_KEY", "")
     auth_script = f'<script>window.TRADING_API_KEY="{api_key}";</script>'
     html = DASHBOARD_HTML_WITH_COMMENTARY.replace("</head>", f"{auth_script}</head>", 1)

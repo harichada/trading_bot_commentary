@@ -60,12 +60,14 @@ def verify_api_key(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Missing authorization header",
+            headers={"WWW-Authenticate": "Bearer"},
         )
 
     if not secrets.compare_digest(credentials.credentials, api_key):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid API key",
+            headers={"WWW-Authenticate": "Bearer"},
         )
 
     return credentials.credentials

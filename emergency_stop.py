@@ -7,17 +7,13 @@ USE ONLY IN EMERGENCIES!
 """
 
 import os
-import sys
+import subprocess
 import requests
 from dotenv import load_dotenv
 
+from cli_utils import auth_headers
+
 load_dotenv()
-
-
-def _auth_headers():
-    """Build auth headers from TRADING_API_KEY if set."""
-    key = os.getenv("TRADING_API_KEY", "")
-    return {"Authorization": f"Bearer {key}"} if key else {}
 
 
 def main():
@@ -36,13 +32,14 @@ def main():
         return
 
     print("\n⚠️  Executing emergency stop...")
+    headers = auth_headers()
 
     try:
         # Close all positions
         response = requests.post(
             "http://localhost:8000/api/emergency/close-all",
             timeout=30,
-            headers=_auth_headers()
+            headers=headers
         )
         if response.status_code == 200:
             print("✓ All positions closed")
@@ -53,20 +50,20 @@ def main():
         response = requests.post(
             "http://localhost:8000/api/shutdown",
             timeout=10,
-            headers=_auth_headers()
+            headers=headers
         )
         print("✓ Bot shutdown initiated")
 
-    except Exception as e:
-        print(f"\n⚠️  API not responding. Attempting force stop...")
+    except requests.RequestException as e:
+        print(f"\n⚠️  API not responding ({e}). Attempting force stop...")
 
         # Force kill
-        import subprocess
         subprocess.run(["pkill", "-f", "trading_bot"], capture_output=True)
         print("✓ Processes terminated")
 
     print("\n✅ Emergency stop complete")
     print("   Check your Schwab account directly to verify positions")
+
 
 if __name__ == "__main__":
     main()
