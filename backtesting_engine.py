@@ -858,7 +858,7 @@ class BacktestReport:
 try:
     import ta
 except ImportError:
-    logger.warning("ta library not found, installing...")
-    import os
-    os.system("pip install ta")
-    import ta
+    raise ImportError(
+        "Required package 'ta' is not installed. "
+        "Install it with: pip install ta"
+    )

@@ -14,9 +14,10 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
 from websockets.exceptions import ConnectionClosedError
 import uvicorn
 
@@ -24,6 +25,7 @@ from core.models import TradingMode, CommentaryType, SignalType
 from core.config import Config, config, logger
 from core.commentary import TradingCommentary, CommentarySystem
 from core.websocket_manager import ConnectionManager
+from api.auth import verify_api_key, verify_ws_token
 
 logger = logging.getLogger('TradingBot')
 
@@ -45,6 +47,35 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+class APIAuthMiddleware(BaseHTTPMiddleware):
+    """Middleware that enforces Bearer token auth on /api/* routes.
+
+    Public routes (GET /, WebSocket /ws, /docs, /openapi.json) are excluded.
+    When TRADING_API_KEY is unset, all requests are allowed (dev mode).
+    """
+
+    async def dispatch(self, request: Request, call_next):
+        path = request.url.path
+        # Skip auth for public routes
+        if path == "/" or path.startswith("/docs") or path.startswith("/openapi") or path.startswith("/redoc"):
+            return await call_next(request)
+        # Only protect /api/* routes
+        if path.startswith("/api/"):
+            import secrets as _secrets
+            api_key = os.getenv("TRADING_API_KEY")
+            if api_key:
+                auth_header = request.headers.get("authorization", "")
+                if not auth_header.startswith("Bearer "):
+                    return JSONResponse(status_code=401, content={"detail": "Missing authorization header"})
+                token = auth_header[7:]
+                if not _secrets.compare_digest(token, api_key):
+                    return JSONResponse(status_code=401, content={"detail": "Invalid API key"})
+        return await call_next(request)
+
+
+app.add_middleware(APIAuthMiddleware)
 
 # Global instances
 trading_engine = None
@@ -283,7 +314,11 @@ async def toggle_confirmations(request: dict):
 
 @app.get("/")
 async def get_dashboard():
-    return HTMLResponse(content=DASHBOARD_HTML_WITH_COMMENTARY)
+    # Inject API key into dashboard so JS can authenticate fetch/WebSocket calls
+    api_key = os.getenv("TRADING_API_KEY", "")
+    auth_script = f'<script>window.TRADING_API_KEY="{api_key}";</script>'
+    html = DASHBOARD_HTML_WITH_COMMENTARY.replace("</head>", f"{auth_script}</head>", 1)
+    return HTMLResponse(content=html)
 
 @app.post("/api/start")
 async def start_trading():
@@ -1512,6 +1547,11 @@ async def toggle_strategy(strategy_key: str):
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
+    # Verify WebSocket auth token from query params
+    token = websocket.query_params.get("token")
+    if not verify_ws_token(token):
+        await websocket.close(code=1008, reason="Authentication required")
+        return
     await connection_manager.connect(websocket)
 
     try:

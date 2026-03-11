@@ -3,6 +3,7 @@ import logging
 import yaml
 from pathlib import Path
 from datetime import datetime, timedelta
+from typing import Optional
 
 
 class ConfigManager:
@@ -335,6 +336,15 @@ class Config:
     @property
     def ML_PREDICTION_ENABLED(self):
         return self.manager.get('trading.ml_prediction_enabled', True)
+
+    @property
+    def TRADING_API_KEY(self) -> Optional[str]:
+        """Bearer token that protects the REST and WebSocket API endpoints.
+
+        Returns the value of the TRADING_API_KEY environment variable, or None
+        when the variable is not set (auth disabled / dev mode).
+        """
+        return os.getenv("TRADING_API_KEY")
 
     # Order execution constants
     @property

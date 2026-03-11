@@ -9,6 +9,7 @@ Run this once, then use 'start_trading.py' to run the bot.
 import os
 import sys
 import json
+import subprocess
 import getpass
 from pathlib import Path
 from datetime import datetime
@@ -187,7 +188,7 @@ def setup_schwab_token(api_key, app_secret):
         import httpx
     except ImportError:
         print_error("schwab-py not installed. Installing...")
-        os.system("pip install schwab-py httpx")
+        subprocess.run([sys.executable, "-m", "pip", "install", "schwab-py", "httpx"], check=False)
         print_info("Please run setup again after installation.")
         return False
 

@@ -11,13 +11,22 @@ import json
 import logging
 import requests
 from datetime import datetime
+from dotenv import load_dotenv
 
+load_dotenv()
 logger = logging.getLogger('TradingBot')
+
+
+def _auth_headers():
+    """Build auth headers from TRADING_API_KEY if set."""
+    key = os.getenv("TRADING_API_KEY", "")
+    return {"Authorization": f"Bearer {key}"} if key else {}
+
 
 def get_status():
     """Get bot status from API"""
     try:
-        response = requests.get("http://localhost:8000/api/status", timeout=5)
+        response = requests.get("http://localhost:8000/api/status", timeout=5, headers=_auth_headers())
         if response.status_code == 200:
             return response.json()
     except requests.RequestException as e:
@@ -27,7 +36,7 @@ def get_status():
 def get_positions():
     """Get current positions"""
     try:
-        response = requests.get("http://localhost:8000/api/positions", timeout=5)
+        response = requests.get("http://localhost:8000/api/positions", timeout=5, headers=_auth_headers())
         if response.status_code == 200:
             return response.json()
     except requests.RequestException as e:
@@ -37,7 +46,7 @@ def get_positions():
 def get_pnl():
     """Get P&L"""
     try:
-        response = requests.get("http://localhost:8000/api/pnl", timeout=5)
+        response = requests.get("http://localhost:8000/api/pnl", timeout=5, headers=_auth_headers())
         if response.status_code == 200:
             return response.json()
     except requests.RequestException as e:

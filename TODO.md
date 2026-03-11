@@ -17,10 +17,10 @@
 
 ## Security
 - [ ] Rotate Schwab API credentials (exposed in git history)
-- [ ] Add API authentication to FastAPI endpoints
-- [ ] Add WebSocket authentication
+- [x] Add API authentication to FastAPI endpoints (TRADING_API_KEY env var + Bearer token)
+- [x] Add WebSocket authentication (token query param)
 - [ ] Encrypt token_1.json on disk
-- [ ] Remove `os.system("pip install ...")` calls in setup_wizard.py and backtesting_engine.py
+- [x] Remove `os.system("pip install ...")` calls in setup_wizard.py and backtesting_engine.py
 
 ## Architecture
 - [ ] Replace JSON state files with SQLite/PostgreSQL
