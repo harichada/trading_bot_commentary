@@ -1,6 +1,8 @@
 """
 Custom exception classes for the trading bot to handle different error scenarios appropriately.
 """
+from datetime import datetime
+
 
 class TradingBotException(Exception):
     """Base exception for all trading bot errors"""

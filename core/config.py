@@ -195,11 +195,11 @@ class TradingLossBreaker:
         if not self.is_tripped:
             return True
         if datetime.now() >= self.reset_time:
-            self._reset()
+            self.reset()
             return True
         return False
 
-    def _reset(self):
+    def reset(self):
         """Reset the circuit breaker"""
         self.is_tripped = False
         self.trip_time = None
