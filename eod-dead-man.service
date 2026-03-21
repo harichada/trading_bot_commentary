@@ -1,0 +1,11 @@
+[Unit]
+Description=EOD Dead Man Switch — Emergency position liquidation
+After=network.target
+
+[Service]
+Type=oneshot
+User=nvidia
+WorkingDirectory=/home/nvidia/claude/singleton/trading_bot_commentary
+EnvironmentFile=/home/nvidia/claude/singleton/trading_bot_commentary/.env
+ExecStart=/home/nvidia/anaconda3/envs/trading-bot/bin/python eod_dead_man_switch.py
+TimeoutStartSec=120

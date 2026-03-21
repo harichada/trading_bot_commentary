@@ -31,4 +31,7 @@ oandapyV20>=0.7.2
 # PostgreSQL
 psycopg2-binary>=2.9.9
 
+# Interactive Brokers
+ib_insync>=0.9.86
+
 # Quality: install in CI with: pip install ruff

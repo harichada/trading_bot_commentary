@@ -11,6 +11,13 @@ from brokers.alpaca_adapter import AlpacaBrokerAdapter, AlpacaTickStreamerAdapte
 from brokers.oanda_adapter import OandaBrokerAdapter, OandaTickStreamer
 from brokers.coordinator import MultiBrokerCoordinator, CombinedRiskManager, BrokerSlot
 
+try:
+    from brokers.ibkr_adapter import IBKRBrokerAdapter
+    from brokers.ibkr_streamer import IBKRTickStreamer
+    from brokers.ibkr_connection import IBKRConnectionManager
+except ImportError:
+    pass  # ib_insync not installed
+
 __all__ = [
     'AbstractBroker',
     'BrokerConfig',
@@ -23,6 +30,9 @@ __all__ = [
     'AlpacaTickStreamerAdapter',
     'OandaBrokerAdapter',
     'OandaTickStreamer',
+    'IBKRBrokerAdapter',
+    'IBKRTickStreamer',
+    'IBKRConnectionManager',
     'MultiBrokerCoordinator',
     'CombinedRiskManager',
     'BrokerSlot',

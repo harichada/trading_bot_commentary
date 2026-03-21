@@ -425,9 +425,9 @@ class TickIndicatorEngine:
                     except (ValueError, IndexError):
                         pass
 
-        logger.info(f"Seeded {symbol}: {len(bars)} bars, "
-                    f"RSI={'%.1f' % si.rsi if si.rsi_initialized else 'pending'}, "
-                    f"bars={len(si.completed_bars)}")
+        logger.debug(f"Seeded {symbol}: {len(bars)} bars, "
+                     f"RSI={'%.1f' % si.rsi if si.rsi_initialized else 'pending'}, "
+                     f"bars={len(si.completed_bars)}")
 
     def get_data(self, symbol: str) -> Dict:
         """Get current indicator values for a symbol.

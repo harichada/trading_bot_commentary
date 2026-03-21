@@ -52,9 +52,12 @@ COOKIE_NAME = "gf_session"
 COOKIE_MAX_AGE = 72 * 3600  # 72 hours
 JWT_ALGORITHM = "HS256"
 
-# Server-side store for pending mobile OAuth redirects (nonce -> redirect_url)
+# Server-side store for pending mobile OAuth redirects.
+# nonce -> (redirect_url, timestamp, jwt_token_or_None, oauth_session_state)
+# oauth_session_state stores the CSRF state that authlib puts in the session
+# cookie — mobile browsers lose this cookie during the Google redirect chain.
 # Entries expire after 10 minutes. No persistence needed — login retries are cheap.
-_pending_mobile_redirects: dict[str, tuple[str, float]] = {}
+_pending_mobile_redirects: dict[str, tuple[str, float, Optional[str], dict]] = {}
 _MOBILE_NONCE_TTL = 600  # 10 minutes
 
 
@@ -85,7 +88,7 @@ def _allowed_emails() -> set[str]:
 def _cleanup_expired_nonces():
     """Remove expired mobile redirect nonces."""
     now = time.time()
-    expired = [k for k, (_, ts) in _pending_mobile_redirects.items() if now - ts > _MOBILE_NONCE_TTL]
+    expired = [k for k, v in _pending_mobile_redirects.items() if now - v[1] > _MOBILE_NONCE_TTL]
     for k in expired:
         del _pending_mobile_redirects[k]
 
@@ -234,20 +237,38 @@ async def login(provider: str, request: Request):
     if not auth_enabled():
         return JSONResponse({"error": "Auth not configured"}, 501)
     client = oauth.create_client(provider)
-    # Derive callback URL from the actual request so it works for both
-    # web (via frontend proxy) and mobile (direct server access).
-    base = str(request.base_url).rstrip("/")
+    # Derive callback URL from the actual request. Behind a reverse proxy
+    # (ngrok, nginx), use forwarded headers to get the public URL.
+    forwarded_proto = request.headers.get("x-forwarded-proto", "")
+    forwarded_host = request.headers.get("x-forwarded-host", "") or request.headers.get("host", "")
+    if forwarded_proto and forwarded_host:
+        base = f"{forwarded_proto}://{forwarded_host}"
+    else:
+        base = str(request.base_url).rstrip("/")
     redirect_uri = f"{base}/api/auth/callback/{provider}"
 
     # Mobile flow: store the app's redirect URL server-side keyed by a nonce.
     # The nonce is sent as a plain cookie (not session) so it survives the OAuth redirect chain.
     mobile_redirect = request.query_params.get("mobile_redirect", "")
+
+    # Clear any stale OAuth session state to prevent CSRF mismatch when
+    # multiple login attempts happen in the same browser session.
+    request.session.pop("_state_google_", None)
+    request.session.pop("_state_github_", None)
+    request.session.pop("_state_discord_", None)
+
     resp = await client.authorize_redirect(request, redirect_uri)
 
     if mobile_redirect:
         _cleanup_expired_nonces()
-        nonce = secrets.token_urlsafe(32)
-        _pending_mobile_redirects[nonce] = (mobile_redirect, time.time())
+        # Use client-supplied nonce so the mobile app can poll /mobile-token.
+        client_nonce = request.query_params.get("nonce", "")
+        nonce = client_nonce if client_nonce and len(client_nonce) >= 16 else secrets.token_urlsafe(32)
+        # Save the OAuth session state (CSRF token) server-side. Mobile browsers
+        # lose session cookies during the Google redirect chain, so the callback
+        # restores the state from here instead of relying on the cookie.
+        oauth_state = dict(request.session)
+        _pending_mobile_redirects[nonce] = (mobile_redirect, time.time(), None, oauth_state)
         resp.set_cookie(
             "gf_mobile_nonce", nonce,
             max_age=_MOBILE_NONCE_TTL, httponly=True, samesite="lax", path="/",
@@ -263,6 +284,16 @@ async def callback(provider: str, request: Request):
         return JSONResponse({"error": f"Unknown provider: {provider}"}, 400)
     if not auth_enabled():
         return JSONResponse({"error": "Auth not configured"}, 501)
+
+    # For mobile flows, restore the OAuth session state that was saved during
+    # login. Mobile browsers lose session cookies during the Google redirect
+    # chain, causing CSRF state mismatch. We stored the state server-side.
+    mobile_nonce = request.cookies.get("gf_mobile_nonce", "")
+    if mobile_nonce and mobile_nonce in _pending_mobile_redirects:
+        saved_state = _pending_mobile_redirects[mobile_nonce][3]
+        for k, v in saved_state.items():
+            if k not in request.session:
+                request.session[k] = v
 
     client = oauth.create_client(provider)
     try:
@@ -287,9 +318,11 @@ async def callback(provider: str, request: Request):
     jwt_token = _create_token(user)
 
     # Mobile flow: check for pending redirect nonce in cookie (not session)
-    mobile_nonce = request.cookies.get("gf_mobile_nonce", "")
     if mobile_nonce and mobile_nonce in _pending_mobile_redirects:
-        mobile_redirect, _ = _pending_mobile_redirects.pop(mobile_nonce)
+        entry = _pending_mobile_redirects[mobile_nonce]
+        mobile_redirect, ts = entry[0], entry[1]
+        # Store the token so the mobile-token polling endpoint can return it
+        _pending_mobile_redirects[mobile_nonce] = (mobile_redirect, ts, jwt_token, entry[3])
         sep = "&" if "?" in mobile_redirect else "?"
         deep_link = f"{mobile_redirect}{sep}token={jwt_token}"
         logger.info("OAuth mobile login: %s via %s → %s", email, provider, mobile_redirect[:60])
@@ -323,7 +356,12 @@ async def mobile_token(nonce: str):
     entry = _pending_mobile_redirects.get(nonce)
     if not entry:
         return JSONResponse({"error": "Invalid or expired nonce", "ready": False}, 404)
-    # The nonce is still pending — OAuth hasn't completed yet, or redirect worked
+    token = entry[2]
+    if token:
+        # OAuth completed — return the token and clean up
+        del _pending_mobile_redirects[nonce]
+        return JSONResponse({"ready": True, "token": token})
+    # OAuth hasn't completed yet
     return JSONResponse({"ready": False, "message": "Waiting for OAuth to complete"}, 202)
 
 

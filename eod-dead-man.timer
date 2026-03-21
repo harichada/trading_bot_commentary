@@ -1,0 +1,10 @@
+[Unit]
+Description=EOD Dead Man Switch Timer — fires Mon-Fri 15:55 ET
+
+[Timer]
+OnCalendar=Mon..Fri 15:55 America/New_York
+Persistent=true
+RandomizedDelaySec=30
+
+[Install]
+WantedBy=timers.target

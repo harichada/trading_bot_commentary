@@ -36,6 +36,15 @@ from . import orb_breakout      # noqa: F401
 from . import momentum_surge    # noqa: F401
 from . import pullback_entry    # noqa: F401
 from . import range_trade       # noqa: F401
+from . import vwap_mean_reversion  # noqa: F401
+from . import opening_trend     # noqa: F401
+from . import first_hour_breakout  # noqa: F401
+from . import connors_rsi2        # noqa: F401
+from . import vwap_bounce          # noqa: F401
+from . import catalyst_momentum    # noqa: F401
+from . import micro_scalp          # noqa: F401
+from . import gap_continuation     # noqa: F401
+from . import gap_bounce           # noqa: F401
 
 __all__ = [
     'GapFadeStrategy',

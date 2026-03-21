@@ -185,18 +185,32 @@ def _get_alpaca_config() -> Optional[dict]:
     secret_key = os.environ.get('ALPACA_SECRET_KEY', '')
     if not api_key or not secret_key:
         return None
+    # Trade execution key (paper account for orders)
+    trade_api_key = os.environ.get('ALPACA_TRADE_API_KEY', '')
+    trade_secret_key = os.environ.get('ALPACA_TRADE_SECRET_KEY', '')
     return {
-        'api_key': api_key,
+        'api_key': api_key,              # Live key — used for SIP data
         'secret_key': secret_key,
-        'base_url': 'https://paper-api.alpaca.markets',
-        'data_url': 'https://data.alpaca.markets',
+        'trade_api_key': trade_api_key or api_key,   # Paper key — used for orders
+        'trade_secret_key': trade_secret_key or secret_key,
+        'base_url': 'https://paper-api.alpaca.markets',  # Orders go to paper
+        'data_url': 'https://data.alpaca.markets',       # Data from SIP (live key)
     }
 
 
 def _alpaca_headers(cfg: dict) -> dict:
+    """Headers for DATA requests (live key with SIP access)."""
     return {
         'APCA-API-KEY-ID': cfg['api_key'],
         'APCA-API-SECRET-KEY': cfg['secret_key'],
+    }
+
+
+def _alpaca_trade_headers(cfg: dict) -> dict:
+    """Headers for ORDER/ACCOUNT requests (paper key)."""
+    return {
+        'APCA-API-KEY-ID': cfg['trade_api_key'],
+        'APCA-API-SECRET-KEY': cfg['trade_secret_key'],
     }
 
 
@@ -361,7 +375,7 @@ def _get_key_pool() -> AlpacaKeyPool:
 
 
 def fetch_alpaca_bars(symbol: str, start_date: str, end_date: str,
-                      interval: str = '1Day', feed: str = 'iex') -> Optional[pd.DataFrame]:
+                      interval: str = '1Day', feed: str = 'sip') -> Optional[pd.DataFrame]:
     """Fetch historical bars from Alpaca Data API v2 with pagination."""
     cfg = _get_alpaca_config()
     if cfg is None:
@@ -451,7 +465,7 @@ def fetch_alpaca_bars(symbol: str, start_date: str, end_date: str,
 
 
 def fetch_alpaca_bars_multi(symbols: List[str], start_date: str, end_date: str,
-                            interval: str = '1Day', feed: str = 'iex',
+                            interval: str = '1Day', feed: str = 'sip',
                             batch_size: int = 100) -> Dict[str, pd.DataFrame]:
     """Fetch daily bars for many symbols at once using Alpaca multi-stock bars endpoint.
 
@@ -564,7 +578,7 @@ def fetch_alpaca_bars_multi(symbols: List[str], start_date: str, end_date: str,
 
 
 def _fetch_bars_multi_parallel(symbols: List[str], start_date: str, end_date: str,
-                                interval: str = '1Day', feed: str = 'iex',
+                                interval: str = '1Day', feed: str = 'sip',
                                 batch_size: int = 100) -> Dict[str, pd.DataFrame]:
     """Parallel multi-key version of fetch_alpaca_bars_multi.
 
@@ -708,7 +722,7 @@ def fetch_alpaca_snapshots(symbols: List[str]) -> dict:
         batch = symbols[i:i+batch_size]
         params = {
             'symbols': ','.join(batch),
-            'feed': 'iex',
+            'feed': 'sip',
         }
         _t0 = _time.monotonic()
         try:
@@ -825,7 +839,7 @@ def fetch_alpaca_movers(top_n: int = 20) -> List[str]:
         try:
             snap_url = f'{data_url}/v2/stocks/snapshots'
             resp = requests.get(snap_url, headers=headers,
-                                params={'symbols': ','.join(clean), 'feed': 'iex'},
+                                params={'symbols': ','.join(clean), 'feed': 'sip'},
                                 timeout=10)
             if resp.status_code == 200:
                 snaps = resp.json()
@@ -880,7 +894,7 @@ def fetch_alpaca_assets(min_price: float = 1.0,
     _t0 = _time.monotonic()
     try:
         resp = requests.get(
-            f'{cfg["base_url"]}/v2/assets',
+            'https://api.alpaca.markets/v2/assets',
             headers=headers,
             params={'status': 'active', 'asset_class': asset_class},
             timeout=60
@@ -943,7 +957,7 @@ def alpaca_check_shortable(symbol: str) -> Tuple[bool, bool]:
     headers = {**_alpaca_headers(cfg), 'Content-Type': 'application/json'}
     try:
         resp = requests.get(
-            f'{cfg["base_url"]}/v2/assets/{symbol}',
+            f'https://api.alpaca.markets/v2/assets/{symbol}',
             headers=headers, timeout=10
         )
         if resp.status_code == 200:
@@ -970,7 +984,7 @@ def alpaca_check_shortable_batch(symbols: List[str]) -> Dict[str, Tuple[bool, bo
 class OrderResult:
     """Structured result from order submission + fill verification."""
     order_id: str = ''
-    status: str = ''               # 'filled', 'partially_filled', 'rejected', 'cancelled', 'error', 'timeout'
+    status: str = ''               # 'filled', 'partially_filled', 'pending', 'rejected', 'cancelled', 'error', 'timeout'
     filled_qty: int = 0
     filled_avg_price: float = 0.0
     symbol: str = ''
@@ -996,7 +1010,7 @@ def alpaca_place_order(symbol: str, qty: int, side: str, order_type: str = 'mark
     if cfg is None:
         return {'error': 'Alpaca not configured'}
 
-    headers = {**_alpaca_headers(cfg), 'Content-Type': 'application/json'}
+    headers = {**_alpaca_trade_headers(cfg), 'Content-Type': 'application/json'}
     payload = {
         'symbol': symbol,
         'qty': str(qty),
@@ -1041,7 +1055,7 @@ def alpaca_get_order(order_id: str) -> Optional[dict]:
     try:
         resp = requests.get(
             f'{cfg["base_url"]}/v2/orders/{order_id}',
-            headers=_alpaca_headers(cfg), timeout=10
+            headers=_alpaca_trade_headers(cfg), timeout=10
         )
         if resp.status_code == 200:
             return resp.json()
@@ -1060,7 +1074,7 @@ def alpaca_cancel_open_orders_for_symbol(symbol: str) -> int:
     try:
         resp = requests.get(
             f'{cfg["base_url"]}/v2/orders',
-            headers=_alpaca_headers(cfg),
+            headers=_alpaca_trade_headers(cfg),
             params={'status': 'open', 'symbols': symbol, 'limit': 50},
             timeout=10,
         )
@@ -1076,7 +1090,7 @@ def alpaca_cancel_open_orders_for_symbol(symbol: str) -> int:
                 try:
                     r = requests.delete(
                         f'{cfg["base_url"]}/v2/orders/{oid}',
-                        headers=_alpaca_headers(cfg), timeout=10,
+                        headers=_alpaca_trade_headers(cfg), timeout=10,
                     )
                     if r.status_code in (200, 204):
                         cancelled += 1
@@ -1092,6 +1106,37 @@ def alpaca_cancel_open_orders_for_symbol(symbol: str) -> int:
         return 0
 
 
+def alpaca_get_filled_orders(symbol: str, after: str, limit: int = 10) -> List[dict]:
+    """Get recent filled orders for a symbol from Alpaca.
+
+    Used by reconciliation to reconstruct entry context for adopted positions.
+    Returns list of order dicts sorted by filled_at descending.
+    """
+    cfg = _get_alpaca_config()
+    if cfg is None:
+        return []
+    headers = _alpaca_trade_headers(cfg)
+    try:
+        resp = requests.get(
+            f'{cfg["base_url"]}/v2/orders',
+            headers=headers,
+            params={
+                'status': 'filled',
+                'symbols': symbol,
+                'after': after,
+                'limit': str(limit),
+                'direction': 'desc',
+            },
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            return resp.json()
+        logger.warning(f"alpaca_get_filled_orders({symbol}): {resp.status_code}")
+    except Exception as e:
+        logger.warning(f"alpaca_get_filled_orders({symbol}) error: {e}")
+    return []
+
+
 def alpaca_close_position_api(symbol: str) -> dict:
     """Close a position using Alpaca's DELETE /v2/positions/{symbol} endpoint.
 
@@ -1105,7 +1150,7 @@ def alpaca_close_position_api(symbol: str) -> dict:
     try:
         resp = requests.delete(
             f'{cfg["base_url"]}/v2/positions/{symbol}',
-            headers=_alpaca_headers(cfg), timeout=15,
+            headers=_alpaca_trade_headers(cfg), timeout=15,
         )
         _log_api_call('/v2/positions (close)', 'DELETE', symbol, resp.status_code,
                       (_time.monotonic() - _t0) * 1000)
@@ -1130,7 +1175,7 @@ def _alpaca_open_order_count(symbol: str) -> int:
     try:
         resp = requests.get(
             f'{cfg["base_url"]}/v2/orders',
-            headers=_alpaca_headers(cfg),
+            headers=_alpaca_trade_headers(cfg),
             params={'status': 'open', 'symbols': symbol, 'limit': 50},
             timeout=10,
         )
@@ -1152,7 +1197,7 @@ def alpaca_cancel_order(order_id: str) -> bool:
     try:
         resp = requests.delete(
             f'{cfg["base_url"]}/v2/orders/{order_id}',
-            headers=_alpaca_headers(cfg), timeout=10
+            headers=_alpaca_trade_headers(cfg), timeout=10
         )
         _log_api_call('/v2/orders (cancel)', 'DELETE', order_id, resp.status_code,
                       (_time.monotonic() - _t0) * 1000)
@@ -1166,11 +1211,19 @@ async def alpaca_submit_and_confirm(
     symbol: str, qty: int, side: str,
     order_type: str = 'market', limit_price: float = None,
     timeout_sec: float = 30.0, poll_interval: float = 0.5,
+    cancel_on_timeout: bool = False,
 ) -> OrderResult:
     """Submit order and poll until filled, rejected, or timeout.
 
-    For limit orders that don't fill within timeout, cancels the order and
-    returns a timeout result. Market orders typically fill within 1-2 polls.
+    For limit orders: polls until filled or timeout. By default does NOT
+    cancel on timeout — the order stays open on the broker and may fill later.
+    The caller should track the order_id for later reconciliation.
+
+    For market orders: polls until filled or timeout. Market orders that don't
+    fill within the timeout are cancelled (something is wrong).
+
+    Set cancel_on_timeout=True to force cancellation on timeout (used for
+    exit orders where we need certainty).
     """
     result = OrderResult(symbol=symbol, side=side)
 
@@ -1186,7 +1239,9 @@ async def alpaca_submit_and_confirm(
 
     order_id = order_resp.get('id', '')
     result.order_id = order_id
-    logger.info(f"Order submitted: {side} {qty} {symbol} ({order_type}) id={order_id}")
+    logger.info(f"Order submitted: {side} {qty} {symbol} ({order_type}) "
+                f"id={order_id}" +
+                (f" limit=${limit_price:.2f}" if limit_price else ""))
 
     # Poll for fill
     deadline = _time.monotonic() + timeout_sec
@@ -1208,7 +1263,7 @@ async def alpaca_submit_and_confirm(
 
         if status in ('cancelled', 'canceled', 'expired', 'suspended'):
             result.status = 'cancelled'
-            result.error = f"Order {status}"
+            result.error = f"Order {status} (by broker, not by us)"
             logger.warning(f"Order {status}: {side} {qty} {symbol} (id={order_id})")
             return result
 
@@ -1223,27 +1278,47 @@ async def alpaca_submit_and_confirm(
             result.filled_avg_price = float(order_data.get('filled_avg_price', 0))
             # Keep polling — may fully fill
 
-    # Timeout — cancel the order if it hasn't filled
-    logger.warning(f"Order TIMEOUT after {timeout_sec}s: {side} {qty} {symbol} (id={order_id})")
+    # ── Timeout reached ──
+    # One final check in case it filled during the last sleep
     order_data = await asyncio.to_thread(alpaca_get_order, order_id)
     if order_data and order_data.get('status') == 'filled':
         result.status = 'filled'
         result.filled_qty = int(order_data.get('filled_qty', qty))
         result.filled_avg_price = float(order_data.get('filled_avg_price', 0))
+        logger.info(f"Order FILLED (on final check): {side} {result.filled_qty} {symbol} "
+                   f"@ ${result.filled_avg_price:.2f}")
         return result
 
-    # Cancel unfilled order
-    cancelled = await asyncio.to_thread(alpaca_cancel_order, order_id)
     filled_qty = int(order_data.get('filled_qty', 0)) if order_data else 0
 
-    if filled_qty > 0:
-        result.status = 'partially_filled'
-        result.filled_qty = filled_qty
-        result.filled_avg_price = float(order_data.get('filled_avg_price', 0))
-        result.error = f"Partial fill: {filled_qty}/{qty} shares"
+    # Decide whether to cancel or hold
+    should_cancel = cancel_on_timeout or order_type == 'market'
+
+    if should_cancel:
+        logger.warning(f"Order TIMEOUT after {timeout_sec}s, CANCELLING: "
+                      f"{side} {qty} {symbol} ({order_type}) id={order_id}")
+        await asyncio.to_thread(alpaca_cancel_order, order_id)
+        if filled_qty > 0:
+            result.status = 'partially_filled'
+            result.filled_qty = filled_qty
+            result.filled_avg_price = float(order_data.get('filled_avg_price', 0))
+            result.error = f"Partial fill: {filled_qty}/{qty} shares, rest cancelled"
+        else:
+            result.status = 'timeout'
+            result.error = f"No fill after {timeout_sec}s, order cancelled"
     else:
-        result.status = 'timeout'
-        result.error = f"No fill after {timeout_sec}s, order cancelled"
+        # Limit order: DON'T cancel — let it work on the broker
+        logger.info(f"Order still PENDING after {timeout_sec}s, HOLDING: "
+                    f"{side} {qty} {symbol} limit=${limit_price} id={order_id} "
+                    f"(order stays open on broker)")
+        if filled_qty > 0:
+            result.status = 'partially_filled'
+            result.filled_qty = filled_qty
+            result.filled_avg_price = float(order_data.get('filled_avg_price', 0))
+            result.error = f"Partial fill: {filled_qty}/{qty} shares, order still open"
+        else:
+            result.status = 'pending'
+            result.error = f"Still pending after {timeout_sec}s, order held open"
 
     return result
 
@@ -1254,7 +1329,7 @@ def alpaca_get_positions() -> List[dict]:
     if cfg is None:
         return []
 
-    headers = _alpaca_headers(cfg)
+    headers = _alpaca_trade_headers(cfg)
     _t0 = _time.monotonic()
     try:
         resp = requests.get(
@@ -1293,7 +1368,7 @@ def alpaca_place_stop_order(symbol: str, qty: int, stop_price: float,
     else:
         side = 'buy'
         limit_price = round(stop_price * (1 + limit_offset_pct), 2)
-    headers = {**_alpaca_headers(cfg), 'Content-Type': 'application/json'}
+    headers = {**_alpaca_trade_headers(cfg), 'Content-Type': 'application/json'}
     payload = {
         'symbol': symbol,
         'qty': str(qty),
@@ -1301,7 +1376,7 @@ def alpaca_place_stop_order(symbol: str, qty: int, stop_price: float,
         'type': 'stop_limit',
         'stop_price': str(round(stop_price, 2)),
         'limit_price': str(limit_price),
-        'time_in_force': 'day',
+        'time_in_force': 'gtc',
     }
 
     _t0 = _time.monotonic()
@@ -1354,7 +1429,7 @@ def alpaca_get_account() -> Optional[dict]:
     if cfg is None:
         return None
 
-    headers = _alpaca_headers(cfg)
+    headers = _alpaca_trade_headers(cfg)
     _t0 = _time.monotonic()
     try:
         resp = requests.get(
@@ -1373,7 +1448,7 @@ def alpaca_get_account() -> Optional[dict]:
 class AlpacaTickStreamer:
     """Real-time trade stream via Alpaca WebSocket."""
 
-    WS_URL = 'wss://stream.data.alpaca.markets/v2/iex'
+    WS_URL = 'wss://stream.data.alpaca.markets/v2/sip'
     THROTTLE_SEC = 0.25
 
     def __init__(self, symbols, on_tick=None):
@@ -1765,6 +1840,12 @@ class PriceDB:
             CREATE INDEX IF NOT EXISTS idx_rejected_ts ON candidates_rejected (timestamp);
             CREATE INDEX IF NOT EXISTS idx_rejected_stage_ts ON candidates_rejected (rejection_stage, timestamp);
             CREATE INDEX IF NOT EXISTS idx_rejected_sym_ts ON candidates_rejected (symbol, timestamp);
+            CREATE TABLE IF NOT EXISTS minute_bars (
+                symbol TEXT NOT NULL, ts TIMESTAMP NOT NULL,
+                open DOUBLE PRECISION, high DOUBLE PRECISION, low DOUBLE PRECISION,
+                close DOUBLE PRECISION, volume BIGINT DEFAULT 0,
+                PRIMARY KEY (symbol, ts));
+            CREATE INDEX IF NOT EXISTS idx_minute_bars_ts ON minute_bars (ts);
             CREATE TABLE IF NOT EXISTS trader_state (
                 key TEXT PRIMARY KEY, state_json TEXT NOT NULL, saved_at TEXT NOT NULL);
         ''')
@@ -1878,6 +1959,54 @@ class PriceDB:
                 df.sort_index(inplace=True)
                 df.index.name = sym
                 results[sym] = df
+        return results
+
+    def get_minute_bars(self, symbol: str, date_str: str) -> Optional[pd.DataFrame]:
+        """Get 1-min bars for a symbol on a single date from minute_bars table."""
+        cur = self._conn.cursor()
+        cur.execute(
+            'SELECT ts, open, high, low, close, volume FROM minute_bars '
+            'WHERE symbol = %s AND ts::date = %s ORDER BY ts',
+            (symbol, date_str)
+        )
+        rows = cur.fetchall()
+        if not rows:
+            return None
+        df = pd.DataFrame(rows, columns=['datetime', 'open', 'high', 'low', 'close', 'volume'])
+        df['datetime'] = pd.to_datetime(df['datetime'])
+        for col in ['open', 'high', 'low', 'close']:
+            df[col] = df[col].astype(np.float64)
+        df['volume'] = df['volume'].astype(np.int64)
+        df.set_index('datetime', inplace=True)
+        df.sort_index(inplace=True)
+        df.index.name = symbol
+        return df
+
+    def get_minute_bars_batch(self, symbols: List[str], date_str: str) -> Dict[str, pd.DataFrame]:
+        """Get 1-min bars for many symbols on a single date. Returns {symbol: DataFrame}."""
+        results = {}
+        if not symbols:
+            return results
+        cur = self._conn.cursor()
+        placeholders = ','.join(['%s'] * len(symbols))
+        cur.execute(
+            f'SELECT symbol, ts, open, high, low, close, volume FROM minute_bars '
+            f'WHERE symbol IN ({placeholders}) AND ts::date = %s ORDER BY symbol, ts',
+            symbols + [date_str]
+        )
+        rows = cur.fetchall()
+        for sym, group in groupby(rows, key=lambda r: r[0]):
+            bar_rows = list(group)
+            df = pd.DataFrame(bar_rows, columns=['symbol', 'datetime', 'open', 'high', 'low', 'close', 'volume'])
+            df.drop(columns=['symbol'], inplace=True)
+            df['datetime'] = pd.to_datetime(df['datetime'])
+            for col in ['open', 'high', 'low', 'close']:
+                df[col] = df[col].astype(np.float64)
+            df['volume'] = df['volume'].astype(np.int64)
+            df.set_index('datetime', inplace=True)
+            df.sort_index(inplace=True)
+            df.index.name = sym
+            results[sym] = df
         return results
 
     def get_last_date(self, symbol: str) -> Optional[str]:
@@ -2862,7 +2991,7 @@ class GapFadeConfig:
     min_price: float = 10.0            # minimum stock price (low-price stocks have wide spreads/slippage)
 
     # Position sizing
-    initial_capital: float = 25_000
+    initial_capital: float = 100_000
     risk_pct: float = 0.02             # risk 2% of equity per trade
     kelly_fraction: float = 0.25       # quarter Kelly
     max_positions: int = 5             # max concurrent positions
@@ -2874,6 +3003,11 @@ class GapFadeConfig:
     partial_cover_frac: float = 0.33   # fraction of position to cover at partial target (0.33 = 1/3)
     bounce_entry_pct: float = 0.0      # wait for bounce above open before shorting (0 = disabled)
     # Full target = prev_close (full gap fill)
+
+    # Trailing stop — locks in profit once position reaches activation threshold
+    trailing_stop_enabled: bool = True
+    trailing_activation_pct: float = 0.01   # activate trailing after 1% unrealized profit
+    trailing_distance_pct: float = 0.005    # trail 0.5% behind best price (tight to lock in gains)
 
     # Adaptive stops — scale stop with gap size
     adaptive_stops: bool = True         # if True, stop = gap_pct * stop_gap_fraction (clamped)
@@ -2994,8 +3128,8 @@ class GapFadeConfig:
     active_strategy: str = 'classic_gap_fade'  # strategy ID from registry
 
     # Intraday strategies
-    intraday_enabled: bool = True            # master toggle
-    intraday_strategies: str = 'orb_breakout,momentum_surge,pullback_entry,range_trade'
+    intraday_enabled: bool = False           # disabled — gap fade only
+    intraday_strategies: str = 'orb_breakout,momentum_surge,pullback_entry,range_trade,connors_rsi2,vwap_bounce'
     intraday_scan_interval: int = 30         # seconds between scans
     intraday_watchlist_size: int = 25        # max symbols to watch (Alpaca free tier: 25 WS limit)
     intraday_max_entries: int = 3            # max intraday entries per day
@@ -3003,9 +3137,26 @@ class GapFadeConfig:
     intraday_daily_loss_limit: float = 0.02  # 2% max daily loss from intraday
     intraday_max_position_pct: float = 0.20  # max 20% of equity per intraday position
 
+    # Capital partitioning — parallel gap fade + intraday
+    capital_partition: bool = True            # enable capital partitioning
+    gap_fade_capital_pct: float = 0.60       # 60% of equity reserved for gap fade
+    intraday_capital_pct: float = 0.40       # 40% of equity reserved for intraday
+    gap_fade_max_positions: int = 3          # max concurrent gap fade positions
+    intraday_max_positions: int = 3          # max concurrent intraday positions
+    capital_overflow: bool = True            # release unused gap fade capital to intraday after overflow_time
+    capital_overflow_hour: int = 10          # hour (ET) after which unused gap fade slots overflow
+    capital_overflow_min: int = 30           # minute (ET) for overflow
+
+    # Execution broker: 'alpaca' or 'ibkr'
+    execution_broker: str = 'alpaca'
+
     def __post_init__(self):
         if not self.llm_api_key:
             self.llm_api_key = os.environ.get('LLM_API_KEY', '')
+        # Env var override for execution broker
+        env_broker = os.environ.get('EXECUTION_BROKER', '')
+        if env_broker:
+            self.execution_broker = env_broker
 
 
 @dataclass
@@ -3059,6 +3210,7 @@ class GapPosition:
     score: float = 0.0
     catalyst: str = ''
     strategy_id: str = ''                # which strategy opened this position
+    source: str = 'gap_fade'             # 'gap_fade' or 'intraday' — for capital partitioning
 
     def __post_init__(self):
         if self.remaining_shares == 0:
@@ -3525,7 +3677,7 @@ class GapScanner:
             if need_api:
                 logger.info(f"Fetching {len(need_api)} symbols from API (not in DB)...")
                 t0 = _time.time()
-                api_dfs = _fetch_bars_multi_parallel(need_api, start_str, end_str, '1Day', 'iex')
+                api_dfs = _fetch_bars_multi_parallel(need_api, start_str, end_str, '1Day', 'sip')
                 elapsed = _time.time() - t0
                 logger.info(f"API volume fetch: {len(api_dfs)}/{len(need_api)} symbols in {elapsed:.1f}s")
 
@@ -3569,7 +3721,7 @@ class GapScanner:
         need_api = [s for s in universe if s not in sql_vols]
         if need_api:
             logger.info(f"Fetching {len(need_api)} symbols from API...")
-            api_dfs = _fetch_bars_multi_parallel(need_api, start_str, end_str, '1Day', 'iex')
+            api_dfs = _fetch_bars_multi_parallel(need_api, start_str, end_str, '1Day', 'sip')
 
             for sym, df in api_dfs.items():
                 if df is not None and len(df) >= 5:
@@ -3741,7 +3893,7 @@ class GapScanner:
         """Find historical gap-up days for backtesting (single symbol)."""
         # Fetch extra days for rolling avg volume
         adj_start = (datetime.strptime(start_date, '%Y-%m-%d') - timedelta(days=45)).strftime('%Y-%m-%d')
-        df = fetch_alpaca_bars(symbol, adj_start, end_date, '1Day', 'iex')
+        df = fetch_alpaca_bars(symbol, adj_start, end_date, '1Day', 'sip')
         start_dt = datetime.strptime(start_date, '%Y-%m-%d')
         gd_cfg = None
         if self.config.trade_gap_downs:
@@ -3777,7 +3929,7 @@ class GapScanner:
                         f"fetching {len(missing_symbols)} missing from API...")
             if progress_callback:
                 progress_callback(0, len(missing_symbols))
-            api_dfs = fetch_alpaca_bars_multi(missing_symbols, adj_start, end_date, '1Day', 'iex')
+            api_dfs = fetch_alpaca_bars_multi(missing_symbols, adj_start, end_date, '1Day', 'sip')
             if api_dfs:
                 db.upsert_bars_batch(api_dfs)
                 logger.info(f"Cached {len(api_dfs)} new symbols into PriceDB")
@@ -3948,13 +4100,46 @@ class GapFadeEngine:
         self._stopped_today: Dict[str, StopOutRecord] = {}  # re-entry tracking
         self.trade_log: List[TradeRecord] = []
         self.all_trade_log: List[TradeRecord] = []   # persists across resets
-        self._effective_max_positions: int = config.max_positions  # updated per scan
+        if config.capital_partition:
+            self._effective_max_positions: int = config.gap_fade_max_positions
+        else:
+            self._effective_max_positions: int = config.max_positions
 
     def effective_max_positions(self, n_candidates: int) -> int:
         """If fewer candidates than thin_day_threshold, trade all of them."""
+        if self.config.capital_partition:
+            max_pos = self.config.gap_fade_max_positions
+        else:
+            max_pos = self.config.max_positions
         if n_candidates < self.config.thin_day_threshold:
-            return n_candidates
-        return self.config.max_positions
+            return min(n_candidates, max_pos)
+        return max_pos
+
+    def count_positions_by_source(self, source: str) -> int:
+        """Count open positions by source ('gap_fade' or 'intraday')."""
+        return sum(1 for p in self.positions.values() if p.source == source)
+
+    def allocated_equity(self, source: str) -> float:
+        """Return allocated equity for a source, with overflow support."""
+        if not self.config.capital_partition:
+            return self.equity
+
+        if source == 'gap_fade':
+            base = self.equity * self.config.gap_fade_capital_pct
+        else:
+            base = self.equity * self.config.intraday_capital_pct
+            # Overflow: after cutoff time, unused gap fade capital flows to intraday
+            if self.config.capital_overflow and not self.backtest_mode:
+                now = datetime.now(ET)
+                overflow_time = (self.config.capital_overflow_hour, self.config.capital_overflow_min)
+                if (now.hour, now.minute) >= overflow_time:
+                    gf_count = self.count_positions_by_source('gap_fade')
+                    gf_max = self.config.gap_fade_max_positions
+                    unused_slots = max(0, gf_max - gf_count)
+                    if unused_slots > 0:
+                        per_slot = (self.equity * self.config.gap_fade_capital_pct) / max(1, gf_max)
+                        base += per_slot * unused_slots
+        return base
 
     def compute_kelly_size(self) -> float:
         """Compute optimal position size using Kelly criterion.
@@ -3967,24 +4152,32 @@ class GapFadeEngine:
         kelly = (p * b - q) / b if b > 0 else 0
         return max(0, kelly * self.config.kelly_fraction)
 
-    def compute_position_size(self, entry_price: float, stop_price: float) -> int:
-        """Compute number of shares to short based on risk and Kelly sizing."""
+    def compute_position_size(self, entry_price: float, stop_price: float,
+                              source: str = 'gap_fade') -> int:
+        """Compute number of shares based on risk, Kelly sizing, and capital partition."""
         risk_per_share = abs(stop_price - entry_price)
         if risk_per_share <= 0:
             return 0
+
+        # Use allocated equity for this source
+        alloc_equity = self.allocated_equity(source)
 
         # Kelly-adjusted risk
         kelly_risk = self.compute_kelly_size()
         risk_frac = min(self.config.risk_pct, kelly_risk) if kelly_risk > 0 else self.config.risk_pct
 
-        dollar_risk = self.equity * risk_frac
+        dollar_risk = alloc_equity * risk_frac
         shares = int(dollar_risk / risk_per_share)
 
-        # Per-position cap: divide equity by effective max so all slots fit without leverage
-        eff_max = self._effective_max_positions
-        open_count = len(self.positions)
-        slots = max(1, eff_max - open_count)
-        per_slot_equity = self.equity / max(1, eff_max)
+        # Per-position cap: divide allocated equity by max slots for this source
+        if self.config.capital_partition:
+            if source == 'gap_fade':
+                eff_max = self._effective_max_positions
+            else:
+                eff_max = self.config.intraday_max_positions
+        else:
+            eff_max = self._effective_max_positions
+        per_slot_equity = alloc_equity / max(1, eff_max)
         max_shares = int(per_slot_equity / entry_price) if entry_price > 0 else 0
         shares = min(shares, max_shares)
 
@@ -4055,10 +4248,16 @@ class GapFadeEngine:
             if rec.reentry_count >= self.config.reentry_max_per_symbol:
                 return False, f"re-entry cap reached for {candidate.symbol} ({rec.reentry_count}/{self.config.reentry_max_per_symbol})"
 
-        # Max positions (applies in both modes) — uses effective max for thin days
-        eff_max = self._effective_max_positions
-        if len(self.positions) >= eff_max:
-            return False, f"max positions ({eff_max}) reached"
+        # Max positions — partitioned by source when enabled
+        if self.config.capital_partition:
+            gf_count = self.count_positions_by_source('gap_fade')
+            eff_max = self._effective_max_positions  # already capped to gap_fade_max_positions
+            if gf_count >= eff_max:
+                return False, f"gap fade max positions ({eff_max}) reached ({gf_count} open)"
+        else:
+            eff_max = self._effective_max_positions
+            if len(self.positions) >= eff_max:
+                return False, f"max positions ({eff_max}) reached"
 
         # Volume ratio check (applies in both modes; different limit for gap-downs)
         vol_limit = self.config.gap_down_vol_ratio_max if candidate.direction == 'long' else self.config.vol_ratio_max
@@ -4109,7 +4308,7 @@ class GapFadeEngine:
             half_target = (fill_price + candidate.prev_close) / 2
             full_target = candidate.prev_close  # gap fill = back down to prev close
 
-        shares = self.compute_position_size(fill_price, stop_price)
+        shares = self.compute_position_size(fill_price, stop_price, source='gap_fade')
         # Liquidity cap: max % of average daily volume
         if candidate.avg_vol_20d > 0 and self.config.max_pct_adv > 0:
             max_liq = int(candidate.avg_vol_20d * self.config.max_pct_adv)
@@ -4132,6 +4331,7 @@ class GapFadeEngine:
             vol_ratio=candidate.vol_ratio,
             score=candidate.score,
             catalyst=candidate.catalyst,
+            source='gap_fade',
         )
         self.positions[candidate.symbol] = pos
         self.daily_stats.trades += 1
@@ -4200,6 +4400,31 @@ class GapFadeEngine:
                 )
             del self.positions[symbol]
             return trades
+
+        # 1b. Trailing stop — lock in profits once activation threshold met
+        if self.config.trailing_stop_enabled and pos.entry_price > 0:
+            if d == 'short':
+                unrealized_pct = (pos.entry_price - price) / pos.entry_price
+                # Track best price (lowest for shorts)
+                if pos.high_water_price <= 0 or price < pos.high_water_price:
+                    pos.high_water_price = price
+                    pos.high_water_pnl_pct = max(pos.high_water_pnl_pct, unrealized_pct)
+                # Activate trailing once profit exceeds threshold
+                if pos.high_water_pnl_pct >= self.config.trailing_activation_pct:
+                    trail_stop = pos.high_water_price * (1 + self.config.trailing_distance_pct)
+                    if trail_stop < pos.stop_price:
+                        pos.stop_price = trail_stop
+            else:
+                unrealized_pct = (price - pos.entry_price) / pos.entry_price
+                # Track best price (highest for longs)
+                if price > pos.high_water_price:
+                    pos.high_water_price = price
+                    pos.high_water_pnl_pct = max(pos.high_water_pnl_pct, unrealized_pct)
+                # Activate trailing once profit exceeds threshold
+                if pos.high_water_pnl_pct >= self.config.trailing_activation_pct:
+                    trail_stop = pos.high_water_price * (1 - self.config.trailing_distance_pct)
+                    if trail_stop > pos.stop_price:
+                        pos.stop_price = trail_stop
 
         # 2. Partial profit — cover fraction when price hits midpoint target
         if not pos.partial_filled and _target_hit(d, price, pos.half_target):
@@ -4272,6 +4497,85 @@ class GapFadeEngine:
         if _stop_hit(d, high, price, pos.stop_price):
             return {'reason': 'stop', 'shares': pos.remaining_shares,
                     'is_full_close': True, 'trigger_price': pos.stop_price}
+
+        # ── Smart Exit Engine ─────────────────────────────────────
+        # Tracks price movement and adapts exit strategy based on
+        # how much profit has been seen and whether momentum is fading.
+        #
+        # Profit tiers (for shorts: entry - price, for longs: price - entry):
+        #   Tier 0: Unrealized < 0%     → hold, original stop
+        #   Tier 1: 0% to 1%            → move stop to breakeven
+        #   Tier 2: 1% to 3%            → trail 0.5% behind best
+        #   Tier 3: 3% to 5%            → trail 0.3% behind best (tighter)
+        #   Tier 4: 5%+                 → trail 0.2% behind best (very tight)
+        #
+        # Reversal detection: if price has retraced 40% from high water
+        # mark while in Tier 2+, close immediately (momentum lost).
+        # ──────────────────────────────────────────────────────────
+
+        if pos.entry_price > 0:
+            if d == 'short':
+                unrealized_pct = (pos.entry_price - price) / pos.entry_price
+                # Update high water mark (lowest price for shorts)
+                if pos.high_water_price <= 0 or price < pos.high_water_price:
+                    pos.high_water_price = price
+                pos.high_water_pnl_pct = max(
+                    pos.high_water_pnl_pct,
+                    (pos.entry_price - pos.high_water_price) / pos.entry_price
+                    if pos.high_water_price > 0 else 0)
+            else:
+                unrealized_pct = (price - pos.entry_price) / pos.entry_price
+                # Update high water mark (highest price for longs)
+                if price > pos.high_water_price:
+                    pos.high_water_price = price
+                pos.high_water_pnl_pct = max(
+                    pos.high_water_pnl_pct,
+                    (pos.high_water_price - pos.entry_price) / pos.entry_price
+                    if pos.high_water_price > 0 else 0)
+
+            hwm_pct = pos.high_water_pnl_pct  # Best unrealized % seen
+
+            # Determine profit tier and trailing distance
+            if hwm_pct >= 0.05:
+                trail_pct = 0.002   # Tier 4: very tight 0.2% trail
+            elif hwm_pct >= 0.03:
+                trail_pct = 0.003   # Tier 3: tight 0.3% trail
+            elif hwm_pct >= 0.01:
+                trail_pct = 0.005   # Tier 2: standard 0.5% trail
+            elif hwm_pct >= 0.001:
+                trail_pct = None    # Tier 1: move to breakeven only
+            else:
+                trail_pct = None    # Tier 0: no change
+
+            # Apply trailing stop
+            if trail_pct is not None and pos.high_water_price > 0:
+                if d == 'short':
+                    trail_stop = pos.high_water_price * (1 + trail_pct)
+                    if trail_stop < pos.stop_price:
+                        pos.stop_price = trail_stop
+                else:
+                    trail_stop = pos.high_water_price * (1 - trail_pct)
+                    if trail_stop > pos.stop_price:
+                        pos.stop_price = trail_stop
+            elif hwm_pct >= 0.001:
+                # Tier 1: breakeven stop
+                if d == 'short' and pos.entry_price < pos.stop_price:
+                    pos.stop_price = pos.entry_price
+                elif d == 'long' and pos.entry_price > pos.stop_price:
+                    pos.stop_price = pos.entry_price
+
+            # Reversal detection: if we've retraced 40%+ from HWM while in Tier 2+
+            if hwm_pct >= 0.01 and pos.high_water_price > 0:
+                if d == 'short':
+                    retracement = (price - pos.high_water_price) / (pos.entry_price - pos.high_water_price) if pos.entry_price != pos.high_water_price else 0
+                else:
+                    retracement = (pos.high_water_price - price) / (pos.high_water_price - pos.entry_price) if pos.high_water_price != pos.entry_price else 0
+
+                if retracement >= 0.40:
+                    return {'reason': 'reversal_detected',
+                            'shares': pos.remaining_shares,
+                            'is_full_close': True,
+                            'trigger_price': price}
 
         # 2. Partial profit — cover fraction at midpoint target
         if not pos.partial_filled and _target_hit(d, price, pos.half_target):
@@ -4785,7 +5089,7 @@ class GapFadeBacktester:
 
                 if use_1min:
                     # Detailed mode: fetch 1-min bars per day (slow)
-                    min_df = fetch_alpaca_bars(sym, gap_date, gap_date, '1Min', 'iex')
+                    min_df = fetch_alpaca_bars(sym, gap_date, gap_date, '1Min', 'sip')
                     if min_df is None or len(min_df) < 10:
                         bars_missing += 1
                         await _log('warn', f'{sym} {gap_date}: no 1-min data')
@@ -7805,6 +8109,24 @@ class AlertNotifier:
             logger.warning(f"Telegram alert failed: {e}")
 
 
+def _build_execution_broker(config: GapFadeConfig):
+    """Factory: return execution broker based on config.execution_broker."""
+    broker_type = config.execution_broker.lower()
+    if broker_type == 'ibkr':
+        try:
+            from brokers.ibkr_adapter import IBKRBrokerAdapter
+            adapter = IBKRBrokerAdapter()
+            if adapter.is_configured():
+                logger.info("Execution broker: IBKR (IB Gateway)")
+                return adapter
+            logger.warning("IBKR requested but not configured — falling back to Alpaca")
+        except ImportError:
+            logger.warning("ib_insync not installed — falling back to Alpaca")
+    # Default: Alpaca (uses existing module-level functions)
+    logger.info("Execution broker: Alpaca")
+    return None  # None = use legacy Alpaca functions directly
+
+
 class GapFadeLiveTrader:
     """Async live trading loop for gap fade strategy.
 
@@ -7823,7 +8145,8 @@ class GapFadeLiveTrader:
         self.config = config or GapFadeConfig()
         self.engine = GapFadeEngine(self.config)
         self.scanner = GapScanner(self.config)
-        self.streamer: Optional[AlpacaTickStreamer] = None
+        self._execution_broker = _build_execution_broker(self.config)
+        self.streamer = None  # AlpacaTickStreamer or IBKRTickStreamer
         self.status = 'stopped'        # stopped, scanning, trading, paused, waiting
         self.candidates: List[GapCandidate] = []
         self._task: Optional[asyncio.Task] = None
@@ -7838,6 +8161,11 @@ class GapFadeLiveTrader:
         self._LLM_DECIDE_INTERVAL = 120  # seconds — don't re-ask Rudra unless state changed
         self._last_llm_state_hash = ''  # detect meaningful state changes
         self._last_loop_heartbeat = _time.monotonic()  # watchdog: trading loop health
+        self._last_state_save_time = _time.monotonic()  # state persistence heartbeat
+        # Exhaustion entry tracking (per-symbol Opening Range and signal state)
+        self._opening_ranges: Dict[str, dict] = {}     # sym -> {high, low, built}
+        self._exhaustion_signals: Dict[str, dict] = {} # sym -> {triggered, time, vwap, rsi}
+        self._exhaustion_entered: set = set()           # symbols already entered via exhaustion
         self._last_model_rebuild = ''  # ISO date of last model rebuild
         self._trading_halted: bool = False  # EOD circuit breaker — set by watchdog, blocks new entries
         self._eod_watchdog_task: Optional[asyncio.Task] = None  # independent EOD guardian
@@ -7909,6 +8237,158 @@ class GapFadeLiveTrader:
             logger.info(f"Rudra enabled: {self.config.llm_model} @ {self.config.llm_url}")
         else:
             logger.info("Rudra disabled (llm_enabled=false)")
+
+    # -- Broker bridge methods -----------------------------------------------
+    # These route all broker interactions to IBKR or Alpaca based on config.
+    # Historical DB data (PostgreSQL) is shared across both brokers.
+
+    @property
+    def _use_ibkr(self) -> bool:
+        return self._execution_broker is not None
+
+    async def _broker_submit(self, symbol: str, qty: int, side: str, *,
+                             order_type: str = 'market', limit_price: float = None,
+                             timeout_sec: float = 30.0,
+                             cancel_on_timeout: bool = False) -> 'OrderResult':
+        """Submit order via configured broker."""
+        if self._use_ibkr:
+            return await self._execution_broker.submit_order(
+                symbol, qty, side, order_type=order_type,
+                limit_price=limit_price, timeout_sec=timeout_sec)
+        return await alpaca_submit_and_confirm(
+            symbol, qty, side, order_type=order_type,
+            limit_price=limit_price, timeout_sec=timeout_sec,
+            cancel_on_timeout=cancel_on_timeout)
+
+    async def _broker_place_stop(self, symbol: str, qty: int, stop_price: float,
+                                 limit_offset_pct: float = 0.003,
+                                 direction: str = 'short') -> dict:
+        """Place stop order via configured broker."""
+        if self._use_ibkr:
+            return await self._execution_broker.place_stop_order(
+                symbol, qty, stop_price, limit_offset_pct, direction)
+        return await asyncio.to_thread(
+            alpaca_place_stop_order, symbol, qty, stop_price,
+            limit_offset_pct, direction)
+
+    async def _broker_cancel(self, order_id: str) -> bool:
+        """Cancel order via configured broker."""
+        if self._use_ibkr:
+            return await self._execution_broker.cancel_order(order_id)
+        return await asyncio.to_thread(alpaca_cancel_order, order_id)
+
+    async def _broker_get_positions(self) -> List[dict]:
+        """Get positions via configured broker."""
+        if self._use_ibkr:
+            return await self._execution_broker.get_positions()
+        return await asyncio.to_thread(alpaca_get_positions)
+
+    async def _broker_get_account(self) -> Optional[dict]:
+        """Get account info via configured broker."""
+        if self._use_ibkr:
+            return await self._execution_broker.get_account()
+        return await asyncio.to_thread(alpaca_get_account)
+
+    async def _broker_close_position(self, symbol: str) -> dict:
+        """Force-close position via configured broker."""
+        if self._use_ibkr:
+            # IBKR: submit market order to flatten
+            positions = await self._broker_get_positions()
+            for pos in positions:
+                if pos['symbol'] == symbol:
+                    close_side = 'sell' if pos['side'] == 'long' else 'buy'
+                    result = await self._execution_broker.submit_order(
+                        symbol, int(pos['qty']), close_side, order_type='market')
+                    return {'status': result.status, 'order_id': result.order_id}
+            return {'error': f'{symbol} not found in IBKR positions'}
+        return await asyncio.to_thread(alpaca_close_position_api, symbol)
+
+    def _broker_make_streamer(self, symbols: List[str], on_tick=None):
+        """Create tick streamer via configured broker."""
+        if self._use_ibkr:
+            return self._execution_broker.create_tick_streamer(symbols, on_tick=on_tick)
+        return AlpacaTickStreamer(symbols, on_tick=on_tick)
+
+    async def _broker_ensure_connected(self) -> bool:
+        """Ensure IBKR is connected (no-op for Alpaca)."""
+        if self._use_ibkr:
+            connected = await self._execution_broker.conn.ensure_connected()
+            if not connected:
+                logger.error("IBKR connection failed — halting trading")
+                self._trading_halted = True
+                return False
+        return True
+
+    async def _broker_get_order(self, order_id: str) -> Optional[dict]:
+        """Get order status via configured broker."""
+        if self._use_ibkr:
+            return await self._execution_broker.get_order(order_id)
+        return await asyncio.to_thread(alpaca_get_order, order_id)
+
+    async def _broker_get_prices(self, symbols: List[str]) -> Dict[str, float]:
+        """Get current prices for symbols via configured broker.
+
+        Returns {symbol: price} regardless of broker.
+        IBKR: uses reqMktData snapshots.
+        Alpaca: uses /v2/stocks/snapshots, extracts latestTrade.p.
+        """
+        if self._use_ibkr:
+            return await self._execution_broker.get_snapshot_prices(symbols)
+        snaps = await asyncio.to_thread(fetch_alpaca_snapshots, symbols)
+        prices = {}
+        for sym, snap in snaps.items():
+            p = snap.get('latestTrade', {}).get('p', 0.0)
+            if p and p > 0:
+                prices[sym] = float(p)
+        return prices
+
+    def _lookup_gap_context(self, symbol: str, entry_price: float,
+                            direction: str) -> dict:
+        """Look up gap context from daily_bars for an adopted position.
+
+        Returns dict with prev_close, gap_pct, atr, open_price.
+        Empty dict on failure.
+        """
+        try:
+            db = get_price_db()
+            cur = db._conn.cursor()
+            # Get last 21 bars for ATR calculation + gap detection
+            cur.execute(
+                "SELECT date, open, high, low, close FROM daily_bars "
+                "WHERE symbol = %s ORDER BY date DESC LIMIT 21",
+                (symbol,))
+            rows = cur.fetchall()
+            if len(rows) < 2:
+                return {}
+
+            today_bar = rows[0]  # most recent
+            prev_bar = rows[1]   # previous day
+            open_price = float(today_bar[1])
+            prev_close = float(prev_bar[4])
+
+            if prev_close <= 0:
+                return {}
+
+            gap_pct = (open_price - prev_close) / prev_close
+
+            # Compute ATR(14) from available bars
+            atr = 0.0
+            if len(rows) >= 15:
+                tr_vals = []
+                for i in range(len(rows) - 1):
+                    h, l, pc = float(rows[i][2]), float(rows[i][3]), float(rows[i + 1][4])
+                    tr_vals.append(max(h - l, abs(h - pc), abs(l - pc)))
+                atr = sum(tr_vals[:14]) / min(14, len(tr_vals[:14]))
+
+            return {
+                'prev_close': prev_close,
+                'gap_pct': gap_pct,
+                'atr': atr,
+                'open_price': open_price,
+            }
+        except Exception as e:
+            logger.warning(f"Gap context lookup failed for {symbol}: {e}")
+            return {}
 
     def _add_message(self, msg_type: str, text: str, data: dict = None):
         """Add a message to the decision feed."""
@@ -8323,7 +8803,11 @@ class GapFadeLiveTrader:
 
         # Enter the best setups (up to remaining capacity)
         remaining = self.config.intraday_max_entries - self._intraday_entries_today
-        max_positions = self.config.max_positions - len(self.engine.positions)
+        if self.config.capital_partition:
+            intraday_count = self.engine.count_positions_by_source('intraday')
+            max_positions = self.config.intraday_max_positions - intraday_count
+        else:
+            max_positions = self.config.max_positions - len(self.engine.positions)
         entries_allowed = min(remaining, max_positions)
 
         for setup in setups[:entries_allowed]:
@@ -8376,18 +8860,18 @@ class GapFadeLiveTrader:
         if setup.symbol in self.engine.positions:
             return False
 
-        # Position sizing based on risk
-        equity = self.engine.equity
+        # Position sizing based on allocated equity
+        alloc_equity = self.engine.allocated_equity('intraday')
         risk_per_share = abs(setup.entry_price - setup.stop_price)
         if risk_per_share <= 0:
             return False
 
-        risk_amount = equity * self.config.intraday_risk_pct * size_multiplier
+        risk_amount = alloc_equity * self.config.intraday_risk_pct * size_multiplier
         shares = int(risk_amount / risk_per_share)
         shares = max(1, shares)
 
-        # Cap at max % of equity per position (prevents over-concentration)
-        max_position_value = equity * self.config.intraday_max_position_pct
+        # Cap at max % of allocated equity per position (prevents over-concentration)
+        max_position_value = alloc_equity * self.config.intraday_max_position_pct
         if shares * setup.entry_price > max_position_value:
             shares = max(1, int(max_position_value / setup.entry_price))
 
@@ -8398,9 +8882,14 @@ class GapFadeLiveTrader:
 
         # Create position
         async with self._position_lock:
-            # Re-check capacity under lock
-            if len(self.engine.positions) >= self.config.max_positions:
-                return False
+            # Re-check capacity under lock (partitioned)
+            if self.config.capital_partition:
+                intraday_count = self.engine.count_positions_by_source('intraday')
+                if intraday_count >= self.config.intraday_max_positions:
+                    return False
+            else:
+                if len(self.engine.positions) >= self.config.max_positions:
+                    return False
             if setup.symbol in self.engine.positions:
                 return False
 
@@ -8415,6 +8904,7 @@ class GapFadeLiveTrader:
                 entry_time=setup.timestamp.strftime('%Y-%m-%d %H:%M') if setup.timestamp else '',
                 direction=setup.direction,
                 strategy_id=setup.strategy_id,
+                source='intraday',
             )
             self.engine.positions[setup.symbol] = pos
 
@@ -8430,10 +8920,10 @@ class GapFadeLiveTrader:
             limit_px = None
             order_type = 'market'
 
-        fill = await alpaca_submit_and_confirm(
+        fill = await self._broker_submit(
             setup.symbol, shares, entry_side,
             order_type=order_type, limit_price=limit_px,
-            timeout_sec=15.0 if order_type == 'limit' else 10.0,
+            timeout_sec=120.0 if order_type == 'limit' else 30.0,
         )
 
         async with self._position_lock:
@@ -8449,9 +8939,8 @@ class GapFadeLiveTrader:
 
                 # Place broker-side stop order
                 try:
-                    stop_result = await asyncio.to_thread(
-                        alpaca_place_stop_order, setup.symbol,
-                        pos.remaining_shares, setup.stop_price,
+                    stop_result = await self._broker_place_stop(
+                        setup.symbol, pos.remaining_shares, setup.stop_price,
                         0.003, setup.direction)
                     if 'error' not in stop_result:
                         pos.stop_order_id = stop_result.get('id', '')
@@ -8475,6 +8964,14 @@ class GapFadeLiveTrader:
                     f'target ${setup.target_price:.2f})',
                     symbol=setup.symbol)
 
+                self._save_state()
+                return True
+            elif fill.status == 'pending' and order_type == 'limit':
+                # Limit order still open — keep position, track order_id
+                pos.entry_order_id = fill.order_id
+                self._add_message('info',
+                    f'{setup.symbol} intraday limit order still open, holding '
+                    f'(id={fill.order_id})')
                 self._save_state()
                 return True
             else:
@@ -8559,7 +9056,7 @@ class GapFadeLiveTrader:
         try:
             bars_dict = await asyncio.to_thread(
                 fetch_alpaca_bars_multi, symbols, today_str, today_str,
-                '5Min', 'iex',
+                '5Min', 'sip',
             )
             total_bars = 0
             seeded = 0
@@ -8615,6 +9112,9 @@ class GapFadeLiveTrader:
         if self.engine.daily_stats.date != today_str:
             self.engine.reset_daily()
             self.event_detector.reset_daily()
+        # Ensure IBKR connected before anything else
+        if not await self._broker_ensure_connected():
+            return
         # P0-4: reconcile with broker on startup
         await self._reconcile_with_broker()
         # Build intraday watchlist before creating streamer so we can include
@@ -8636,7 +9136,7 @@ class GapFadeLiveTrader:
             _stream_syms.update(self._intraday_watchlist)
 
         if _stream_syms and not self.streamer:
-            self.streamer = AlpacaTickStreamer(
+            self.streamer = self._broker_make_streamer(
                 list(_stream_syms), on_tick=self._on_tick)
             await self.streamer.start()
             logger.info(f"Tick streamer started for {len(_stream_syms)} symbols "
@@ -8662,7 +9162,7 @@ class GapFadeLiveTrader:
         for sym, pos in list(self.engine.positions.items()):
             if pos.stop_order_id:
                 try:
-                    await asyncio.to_thread(alpaca_cancel_order, pos.stop_order_id)
+                    await self._broker_cancel(pos.stop_order_id)
                     pos.stop_order_id = ''
                 except Exception:
                     pass
@@ -8687,6 +9187,9 @@ class GapFadeLiveTrader:
                 await self._eod_watchdog_task
             except asyncio.CancelledError:
                 pass
+        # Disconnect IBKR if connected
+        if self._use_ibkr:
+            await self._execution_broker.conn.disconnect()
         self._trading_halted = False
         self._add_message('system', 'Live trader stopped')
         self._save_state()
@@ -8715,11 +9218,11 @@ class GapFadeLiveTrader:
         we remove it. If broker has a position we don't know about, we adopt it.
         """
         try:
-            broker_positions = await asyncio.to_thread(alpaca_get_positions)
+            broker_positions = await self._broker_get_positions()
         except Exception as e:
             logger.warning(f"Reconciliation failed (could not reach broker): {e}")
             await self.alerter.send('Broker API Failure',
-                f'Could not reach Alpaca broker: {e}',
+                f'Could not reach broker: {e}',
                 level='error', throttle_key='broker_api')
             return
 
@@ -8739,12 +9242,42 @@ class GapFadeLiveTrader:
         orphaned = internal_syms - broker_syms
         for sym in orphaned:
             pos = self.engine.positions[sym]
+            # Check if this is a pending entry order (not filled yet)
+            if pos.entry_fill_price == 0.0 and pos.entry_order_id:
+                # Pending limit order — check if it filled or was cancelled
+                try:
+                    order_data = await self._broker_get_order(pos.entry_order_id)
+                    if order_data:
+                        ost = order_data.get('status', '')
+                        if ost == 'filled':
+                            # Order filled! Update position with fill data
+                            pos.entry_fill_price = float(order_data.get('filled_avg_price', 0))
+                            pos.entry_price = pos.entry_fill_price
+                            pos.remaining_shares = int(order_data.get('filled_qty', pos.shares))
+                            logger.info(f"RECONCILE: Pending order for {sym} FILLED "
+                                       f"@ ${pos.entry_fill_price:.2f}")
+                            self._add_message('entry',
+                                f'RECONCILE: {sym} limit order filled @ ${pos.entry_fill_price:.2f}')
+                            continue  # Don't remove — it's now a real position
+                        elif ost in ('cancelled', 'canceled', 'expired', 'rejected'):
+                            logger.info(f"RECONCILE: Pending order for {sym} {ost} — removing")
+                            self._add_message('info',
+                                f'RECONCILE: {sym} pending order {ost} — removed')
+                        elif ost in ('new', 'accepted', 'pending_new', 'partially_filled'):
+                            logger.info(f"RECONCILE: {sym} entry order still {ost}, keeping")
+                            continue  # Order still live — don't remove
+                        else:
+                            logger.warning(f"RECONCILE: {sym} entry order status={ost}, removing")
+                except Exception as e:
+                    logger.warning(f"RECONCILE: Could not check pending order for {sym}: {e}")
+                    continue  # Don't remove if we can't verify
+
             logger.warning(f"RECONCILE: Internal position {sym} ({pos.remaining_shares} shares) "
                           f"NOT found on broker — removing from internal state")
             self._add_message('warning', f'RECONCILE: {sym} not on broker — removed internally')
             del self.engine.positions[sym]
 
-        # Positions broker has that we don't know about
+        # Positions broker has that we don't know about — adopt with context
         unknown = broker_syms - internal_syms
         for sym in unknown:
             bp = broker_map[sym]
@@ -8752,32 +9285,106 @@ class GapFadeLiveTrader:
             if direction not in ('long', 'short'):
                 logger.warning(f"RECONCILE: Unknown side '{direction}' for {sym} — skipping")
                 continue
-            logger.warning(f"RECONCILE: Broker has {direction} {sym} ({bp['qty']} shares @ "
-                          f"${bp['avg_entry_price']:.2f}) — adopting into internal state")
-            self._add_message('warning',
-                f'RECONCILE: Adopting broker {direction} {sym} ({bp["qty"]} shares)')
-            if direction == 'short':
-                stop_price = bp['avg_entry_price'] * (1 + self.config.stop_pct)
-                half_target = bp['avg_entry_price'] * 0.99
-                full_target = bp['avg_entry_price'] * 0.97
-                prev_close = bp['avg_entry_price'] * 0.97
+
+            entry_price = bp['avg_entry_price']
+            entry_time_str = datetime.now(ET).strftime('%Y-%m-%d %H:%M')
+
+            # Step 1: Try to find actual entry from order history
+            try:
+                yesterday = (datetime.now(ET) - timedelta(days=2)).strftime('%Y-%m-%dT00:00:00Z')
+                filled_orders = await asyncio.to_thread(
+                    alpaca_get_filled_orders, sym, yesterday, 5)
+                for order in filled_orders:
+                    if order.get('filled_avg_price'):
+                        entry_price = float(order['filled_avg_price'])
+                        if order.get('filled_at'):
+                            entry_time_str = order['filled_at'][:16].replace('T', ' ')
+                        logger.info(f"RECONCILE: Found entry order for {sym} "
+                                   f"@ ${entry_price:.2f} at {entry_time_str}")
+                        break
+            except Exception as e:
+                logger.warning(f"RECONCILE: Order history lookup failed for {sym}: {e}")
+
+            # Step 2: Look up gap context from daily_bars
+            gap_ctx = self._lookup_gap_context(sym, entry_price, direction)
+
+            if gap_ctx and gap_ctx.get('prev_close', 0) > 0:
+                prev_close = gap_ctx['prev_close']
+                gap_pct = abs(gap_ctx.get('gap_pct', 0))
+                atr = gap_ctx.get('atr', 0)
+                # Use adaptive stop logic if gap context available
+                eff_stop_pct = compute_adaptive_stop_pct(self.config, gap_pct) if gap_pct > 0 else self.config.stop_pct
+                if direction == 'short':
+                    stop_price = entry_price * (1 + eff_stop_pct)
+                    half_target = (entry_price + prev_close) / 2
+                    full_target = prev_close
+                else:
+                    stop_price = entry_price * (1 - eff_stop_pct)
+                    half_target = (entry_price + prev_close) / 2
+                    full_target = prev_close
+                logger.info(f"RECONCILE: {sym} gap context — gap {gap_pct:.1%}, "
+                           f"prev_close ${prev_close:.2f}, ATR ${atr:.2f}, "
+                           f"stop ${stop_price:.2f}")
+            elif gap_ctx and gap_ctx.get('atr', 0) > 0:
+                # No gap but have ATR — use 1.5x ATR safety stop
+                atr = gap_ctx['atr']
+                prev_close = gap_ctx.get('prev_close', entry_price)
+                if direction == 'short':
+                    stop_price = entry_price + (1.5 * atr)
+                    half_target = entry_price - atr
+                    full_target = entry_price - (2 * atr)
+                else:
+                    stop_price = entry_price - (1.5 * atr)
+                    half_target = entry_price + atr
+                    full_target = entry_price + (2 * atr)
+                logger.warning(f"RECONCILE: {sym} no gap context — using 1.5x ATR "
+                              f"safety stop @ ${stop_price:.2f} (ATR=${atr:.2f})")
             else:
-                stop_price = bp['avg_entry_price'] * (1 - self.config.stop_pct)
-                half_target = bp['avg_entry_price'] * 1.01
-                full_target = bp['avg_entry_price'] * 1.03
-                prev_close = bp['avg_entry_price'] * 1.03
+                # Last resort — fixed percentage
+                if direction == 'short':
+                    stop_price = entry_price * (1 + self.config.stop_pct)
+                    half_target = entry_price * 0.99
+                    full_target = entry_price * 0.97
+                    prev_close = entry_price * 0.97
+                else:
+                    stop_price = entry_price * (1 - self.config.stop_pct)
+                    half_target = entry_price * 1.01
+                    full_target = entry_price * 1.03
+                    prev_close = entry_price * 1.03
+                logger.warning(f"RECONCILE: {sym} NO context available — "
+                              f"using fallback {self.config.stop_pct:.1%} stop")
+
+            logger.warning(f"RECONCILE: Adopting broker {direction} {sym} "
+                          f"({bp['qty']} shares @ ${entry_price:.2f})")
+            self._add_message('warning',
+                f'RECONCILE: Adopting {direction} {sym} ({bp["qty"]} shares) '
+                f'stop=${stop_price:.2f}')
+
             pos = GapPosition(
-                symbol=sym, shares=bp['qty'], entry_price=bp['avg_entry_price'],
+                symbol=sym, shares=bp['qty'], entry_price=entry_price,
                 stop_price=stop_price,
                 half_target=half_target,
                 full_target=full_target,
                 prev_close=prev_close,
-                entry_time=datetime.now(ET).strftime('%Y-%m-%d %H:%M'),
+                entry_time=entry_time_str,
                 remaining_shares=bp['qty'],
-                entry_fill_price=bp['avg_entry_price'],
+                entry_fill_price=entry_price,
                 direction=direction,
+                source='reconcile',
             )
             self.engine.positions[sym] = pos
+
+            # Step 3: Place GTC broker-side stop immediately
+            try:
+                stop_result = await self._broker_place_stop(
+                    sym, bp['qty'], stop_price, 0.003, direction)
+                if 'error' not in stop_result:
+                    pos.stop_order_id = stop_result.get('id', '')
+                    logger.info(f"RECONCILE: GTC stop placed for {sym} @ ${stop_price:.2f}")
+                else:
+                    logger.warning(f"RECONCILE: Stop placement failed for {sym}: {stop_result}")
+            except Exception as e:
+                logger.warning(f"RECONCILE: Stop placement error for {sym}: {e}")
 
         # Quantity mismatches on shared positions
         shared = internal_syms & broker_syms
@@ -8791,6 +9398,35 @@ class GapFadeLiveTrader:
                     f'RECONCILE: {sym} qty adjusted {pos.remaining_shares} → {bp["qty"]}')
                 pos.remaining_shares = bp['qty']
                 pos.shares = bp['qty']
+
+        # Verify all positions have broker-side stops (safety net)
+        for sym, pos in self.engine.positions.items():
+            if not pos.stop_order_id:
+                logger.warning(f"RECONCILE: {sym} has NO broker-side stop — placing safety stop")
+                try:
+                    stop_result = await self._broker_place_stop(
+                        sym, pos.remaining_shares, pos.stop_price,
+                        0.003, pos.direction)
+                    if 'error' not in stop_result:
+                        pos.stop_order_id = stop_result.get('id', '')
+                        logger.info(f"RECONCILE: Safety stop placed for {sym} @ ${pos.stop_price:.2f}")
+                except Exception as e:
+                    logger.error(f"RECONCILE: CRITICAL — could not place stop for {sym}: {e}")
+            else:
+                # Verify existing stop order is still active on broker
+                try:
+                    order_data = await self._broker_get_order(pos.stop_order_id)
+                    if order_data:
+                        ost = order_data.get('status', '')
+                        if ost in ('cancelled', 'canceled', 'expired', 'filled', 'rejected'):
+                            logger.warning(f"RECONCILE: {sym} stop order {ost} — replacing")
+                            stop_result = await self._broker_place_stop(
+                                sym, pos.remaining_shares, pos.stop_price,
+                                0.003, pos.direction)
+                            if 'error' not in stop_result:
+                                pos.stop_order_id = stop_result.get('id', '')
+                except Exception as e:
+                    logger.warning(f"RECONCILE: Could not verify stop for {sym}: {e}")
 
         self._last_reconcile = _time.monotonic()
         if orphaned or unknown or any(
@@ -8838,7 +9474,18 @@ class GapFadeLiveTrader:
                 'dd_tier1_threshold': self.config.dd_tier1_threshold,
                 'dd_tier2_threshold': self.config.dd_tier2_threshold,
                 'dd_hard_stop': self.config.dd_hard_stop,
+                'capital_partition': self.config.capital_partition,
+                'gap_fade_capital_pct': self.config.gap_fade_capital_pct,
+                'intraday_capital_pct': self.config.intraday_capital_pct,
+                'gap_fade_max_positions': self.config.gap_fade_max_positions,
+                'intraday_max_positions': self.config.intraday_max_positions,
             },
+            'capital_partition': {
+                'gap_fade_equity': round(self.engine.allocated_equity('gap_fade'), 2),
+                'intraday_equity': round(self.engine.allocated_equity('intraday'), 2),
+                'gap_fade_positions': self.engine.count_positions_by_source('gap_fade'),
+                'intraday_positions': self.engine.count_positions_by_source('intraday'),
+            } if self.config.capital_partition else None,
         }
         # Enrich with journal summary and indicator snapshot
         state['journal_summary'] = self.journal.get_summary(minutes=20)
@@ -9114,6 +9761,12 @@ class GapFadeLiveTrader:
                 now = datetime.now(ET)
                 today = now.strftime('%Y-%m-%d')
 
+                # State persistence heartbeat: force save if stale >5 min
+                if (_time.monotonic() - self._last_state_save_time > 300
+                        and self.status in ('trading', 'scanning')):
+                    logger.warning("State persistence stale (>5 min) — forcing save")
+                    self._save_state()
+
                 # Reset flags on new day
                 if today != _done_date:
                     _done_date = today
@@ -9121,6 +9774,10 @@ class GapFadeLiveTrader:
                     _did_scan_925 = False
                     _did_enter = False
                     _did_close_on_open = False
+                    # Reset exhaustion entry state for new day
+                    self._opening_ranges.clear()
+                    self._exhaustion_signals.clear()
+                    self._exhaustion_entered.clear()
                     self._last_perf_snapshot_hour = -1
 
                 # Hourly performance snapshot (9:30-16:00, once per hour)
@@ -9160,11 +9817,11 @@ class GapFadeLiveTrader:
                     coo_syms = [sym for sym, pos in self.engine.positions.items()
                                 if pos.close_on_open]
                     if coo_syms:
-                        _did_close_on_open = True
                         logger.info(f"Close-on-open: liquidating {len(coo_syms)} overnight positions: {coo_syms}")
                         self._add_message('system',
                             f'Close-on-open: liquidating {len(coo_syms)} positions from yesterday: {coo_syms}')
                         for sym in coo_syms:
+                          try:
                             async with self._position_lock:
                                 pos = self.engine.positions.get(sym)
                                 if pos is None:
@@ -9172,8 +9829,8 @@ class GapFadeLiveTrader:
                                 # Get current price
                                 price = 0.0
                                 try:
-                                    snaps = await asyncio.to_thread(fetch_alpaca_snapshots, [sym])
-                                    price = snaps.get(sym, {}).get('latestTrade', {}).get('p', 0.0)
+                                    snap_prices = await self._broker_get_prices([sym])
+                                    price = snap_prices.get(sym, 0.0)
                                 except Exception:
                                     pass
                                 if price <= 0:
@@ -9187,10 +9844,10 @@ class GapFadeLiveTrader:
                                     f'P&L: ${trade.pnl:+,.2f}')
                                 await broadcast({'type': 'trade', 'trades': [asdict(trade)]})
                             else:
-                                # Last resort: Alpaca close position API
-                                result = await asyncio.to_thread(alpaca_close_position_api, sym)
+                                # Last resort: broker close position API
+                                result = await self._broker_close_position(sym)
                                 if 'error' not in result:
-                                    logger.info(f"Close-on-open fallback: {sym} closed via Alpaca API")
+                                    logger.info(f"Close-on-open fallback: {sym} closed via broker API")
                                     pos = self.engine.positions.get(sym)
                                     if pos:
                                         fill_price = float(result.get('filled_avg_price', 0)) or price
@@ -9203,6 +9860,10 @@ class GapFadeLiveTrader:
                                 else:
                                     logger.error(f"Close-on-open FAILED for {sym}: {result.get('error')}")
                                     self._add_message('error', f'Close-on-open FAILED for {sym} — manual action needed')
+                          except Exception as e:
+                            logger.error(f"Close-on-open exception for {sym}: {e}")
+                            self._add_message('error', f'Close-on-open exception for {sym}: {e}')
+                        _did_close_on_open = True
                         self._save_state()
                     else:
                         _did_close_on_open = True  # nothing to close
@@ -9464,6 +10125,8 @@ class GapFadeLiveTrader:
                 # Pre-market scan (7:00+ AM, once per day)
                 if 7 <= now.hour < 9 and not _did_scan_7am:
                     _did_scan_7am = True
+                    # Verify yesterday's daily bars before scanning
+                    await self._verify_daily_bars()
                     await self._run_scan()
                     await asyncio.sleep(30)
                     continue
@@ -9493,26 +10156,44 @@ class GapFadeLiveTrader:
                                   (now.hour == _cutoff_h and now.minute < _cutoff_m))
                 _after_entry_start = (now.hour > _entry_start_h or
                                       (now.hour == _entry_start_h and now.minute >= _entry_start_m))
-                if _after_entry_start and _before_cutoff and not _did_enter:
-                    if self.status in ('scanning', 'waiting'):
+                if _after_entry_start and _before_cutoff:
+                    if self.status in ('scanning', 'waiting', 'trading'):
                         # If no candidates (e.g. mid-day restart), scan first
                         if not self.candidates:
                             self._add_message('scan', 'No candidates cached — running fresh scan before entry')
                             await self._run_scan()
-                        _did_enter = True
-                        await self._enter_positions()
-                        await asyncio.sleep(30)
+
+                        # Build Opening Range (9:30-9:45)
+                        if now.hour == 9 and now.minute < 45:
+                            self._build_opening_ranges()
+
+                        # Exhaustion entry scan (9:45 onward, continuous)
+                        if now.hour > 9 or (now.hour == 9 and now.minute >= 45):
+                            self._build_opening_ranges()  # finalize OR
+                            await self._exhaustion_entry_scan()
+                            if self.engine.positions:
+                                self.status = 'trading'
+                                await broadcast({'type': 'live_status', 'status': 'trading'})
+
+                        await asyncio.sleep(15)  # Check every 15 seconds
                         continue
 
                 # During trading hours — monitor every 15 seconds
-                if 9 <= now.hour < 16 and self.status == 'trading':
-                    await self._check_positions()
-                    if _time.monotonic() - self._last_reconcile > self.RECONCILE_INTERVAL:
-                        await self._reconcile_with_broker()
-                    # Autonomous review (fallback schedule too)
+                if 9 <= now.hour < 16 and self.status in ('trading', 'scanning'):
                     if self.engine.positions:
+                        if self.status != 'trading':
+                            self.status = 'trading'
+                            await broadcast({'type': 'live_status', 'status': 'trading'})
+                        await self._check_positions()
+                        if _time.monotonic() - self._last_reconcile > self.RECONCILE_INTERVAL:
+                            await self._reconcile_with_broker()
                         await self._execute_scheduled_reflection()
-                    # Intraday scanning during monitoring (fallback schedule)
+                    else:
+                        # No positions — make sure we're in 'scanning' state
+                        if self.status != 'scanning':
+                            self.status = 'scanning'
+                            await broadcast({'type': 'live_status', 'status': 'scanning'})
+                    # Intraday scanning during market hours (fallback schedule)
                     if (self.config.intraday_enabled and self._intraday_strategies
                             and (now.hour, now.minute) >= (9, 45)
                             and (now.hour, now.minute) <= (15, 30)):
@@ -9689,6 +10370,258 @@ class GapFadeLiveTrader:
     # Entry Flow — with fill verification
     # -------------------------------------------------------------------------
 
+    def _build_opening_ranges(self):
+        """Build 15-min Opening Range (9:30-9:44) for each gap candidate from tick data.
+
+        Called during the 9:30-9:45 window. Uses indicator_engine's bar history
+        to track the high and low of each candidate's first 15 minutes.
+        """
+        if not self.candidates or not self.indicator_engine:
+            return
+
+        now = datetime.now(ET)
+        for cand in self.candidates:
+            sym = cand.symbol
+            if sym in self._opening_ranges and self._opening_ranges[sym].get('built'):
+                continue  # Already built
+
+            tick_data = self.indicator_engine.get_data(sym)
+            if not tick_data:
+                continue
+
+            # Get bar history from indicator engine
+            bar_history = tick_data.get('bar_history', [])
+            if not bar_history:
+                # Use latest price as initial OR
+                price = self.streamer.latest_prices.get(sym, 0) if self.streamer else 0
+                if price > 0:
+                    if sym not in self._opening_ranges:
+                        self._opening_ranges[sym] = {'high': price, 'low': price, 'built': False}
+                    else:
+                        self._opening_ranges[sym]['high'] = max(self._opening_ranges[sym]['high'], price)
+                        self._opening_ranges[sym]['low'] = min(self._opening_ranges[sym]['low'], price)
+                continue
+
+            # Accumulate high/low from all bars in 9:30-9:44 window
+            or_high = 0.0
+            or_low = float('inf')
+            for bar in bar_history:
+                bar_time = getattr(bar, 'bar_time', '') if hasattr(bar, 'bar_time') else ''
+                h = getattr(bar, 'high', 0)
+                l = getattr(bar, 'low', 0)
+                if h > 0 and l > 0:
+                    or_high = max(or_high, h)
+                    or_low = min(or_low, l)
+
+            if or_high > 0 and or_low < float('inf'):
+                is_built = now.hour == 9 and now.minute >= 45
+                self._opening_ranges[sym] = {
+                    'high': or_high, 'low': or_low, 'built': is_built
+                }
+
+    def _check_exhaustion_signal(self, symbol: str) -> Optional[dict]:
+        """Check if a gap candidate shows exhaustion entry signal.
+
+        Conditions (ALL must be true for a short):
+            1. Price < 15-min Opening Range High (momentum fading)
+            2. Price < intraday VWAP (sellers in control)
+            3. RSI(5) < previous RSI(5) AND previous RSI(5) > 65 (overbought exhaustion)
+
+        Returns signal dict or None.
+        """
+        if symbol in self._exhaustion_entered:
+            return None
+        if symbol not in self._opening_ranges:
+            return None
+
+        or_data = self._opening_ranges[symbol]
+        if not or_data.get('built'):
+            return None
+
+        or_high = or_data['high']
+
+        # Get current tick data from indicator engine
+        tick_data = self.indicator_engine.get_data(symbol) if self.indicator_engine else None
+        if not tick_data:
+            return None
+
+        price = tick_data.get('last_price', 0)
+        vwap = tick_data.get('vwap', 0)
+        rsi = tick_data.get('rsi', 50)
+
+        if price <= 0 or vwap <= 0:
+            return None
+
+        # Condition 1: Price below OR high
+        below_or_high = price < or_high
+
+        # Condition 2: Price below VWAP
+        below_vwap = price < vwap
+
+        # Condition 3: RSI exhaustion (curling down from overbought)
+        # Use bar history to check previous RSI
+        prev_rsi = tick_data.get('prev_rsi', rsi)
+        rsi_exhausted = prev_rsi > 65 and rsi < prev_rsi
+
+        now = datetime.now(ET)
+
+        # Full signal: all 3 conditions
+        if below_or_high and below_vwap and rsi_exhausted:
+            return {
+                'type': 'exhaustion',
+                'or_high': or_high,
+                'vwap': vwap,
+                'rsi': rsi,
+                'price': price,
+                'time': now.strftime('%H:%M:%S'),
+            }
+
+        # Fallback: after 10:00 AM, enter on VWAP cross alone if RSI < 55
+        if now.hour >= 10 and below_or_high and below_vwap and rsi < 55:
+            return {
+                'type': 'exhaustion_fallback',
+                'or_high': or_high,
+                'vwap': vwap,
+                'rsi': rsi,
+                'price': price,
+                'time': now.strftime('%H:%M:%S'),
+            }
+
+        return None
+
+    async def _exhaustion_entry_scan(self):
+        """Scan all candidates for exhaustion entry signals and enter positions.
+
+        Called every iteration of the trading loop between 9:45 and entry_cutoff.
+        """
+        if self._trading_halted or not self.candidates:
+            return
+
+        now = datetime.now(ET)
+
+        # Only scan between 9:45 and entry cutoff
+        if now.hour == 9 and now.minute < 45:
+            return
+        if now.hour > self.config.entry_cutoff_hour or \
+           (now.hour == self.config.entry_cutoff_hour and now.minute >= self.config.entry_cutoff_min):
+            return
+
+        eff_max = self.engine.effective_max_positions(len(self.candidates))
+
+        for cand in self.candidates:
+            sym = cand.symbol
+            if sym in self._exhaustion_entered:
+                continue
+            if len(self.engine.positions) >= eff_max:
+                break
+            if sym in self.engine.positions:
+                continue
+
+            signal = self._check_exhaustion_signal(sym)
+            if signal is None:
+                continue
+
+            # Signal triggered — enter position
+            or_high = signal['or_high']
+            entry_price = signal['price']
+
+            self._add_message('entry',
+                f'EXHAUSTION {signal["type"]}: {sym} @ ${entry_price:.2f} '
+                f'(OR high=${or_high:.2f}, VWAP=${signal["vwap"]:.2f}, RSI={signal["rsi"]:.1f})')
+
+            # Structural stop: 0.2% above OR high
+            stop_price = or_high * 1.002
+            stop_pct = (stop_price - entry_price) / entry_price if entry_price > 0 else 0.03
+            if stop_pct < 0.005:
+                stop_pct = 0.005
+                stop_price = entry_price * (1 + stop_pct)
+
+            # Open position in engine
+            async with self._position_lock:
+                ok, reason = self.engine.should_enter(cand)
+                if not ok:
+                    self._add_message('skip', f'Exhaustion skip {sym}: {reason}')
+                    continue
+
+                entry_time = now.strftime('%Y-%m-%d %H:%M')
+                pos = self.engine.open_position(cand, entry_price, entry_time)
+                if pos is None:
+                    continue
+
+                # Override stop with structural stop
+                pos.stop_price = stop_price
+                pos.strategy_id = 'exhaustion_gap_fade'
+
+            # Submit order
+            direction = cand.direction
+            entry_side = 'buy' if direction == 'long' else 'sell'
+            side_label = 'LONG' if direction == 'long' else 'SHORT'
+
+            if self.config.limit_orders_only:
+                if direction == 'long':
+                    limit_px = round(entry_price * (1 + self.config.limit_offset_pct), 2)
+                else:
+                    limit_px = round(entry_price * (1 - self.config.limit_offset_pct), 2)
+                order_type = 'limit'
+            else:
+                limit_px = None
+                order_type = 'market'
+
+            fill = await self._broker_submit(
+                sym, pos.shares, entry_side,
+                order_type=order_type, limit_price=limit_px,
+                timeout_sec=120.0 if order_type == 'limit' else 30.0,
+            )
+
+            async with self._position_lock:
+                pos = self.engine.positions.get(sym)
+                if not pos:
+                    continue
+
+                if fill.is_filled:
+                    pos.entry_fill_price = fill.filled_avg_price
+                    pos.entry_order_id = fill.order_id
+                    if fill.filled_avg_price > 0:
+                        pos.entry_price = fill.filled_avg_price
+                        # Recalculate structural stop based on actual fill
+                        pos.stop_price = or_high * 1.002
+                        if (pos.stop_price - fill.filled_avg_price) / fill.filled_avg_price < 0.005:
+                            pos.stop_price = fill.filled_avg_price * 1.005
+
+                    # Place broker-side GTC stop
+                    try:
+                        stop_result = await self._broker_place_stop(
+                            sym, fill.filled_qty, pos.stop_price,
+                            0.003, direction)
+                        if 'error' not in stop_result:
+                            pos.stop_order_id = stop_result.get('id', '')
+                    except Exception as e:
+                        logger.warning(f"Broker stop failed for exhaustion {sym}: {e}")
+
+                    # Subscribe to tick stream
+                    if self.streamer:
+                        await self.streamer.add_symbols(
+                            [sym], priority_symbols=set(self.engine.positions.keys()))
+
+                    self._exhaustion_entered.add(sym)
+                    self._add_message('entry',
+                        f'FILLED {side_label} {fill.filled_qty} {sym} @ ${fill.filled_avg_price:.2f} '
+                        f'(structural stop ${pos.stop_price:.2f})')
+
+                    self.journal.log('action', 'exhaustion_entry',
+                        f'ENTRY {side_label} {fill.filled_qty} {sym} '
+                        f'@ ${fill.filled_avg_price:.2f} (OR high=${or_high:.2f})',
+                        symbol=sym)
+
+                    self._save_state()
+                elif fill.status == 'pending':
+                    pos.entry_order_id = fill.order_id
+                    self._exhaustion_entered.add(sym)
+                else:
+                    self._add_message('error', f'Exhaustion entry FAILED {sym}: {fill.error}')
+                    if sym in self.engine.positions:
+                        del self.engine.positions[sym]
+
     async def _enter_positions(self, llm_symbols=None, size_mult=1.0):
         """Enter positions on top candidates with fill verification.
 
@@ -9709,7 +10642,8 @@ class GapFadeLiveTrader:
         regime = await fetch_market_regime_live(self.config)
         if regime and regime.position_reduction == -999:
             self._add_message('regime', f'BLOCKED: {regime.note}')
-            self.status = 'regime_blocked'
+            await broadcast({'type': 'live_status', 'status': 'regime_blocked'})
+            self.status = 'scanning'
             return
         if regime and regime.position_reduction == -1:
             self._add_message('regime', f'HALVED: {regime.note}')
@@ -9794,10 +10728,10 @@ class GapFadeLiveTrader:
             self._add_message('entry',
                 f'Submitting {side_label} {pos.shares} {candidate.symbol} {order_label}...')
 
-            fill = await alpaca_submit_and_confirm(
+            fill = await self._broker_submit(
                 candidate.symbol, pos.shares, entry_side,
                 order_type=order_type, limit_price=limit_px,
-                timeout_sec=15.0 if order_type == 'limit' else 10.0,
+                timeout_sec=120.0 if order_type == 'limit' else 30.0,
             )
 
             async with self._position_lock:
@@ -9828,10 +10762,9 @@ class GapFadeLiveTrader:
                                 pos.half_target, pos.full_target = strat_targets
 
                     # Place broker-side stop order immediately
-                    stop_result = await asyncio.to_thread(
-                        alpaca_place_stop_order, candidate.symbol,
-                        fill.filled_qty, pos.stop_price, 0.003, direction
-                    )
+                    stop_result = await self._broker_place_stop(
+                        candidate.symbol, fill.filled_qty, pos.stop_price,
+                        0.003, direction)
                     if 'error' not in stop_result:
                         pos.stop_order_id = stop_result.get('id', '')
                         self._add_message('entry',
@@ -9884,10 +10817,9 @@ class GapFadeLiveTrader:
                         pos.half_target = (fill.filled_avg_price + candidate.prev_close) / 2
 
                     # Place broker-side stop for partial fill too
-                    stop_result = await asyncio.to_thread(
-                        alpaca_place_stop_order, candidate.symbol,
-                        fill.filled_qty, pos.stop_price, 0.003, direction
-                    )
+                    stop_result = await self._broker_place_stop(
+                        candidate.symbol, fill.filled_qty, pos.stop_price,
+                        0.003, direction)
                     if 'error' not in stop_result:
                         pos.stop_order_id = stop_result.get('id', '')
 
@@ -9895,13 +10827,22 @@ class GapFadeLiveTrader:
                     self._add_message('warning',
                         f'PARTIAL FILL {fill.filled_qty}/{pos.shares} {candidate.symbol} '
                         f'@ ${fill.filled_avg_price:.2f}')
+                elif fill.status == 'pending' and order_type == 'limit':
+                    # Limit order still open after polling timeout — it's
+                    # still live on the broker. Track the order_id so we can
+                    # reconcile when it fills (via WebSocket or next poll).
+                    pos.entry_order_id = fill.order_id
+                    self._add_message('info',
+                        f'{candidate.symbol} limit order still open, holding '
+                        f'(id={fill.order_id})')
+                    symbols_entered.append(candidate.symbol)
                 elif fill.status == 'timeout' and order_type == 'limit':
-                    # Limit order timed out — retry with market order
+                    # Legacy path: only reached if cancel_on_timeout=True
                     self._add_message('warning',
-                        f'{candidate.symbol} limit timed out, retrying MARKET...')
-                    fill = await alpaca_submit_and_confirm(
+                        f'{candidate.symbol} limit cancelled after timeout, retrying MARKET...')
+                    fill = await self._broker_submit(
                         candidate.symbol, pos.shares, entry_side,
-                        order_type='market', timeout_sec=10.0,
+                        order_type='market', timeout_sec=30.0,
                     )
                     if fill.is_filled:
                         pos.entry_fill_price = fill.filled_avg_price
@@ -9914,10 +10855,9 @@ class GapFadeLiveTrader:
                             else:
                                 pos.stop_price = fill.filled_avg_price * (1 + eff_stop_pct)
                             pos.half_target = (fill.filled_avg_price + candidate.prev_close) / 2
-                        stop_result = await asyncio.to_thread(
-                            alpaca_place_stop_order, candidate.symbol,
-                            fill.filled_qty, pos.stop_price, 0.003, direction
-                        )
+                        stop_result = await self._broker_place_stop(
+                            candidate.symbol, fill.filled_qty, pos.stop_price,
+                            0.003, direction)
                         if 'error' not in stop_result:
                             pos.stop_order_id = stop_result.get('id', '')
                             self._add_message('entry',
@@ -9950,8 +10890,15 @@ class GapFadeLiveTrader:
                 # No active streamer — stop stale one if any, then create new
                 if self.streamer:
                     await self.streamer.stop()
-                self.streamer = AlpacaTickStreamer(symbols_entered, on_tick=self._on_tick)
+                self.streamer = self._broker_make_streamer(symbols_entered, on_tick=self._on_tick)
                 await self.streamer.start()
+
+        # If no entries succeeded, reset status so the bot isn't stuck in 'trading'
+        # with no positions (which blocks further scanning in fallback mode)
+        if not symbols_entered and not self.engine.positions:
+            self.status = 'scanning'
+            await broadcast({'type': 'live_status', 'status': 'scanning'})
+            logger.warning("No entries succeeded and no open positions — status reset to 'scanning'")
 
         await broadcast({
             'type': 'positions_update',
@@ -9986,8 +10933,17 @@ class GapFadeLiveTrader:
         # "insufficient qty available" if we submit a cover while orders are active.
         # Skip only for stop exits where the broker stop triggered the exit.
         if not is_stop:
-            _cancelled = await asyncio.to_thread(
-                alpaca_cancel_open_orders_for_symbol, symbol)
+            if self._use_ibkr:
+                # IBKR: cancel stop order directly if we have one
+                pos = self.engine.positions.get(symbol)
+                _cancelled = 0
+                if pos and pos.stop_order_id:
+                    if await self._broker_cancel(pos.stop_order_id):
+                        _cancelled = 1
+                        pos.stop_order_id = ''
+            else:
+                _cancelled = await asyncio.to_thread(
+                    alpaca_cancel_open_orders_for_symbol, symbol)
             if _cancelled > 0:
                 logger.info(f"Cancelled {_cancelled} open orders for {symbol} before cover")
                 # Poll until Alpaca confirms no open orders remain for this symbol
@@ -10019,20 +10975,21 @@ class GapFadeLiveTrader:
             order_type = 'market'
             limit_px = None
 
-        fill = await alpaca_submit_and_confirm(
+        fill = await self._broker_submit(
             symbol, shares, exit_side,
             order_type=order_type, limit_price=limit_px,
-            timeout_sec=10.0 if order_type == 'limit' else 15.0,
+            timeout_sec=60.0 if order_type == 'limit' else 30.0,
+            cancel_on_timeout=True,  # exits MUST fill — cancel and retry
         )
 
         # Market fallback: if limit cover timed out, retry with market order
         if fill.status == 'timeout' and order_type == 'limit':
             self._add_message('warning',
-                f'{symbol} limit cover timed out, retrying MARKET...')
+                f'{symbol} limit cover timed out after 60s, retrying MARKET...')
             await asyncio.sleep(1)  # brief pause for broker to clear the cancel hold
-            fill = await alpaca_submit_and_confirm(
+            fill = await self._broker_submit(
                 symbol, shares, exit_side,
-                order_type='market', timeout_sec=15.0,
+                order_type='market', timeout_sec=30.0,
             )
 
         if fill.is_filled:
@@ -10082,6 +11039,11 @@ class GapFadeLiveTrader:
             trade = self.engine.confirm_exit(
                 symbol, fill.filled_qty, fill.filled_avg_price, reason, now
             )
+            # confirm_exit sets closing=False, but we still have remaining shares
+            # with a potentially live order — keep closing=True to prevent over-sell
+            remaining_pos = self.engine.positions.get(symbol)
+            if remaining_pos:
+                remaining_pos.closing = True
             if trade:
                 self._add_message('warning',
                     f'PARTIAL COVER {fill.filled_qty}/{shares} {symbol} '
@@ -10229,10 +11191,9 @@ class GapFadeLiveTrader:
                                 # Update broker stop
                                 if pos.stop_order_id:
                                     try:
-                                        await asyncio.to_thread(alpaca_cancel_order, pos.stop_order_id)
-                                        stop_result = await asyncio.to_thread(
-                                            alpaca_place_stop_order, symbol,
-                                            pos.remaining_shares, float(new_stop),
+                                        await self._broker_cancel(pos.stop_order_id)
+                                        stop_result = await self._broker_place_stop(
+                                            symbol, pos.remaining_shares, float(new_stop),
                                             0.003, pos.direction)
                                         if 'error' not in stop_result:
                                             pos.stop_order_id = stop_result.get('id', '')
@@ -10278,7 +11239,7 @@ class GapFadeLiveTrader:
             if not pos or not pos.stop_order_id or pos.closing:
                 continue
 
-            order_data = await asyncio.to_thread(alpaca_get_order, pos.stop_order_id)
+            order_data = await self._broker_get_order(pos.stop_order_id)
             if order_data is None:
                 continue
 
@@ -10289,9 +11250,17 @@ class GapFadeLiveTrader:
                 fill_price = float(order_data.get('filled_avg_price', pos.stop_price))
 
                 logger.info(f"Broker stop FILLED: {sym} {fill_qty} shares @ ${fill_price:.2f}")
-                now = datetime.now(ET)
-                trade = self.engine.confirm_exit(sym, fill_qty, fill_price, 'stop', now)
-                pos.stop_order_id = ''
+                async with self._position_lock:
+                    # Re-check position still exists after acquiring lock
+                    pos = self.engine.positions.get(sym)
+                    if not pos:
+                        logger.warning(f"Broker stop fill for {sym} but position already gone")
+                        continue
+                    now = datetime.now(ET)
+                    trade = self.engine.confirm_exit(sym, fill_qty, fill_price, 'stop', now)
+                    pos_ref = self.engine.positions.get(sym)
+                    if pos_ref:
+                        pos_ref.stop_order_id = ''
 
                 if trade:
                     self._add_message('exit',
@@ -10340,7 +11309,7 @@ class GapFadeLiveTrader:
                     'volume_surge': round(_td.get('volume_surge', 0), 2) if _td else 0,
                 })
 
-        if self.status != 'trading':
+        if self.status not in ('trading', 'standdown'):
             return
 
         async with self._position_lock:
@@ -10348,6 +11317,12 @@ class GapFadeLiveTrader:
                 return
 
             pos = self.engine.positions[symbol]
+
+            # Skip exit evaluation for positions with pending (unfilled) entry orders
+            if pos.entry_fill_price == 0.0 and pos.entry_order_id:
+                logger.debug(f"Skipping tick exit eval for {symbol}: entry order pending")
+                return
+
             now = datetime.now(ET)
             pos.update_tracking(price, now.strftime('%H:%M:%S'))
 
@@ -10389,10 +11364,9 @@ class GapFadeLiveTrader:
                         # Update broker stop if we have one
                         if pos.stop_order_id:
                             try:
-                                await asyncio.to_thread(alpaca_cancel_order, pos.stop_order_id)
-                                stop_result = await asyncio.to_thread(
-                                    alpaca_place_stop_order, symbol,
-                                    pos.remaining_shares, new_stop,
+                                await self._broker_cancel(pos.stop_order_id)
+                                stop_result = await self._broker_place_stop(
+                                    symbol, pos.remaining_shares, new_stop,
                                     0.003, pos.direction)
                                 if 'error' not in stop_result:
                                     pos.stop_order_id = stop_result.get('id', '')
@@ -10446,14 +11420,30 @@ class GapFadeLiveTrader:
         if now_mono - self._spy_cache[0] < self._SPY_CACHE_TTL:
             return self._spy_cache[1]
         try:
-            snaps = await asyncio.to_thread(fetch_alpaca_snapshots, ['SPY'])
-            spy = snaps.get('SPY', {})
-            daily = spy.get('dailyBar', {})
-            prev = spy.get('prevDailyBar', {})
-            if daily.get('c') and prev.get('c'):
-                change = (daily['c'] - prev['c']) / prev['c']
-                self._spy_cache = (now_mono, change)
-                return change
+            if self._use_ibkr:
+                # IBKR: get current price from snapshot, prev close from DB
+                snap_prices = await self._broker_get_prices(['SPY'])
+                spy_price = snap_prices.get('SPY', 0.0)
+                if spy_price > 0:
+                    db = get_price_db()
+                    cur = db._conn.cursor()
+                    cur.execute(
+                        "SELECT close FROM daily_bars WHERE symbol='SPY' "
+                        "ORDER BY date DESC LIMIT 1")
+                    row = cur.fetchone()
+                    if row and row[0] > 0:
+                        change = (spy_price - row[0]) / row[0]
+                        self._spy_cache = (now_mono, change)
+                        return change
+            else:
+                snaps = await asyncio.to_thread(fetch_alpaca_snapshots, ['SPY'])
+                spy = snaps.get('SPY', {})
+                daily = spy.get('dailyBar', {})
+                prev = spy.get('prevDailyBar', {})
+                if daily.get('c') and prev.get('c'):
+                    change = (daily['c'] - prev['c']) / prev['c']
+                    self._spy_cache = (now_mono, change)
+                    return change
         except Exception:
             pass
         return self._spy_cache[1]
@@ -10481,14 +11471,11 @@ class GapFadeLiveTrader:
         if self.streamer and self.streamer.latest_prices:
             prices = dict(self.streamer.latest_prices)
         if not prices and self.engine.positions:
-            # REST fallback when WebSocket is down
+            # REST fallback when WebSocket/streamer is down
             try:
                 syms = list(self.engine.positions.keys())
-                snaps = await asyncio.to_thread(fetch_alpaca_snapshots, syms)
-                for sym, snap in snaps.items():
-                    lt = snap.get('latestTrade', {})
-                    if lt.get('p'):
-                        prices[sym] = lt['p']
+                snap_prices = await self._broker_get_prices(syms)
+                prices.update(snap_prices)
                 if prices:
                     logger.debug(f"Using REST snapshot prices for {len(prices)} positions")
             except Exception as e:
@@ -10513,6 +11500,11 @@ class GapFadeLiveTrader:
                     if not pos:
                         continue
 
+                    # Skip exit evaluation for positions with pending (unfilled) entry orders
+                    if pos.entry_fill_price == 0.0 and pos.entry_order_id:
+                        logger.debug(f"Skipping exit eval for {sym}: entry order pending")
+                        continue
+
                     pos.update_tracking(price, now_str)
 
                     # Determine which strategy to use for this position
@@ -10532,10 +11524,9 @@ class GapFadeLiveTrader:
                                     f'Trailing stop {sym}: ${old_stop:.2f} -> ${new_stop:.2f}')
                                 if pos.stop_order_id:
                                     try:
-                                        await asyncio.to_thread(alpaca_cancel_order, pos.stop_order_id)
-                                        stop_result = await asyncio.to_thread(
-                                            alpaca_place_stop_order, sym,
-                                            pos.remaining_shares, new_stop,
+                                        await self._broker_cancel(pos.stop_order_id)
+                                        stop_result = await self._broker_place_stop(
+                                            sym, pos.remaining_shares, new_stop,
                                             0.003, pos.direction)
                                         if 'error' not in stop_result:
                                             pos.stop_order_id = stop_result.get('id', '')
@@ -10642,10 +11633,9 @@ class GapFadeLiveTrader:
                                         f'RUDRA: Tighten stop ${old_stop:.2f} → ${new_stop:.2f} — {reasoning}')
                                     if pos.stop_order_id:
                                         try:
-                                            await asyncio.to_thread(alpaca_cancel_order, pos.stop_order_id)
-                                            stop_result = await asyncio.to_thread(
-                                                alpaca_place_stop_order, sym,
-                                                pos.remaining_shares, new_stop,
+                                            await self._broker_cancel(pos.stop_order_id)
+                                            stop_result = await self._broker_place_stop(
+                                                sym, pos.remaining_shares, new_stop,
                                                 0.003, pos.direction)
                                             if 'error' not in stop_result:
                                                 pos.stop_order_id = stop_result.get('id', '')
@@ -10750,11 +11740,11 @@ class GapFadeLiveTrader:
                 else:
                     re_limit_px = None
 
-                fill = await alpaca_submit_and_confirm(
+                fill = await self._broker_submit(
                     sym, re_pos.shares, re_entry_side,
                     order_type='limit' if self.config.limit_orders_only else 'market',
                     limit_price=re_limit_px,
-                    timeout_sec=15.0,
+                    timeout_sec=120.0,
                 )
                 async with self._position_lock:
                     if fill.is_filled:
@@ -10766,13 +11756,17 @@ class GapFadeLiveTrader:
                                 re_pos.stop_price = fill.filled_avg_price * (1 - self.config.reentry_stop_pct)
                             else:
                                 re_pos.stop_price = fill.filled_avg_price * (1 + self.config.reentry_stop_pct)
-                        stop_result = await asyncio.to_thread(
-                            alpaca_place_stop_order, sym, fill.filled_qty, re_pos.stop_price,
+                        stop_result = await self._broker_place_stop(
+                            sym, fill.filled_qty, re_pos.stop_price,
                             0.003, re_dir)
                         if 'error' not in stop_result:
                             re_pos.stop_order_id = stop_result.get('id', '')
                         self._add_message('entry',
                             f'RE-ENTRY FILLED {fill.filled_qty} {sym} @ ${fill.filled_avg_price:.2f}')
+                    elif fill.status == 'pending' and self.config.limit_orders_only:
+                        re_pos.entry_order_id = fill.order_id
+                        self._add_message('info',
+                            f'RE-ENTRY {sym} limit order still open, holding (id={fill.order_id})')
                     else:
                         self._add_message('error', f'RE-ENTRY FAILED {sym}: {fill.error}')
                         if sym in self.engine.positions:
@@ -10799,8 +11793,14 @@ class GapFadeLiveTrader:
         symbols_with_positions = list(self.engine.positions.keys())
         _total_cancelled = 0
         for sym in symbols_with_positions:
-            n = await asyncio.to_thread(alpaca_cancel_open_orders_for_symbol, sym)
-            _total_cancelled += n
+            if self._use_ibkr:
+                pos = self.engine.positions.get(sym)
+                if pos and pos.stop_order_id:
+                    if await self._broker_cancel(pos.stop_order_id):
+                        _total_cancelled += 1
+            else:
+                n = await asyncio.to_thread(alpaca_cancel_open_orders_for_symbol, sym)
+                _total_cancelled += n
             pos = self.engine.positions.get(sym)
             if pos:
                 pos.stop_order_id = ''
@@ -10818,7 +11818,12 @@ class GapFadeLiveTrader:
             # On retry, cancel any new open orders that may have appeared
             if attempt > 0:
                 for sym in symbols_to_close:
-                    await asyncio.to_thread(alpaca_cancel_open_orders_for_symbol, sym)
+                    if self._use_ibkr:
+                        pos = self.engine.positions.get(sym)
+                        if pos and pos.stop_order_id:
+                            await self._broker_cancel(pos.stop_order_id)
+                    else:
+                        await asyncio.to_thread(alpaca_cancel_open_orders_for_symbol, sym)
                 await asyncio.sleep(2)
 
             for sym in symbols_to_close:
@@ -10832,8 +11837,8 @@ class GapFadeLiveTrader:
                         price = self.streamer.latest_prices.get(sym, 0.0)
                     if price <= 0:
                         try:
-                            snaps = await asyncio.to_thread(fetch_alpaca_snapshots, [sym])
-                            price = snaps.get(sym, {}).get('latestTrade', {}).get('p', 0.0)
+                            snap_prices = await self._broker_get_prices([sym])
+                            price = snap_prices.get(sym, 0.0)
                         except Exception:
                             pass
                     if price <= 0:
@@ -10848,7 +11853,7 @@ class GapFadeLiveTrader:
 
             # Verify with broker that positions are actually closed
             await asyncio.sleep(2)  # give broker time to settle
-            broker_positions = await asyncio.to_thread(alpaca_get_positions)
+            broker_positions = await self._broker_get_positions()
             tracked_syms = set(self.engine.positions.keys())
             broker_remaining = [p for p in broker_positions
                                 if p.get('symbol') in tracked_syms]
@@ -10873,22 +11878,23 @@ class GapFadeLiveTrader:
             if attempt < max_retries - 1:
                 await asyncio.sleep(3)  # wait before retry
 
-        # Final safety: use Alpaca's DELETE /v2/positions/{symbol} API as last resort
-        broker_positions = await asyncio.to_thread(alpaca_get_positions)
+        # Final safety: use broker close-position API as last resort
+        broker_positions = await self._broker_get_positions()
         tracked_syms = set(self.engine.positions.keys())
         broker_remaining = [p for p in broker_positions
                             if p.get('symbol') in tracked_syms]
         if broker_remaining:
             remaining_syms = [p['symbol'] for p in broker_remaining]
-            logger.warning(f"EOD: using Alpaca close-position API for stubborn positions: {remaining_syms}")
-            self._add_message('warning', f'EOD fallback: using Alpaca liquidation API for {remaining_syms}')
+            logger.warning(f"EOD: using broker close-position API for stubborn positions: {remaining_syms}")
+            self._add_message('warning', f'EOD fallback: using broker liquidation API for {remaining_syms}')
             for sym in remaining_syms:
                 # Cancel any remaining orders first
-                await asyncio.to_thread(alpaca_cancel_open_orders_for_symbol, sym)
+                if not self._use_ibkr:
+                    await asyncio.to_thread(alpaca_cancel_open_orders_for_symbol, sym)
                 await asyncio.sleep(1)
-                result = await asyncio.to_thread(alpaca_close_position_api, sym)
+                result = await self._broker_close_position(sym)
                 if 'error' not in result:
-                    logger.info(f"EOD fallback: {sym} closed via Alpaca API")
+                    logger.info(f"EOD fallback: {sym} closed via broker API")
                     # Reconcile engine state
                     pos = self.engine.positions.get(sym)
                     if pos:
@@ -10904,7 +11910,7 @@ class GapFadeLiveTrader:
 
             # Final verification
             await asyncio.sleep(2)
-            broker_positions = await asyncio.to_thread(alpaca_get_positions)
+            broker_positions = await self._broker_get_positions()
             broker_remaining = [p for p in broker_positions
                                 if p.get('symbol') in tracked_syms]
             if broker_remaining:
@@ -10960,6 +11966,10 @@ class GapFadeLiveTrader:
         """
         logger.info("EOD watchdog started — independent guardian task active")
         _last_date = ''
+        _did_primary_close = False
+        _did_force_close = False
+        _did_emergency = False
+        _did_audit = False
 
         while True:
             try:
@@ -10970,6 +11980,10 @@ class GapFadeLiveTrader:
                 if today != _last_date:
                     _last_date = today
                     self._trading_halted = False
+                    _did_primary_close = False
+                    _did_force_close = False
+                    _did_emergency = False
+                    _did_audit = False
 
                 # Only run on weekdays
                 if now.weekday() >= 5:
@@ -11001,7 +12015,8 @@ class GapFadeLiveTrader:
 
                 # ── PHASE 3: 3:50 PM — Primary EOD Close ──
                 target_350 = now.replace(hour=15, minute=50, second=0, microsecond=0)
-                if now >= target_350 and now.hour == 15 and now.minute >= 50:
+                if now >= target_350 and now.hour == 15 and now.minute >= 50 and not _did_primary_close:
+                    _did_primary_close = True
                     if self.engine.positions:
                         n_pos = len(self.engine.positions)
                         symbols = list(self.engine.positions.keys())
@@ -11051,7 +12066,8 @@ class GapFadeLiveTrader:
                 # ── PHASE 4: 3:55 PM — Force Close (retry remaining) ──
                 target_355 = now.replace(hour=15, minute=55, second=0, microsecond=0)
                 now = datetime.now(ET)  # refresh
-                if now >= target_355 and now.hour == 15 and now.minute >= 55:
+                if now >= target_355 and now.hour == 15 and now.minute >= 55 and not _did_force_close:
+                    _did_force_close = True
                     if self.engine.positions:
                         remaining = list(self.engine.positions.keys())
                         logger.error(f"EOD WATCHDOG [3:55 PM]: FORCE CLOSE — "
@@ -11063,14 +12079,14 @@ class GapFadeLiveTrader:
                             f'Symbols: {remaining}\nForce closing via Alpaca API.',
                             level='error')
 
-                        # Use Alpaca's DELETE /v2/positions/{symbol} directly
+                        # Use broker close-position API directly
                         for sym in remaining:
                             try:
-                                await asyncio.to_thread(
-                                    alpaca_cancel_open_orders_for_symbol, sym)
+                                if not self._use_ibkr:
+                                    await asyncio.to_thread(
+                                        alpaca_cancel_open_orders_for_symbol, sym)
                                 await asyncio.sleep(1)
-                                result = await asyncio.to_thread(
-                                    alpaca_close_position_api, sym)
+                                result = await self._broker_close_position(sym)
                                 if 'error' not in result:
                                     logger.info(f"EOD WATCHDOG: {sym} force-closed via API")
                                     pos = self.engine.positions.get(sym)
@@ -11096,7 +12112,8 @@ class GapFadeLiveTrader:
 
                 # ── PHASE 5: 4:00 PM — Emergency Liquidation ──
                 now = datetime.now(ET)
-                if now.hour >= 16 and self.engine.positions:
+                if now.hour >= 16 and self.engine.positions and not _did_emergency:
+                    _did_emergency = True
                     remaining = list(self.engine.positions.keys())
                     logger.error(f"EOD WATCHDOG [4:00 PM]: EMERGENCY — "
                                 f"{len(remaining)} positions STILL open after all attempts")
@@ -11118,10 +12135,11 @@ class GapFadeLiveTrader:
 
                 # ── PHASE 6: 4:05 PM — Final Audit ──
                 now = datetime.now(ET)
-                if now.hour >= 16 and now.minute >= 5:
+                if now.hour >= 16 and now.minute >= 5 and not _did_audit:
+                    _did_audit = True
                     # Verify with broker directly
                     try:
-                        broker_positions = await asyncio.to_thread(alpaca_get_positions)
+                        broker_positions = await self._broker_get_positions()
                         if broker_positions:
                             broker_syms = [p.get('symbol') for p in broker_positions]
                             logger.error(f"EOD WATCHDOG AUDIT: Broker still has "
@@ -11163,6 +12181,111 @@ class GapFadeLiveTrader:
     # EOD bar storage — store today's closing prices for next-day gap scan
     # -------------------------------------------------------------------------
 
+    async def _verify_daily_bars(self):
+        """Pre-market check: ensure yesterday's daily bars are complete.
+
+        If yesterday has < 10,000 symbols, trigger a full backfill from Alpaca.
+        This prevents the gap scanner from missing candidates when the EOD bar
+        storage failed (bot crash, partial run, etc.).
+        """
+        MIN_SYMBOLS = 10000
+        try:
+            db = get_price_db()
+            cur = db._conn.cursor()
+
+            # Find the last 3 trading days in the DB
+            cur.execute(
+                "SELECT date, COUNT(*) AS cnt FROM daily_bars "
+                "WHERE date >= CURRENT_DATE - INTERVAL '7 days' "
+                "GROUP BY date ORDER BY date DESC LIMIT 5")
+            rows = cur.fetchall()
+
+            dates_to_fix = []
+            for date_val, cnt in rows:
+                if cnt < MIN_SYMBOLS:
+                    dates_to_fix.append((str(date_val), cnt))
+
+            if not dates_to_fix:
+                return
+
+            for date_str, cnt in dates_to_fix:
+                logger.warning(f"Daily bars incomplete: {date_str} has {cnt} symbols "
+                              f"(need {MIN_SYMBOLS}+) — backfilling")
+                self._add_message('system',
+                    f'Backfilling daily bars for {date_str} ({cnt} → full universe)')
+
+            # Fetch all active tradeable symbols from Alpaca
+            cfg = _get_alpaca_config()
+            if cfg is None:
+                logger.error("Cannot backfill daily bars: no Alpaca config")
+                return
+            headers = _alpaca_headers(cfg)
+
+            resp = await asyncio.to_thread(
+                requests.get, 'https://api.alpaca.markets/v2/assets',
+                headers=headers,
+                params={'status': 'active', 'asset_class': 'us_equity'},
+                timeout=60)
+            if resp.status_code != 200:
+                logger.error(f"Assets API failed: {resp.status_code}")
+                return
+            valid_exchanges = {'NYSE', 'NASDAQ', 'ARCA', 'AMEX', 'BATS', 'NYSEARCA'}
+            symbols = [a['symbol'] for a in resp.json()
+                       if a.get('tradable') and a.get('exchange') in valid_exchanges]
+            logger.info(f"Daily bar backfill: {len(symbols)} tradeable symbols")
+
+            # Determine date range to backfill
+            earliest = min(d for d, _ in dates_to_fix)
+            latest_date = datetime.now(ET).strftime('%Y-%m-%d')
+
+            # Fetch bars in batches
+            batch_size = 1500
+            total_stored = 0
+            for i in range(0, len(symbols), batch_size):
+                batch = symbols[i:i + batch_size]
+                params = {
+                    'symbols': ','.join(batch),
+                    'timeframe': '1Day',
+                    'start': earliest,
+                    'end': latest_date,
+                    'limit': '10000',
+                    'feed': 'sip',
+                    'adjustment': 'raw',
+                }
+                try:
+                    resp = await asyncio.to_thread(
+                        requests.get,
+                        f'{cfg["data_url"]}/v2/stocks/bars',
+                        headers=headers, params=params, timeout=30)
+                    if resp.status_code == 200:
+                        bars_data = resp.json().get('bars', {})
+                        for sym, bars in bars_data.items():
+                            for bar in bars:
+                                date = bar['t'][:10]
+                                cur.execute(
+                                    'INSERT INTO daily_bars (symbol, date, open, high, low, close, volume) '
+                                    'VALUES (%s, %s, %s, %s, %s, %s, %s) '
+                                    'ON CONFLICT (symbol, date) DO NOTHING',
+                                    (sym, date, bar['o'], bar['h'], bar['l'], bar['c'], bar['v']))
+                                total_stored += 1
+                        db._conn.commit()
+                except Exception as e:
+                    logger.warning(f"Daily bar batch {i // batch_size} failed: {e}")
+                    try:
+                        db._conn.rollback()
+                    except Exception:
+                        pass
+
+            logger.info(f"Daily bar backfill complete: {total_stored} bars stored")
+            self._add_message('system', f'Daily bar backfill: {total_stored} bars stored')
+
+        except Exception as e:
+            logger.error(f"Daily bar verification failed: {e}")
+            try:
+                db._conn.rollback()
+            except Exception:
+                pass
+
     async def _store_eod_bars(self, today: str):
         """Fetch and store today's daily bars for the full universe.
 
@@ -11190,7 +12313,7 @@ class GapFadeLiveTrader:
             t0 = _time.monotonic()
 
             dfs = await asyncio.to_thread(
-                _fetch_bars_multi_parallel, need_fetch, today, today, '1Day', 'iex'
+                _fetch_bars_multi_parallel, need_fetch, today, today, '1Day', 'sip'
             )
 
             stored = 0
@@ -11207,7 +12330,8 @@ class GapFadeLiveTrader:
     # -------------------------------------------------------------------------
 
     def _save_state(self):
-        """Persist state to PostgreSQL (no disk writes)."""
+        """Persist state to PostgreSQL with validation and retry."""
+        now_str = datetime.now(ET).strftime('%Y-%m-%d %H:%M:%S')
         state = {
             'status': self.status,
             'equity': self.engine.equity,
@@ -11218,18 +12342,42 @@ class GapFadeLiveTrader:
             'trade_log': [asdict(t) for t in self.engine.all_trade_log[-500:]],
             'messages': self.messages[-50:],
             'last_model_rebuild': self._last_model_rebuild,
-            'saved_at': datetime.now(ET).strftime('%Y-%m-%d %H:%M:%S'),
+            'saved_at': now_str,
+            'last_updated': now_str,
             'active_strategy': self.config.active_strategy,
             'strategy_config': self._strategy_config,
             'conversation_history': self.llm_supervisor.memory.to_dict() if self.llm_supervisor else {},
             'event_bus_pending': self._event_bus.pending_count(),
             'journal_entries_today': len(self.journal._entries),
         }
+        # Validate with Pydantic (log errors but don't block save)
         try:
-            db = get_price_db()
-            db.save_trader_state(state, key=self.STATE_KEY)
-        except Exception as e:
-            logger.error(f"State save failed: {e}")
+            from state_schema import TraderStateSchema
+            TraderStateSchema(**state)
+        except Exception as ve:
+            logger.warning(f"State validation warning: {ve}")
+
+        # Save with 1 retry
+        for attempt in range(2):
+            try:
+                db = get_price_db()
+                db.save_trader_state(state, key=self.STATE_KEY)
+                self._last_state_save_time = _time.monotonic()
+                return
+            except Exception as e:
+                if attempt == 0:
+                    logger.warning(f"State save failed (retrying): {e}")
+                    try:
+                        db._conn.rollback()
+                    except Exception:
+                        pass
+                    _time.sleep(0.5)
+                else:
+                    logger.error(f"State save FAILED after retry: {e}")
+                    try:
+                        db._conn.rollback()
+                    except Exception:
+                        pass
 
     def _load_state(self):
         """Load persisted state from PostgreSQL."""
@@ -11644,7 +12792,7 @@ CONFIG_VALID_RANGES = {
     # Drawdown circuit breakers
     'dd_tier1_threshold':    (0.05, 0.50),
     'dd_tier1_scale':        (0.01, 1.0),
-    'dd_tier2_threshold':    (0.10, 0.70),
+    'dd_tier2_threshold':    (0.03, 0.70),
     'dd_tier2_scale':        (0.01, 1.0),
     'dd_tier2_max_positions':(1, 5),
     'dd_hard_stop':          (0.0, 1.0),
@@ -11670,6 +12818,13 @@ CONFIG_VALID_RANGES = {
     'intraday_risk_pct':        (0.001, 0.10),
     'intraday_daily_loss_limit':(0.005, 0.10),
     'intraday_max_position_pct':(0.02, 0.50),
+    # Capital partitioning
+    'gap_fade_capital_pct':     (0.10, 0.90),
+    'intraday_capital_pct':     (0.10, 0.90),
+    'gap_fade_max_positions':   (1, 10),
+    'intraday_max_positions':   (1, 10),
+    'capital_overflow_hour':    (9, 15),
+    'capital_overflow_min':     (0, 59),
 }
 
 
@@ -11696,6 +12851,11 @@ def validate_config(updates: dict) -> Tuple[dict, List[str]]:
             if not (lo <= typed_value <= hi):
                 errors.append(f"{key}: {typed_value} out of range [{lo}, {hi}]")
                 continue
+
+        # Enum-style string fields
+        if key == 'execution_broker' and typed_value not in ('alpaca', 'ibkr'):
+            errors.append(f"{key}: must be 'alpaca' or 'ibkr'")
+            continue
 
         validated[key] = typed_value
     return validated, errors
@@ -12406,6 +13566,29 @@ async def update_config(body: dict):
     elif live_trader.llm_supervisor is not None:
         live_trader.llm_supervisor = None
         logger.info("Rudra disabled")
+    # Rebuild execution broker if changed
+    if 'execution_broker' in changes:
+        old_broker = live_trader._execution_broker
+        live_trader._execution_broker = _build_execution_broker(config)
+        new_label = 'IBKR' if live_trader._use_ibkr else 'Alpaca'
+        logger.info(f"Execution broker switched to {new_label}")
+        # Disconnect old IBKR if we switched away
+        if old_broker is not None and not live_trader._use_ibkr:
+            try:
+                import asyncio
+                asyncio.ensure_future(old_broker.conn.disconnect())
+            except Exception:
+                pass
+    # Cross-validate capital partition percentages
+    if config.capital_partition:
+        total_pct = config.gap_fade_capital_pct + config.intraday_capital_pct
+        if total_pct > 1.0:
+            # Auto-normalize to 100%
+            config.gap_fade_capital_pct = round(config.gap_fade_capital_pct / total_pct, 2)
+            config.intraday_capital_pct = round(1.0 - config.gap_fade_capital_pct, 2)
+            errors.append(f"Capital percentages exceeded 100% — auto-normalized to "
+                         f"{config.gap_fade_capital_pct:.0%}/{config.intraday_capital_pct:.0%}")
+
     # Persist config changes immediately (survive restarts)
     live_trader._save_state()
 
@@ -12923,7 +14106,7 @@ Equity: ${live_trader.engine.equity:,.2f}
 Today P&L: ${stats.pnl:+,.2f} ({stats.wins}W/{stats.losses}L)
 Consecutive losses: {stats.consecutive_losses}
 
-Open positions ({len(live_trader.engine.positions)}/{cfg.max_positions}):
+Open positions ({len(live_trader.engine.positions)}/{cfg.max_positions}){f" [gap_fade: {live_trader.engine.count_positions_by_source('gap_fade')}/{cfg.gap_fade_max_positions}, intraday: {live_trader.engine.count_positions_by_source('intraday')}/{cfg.intraday_max_positions}]" if cfg.capital_partition else ""}:
 {positions_text}
 
 Top candidates:
@@ -13130,10 +14313,9 @@ async def adjust_stop(symbol: str, body: dict):
         # Update broker-side stop order if one exists
         if pos.stop_order_id:
             try:
-                await asyncio.to_thread(alpaca_cancel_order, pos.stop_order_id)
-                stop_result = await asyncio.to_thread(
-                    alpaca_place_stop_order, symbol,
-                    pos.remaining_shares, new_stop,
+                await live_trader._broker_cancel(pos.stop_order_id)
+                stop_result = await live_trader._broker_place_stop(
+                    symbol, pos.remaining_shares, new_stop,
                     0.003, pos.direction)
                 if 'error' not in stop_result:
                     pos.stop_order_id = stop_result.get('id', '')
@@ -13947,7 +15129,7 @@ async def db_build(body: dict):
         total_batches = (total + batch_size - 1) // batch_size
 
         try:
-            dfs = fetch_alpaca_bars_multi(batch, start_date, end_date, '1Day', 'iex')
+            dfs = fetch_alpaca_bars_multi(batch, start_date, end_date, '1Day', 'sip')
             if dfs:
                 db.upsert_bars_batch(dfs)
                 loaded += len(dfs)
@@ -14003,7 +15185,7 @@ async def db_update():
             updated += len(batch)
         else:
             try:
-                dfs = fetch_alpaca_bars_multi(batch, batch_start, today, '1Day', 'iex')
+                dfs = fetch_alpaca_bars_multi(batch, batch_start, today, '1Day', 'sip')
                 if dfs:
                     db.upsert_bars_batch(dfs)
                     updated += len(dfs)
@@ -14113,7 +15295,7 @@ async def get_tracker_bars(symbol: str, timeframe: str = '1Min', limit: int = 39
     end_date = today.strftime('%Y-%m-%d')
 
     df = await asyncio.to_thread(
-        fetch_alpaca_bars, symbol, start_date, end_date, timeframe, 'iex'
+        fetch_alpaca_bars, symbol, start_date, end_date, timeframe, 'sip'
     )
     if df is None or df.empty:
         return {'symbol': symbol, 'timeframe': timeframe, 'bars': []}
@@ -15982,26 +17164,207 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   </div>
 
   <div class="page" id="page-guide">
-    <h2 style="margin-bottom:10px;">Rudra Trading Engine &mdash; Guide</h2>
-    <p style="color:var(--muted);margin:0 0 16px 0;font-size:12px;">Everything you need to know about trading with Rudra. Click any section to expand.</p>
+    <h2 style="margin-bottom:10px;">Rudra Trading Engine &mdash; Algorithm Guide</h2>
+    <p style="color:var(--muted);margin:0 0 16px 0;font-size:12px;">Visual step-by-step breakdown of how every trade decision is made. Click any section to expand.</p>
 
-    <!-- Section 1: Strategy Overview -->
+    <!-- ═══ SECTION: THE BIG PICTURE ═══ -->
     <details open style="margin-bottom:12px;">
     <summary style="cursor:pointer;padding:12px 16px;background:rgba(168,85,247,0.06);border:1px solid rgba(168,85,247,0.2);border-radius:8px;color:var(--purple);font-weight:600;font-size:14px;list-style:none;">
-      &#9660; What Is Gap Fading?
+      &#9660; The Big Picture &mdash; What This Bot Does
     </summary>
-    <div style="padding:12px 16px;border:1px solid rgba(168,85,247,0.1);border-top:none;border-radius:0 0 8px 8px;">
-      <p style="color:var(--text);line-height:1.7;margin:0 0 10px 0;font-size:13px;">
-        When a stock opens significantly higher than yesterday's close, that jump is called a <strong style="color:var(--purple);">gap up</strong>.
-        Most of the time, the price drifts back down toward yesterday's close during the trading day &mdash; this is called <strong style="color:var(--purple);">fading the gap</strong>.
-      </p>
-      <p style="color:var(--text);line-height:1.7;margin:0 0 10px 0;font-size:13px;">
-        This bot finds stocks that gapped up on <em>below-average volume</em> (a sign the move lacks conviction) and shorts them,
-        betting the price will fall back. It also goes <strong style="color:var(--green);">long on gap-downs</strong> when enabled. All positions are closed before market close &mdash; no overnight risk.
-      </p>
-      <div style="display:inline-block;padding:8px 14px;background:rgba(168,85,247,0.12);border-radius:6px;margin-top:4px;">
-        <span style="color:var(--purple);font-weight:600;font-size:13px;">Statistical Edge:</span>
-        <span style="color:var(--text);font-size:13px;"> 71% of low-volume gap-ups fade &mdash; historical study of 12,000+ events across 450 tickers.</span>
+    <div style="padding:16px;border:1px solid rgba(168,85,247,0.1);border-top:none;border-radius:0 0 8px 8px;">
+      <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:14px;">
+        <div style="flex:1;min-width:200px;padding:14px;background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.2);border-radius:8px;text-align:center;">
+          <div style="font-size:28px;margin-bottom:4px;">&#128200;</div>
+          <div style="color:var(--red);font-weight:700;font-size:14px;">FIND THE GAP</div>
+          <div style="color:var(--muted);font-size:11px;margin-top:4px;">Stock opens 5-12% higher than yesterday's close on low volume</div>
+        </div>
+        <div style="flex:0 0 30px;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:24px;">&#10132;</div>
+        <div style="flex:1;min-width:200px;padding:14px;background:rgba(234,179,8,0.08);border:1px solid rgba(234,179,8,0.2);border-radius:8px;text-align:center;">
+          <div style="font-size:28px;margin-bottom:4px;">&#129504;</div>
+          <div style="color:var(--yellow);font-weight:700;font-size:14px;">SCORE IT</div>
+          <div style="color:var(--muted);font-size:11px;margin-top:4px;">Bayesian probability: regime + volume + time + gap size = P(profit)</div>
+        </div>
+        <div style="flex:0 0 30px;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:24px;">&#10132;</div>
+        <div style="flex:1;min-width:200px;padding:14px;background:rgba(34,197,94,0.08);border:1px solid rgba(34,197,94,0.2);border-radius:8px;text-align:center;">
+          <div style="font-size:28px;margin-bottom:4px;">&#128176;</div>
+          <div style="color:var(--green);font-weight:700;font-size:14px;">TRADE &amp; PROTECT</div>
+          <div style="color:var(--muted);font-size:11px;margin-top:4px;">Short it. Smart exit locks in profit as it fades. Close by 3 PM.</div>
+        </div>
+      </div>
+      <div style="padding:10px 14px;background:rgba(168,85,247,0.10);border-radius:6px;">
+        <span style="color:var(--purple);font-weight:600;">Statistical Edge:</span>
+        <span style="color:var(--text);font-size:13px;"> 56% of low-volume gap-ups (5-12%) fade back. PF 1.42 over 1,466 trades across 2 years. $25K &rarr; $83K.</span>
+      </div>
+    </div>
+    </details>
+
+    <!-- ═══ SECTION: ENTRY DECISION FLOWCHART ═══ -->
+    <details open style="margin-bottom:12px;">
+    <summary style="cursor:pointer;padding:12px 16px;background:rgba(59,130,246,0.06);border:1px solid rgba(59,130,246,0.2);border-radius:8px;color:var(--blue);font-weight:600;font-size:14px;list-style:none;">
+      &#9660; Entry Decision Flowchart
+    </summary>
+    <div style="padding:16px;border:1px solid rgba(59,130,246,0.1);border-top:none;border-radius:0 0 8px 8px;">
+      <div style="font-family:monospace;font-size:12px;line-height:1.8;color:var(--text);background:var(--bg-secondary);padding:16px;border-radius:8px;overflow-x:auto;">
+        <div style="color:var(--cyan);font-weight:700;">CANDIDATE ARRIVES (stock gapped up)</div>
+        <div style="padding-left:16px;">&#9474;</div>
+        <div style="padding-left:16px;">&#9500;&#9472; <span style="color:var(--red);">KILL SWITCH CHECK</span></div>
+        <div style="padding-left:32px;">&#9474; Daily loss &gt; -3%? &rarr; <span style="color:var(--red);font-weight:700;">BLOCKED</span></div>
+        <div style="padding-left:32px;">&#9474; Drawdown &gt; -8%? &rarr; <span style="color:var(--red);font-weight:700;">BLOCKED</span></div>
+        <div style="padding-left:32px;">&#9474; 5+ consecutive losses? &rarr; <span style="color:var(--red);font-weight:700;">BLOCKED</span></div>
+        <div style="padding-left:32px;">&#9474; 10+ trades today? &rarr; <span style="color:var(--red);font-weight:700;">BLOCKED</span></div>
+        <div style="padding-left:16px;">&#9474;</div>
+        <div style="padding-left:16px;">&#9500;&#9472; <span style="color:var(--yellow);">FILTER GATES</span></div>
+        <div style="padding-left:32px;">&#9474; Gap &lt; 5% or &gt; 12%? &rarr; <span style="color:var(--yellow);">SKIP</span> (no edge outside this range)</div>
+        <div style="padding-left:32px;">&#9474; Volume &gt; 1x average? &rarr; <span style="color:var(--yellow);">SKIP</span> (conviction gap, don't fade)</div>
+        <div style="padding-left:32px;">&#9474; Price &lt; $10? &rarr; <span style="color:var(--yellow);">SKIP</span> (penny stock noise)</div>
+        <div style="padding-left:32px;">&#9474; After 11:30 AM? &rarr; <span style="color:var(--yellow);">SKIP</span> (gap fade window closed)</div>
+        <div style="padding-left:32px;">&#9474; Leveraged ETF? &rarr; <span style="color:var(--yellow);">SKIP</span> (synthetic, not real gaps)</div>
+        <div style="padding-left:16px;">&#9474;</div>
+        <div style="padding-left:16px;">&#9500;&#9472; <span style="color:var(--purple);">REGIME CHECK</span> (is SPY healthy?)</div>
+        <div style="padding-left:32px;">&#9474; SPY gapped up &gt; 1.5%? &rarr; <span style="color:var(--yellow);">SKIP</span> (market-wide gap, not stock-specific)</div>
+        <div style="padding-left:32px;">&#9474; SPY in bear trend (5d &lt; -2%)? &rarr; <span style="color:var(--yellow);">SKIP</span> (gap-ups are dead cats)</div>
+        <div style="padding-left:16px;">&#9474;</div>
+        <div style="padding-left:16px;">&#9500;&#9472; <span style="color:var(--cyan);">POSITION SIZING</span> (Kelly Criterion)</div>
+        <div style="padding-left:32px;">&#9474; Risk per trade: 2% of equity</div>
+        <div style="padding-left:32px;">&#9474; Shares = (equity &times; 2%) / (price &times; stop%)</div>
+        <div style="padding-left:32px;">&#9474; Max notional: $50,000</div>
+        <div style="padding-left:32px;">&#9474; Max concurrent: 5 positions</div>
+        <div style="padding-left:16px;">&#9474;</div>
+        <div style="padding-left:16px;">&#9500;&#9472; <span style="color:var(--green);">STOP CALCULATION</span> (adaptive)</div>
+        <div style="padding-left:32px;">&#9474; Stop = gap% &times; 25%, clamped to [1.64%, 3%]</div>
+        <div style="padding-left:32px;">&#9474; Example: 8% gap &rarr; 2% stop above entry</div>
+        <div style="padding-left:32px;">&#9474; Placed on broker as GTC (survives overnight)</div>
+        <div style="padding-left:16px;">&#9474;</div>
+        <div style="padding-left:16px;color:var(--green);font-weight:700;">&#9492;&#9472; &#10004; ENTER SHORT (sell to open)</div>
+      </div>
+    </div>
+    </details>
+
+    <!-- ═══ SECTION: SMART EXIT ENGINE ═══ -->
+    <details open style="margin-bottom:12px;">
+    <summary style="cursor:pointer;padding:12px 16px;background:rgba(34,197,94,0.06);border:1px solid rgba(34,197,94,0.2);border-radius:8px;color:var(--green);font-weight:600;font-size:14px;list-style:none;">
+      &#9660; Smart Exit Engine &mdash; How Profits Are Protected
+    </summary>
+    <div style="padding:16px;border:1px solid rgba(34,197,94,0.1);border-top:none;border-radius:0 0 8px 8px;">
+      <p style="color:var(--text);font-size:13px;margin:0 0 12px;">The bot doesn't just set a stop and pray. It watches every tick and tightens protection as the trade moves in your favor.</p>
+
+      <!-- Profit Tiers Visual -->
+      <div style="margin-bottom:16px;">
+        <div style="font-weight:600;color:var(--cyan);margin-bottom:8px;font-size:13px;">Profit Tier Ladder (Short Example: Entry $50.00)</div>
+        <div style="display:grid;grid-template-columns:60px 1fr 1fr 1fr;gap:2px;font-size:11px;">
+          <div style="padding:6px;font-weight:600;color:var(--muted);">TIER</div>
+          <div style="padding:6px;font-weight:600;color:var(--muted);">PRICE REACHES</div>
+          <div style="padding:6px;font-weight:600;color:var(--muted);">STOP MOVES TO</div>
+          <div style="padding:6px;font-weight:600;color:var(--muted);">WHAT THIS MEANS</div>
+
+          <div style="padding:8px;background:rgba(148,163,184,0.1);border-radius:4px;color:var(--muted);font-weight:700;">TIER 0</div>
+          <div style="padding:8px;background:rgba(148,163,184,0.05);border-radius:4px;color:var(--text);">$50.00+ (losing)</div>
+          <div style="padding:8px;background:rgba(148,163,184,0.05);border-radius:4px;color:var(--text);">Original stop ($51.00)</div>
+          <div style="padding:8px;background:rgba(148,163,184,0.05);border-radius:4px;color:var(--muted);">Hold. No changes yet.</div>
+
+          <div style="padding:8px;background:rgba(234,179,8,0.15);border-radius:4px;color:var(--yellow);font-weight:700;">TIER 1</div>
+          <div style="padding:8px;background:rgba(234,179,8,0.05);border-radius:4px;color:var(--text);">$49.95 (+0.1%)</div>
+          <div style="padding:8px;background:rgba(234,179,8,0.05);border-radius:4px;color:var(--yellow);font-weight:600;">$50.00 (breakeven)</div>
+          <div style="padding:8px;background:rgba(234,179,8,0.05);border-radius:4px;color:var(--muted);">Worst case = flat. Free trade.</div>
+
+          <div style="padding:8px;background:rgba(6,182,212,0.15);border-radius:4px;color:var(--cyan);font-weight:700;">TIER 2</div>
+          <div style="padding:8px;background:rgba(6,182,212,0.05);border-radius:4px;color:var(--text);">$49.50 (+1.0%)</div>
+          <div style="padding:8px;background:rgba(6,182,212,0.05);border-radius:4px;color:var(--cyan);font-weight:600;">$49.75 (trail 0.5%)</div>
+          <div style="padding:8px;background:rgba(6,182,212,0.05);border-radius:4px;color:var(--muted);">Locked in $0.25/share profit min.</div>
+
+          <div style="padding:8px;background:rgba(168,85,247,0.15);border-radius:4px;color:var(--purple);font-weight:700;">TIER 3</div>
+          <div style="padding:8px;background:rgba(168,85,247,0.05);border-radius:4px;color:var(--text);">$48.50 (+3.0%)</div>
+          <div style="padding:8px;background:rgba(168,85,247,0.05);border-radius:4px;color:var(--purple);font-weight:600;">$48.65 (trail 0.3%)</div>
+          <div style="padding:8px;background:rgba(168,85,247,0.05);border-radius:4px;color:var(--muted);">Tight trail. Capturing most of the move.</div>
+
+          <div style="padding:8px;background:rgba(34,197,94,0.15);border-radius:4px;color:var(--green);font-weight:700;">TIER 4</div>
+          <div style="padding:8px;background:rgba(34,197,94,0.05);border-radius:4px;color:var(--text);">$47.50 (+5.0%)</div>
+          <div style="padding:8px;background:rgba(34,197,94,0.05);border-radius:4px;color:var(--green);font-weight:600;">$47.60 (trail 0.2%)</div>
+          <div style="padding:8px;background:rgba(34,197,94,0.05);border-radius:4px;color:var(--muted);">Very tight. Almost full capture.</div>
+        </div>
+      </div>
+
+      <!-- Reversal Detection -->
+      <div style="padding:14px;background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.2);border-radius:8px;margin-bottom:14px;">
+        <div style="color:var(--red);font-weight:700;font-size:13px;margin-bottom:6px;">&#9888; Reversal Detection (the AI part)</div>
+        <div style="color:var(--text);font-size:12px;line-height:1.7;">
+          If the price retraces <strong>40% of its best move</strong>, the bot closes immediately.<br>
+          <span style="color:var(--muted);">Example: Price went from $50 &rarr; $47.50 (best). Then bounces to $48.50.</span><br>
+          <span style="color:var(--muted);">Retracement = ($48.50 - $47.50) / ($50.00 - $47.50) = <strong style="color:var(--red);">40%</strong></span><br>
+          <span style="color:var(--red);font-weight:600;">&rarr; CLOSE NOW at $48.50. Capture $1.50/share instead of risking reversal to $50.</span>
+        </div>
+      </div>
+
+      <!-- Before/After comparison -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+        <div style="padding:12px;background:rgba(239,68,68,0.06);border:1px solid rgba(239,68,68,0.15);border-radius:8px;">
+          <div style="color:var(--red);font-weight:700;font-size:12px;margin-bottom:6px;">&#10008; OLD BOT (Fixed Stop)</div>
+          <div style="color:var(--muted);font-size:11px;line-height:1.6;">
+            Entry: $50.00<br>
+            Price goes to $47.50 (+5% profit)<br>
+            <span style="color:var(--yellow);">Bot does nothing...</span><br>
+            Price reverses to $51.00<br>
+            <span style="color:var(--red);font-weight:600;">Stop hit: -$1.00/share LOSS</span><br>
+            <span style="color:var(--red);">$32,365 left on table across 72 trades</span>
+          </div>
+        </div>
+        <div style="padding:12px;background:rgba(34,197,94,0.06);border:1px solid rgba(34,197,94,0.15);border-radius:8px;">
+          <div style="color:var(--green);font-weight:700;font-size:12px;margin-bottom:6px;">&#10004; NEW BOT (Smart Exit)</div>
+          <div style="color:var(--muted);font-size:11px;line-height:1.6;">
+            Entry: $50.00<br>
+            Price goes to $47.50 (+5% profit)<br>
+            <span style="color:var(--green);">Stop tightened to $47.60 (Tier 4)</span><br>
+            Price reverses to $48.50<br>
+            <span style="color:var(--green);font-weight:600;">Reversal detected: CLOSE at $48.50</span><br>
+            <span style="color:var(--green);">Captured $1.50/share PROFIT</span>
+          </div>
+        </div>
+      </div>
+    </div>
+    </details>
+
+    <!-- ═══ SECTION: WHAT IS GAP FADING ═══ -->
+    <details style="margin-bottom:12px;">
+    <summary style="cursor:pointer;padding:12px 16px;background:rgba(168,85,247,0.06);border:1px solid rgba(168,85,247,0.2);border-radius:8px;color:var(--purple);font-weight:600;font-size:14px;list-style:none;">
+      &#9654; What Is Gap Fading?
+    </summary>
+    <div style="padding:16px;border:1px solid rgba(168,85,247,0.1);border-top:none;border-radius:0 0 8px 8px;">
+      <!-- Visual gap diagram -->
+      <div style="display:flex;align-items:end;gap:4px;height:120px;margin-bottom:12px;padding:8px;background:var(--bg-secondary);border-radius:8px;">
+        <div style="width:60px;text-align:center;">
+          <div style="height:70px;background:linear-gradient(to top,var(--green),rgba(34,197,94,0.3));border-radius:4px 4px 0 0;position:relative;">
+            <span style="position:absolute;top:-18px;width:100%;font-size:10px;color:var(--muted);">Yesterday</span>
+            <span style="position:absolute;top:4px;width:100%;font-size:10px;color:white;">Close</span>
+            <span style="position:absolute;top:4px;right:-2px;font-size:9px;color:var(--green);">$45</span>
+          </div>
+        </div>
+        <div style="width:20px;display:flex;flex-direction:column;align-items:center;justify-content:center;">
+          <div style="height:30px;border-left:2px dashed var(--yellow);"></div>
+          <span style="font-size:9px;color:var(--yellow);writing-mode:vertical-rl;">GAP</span>
+          <div style="height:10px;border-left:2px dashed var(--yellow);"></div>
+        </div>
+        <div style="width:60px;text-align:center;">
+          <div style="height:100px;background:linear-gradient(to top,var(--red),rgba(239,68,68,0.3));border-radius:4px 4px 0 0;position:relative;">
+            <span style="position:absolute;top:-18px;width:100%;font-size:10px;color:var(--muted);">Today</span>
+            <span style="position:absolute;top:4px;width:100%;font-size:10px;color:white;">Open</span>
+            <span style="position:absolute;top:4px;right:-2px;font-size:9px;color:var(--red);">$50</span>
+          </div>
+        </div>
+        <div style="flex:1;display:flex;align-items:center;padding:0 10px;">
+          <svg viewBox="0 0 200 80" style="width:100%;height:80px;">
+            <path d="M0,10 C20,10 30,15 50,25 C70,35 80,50 120,55 C140,58 160,60 200,55" fill="none" stroke="#ef4444" stroke-width="2"/>
+            <text x="100" y="75" fill="#94a3b8" font-size="10" text-anchor="middle">Price fades back toward $45</text>
+            <circle cx="0" cy="10" r="4" fill="#ef4444"/>
+            <text x="5" y="6" fill="#ef4444" font-size="8">SHORT HERE</text>
+            <circle cx="200" cy="55" r="4" fill="#22c55e"/>
+            <text x="170" y="50" fill="#22c55e" font-size="8">COVER HERE</text>
+          </svg>
+        </div>
+      </div>
+      <div style="padding:10px 14px;background:rgba(168,85,247,0.10);border-radius:6px;">
+        <span style="color:var(--purple);font-weight:600;">Why it works:</span>
+        <span style="color:var(--text);font-size:12px;"> Low-volume gaps lack institutional conviction. They're driven by retail FOMO and after-hours thin liquidity. Once the real market opens, professional sellers push the price back.</span>
       </div>
     </div>
     </details>
@@ -16042,7 +17405,53 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     </div>
     </details>
 
-    <!-- Section: Feature Toggles -->
+    <!-- ═══ SECTION: SAFETY LAYERS ═══ -->
+    <details style="margin-bottom:12px;">
+    <summary style="cursor:pointer;padding:12px 16px;background:rgba(239,68,68,0.06);border:1px solid rgba(239,68,68,0.2);border-radius:8px;color:var(--red);font-weight:600;font-size:14px;list-style:none;">
+      &#9654; Safety Guardrails (5 Layers of Protection)
+    </summary>
+    <div style="padding:16px;border:1px solid rgba(239,68,68,0.1);border-top:none;border-radius:0 0 8px 8px;">
+      <div style="display:flex;flex-direction:column;gap:8px;">
+        <div style="display:flex;align-items:center;gap:10px;padding:10px 14px;background:rgba(239,68,68,0.06);border-left:4px solid var(--red);border-radius:0 6px 6px 0;">
+          <span style="font-size:20px;">&#128721;</span>
+          <div>
+            <span style="color:var(--red);font-weight:700;font-size:12px;">LAYER 1: Kill Switch</span>
+            <p style="color:var(--muted);margin:2px 0 0;font-size:11px;">Daily loss &gt; 3% OR drawdown &gt; 8% OR 5 consecutive losses &rarr; ALL TRADING STOPS</p>
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;padding:10px 14px;background:rgba(234,179,8,0.06);border-left:4px solid var(--yellow);border-radius:0 6px 6px 0;">
+          <span style="font-size:20px;">&#128737;</span>
+          <div>
+            <span style="color:var(--yellow);font-weight:700;font-size:12px;">LAYER 2: Broker-Side GTC Stops</span>
+            <p style="color:var(--muted);margin:2px 0 0;font-size:11px;">Every position has a stop order ON THE BROKER. If bot dies, broker still protects you. Survives overnight.</p>
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;padding:10px 14px;background:rgba(6,182,212,0.06);border-left:4px solid var(--cyan);border-radius:0 6px 6px 0;">
+          <span style="font-size:20px;">&#128338;</span>
+          <div>
+            <span style="color:var(--cyan);font-weight:700;font-size:12px;">LAYER 3: EOD Watchdog</span>
+            <p style="color:var(--muted);margin:2px 0 0;font-size:11px;">3:45 block entries &rarr; 3:50 close all &rarr; 3:55 force close &rarr; 4:00 emergency liquidation. Independent task.</p>
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;padding:10px 14px;background:rgba(168,85,247,0.06);border-left:4px solid var(--purple);border-radius:0 6px 6px 0;">
+          <span style="font-size:20px;">&#128163;</span>
+          <div>
+            <span style="color:var(--purple);font-weight:700;font-size:12px;">LAYER 4: Dead Man's Switch</span>
+            <p style="color:var(--muted);margin:2px 0 0;font-size:11px;">Standalone cron job at 3:55 PM. If the bot is dead, this script liquidates EVERYTHING via Alpaca API.</p>
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;padding:10px 14px;background:rgba(34,197,94,0.06);border-left:4px solid var(--green);border-radius:0 6px 6px 0;">
+          <span style="font-size:20px;">&#128270;</span>
+          <div>
+            <span style="color:var(--green);font-weight:700;font-size:12px;">LAYER 5: Startup Reconciliation</span>
+            <p style="color:var(--muted);margin:2px 0 0;font-size:11px;">On every restart: checks broker for orphaned positions, places safety stops, reconstructs state from order history.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+    </details>
+
+    <!-- Section: Feature Toggles (original, kept for reference) -->
     <details style="margin-bottom:12px;">
     <summary style="cursor:pointer;padding:12px 16px;background:rgba(59,130,246,0.06);border:1px solid rgba(59,130,246,0.2);border-radius:8px;color:var(--blue);font-weight:600;font-size:14px;list-style:none;">
       &#9654; Feature Toggles &amp; Config
@@ -17898,6 +19307,10 @@ async function saveConfig() {
       body[key] = inp.value;
     }
   });
+  // Collect select elements (e.g. execution_broker)
+  document.querySelectorAll('#configGrid select[data-key]').forEach(sel => {
+    body[sel.dataset.key] = sel.value;
+  });
   if (hasErr) return;
   // Include scan universe settings
   const univRadio = document.querySelector('input[name="scanUniverse"]:checked');
@@ -18593,6 +20006,9 @@ function renderConfig(config) {
     catalyst_earnings_penalty:[0,100], catalyst_news_penalty:[0,100], catalyst_noise_bonus:[0,50],
     intraday_scan_interval:[5,300], intraday_watchlist_size:[1,100], intraday_max_entries:[1,20],
     intraday_risk_pct:[0.001,0.10], intraday_daily_loss_limit:[0.005,0.10], intraday_max_position_pct:[0.02,0.50],
+    gap_fade_capital_pct:[0.10,0.90], intraday_capital_pct:[0.10,0.90],
+    gap_fade_max_positions:[1,10], intraday_max_positions:[1,10],
+    capital_overflow_hour:[9,15], capital_overflow_min:[0,59],
   };
   const inp = (key, label, def) => {
     const val = v(key, def);
@@ -18645,6 +20061,17 @@ function renderConfig(config) {
       <div class="cfg-section-body">
         ${s.title === 'Order Execution' ? `
           <div class="config-item">
+            <label>Execution Broker</label>
+            <div style="display:flex;align-items:center;gap:8px;padding:4px 0;">
+              <select id="cfgExecBroker" data-key="execution_broker"
+                style="background:var(--bg-secondary);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:4px 8px;font-size:12px;">
+                <option value="alpaca" ${config.execution_broker==='alpaca'?'selected':''}>Alpaca</option>
+                <option value="ibkr" ${config.execution_broker==='ibkr'?'selected':''}>Interactive Brokers</option>
+              </select>
+              <span style="font-size:11px;color:var(--muted);">Order routing</span>
+            </div>
+          </div>
+          <div class="config-item">
             <label>Limit Orders Only</label>
             <div style="display:flex;align-items:center;gap:8px;padding:4px 0;">
               <input type="checkbox" id="cfgLimitOrders" data-key="limit_orders_only"
@@ -18664,6 +20091,8 @@ function renderConfig(config) {
 
   // Feature toggle sections
   const features = [
+    { key: 'trailing_stop_enabled', title: 'Trailing Stop', desc: 'Lock in profits: once position gains X%, trail stop Y% behind best price. Prevents winners from reversing into losers.',
+      params: [['trailing_activation_pct', 'Activation %', 0.01], ['trailing_distance_pct', 'Trail Distance %', 0.005]] },
     { key: 'adaptive_stops', title: 'Adaptive Stops', desc: 'Scale stop with gap size (overrides Fixed Stop Loss %). Stop = gap% \u00d7 fraction, clamped to [min, max]',
       params: [['stop_gap_fraction', 'Gap Fraction', 0.25], ['stop_min_pct', 'Min Stop %', 0.015], ['stop_max_pct', 'Max Stop %', 0.025]] },
     { key: 'regime_filter', title: 'Market Regime Filter', desc: 'Reduce or block entries when SPY gaps up or VIX is elevated',
@@ -18678,6 +20107,8 @@ function renderConfig(config) {
       params: [['llm_url', 'Ollama URL', 'http://localhost:11434'], ['llm_model', 'Model', 'gpt-oss:20b'], ['llm_timeout', 'Timeout (sec)', 30], ['llm_max_failures', 'Circuit Breaker Failures', 5], ['llm_circuit_reset', 'Circuit Reset (sec)', 120], ['llm_max_hold_overrides', 'Max Hold Overrides', 2]] },
     { key: 'intraday_enabled', title: 'Intraday Strategies', desc: 'Run ORB, Momentum, Pullback, Range strategies alongside gap fade during market hours',
       params: [['intraday_strategies', 'Active Strategies', 'orb_breakout,momentum_surge,pullback_entry,range_trade'], ['intraday_scan_interval', 'Scan Interval (sec)', 30], ['intraday_watchlist_size', 'Watchlist Size', 25], ['intraday_max_entries', 'Max Entries/Day', 3], ['intraday_risk_pct', 'Risk Per Trade %', 0.01], ['intraday_daily_loss_limit', 'Daily Loss Limit %', 0.02], ['intraday_max_position_pct', 'Max Position % Equity', 0.20]] },
+    { key: 'capital_partition', title: 'Capital Partitioning', desc: 'Split equity between gap fade and intraday strategies so they run in parallel with dedicated capital pools',
+      params: [['gap_fade_capital_pct', 'Gap Fade Capital %', 0.60], ['intraday_capital_pct', 'Intraday Capital %', 0.40], ['gap_fade_max_positions', 'Gap Fade Max Pos', 3], ['intraday_max_positions', 'Intraday Max Pos', 3], ['capital_overflow_hour', 'Overflow Hour (ET)', 10], ['capital_overflow_min', 'Overflow Minute', 30]] },
     { key: 'catalyst_enabled', title: 'Catalyst Detection', desc: 'Score candidates by news catalyst (earnings, FDA, offerings) — penalize known catalysts, bonus unknown gaps',
       params: [['catalyst_skip_earnings', 'Skip Earnings', false], ['catalyst_earnings_penalty', 'Earnings Penalty', 30], ['catalyst_news_penalty', 'News Penalty', 15], ['catalyst_noise_bonus', 'No-Catalyst Bonus', 10]] },
     { key: 'auto_start', title: 'Auto-Start Trading', desc: 'Automatically start the trading loop when the app launches (no manual Start needed)',

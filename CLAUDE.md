@@ -94,6 +94,64 @@ Monkey-patches `builtins.__import__` to block xgboost/lightgbm (segfault prevent
 
 `gap-fade.service` — systemd unit for Rudra Trading Engine. Reads `.env` via `EnvironmentFile`, has watchdog (120s), memory cap (2G). Install script: `install-service.sh`.
 
+## Critical Rules
+
+### 1. Code Quality
+
+- No print() in production code — use structlog/logging
+- Immutability preferred — avoid mutating dicts/lists in-place when possible
+- Type hints on all new functions (params + return)
+- Max 400 lines per new module; existing monoliths are legacy — don't add to them
+- Parameterized queries only — never f-string SQL
+
+### 2. Testing
+
+- Write tests for any new function or bug fix
+- Run `python -m pytest <relevant_test>.py -v` to verify changes
+- Mock external APIs (Alpaca, Schwab, OANDA) — never hit live endpoints in tests
+- Use `tests/conftest.py` fixtures: `make_config()`, `make_engine()`, `make_candidate()`
+
+### 3. Security
+
+- No hardcoded API keys, tokens, or secrets — use env vars via `python-dotenv`
+- `.env` files are git-crypt encrypted — never commit plaintext credentials
+- Validate all user inputs in FastAPI endpoints
+- Auth is optional (disabled without `AUTH_JWT_SECRET`) — never break graceful degradation
+
+### 4. Trading Safety
+
+- Never modify order execution logic without explicit confirmation
+- Circuit breakers and risk limits must not be weakened
+- Position sizing must respect `GapFadeConfig` max limits
+- Always test with paper trading before any live changes
+- Preserve stop-loss and emergency stop functionality
+
+### 5. Git Workflow
+
+- Conventional commits: `feat:`, `fix:`, `refactor:`, `test:`, `docs:`
+- Never commit `.env`, `token_1.json`, state files, or `*.db` files
+- Run tests before committing
+
+## Agent Automation (MANDATORY)
+
+Claude MUST automatically use agents — do NOT wait for the user to invoke them manually.
+Full rules in `.claude/rules/auto-agents.md`. Summary:
+
+| Trigger | Agent(s) | Automatic? |
+|---|---|---|
+| Feature request / 3+ file change | **planner** (then wait for approval) | YES |
+| New code or bug fix | **tdd-guide** (tests first) | YES |
+| After implementation done | **code-reviewer** + **security-reviewer** + **python-reviewer** in parallel | YES |
+| Build/test failure | **build-error-resolver** | YES |
+| Any change to order execution, risk, stops | **planner** with SAFETY GATE (explicit user approval required) | YES |
+
+### Slash Commands (manual override)
+
+- `/plan` — Force planning when auto-trigger didn't fire
+- `/tdd` — Force TDD mode
+- `/code-review` — Force review
+- `/build-fix` — Force build diagnosis
+
 ## Compaction Instructions
 
 When auto-compacting, preserve:

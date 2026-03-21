@@ -219,6 +219,22 @@ CREATE INDEX IF NOT EXISTS idx_rejected_stage_ts ON candidates_rejected (rejecti
 CREATE INDEX IF NOT EXISTS idx_rejected_sym_ts ON candidates_rejected (symbol, timestamp);
 
 -- =============================================================================
+-- MINUTE BARS (1-min intraday data for ORB backtesting)
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS minute_bars (
+    symbol  TEXT NOT NULL,
+    ts      TIMESTAMP NOT NULL,
+    open    DOUBLE PRECISION,
+    high    DOUBLE PRECISION,
+    low     DOUBLE PRECISION,
+    close   DOUBLE PRECISION,
+    volume  BIGINT DEFAULT 0,
+    PRIMARY KEY (symbol, ts)
+);
+CREATE INDEX IF NOT EXISTS idx_minute_bars_ts ON minute_bars (ts);
+CREATE INDEX IF NOT EXISTS idx_minute_bars_date ON minute_bars (symbol, (ts::date));
+
+-- =============================================================================
 -- TRADER STATE (replaces JSON state files)
 -- =============================================================================
 CREATE TABLE IF NOT EXISTS trader_state (

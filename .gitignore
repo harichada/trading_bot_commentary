@@ -30,4 +30,4 @@ __pycache__/
 *.so
 .Python
 venv/
-env/
+env/.mcp.json
