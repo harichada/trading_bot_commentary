@@ -1223,7 +1223,18 @@ def main():
             print(f"  {sid:<25s} — {strat.name}")
         return
 
-    symbols = args.symbols if args.symbols else UNIVERSE
+    if args.symbols and len(args.symbols) == 1 and args.symbols[0] == 'ALL':
+        # Load full universe from DB: all symbols with >100 days of minute bars
+        _conn = psycopg2.connect(DB_URL)
+        _cur = _conn.cursor()
+        _cur.execute("SELECT symbol FROM minute_bars GROUP BY symbol HAVING COUNT(DISTINCT ts::date) > 100 ORDER BY symbol")
+        symbols = [r[0] for r in _cur.fetchall()]
+        _conn.close()
+        log.info("Loaded %d symbols from DB (full universe)", len(symbols))
+    elif args.symbols:
+        symbols = args.symbols
+    else:
+        symbols = UNIVERSE
     strategies = create_all_strategies(only=args.strategies)
     if not strategies:
         log.error("No valid strategies selected. Use --list-strategies to see options.")
