@@ -242,3 +242,31 @@ CREATE TABLE IF NOT EXISTS trader_state (
     state_json  TEXT NOT NULL,
     saved_at    TEXT NOT NULL
 );
+
+-- =============================================================================
+-- NEWS ALERTS
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS news_alerts (
+    id          TEXT PRIMARY KEY,
+    symbol      TEXT NOT NULL DEFAULT '',
+    headline    TEXT NOT NULL,
+    summary     TEXT DEFAULT '',
+    source      TEXT DEFAULT 'alpaca',
+    url         TEXT DEFAULT '',
+    impact      TEXT DEFAULT 'medium',
+    category    TEXT DEFAULT 'general',
+    timestamp   TEXT NOT NULL,
+    read        BOOLEAN DEFAULT FALSE,
+    dismissed   BOOLEAN DEFAULT FALSE,
+    created_at  TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_news_alerts_ts ON news_alerts (timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_news_alerts_symbol ON news_alerts (symbol, timestamp DESC);
+
+-- =============================================================================
+-- NEWS SETTINGS (notification preferences)
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS news_settings (
+    key         TEXT PRIMARY KEY,
+    value_json  TEXT DEFAULT '{}'
+);

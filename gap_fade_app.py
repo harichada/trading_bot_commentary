@@ -25,6 +25,7 @@ Sections:
 # =============================================================================
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -1854,6 +1855,24 @@ class PriceDB:
             CREATE INDEX IF NOT EXISTS idx_minute_bars_ts ON minute_bars (ts);
             CREATE TABLE IF NOT EXISTS trader_state (
                 key TEXT PRIMARY KEY, state_json TEXT NOT NULL, saved_at TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS news_alerts (
+                id TEXT PRIMARY KEY,
+                symbol TEXT NOT NULL DEFAULT '',
+                headline TEXT NOT NULL,
+                summary TEXT DEFAULT '',
+                source TEXT DEFAULT 'alpaca',
+                url TEXT DEFAULT '',
+                impact TEXT DEFAULT 'medium',
+                category TEXT DEFAULT 'general',
+                timestamp TEXT NOT NULL,
+                read BOOLEAN DEFAULT FALSE,
+                dismissed BOOLEAN DEFAULT FALSE,
+                created_at TIMESTAMPTZ DEFAULT NOW());
+            CREATE INDEX IF NOT EXISTS idx_news_alerts_ts ON news_alerts (timestamp DESC);
+            CREATE INDEX IF NOT EXISTS idx_news_alerts_symbol ON news_alerts (symbol, timestamp DESC);
+            CREATE TABLE IF NOT EXISTS news_settings (
+                key TEXT PRIMARY KEY,
+                value_json TEXT DEFAULT '{}');
         ''')
 
     _UPSERT_BARS_SQL = (
@@ -2903,6 +2922,130 @@ class PriceDB:
         if total_migrated:
             self._conn.commit()
             logger.info(f"Migrated {total_migrated} journal entries from {len(files)} JSONL files to PostgreSQL")
+
+    # -- News Alerts --
+
+    def insert_news_alert(self, alert: dict) -> bool:
+        """Insert a news alert. Returns True if new (not duplicate)."""
+        alert_id = alert.get('id', '')
+        if not alert_id:
+            raw = f"{alert.get('symbol', '')}{alert.get('headline', '')}{alert.get('timestamp', '')}"
+            alert_id = hashlib.sha256(raw.encode()).hexdigest()[:16]
+        try:
+            with self._lock:
+                cur = self._conn.cursor()
+                cur.execute(
+                    '''INSERT INTO news_alerts
+                       (id, symbol, headline, summary, source, url, impact, category, timestamp, read, dismissed)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                       ON CONFLICT (id) DO NOTHING''',
+                    (alert_id, alert.get('symbol', ''), alert.get('headline', ''),
+                     alert.get('summary', ''), alert.get('source', 'alpaca'),
+                     alert.get('url', ''), alert.get('impact', 'medium'),
+                     alert.get('category', 'general'), alert.get('timestamp', ''),
+                     alert.get('read', False), alert.get('dismissed', False))
+                )
+                inserted = cur.rowcount > 0
+                self._conn.commit()
+                return inserted
+        except Exception as e:
+            self._conn.rollback()
+            logger.debug(f"insert_news_alert failed: {e}")
+            return False
+
+    def get_news_alerts(self, limit: int = 50, offset: int = 0,
+                        symbol: Optional[str] = None,
+                        impact: Optional[str] = None) -> Tuple[List[dict], int]:
+        """Get paginated news alerts. Returns (alerts, total_count)."""
+        try:
+            cur = self._conn.cursor()
+            where_clauses = ["dismissed = FALSE"]
+            params: list = []
+            if symbol:
+                where_clauses.append("symbol = %s")
+                params.append(symbol)
+            if impact:
+                where_clauses.append("impact = %s")
+                params.append(impact)
+            where_sql = " AND ".join(where_clauses)
+
+            cur.execute(f"SELECT COUNT(*) FROM news_alerts WHERE {where_sql}", params)
+            total = cur.fetchone()[0]
+
+            cur.execute(
+                f'''SELECT id, symbol, headline, summary, source, url, impact, category,
+                           timestamp, read, dismissed, created_at
+                    FROM news_alerts WHERE {where_sql}
+                    ORDER BY timestamp DESC LIMIT %s OFFSET %s''',
+                params + [limit, offset]
+            )
+            cols = ['id', 'symbol', 'headline', 'summary', 'source', 'url',
+                    'impact', 'category', 'timestamp', 'read', 'dismissed', 'created_at']
+            alerts = [dict(zip(cols, row)) for row in cur.fetchall()]
+            # Serialize created_at to string
+            for a in alerts:
+                if a.get('created_at') and hasattr(a['created_at'], 'isoformat'):
+                    a['created_at'] = a['created_at'].isoformat()
+            return alerts, total
+        except Exception as e:
+            logger.debug(f"get_news_alerts failed: {e}")
+            return [], 0
+
+    def dismiss_news_alert(self, alert_id: str) -> bool:
+        """Mark an alert as dismissed."""
+        try:
+            with self._lock:
+                cur = self._conn.cursor()
+                cur.execute("UPDATE news_alerts SET dismissed = TRUE WHERE id = %s", (alert_id,))
+                updated = cur.rowcount > 0
+                self._conn.commit()
+                return updated
+        except Exception as e:
+            self._conn.rollback()
+            logger.debug(f"dismiss_news_alert failed: {e}")
+            return False
+
+    def mark_news_alert_read(self, alert_id: str) -> bool:
+        """Mark an alert as read."""
+        try:
+            with self._lock:
+                cur = self._conn.cursor()
+                cur.execute("UPDATE news_alerts SET read = TRUE WHERE id = %s", (alert_id,))
+                updated = cur.rowcount > 0
+                self._conn.commit()
+                return updated
+        except Exception as e:
+            self._conn.rollback()
+            logger.debug(f"mark_news_alert_read failed: {e}")
+            return False
+
+    def get_news_settings(self) -> dict:
+        """Get notification preferences."""
+        try:
+            cur = self._conn.cursor()
+            cur.execute("SELECT value_json FROM news_settings WHERE key = 'preferences'")
+            row = cur.fetchone()
+            if row:
+                return json.loads(row[0])
+        except Exception as e:
+            logger.debug(f"get_news_settings failed: {e}")
+        return {}
+
+    def save_news_settings(self, settings: dict):
+        """Save notification preferences."""
+        try:
+            with self._lock:
+                cur = self._conn.cursor()
+                cur.execute(
+                    '''INSERT INTO news_settings (key, value_json)
+                       VALUES ('preferences', %s)
+                       ON CONFLICT (key) DO UPDATE SET value_json = EXCLUDED.value_json''',
+                    (json.dumps(settings, default=str),)
+                )
+                self._conn.commit()
+        except Exception as e:
+            self._conn.rollback()
+            logger.debug(f"save_news_settings failed: {e}")
 
     @staticmethod
     def _gap_row_to_dict(row) -> dict:
@@ -13733,6 +13876,140 @@ class GapFadeLiveTrader:
 
 
 # =============================================================================
+# SECTION 7B: NEWS ALERTS
+# =============================================================================
+
+DEFAULT_NEWS_SETTINGS: dict = {
+    'enabled': True,
+    'high_impact_push': True,
+    'medium_impact_push': False,
+    'low_impact_push': False,
+    'categories': {
+        'earnings': True,
+        'fda': True,
+        'merger': True,
+        'offering': True,
+        'upgrade': True,
+        'downgrade': True,
+        'general': False,
+    },
+    'symbols_filter': [],
+    'quiet_hours_start': '20:00',
+    'quiet_hours_end': '07:00',
+}
+
+
+def _classify_news(headline: str, symbol: str = '') -> Tuple[str, str]:
+    """Classify news headline into (impact, category).
+
+    impact: 'high', 'medium', 'low'
+    category: 'earnings', 'fda', 'merger', 'offering', 'upgrade', 'downgrade', 'general'
+    """
+    hl = headline.lower()
+
+    # High impact
+    if any(kw in hl for kw in ('earnings', 'eps', 'revenue beat', 'revenue miss',
+                                'profit beat', 'profit miss', 'quarterly results')):
+        return 'high', 'earnings'
+    if any(kw in hl for kw in ('fda', 'approval', 'trial result', 'clinical trial',
+                                'phase 3', 'phase 2', 'drug approval')):
+        return 'high', 'fda'
+    if any(kw in hl for kw in ('merger', 'acquisition', 'buyout', 'takeover',
+                                'acquire', 'deal to buy')):
+        return 'high', 'merger'
+
+    # Medium impact
+    if any(kw in hl for kw in ('offering', 'dilution', 'secondary offering',
+                                'share sale', 'stock offering')):
+        return 'medium', 'offering'
+    if any(kw in hl for kw in ('upgrade', 'price target raised', 'raised to buy',
+                                'initiates buy', 'outperform')):
+        return 'medium', 'upgrade'
+    if any(kw in hl for kw in ('downgrade', 'price target lowered', 'lowered to sell',
+                                'underperform', 'initiates sell')):
+        return 'medium', 'downgrade'
+
+    # Low / general
+    return 'low', 'general'
+
+
+async def _news_fetcher_loop():
+    """Background task: fetch news every 5 minutes during market hours.
+
+    Uses existing _fetch_alpaca_news(). Classifies each headline,
+    stores in DB, broadcasts high-impact via WebSocket.
+    """
+    await asyncio.sleep(10)  # let app fully start
+    logger.info("News fetcher background task started")
+    while True:
+        try:
+            now = datetime.now(ET)
+            # Only fetch during extended market hours (6 AM - 8 PM ET, weekdays)
+            if now.weekday() >= 5 or now.hour < 6 or now.hour >= 20:
+                await asyncio.sleep(300)
+                continue
+
+            # Gather symbols: open positions + recent candidates (not all 12K)
+            symbols_set: set = set()
+            try:
+                if live_trader and live_trader.engine and live_trader.engine.positions:
+                    symbols_set.update(live_trader.engine.positions.keys())
+            except Exception:
+                pass
+            # Add watchlist from config if available
+            try:
+                if hasattr(live_trader, 'config') and hasattr(live_trader.config, 'watchlist'):
+                    symbols_set.update(live_trader.config.watchlist or [])
+            except Exception:
+                pass
+            # Add LARGE_CAP as baseline
+            symbols_set.update(LARGE_CAP[:20])
+
+            symbols = list(symbols_set)[:50]  # cap at 50 to avoid API abuse
+            if not symbols:
+                await asyncio.sleep(300)
+                continue
+
+            news_results = await _fetch_alpaca_news(symbols)
+            db = get_price_db()
+            settings = db.get_news_settings() or DEFAULT_NEWS_SETTINGS
+
+            for sym, headlines in news_results.items():
+                for headline in headlines:
+                    impact, category = _classify_news(headline, sym)
+                    raw = f"{sym}{headline}{now.strftime('%Y-%m-%d')}"
+                    alert_id = hashlib.sha256(raw.encode()).hexdigest()[:16]
+                    alert = {
+                        'id': alert_id,
+                        'symbol': sym,
+                        'headline': headline,
+                        'summary': '',
+                        'source': 'alpaca',
+                        'url': '',
+                        'impact': impact,
+                        'category': category,
+                        'timestamp': now.isoformat(),
+                        'read': False,
+                        'dismissed': False,
+                    }
+                    is_new = db.insert_news_alert(alert)
+                    if is_new and impact == 'high' and settings.get('high_impact_push', True):
+                        # Check category filter
+                        cat_settings = settings.get('categories', {})
+                        if cat_settings.get(category, True):
+                            await broadcast({
+                                'type': 'news_alert',
+                                'alert': alert,
+                            })
+                            logger.info(f"News alert broadcast: [{impact}] {sym} - {headline[:80]}")
+
+        except Exception as e:
+            logger.debug(f"News fetcher error: {e}")
+
+        await asyncio.sleep(300)  # 5 minutes
+
+
+# =============================================================================
 # SECTION 8: WEBSOCKET & BROADCAST
 # =============================================================================
 
@@ -13858,6 +14135,8 @@ async def lifespan(app):
     asyncio.create_task(_startup_reconcile())
     # Pre-warm volume cache for fast first scan
     asyncio.create_task(_prewarm_volume_cache())
+    # Background news fetcher (every 5 min during market hours)
+    asyncio.create_task(_news_fetcher_loop())
     # Auto-start trading loop if configured
     if live_trader.config.auto_start:
         asyncio.create_task(_delayed_auto_start())
@@ -16687,6 +16966,70 @@ async def get_rejected_candidates(request: Request):
     rows = db.query_rejected_candidates(date=date, stage=stage, symbol=symbol, n=n)
     stats = db.get_rejected_stats(date) if date else {}
     return {'candidates': rows, 'stats': stats, 'count': len(rows)}
+
+
+# ---------------------------------------------------------------------------
+# News Alerts API
+# ---------------------------------------------------------------------------
+
+@app.get("/api/news/alerts")
+async def api_get_news_alerts(request: Request):
+    """Paginated news alerts for mobile app."""
+    limit = min(int(request.query_params.get('limit', '50')), 200)
+    offset = int(request.query_params.get('offset', '0'))
+    symbol = request.query_params.get('symbol', None) or None
+    impact = request.query_params.get('impact', None) or None
+    db = get_price_db()
+    alerts, total = db.get_news_alerts(limit=limit, offset=offset,
+                                        symbol=symbol, impact=impact)
+    return {'alerts': alerts, 'total': total, 'limit': limit, 'offset': offset}
+
+
+@app.post("/api/news/dismiss")
+async def api_dismiss_news_alert(request: Request):
+    """Dismiss/acknowledge an alert."""
+    body = await request.json()
+    alert_id = body.get('id', '')
+    if not alert_id:
+        return JSONResponse({'error': 'missing alert id'}, status_code=400)
+    db = get_price_db()
+    ok = db.dismiss_news_alert(alert_id)
+    return {'dismissed': ok, 'id': alert_id}
+
+
+@app.post("/api/news/read")
+async def api_mark_news_read(request: Request):
+    """Mark an alert as read."""
+    body = await request.json()
+    alert_id = body.get('id', '')
+    if not alert_id:
+        return JSONResponse({'error': 'missing alert id'}, status_code=400)
+    db = get_price_db()
+    ok = db.mark_news_alert_read(alert_id)
+    return {'read': ok, 'id': alert_id}
+
+
+@app.get("/api/news/settings")
+async def api_get_news_settings():
+    """Get notification preferences."""
+    db = get_price_db()
+    settings = db.get_news_settings()
+    if not settings:
+        settings = dict(DEFAULT_NEWS_SETTINGS)
+    return {'settings': settings}
+
+
+@app.post("/api/news/settings")
+async def api_update_news_settings(request: Request):
+    """Update notification preferences."""
+    body = await request.json()
+    settings = body.get('settings', body)
+    # Merge with defaults to ensure all keys exist
+    merged = dict(DEFAULT_NEWS_SETTINGS)
+    merged.update(settings)
+    db = get_price_db()
+    db.save_news_settings(merged)
+    return {'saved': True, 'settings': merged}
 
 
 async def _tracker_on_tick(symbol: str, price: float, size: int = 0):
