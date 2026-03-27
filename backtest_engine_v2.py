@@ -2,6 +2,8 @@
 backtest_engine_v2.py — Institution-grade walk-forward backtesting engine.
 
 Simulates the gap-fade short strategy bar-by-bar on 1-minute data with:
+  - Pluggable entry modes: blind (9:31) or exhaustion (9:45+ OR fade)
+  - Optional sweep detection and pyramiding
   - ATR-based slippage model
   - Tiered smart-exit trailing stops with reversal detection
   - Adaptive stop sizing (gap% * fraction, clamped)
@@ -13,8 +15,11 @@ Simulates the gap-fade short strategy bar-by-bar on 1-minute data with:
   - Survivorship-bias discount
 
 Usage:
-    python backtest_engine_v2.py                    # default config
-    python backtest_engine_v2.py --start 2024-06-01 --end 2025-06-01
+    python backtest_engine_v2.py --entry blind        # 9:31 blind (original)
+    python backtest_engine_v2.py --entry exhaustion    # 9:45+ exhaustion (matches live)
+    python backtest_engine_v2.py --sweep               # enable sweep detector
+    python backtest_engine_v2.py --pyramid             # enable pyramiding
+    python backtest_engine_v2.py --entry exhaustion --sweep --pyramid  # full live match
 """
 
 from __future__ import annotations
@@ -124,6 +129,23 @@ class BacktestConfig:
     fomc_block: bool = True
     earnings_block: bool = True
 
+    # Entry mode: 'blind' (9:31 bar open) or 'exhaustion' (9:45+ OR fade)
+    entry_mode: str = "exhaustion"
+
+    # Exhaustion-specific settings
+    exhaustion_or_minutes: int = 15         # Opening Range: first 15 minutes (9:30-9:44)
+    exhaustion_min_fade_pct: float = 0.0    # minimum fade from open to trigger (0 = any fade)
+
+    # Sweep detector
+    sweep_enabled: bool = False
+    sweep_recovery_bars: int = 5            # max bars for price to recover after sweep
+
+    # Pyramiding
+    pyramid_enabled: bool = False
+    pyramid_max_adds: int = 2
+    pyramid_min_profit_pct: float = 0.03    # +3% before adding
+    pyramid_size_decay: float = 0.5         # each add = 50% of previous
+
     # Database
     db_url: str = "postgresql://rudra:rudra_dev_2024@localhost:5432/rudra_dev"
 
@@ -152,6 +174,10 @@ class Position:
     high_water_price: float = 0.0
     high_water_pnl_pct: float = 0.0
     partial_filled: bool = False
+
+    # Pyramiding tracking
+    pyramid_count: int = 0
+    total_cost_basis: float = 0.0  # sum(entry_price * shares) for avg calc
 
 
 @dataclass(frozen=True)
@@ -573,6 +599,12 @@ class BacktestEngineV2:
     ) -> Tuple[List[TradeRecord], float, List[Position]]:
         """Simulate one trading day bar-by-bar.
 
+        Supports two entry modes controlled by cfg.entry_mode:
+          - 'blind':      enter at entry_delay bar open (default 9:31)
+          - 'exhaustion':  wait until 9:45+, check price < OR high AND price < gap open
+
+        Optional sweep detection (cfg.sweep_enabled) and pyramiding (cfg.pyramid_enabled).
+
         Args:
             date_str:   date string 'YYYY-MM-DD'
             candidates: rows from gap scan for this date
@@ -614,233 +646,58 @@ class BacktestEngineV2:
             return trades, equity, positions
 
         # Group bars by symbol and apply split adjustment
-        # Minute bars may be raw (pre-split) while daily bars are split-adjusted.
-        # We compute a split ratio from daily bar open vs minute bar first open.
         bars_by_symbol: Dict[str, pd.DataFrame] = {}
         for sym in symbols:
             sym_bars = minute_df[minute_df["symbol"] == sym].copy()
             if not sym_bars.empty:
                 sym_bars = sym_bars.sort_values("ts").reset_index(drop=True)
-                # Split adjustment: compare daily bar open with first minute bar open
                 cand_row = candidates[candidates["symbol"] == sym]
                 if not cand_row.empty:
                     daily_open = float(cand_row.iloc[0]["open"])
                     min_open = float(sym_bars.iloc[0]["open"])
                     if min_open > 0 and daily_open > 0:
                         ratio = daily_open / min_open
-                        # If ratio is far from 1.0, there was a split
                         if abs(ratio - 1.0) > 0.05:
                             for col in ("open", "high", "low", "close"):
                                 sym_bars[col] = sym_bars[col] * ratio
                 bars_by_symbol[sym] = sym_bars
-
-        # ═══════════════════════════════════════════════════════════════
-        # EXHAUSTION ENTRY ENGINE — Structure-Based, Not Time-Based
-        #
-        # Phase 1 (9:30-9:45): Build the Opening Range (OR). Track HOD/LOD.
-        # Phase 2 (9:45+): Wait for exhaustion signal:
-        #   - Price must be below 15-min HOD (momentum fading)
-        #   - VWAP cross: bar closes below running VWAP (institutional selling)
-        #   - RSI(5) curling down from >70 (overbought exhaustion)
-        # Phase 3: Entry at the bar AFTER all 3 conditions are met.
-        #   - Stop = 0.20% above 15-min HOD (structural invalidation)
-        # ═══════════════════════════════════════════════════════════════
 
         current_notional = sum(
             p.remaining_shares * p.entry_price for p in positions
         )
         new_positions: List[Position] = list(positions)
 
-        # Pre-compute per-symbol: OR high/low, VWAP, RSI(5)
-        entry_signals: Dict[str, dict] = {}  # sym -> entry info
+        # ═══════════════════════════════════════════════════════════════
+        # ENTRY MODE DISPATCH
+        # ═══════════════════════════════════════════════════════════════
 
-        for _, cand in candidates.iterrows():
-            sym = cand["symbol"]
-            if sym not in bars_by_symbol:
-                continue
-
-            sym_bars = bars_by_symbol[sym]
-            if len(sym_bars) < 20:  # Need at least 20 bars
-                continue
-
-            # Phase 1: Build Opening Range (9:30-9:44)
-            or_bars = sym_bars[sym_bars["ts"].apply(
-                lambda t: t.hour == 9 and 30 <= t.minute < 45
-                if isinstance(t, datetime) else False
-            )]
-            if or_bars.empty:
-                continue
-
-            or_high = float(or_bars["high"].max())
-            or_low = float(or_bars["low"].min())
-
-            # Phase 2: Scan bars from 9:45 onward for exhaustion signal
-            post_or = sym_bars[sym_bars["ts"].apply(
-                lambda t: (t.hour > 9 or (t.hour == 9 and t.minute >= 45))
-                          and (t.hour < self.cfg.time_exit_hour or
-                               (t.hour == self.cfg.time_exit_hour and t.minute < self.cfg.time_exit_min))
-                if isinstance(t, datetime) else False
-            )].reset_index(drop=True)
-
-            if post_or.empty:
-                continue
-
-            # Compute running VWAP and RSI(5) on 1-min bars
-            cum_pv = 0.0
-            cum_vol = 0.0
-            rsi_gains = []
-            rsi_losses = []
-            prev_close_bar = None
-            triggered = False
-
-            for bi in range(len(post_or)):
-                bar = post_or.iloc[bi]
-                bar_close = float(bar["close"])
-                bar_high = float(bar["high"])
-                bar_vol = float(bar["volume"]) if bar["volume"] > 0 else 1.0
-                bar_time = bar["ts"]
-                typical = (float(bar["high"]) + float(bar["low"]) + bar_close) / 3.0
-                cum_pv += typical * bar_vol
-                cum_vol += bar_vol
-                vwap = cum_pv / cum_vol if cum_vol > 0 else bar_close
-
-                # RSI(5) calculation
-                if prev_close_bar is not None:
-                    change = bar_close - prev_close_bar
-                    rsi_gains.append(max(0, change))
-                    rsi_losses.append(max(0, -change))
-                prev_close_bar = bar_close
-
-                if len(rsi_gains) < 5:
-                    continue
-
-                avg_gain = sum(rsi_gains[-5:]) / 5.0
-                avg_loss = sum(rsi_losses[-5:]) / 5.0
-                rs = avg_gain / avg_loss if avg_loss > 0 else 100.0
-                rsi5 = 100.0 - (100.0 / (1.0 + rs))
-
-                # Check previous bar's RSI to detect "curling down from >70"
-                if len(rsi_gains) >= 6:
-                    prev_avg_gain = sum(rsi_gains[-6:-1]) / 5.0
-                    prev_avg_loss = sum(rsi_losses[-6:-1]) / 5.0
-                    prev_rs = prev_avg_gain / prev_avg_loss if prev_avg_loss > 0 else 100.0
-                    prev_rsi5 = 100.0 - (100.0 / (1.0 + prev_rs))
-                else:
-                    prev_rsi5 = rsi5
-
-                # ── EXHAUSTION SIGNAL CHECK ──
-                # 1. Price below 15-min HOD (opening momentum fading)
-                below_or_high = bar_close < or_high
-                # 2. Bar closes below VWAP (sellers taking control)
-                below_vwap = bar_close < vwap
-                # 3. RSI(5) curling down from overbought (>70 prev, now falling)
-                rsi_exhausted = prev_rsi5 > 65 and rsi5 < prev_rsi5
-
-                if below_or_high and below_vwap and rsi_exhausted:
-                    entry_signals[sym] = {
-                        "cand": cand,
-                        "entry_bar_idx": bi + 1,  # Enter on NEXT bar
-                        "entry_bars": post_or,
-                        "or_high": or_high,
-                        "or_low": or_low,
-                        "vwap_at_signal": vwap,
-                        "rsi_at_signal": rsi5,
-                        "signal_time": bar_time,
-                    }
-                    triggered = True
-                    break  # First signal wins
-
-                # Fallback: if no RSI exhaustion but price drops below VWAP
-                # after 10:00 AM, enter on VWAP cross alone (weaker signal)
-                if not triggered and isinstance(bar_time, datetime) and bar_time.hour >= 10:
-                    if below_or_high and below_vwap and rsi5 < 55:
-                        entry_signals[sym] = {
-                            "cand": cand,
-                            "entry_bar_idx": bi + 1,
-                            "entry_bars": post_or,
-                            "or_high": or_high,
-                            "or_low": or_low,
-                            "vwap_at_signal": vwap,
-                            "rsi_at_signal": rsi5,
-                            "signal_time": bar_time,
-                            "is_fallback": True,
-                        }
-                        triggered = True
-                        break
-
-        # Phase 3: Execute entries from signals
-        for sym, sig in entry_signals.items():
-            if len(new_positions) >= max_pos:
-                break
-
-            cand = sig["cand"]
-            post_or = sig["entry_bars"]
-            entry_idx = sig["entry_bar_idx"]
-            or_high = sig["or_high"]
-
-            if entry_idx >= len(post_or):
-                continue
-
-            entry_bar = post_or.iloc[entry_idx]
-            raw_entry = float(entry_bar["open"])
-            atr = atr_map.get(sym, raw_entry * 0.02)
-            slip = self._slippage(raw_entry, atr, "short")
-            entry_price = raw_entry - slip
-
-            if entry_price <= 0:
-                continue
-
-            # Order rejection
-            if self._rng.random() < self.cfg.rejection_rate:
-                continue
-
-            gap_pct = float(cand["gap_pct"])
-            prev_close = float(cand["prev_close"])
-
-            # STRUCTURAL STOP: 0.20% above the 15-min HOD
-            stop_price = or_high * 1.002
-            stop_pct = (stop_price - entry_price) / entry_price if entry_price > 0 else 0.03
-
-            # Minimum stop distance (don't let it be too tight)
-            if stop_pct < 0.005:
-                stop_pct = 0.005
-                stop_price = entry_price * (1 + stop_pct)
-
-            shares = self._size_position(
-                equity, entry_price, stop_pct, current_notional
+        if self.cfg.entry_mode == "blind":
+            self._enter_blind(
+                candidates, bars_by_symbol, atr_map, equity,
+                current_notional, max_pos, new_positions,
             )
-            if shares <= 0:
-                continue
-
-            notional = shares * entry_price
-            current_notional += notional
-
-            pos = Position(
-                symbol=sym,
-                direction="short",
-                entry_price=entry_price,
-                entry_time=str(entry_bar["ts"]),
-                shares=shares,
-                remaining_shares=shares,
-                stop_price=stop_price,
-                prev_close=prev_close,
-                gap_pct=gap_pct,
-                atr=atr,
-                slippage_entry=slip,
+        else:
+            self._enter_exhaustion(
+                candidates, bars_by_symbol, atr_map, equity,
+                current_notional, max_pos, new_positions,
             )
-            new_positions.append(pos)
 
-        # --- Bar-by-bar exit simulation ---
+        # --- Bar-by-bar exit simulation (with optional pyramiding) ---
         closed_indices: set = set()
 
-        # Get all unique timestamps across all symbols, sorted
         all_times = sorted(minute_df["ts"].unique())
 
         for bar_ts in all_times:
             bar_time = pd.Timestamp(bar_ts).to_pydatetime()
-            # Skip 9:30 bar (entry bar) — positions entered at 9:31
             if bar_time.hour == 9 and bar_time.minute <= 30:
                 continue
+
+            # --- Pyramiding check (before exit logic) ---
+            if self.cfg.pyramid_enabled:
+                self._check_pyramid(
+                    bar_ts, bars_by_symbol, atr_map, equity,
+                    current_notional, new_positions, closed_indices,
+                )
 
             for idx, pos in enumerate(new_positions):
                 if idx in closed_indices:
@@ -968,6 +825,368 @@ class BacktestEngineV2:
             p for i, p in enumerate(new_positions) if i not in closed_indices and p.remaining_shares > 0
         ]
         return trades, equity, remaining
+
+    # -- blind entry mode ----------------------------------------------------
+
+    def _enter_blind(
+        self,
+        candidates: pd.DataFrame,
+        bars_by_symbol: Dict[str, pd.DataFrame],
+        atr_map: Dict[str, float],
+        equity: float,
+        current_notional: float,
+        max_pos: int,
+        new_positions: List[Position],
+    ) -> None:
+        """Blind entry: enter at entry_delay bar's open (default 9:31).
+
+        Simple mode — for each candidate, place order at the bar open
+        that corresponds to entry_delay_minutes after 9:30, set adaptive stop.
+        """
+        entry_minute = 30 + self.cfg.entry_delay_minutes  # e.g. 31 for 1-min delay
+
+        for _, cand in candidates.iterrows():
+            if len(new_positions) >= max_pos:
+                break
+
+            sym = cand["symbol"]
+            if sym not in bars_by_symbol:
+                continue
+
+            sym_bars = bars_by_symbol[sym]
+            if len(sym_bars) < 2:
+                continue
+
+            # Find the entry bar (entry_delay minutes after 9:30)
+            entry_bar = None
+            for bi in range(len(sym_bars)):
+                bar = sym_bars.iloc[bi]
+                ts = bar["ts"]
+                if isinstance(ts, datetime):
+                    if ts.hour == 9 and ts.minute == entry_minute:
+                        entry_bar = bar
+                        break
+                    # If exact minute not found, take first bar after delay
+                    if (ts.hour > 9 or ts.minute >= entry_minute) and entry_bar is None:
+                        entry_bar = bar
+                        break
+
+            if entry_bar is None:
+                continue
+
+            raw_entry = float(entry_bar["open"])
+            atr = atr_map.get(sym, raw_entry * 0.02)
+            slip = self._slippage(raw_entry, atr, "short")
+            entry_price = raw_entry - slip
+
+            if entry_price <= 0:
+                continue
+
+            # Order rejection
+            if self._rng.random() < self.cfg.rejection_rate:
+                continue
+
+            gap_pct = float(cand["gap_pct"])
+            prev_close = float(cand["prev_close"])
+
+            # Adaptive stop (gap% * fraction, clamped)
+            stop_pct = self._adaptive_stop_pct(gap_pct)
+            stop_price = entry_price * (1 + stop_pct)
+
+            shares = self._size_position(
+                equity, entry_price, stop_pct, current_notional
+            )
+            if shares <= 0:
+                continue
+
+            notional = shares * entry_price
+            current_notional += notional
+
+            pos = Position(
+                symbol=sym,
+                direction="short",
+                entry_price=entry_price,
+                entry_time=str(entry_bar["ts"]),
+                shares=shares,
+                remaining_shares=shares,
+                stop_price=stop_price,
+                prev_close=prev_close,
+                gap_pct=gap_pct,
+                atr=atr,
+                slippage_entry=slip,
+                total_cost_basis=entry_price * shares,
+            )
+            new_positions.append(pos)
+
+    # -- exhaustion entry mode -----------------------------------------------
+
+    def _enter_exhaustion(
+        self,
+        candidates: pd.DataFrame,
+        bars_by_symbol: Dict[str, pd.DataFrame],
+        atr_map: Dict[str, float],
+        equity: float,
+        current_notional: float,
+        max_pos: int,
+        new_positions: List[Position],
+    ) -> None:
+        """Exhaustion entry: matches live bot _check_exhaustion_signal() EXACTLY.
+
+        Phase 1 (bars 0-14, 9:30-9:44): Build Opening Range (track high/low).
+        Phase 2 (bars 15+, 9:45+): Check each bar:
+          - Is current close < OR high? (momentum fading)
+          - Is current close < the gap open price? (gap actually fading)
+          - If both YES -> enter at NEXT bar's open
+          - Stop = OR high * 1.002 (structural)
+
+        Optional sweep detection: if a bar's high goes ABOVE OR high then
+        a subsequent bar closes BELOW OR high within sweep_recovery_bars,
+        enter on sweep signal with stop above sweep_high.
+        """
+        or_minutes = self.cfg.exhaustion_or_minutes  # default 15
+        or_end_minute = 30 + or_minutes  # e.g. 45
+
+        entry_signals: Dict[str, dict] = {}
+
+        for _, cand in candidates.iterrows():
+            sym = cand["symbol"]
+            if sym not in bars_by_symbol:
+                continue
+
+            sym_bars = bars_by_symbol[sym]
+            if len(sym_bars) < or_minutes + 5:
+                continue
+
+            gap_open = float(cand["open"])  # the gap open price
+
+            # Phase 1: Build Opening Range (9:30 to 9:30+or_minutes)
+            or_bars = sym_bars[sym_bars["ts"].apply(
+                lambda t, om=or_end_minute: t.hour == 9 and 30 <= t.minute < om
+                if isinstance(t, datetime) else False
+            )]
+            if or_bars.empty:
+                continue
+
+            or_high = float(or_bars["high"].max())
+            or_low = float(or_bars["low"].min())
+
+            # Phase 2: Scan bars from or_end_minute onward
+            post_or = sym_bars[sym_bars["ts"].apply(
+                lambda t, om=or_end_minute: (t.hour > 9 or (t.hour == 9 and t.minute >= om))
+                          and (t.hour < self.cfg.time_exit_hour or
+                               (t.hour == self.cfg.time_exit_hour and t.minute < self.cfg.time_exit_min))
+                if isinstance(t, datetime) else False
+            )].reset_index(drop=True)
+
+            if post_or.empty:
+                continue
+
+            # Sweep tracking state
+            sweep_high: Optional[float] = None
+            sweep_bar_count = 0
+            triggered = False
+
+            for bi in range(len(post_or)):
+                bar = post_or.iloc[bi]
+                bar_close = float(bar["close"])
+                bar_high = float(bar["high"])
+
+                # ── SWEEP DETECTION ──
+                if self.cfg.sweep_enabled:
+                    if bar_high > or_high:
+                        # Price swept above OR high
+                        if sweep_high is None or bar_high > sweep_high:
+                            sweep_high = bar_high
+                        sweep_bar_count = 0  # reset recovery counter
+                    elif sweep_high is not None:
+                        sweep_bar_count += 1
+                        # Check if price recovered (closed back below OR high)
+                        if bar_close < or_high and sweep_bar_count <= self.cfg.sweep_recovery_bars:
+                            # Sweep signal: enter at next bar
+                            entry_signals[sym] = {
+                                "cand": cand,
+                                "entry_bar_idx": bi + 1,
+                                "entry_bars": post_or,
+                                "or_high": or_high,
+                                "or_low": or_low,
+                                "stop_ref": sweep_high,  # stop above sweep high
+                                "signal_type": "sweep",
+                            }
+                            triggered = True
+                            break
+                        if sweep_bar_count > self.cfg.sweep_recovery_bars:
+                            sweep_high = None  # reset, too many bars elapsed
+
+                # ── EXHAUSTION SIGNAL CHECK (matches live bot EXACTLY) ──
+                # Condition 1: Price below OR high
+                below_or_high = bar_close < or_high
+
+                # Condition 2: Price below the gap open (gap is fading)
+                price_fading = bar_close < gap_open
+
+                # Optional minimum fade filter
+                if self.cfg.exhaustion_min_fade_pct > 0:
+                    fade_pct = (gap_open - bar_close) / gap_open if gap_open > 0 else 0.0
+                    if fade_pct < self.cfg.exhaustion_min_fade_pct:
+                        price_fading = False
+
+                if below_or_high and price_fading:
+                    # Enter at NEXT bar's open
+                    entry_signals[sym] = {
+                        "cand": cand,
+                        "entry_bar_idx": bi + 1,
+                        "entry_bars": post_or,
+                        "or_high": or_high,
+                        "or_low": or_low,
+                        "stop_ref": or_high,  # structural stop ref
+                        "signal_type": "exhaustion",
+                    }
+                    triggered = True
+                    break
+
+        # Phase 3: Execute entries from signals
+        for sym, sig in entry_signals.items():
+            if len(new_positions) >= max_pos:
+                break
+
+            cand = sig["cand"]
+            post_or = sig["entry_bars"]
+            entry_idx = sig["entry_bar_idx"]
+            stop_ref = sig["stop_ref"]
+
+            if entry_idx >= len(post_or):
+                continue
+
+            entry_bar = post_or.iloc[entry_idx]
+            raw_entry = float(entry_bar["open"])
+            atr = atr_map.get(sym, raw_entry * 0.02)
+            slip = self._slippage(raw_entry, atr, "short")
+            entry_price = raw_entry - slip
+
+            if entry_price <= 0:
+                continue
+
+            # Order rejection
+            if self._rng.random() < self.cfg.rejection_rate:
+                continue
+
+            gap_pct = float(cand["gap_pct"])
+            prev_close = float(cand["prev_close"])
+
+            # STRUCTURAL STOP: 0.20% above stop reference
+            stop_price = stop_ref * 1.002
+            stop_pct = (stop_price - entry_price) / entry_price if entry_price > 0 else 0.03
+
+            # Minimum stop distance
+            if stop_pct < 0.005:
+                stop_pct = 0.005
+                stop_price = entry_price * (1 + stop_pct)
+
+            shares = self._size_position(
+                equity, entry_price, stop_pct, current_notional
+            )
+            if shares <= 0:
+                continue
+
+            notional = shares * entry_price
+            current_notional += notional
+
+            pos = Position(
+                symbol=sym,
+                direction="short",
+                entry_price=entry_price,
+                entry_time=str(entry_bar["ts"]),
+                shares=shares,
+                remaining_shares=shares,
+                stop_price=stop_price,
+                prev_close=prev_close,
+                gap_pct=gap_pct,
+                atr=atr,
+                slippage_entry=slip,
+                total_cost_basis=entry_price * shares,
+            )
+            new_positions.append(pos)
+
+    # -- pyramiding ----------------------------------------------------------
+
+    def _check_pyramid(
+        self,
+        bar_ts: Any,
+        bars_by_symbol: Dict[str, pd.DataFrame],
+        atr_map: Dict[str, float],
+        equity: float,
+        current_notional: float,
+        positions: List[Position],
+        closed_indices: set,
+    ) -> None:
+        """Check if any open position qualifies for pyramid add.
+
+        Adds shares if position is >= pyramid_min_profit_pct profitable
+        and pyramid_count < pyramid_max_adds. Each add is sized at
+        original_shares * pyramid_size_decay^(count+1). Stop moves to
+        breakeven of combined position.
+        """
+        for idx, pos in enumerate(positions):
+            if idx in closed_indices:
+                continue
+            if pos.pyramid_count >= self.cfg.pyramid_max_adds:
+                continue
+
+            sym = pos.symbol
+            if sym not in bars_by_symbol:
+                continue
+
+            sym_bars = bars_by_symbol[sym]
+            bar_rows = sym_bars[sym_bars["ts"] == bar_ts]
+            if bar_rows.empty:
+                continue
+
+            bar = bar_rows.iloc[0]
+            bar_close = float(bar["close"])
+
+            # Calculate unrealized P&L %
+            if pos.direction == "short":
+                unrealized_pct = (pos.entry_price - bar_close) / pos.entry_price
+            else:
+                unrealized_pct = (bar_close - pos.entry_price) / pos.entry_price
+
+            if unrealized_pct < self.cfg.pyramid_min_profit_pct:
+                continue
+
+            # Calculate add size with decay
+            decay = self.cfg.pyramid_size_decay ** (pos.pyramid_count + 1)
+            add_shares = max(1, int(pos.shares * decay))
+
+            # Slippage on add
+            atr = atr_map.get(sym, bar_close * 0.02)
+            slip = self._slippage(bar_close, atr, pos.direction)
+            if pos.direction == "short":
+                add_price = bar_close - slip
+            else:
+                add_price = bar_close + slip
+
+            if add_price <= 0:
+                continue
+
+            # Update position: add shares, recalculate avg entry
+            old_cost = pos.total_cost_basis if pos.total_cost_basis > 0 else pos.entry_price * pos.remaining_shares
+            new_cost = old_cost + add_price * add_shares
+            new_total_shares = pos.remaining_shares + add_shares
+
+            avg_entry = new_cost / new_total_shares if new_total_shares > 0 else pos.entry_price
+
+            pos.remaining_shares = new_total_shares
+            pos.total_cost_basis = new_cost
+            pos.pyramid_count += 1
+
+            # Move stop to breakeven of combined position
+            if pos.direction == "short":
+                pos.stop_price = avg_entry * 1.002  # tiny buffer above breakeven
+            else:
+                pos.stop_price = avg_entry * 0.998
+
+            # Update entry_price to weighted average for P&L calcs
+            pos.entry_price = avg_entry
 
     # -- full backtest -------------------------------------------------------
 
@@ -1517,8 +1736,18 @@ def _print_summary(result: Dict[str, Any]) -> None:
         print("No results.")
         return
 
+    cfg = result.get("config", {})
+    entry_mode = cfg.get("entry_mode", "exhaustion")
+    sweep_on = cfg.get("sweep_enabled", False)
+    pyramid_on = cfg.get("pyramid_enabled", False)
+
+    mode_label = "blind (9:31 bar open)" if entry_mode == "blind" else "exhaustion (9:45+ OR fade)"
+
     print("\n" + "=" * 65)
     print("  BACKTEST RESULTS — Gap Fade Short Strategy (1-min bars)")
+    print(f"  Entry Mode: {mode_label}")
+    print(f"  Sweep: {'enabled' if sweep_on else 'disabled'}")
+    print(f"  Pyramid: {'enabled' if pyramid_on else 'disabled'}")
     print("=" * 65)
 
     fmt = "  {:<30s} {}"
@@ -1591,6 +1820,16 @@ def main() -> None:
     parser.add_argument("--end", default="2026-03-20", help="End date YYYY-MM-DD")
     parser.add_argument("--capital", type=float, default=25_000, help="Initial capital")
     parser.add_argument(
+        "--entry", choices=["blind", "exhaustion"], default="exhaustion",
+        help="Entry mode: blind (9:31 bar open) or exhaustion (9:45+ OR fade, matches live bot)"
+    )
+    parser.add_argument(
+        "--sweep", action="store_true", help="Enable sweep detector (exhaustion mode)"
+    )
+    parser.add_argument(
+        "--pyramid", action="store_true", help="Enable pyramiding into winners"
+    )
+    parser.add_argument(
         "--walk-forward", action="store_true", help="Run walk-forward optimization"
     )
     parser.add_argument(
@@ -1609,6 +1848,9 @@ def main() -> None:
         start_date=args.start,
         end_date=args.end,
         initial_capital=args.capital,
+        entry_mode=args.entry,
+        sweep_enabled=args.sweep,
+        pyramid_enabled=args.pyramid,
     )
     engine = BacktestEngineV2(cfg)
 
