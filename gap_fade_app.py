@@ -3159,6 +3159,19 @@ class GapFadeConfig:
     swing_max_positions: int = 5
     swing_max_weekly_trades: int = 3
 
+    # Pyramiding (add to winners)
+    pyramid_enabled: bool = True
+    pyramid_max_adds: int = 2              # max 2 adds per position
+    pyramid_min_profit_pct: float = 0.03   # only add when +3% profitable
+    pyramid_size_decay: float = 0.5        # each add is 50% of previous size
+    pyramid_move_stop: bool = True         # move stop to breakeven after each add
+
+    # Sweep detector (liquidity sweep entry)
+    sweep_entry_enabled: bool = True
+    sweep_lookback_bars: int = 3           # check last 3 price updates
+    sweep_min_recovery_pct: float = 0.003  # price must recover 0.3% from sweep high
+    sweep_max_time_bars: int = 5           # recovery must happen within 5 bars
+
     # Execution broker: 'alpaca' or 'ibkr'
     execution_broker: str = 'alpaca'
 
@@ -3223,10 +3236,16 @@ class GapPosition:
     catalyst: str = ''
     strategy_id: str = ''                # which strategy opened this position
     source: str = 'gap_fade'             # 'gap_fade' or 'intraday' — for capital partitioning
+    # Pyramiding state
+    pyramid_count: int = 0               # number of pyramid adds done
+    pyramid_entries: str = ''            # JSON: [{price, shares, time}]
+    original_shares: int = 0             # shares at first entry (before pyramids)
 
     def __post_init__(self):
         if self.remaining_shares == 0:
             self.remaining_shares = self.shares
+        if self.original_shares == 0:
+            self.original_shares = self.shares
 
     def update_tracking(self, price: float, now_str: str):
         """Update high water mark and price history."""
@@ -8178,6 +8197,10 @@ class GapFadeLiveTrader:
         self._opening_ranges: Dict[str, dict] = {}     # sym -> {high, low, built}
         self._exhaustion_signals: Dict[str, dict] = {} # sym -> {triggered, time, vwap, rsi}
         self._exhaustion_entered: set = set()           # symbols already entered via exhaustion
+        # Sweep detector state (tracks liquidity sweeps above OR high)
+        self._sweep_data: Dict[str, dict] = {}          # sym -> {sweep_high, sweep_time, bars_since, recovered, entry_triggered}
+        # Pyramiding state
+        self._last_pyramid_check: float = 0.0           # monotonic time of last pyramid scan
         self._last_model_rebuild = ''  # ISO date of last model rebuild
         self._trading_halted: bool = False  # EOD circuit breaker — set by watchdog, blocks new entries
         self._eod_watchdog_task: Optional[asyncio.Task] = None  # independent EOD guardian
@@ -10176,6 +10199,9 @@ class GapFadeLiveTrader:
                                 self.status = 'trading'
                                 await broadcast({'type': 'live_status', 'status': 'trading'})
                             await self._check_positions()
+                            # Pyramid check (add to winners)
+                            if self.config.pyramid_enabled and self.engine.positions:
+                                await self._check_pyramid_opportunities()
                             if _time.monotonic() - self._last_reconcile > self.RECONCILE_INTERVAL:
                                 await self._reconcile_with_broker()
                             # Autonomous review: periodic portfolio self-check
@@ -10281,6 +10307,9 @@ class GapFadeLiveTrader:
                             self.status = 'trading'
                             await broadcast({'type': 'live_status', 'status': 'trading'})
                         await self._check_positions()
+                        # Pyramid check (add to winners)
+                        if self.config.pyramid_enabled and self.engine.positions:
+                            await self._check_pyramid_opportunities()
                         if _time.monotonic() - self._last_reconcile > self.RECONCILE_INTERVAL:
                             await self._reconcile_with_broker()
                         await self._execute_scheduled_reflection()
@@ -10534,6 +10563,8 @@ class GapFadeLiveTrader:
 
         Simplified for live trading — uses snapshot prices instead of tick data.
 
+        Checks sweep signal first (higher quality), then falls back to plain exhaustion.
+
         Conditions (ALL must be true for a short):
             1. Price < Opening Range High (momentum fading)
             2. Price < day's open (gap is fading)
@@ -10541,6 +10572,11 @@ class GapFadeLiveTrader:
 
         Returns signal dict or None.
         """
+        # Check for sweep signal first (higher quality than plain exhaustion)
+        sweep = self._check_sweep_signal(symbol)
+        if sweep:
+            return sweep
+
         if symbol in self._exhaustion_entered:
             return None
         if symbol not in self._opening_ranges:
@@ -10605,6 +10641,377 @@ class GapFadeLiveTrader:
 
         return None
 
+    def _check_sweep_signal(self, symbol: str) -> Optional[dict]:
+        """Detect liquidity sweep above OR high and return entry signal on recovery.
+
+        Sweep pattern (for SHORT gap-up fade):
+        1. Price spikes ABOVE the Opening Range high (sweep)
+        2. Price fails to hold — drops back BELOW OR high within sweep_max_time_bars checks
+        3. This is the BEST short entry — stops above the sweep high
+
+        The stop goes above the SWEEP high (not just OR high),
+        which is harder to hunt again since institutions already got
+        their liquidity there.
+
+        For LONG gap-down fades: sweep is below OR low, recovery back above.
+        """
+        if not self.config.sweep_entry_enabled:
+            return None
+        if symbol in self._exhaustion_entered:
+            return None
+        if symbol not in self._opening_ranges:
+            return None
+
+        sweep = self._sweep_data.get(symbol)
+        if sweep is None or not sweep.get('recovered') or sweep.get('entry_triggered'):
+            return None
+
+        # Recovery must happen within max_time_bars
+        if sweep.get('bars_since', 0) > self.config.sweep_max_time_bars:
+            return None
+
+        or_data = self._opening_ranges[symbol]
+        or_high = or_data['high']
+
+        # Get current price
+        price = 0.0
+        if self.streamer and hasattr(self.streamer, 'latest_prices'):
+            price = self.streamer.latest_prices.get(symbol, 0)
+        if price <= 0:
+            return None
+
+        sweep_high = sweep['sweep_high']
+
+        # Determine direction from candidate
+        cand = next((c for c in self.candidates if c.symbol == symbol), None)
+        direction = cand.direction if cand else 'short'
+
+        if direction == 'short':
+            # Sweep was above OR high; price must now be below OR high
+            if price >= or_high:
+                return None
+            # Recovery must be meaningful: price dropped sweep_min_recovery_pct from sweep_high
+            recovery_pct = (sweep_high - price) / sweep_high if sweep_high > 0 else 0
+            if recovery_pct < self.config.sweep_min_recovery_pct:
+                return None
+            # Stop above the sweep high (harder to hunt again)
+            stop_price = round(sweep_high * 1.002, 2)
+        else:
+            # LONG: sweep was below OR low; price must now be above OR low
+            or_low = or_data.get('low', 0)
+            if or_low <= 0 or price <= or_low:
+                return None
+            sweep_low = sweep['sweep_high']  # stored as the extreme (lowest price for longs)
+            recovery_pct = (price - sweep_low) / sweep_low if sweep_low > 0 else 0
+            if recovery_pct < self.config.sweep_min_recovery_pct:
+                return None
+            stop_price = round(sweep_low * 0.998, 2)
+
+        now = datetime.now(ET)
+        return {
+            'type': 'sweep',
+            'or_high': or_high,
+            'sweep_high': sweep_high,
+            'sweep_time': sweep.get('sweep_time', ''),
+            'vwap': 0,
+            'rsi': 0,
+            'price': price,
+            'stop_price': stop_price,
+            'time': now.strftime('%H:%M:%S'),
+        }
+
+    def _update_sweep_tracking(self, symbol: str, price: float, direction: str = 'short'):
+        """Update sweep tracking data for a symbol on every price check.
+
+        Called during exhaustion entry scan to track potential liquidity sweeps.
+        """
+        if not self.config.sweep_entry_enabled:
+            return
+        if symbol not in self._opening_ranges:
+            return
+
+        or_data = self._opening_ranges[symbol]
+        or_high = or_data['high']
+        or_low = or_data.get('low', 0)
+        now = datetime.now(ET)
+
+        if direction == 'short':
+            # Track if price sweeps ABOVE OR high
+            if price > or_high:
+                if symbol not in self._sweep_data:
+                    self._sweep_data[symbol] = {
+                        'sweep_high': price,
+                        'sweep_time': now.strftime('%H:%M:%S'),
+                        'bars_since': 0,
+                        'recovered': False,
+                        'entry_triggered': False,
+                    }
+                else:
+                    sd = self._sweep_data[symbol]
+                    sd['sweep_high'] = max(sd['sweep_high'], price)
+                    if not sd['recovered']:
+                        sd['bars_since'] += 1
+            elif symbol in self._sweep_data:
+                sd = self._sweep_data[symbol]
+                if not sd['recovered']:
+                    # Price came back below OR high — recovery detected
+                    sd['recovered'] = True
+                    sd['bars_since'] += 1
+                elif not sd['entry_triggered']:
+                    sd['bars_since'] += 1
+        else:
+            # LONG: track if price sweeps BELOW OR low
+            if or_low > 0 and price < or_low:
+                if symbol not in self._sweep_data:
+                    self._sweep_data[symbol] = {
+                        'sweep_high': price,  # actually sweep_low for longs
+                        'sweep_time': now.strftime('%H:%M:%S'),
+                        'bars_since': 0,
+                        'recovered': False,
+                        'entry_triggered': False,
+                    }
+                else:
+                    sd = self._sweep_data[symbol]
+                    sd['sweep_high'] = min(sd['sweep_high'], price)  # track lowest
+                    if not sd['recovered']:
+                        sd['bars_since'] += 1
+            elif symbol in self._sweep_data:
+                sd = self._sweep_data[symbol]
+                if not sd['recovered']:
+                    sd['recovered'] = True
+                    sd['bars_since'] += 1
+                elif not sd['entry_triggered']:
+                    sd['bars_since'] += 1
+
+    async def _check_pyramid_opportunities(self):
+        """Check open positions for pyramid (add-to-winner) opportunities.
+
+        Called every 30 seconds during market hours when positions exist.
+
+        Rules:
+        1. Position must be profitable (>= pyramid_min_profit_pct from avg entry)
+        2. Current price > last pyramid entry * (1 + min_profit_pct) (distance from last add)
+        3. Max pyramid_max_adds adds per position
+        4. EMA(9) > EMA(21) must still be aligned (trend valid) — when indicator data available
+        5. Volume above average (confirming momentum) — when indicator data available
+        6. After each add: move stop to breakeven of the combined position
+        7. Each add size = original_shares * (pyramid_size_decay ^ (pyramid_count + 1))
+
+        For SHORTS: profitable means price BELOW entry, pyramid on new lows.
+        For LONGS: profitable means price ABOVE entry, pyramid on new highs.
+        """
+        if self._trading_halted:
+            return
+        if not self.config.pyramid_enabled:
+            return
+
+        now = datetime.now(ET)
+        now_mono = _time.monotonic()
+
+        # Throttle: check every 30 seconds
+        if now_mono - self._last_pyramid_check < 30:
+            return
+        self._last_pyramid_check = now_mono
+
+        # Get prices: prefer streamer, fall back to REST
+        prices: dict = {}
+        if self.streamer and hasattr(self.streamer, 'latest_prices'):
+            prices = dict(self.streamer.latest_prices)
+        if not prices and self.engine.positions:
+            try:
+                syms = list(self.engine.positions.keys())
+                prices = await self._broker_get_prices(syms)
+            except Exception as e:
+                logger.warning(f"Pyramid price fetch failed: {e}")
+                return
+
+        for sym in list(self.engine.positions.keys()):
+            price = prices.get(sym)
+            if not price or price <= 0:
+                continue
+
+            async with self._position_lock:
+                pos = self.engine.positions.get(sym)
+                if not pos:
+                    continue
+
+                # Skip non-gap-fade positions (swing, intraday)
+                if pos.source != 'gap_fade':
+                    continue
+                # Skip positions being closed
+                if pos.closing:
+                    continue
+                # Max adds reached
+                if pos.pyramid_count >= self.config.pyramid_max_adds:
+                    continue
+
+                # Calculate current P&L %
+                if pos.direction == 'short':
+                    pnl_pct = (pos.entry_price - price) / pos.entry_price if pos.entry_price > 0 else 0
+                else:
+                    pnl_pct = (price - pos.entry_price) / pos.entry_price if pos.entry_price > 0 else 0
+
+                # Must be profitable enough
+                if pnl_pct < self.config.pyramid_min_profit_pct:
+                    continue
+
+                # Check distance from last pyramid entry
+                last_entry_price = pos.entry_price  # default to avg entry
+                if pos.pyramid_entries:
+                    try:
+                        entries = json.loads(pos.pyramid_entries)
+                        if entries:
+                            last_entry_price = entries[-1]['price']
+                    except (json.JSONDecodeError, KeyError, IndexError):
+                        pass
+
+                if pos.direction == 'short':
+                    # For shorts, price must be sufficiently below last add
+                    distance = (last_entry_price - price) / last_entry_price if last_entry_price > 0 else 0
+                else:
+                    # For longs, price must be sufficiently above last add
+                    distance = (price - last_entry_price) / last_entry_price if last_entry_price > 0 else 0
+
+                if distance < self.config.pyramid_min_profit_pct:
+                    continue
+
+                # EMA trend check (when indicator data available)
+                if self.indicator_engine:
+                    tick_data = self.indicator_engine.get_data(sym)
+                    if tick_data:
+                        ema9 = tick_data.get('ema9', 0)
+                        ema21 = tick_data.get('ema21', 0)
+                        if ema9 > 0 and ema21 > 0:
+                            if pos.direction == 'short' and ema9 > ema21:
+                                # Short: EMA9 above EMA21 means uptrend — skip pyramid
+                                continue
+                            elif pos.direction == 'long' and ema9 < ema21:
+                                # Long: EMA9 below EMA21 means downtrend — skip pyramid
+                                continue
+
+                        # Volume check: prefer above-average volume
+                        vol_surge = tick_data.get('volume_surge_ratio', 1.0)
+                        if vol_surge < 0.8:
+                            continue  # below-average volume — skip
+
+                # Calculate add size: original_shares * decay^(count+1)
+                add_shares = int(pos.original_shares * (
+                    self.config.pyramid_size_decay ** (pos.pyramid_count + 1)))
+                if add_shares <= 0:
+                    continue
+
+                # Cap notional (respect max_notional)
+                add_notional = add_shares * price
+                existing_notional = pos.remaining_shares * price
+                if existing_notional + add_notional > self.config.max_notional:
+                    add_shares = max(0, int((self.config.max_notional - existing_notional) / price))
+                    if add_shares <= 0:
+                        continue
+
+            # Submit pyramid order (outside lock to avoid holding during I/O)
+            entry_side = 'buy' if pos.direction == 'long' else 'sell'
+            side_label = 'LONG' if pos.direction == 'long' else 'SHORT'
+
+            if self.config.limit_orders_only:
+                if pos.direction == 'long':
+                    limit_px = round(price * (1 + self.config.limit_offset_pct), 2)
+                else:
+                    limit_px = round(price * (1 - self.config.limit_offset_pct), 2)
+                order_type = 'limit'
+            else:
+                limit_px = None
+                order_type = 'market'
+
+            try:
+                fill = await self._broker_submit(
+                    sym, add_shares, entry_side,
+                    order_type=order_type, limit_price=limit_px,
+                    timeout_sec=60.0 if order_type == 'limit' else 30.0,
+                )
+            except Exception as e:
+                logger.warning(f"Pyramid order failed for {sym}: {e}")
+                continue
+
+            if not fill.is_filled:
+                logger.info(f"Pyramid order not filled for {sym}: {fill.status}")
+                continue
+
+            # Update position under lock
+            async with self._position_lock:
+                pos = self.engine.positions.get(sym)
+                if not pos:
+                    continue
+
+                fill_price = fill.filled_avg_price if fill.filled_avg_price > 0 else price
+                filled_qty = fill.filled_qty if fill.filled_qty > 0 else add_shares
+
+                # Record pyramid entry
+                try:
+                    entries = json.loads(pos.pyramid_entries) if pos.pyramid_entries else []
+                except (json.JSONDecodeError, ValueError):
+                    entries = []
+                entries.append({
+                    'price': fill_price,
+                    'shares': filled_qty,
+                    'time': now.strftime('%H:%M:%S'),
+                })
+                pos.pyramid_entries = json.dumps(entries)
+
+                # Recalculate weighted average entry price
+                old_total_cost = pos.entry_price * pos.remaining_shares
+                new_total_cost = fill_price * filled_qty
+                new_total_shares = pos.remaining_shares + filled_qty
+                new_avg_entry = (old_total_cost + new_total_cost) / new_total_shares if new_total_shares > 0 else pos.entry_price
+
+                pos.entry_price = new_avg_entry
+                pos.shares = new_total_shares
+                pos.remaining_shares = new_total_shares
+                pos.pyramid_count += 1
+
+                # Move stop to breakeven of combined position
+                new_stop = None
+                if self.config.pyramid_move_stop:
+                    if pos.direction == 'short':
+                        # Breakeven for shorts: avg entry + small buffer
+                        new_stop = round(new_avg_entry * 1.001, 2)
+                    else:
+                        # Breakeven for longs: avg entry - small buffer
+                        new_stop = round(new_avg_entry * 0.999, 2)
+                    pos.stop_price = new_stop
+
+                    # Replace broker-side stop
+                    if pos.stop_order_id:
+                        try:
+                            await self._broker_cancel(pos.stop_order_id)
+                        except Exception as e:
+                            logger.warning(f"Cancel old stop for pyramid {sym}: {e}")
+
+                    try:
+                        stop_result = await self._broker_place_stop(
+                            sym, pos.remaining_shares, new_stop,
+                            0.003, pos.direction)
+                        if 'error' not in stop_result:
+                            pos.stop_order_id = stop_result.get('id', '')
+                    except Exception as e:
+                        logger.warning(f"Broker stop failed for pyramid {sym}: {e}")
+
+            # Log and alert
+            stop_msg = f', stop moved to ${new_stop:.2f} (breakeven)' if new_stop else ''
+            msg = (f'PYRAMID #{pos.pyramid_count} {side_label} +{filled_qty} {sym} '
+                   f'@ ${fill_price:.2f} (avg entry ${new_avg_entry:.2f}, '
+                   f'total {new_total_shares} shares{stop_msg})')
+            self._add_message('pyramid', msg)
+            self.journal.log('action', 'pyramid_add', msg, symbol=sym)
+            logger.info(msg)
+
+            await self.alerter.send(
+                f'Pyramid Add — {side_label} {sym}',
+                f'Add #{pos.pyramid_count}: +{filled_qty} shares @ ${fill_price:.2f}\n'
+                f'Avg entry: ${new_avg_entry:.2f}\n'
+                f'Total shares: {new_total_shares}\n'
+                f'P&L: {pnl_pct*100:.1f}%{stop_msg}',
+                level='info', throttle_key=f'pyramid_{sym}')
+
     async def _exhaustion_entry_scan(self):
         """Scan all candidates for exhaustion entry signals and enter positions.
 
@@ -10634,6 +11041,15 @@ class GapFadeLiveTrader:
 
         for cand in self.candidates:
             sym = cand.symbol
+
+            # Update sweep tracking on every price check (even for already-entered symbols)
+            if self.config.sweep_entry_enabled and sym in self._opening_ranges:
+                sweep_price = 0.0
+                if self.streamer and hasattr(self.streamer, 'latest_prices'):
+                    sweep_price = self.streamer.latest_prices.get(sym, 0)
+                if sweep_price > 0:
+                    self._update_sweep_tracking(sym, sweep_price, cand.direction)
+
             if sym in self._exhaustion_entered:
                 continue
             if len(self.engine.positions) >= eff_max:
@@ -10646,15 +11062,25 @@ class GapFadeLiveTrader:
                 continue
 
             # Signal triggered — enter position
+            is_sweep = signal['type'] == 'sweep'
             or_high = signal['or_high']
             entry_price = signal['price']
 
-            self._add_message('entry',
-                f'EXHAUSTION {signal["type"]}: {sym} @ ${entry_price:.2f} '
-                f'(OR high=${or_high:.2f}, VWAP=${signal["vwap"]:.2f}, RSI={signal["rsi"]:.1f})')
+            if is_sweep:
+                self._add_message('entry',
+                    f'SWEEP ENTRY: {sym} @ ${entry_price:.2f} '
+                    f'(sweep high=${signal["sweep_high"]:.2f}, OR high=${or_high:.2f})')
+            else:
+                self._add_message('entry',
+                    f'EXHAUSTION {signal["type"]}: {sym} @ ${entry_price:.2f} '
+                    f'(OR high=${or_high:.2f}, VWAP=${signal["vwap"]:.2f}, RSI={signal["rsi"]:.1f})')
 
-            # Structural stop: 0.2% above OR high
-            stop_price = or_high * 1.002
+            # Set stop: sweep uses sweep_high-based stop, exhaustion uses OR-high-based
+            if is_sweep:
+                stop_price = signal['stop_price']
+            else:
+                # Structural stop: 0.2% above OR high
+                stop_price = or_high * 1.002
             stop_pct = (stop_price - entry_price) / entry_price if entry_price > 0 else 0.03
             if stop_pct < 0.005:
                 stop_pct = 0.005
@@ -10664,7 +11090,7 @@ class GapFadeLiveTrader:
             async with self._position_lock:
                 ok, reason = self.engine.should_enter(cand)
                 if not ok:
-                    self._add_message('skip', f'Exhaustion skip {sym}: {reason}')
+                    self._add_message('skip', f'{"Sweep" if is_sweep else "Exhaustion"} skip {sym}: {reason}')
                     continue
 
                 entry_time = now.strftime('%Y-%m-%d %H:%M')
@@ -10674,7 +11100,7 @@ class GapFadeLiveTrader:
 
                 # Override stop with structural stop
                 pos.stop_price = stop_price
-                pos.strategy_id = 'exhaustion_gap_fade'
+                pos.strategy_id = 'sweep_gap_fade' if is_sweep else 'exhaustion_gap_fade'
 
             # Submit order
             direction = cand.direction
@@ -10707,10 +11133,17 @@ class GapFadeLiveTrader:
                     pos.entry_order_id = fill.order_id
                     if fill.filled_avg_price > 0:
                         pos.entry_price = fill.filled_avg_price
-                        # Recalculate structural stop based on actual fill
-                        pos.stop_price = or_high * 1.002
-                        if (pos.stop_price - fill.filled_avg_price) / fill.filled_avg_price < 0.005:
-                            pos.stop_price = fill.filled_avg_price * 1.005
+                        if is_sweep:
+                            # Sweep: keep stop above sweep high
+                            sweep_high_val = signal.get('sweep_high', or_high)
+                            pos.stop_price = round(sweep_high_val * 1.002, 2)
+                            if (pos.stop_price - fill.filled_avg_price) / fill.filled_avg_price < 0.005:
+                                pos.stop_price = fill.filled_avg_price * 1.005
+                        else:
+                            # Exhaustion: stop above OR high
+                            pos.stop_price = or_high * 1.002
+                            if (pos.stop_price - fill.filled_avg_price) / fill.filled_avg_price < 0.005:
+                                pos.stop_price = fill.filled_avg_price * 1.005
 
                     # Place broker-side GTC stop
                     try:
@@ -10720,7 +11153,7 @@ class GapFadeLiveTrader:
                         if 'error' not in stop_result:
                             pos.stop_order_id = stop_result.get('id', '')
                     except Exception as e:
-                        logger.warning(f"Broker stop failed for exhaustion {sym}: {e}")
+                        logger.warning(f"Broker stop failed for {'sweep' if is_sweep else 'exhaustion'} {sym}: {e}")
 
                     # Subscribe to tick stream
                     if self.streamer:
@@ -10728,21 +11161,41 @@ class GapFadeLiveTrader:
                             [sym], priority_symbols=set(self.engine.positions.keys()))
 
                     self._exhaustion_entered.add(sym)
+
+                    # Mark sweep as entry_triggered
+                    if is_sweep and sym in self._sweep_data:
+                        self._sweep_data[sym]['entry_triggered'] = True
+
+                    entry_type_label = 'SWEEP' if is_sweep else 'EXHAUSTION'
                     self._add_message('entry',
                         f'FILLED {side_label} {fill.filled_qty} {sym} @ ${fill.filled_avg_price:.2f} '
-                        f'(structural stop ${pos.stop_price:.2f})')
+                        f'({"sweep" if is_sweep else "structural"} stop ${pos.stop_price:.2f})')
 
-                    self.journal.log('action', 'exhaustion_entry',
+                    action_label = 'sweep_entry' if is_sweep else 'exhaustion_entry'
+                    self.journal.log('action', action_label,
                         f'ENTRY {side_label} {fill.filled_qty} {sym} '
                         f'@ ${fill.filled_avg_price:.2f} (OR high=${or_high:.2f})',
                         symbol=sym)
+
+                    # Send sweep-specific Telegram alert
+                    if is_sweep:
+                        sweep_high_val = signal.get('sweep_high', or_high)
+                        await self.alerter.send(
+                            f'SWEEP ENTRY \u2014 {side_label} {sym}',
+                            f'Sweep high: ${sweep_high_val:.2f} (stop hunters triggered)\n'
+                            f'Recovery: price back to ${fill.filled_avg_price:.2f}\n'
+                            f'Entry: ${fill.filled_avg_price:.2f}\n'
+                            f'Stop: ${pos.stop_price:.2f} (above sweep \u2014 safe)\n'
+                            f'OR high was: ${or_high:.2f}\n'
+                            f'Better R:R than plain exhaustion entry',
+                            level='info', throttle_key=f'sweep_{sym}')
 
                     self._save_state()
                 elif fill.status == 'pending':
                     pos.entry_order_id = fill.order_id
                     self._exhaustion_entered.add(sym)
                 else:
-                    self._add_message('error', f'Exhaustion entry FAILED {sym}: {fill.error}')
+                    self._add_message('error', f'{"Sweep" if is_sweep else "Exhaustion"} entry FAILED {sym}: {fill.error}')
                     if sym in self.engine.positions:
                         del self.engine.positions[sym]
 
