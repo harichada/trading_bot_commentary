@@ -11347,10 +11347,20 @@ class GapFadeLiveTrader:
                     continue
 
                 if fill.is_filled:
-                    pos.entry_fill_price = fill.filled_avg_price
+                    # Use the actual fill price, not the snapshot/limit price
+                    fill_price = fill.filled_avg_price
+                    # Safety: if fill price seems wrong (0 or same as snapshot), re-check
+                    if fill_price <= 0 or abs(fill_price - entry_price) < 0.001:
+                        try:
+                            order_data = await self._broker_get_order(fill.order_id)
+                            if order_data and order_data.get('filled_avg_price'):
+                                fill_price = float(order_data['filled_avg_price'])
+                        except Exception:
+                            pass
+                    pos.entry_fill_price = fill_price
                     pos.entry_order_id = fill.order_id
-                    if fill.filled_avg_price > 0:
-                        pos.entry_price = fill.filled_avg_price
+                    if fill_price > 0:
+                        pos.entry_price = fill_price
                         if is_sweep:
                             # Sweep: keep stop above sweep high
                             sweep_high_val = signal.get('sweep_high', or_high)
