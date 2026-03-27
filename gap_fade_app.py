@@ -9708,6 +9708,18 @@ class GapFadeLiveTrader:
                 except Exception as e:
                     logger.warning(f"RECONCILE: Could not verify stop for {sym}: {e}")
 
+        # Sync equity with broker (ground truth)
+        try:
+            acct = await self._broker_get_account()
+            if acct and acct.get('equity'):
+                broker_equity = float(acct['equity'])
+                if abs(broker_equity - self.engine.equity) > 1.0:
+                    logger.info(f"RECONCILE: Equity sync ${self.engine.equity:,.2f} → ${broker_equity:,.2f} (broker)")
+                    self.engine.equity = broker_equity
+                    self.engine.peak_equity = max(self.engine.peak_equity, broker_equity)
+        except Exception as e:
+            logger.debug(f"RECONCILE: Equity sync failed: {e}")
+
         self._last_reconcile = _time.monotonic()
         if orphaned or unknown or any(
             broker_map.get(s, {}).get('qty', 0) != self.engine.positions.get(s, GapPosition(
