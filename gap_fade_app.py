@@ -53,6 +53,12 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse, StreamingResponse
 import uvicorn
 
+from rudra_swing_engine import (
+    WeeklyKillSwitch, StageClassifier, TightBaseDetector,
+    VolumeEngine, MultiTimeframeBias, aggregate_to_weekly,
+    DataLoader as SwingDataLoader, _ema as swing_ema,
+)
+
 logger = logging.getLogger('GapFadeApp')
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(name)s] %(levelname)s: %(message)s')
 
@@ -3146,6 +3152,12 @@ class GapFadeConfig:
     capital_overflow: bool = True            # release unused gap fade capital to intraday after overflow_time
     capital_overflow_hour: int = 10          # hour (ET) after which unused gap fade slots overflow
     capital_overflow_min: int = 30           # minute (ET) for overflow
+
+    # Swing trading (Weinstein Stage 2)
+    swing_enabled: bool = True
+    swing_risk_pct: float = 0.02
+    swing_max_positions: int = 5
+    swing_max_weekly_trades: int = 3
 
     # Execution broker: 'alpaca' or 'ibkr'
     execution_broker: str = 'alpaca'
@@ -8208,6 +8220,21 @@ class GapFadeLiveTrader:
         self._last_intraday_watchlist_refresh: float = 0.0
         self._intraday_date: str = ''  # for daily reset
 
+        # Swing engine state
+        self._swing_kill_switch = WeeklyKillSwitch()
+        self._swing_classifier = StageClassifier()
+        self._swing_base_detector = TightBaseDetector()
+        self._swing_volume = VolumeEngine()
+        self._swing_bias = MultiTimeframeBias(self._swing_kill_switch)
+        self._swing_candidates: List[dict] = []       # Current Stage 2 + tight base candidates
+        self._swing_last_scan: str = ''                # Date of last weekly scan
+        self._swing_enabled: bool = self.config.swing_enabled
+        self._swing_watchlist: List[dict] = []         # Top 15 candidates
+        self._swing_weekly_trades: int = 0             # Entries this week
+        self._swing_week_key: str = ''                 # ISO week key for weekly trade counter reset
+        self._swing_kill_switch_status: dict = {'active': False, 'reason': 'Not scanned yet'}
+        self._swing_last_entry_check: float = 0.0     # Monotonic time of last entry check
+
         # Signal log ring buffer for intraday page
         self._signal_log: deque = deque(maxlen=200)
         self._signal_log_counter: int = 0
@@ -8545,13 +8572,25 @@ class GapFadeLiveTrader:
                 )
                 logger.info(f"Indicator engine created: {required}")
             else:
-                self.indicator_engine = None
+                # Exhaustion entry always needs VWAP + RSI — create minimal engine
+                self.indicator_engine = TickIndicatorEngine(
+                    indicators=['vwap', 'rsi', 'ema', 'day_high', 'day_low'],
+                    ema_period=9,
+                    or_minutes=15,
+                )
+                logger.info("Indicator engine created (exhaustion entry defaults)")
 
             logger.info(f"Strategy loaded: {self.strategy.name} ({strategy_id})")
         except Exception as e:
             logger.error(f"Failed to load strategy '{strategy_id}': {e}")
             self.strategy = None
-            self.indicator_engine = None
+            # Still create indicator engine for exhaustion entry
+            self.indicator_engine = TickIndicatorEngine(
+                indicators=['vwap', 'rsi', 'ema', 'day_high', 'day_low'],
+                ema_period=9,
+                or_minutes=15,
+            )
+            logger.info("Indicator engine created (fallback for exhaustion entry)")
 
     def switch_strategy(self, strategy_id: str, strategy_config: dict = None):
         """Hot-swap the active strategy (no restart needed).
@@ -9788,6 +9827,42 @@ class GapFadeLiveTrader:
                         self._last_perf_snapshot_hour = now.hour
                         self._record_performance_snapshot('hourly')
 
+                # ── SWING ENGINE (weekly scan + daily entry checks) ──
+
+                # Swing weekly scan: Monday 7 AM or if stale (>5 days since last scan)
+                if self._swing_enabled:
+                    _scan_stale = False
+                    if self._swing_last_scan:
+                        try:
+                            _last_scan_dt = datetime.strptime(self._swing_last_scan, '%Y-%m-%d')
+                            _scan_stale = (now.replace(tzinfo=None) - _last_scan_dt).days > 5
+                        except ValueError:
+                            _scan_stale = True
+                    else:
+                        _scan_stale = True
+
+                    if ((now.weekday() == 0 and now.hour == 7 and self._swing_last_scan != today)
+                            or _scan_stale):
+                        try:
+                            await self._run_swing_scan()
+                        except Exception as e:
+                            logger.error("Swing scan error: %s", e, exc_info=True)
+
+                    # Swing daily entry check (10:00 AM - 3:00 PM)
+                    _market_open = (now.hour > 9 or (now.hour == 9 and now.minute >= 30))
+                    if _market_open and 10 <= now.hour < 15:
+                        try:
+                            await self._check_swing_entries()
+                        except Exception as e:
+                            logger.error("Swing entry check error: %s", e, exc_info=True)
+
+                    # Swing exit monitoring (during market hours)
+                    if _market_open and now.hour < 16:
+                        try:
+                            await self._check_swing_exits()
+                        except Exception as e:
+                            logger.error("Swing exit check error: %s", e, exc_info=True)
+
                 # ── SAFETY NETS (always active, LLM cannot override) ──
 
                 # Before pre-market (before 7 AM) — sleep
@@ -10134,7 +10209,25 @@ class GapFadeLiveTrader:
                 # Re-scan at 9:25+ AM (once per day, refine candidates)
                 if now.hour == 9 and now.minute >= 25 and not _did_scan_925:
                     _did_scan_925 = True
+                    # Also verify daily bars here in case bot started after 9 AM
+                    if not _did_scan_7am:
+                        _did_scan_7am = True
+                        await self._verify_daily_bars()
                     await self._run_scan()
+                    # Subscribe candidates to tick streamer for exhaustion entry
+                    # (needs VWAP/RSI data from indicator engine before entry)
+                    if self.candidates and self.streamer:
+                        cand_syms = [c.symbol for c in self.candidates[:15]]
+                        await self.streamer.add_symbols(
+                            cand_syms,
+                            priority_symbols=set(cand_syms))
+                        logger.info(f"Subscribed {len(cand_syms)} candidates to tick streamer for exhaustion monitoring")
+                    elif self.candidates and not self.streamer:
+                        # Start streamer with candidates
+                        cand_syms = [c.symbol for c in self.candidates[:15]]
+                        self.streamer = self._broker_make_streamer(cand_syms, on_tick=self._on_tick)
+                        await self.streamer.start()
+                        logger.info(f"Started tick streamer for {len(cand_syms)} candidates")
                     # Fast-poll until entry window opens
                     _ew = self.strategy.get_entry_window() if self.strategy else None
                     _ew_min = _ew[1] if _ew else 31
@@ -10371,61 +10464,77 @@ class GapFadeLiveTrader:
     # -------------------------------------------------------------------------
 
     def _build_opening_ranges(self):
-        """Build 15-min Opening Range (9:30-9:44) for each gap candidate from tick data.
+        """Build Opening Range for each gap candidate.
 
-        Called during the 9:30-9:45 window. Uses indicator_engine's bar history
-        to track the high and low of each candidate's first 15 minutes.
+        Uses multiple data sources:
+        1. Tick streamer latest_prices (if subscribed)
+        2. Indicator engine bar history (if available)
+        3. Candidate's premarket_price as fallback (from scan snapshot)
+
+        After 9:45, marks all ranges as 'built' even if only using snapshot data.
+        The OR high is the key level — stop goes above it.
         """
-        if not self.candidates or not self.indicator_engine:
+        if not self.candidates:
             return
 
         now = datetime.now(ET)
+        is_or_complete = now.hour > 9 or (now.hour == 9 and now.minute >= 45)
+
         for cand in self.candidates:
             sym = cand.symbol
             if sym in self._opening_ranges and self._opening_ranges[sym].get('built'):
-                continue  # Already built
-
-            tick_data = self.indicator_engine.get_data(sym)
-            if not tick_data:
                 continue
 
-            # Get bar history from indicator engine
-            bar_history = tick_data.get('bar_history', [])
-            if not bar_history:
-                # Use latest price as initial OR
-                price = self.streamer.latest_prices.get(sym, 0) if self.streamer else 0
-                if price > 0:
-                    if sym not in self._opening_ranges:
-                        self._opening_ranges[sym] = {'high': price, 'low': price, 'built': False}
-                    else:
-                        self._opening_ranges[sym]['high'] = max(self._opening_ranges[sym]['high'], price)
-                        self._opening_ranges[sym]['low'] = min(self._opening_ranges[sym]['low'], price)
-                continue
+            # Try to get price from streamer
+            price = 0.0
+            if self.streamer and hasattr(self.streamer, 'latest_prices'):
+                price = self.streamer.latest_prices.get(sym, 0)
 
-            # Accumulate high/low from all bars in 9:30-9:44 window
-            or_high = 0.0
-            or_low = float('inf')
-            for bar in bar_history:
-                bar_time = getattr(bar, 'bar_time', '') if hasattr(bar, 'bar_time') else ''
-                h = getattr(bar, 'high', 0)
-                l = getattr(bar, 'low', 0)
-                if h > 0 and l > 0:
-                    or_high = max(or_high, h)
-                    or_low = min(or_low, l)
+            # Try indicator engine for bar history
+            tick_data = self.indicator_engine.get_data(sym) if self.indicator_engine else None
+            if tick_data:
+                bar_history = tick_data.get('bar_history', [])
+                for bar in bar_history:
+                    h = getattr(bar, 'high', 0) if hasattr(bar, 'high') else 0
+                    l = getattr(bar, 'low', 0) if hasattr(bar, 'low') else 0
+                    if h > 0:
+                        if sym not in self._opening_ranges:
+                            self._opening_ranges[sym] = {'high': h, 'low': l or h, 'built': False}
+                        else:
+                            self._opening_ranges[sym]['high'] = max(self._opening_ranges[sym]['high'], h)
+                            if l > 0:
+                                self._opening_ranges[sym]['low'] = min(self._opening_ranges[sym]['low'], l)
 
-            if or_high > 0 and or_low < float('inf'):
-                is_built = now.hour == 9 and now.minute >= 45
+            # Use streamer price to update OR
+            if price > 0:
+                if sym not in self._opening_ranges:
+                    self._opening_ranges[sym] = {'high': price, 'low': price, 'built': False}
+                else:
+                    self._opening_ranges[sym]['high'] = max(self._opening_ranges[sym]['high'], price)
+                    self._opening_ranges[sym]['low'] = min(self._opening_ranges[sym]['low'], price)
+
+            # Fallback: use candidate's premarket price (from scan snapshot)
+            if sym not in self._opening_ranges and cand.premarket_price > 0:
+                # Use the gap open as the OR high (conservative — actual high is likely higher)
                 self._opening_ranges[sym] = {
-                    'high': or_high, 'low': or_low, 'built': is_built
+                    'high': cand.premarket_price * 1.005,  # assume 0.5% spike from open
+                    'low': cand.premarket_price * 0.995,
+                    'built': False,
                 }
+
+            # Mark as built after 9:45
+            if is_or_complete and sym in self._opening_ranges:
+                self._opening_ranges[sym]['built'] = True
 
     def _check_exhaustion_signal(self, symbol: str) -> Optional[dict]:
         """Check if a gap candidate shows exhaustion entry signal.
 
+        Simplified for live trading — uses snapshot prices instead of tick data.
+
         Conditions (ALL must be true for a short):
-            1. Price < 15-min Opening Range High (momentum fading)
-            2. Price < intraday VWAP (sellers in control)
-            3. RSI(5) < previous RSI(5) AND previous RSI(5) > 65 (overbought exhaustion)
+            1. Price < Opening Range High (momentum fading)
+            2. Price < day's open (gap is fading)
+            3. Price has dropped from the high (not making new highs)
 
         Returns signal dict or None.
         """
@@ -10435,49 +10544,53 @@ class GapFadeLiveTrader:
             return None
 
         or_data = self._opening_ranges[symbol]
-        if not or_data.get('built'):
-            return None
-
         or_high = or_data['high']
+        or_low = or_data.get('low', 0)
 
-        # Get current tick data from indicator engine
-        tick_data = self.indicator_engine.get_data(symbol) if self.indicator_engine else None
-        if not tick_data:
+        # Get price from streamer or snapshot cache
+        price = 0.0
+        if self.streamer and hasattr(self.streamer, 'latest_prices'):
+            price = self.streamer.latest_prices.get(symbol, 0)
+        if price <= 0:
+            # Fallback: use the opening range data as reference
             return None
-
-        price = tick_data.get('last_price', 0)
-        vwap = tick_data.get('vwap', 0)
-        rsi = tick_data.get('rsi', 50)
-
-        if price <= 0 or vwap <= 0:
-            return None
-
-        # Condition 1: Price below OR high
-        below_or_high = price < or_high
-
-        # Condition 2: Price below VWAP
-        below_vwap = price < vwap
-
-        # Condition 3: RSI exhaustion (curling down from overbought)
-        # Use bar history to check previous RSI
-        prev_rsi = tick_data.get('prev_rsi', rsi)
-        rsi_exhausted = prev_rsi > 65 and rsi < prev_rsi
 
         now = datetime.now(ET)
 
-        # Full signal: all 3 conditions
-        if below_or_high and below_vwap and rsi_exhausted:
+        # Get VWAP/RSI from indicator engine if available
+        tick_data = self.indicator_engine.get_data(symbol) if self.indicator_engine else None
+        vwap = tick_data.get('vwap', 0) if tick_data else 0
+        rsi = tick_data.get('rsi', 50) if tick_data else 50
+
+        # Condition 1: Price below OR high (momentum fading)
+        below_or_high = price < or_high
+
+        # Condition 2: Price dropping from the gap open
+        # Find the candidate's open price
+        cand = next((c for c in self.candidates if c.symbol == symbol), None)
+        gap_open = cand.premarket_price if cand else or_high
+        price_fading = price < gap_open * 0.995  # price below open by 0.5%+
+
+        # Condition 3: Price below VWAP (if available) OR price below OR midpoint
+        if vwap > 0:
+            below_vwap = price < vwap
+        else:
+            or_mid = (or_high + or_low) / 2 if or_low > 0 else or_high * 0.995
+            below_vwap = price < or_mid
+
+        # Full signal: below OR high + fading from open
+        if below_or_high and price_fading:
             return {
                 'type': 'exhaustion',
                 'or_high': or_high,
-                'vwap': vwap,
+                'vwap': vwap if vwap > 0 else 0,
                 'rsi': rsi,
                 'price': price,
                 'time': now.strftime('%H:%M:%S'),
             }
 
-        # Fallback: after 10:00 AM, enter on VWAP cross alone if RSI < 55
-        if now.hour >= 10 and below_or_high and below_vwap and rsi < 55:
+        # Fallback: after 10:00 AM, enter if below OR high (weaker signal)
+        if now.hour >= 10 and below_or_high and below_vwap:
             return {
                 'type': 'exhaustion_fallback',
                 'or_high': or_high,
@@ -10502,6 +10615,14 @@ class GapFadeLiveTrader:
         # Only scan between 9:45 and entry cutoff
         if now.hour == 9 and now.minute < 45:
             return
+
+        # Ensure candidates are subscribed to tick streamer
+        if self.streamer and self.candidates:
+            cand_syms = [c.symbol for c in self.candidates if c.symbol not in self._exhaustion_entered]
+            unsub = [s for s in cand_syms if s not in (self.streamer.symbols if hasattr(self.streamer, 'symbols') else [])]
+            if unsub:
+                await self.streamer.add_symbols(unsub[:15])
+                logger.info(f"Exhaustion scan: subscribed {len(unsub)} new symbols to streamer")
         if now.hour > self.config.entry_cutoff_hour or \
            (now.hour == self.config.entry_cutoff_hour and now.minute >= self.config.entry_cutoff_min):
             return
@@ -11388,8 +11509,25 @@ class GapFadeLiveTrader:
                     }
 
             # Engine exit check (stop, partial, full target, time)
+            # Save old stop to detect if trailing stop tightened
+            _old_stop = pos.stop_price
             if exit_signal is None:
                 exit_signal = self.engine.evaluate_exit(symbol, price, price, now)
+
+            # Sync broker stop if the engine's smart exit tightened it
+            if pos.stop_price != _old_stop and pos.stop_order_id and exit_signal is None:
+                try:
+                    await self._broker_cancel(pos.stop_order_id)
+                    stop_result = await self._broker_place_stop(
+                        symbol, pos.remaining_shares, pos.stop_price,
+                        0.003, pos.direction)
+                    if 'error' not in stop_result:
+                        pos.stop_order_id = stop_result.get('id', '')
+                        self._add_message('exit',
+                            f'Trailing stop synced to broker: {symbol} ${_old_stop:.2f} → ${pos.stop_price:.2f}')
+                except Exception as e:
+                    logger.warning(f"Broker stop sync failed for {symbol}: {e}")
+
             if exit_signal is None:
                 return
 
@@ -11503,6 +11641,11 @@ class GapFadeLiveTrader:
                     # Skip exit evaluation for positions with pending (unfilled) entry orders
                     if pos.entry_fill_price == 0.0 and pos.entry_order_id:
                         logger.debug(f"Skipping exit eval for {sym}: entry order pending")
+                        continue
+
+                    # Skip swing positions — they use their own exit logic (_check_swing_exits)
+                    if getattr(pos, 'strategy_id', '') == 'swing_stage2':
+                        pos.update_tracking(price, now_str)
                         continue
 
                     pos.update_tracking(price, now_str)
@@ -11780,17 +11923,553 @@ class GapFadeLiveTrader:
         })
 
     # -------------------------------------------------------------------------
+    # Swing Engine — Weekly scan + daily entry checks
+    # -------------------------------------------------------------------------
+
+    async def _run_swing_scan(self) -> None:
+        """Weekly swing scan: classify universe, detect tight bases, rank candidates."""
+        now = datetime.now(ET)
+        today = now.strftime('%Y-%m-%d')
+        logger.info("Swing scan starting for %s", today)
+        self._add_message('system', f'Swing weekly scan starting ({today})')
+
+        try:
+            loader = SwingDataLoader()
+            lookback_start = (now - timedelta(days=400)).strftime('%Y-%m-%d')
+
+            # 1. Load SPY daily and aggregate to weekly for kill switch
+            spy_daily = await asyncio.to_thread(
+                loader.load_daily, ['SPY'], lookback_start, today)
+            if spy_daily.empty:
+                logger.warning("Swing scan: no SPY data")
+                self._add_message('error', 'Swing scan failed: no SPY data')
+                return
+            spy_weekly = aggregate_to_weekly(spy_daily)
+
+            # 2. Kill switch check
+            active, reason = self._swing_kill_switch.is_active(spy_weekly)
+            self._swing_kill_switch_status = {'active': active, 'reason': reason}
+            logger.info("Swing kill switch: active=%s, reason=%s", active, reason)
+
+            if not active:
+                self._swing_watchlist = []
+                self._swing_candidates = []
+                self._swing_last_scan = today
+                self._add_message('system', f'Swing scan: KILL SWITCH OFF — {reason}')
+                await broadcast({'type': 'swing_scan', 'status': 'halted', 'reason': reason})
+                return
+
+            # 3. Get liquid symbols
+            liquid_symbols = await asyncio.to_thread(
+                loader.get_liquid_symbols,
+                as_of_date=today,
+                min_avg_volume=500_000,
+                min_price=10.0,
+                max_symbols=1500,
+            )
+            logger.info("Swing scan: %d liquid symbols", len(liquid_symbols))
+
+            # 4. Load daily data for universe
+            all_daily = await asyncio.to_thread(
+                loader.load_daily, liquid_symbols, lookback_start, today, 0, 0)
+
+            # 5. Classify into Weinstein stages
+            stage2_syms = []
+            stage_counts = {"STAGE_1": 0, "STAGE_2": 0, "STAGE_3": 0, "STAGE_4": 0, "UNCLEAR": 0}
+
+            symbol_daily_map = {}
+            symbol_weekly_map = {}
+            for sym, grp in all_daily.groupby("symbol"):
+                sym_str = str(sym)
+                df = grp.reset_index(drop=True)
+                symbol_daily_map[sym_str] = df
+                if len(df) >= 40:
+                    wk = aggregate_to_weekly(df)
+                    symbol_weekly_map[sym_str] = wk
+                    if len(wk) >= 34:
+                        stage = self._swing_classifier.classify(sym_str, wk)
+                        stage_counts[stage] = stage_counts.get(stage, 0) + 1
+                        if stage == "STAGE_2":
+                            stage2_syms.append(sym_str)
+
+            logger.info("Swing scan: Stage 2 = %d, total classified = %d",
+                        len(stage2_syms), sum(stage_counts.values()))
+
+            # 6. Detect tight bases among Stage 2 stocks
+            candidates = []
+            for sym in stage2_syms:
+                df = symbol_daily_map.get(sym)
+                if df is None or len(df) < 40:
+                    continue
+                setup = self._swing_base_detector.detect(sym, df)
+                if setup is not None:
+                    vol_state = self._swing_volume.classify(sym, df)
+                    setup['vol_state'] = vol_state
+                    # Store the bias check result for entry filtering
+                    sym_wk = symbol_weekly_map.get(sym)
+                    bias_result = self._swing_bias.check_bias(sym, df, spy_weekly, sym_wk)
+                    setup['bias'] = bias_result
+                    candidates.append(setup)
+
+            # 7. Rank by score, take top 15
+            candidates.sort(key=lambda x: x['score'], reverse=True)
+            self._swing_watchlist = candidates[:15]
+            self._swing_candidates = candidates
+            self._swing_last_scan = today
+
+            # Reset weekly trade counter if new week
+            week_key = now.isocalendar()[:2]
+            wk_str = f"{week_key[0]}-W{week_key[1]}"
+            if wk_str != self._swing_week_key:
+                self._swing_week_key = wk_str
+                self._swing_weekly_trades = 0
+
+            syms_list = [c['symbol'] for c in self._swing_watchlist]
+            self._add_message('system',
+                f'Swing scan complete: {len(stage2_syms)} Stage 2 stocks, '
+                f'{len(candidates)} tight bases, top 15: {syms_list}')
+            logger.info("Swing scan complete: watchlist=%s", syms_list)
+
+            await broadcast({
+                'type': 'swing_scan',
+                'status': 'complete',
+                'stage2_count': len(stage2_syms),
+                'candidates': len(candidates),
+                'watchlist': syms_list,
+                'stage_counts': stage_counts,
+            })
+
+        except Exception as e:
+            logger.error("Swing scan failed: %s", e, exc_info=True)
+            self._add_message('error', f'Swing scan failed: {e}')
+
+    async def _check_swing_entries(self) -> None:
+        """Check swing watchlist for entry signals during market hours."""
+        if not self._swing_enabled or not self._swing_watchlist:
+            return
+        if self._trading_halted:
+            return
+
+        now = datetime.now(ET)
+        now_mono = _time.monotonic()
+
+        # Throttle: check every 5 minutes
+        if now_mono - self._swing_last_entry_check < 300:
+            return
+        self._swing_last_entry_check = now_mono
+
+        # Only enter 10 AM - 3 PM
+        if now.hour < 10 or now.hour >= 15:
+            return
+
+        # Weekly trade limit
+        if self._swing_weekly_trades >= self.config.swing_max_weekly_trades:
+            return
+
+        # Count current swing positions
+        swing_positions = {sym: pos for sym, pos in self.engine.positions.items()
+                          if getattr(pos, 'strategy_id', '') == 'swing_stage2'}
+        if len(swing_positions) >= self.config.swing_max_positions:
+            return
+
+        # Combined max positions check
+        total_positions = len(self.engine.positions)
+        combined_max = self.config.max_positions + self.config.swing_max_positions
+        if total_positions >= combined_max:
+            return
+
+        held_symbols = set(self.engine.positions.keys())
+
+        # Get snapshot prices for all watchlist symbols
+        watchlist_syms = [c['symbol'] for c in self._swing_watchlist
+                         if c['symbol'] not in held_symbols]
+        if not watchlist_syms:
+            return
+
+        try:
+            prices = await self._broker_get_prices(watchlist_syms)
+        except Exception as e:
+            logger.warning("Swing entry check: failed to get prices: %s", e)
+            return
+
+        # Load daily bars for EMA calculations
+        loader = SwingDataLoader()
+        lookback_start = (now - timedelta(days=200)).strftime('%Y-%m-%d')
+        today = now.strftime('%Y-%m-%d')
+
+        for cand in self._swing_watchlist:
+            if self._swing_weekly_trades >= self.config.swing_max_weekly_trades:
+                break
+            if len(swing_positions) >= self.config.swing_max_positions:
+                break
+
+            sym = cand['symbol']
+            if sym in held_symbols:
+                continue
+
+            price = prices.get(sym, 0.0)
+            if price <= 0:
+                continue
+
+            # Check bias — if stored from scan, use it; otherwise skip
+            bias = cand.get('bias', {})
+            if not bias.get('all_pass', False):
+                continue
+
+            # Load daily bars for EMA zone check
+            try:
+                sym_daily = await asyncio.to_thread(
+                    loader.load_daily, [sym], lookback_start, today)
+                if sym_daily.empty or len(sym_daily) < 50:
+                    continue
+            except Exception:
+                continue
+
+            closes = sym_daily['close'].astype(float)
+            volumes = sym_daily['volume'].astype(float)
+
+            # EMA zone check: price in 9-21 EMA zone
+            # swing_ema imported at module level
+            ema9 = float(swing_ema(closes, 9).iloc[-1])
+            ema21 = float(swing_ema(closes, 21).iloc[-1])
+            ema_low = min(ema9, ema21)
+            ema_high = max(ema9, ema21)
+
+            if not (ema_low * 0.99 <= price <= ema_high * 1.01):
+                continue
+
+            # Volume check: current volume below average (healthy pullback)
+            if len(volumes) >= 20:
+                vol_avg = volumes.iloc[-20:].mean()
+                if vol_avg > 0 and volumes.iloc[-1] / vol_avg > 0.80:
+                    continue
+
+            # Stop = swing low of last 10 bars
+            swing_low = float(sym_daily['low'].astype(float).iloc[-10:].min())
+            stop_price = swing_low * 0.995  # tiny buffer below swing low
+            risk_per_share = price - stop_price
+            if risk_per_share <= 0 or risk_per_share / price > 0.08:
+                continue
+
+            # Position sizing: equity * risk_pct / risk_per_share
+            risk_amount = self.engine.equity * self.config.swing_risk_pct
+            shares = int(risk_amount / risk_per_share)
+            if shares <= 0:
+                continue
+
+            # Max 25% of equity per position
+            cost = shares * price
+            if cost > self.engine.equity * 0.25:
+                shares = int(self.engine.equity * 0.25 / price)
+                if shares <= 0:
+                    continue
+
+            # Submit entry order via broker
+            logger.info("Swing entry: %s %d shares @ ~$%.2f, stop $%.2f",
+                        sym, shares, price, stop_price)
+            self._add_message('system',
+                f'Swing entry signal: {sym} {shares} shares @ ~${price:.2f}, stop ${stop_price:.2f}')
+
+            try:
+                async with self._position_lock:
+                    fill = await self._broker_submit(sym, shares, 'buy',
+                                                     order_type='market')
+                    if fill and not fill.error:
+                        entry_price = fill.avg_price or price
+                        target_price = entry_price + 2 * risk_per_share
+
+                        pos = GapPosition(
+                            symbol=sym,
+                            shares=shares,
+                            entry_price=entry_price,
+                            stop_price=stop_price,
+                            half_target=target_price,
+                            full_target=target_price,
+                            prev_close=float(closes.iloc[-1]),
+                            entry_time=now.strftime('%Y-%m-%d %H:%M'),
+                            remaining_shares=shares,
+                            entry_order_id=fill.order_id or '',
+                            entry_fill_price=entry_price,
+                            direction='long',
+                            strategy_id='swing_stage2',
+                            source='swing',
+                        )
+                        self.engine.positions[sym] = pos
+                        held_symbols.add(sym)
+                        swing_positions[sym] = pos
+                        self._swing_weekly_trades += 1
+                        self._save_state()
+
+                        self._add_message('entry',
+                            f'SWING ENTRY: {sym} {shares} shares LONG @ ${entry_price:.2f}, '
+                            f'stop ${stop_price:.2f}, target ${target_price:.2f}')
+                        logger.info("Swing entry filled: %s %d @ $%.2f", sym, shares, entry_price)
+
+                        # Place broker-side stop
+                        try:
+                            stop_result = await self._broker_place_stop(
+                                sym, shares, stop_price, 0.003, 'long')
+                            if 'error' not in stop_result:
+                                pos.stop_order_id = stop_result.get('id', '')
+                        except Exception as e:
+                            logger.warning("Swing stop placement failed for %s: %s", sym, e)
+
+                        await broadcast({
+                            'type': 'positions_update',
+                            'positions': {s: asdict(p) for s, p in self.engine.positions.items()},
+                            'stats': asdict(self.engine.daily_stats),
+                            'equity': self.engine.equity,
+                        })
+                    else:
+                        err_msg = fill.error if fill else 'No fill returned'
+                        self._add_message('error', f'Swing entry FAILED {sym}: {err_msg}')
+                        logger.warning("Swing entry failed for %s: %s", sym, err_msg)
+
+            except Exception as e:
+                logger.error("Swing entry exception for %s: %s", sym, e, exc_info=True)
+                self._add_message('error', f'Swing entry exception {sym}: {e}')
+
+    async def _check_swing_exits(self) -> None:
+        """Check swing positions for exit signals.
+
+        Exit rules (different from gap fade):
+        1. At +1R: move stop to breakeven
+        2. At +2R: exit 50%, trail rest below 21 EMA
+        3. Close < 50 EMA: exit all
+        4. 3 consecutive non-higher daily closes + volume declining: exit
+        """
+        swing_positions = {sym: pos for sym, pos in self.engine.positions.items()
+                          if getattr(pos, 'strategy_id', '') == 'swing_stage2'}
+        if not swing_positions:
+            return
+
+        now = datetime.now(ET)
+        loader = SwingDataLoader()
+        lookback_start = (now - timedelta(days=200)).strftime('%Y-%m-%d')
+        today = now.strftime('%Y-%m-%d')
+
+        # Get current prices
+        try:
+            prices = await self._broker_get_prices(list(swing_positions.keys()))
+        except Exception:
+            return
+
+        for sym, pos in list(swing_positions.items()):
+            price = prices.get(sym, 0.0)
+            if price <= 0:
+                continue
+
+            risk_per_share = pos.entry_price - pos.stop_price if not pos.stop_at_breakeven else pos.initial_risk if hasattr(pos, 'initial_risk') else (pos.entry_price - pos.stop_price)
+            # Use the original risk from entry
+            # GapPosition doesn't have initial_risk, so compute from gap_pct or original stop
+            if pos.entry_fill_price > 0 and pos.entry_price > 0:
+                # We store original stop in stop_price initially
+                # After breakeven move, we need original risk
+                # Approximate: half_target = entry + 2R, so R = (half_target - entry) / 2
+                initial_risk = (pos.half_target - pos.entry_price) / 2.0 if pos.half_target > pos.entry_price else pos.entry_price * 0.02
+            else:
+                initial_risk = pos.entry_price * 0.02
+
+            if initial_risk <= 0:
+                continue
+
+            pnl_per_share = price - pos.entry_price  # long position
+            r_multiple = pnl_per_share / initial_risk
+
+            # 1. At +1R: move stop to breakeven
+            if r_multiple >= 1.0 and pos.stop_price < pos.entry_price:
+                new_stop = pos.entry_price + 0.01
+                logger.info("Swing %s: +1R reached, moving stop to breakeven $%.2f", sym, new_stop)
+                self._add_message('system', f'Swing {sym}: +1R — stop moved to breakeven ${new_stop:.2f}')
+                async with self._position_lock:
+                    p = self.engine.positions.get(sym)
+                    if p:
+                        p.stop_price = new_stop
+                        # Update broker stop
+                        if p.stop_order_id:
+                            try:
+                                await self._broker_cancel(p.stop_order_id)
+                                stop_result = await self._broker_place_stop(sym, p.remaining_shares, new_stop, 0.003, 'long')
+                                if 'error' not in stop_result:
+                                    p.stop_order_id = stop_result.get('id', '')
+                            except Exception as e:
+                                logger.warning("Swing breakeven stop update failed for %s: %s", sym, e)
+
+            # 2. At +2R: exit 50% if not already partial
+            if r_multiple >= 2.0 and not pos.partial_filled:
+                exit_shares = pos.remaining_shares // 2
+                if exit_shares > 0:
+                    logger.info("Swing %s: +2R, exiting %d shares (50%%)", sym, exit_shares)
+                    try:
+                        async with self._position_lock:
+                            p = self.engine.positions.get(sym)
+                            if p and not p.partial_filled:
+                                exit_signal = {
+                                    'reason': 'swing_partial_2R',
+                                    'shares': exit_shares,
+                                    'is_full_close': False,
+                                    'trigger_price': price,
+                                }
+                                trade = await self._execute_exit(sym, exit_signal, price)
+                                if trade:
+                                    self._add_message('exit',
+                                        f'SWING PARTIAL {sym}: {exit_shares} shares @ ${price:.2f} (+2R), '
+                                        f'P&L ${trade.pnl:+,.2f}')
+                    except Exception as e:
+                        logger.error("Swing partial exit failed for %s: %s", sym, e)
+
+            # Trail remaining below 21 EMA after partial
+            if pos.partial_filled:
+                try:
+                    sym_daily = await asyncio.to_thread(
+                        loader.load_daily, [sym], lookback_start, today)
+                    if not sym_daily.empty and len(sym_daily) >= 21:
+                        # swing_ema imported at module level
+                        ema21_val = float(swing_ema(sym_daily['close'].astype(float), 21).iloc[-1])
+                        new_stop = ema21_val * 0.995
+                        if new_stop > pos.stop_price:
+                            async with self._position_lock:
+                                p = self.engine.positions.get(sym)
+                                if p:
+                                    old_stop = p.stop_price
+                                    p.stop_price = new_stop
+                                    self._add_message('system',
+                                        f'Swing {sym}: trailing stop ${old_stop:.2f} -> ${new_stop:.2f} (21 EMA)')
+                                    if p.stop_order_id:
+                                        try:
+                                            await self._broker_cancel(p.stop_order_id)
+                                            stop_result = await self._broker_place_stop(sym, p.remaining_shares, new_stop, 0.003, 'long')
+                                            if 'error' not in stop_result:
+                                                p.stop_order_id = stop_result.get('id', '')
+                                        except Exception as e:
+                                            logger.warning("Swing 21 EMA trail update failed for %s: %s", sym, e)
+                except Exception:
+                    pass
+
+            # 3. Close < 50 EMA: exit all
+            try:
+                sym_daily = await asyncio.to_thread(
+                    loader.load_daily, [sym], lookback_start, today)
+                if not sym_daily.empty and len(sym_daily) >= 50:
+                    # swing_ema imported at module level
+                    ema50_val = float(swing_ema(sym_daily['close'].astype(float), 50).iloc[-1])
+                    if price < ema50_val:
+                        logger.info("Swing %s: price $%.2f < 50 EMA $%.2f — exiting", sym, price, ema50_val)
+                        self._add_message('system', f'Swing {sym}: below 50 EMA (${ema50_val:.2f}) — closing')
+                        async with self._position_lock:
+                            p = self.engine.positions.get(sym)
+                            if p:
+                                exit_signal = {
+                                    'reason': 'swing_below_50ema',
+                                    'shares': p.remaining_shares,
+                                    'is_full_close': True,
+                                    'trigger_price': price,
+                                }
+                                trade = await self._execute_exit(sym, exit_signal, price)
+                                if trade:
+                                    self._add_message('exit',
+                                        f'SWING EXIT {sym}: below 50 EMA @ ${price:.2f}, '
+                                        f'P&L ${trade.pnl:+,.2f}')
+                        continue
+
+                    # 4. 3 consecutive non-higher closes + declining volume
+                    if len(sym_daily) >= 4:
+                        recent = sym_daily.iloc[-4:]
+                        recent_closes = recent['close'].astype(float).values
+                        recent_vols = recent['volume'].astype(float).values
+                        non_higher = all(recent_closes[i] <= recent_closes[i - 1] for i in range(1, 4))
+                        vol_declining = all(recent_vols[i] <= recent_vols[i - 1] for i in range(1, 4))
+                        if non_higher and vol_declining:
+                            logger.info("Swing %s: stall exit (3 non-higher closes + declining vol)", sym)
+                            self._add_message('system', f'Swing {sym}: stall pattern — closing')
+                            async with self._position_lock:
+                                p = self.engine.positions.get(sym)
+                                if p:
+                                    exit_signal = {
+                                        'reason': 'swing_stall',
+                                        'shares': p.remaining_shares,
+                                        'is_full_close': True,
+                                        'trigger_price': price,
+                                    }
+                                    trade = await self._execute_exit(sym, exit_signal, price)
+                                    if trade:
+                                        self._add_message('exit',
+                                            f'SWING EXIT {sym}: stall pattern @ ${price:.2f}, '
+                                            f'P&L ${trade.pnl:+,.2f}')
+            except Exception as e:
+                logger.warning("Swing exit check failed for %s: %s", sym, e)
+
+    async def _swing_classify_symbol(self, symbol: str) -> dict:
+        """Classify a single stock's Weinstein stage and return full analysis."""
+        loader = SwingDataLoader()
+        today = datetime.now(ET).strftime('%Y-%m-%d')
+        lookback_start = (datetime.now(ET) - timedelta(days=600)).strftime('%Y-%m-%d')
+
+        sym_daily = await asyncio.to_thread(
+            loader.load_daily, [symbol], lookback_start, today)
+        spy_daily = await asyncio.to_thread(
+            loader.load_daily, ['SPY'], lookback_start, today)
+
+        if sym_daily.empty:
+            return {'error': f'No data found for {symbol}'}
+
+        sym_weekly = aggregate_to_weekly(sym_daily)
+        spy_weekly = aggregate_to_weekly(spy_daily)
+
+        stage = self._swing_classifier.classify(symbol, sym_weekly)
+        vol_state = self._swing_volume.classify(symbol, sym_daily)
+        trend = self._swing_volume.trend_health(symbol, sym_daily)
+        bias_result = self._swing_bias.check_bias(symbol, sym_daily, spy_weekly, sym_weekly)
+
+        last_close = float(sym_daily['close'].iloc[-1])
+        last_date = str(sym_daily['date'].iloc[-1])
+
+        result = {
+            'symbol': symbol,
+            'last_close': last_close,
+            'last_date': last_date,
+            'stage': stage,
+            'volume_state': vol_state,
+            'trend_health': trend,
+            'bias': bias_result,
+        }
+
+        # Tight base detection
+        setup = self._swing_base_detector.detect(symbol, sym_daily)
+        if setup:
+            result['tight_base'] = setup
+        else:
+            result['tight_base'] = None
+
+        return result
+
+    # -------------------------------------------------------------------------
     # P0-5: EOD Close — retry loop with broker verification
     # -------------------------------------------------------------------------
 
     async def _eod_close(self):
-        """Force close all positions at end of day with retry and verification."""
+        """Force close all positions at end of day with retry and verification.
+
+        Swing positions (strategy_id='swing_stage2') are SKIPPED — they hold
+        overnight for days/weeks. Only gap fade and intraday positions are closed.
+        """
         self._add_message('system', 'EOD — closing all positions (with verification)')
         logger.info("EOD close initiated")
 
         # Cancel ALL open orders for each position symbol (stops, pending entries, etc.)
         # This ensures shares are not held_for_orders when we submit the cover.
-        symbols_with_positions = list(self.engine.positions.keys())
+        # Skip swing positions — they hold overnight.
+        symbols_with_positions = [
+            sym for sym in self.engine.positions.keys()
+            if getattr(self.engine.positions[sym], 'strategy_id', '') != 'swing_stage2'
+        ]
+        _swing_held = [
+            sym for sym in self.engine.positions.keys()
+            if getattr(self.engine.positions[sym], 'strategy_id', '') == 'swing_stage2'
+        ]
+        if _swing_held:
+            logger.info("EOD: skipping %d swing positions (hold overnight): %s", len(_swing_held), _swing_held)
+            self._add_message('system', f'EOD: holding {len(_swing_held)} swing positions overnight: {_swing_held}')
         _total_cancelled = 0
         for sym in symbols_with_positions:
             if self._use_ibkr:
@@ -11810,10 +12489,13 @@ class GapFadeLiveTrader:
 
         max_retries = 3
         for attempt in range(max_retries):
-            if not self.engine.positions:
+            # Check if only swing positions remain (they don't need closing)
+            non_swing = [sym for sym in self.engine.positions.keys()
+                        if getattr(self.engine.positions[sym], 'strategy_id', '') != 'swing_stage2']
+            if not non_swing:
                 break
 
-            symbols_to_close = list(self.engine.positions.keys())
+            symbols_to_close = non_swing
 
             # On retry, cancel any new open orders that may have appeared
             if attempt > 0:
@@ -12068,8 +12750,10 @@ class GapFadeLiveTrader:
                 now = datetime.now(ET)  # refresh
                 if now >= target_355 and now.hour == 15 and now.minute >= 55 and not _did_force_close:
                     _did_force_close = True
-                    if self.engine.positions:
-                        remaining = list(self.engine.positions.keys())
+                    # Skip swing positions — they hold overnight
+                    remaining = [sym for sym in self.engine.positions.keys()
+                                if getattr(self.engine.positions[sym], 'strategy_id', '') != 'swing_stage2']
+                    if remaining:
                         logger.error(f"EOD WATCHDOG [3:55 PM]: FORCE CLOSE — "
                                     f"{len(remaining)} positions still open: {remaining}")
                         self._add_message('error',
@@ -12112,9 +12796,12 @@ class GapFadeLiveTrader:
 
                 # ── PHASE 5: 4:00 PM — Emergency Liquidation ──
                 now = datetime.now(ET)
-                if now.hour >= 16 and self.engine.positions and not _did_emergency:
+                # Skip swing positions — they hold overnight
+                _emergency_remaining = [sym for sym in self.engine.positions.keys()
+                                       if getattr(self.engine.positions[sym], 'strategy_id', '') != 'swing_stage2']
+                if now.hour >= 16 and _emergency_remaining and not _did_emergency:
                     _did_emergency = True
-                    remaining = list(self.engine.positions.keys())
+                    remaining = _emergency_remaining
                     logger.error(f"EOD WATCHDOG [4:00 PM]: EMERGENCY — "
                                 f"{len(remaining)} positions STILL open after all attempts")
                     self._add_message('error',
@@ -12126,7 +12813,7 @@ class GapFadeLiveTrader:
                         f'MANUAL INTERVENTION MAY BE REQUIRED.',
                         level='error')
 
-                    # Mark for close-on-open
+                    # Mark for close-on-open (not swing positions)
                     for sym in remaining:
                         if sym in self.engine.positions:
                             self.engine.positions[sym].close_on_open = True
@@ -12196,7 +12883,7 @@ class GapFadeLiveTrader:
             # Find the last 3 trading days in the DB
             cur.execute(
                 "SELECT date, COUNT(*) AS cnt FROM daily_bars "
-                "WHERE date >= CURRENT_DATE - INTERVAL '7 days' "
+                "WHERE date::date >= CURRENT_DATE - INTERVAL '7 days' "
                 "GROUP BY date ORDER BY date DESC LIMIT 5")
             rows = cur.fetchall()
 
@@ -13506,6 +14193,86 @@ async def get_intraday_analysis(symbol: str):
         'indicators': ind,
         'strategies': results,
     }
+
+
+# ---------------------------------------------------------------------------
+# Swing Engine API Endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/api/swing/status")
+async def swing_status():
+    """Swing engine status — kill switch, candidates, positions."""
+    swing_positions = {sym: asdict(pos) for sym, pos in live_trader.engine.positions.items()
+                      if getattr(pos, 'strategy_id', '') == 'swing_stage2'}
+    return {
+        'enabled': live_trader._swing_enabled,
+        'kill_switch': live_trader._swing_kill_switch_status,
+        'last_scan': live_trader._swing_last_scan,
+        'watchlist_count': len(live_trader._swing_watchlist),
+        'candidates_count': len(live_trader._swing_candidates),
+        'weekly_trades': live_trader._swing_weekly_trades,
+        'max_weekly_trades': live_trader.config.swing_max_weekly_trades,
+        'max_positions': live_trader.config.swing_max_positions,
+        'swing_positions': swing_positions,
+        'swing_position_count': len(swing_positions),
+        'risk_pct': live_trader.config.swing_risk_pct,
+    }
+
+
+@app.get("/api/swing/candidates")
+async def swing_candidates():
+    """Current Stage 2 watchlist with scores."""
+    return {
+        'watchlist': live_trader._swing_watchlist,
+        'all_candidates': live_trader._swing_candidates[:50],
+        'total_candidates': len(live_trader._swing_candidates),
+        'last_scan': live_trader._swing_last_scan,
+    }
+
+
+@app.get("/api/swing/scan")
+async def swing_scan_now():
+    """Trigger a swing scan immediately."""
+    if not live_trader._swing_enabled:
+        return JSONResponse(
+            status_code=400,
+            content={'error': 'Swing trading is disabled. Enable it first via /api/swing/enable.'})
+    asyncio.create_task(live_trader._run_swing_scan())
+    return {'status': 'scan_started', 'message': 'Swing scan triggered — results will be broadcast via WebSocket.'}
+
+
+@app.post("/api/swing/enable")
+async def swing_enable():
+    """Enable swing trading."""
+    live_trader._swing_enabled = True
+    live_trader.config.swing_enabled = True
+    live_trader._save_state()
+    live_trader._add_message('system', 'Swing trading ENABLED')
+    return {'enabled': True}
+
+
+@app.post("/api/swing/disable")
+async def swing_disable():
+    """Disable swing trading."""
+    live_trader._swing_enabled = False
+    live_trader.config.swing_enabled = False
+    live_trader._save_state()
+    live_trader._add_message('system', 'Swing trading DISABLED')
+    return {'enabled': False}
+
+
+@app.get("/api/swing/classify/{symbol}")
+async def swing_classify(symbol: str):
+    """Classify a single stock's Weinstein stage."""
+    symbol = symbol.upper().strip()
+    if not symbol or len(symbol) > 10:
+        return JSONResponse(status_code=400, content={'error': 'Invalid symbol'})
+    try:
+        result = await live_trader._swing_classify_symbol(symbol)
+        return result
+    except Exception as e:
+        logger.error("Swing classify failed for %s: %s", symbol, e, exc_info=True)
+        return JSONResponse(status_code=500, content={'error': str(e)})
 
 
 @app.post("/api/config")
