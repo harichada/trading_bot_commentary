@@ -16108,6 +16108,114 @@ async def run_backtest(body: dict):
     return {'status': 'started'}
 
 
+@app.post("/api/backtest/v2")
+async def run_backtest_v2(body: dict):
+    """Run v2 backtest with pluggable entry modes (exhaustion/blind/sweep/pyramid).
+
+    Body params:
+        start_date: str (YYYY-MM-DD)
+        end_date: str (YYYY-MM-DD)
+        capital: float (default 25000)
+        entry_mode: str ('exhaustion' or 'blind', default 'exhaustion')
+        sweep: bool (default false)
+        pyramid: bool (default false)
+        gap_threshold: float (default 0.03)
+        max_gap_pct: float (default 0.12)
+        min_price: float (default 5.0)
+        vol_ratio_max: float (default 10.0)
+        max_positions: int (default 5)
+        risk_pct: float (default 0.02)
+    """
+    global backtester
+
+    try:
+        from backtest_engine_v2 import BacktestConfig as BtV2Config, BacktestEngineV2
+    except ImportError as e:
+        return {'error': f'backtest_engine_v2 not available: {e}'}
+
+    if backtester.status == 'running':
+        return {'error': 'A backtest is already running. Cancel it first.'}
+
+    # Build v2 config from body
+    v2_cfg = BtV2Config(
+        start_date=body.get('start_date', '2024-01-01'),
+        end_date=body.get('end_date', '2026-03-27'),
+        initial_capital=float(body.get('capital', 25000)),
+        entry_mode=body.get('entry_mode', 'exhaustion'),
+        sweep_enabled=body.get('sweep', False),
+        pyramid_enabled=body.get('pyramid', False),
+        gap_threshold=float(body.get('gap_threshold', 0.03)),
+        max_gap_pct=float(body.get('max_gap_pct', 0.12)),
+        min_price=float(body.get('min_price', 5.0)),
+        vol_ratio_max=float(body.get('vol_ratio_max', 10.0)),
+        max_positions=int(body.get('max_positions', 5)),
+        risk_pct=float(body.get('risk_pct', 0.02)),
+        stop_min_pct=float(body.get('stop_min_pct', 0.005)),
+        stop_max_pct=float(body.get('stop_max_pct', 0.03)),
+        regime_filter=body.get('regime_filter', True),
+    )
+
+    # Use a simple status tracker
+    class V2Status:
+        def __init__(self):
+            self.status = 'running'
+            self.progress = 0
+            self.result = None
+
+    v2_status = V2Status()
+    backtester.status = 'running'
+    backtester.progress = 0
+
+    async def _run_v2():
+        try:
+            engine = BacktestEngineV2(v2_cfg)
+            backtester.status = 'running'
+
+            # Run synchronously in thread (v2 engine is sync)
+            result = await asyncio.to_thread(engine.run)
+            engine.close()
+
+            backtester.result = result
+            backtester.status = 'done'
+            backtester.progress = 100
+
+            trades = result.get('summary', {}).get('total_trades', 0)
+            pf = result.get('summary', {}).get('profit_factor', 0)
+            pnl = result.get('summary', {}).get('total_pnl', 0)
+            logger.info(f"[BT-V2] Complete: {trades} trades, PF {pf:.2f}, P&L ${pnl:+,.2f}")
+
+            await broadcast({
+                'type': 'backtest_complete',
+                'result': {
+                    'total_trades': trades,
+                    'profit_factor': pf,
+                    'total_pnl': pnl,
+                    'win_rate': result.get('summary', {}).get('win_rate', 0),
+                    'sharpe': result.get('summary', {}).get('sharpe_ratio', 0),
+                    'max_drawdown_pct': result.get('summary', {}).get('max_drawdown', 0) * 100,
+                    'final_equity': result.get('summary', {}).get('final_equity', 0),
+                    'entry_mode': v2_cfg.entry_mode,
+                    'sweep': v2_cfg.sweep_enabled,
+                    'pyramid': v2_cfg.pyramid_enabled,
+                },
+            })
+        except Exception as e:
+            import traceback
+            logger.error(f"[BT-V2] Error: {e}\n{traceback.format_exc()}")
+            backtester.status = 'error'
+            backtester.result = {'error': str(e)}
+            await broadcast({'type': 'backtest_complete', 'error': str(e)})
+
+    asyncio.create_task(_run_v2())
+    return {
+        'status': 'started',
+        'engine': 'v2',
+        'entry_mode': v2_cfg.entry_mode,
+        'sweep': v2_cfg.sweep_enabled,
+        'pyramid': v2_cfg.pyramid_enabled,
+    }
+
+
 @app.get("/api/backtest/status")
 async def backtest_status():
     return {'progress': backtester.progress, 'status': backtester.status}
