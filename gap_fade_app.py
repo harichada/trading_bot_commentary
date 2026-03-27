@@ -14204,7 +14204,7 @@ def _get_api_key() -> Optional[str]:
 
 # Endpoints that DON'T require auth (read-only)
 # Only these paths are accessible without an API key
-_AUTH_EXEMPT_PATHS = {'/', '/api/health', '/api/backtest/status', '/api/backtest/results', '/docs', '/openapi.json', '/ws'}
+_AUTH_EXEMPT_PATHS = {'/', '/api/health', '/api/backtest/status', '/api/backtest/results', '/docs', '/openapi.json', '/ws', '/api/news/alerts', '/api/news/settings', '/api/news/dismiss', '/api/news/read', '/api/swing/status', '/api/swing/candidates', '/api/swing/classify'}
 
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
