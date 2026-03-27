@@ -1730,8 +1730,8 @@ class PriceDB:
     DEFAULT_DB_URL = 'postgresql://rudra:rudra_dev_2024@localhost:5432/rudra_dev'
 
     def __init__(self):
-        db_url = os.environ.get('DATABASE_URL', self.DEFAULT_DB_URL)
-        self._conn = psycopg2.connect(db_url)
+        self._db_url = os.environ.get('DATABASE_URL', '') or self.DEFAULT_DB_URL
+        self._conn = psycopg2.connect(self._db_url)
         self._conn.autocommit = False
         self._lock = threading.Lock()
         cur = self._conn.cursor()
@@ -2384,21 +2384,46 @@ class PriceDB:
 
     def save_trader_state(self, state: dict, key: str = 'default'):
         """Persist trader state to PostgreSQL (replaces JSON file writes)."""
-        try:
-            saved_at = state.get('saved_at', '')
-            with self._lock:
-                cur = self._conn.cursor()
-                cur.execute('''
-                    INSERT INTO trader_state (key, state_json, saved_at)
-                    VALUES (%s, %s, %s)
-                    ON CONFLICT (key) DO UPDATE SET
-                        state_json = EXCLUDED.state_json,
-                        saved_at = EXCLUDED.saved_at
-                ''', (key, json.dumps(state, default=str), saved_at))
-                self._conn.commit()
-        except Exception as e:
-            self._conn.rollback()
-            logger.error(f"Trader state save failed: {e}")
+        saved_at = state.get('saved_at', '')
+        state_json = json.dumps(state, default=str)
+        for attempt in range(2):
+            try:
+                with self._lock:
+                    # Check connection health
+                    if self._conn.closed:
+                        logger.warning("DB connection closed — reconnecting")
+                        self._conn = psycopg2.connect(self._db_url)
+                    cur = self._conn.cursor()
+                    cur.execute('''
+                        INSERT INTO trader_state (key, state_json, saved_at)
+                        VALUES (%s, %s, %s)
+                        ON CONFLICT (key) DO UPDATE SET
+                            state_json = EXCLUDED.state_json,
+                            saved_at = EXCLUDED.saved_at
+                    ''', (key, state_json, saved_at))
+                    self._conn.commit()
+                    return  # success
+            except Exception as e:
+                try:
+                    self._conn.rollback()
+                except Exception:
+                    pass
+                if attempt == 0:
+                    logger.warning(f"Trader state save failed (attempt 1): {e}")
+                    # Try reconnecting
+                    try:
+                        self._conn = psycopg2.connect(self._db_url)
+                    except Exception:
+                        pass
+                else:
+                    logger.error(f"Trader state save FAILED after retry: {e}")
+                    # Last resort: save to JSON file
+                    try:
+                        with open('gap_fade_state.json', 'w') as f:
+                            f.write(state_json)
+                        logger.info("State saved to JSON fallback")
+                    except Exception:
+                        pass
 
     def load_trader_state(self, key: str = 'default') -> Optional[dict]:
         """Load trader state from PostgreSQL. Returns None if not found."""
@@ -9995,22 +10020,40 @@ class GapFadeLiveTrader:
                             level='error')
                         await self._eod_close()
 
-                    # Send daily P&L summary before resetting
+                    # Send daily P&L summary (Telegram + Email)
                     stats = self.engine.daily_stats
                     today_trades = [t for t in self.engine.all_trade_log
                                     if hasattr(t, 'exit_time') and t.exit_time
                                     and t.exit_time.startswith(today)]
                     wins = sum(1 for t in today_trades if t.pnl > 0)
                     losses = len(today_trades) - wins
-                    trade_details = ', '.join(
-                        f'{t.symbol} {"+" if t.pnl >= 0 else ""}${t.pnl:.0f}'
-                        for t in today_trades[:10])
-                    await self.alerter.send(
-                        f'Daily Summary \u2014 {now.strftime("%a %b %d")}',
-                        f'Equity: ${self.engine.equity:,.2f}\n'
-                        f'Today: {"+" if stats.pnl >= 0 else ""}${stats.pnl:.2f} ({wins}W/{losses}L)\n'
-                        f'Trades: {trade_details or "none"}',
-                        level='summary')
+                    wr = wins / len(today_trades) * 100 if today_trades else 0
+
+                    # Use RudraAlerter's daily_summary if available
+                    if hasattr(self.alerter, 'daily_summary'):
+                        swing_positions = [s for s, p in self.engine.positions.items()
+                                           if getattr(p, 'strategy_id', '') == 'swing_stage2']
+                        try:
+                            await self.alerter.daily_summary(
+                                trades=len(today_trades),
+                                pnl=stats.pnl,
+                                equity=self.engine.equity,
+                                win_rate=wr,
+                                positions=swing_positions,
+                            )
+                        except Exception as e:
+                            logger.warning(f"Daily summary alert failed: {e}")
+                    else:
+                        # Fallback to basic alert
+                        trade_details = ', '.join(
+                            f'{t.symbol} {"+" if t.pnl >= 0 else ""}${t.pnl:.0f}'
+                            for t in today_trades[:10])
+                        await self.alerter.send(
+                            f'Daily Summary \u2014 {now.strftime("%a %b %d")}',
+                            f'Equity: ${self.engine.equity:,.2f}\n'
+                            f'Today: {"+" if stats.pnl >= 0 else ""}${stats.pnl:.2f} ({wins}W/{losses}L)\n'
+                            f'Trades: {trade_details or "none"}',
+                            level='summary')
 
                     # Store today's closing bars for the full universe
                     # so tomorrow's gap scanner can use prev_close from DB
