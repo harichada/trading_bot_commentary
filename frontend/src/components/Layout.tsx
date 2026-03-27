@@ -1,5 +1,5 @@
 import { useState, useEffect, type ReactNode } from 'react'
-import { NavLink, useNavigate } from 'react-router-dom'
+import { NavLink, useNavigate, useLocation } from 'react-router-dom'
 import { gfApi, type GfHealth } from '../api/client'
 
 interface LayoutProps {
@@ -108,13 +108,36 @@ export default function Layout({ children }: LayoutProps) {
     return () => clearInterval(timer)
   }, [])
 
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
+  const location = useLocation()
+
+  // Close mobile menu on route change
+  useEffect(() => {
+    setMobileMenuOpen(false)
+  }, [location.pathname])
+
   const marketOpen = health?.trading_halted === false
   const equity = typeof health?.equity === 'number' ? health.equity : null
 
   return (
     <div className="h-full flex bg-bg-primary">
-      {/* Sidebar */}
-      <aside className="w-16 flex flex-col items-center py-4 bg-bg-card border-r border-border shrink-0">
+      {/* Mobile overlay */}
+      {mobileMenuOpen && (
+        <div
+          className="fixed inset-0 bg-black/60 z-40 md:hidden"
+          onClick={() => setMobileMenuOpen(false)}
+        />
+      )}
+
+      {/* Sidebar — hidden on mobile, shown on md+ */}
+      <aside className={`
+        ${mobileMenuOpen ? 'translate-x-0' : '-translate-x-full'}
+        md:translate-x-0 fixed md:static z-50
+        w-56 md:w-16 h-full
+        flex flex-col items-center py-4
+        bg-bg-card border-r border-border shrink-0
+        transition-transform duration-200 ease-in-out
+      `}>
         {/* Logo */}
         <button
           onClick={() => navigate('/')}
@@ -132,7 +155,7 @@ export default function Layout({ children }: LayoutProps) {
               key={item.path}
               to={item.path}
               className={({ isActive }) =>
-                `group relative flex items-center justify-center w-12 h-10 rounded-lg transition-colors mx-auto ${
+                `group relative flex items-center md:justify-center w-full md:w-12 h-10 rounded-lg transition-colors md:mx-auto px-3 md:px-0 ${
                   isActive
                     ? 'bg-green/10 text-green'
                     : 'text-text-muted hover:text-text-secondary hover:bg-bg-card-hover'
@@ -141,8 +164,9 @@ export default function Layout({ children }: LayoutProps) {
               title={item.label}
             >
               <NavIcon icon={item.icon} className="w-5 h-5" />
-              {/* Tooltip */}
-              <span className="absolute left-full ml-2 px-2 py-1 text-xs bg-bg-card border border-border rounded opacity-0 group-hover:opacity-100 pointer-events-none whitespace-nowrap z-50 text-text-primary transition-opacity">
+              {/* Label — visible on mobile sidebar, tooltip on desktop */}
+              <span className="md:hidden ml-3 text-sm">{item.label}</span>
+              <span className="hidden md:block absolute left-full ml-2 px-2 py-1 text-xs bg-bg-card border border-border rounded opacity-0 group-hover:opacity-100 pointer-events-none whitespace-nowrap z-50 text-text-primary transition-opacity">
                 {item.label}
               </span>
             </NavLink>
@@ -168,11 +192,24 @@ export default function Layout({ children }: LayoutProps) {
       <div className="flex-1 flex flex-col overflow-hidden">
         {/* Top Bar */}
         <header className="h-12 flex items-center justify-between px-4 bg-bg-card border-b border-border shrink-0">
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-3">
+            {/* Hamburger — mobile only */}
+            <button
+              className="md:hidden p-1.5 rounded-lg text-text-muted hover:text-text-primary hover:bg-bg-card-hover"
+              onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+            >
+              <svg viewBox="0 0 20 20" fill="currentColor" className="w-5 h-5">
+                {mobileMenuOpen ? (
+                  <path d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" />
+                ) : (
+                  <path d="M3 5h14M3 10h14M3 15h14" stroke="currentColor" strokeWidth="2" fill="none" />
+                )}
+              </svg>
+            </button>
             <h1 className="text-sm font-semibold text-text-primary">
-              <span className="text-green">Rudra</span> Engine
+              <span className="text-green">Rudra</span> <span className="hidden sm:inline">Engine</span>
             </h1>
-            <span className="text-[10px] text-text-muted italic">INSTITUTIONAL TERMINAL</span>
+            <span className="hidden lg:inline text-[10px] text-text-muted italic">INSTITUTIONAL TERMINAL</span>
             {gfOnline ? (
               <span className={`flex items-center gap-1.5 text-[10px] font-semibold px-2 py-0.5 rounded ${
                 marketOpen ? 'bg-green/10 text-green' : 'bg-yellow/10 text-yellow'
