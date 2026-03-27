@@ -2992,7 +2992,7 @@ class PriceDB:
             where_clauses = ["dismissed = FALSE"]
             params: list = []
             if symbol:
-                where_clauses.append("symbol = %s")
+                where_clauses.append("UPPER(symbol) = UPPER(%s)")
                 params.append(symbol)
             if impact:
                 where_clauses.append("impact = %s")
