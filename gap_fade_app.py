@@ -17427,25 +17427,25 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
   /* ── Mobile responsive ── */
   @media (max-width: 768px) {
-    .app-grid {
-      grid-template-columns: 1fr;
-      grid-template-rows: 48px auto 1fr 28px;
+    #app {
+      grid-template-columns: 1fr !important;
+      grid-template-rows: 48px auto 1fr 28px !important;
       grid-template-areas:
         "header"
         "metrics"
         "content"
-        "statusbar";
+        "statusbar" !important;
     }
     .sidebar {
-      position: fixed; left: 0; top: 0; bottom: 0; width: 220px;
+      position: fixed !important; left: 0; top: 0; bottom: 0; width: 220px;
       z-index: 100; transform: translateX(-100%);
       transition: transform 0.2s ease;
     }
-    .sidebar.open { transform: translateX(0); }
-    .sidebar-overlay.open { display: block; }
-    .hamburger-btn { display: block; }
-    .rightpanel { display: none; }
-    .header { padding-left: 4px; }
+    .sidebar.open { transform: translateX(0) !important; }
+    .sidebar-overlay.open { display: block !important; }
+    .hamburger-btn { display: block !important; }
+    .rightpanel { display: none !important; }
+    .top-bar { padding-left: 4px; }
     .metrics-bar { flex-wrap: wrap; gap: 6px; padding: 6px 8px; }
     .metric-card { min-width: 120px; padding: 6px 8px; }
     .metric-card .label { font-size: 9px; }
@@ -18228,7 +18228,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   </div>
 </div>
 
-<div id="app" style="display:none;">
+<div id="app" class="app-grid" style="display:none;">
 
 <!-- Mobile overlay -->
 <div class="sidebar-overlay" id="sidebarOverlay" onclick="toggleMobileMenu()"></div>
