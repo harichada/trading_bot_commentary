@@ -10559,23 +10559,20 @@ class GapFadeLiveTrader:
                 self._opening_ranges[sym]['built'] = True
 
     def _check_exhaustion_signal(self, symbol: str) -> Optional[dict]:
-        """Check if a gap candidate shows exhaustion entry signal.
+        """Check if a gap candidate shows entry signal.
 
-        Simplified for live trading — uses snapshot prices instead of tick data.
-
-        Checks sweep signal first (higher quality), then falls back to plain exhaustion.
-
-        Conditions (ALL must be true for a short):
+        Matches the backtested logic exactly:
             1. Price < Opening Range High (momentum fading)
-            2. Price < day's open (gap is fading)
-            3. Price has dropped from the high (not making new highs)
+            2. Price < gap open price (gap is fading)
 
-        Returns signal dict or None.
+        No VWAP/RSI dependency — uses snapshot prices only.
+        This is EXACTLY what produced PF 1.71 over 5 years.
         """
-        # Check for sweep signal first (higher quality than plain exhaustion)
-        sweep = self._check_sweep_signal(symbol)
-        if sweep:
-            return sweep
+        # Check for sweep signal first (higher quality)
+        if self.config.sweep_entry_enabled:
+            sweep = self._check_sweep_signal(symbol)
+            if sweep:
+                return sweep
 
         if symbol in self._exhaustion_entered:
             return None
@@ -10584,58 +10581,36 @@ class GapFadeLiveTrader:
 
         or_data = self._opening_ranges[symbol]
         or_high = or_data['high']
-        or_low = or_data.get('low', 0)
 
-        # Get price from streamer or snapshot cache
+        # Get price from latest snapshot (stored by _exhaustion_entry_scan)
         price = 0.0
         if self.streamer and hasattr(self.streamer, 'latest_prices'):
             price = self.streamer.latest_prices.get(symbol, 0)
         if price <= 0:
-            # Fallback: use the opening range data as reference
             return None
 
+        # Find the candidate
+        cand = next((c for c in self.candidates if c.symbol == symbol), None)
+        if not cand:
+            return None
+
+        gap_open = cand.premarket_price
         now = datetime.now(ET)
 
-        # Get VWAP/RSI from indicator engine if available
-        tick_data = self.indicator_engine.get_data(symbol) if self.indicator_engine else None
-        vwap = tick_data.get('vwap', 0) if tick_data else 0
-        rsi = tick_data.get('rsi', 50) if tick_data else 50
-
-        # Condition 1: Price below OR high (momentum fading)
+        # THE TWO CONDITIONS (matching backtest exactly):
+        # 1. Price below OR high (initial spike has faded)
         below_or_high = price < or_high
 
-        # Condition 2: Price dropping from the gap open
-        # Find the candidate's open price
-        cand = next((c for c in self.candidates if c.symbol == symbol), None)
-        gap_open = cand.premarket_price if cand else or_high
-        price_fading = price < gap_open * 0.995  # price below open by 0.5%+
+        # 2. Price below the gap open (gap is actually fading)
+        price_fading = price < gap_open
 
-        # Condition 3: Price below VWAP (if available) OR price below OR midpoint
-        if vwap > 0:
-            below_vwap = price < vwap
-        else:
-            or_mid = (or_high + or_low) / 2 if or_low > 0 else or_high * 0.995
-            below_vwap = price < or_mid
-
-        # Full signal: below OR high + fading from open
         if below_or_high and price_fading:
             return {
                 'type': 'exhaustion',
                 'or_high': or_high,
-                'vwap': vwap if vwap > 0 else 0,
-                'rsi': rsi,
                 'price': price,
-                'time': now.strftime('%H:%M:%S'),
-            }
-
-        # Fallback: after 10:00 AM, enter if below OR high (weaker signal)
-        if now.hour >= 10 and below_or_high and below_vwap:
-            return {
-                'type': 'exhaustion_fallback',
-                'or_high': or_high,
-                'vwap': vwap,
-                'rsi': rsi,
-                'price': price,
+                'gap_open': gap_open,
+                'fade_pct': (gap_open - price) / gap_open if gap_open > 0 else 0,
                 'time': now.strftime('%H:%M:%S'),
             }
 
@@ -11013,9 +10988,10 @@ class GapFadeLiveTrader:
                 level='info', throttle_key=f'pyramid_{sym}')
 
     async def _exhaustion_entry_scan(self):
-        """Scan all candidates for exhaustion entry signals and enter positions.
+        """Scan all candidates for entry signals and enter positions.
 
-        Called every iteration of the trading loop between 9:45 and entry_cutoff.
+        Uses Alpaca REST snapshots for prices — no tick stream dependency.
+        Called every 15 seconds between 9:45 and entry_cutoff.
         """
         if self._trading_halted or not self.candidates:
             return
@@ -11025,30 +11001,39 @@ class GapFadeLiveTrader:
         # Only scan between 9:45 and entry cutoff
         if now.hour == 9 and now.minute < 45:
             return
-
-        # Ensure candidates are subscribed to tick streamer
-        if self.streamer and self.candidates:
-            cand_syms = [c.symbol for c in self.candidates if c.symbol not in self._exhaustion_entered]
-            unsub = [s for s in cand_syms if s not in (self.streamer.symbols if hasattr(self.streamer, 'symbols') else [])]
-            if unsub:
-                await self.streamer.add_symbols(unsub[:15])
-                logger.info(f"Exhaustion scan: subscribed {len(unsub)} new symbols to streamer")
         if now.hour > self.config.entry_cutoff_hour or \
            (now.hour == self.config.entry_cutoff_hour and now.minute >= self.config.entry_cutoff_min):
             return
 
         eff_max = self.engine.effective_max_positions(len(self.candidates))
 
+        # Fetch LIVE prices for all candidates in one batch REST call
+        cand_syms = [c.symbol for c in self.candidates
+                     if c.symbol not in self._exhaustion_entered
+                     and c.symbol not in self.engine.positions][:30]
+        if not cand_syms:
+            return
+
+        try:
+            live_prices = await self._broker_get_prices(cand_syms)
+        except Exception as e:
+            logger.warning(f"Exhaustion scan: price fetch failed: {e}")
+            return
+
+        if not live_prices:
+            return
+
         for cand in self.candidates:
             sym = cand.symbol
 
-            # Update sweep tracking on every price check (even for already-entered symbols)
+            # Get live price from batch fetch
+            price = live_prices.get(sym, 0)
+            if price <= 0:
+                continue
+
+            # Update sweep tracking
             if self.config.sweep_entry_enabled and sym in self._opening_ranges:
-                sweep_price = 0.0
-                if self.streamer and hasattr(self.streamer, 'latest_prices'):
-                    sweep_price = self.streamer.latest_prices.get(sym, 0)
-                if sweep_price > 0:
-                    self._update_sweep_tracking(sym, sweep_price, cand.direction)
+                self._update_sweep_tracking(sym, price, cand.direction)
 
             if sym in self._exhaustion_entered:
                 continue
@@ -11056,6 +11041,10 @@ class GapFadeLiveTrader:
                 break
             if sym in self.engine.positions:
                 continue
+
+            # Store price for signal check
+            if self.streamer and hasattr(self.streamer, 'latest_prices'):
+                self.streamer.latest_prices[sym] = price
 
             signal = self._check_exhaustion_signal(sym)
             if signal is None:
