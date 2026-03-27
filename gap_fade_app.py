@@ -12838,6 +12838,38 @@ class GapFadeLiveTrader:
                 if shares <= 0:
                     continue
 
+            # LLM Pre-Entry Debate (optional — uses local Ollama)
+            llm_approved = True
+            try:
+                from pre_entry_debate import PreEntryDebate
+                debate = PreEntryDebate()
+                if debate.enabled:
+                    result = await debate.evaluate(sym, {
+                        'direction': 'long',
+                        'strategy_id': 'swing_stage2',
+                        'entry_price': price,
+                        'stop_price': stop_price,
+                        'target_price': price + 2 * risk_per_share,
+                        'rr_ratio': round(2 * risk_per_share / risk_per_share, 1) if risk_per_share > 0 else 0,
+                        'ema9': ema9,
+                        'ema21': ema21,
+                        'stage': cand.get('stage', 'STAGE_2'),
+                        'tight_base_score': cand.get('score', 0),
+                        'volume_state': 'pullback_low',
+                    })
+                    llm_approved = result.approved
+                    self._add_message('system',
+                        f'Swing LLM debate {sym}: {"PROCEED" if result.approved else "REJECT"} '
+                        f'({result.confidence:.0%}) — {result.verdict[:80]}')
+                    if not result.approved:
+                        logger.info(f"Swing entry REJECTED by LLM: {sym} — {result.verdict}")
+                        continue
+            except ImportError:
+                pass  # pre_entry_debate not available, skip
+            except Exception as e:
+                logger.debug(f"Swing LLM debate error for {sym}: {e}")
+                # On error, proceed (don't block on LLM failure)
+
             # Submit entry order via broker
             logger.info("Swing entry: %s %d shares @ ~$%.2f, stop $%.2f",
                         sym, shares, price, stop_price)
