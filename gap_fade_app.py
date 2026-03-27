@@ -1735,7 +1735,29 @@ class PriceDB:
         self._conn = psycopg2.connect(self._db_url)
         self._conn.autocommit = False
         self._lock = threading.Lock()
+        self._ensure_connection()
         cur = self._conn.cursor()
+
+    def _ensure_connection(self):
+        """Ensure DB connection is alive and not in a failed transaction."""
+        try:
+            if self._conn.closed:
+                self._conn = psycopg2.connect(self._db_url)
+                self._conn.autocommit = False
+                logger.info("PriceDB: reconnected to database")
+                return
+            # Check if stuck in aborted transaction
+            status = self._conn.get_transaction_status()
+            if status == psycopg2.extensions.TRANSACTION_STATUS_INERROR:
+                self._conn.rollback()
+                logger.info("PriceDB: rolled back aborted transaction")
+        except Exception:
+            try:
+                self._conn = psycopg2.connect(self._db_url)
+                self._conn.autocommit = False
+                logger.info("PriceDB: reconnected after error")
+            except Exception as e:
+                logger.error(f"PriceDB: reconnect failed: {e}")
         # Schema is managed by `make db-migrate` (infra/scripts/init-schema.sql).
         # For local dev without Docker, ensure tables exist as a fallback.
         cur.execute("SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='daily_bars'")
@@ -2244,6 +2266,7 @@ class PriceDB:
         Returns True if a row was inserted, False if duplicate/ignored."""
         d = trade if isinstance(trade, dict) else asdict(trade)
         try:
+            self._ensure_connection()
             cur = self._conn.cursor()
             cur.execute(
                 '''INSERT INTO trades
@@ -2336,6 +2359,7 @@ class PriceDB:
     def insert_journal(self, entry: dict):
         """Insert a journal entry, ignoring duplicates."""
         try:
+            self._ensure_connection()
             cur = self._conn.cursor()
             cur.execute('''
                 INSERT INTO journal_entries
@@ -2348,7 +2372,10 @@ class PriceDB:
                   bool(entry.get('llm_call'))))
             self._conn.commit()
         except Exception as e:
-            self._conn.rollback()
+            try:
+                self._conn.rollback()
+            except Exception:
+                self._ensure_connection()
             logger.error(f"Journal insert failed: {e}")
 
     def query_journal(self, date: str = '', n: int = 50, entry_type: str = '') -> list:
