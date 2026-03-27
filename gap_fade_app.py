@@ -8198,7 +8198,14 @@ class GapFadeLiveTrader:
         self.event_detector = MarketEventDetector()
 
         # Telegram alerts
-        self.alerter = AlertNotifier(self.config)
+        # Use RudraAlerter (Telegram + Email) if available, fallback to built-in
+        try:
+            from alerter import RudraAlerter
+            self.alerter = RudraAlerter()
+            logger.info("RudraAlerter loaded (Telegram + Email)")
+        except Exception as e:
+            self.alerter = AlertNotifier(self.config)
+            logger.info(f"Using built-in AlertNotifier ({e})")
 
         # Load persisted state (before LLM init so config overrides apply)
         self.llm_supervisor = None
