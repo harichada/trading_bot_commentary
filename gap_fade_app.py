@@ -17022,7 +17022,10 @@ async def get_rejected_candidates(request: Request):
 
 @app.get("/api/news/alerts")
 async def api_get_news_alerts(request: Request):
-    """Paginated news alerts for mobile app."""
+    """Paginated news alerts for mobile app.
+
+    If a symbol is specified and has no cached news, fetches from Alpaca on-demand.
+    """
     limit = min(int(request.query_params.get('limit', '50')), 200)
     offset = int(request.query_params.get('offset', '0'))
     symbol = request.query_params.get('symbol', None) or None
@@ -17030,6 +17033,33 @@ async def api_get_news_alerts(request: Request):
     db = get_price_db()
     alerts, total = db.get_news_alerts(limit=limit, offset=offset,
                                         symbol=symbol, impact=impact)
+
+    # On-demand fetch: if symbol specified but no results, fetch from Alpaca now
+    if symbol and total == 0:
+        try:
+            news_results = await _fetch_alpaca_news([symbol], full=True)
+            now = datetime.now(ET)
+            for sym, articles in news_results.items():
+                for article in articles:
+                    headline = article.get('headline', '') if isinstance(article, dict) else article
+                    summary = article.get('summary', '') if isinstance(article, dict) else ''
+                    url = article.get('url', '') if isinstance(article, dict) else ''
+                    source = article.get('source', 'alpaca') if isinstance(article, dict) else 'alpaca'
+                    ts = article.get('timestamp', now.isoformat()) if isinstance(article, dict) else now.isoformat()
+                    imp, cat = _classify_news(headline, sym)
+                    raw = f"{sym}{headline}{ts[:10]}"
+                    alert_id = hashlib.sha256(raw.encode()).hexdigest()[:16]
+                    db.insert_news_alert({
+                        'id': alert_id, 'symbol': sym, 'headline': headline,
+                        'summary': summary, 'source': source, 'url': url,
+                        'impact': imp, 'category': cat, 'timestamp': ts,
+                    })
+            # Re-query after insert
+            alerts, total = db.get_news_alerts(limit=limit, offset=offset,
+                                                symbol=symbol, impact=impact)
+        except Exception as e:
+            logger.warning(f"On-demand news fetch for {symbol} failed: {e}")
+
     return {'alerts': alerts, 'total': total, 'limit': limit, 'offset': offset}
 
 
