@@ -1735,8 +1735,7 @@ class PriceDB:
         self._conn = psycopg2.connect(self._db_url)
         self._conn.autocommit = False
         self._lock = threading.Lock()
-        self._ensure_connection()
-        cur = self._conn.cursor()
+        self._check_schema()
 
     def _ensure_connection(self):
         """Ensure DB connection is alive and not in a failed transaction."""
@@ -1758,6 +1757,10 @@ class PriceDB:
                 logger.info("PriceDB: reconnected after error")
             except Exception as e:
                 logger.error(f"PriceDB: reconnect failed: {e}")
+
+    def _check_schema(self):
+        """Check if tables exist, create if missing."""
+        cur = self._conn.cursor()
         # Schema is managed by `make db-migrate` (infra/scripts/init-schema.sql).
         # For local dev without Docker, ensure tables exist as a fallback.
         cur.execute("SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='daily_bars'")
