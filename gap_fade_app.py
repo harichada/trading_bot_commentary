@@ -17412,6 +17412,49 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     border-left-color: var(--accent-green);
   }
   .sidebar-item svg { width: 16px; height: 16px; flex-shrink: 0; }
+
+  /* ── Mobile hamburger ── */
+  .hamburger-btn {
+    display: none;
+    background: none; border: none; color: var(--text);
+    cursor: pointer; padding: 6px; margin-right: 8px;
+  }
+  .hamburger-btn svg { width: 22px; height: 22px; }
+  .sidebar-overlay {
+    display: none;
+    position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 99;
+  }
+
+  /* ── Mobile responsive ── */
+  @media (max-width: 768px) {
+    .app-grid {
+      grid-template-columns: 1fr;
+      grid-template-rows: 48px auto 1fr 28px;
+      grid-template-areas:
+        "header"
+        "metrics"
+        "content"
+        "statusbar";
+    }
+    .sidebar {
+      position: fixed; left: 0; top: 0; bottom: 0; width: 220px;
+      z-index: 100; transform: translateX(-100%);
+      transition: transform 0.2s ease;
+    }
+    .sidebar.open { transform: translateX(0); }
+    .sidebar-overlay.open { display: block; }
+    .hamburger-btn { display: block; }
+    .rightpanel { display: none; }
+    .header { padding-left: 4px; }
+    .metrics-bar { flex-wrap: wrap; gap: 6px; padding: 6px 8px; }
+    .metric-card { min-width: 120px; padding: 6px 8px; }
+    .metric-card .label { font-size: 9px; }
+    .metric-card .value { font-size: 14px; }
+  }
+  @media (max-width: 480px) {
+    .metric-card { min-width: 100px; }
+    .metric-card .value { font-size: 12px; }
+  }
   .sidebar-sep { height: 1px; background: var(--border); margin: 4px 16px; }
   .sidebar-footer {
     padding: 12px 16px;
@@ -18187,8 +18230,11 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
 <div id="app" style="display:none;">
 
+<!-- Mobile overlay -->
+<div class="sidebar-overlay" id="sidebarOverlay" onclick="toggleMobileMenu()"></div>
+
 <!-- ── Sidebar ── -->
-<aside class="sidebar">
+<aside class="sidebar" id="sidebarEl">
   <div class="sidebar-logo">
     <span class="brand-text">Gap Fade</span><span class="brand-sub">Terminal</span>
   </div>
@@ -18259,6 +18305,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 <!-- ── Top Header ── -->
 <header class="top-bar">
   <div style="display:flex;align-items:center;gap:12px;">
+    <button class="hamburger-btn" onclick="toggleMobileMenu()">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+    </button>
     <span class="page-title" id="pageTitle">Dashboard</span>
     <span id="statusBadge" class="status-badge status-stopped">STOPPED</span>
     <span id="llmBadge" class="llm-badge" style="display:none;" title="Rudra">Rudra</span>
@@ -19838,7 +19887,15 @@ const PAGE_TITLES = {
   guide: 'Guide'
 };
 
+function toggleMobileMenu() {
+  document.getElementById('sidebarEl').classList.toggle('open');
+  document.getElementById('sidebarOverlay').classList.toggle('open');
+}
+
 function showPage(name) {
+  // Close mobile menu on page change
+  document.getElementById('sidebarEl').classList.remove('open');
+  document.getElementById('sidebarOverlay').classList.remove('open');
   document.querySelectorAll('.sidebar-item').forEach(el => el.classList.remove('active'));
   document.querySelectorAll('.page').forEach(el => el.classList.remove('active'));
   const page = document.getElementById('page-' + name);
