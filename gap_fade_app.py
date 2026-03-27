@@ -3677,10 +3677,14 @@ def _classify_headlines(headlines: List[str]) -> Tuple[str, str]:
     return '', ''
 
 
-async def _fetch_alpaca_news(symbols: List[str]) -> Dict[str, List[str]]:
-    """Fetch recent news headlines from Alpaca News API.
+async def _fetch_alpaca_news(symbols: List[str], full: bool = False) -> Dict[str, List]:
+    """Fetch recent news from Alpaca News API.
 
-    Returns {symbol: [headline1, headline2, ...]}
+    Args:
+        symbols: list of stock tickers
+        full: if True, return full article dicts; if False, return headline strings only
+
+    Returns {symbol: [headline_or_article, ...]}
     """
     cfg = _get_alpaca_config()
     if not cfg:
@@ -3694,21 +3698,30 @@ async def _fetch_alpaca_news(symbols: List[str]) -> Dict[str, List[str]]:
     sym_str = ','.join(symbols)
     url = f"{cfg['data_url']}/v1beta1/news?symbols={sym_str}&start={since}&limit=50&sort=desc"
 
-    result: Dict[str, List[str]] = defaultdict(list)
+    result: Dict[str, List] = defaultdict(list)
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=2.5)) as resp:
+            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as resp:
                 if resp.status != 200:
-                    logger.debug(f"Alpaca news API returned {resp.status}")
+                    logger.warning(f"Alpaca news API returned {resp.status}")
                     return {}
                 data = await resp.json()
                 for article in data.get('news', []):
                     headline = article.get('headline', '')
                     for sym in article.get('symbols', []):
                         if sym in symbols:
-                            result[sym].append(headline)
+                            if full:
+                                result[sym].append({
+                                    'headline': headline,
+                                    'summary': (article.get('summary') or '')[:500],
+                                    'url': article.get('url', ''),
+                                    'source': article.get('source', 'alpaca'),
+                                    'timestamp': article.get('created_at', ''),
+                                })
+                            else:
+                                result[sym].append(headline)
     except Exception as e:
-        logger.debug(f"Alpaca news fetch failed: {e}")
+        logger.warning(f"Alpaca news fetch failed: {e}")
     return dict(result)
 
 
@@ -14000,25 +14013,30 @@ async def _news_fetcher_loop():
                 await asyncio.sleep(300)
                 continue
 
-            news_results = await _fetch_alpaca_news(symbols)
+            news_results = await _fetch_alpaca_news(symbols, full=True)
             db = get_price_db()
             settings = db.get_news_settings() or DEFAULT_NEWS_SETTINGS
 
-            for sym, headlines in news_results.items():
-                for headline in headlines:
+            for sym, articles in news_results.items():
+                for article in articles:
+                    headline = article.get('headline', '') if isinstance(article, dict) else article
+                    summary = article.get('summary', '') if isinstance(article, dict) else ''
+                    url = article.get('url', '') if isinstance(article, dict) else ''
+                    source = article.get('source', 'alpaca') if isinstance(article, dict) else 'alpaca'
+                    ts = article.get('timestamp', now.isoformat()) if isinstance(article, dict) else now.isoformat()
                     impact, category = _classify_news(headline, sym)
-                    raw = f"{sym}{headline}{now.strftime('%Y-%m-%d')}"
+                    raw = f"{sym}{headline}{ts[:10]}"
                     alert_id = hashlib.sha256(raw.encode()).hexdigest()[:16]
                     alert = {
                         'id': alert_id,
                         'symbol': sym,
                         'headline': headline,
-                        'summary': '',
-                        'source': 'alpaca',
-                        'url': '',
+                        'summary': summary,
+                        'source': source,
+                        'url': url,
                         'impact': impact,
                         'category': category,
-                        'timestamp': now.isoformat(),
+                        'timestamp': ts,
                         'read': False,
                         'dismissed': False,
                     }
@@ -14034,7 +14052,7 @@ async def _news_fetcher_loop():
                             logger.info(f"News alert broadcast: [{impact}] {sym} - {headline[:80]}")
 
         except Exception as e:
-            logger.debug(f"News fetcher error: {e}")
+            logger.warning(f"News fetcher error: {e}")
 
         await asyncio.sleep(300)  # 5 minutes
 
