@@ -9876,9 +9876,7 @@ class GapFadeLiveTrader:
                 if now.hour < 7:
                     self.status = 'waiting'
                     await broadcast({'type': 'live_status', 'status': 'waiting'})
-                    target = now.replace(hour=7, minute=0, second=0, microsecond=0)
-                    sleep_sec = max(30, (target - now).total_seconds())
-                    await asyncio.sleep(sleep_sec)
+                    await asyncio.sleep(60)  # Check every minute before 7 AM
                     continue
 
                 # Weekend / holiday check — sleep until next market day
@@ -9889,8 +9887,8 @@ class GapFadeLiveTrader:
                     self._add_message('info',
                         f'Market closed ({now.strftime("%A")}). '
                         f'Next open: {next_open.strftime("%a %b %d %H:%M")}')
-                    sleep_sec = max(60, (next_open - now).total_seconds())
-                    await asyncio.sleep(min(sleep_sec, 86400))  # cap at 24h
+                    # Sleep in 5-minute chunks (long sleeps drift)
+                    await asyncio.sleep(300)
                     continue
 
                 # Close-on-open: liquidate positions that failed to close yesterday
@@ -10005,10 +10003,8 @@ class GapFadeLiveTrader:
                     self.status = 'waiting'
                     await broadcast({'type': 'live_status', 'status': 'waiting'})
                     self._add_message('info', 'After hours — sleeping until 7:00 AM ET')
-                    tomorrow_7am = (now + timedelta(days=1)).replace(
-                        hour=7, minute=0, second=0, microsecond=0)
-                    sleep_sec = max(60, (tomorrow_7am - now).total_seconds())
-                    await asyncio.sleep(sleep_sec)
+                    # Sleep in 5-minute chunks (long sleeps drift/stall)
+                    await asyncio.sleep(300)
                     continue
 
                 # ── LLM SUPERVISOR MODE ──
