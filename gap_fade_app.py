@@ -17413,16 +17413,77 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   }
   .sidebar-item svg { width: 16px; height: 16px; flex-shrink: 0; }
 
-  /* ── Mobile hamburger ── */
-  .hamburger-btn {
+  /* ── Mobile Menu (Claude.ai style drawer) ── */
+  .mobile-menu-btn {
     display: none;
     background: none; border: none; color: var(--text);
-    cursor: pointer; padding: 6px; margin-right: 8px;
+    cursor: pointer; padding: 8px; border-radius: 8px;
+    transition: background 0.15s;
   }
-  .hamburger-btn svg { width: 22px; height: 22px; }
-  .sidebar-overlay {
-    display: none;
-    position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 99;
+  .mobile-menu-btn:hover { background: rgba(255,255,255,0.06); }
+  .mobile-menu-btn svg { width: 20px; height: 20px; }
+
+  .mobile-drawer-overlay {
+    display: none; position: fixed; inset: 0;
+    background: rgba(0,0,0,0.5); z-index: 200;
+    opacity: 0; transition: opacity 0.25s ease;
+    -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px);
+  }
+  .mobile-drawer-overlay.open { display: block; opacity: 1; }
+
+  .mobile-drawer {
+    display: none; position: fixed; left: 0; top: 0; bottom: 0;
+    width: 280px; max-width: 85vw; z-index: 201;
+    background: #0a0a0f; border-right: 1px solid rgba(255,255,255,0.06);
+    transform: translateX(-100%); transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    flex-direction: column; overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  .mobile-drawer.open { transform: translateX(0); }
+
+  .mobile-drawer-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 16px 20px; border-bottom: 1px solid rgba(255,255,255,0.06);
+  }
+  .mobile-drawer-header .drawer-title {
+    font-size: 15px; font-weight: 600; color: #fff;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .mobile-drawer-header .drawer-title .logo-dot {
+    width: 8px; height: 8px; border-radius: 50%; background: var(--accent-green);
+  }
+  .mobile-drawer-close {
+    background: none; border: none; color: rgba(255,255,255,0.4);
+    cursor: pointer; padding: 6px; border-radius: 6px;
+    transition: all 0.15s;
+  }
+  .mobile-drawer-close:hover { background: rgba(255,255,255,0.06); color: #fff; }
+  .mobile-drawer-close svg { width: 18px; height: 18px; }
+
+  .mobile-drawer-nav { padding: 8px 12px; flex: 1; }
+  .mobile-drawer-item {
+    display: flex; align-items: center; gap: 12px;
+    padding: 12px 14px; border-radius: 10px; cursor: pointer;
+    color: rgba(255,255,255,0.55); font-size: 14px; font-weight: 500;
+    transition: all 0.15s; margin-bottom: 2px;
+  }
+  .mobile-drawer-item:hover { background: rgba(255,255,255,0.04); color: rgba(255,255,255,0.8); }
+  .mobile-drawer-item.active { background: rgba(34,197,94,0.08); color: var(--accent-green); }
+  .mobile-drawer-item svg { width: 18px; height: 18px; opacity: 0.7; flex-shrink: 0; }
+  .mobile-drawer-item.active svg { opacity: 1; }
+
+  .mobile-drawer-section {
+    padding: 12px 14px 6px; font-size: 10px; font-weight: 600;
+    color: rgba(255,255,255,0.25); text-transform: uppercase; letter-spacing: 1px;
+  }
+
+  .mobile-drawer-footer {
+    padding: 12px 16px; border-top: 1px solid rgba(255,255,255,0.06);
+    font-size: 11px; color: rgba(255,255,255,0.25);
+  }
+  .mobile-drawer-footer .equity-display {
+    font-family: 'JetBrains Mono', monospace; font-size: 18px;
+    font-weight: 600; color: var(--accent-green); margin-bottom: 4px;
   }
 
   /* ── Mobile responsive ── */
@@ -17436,24 +17497,20 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         "content"
         "statusbar" !important;
     }
-    .sidebar {
-      position: fixed !important; left: 0; top: 0; bottom: 0; width: 220px;
-      z-index: 100; transform: translateX(-100%);
-      transition: transform 0.2s ease;
-    }
-    .sidebar.open { transform: translateX(0) !important; }
-    .sidebar-overlay.open { display: block !important; }
-    .hamburger-btn { display: block !important; }
-    .rightpanel { display: none !important; }
+    .sidebar { display: none !important; }
+    .mobile-menu-btn { display: block !important; }
+    .mobile-drawer { display: flex; }
+    .rightpanel, .right-panel { display: none !important; }
     .top-bar { padding-left: 4px; }
-    .metrics-bar { flex-wrap: wrap; gap: 6px; padding: 6px 8px; }
-    .metric-card { min-width: 120px; padding: 6px 8px; }
+    .metrics-bar { flex-wrap: wrap; gap: 6px; padding: 6px 10px; }
+    .metric-card { min-width: 130px; padding: 8px 10px; }
     .metric-card .label { font-size: 9px; }
-    .metric-card .value { font-size: 14px; }
+    .metric-card .value { font-size: 15px; }
   }
   @media (max-width: 480px) {
     .metric-card { min-width: 100px; }
-    .metric-card .value { font-size: 12px; }
+    .metric-card .value { font-size: 13px; }
+    .mobile-drawer { width: 260px; }
   }
   .sidebar-sep { height: 1px; background: var(--border); margin: 4px 16px; }
   .sidebar-footer {
@@ -18228,8 +18285,52 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
 <div id="app" class="app-grid" style="display:none;">
 
-<!-- Mobile overlay -->
-<div class="sidebar-overlay" id="sidebarOverlay" onclick="toggleMobileMenu()"></div>
+<!-- Mobile Drawer (Claude.ai style) -->
+<div class="mobile-drawer-overlay" id="mobileOverlay" onclick="closeMobileDrawer()"></div>
+<div class="mobile-drawer" id="mobileDrawer">
+  <div class="mobile-drawer-header">
+    <div class="drawer-title"><span class="logo-dot"></span> Rudra Terminal</div>
+    <button class="mobile-drawer-close" onclick="closeMobileDrawer()">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+    </button>
+  </div>
+  <div class="mobile-drawer-nav">
+    <div class="mobile-drawer-section">Trading</div>
+    <div class="mobile-drawer-item active" onclick="mobileNav('dashboard')">
+      <svg viewBox="0 0 20 20" fill="currentColor"><path d="M3 3h6v6H3V3zm8 0h6v6h-6V3zM3 11h6v6H3v-6zm8 0h6v6h-6v-6z"/></svg>
+      Dashboard
+    </div>
+    <div class="mobile-drawer-item" onclick="mobileNav('candidates')">
+      <svg viewBox="0 0 20 20" fill="currentColor"><path d="M9 2a7 7 0 104.32 12.53l3.58 3.58a1 1 0 001.41-1.42l-3.58-3.58A7 7 0 009 2zm0 2a5 5 0 110 10A5 5 0 019 4z"/></svg>
+      Candidates
+    </div>
+    <div class="mobile-drawer-item" onclick="mobileNav('trades')">
+      <svg viewBox="0 0 20 20" fill="currentColor"><path d="M4 4h3v12H4V4zm5 4h3v8H9V8zm5-2h3v10h-3V6z"/></svg>
+      Trades
+    </div>
+    <div class="mobile-drawer-section">Analysis</div>
+    <div class="mobile-drawer-item" onclick="mobileNav('backtest')">
+      <svg viewBox="0 0 20 20" fill="currentColor"><path d="M2 16l5-5 3 3 8-8v4h2V2h-8v2h4l-6 6-3-3-7 7 2 2z"/></svg>
+      Backtest
+    </div>
+    <div class="mobile-drawer-item" onclick="mobileNav('config')">
+      <svg viewBox="0 0 20 20" fill="currentColor"><path d="M10 13a3 3 0 100-6 3 3 0 000 6zM17.3 8.6l-1.5-.9a5.6 5.6 0 000-1.4l1.5-.9a.5.5 0 00.2-.6l-1.5-2.6a.5.5 0 00-.6-.2l-1.5.9a5.5 5.5 0 00-1.2-.7V.5a.5.5 0 00-.5-.5H9.2a.5.5 0 00-.5.5v1.7a5.5 5.5 0 00-1.2.7l-1.5-.9a.5.5 0 00-.6.2L3.9 5.3a.5.5 0 00.2.6l1.5.9a5.6 5.6 0 000 1.4l-1.5.9a.5.5 0 00-.2.6l1.5 2.6a.5.5 0 00.6.2l1.5-.9c.4.3.8.5 1.2.7v1.7a.5.5 0 00.5.5h3a.5.5 0 00.5-.5v-1.7c.4-.2.8-.4 1.2-.7l1.5.9a.5.5 0 00.6-.2l1.5-2.6a.5.5 0 00-.2-.6z"/></svg>
+      Config
+    </div>
+    <div class="mobile-drawer-item" onclick="mobileNav('guide')">
+      <svg viewBox="0 0 20 20" fill="currentColor"><path d="M4 3a2 2 0 00-2 2v10a2 2 0 002 2h12a2 2 0 002-2V5a2 2 0 00-2-2H4zm1 3h10v2H5V6zm0 4h10v2H5v-2zm0 4h6v2H5v-2z"/></svg>
+      Guide
+    </div>
+    <div class="mobile-drawer-item" onclick="mobileNav('chat')">
+      <svg viewBox="0 0 20 20" fill="currentColor"><path d="M18 10c0 4.4-3.6 8-8 8a8 8 0 01-4-.9L2 18l1-4A8 8 0 1118 10z"/></svg>
+      AI Chat
+    </div>
+  </div>
+  <div class="mobile-drawer-footer">
+    <div class="equity-display" id="drawerEquity">—</div>
+    <div>v15.0 · Rudra Trading Engine</div>
+  </div>
+</div>
 
 <!-- ── Sidebar ── -->
 <aside class="sidebar" id="sidebarEl">
@@ -18303,8 +18404,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 <!-- ── Top Header ── -->
 <header class="top-bar">
   <div style="display:flex;align-items:center;gap:12px;">
-    <button class="hamburger-btn" onclick="toggleMobileMenu()">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+    <button class="mobile-menu-btn" onclick="openMobileDrawer()">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
     </button>
     <span class="page-title" id="pageTitle">Dashboard</span>
     <span id="statusBadge" class="status-badge status-stopped">STOPPED</span>
@@ -19885,15 +19986,26 @@ const PAGE_TITLES = {
   guide: 'Guide'
 };
 
-function toggleMobileMenu() {
-  document.getElementById('sidebarEl').classList.toggle('open');
-  document.getElementById('sidebarOverlay').classList.toggle('open');
+function openMobileDrawer() {
+  document.getElementById('mobileDrawer').classList.add('open');
+  document.getElementById('mobileOverlay').classList.add('open');
+  // Update equity in drawer
+  const eq = document.querySelector('.metric-card .value');
+  if (eq) document.getElementById('drawerEquity').textContent = eq.textContent;
+}
+function closeMobileDrawer() {
+  document.getElementById('mobileDrawer').classList.remove('open');
+  document.getElementById('mobileOverlay').classList.remove('open');
+}
+function mobileNav(page) {
+  closeMobileDrawer();
+  showPage(page);
+  // Update active state
+  document.querySelectorAll('.mobile-drawer-item').forEach(el => el.classList.remove('active'));
+  event.target.closest('.mobile-drawer-item')?.classList.add('active');
 }
 
 function showPage(name) {
-  // Close mobile menu on page change
-  document.getElementById('sidebarEl').classList.remove('open');
-  document.getElementById('sidebarOverlay').classList.remove('open');
   document.querySelectorAll('.sidebar-item').forEach(el => el.classList.remove('active'));
   document.querySelectorAll('.page').forEach(el => el.classList.remove('active'));
   const page = document.getElementById('page-' + name);
