@@ -18073,7 +18073,6 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         "content"
         "statusbar";
     }
-    .sidebar { display: none; }
     .right-panel { display: none; }
     .main-content { padding: 8px; }
   }
@@ -18181,7 +18180,6 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     .config-profiles-bar { flex-direction: column; align-items: stretch; }
   }
   @media (max-width: 768px) {
-    .sidebar { display: none; }
     .main-area { margin-left: 0; }
     .right-panel { display: none; }
     .strategy-cards { grid-template-columns: 1fr; }
