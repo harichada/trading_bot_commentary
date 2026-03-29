@@ -17531,10 +17531,30 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     .equity-curve-container, .chart-container { max-width: 100%; overflow: hidden; }
 
     /* Compact header on mobile */
-    .top-bar { flex-wrap: wrap; height: auto !important; min-height: 48px; padding: 6px 8px !important; gap: 6px; }
+    .top-bar { flex-wrap: wrap; height: auto !important; min-height: 48px; padding: 6px 8px !important; gap: 4px; position: relative; z-index: 10; }
     .top-bar > div { flex-wrap: wrap; gap: 4px; }
-    .page-title { font-size: 14px !important; }
-    .status-badge { font-size: 10px !important; padding: 2px 6px !important; }
+    .page-title { font-size: 13px !important; }
+    .status-badge { font-size: 9px !important; padding: 2px 4px !important; }
+    .strategy-badge, .llm-badge { display: none !important; }
+
+    /* Control buttons row — scroll horizontally, don't wrap */
+    .header-controls {
+      width: 100% !important; overflow-x: auto !important;
+      display: flex !important; gap: 4px !important; padding: 4px 0 !important;
+      -webkit-overflow-scrolling: touch;
+      scrollbar-width: none;
+    }
+    .header-controls::-webkit-scrollbar { display: none; }
+    .header-controls button {
+      font-size: 10px !important; padding: 4px 8px !important;
+      white-space: nowrap !important; flex-shrink: 0 !important;
+      border-radius: 4px !important;
+    }
+    .header-controls select {
+      font-size: 10px !important; padding: 3px 4px !important;
+      max-width: 90px !important; flex-shrink: 0 !important;
+    }
+    .header-controls .right { display: none !important; }
 
     /* Stack metric cards 2-per-row */
     .metrics-bar { display: grid !important; grid-template-columns: 1fr 1fr !important; gap: 6px !important; padding: 6px 8px !important; }
