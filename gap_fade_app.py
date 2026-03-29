@@ -18308,14 +18308,39 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       <svg viewBox="0 0 20 20" fill="currentColor"><path d="M4 4h3v12H4V4zm5 4h3v8H9V8zm5-2h3v10h-3V6z"/></svg>
       Trades
     </div>
+    <div class="mobile-drawer-item" onclick="mobileNav('strategies')">
+      <svg viewBox="0 0 20 20" fill="currentColor"><path d="M3 3h4v4H3V3zm5 0h4v4H8V3zm5 0h4v4h-4V3zM3 8h4v4H3V8zm5 0h4v4H8V8z"/></svg>
+      Strategies
+    </div>
+    <div class="mobile-drawer-item" onclick="mobileNav('tracker')">
+      <svg viewBox="0 0 20 20" fill="currentColor"><path d="M10 2a8 8 0 100 16 8 8 0 000-16zm1 4v4l3 2-1 1.5-4-2.5V6h2z"/></svg>
+      Tracker
+    </div>
     <div class="mobile-drawer-section">Analysis</div>
     <div class="mobile-drawer-item" onclick="mobileNav('backtest')">
       <svg viewBox="0 0 20 20" fill="currentColor"><path d="M2 16l5-5 3 3 8-8v4h2V2h-8v2h4l-6 6-3-3-7 7 2 2z"/></svg>
       Backtest
     </div>
+    <div class="mobile-drawer-item" onclick="mobileNav('walkforward')">
+      <svg viewBox="0 0 20 20" fill="currentColor"><path d="M3 3v14h14v-2H5V3H3zm4 8l3-3 2 2 4-4v3h2V3h-6v2h3l-3 3-2-2-4 4 1.5 1z"/></svg>
+      Walk-Forward
+    </div>
+    <div class="mobile-drawer-item" onclick="mobileNav('intraday')">
+      <svg viewBox="0 0 20 20" fill="currentColor"><path d="M4 4h3v12H4V4zm5 4h3v8H9V8zm5-2h3v10h-3V6z"/></svg>
+      Intraday
+    </div>
+    <div class="mobile-drawer-item" onclick="mobileNav('intraday-wf')">
+      <svg viewBox="0 0 20 20" fill="currentColor"><path d="M3 3v14h14v-2H5V3H3zm14 2h-4v2h1.6l-3.3 3.3-2-2L6 11.6 7.4 13l2.3-2.3 2 2L16 8.4V10h2V5z"/></svg>
+      Intraday WF
+    </div>
+    <div class="mobile-drawer-section">System</div>
     <div class="mobile-drawer-item" onclick="mobileNav('config')">
-      <svg viewBox="0 0 20 20" fill="currentColor"><path d="M10 13a3 3 0 100-6 3 3 0 000 6zM17.3 8.6l-1.5-.9a5.6 5.6 0 000-1.4l1.5-.9a.5.5 0 00.2-.6l-1.5-2.6a.5.5 0 00-.6-.2l-1.5.9a5.5 5.5 0 00-1.2-.7V.5a.5.5 0 00-.5-.5H9.2a.5.5 0 00-.5.5v1.7a5.5 5.5 0 00-1.2.7l-1.5-.9a.5.5 0 00-.6.2L3.9 5.3a.5.5 0 00.2.6l1.5.9a5.6 5.6 0 000 1.4l-1.5.9a.5.5 0 00-.2.6l1.5 2.6a.5.5 0 00.6.2l1.5-.9c.4.3.8.5 1.2.7v1.7a.5.5 0 00.5.5h3a.5.5 0 00.5-.5v-1.7c.4-.2.8-.4 1.2-.7l1.5.9a.5.5 0 00.6-.2l1.5-2.6a.5.5 0 00-.2-.6z"/></svg>
+      <svg viewBox="0 0 20 20" fill="currentColor"><path d="M10 13a3 3 0 100-6 3 3 0 000 6zM17.3 8.6l-1.5-.9c0-.2 0-.5 0-.7s0-.5 0-.7l1.5-.9c.2-.1.3-.4.2-.6l-1.5-2.6c-.1-.2-.4-.3-.6-.2l-1.5.9c-.4-.3-.8-.5-1.2-.7V.5c0-.3-.2-.5-.5-.5H9.2c-.3 0-.5.2-.5.5v1.7c-.4.2-.8.4-1.2.7l-1.5-.9c-.2-.1-.5 0-.6.2L3.9 5.3c-.1.2 0 .5.2.6l1.5.9c0 .2 0 .5 0 .7s0 .5 0 .7l-1.5.9c-.2.1-.3.4-.2.6l1.5 2.6c.1.2.4.3.6.2l1.5-.9c.4.3.8.5 1.2.7v1.7c0 .3.2.5.5.5h3c.3 0 .5-.2.5-.5v-1.7c.4-.2.8-.4 1.2-.7l1.5.9c.2.1.5 0 .6-.2l1.5-2.6c.1-.2 0-.5-.2-.6z"/></svg>
       Config
+    </div>
+    <div class="mobile-drawer-item" onclick="mobileNav('database')">
+      <svg viewBox="0 0 20 20" fill="currentColor"><path d="M3 4c0-1.1 3.1-2 7-2s7 .9 7 2v2c0 1.1-3.1 2-7 2S3 7.1 3 6V4zm0 5c0 1.1 3.1 2 7 2s7-.9 7-2v2c0 1.1-3.1 2-7 2s-7-.9-7-2V9zm0 5c0 1.1 3.1 2 7 2s7-.9 7-2v2c0 1.1-3.1 2-7 2s-7-.9-7-2v-2z"/></svg>
+      Database
     </div>
     <div class="mobile-drawer-item" onclick="mobileNav('guide')">
       <svg viewBox="0 0 20 20" fill="currentColor"><path d="M4 3a2 2 0 00-2 2v10a2 2 0 002 2h12a2 2 0 002-2V5a2 2 0 00-2-2H4zm1 3h10v2H5V6zm0 4h10v2H5v-2zm0 4h6v2H5v-2z"/></svg>
