@@ -17349,6 +17349,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     --sidebar-active: rgba(34, 197, 94, 0.15);
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { overflow-x: hidden; }
   body {
     font-family: 'Inter', system-ui, sans-serif;
     background: var(--bg);
@@ -17356,8 +17357,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     font-size: 13px;
     line-height: 1.5;
     height: 100vh;
-    overflow: hidden;
+    overflow-x: hidden;
+    overflow-y: auto;
     -webkit-font-smoothing: antialiased;
+    max-width: 100vw;
   }
 
   /* ── Layout Grid ── */
@@ -17511,6 +17514,47 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     .metric-card { min-width: 100px; }
     .metric-card .value { font-size: 13px; }
     .mobile-drawer { width: 260px; }
+  }
+
+  /* ── Global mobile overflow fixes ── */
+  @media (max-width: 768px) {
+    #app { overflow-x: hidden !important; max-width: 100vw !important; }
+    .page { overflow-x: auto !important; padding: 8px !important; }
+    .page > * { max-width: 100% !important; }
+
+    /* Tables scroll horizontally inside their container */
+    table { display: block; overflow-x: auto; -webkit-overflow-scrolling: touch; white-space: nowrap; max-width: calc(100vw - 16px); }
+    thead, tbody, tr { max-width: 100%; }
+
+    /* Cards and grids stack vertically */
+    .decisions-feed, .trade-log, .candidate-table { max-width: 100%; overflow-x: auto; }
+    .equity-curve-container, .chart-container { max-width: 100%; overflow: hidden; }
+
+    /* Compact header on mobile */
+    .top-bar { flex-wrap: wrap; height: auto !important; min-height: 48px; padding: 6px 8px !important; gap: 6px; }
+    .top-bar > div { flex-wrap: wrap; gap: 4px; }
+    .page-title { font-size: 14px !important; }
+    .status-badge { font-size: 10px !important; padding: 2px 6px !important; }
+
+    /* Stack metric cards 2-per-row */
+    .metrics-bar { display: grid !important; grid-template-columns: 1fr 1fr !important; gap: 6px !important; padding: 6px 8px !important; }
+
+    /* Candidate cards */
+    .candidate-cards { grid-template-columns: 1fr !important; }
+
+    /* Config sections */
+    .cfg-section-body { grid-template-columns: 1fr !important; }
+
+    /* Decision feed */
+    .decisions-feed { font-size: 11px; }
+    .decisions-feed .msg { padding: 4px 8px; }
+
+    /* Buttons */
+    .sidebar-actions button { font-size: 11px !important; padding: 6px !important; }
+
+    /* Hide non-essential on mobile */
+    .header-controls select { max-width: 100px; font-size: 10px; }
+    .statusbar { font-size: 9px; padding: 2px 6px; }
   }
   .sidebar-sep { height: 1px; background: var(--border); margin: 4px 16px; }
   .sidebar-footer {
