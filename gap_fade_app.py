@@ -17493,7 +17493,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   @media (max-width: 768px) {
     #app {
       grid-template-columns: 1fr !important;
-      grid-template-rows: 48px auto 1fr 28px !important;
+      grid-template-rows: auto auto 1fr 28px !important;
       grid-template-areas:
         "header"
         "metrics"
@@ -17530,23 +17530,28 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     .decisions-feed, .trade-log, .candidate-table { max-width: 100%; overflow-x: auto; }
     .equity-curve-container, .chart-container { max-width: 100%; overflow: hidden; }
 
-    /* Compact header on mobile */
-    .top-bar { flex-wrap: wrap; height: auto !important; min-height: 48px; padding: 6px 8px !important; gap: 4px; position: relative; z-index: 10; }
-    .top-bar > div { flex-wrap: wrap; gap: 4px; }
+    /* Compact header on mobile — two rows: title + controls */
+    .top-bar {
+      flex-wrap: wrap !important; height: auto !important; min-height: 40px;
+      padding: 6px 8px !important; gap: 2px 8px; position: relative; z-index: 10;
+    }
+    .top-bar > div:first-child { flex: 1; min-width: 0; gap: 6px; }
+    .top-bar > .right { display: none !important; }
     .page-title { font-size: 13px !important; }
     .status-badge { font-size: 9px !important; padding: 2px 4px !important; }
     .strategy-badge, .llm-badge { display: none !important; }
 
-    /* Control buttons row — scroll horizontally, don't wrap */
+    /* Control buttons row — own line, scroll horizontally */
     .header-controls {
-      width: 100% !important; overflow-x: auto !important;
-      display: flex !important; gap: 4px !important; padding: 4px 0 !important;
-      -webkit-overflow-scrolling: touch;
-      scrollbar-width: none;
+      order: 3 !important; width: 100% !important;
+      overflow-x: auto !important; display: flex !important;
+      gap: 4px !important; padding: 4px 0 2px !important;
+      border-top: 1px solid rgba(255,255,255,0.06);
+      -webkit-overflow-scrolling: touch; scrollbar-width: none;
     }
     .header-controls::-webkit-scrollbar { display: none; }
     .header-controls button {
-      font-size: 10px !important; padding: 4px 8px !important;
+      font-size: 10px !important; padding: 4px 10px !important;
       white-space: nowrap !important; flex-shrink: 0 !important;
       border-radius: 4px !important;
     }
@@ -17554,7 +17559,6 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       font-size: 10px !important; padding: 3px 4px !important;
       max-width: 90px !important; flex-shrink: 0 !important;
     }
-    .header-controls .right { display: none !important; }
 
     /* Stack metric cards 2-per-row */
     .metrics-bar { display: grid !important; grid-template-columns: 1fr 1fr !important; gap: 6px !important; padding: 6px 8px !important; }
