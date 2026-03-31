@@ -14452,6 +14452,21 @@ async def auth_middleware(request: Request, call_next):
                 content={'error': 'Forbidden: invalid or missing credentials'}
             )
 
+    # ── Read-only enforcement for viewers ──
+    # Viewers can see everything (GET) but cannot change anything (POST/PUT/DELETE)
+    if auth_enabled() and request.method in ('POST', 'PUT', 'DELETE', 'PATCH'):
+        # Allow auth endpoints (login/logout)
+        if not path.startswith('/api/auth') and not path.startswith('/api/backtest'):
+            user = get_current_user(request)
+            if user:
+                role = user.get('role', 'viewer')
+                if role != 'admin':
+                    logger.info(f"Viewer {user.get('sub','')} blocked: {request.method} {path}")
+                    return JSONResponse(
+                        status_code=403,
+                        content={'error': 'Read-only access. Contact admin to make changes.'}
+                    )
+
     return await call_next(request)
 
 
@@ -20185,6 +20200,7 @@ __RELEASE_NOTES__
 // ── OAuth Auth Gate ──────────────────────────────────────────────
 let _authUser = null;
 let _authEnabled = false;
+let _isViewer = false;
 
 async function checkAuth() {
   try {
@@ -20192,7 +20208,6 @@ async function checkAuth() {
     const data = await r.json();
     _authEnabled = data.auth_enabled || false;
     if (!_authEnabled) {
-      // Auth not configured — open access
       document.getElementById('app').style.display = '';
       return;
     }
@@ -20202,14 +20217,53 @@ async function checkAuth() {
     }
     if (data.user) {
       _authUser = data.user;
+      _isViewer = (data.user.role === 'viewer');
       document.getElementById('app').style.display = '';
       showUserBadge(data.user);
+      if (_isViewer) applyReadOnlyMode();
     } else {
       document.getElementById('authOverlay').style.display = 'flex';
     }
   } catch(e) {
-    // Auth endpoint unreachable — open access
     document.getElementById('app').style.display = '';
+  }
+}
+
+function applyReadOnlyMode() {
+  // Hide all action buttons for viewers
+  document.querySelectorAll('button.primary, button.danger, button.success').forEach(btn => {
+    const text = btn.textContent.toLowerCase();
+    if (['scan', 'start', 'stop', 'pause', 'resume', 'reset', 'save'].some(w => text.includes(w))) {
+      btn.style.display = 'none';
+    }
+  });
+  // Hide strategy select dropdown
+  const stratSelect = document.getElementById('strategySelect');
+  if (stratSelect) stratSelect.disabled = true;
+  // Add read-only badge next to user badge
+  const userBadge = document.getElementById('userBadge');
+  if (userBadge) {
+    const badge = document.createElement('span');
+    badge.textContent = 'VIEW ONLY';
+    badge.style.cssText = 'font-size:9px;font-weight:700;color:#F5A623;background:rgba(245,166,35,0.1);border:1px solid rgba(245,166,35,0.2);padding:2px 6px;border-radius:3px;letter-spacing:0.5px;margin-left:8px;';
+    userBadge.appendChild(badge);
+  }
+  // Override API calls to show toast instead of executing
+  const origApi = window.api;
+  if (origApi) {
+    const blocked = (path, method) => {
+      showToast('Read-only access — contact admin to make changes', 'warning');
+      return Promise.resolve({});
+    };
+    // Block POST operations
+    const origFn = window.apiFetch || fetch;
+    window.apiFetch = (url, opts = {}) => {
+      if (opts.method && opts.method !== 'GET' && !url.includes('/auth/') && !url.includes('/backtest')) {
+        showToast('Read-only access', 'warning');
+        return Promise.resolve(new Response(JSON.stringify({error: 'read-only'}), {status: 403}));
+      }
+      return origFn(url, opts);
+    };
   }
 }
 
@@ -22399,6 +22453,16 @@ function renderConfig(config) {
       params: [['gap_fade_capital_pct', 'Gap Fade Capital %', 0.60], ['intraday_capital_pct', 'Intraday Capital %', 0.40], ['gap_fade_max_positions', 'Gap Fade Max Pos', 3], ['intraday_max_positions', 'Intraday Max Pos', 3], ['capital_overflow_hour', 'Overflow Hour (ET)', 10], ['capital_overflow_min', 'Overflow Minute', 30]] },
     { key: 'catalyst_enabled', title: 'Catalyst Detection', desc: 'Score candidates by news catalyst (earnings, FDA, offerings) — penalize known catalysts, bonus unknown gaps',
       params: [['catalyst_skip_earnings', 'Skip Earnings', false], ['catalyst_earnings_penalty', 'Earnings Penalty', 30], ['catalyst_news_penalty', 'News Penalty', 15], ['catalyst_noise_bonus', 'No-Catalyst Bonus', 10]] },
+    { key: 'exclude_leveraged', title: 'Exclude Leveraged ETFs', desc: 'Filter out leveraged/inverse ETFs (TQQQ, SOXL, TZA, etc.) from gap fade candidates — these have different price dynamics',
+      params: [] },
+    { key: 'orb_enabled', title: 'ORB Confirmation', desc: 'Require price to confirm against the Opening Range before entry — wait for OR break instead of blind entry',
+      params: [['orb_atr_fraction', 'ATR Fraction', 0.35], ['orb_atr_period', 'ATR Period', 14], ['orb_dynamic_stop', 'Dynamic Stop', false], ['orb_min_range_pct', 'Min Range %', 0.003], ['orb_max_range_pct', 'Max Range %', 0.025]] },
+    { key: 'pyramid_enabled', title: 'Pyramiding (Add to Winners)', desc: 'Add to winning positions at profit intervals — increases size when trade is working',
+      params: [['pyramid_max_adds', 'Max Adds', 2], ['pyramid_min_profit_pct', 'Min Profit % to Add', 0.03], ['pyramid_size_decay', 'Size Decay', 0.50], ['pyramid_move_stop', 'Move Stop on Add', true]] },
+    { key: 'sweep_entry_enabled', title: 'Sweep Detector Entry', desc: 'Detect liquidity sweeps above OR high, enter on recovery — better entries with stops above sweep high',
+      params: [['sweep_lookback_bars', 'Lookback Bars', 3], ['sweep_min_recovery_pct', 'Min Recovery %', 0.003], ['sweep_max_time_bars', 'Max Time Bars', 5]] },
+    { key: 'swing_enabled', title: 'Swing Trading (Weinstein)', desc: 'Multi-day swing trades using Stage 2 breakouts — holds overnight, uses weekly kill switch',
+      params: [['swing_risk_pct', 'Risk %', 0.02], ['swing_max_positions', 'Max Positions', 5], ['swing_max_weekly_trades', 'Max Weekly Trades', 3]] },
     { key: 'auto_start', title: 'Auto-Start Trading', desc: 'Automatically start the trading loop when the app launches (no manual Start needed)',
       params: [] },
   ];

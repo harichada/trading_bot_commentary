@@ -85,6 +85,23 @@ def _allowed_emails() -> set[str]:
     return {e.strip().lower() for e in raw.split(",") if e.strip()}
 
 
+def _admin_emails() -> set[str]:
+    """Admin emails get full read/write access. Everyone else is read-only viewer."""
+    raw = _env("AUTH_ADMIN_EMAILS")
+    if not raw:
+        # Fallback: if no ADMIN list set, treat ALL allowed emails as admin
+        return _allowed_emails()
+    return {e.strip().lower() for e in raw.split(",") if e.strip()}
+
+
+def get_user_role(email: str) -> str:
+    """Return 'admin' or 'viewer' based on email."""
+    admins = _admin_emails()
+    if not admins:
+        return 'admin'  # no admin list = everyone is admin
+    return 'admin' if email.lower() in admins else 'viewer'
+
+
 def _cleanup_expired_nonces():
     """Remove expired mobile redirect nonces."""
     now = time.time()
@@ -134,11 +151,14 @@ _PROVIDERS = {"google", "github", "discord"}
 # ── JWT helpers ──────────────────────────────────────────────────────────────
 
 def _create_token(user: dict) -> str:
+    email = user.get("email", "").lower()
+    role = get_user_role(email)
     payload = {
-        "sub": user["email"],
+        "sub": email,
         "name": user.get("name", ""),
         "picture": user.get("picture", ""),
         "provider": user.get("provider", ""),
+        "role": role,
         "iat": int(time.time()),
         "exp": int(time.time()) + COOKIE_MAX_AGE,
     }
@@ -372,12 +392,15 @@ async def me(request: Request):
     user = get_current_user(request)
     if not user:
         return JSONResponse({"error": "Not authenticated", "auth_enabled": True}, 401)
+    email = user.get("sub", "")
+    role = user.get("role") or get_user_role(email)
     return {
         "user": {
-            "email": user.get("sub", ""),
+            "email": email,
             "name": user.get("name", ""),
             "picture": user.get("picture", ""),
             "provider": user.get("provider", ""),
+            "role": role,
         },
         "auth_enabled": True,
     }
