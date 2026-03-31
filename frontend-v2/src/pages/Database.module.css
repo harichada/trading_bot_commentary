@@ -1,0 +1,30 @@
+.page { padding: 24px; }
+.statsBar { display: flex; gap: 0; border-bottom: 1px solid rgba(255,255,255,0.06); }
+.stat { padding: 16px 24px; border-right: 1px solid rgba(255,255,255,0.06); }
+.stat:last-of-type { border-right: none; }
+.label { display: block; font-size: 10px; color: #888; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 4px; }
+.value { font-family: var(--font-mono); font-size: 16px; font-weight: 700; color: #fff; }
+
+.controls { display: flex; align-items: flex-end; gap: 12px; padding: 20px 0; border-bottom: 1px solid rgba(255,255,255,0.06); flex-wrap: wrap; }
+.field { display: flex; flex-direction: column; gap: 4px; }
+.field label { font-size: 10px; color: #888; font-weight: 500; }
+.field select, .field input { background: transparent; border: 1px solid rgba(255,255,255,0.06); padding: 7px 10px; font-size: 12px; color: #fff; font-family: var(--font-mono); outline: none; border-radius: 2px; }
+.field select { color: #bdbdbd; cursor: pointer; }
+
+.btn { padding: 8px 14px; font-size: 12px; font-weight: 600; color: #bdbdbd; background: transparent; border: 1px solid rgba(255,255,255,0.06); border-radius: 2px; cursor: pointer; font-family: inherit; }
+.btn:hover { color: #fff; border-color: rgba(255,255,255,0.1); }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.btnPrimary { padding: 8px 14px; font-size: 12px; font-weight: 600; color: #000; background: #00FFBB; border: none; border-radius: 2px; cursor: pointer; font-family: inherit; }
+.btnPrimary:disabled { opacity: 0.4; cursor: not-allowed; }
+.btnPurple { padding: 8px 14px; font-size: 12px; font-weight: 600; color: #A855F7; background: rgba(168,85,247,0.08); border: 1px solid rgba(168,85,247,0.2); border-radius: 2px; cursor: pointer; font-family: inherit; }
+
+.polygonGroup { display: flex; gap: 6px; align-items: flex-end; }
+.daysInput { width: 60px; background: transparent; border: 1px solid rgba(255,255,255,0.06); padding: 7px 8px; font-size: 12px; color: #fff; font-family: var(--font-mono); outline: none; border-radius: 2px; text-align: center; }
+
+.progressBar { height: 24px; background: rgba(255,255,255,0.04); position: relative; margin-top: 16px; border-radius: 2px; overflow: hidden; }
+.progressFill { height: 100%; background: rgba(0,255,187,0.2); width: 100%; animation: indeterminate 1.5s ease-in-out infinite; }
+@keyframes indeterminate { 0% { transform: translateX(-100%); } 100% { transform: translateX(100%); } }
+.progressText { position: absolute; top: 50%; left: 12px; transform: translateY(-50%); font-size: 11px; color: #bdbdbd; font-family: var(--font-mono); }
+
+.info { padding: 20px 0; color: #888; font-size: 13px; line-height: 1.8; }
+.info strong { color: #fff; }

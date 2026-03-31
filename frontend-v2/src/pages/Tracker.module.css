@@ -1,0 +1,45 @@
+.page { padding: 24px; height: 100%; overflow-y: auto; }
+.controls { display: flex; gap: 8px; align-items: center; padding-bottom: 16px; border-bottom: 1px solid rgba(255,255,255,0.06); }
+.input { background: transparent; border: 1px solid rgba(255,255,255,0.06); padding: 8px 12px; font-size: 13px; color: #fff; font-family: var(--font-mono); outline: none; border-radius: 2px; width: 160px; text-transform: uppercase; }
+.input:focus { border-color: rgba(0,255,187,0.2); }
+.addBtn { padding: 8px 14px; font-size: 12px; font-weight: 600; color: #000; background: #00FFBB; border: none; border-radius: 2px; cursor: pointer; font-family: inherit; }
+.watchCount { font-size: 11px; color: #888; margin-left: auto; }
+
+/* Positions */
+.posSection { padding: 16px 0; border-bottom: 1px solid rgba(255,255,255,0.06); }
+.sectionTitle { font-size: 11px; font-weight: 600; color: #888; text-transform: uppercase; letter-spacing: 0.08em; padding-bottom: 10px; }
+.table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.table th { padding: 8px 12px; text-align: left; font-size: 10px; font-weight: 600; color: #666; text-transform: uppercase; letter-spacing: 0.06em; border-bottom: 1px solid rgba(255,255,255,0.06); }
+.table td { padding: 8px 12px; color: #bdbdbd; border-bottom: 1px solid rgba(255,255,255,0.03); cursor: pointer; }
+.table tr:hover td { background: rgba(255,255,255,0.02); }
+.ticker { font-family: var(--font-mono); font-weight: 600; color: #fff; letter-spacing: 0.03em; }
+.mono { font-family: var(--font-mono); font-size: 12px; }
+.up { color: #00FFBB; }
+.down { color: #FF4D6A; }
+
+/* Chart Grid */
+.chartGrid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0; margin-top: 16px; border-top: 1px solid rgba(255,255,255,0.06); }
+@media (max-width: 1200px) { .chartGrid { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 800px) { .chartGrid { grid-template-columns: 1fr; } }
+
+.chartPanel { border-bottom: 1px solid rgba(255,255,255,0.06); border-right: 1px solid rgba(255,255,255,0.06); }
+.chartPanel:nth-child(3n) { border-right: none; }
+@media (max-width: 1200px) { .chartPanel:nth-child(2n) { border-right: none; } .chartPanel:nth-child(3n) { border-right: 1px solid rgba(255,255,255,0.06); } }
+@media (max-width: 800px) { .chartPanel { border-right: none !important; } }
+
+.chartHeader { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid rgba(255,255,255,0.04); }
+.chartSymbol { font-family: var(--font-mono); font-size: 13px; font-weight: 700; color: #fff; letter-spacing: 0.03em; }
+.chartPrice { font-family: var(--font-mono); font-size: 12px; color: #bdbdbd; }
+.chartActions { display: flex; gap: 4px; margin-left: auto; }
+.buyBtn { padding: 3px 8px; font-size: 10px; font-weight: 600; color: #00FFBB; background: rgba(0,255,187,0.08); border: 1px solid rgba(0,255,187,0.15); border-radius: 2px; cursor: pointer; font-family: inherit; }
+.shortBtn { padding: 3px 8px; font-size: 10px; font-weight: 600; color: #FF4D6A; background: rgba(255,77,106,0.08); border: 1px solid rgba(255,77,106,0.15); border-radius: 2px; cursor: pointer; font-family: inherit; }
+.removeBtn { padding: 3px 6px; font-size: 12px; color: #888; background: none; border: none; cursor: pointer; }
+.removeBtn:hover { color: #FF4D6A; }
+
+.tfBar { display: flex; gap: 2px; padding: 6px 12px; }
+.tfBtn { padding: 2px 8px; font-size: 10px; font-weight: 600; color: #888; background: none; border: none; cursor: pointer; font-family: var(--font-mono); border-radius: 2px; }
+.tfBtn:hover { color: #fff; }
+.tfActive { color: #00FFBB; background: rgba(0,255,187,0.08); }
+
+.chartContainer { height: 200px; width: 100%; }
+.empty { padding: 60px; text-align: center; color: #555; font-size: 13px; grid-column: 1/-1; }

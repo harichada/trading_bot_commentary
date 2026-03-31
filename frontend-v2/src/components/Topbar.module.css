@@ -1,0 +1,164 @@
+.topbar {
+  height: 44px;
+  background: transparent;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 var(--space-4);
+  gap: var(--space-3);
+  position: sticky;
+  top: 0;
+  z-index: var(--z-raised);
+  flex-shrink: 0;
+}
+
+.left {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.right {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  flex-shrink: 0;
+}
+
+/* ── Mobile hamburger ── */
+.menuBtn {
+  display: none;
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: var(--space-1);
+  border-radius: 2px;
+}
+.menuBtn:hover { color: var(--text-primary); }
+
+@media (max-width: 768px) {
+  .menuBtn { display: flex; align-items: center; }
+}
+
+/* ── Title ── */
+.titleArea {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+
+.title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.breadcrumb {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+/* ── Status Pill ── */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: var(--radius-full);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.pillDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+
+.pillRunning {
+  background: rgba(0, 255, 187, 0.1);
+  color: var(--accent);
+  border: 1px solid var(--accent-muted);
+}
+.pillRunning .pillDot {
+  background: var(--accent);
+  animation: pulse 2s ease-in-out infinite;
+}
+
+.pillPaused {
+  background: var(--warning-dim);
+  color: var(--warning);
+  border: 1px solid rgba(245, 166, 35, 0.2);
+}
+.pillPaused .pillDot { background: var(--warning); }
+
+.pillStopped {
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+}
+.pillStopped .pillDot { background: var(--text-muted); }
+
+.pillHalted {
+  background: var(--loss-dim);
+  color: var(--loss-text);
+  border: 1px solid rgba(255, 59, 92, 0.2);
+}
+.pillHalted .pillDot { background: var(--loss); }
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+/* ── Clock ── */
+.clock {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* ── Uptime ── */
+.uptime {
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+/* ── Equity ── */
+.equity {
+  color: var(--text-primary);
+}
+
+/* ── Daily P&L ── */
+.dailyPnl {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+/* ── Connection ── */
+.conn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+}
+.connOnline { color: var(--accent); }
+.connOffline { color: var(--loss); }
+
+/* ── Mobile ── */
+.panelBtn { background: none; border: none; color: #888; cursor: pointer; padding: 4px; display: flex; align-items: center; }
+.panelBtn:hover { color: #00FFBB; }
+
+@media (max-width: 768px) {
+  .uptime, .clock, .breadcrumb { display: none; }
+  .equity { font-size: 16px !important; }
+  .dailyPnl { font-size: 11px; }
+}

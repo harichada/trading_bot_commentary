@@ -1,0 +1,54 @@
+.page { display: flex; flex-direction: column; height: 100%; }
+
+/* Top bar */
+.topBar { display: flex; align-items: center; gap: 12px; padding: 16px 24px; border-bottom: 1px solid rgba(255,255,255,0.06); flex-shrink: 0; }
+.search { flex: 1; max-width: 300px; background: transparent; border: 1px solid rgba(255,255,255,0.06); padding: 8px 12px; font-size: 13px; color: #fff; font-family: inherit; outline: none; caret-color: #00FFBB; border-radius: 2px; }
+.search:focus { border-color: rgba(0,255,187,0.2); }
+.search::placeholder { color: #555; }
+.profileBar { display: flex; gap: 8px; margin-left: auto; align-items: center; }
+.select { background: #1a1a1a; border: 1px solid rgba(255,255,255,0.06); color: #bdbdbd; padding: 6px 10px; font-size: 12px; font-family: inherit; border-radius: 2px; cursor: pointer; outline: none; }
+.btn { padding: 6px 14px; font-size: 11px; font-weight: 600; color: #888; background: transparent; border: 1px solid rgba(255,255,255,0.06); border-radius: 2px; cursor: pointer; font-family: inherit; transition: all 0.15s; }
+.btn:hover { color: #fff; border-color: rgba(255,255,255,0.1); }
+.btnAccent { padding: 6px 14px; font-size: 11px; font-weight: 600; color: #000; background: #00FFBB; border: none; border-radius: 2px; cursor: pointer; font-family: inherit; transition: background 0.15s; }
+.btnAccent:hover { background: #00ffcc; }
+
+/* Layout: tabs | fields */
+.layout { display: grid; grid-template-columns: 180px 1fr; flex: 1; min-height: 0; overflow: hidden; }
+
+/* Tabs */
+.tabs { border-right: 1px solid rgba(255,255,255,0.06); overflow-y: auto; padding: 8px 0; }
+.tabItem { display: flex; align-items: center; justify-content: space-between; width: 100%; text-align: left; padding: 8px 16px; font-size: 12px; color: #888; background: none; border: none; border-left: 2px solid transparent; cursor: pointer; font-family: inherit; transition: all 0.15s; }
+.tabItem:hover { color: #fff; background: rgba(255,255,255,0.02); }
+.tabActive { color: #00FFBB; border-left-color: #00FFBB; background: rgba(0,255,187,0.04); }
+.tabDot { width: 6px; height: 6px; border-radius: 50%; background: #00FFBB; flex-shrink: 0; }
+
+/* Fields */
+.fields { overflow-y: auto; padding: 24px; }
+.sectionTitle { font-size: 11px; font-weight: 700; color: #888; text-transform: uppercase; letter-spacing: 0.1em; padding-bottom: 12px; margin-bottom: 16px; border-bottom: 1px solid rgba(255,255,255,0.06); }
+.fieldGrid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 24px; margin-bottom: 32px; }
+.field { display: flex; flex-direction: column; gap: 4px; }
+.fieldToggle { flex-direction: row; align-items: center; justify-content: space-between; }
+.fieldLabel { font-size: 11px; color: #888; font-weight: 500; font-family: var(--font-mono); }
+.fieldLabel.changed { color: #00FFBB; }
+.input { background: transparent; border: 1px solid rgba(255,255,255,0.06); padding: 7px 10px; font-size: 12px; color: #fff; font-family: var(--font-mono); outline: none; border-radius: 2px; }
+.input:focus { border-color: rgba(0,255,187,0.2); }
+
+/* Toggle switch */
+.toggle { width: 36px; height: 20px; border-radius: 10px; background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.06); cursor: pointer; position: relative; transition: all 0.2s; flex-shrink: 0; }
+.toggleOn { background: rgba(0,255,187,0.15); border-color: rgba(0,255,187,0.3); }
+.toggleThumb { position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: #888; transition: all 0.2s; }
+.toggleOn .toggleThumb { left: 18px; background: #00FFBB; }
+
+/* Sticky footer */
+.footer { display: flex; align-items: center; gap: 12px; padding: 12px 24px; border-top: 1px solid rgba(0,255,187,0.15); background: rgba(0,0,0,0.8); backdrop-filter: blur(8px); flex-shrink: 0; font-size: 12px; color: #bdbdbd; }
+.footerDot { width: 8px; height: 8px; border-radius: 50%; background: #00FFBB; animation: pulse 2s infinite; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+.footerActions { display: flex; gap: 8px; margin-left: auto; }
+
+@media (max-width: 768px) {
+  .layout { grid-template-columns: 1fr; }
+  .tabs { border-right: none; border-bottom: 1px solid rgba(255,255,255,0.06); display: flex; overflow-x: auto; padding: 0; }
+  .tabItem { white-space: nowrap; border-left: none; border-bottom: 2px solid transparent; padding: 8px 12px; }
+  .tabActive { border-bottom-color: #00FFBB; }
+  .fieldGrid { grid-template-columns: 1fr; }
+}

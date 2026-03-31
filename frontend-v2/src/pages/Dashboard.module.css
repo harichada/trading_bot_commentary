@@ -1,0 +1,196 @@
+/* ══════════════════════════════════════════════
+   Dashboard — Obside-style (pixel-matched)
+   ══════════════════════════════════════════════ */
+
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  width: 100%;
+  padding: 28px 28px 0;
+  overflow-y: auto;
+  height: 100%;
+}
+
+/* ── Greeting ── */
+.greeting {
+  font-size: 30px;
+  font-weight: 700;
+  color: #fff;
+  letter-spacing: -0.02em;
+  margin-bottom: 24px;
+}
+
+/* ── Card — flat, line-separated ── */
+.card {
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 24px;
+}
+
+/* ── Circuit breakers (subtle) ── */
+.cbRow { display: flex; align-items: center; gap: 8px; margin-bottom: 20px; font-size: 11px; }
+.cbDot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+.cbGreen { background: #00FFBB; }
+.cbYellow { background: #F5A623; }
+.cbRed { background: #FF4D6A; }
+.cbLabel { color: #666; font-family: var(--font-mono); font-size: 10px; margin-right: 12px; }
+
+/* ── Top Row: 3 columns, line-separated ── */
+.topRow {
+  display: grid;
+  grid-template-columns: 1.1fr 0.4fr 0.5fr;
+  gap: 0;
+  border-top: 1px solid rgba(255,255,255,0.06);
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+.topRow > .card {
+  border-right: 1px solid rgba(255,255,255,0.06);
+}
+.topRow > .card:last-child { border-right: none; }
+
+/* ── Balance Card ── */
+.balanceCard { display: flex; flex-direction: column; }
+
+.balanceHeader { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.balanceLabel { font-size: 14px; font-weight: 400; color: #888; }
+.periodToggle { display: flex; gap: 2px; background: rgba(255,255,255,0.04); border-radius: 2px; padding: 2px; }
+.periodBtn { padding: 4px 10px; font-size: 11px; font-weight: 600; color: #666; background: transparent; border: none; border-radius: 2px; cursor: pointer; transition: all 0.2s; font-family: inherit; }
+.periodBtn:hover { color: #fff; }
+.periodActive { background: #00FFBB; color: #000; }
+
+.balanceValue {
+  font-family: 'Inter', sans-serif;
+  font-size: 40px; font-weight: 700; color: #fff;
+  letter-spacing: -0.03em; line-height: 1; margin-bottom: 6px;
+}
+.balanceChange { display: flex; align-items: center; gap: 8px; margin-bottom: 16px; }
+.changeBadge { font-family: 'Inter', sans-serif; font-size: 13px; font-weight: 500; padding: 4px 12px; border-radius: 2px; }
+.changeUp { background: rgba(0,255,187,0.1); color: #00FFBB; }
+.changeDown { background: rgba(255,77,106,0.1); color: #FF4D6A; }
+.pnlUp { color: #00FFBB; font-size: 13px; }
+.pnlDown { color: #FF4D6A; font-size: 13px; }
+
+.chartWrap { flex: 1; min-height: 160px; }
+.chartEmpty { height: 160px; display: flex; flex-direction: column; align-items: center; justify-content: center; color: #555; font-size: 13px; gap: 4px; }
+
+/* ── Allocation Card ── */
+.allocCard { display: flex; flex-direction: column; align-items: center; gap: 16px; }
+.cardLabel { font-size: 15px; font-weight: 600; color: #fff; align-self: flex-start; }
+.donutWrap { flex: 1; display: flex; align-items: center; justify-content: center; }
+.manageBtn {
+  width: 100%; padding: 10px;
+  font-size: 13px; font-weight: 600; color: #00FFBB;
+  background: rgba(0,255,187,0.06); border: 1px solid rgba(0,255,187,0.12);
+  border-radius: 2px; cursor: pointer; transition: all 0.2s; font-family: inherit;
+}
+.manageBtn:hover { background: rgba(0,255,187,0.12); }
+
+/* ── News Card ── */
+.newsCard { display: flex; flex-direction: column; gap: 8px; min-width: 0; overflow: hidden; }
+.newsList { flex: 1; display: flex; flex-direction: column; gap: 0; overflow-y: auto; }
+.newsItem { display: flex; align-items: flex-start; gap: 8px; font-size: 12px; color: #bdbdbd; line-height: 1.5; padding: 6px 0; border-bottom: 1px solid rgba(255,255,255,0.03); }
+.newsDot { width: 4px; height: 4px; border-radius: 50%; background: #00FFBB; margin-top: 7px; flex-shrink: 0; }
+.newsBtn {
+  padding: 10px; font-size: 13px; font-weight: 600; color: #888;
+  background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 2px; cursor: pointer; transition: all 0.2s; font-family: inherit;
+}
+.newsBtn:hover { color: #fff; border-color: rgba(255,255,255,0.1); }
+
+/* ── Bot Feed (inside news card) ── */
+.botFeed { flex-shrink: 0; max-height: 120px; overflow-y: auto; overflow-x: hidden; font-family: 'JetBrains Mono', monospace; font-size: 10px; line-height: 1.5; margin-bottom: 4px; }
+.feedLine { display: flex; gap: 6px; padding: 2px 0; min-width: 0; }
+.feedTime { color: #444; flex-shrink: 0; }
+.feedType { color: #00FFBB; font-weight: 600; text-transform: uppercase; flex-shrink: 0; min-width: 40px; }
+.feedText { color: #666; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1; }
+.feedEmpty { color: #444; padding: 8px 0; }
+.feedDivider { height: 1px; background: rgba(255,255,255,0.04); margin: 8px 0; }
+
+/* ── Middle Row ── */
+.midRow {
+  display: grid; grid-template-columns: 220px 1fr; gap: 0;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+.midRow > .card { border-right: 1px solid rgba(255,255,255,0.06); }
+.midRow > .card:last-child { border-right: none; }
+
+.availCard { display: flex; flex-direction: column; gap: 8px; }
+.availValue { font-family: 'Inter', sans-serif; font-size: 26px; font-weight: 700; color: #fff; letter-spacing: -0.02em; }
+.allocateBtn {
+  padding: 10px; font-size: 13px; font-weight: 600; color: #000; background: #00FFBB;
+  border: none; border-radius: 2px; cursor: pointer; transition: background 0.2s; font-family: inherit;
+}
+.allocateBtn:hover { background: #00ffcc; }
+
+.connectCard { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 16px; justify-content: center; }
+.connectTitle { font-size: 16px; font-weight: 600; color: #fff; margin-bottom: 4px; }
+.connectSub { font-size: 13px; color: #666; }
+.connectRight { display: flex; flex-direction: column; align-items: center; gap: 12px; }
+.brokerIcons { display: flex; gap: 10px; }
+.brokerIcon {
+  width: 44px; height: 44px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 12px; font-weight: 700; color: #888;
+  font-family: 'JetBrains Mono', monospace;
+  animation: float 3s ease-in-out infinite;
+}
+.brokerIcon:nth-child(1) { background: rgba(0,255,187,0.1); border: 1px solid rgba(0,255,187,0.2); color: #00FFBB; animation-delay: 0s; }
+.brokerIcon:nth-child(2) { background: rgba(168,85,247,0.1); border: 1px solid rgba(168,85,247,0.2); color: #A855F7; animation-delay: 0.5s; }
+@keyframes float { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-4px); } }
+
+.connectBtn {
+  width: 100%; max-width: 160px; padding: 10px 24px;
+  font-size: 13px; font-weight: 600; color: #000; background: #00FFBB;
+  border: none; border-radius: 2px; cursor: pointer; transition: background 0.2s; font-family: inherit;
+}
+.connectBtn:hover { background: #00ffcc; }
+
+/* ── Bot Controls ── */
+.controlsBar { display: flex; align-items: center; gap: 8px; padding: 12px 0; border-bottom: 1px solid rgba(255,255,255,0.06); margin-bottom: 16px; }
+.controlsToggle { display: none; }
+.controlsBtns { display: flex; gap: 6px; }
+.ctrlBtn { padding: 6px 14px; font-size: 11px; font-weight: 600; color: #bdbdbd; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.06); border-radius: 2px; cursor: pointer; transition: all 0.15s; font-family: inherit; }
+.ctrlBtn:hover { background: rgba(255,255,255,0.06); color: #fff; }
+.ctrlDanger:hover { background: rgba(255,77,106,0.08); color: #FF4D6A; }
+
+/* ── Open Trades ── */
+.tradesHeader { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+.tradesTitle { font-size: 15px; font-weight: 600; color: #fff; }
+.unrealized { font-size: 14px; font-weight: 500; }
+
+.tableWrap { overflow-x: auto; }
+.table { width: 100%; border-collapse: collapse; }
+.table th {
+  padding: 12px 16px; text-align: left;
+  font-size: 13px; font-weight: 400; color: #666;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+  white-space: nowrap; cursor: pointer;
+}
+.table th:hover { color: #888; }
+.table td { padding: 14px 16px; font-size: 13px; color: #bdbdbd; border-bottom: 1px solid rgba(255,255,255,0.03); white-space: nowrap; }
+.table tbody tr:hover td { background: rgba(255,255,255,0.02); }
+
+.emptyRow { text-align: center !important; padding: 48px 16px !important; color: #555 !important; }
+.statusDot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; }
+.dotGreen { background: #00FFBB; }
+.dotRed { background: #FF4D6A; }
+.cellTicker { font-weight: 600; color: #fff !important; font-family: 'JetBrains Mono', monospace; letter-spacing: 0.03em; }
+.cellMono { font-family: 'JetBrains Mono', monospace; font-size: 13px; }
+.cellMuted { color: #555 !important; font-size: 12px; }
+
+/* ── Responsive ── */
+@media (max-width: 1024px) {
+  .topRow { grid-template-columns: 1fr; }
+  .midRow { grid-template-columns: 1fr 1fr; }
+}
+@media (max-width: 768px) {
+  .page { padding: 16px; }
+  .greeting { font-size: 22px; }
+  .balanceValue { font-size: 26px; }
+  .midRow { grid-template-columns: 1fr; }
+  .connectCard { align-items: flex-start; text-align: left; }
+  .connectRight { width: 100%; }
+  .connectBtn { max-width: none; }
+}

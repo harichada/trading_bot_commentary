@@ -1,0 +1,17 @@
+.layout { display: grid; grid-template-columns: 180px 1fr; height: 100%; }
+.nav { border-right: 1px solid rgba(255,255,255,0.06); padding: 20px 0; overflow-y: auto; }
+.navTitle { font-size: 10px; font-weight: 700; color: #888; text-transform: uppercase; letter-spacing: 0.1em; padding: 0 16px 12px; }
+.navItem { display: block; width: 100%; text-align: left; padding: 8px 16px; font-size: 12px; color: #888; background: none; border: none; border-left: 2px solid transparent; cursor: pointer; font-family: inherit; transition: all 0.15s; }
+.navItem:hover { color: #fff; background: rgba(255,255,255,0.02); }
+.navActive { color: #00FFBB; border-left-color: #00FFBB; background: rgba(0,255,187,0.04); }
+
+.content { padding: 24px 32px; overflow-y: auto; max-width: 720px; }
+.heading { font-size: 20px; font-weight: 700; color: #fff; margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid rgba(255,255,255,0.06); }
+.body { font-size: 14px; color: #bdbdbd; line-height: 1.7; }
+.body p { margin-bottom: 8px; }
+.body strong { color: #fff; font-weight: 600; }
+.body code { font-family: var(--font-mono); font-size: 12px; color: #00FFBB; background: rgba(0,255,187,0.06); padding: 1px 5px; border-radius: 2px; }
+.listItem { padding: 4px 0 4px 16px; position: relative; font-size: 13px; }
+.listItem::before { content: '→'; position: absolute; left: 0; color: #555; }
+
+@media (max-width: 768px) { .layout { grid-template-columns: 1fr; } .nav { border-right: none; border-bottom: 1px solid rgba(255,255,255,0.06); display: flex; overflow-x: auto; padding: 0; } .navTitle { display: none; } .navItem { white-space: nowrap; border-left: none; border-bottom: 2px solid transparent; } .navActive { border-bottom-color: #00FFBB; border-left-color: transparent; } }

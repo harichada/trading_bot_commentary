@@ -1,0 +1,16 @@
+.overlay { position: fixed; inset: 0; background: #0d0d0d; z-index: 500; display: flex; align-items: center; justify-content: center; }
+.card { text-align: center; max-width: 360px; padding: 40px; }
+.logo { width: 48px; height: 48px; border-radius: 8px; background: rgba(0,255,187,0.1); border: 1px solid rgba(0,255,187,0.2); display: flex; align-items: center; justify-content: center; font-family: var(--font-mono); font-size: 20px; font-weight: 800; color: #00FFBB; margin: 0 auto 20px; }
+.title { font-size: 22px; font-weight: 700; color: #fff; margin-bottom: 6px; }
+.subtitle { font-size: 13px; color: #888; margin-bottom: 28px; }
+.buttons { display: flex; flex-direction: column; gap: 10px; }
+.btn { display: flex; align-items: center; justify-content: center; gap: 10px; padding: 12px 20px; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.06); border-radius: 4px; color: #fff; font-size: 13px; font-weight: 500; text-decoration: none; transition: all 0.15s; font-family: inherit; }
+.btn:hover { background: rgba(255,255,255,0.08); border-color: rgba(255,255,255,0.1); }
+
+/* User badge in topbar */
+.userBadge { display: flex; align-items: center; gap: 8px; }
+.avatar { width: 24px; height: 24px; border-radius: 50%; border: 1px solid rgba(255,255,255,0.1); }
+.initial { width: 24px; height: 24px; border-radius: 50%; background: rgba(0,255,187,0.15); border: 1px solid rgba(0,255,187,0.2); display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; color: #00FFBB; }
+.userName { font-size: 12px; color: #bdbdbd; max-width: 100px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.logout { color: #888; display: flex; padding: 2px; }
+.logout:hover { color: #FF4D6A; }

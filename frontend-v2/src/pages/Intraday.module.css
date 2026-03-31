@@ -1,0 +1,21 @@
+.page { padding: 24px; }
+.summary { display: flex; gap: 0; border-bottom: 1px solid rgba(255,255,255,0.06); }
+.stat { padding: 16px 24px; border-right: 1px solid rgba(255,255,255,0.06); }
+.stat:last-child { border-right: none; }
+.statLabel { display: block; font-size: 10px; color: #888; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 4px; }
+.statValue { font-family: var(--font-mono); font-size: 20px; font-weight: 700; color: #fff; }
+.up { color: #00FFBB; }
+.down { color: #FF4D6A; }
+.section { padding-top: 20px; }
+.sectionTitle { font-size: 11px; font-weight: 600; color: #888; text-transform: uppercase; letter-spacing: 0.08em; padding-bottom: 12px; border-bottom: 1px solid rgba(255,255,255,0.06); }
+.stratList { display: flex; flex-direction: column; }
+.stratRow { padding: 12px 0; border-bottom: 1px solid rgba(255,255,255,0.03); display: flex; justify-content: space-between; align-items: center; }
+.stratName { font-size: 13px; font-weight: 600; color: #fff; }
+.stratMeta { font-size: 11px; color: #888; }
+.tableWrap { overflow-x: auto; }
+.table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.table th { padding: 10px 14px; text-align: left; font-size: 10px; font-weight: 600; color: #666; text-transform: uppercase; letter-spacing: 0.06em; border-bottom: 1px solid rgba(255,255,255,0.06); }
+.table td { padding: 10px 14px; color: #bdbdbd; border-bottom: 1px solid rgba(255,255,255,0.03); }
+.mono { font-family: var(--font-mono); font-size: 11px; color: #888; }
+.ticker { font-family: var(--font-mono); font-weight: 600; color: #fff; letter-spacing: 0.03em; }
+.empty { padding: 40px; text-align: center; color: #555; font-size: 13px; }

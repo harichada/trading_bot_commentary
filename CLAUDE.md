@@ -118,13 +118,18 @@ Monkey-patches `builtins.__import__` to block xgboost/lightgbm (segfault prevent
 - Validate all user inputs in FastAPI endpoints
 - Auth is optional (disabled without `AUTH_JWT_SECRET`) — never break graceful degradation
 
-### 4. Trading Safety
+### 4. Trading Safety (CRITICAL — see TRADING_SAFETY_RULES.md)
 
 - Never modify order execution logic without explicit confirmation
+- **Stop orders MUST use type='stop' (market), NEVER 'stop_limit'** — stop-limit can fail to fill on gaps
+- **All dict access on signal/tick data MUST use .get() with defaults** — KeyError in trading loop = positions unprotected
+- **Non-critical operations (logging, UI, metrics) MUST be wrapped in try/except** — never crash the trading loop
+- **Reconciliation MUST record P&L** when removing orphaned positions — never silently delete
 - Circuit breakers and risk limits must not be weakened
 - Position sizing must respect `GapFadeConfig` max limits
 - Always test with paper trading before any live changes
 - Preserve stop-loss and emergency stop functionality
+- Before ANY order execution change, answer: "what happens if price gaps 5% in one tick?"
 
 ### 5. Git Workflow
 

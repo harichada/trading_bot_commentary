@@ -1,0 +1,102 @@
+/* ── Overlay (mobile) ── */
+.overlay {
+  position: fixed; inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(4px);
+  z-index: var(--z-overlay);
+}
+
+/* ── Sidebar ── */
+.sidebar {
+  width: var(--sidebar-width);
+  height: 100vh;
+  background: #111;
+  border-right: 1px solid rgba(255,255,255,0.06);
+  display: flex;
+  flex-direction: column;
+  position: fixed; left: 0; top: 0;
+  z-index: var(--z-modal);
+  transition: width var(--transition-slow), transform var(--transition-slow);
+  overflow: hidden;
+  transform: translateX(-100%);
+}
+.sidebar.open { transform: translateX(0); }
+
+@media (min-width: 769px) {
+  .sidebar { position: relative; transform: translateX(0); z-index: var(--z-base); flex-shrink: 0; }
+  .overlay { display: none; }
+  .mobileClose { display: none !important; }
+}
+
+/* ── Collapsed ── */
+.sidebar.collapsed { width: var(--sidebar-collapsed); }
+.sidebar.collapsed .brandText, .sidebar.collapsed .navLabel, .sidebar.collapsed .sectionLabel, .sidebar.collapsed .toggleLabel, .sidebar.collapsed .autoLabel { opacity: 0; width: 0; overflow: hidden; pointer-events: none; }
+.sidebar.collapsed .navItem { justify-content: center; padding: 10px; }
+.sidebar.collapsed .brand { justify-content: center; padding: 16px 8px; }
+.sidebar.collapsed .toggle { justify-content: center; }
+.sidebar.collapsed .autoBtn { width: 36px; padding: 0; justify-content: center; }
+.sidebar.collapsed .autoLabel { display: none; }
+
+/* ── Brand ── */
+.brand {
+  padding: 16px 16px 12px;
+  display: flex; align-items: center; gap: 10px;
+  flex-shrink: 0;
+}
+.logoMark { width: 28px; height: 28px; flex-shrink: 0; }
+.brandText { transition: opacity var(--transition-base); white-space: nowrap; }
+.brandName { font-size: 15px; font-weight: 800; color: #fff; letter-spacing: -0.02em; }
+.brandSub { font-size: 8px; font-weight: 400; color: #666; letter-spacing: 0.1em; text-transform: uppercase; }
+.mobileClose { margin-left: auto; background: none; border: none; color: #666; cursor: pointer; padding: 4px; display: flex; }
+
+/* ── Automate Button ── */
+.autoBtn {
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  margin: 0 12px 12px; padding: 10px 16px;
+  background: #00FFBB; color: #000;
+  border: none; border-radius: 2px;
+  font-size: 13px; font-weight: 600; font-family: inherit;
+  cursor: pointer; transition: background 0.2s;
+}
+.autoBtn:hover { background: #00ffcc; }
+.autoLabel { white-space: nowrap; }
+
+/* ── Nav scroll ── */
+.navScroll { flex: 1; overflow-y: auto; overflow-x: hidden; }
+
+/* ── Section labels ── */
+.sectionLabel {
+  padding: 16px 16px 6px; font-size: 9px; font-weight: 600;
+  color: #555; letter-spacing: 0.1em; text-transform: uppercase;
+  white-space: nowrap; transition: opacity var(--transition-base);
+}
+
+/* ── Nav items ── */
+.navItem {
+  display: flex; align-items: center; gap: 12px;
+  padding: 9px 16px; margin: 1px 8px;
+  border-radius: 2px;
+  color: #888; font-size: 13px; font-weight: 400;
+  cursor: pointer; transition: all 0.15s;
+  white-space: nowrap; text-decoration: none;
+  border: none; border-left: none;
+}
+.navItem:hover { background: rgba(255,255,255,0.04); color: #fff; }
+.navItem.active { background: rgba(0,255,187,0.08); color: #00FFBB; }
+
+.navIcon { width: 18px; height: 18px; flex-shrink: 0; opacity: 0.7; }
+.navItem.active .navIcon { opacity: 1; }
+.navLabel { transition: opacity var(--transition-base), width var(--transition-base); }
+
+/* ── Live dot ── */
+.navDot { width: 6px; height: 6px; background: #00FFBB; border-radius: 50%; margin-left: auto; animation: pulse 2s infinite; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+
+/* ── Collapse toggle ── */
+.toggle {
+  padding: 12px 16px; border-top: 1px solid rgba(255,255,255,0.06);
+  cursor: pointer; display: flex; align-items: center; gap: 10px;
+  color: #666; font-size: 11px; transition: color 0.15s; flex-shrink: 0;
+}
+.toggle:hover { color: #fff; }
+.toggleLabel { white-space: nowrap; transition: opacity var(--transition-base), width var(--transition-base); }

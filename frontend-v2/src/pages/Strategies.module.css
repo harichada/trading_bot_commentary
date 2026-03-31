@@ -1,0 +1,37 @@
+.page { padding: 24px; overflow-y: auto; height: 100%; }
+.sectionTitle { font-size: 11px; font-weight: 700; color: #888; text-transform: uppercase; letter-spacing: 0.1em; padding-bottom: 12px; border-bottom: 1px solid rgba(255,255,255,0.06); margin-bottom: 0; }
+
+.gallery { display: grid; grid-template-columns: repeat(2, 1fr); gap: 0; border-top: 1px solid rgba(255,255,255,0.06); }
+@media (max-width: 768px) { .gallery { grid-template-columns: 1fr; } }
+
+.card { border-radius: 0; overflow: hidden; position: relative; padding: 20px; min-height: 130px; cursor: pointer; transition: background 0.2s; display: flex; flex-direction: column; justify-content: flex-end; border-bottom: 1px solid rgba(255,255,255,0.06); border-right: 1px solid rgba(255,255,255,0.06); }
+.card:nth-child(2n) { border-right: none; }
+.card:hover { filter: brightness(1.1); }
+.cardActive { outline: 1px solid #00FFBB; outline-offset: -1px; }
+
+.card::before { content: ''; position: absolute; inset: 0; background: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.05'/%3E%3C/svg%3E"); pointer-events: none; }
+.card::after { content: ''; position: absolute; inset: 0; background: linear-gradient(0deg, rgba(0,0,0,0.4) 0%, transparent 60%); pointer-events: none; }
+
+.cardContent { position: relative; z-index: 1; }
+.cardTop { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 6px; }
+.cardName { font-size: 13px; font-weight: 700; color: #fff; letter-spacing: 0.02em; }
+.cardDesc { font-size: 10px; color: rgba(255,255,255,0.5); margin-bottom: 8px; }
+.cardStats { display: flex; gap: 16px; }
+.cardStat { display: flex; flex-direction: column; gap: 1px; }
+.statLabel { font-size: 9px; color: rgba(255,255,255,0.4); text-transform: uppercase; letter-spacing: 0.04em; }
+.statValue { font-family: var(--font-mono); font-size: 12px; font-weight: 600; color: rgba(255,255,255,0.9); }
+.positive { color: #00FFBB !important; }
+.negative { color: #FF4D6A !important; }
+
+/* Intraday strategies */
+.intradayList { display: flex; flex-direction: column; }
+.intradayRow { display: flex; justify-content: space-between; align-items: center; padding: 12px 0; border-bottom: 1px solid rgba(255,255,255,0.04); }
+.intradayName { font-size: 13px; font-weight: 600; color: #fff; }
+.intradayDesc { font-size: 11px; color: #888; margin-top: 2px; }
+
+/* Performance grid */
+.perfGrid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0; border-top: 1px solid rgba(255,255,255,0.06); }
+.perfItem { padding: 14px; border-bottom: 1px solid rgba(255,255,255,0.06); border-right: 1px solid rgba(255,255,255,0.06); }
+.perfItem:nth-child(3n) { border-right: none; }
+.perfLabel { display: block; font-size: 10px; color: #888; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 4px; }
+.perfValue { font-family: var(--font-mono); font-size: 15px; font-weight: 700; color: #fff; }

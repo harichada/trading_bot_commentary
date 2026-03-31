@@ -45,6 +45,7 @@ from . import catalyst_momentum    # noqa: F401
 from . import micro_scalp          # noqa: F401
 from . import gap_continuation     # noqa: F401
 from . import gap_bounce           # noqa: F401
+from . import aziz_abcd_vwap       # noqa: F401
 
 __all__ = [
     'GapFadeStrategy',

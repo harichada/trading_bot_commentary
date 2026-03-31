@@ -1,0 +1,59 @@
+.page { padding: 24px; overflow-y: auto; height: 100%; }
+
+/* Controls grid */
+.controlsGrid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px 20px; padding-bottom: 20px; border-bottom: 1px solid rgba(255,255,255,0.06); }
+.field { display: flex; flex-direction: column; gap: 4px; }
+.field label { font-size: 10px; color: #888; font-weight: 500; text-transform: uppercase; letter-spacing: 0.04em; }
+.field input, .field select { background: transparent; border: 1px solid rgba(255,255,255,0.06); padding: 7px 10px; font-size: 12px; color: #fff; font-family: var(--font-mono); outline: none; border-radius: 2px; }
+.field input:focus, .field select:focus { border-color: rgba(0,255,187,0.2); }
+.field select { color: #bdbdbd; cursor: pointer; }
+
+/* Feature toggles */
+.togglesSection { padding: 16px 0; border-bottom: 1px solid rgba(255,255,255,0.06); display: flex; flex-direction: column; gap: 8px; }
+.toggle { display: flex; align-items: center; gap: 10px; }
+.toggleBtn { width: 32px; height: 18px; border-radius: 9px; background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.06); cursor: pointer; position: relative; transition: all 0.2s; flex-shrink: 0; }
+.toggleOn { background: rgba(0,255,187,0.15); border-color: rgba(0,255,187,0.3); }
+.toggleThumb { position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: #888; transition: all 0.2s; }
+.toggleOn .toggleThumb { left: 16px; background: #00FFBB; }
+.toggleLabel { font-size: 12px; color: #bdbdbd; }
+.subFields { display: flex; gap: 12px; padding: 8px 0 4px 42px; flex-wrap: wrap; }
+.subFields .field { flex: 0 0 auto; }
+.subFields .field label { font-size: 9px; }
+.subFields .field input { width: 80px; font-size: 11px; padding: 5px 8px; }
+
+/* Actions */
+.actions { display: flex; gap: 10px; padding: 16px 0; border-bottom: 1px solid rgba(255,255,255,0.06); }
+.btnRun { padding: 8px 20px; font-size: 12px; font-weight: 600; color: #000; background: #00FFBB; border: none; border-radius: 2px; cursor: pointer; font-family: inherit; }
+.btnRun:hover { background: #00ffcc; }
+.btnRun:disabled { opacity: 0.4; cursor: not-allowed; }
+.btnCancel { padding: 8px 16px; font-size: 12px; font-weight: 600; color: #FF4D6A; background: transparent; border: 1px solid rgba(255,77,106,0.2); border-radius: 2px; cursor: pointer; font-family: inherit; }
+
+/* Progress */
+.progressBar { height: 24px; background: rgba(255,255,255,0.04); position: relative; margin: 16px 0; border-radius: 2px; overflow: hidden; }
+.progressFill { height: 100%; background: rgba(0,255,187,0.2); transition: width 0.3s; }
+.progressText { position: absolute; top: 50%; left: 12px; transform: translateY(-50%); font-size: 11px; color: #bdbdbd; font-family: var(--font-mono); }
+
+/* Results */
+.results { padding-top: 20px; }
+.resultsTitle { font-size: 12px; font-weight: 700; color: #fff; text-transform: uppercase; letter-spacing: 0.06em; padding-bottom: 12px; border-bottom: 1px solid rgba(255,255,255,0.06); margin-bottom: 16px; }
+.metricsGrid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0; border-top: 1px solid rgba(255,255,255,0.06); }
+.metricItem { display: flex; flex-direction: column; gap: 4px; padding: 14px; border-bottom: 1px solid rgba(255,255,255,0.06); border-right: 1px solid rgba(255,255,255,0.06); }
+.metricItem:nth-child(4n) { border-right: none; }
+.metricLabel { font-size: 10px; color: #888; text-transform: uppercase; letter-spacing: 0.06em; }
+.metricValue { font-family: var(--font-mono); font-size: 16px; font-weight: 700; color: #fff; }
+
+/* Trades table */
+.tradesSection { margin-top: 24px; }
+.tableWrap { overflow-x: auto; max-height: 400px; overflow-y: auto; }
+.table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.table th { padding: 8px 12px; text-align: left; font-size: 10px; font-weight: 600; color: #666; text-transform: uppercase; letter-spacing: 0.06em; border-bottom: 1px solid rgba(255,255,255,0.06); position: sticky; top: 0; background: #0d0d0d; }
+.table td { padding: 8px 12px; color: #bdbdbd; border-bottom: 1px solid rgba(255,255,255,0.03); white-space: nowrap; }
+.rowUp { border-left: 2px solid #00FFBB; }
+.rowDown { border-left: 2px solid #FF4D6A; }
+.mono { font-family: var(--font-mono); font-size: 11px; }
+.ticker { font-family: var(--font-mono); font-weight: 600; color: #fff; letter-spacing: 0.03em; }
+.up { color: #00FFBB; }
+.down { color: #FF4D6A; }
+.empty { padding: 60px; text-align: center; color: #555; font-size: 13px; }
+
+@media (max-width: 768px) { .controlsGrid { grid-template-columns: 1fr 1fr; } .metricsGrid { grid-template-columns: 1fr 1fr; } }

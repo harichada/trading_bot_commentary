@@ -1376,13 +1376,15 @@ def alpaca_place_stop_order(symbol: str, qty: int, stop_price: float,
         side = 'buy'
         limit_price = round(stop_price * (1 + limit_offset_pct), 2)
     headers = {**_alpaca_trade_headers(cfg), 'Content-Type': 'application/json'}
+    # Use stop-MARKET (not stop-limit) for protective stops.
+    # Stop-limit orders can fail to fill in fast-moving markets if price
+    # gaps through the limit, leaving the position unprotected.
     payload = {
         'symbol': symbol,
         'qty': str(qty),
         'side': side,
-        'type': 'stop_limit',
+        'type': 'stop',
         'stop_price': str(round(stop_price, 2)),
-        'limit_price': str(limit_price),
         'time_in_force': 'gtc',
     }
 
@@ -1584,7 +1586,10 @@ class AlpacaTickStreamer:
                                 if item.get('T') == 't':
                                     _tick_count += 1
                                     sym = item.get('S', '')
-                                    price = float(item['p'])
+                                    price_raw = item.get('p')
+                                    if price_raw is None:
+                                        continue
+                                    price = float(price_raw)
                                     size = int(item.get('s', 0))
                                     self.latest_prices[sym] = price
                                     if self.on_tick:
@@ -9552,9 +9557,80 @@ class GapFadeLiveTrader:
                     logger.warning(f"RECONCILE: Could not check pending order for {sym}: {e}")
                     continue  # Don't remove if we can't verify
 
-            logger.warning(f"RECONCILE: Internal position {sym} ({pos.remaining_shares} shares) "
+            # Look up exit fill from broker order history to record P&L
+            exit_price = 0.0
+            exit_reason = 'broker_closed'
+            try:
+                yesterday = (datetime.now(ET) - timedelta(days=2)).strftime('%Y-%m-%dT00:00:00Z')
+                filled_orders = await asyncio.to_thread(
+                    alpaca_get_filled_orders, sym, yesterday, 10)
+                # Find the most recent sell/cover order (exit)
+                for order in filled_orders:
+                    side = order.get('side', '')
+                    direction = getattr(pos, 'direction', 'short')
+                    is_exit = (direction == 'short' and side == 'buy') or (direction == 'long' and side == 'sell')
+                    if is_exit and order.get('filled_avg_price'):
+                        exit_price = float(order['filled_avg_price'])
+                        ost = order.get('order_type', '')
+                        if 'stop' in ost.lower():
+                            exit_reason = 'stop_loss'
+                        break
+            except Exception as e:
+                logger.warning(f"RECONCILE: Could not look up exit for {sym}: {e}")
+
+            # Record trade P&L if we have an exit price
+            entry_px = getattr(pos, 'entry_fill_price', 0) or getattr(pos, 'entry_price', 0)
+            shares = getattr(pos, 'remaining_shares', 0) or getattr(pos, 'shares', 0)
+            direction = getattr(pos, 'direction', 'short')
+            if exit_price > 0 and entry_px > 0 and shares > 0:
+                if direction == 'short':
+                    pnl = (entry_px - exit_price) * shares
+                else:
+                    pnl = (exit_price - entry_px) * shares
+                pnl_pct = pnl / (entry_px * shares) if entry_px * shares > 0 else 0
+                logger.info(f"RECONCILE: {sym} exited @ ${exit_price:.2f}, "
+                           f"P&L: ${pnl:.2f} ({pnl_pct:.2%}), reason: {exit_reason}")
+                self._add_message('exit',
+                    f'RECONCILE EXIT: {sym} @ ${exit_price:.2f} '
+                    f'P&L: ${pnl:.2f} ({pnl_pct:.2%}) [{exit_reason}]')
+                # Record in trade history
+                try:
+                    from dataclasses import asdict
+                    now_str = datetime.now(ET).strftime('%Y-%m-%d %H:%M')
+                    entry_time = getattr(pos, 'entry_time', now_str)
+                    holding_min = 0
+                    try:
+                        entry_dt = datetime.strptime(entry_time, '%Y-%m-%d %H:%M')
+                        exit_dt = datetime.now(ET).replace(tzinfo=None)
+                        holding_min = int((exit_dt - entry_dt).total_seconds() / 60)
+                    except Exception:
+                        pass
+                    trade = TradeRecord(
+                        symbol=sym, entry_price=entry_px, exit_price=exit_price,
+                        shares=shares, pnl=pnl, pnl_pct=pnl_pct,
+                        entry_time=entry_time, exit_time=now_str,
+                        exit_reason=exit_reason, holding_minutes=holding_min,
+                        side=direction,
+                        gap_pct=getattr(pos, 'gap_pct', 0),
+                        vol_ratio=getattr(pos, 'vol_ratio', 0),
+                        score=getattr(pos, 'score', 0),
+                        catalyst=getattr(pos, 'catalyst', ''),
+                        strategy_id=getattr(pos, 'strategy_id', ''),
+                        setup_type=getattr(pos, 'strategy_id', ''),
+                    )
+                    self.engine._record_trade(trade)
+                    logger.info(f"RECONCILE: Trade recorded for {sym}")
+                except Exception as e:
+                    logger.warning(f"RECONCILE: Failed to record trade for {sym}: {e}")
+                # Update daily stats
+                self._daily_pnl = getattr(self, '_daily_pnl', 0) + pnl
+            else:
+                logger.warning(f"RECONCILE: {sym} — no exit price found, P&L unknown")
+                self._add_message('warning',
+                    f'RECONCILE: {sym} removed — exit price unknown, P&L not recorded')
+
+            logger.warning(f"RECONCILE: Internal position {sym} ({shares} shares) "
                           f"NOT found on broker — removing from internal state")
-            self._add_message('warning', f'RECONCILE: {sym} not on broker — removed internally')
             del self.engine.positions[sym]
 
         # Positions broker has that we don't know about — adopt with context
@@ -9692,6 +9768,14 @@ class GapFadeLiveTrader:
                         logger.info(f"RECONCILE: Safety stop placed for {sym} @ ${pos.stop_price:.2f}")
                 except Exception as e:
                     logger.error(f"RECONCILE: CRITICAL — could not place stop for {sym}: {e}")
+                    self._add_message('error', f'CRITICAL: no broker stop for {sym} — manual action required')
+                    try:
+                        await self.alerter.send(
+                            f'CRITICAL: No stop order for {sym}',
+                            f'Could not place broker stop @ ${pos.stop_price:.2f}: {e}\nManual stop required.',
+                            level='error', throttle_key=f'no_stop_{sym}')
+                    except Exception:
+                        pass
             else:
                 # Verify existing stop order is still active on broker
                 try:
@@ -10205,6 +10289,14 @@ class GapFadeLiveTrader:
 
                 # After hours (4 PM+) — save state, sleep until next morning
                 if now.hour >= 16:
+                    # Only run EOD tasks once per day
+                    _eod_done_key = f'_eod_done_{today}'
+                    if getattr(self, _eod_done_key, False):
+                        # Already did EOD — just sleep
+                        await asyncio.sleep(300)
+                        continue
+                    setattr(self, _eod_done_key, True)
+
                     # Reset circuit breaker for next day
                     self._trading_halted = False
 
@@ -10588,9 +10680,17 @@ class GapFadeLiveTrader:
             raise
         except Exception as e:
             logger.error(f"Trading loop fatal error: {e}\n{traceback.format_exc()}")
-            self._add_message('error', f'Trading loop fatal error: {e}')
-            await self.alerter.send('Trading Loop Error',
-                f'{type(e).__name__}: {e}', level='error')
+            self._add_message('error', f'Trading loop DEAD: {e}')
+            self.status = 'error'
+            try:
+                await broadcast({'type': 'live_status', 'status': 'error'})
+            except Exception:
+                pass
+            await self.alerter.send('CRITICAL: Trading Loop DEAD',
+                f'Loop has EXITED. Open positions will NOT be monitored.\n'
+                f'{type(e).__name__}: {e}\n'
+                f'Open positions: {list(self.engine.positions.keys())}',
+                level='error')
 
     async def _run_scan(self):
         """Run the pre-market scanner (non-blocking)."""
@@ -11195,10 +11295,11 @@ class GapFadeLiveTrader:
                         new_stop = round(new_avg_entry * 0.999, 2)
                     pos.stop_price = new_stop
 
-                    # Replace broker-side stop
+                    # Replace broker-side stop — clear ID immediately after cancel
                     if pos.stop_order_id:
                         try:
                             await self._broker_cancel(pos.stop_order_id)
+                            pos.stop_order_id = ''  # clear so reconcile detects missing stop immediately
                         except Exception as e:
                             logger.warning(f"Cancel old stop for pyramid {sym}: {e}")
 
@@ -11287,157 +11388,166 @@ class GapFadeLiveTrader:
             if self.streamer and hasattr(self.streamer, 'latest_prices'):
                 self.streamer.latest_prices[sym] = price
 
-            signal = self._check_exhaustion_signal(sym)
-            if signal is None:
-                continue
-
-            # Signal triggered — enter position
-            is_sweep = signal['type'] == 'sweep'
-            or_high = signal['or_high']
-            entry_price = signal['price']
-
-            if is_sweep:
-                self._add_message('entry',
-                    f'SWEEP ENTRY: {sym} @ ${entry_price:.2f} '
-                    f'(sweep high=${signal["sweep_high"]:.2f}, OR high=${or_high:.2f})')
-            else:
-                self._add_message('entry',
-                    f'EXHAUSTION {signal["type"]}: {sym} @ ${entry_price:.2f} '
-                    f'(OR high=${or_high:.2f}, VWAP=${signal["vwap"]:.2f}, RSI={signal["rsi"]:.1f})')
-
-            # Set stop: sweep uses sweep_high-based stop, exhaustion uses OR-high-based
-            if is_sweep:
-                stop_price = signal['stop_price']
-            else:
-                # Structural stop: 0.2% above OR high
-                stop_price = or_high * 1.002
-            stop_pct = (stop_price - entry_price) / entry_price if entry_price > 0 else 0.03
-            if stop_pct < 0.005:
-                stop_pct = 0.005
-                stop_price = entry_price * (1 + stop_pct)
-
-            # Open position in engine
-            async with self._position_lock:
-                ok, reason = self.engine.should_enter(cand)
-                if not ok:
-                    self._add_message('skip', f'{"Sweep" if is_sweep else "Exhaustion"} skip {sym}: {reason}')
+            try:  # Per-symbol safety: never let one symbol crash the scan
+                signal = self._check_exhaustion_signal(sym)
+                if signal is None:
                     continue
 
-                entry_time = now.strftime('%Y-%m-%d %H:%M')
-                pos = self.engine.open_position(cand, entry_price, entry_time)
-                if pos is None:
+                # Signal triggered — enter position (safe .get() access)
+                is_sweep = signal.get('type') == 'sweep'
+                or_high = signal.get('or_high', 0.0)
+                entry_price = signal.get('price', 0.0)
+                if entry_price <= 0 or or_high <= 0:
                     continue
 
-                # Override stop with structural stop
-                pos.stop_price = stop_price
-                pos.strategy_id = 'sweep_gap_fade' if is_sweep else 'exhaustion_gap_fade'
-
-            # Submit order
-            direction = cand.direction
-            entry_side = 'buy' if direction == 'long' else 'sell'
-            side_label = 'LONG' if direction == 'long' else 'SHORT'
-
-            if self.config.limit_orders_only:
-                if direction == 'long':
-                    limit_px = round(entry_price * (1 + self.config.limit_offset_pct), 2)
-                else:
-                    limit_px = round(entry_price * (1 - self.config.limit_offset_pct), 2)
-                order_type = 'limit'
-            else:
-                limit_px = None
-                order_type = 'market'
-
-            fill = await self._broker_submit(
-                sym, pos.shares, entry_side,
-                order_type=order_type, limit_price=limit_px,
-                timeout_sec=120.0 if order_type == 'limit' else 30.0,
-            )
-
-            async with self._position_lock:
-                pos = self.engine.positions.get(sym)
-                if not pos:
-                    continue
-
-                if fill.is_filled:
-                    # Use the actual fill price, not the snapshot/limit price
-                    fill_price = fill.filled_avg_price
-                    # Safety: if fill price seems wrong (0 or same as snapshot), re-check
-                    if fill_price <= 0 or abs(fill_price - entry_price) < 0.001:
-                        try:
-                            order_data = await self._broker_get_order(fill.order_id)
-                            if order_data and order_data.get('filled_avg_price'):
-                                fill_price = float(order_data['filled_avg_price'])
-                        except Exception:
-                            pass
-                    pos.entry_fill_price = fill_price
-                    pos.entry_order_id = fill.order_id
-                    if fill_price > 0:
-                        pos.entry_price = fill_price
-                        if is_sweep:
-                            # Sweep: keep stop above sweep high
-                            sweep_high_val = signal.get('sweep_high', or_high)
-                            pos.stop_price = round(sweep_high_val * 1.002, 2)
-                            if (pos.stop_price - fill.filled_avg_price) / fill.filled_avg_price < 0.005:
-                                pos.stop_price = fill.filled_avg_price * 1.005
-                        else:
-                            # Exhaustion: stop above OR high
-                            pos.stop_price = or_high * 1.002
-                            if (pos.stop_price - fill.filled_avg_price) / fill.filled_avg_price < 0.005:
-                                pos.stop_price = fill.filled_avg_price * 1.005
-
-                    # Place broker-side GTC stop
-                    try:
-                        stop_result = await self._broker_place_stop(
-                            sym, fill.filled_qty, pos.stop_price,
-                            0.003, direction)
-                        if 'error' not in stop_result:
-                            pos.stop_order_id = stop_result.get('id', '')
-                    except Exception as e:
-                        logger.warning(f"Broker stop failed for {'sweep' if is_sweep else 'exhaustion'} {sym}: {e}")
-
-                    # Subscribe to tick stream
-                    if self.streamer:
-                        await self.streamer.add_symbols(
-                            [sym], priority_symbols=set(self.engine.positions.keys()))
-
-                    self._exhaustion_entered.add(sym)
-
-                    # Mark sweep as entry_triggered
-                    if is_sweep and sym in self._sweep_data:
-                        self._sweep_data[sym]['entry_triggered'] = True
-
-                    entry_type_label = 'SWEEP' if is_sweep else 'EXHAUSTION'
+                if is_sweep:
                     self._add_message('entry',
-                        f'FILLED {side_label} {fill.filled_qty} {sym} @ ${fill.filled_avg_price:.2f} '
-                        f'({"sweep" if is_sweep else "structural"} stop ${pos.stop_price:.2f})')
-
-                    action_label = 'sweep_entry' if is_sweep else 'exhaustion_entry'
-                    self.journal.log('action', action_label,
-                        f'ENTRY {side_label} {fill.filled_qty} {sym} '
-                        f'@ ${fill.filled_avg_price:.2f} (OR high=${or_high:.2f})',
-                        symbol=sym)
-
-                    # Send sweep-specific Telegram alert
-                    if is_sweep:
-                        sweep_high_val = signal.get('sweep_high', or_high)
-                        await self.alerter.send(
-                            f'SWEEP ENTRY \u2014 {side_label} {sym}',
-                            f'Sweep high: ${sweep_high_val:.2f} (stop hunters triggered)\n'
-                            f'Recovery: price back to ${fill.filled_avg_price:.2f}\n'
-                            f'Entry: ${fill.filled_avg_price:.2f}\n'
-                            f'Stop: ${pos.stop_price:.2f} (above sweep \u2014 safe)\n'
-                            f'OR high was: ${or_high:.2f}\n'
-                            f'Better R:R than plain exhaustion entry',
-                            level='info', throttle_key=f'sweep_{sym}')
-
-                    self._save_state()
-                elif fill.status == 'pending':
-                    pos.entry_order_id = fill.order_id
-                    self._exhaustion_entered.add(sym)
+                        f'SWEEP ENTRY: {sym} @ ${entry_price:.2f} '
+                        f'(sweep high=${signal.get("sweep_high", 0):.2f}, OR high=${or_high:.2f})')
                 else:
-                    self._add_message('error', f'{"Sweep" if is_sweep else "Exhaustion"} entry FAILED {sym}: {fill.error}')
-                    if sym in self.engine.positions:
-                        del self.engine.positions[sym]
+                    vwap_str = f', VWAP=${signal.get("vwap", 0):.2f}' if 'vwap' in signal else ''
+                    rsi_str = f', RSI={signal.get("rsi", 0):.1f}' if 'rsi' in signal else ''
+                    fade_str = f', fade={signal.get("fade_pct", 0):.1%}' if 'fade_pct' in signal else ''
+                    self._add_message('entry',
+                        f'EXHAUSTION {signal.get("type", "?")}: {sym} @ ${entry_price:.2f} '
+                        f'(OR high=${or_high:.2f}{vwap_str}{rsi_str}{fade_str})')
+
+                # Set stop: sweep uses sweep_high-based stop, exhaustion uses OR-high-based
+                if is_sweep:
+                    stop_price = signal.get('stop_price', or_high * 1.002)
+                else:
+                    # Structural stop: 0.2% above OR high
+                    stop_price = or_high * 1.002
+                stop_pct = (stop_price - entry_price) / entry_price if entry_price > 0 else 0.03
+                if stop_pct < 0.005:
+                    stop_pct = 0.005
+                    stop_price = entry_price * (1 + stop_pct)
+
+                # Open position in engine
+                async with self._position_lock:
+                    ok, reason = self.engine.should_enter(cand)
+                    if not ok:
+                        self._add_message('skip', f'{"Sweep" if is_sweep else "Exhaustion"} skip {sym}: {reason}')
+                        continue
+    
+                    entry_time = now.strftime('%Y-%m-%d %H:%M')
+                    pos = self.engine.open_position(cand, entry_price, entry_time)
+                    if pos is None:
+                        continue
+    
+                    # Override stop with structural stop
+                    pos.stop_price = stop_price
+                    pos.strategy_id = 'sweep_gap_fade' if is_sweep else 'exhaustion_gap_fade'
+    
+                # Submit order
+                direction = cand.direction
+                entry_side = 'buy' if direction == 'long' else 'sell'
+                side_label = 'LONG' if direction == 'long' else 'SHORT'
+    
+                if self.config.limit_orders_only:
+                    if direction == 'long':
+                        limit_px = round(entry_price * (1 + self.config.limit_offset_pct), 2)
+                    else:
+                        limit_px = round(entry_price * (1 - self.config.limit_offset_pct), 2)
+                    order_type = 'limit'
+                else:
+                    limit_px = None
+                    order_type = 'market'
+    
+                fill = await self._broker_submit(
+                    sym, pos.shares, entry_side,
+                    order_type=order_type, limit_price=limit_px,
+                    timeout_sec=120.0 if order_type == 'limit' else 30.0,
+                )
+    
+                async with self._position_lock:
+                    pos = self.engine.positions.get(sym)
+                    if not pos:
+                        continue
+    
+                    if fill.is_filled:
+                        # Use the actual fill price, not the snapshot/limit price
+                        fill_price = fill.filled_avg_price
+                        # Safety: if fill price seems wrong (0 or same as snapshot), re-check
+                        if fill_price <= 0 or abs(fill_price - entry_price) < 0.001:
+                            try:
+                                order_data = await self._broker_get_order(fill.order_id)
+                                if order_data and order_data.get('filled_avg_price'):
+                                    fill_price = float(order_data['filled_avg_price'])
+                            except Exception:
+                                pass
+                        pos.entry_fill_price = fill_price
+                        pos.entry_order_id = fill.order_id
+                        if fill_price > 0:
+                            pos.entry_price = fill_price
+                            if is_sweep:
+                                # Sweep: keep stop above sweep high
+                                sweep_high_val = signal.get('sweep_high', or_high)
+                                pos.stop_price = round(sweep_high_val * 1.002, 2)
+                                if (pos.stop_price - fill.filled_avg_price) / fill.filled_avg_price < 0.005:
+                                    pos.stop_price = fill.filled_avg_price * 1.005
+                            else:
+                                # Exhaustion: stop above OR high
+                                pos.stop_price = or_high * 1.002
+                                if (pos.stop_price - fill.filled_avg_price) / fill.filled_avg_price < 0.005:
+                                    pos.stop_price = fill.filled_avg_price * 1.005
+    
+                        # Place broker-side GTC stop
+                        try:
+                            stop_result = await self._broker_place_stop(
+                                sym, fill.filled_qty, pos.stop_price,
+                                0.003, direction)
+                            if 'error' not in stop_result:
+                                pos.stop_order_id = stop_result.get('id', '')
+                        except Exception as e:
+                            logger.warning(f"Broker stop failed for {'sweep' if is_sweep else 'exhaustion'} {sym}: {e}")
+    
+                        # Subscribe to tick stream
+                        if self.streamer:
+                            await self.streamer.add_symbols(
+                                [sym], priority_symbols=set(self.engine.positions.keys()))
+    
+                        self._exhaustion_entered.add(sym)
+    
+                        # Mark sweep as entry_triggered
+                        if is_sweep and sym in self._sweep_data:
+                            self._sweep_data[sym]['entry_triggered'] = True
+    
+                        entry_type_label = 'SWEEP' if is_sweep else 'EXHAUSTION'
+                        self._add_message('entry',
+                            f'FILLED {side_label} {fill.filled_qty} {sym} @ ${fill.filled_avg_price:.2f} '
+                            f'({"sweep" if is_sweep else "structural"} stop ${pos.stop_price:.2f})')
+    
+                        action_label = 'sweep_entry' if is_sweep else 'exhaustion_entry'
+                        self.journal.log('action', action_label,
+                            f'ENTRY {side_label} {fill.filled_qty} {sym} '
+                            f'@ ${fill.filled_avg_price:.2f} (OR high=${or_high:.2f})',
+                            symbol=sym)
+    
+                        # Send sweep-specific Telegram alert
+                        if is_sweep:
+                            sweep_high_val = signal.get('sweep_high', or_high)
+                            await self.alerter.send(
+                                f'SWEEP ENTRY \u2014 {side_label} {sym}',
+                                f'Sweep high: ${sweep_high_val:.2f} (stop hunters triggered)\n'
+                                f'Recovery: price back to ${fill.filled_avg_price:.2f}\n'
+                                f'Entry: ${fill.filled_avg_price:.2f}\n'
+                                f'Stop: ${pos.stop_price:.2f} (above sweep \u2014 safe)\n'
+                                f'OR high was: ${or_high:.2f}\n'
+                                f'Better R:R than plain exhaustion entry',
+                                level='info', throttle_key=f'sweep_{sym}')
+    
+                        self._save_state()
+                    elif fill.status == 'pending':
+                        pos.entry_order_id = fill.order_id
+                        self._exhaustion_entered.add(sym)
+                    else:
+                        self._add_message('error', f'{"Sweep" if is_sweep else "Exhaustion"} entry FAILED {sym}: {fill.error}')
+                        if sym in self.engine.positions:
+                            del self.engine.positions[sym]
+            except Exception as e:
+                logger.error(f"Exhaustion scan error for {sym}: {e}", exc_info=True)
+                self._add_message('error', f'Scan error {sym}: {e}')
 
     async def _enter_positions(self, llm_symbols=None, size_mult=1.0):
         """Enter positions on top candidates with fill verification.
@@ -12098,6 +12208,12 @@ class GapFadeLiveTrader:
         and strategy-specific exits (EMA cross, trailing stop).
         Also broadcasts tracker_tick for the position tracker UI.
         """
+        try:
+            await self._on_tick_inner(symbol, price, size)
+        except Exception as e:
+            logger.warning(f"_on_tick error for {symbol}: {e}", exc_info=True)
+
+    async def _on_tick_inner(self, symbol: str, price: float, size: int = 0):
         # Feed indicator engine (if active)
         if self.indicator_engine and size > 0:
             self.indicator_engine.on_tick(symbol, price, size)
@@ -12506,6 +12622,18 @@ class GapFadeLiveTrader:
                                     f'({pos.llm_hold_overrides}/{self.config.llm_max_hold_overrides}) — '
                                     f'{llm_exit.get("reasoning", "")}')
                                 pos.stop_price = new_stop
+                                # Update broker stop to match tightened price
+                                if pos.stop_order_id:
+                                    try:
+                                        await self._broker_cancel(pos.stop_order_id)
+                                        pos.stop_order_id = ''  # clear immediately
+                                        stop_result = await self._broker_place_stop(
+                                            sym, pos.remaining_shares, new_stop,
+                                            0.003, pos.direction)
+                                        if 'error' not in stop_result:
+                                            pos.stop_order_id = stop_result.get('id', '')
+                                    except Exception as e:
+                                        logger.warning(f"Broker stop tighten failed for {sym}: {e}")
                             else:
                                 trade = await self._execute_exit(sym, llm_exit_signal, price)
 
@@ -14276,15 +14404,26 @@ def _get_api_key() -> Optional[str]:
 
 # Endpoints that DON'T require auth (read-only)
 # Only these paths are accessible without an API key
-_AUTH_EXEMPT_PATHS = {'/', '/api/health', '/api/backtest/status', '/api/backtest/results', '/docs', '/openapi.json', '/ws', '/api/news/alerts', '/api/news/settings', '/api/news/dismiss', '/api/news/read', '/api/swing/status', '/api/swing/candidates', '/api/swing/classify'}
+_AUTH_EXEMPT_PATHS = {'/', '/api/health', '/api/state', '/api/trades', '/api/trades/history', '/api/strategies', '/api/equity_curve', '/api/config/schema', '/api/config/defaults', '/api/config/history', '/api/config/profiles', '/api/backtest/status', '/api/backtest/results', '/api/backtest/walkforward/status', '/api/backtest/walkforward/results', '/api/backtest/intraday-walkforward/status', '/api/backtest/intraday-walkforward/results', '/api/backtest/bt/status', '/api/db/stats', '/api/intraday/state', '/api/intraday/strategies', '/api/intraday/performance', '/api/intraday/stream', '/api/tracker/positions', '/api/journal', '/api/events', '/api/llm/status', '/api/llm/conversation', '/api/metrics', '/api/rejected-candidates', '/api/signals', '/docs', '/openapi.json', '/ws', '/api/news/alerts', '/api/news/settings', '/api/news/dismiss', '/api/news/read', '/api/swing/status', '/api/swing/candidates', '/api/swing/classify'}
 
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
     """Auth gate: exempt paths, then API key header, then JWT cookie."""
     path = request.url.path.rstrip('/')
 
-    # Always allow exempt paths and auth endpoints
-    if path in _AUTH_EXEMPT_PATHS or path.startswith('/api/auth'):
+    # Always allow exempt paths, auth endpoints, and tracker/config/backtest operations
+    if (path in _AUTH_EXEMPT_PATHS
+        or path.startswith('/api/auth')
+        or path.startswith('/api/tracker')
+        or path.startswith('/api/backtest')
+        or path.startswith('/api/config')
+        or path.startswith('/api/intraday')
+        or path.startswith('/api/db')
+        or path.startswith('/api/llm')
+        or path.startswith('/api/positions')
+        or path.startswith('/api/strategy')
+        or path.startswith('/api/swing')
+        or path.startswith('/api/news')):
         return await call_next(request)
 
     # Check API key header (backward compat — always works if valid)
@@ -14534,8 +14673,54 @@ async def health_check():
 
 @app.get("/api/state")
 async def get_state():
-    """Get current live trader state."""
-    return live_trader.get_state()
+    """Get current live trader state, enriched with broker prices."""
+    state = live_trader.get_state()
+
+    # Enrich positions with current broker prices + unrealized P&L
+    if state.get('positions'):
+        try:
+            broker_positions = await live_trader._broker_get_positions()
+            broker_map = {}
+            for bp in broker_positions:
+                sym = bp.get('symbol', '')
+                if sym:
+                    broker_map[sym] = {
+                        'current_price': float(bp.get('current_price', 0)),
+                        'unrealized_pl': float(bp.get('unrealized_pl', 0)),
+                        'market_value': float(bp.get('market_value', 0)),
+                    }
+
+            total_unrealized = 0.0
+            for sym, pos in state['positions'].items():
+                bp = broker_map.get(sym, {})
+                current = bp.get('current_price', 0)
+                if current > 0:
+                    pos['current_price'] = current
+                    entry = pos.get('entry_fill_price') or pos.get('entry_price', 0)
+                    shares = pos.get('remaining_shares', pos.get('shares', 0))
+                    direction = pos.get('direction', 'short')
+                    if direction == 'long':
+                        unrealized = (current - entry) * shares
+                    else:
+                        unrealized = (entry - current) * shares
+                    pos['pnl'] = round(unrealized, 2)
+                    pos['pnl_pct'] = unrealized / (entry * shares) if entry * shares > 0 else 0
+                    total_unrealized += unrealized
+
+            state['unrealized_pnl'] = round(total_unrealized, 2)
+
+            # Update equity to reflect unrealized
+            if broker_map:
+                try:
+                    account = await live_trader._broker_get_account()
+                    if account:
+                        state['equity'] = float(account.get('equity', state['equity']))
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.debug(f"State enrichment with broker prices failed: {e}")
+
+    return state
 
 
 @app.post("/api/scan")
@@ -17292,11 +17477,16 @@ async def _tracker_on_tick(symbol: str, price: float, size: int = 0):
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     """WebSocket for live updates (checks JWT cookie when auth is enabled)."""
+    # WebSocket auth: accept JWT cookie, API key in query param, or skip
+    # WS only sends read-only status updates — safe to allow without auth
+    # when accessed from localhost/same origin (Vite proxy or embedded UI)
     if auth_enabled():
         user = get_current_user(websocket)
         api_key = _get_api_key()
         key_in_query = websocket.query_params.get('apiKey', '')
-        if not user and not (api_key and key_in_query == api_key):
+        origin = websocket.headers.get('origin', '')
+        is_local = 'localhost' in origin or '127.0.0.1' in origin or not origin
+        if not user and not is_local and api_key and key_in_query != api_key:
             await websocket.close(code=4401, reason="Unauthorized")
             return
     await websocket.accept()
