@@ -438,7 +438,9 @@ class ReplayEngine:
                 tick_data = self.indicators[sym].get_tick_data()
                 try:
                     setup = strategy.scan_for_setups(
-                        sym, tick_data, {'price': bar.close, 'volume': bar.volume},
+                        sym, tick_data,
+                        {'price': bar.close, 'volume': bar.volume,
+                         'open': bar.open, 'high': bar.high, 'low': bar.low},
                         bar.ts)
                     if setup:
                         valid, reason = strategy.validate_setup(setup, tick_data, bar.ts)

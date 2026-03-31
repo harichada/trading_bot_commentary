@@ -14,14 +14,41 @@ const GRADIENTS: Record<string, string> = {
   minervini_trend: 'linear-gradient(135deg, #2a1a0d 0%, #f97316 100%)',
   gap_continuation: 'linear-gradient(135deg, #1a0d2a 0%, #8b5cf6 100%)',
   gap_bounce: 'linear-gradient(135deg, #2a0d0d 0%, #ff3b5c 100%)',
+  // Intraday strategies
+  aziz_abcd_vwap: 'linear-gradient(135deg, #0d1a2a 0%, #00FFBB 100%)',
+  orb_breakout: 'linear-gradient(135deg, #1a1a0d 0%, #f5a623 100%)',
+  momentum_surge: 'linear-gradient(135deg, #0d1a2a 0%, #3b82f6 100%)',
+  vwap_mean_reversion: 'linear-gradient(135deg, #0d2a1a 0%, #06b6d4 100%)',
+  connors_rsi2: 'linear-gradient(135deg, #2a0d1a 0%, #ec4899 100%)',
+  pullback_entry: 'linear-gradient(135deg, #2a1a0d 0%, #f97316 100%)',
+  range_trade: 'linear-gradient(135deg, #1a1a2a 0%, #8b5cf6 100%)',
+  vwap_bounce: 'linear-gradient(135deg, #0a1a2a 0%, #3b82f6 100%)',
+  opening_trend: 'linear-gradient(135deg, #1a0d0d 0%, #ef4444 100%)',
+  first_hour_breakout: 'linear-gradient(135deg, #1a1a0d 0%, #eab308 100%)',
+  catalyst_momentum: 'linear-gradient(135deg, #0d2a2a 0%, #14b8a6 100%)',
+  micro_scalp: 'linear-gradient(135deg, #2a0d2a 0%, #d946ef 100%)',
 }
 
 export default function Strategies() {
   const [strategies, setStrategies] = useState<Strategy[]>([])
   const [activeId, setActiveId] = useState('')
-  const [intradayStrats, setIntradayStrats] = useState<Record<string, unknown>[]>([])
   const [perf, setPerf] = useState<Record<string, unknown> | null>(null)
   const { showToast } = useToast()
+
+  const [intradayStrats, setIntradayStrats] = useState<Strategy[]>([])
+
+  // Load intraday strategies from lab API
+  useEffect(() => {
+    fetch('/api/lab/strategies').then(r => r.json()).then(d => {
+      const strats = Array.isArray(d.strategies) ? d.strategies : []
+      setIntradayStrats(strats.map((s: Record<string, unknown>) => ({
+        id: String(s.id ?? ''),
+        name: String(s.id ?? '').replace(/_/g, ' '),
+        description: `${Object.keys(s.params ?? {}).length} tunable parameters`,
+        trades: 0, win_rate: 0, pf: 0, net_pnl: 0, active: false,
+      })))
+    }).catch(() => {})
+  }, [])
 
   useEffect(() => {
     Promise.all([api.strategies(), api.trades()]).then(([reg, trades]) => {
@@ -60,7 +87,7 @@ export default function Strategies() {
       setStrategies(result)
     }).catch(() => {})
 
-    fetch('/api/intraday/strategies').then(r => r.json()).then(d => setIntradayStrats(d.strategies ?? d ?? [])).catch(() => {})
+    // Intraday strategies loaded from lab API in separate useEffect
     fetch('/api/intraday/performance').then(r => r.json()).then(setPerf).catch(() => {})
   }, [])
 
@@ -99,20 +126,26 @@ export default function Strategies() {
         ))}
       </div>
 
-      {/* Intraday Strategies */}
+      {/* Intraday Strategies (from Lab) */}
       {intradayStrats.length > 0 && (
         <>
-          <div className={s.sectionTitle} style={{ marginTop: 24 }}>Intraday Strategies</div>
-          <div className={s.intradayList}>
-            {intradayStrats.map((ist, i) => (
-              <div key={i} className={s.intradayRow}>
-                <div>
-                  <div className={s.intradayName}>{String(ist.name ?? ist.id ?? '')}</div>
-                  <div className={s.intradayDesc}>{String(ist.description ?? '')}</div>
+          <div className={s.sectionTitle} style={{ marginTop: 24 }}>Intraday Strategies ({intradayStrats.length})</div>
+          <div className={s.gallery}>
+            {intradayStrats.map(ist => (
+              <div key={ist.id} className={s.card}
+                style={{ background: GRADIENTS[ist.id] ?? 'linear-gradient(135deg, #1a1a1a 0%, #444 100%)' }}
+                onClick={() => window.location.href = `/lab`}>
+                <div className={s.cardContent}>
+                  <div className={s.cardTop}>
+                    <div className={s.cardName}>{ist.name.toUpperCase()}</div>
+                    {ist.id === 'aziz_abcd_vwap' && <span className={`${ui.badge} ${ui.badgeAccent} ${ui.badgeSm}`}>NEW</span>}
+                  </div>
+                  {ist.description && <div className={s.cardDesc}>{ist.description}</div>}
+                  <div className={s.cardStats}>
+                    <div className={s.cardStat}><span className={s.statLabel}>Type</span><span className={s.statValue}>Intraday</span></div>
+                    <div className={s.cardStat}><span className={s.statLabel}>Window</span><span className={s.statValue}>10AM-3PM</span></div>
+                  </div>
                 </div>
-                <span className={`${ui.badge} ${ist.enabled ? ui.badgeAccent : ui.badgeMuted} ${ui.badgeSm}`}>
-                  {ist.enabled ? 'ON' : 'OFF'}
-                </span>
               </div>
             ))}
           </div>
