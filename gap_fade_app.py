@@ -185,8 +185,19 @@ def _load_env_file():
         logger.debug(f"Could not load .env: {e}")
 
 
+# Context-var Alpaca config override (for per-user engines in multi-tenant mode).
+# contextvars propagate into asyncio.to_thread() automatically (Python 3.10+).
+import contextvars as _contextvars
+_alpaca_config_ctx: _contextvars.ContextVar[Optional[dict]] = _contextvars.ContextVar(
+    '_alpaca_config_ctx', default=None)
+
+
 def _get_alpaca_config() -> Optional[dict]:
-    """Get Alpaca paper trading config from env vars."""
+    """Get Alpaca config. Checks context-var override first (per-user engines),
+    then falls back to env vars (global/system trader)."""
+    override = _alpaca_config_ctx.get()
+    if override:
+        return override
     _load_env_file()
     api_key = os.environ.get('ALPACA_API_KEY', '')
     secret_key = os.environ.get('ALPACA_SECRET_KEY', '')
@@ -2269,7 +2280,7 @@ class PriceDB:
 
     # ── Trade persistence ─────────────────────────────────────────────
 
-    def insert_trade(self, trade) -> bool:
+    def insert_trade(self, trade, user_id: str = None) -> bool:
         """INSERT a TradeRecord (or dict) into the trades table, ignoring duplicates.
         Returns True if a row was inserted, False if duplicate/ignored."""
         d = trade if isinstance(trade, dict) else asdict(trade)
@@ -2281,8 +2292,8 @@ class PriceDB:
                    (symbol, entry_price, exit_price, shares, pnl, pnl_pct,
                     entry_time, exit_time, exit_reason, holding_minutes,
                     side, gap_pct, vol_ratio, score, catalyst,
-                    strategy_id, setup_type)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    strategy_id, setup_type, user_id)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                    ON CONFLICT (symbol, entry_time, exit_time, shares, exit_reason) DO NOTHING''',
                 (d['symbol'], d['entry_price'], d['exit_price'], d['shares'],
                  d['pnl'], d['pnl_pct'], d['entry_time'], d['exit_time'],
@@ -2290,7 +2301,8 @@ class PriceDB:
                  d.get('side', 'short'), d.get('gap_pct', 0.0),
                  d.get('vol_ratio', 0.0), d.get('score', 0.0),
                  d.get('catalyst', ''),
-                 d.get('strategy_id', ''), d.get('setup_type', '')))
+                 d.get('strategy_id', ''), d.get('setup_type', ''),
+                 user_id))
             self._conn.commit()
             return cur.rowcount > 0
         except Exception as e:
@@ -2316,7 +2328,8 @@ class PriceDB:
             return []
 
     def query_trades(self, start_date: str = None, end_date: str = None,
-                     symbol: str = None, limit: int = 100, offset: int = 0) -> dict:
+                     symbol: str = None, limit: int = 100, offset: int = 0,
+                     user_id: str = None) -> dict:
         """Paginated trade query. Returns {trades, total, limit, offset}."""
         try:
             where_clauses = []
@@ -2330,6 +2343,9 @@ class PriceDB:
             if symbol:
                 where_clauses.append('symbol = %s')
                 params.append(symbol.upper())
+            if user_id:
+                where_clauses.append('user_id = %s')
+                params.append(user_id)
             where_sql = (' WHERE ' + ' AND '.join(where_clauses)) if where_clauses else ''
 
             cur = self._conn.cursor()
@@ -4953,12 +4969,20 @@ class GapFadeEngine:
         self.trade_log.append(trade)
         self.all_trade_log.append(trade)
 
-        # Persist to SQLite (live trades only — backtests stay out)
+        # Persist to database (live trades only — backtests stay out)
         if not self.backtest_mode:
+            _uid = getattr(self, '_user_id', None)
             try:
-                get_price_db().insert_trade(trade)
+                get_price_db().insert_trade(trade, user_id=_uid)
             except Exception as e:
-                logger.error(f"SQLite trade persist failed (non-fatal): {e}")
+                logger.error(f"Trade persist failed (non-fatal): {e}")
+            # Update user's monthly P&L for profit cap tracking
+            if _uid:
+                try:
+                    from user_management import get_user_repo
+                    get_user_repo().update_monthly_pnl(_uid, float(trade.pnl))
+                except Exception as e:
+                    logger.error(f"Monthly P&L update failed (non-fatal): {e}")
 
     def reset_daily(self):
         """Reset daily stats for new trading day."""
@@ -8388,9 +8412,12 @@ class GapFadeLiveTrader:
     STATE_KEY = 'gap_fade_state'
     RECONCILE_INTERVAL = 300  # seconds between broker reconciliation checks
 
-    def __init__(self, config: GapFadeConfig = None):
+    def __init__(self, config: GapFadeConfig = None, alpaca_config: dict = None, user_id: str = None):
         self.config = config or GapFadeConfig()
+        self._alpaca_config_override = alpaca_config  # Per-user broker keys (None = use env vars)
+        self._user_id = user_id  # For trade attribution and profit cap
         self.engine = GapFadeEngine(self.config)
+        self.engine._user_id = user_id  # Propagate to engine for trade recording
         self.scanner = GapScanner(self.config)
         self._execution_broker = _build_execution_broker(self.config)
         self.streamer = None  # AlpacaTickStreamer or IBKRTickStreamer
@@ -8528,10 +8555,14 @@ class GapFadeLiveTrader:
             return await self._execution_broker.submit_order(
                 symbol, qty, side, order_type=order_type,
                 limit_price=limit_price, timeout_sec=timeout_sec)
-        return await alpaca_submit_and_confirm(
-            symbol, qty, side, order_type=order_type,
-            limit_price=limit_price, timeout_sec=timeout_sec,
-            cancel_on_timeout=cancel_on_timeout)
+        token = self._activate_broker_context()
+        try:
+            return await alpaca_submit_and_confirm(
+                symbol, qty, side, order_type=order_type,
+                limit_price=limit_price, timeout_sec=timeout_sec,
+                cancel_on_timeout=cancel_on_timeout)
+        finally:
+            self._deactivate_broker_context(token)
 
     async def _broker_place_stop(self, symbol: str, qty: int, stop_price: float,
                                  limit_offset_pct: float = 0.003,
@@ -8540,27 +8571,55 @@ class GapFadeLiveTrader:
         if self._use_ibkr:
             return await self._execution_broker.place_stop_order(
                 symbol, qty, stop_price, limit_offset_pct, direction)
-        return await asyncio.to_thread(
-            alpaca_place_stop_order, symbol, qty, stop_price,
-            limit_offset_pct, direction)
+        token = self._activate_broker_context()
+        try:
+            return await asyncio.to_thread(
+                alpaca_place_stop_order, symbol, qty, stop_price,
+                limit_offset_pct, direction)
+        finally:
+            self._deactivate_broker_context(token)
 
     async def _broker_cancel(self, order_id: str) -> bool:
         """Cancel order via configured broker."""
         if self._use_ibkr:
             return await self._execution_broker.cancel_order(order_id)
-        return await asyncio.to_thread(alpaca_cancel_order, order_id)
+        token = self._activate_broker_context()
+        try:
+            return await asyncio.to_thread(alpaca_cancel_order, order_id)
+        finally:
+            self._deactivate_broker_context(token)
+
+    def _activate_broker_context(self) -> Optional[object]:
+        """Activate per-user Alpaca credentials in the context var.
+        Returns the token to reset, or None if no override."""
+        if self._alpaca_config_override:
+            return _alpaca_config_ctx.set(self._alpaca_config_override)
+        return None
+
+    def _deactivate_broker_context(self, token):
+        """Reset the context var to its previous value."""
+        if token is not None:
+            _alpaca_config_ctx.reset(token)
 
     async def _broker_get_positions(self) -> List[dict]:
         """Get positions via configured broker."""
         if self._use_ibkr:
             return await self._execution_broker.get_positions()
-        return await asyncio.to_thread(alpaca_get_positions)
+        token = self._activate_broker_context()
+        try:
+            return await asyncio.to_thread(alpaca_get_positions)
+        finally:
+            self._deactivate_broker_context(token)
 
     async def _broker_get_account(self) -> Optional[dict]:
         """Get account info via configured broker."""
         if self._use_ibkr:
             return await self._execution_broker.get_account()
-        return await asyncio.to_thread(alpaca_get_account)
+        token = self._activate_broker_context()
+        try:
+            return await asyncio.to_thread(alpaca_get_account)
+        finally:
+            self._deactivate_broker_context(token)
 
     async def _broker_close_position(self, symbol: str) -> dict:
         """Force-close position via configured broker."""
@@ -8574,7 +8633,11 @@ class GapFadeLiveTrader:
                         symbol, int(pos['qty']), close_side, order_type='market')
                     return {'status': result.status, 'order_id': result.order_id}
             return {'error': f'{symbol} not found in IBKR positions'}
-        return await asyncio.to_thread(alpaca_close_position_api, symbol)
+        token = self._activate_broker_context()
+        try:
+            return await asyncio.to_thread(alpaca_close_position_api, symbol)
+        finally:
+            self._deactivate_broker_context(token)
 
     def _broker_make_streamer(self, symbols: List[str], on_tick=None):
         """Create tick streamer via configured broker."""
@@ -11562,6 +11625,18 @@ class GapFadeLiveTrader:
             logger.info("_enter_positions blocked by EOD circuit breaker")
             return
 
+        # Profit cap enforcement (multi-tenant)
+        if self._user_id:
+            try:
+                from user_engine import ProfitCapChecker
+                cap_ok, cap_reason = ProfitCapChecker().can_enter(self._user_id)
+                if not cap_ok:
+                    self._add_message('system', f'Entry blocked: {cap_reason}')
+                    logger.info("Profit cap block for user %s: %s", self._user_id[:8], cap_reason)
+                    return
+            except Exception as e:
+                logger.warning(f"Profit cap check failed (allowing entry): {e}")
+
         self.status = 'trading'
         await broadcast({'type': 'live_status', 'status': 'trading'})
 
@@ -11951,9 +12026,13 @@ class GapFadeLiveTrader:
             # If partial profit exit, replace broker stop at breakeven
             if reason == 'partial' and symbol in self.engine.positions:
                 new_pos = self.engine.positions[symbol]
-                new_stop_result = await alpaca_replace_stop_order(
-                    '', symbol, new_pos.remaining_shares, new_pos.stop_price
-                )
+                _ctx_token = self._activate_broker_context()
+                try:
+                    new_stop_result = await alpaca_replace_stop_order(
+                        '', symbol, new_pos.remaining_shares, new_pos.stop_price
+                    )
+                finally:
+                    self._deactivate_broker_context(_ctx_token)
                 if 'error' not in new_stop_result:
                     new_pos.stop_order_id = new_stop_result.get('id', '')
                     self._add_message('info',
@@ -14387,6 +14466,13 @@ app.add_middleware(SessionMiddleware, secret_key=_session_secret)
 from auth import router as auth_router, auth_enabled, get_current_user
 app.include_router(auth_router)
 
+try:
+    from user_management import router as user_router, admin_router
+    app.include_router(user_router)
+    app.include_router(admin_router)
+except ImportError:
+    logger.warning("user_management module not found — multi-tenant endpoints disabled")
+
 # ---------------------------------------------------------------------------
 # P0-6: API Authentication Middleware
 # ---------------------------------------------------------------------------
@@ -14456,7 +14542,7 @@ async def auth_middleware(request: Request, call_next):
     # Viewers can see everything (GET) but cannot change anything (POST/PUT/DELETE)
     if auth_enabled() and request.method in ('POST', 'PUT', 'DELETE', 'PATCH'):
         # Allow auth endpoints (login/logout)
-        if not path.startswith('/api/auth') and not path.startswith('/api/backtest'):
+        if not path.startswith('/api/auth') and not path.startswith('/api/backtest') and not path.startswith('/api/users') and not path.startswith('/api/admin'):
             user = get_current_user(request)
             if user:
                 role = user.get('role', 'viewer')
@@ -14575,6 +14661,17 @@ def validate_config(updates: dict) -> Tuple[dict, List[str]]:
 live_trader = GapFadeLiveTrader()
 backtester = GapFadeBacktester()
 
+# Multi-tenant engine pool (lazy — only active when users have stored credentials)
+try:
+    from user_engine import init_engine_manager, get_trader_for_request, resolve_user_id
+    _user_engine_mgr = init_engine_manager(live_trader)
+except ImportError:
+    _user_engine_mgr = None
+    logger.info("user_engine module not found — multi-tenant engine pool disabled")
+except Exception as _e:
+    _user_engine_mgr = None
+    logger.warning(f"Engine pool init failed: {_e}")
+
 # ---------------------------------------------------------------------------
 # Infrastructure integration (Prometheus metrics, health checks, correlation IDs)
 # ---------------------------------------------------------------------------
@@ -14687,14 +14784,15 @@ async def health_check():
 
 
 @app.get("/api/state")
-async def get_state():
+async def get_state(request: Request):
     """Get current live trader state, enriched with broker prices."""
-    state = live_trader.get_state()
+    trader = await get_trader_for_request(request) if _user_engine_mgr else live_trader
+    state = trader.get_state()
 
     # Enrich positions with current broker prices + unrealized P&L
     if state.get('positions'):
         try:
-            broker_positions = await live_trader._broker_get_positions()
+            broker_positions = await trader._broker_get_positions()
             broker_map = {}
             for bp in broker_positions:
                 sym = bp.get('symbol', '')
@@ -14727,7 +14825,7 @@ async def get_state():
             # Update equity to reflect unrealized
             if broker_map:
                 try:
-                    account = await live_trader._broker_get_account()
+                    account = await trader._broker_get_account()
                     if account:
                         state['equity'] = float(account.get('equity', state['equity']))
                 except Exception:
@@ -14782,51 +14880,56 @@ async def run_scan():
 
 
 @app.post("/api/start")
-async def start_trading():
+async def start_trading(request: Request):
     """Start the live trading loop."""
-    await live_trader.start()
-    return {'status': live_trader.status}
+    trader = await get_trader_for_request(request) if _user_engine_mgr else live_trader
+    await trader.start()
+    return {'status': trader.status}
 
 
 @app.post("/api/enter")
-async def enter_positions(body: dict = None):
+async def enter_positions(request: Request, body: dict = None):
     """Manually trigger entry on current candidates.
 
     Optional body: {"symbols": ["SYM1", "SYM2"]} to enter specific symbols.
     Without body, enters top candidates up to max_positions.
     """
-    if live_trader.status == 'stopped':
+    trader = await get_trader_for_request(request) if _user_engine_mgr else live_trader
+    if trader.status == 'stopped':
         return {'error': 'Trader is stopped. Start it first.'}
     body = body or {}
     llm_symbols = body.get('symbols')
     size_mult = body.get('size_mult', 1.0)
     # Scan first if no candidates cached
-    if not live_trader.candidates:
-        await live_trader._run_scan()
-    await live_trader._enter_positions(llm_symbols=llm_symbols, size_mult=size_mult)
+    if not trader.candidates:
+        await trader._run_scan()
+    await trader._enter_positions(llm_symbols=llm_symbols, size_mult=size_mult)
     return {
-        'status': live_trader.status,
-        'positions': {s: asdict(p) for s, p in live_trader.engine.positions.items()},
+        'status': trader.status,
+        'positions': {s: asdict(p) for s, p in trader.engine.positions.items()},
     }
 
 
 @app.post("/api/stop")
-async def stop_trading():
+async def stop_trading(request: Request):
     """Stop the live trader."""
-    await live_trader.stop()
-    return {'status': live_trader.status}
+    trader = await get_trader_for_request(request) if _user_engine_mgr else live_trader
+    await trader.stop()
+    return {'status': trader.status}
 
 
 @app.post("/api/pause")
-async def pause_trading():
-    await live_trader.pause()
-    return {'status': live_trader.status}
+async def pause_trading(request: Request):
+    trader = await get_trader_for_request(request) if _user_engine_mgr else live_trader
+    await trader.pause()
+    return {'status': trader.status}
 
 
 @app.post("/api/resume")
-async def resume_trading():
-    await live_trader.resume()
-    return {'status': live_trader.status}
+async def resume_trading(request: Request):
+    trader = await get_trader_for_request(request) if _user_engine_mgr else live_trader
+    await trader.resume()
+    return {'status': trader.status}
 
 
 @app.post("/api/reset")
@@ -16978,34 +17081,39 @@ async def bt_chart_file(filename: str):
 
 
 @app.get("/api/metrics")
-async def get_metrics():
-    return live_trader.engine.get_metrics()
+async def get_metrics(request: Request):
+    trader = await get_trader_for_request(request) if _user_engine_mgr else live_trader
+    return trader.engine.get_metrics()
 
 
 @app.get("/api/trades")
-async def get_trades():
+async def get_trades(request: Request):
+    trader = await get_trader_for_request(request) if _user_engine_mgr else live_trader
     try:
         total_trades = get_price_db().count_trades()
     except Exception:
-        total_trades = len(live_trader.engine.all_trade_log)
+        total_trades = len(trader.engine.all_trade_log)
     return {
-        'trades': [asdict(t) for t in live_trader.engine.all_trade_log[-200:]],
-        'today': [asdict(t) for t in live_trader.engine.trade_log],
+        'trades': [asdict(t) for t in trader.engine.all_trade_log[-200:]],
+        'today': [asdict(t) for t in trader.engine.trade_log],
         'total_trades': total_trades,
     }
 
 
 @app.get("/api/trades/history")
 async def get_trades_history(
+    request: Request,
     start: str = None, end: str = None, symbol: str = None,
     limit: int = 100, offset: int = 0
 ):
-    """Paginated full trade history from SQLite."""
+    """Paginated full trade history from database, scoped to user."""
     limit = max(1, min(limit, 1000))
     offset = max(0, offset)
     db = get_price_db()
+    user_id = resolve_user_id(request) if _user_engine_mgr else None
     return db.query_trades(start_date=start, end_date=end,
-                           symbol=symbol, limit=limit, offset=offset)
+                           symbol=symbol, limit=limit, offset=offset,
+                           user_id=user_id)
 
 
 @app.get("/api/account")
@@ -17260,10 +17368,11 @@ async def get_tracker_bars(symbol: str, timeframe: str = '1Min', limit: int = 39
 
 
 @app.get("/api/tracker/positions")
-async def get_tracker_positions():
+async def get_tracker_positions(request: Request):
     """Get all Alpaca broker positions + account info."""
-    positions = await asyncio.to_thread(alpaca_get_positions)
-    account = await asyncio.to_thread(alpaca_get_account)
+    trader = await get_trader_for_request(request) if _user_engine_mgr else live_trader
+    positions = await trader._broker_get_positions()
+    account = await trader._broker_get_account()
     return {
         'positions': positions or [],
         'equity': float(account.get('equity', 0)) if account else 0,
@@ -17286,7 +17395,12 @@ async def place_tracker_order(request: Request):
     if qty <= 0:
         return {'error': 'Qty must be positive'}
 
-    result = await alpaca_submit_and_confirm(symbol, qty, side)
+    trader = await get_trader_for_request(request) if _user_engine_mgr else live_trader
+    token = trader._activate_broker_context()
+    try:
+        result = await alpaca_submit_and_confirm(symbol, qty, side)
+    finally:
+        trader._deactivate_broker_context(token)
     return {
         'status': result.status,
         'filled_qty': result.filled_qty,
@@ -24078,6 +24192,32 @@ async function trackerShort(sym) {
 </script>
 </body>
 </html>"""
+
+
+# =============================================================================
+# SECTION 10B: FRONTEND-V2 SPA SERVING (production build)
+# =============================================================================
+# Must be registered LAST so /api/* routes take priority.
+
+_frontend_v2_dist = os.path.join(os.path.dirname(__file__) or '.', 'frontend-v2-dist')
+if os.path.isdir(_frontend_v2_dist):
+    from starlette.responses import FileResponse as _SpaFileResponse
+
+    @app.get("/app/{full_path:path}")
+    async def serve_spa(full_path: str):
+        """Serve frontend-v2 SPA. All non-file paths return index.html."""
+        file_path = os.path.join(_frontend_v2_dist, full_path)
+        if full_path and os.path.isfile(file_path):
+            return _SpaFileResponse(file_path)
+        return _SpaFileResponse(os.path.join(_frontend_v2_dist, 'index.html'))
+
+    # Serve static assets (js, css, images) from the dist root
+    from starlette.staticfiles import StaticFiles as _SpaStaticFiles
+    app.mount("/assets", _SpaStaticFiles(directory=os.path.join(_frontend_v2_dist, "assets")), name="spa-assets")
+
+    logger.info("Frontend-v2 SPA serving from %s at /app/", _frontend_v2_dist)
+else:
+    logger.info("No frontend-v2-dist/ found — SPA serving disabled (use Vite dev server)")
 
 
 # =============================================================================

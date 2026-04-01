@@ -3,6 +3,7 @@ import {
   LayoutDashboard, ScanSearch, Receipt, CandlestickChart, Activity,
   BarChart2, GitBranch, Layers, Settings2, Database, Bot, BookOpen,
   PanelLeftClose, PanelLeftOpen, X, FlaskConical, Play,
+  User, ShieldCheck,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import styles from './Sidebar.module.css'
@@ -47,6 +48,8 @@ const navSections: NavSection[] = [
       { path: '/config',     icon: Settings2, label: 'Config' },
       { path: '/database',   icon: Database,  label: 'Database' },
       { path: '/chat',       icon: Bot,       label: 'Rudra Chat' },
+      { path: '/account',   icon: User,      label: 'Account' },
+      { path: '/admin',     icon: ShieldCheck, label: 'Admin' },
       { path: '/guide',      icon: BookOpen,  label: 'Guide' },
     ],
   },

@@ -150,9 +150,28 @@ _PROVIDERS = {"google", "github", "discord"}
 
 # ── JWT helpers ──────────────────────────────────────────────────────────────
 
+def _upsert_user_on_login(user: dict) -> Optional[dict]:
+    """Create or update user in DB on OAuth login. Returns DB row or None on failure."""
+    try:
+        from user_management import get_user_repo
+        return get_user_repo().upsert_on_login(
+            email=user.get("email", ""),
+            name=user.get("name", ""),
+            picture=user.get("picture", ""),
+            provider=user.get("provider", ""),
+        )
+    except Exception as exc:
+        logger.warning("DB user upsert failed (falling back to env-var auth): %s", exc)
+        return None
+
+
 def _create_token(user: dict) -> str:
     email = user.get("email", "").lower()
     role = get_user_role(email)
+
+    # Try to upsert in DB and enrich JWT with user_id/tier
+    db_user = _upsert_user_on_login(user)
+
     payload = {
         "sub": email,
         "name": user.get("name", ""),
@@ -162,6 +181,11 @@ def _create_token(user: dict) -> str:
         "iat": int(time.time()),
         "exp": int(time.time()) + COOKIE_MAX_AGE,
     }
+    if db_user:
+        payload["user_id"] = str(db_user.get("user_id", ""))
+        payload["tier"] = db_user.get("tier", "free")
+        payload["is_admin"] = db_user.get("is_admin", False)
+
     return jwt.encode(payload, _jwt_secret(), algorithm=JWT_ALGORITHM)
 
 
@@ -270,6 +294,13 @@ async def login(provider: str, request: Request):
     # Mobile flow: store the app's redirect URL server-side keyed by a nonce.
     # The nonce is sent as a plain cookie (not session) so it survives the OAuth redirect chain.
     mobile_redirect = request.query_params.get("mobile_redirect", "")
+
+    # Validate mobile_redirect to prevent open redirect / JWT exfiltration
+    if mobile_redirect:
+        _allowed_redirect_base = _frontend_url().rstrip("/")
+        if not mobile_redirect.startswith(_allowed_redirect_base):
+            logger.warning("Blocked mobile_redirect to untrusted URL: %s", mobile_redirect[:100])
+            return JSONResponse({"error": "Invalid mobile_redirect URL"}, 400)
 
     # Clear any stale OAuth session state to prevent CSRF mismatch when
     # multiple login attempts happen in the same browser session.

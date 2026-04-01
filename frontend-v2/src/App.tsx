@@ -18,6 +18,8 @@ import Chat from './pages/Chat'
 import Guide from './pages/Guide'
 import IntradayLab from './pages/IntradayLab'
 import Replay from './pages/Replay'
+import Account from './pages/Account'
+import Admin from './pages/Admin'
 
 function AppInner() {
   const { showHelp, setShowHelp } = useKeyboardShortcuts()
@@ -43,6 +45,8 @@ function AppInner() {
           <Route path="/guide" element={<Guide />} />
           <Route path="/lab" element={<IntradayLab />} />
           <Route path="/replay" element={<Replay />} />
+          <Route path="/account" element={<Account />} />
+          <Route path="/admin" element={<Admin />} />
         </Route>
       </Routes>
     </>
