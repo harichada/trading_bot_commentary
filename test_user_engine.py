@@ -120,12 +120,12 @@ class TestUserEngineManager:
         assert trader is self.mock_global
 
     @pytest.mark.asyncio
-    async def test_unknown_user_no_creds_gets_global(self):
-        """User with no credentials falls back to global trader."""
+    async def test_unknown_user_no_creds_returns_none(self):
+        """User with no credentials gets None (must add credentials first)."""
         test_uid = str(uuid.uuid4())
         with patch("user_management.CredentialManager.get_all_for_user", return_value=[]):
             trader = await self.mgr.get_trader(test_uid)
-            assert trader is self.mock_global
+            assert trader is None
 
     @pytest.mark.asyncio
     async def test_engine_count(self):

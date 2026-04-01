@@ -17,7 +17,7 @@ const TIER_PRICES: Record<string, string> = { free: '$0', starter: '$29', pro: '
 const TIER_NAMES: Record<string, string> = { free: 'Free', starter: 'Starter', pro: 'Professional' }
 
 async function apiFetch<T>(path: string, opts?: RequestInit): Promise<T> {
-  const res = await fetch(path, { ...opts, headers: { 'Content-Type': 'application/json', ...(opts?.headers as Record<string, string>) } })
+  const res = await fetch(path, { ...opts, credentials: 'include', headers: { 'Content-Type': 'application/json', ...(opts?.headers as Record<string, string>) } })
   return res.json()
 }
 

@@ -1,4 +1,4 @@
-import { Menu, Wifi, WifiOff, Clock, PanelRight } from 'lucide-react'
+import { Menu, Wifi, WifiOff, Clock, PanelRight, LogOut } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import type { HealthData } from '../lib/api'
 import styles from './Topbar.module.css'
@@ -10,6 +10,7 @@ interface TopbarProps {
   onPanelToggle?: () => void
   pageTitle?: string
   pageSubtitle?: string
+  user?: { name: string; email: string; avatar?: string; picture?: string } | null
 }
 
 function formatUptime(seconds: number): string {
@@ -53,7 +54,7 @@ function StatusPill({ status }: { status: string }) {
   )
 }
 
-export default function Topbar({ health, connected, onMenuClick, onPanelToggle, pageTitle, pageSubtitle }: TopbarProps) {
+export default function Topbar({ health, connected, onMenuClick, onPanelToggle, pageTitle, pageSubtitle, user }: TopbarProps) {
   const equity = health?.equity
   const dailyPnl = health?.daily_pnl ?? 0
   const pnlPositive = dailyPnl >= 0
@@ -94,6 +95,19 @@ export default function Topbar({ health, connected, onMenuClick, onPanelToggle, 
           <button className={styles.panelBtn} onClick={onPanelToggle} title="Toggle panel">
             <PanelRight size={16} />
           </button>
+        )}
+        {user && (
+          <div className={styles.userArea}>
+            {(user.avatar || user.picture) ? (
+              <img src={user.avatar || user.picture} alt="" className={styles.userAvatar} referrerPolicy="no-referrer" />
+            ) : (
+              <span className={styles.userInitial}>{user.name?.charAt(0) || '?'}</span>
+            )}
+            <span className={styles.userName}>{user.name}</span>
+            <a href="/api/auth/logout" className={styles.logoutBtn} title="Sign out">
+              <LogOut size={14} />
+            </a>
+          </div>
         )}
       </div>
     </header>

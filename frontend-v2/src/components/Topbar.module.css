@@ -157,8 +157,32 @@
 .panelBtn { background: none; border: none; color: #888; cursor: pointer; padding: 4px; display: flex; align-items: center; }
 .panelBtn:hover { color: #00FFBB; }
 
+/* ── User Area ── */
+.userArea {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-left: 12px;
+  border-left: 1px solid var(--border);
+  margin-left: 4px;
+}
+.userAvatar { width: 24px; height: 24px; border-radius: 50%; object-fit: cover; }
+.userInitial {
+  width: 24px; height: 24px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0,255,187,0.1); color: #00FFBB;
+  font-size: 11px; font-weight: 700;
+}
+.userName { font-size: 12px; color: #888; font-weight: 500; }
+.logoutBtn {
+  display: flex; align-items: center; padding: 4px;
+  color: #555; text-decoration: none; transition: color 0.15s;
+}
+.logoutBtn:hover { color: #FF4D6A; }
+
 @media (max-width: 768px) {
   .uptime, .clock, .breadcrumb { display: none; }
   .equity { font-size: 16px !important; }
   .dailyPnl { font-size: 11px; }
+  .userName { display: none; }
 }

@@ -5,6 +5,7 @@ import Sidebar from './Sidebar'
 import Topbar from './Topbar'
 import RightPanel from './RightPanel'
 import StatusBar from './StatusBar'
+import { useAuth, AuthOverlay } from './AuthOverlay'
 import { useTraderState } from '../hooks/useTraderState'
 import styles from './Layout.module.css'
 
@@ -24,6 +25,8 @@ const pageMeta: Record<string, { title: string; subtitle: string }> = {
   '/guide':        { title: 'Guide',         subtitle: 'Documentation & release notes' },
   '/lab':          { title: 'Strategy Lab',  subtitle: 'Intraday strategy development & replay' },
   '/replay':       { title: 'Visual Replay', subtitle: 'Watch strategies trade bar-by-bar' },
+  '/account':      { title: 'Account',       subtitle: 'Profile, credentials & subscription' },
+  '/admin':        { title: 'Admin',         subtitle: 'User management & engine pool' },
 }
 
 export default function Layout() {
@@ -31,10 +34,17 @@ export default function Layout() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [rightPanelOpen, setRightPanelOpen] = useState(false)
   const { health, connected } = useTraderState(5000)
+  const { user, checked, needsAuth } = useAuth()
   const location = useLocation()
 
   const meta = pageMeta[location.pathname] ?? { title: 'Rudra', subtitle: '' }
   const botLive = health?.trader_status === 'scanning' || health?.trader_status === 'trading'
+
+  // Show login overlay if auth is required
+  if (needsAuth) return <AuthOverlay />
+
+  // Still checking auth — show nothing (avoids flash)
+  if (!checked) return null
 
   return (
     <div className={`${styles.shell} ${sidebarCollapsed ? styles.collapsed : ''}`}>
@@ -53,6 +63,7 @@ export default function Layout() {
           onPanelToggle={() => setRightPanelOpen(!rightPanelOpen)}
           pageTitle={meta.title}
           pageSubtitle={meta.subtitle}
+          user={user}
         />
         <div className={styles.body}>
           <main className={styles.content} key={location.pathname}>

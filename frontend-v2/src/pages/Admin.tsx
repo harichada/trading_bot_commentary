@@ -13,7 +13,7 @@ interface EnginesData { engines: Record<string, EngineInfo>; count: number; max:
 const TIERS = ['free', 'starter', 'pro', 'enterprise']
 
 async function apiFetch<T>(path: string, opts?: RequestInit): Promise<T> {
-  const res = await fetch(path, { ...opts, headers: { 'Content-Type': 'application/json', ...(opts?.headers as Record<string, string>) } })
+  const res = await fetch(path, { ...opts, credentials: 'include', headers: { 'Content-Type': 'application/json', ...(opts?.headers as Record<string, string>) } })
   return res.json()
 }
 

@@ -51,7 +51,7 @@ import feedparser
 import yfinance as yf
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
-from fastapi.responses import HTMLResponse, JSONResponse, FileResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, FileResponse, StreamingResponse, RedirectResponse
 import uvicorn
 
 from rudra_swing_engine import (
@@ -14657,41 +14657,44 @@ def validate_config(updates: dict) -> Tuple[dict, List[str]]:
     return validated, errors
 
 
-# Singletons
-live_trader = GapFadeLiveTrader()
-backtester = GapFadeBacktester()
+# Singletons — only create when running as main app, not when imported
+if __name__ == '__main__' or os.environ.get('GAP_FADE_STANDALONE', ''):
+    live_trader = GapFadeLiveTrader()
+    backtester = GapFadeBacktester()
+else:
+    live_trader = None
+    backtester = None
 
-# Multi-tenant engine pool (lazy — only active when users have stored credentials)
-try:
-    from user_engine import init_engine_manager, get_trader_for_request, resolve_user_id
-    _user_engine_mgr = init_engine_manager(live_trader)
-except ImportError:
-    _user_engine_mgr = None
-    logger.info("user_engine module not found — multi-tenant engine pool disabled")
-except Exception as _e:
-    _user_engine_mgr = None
-    logger.warning(f"Engine pool init failed: {_e}")
-
-# ---------------------------------------------------------------------------
-# Infrastructure integration (Prometheus metrics, health checks, correlation IDs)
-# ---------------------------------------------------------------------------
-try:
-    import sys as _sys
-    _infra_dir = os.path.join(os.path.dirname(__file__) or '.', 'infra_src')
-    _local_dir = os.path.join(os.path.dirname(__file__) or '.', '..', 'infra')
-    for _p in [_infra_dir, _local_dir]:
-        if os.path.isdir(_p) and _p not in _sys.path:
-            _sys.path.insert(0, _p)
+# Multi-tenant engine pool and infra — only when running standalone
+if live_trader is not None:
     try:
-        from integration import integrate_infra
+        from user_engine import init_engine_manager, get_trader_for_request, resolve_user_id, NO_ENGINE_STATE
+        _user_engine_mgr = init_engine_manager(live_trader)
     except ImportError:
-        from src.integration import integrate_infra
-    integrate_infra(app, live_trader)
-    logger.info("Infrastructure modules integrated (metrics, health, logging)")
-except ImportError as _ie:
-    logger.info(f"Infrastructure modules not available — running standalone ({_ie})")
-except Exception as _e:
-    logger.warning(f"Infrastructure integration failed: {_e}")
+        _user_engine_mgr = None
+        logger.info("user_engine module not found — multi-tenant engine pool disabled")
+    except Exception as _e:
+        _user_engine_mgr = None
+        logger.warning(f"Engine pool init failed: {_e}")
+
+    # Infrastructure integration (Prometheus metrics, health checks, correlation IDs)
+    try:
+        import sys as _sys
+        _infra_dir = os.path.join(os.path.dirname(__file__) or '.', 'infra_src')
+        _local_dir = os.path.join(os.path.dirname(__file__) or '.', '..', 'infra')
+        for _p in [_infra_dir, _local_dir]:
+            if os.path.isdir(_p) and _p not in _sys.path:
+                _sys.path.insert(0, _p)
+        try:
+            from integration import integrate_infra
+        except ImportError:
+            from src.integration import integrate_infra
+        integrate_infra(app, live_trader)
+        logger.info("Infrastructure modules integrated (metrics, health, logging)")
+    except ImportError as _ie:
+        logger.info(f"Infrastructure modules not available — running standalone ({_ie})")
+    except Exception as _e:
+        logger.warning(f"Infrastructure integration failed: {_e}")
 
 
 async def _watchdog_heartbeat():
@@ -14748,17 +14751,13 @@ async def _watchdog_heartbeat():
         logger.warning(f"Watchdog heartbeat error: {e}")
 
 
-@app.get("/", response_class=HTMLResponse)
+@app.get("/")
 async def dashboard():
-    """Serve the embedded HTML dashboard with API key injected."""
-    api_key = _get_api_key() or ''
-    # Inject the key as a JS variable so the dashboard can authenticate POST requests
-    html = DASHBOARD_HTML.replace(
-        '/*__API_KEY_PLACEHOLDER__*/',
-        f'const __API_KEY__ = "{api_key}";',
-    ).replace('__APP_VERSION__', APP_VERSION
-    ).replace('__RELEASE_NOTES__', RELEASE_NOTES_HTML)
-    return HTMLResponse(html)
+    """Serve frontend-v2 React UI (or fallback to embedded dashboard)."""
+    _dist = os.path.join(os.path.dirname(__file__) or '.', 'frontend-v2-dist', 'index.html')
+    if os.path.isfile(_dist):
+        return FileResponse(_dist)
+    return HTMLResponse('<h3>Frontend not built. Run: cd frontend-v2 && npm run build</h3>')
 
 
 @app.get("/api/health")
@@ -14787,6 +14786,8 @@ async def health_check():
 async def get_state(request: Request):
     """Get current live trader state, enriched with broker prices."""
     trader = await get_trader_for_request(request) if _user_engine_mgr else live_trader
+    if trader is None:
+        return NO_ENGINE_STATE
     state = trader.get_state()
 
     # Enrich positions with current broker prices + unrealized P&L
@@ -14837,70 +14838,75 @@ async def get_state(request: Request):
 
 
 @app.post("/api/scan")
-async def run_scan():
+async def run_scan(request: Request):
     """Trigger a pre-market scan (non-blocking)."""
-    scanner = GapScanner(live_trader.config)
+    trader = await get_trader_for_request(request) if _user_engine_mgr else live_trader
+    if trader is None:
+        return JSONResponse(_NO_ENGINE_ERR, 400)
+    scanner = GapScanner(trader.config)
     candidates, universe_size = await asyncio.to_thread(scanner.scan_premarket)
-    live_trader.candidates = candidates
-    live_trader.last_scan_time = datetime.now(ET).strftime('%H:%M:%S')
+    trader.candidates = candidates
+    trader.last_scan_time = datetime.now(ET).strftime('%H:%M:%S')
 
     # Catalyst detection
-    if live_trader.config.catalyst_enabled and candidates:
+    if trader.config.catalyst_enabled and candidates:
         try:
-            await detect_catalysts(candidates, live_trader.config)
-            live_trader._apply_catalyst_scores()
-            candidates = live_trader.candidates  # _apply_catalyst_scores filters in-place
+            await detect_catalysts(candidates, trader.config)
+            trader._apply_catalyst_scores()
+            candidates = trader.candidates
             candidates.sort(key=lambda c: c.score, reverse=True)
         except Exception as e:
             logger.warning(f"Catalyst detection failed (non-fatal): {e}")
 
     # LLM candidate evaluation
     llm_evals = []
-    if live_trader.llm_supervisor and live_trader.llm_supervisor.is_available() and candidates:
+    if trader.llm_supervisor and trader.llm_supervisor.is_available() and candidates:
         try:
-            llm_evals = await live_trader.llm_supervisor.evaluate_candidates(
+            llm_evals = await trader.llm_supervisor.evaluate_candidates(
                 [asdict(c) for c in candidates[:15]])
             if llm_evals:
                 skip_syms = {e['symbol'] for e in llm_evals
                              if isinstance(e, dict) and e.get('action') == 'skip'}
                 if skip_syms:
-                    live_trader.candidates = [c for c in live_trader.candidates
+                    trader.candidates = [c for c in trader.candidates
                                               if c.symbol not in skip_syms]
-                    candidates = live_trader.candidates
+                    candidates = trader.candidates
         except Exception as e:
             logger.warning(f"Rudra candidate evaluation failed (non-fatal): {e}")
 
     return {
         'candidates': [asdict(c) for c in candidates[:15]],
-        'scan_time': live_trader.last_scan_time,
+        'scan_time': trader.last_scan_time,
         'count': len(candidates),
         'universe_size': universe_size,
         'llm_evals': llm_evals if llm_evals else None,
     }
 
 
+_NO_ENGINE_ERR = {'error': 'No broker credentials configured. Go to Account page to add them.', 'needs_setup': True}
+
+
 @app.post("/api/start")
 async def start_trading(request: Request):
     """Start the live trading loop."""
     trader = await get_trader_for_request(request) if _user_engine_mgr else live_trader
+    if trader is None:
+        return JSONResponse(_NO_ENGINE_ERR, 400)
     await trader.start()
     return {'status': trader.status}
 
 
 @app.post("/api/enter")
 async def enter_positions(request: Request, body: dict = None):
-    """Manually trigger entry on current candidates.
-
-    Optional body: {"symbols": ["SYM1", "SYM2"]} to enter specific symbols.
-    Without body, enters top candidates up to max_positions.
-    """
+    """Manually trigger entry on current candidates."""
     trader = await get_trader_for_request(request) if _user_engine_mgr else live_trader
+    if trader is None:
+        return JSONResponse(_NO_ENGINE_ERR, 400)
     if trader.status == 'stopped':
         return {'error': 'Trader is stopped. Start it first.'}
     body = body or {}
     llm_symbols = body.get('symbols')
     size_mult = body.get('size_mult', 1.0)
-    # Scan first if no candidates cached
     if not trader.candidates:
         await trader._run_scan()
     await trader._enter_positions(llm_symbols=llm_symbols, size_mult=size_mult)
@@ -14914,6 +14920,8 @@ async def enter_positions(request: Request, body: dict = None):
 async def stop_trading(request: Request):
     """Stop the live trader."""
     trader = await get_trader_for_request(request) if _user_engine_mgr else live_trader
+    if trader is None:
+        return JSONResponse(_NO_ENGINE_ERR, 400)
     await trader.stop()
     return {'status': trader.status}
 
@@ -14921,6 +14929,8 @@ async def stop_trading(request: Request):
 @app.post("/api/pause")
 async def pause_trading(request: Request):
     trader = await get_trader_for_request(request) if _user_engine_mgr else live_trader
+    if trader is None:
+        return JSONResponse(_NO_ENGINE_ERR, 400)
     await trader.pause()
     return {'status': trader.status}
 
@@ -14928,6 +14938,8 @@ async def pause_trading(request: Request):
 @app.post("/api/resume")
 async def resume_trading(request: Request):
     trader = await get_trader_for_request(request) if _user_engine_mgr else live_trader
+    if trader is None:
+        return JSONResponse(_NO_ENGINE_ERR, 400)
     await trader.resume()
     return {'status': trader.status}
 
@@ -17083,12 +17095,16 @@ async def bt_chart_file(filename: str):
 @app.get("/api/metrics")
 async def get_metrics(request: Request):
     trader = await get_trader_for_request(request) if _user_engine_mgr else live_trader
+    if trader is None:
+        return {'total_trades': 0, 'needs_setup': True}
     return trader.engine.get_metrics()
 
 
 @app.get("/api/trades")
 async def get_trades(request: Request):
     trader = await get_trader_for_request(request) if _user_engine_mgr else live_trader
+    if trader is None:
+        return {'trades': [], 'today': [], 'total_trades': 0, 'needs_setup': True}
     try:
         total_trades = get_price_db().count_trades()
     except Exception:
@@ -17371,6 +17387,8 @@ async def get_tracker_bars(symbol: str, timeframe: str = '1Min', limit: int = 39
 async def get_tracker_positions(request: Request):
     """Get all Alpaca broker positions + account info."""
     trader = await get_trader_for_request(request) if _user_engine_mgr else live_trader
+    if trader is None:
+        return {'positions': [], 'equity': 0, 'buying_power': 0, 'needs_setup': True}
     positions = await trader._broker_get_positions()
     account = await trader._broker_get_account()
     return {
@@ -17383,6 +17401,9 @@ async def get_tracker_positions(request: Request):
 @app.post("/api/tracker/order")
 async def place_tracker_order(request: Request):
     """Place a market order via Alpaca (Buy/Short from tracker UI)."""
+    trader = await get_trader_for_request(request) if _user_engine_mgr else live_trader
+    if trader is None:
+        return JSONResponse(_NO_ENGINE_ERR, 400)
     body = await request.json()
     symbol = (body.get('symbol') or '').upper().strip()
     side = body.get('side', '')
@@ -24203,7 +24224,12 @@ _frontend_v2_dist = os.path.join(os.path.dirname(__file__) or '.', 'frontend-v2-
 if os.path.isdir(_frontend_v2_dist):
     from starlette.responses import FileResponse as _SpaFileResponse
 
-    @app.get("/app/{full_path:path}")
+    # Serve static assets (js, css, images)
+    from starlette.staticfiles import StaticFiles as _SpaStaticFiles
+    app.mount("/assets", _SpaStaticFiles(directory=os.path.join(_frontend_v2_dist, "assets")), name="spa-assets")
+
+    # SPA catch-all: any non-API, non-asset path returns index.html for React Router
+    @app.get("/{full_path:path}")
     async def serve_spa(full_path: str):
         """Serve frontend-v2 SPA. All non-file paths return index.html."""
         file_path = os.path.join(_frontend_v2_dist, full_path)
@@ -24211,11 +24237,7 @@ if os.path.isdir(_frontend_v2_dist):
             return _SpaFileResponse(file_path)
         return _SpaFileResponse(os.path.join(_frontend_v2_dist, 'index.html'))
 
-    # Serve static assets (js, css, images) from the dist root
-    from starlette.staticfiles import StaticFiles as _SpaStaticFiles
-    app.mount("/assets", _SpaStaticFiles(directory=os.path.join(_frontend_v2_dist, "assets")), name="spa-assets")
-
-    logger.info("Frontend-v2 SPA serving from %s at /app/", _frontend_v2_dist)
+    logger.info("Frontend-v2 SPA serving from %s", _frontend_v2_dist)
 else:
     logger.info("No frontend-v2-dist/ found — SPA serving disabled (use Vite dev server)")
 

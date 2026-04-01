@@ -90,10 +90,10 @@ class UserEngineManager:
     async def get_trader(self, user_id: str) -> Any:
         """Get or create a trader for the given user_id.
 
-        Returns the global trader for system user or when auth is off.
-        Lazily provisions a new engine for other users.
+        Returns the global trader ONLY when auth is disabled (system user).
+        For authenticated users without credentials, returns None.
         """
-        # System user or unknown -> global trader
+        # Auth disabled or no user -> global trader (backward compat)
         if not user_id or user_id == SYSTEM_USER_ID:
             return self._global_trader
 
@@ -115,9 +115,9 @@ class UserEngineManager:
 
             engine = await self._provision_engine(user_id)
             if engine is None:
-                # No credentials found — fall back to global trader
-                logger.info("No credentials for user %s, using global trader", user_id[:8])
-                return self._global_trader
+                # No credentials — user needs to add them on Account page
+                logger.info("No credentials for user %s — engine not provisioned", user_id[:8])
+                return None
 
             self._engines[user_id] = engine
             logger.info(
@@ -221,13 +221,27 @@ def resolve_user_id(request) -> str:
 
 
 async def get_trader_for_request(request) -> Any:
-    """One-liner for endpoints: resolve user -> get their engine."""
+    """One-liner for endpoints: resolve user -> get their engine.
+    Returns None if user has no broker credentials configured."""
     if _engine_manager is None:
         # Module not initialized — return global trader via import
         from gap_fade_app import live_trader
         return live_trader
     user_id = resolve_user_id(request)
     return await _engine_manager.get_trader(user_id)
+
+
+# Standard empty state for users without an engine
+NO_ENGINE_STATE = {
+    "status": "not_configured",
+    "equity": 0,
+    "daily_pnl": 0,
+    "positions": {},
+    "candidates": [],
+    "messages": [],
+    "needs_setup": True,
+    "setup_message": "Add your broker credentials on the Account page to start trading.",
+}
 
 
 # ── Module Singleton ────────────────────────────────────────────────────────
