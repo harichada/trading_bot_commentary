@@ -2248,9 +2248,11 @@ def main():
     \u255a\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u255d
     """)
 
+    port = int(os.environ.get("TRADING_BOT_PORT", "9000"))
+
     logger.info("Starting Trading Bot in Commentary Mode...")
     logger.info("The bot will explain its thinking process in real-time.")
-    logger.info("Open http://localhost:8000 in your browser")
+    logger.info(f"Open http://localhost:{port} in your browser")
     logger.info("Press Ctrl+C or send SIGTERM to stop")
 
     def shutdown_handler(signum, frame):
@@ -2285,7 +2287,7 @@ def main():
     signal.signal(signal.SIGTERM, shutdown_handler)
 
     # Run the server
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=port)
 
 if __name__ == "__main__":
     main()
