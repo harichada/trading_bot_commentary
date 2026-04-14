@@ -138,28 +138,112 @@ class NewsSentimentEngine:
 
         return result
 
+    @staticmethod
+    def _label(score_neg1_to_1: float) -> str:
+        if score_neg1_to_1 >= 0.15:
+            return "bullish"
+        if score_neg1_to_1 <= -0.15:
+            return "bearish"
+        return "neutral"
+
     async def update(self) -> Dict[str, Any]:
-        """Refresh all watchlist symbols and return aggregate sentiment."""
+        """Refresh watchlist and return the dashboard-shaped payload.
+
+        Output contract (consumed by templates/dashboard.html updateSentimentTab/
+        updateSentimentWidget):
+          market_sentiment: {score(-100..100), label, confidence(0..1),
+                             trend, source_count, last_updated}
+          symbol_sentiments: {SYM: {score(-100..100), label, trend, article_count}}
+          velocities:        {SYM: {recent_count, is_spike}}
+          headlines:         [{symbol, headline, summary, source, url,
+                               sentiment_score(-100..100), timestamp}]
+          earnings:          []  (stub)
+        """
         if not self.watchlist:
-            return {"market_sentiment": 0.0, "symbols": {}, "timestamp": datetime.now().isoformat()}
+            return self._empty_payload()
 
         results = await asyncio.gather(
             *(self._refresh_symbol(s) for s in self.watchlist),
             return_exceptions=True,
         )
-        symbols: Dict[str, Dict[str, Any]] = {}
+
+        symbol_sentiments: Dict[str, Dict[str, Any]] = {}
+        velocities: Dict[str, Dict[str, Any]] = {}
+        all_headlines: List[Dict[str, Any]] = []
+        sources: set = set()
         scores: List[float] = []
+
         for sym, res in zip(self.watchlist, results):
             if isinstance(res, Exception):
-                symbols[sym] = {"score": 0.0, "article_count": 0, "error": str(res)}
+                symbol_sentiments[sym] = {
+                    "score": 0, "label": "neutral",
+                    "trend": "--", "article_count": 0,
+                    "error": str(res),
+                }
+                velocities[sym] = {"recent_count": 0, "is_spike": False}
                 continue
-            symbols[sym] = {"score": res["score"], "article_count": res["article_count"]}
-            if res["article_count"] > 0:
-                scores.append(res["score"])
+
+            raw_score = float(res["score"])  # -1..+1
+            article_count = int(res["article_count"])
+            symbol_sentiments[sym] = {
+                "score": round(raw_score * 100, 1),  # -100..+100 for the UI
+                "label": self._label(raw_score),
+                "trend": "--",
+                "article_count": article_count,
+            }
+            velocities[sym] = {
+                "recent_count": article_count,
+                "is_spike": article_count >= 8,  # arbitrary spike threshold
+            }
+            for h in res["headlines"]:
+                # Re-emit with score on -100..+100 so frontend Math.round() works
+                all_headlines.append({
+                    **h,
+                    "sentiment_score": round(float(h.get("sentiment", 0.0)) * 100, 1),
+                })
+                if h.get("source"):
+                    sources.add(h["source"])
+
+            if article_count > 0:
+                scores.append(raw_score)
+
+        market_avg = sum(scores) / len(scores) if scores else 0.0
+        # Confidence: how strong the signal is, scaled by coverage
+        coverage = len(scores) / len(self.watchlist) if self.watchlist else 0.0
+        confidence = min(1.0, abs(market_avg) * coverage * 1.5)
+
+        # Most recent first
+        all_headlines.sort(key=lambda h: h.get("timestamp", ""), reverse=True)
 
         return {
-            "market_sentiment": sum(scores) / len(scores) if scores else 0.0,
-            "symbols": symbols,
+            "market_sentiment": {
+                "score": round(market_avg * 100, 1),
+                "label": self._label(market_avg),
+                "confidence": round(confidence, 3),
+                "trend": "--",
+                "source_count": len(sources),
+                "last_updated": datetime.now().isoformat(),
+            },
+            "symbol_sentiments": symbol_sentiments,
+            "velocities": velocities,
+            "headlines": all_headlines[:50],
+            "earnings": [],
+            "timestamp": datetime.now().isoformat(),
+            # Backward-compat: keep numeric market_sentiment under a separate key
+            "market_sentiment_raw": round(market_avg, 4),
+        }
+
+    def _empty_payload(self) -> Dict[str, Any]:
+        return {
+            "market_sentiment": {
+                "score": 0, "label": "neutral", "confidence": 0,
+                "trend": "--", "source_count": 0,
+                "last_updated": datetime.now().isoformat(),
+            },
+            "symbol_sentiments": {},
+            "velocities": {},
+            "headlines": [],
+            "earnings": [],
             "timestamp": datetime.now().isoformat(),
         }
 
