@@ -83,23 +83,40 @@ class BreakoutStrategyWithCommentary(TradingStrategyWithCommentary):
                 return None
 
             if resistance_1 > 0 and market_data.close > resistance_1:
-                # Check volume confirmation
+                # Breakout detected — check volume confirmation
                 volume_surge = market_data.volume > volume_ratio * 1.5
+
+                if not volume_surge:
+                    # Real veto: breakout without volume rarely follows through.
+                    # Skip the trade and tell the user why.
+                    self.commentary.add_commentary(TradingCommentary(
+                        timestamp=datetime.now(),
+                        type=CommentaryType.RISK_ASSESSMENT,
+                        symbol=market_data.symbol,
+                        title=f"⛔ Breakout Skipped — Low Volume",
+                        message=(f"Price broke above ${resistance_1:.2f} but volume_ratio "
+                                 f"{volume_ratio:.2f} < 1.5x. Breakouts without volume "
+                                 "typically fail."),
+                        data={'breakout_level': resistance_1,
+                              'volume_ratio': volume_ratio},
+                        importance=6,
+                    ))
+                    return None
 
                 self.commentary.add_commentary(TradingCommentary(
                     timestamp=datetime.now(),
                     type=CommentaryType.OPPORTUNITY,
                     symbol=market_data.symbol,
                     title=f"🚀 Breakout Detected!",
-                    message=f"Price broke above resistance at ${resistance_1:.2f} {symbol}. "
-                           f"{'Volume confirms breakout!' if volume_surge else 'Volume is average.'}",
+                    message=f"Price broke above resistance at ${resistance_1:.2f}. "
+                           f"Volume confirms breakout!",
                     data={
                         'breakout_level': resistance_1,
                         'current_price': market_data.close,
-                        'volume_surge': volume_surge,
+                        'volume_surge': True,
                         'distance_from_resistance': ((market_data.close - resistance_1) / resistance_1) * 100
                     },
-                    confidence=0.8 if volume_surge else 0.6,
+                    confidence=0.8,
                     importance=8
                 ))
 
@@ -119,23 +136,17 @@ class BreakoutStrategyWithCommentary(TradingStrategyWithCommentary):
                     reasoning={
                         'strategy': 'breakout',
                         'breakout_level': resistance_1,
-                        'volume_confirmation': volume_surge
+                        'volume_confirmation': True
                     },
                     confidence=0.75
                 )
         except Exception as e:
             logger.debug(f"Breakout strategy error for {market_data.symbol}: {e}")
 
-        if indicators.get('volume_ratio', 1) < 1.5:
-            self.commentary.add_commentary(TradingCommentary(
-                timestamp=datetime.now(),
-                type=CommentaryType.TECHNICAL,
-                symbol=market_data.symbol,
-                title=f"📊 Low Volume",
-                message="Volume too low for reliable entry",
-                importance=5
-            ))
-
+        # No breakout detected — silently return (no commentary spam).
+        # The previous "Low Volume" notice fired even when no breakout was
+        # in play, which read as if it were a veto reason for trades from
+        # other strategies. It wasn't.
         return None
 
 class MeanReversionStrategyWithCommentary(TradingStrategyWithCommentary):
