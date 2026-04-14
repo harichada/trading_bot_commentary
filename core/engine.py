@@ -34,6 +34,7 @@ from strategies.builtin import (BreakoutStrategyWithCommentary,
                                 MomentumStrategyWithCommentary)
 from strategies.news_strategy import FreeNewsSignalStrategy
 from data_providers.realtime import RealTimeDataProvider, DummyDataProvider
+from data_providers.schwab import SchwabDataProvider
 
 from trading_exceptions import *
 from circuit_breaker import api_circuit_breaker, order_circuit_breaker
