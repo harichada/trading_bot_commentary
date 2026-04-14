@@ -1101,91 +1101,34 @@ async def get_professional_config():
     }
 
 # ==================== Analytics API Endpoints ====================
+# analytics_logger module was removed in cleanup commit 41ee4b7. These
+# endpoints now return empty success envelopes so dashboard widgets render
+# cleanly instead of 500ing. To restore real data, build a replacement
+# reader that pulls from trading_commentary.json / trading_state.json.
 
 @app.get("/api/analytics/summary")
 async def get_analytics_summary():
-    """Get analytics summary report"""
-    from analytics_logger import analytics_logger
-    return analytics_logger.get_summary_report()
+    return {"status": "success", "summary": {}, "note": "analytics_logger removed"}
 
 @app.get("/api/analytics/trades")
 async def get_trade_history(days: int = 7, symbol: str = None):
-    """Get trade history for analysis"""
-    from analytics_logger import analytics_logger
-    trades = analytics_logger.get_trade_history(days=days, symbol=symbol)
-    return {
-        'status': 'success',
-        'count': len(trades),
-        'trades': trades
-    }
+    return {"status": "success", "count": 0, "trades": [], "note": "analytics_logger removed"}
 
 @app.get("/api/analytics/decisions")
 async def get_decision_analysis(days: int = 7, symbol: str = None):
-    """Get decision analysis"""
-    from analytics_logger import analytics_logger
-    analysis = analytics_logger.get_decision_analysis(days=days, symbol=symbol)
-    return {
-        'status': 'success',
-        'analysis': analysis
-    }
+    return {"status": "success", "analysis": {}, "note": "analytics_logger removed"}
 
 @app.get("/api/analytics/performance")
 async def get_performance_history(days: int = 7):
-    """Get performance snapshots"""
-    from analytics_logger import analytics_logger
-    snapshots = analytics_logger.get_performance_history(days=days)
-    return {
-        'status': 'success',
-        'count': len(snapshots),
-        'snapshots': snapshots
-    }
+    return {"status": "success", "count": 0, "snapshots": [], "note": "analytics_logger removed"}
 
 @app.get("/api/analytics/daily-stats")
 async def get_daily_stats(date: str = None):
-    """Get statistics for a specific day"""
-    from analytics_logger import analytics_logger
-    from datetime import datetime as dt
-    if date:
-        try:
-            target_date = dt.strptime(date, "%Y-%m-%d").date()
-        except ValueError:
-            return {'status': 'error', 'message': 'Invalid date format. Use YYYY-MM-DD'}
-    else:
-        target_date = dt.now().date()
-
-    stats = analytics_logger.get_daily_stats(target_date)
-    return {
-        'status': 'success',
-        'stats': stats
-    }
+    return {"status": "success", "stats": {}, "note": "analytics_logger removed"}
 
 @app.post("/api/analytics/export/{category}")
 async def export_analytics(category: str, days: int = 30):
-    """Export analytics to CSV file"""
-    from analytics_logger import analytics_logger, LogCategory
-
-    category_map = {
-        'trades': LogCategory.TRADE,
-        'decisions': LogCategory.DECISION,
-        'signals': LogCategory.SIGNAL,
-        'performance': LogCategory.PERFORMANCE,
-        'market_data': LogCategory.MARKET_DATA,
-        'system': LogCategory.SYSTEM
-    }
-
-    if category not in category_map:
-        return {'status': 'error', 'message': f'Invalid category. Valid: {list(category_map.keys())}'}
-
-    output_file = f"logs/exports/{category}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-    Path("logs/exports").mkdir(parents=True, exist_ok=True)
-
-    analytics_logger.export_to_csv(category_map[category], output_file, days=days)
-
-    return {
-        'status': 'success',
-        'message': f'Exported to {output_file}',
-        'file': output_file
-    }
+    return {"status": "error", "message": "analytics export disabled — analytics_logger removed"}
 
 # =============================================================================
 # NEWS SENTIMENT API ENDPOINTS
