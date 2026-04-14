@@ -335,11 +335,18 @@ class MomentumStrategyWithCommentary(TradingStrategyWithCommentary):
                     importance=7
                 ))
 
-                stop_loss = market_data.close * 0.97
-                take_profit = market_data.close * 1.06
+                # ATR-scaled stops/targets. Previous fixed 3% stop / 6% target
+                # was a daily-bar swing setup; on 5-min bars only 12.5% of trades
+                # ever hit the 6% target while 47% timed out — backtest 2026-04-14.
+                # 1.5x ATR stop / 3x ATR target = 2:1 R:R, achievable in ~10-20
+                # bars given typical intraday volatility.
+                atr = float(indicators.get('atr', market_data.close * 0.005))
+                stop_loss = market_data.close - 1.5 * atr
+                take_profit = market_data.close + 3.0 * atr
 
                 self._log_decision(market_data, "signal_buy", "macd_rsi_adx_aligned",
                                    macd=round(macd, 4), rsi=round(rsi, 2), adx=round(adx, 2),
+                                   atr=round(atr, 3),
                                    stop=round(stop_loss, 2), target=round(take_profit, 2))
                 return TradingSignal(
                     symbol=market_data.symbol,
