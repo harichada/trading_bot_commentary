@@ -509,20 +509,18 @@ class IntegratedMLModel:
 
             # Train XGBoost model
             self.model = xgb.XGBClassifier(
-            n_estimators=100,
-            max_depth=5,
-            learning_rate=0.1,
-            subsample=0.8,
-            colsample_bytree=0.8,
-            random_state=42,
-            eval_metric='mlogloss',  # Multi-class logloss
-            use_label_encoder=False,
-            # early_stopping_rounds moved to fit() call
-            num_class=3,  # 3 classes
-            objective='multi:softprob'  # Multi-class classification
-        )
+                n_estimators=100,
+                max_depth=5,
+                learning_rate=0.1,
+                subsample=0.8,
+                colsample_bytree=0.8,
+                random_state=42,
+                eval_metric='mlogloss',
+                early_stopping_rounds=10,
+                num_class=3,
+                objective='multi:softprob',
+            )
 
-            # Train with validation split
             split_idx = int(0.8 * len(X))
             X_train, X_val = X_scaled[:split_idx], X_scaled[split_idx:]
             y_train, y_val = y[:split_idx], y[split_idx:]
@@ -530,8 +528,7 @@ class IntegratedMLModel:
             self.model.fit(
                 X_train, y_train,
                 eval_set=[(X_val, y_val)],
-                early_stopping_rounds=10,
-                verbose=False
+                verbose=False,
             )
 
             # Calculate validation accuracy
