@@ -2625,17 +2625,11 @@ class TradingEngineWithCommentary:
                 ))
                 return
 
-            if self.mode != TradingMode.SIMULATION_WITH_COMMENTARY:
-                return
-            else:
-                self.commentary.add_commentary(TradingCommentary(
-                    timestamp=datetime.now(),
-                    type=CommentaryType.DECISION,
-                    symbol=signal.symbol,
-                    title=f"📝 Simulation Override",
-                    message="In simulation mode, I'll show you what would happen if we took this trade anyway.",
-                    importance=5
-                ))
+            # Treat sim and live identically so simulation previews match
+            # what live would do. Previously sim took the trade anyway after
+            # a sub-veto-threshold ML disagreement, which made simulation a
+            # poor predictor of live behaviour.
+            return
         # Multi-timeframe confirmation
         try:
             daily_data = self.data_provider.get_market_data(signal.symbol, frequency_type='daily', frequency=1)
