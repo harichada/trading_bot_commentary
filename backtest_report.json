@@ -1,0 +1,90 @@
+{
+  "timestamp": "2026-04-14T14:53:37.074466",
+  "symbols": [
+    "NVDA",
+    "ZSL",
+    "QNCX",
+    "INTC",
+    "BMNU",
+    "BITO",
+    "MOBX",
+    "SLV",
+    "PLUG",
+    "SPY",
+    "ONDS",
+    "TIRX",
+    "NVD",
+    "TSLL",
+    "DXST",
+    "SPDN",
+    "IBIT",
+    "QQQ",
+    "AAL",
+    "SOFI",
+    "TSLA",
+    "F",
+    "XLE",
+    "MSTX",
+    "PLTD",
+    "UVIX",
+    "NU",
+    "XLF",
+    "NOK",
+    "SNAP"
+  ],
+  "symbol_count": 30,
+  "days": 90,
+  "frequency_minutes": 5,
+  "total_trades": 4360,
+  "elapsed_seconds": 22.0,
+  "per_strategy": {
+    "breakout": {
+      "n_trades": 1918,
+      "win_rate_pct": 38.32,
+      "avg_return_pct": 0.359,
+      "median_return_pct": -0.372,
+      "total_return_pct_compounded": 18943.66,
+      "max_drawdown_pct": -8609.5,
+      "per_trade_sharpe": 0.083,
+      "avg_hold_bars": 19.1,
+      "exit_breakdown": {
+        "stop": 58.6,
+        "target": 31.5,
+        "timeout": 9.7,
+        "eod": 0.2
+      }
+    },
+    "mean_reversion": {
+      "n_trades": 945,
+      "win_rate_pct": 46.03,
+      "avg_return_pct": 0.343,
+      "median_return_pct": -0.533,
+      "total_return_pct_compounded": 1194.64,
+      "max_drawdown_pct": -258.2,
+      "per_trade_sharpe": 0.085,
+      "avg_hold_bars": 18.6,
+      "exit_breakdown": {
+        "stop": 46.6,
+        "target": 40.6,
+        "timeout": 12.4,
+        "eod": 0.4
+      }
+    },
+    "momentum": {
+      "n_trades": 1497,
+      "win_rate_pct": 37.41,
+      "avg_return_pct": -0.206,
+      "median_return_pct": -2.472,
+      "total_return_pct_compounded": -98.12,
+      "max_drawdown_pct": -133.88,
+      "per_trade_sharpe": -0.06,
+      "avg_hold_bars": 28.7,
+      "exit_breakdown": {
+        "stop": 49.6,
+        "target": 18.1,
+        "timeout": 32.0,
+        "eod": 0.3
+      }
+    }
+  }
+}
