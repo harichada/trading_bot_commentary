@@ -204,6 +204,21 @@ class TradingEngineWithCommentary:
             return True
         return False
 
+    def _audit(self, component: str, symbol, action: str, reason: str, **details) -> None:
+        """Structured audit log for engine-level decisions.
+
+        Format (one line per event, shell-greppable):
+          engine_decision component=NAME symbol=SYM action=ACTION reason=R k=v k=v
+
+        Every decision gate that accepts, skips, or modifies a trade must
+        emit one of these so trading_bot.log is a complete audit trail.
+        """
+        kv = " ".join(f"{k}={v}" for k, v in details.items())
+        logger.info(
+            "engine_decision component=%s symbol=%s action=%s reason=%s mode=%s %s",
+            component, symbol or "-", action, reason, self.mode.value, kv,
+        )
+
     # Add to rest brain - caution state:
     def reset_brain_state(self):
         """Reset brain to neutral confident state"""
@@ -2422,12 +2437,12 @@ class TradingEngineWithCommentary:
     
     async def _process_signal_with_commentary(self, signal, ml_signal, ml_explanation):
         """Process trading signal with detailed explanation"""
-        logger.info(
-            f"Processing signal: {signal.signal_type.value} {signal.symbol} "
-            f"confidence={getattr(signal, 'confidence', 'N/A')}",
-            extra={'symbol': signal.symbol, 'signal_type': signal.signal_type.value,
-                   'action': 'signal_received'}
-        )
+        self._audit("signal_router", signal.symbol, "received",
+                    signal.reasoning.get("strategy", "unknown"),
+                    signal_type=signal.signal_type.value,
+                    confidence=round(float(getattr(signal, "confidence", 0)), 3),
+                    strength=round(float(getattr(signal, "strength", 0)), 3),
+                    ml_signal=ml_signal)
 
         # CRITICAL: Check real Schwab positions FIRST before internal tracking
         if self.mode == TradingMode.LIVE and self.schwab_client:
@@ -2470,9 +2485,13 @@ class TradingEngineWithCommentary:
                             position.stop_loss,
                             position.take_profit
                         )
-                
+
+                self._audit("signal_router", signal.symbol, "skip",
+                            "existing_schwab_position",
+                            qty=existing_position["quantity"],
+                            avg=existing_position["average_price"])
                 return
-        
+
         # Check internal tracking (for simulation mode or as fallback)
         if signal.symbol in self.positions or signal.symbol in self.simulated_positions:
             self.commentary.add_commentary(TradingCommentary(
@@ -2483,6 +2502,7 @@ class TradingEngineWithCommentary:
                 message=f"Already tracking position in {signal.symbol}, skipping this signal.",
                 importance=3
             ))
+            self._audit("signal_router", signal.symbol, "skip", "already_tracking")
             return
         
         # EARLY BUYING POWER CHECK for LIVE mode
@@ -2500,6 +2520,9 @@ class TradingEngineWithCommentary:
                     message=f"Cannot trade - buying power is ${available_bp or 0:.2f} (need at least ${min_buying_power})",
                     importance=9
                 ))
+                self._audit("risk", signal.symbol, "skip", "no_buying_power",
+                            available_bp=round(float(available_bp or 0), 2),
+                            min_required=min_buying_power)
                 return
             
             # Update risk manager with current buying power
@@ -2519,8 +2542,14 @@ class TradingEngineWithCommentary:
                     
                     # Cancel existing orders if configured
                     if Config().AUTO_CANCEL_EXISTING_ORDERS:
+                        self._audit("signal_router", signal.symbol, "cancel_and_retry",
+                                    "existing_orders",
+                                    existing_count=existing_orders["count"])
                         await self._cancel_existing_orders(signal.symbol)
                     else:
+                        self._audit("signal_router", signal.symbol, "skip",
+                                    "existing_orders",
+                                    existing_count=existing_orders["count"])
                         return
         # Check with brain if we should take this trade
         should_trade, brain_reason = self.brain.should_take_trade(
@@ -2541,6 +2570,9 @@ class TradingEngineWithCommentary:
                 },
                 importance=7
             ))
+            self._audit("brain", signal.symbol, "skip", "experience_says_no",
+                        strategy=signal.reasoning.get("strategy", "unknown"),
+                        brain_reason=brain_reason[:60].replace(" ", "_"))
             return
 	
 	# Add more human-like pre-trade thoughts
@@ -2623,12 +2655,18 @@ class TradingEngineWithCommentary:
                             f"{ml_veto_threshold:.0%}. The model strongly disagrees with the strategy.",
                     importance=8
                 ))
+                self._audit("ml", signal.symbol, "skip", "ml_veto_high_confidence",
+                            ml_signal=ml_signal, ml_conf=round(ml_confidence, 3),
+                            threshold=round(ml_veto_threshold, 3))
                 return
 
             # Treat sim and live identically so simulation previews match
             # what live would do. Previously sim took the trade anyway after
             # a sub-veto-threshold ML disagreement, which made simulation a
             # poor predictor of live behaviour.
+            self._audit("ml", signal.symbol, "skip", "ml_disagreement",
+                        ml_signal=ml_signal, ml_conf=round(ml_confidence, 3),
+                        expected=expected_ml_signal)
             return
         # Multi-timeframe confirmation
         try:
@@ -2794,6 +2832,14 @@ class TradingEngineWithCommentary:
             confidence=signal.confidence,
             importance=10
         ))
+        self._audit("signal_router", signal.symbol, "accepted",
+                    signal.reasoning.get("strategy", "unknown"),
+                    side=signal.signal_type.name,
+                    qty=position_size,
+                    entry=round(signal.entry_price, 2),
+                    stop=round(signal.stop_loss, 2),
+                    target=round(signal.take_profit, 2),
+                    total_cost=round(position_size * signal.entry_price, 2))
         
         # Execute the trade based on mode
         position = None
@@ -2926,6 +2972,9 @@ class TradingEngineWithCommentary:
                 is_manually_managed = getattr(position, 'is_manually_managed', False)
 
                 if (self.auto_close_disabled or (self.manual_close_only and (is_external or is_manually_managed))):
+                    self._audit("position_manager", symbol, "hold",
+                                "auto_close_disabled",
+                                external=is_external, manually_managed=is_manually_managed)
                     # Only update the price for display purposes, but don't take any action
                     if self.data_provider:
                         quote = self.data_provider.get_quote(symbol)
@@ -3265,6 +3314,10 @@ class TradingEngineWithCommentary:
 
         # CRITICAL: Check if manual close only is enabled (except for manual_override)
         if self.auto_close_disabled and reason != "manual_override":
+            self._audit("position_manager", position.symbol, "skip_close",
+                        "auto_close_disabled",
+                        requested_reason=reason,
+                        pnl=round(float(getattr(position, "unrealized_pnl", 0)), 2))
             logger.warning(f"Attempted to auto-close {position.symbol} but manual_close_only is ON. Reason: {reason}")
             self.commentary.add_commentary(TradingCommentary(
                 timestamp=datetime.now(),
