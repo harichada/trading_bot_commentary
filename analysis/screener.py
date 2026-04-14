@@ -175,7 +175,11 @@ class StockScreener:
                     'description': quote.get('description', ''),
                     'last': last,
                     'change': quote.get('netChange', 0),
-                    'percent_change': quote.get('netPercentChangeInDouble', 0),
+                    # Schwab field is netPercentChange (the legacy
+                    # netPercentChangeInDouble name returned None, which made
+                    # every ticker show 0.00% on the dashboard).
+                    'percent_change': quote.get('netPercentChange',
+                        quote.get('netPercentChangeInDouble', 0)),
                     'volume': quote.get('totalVolume', 0),
                     'high': high,
                     'low': low,
