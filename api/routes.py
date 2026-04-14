@@ -1193,10 +1193,13 @@ async def export_analytics(category: str, days: int = 30):
 
 # Initialize sentiment engine
 _sentiment_engine_instance = None
+_sentiment_engine_unavailable = False
 
 def get_sentiment_engine_instance():
     """Get or create sentiment engine instance"""
-    global _sentiment_engine_instance
+    global _sentiment_engine_instance, _sentiment_engine_unavailable
+    if _sentiment_engine_unavailable:
+        return None
     if _sentiment_engine_instance is None:
         try:
             from news_sentiment_widget import get_sentiment_engine
@@ -1204,7 +1207,8 @@ def get_sentiment_engine_instance():
                 'watchlist': Config().WATCHLIST if hasattr(Config(), 'WATCHLIST') else ['TSLA', 'NVDA', 'AMD', 'AAPL', 'SPY', 'MARA']
             })
         except ImportError:
-            logger.warning("News sentiment widget not available")
+            logger.info("News sentiment widget module removed; sentiment endpoints disabled")
+            _sentiment_engine_unavailable = True
             return None
     return _sentiment_engine_instance
 
