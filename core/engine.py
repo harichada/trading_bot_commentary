@@ -16,7 +16,7 @@ from scipy import stats
 
 from core.models import (TradingMode, CommentaryType, SignalType, NewsImpact,
                          TradingSignal, Position, MarketData, NewsItem)
-from core.config import Config, config, logger, TradingLossBreaker
+from core.config import Config, config, config_manager, logger, TradingLossBreaker
 from core.commentary import TradingCommentary, CommentarySystem
 from core.brain import TradingBrain
 from core.websocket_manager import ConnectionManager
@@ -28,6 +28,7 @@ from analysis.technical import TechnicalAnalyzerWithCommentary
 from analysis.screener import StockScreener
 from ml.predictor import MLPredictorWithCommentary
 from risk.manager import RiskManagerWithCommentary
+from risk.backtest import PerformanceAnalyzer
 from strategies.builtin import (BreakoutStrategyWithCommentary,
                                 MeanReversionStrategyWithCommentary,
                                 MomentumStrategyWithCommentary)
@@ -37,6 +38,14 @@ from data_providers.realtime import RealTimeDataProvider, DummyDataProvider
 from trading_exceptions import *
 from circuit_breaker import api_circuit_breaker, order_circuit_breaker
 from error_recovery import ErrorRecoveryManager
+
+
+def log_signal(*args, **kwargs): pass
+def log_decision(*args, **kwargs): pass
+def log_trade(*args, **kwargs): pass
+def log_system_event(*args, **kwargs): pass
+def log_pnl(*args, **kwargs): pass
+def log_error(*args, **kwargs): pass
 
 # Schwab SDK imports
 try:
@@ -92,9 +101,9 @@ class TradingEngineWithCommentary:
         self.technical_analyzer = TechnicalAnalyzerWithCommentary(
             commentary_system=self.commentary
         )
-        # ML predictor - Using advanced scalping ML model
-        from scalping_ml_integration import create_scalping_ml_predictor
-        self.ml_predictor = create_scalping_ml_predictor(
+        # ML predictor
+        from ml.predictor import MLPredictorWithCommentary
+        self.ml_predictor = MLPredictorWithCommentary(
             commentary_system=self.commentary
         )
         self.ml_predictor.set_brain(self.brain)
@@ -140,7 +149,6 @@ class TradingEngineWithCommentary:
         
         # Enhanced error recovery and circuit breakers
         self.circuit_breaker = TradingLossBreaker()
-        self.error_recovery = ErrorRecovery()
         self.error_counts = {}
         self.last_error_time = None
         self.consecutive_errors = 0
@@ -156,25 +164,9 @@ class TradingEngineWithCommentary:
         self.alternative_data_integrator = AlternativeDataIntegrator(self.commentary)
         self.market_neutral_strategies = MarketNeutralStrategies(self.commentary)
 
-        # Professional Trading Wrapper - Institutional-grade filtering
-        # This wraps all trade decisions through quality filters
         self.pro_trading_wrapper = None
-        if PRO_TRADING_AVAILABLE:
-            try:
-                self.pro_trading_wrapper = get_pro_trading_wrapper()
-                self.commentary.add_commentary(TradingCommentary(
-                    timestamp=datetime.now(),
-                    type=CommentaryType.MARKET_ANALYSIS,
-                    symbol=None,
-                    title="🏛️ Professional Trading Modules Loaded",
-                    message="Institutional-grade filters active: Regime detection, session awareness, "
-                           "quality gates, market context, R-multiple exits. Trade quality > quantity.",
-                    importance=8
-                ))
-            except Exception as e:
-                logger.error(f"Failed to initialize professional trading wrapper: {e}")
-                self.pro_trading_wrapper = None
-        
+
+
         # Add initial commentary
         self.commentary.add_commentary(TradingCommentary(
             timestamp=datetime.now(),
@@ -2137,11 +2129,12 @@ class TradingEngineWithCommentary:
             
             # Interpret VIX
             vix_interpretation = ""
-            if breadth['vix'] < 15:
+            vix_value = self.market_state['vix']
+            if vix_value < 15:
                 vix_interpretation = "Low volatility - Markets are calm, good for trend following"
-            elif breadth['vix'] < 25:
+            elif vix_value < 25:
                 vix_interpretation = "Normal volatility - Standard trading conditions"
-            elif breadth['vix'] < 35:
+            elif vix_value < 35:
                 vix_interpretation = "Elevated volatility - Higher risk, but also opportunities"
             else:
                 vix_interpretation = "High volatility - Extreme caution needed, reduce position sizes"
@@ -2166,7 +2159,7 @@ class TradingEngineWithCommentary:
                 title="📊 Market Breadth Analysis",
                 message=f"{vix_interpretation}\n{breadth_interpretation}",
                 data={
-                    'vix': breadth['vix'],
+                    'vix': vix_value,
                     'advance_decline_ratio': advance_decline,
                     'new_highs': breadth.get('new_highs', 0),
                     'new_lows': breadth.get('new_lows', 0),
@@ -2568,18 +2561,8 @@ class TradingEngineWithCommentary:
             importance=8
         ))
 
-        # Log the signal for analytics
-        log_signal(
-            symbol=signal.symbol,
-            strategy=signal.reasoning.get('strategy', 'unknown'),
-            signal=signal.signal_type.name,
-            strength=signal.strength,
-            price=signal.entry_price,
-            volume=0,
-            indicators=signal.reasoning.get('indicators', {}),
-            conditions_met=signal.reasoning.get('conditions', [])
-        )
-        
+
+
         # Check ML confirmation
         # Check ML confirmation (1 for BUY, -1 for SELL)
         expected_ml_signal = 1 if signal.signal_type == SignalType.BUY else -1

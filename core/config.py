@@ -5,6 +5,10 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Optional
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 
 class ConfigManager:
     """Manages configuration loading and validation"""
