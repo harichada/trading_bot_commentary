@@ -47,6 +47,7 @@ def log_trade(*args, **kwargs): pass
 def log_system_event(*args, **kwargs): pass
 def log_pnl(*args, **kwargs): pass
 def log_error(*args, **kwargs): pass
+def log_performance(*args, **kwargs): pass
 
 # Schwab SDK imports
 try:
