@@ -69,6 +69,8 @@ class NewsSignalStrategy(TradingStrategyWithCommentary):
 class BreakoutStrategyWithCommentary(TradingStrategyWithCommentary):
     """Breakout strategy with detailed explanations"""
 
+    name = "breakout"
+
     async def generate_signal_with_commentary(self, market_data) -> Optional[TradingSignal]:
         indicators = market_data.indicators
 
@@ -80,77 +82,84 @@ class BreakoutStrategyWithCommentary(TradingStrategyWithCommentary):
 
             # Validate values
             if np.isnan(resistance_1) or resistance_1 <= 0 or np.isnan(support_1) or support_1 <= 0:
+                self._log_decision(market_data, "skip", "invalid_indicators",
+                                   resistance=resistance_1, support=support_1)
                 return None
 
-            if resistance_1 > 0 and market_data.close > resistance_1:
-                # Breakout detected — check volume confirmation
-                volume_surge = market_data.volume > volume_ratio * 1.5
+            if not (resistance_1 > 0 and market_data.close > resistance_1):
+                self._log_decision(market_data, "skip", "no_breakout",
+                                   resistance=resistance_1, volume_ratio=round(volume_ratio, 2))
+                return None
 
-                if not volume_surge:
-                    # Real veto: breakout without volume rarely follows through.
-                    # Skip the trade and tell the user why.
-                    self.commentary.add_commentary(TradingCommentary(
-                        timestamp=datetime.now(),
-                        type=CommentaryType.RISK_ASSESSMENT,
-                        symbol=market_data.symbol,
-                        title=f"⛔ Breakout Skipped — Low Volume",
-                        message=(f"Price broke above ${resistance_1:.2f} but volume_ratio "
-                                 f"{volume_ratio:.2f} < 1.5x. Breakouts without volume "
-                                 "typically fail."),
-                        data={'breakout_level': resistance_1,
-                              'volume_ratio': volume_ratio},
-                        importance=6,
-                    ))
-                    return None
+            # Breakout detected — check volume confirmation
+            volume_surge = market_data.volume > volume_ratio * 1.5
 
+            if not volume_surge:
+                self._log_decision(market_data, "skip", "low_volume",
+                                   resistance=resistance_1, volume_ratio=round(volume_ratio, 2))
                 self.commentary.add_commentary(TradingCommentary(
                     timestamp=datetime.now(),
-                    type=CommentaryType.OPPORTUNITY,
+                    type=CommentaryType.RISK_ASSESSMENT,
                     symbol=market_data.symbol,
-                    title=f"🚀 Breakout Detected!",
-                    message=f"Price broke above resistance at ${resistance_1:.2f}. "
-                           f"Volume confirms breakout!",
-                    data={
-                        'breakout_level': resistance_1,
-                        'current_price': market_data.close,
-                        'volume_surge': True,
-                        'distance_from_resistance': ((market_data.close - resistance_1) / resistance_1) * 100
-                    },
-                    confidence=0.8,
-                    importance=8
+                    title=f"⛔ Breakout Skipped — Low Volume",
+                    message=(f"Price broke above ${resistance_1:.2f} but volume_ratio "
+                             f"{volume_ratio:.2f} < 1.5x. Breakouts without volume "
+                             "typically fail."),
+                    data={'breakout_level': resistance_1, 'volume_ratio': volume_ratio},
+                    importance=6,
                 ))
+                return None
 
-                # Calculate targets
-                atr = indicators.get('atr', market_data.close * 0.02)
-                stop_loss = market_data.close - (2 * atr)
-                take_profit = market_data.close + 2 * (market_data.close - stop_loss)
+            self.commentary.add_commentary(TradingCommentary(
+                timestamp=datetime.now(),
+                type=CommentaryType.OPPORTUNITY,
+                symbol=market_data.symbol,
+                title=f"🚀 Breakout Detected!",
+                message=f"Price broke above resistance at ${resistance_1:.2f}. "
+                       f"Volume confirms breakout!",
+                data={
+                    'breakout_level': resistance_1,
+                    'current_price': market_data.close,
+                    'volume_surge': True,
+                    'distance_from_resistance': ((market_data.close - resistance_1) / resistance_1) * 100
+                },
+                confidence=0.8,
+                importance=8
+            ))
 
-                return TradingSignal(
-                    symbol=market_data.symbol,
-                    signal_type=SignalType.BUY,
-                    strength=0.8,
-                    entry_price=market_data.close,
-                    stop_loss=stop_loss,
-                    take_profit=take_profit,
-                    position_size=0,
-                    reasoning={
-                        'strategy': 'breakout',
-                        'breakout_level': resistance_1,
-                        'volume_confirmation': True
-                    },
-                    confidence=0.75
-                )
+            # Calculate targets
+            atr = indicators.get('atr', market_data.close * 0.02)
+            stop_loss = market_data.close - (2 * atr)
+            take_profit = market_data.close + 2 * (market_data.close - stop_loss)
+
+            self._log_decision(market_data, "signal_buy", "breakout_with_volume",
+                               resistance=resistance_1, volume_ratio=round(volume_ratio, 2),
+                               stop=round(stop_loss, 2), target=round(take_profit, 2))
+            return TradingSignal(
+                symbol=market_data.symbol,
+                signal_type=SignalType.BUY,
+                strength=0.8,
+                entry_price=market_data.close,
+                stop_loss=stop_loss,
+                take_profit=take_profit,
+                position_size=0,
+                reasoning={
+                    'strategy': 'breakout',
+                    'breakout_level': resistance_1,
+                    'volume_confirmation': True
+                },
+                confidence=0.75
+            )
         except Exception as e:
+            self._log_decision(market_data, "error", "exception", err=str(e))
             logger.debug(f"Breakout strategy error for {market_data.symbol}: {e}")
-
-        # No breakout detected — silently return (no commentary spam).
-        # The previous "Low Volume" notice fired even when no breakout was
-        # in play, which read as if it were a veto reason for trades from
-        # other strategies. It wasn't.
-        return None
+            return None
 
 class MeanReversionStrategyWithCommentary(TradingStrategyWithCommentary):
     """Mean reversion strategy with explanations and tunable parameters"""
+
+    name = "mean_reversion"
+
     def __init__(self, commentary_system, rsi_threshold=30, bb_window=20, stop_loss_mult=0.98, take_profit_mult=1.0):
         super().__init__(commentary_system)
         self.rsi_threshold = rsi_threshold
@@ -166,6 +175,8 @@ class MeanReversionStrategyWithCommentary(TradingStrategyWithCommentary):
             bb_middle = float(indicators.get('bb_middle', market_data.close))
             bb_upper = float(indicators.get('bb_upper', market_data.close))
             if np.isnan(rsi) or np.isnan(bb_lower) or bb_lower <= 0:
+                self._log_decision(market_data, "skip", "invalid_indicators",
+                                   rsi=rsi, bb_lower=bb_lower)
                 return None
             if rsi < self.rsi_threshold and market_data.close < bb_lower:
                 # Trend filter: don't catch a falling knife.
@@ -177,6 +188,9 @@ class MeanReversionStrategyWithCommentary(TradingStrategyWithCommentary):
                 macd_signal_val = float(indicators.get('macd_signal', 0))
                 if (sma_50 > 0 and market_data.close < sma_50
                         and macd_val < macd_signal_val):
+                    self._log_decision(market_data, "skip", "falling_knife",
+                                       rsi=round(rsi, 2), sma_50=round(sma_50, 2),
+                                       macd=round(macd_val, 4))
                     self.commentary.add_commentary(TradingCommentary(
                         timestamp=datetime.now(),
                         type=CommentaryType.RISK_ASSESSMENT,
@@ -211,6 +225,9 @@ class MeanReversionStrategyWithCommentary(TradingStrategyWithCommentary):
                 ))
                 stop_loss = market_data.close * self.stop_loss_mult
                 take_profit = bb_middle * self.take_profit_mult
+                self._log_decision(market_data, "signal_buy", "oversold_bounce",
+                                   rsi=round(rsi, 2), distance_pct=round(distance_from_mean, 2),
+                                   stop=round(stop_loss, 2), target=round(take_profit, 2))
                 return TradingSignal(
                     symbol=market_data.symbol,
                     signal_type=SignalType.BUY,
@@ -248,6 +265,9 @@ class MeanReversionStrategyWithCommentary(TradingStrategyWithCommentary):
                 # Convert stop_loss_mult (e.g., 0.98) to above price multiplier (e.g., 1.02)
                 stop_loss = market_data.close * (2 - self.stop_loss_mult)  # Stop above entry
                 take_profit = bb_middle  # Target at middle Bollinger Band
+                self._log_decision(market_data, "signal_sell", "overbought_fade",
+                                   rsi=round(rsi, 2), distance_pct=round(distance_from_mean, 2),
+                                   stop=round(stop_loss, 2), target=round(take_profit, 2))
                 return TradingSignal(
                     symbol=market_data.symbol,
                     signal_type=SignalType.SELL,
@@ -265,11 +285,18 @@ class MeanReversionStrategyWithCommentary(TradingStrategyWithCommentary):
                     confidence=0.65
                 )
         except Exception as e:
+            self._log_decision(market_data, "error", "exception", err=str(e))
             logger.debug(f"Mean reversion strategy error for {market_data.symbol}: {e}")
+            return None
+        self._log_decision(market_data, "skip", "no_setup",
+                           rsi=round(rsi, 2), bb_lower=round(bb_lower, 2),
+                           close=round(market_data.close, 2))
         return None
 
 class MomentumStrategyWithCommentary(TradingStrategyWithCommentary):
     """Momentum strategy with explanations"""
+
+    name = "momentum"
 
     async def generate_signal_with_commentary(self, market_data) -> Optional[TradingSignal]:
         indicators = market_data.indicators
@@ -283,6 +310,8 @@ class MomentumStrategyWithCommentary(TradingStrategyWithCommentary):
 
             # Validate values
             if np.isnan(macd) or np.isnan(macd_signal) or np.isnan(rsi) or np.isnan(adx):
+                self._log_decision(market_data, "skip", "invalid_indicators",
+                                   macd=macd, rsi=rsi, adx=adx)
                 return None
 
             if macd > macd_signal and 50 < rsi < 70 and adx > 25:
@@ -309,6 +338,9 @@ class MomentumStrategyWithCommentary(TradingStrategyWithCommentary):
                 stop_loss = market_data.close * 0.97
                 take_profit = market_data.close * 1.06
 
+                self._log_decision(market_data, "signal_buy", "macd_rsi_adx_aligned",
+                                   macd=round(macd, 4), rsi=round(rsi, 2), adx=round(adx, 2),
+                                   stop=round(stop_loss, 2), target=round(take_profit, 2))
                 return TradingSignal(
                     symbol=market_data.symbol,
                     signal_type=SignalType.BUY,
@@ -326,6 +358,10 @@ class MomentumStrategyWithCommentary(TradingStrategyWithCommentary):
                     confidence=0.7
                 )
         except Exception as e:
+            self._log_decision(market_data, "error", "exception", err=str(e))
             logger.debug(f"Momentum strategy error for {market_data.symbol}: {e}")
+            return None
 
+        self._log_decision(market_data, "skip", "no_setup",
+                           macd=round(macd, 4), rsi=round(rsi, 2), adx=round(adx, 2))
         return None

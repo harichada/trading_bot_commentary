@@ -316,6 +316,9 @@ class FreeNewsAggregator:
 class FreeNewsSignalStrategy(TradingStrategyWithCommentary):
     """News strategy using only free sources"""
     from nltk.sentiment import SentimentIntensityAnalyzer
+
+    name = "news"
+
     def __init__(self, commentary_system):
         super().__init__(commentary_system)
         self.aggregator = FreeNewsAggregator()
@@ -329,13 +332,18 @@ class FreeNewsSignalStrategy(TradingStrategyWithCommentary):
 
         # Check cooldown
         if symbol in self.last_signal_time:
-            if (datetime.now() - self.last_signal_time[symbol]).total_seconds() < 3600:
+            cooldown_left = 3600 - (datetime.now() - self.last_signal_time[symbol]).total_seconds()
+            if cooldown_left > 0:
+                self._log_decision(market_data, "skip", "cooldown",
+                                   cooldown_remaining_s=int(cooldown_left))
                 return None
 
         # Fetch news
         news_items = await self.aggregator.fetch_news(symbol, 24)
 
         if len(news_items) < 3:  # Need at least 3 articles
+            self._log_decision(market_data, "skip", "insufficient_news",
+                               articles=len(news_items))
             return None
 
         # Analyze sentiment
@@ -395,6 +403,15 @@ class FreeNewsSignalStrategy(TradingStrategyWithCommentary):
 
             self.last_signal_time[symbol] = datetime.now()
 
+            self._log_decision(
+                market_data,
+                "signal_buy" if signal_type == SignalType.BUY else "signal_sell",
+                "high_impact_news" if high_impact_news else "strong_sentiment",
+                sentiment=round(avg_sentiment, 3),
+                articles=len(news_items),
+                stop=round(stop_loss, 2),
+                target=round(take_profit, 2),
+            )
             return TradingSignal(
                 symbol=symbol,
                 signal_type=signal_type,
@@ -412,4 +429,6 @@ class FreeNewsSignalStrategy(TradingStrategyWithCommentary):
                 confidence=confidence
             )
 
+        self._log_decision(market_data, "skip", "weak_sentiment",
+                           sentiment=round(avg_sentiment, 3), articles=len(news_items))
         return None
