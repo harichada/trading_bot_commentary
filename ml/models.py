@@ -699,7 +699,17 @@ class IntegratedMLModel:
                 logger.warning(f"Model version mismatch, retraining needed")
                 return
 
-            self.model = model_data['model']
+            loaded_model = model_data['model']
+
+            from sklearn.utils.validation import check_is_fitted
+            from sklearn.exceptions import NotFittedError
+            try:
+                check_is_fitted(loaded_model)
+            except NotFittedError:
+                logger.warning("Loaded ML model is not fitted; ignoring stale pickle and using fallback rules")
+                return
+
+            self.model = loaded_model
             self.scaler = model_data['scaler']
             self.feature_names = model_data.get('feature_names', self.feature_names)
             self.training_samples = model_data.get('training_samples', 0)
