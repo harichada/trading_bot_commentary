@@ -187,6 +187,22 @@ class TradingEngineWithCommentary:
             'slippage': [],
             'fill_rate': {'attempts': 0, 'fills': 0}
         }
+
+    @property
+    def auto_close_disabled(self) -> bool:
+        """True when the bot must not auto-close any positions.
+
+        Disabled when:
+        - manual_close_only is ON in LIVE mode (always-on safety), OR
+        - manual_close_only AND require_confirmations are both ON (user
+          explicitly opted out of automated exits regardless of mode).
+        """
+        if self.manual_close_only and self.require_confirmations:
+            return True
+        if self.manual_close_only and self.mode == TradingMode.LIVE:
+            return True
+        return False
+
     # Add to rest brain - caution state:
     def reset_brain_state(self):
         """Reset brain to neutral confident state"""
@@ -2897,7 +2913,7 @@ class TradingEngineWithCommentary:
                 is_external = getattr(position, 'is_external', False)
                 is_manually_managed = getattr(position, 'is_manually_managed', False)
 
-                if self.manual_close_only and self.mode == TradingMode.LIVE and (is_external or is_manually_managed):
+                if (self.auto_close_disabled or (self.manual_close_only and (is_external or is_manually_managed))):
                     # Only update the price for display purposes, but don't take any action
                     if self.data_provider:
                         quote = self.data_provider.get_quote(symbol)
@@ -3073,7 +3089,7 @@ class TradingEngineWithCommentary:
                                     if exit_sig.exit_size_pct < 1.0:
                                         # Partial exit - scale out
                                         exit_quantity = int(position.quantity * exit_sig.exit_size_pct)
-                                        if exit_quantity > 0 and not self.manual_close_only:
+                                        if exit_quantity > 0 and not self.auto_close_disabled:
                                             # Execute partial close
                                             position.quantity -= exit_quantity
                                             self.commentary.add_commentary(TradingCommentary(
@@ -3087,7 +3103,7 @@ class TradingEngineWithCommentary:
                                             ))
                                     else:
                                         # Full exit
-                                        if not self.manual_close_only or self.mode != TradingMode.LIVE:
+                                        if not self.auto_close_disabled:
                                             await self._close_position_with_commentary(
                                                 position,
                                                 f"pro_exit_{exit_sig.exit_reason.value}"
@@ -3104,7 +3120,7 @@ class TradingEngineWithCommentary:
                         
                         if should_exit:
                             # Check if manual close only is enabled
-                            if self.manual_close_only and self.mode == TradingMode.LIVE:
+                            if self.auto_close_disabled:
                                 self.commentary.add_commentary(TradingCommentary(
                                     timestamp=datetime.now(),
                                     type=CommentaryType.INFO,
@@ -3159,7 +3175,7 @@ class TradingEngineWithCommentary:
             stop_loss_hit = current_price <= position.stop_loss
 
         # If manual close only mode, only check hard stops
-        if self.manual_close_only and self.mode == TradingMode.LIVE:
+        if self.auto_close_disabled:
             # Still check stop loss for safety
             if stop_loss_hit:
                 self.commentary.add_commentary(TradingCommentary(
@@ -3236,7 +3252,7 @@ class TradingEngineWithCommentary:
             return  # NEVER auto-close external positions
 
         # CRITICAL: Check if manual close only is enabled (except for manual_override)
-        if self.manual_close_only and self.mode == TradingMode.LIVE and reason != "manual_override":
+        if self.auto_close_disabled and reason != "manual_override":
             logger.warning(f"Attempted to auto-close {position.symbol} but manual_close_only is ON. Reason: {reason}")
             self.commentary.add_commentary(TradingCommentary(
                 timestamp=datetime.now(),
