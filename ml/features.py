@@ -413,6 +413,117 @@ class MLFeatureExtractor:
 
         return features
 
+    def batch_extract(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Vectorized feature extraction for training / backtest.
+
+        Returns a DataFrame with one row per input bar and columns matching
+        self.feature_names. ~100x faster than repeatedly calling
+        extract_from_dataframe on growing windows, because rolling
+        indicators are computed once over the full series.
+
+        Rows with insufficient history for 50-bar indicators are dropped;
+        callers should realign their labels via the returned index.
+        """
+        if df is None or df.empty or len(df) < 50:
+            return pd.DataFrame(columns=self.feature_names)
+
+        # Coerce numerics once, drop NaN rows once
+        df = df.copy()
+        for col in ("Open", "High", "Low", "Close", "Volume"):
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+        df = df.dropna(subset=[c for c in ("Open", "High", "Low", "Close", "Volume") if c in df.columns])
+        if len(df) < 50:
+            return pd.DataFrame(columns=self.feature_names)
+
+        close = df["Close"]
+        high  = df["High"]
+        low   = df["Low"]
+        volume = df["Volume"]
+
+        # --- Price momentum (vectorised pct_change + rolling mean) -------
+        returns_1 = close.pct_change(1)
+        returns_5 = close.pct_change(5)
+        returns_20 = close.pct_change(20)
+        sma20 = close.rolling(20).mean()
+        sma50 = close.rolling(50).mean()
+        price_vs_sma20 = close / sma20 - 1
+        price_vs_sma50 = close / sma50 - 1
+
+        # --- Technical indicators (ta library is already vectorised) -----
+        rsi = ta.momentum.rsi(close, window=14) / 100.0
+        macd_obj = ta.trend.MACD(close)
+        macd = macd_obj.macd() / close
+        macd_signal = macd_obj.macd_signal() / close
+        macd_hist = macd_obj.macd_diff() / close
+
+        # --- Bollinger Bands (rolling) -----------------------------------
+        bb_middle = close.rolling(20).mean()
+        bb_std = close.rolling(20).std()
+        bb_upper = bb_middle + 2 * bb_std
+        bb_lower = bb_middle - 2 * bb_std
+        bb_position = (close - bb_lower) / (bb_upper - bb_lower + 1e-10)
+        bb_width = (bb_upper - bb_lower) / bb_middle
+
+        # --- Volume (rolling) --------------------------------------------
+        vol_mean_20 = volume.rolling(20).mean()
+        vol_mean_5 = volume.rolling(5).mean()
+        vol_std_20 = volume.rolling(20).std()
+        volume_ratio = volume / (vol_mean_20 + 1e-10)
+        volume_std_ratio = vol_std_20 / (vol_mean_20 + 1e-10)
+        volume_trend = (vol_mean_5 - vol_mean_20) / (vol_mean_20 + 1e-10)
+
+        # --- Volatility --------------------------------------------------
+        atr = ta.volatility.average_true_range(high, low, close, window=14)
+        atr_ratio = atr / close
+        high_low_ratio = (high - low) / close
+        std_dev_ratio = close.rolling(20).std() / close.rolling(20).mean()
+
+        # --- Pivot / support / resistance (per-bar, no rolling) ----------
+        pivot = (high + low + close) / 3
+        pivot_distance = (close - pivot) / close
+        r1 = 2 * pivot - low
+        s1 = 2 * pivot - high
+        r1_distance = (r1 - close) / close
+        s1_distance = (close - s1) / close
+
+        # --- Microstructure ----------------------------------------------
+        spread_proxy = (high - low) / close
+        # signed_volume is volume[i] * sign(close[i] - close[i-1]);
+        # rolling sum over 20 bars divided by rolling sum of volume.
+        signed_vol = volume * np.sign(close.diff())
+        volume_imbalance = signed_vol.rolling(20).sum() / (volume.rolling(20).sum() + 1e-10)
+
+        out = pd.DataFrame({
+            "returns_1": returns_1,
+            "returns_5": returns_5,
+            "returns_20": returns_20,
+            "price_vs_sma20": price_vs_sma20,
+            "price_vs_sma50": price_vs_sma50,
+            "rsi": rsi,
+            "macd": macd,
+            "macd_signal": macd_signal,
+            "macd_hist": macd_hist,
+            "bb_position": bb_position,
+            "bb_width": bb_width,
+            "volume_ratio": volume_ratio,
+            "volume_std_ratio": volume_std_ratio,
+            "volume_trend": volume_trend,
+            "atr_ratio": atr_ratio,
+            "high_low_ratio": high_low_ratio,
+            "std_dev_ratio": std_dev_ratio,
+            "pivot_distance": pivot_distance,
+            "r1_distance": r1_distance,
+            "s1_distance": s1_distance,
+            "spread_proxy": spread_proxy,
+            "volume_imbalance": volume_imbalance,
+        }, index=df.index)
+
+        # Replace inf / NaN with 0 to match per-call behaviour
+        out = out.replace([np.inf, -np.inf], 0.0).fillna(0.0)
+        # Ensure column order matches self.feature_names
+        return out[self.feature_names]
+
     def extract_from_indicators(self, indicators: Dict[str, float]) -> Dict[str, float]:
         """Extract features from pre-calculated indicators (for compatibility)"""
         features = {}

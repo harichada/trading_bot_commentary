@@ -45,17 +45,43 @@ DEFAULT_DAYS = 180
 DEFAULT_FOLDS = 5
 
 
-def top_symbols_by_volume(dsn: str, n: int, days: int) -> list[str]:
+# Leveraged / inverse / short ETFs — intraday dynamics are artificial (3x
+# amplified, daily decay, rebalancing). Their bars don't represent the
+# underlying supply/demand we want the model to learn.
+_LEVERAGED_ETFS = frozenset({
+    "SOXL", "SOXS", "TQQQ", "SQQQ", "UPRO", "SPXU", "SPXS", "SPXL",
+    "TNA", "TZA", "FAS", "FAZ", "UDOW", "SDOW", "URTY", "SRTY",
+    "LABU", "LABD", "YINN", "YANG", "NUGT", "DUST", "JNUG", "JDST",
+    "GUSH", "DRIP", "DRN", "DRV", "MIDU", "WEBL", "WEBS",
+    # 2x pairs
+    "QLD", "QID", "SSO", "SDS", "DDM", "DXD", "UYG", "SKF",
+    # VIX ETNs / products (also pathological)
+    "UVXY", "SVXY", "VIXY", "VXX", "TVIX",
+})
+
+
+def top_symbols_by_volume(
+    dsn: str,
+    n: int,
+    days: int,
+    exclude_leveraged: bool = True,
+) -> list[str]:
+    """Top-N by dollar-ish volume, optionally excluding leveraged ETFs."""
     engine = create_engine(dsn)
+    # Fetch extra so we have room after filtering
+    fetch = n * 2 if exclude_leveraged else n
     sql = text(
         "SELECT symbol, SUM(volume) AS total_vol "
         "FROM minute_bars "
         "WHERE ts >= NOW() - (:days || ' days')::interval "
-        "GROUP BY symbol ORDER BY total_vol DESC LIMIT :n"
+        "GROUP BY symbol ORDER BY total_vol DESC LIMIT :fetch"
     )
     with engine.connect() as conn:
-        rows = conn.execute(sql, {"days": days, "n": n}).fetchall()
-    return [r[0] for r in rows]
+        rows = conn.execute(sql, {"days": days, "fetch": fetch}).fetchall()
+    symbols = [r[0] for r in rows]
+    if exclude_leveraged:
+        symbols = [s for s in symbols if s not in _LEVERAGED_ETFS]
+    return symbols[:n]
 
 
 def collect_samples(
@@ -93,24 +119,31 @@ def collect_samples(
             logger.warning("insufficient_data symbol=%s bars=%d", symbol, len(df))
             continue
 
-        sym_count = 0
-        for j in range(50, len(df) - 20):
-            window = df.iloc[: j + 1]
-            feats = model.feature_extractor.extract_from_dataframe(window)
-            current = df["Close"].iloc[j]
-            future = df["Close"].iloc[j + 10]
-            change = (future - current) / current
-            if change > 0.003:
-                label = 2
-            elif change < -0.003:
-                label = 0
-            else:
-                label = 1
-            all_feats.append([feats[name] for name in model.feature_names])
-            all_labels.append(label)
-            all_ts.append(df.index[j])
-            sym_count += 1
+        # Vectorised feature extraction over the whole series (~100x faster
+        # than per-bar recomputation on growing windows).
+        feat_df = model.feature_extractor.batch_extract(df)
+        if feat_df.empty:
+            logger.warning("no_features symbol=%s", symbol)
+            continue
 
+        close = df["Close"].to_numpy()
+        # Slice [50, len-20) so we have 50 bars of history + 10-bar forward label
+        start, stop = 50, len(df) - 20
+        if stop <= start:
+            continue
+
+        sym_feats = feat_df.iloc[start:stop][model.feature_names].to_numpy()
+        future = close[start + 10 : stop + 10]
+        present = close[start:stop]
+        change = (future - present) / np.where(present == 0, 1, present)
+
+        labels = np.where(change > 0.003, 2,
+                 np.where(change < -0.003, 0, 1))
+
+        all_feats.extend(sym_feats.tolist())
+        all_labels.extend(labels.tolist())
+        all_ts.extend(df.index[start:stop].tolist())
+        sym_count = len(labels)
         per_symbol[symbol] = sym_count
         if (i + 1) % 10 == 0 or i + 1 == len(symbols):
             logger.info(
