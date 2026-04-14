@@ -342,6 +342,12 @@ class Config:
         return self.manager.get('trading.ml_prediction_enabled', True)
 
     @property
+    def ML_VETO_CONFIDENCE(self) -> float:
+        """ML confidence (0-1) at or above which a disagreeing ML signal vetoes
+        the trade. Default 0.65 — set higher for fewer vetoes, lower for stricter."""
+        return float(self.manager.get('trading.ml_veto_confidence', 0.65))
+
+    @property
     def TRADING_API_KEY(self) -> Optional[str]:
         """Bearer token that protects the REST and WebSocket API endpoints.
 

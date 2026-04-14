@@ -2607,6 +2607,23 @@ class TradingEngineWithCommentary:
                 mode=self.mode.value
             )
 
+            # Veto policy: when ML disagrees with high confidence, skip the trade
+            # in ALL modes (not just live). Previously sim mode ignored the veto,
+            # which let strategies enter against trained-model signals (LCID 2026-04-14).
+            ml_confidence = float(ml_explanation.get("confidence", 0.0)) if isinstance(ml_explanation, dict) else 0.0
+            ml_veto_threshold = Config().ML_VETO_CONFIDENCE
+            if ml_confidence >= ml_veto_threshold:
+                self.commentary.add_commentary(TradingCommentary(
+                    timestamp=datetime.now(),
+                    type=CommentaryType.DECISION,
+                    symbol=signal.symbol,
+                    title=f"🛑 ML Veto",
+                    message=f"Skipping trade — ML confidence {ml_confidence:.0%} ≥ veto threshold "
+                            f"{ml_veto_threshold:.0%}. The model strongly disagrees with the strategy.",
+                    importance=8
+                ))
+                return
+
             if self.mode != TradingMode.SIMULATION_WITH_COMMENTARY:
                 return
             else:
