@@ -1545,6 +1545,8 @@ async def websocket_endpoint(websocket: WebSocket):
                                 'quantity': pos.quantity,
                                 'entry_price': pos.entry_price,
                                 'current_price': pos.current_price,
+                                'stop_loss': getattr(pos, 'stop_loss', None),
+                                'take_profit': getattr(pos, 'take_profit', None),
                                 'unrealized_pnl': pos.unrealized_pnl,
                                 'type': 'simulated'
                             })
