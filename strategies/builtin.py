@@ -157,6 +157,29 @@ class MeanReversionStrategyWithCommentary(TradingStrategyWithCommentary):
             if np.isnan(rsi) or np.isnan(bb_lower) or bb_lower <= 0:
                 return None
             if rsi < self.rsi_threshold and market_data.close < bb_lower:
+                # Trend filter: don't catch a falling knife.
+                # Skip the long when price is below MA50 AND momentum is bearish.
+                # This is the LCID 2026-04-14 setup: oversold inside a downtrend
+                # rarely mean-reverts cleanly; it usually keeps falling.
+                sma_50 = float(indicators.get('sma_50', 0))
+                macd_val = float(indicators.get('macd', 0))
+                macd_signal_val = float(indicators.get('macd_signal', 0))
+                if (sma_50 > 0 and market_data.close < sma_50
+                        and macd_val < macd_signal_val):
+                    self.commentary.add_commentary(TradingCommentary(
+                        timestamp=datetime.now(),
+                        type=CommentaryType.RISK_ASSESSMENT,
+                        symbol=market_data.symbol,
+                        title=f"⛔ Mean Reversion Skipped — Falling Knife",
+                        message=(f"RSI {rsi:.1f} oversold but price below MA50 "
+                                 f"and MACD bearish. Avoiding catch-the-knife setup."),
+                        data={'rsi': rsi, 'close': market_data.close,
+                              'sma_50': sma_50, 'macd': macd_val,
+                              'macd_signal': macd_signal_val},
+                        importance=6
+                    ))
+                    return None
+
                 distance_from_mean = ((bb_middle - market_data.close) / market_data.close) * 100
                 self.commentary.add_commentary(TradingCommentary(
                     timestamp=datetime.now(),
