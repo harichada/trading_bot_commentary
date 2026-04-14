@@ -46,6 +46,9 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     p.add_argument("--batch-size", type=int, default=50,
                    help="Symbols per API request (max 200, default 50)")
+    p.add_argument("--window-days", type=int, default=30,
+                   help="Days per checkpointed unit for visible progress "
+                        "(default 30 = monthly)")
     p.add_argument("--workers", type=int, default=4,
                    help="Concurrent HTTP requests (default 4)")
     p.add_argument("--feed", choices=["sip", "iex"], default=None,
@@ -100,7 +103,8 @@ async def _main_async(args: argparse.Namespace) -> int:
                     symbols[:5], symbols[-5:] if len(symbols) > 5 else [])
         return 0
 
-    stats = await IngestJob(cfg).run(symbols, start, end)
+    stats = await IngestJob(cfg).run(symbols, start, end,
+                                     window_days=args.window_days)
     logger.info("ingest_summary %s", " ".join(f"{k}={v}" for k, v in stats.items()))
     return 0
 

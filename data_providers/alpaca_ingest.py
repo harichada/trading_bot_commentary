@@ -322,51 +322,73 @@ class IngestJob:
         symbols: list[str],
         start: datetime,
         end: datetime,
+        window_days: int = 30,
     ) -> dict[str, Any]:
+        """Backfill Alpaca bars for `symbols` over [start, end).
+
+        Splits the full range into `window_days`-sized windows and iterates
+        (symbol_batch x window) pairs for fine-grained checkpointing and
+        visible per-unit progress logging.
+        """
         if start.tzinfo is None or end.tzinfo is None:
             raise ValueError("start and end must be tz-aware datetimes")
 
         checkpoint = _Checkpoint.load(self._cfg.checkpoint_path)
         batches = _batched(symbols, self._cfg.symbols_per_request)
-        total_batches = len(batches)
+        windows = _time_windows(start, end, window_days)
+        total_units = len(batches) * len(windows)
 
         _logger.info(
-            "alpaca_ingest_start symbols=%d batches=%d start=%s end=%s feed=%s",
-            len(symbols), total_batches,
+            "alpaca_ingest_start symbols=%d batches=%d windows=%d units=%d "
+            "start=%s end=%s feed=%s",
+            len(symbols), len(batches), len(windows), total_units,
             start.isoformat(), end.isoformat(), self._cfg.feed,
         )
 
-        stats = {"requests": 0, "rows_inserted": 0, "batches_skipped": 0,
+        stats = {"requests": 0, "rows_inserted": 0, "units_skipped": 0,
                  "symbols_empty": 0}
         t0 = datetime.now(timezone.utc)
+        unit_idx = 0
 
         async with AlpacaBarClient(self._cfg) as client:
             with PostgresBarSink(self._cfg) as sink:
                 for batch_idx, batch in enumerate(batches):
-                    key = f"{batch_idx}:{start.date()}:{end.date()}"
-                    if checkpoint.has(key):
-                        stats["batches_skipped"] += 1
-                        continue
+                    for win_idx, (win_start, win_end) in enumerate(windows):
+                        unit_idx += 1
+                        key = f"{batch_idx}:{win_start.date()}:{win_end.date()}"
+                        if checkpoint.has(key):
+                            stats["units_skipped"] += 1
+                            continue
 
-                    await self._ingest_batch(
-                        client, sink, batch, start, end, stats,
-                    )
-                    checkpoint.mark(key)
-                    checkpoint.save(self._cfg.checkpoint_path)
+                        t_unit = datetime.now(timezone.utc)
+                        rows_before = stats["rows_inserted"]
+                        reqs_before = stats["requests"]
 
-                    _logger.info(
-                        "alpaca_ingest_batch idx=%d/%d size=%d "
-                        "cumulative_rows=%d cumulative_requests=%d",
-                        batch_idx + 1, total_batches, len(batch),
-                        stats["rows_inserted"], stats["requests"],
-                    )
+                        await self._ingest_batch(
+                            client, sink, batch, win_start, win_end, stats,
+                        )
+                        checkpoint.mark(key)
+                        checkpoint.save(self._cfg.checkpoint_path)
+
+                        unit_elapsed = (datetime.now(timezone.utc) - t_unit).total_seconds()
+                        _logger.info(
+                            "alpaca_ingest_unit %d/%d batch=%d/%d window=%s..%s "
+                            "size=%d rows_added=%d requests=%d elapsed_s=%.1f "
+                            "cumulative_rows=%d",
+                            unit_idx, total_units, batch_idx + 1, len(batches),
+                            win_start.date(), win_end.date(), len(batch),
+                            stats["rows_inserted"] - rows_before,
+                            stats["requests"] - reqs_before,
+                            unit_elapsed,
+                            stats["rows_inserted"],
+                        )
 
         elapsed = (datetime.now(timezone.utc) - t0).total_seconds()
         _logger.info(
             "alpaca_ingest_done elapsed_s=%.1f rows=%d requests=%d "
-            "skipped=%d symbols_empty=%d",
+            "units_skipped=%d symbols_empty=%d",
             elapsed, stats["rows_inserted"], stats["requests"],
-            stats["batches_skipped"], stats["symbols_empty"],
+            stats["units_skipped"], stats["symbols_empty"],
         )
         return {**stats, "elapsed_s": elapsed}
 
@@ -402,6 +424,24 @@ class IngestJob:
 
 def _batched(items: list[str], size: int) -> list[list[str]]:
     return [items[i:i + size] for i in range(0, len(items), size)]
+
+
+def _time_windows(
+    start: datetime,
+    end: datetime,
+    window_days: int,
+) -> list[tuple[datetime, datetime]]:
+    """Split [start, end) into contiguous `window_days`-sized chunks."""
+    if window_days <= 0:
+        raise ValueError("window_days must be positive")
+    out: list[tuple[datetime, datetime]] = []
+    cur = start
+    step = timedelta(days=window_days)
+    while cur < end:
+        nxt = min(cur + step, end)
+        out.append((cur, nxt))
+        cur = nxt
+    return out
 
 
 def top_symbols_by_volume(dsn: str, n: int, days: int = 30) -> list[str]:
