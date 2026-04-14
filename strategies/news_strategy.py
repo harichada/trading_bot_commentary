@@ -372,6 +372,41 @@ class FreeNewsSignalStrategy(TradingStrategyWithCommentary):
             signal_type = SignalType.BUY if avg_sentiment > 0 else SignalType.SELL
             confidence = min(abs(avg_sentiment) + 0.3, 0.8)
 
+            # Trend filter: don't buy positive news into a confirmed downtrend.
+            # Same LCID-style "falling knife" pattern the mean-rev strategy had.
+            # Keep symmetric short side open since short-of-uptrend-on-bad-news
+            # is a legitimate fade setup (exhaustion, reversal).
+            if signal_type == SignalType.BUY:
+                indicators = market_data.indicators or {}
+                try:
+                    sma_50 = float(indicators.get("sma_50", 0))
+                    macd_val = float(indicators.get("macd", 0))
+                    macd_sig = float(indicators.get("macd_signal", 0))
+                except (TypeError, ValueError):
+                    sma_50, macd_val, macd_sig = 0.0, 0.0, 0.0
+                if (sma_50 > 0 and market_data.close < sma_50
+                        and macd_val < macd_sig):
+                    self._log_decision(
+                        market_data, "skip", "falling_knife_news_buy",
+                        sentiment=round(avg_sentiment, 3),
+                        sma_50=round(sma_50, 2),
+                        macd=round(macd_val, 4),
+                        articles=len(news_items),
+                    )
+                    self.commentary.add_commentary(TradingCommentary(
+                        timestamp=datetime.now(),
+                        type=CommentaryType.RISK_ASSESSMENT,
+                        symbol=symbol,
+                        title=f"⛔ News BUY Skipped — Falling Knife",
+                        message=(f"Positive news sentiment ({avg_sentiment:+.2f}) "
+                                 f"but price below MA50 and MACD bearish. "
+                                 "Avoiding counter-trend news entry."),
+                        data={"sentiment": avg_sentiment, "sma_50": sma_50,
+                              "macd": macd_val, "macd_signal": macd_sig},
+                        importance=6,
+                    ))
+                    return None
+
             # Commentary
             self.commentary.add_commentary(TradingCommentary(
                 timestamp=datetime.now(),
