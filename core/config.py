@@ -348,6 +348,16 @@ class Config:
         return float(self.manager.get('trading.ml_veto_confidence', 0.65))
 
     @property
+    def WARMUP_MINUTES_BEFORE_OPEN(self) -> int:
+        """Minutes before regular market open (09:30 ET) to wake the bot so
+        it can scan the watchlist and build indicator context before the
+        first tradable bar. New entries are still blocked until regular
+        hours by the signal-router gate.
+
+        Default 30 — set to 0 to disable warmup."""
+        return int(self.manager.get('trading.warmup_minutes_before_open', 30))
+
+    @property
     def TRADING_API_KEY(self) -> Optional[str]:
         """Bearer token that protects the REST and WebSocket API endpoints.
 

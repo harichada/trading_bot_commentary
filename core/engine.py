@@ -1463,6 +1463,25 @@ class TradingEngineWithCommentary:
                         
         except Exception as e:
             logger.error(f"Position update error: {e}")
+    def _in_warmup_window(self) -> bool:
+        """True if we're within WARMUP_MINUTES_BEFORE_OPEN of regular-hours
+        open on a weekday. Lets the bot pre-scan the watchlist so by 09:30
+        ET it already has indicator state and a candidate list ready."""
+        warmup_minutes = Config().WARMUP_MINUTES_BEFORE_OPEN
+        if warmup_minutes <= 0:
+            return False
+        try:
+            import pytz
+            from datetime import time, timedelta
+            now_et = datetime.now(pytz.timezone("US/Eastern"))
+            if now_et.weekday() >= 5:  # weekend
+                return False
+            open_dt = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
+            warmup_start = open_dt - timedelta(minutes=warmup_minutes)
+            return warmup_start <= now_et < open_dt
+        except Exception:
+            return False
+
     def is_market_hours(self) -> tuple[bool, str]:
         """Check if we're in regular market hours
         
@@ -1916,10 +1935,13 @@ class TradingEngineWithCommentary:
                 # keeps the audit log honest (no afterhours "decisions"
                 # during closed markets) and saves API quota.
                 is_regular, session = self.is_market_hours()
+                in_warmup = self._in_warmup_window()
                 tradable = (
                     is_regular
                     or (session == "premarket" and self.allow_premarket)
                     or (session == "afterhours" and self.allow_afterhours)
+                    or in_warmup  # pre-open analysis window — loop runs but
+                                  # signal-router gate still blocks entries
                 )
                 if not tradable:
                     if self._paused_for_session != session:
@@ -1947,15 +1969,26 @@ class TradingEngineWithCommentary:
 
                 if self._paused_for_session is not None:
                     # Waking back up — announce and clear the flag
+                    if in_warmup:
+                        title = "🔎 Pre-Market Warmup — Scanning Watchlist"
+                        msg = (f"{Config().WARMUP_MINUTES_BEFORE_OPEN} minutes "
+                               "before regular open. Building indicator state "
+                               "and ranking candidates. New entries still blocked "
+                               "until 09:30 ET.")
+                        resume_reason = "warmup"
+                    else:
+                        title = "☀️ Market Open — Resuming Analysis"
+                        msg = f"Entering {session} session. Bot is active."
+                        resume_reason = f"session_{session}"
                     self.commentary.add_commentary(TradingCommentary(
                         timestamp=datetime.now(),
                         type=CommentaryType.MARKET_ANALYSIS,
                         symbol=None,
-                        title="☀️ Market Open — Resuming Analysis",
-                        message=f"Entering {session} session. Bot is active.",
+                        title=title,
+                        message=msg,
                         importance=6,
                     ))
-                    self._audit("market_hours", None, "resume", f"session_{session}")
+                    self._audit("market_hours", None, "resume", resume_reason)
                     self._paused_for_session = None
 
                 analysis_count += 1
