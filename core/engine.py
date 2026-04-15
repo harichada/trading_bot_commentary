@@ -2444,6 +2444,32 @@ class TradingEngineWithCommentary:
                     strength=round(float(getattr(signal, "strength", 0)), 3),
                     ml_signal=ml_signal)
 
+        # Market-hours gate — applies to BOTH sim and live so simulation
+        # accurately previews live behaviour (sim used to enter trades
+        # 24/7 which gave misleading fills on afterhours noise).
+        is_regular, session = self.is_market_hours()
+        if not is_regular:
+            if session == "premarket" and self.allow_premarket:
+                pass
+            elif session == "afterhours" and self.allow_afterhours:
+                pass
+            else:
+                self._audit("market_hours", signal.symbol, "skip",
+                            f"session_{session}",
+                            allow_premarket=self.allow_premarket,
+                            allow_afterhours=self.allow_afterhours)
+                self.commentary.add_commentary(TradingCommentary(
+                    timestamp=datetime.now(),
+                    type=CommentaryType.WARNING,
+                    symbol=signal.symbol,
+                    title=f"🌙 Market {session.title()} — Skipping Entry",
+                    message=(f"Signal received during {session} session. "
+                             "New trades only during regular hours (09:30-16:00 ET). "
+                             "Toggle trading.extended_hours.allow_* to override."),
+                    importance=5,
+                ))
+                return
+
         # CRITICAL: Check real Schwab positions FIRST before internal tracking
         if self.mode == TradingMode.LIVE and self.schwab_client:
             schwab_positions = await self.get_schwab_positions()
