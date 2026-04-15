@@ -1907,24 +1907,57 @@ class TradingEngineWithCommentary:
                 ))
 
         analysis_count = 0
-        
+        self._paused_for_session: Optional[str] = None  # track session to avoid log spam
+
         while self.is_running:
             try:
-                #Market hours check with commentary
-                # if not self._is_market_open():
-                #    if analysis_count == 0:  # Only show once
-                #        self.commentary.add_commentary(TradingCommentary(
-                #            timestamp=datetime.now(),
-                #            type=CommentaryType.MARKET_ANALYSIS,
-                #            symbol=None,
-                #            title="🌙 Market Closed",
-                #           message="Markets are currently closed. I'm waiting for the next session.",
-                #            data={'next_open': self._get_next_market_open()},
-                #            importance=3
-                #        ))
-                #    await asyncio.sleep(60)
-                #    continue
-                
+                # Full pause outside tradable sessions. Sim and live both
+                # stop analysing until the next trading session begins —
+                # keeps the audit log honest (no afterhours "decisions"
+                # during closed markets) and saves API quota.
+                is_regular, session = self.is_market_hours()
+                tradable = (
+                    is_regular
+                    or (session == "premarket" and self.allow_premarket)
+                    or (session == "afterhours" and self.allow_afterhours)
+                )
+                if not tradable:
+                    if self._paused_for_session != session:
+                        next_open = self._get_next_market_open()
+                        self.commentary.add_commentary(TradingCommentary(
+                            timestamp=datetime.now(),
+                            type=CommentaryType.MARKET_ANALYSIS,
+                            symbol=None,
+                            title=f"🌙 Market {session.title()} — Bot Paused",
+                            message=(f"Markets are currently {session}. "
+                                     f"Pausing analysis until the next regular "
+                                     f"session opens at {next_open}."),
+                            data={"session": session, "next_open": next_open,
+                                  "allow_premarket": self.allow_premarket,
+                                  "allow_afterhours": self.allow_afterhours},
+                            importance=4,
+                        ))
+                        self._audit("market_hours", None, "pause",
+                                    f"session_{session}", next_open=next_open)
+                        self._paused_for_session = session
+                    # Recheck every 60s so we pick up the next session
+                    # promptly; also keeps the websocket alive.
+                    await asyncio.sleep(60)
+                    continue
+
+                if self._paused_for_session is not None:
+                    # Waking back up — announce and clear the flag
+                    self.commentary.add_commentary(TradingCommentary(
+                        timestamp=datetime.now(),
+                        type=CommentaryType.MARKET_ANALYSIS,
+                        symbol=None,
+                        title="☀️ Market Open — Resuming Analysis",
+                        message=f"Entering {session} session. Bot is active.",
+                        importance=6,
+                    ))
+                    self._audit("market_hours", None, "resume", f"session_{session}")
+                    self._paused_for_session = None
+
                 analysis_count += 1
                 
                 # Sync with Schwab account data periodically (every 5 analyses)
