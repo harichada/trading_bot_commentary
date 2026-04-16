@@ -109,6 +109,28 @@ class TradingEngineWithCommentary:
             commentary_system=self.commentary
         )
         self.ml_predictor.set_brain(self.brain)
+        # Meta-model (shadow mode): evaluates mean-reversion signals and
+        # logs a trust score without affecting trade decisions. Absent
+        # model file → feature silently disabled.
+        self.meta_inference = None
+        try:
+            from ml.meta_inference import MetaInference
+            meta_path = Path("ml_meta_model.pkl")
+            if meta_path.exists():
+                self.meta_inference = MetaInference.load(meta_path)
+                logger.info(
+                    "meta_shadow_enabled primary=%s features=%d",
+                    self.meta_inference.primary_strategy,
+                    len(self.meta_inference.feature_names),
+                )
+        except (FileNotFoundError, KeyError, ImportError) as exc:
+            # Expected failure modes: missing file, missing bundle keys,
+            # missing dependency. Log once and continue — bot still trades.
+            logger.warning("meta_shadow_disabled reason=%s", exc)
+        except Exception:
+            # Anything else (corrupt bundle, import failure of a subclass,
+            # etc.) logs with traceback so a silent corruption is loud.
+            logger.exception("meta_shadow_disabled_unexpected")
         # Stock screener
         self.screener = StockScreener(
             self.schwab_client,
@@ -122,8 +144,11 @@ class TradingEngineWithCommentary:
         self.strategies = [
             BreakoutStrategyWithCommentary(self.commentary),
             MeanReversionStrategyWithCommentary(self.commentary),
-            MomentumStrategyWithCommentary(self.commentary)
         ]
+        # Momentum disabled 2026-04-15: backtest PF 0.78–0.83 across 1/5/15-min
+        # timeframes — consistently losing. Re-enable via ENABLE_MOMENTUM=1.
+        if os.environ.get("ENABLE_MOMENTUM", "0") == "1":
+            self.strategies.append(MomentumStrategyWithCommentary(self.commentary))
         self.strategies.append(FreeNewsSignalStrategy(self.commentary))
         
 	    # Initialize brain and exit manager
@@ -1962,6 +1987,13 @@ class TradingEngineWithCommentary:
                         self._audit("market_hours", None, "pause",
                                     f"session_{session}", next_open=next_open)
                         self._paused_for_session = session
+                    # Still refresh displayed state so the dashboard shows
+                    # live quotes, P&L, and session metadata while paused.
+                    # Read-only quote fetches only — no strategy eval, no orders.
+                    try:
+                        await self._update_position_prices()
+                    except Exception as exc:
+                        logger.debug("paused_refresh_error err=%s", exc)
                     # Recheck every 60s so we pick up the next session
                     # promptly; also keeps the websocket alive.
                     await asyncio.sleep(60)
@@ -2169,22 +2201,28 @@ class TradingEngineWithCommentary:
             if self.mode == TradingMode.SIMULATION_WITH_COMMENTARY:
                 # Update simulated positions
                 for symbol, position in self.simulated_positions.items():
-                    if position:
-                        try:
-                            # Get current quote
-                            quote = await self.data_provider.get_current_quote(symbol)
-                            if quote and 'price' in quote:
-                                old_price = position.current_price
-                                position.current_price = quote['price']
-                                # Update unrealized PnL
-                                position.unrealized_pnl = (position.current_price - position.entry_price) * position.quantity
-                                
-                                # Log significant price movements
+                    # Skip positions that are being closed or partially-
+                    # constructed (zero quantity or zero entry price).
+                    # Overwriting their stored P&L with a nonsense value
+                    # can corrupt trading_state.json — especially now that
+                    # this refresh also runs during the paused loop.
+                    if not position or position.quantity == 0 or position.entry_price == 0:
+                        continue
+                    try:
+                        # Get current quote
+                        quote = await self.data_provider.get_current_quote(symbol)
+                        if quote and 'price' in quote:
+                            old_price = position.current_price
+                            position.current_price = quote['price']
+                            # Update unrealized PnL
+                            position.unrealized_pnl = (position.current_price - position.entry_price) * position.quantity
+                            # Log significant price movements (guard /0)
+                            if old_price:
                                 price_change = abs(position.current_price - old_price) / old_price
-                                if price_change > 0.01:  # More than 1% change
+                                if price_change > 0.01:
                                     logger.debug(f"Updated {symbol} price: ${old_price:.2f} -> ${position.current_price:.2f}")
-                        except Exception as e:
-                            logger.debug(f"Error updating price for {symbol}: {e}")
+                    except Exception as e:
+                        logger.debug(f"Error updating price for {symbol}: {e}")
             
             elif self.mode == TradingMode.LIVE and self.schwab_client:
                 # Update real positions
@@ -2501,6 +2539,52 @@ class TradingEngineWithCommentary:
                 ))
                 logger.error(f"Error analyzing {symbol}: {e}", exc_info=True)
     
+    def _shadow_meta_evaluate_sync(self, signal) -> None:
+        """Synchronous core of shadow evaluation — runs in a thread.
+
+        Reviewers flagged that the original direct call from an async
+        context stalled the event loop on each signal (get_market_data
+        and batch_extract are both blocking CPU+I/O). Keeping the sync
+        body here and dispatching via asyncio.to_thread() in the wrapper
+        below isolates the stall from the main loop.
+        """
+        if self.meta_inference is None:
+            return
+        strategy = signal.reasoning.get("strategy", "")
+        if not strategy.startswith(self.meta_inference.primary_strategy):
+            return
+        try:
+            df = self.data_provider.get_market_data(
+                signal.symbol, frequency_type="minute", frequency=5,
+            )
+            if df is None or df.empty or len(df) < 50:
+                return
+            feat_df = self.ml_predictor.model.feature_extractor.batch_extract(df)
+            if feat_df.empty:
+                return
+            side = 1 if signal.signal_type == SignalType.BUY else -1
+            features = feat_df.iloc[-1].to_dict()
+            result = self.meta_inference.predict(features, side=side)
+            self._audit(
+                "meta_shadow", signal.symbol, "evaluated",
+                f"{strategy}_{'long' if side == 1 else 'short'}",
+                proba=round(result.win_probability, 4),
+                thr_065=result.would_trade_at_065,
+                thr_070=result.would_trade_at_070,
+                thr_075=result.would_trade_at_075,
+            )
+        except Exception as exc:
+            logger.debug("meta_shadow_error symbol=%s err=%s", signal.symbol, exc)
+
+    async def _shadow_meta_evaluate(self, signal) -> None:
+        """Async wrapper — offloads sync body to a thread pool."""
+        if self.meta_inference is None:
+            return
+        try:
+            await asyncio.to_thread(self._shadow_meta_evaluate_sync, signal)
+        except Exception as exc:
+            logger.debug("meta_shadow_dispatch_error err=%s", exc)
+
     async def _process_signal_with_commentary(self, signal, ml_signal, ml_explanation):
         """Process trading signal with detailed explanation"""
         self._audit("signal_router", signal.symbol, "received",
@@ -2509,6 +2593,11 @@ class TradingEngineWithCommentary:
                     confidence=round(float(getattr(signal, "confidence", 0)), 3),
                     strength=round(float(getattr(signal, "strength", 0)), 3),
                     ml_signal=ml_signal)
+
+        # Shadow meta-model evaluation — logs only, no decision impact.
+        # Dispatched via asyncio.to_thread so the sync sklearn/xgb call
+        # does not block the event loop.
+        await self._shadow_meta_evaluate(signal)
 
         # Market-hours gate — applies to BOTH sim and live so simulation
         # accurately previews live behaviour (sim used to enter trades
