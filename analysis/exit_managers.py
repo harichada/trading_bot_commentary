@@ -263,36 +263,33 @@ class DynamicExitManager:
                 ))
                 return True, "exhaustion", 1.0
 
-        # 6. Time Decay Exit - Position not working out
-        position_age_minutes = (datetime.now() - position.entry_time).total_seconds() / 60
-        if position_age_minutes > 30 and abs(pnl_percent) < 0.3:
-            self.commentary.add_commentary(TradingCommentary(
-                timestamp=datetime.now(),
-                type=CommentaryType.PSYCHOLOGY,
-                symbol=symbol,
-                title=f"\U0001f634 Dead Money",
-                message=f"This trade isn't working after {position_age_minutes:.0f} minutes. Moving on to better opportunities.",
-                importance=7
-            ))
-            return True, "time_decay", 1.0
+        # 6. Time Decay Exit — DISABLED 2026-04-17
+        # Was: close if flat (< ±0.3%) after 30 min.
+        # Problem: meta-model trains with max_holding=300 min (5 hrs).
+        # Closing at 30 min pre-empts the thesis before the setup can
+        # resolve, corrupting sim P&L honesty. Hard SL/TP handle exits.
+        # Re-enable only for scalping strategies where the thesis IS
+        # "if it doesn't move in 30 min, it's wrong."
+        #
+        # position_age_minutes = (datetime.now() - position.entry_time).total_seconds() / 60
+        # if position_age_minutes > 30 and abs(pnl_percent) < 0.3:
+        #     return True, "time_decay", 1.0
 
         # 7. Check against dynamic stop
         if current_price <= tracker['current_stop']:
             return True, "trailing_stop", 1.0
 
-        # 8. Human-like Patience Limit
-        if position_age_minutes > 15 and pnl_percent > 0.8:
-            patience = self.brain.emotional_state['patience']
-            if patience < 0.5 and np.random.random() > patience:
-                self.commentary.add_commentary(TradingCommentary(
-                    timestamp=datetime.now(),
-                    type=CommentaryType.PSYCHOLOGY,
-                    symbol=symbol,
-                    title=f"\U0001f624 Getting Impatient",
-                    message=f"I've been in this trade for {position_age_minutes:.0f} minutes. Good enough profit at {pnl_percent:.1f}%, taking it.",
-                    importance=7
-                ))
-                return True, "impatience", 1.0
+        # 8. Human-like Patience Limit — DISABLED 2026-04-17
+        # Was: randomly close after 15 min if >0.8% profit.
+        # Problem: grabs small wins before TP, destroying the 2:1 R:R
+        # that the meta-model was trained to expect. A +0.8% exit when
+        # TP is at +1.5% ATR leaves half the expected return on the table.
+        #
+        # position_age_minutes = (datetime.now() - position.entry_time).total_seconds() / 60
+        # if position_age_minutes > 15 and pnl_percent > 0.8:
+        #     patience = self.brain.emotional_state['patience']
+        #     if patience < 0.5 and np.random.random() > patience:
+        #         return True, "impatience", 1.0
 
         return False, "", 0
 

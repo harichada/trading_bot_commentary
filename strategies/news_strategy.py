@@ -426,15 +426,19 @@ class FreeNewsSignalStrategy(TradingStrategyWithCommentary):
                 importance=8 if high_impact_news else 7
             ))
 
-            # Calculate stops
-            atr = market_data.indicators.get('atr', market_data.close * 0.02)
+            # ATR-scaled stops
+            from core.config import Config
+            atr = float(market_data.indicators.get('atr', market_data.close * 0.02))
+            atr_mult = Config().ATR_STOP_MULTIPLIER
+            rr_ratio = Config().ATR_REWARD_RISK_RATIO
+            stop_distance = atr_mult * atr
 
             if signal_type == SignalType.BUY:
-                stop_loss = market_data.close - (2 * atr)
-                take_profit = market_data.close + (4 * atr)
+                stop_loss = market_data.close - stop_distance
+                take_profit = market_data.close + (rr_ratio * stop_distance)
             else:
-                stop_loss = market_data.close + (2 * atr)
-                take_profit = market_data.close - (4 * atr)
+                stop_loss = market_data.close + stop_distance
+                take_profit = market_data.close - (rr_ratio * stop_distance)
 
             self.last_signal_time[symbol] = datetime.now()
 
@@ -446,6 +450,7 @@ class FreeNewsSignalStrategy(TradingStrategyWithCommentary):
                 articles=len(news_items),
                 stop=round(stop_loss, 2),
                 target=round(take_profit, 2),
+                atr=round(atr, 3), stop_dist=round(stop_distance, 2),
             )
             return TradingSignal(
                 symbol=symbol,
@@ -459,7 +464,9 @@ class FreeNewsSignalStrategy(TradingStrategyWithCommentary):
                     'strategy': 'free_news_sentiment',
                     'sentiment': avg_sentiment,
                     'news_count': len(news_items),
-                    'sources': [item.source for item in news_items[:3]]
+                    'sources': [item.source for item in news_items[:3]],
+                    'atr': atr, 'atr_mult': atr_mult,
+                    'stop_distance': stop_distance,
                 },
                 confidence=confidence
             )

@@ -73,9 +73,17 @@ class RiskManagerWithCommentary:
             ))
             return 0
 
-        # Maximum risk amount
-        max_risk_pct = Config().MAX_RISK_PER_TRADE or 0.02  # Default to 2%
+        # Maximum risk amount — uses ATR-scaled RISK_PER_TRADE_PCT (default 1%).
+        # Strategies now set stop_loss via ATR, so risk_per_share = ATR_mult × ATR.
+        # This means: shares = (equity × 1%) / (1.5 × ATR), naturally giving
+        # fewer shares for volatile stocks and more for calm ones.
+        max_risk_pct = Config().RISK_PER_TRADE_PCT or 0.01
         max_risk_amount = self.account_balance * max_risk_pct
+
+        # Sanity floor: stop_distance must be at least 0.5% of price
+        # to prevent absurd position sizes from ATR=0 or stale data.
+        min_stop_distance = current_price * 0.005
+        risk_per_share = max(risk_per_share, min_stop_distance)
         # Adjust based on recent performance
         if hasattr(self, 'trade_history') and len(self.trade_history) >= 5:
             recent_trades = self.trade_history[-5:]
@@ -118,6 +126,22 @@ class RiskManagerWithCommentary:
 
         # Calculate position size
         position_size = int(max_risk_amount / risk_per_share)
+
+        # Audit log — ATR, stop distance, shares, dollar risk
+        atr_val = signal.reasoning.get('atr') if hasattr(signal, 'reasoning') and signal.reasoning else None
+        atr_mult_val = signal.reasoning.get('atr_mult') if hasattr(signal, 'reasoning') and signal.reasoning else None
+        dollar_risk = position_size * risk_per_share
+        logger.info(
+            "position_sizing symbol=%s price=%.2f atr=%s atr_mult=%s "
+            "stop_dist=%.2f shares=%d notional=%.0f dollar_risk=%.2f "
+            "equity=%.0f risk_pct=%.4f",
+            signal.symbol, current_price,
+            round(atr_val, 3) if atr_val else "n/a",
+            atr_mult_val or "n/a",
+            risk_per_share, position_size,
+            position_size * current_price, dollar_risk,
+            self.account_balance, max_risk_pct,
+        )
 
         # Check against max position value
         max_position_value = Config().MAX_POSITION_VALUE or 10000  # Default $10k

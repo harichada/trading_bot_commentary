@@ -387,6 +387,21 @@ class Config:
         """Maximum position value as fraction of portfolio"""
         return self.manager.get('trading.max_position_value_pct', 0.25)
 
+    @property
+    def ATR_STOP_MULTIPLIER(self):
+        """ATR multiplier for stop-loss distance (1.5 = stop at 1.5×ATR from entry)."""
+        return self.manager.get('trading.atr_stop_multiplier', 1.5)
+
+    @property
+    def ATR_REWARD_RISK_RATIO(self):
+        """R:R ratio for take-profit relative to stop distance (2.0 = 2:1 R:R)."""
+        return self.manager.get('trading.atr_reward_risk_ratio', 2.0)
+
+    @property
+    def RISK_PER_TRADE_PCT(self):
+        """Fraction of equity risked per trade for ATR-based sizing (0.01 = 1%)."""
+        return self.manager.get('trading.risk_per_trade_pct', 0.01)
+
 # Initialize configuration
 config = Config()
 # ============================================================================

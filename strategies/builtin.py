@@ -48,9 +48,18 @@ class NewsSignalStrategy(TradingStrategyWithCommentary):
                 importance=7
             ))
 
-            # Create trading signal
-            stop_loss = market_data.close * (1 - 0.02) if signal_type == SignalType.BUY else market_data.close * 1.02
-            take_profit = market_data.close * (1 + 0.04) if signal_type == SignalType.BUY else market_data.close * 0.96
+            # ATR-scaled stops
+            from core.config import Config
+            atr = float(getattr(market_data, 'indicators', {}).get('atr', market_data.close * 0.02))
+            atr_mult = Config().ATR_STOP_MULTIPLIER
+            rr_ratio = Config().ATR_REWARD_RISK_RATIO
+            stop_distance = atr_mult * atr
+            if signal_type == SignalType.BUY:
+                stop_loss = market_data.close - stop_distance
+                take_profit = market_data.close + (rr_ratio * stop_distance)
+            else:
+                stop_loss = market_data.close + stop_distance
+                take_profit = market_data.close - (rr_ratio * stop_distance)
 
             return TradingSignal(
                 symbol=market_data.symbol,
@@ -59,8 +68,9 @@ class NewsSignalStrategy(TradingStrategyWithCommentary):
                 entry_price=market_data.close,
                 stop_loss=stop_loss,
                 take_profit=take_profit,
-                position_size=0,  # To be calculated by risk manager
-                reasoning={'strategy': 'news_sentiment', 'sentiment': avg_sentiment},
+                position_size=0,
+                reasoning={'strategy': 'news_sentiment', 'sentiment': avg_sentiment,
+                           'atr': atr, 'atr_mult': atr_mult, 'stop_distance': stop_distance},
                 confidence=min(abs(avg_sentiment) * 1.5, 0.8)
             )
 
@@ -127,14 +137,20 @@ class BreakoutStrategyWithCommentary(TradingStrategyWithCommentary):
                 importance=8
             ))
 
-            # Calculate targets
-            atr = indicators.get('atr', market_data.close * 0.02)
-            stop_loss = market_data.close - (2 * atr)
-            take_profit = market_data.close + 2 * (market_data.close - stop_loss)
+            # ATR-scaled stops: wider stops for volatile stocks, tighter for calm
+            from core.config import Config
+            atr = float(indicators.get('atr', market_data.close * 0.02))
+            atr_mult = Config().ATR_STOP_MULTIPLIER
+            rr_ratio = Config().ATR_REWARD_RISK_RATIO
+            stop_distance = atr_mult * atr
+            stop_loss = market_data.close - stop_distance
+            take_profit = market_data.close + (rr_ratio * stop_distance)
 
             self._log_decision(market_data, "signal_buy", "breakout_with_volume",
                                resistance=resistance_1, volume_ratio=round(volume_ratio, 2),
-                               stop=round(stop_loss, 2), target=round(take_profit, 2))
+                               stop=round(stop_loss, 2), target=round(take_profit, 2),
+                               atr=round(atr, 3), atr_mult=atr_mult,
+                               stop_dist=round(stop_distance, 2))
             return TradingSignal(
                 symbol=market_data.symbol,
                 signal_type=SignalType.BUY,
@@ -146,7 +162,10 @@ class BreakoutStrategyWithCommentary(TradingStrategyWithCommentary):
                 reasoning={
                     'strategy': 'breakout',
                     'breakout_level': resistance_1,
-                    'volume_confirmation': True
+                    'volume_confirmation': True,
+                    'atr': atr,
+                    'atr_mult': atr_mult,
+                    'stop_distance': stop_distance,
                 },
                 confidence=0.75
             )
@@ -223,11 +242,18 @@ class MeanReversionStrategyWithCommentary(TradingStrategyWithCommentary):
                     confidence=0.65,
                     importance=7
                 ))
-                stop_loss = market_data.close * self.stop_loss_mult
-                take_profit = bb_middle * self.take_profit_mult
+                from core.config import Config
+                atr = float(indicators.get('atr', market_data.close * 0.02))
+                atr_mult = Config().ATR_STOP_MULTIPLIER
+                rr_ratio = Config().ATR_REWARD_RISK_RATIO
+                stop_distance = atr_mult * atr
+                stop_loss = market_data.close - stop_distance
+                rr_target = market_data.close + (rr_ratio * stop_distance)
+                take_profit = min(bb_middle * self.take_profit_mult, rr_target)
                 self._log_decision(market_data, "signal_buy", "oversold_bounce",
                                    rsi=round(rsi, 2), distance_pct=round(distance_from_mean, 2),
-                                   stop=round(stop_loss, 2), target=round(take_profit, 2))
+                                   stop=round(stop_loss, 2), target=round(take_profit, 2),
+                                   atr=round(atr, 3), stop_dist=round(stop_distance, 2))
                 return TradingSignal(
                     symbol=market_data.symbol,
                     signal_type=SignalType.BUY,
@@ -240,7 +266,9 @@ class MeanReversionStrategyWithCommentary(TradingStrategyWithCommentary):
                         'strategy': 'mean_reversion',
                         'rsi': rsi,
                         'bb_position': 'below_lower_band',
-                        'distance_from_mean': distance_from_mean
+                        'distance_from_mean': distance_from_mean,
+                        'atr': atr, 'atr_mult': atr_mult,
+                        'stop_distance': stop_distance,
                     },
                     confidence=0.65
                 )
@@ -261,13 +289,18 @@ class MeanReversionStrategyWithCommentary(TradingStrategyWithCommentary):
                     confidence=0.65,
                     importance=7
                 ))
-                # For short positions: stop loss above entry, take profit below entry
-                # Convert stop_loss_mult (e.g., 0.98) to above price multiplier (e.g., 1.02)
-                stop_loss = market_data.close * (2 - self.stop_loss_mult)  # Stop above entry
-                take_profit = bb_middle  # Target at middle Bollinger Band
+                from core.config import Config
+                atr = float(indicators.get('atr', market_data.close * 0.02))
+                atr_mult = Config().ATR_STOP_MULTIPLIER
+                rr_ratio = Config().ATR_REWARD_RISK_RATIO
+                stop_distance = atr_mult * atr
+                stop_loss = market_data.close + stop_distance
+                rr_target = market_data.close - (rr_ratio * stop_distance)
+                take_profit = max(bb_middle, rr_target)
                 self._log_decision(market_data, "signal_sell", "overbought_fade",
                                    rsi=round(rsi, 2), distance_pct=round(distance_from_mean, 2),
-                                   stop=round(stop_loss, 2), target=round(take_profit, 2))
+                                   stop=round(stop_loss, 2), target=round(take_profit, 2),
+                                   atr=round(atr, 3), stop_dist=round(stop_distance, 2))
                 return TradingSignal(
                     symbol=market_data.symbol,
                     signal_type=SignalType.SELL,
@@ -280,7 +313,9 @@ class MeanReversionStrategyWithCommentary(TradingStrategyWithCommentary):
                         'strategy': 'mean_reversion_short',
                         'rsi': rsi,
                         'bb_position': 'above_upper_band',
-                        'distance_from_mean': distance_from_mean
+                        'distance_from_mean': distance_from_mean,
+                        'atr': atr, 'atr_mult': atr_mult,
+                        'stop_distance': stop_distance,
                     },
                     confidence=0.65
                 )

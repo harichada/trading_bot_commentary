@@ -218,16 +218,15 @@ class TradingEngineWithCommentary:
     def auto_close_disabled(self) -> bool:
         """True when the bot must not auto-close any positions.
 
-        Disabled when:
-        - manual_close_only is ON in LIVE mode (always-on safety), OR
-        - manual_close_only AND require_confirmations are both ON (user
-          explicitly opted out of automated exits regardless of mode).
+        Simulation always auto-closes on stop-loss / take-profit —
+        otherwise the simulated P&L stops reflecting what live
+        execution would produce, which defeats the purpose of sim.
+        The manual-close-only safety applies only to LIVE mode,
+        where it prevents the bot from touching real broker positions.
         """
-        if self.manual_close_only and self.require_confirmations:
-            return True
-        if self.manual_close_only and self.mode == TradingMode.LIVE:
-            return True
-        return False
+        if self.mode != TradingMode.LIVE:
+            return False
+        return bool(self.manual_close_only)
 
     def _audit(self, component: str, symbol, action: str, reason: str, **details) -> None:
         """Structured audit log for engine-level decisions.
@@ -3409,12 +3408,24 @@ class TradingEngineWithCommentary:
             # External positions are NEVER auto-managed
             return False, ""
 
-        # Check if stop loss is hit based on position side
+        # Check if stop loss / take profit are hit based on position side.
+        # Both use the same simple price comparison — no indicator logic.
+        # The dynamic exit manager below still runs for softer/partial exits
+        # but hard SL/TP must fire regardless of regime.
         stop_loss_hit = False
+        take_profit_hit = False
         if position.side == 'short':
             stop_loss_hit = current_price >= position.stop_loss
+            take_profit_hit = (
+                position.take_profit is not None
+                and current_price <= position.take_profit
+            )
         else:  # long
             stop_loss_hit = current_price <= position.stop_loss
+            take_profit_hit = (
+                position.take_profit is not None
+                and current_price >= position.take_profit
+            )
 
         # If manual close only mode, only check hard stops
         if self.auto_close_disabled:
@@ -3442,6 +3453,24 @@ class TradingEngineWithCommentary:
                 importance=9
             ))
             return True, "stop_loss"
+
+        # Hard take-profit check — fires on the next bar whose price
+        # reaches the target, independent of indicators. Previous code
+        # let the dynamic exit manager swallow this case and sometimes
+        # held past the target.
+        if take_profit_hit:
+            self.commentary.add_commentary(TradingCommentary(
+                timestamp=datetime.now(),
+                type=CommentaryType.DECISION,
+                symbol=position.symbol,
+                title=f"🎯 Take-Profit Hit",
+                message=(
+                    f"Target reached at ${current_price:.2f} "
+                    f"(target ${position.take_profit:.2f}). Closing."
+                ),
+                importance=9,
+            ))
+            return True, "take_profit"
         
         # Get current indicators for dynamic exit
         if self.data_provider:
