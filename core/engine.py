@@ -2696,7 +2696,39 @@ class TradingEngineWithCommentary:
             ))
             self._audit("signal_router", signal.symbol, "skip", "already_tracking")
             return
-        
+
+        # Sector correlation guard — limit to 1 open position per
+        # correlated group to prevent cluster stop-outs (e.g., MARA +
+        # RIOT + COIN all dropping together when BTC falls).
+        _CORRELATED_GROUPS = {
+            "crypto_miners": {"MARA", "RIOT", "COIN", "CLSK", "BTBT", "CIFR", "WULF", "HUT"},
+            "ev_makers": {"TSLA", "RIVN", "NIO", "LCID", "XPEV"},
+            "china_tech": {"BABA", "JD", "PDD", "BIDU", "NIO", "XPEV"},
+            "meme_retail": {"AMC", "GME", "BBBY", "FUBO"},
+            "semiconductors": {"NVDA", "AMD", "INTC", "MU", "AVGO", "QCOM"},
+        }
+        active_positions = set(self.positions.keys()) | set(self.simulated_positions.keys())
+        for group_name, members in _CORRELATED_GROUPS.items():
+            if signal.symbol in members:
+                overlap = active_positions & members
+                if overlap:
+                    self._audit("correlation_guard", signal.symbol, "skip",
+                                f"correlated_with_{group_name}",
+                                existing=list(overlap))
+                    self.commentary.add_commentary(TradingCommentary(
+                        timestamp=datetime.now(),
+                        type=CommentaryType.RISK_ASSESSMENT,
+                        symbol=signal.symbol,
+                        title=f"🔗 Correlated Position Blocked",
+                        message=(
+                            f"Already holding {', '.join(overlap)} in the "
+                            f"{group_name.replace('_', ' ')} group. "
+                            f"Skipping {signal.symbol} to avoid cluster risk."
+                        ),
+                        importance=7,
+                    ))
+                    return
+
         # EARLY BUYING POWER CHECK for LIVE mode
         if self.mode == TradingMode.LIVE:
             # First check if we have ANY buying power before doing calculations

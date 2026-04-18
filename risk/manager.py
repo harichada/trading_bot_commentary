@@ -124,23 +124,38 @@ class RiskManagerWithCommentary:
             importance=6
         ))
 
-        # Calculate position size
+        # Calculate base position size
         position_size = int(max_risk_amount / risk_per_share)
 
-        # Audit log — ATR, stop distance, shares, dollar risk
+        # Kelly-inspired bet sizing: scale position by signal confidence.
+        # For our 2:1 R:R (ATR_REWARD_RISK_RATIO=2.0):
+        #   kelly_fraction = 1.5 × win_prob - 0.5
+        # Maps: 0.50 → 0.25 (quarter size), 0.65 → 0.475, 0.75 → 0.625
+        # Floor at 0.25 to avoid zero-size on marginal signals.
+        confidence = getattr(signal, 'confidence', 0.5) or 0.5
+        rr = Config().ATR_REWARD_RISK_RATIO or 2.0
+        kelly = confidence - (1.0 - confidence) / rr
+        kelly = max(kelly, 0.25)  # floor: always take at least 25%
+        kelly = min(kelly, 1.0)   # cap: never exceed base size
+        position_size = int(position_size * kelly)
+        if position_size < 1:
+            position_size = 1
+
+        # Audit log — ATR, stop distance, shares, dollar risk, kelly
         atr_val = signal.reasoning.get('atr') if hasattr(signal, 'reasoning') and signal.reasoning else None
         atr_mult_val = signal.reasoning.get('atr_mult') if hasattr(signal, 'reasoning') and signal.reasoning else None
         dollar_risk = position_size * risk_per_share
         logger.info(
             "position_sizing symbol=%s price=%.2f atr=%s atr_mult=%s "
             "stop_dist=%.2f shares=%d notional=%.0f dollar_risk=%.2f "
-            "equity=%.0f risk_pct=%.4f",
+            "equity=%.0f risk_pct=%.4f confidence=%.2f kelly=%.3f",
             signal.symbol, current_price,
             round(atr_val, 3) if atr_val else "n/a",
             atr_mult_val or "n/a",
             risk_per_share, position_size,
             position_size * current_price, dollar_risk,
             self.account_balance, max_risk_pct,
+            confidence, kelly,
         )
 
         # Check against max position value
