@@ -159,34 +159,17 @@ class DynamicExitManager:
 
         pnl_percent = ((current_price - position.entry_price) / position.entry_price) * 100
 
-        # 1. Quick Scalp Exit - Take quick profits
-        if pnl_percent > 0.5 and not tracker['scalp_target_hit']:
-            if tracker['time_in_profit'] < 300:  # Less than 5 minutes
-                self.commentary.add_commentary(TradingCommentary(
-                    timestamp=datetime.now(),
-                    type=CommentaryType.DECISION,
-                    symbol=symbol,
-                    title=f"\U0001f4b0 Quick Scalp Opportunity",
-                    message=f"Up {pnl_percent:.1f}% quickly. Taking half off the table like a smart day trader would.",
-                    importance=8
-                ))
-                tracker['scalp_target_hit'] = True
-                tracker['partial_exits'].append({'price': current_price, 'portion': 0.5})
-                return True, "quick_scalp", 0.5
+        # 1. Quick Scalp Exit — DISABLED 2026-04-18
+        # Was: exit 50% if up 0.5% in <5 min. Pre-empts 1R partial exit
+        # and grabs tiny wins before the thesis can play out.
+        # Replaced by: ScaleTrailManager 1R partial exit in engine.py.
 
-        # Progressive profit taking
-        if pnl_percent > 1.5 and not tracker.get('scaled_out'):
-            tracker['scaled_out'] = True
-            self.commentary.add_commentary(TradingCommentary(
-                timestamp=datetime.now(),
-                type=CommentaryType.DECISION,
-                symbol=symbol,
-                title=f"\U0001f4b0 Scaling Out 50%",
-                message=f"Taking half off at {pnl_percent:.1f}% profit",
-                importance=8
-            ))
-            return True, "scale_out_half", 0.5
+        # Progressive profit taking — DISABLED 2026-04-18
+        # Was: exit 50% at 1.5% profit (fixed %). Conflicts with ATR-
+        # scaled 1R partial which fires at the right volatility-adjusted
+        # level instead of a fixed percentage.
 
+        # Extended target — keep this one (3%+ is a genuine outsized move)
         if pnl_percent > 3.0:
             self.commentary.add_commentary(TradingCommentary(
                 timestamp=datetime.now(),
@@ -198,24 +181,11 @@ class DynamicExitManager:
             ))
             return True, "take_profits_extended", 1.0
 
-        # 2. Momentum Failure Exit
-        if pnl_percent > 0.3:
-            # Check if momentum is dying
-            rsi = indicators.get('rsi', 50)
-            macd = indicators.get('macd', 0)
-            macd_signal = indicators.get('macd_signal', 0)
-
-            if position.side == 'long' and macd < macd_signal and rsi < 50:
-                self.commentary.add_commentary(TradingCommentary(
-                    timestamp=datetime.now(),
-                    type=CommentaryType.DECISION,
-                    symbol=symbol,
-                    title=f"\U0001f4c9 Momentum Dying",
-                    message=f"I'm up {pnl_percent:.1f}% but momentum is fading. Time to book profits before it reverses.",
-                    data={'rsi': rsi, 'macd_cross': 'bearish'},
-                    importance=8
-                ))
-                return True, "momentum_fade", 1.0
+        # 2. Momentum Failure Exit — DISABLED 2026-04-18
+        # Was: full exit at 0.3% if MACD/RSI diverge. Killed winners
+        # at +$36 avg — the primary cause of the 1.11:1 win/loss ratio.
+        # Replaced by: ATR trailing stop which protects profits without
+        # requiring indicator confirmation.
 
         # 3. Time-Based Trailing Stop
         if pnl_percent > 1.0 and not tracker['trailing_activated']:

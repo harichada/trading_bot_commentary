@@ -131,6 +131,9 @@ class TradingEngineWithCommentary:
             # Anything else (corrupt bundle, import failure of a subclass,
             # etc.) logs with traceback so a silent corruption is loud.
             logger.exception("meta_shadow_disabled_unexpected")
+        # Scale-out + trailing stop manager
+        from analysis.scale_trail_manager import ScaleTrailManager
+        self.scale_trail = ScaleTrailManager()
         # Stock screener
         self.screener = StockScreener(
             self.schwab_client,
@@ -3043,7 +3046,8 @@ class TradingEngineWithCommentary:
                 stop_loss=signal.stop_loss,
                 take_profit=signal.take_profit,
                 entry_time=datetime.now(),
-                reasoning=signal.reasoning
+                reasoning=signal.reasoning,
+                original_stop=signal.stop_loss,
             )
             self.simulated_positions[signal.symbol] = position
             
@@ -3281,34 +3285,102 @@ class TradingEngineWithCommentary:
                         ))
                     
                     # ================================================================
-                    # PROFESSIONAL EXIT MANAGER - R-Multiple Based Exits
-                    # Scale out at 1R, 2R, 3R. Move to breakeven. Trail properly.
+                    # ================================================================
+                    # ATR CALCULATION (used by scale-trail + pro exit manager)
+                    # ================================================================
+                    current_atr = None
+                    market_df = None
+                    if self.data_provider and not getattr(position, 'is_long_term', False):
+                        try:
+                            raw_data = self.data_provider.get_market_data(symbol)
+                            if not raw_data.empty and len(raw_data) >= 14:
+                                high = raw_data['High'].values
+                                low = raw_data['Low'].values
+                                close = raw_data['Close'].values
+                                tr = np.maximum(
+                                    high[1:] - low[1:],
+                                    np.maximum(
+                                        np.abs(high[1:] - close[:-1]),
+                                        np.abs(low[1:] - close[:-1])
+                                    )
+                                )
+                                current_atr = float(np.mean(tr[-14:]))
+                                market_df = raw_data.rename(columns={
+                                    'Open': 'open', 'High': 'high', 'Low': 'low',
+                                    'Close': 'close', 'Volume': 'volume'
+                                })
+                        except Exception as e:
+                            logger.debug(f"ATR calc error for {symbol}: {e}")
+
+                    # ================================================================
+                    # SCALE-OUT AT 1R + ATR TRAILING STOP
+                    # ================================================================
+                    if not getattr(position, 'is_long_term', False) and not self.auto_close_disabled:
+                        # --- 1R Partial Exit ---
+                        partial = self.scale_trail.check_partial_exit(position, current_price)
+                        if partial is not None and partial.exit_qty > 0:
+                            position.quantity -= partial.exit_qty
+                            position.scaled_out = True
+                            position.stop_loss = partial.new_stop
+                            self._audit("scale_out", symbol, "partial_exit_1R",
+                                        "1R_reached",
+                                        exit_qty=partial.exit_qty,
+                                        remaining=position.quantity,
+                                        new_stop=round(partial.new_stop, 2),
+                                        pnl_locked=round(partial.exit_qty * abs(current_price - position.entry_price), 2))
+                            self.commentary.add_commentary(TradingCommentary(
+                                timestamp=datetime.now(),
+                                type=CommentaryType.DECISION,
+                                symbol=symbol,
+                                title=f"🎯 1R Reached — Scaling Out 50%",
+                                message=(
+                                    f"Price hit 1R at ${current_price:.2f}. "
+                                    f"Closed {partial.exit_qty} shares, keeping {position.quantity}. "
+                                    f"Stop moved to breakeven at ${partial.new_stop:.2f}."
+                                ),
+                                importance=9,
+                            ))
+
+                        # --- ATR Trailing Stop ---
+                        if current_atr is not None:
+                            new_trail = self.scale_trail.update_trailing_stop(
+                                position, current_price, current_atr,
+                            )
+                            if new_trail is not None:
+                                old_trail = position.trailing_stop
+                                position.trailing_stop = new_trail
+                                self._audit("trailing_stop", symbol, "update",
+                                            "atr_trail",
+                                            old=round(old_trail or 0, 2),
+                                            new=round(new_trail, 2),
+                                            atr=round(current_atr, 3))
+
+                            if self.scale_trail.is_trailing_stop_hit(position, current_price):
+                                self._audit("trailing_stop", symbol, "exit",
+                                            "atr_trail_hit",
+                                            price=round(current_price, 2),
+                                            trail=round(position.trailing_stop, 2))
+                                self.commentary.add_commentary(TradingCommentary(
+                                    timestamp=datetime.now(),
+                                    type=CommentaryType.DECISION,
+                                    symbol=symbol,
+                                    title=f"📉 Trailing Stop Hit",
+                                    message=(
+                                        f"ATR trail at ${position.trailing_stop:.2f} breached "
+                                        f"at ${current_price:.2f}. Locking in gains."
+                                    ),
+                                    importance=9,
+                                ))
+                                await self._close_position_with_commentary(
+                                    position, "trailing_stop_atr"
+                                )
+                                continue
+
+                    # ================================================================
+                    # PROFESSIONAL EXIT MANAGER
                     # ================================================================
                     if self.pro_trading_wrapper is not None and not getattr(position, 'is_long_term', False):
                         try:
-                            # Get ATR for trailing stop calculations
-                            current_atr = None
-                            market_df = None
-                            if self.data_provider:
-                                raw_data = self.data_provider.get_market_data(symbol)
-                                if not raw_data.empty and len(raw_data) >= 14:
-                                    # Calculate ATR
-                                    high = raw_data['High'].values
-                                    low = raw_data['Low'].values
-                                    close = raw_data['Close'].values
-                                    tr = np.maximum(
-                                        high[1:] - low[1:],
-                                        np.maximum(
-                                            np.abs(high[1:] - close[:-1]),
-                                            np.abs(low[1:] - close[:-1])
-                                        )
-                                    )
-                                    current_atr = float(np.mean(tr[-14:]))
-                                    # Rename columns for pro modules
-                                    market_df = raw_data.rename(columns={
-                                        'Open': 'open', 'High': 'high', 'Low': 'low',
-                                        'Close': 'close', 'Volume': 'volume'
-                                    })
 
                             # Check for exit signals from professional exit manager
                             pro_exit_signals = self.pro_trading_wrapper.update_positions(

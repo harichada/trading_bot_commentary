@@ -65,7 +65,10 @@ class Position:
     entry_time: datetime
     unrealized_pnl: float = 0
     reasoning: Dict[str, Any] = field(default_factory=dict)
-    is_long_term: bool = False  # Flag for long-term holdings
+    is_long_term: bool = False
+    scaled_out: bool = False            # Whether 1R partial exit has fired
+    original_stop: Optional[float] = None  # Stop at entry (for computing R)
+    trailing_stop: Optional[float] = None  # Current ATR trailing stop level
 
 @dataclass
 class MarketData:
