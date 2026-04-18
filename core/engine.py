@@ -2484,7 +2484,16 @@ class TradingEngineWithCommentary:
                     quote = self.data_provider.get_quote(symbol)
                     if not quote:
                         quote = {'last': data['Close'].iloc[-1]}
-                    
+
+                    # Minimum price filter — penny stocks have spreads
+                    # wider than their ATR, making stops meaningless.
+                    # HQGE ($0.019) cost -$4,681 across 49 repeat trades.
+                    current_quote_price = float(quote.get('last', data['Close'].iloc[-1]))
+                    if current_quote_price < 5.0:
+                        self._audit("price_filter", symbol, "skip",
+                                    "below_min_price", price=round(current_quote_price, 4))
+                        continue
+
                     # Technical analysis with commentary
                     indicators = await self.technical_analyzer.analyze_with_commentary(data, symbol)
                     
