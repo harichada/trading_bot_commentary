@@ -95,6 +95,17 @@ class BreakoutStrategyWithCommentary(TradingStrategyWithCommentary):
     async def generate_signal_with_commentary(self, market_data) -> Optional[TradingSignal]:
         indicators = market_data.indicators
 
+        # v-profitability-pass-2026-04-20: disabled by default on 5-min
+        # bars. Backtest PF 0.79-0.83 after strict gates. Flip
+        # ENABLE_BREAKOUT_LONG True in Config.yaml to reactivate.
+        # Short branch still runs (gated separately by ENABLE_SHORT_MIRRORS).
+        from core.config import Config as _CfgGate
+        _cfg_gate = _CfgGate()
+        _long_enabled = _cfg_gate.ENABLE_BREAKOUT_LONG
+        _short_enabled = _cfg_gate.ENABLE_SHORT_MIRRORS
+        if not _long_enabled and not _short_enabled:
+            return None
+
         try:
             # ---- Real resistance: 20-bar high (not single-bar pivot) ----
             # A breakout means price exceeds the highest point of the last
@@ -114,20 +125,31 @@ class BreakoutStrategyWithCommentary(TradingStrategyWithCommentary):
             # bit-for-bit inside this `if market_data.close > high_20:` block.
             # Any state where close <= high_20 now falls through to the
             # breakdown check instead of an unconditional `return None`.
-            if market_data.close > high_20:
-                # ---- LONG: breakout above 20-bar high (unchanged) -----------
+            # v-profitability-pass-2026-04-20: thresholds come from config
+            # so we can A/B test stricter gates. Defaults to stricter values
+            # (1.003x break, ADX 25, volume 2.0x) based on 60-day backtest
+            # showing loose gates produced PF 0.83.
+            from core.config import Config as _CfgBO
+            _strict_bo = _CfgBO().ENABLE_STRICT_LONG_GATES
+            _break_mult = 1.003 if _strict_bo else 1.0
+            _adx_min = 25.0 if _strict_bo else 20.0
+            _vol_min = 2.0 if _strict_bo else 1.5
 
-                # Gate 2: Trend confirmation — ADX > 20 (trending, not chop)
-                if adx < 20:
+            if _long_enabled and market_data.close > high_20 * _break_mult:
+                # ---- LONG: breakout above 20-bar high -----------------------
+
+                # Gate 2: Trend confirmation — ADX
+                if adx < _adx_min:
                     self._log_decision(market_data, "skip", "weak_trend",
-                                       adx=round(adx, 1), high_20=round(high_20, 2))
+                                       adx=round(adx, 1), high_20=round(high_20, 2),
+                                       adx_min=_adx_min)
                     self.commentary.add_commentary(TradingCommentary(
                         timestamp=datetime.now(),
                         type=CommentaryType.RISK_ASSESSMENT,
                         symbol=market_data.symbol,
                         title=f"⛔ Breakout Skipped — Weak Trend",
                         message=(f"Price broke 20-bar high ${high_20:.2f} but ADX "
-                                 f"only {adx:.1f} (<20). Breakouts in choppy markets fail."),
+                                 f"only {adx:.1f} (<{_adx_min:.0f}). Breakouts in chop fail."),
                         importance=6,
                     ))
                     return None
@@ -139,11 +161,12 @@ class BreakoutStrategyWithCommentary(TradingStrategyWithCommentary):
                                        sma_20=round(sma_20, 2))
                     return None
 
-                # Gate 4: Volume confirmation — volume_ratio > 1.5 (50% above 20-bar avg)
-                if volume_ratio < 1.5:
+                # Gate 4: Volume confirmation — volume_ratio threshold
+                if volume_ratio < _vol_min:
                     self._log_decision(market_data, "skip", "low_volume",
                                        high_20=round(high_20, 2),
-                                       volume_ratio=round(volume_ratio, 2))
+                                       volume_ratio=round(volume_ratio, 2),
+                                       vol_min=_vol_min)
                     self.commentary.add_commentary(TradingCommentary(
                         timestamp=datetime.now(),
                         type=CommentaryType.RISK_ASSESSMENT,
@@ -151,7 +174,7 @@ class BreakoutStrategyWithCommentary(TradingStrategyWithCommentary):
                         title=f"⛔ Breakout Skipped — Low Volume",
                         message=(f"Price broke 20-bar high ${high_20:.2f} but volume "
                                  f"only {volume_ratio:.1f}x average. Real breakouts "
-                                 "need at least 1.5x."),
+                                 f"need at least {_vol_min:.1f}x."),
                         importance=6,
                     ))
                     return None
@@ -368,11 +391,31 @@ class MeanReversionStrategyWithCommentary(TradingStrategyWithCommentary):
                 # Skip the long when price is below MA50 AND momentum is bearish.
                 # This is the LCID 2026-04-14 setup: oversold inside a downtrend
                 # rarely mean-reverts cleanly; it usually keeps falling.
+                #
+                # v-profitability-pass-2026-04-20: the old filter was too strict
+                # — backtest showed only 57 trades in 60 days × 20 symbols at
+                # PF 2.43. The setup IS profitable; we just need more of them.
+                # New override (gated by ENABLE_RELAXED_MEAN_REV_LONG, default
+                # True): if the oversold bar is already green (close >= open),
+                # the reversal is starting — take the trade even inside the
+                # downtrend. Still skip when the bar is red (knife still falling).
+                from core.config import Config as _CfgMR
                 sma_50 = float(indicators.get('sma_50', 0))
                 macd_val = float(indicators.get('macd', 0))
                 macd_signal_val = float(indicators.get('macd_signal', 0))
-                if (sma_50 > 0 and market_data.close < sma_50
-                        and macd_val < macd_signal_val):
+                _knife_still_falling = (
+                    sma_50 > 0 and market_data.close < sma_50
+                    and macd_val < macd_signal_val
+                )
+                if _CfgMR().ENABLE_RELAXED_MEAN_REV_LONG:
+                    # Relaxed: require a red bar (close<open) to confirm
+                    # the knife is still falling at THIS bar, not just
+                    # that we're inside a downtrend.
+                    _knife_still_falling = (
+                        _knife_still_falling
+                        and market_data.close <= market_data.open
+                    )
+                if _knife_still_falling:
                     self._log_decision(market_data, "skip", "falling_knife",
                                        rsi=round(rsi, 2), sma_50=round(sma_50, 2),
                                        macd=round(macd_val, 4))
@@ -502,6 +545,17 @@ class MomentumStrategyWithCommentary(TradingStrategyWithCommentary):
     async def generate_signal_with_commentary(self, market_data) -> Optional[TradingSignal]:
         indicators = market_data.indicators
 
+        # v-profitability-pass-2026-04-20: disabled by default on 5-min
+        # bars. Backtest PF 0.84-0.85 even with close>SMA50 + RSI 55-65
+        # tighter gates. Flip ENABLE_MOMENTUM_LONG True to reactivate.
+        # Short branch still runs (gated separately by ENABLE_SHORT_MIRRORS).
+        from core.config import Config as _CfgMGate
+        _cfg_mgate = _CfgMGate()
+        _mom_long_enabled = _cfg_mgate.ENABLE_MOMENTUM_LONG
+        _mom_short_enabled = _cfg_mgate.ENABLE_SHORT_MIRRORS
+        if not _mom_long_enabled and not _mom_short_enabled:
+            return None
+
         try:
             # Check for momentum with proper type conversion
             macd = float(indicators.get('macd', 0))
@@ -515,7 +569,21 @@ class MomentumStrategyWithCommentary(TradingStrategyWithCommentary):
                                    macd=macd, rsi=rsi, adx=adx)
                 return None
 
-            if macd > macd_signal and 50 < rsi < 70 and adx > 25:
+            # v-profitability-pass-2026-04-20: tighter RSI window (55-65 vs
+            # 50-70) plus close>SMA50 trend-confirmation filter, defaulting
+            # to strict via ENABLE_STRICT_LONG_GATES. Loose gates produced
+            # PF 0.85 over 60 days — too many entries against the larger
+            # trend. close>SMA50 is symmetric to the short-mirror gate
+            # (close<SMA50) we added for bearish momentum.
+            from core.config import Config as _CfgMo
+            _strict_mo = _CfgMo().ENABLE_STRICT_LONG_GATES
+            _rsi_min, _rsi_max = (55.0, 65.0) if _strict_mo else (50.0, 70.0)
+            sma_50_long = float(indicators.get('sma_50', 0))
+            _trend_ok = (not _strict_mo) or (sma_50_long > 0 and market_data.close > sma_50_long)
+
+            if (_mom_long_enabled
+                    and macd > macd_signal and _rsi_min < rsi < _rsi_max and adx > 25
+                    and _trend_ok):
 
                 self.commentary.add_commentary(TradingCommentary(
                     timestamp=datetime.now(),

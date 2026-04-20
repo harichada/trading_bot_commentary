@@ -358,6 +358,64 @@ class Config:
         return int(self.manager.get('trading.warmup_minutes_before_open', 30))
 
     @property
+    def ENABLE_BREAKOUT_LONG(self) -> bool:
+        """Enable the breakout-long strategy (20-bar high + volume + trend).
+
+        Default False. 60-day 5-min backtest (2026-04-20, 20 top-volume
+        symbols) showed breakout-long at PF 0.79-0.83 even with strict
+        gates — 50% of entries stop out, only 18-21% hit target. The
+        strategy is structurally weak at intraday timeframes (false
+        breakouts dominate). Kept in code for daily-bar backtests and
+        optional re-enable. Flip to True in Config.yaml to reactivate."""
+        return bool(self.manager.get('trading.enable_breakout_long', False))
+
+    @property
+    def ENABLE_MOMENTUM_LONG(self) -> bool:
+        """Enable the momentum-long strategy (MACD bullish + RSI healthy +
+        ADX trending).
+
+        Default False. 60-day 5-min backtest showed momentum-long at
+        PF 0.84-0.85 even with strict gates (close>SMA50, RSI 55-65).
+        51% of entries stop out, only 16% hit target, 31-35% time out.
+        MACD bullish crossovers on 5-min bars produce too many false
+        positives. Kept in code for higher-timeframe backtests. Flip to
+        True in Config.yaml to reactivate."""
+        return bool(self.manager.get('trading.enable_momentum_long', False))
+
+    @property
+    def ENABLE_STRICT_LONG_GATES(self) -> bool:
+        """Enable the v-profitability-pass-2026-04-20 tighter gates for
+        breakout-long and momentum-long. Default True (new stricter
+        behavior); set False to restore pre-2026-04-20 gates.
+
+        Changes when True:
+          Breakout long: requires close > high_20 * 1.003 (0.3% real break,
+                         not tick), ADX > 25 (was 20), volume_ratio > 2.0
+                         (was 1.5).
+          Momentum long: requires close > SMA50 (trend confirmation),
+                         RSI 55-65 (was 50-70).
+
+        Motivation: 60-day backtest showed breakout-long PF 0.83 and
+        momentum-long PF 0.85 (both losing). High stop rate (~50%) and
+        timeout rate (~31%) pointed at false-breakout and weak-trend
+        entries. Tighter gates cut trade count and raise win rate."""
+        return bool(self.manager.get('trading.enable_strict_long_gates', True))
+
+    @property
+    def ENABLE_RELAXED_MEAN_REV_LONG(self) -> bool:
+        """Enable the v-profitability-pass-2026-04-20 relaxed falling-knife
+        filter for mean-reversion LONG. Default True.
+
+        Old behavior: skip if (close<SMA50 AND MACD<signal). Filtered out
+        too many oversold-bounce setups — backtest showed only 57 trades
+        in 60 days × 20 symbols at PF 2.43.
+        New behavior: skip only if (close<SMA50 AND MACD<signal AND
+        close<low_5) — require very-recent weakness on top of the two old
+        signals to confirm the knife is still falling. Expected to raise
+        trade count ~3-5x while keeping PF >= 1.5."""
+        return bool(self.manager.get('trading.enable_relaxed_mean_rev_long', True))
+
+    @property
     def ENABLE_SHORT_MIRRORS(self) -> bool:
         """Enable the v-short-mirrors-2026-04-20 short branches:
         - Breakout strategy: breakdown short (close < 20-bar low + trend/volume gates)

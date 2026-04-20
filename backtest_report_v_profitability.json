@@ -1,0 +1,113 @@
+{
+  "timestamp": "2026-04-20T12:42:46.301067",
+  "symbols": [
+    "NVDA",
+    "BMNU",
+    "MOBX",
+    "BITO",
+    "INTC",
+    "DXST",
+    "NVD",
+    "SPDN",
+    "SPY",
+    "TSLL",
+    "QNCX",
+    "PLUG",
+    "ONDS",
+    "AAL",
+    "SOFI",
+    "QQQ",
+    "TSLA",
+    "NOK",
+    "PLTD",
+    "XLE"
+  ],
+  "symbol_count": 20,
+  "days": 60,
+  "frequency_minutes": 5,
+  "total_trades": 1658,
+  "elapsed_seconds": 38.4,
+  "per_strategy": {
+    "breakout": {
+      "all": {
+        "n_trades": 0
+      },
+      "long": {
+        "n_trades": 0
+      },
+      "short": {
+        "n_trades": 0
+      }
+    },
+    "mean_reversion": {
+      "all": {
+        "n_trades": 1658,
+        "win_rate_pct": 52.17,
+        "avg_return_pct": 0.164,
+        "median_return_pct": 0.13,
+        "avg_win_pct": 2.117,
+        "avg_loss_pct": -1.967,
+        "sum_return_pct": 271.56,
+        "max_drawdown_pct": -105.44,
+        "per_trade_sharpe": 0.043,
+        "profit_factor": 1.174,
+        "avg_hold_bars": 23.2,
+        "exit_breakdown": {
+          "stop": 37.3,
+          "target": 44.6,
+          "timeout": 18.0,
+          "eod": 0.0
+        }
+      },
+      "long": {
+        "n_trades": 305,
+        "win_rate_pct": 58.03,
+        "avg_return_pct": 0.802,
+        "median_return_pct": 0.224,
+        "avg_win_pct": 2.435,
+        "avg_loss_pct": -1.456,
+        "sum_return_pct": 244.55,
+        "max_drawdown_pct": -23.12,
+        "per_trade_sharpe": 0.144,
+        "profit_factor": 2.312,
+        "avg_hold_bars": 28.2,
+        "exit_breakdown": {
+          "stop": 31.5,
+          "target": 46.6,
+          "timeout": 22.0,
+          "eod": 0.0
+        }
+      },
+      "short": {
+        "n_trades": 1353,
+        "win_rate_pct": 50.85,
+        "avg_return_pct": 0.02,
+        "median_return_pct": 0.087,
+        "avg_win_pct": 2.035,
+        "avg_loss_pct": -2.065,
+        "sum_return_pct": 27.01,
+        "max_drawdown_pct": -103.94,
+        "per_trade_sharpe": 0.006,
+        "profit_factor": 1.02,
+        "avg_hold_bars": 22.0,
+        "exit_breakdown": {
+          "stop": 38.7,
+          "target": 44.2,
+          "timeout": 17.1,
+          "eod": 0.0
+        }
+      }
+    },
+    "momentum": {
+      "all": {
+        "n_trades": 0
+      },
+      "long": {
+        "n_trades": 0
+      },
+      "short": {
+        "n_trades": 0
+      }
+    }
+  }
+}
