@@ -1710,6 +1710,149 @@ async def get_trades_today():
         logger.error(f"Error getting today's trades: {e}")
         return {"status": "error", "message": str(e)}
 
+@app.get("/api/trades")
+async def get_trades(date: str = None, symbol: str = None, strategy: str = None, limit: int = 50):
+    """Query trades from Postgres with optional filters.
+
+    Examples:
+      GET /api/trades                         → last 50 trades
+      GET /api/trades?date=2026-04-20         → all trades on April 20
+      GET /api/trades?symbol=TSLA             → all TSLA trades
+      GET /api/trades?strategy=breakout       → breakout trades only
+      GET /api/trades?date=2026-04-20&limit=5 → last 5 on that day
+    """
+    import os
+    from sqlalchemy import create_engine, text as sa_text
+
+    dsn = os.environ.get(
+        "POSTGRES_DSN",
+        "postgresql://rudra:rudra_dev_2024@localhost:5432/rudra_dev",
+    )
+    try:
+        engine = create_engine(dsn)
+        conditions = []
+        params = {"lim": min(limit, 500)}
+
+        if date:
+            conditions.append("DATE(exit_time) = :dt")
+            params["dt"] = date
+        if symbol:
+            conditions.append("symbol = :sym")
+            params["sym"] = symbol.upper()
+        if strategy:
+            conditions.append("strategy = :strat")
+            params["strat"] = strategy
+
+        where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+        sql = sa_text(f"""
+            SELECT id, symbol, side, strategy, entry_time::text, exit_time::text,
+                   entry_price, exit_price, quantity, pnl,
+                   ROUND(pnl_pct::numeric, 2) AS pnl_pct, exit_reason,
+                   atr_at_entry, stop_loss, take_profit, confidence,
+                   meta_proba, kelly_fraction, scaled_out, mode
+            FROM bot_trades {where}
+            ORDER BY exit_time DESC LIMIT :lim
+        """)
+
+        with engine.connect() as conn:
+            rows = conn.execute(sql, params).mappings().all()
+
+        trades = [dict(r) for r in rows]
+        summary = {
+            "count": len(trades),
+            "total_pnl": round(sum(t["pnl"] for t in trades), 2),
+            "winners": sum(1 for t in trades if t["pnl"] > 0),
+            "losers": sum(1 for t in trades if t["pnl"] < 0),
+        }
+        if trades:
+            summary["win_rate"] = round(100 * summary["winners"] / summary["count"], 1)
+
+        return {"status": "success", "summary": summary, "trades": trades}
+
+    except Exception as e:
+        logger.error(f"Error querying trades: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+@app.get("/api/decisions")
+async def get_decisions(date: str = None, symbol: str = None, component: str = None, limit: int = 100):
+    """Query engine decisions from Postgres.
+
+    Examples:
+      GET /api/decisions?component=meta_shadow    → all shadow evals
+      GET /api/decisions?symbol=TSLA&date=2026-04-20
+      GET /api/decisions?component=correlation_guard
+    """
+    import os
+    from sqlalchemy import create_engine, text as sa_text
+
+    dsn = os.environ.get(
+        "POSTGRES_DSN",
+        "postgresql://rudra:rudra_dev_2024@localhost:5432/rudra_dev",
+    )
+    try:
+        engine = create_engine(dsn)
+        conditions = []
+        params = {"lim": min(limit, 500)}
+
+        if date:
+            conditions.append("DATE(ts) = :dt")
+            params["dt"] = date
+        if symbol:
+            conditions.append("symbol = :sym")
+            params["sym"] = symbol.upper()
+        if component:
+            conditions.append("component = :comp")
+            params["comp"] = component
+
+        where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+        sql = sa_text(f"""
+            SELECT id, ts::text, component, symbol, action, reason,
+                   confidence, meta_proba, atr, price, details_json
+            FROM bot_decisions {where}
+            ORDER BY ts DESC LIMIT :lim
+        """)
+
+        with engine.connect() as conn:
+            rows = conn.execute(sql, params).mappings().all()
+
+        return {"status": "success", "count": len(rows), "decisions": [dict(r) for r in rows]}
+
+    except Exception as e:
+        logger.error(f"Error querying decisions: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+@app.get("/api/positions/db")
+async def get_positions_db():
+    """Current open positions from Postgres (synced every 60s)."""
+    import os
+    from sqlalchemy import create_engine, text as sa_text
+
+    dsn = os.environ.get(
+        "POSTGRES_DSN",
+        "postgresql://rudra:rudra_dev_2024@localhost:5432/rudra_dev",
+    )
+    try:
+        engine = create_engine(dsn)
+        with engine.connect() as conn:
+            rows = conn.execute(sa_text("""
+                SELECT symbol, side, strategy, entry_time::text, entry_price,
+                       current_price, quantity, stop_loss, take_profit,
+                       trailing_stop, scaled_out,
+                       ROUND(unrealized_pnl::numeric, 2) AS unrealized_pnl,
+                       updated_at::text
+                FROM bot_positions ORDER BY entry_time
+            """)).mappings().all()
+
+        positions = [dict(r) for r in rows]
+        return {"status": "success", "count": len(positions), "positions": positions}
+
+    except Exception as e:
+        logger.error(f"Error querying positions: {e}")
+        return {"status": "error", "message": str(e)}
+
+
 @app.post("/api/reset-pnl")
 async def reset_pnl():
     """Reset P&L values when they're incorrect"""
