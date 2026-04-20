@@ -211,7 +211,11 @@ class DbLogger:
                             "unrealized_pnl": getattr(pos, "unrealized_pnl", 0),
                             "atr_at_entry": (getattr(pos, "reasoning", {}) or {}).get("atr"),
                             "confidence": getattr(pos, "confidence", None),
-                            "mode": "simulation",
+                            # v-mode-field-2026-04-20: was hardcoded "simulation";
+                            # now reads attribute-based tag set at Position
+                            # construction. Fallback "simulation" is the safe
+                            # default for objects created before the upgrade.
+                            "mode": getattr(pos, "mode", "simulation"),
                         },
                     )
         except Exception as exc:

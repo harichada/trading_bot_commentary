@@ -344,6 +344,7 @@ class TradingEngineWithCommentary:
                             scaled_out=pd.get('scaled_out', False),
                             original_stop=pd.get('original_stop'),
                             trailing_stop=pd.get('trailing_stop'),
+                            mode=pd.get('mode', 'simulation'),
                         )
                         self.simulated_positions[symbol] = pos
                     if sim_data:
@@ -1292,7 +1293,8 @@ class TradingEngineWithCommentary:
                             stop_loss=signal.stop_loss,
                             take_profit=signal.take_profit,
                             entry_time=datetime.now(),
-                            reasoning=signal.reasoning
+                            reasoning=signal.reasoning,
+                            mode="live",
                         )
                         self.positions[signal.symbol] = position
                         
@@ -1466,7 +1468,8 @@ class TradingEngineWithCommentary:
                         take_profit=float('inf'),  # No automatic take profit
                         entry_time=datetime.now(),
                         side='long' if pos_data['quantity'] > 0 else 'short',
-                        reasoning={'source': 'external', 'strategy': 'manual_entry'}
+                        reasoning={'source': 'external', 'strategy': 'manual_entry'},
+                        mode="live",
                     )
                     position.unrealized_pnl = pos_data['total_pnl']
                     position.is_external = True  # Flag as externally created
@@ -1825,6 +1828,7 @@ class TradingEngineWithCommentary:
                 'scaled_out': getattr(pos, 'scaled_out', False),
                 'original_stop': getattr(pos, 'original_stop', None),
                 'trailing_stop': getattr(pos, 'trailing_stop', None),
+                'mode': getattr(pos, 'mode', 'simulation'),
             }
 
         state = {
@@ -1963,7 +1967,8 @@ class TradingEngineWithCommentary:
                     side='long' if pos_data['quantity'] > 0 else 'short',
                     stop_loss=0,  # No automatic stop loss
                     take_profit=float('inf'),  # No automatic take profit
-                    entry_time=datetime.now() - timedelta(hours=1)  # Approximate
+                    entry_time=datetime.now() - timedelta(hours=1),  # Approximate
+                    mode="live",
                 )
 
                 position.unrealized_pnl = pos_data['total_pnl']
@@ -2785,7 +2790,8 @@ class TradingEngineWithCommentary:
                         take_profit=existing_position['average_price'] * (1 + Config().DEFAULT_TAKE_PROFIT_PCT),
                         entry_time=datetime.now(),
                         unrealized_pnl=existing_position['total_pnl'],
-                        reasoning={'source': 'existing_schwab_position'}
+                        reasoning={'source': 'existing_schwab_position'},
+                        mode="live",
                     )
                     self.positions[signal.symbol] = position
                     
@@ -3241,6 +3247,7 @@ class TradingEngineWithCommentary:
                 entry_time=datetime.now(),
                 reasoning=signal.reasoning,
                 original_stop=signal.stop_loss,
+                mode="simulation",
             )
             self.simulated_positions[signal.symbol] = position
 
@@ -4325,9 +4332,10 @@ class TradingEngineWithCommentary:
                         take_profit=pos_data['average_price'] * (1 + Config().DEFAULT_TAKE_PROFIT_PCT),
                         entry_time=datetime.now(),  # We don't know actual entry time
                         unrealized_pnl=pos_data['total_pnl'],
-                        reasoning={'source': 'existing_position', 'tracked_from': datetime.now().isoformat()}
+                        reasoning={'source': 'existing_position', 'tracked_from': datetime.now().isoformat()},
+                        mode="live",
                     )
-                    
+
                     self.positions[symbol] = position
                     
                     # Initialize exit tracking for existing positions

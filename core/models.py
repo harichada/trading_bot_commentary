@@ -69,6 +69,11 @@ class Position:
     scaled_out: bool = False            # Whether 1R partial exit has fired
     original_stop: Optional[float] = None  # Stop at entry (for computing R)
     trailing_stop: Optional[float] = None  # Current ATR trailing stop level
+    # v-mode-field-2026-04-20: attribute-based tagging replaces the old
+    # container-only tagging ("position in self.positions = live"). Default
+    # "simulation" so an unlabeled position never silently looks live.
+    # Live-mode Position() sites must pass mode="live" explicitly.
+    mode: str = "simulation"
 
 @dataclass
 class MarketData:
