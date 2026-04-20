@@ -163,6 +163,73 @@ class DbLogger:
         except Exception as exc:
             logger.warning("db_logger_trade_error err=%s", exc)
 
+    async def sync_positions(self, positions: dict) -> None:
+        """Upsert all open positions and delete closed ones.
+
+        Called from _save_state() every loop tick so the DB always
+        reflects the current portfolio. Dashboard/queries can read
+        bot_positions instead of parsing JSON.
+        """
+        if not self._enabled:
+            return
+        try:
+            async with self._engine.begin() as conn:
+                # Clear all, then re-insert current — simplest upsert for
+                # a small table (<20 rows max). No partial-update complexity.
+                await conn.execute(text("DELETE FROM bot_positions"))
+                for symbol, pos in positions.items():
+                    if pos is None or getattr(pos, 'quantity', 0) <= 0:
+                        continue
+                    await conn.execute(
+                        text("""
+                            INSERT INTO bot_positions
+                                (symbol, side, strategy, entry_time, entry_price,
+                                 current_price, quantity, stop_loss, take_profit,
+                                 trailing_stop, original_stop, scaled_out,
+                                 unrealized_pnl, atr_at_entry, confidence, mode,
+                                 updated_at)
+                            VALUES
+                                (:symbol, :side, :strategy, :entry_time, :entry_price,
+                                 :current_price, :quantity, :stop_loss, :take_profit,
+                                 :trailing_stop, :original_stop, :scaled_out,
+                                 :unrealized_pnl, :atr_at_entry, :confidence, :mode,
+                                 NOW())
+                        """),
+                        {
+                            "symbol": pos.symbol,
+                            "side": getattr(pos, "side", "long"),
+                            "strategy": (getattr(pos, "reasoning", {}) or {}).get("strategy"),
+                            "entry_time": pos.entry_time,
+                            "entry_price": pos.entry_price,
+                            "current_price": pos.current_price,
+                            "quantity": pos.quantity,
+                            "stop_loss": pos.stop_loss,
+                            "take_profit": pos.take_profit,
+                            "trailing_stop": getattr(pos, "trailing_stop", None),
+                            "original_stop": getattr(pos, "original_stop", None),
+                            "scaled_out": getattr(pos, "scaled_out", False),
+                            "unrealized_pnl": getattr(pos, "unrealized_pnl", 0),
+                            "atr_at_entry": (getattr(pos, "reasoning", {}) or {}).get("atr"),
+                            "confidence": getattr(pos, "confidence", None),
+                            "mode": "simulation",
+                        },
+                    )
+        except Exception as exc:
+            logger.warning("db_logger_positions_error err=%s", exc)
+
+    async def delete_position(self, symbol: str) -> None:
+        """Remove a closed position from bot_positions."""
+        if not self._enabled:
+            return
+        try:
+            async with self._engine.begin() as conn:
+                await conn.execute(
+                    text("DELETE FROM bot_positions WHERE symbol = :symbol"),
+                    {"symbol": symbol},
+                )
+        except Exception as exc:
+            logger.warning("db_logger_delete_position_error err=%s", exc)
+
 
 def _safe_json(value: Any) -> Any:
     """Coerce a value to JSON-serializable form."""

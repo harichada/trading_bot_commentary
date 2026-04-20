@@ -1839,6 +1839,16 @@ class TradingEngineWithCommentary:
         with open("trading_state.json", 'w') as f:
             json.dump(state, f, indent=2, default=str)
 
+        # Sync open positions to Postgres for SQL queryability
+        if self.db_logger is not None:
+            all_positions = {**self.positions, **self.simulated_positions}
+            try:
+                asyncio.get_event_loop().create_task(
+                    self.db_logger.sync_positions(all_positions)
+                )
+            except Exception:
+                pass
+
     def _init_schwab_client(self):
         """Initialize Schwab client with commentary"""
         try:
