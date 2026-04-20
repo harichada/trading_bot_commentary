@@ -1077,7 +1077,8 @@ async def get_paper_positions():
                     'entry_price': pos.entry_price,
                     'current_price': pos.current_price,
                     'unrealized_pnl': pos.unrealized_pnl,
-                    'realized_pnl': 0
+                    'realized_pnl': 0,
+                    'mode': getattr(pos, 'mode', 'simulation'),
                 })
         return {'positions': positions}
     return {'positions': []}
@@ -1548,7 +1549,8 @@ async def websocket_endpoint(websocket: WebSocket):
                                 'stop_loss': getattr(pos, 'stop_loss', None),
                                 'take_profit': getattr(pos, 'take_profit', None),
                                 'unrealized_pnl': pos.unrealized_pnl,
-                                'type': 'simulated'
+                                'type': 'simulated',
+                                'mode': getattr(pos, 'mode', 'simulation'),
                             })
 
                 # Get real Schwab positions
@@ -1570,7 +1572,8 @@ async def websocket_endpoint(websocket: WebSocket):
                             'pnl_percent': pos['pnl_percent'],
                             'market_value': pos['market_value'],
                             'is_long_term': is_long_term,
-                            'type': 'real'
+                            'type': 'real',
+                            'mode': 'live',
                         })
 
                 # Get account info from Schwab
@@ -1837,7 +1840,7 @@ async def get_positions_db():
         engine = create_engine(dsn)
         with engine.connect() as conn:
             rows = conn.execute(sa_text("""
-                SELECT symbol, side, strategy, entry_time::text, entry_price,
+                SELECT symbol, side, strategy, mode, entry_time::text, entry_price,
                        current_price, quantity, stop_loss, take_profit,
                        trailing_stop, scaled_out,
                        ROUND(unrealized_pnl::numeric, 2) AS unrealized_pnl,
