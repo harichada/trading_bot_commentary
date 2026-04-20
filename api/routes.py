@@ -1914,6 +1914,132 @@ async def request_close_position(request: dict):
 
     return {"status": "success", "message": f"Close process initiated for {symbol}"}
 
+
+# Concurrency guard so two operators can't fire close-all simultaneously
+# (race would duplicate audit entries and double-tap the same symbol).
+_close_all_in_flight = False
+
+
+@app.post("/api/emergency/close-all")
+async def emergency_close_all(request: dict):
+    """EMERGENCY: close every open position in a mode.
+
+    Request body (all fields required):
+        mode:    "simulation" | "live" | "all"
+        confirm: must be the literal string "YES"
+
+    Returns a per-symbol report with closed[] and failed[]. Safe to
+    re-call — the second call will find no positions left.
+
+    Safety:
+      * mode has no default; the caller MUST pass it explicitly.
+      * confirm="YES" prevents accidental curl/fat-finger invocations.
+      * A module-level flag blocks concurrent calls.
+      * Every close goes through _close_position_with_commentary with
+        reason="emergency_close_all", so audit logs, trade DB rows, and
+        brain learning all see the same path as any other close.
+      * Bearer auth (TRADING_API_KEY) is enforced by the existing
+        /api/* middleware — no extra check needed here.
+    """
+    global trading_engine, _close_all_in_flight
+
+    if not trading_engine:
+        return {"status": "error", "message": "Trading engine not initialized"}
+
+    mode = request.get("mode")
+    confirm = request.get("confirm")
+
+    if mode not in ("simulation", "live", "all"):
+        return {
+            "status": "error",
+            "message": "mode required: must be 'simulation', 'live', or 'all'",
+        }
+    if confirm != "YES":
+        return {
+            "status": "error",
+            "message": 'confirm required: must be the literal string "YES"',
+        }
+
+    if _close_all_in_flight:
+        return {"status": "error", "message": "another close-all is already running"}
+
+    _close_all_in_flight = True
+    try:
+        targets: list[tuple[str, str, object]] = []  # (symbol, mode_tag, position)
+        if mode in ("simulation", "all"):
+            for sym, pos in list(trading_engine.simulated_positions.items()):
+                if pos is not None and getattr(pos, "quantity", 0) > 0:
+                    targets.append((sym, "simulation", pos))
+        if mode in ("live", "all"):
+            for sym, pos in list(trading_engine.positions.items()):
+                if pos is None or getattr(pos, "quantity", 0) <= 0:
+                    continue
+                # External/manually-managed live positions are off-limits
+                # even in an emergency — the user owns those, not the bot.
+                if getattr(pos, "is_external", False) or getattr(pos, "is_manually_managed", False):
+                    continue
+                targets.append((sym, "live", pos))
+
+        # Front-log the whole batch so the decision trail shows intent
+        # even if some individual closes fail.
+        trading_engine._audit(
+            "emergency", None, "close_all_start",
+            "manual_override",
+            mode=mode,
+            target_count=len(targets),
+            symbols=",".join(t[0] for t in targets) or "none",
+        )
+        trading_engine.commentary.add_commentary(TradingCommentary(
+            timestamp=datetime.now(),
+            type=CommentaryType.WARNING,
+            symbol=None,
+            title="\U0001f6a8 Emergency Close-All",
+            message=f"Closing {len(targets)} position(s) in mode={mode}",
+            importance=10,
+        ))
+
+        closed: list[dict] = []
+        failed: list[dict] = []
+        total_pnl = 0.0
+
+        for sym, mode_tag, pos in targets:
+            try:
+                pnl_before = float(getattr(pos, "unrealized_pnl", 0) or 0)
+                await trading_engine._close_position_with_commentary(
+                    pos, reason="emergency_close_all"
+                )
+                closed.append({
+                    "symbol": sym,
+                    "mode": mode_tag,
+                    "pnl_at_close": round(pnl_before, 2),
+                    "reason": "emergency_close_all",
+                })
+                total_pnl += pnl_before
+            except Exception as exc:
+                logger.error("emergency_close_failed symbol=%s mode=%s err=%s",
+                             sym, mode_tag, exc)
+                failed.append({"symbol": sym, "mode": mode_tag, "error": str(exc)})
+
+        trading_engine._audit(
+            "emergency", None, "close_all_done",
+            "manual_override",
+            mode=mode,
+            closed_count=len(closed),
+            failed_count=len(failed),
+            total_pnl=round(total_pnl, 2),
+        )
+
+        return {
+            "status": "success" if not failed else "partial",
+            "mode": mode,
+            "closed": closed,
+            "failed": failed,
+            "total_pnl": round(total_pnl, 2),
+        }
+    finally:
+        _close_all_in_flight = False
+
+
 @app.post("/api/toggle-long-term")
 async def toggle_long_term(request: dict):
     """Toggle long-term status for a position"""
