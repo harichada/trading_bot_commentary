@@ -3158,10 +3158,14 @@ class TradingEngineWithCommentary:
                 # On error, continue with original signal - fail open
 
         # Check portfolio concentration
-        if self.positions:
-            total_value = sum(p.current_price * p.quantity for p in self.positions.values()) 
+        # v-parity-fix-2026-04-20: include simulated_positions so sim
+        # concentration cap matches live 1:1. Previously only live
+        # positions counted, letting sim oversize the book.
+        all_open_positions = list(self.positions.values()) + list(self.simulated_positions.values())
+        if all_open_positions:
+            total_value = sum(p.current_price * p.quantity for p in all_open_positions)
             max_position_value = total_value * Config().MAX_POSITION_VALUE_PCT
-            
+
             if signal.position_size * signal.entry_price > max_position_value:
                 signal.position_size = int(max_position_value / signal.entry_price)
         # Calculate position size with explanation
@@ -3211,6 +3215,20 @@ class TradingEngineWithCommentary:
         # Execute the trade based on mode
         position = None
         if self.mode == TradingMode.SIMULATION_WITH_COMMENTARY:
+            # v-parity-fix-2026-04-20: OCO validation now runs in sim too
+            # (previously live-only at line ~386). Sim must reject the same
+            # impossible stop/target configurations live would reject so
+            # sim decisions match live 1:1.
+            is_short_sim = (signal.signal_type == SignalType.SELL
+                            and signal.symbol not in self.simulated_positions)
+            if not self._validate_oco_prices(signal.symbol, signal.stop_loss,
+                                              signal.take_profit, is_short_sim):
+                self._audit("signal_router", signal.symbol, "reject_oco_invalid_sim",
+                            signal.reasoning.get("strategy", "unknown"),
+                            side=signal.signal_type.name,
+                            stop=round(signal.stop_loss, 2),
+                            target=round(signal.take_profit, 2))
+                return
             # Create simulated position
             position = Position(
                 symbol=signal.symbol,
@@ -3225,7 +3243,7 @@ class TradingEngineWithCommentary:
                 original_stop=signal.stop_loss,
             )
             self.simulated_positions[signal.symbol] = position
-            
+
             self.commentary.add_commentary(TradingCommentary(
                 timestamp=datetime.now(),
                 type=CommentaryType.DECISION,
