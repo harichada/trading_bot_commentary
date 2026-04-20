@@ -305,23 +305,53 @@ class TradingEngineWithCommentary:
         ))
 
     def _load_state(self):
-        """Load previous trading state"""
+        """Load previous trading state including simulated positions."""
         state_file = Path("trading_state.json")
         if state_file.exists():
             try:
                 with open(state_file, 'r') as f:
                     state = json.load(f)
                     self.trade_history = state.get('trade_history', [])
-                    # Don't load P&L from state - always get fresh from Schwab
                     self.risk_manager.consecutive_losses = state.get('consecutive_losses', 0)
-                    
-                    # Load position long-term flags
+
+                    # Load real position long-term flags
                     positions_data = state.get('positions_data', {})
                     for symbol, pos_data in positions_data.items():
                         if symbol in self.positions:
                             self.positions[symbol].is_long_term = pos_data.get('is_long_term', False)
-                    
-                    # Add human-like morning routine commentary
+
+                    # Restore simulated positions so they survive restarts
+                    sim_data = state.get('simulated_positions', {})
+                    for symbol, pd in sim_data.items():
+                        if symbol in self.simulated_positions:
+                            continue  # don't overwrite if already loaded
+                        try:
+                            entry_time = datetime.fromisoformat(pd['entry_time'])
+                        except (KeyError, ValueError):
+                            entry_time = datetime.now()
+                        pos = Position(
+                            symbol=pd.get('symbol', symbol),
+                            entry_price=pd['entry_price'],
+                            current_price=pd.get('current_price', pd['entry_price']),
+                            quantity=pd['quantity'],
+                            side=pd.get('side', 'long'),
+                            stop_loss=pd['stop_loss'],
+                            take_profit=pd['take_profit'],
+                            entry_time=entry_time,
+                            unrealized_pnl=pd.get('unrealized_pnl', 0),
+                            reasoning=pd.get('reasoning', {}),
+                            is_long_term=pd.get('is_long_term', False),
+                            scaled_out=pd.get('scaled_out', False),
+                            original_stop=pd.get('original_stop'),
+                            trailing_stop=pd.get('trailing_stop'),
+                        )
+                        self.simulated_positions[symbol] = pos
+                    if sim_data:
+                        logger.info(
+                            "restored_sim_positions count=%d symbols=%s",
+                            len(sim_data), list(sim_data.keys()),
+                        )
+
                     self.commentary.add_commentary(TradingCommentary(
                         timestamp=datetime.now(),
                         type=CommentaryType.PSYCHOLOGY,
@@ -1761,8 +1791,8 @@ class TradingEngineWithCommentary:
                 logger.debug(f"Error broadcasting trade update: {e}")
     
     def _save_state(self):
-        """Save current trading state"""
-        # Save position long-term flags
+        """Save current trading state including simulated positions."""
+        # Save real position metadata (long-term flags etc.)
         positions_data = {}
         for symbol, pos in self.positions.items():
             positions_data[symbol] = {
@@ -1772,15 +1802,40 @@ class TradingEngineWithCommentary:
                 'side': pos.side,
                 'entry_time': pos.entry_time.isoformat()
             }
-        
+
+        # Save simulated positions in full so they survive restarts.
+        # Without this, every restart wipes sim positions → duplicate
+        # entries, lost P&L tracking, and broken trailing stops.
+        sim_data = {}
+        for symbol, pos in self.simulated_positions.items():
+            if pos is None or pos.quantity <= 0:
+                continue
+            sim_data[symbol] = {
+                'symbol': pos.symbol,
+                'entry_price': pos.entry_price,
+                'current_price': pos.current_price,
+                'quantity': pos.quantity,
+                'side': pos.side,
+                'stop_loss': pos.stop_loss,
+                'take_profit': pos.take_profit,
+                'entry_time': pos.entry_time.isoformat(),
+                'unrealized_pnl': pos.unrealized_pnl,
+                'reasoning': pos.reasoning,
+                'is_long_term': getattr(pos, 'is_long_term', False),
+                'scaled_out': getattr(pos, 'scaled_out', False),
+                'original_stop': getattr(pos, 'original_stop', None),
+                'trailing_stop': getattr(pos, 'trailing_stop', None),
+            }
+
         state = {
-            'trade_history': self.trade_history[-100:],  # Keep last 100 trades
-            'schwab_pnl': self.risk_manager.schwab_daily_pnl,  # Store Schwab P&L for reference
+            'trade_history': self.trade_history[-100:],
+            'schwab_pnl': self.risk_manager.schwab_daily_pnl,
             'consecutive_losses': self.risk_manager.consecutive_losses,
-            'positions_data': positions_data,  # Save position metadata
+            'positions_data': positions_data,
+            'simulated_positions': sim_data,
             'last_save': datetime.now().isoformat()
         }
-        
+
         with open("trading_state.json", 'w') as f:
             json.dump(state, f, indent=2, default=str)
 
