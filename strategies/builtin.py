@@ -96,59 +96,88 @@ class BreakoutStrategyWithCommentary(TradingStrategyWithCommentary):
         indicators = market_data.indicators
 
         try:
-            # Check for breakout with proper type conversion
-            resistance_1 = float(indicators.get('resistance_1', 0))
-            support_1 = float(indicators.get('support_1', 0))
+            # ---- Real resistance: 20-bar high (not single-bar pivot) ----
+            # A breakout means price exceeds the highest point of the last
+            # 20 bars — a genuine new high, not single-bar pivot noise.
+            high_20 = float(indicators.get('high_20', 0))
             volume_ratio = float(indicators.get('volume_ratio', 1))
+            adx = float(indicators.get('adx', 0))
+            sma_20 = float(indicators.get('sma_20', 0))
 
-            # Validate values
-            if np.isnan(resistance_1) or resistance_1 <= 0 or np.isnan(support_1) or support_1 <= 0:
+            if high_20 <= 0 or np.isnan(high_20):
                 self._log_decision(market_data, "skip", "invalid_indicators",
-                                   resistance=resistance_1, support=support_1)
+                                   high_20=high_20)
                 return None
 
-            if not (resistance_1 > 0 and market_data.close > resistance_1):
+            # Gate 1: Price must close ABOVE the 20-bar high
+            if market_data.close <= high_20:
                 self._log_decision(market_data, "skip", "no_breakout",
-                                   resistance=resistance_1, volume_ratio=round(volume_ratio, 2))
+                                   close=round(market_data.close, 2),
+                                   high_20=round(high_20, 2),
+                                   volume_ratio=round(volume_ratio, 2))
                 return None
 
-            # Breakout detected — check volume confirmation
-            volume_surge = market_data.volume > volume_ratio * 1.5
+            # Gate 2: Trend confirmation — ADX > 20 (trending, not chop)
+            if adx < 20:
+                self._log_decision(market_data, "skip", "weak_trend",
+                                   adx=round(adx, 1), high_20=round(high_20, 2))
+                self.commentary.add_commentary(TradingCommentary(
+                    timestamp=datetime.now(),
+                    type=CommentaryType.RISK_ASSESSMENT,
+                    symbol=market_data.symbol,
+                    title=f"⛔ Breakout Skipped — Weak Trend",
+                    message=(f"Price broke 20-bar high ${high_20:.2f} but ADX "
+                             f"only {adx:.1f} (<20). Breakouts in choppy markets fail."),
+                    importance=6,
+                ))
+                return None
 
-            if not volume_surge:
+            # Gate 3: Price must be above SMA20 (uptrend context)
+            if sma_20 > 0 and market_data.close < sma_20:
+                self._log_decision(market_data, "skip", "below_sma20",
+                                   close=round(market_data.close, 2),
+                                   sma_20=round(sma_20, 2))
+                return None
+
+            # Gate 4: Volume confirmation — volume_ratio > 1.5 (50% above 20-bar avg)
+            if volume_ratio < 1.5:
                 self._log_decision(market_data, "skip", "low_volume",
-                                   resistance=resistance_1, volume_ratio=round(volume_ratio, 2))
+                                   high_20=round(high_20, 2),
+                                   volume_ratio=round(volume_ratio, 2))
                 self.commentary.add_commentary(TradingCommentary(
                     timestamp=datetime.now(),
                     type=CommentaryType.RISK_ASSESSMENT,
                     symbol=market_data.symbol,
                     title=f"⛔ Breakout Skipped — Low Volume",
-                    message=(f"Price broke above ${resistance_1:.2f} but volume_ratio "
-                             f"{volume_ratio:.2f} < 1.5x. Breakouts without volume "
-                             "typically fail."),
-                    data={'breakout_level': resistance_1, 'volume_ratio': volume_ratio},
+                    message=(f"Price broke 20-bar high ${high_20:.2f} but volume "
+                             f"only {volume_ratio:.1f}x average. Real breakouts "
+                             "need at least 1.5x."),
                     importance=6,
                 ))
                 return None
 
+            # All gates passed — genuine breakout
+            breakout_distance_pct = ((market_data.close - high_20) / high_20) * 100
             self.commentary.add_commentary(TradingCommentary(
                 timestamp=datetime.now(),
                 type=CommentaryType.OPPORTUNITY,
                 symbol=market_data.symbol,
-                title=f"🚀 Breakout Detected!",
-                message=f"Price broke above resistance at ${resistance_1:.2f}. "
-                       f"Volume confirms breakout!",
+                title=f"🚀 Breakout: New 20-Bar High!",
+                message=(f"Price ${market_data.close:.2f} broke above 20-bar "
+                         f"resistance ${high_20:.2f} (+{breakout_distance_pct:.1f}%). "
+                         f"ADX {adx:.0f} confirms trend. Volume {volume_ratio:.1f}x."),
                 data={
-                    'breakout_level': resistance_1,
+                    'breakout_level': high_20,
                     'current_price': market_data.close,
-                    'volume_surge': True,
-                    'distance_from_resistance': ((market_data.close - resistance_1) / resistance_1) * 100
+                    'adx': adx,
+                    'volume_ratio': volume_ratio,
+                    'distance_pct': breakout_distance_pct,
                 },
                 confidence=0.8,
-                importance=8
+                importance=8,
             ))
 
-            # ATR-scaled stops: wider stops for volatile stocks, tighter for calm
+            # ATR-scaled stops
             from core.config import Config
             atr = _floored_atr(indicators.get('atr', market_data.close * 0.02), market_data.close)
             atr_mult = Config().ATR_STOP_MULTIPLIER
@@ -157,28 +186,30 @@ class BreakoutStrategyWithCommentary(TradingStrategyWithCommentary):
             stop_loss = market_data.close - stop_distance
             take_profit = market_data.close + (rr_ratio * stop_distance)
 
-            self._log_decision(market_data, "signal_buy", "breakout_with_volume",
-                               resistance=resistance_1, volume_ratio=round(volume_ratio, 2),
+            self._log_decision(market_data, "signal_buy", "breakout_new_high",
+                               high_20=round(high_20, 2),
+                               volume_ratio=round(volume_ratio, 2),
+                               adx=round(adx, 1),
                                stop=round(stop_loss, 2), target=round(take_profit, 2),
-                               atr=round(atr, 3), atr_mult=atr_mult,
-                               stop_dist=round(stop_distance, 2))
+                               atr=round(atr, 3), stop_dist=round(stop_distance, 2))
             return TradingSignal(
                 symbol=market_data.symbol,
                 signal_type=SignalType.BUY,
-                strength=0.8,
+                strength=min(0.6 + (adx / 100), 0.95),  # stronger ADX → higher strength
                 entry_price=market_data.close,
                 stop_loss=stop_loss,
                 take_profit=take_profit,
                 position_size=0,
                 reasoning={
                     'strategy': 'breakout',
-                    'breakout_level': resistance_1,
-                    'volume_confirmation': True,
+                    'breakout_level': high_20,
+                    'adx': adx,
+                    'volume_ratio': volume_ratio,
                     'atr': atr,
                     'atr_mult': atr_mult,
                     'stop_distance': stop_distance,
                 },
-                confidence=0.75
+                confidence=min(0.6 + (adx / 200) + (volume_ratio - 1.5) * 0.1, 0.9),
             )
         except Exception as e:
             self._log_decision(market_data, "error", "exception", err=str(e))

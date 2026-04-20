@@ -118,11 +118,19 @@ class TechnicalAnalyzerWithCommentary:
             adx = ta.trend.ADXIndicator(data['High'], data['Low'], data['Close'], window=14)
             indicators['adx'] = adx.adx().iloc[-1]
 
-            # Support/Resistance
+            # Support/Resistance — single-bar pivot (legacy, kept for ML features)
             pivot = (high[-1] + low[-1] + close[-1]) / 3
             indicators['pivot'] = float(pivot)
             indicators['resistance_1'] = float(2 * pivot - low[-1])
             indicators['support_1'] = float(2 * pivot - high[-1])
+
+            # Multi-bar resistance/support — 20-bar high/low (real breakout levels)
+            if len(high) >= 20:
+                indicators['high_20'] = float(np.max(high[-20:]))
+                indicators['low_20'] = float(np.min(low[-20:]))
+            else:
+                indicators['high_20'] = float(np.max(high))
+                indicators['low_20'] = float(np.min(low))
 
             # Add calculated metrics for ML
             indicators['returns'] = float((close[-1] - close[-2]) / close[-2]) if len(close) > 1 else 0.0
