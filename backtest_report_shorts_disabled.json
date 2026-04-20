@@ -1,0 +1,177 @@
+{
+  "timestamp": "2026-04-20T12:24:22.294369",
+  "symbols": [
+    "NVDA",
+    "BMNU",
+    "MOBX",
+    "BITO",
+    "INTC",
+    "DXST",
+    "NVD",
+    "SPDN",
+    "SPY",
+    "TSLL",
+    "QNCX",
+    "PLUG",
+    "ONDS",
+    "AAL",
+    "SOFI",
+    "QQQ",
+    "TSLA",
+    "NOK",
+    "PLTD",
+    "XLE"
+  ],
+  "symbol_count": 20,
+  "days": 60,
+  "frequency_minutes": 5,
+  "total_trades": 4879,
+  "elapsed_seconds": 74.3,
+  "per_strategy": {
+    "breakout": {
+      "all": {
+        "n_trades": 1273,
+        "win_rate_pct": 38.65,
+        "avg_return_pct": -0.21,
+        "median_return_pct": -1.172,
+        "avg_win_pct": 2.462,
+        "avg_loss_pct": -1.893,
+        "sum_return_pct": -267.05,
+        "max_drawdown_pct": -313.56,
+        "per_trade_sharpe": -0.067,
+        "profit_factor": 0.819,
+        "avg_hold_bars": 29.9,
+        "exit_breakdown": {
+          "stop": 49.0,
+          "target": 17.2,
+          "timeout": 33.2,
+          "eod": 0.5
+        }
+      },
+      "long": {
+        "n_trades": 1273,
+        "win_rate_pct": 38.65,
+        "avg_return_pct": -0.21,
+        "median_return_pct": -1.172,
+        "avg_win_pct": 2.462,
+        "avg_loss_pct": -1.893,
+        "sum_return_pct": -267.05,
+        "max_drawdown_pct": -313.56,
+        "per_trade_sharpe": -0.067,
+        "profit_factor": 0.819,
+        "avg_hold_bars": 29.9,
+        "exit_breakdown": {
+          "stop": 49.0,
+          "target": 17.2,
+          "timeout": 33.2,
+          "eod": 0.5
+        }
+      },
+      "short": {
+        "n_trades": 0
+      }
+    },
+    "mean_reversion": {
+      "all": {
+        "n_trades": 1412,
+        "win_rate_pct": 51.91,
+        "avg_return_pct": 0.036,
+        "median_return_pct": 0.128,
+        "avg_win_pct": 1.972,
+        "avg_loss_pct": -2.055,
+        "sum_return_pct": 50.38,
+        "max_drawdown_pct": -103.94,
+        "per_trade_sharpe": 0.011,
+        "profit_factor": 1.036,
+        "avg_hold_bars": 21.9,
+        "exit_breakdown": {
+          "stop": 38.0,
+          "target": 45.4,
+          "timeout": 16.6,
+          "eod": 0.0
+        }
+      },
+      "long": {
+        "n_trades": 57,
+        "win_rate_pct": 78.95,
+        "avg_return_pct": 0.476,
+        "median_return_pct": 0.422,
+        "avg_win_pct": 1.024,
+        "avg_loss_pct": -1.58,
+        "sum_return_pct": 27.14,
+        "max_drawdown_pct": -3.04,
+        "per_trade_sharpe": 0.206,
+        "profit_factor": 2.432,
+        "avg_hold_bars": 18.9,
+        "exit_breakdown": {
+          "stop": 19.3,
+          "target": 75.4,
+          "timeout": 5.3,
+          "eod": 0.0
+        }
+      },
+      "short": {
+        "n_trades": 1355,
+        "win_rate_pct": 50.77,
+        "avg_return_pct": 0.017,
+        "median_return_pct": 0.073,
+        "avg_win_pct": 2.034,
+        "avg_loss_pct": -2.063,
+        "sum_return_pct": 23.24,
+        "max_drawdown_pct": -103.94,
+        "per_trade_sharpe": 0.005,
+        "profit_factor": 1.017,
+        "avg_hold_bars": 22.0,
+        "exit_breakdown": {
+          "stop": 38.7,
+          "target": 44.1,
+          "timeout": 17.1,
+          "eod": 0.0
+        }
+      }
+    },
+    "momentum": {
+      "all": {
+        "n_trades": 2194,
+        "win_rate_pct": 37.33,
+        "avg_return_pct": -0.182,
+        "median_return_pct": -1.5,
+        "avg_win_pct": 2.674,
+        "avg_loss_pct": -1.883,
+        "sum_return_pct": -398.7,
+        "max_drawdown_pct": -472.59,
+        "per_trade_sharpe": -0.052,
+        "profit_factor": 0.846,
+        "avg_hold_bars": 31.6,
+        "exit_breakdown": {
+          "stop": 50.9,
+          "target": 16.5,
+          "timeout": 32.4,
+          "eod": 0.3
+        }
+      },
+      "long": {
+        "n_trades": 2194,
+        "win_rate_pct": 37.33,
+        "avg_return_pct": -0.182,
+        "median_return_pct": -1.5,
+        "avg_win_pct": 2.674,
+        "avg_loss_pct": -1.883,
+        "sum_return_pct": -398.7,
+        "max_drawdown_pct": -472.59,
+        "per_trade_sharpe": -0.052,
+        "profit_factor": 0.846,
+        "avg_hold_bars": 31.6,
+        "exit_breakdown": {
+          "stop": 50.9,
+          "target": 16.5,
+          "timeout": 32.4,
+          "eod": 0.3
+        }
+      },
+      "short": {
+        "n_trades": 0
+      }
+    }
+  }
+}

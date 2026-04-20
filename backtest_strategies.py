@@ -101,6 +101,10 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     pivot = (high + low + close) / 3
     ind["resistance_1"] = 2 * pivot - low.rolling(20).min().shift(1)
     ind["support_1"] = 2 * pivot - high.rolling(20).max().shift(1)
+    # 20-bar high/low — used by breakout-long and breakdown-short strategies.
+    # shift(1) so the "20-bar high" excludes the current bar (avoids lookahead).
+    ind["high_20"] = high.rolling(20).max().shift(1)
+    ind["low_20"] = low.rolling(20).min().shift(1)
     # Volume ratio
     ind["volume_ratio"] = volume / (volume.rolling(20).mean() + 1e-10)
     return ind
@@ -148,7 +152,8 @@ async def replay_symbol(
         indicators = ind.iloc[i].to_dict()
         if any(pd.isna(v) for k, v in indicators.items()
                if k in ("rsi", "macd", "macd_signal", "bb_lower", "bb_middle",
-                        "bb_upper", "atr", "adx", "sma_50", "volume_ratio")):
+                        "bb_upper", "atr", "adx", "sma_20", "sma_50",
+                        "volume_ratio", "high_20", "low_20")):
             continue
 
         md = MarketData(
@@ -334,10 +339,20 @@ async def main_async(args: argparse.Namespace) -> int:
             logger.info("progress done=%d/%d cumulative_trades=%d",
                         i, len(symbols), len(all_trades))
 
-    # Aggregate
+    # Aggregate — keep (strategy, all), (strategy, long), (strategy, short)
+    # so v-short-mirrors report can verify long-side stats didn't regress.
     by_strategy: dict[str, list[Trade]] = {name: [] for name, _ in strategies}
     for t in all_trades:
         by_strategy[t.strategy].append(t)
+
+    def _split_summary(trades: list[Trade]) -> dict:
+        longs = [t for t in trades if t.side == "long"]
+        shorts = [t for t in trades if t.side == "short"]
+        return {
+            "all": summarize(trades),
+            "long": summarize(longs),
+            "short": summarize(shorts),
+        }
 
     report = {
         "timestamp": datetime.now().isoformat(),
@@ -347,7 +362,7 @@ async def main_async(args: argparse.Namespace) -> int:
         "frequency_minutes": args.frequency,
         "total_trades": len(all_trades),
         "elapsed_seconds": round((datetime.now() - t0).total_seconds(), 1),
-        "per_strategy": {name: summarize(trades)
+        "per_strategy": {name: _split_summary(trades)
                          for name, trades in by_strategy.items()},
     }
 
@@ -358,28 +373,30 @@ async def main_async(args: argparse.Namespace) -> int:
     print(f"BACKTEST REPORT — {len(symbols)} symbols × {args.days} days "
           f"× {args.frequency}min bars")
     print("=" * 70)
-    for name in by_strategy:
-        s = report["per_strategy"][name]
-        print(f"\n{name.upper()}")
+
+    def _print_row(label: str, s: dict) -> None:
         if s["n_trades"] == 0:
-            print("  (no trades)")
-            continue
+            print(f"  {label:<7} (no trades)")
+            return
         pf = s.get("profit_factor")
         pf_str = f"{pf:.2f}" if pf is not None else "N/A"
-        print(f"  trades:             {s['n_trades']}")
-        print(f"  win rate:           {s['win_rate_pct']}%")
-        print(f"  avg return / trade: {s['avg_return_pct']:+.3f}%")
-        print(f"  median return:      {s['median_return_pct']:+.3f}%")
-        print(f"  avg win / avg loss: {s['avg_win_pct']:+.3f}% / {s['avg_loss_pct']:+.3f}%")
-        print(f"  profit factor:      {pf_str}")
-        print(f"  sum of returns:     {s['sum_return_pct']:+.2f}% (equal-sized trades)")
-        print(f"  max drawdown:       {s['max_drawdown_pct']:+.2f}%")
-        print(f"  per-trade Sharpe:   {s['per_trade_sharpe']:+.3f}")
-        print(f"  avg hold:           {s['avg_hold_bars']} bars")
-        print(f"  exits: stop={s['exit_breakdown']['stop']}% "
-              f"target={s['exit_breakdown']['target']}% "
-              f"timeout={s['exit_breakdown']['timeout']}% "
-              f"eod={s['exit_breakdown']['eod']}%")
+        print(f"  {label:<7} n={s['n_trades']:<5} "
+              f"win%={s['win_rate_pct']:<5} "
+              f"avg={s['avg_return_pct']:+.3f}% "
+              f"pf={pf_str:<5} "
+              f"sumR={s['sum_return_pct']:+7.2f}% "
+              f"mdd={s['max_drawdown_pct']:+7.2f}% "
+              f"exits(s/t/to)="
+              f"{s['exit_breakdown']['stop']}/"
+              f"{s['exit_breakdown']['target']}/"
+              f"{s['exit_breakdown']['timeout']}%")
+
+    for name in by_strategy:
+        print(f"\n{name.upper()}")
+        by_side = report["per_strategy"][name]
+        _print_row("all",   by_side["all"])
+        _print_row("long",  by_side["long"])
+        _print_row("short", by_side["short"])
     print("=" * 70 + "\n")
 
     Path(args.report_path).write_text(json.dumps(report, indent=2, default=str))

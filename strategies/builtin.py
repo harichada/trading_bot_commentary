@@ -109,105 +109,229 @@ class BreakoutStrategyWithCommentary(TradingStrategyWithCommentary):
                                    high_20=high_20)
                 return None
 
-            # Gate 1: Price must close ABOVE the 20-bar high
-            if market_data.close <= high_20:
+            # v-short-mirrors-2026-04-20: added breakdown short path below.
+            # Existing long path (Gates 1-4 + BUY signal) is preserved
+            # bit-for-bit inside this `if market_data.close > high_20:` block.
+            # Any state where close <= high_20 now falls through to the
+            # breakdown check instead of an unconditional `return None`.
+            if market_data.close > high_20:
+                # ---- LONG: breakout above 20-bar high (unchanged) -----------
+
+                # Gate 2: Trend confirmation — ADX > 20 (trending, not chop)
+                if adx < 20:
+                    self._log_decision(market_data, "skip", "weak_trend",
+                                       adx=round(adx, 1), high_20=round(high_20, 2))
+                    self.commentary.add_commentary(TradingCommentary(
+                        timestamp=datetime.now(),
+                        type=CommentaryType.RISK_ASSESSMENT,
+                        symbol=market_data.symbol,
+                        title=f"⛔ Breakout Skipped — Weak Trend",
+                        message=(f"Price broke 20-bar high ${high_20:.2f} but ADX "
+                                 f"only {adx:.1f} (<20). Breakouts in choppy markets fail."),
+                        importance=6,
+                    ))
+                    return None
+
+                # Gate 3: Price must be above SMA20 (uptrend context)
+                if sma_20 > 0 and market_data.close < sma_20:
+                    self._log_decision(market_data, "skip", "below_sma20",
+                                       close=round(market_data.close, 2),
+                                       sma_20=round(sma_20, 2))
+                    return None
+
+                # Gate 4: Volume confirmation — volume_ratio > 1.5 (50% above 20-bar avg)
+                if volume_ratio < 1.5:
+                    self._log_decision(market_data, "skip", "low_volume",
+                                       high_20=round(high_20, 2),
+                                       volume_ratio=round(volume_ratio, 2))
+                    self.commentary.add_commentary(TradingCommentary(
+                        timestamp=datetime.now(),
+                        type=CommentaryType.RISK_ASSESSMENT,
+                        symbol=market_data.symbol,
+                        title=f"⛔ Breakout Skipped — Low Volume",
+                        message=(f"Price broke 20-bar high ${high_20:.2f} but volume "
+                                 f"only {volume_ratio:.1f}x average. Real breakouts "
+                                 "need at least 1.5x."),
+                        importance=6,
+                    ))
+                    return None
+
+                # All gates passed — genuine breakout
+                breakout_distance_pct = ((market_data.close - high_20) / high_20) * 100
+                self.commentary.add_commentary(TradingCommentary(
+                    timestamp=datetime.now(),
+                    type=CommentaryType.OPPORTUNITY,
+                    symbol=market_data.symbol,
+                    title=f"🚀 Breakout: New 20-Bar High!",
+                    message=(f"Price ${market_data.close:.2f} broke above 20-bar "
+                             f"resistance ${high_20:.2f} (+{breakout_distance_pct:.1f}%). "
+                             f"ADX {adx:.0f} confirms trend. Volume {volume_ratio:.1f}x."),
+                    data={
+                        'breakout_level': high_20,
+                        'current_price': market_data.close,
+                        'adx': adx,
+                        'volume_ratio': volume_ratio,
+                        'distance_pct': breakout_distance_pct,
+                    },
+                    confidence=0.8,
+                    importance=8,
+                ))
+
+                # ATR-scaled stops
+                from core.config import Config
+                atr = _floored_atr(indicators.get('atr', market_data.close * 0.02), market_data.close)
+                atr_mult = Config().ATR_STOP_MULTIPLIER
+                rr_ratio = Config().ATR_REWARD_RISK_RATIO
+                stop_distance = atr_mult * atr
+                stop_loss = market_data.close - stop_distance
+                take_profit = market_data.close + (rr_ratio * stop_distance)
+
+                self._log_decision(market_data, "signal_buy", "breakout_new_high",
+                                   high_20=round(high_20, 2),
+                                   volume_ratio=round(volume_ratio, 2),
+                                   adx=round(adx, 1),
+                                   stop=round(stop_loss, 2), target=round(take_profit, 2),
+                                   atr=round(atr, 3), stop_dist=round(stop_distance, 2))
+                return TradingSignal(
+                    symbol=market_data.symbol,
+                    signal_type=SignalType.BUY,
+                    strength=min(0.6 + (adx / 100), 0.95),  # stronger ADX → higher strength
+                    entry_price=market_data.close,
+                    stop_loss=stop_loss,
+                    take_profit=take_profit,
+                    position_size=0,
+                    reasoning={
+                        'strategy': 'breakout',
+                        'breakout_level': high_20,
+                        'adx': adx,
+                        'volume_ratio': volume_ratio,
+                        'atr': atr,
+                        'atr_mult': atr_mult,
+                        'stop_distance': stop_distance,
+                    },
+                    confidence=min(0.6 + (adx / 200) + (volume_ratio - 1.5) * 0.1, 0.9),
+                )
+
+            # ---- SHORT: breakdown below 20-bar low ----------------------
+            # Mirror of the long gates, activated when whole watchlist is
+            # red and no long trigger can fire. Same gate logic for symmetry:
+            #   Gate 1: close < low_20 (new 20-bar low)
+            #   Gate 2: ADX > 20 (trending, not chop)
+            #   Gate 3: close < SMA20 (downtrend context)
+            #   Gate 4: volume_ratio > 1.5 (real selling pressure)
+            # Gated behind ENABLE_SHORT_MIRRORS config flag (default False) —
+            # 2026-04-20 backtest showed PF 0.69, symmetric shorts fight
+            # the oversold bounce. Code kept for config-based paper testing.
+            from core.config import Config as _Cfg
+            if not _Cfg().ENABLE_SHORT_MIRRORS:
                 self._log_decision(market_data, "skip", "no_breakout",
                                    close=round(market_data.close, 2),
                                    high_20=round(high_20, 2),
                                    volume_ratio=round(volume_ratio, 2))
                 return None
+            low_20 = float(indicators.get('low_20', 0))
+            if low_20 <= 0 or np.isnan(low_20):
+                self._log_decision(market_data, "skip", "no_breakout",
+                                   close=round(market_data.close, 2),
+                                   high_20=round(high_20, 2),
+                                   low_20=round(low_20, 2),
+                                   volume_ratio=round(volume_ratio, 2))
+                return None
 
-            # Gate 2: Trend confirmation — ADX > 20 (trending, not chop)
+            if market_data.close >= low_20:
+                self._log_decision(market_data, "skip", "no_breakout",
+                                   close=round(market_data.close, 2),
+                                   high_20=round(high_20, 2),
+                                   low_20=round(low_20, 2),
+                                   volume_ratio=round(volume_ratio, 2))
+                return None
+
             if adx < 20:
-                self._log_decision(market_data, "skip", "weak_trend",
-                                   adx=round(adx, 1), high_20=round(high_20, 2))
+                self._log_decision(market_data, "skip", "weak_trend_short",
+                                   adx=round(adx, 1), low_20=round(low_20, 2))
                 self.commentary.add_commentary(TradingCommentary(
                     timestamp=datetime.now(),
                     type=CommentaryType.RISK_ASSESSMENT,
                     symbol=market_data.symbol,
-                    title=f"⛔ Breakout Skipped — Weak Trend",
-                    message=(f"Price broke 20-bar high ${high_20:.2f} but ADX "
-                             f"only {adx:.1f} (<20). Breakouts in choppy markets fail."),
+                    title=f"⛔ Breakdown Skipped — Weak Trend",
+                    message=(f"Price broke 20-bar low ${low_20:.2f} but ADX "
+                             f"only {adx:.1f} (<20). Breakdowns in chop fail."),
                     importance=6,
                 ))
                 return None
 
-            # Gate 3: Price must be above SMA20 (uptrend context)
-            if sma_20 > 0 and market_data.close < sma_20:
-                self._log_decision(market_data, "skip", "below_sma20",
+            if sma_20 > 0 and market_data.close > sma_20:
+                self._log_decision(market_data, "skip", "above_sma20_short",
                                    close=round(market_data.close, 2),
                                    sma_20=round(sma_20, 2))
                 return None
 
-            # Gate 4: Volume confirmation — volume_ratio > 1.5 (50% above 20-bar avg)
             if volume_ratio < 1.5:
-                self._log_decision(market_data, "skip", "low_volume",
-                                   high_20=round(high_20, 2),
+                self._log_decision(market_data, "skip", "low_volume_short",
+                                   low_20=round(low_20, 2),
                                    volume_ratio=round(volume_ratio, 2))
                 self.commentary.add_commentary(TradingCommentary(
                     timestamp=datetime.now(),
                     type=CommentaryType.RISK_ASSESSMENT,
                     symbol=market_data.symbol,
-                    title=f"⛔ Breakout Skipped — Low Volume",
-                    message=(f"Price broke 20-bar high ${high_20:.2f} but volume "
-                             f"only {volume_ratio:.1f}x average. Real breakouts "
+                    title=f"⛔ Breakdown Skipped — Low Volume",
+                    message=(f"Price broke 20-bar low ${low_20:.2f} but volume "
+                             f"only {volume_ratio:.1f}x average. Real breakdowns "
                              "need at least 1.5x."),
                     importance=6,
                 ))
                 return None
 
-            # All gates passed — genuine breakout
-            breakout_distance_pct = ((market_data.close - high_20) / high_20) * 100
+            breakdown_distance_pct = ((low_20 - market_data.close) / low_20) * 100
             self.commentary.add_commentary(TradingCommentary(
                 timestamp=datetime.now(),
                 type=CommentaryType.OPPORTUNITY,
                 symbol=market_data.symbol,
-                title=f"🚀 Breakout: New 20-Bar High!",
-                message=(f"Price ${market_data.close:.2f} broke above 20-bar "
-                         f"resistance ${high_20:.2f} (+{breakout_distance_pct:.1f}%). "
+                title=f"🔻 Breakdown: New 20-Bar Low",
+                message=(f"Price ${market_data.close:.2f} broke below 20-bar "
+                         f"support ${low_20:.2f} (-{breakdown_distance_pct:.1f}%). "
                          f"ADX {adx:.0f} confirms trend. Volume {volume_ratio:.1f}x."),
                 data={
-                    'breakout_level': high_20,
+                    'breakdown_level': low_20,
                     'current_price': market_data.close,
                     'adx': adx,
                     'volume_ratio': volume_ratio,
-                    'distance_pct': breakout_distance_pct,
+                    'distance_pct': breakdown_distance_pct,
                 },
                 confidence=0.8,
                 importance=8,
             ))
 
-            # ATR-scaled stops
             from core.config import Config
-            atr = _floored_atr(indicators.get('atr', market_data.close * 0.02), market_data.close)
-            atr_mult = Config().ATR_STOP_MULTIPLIER
-            rr_ratio = Config().ATR_REWARD_RISK_RATIO
-            stop_distance = atr_mult * atr
-            stop_loss = market_data.close - stop_distance
-            take_profit = market_data.close + (rr_ratio * stop_distance)
+            atr_s = _floored_atr(indicators.get('atr', market_data.close * 0.02), market_data.close)
+            atr_mult_s = Config().ATR_STOP_MULTIPLIER
+            rr_ratio_s = Config().ATR_REWARD_RISK_RATIO
+            stop_distance_s = atr_mult_s * atr_s
+            stop_loss_s = market_data.close + stop_distance_s
+            take_profit_s = market_data.close - (rr_ratio_s * stop_distance_s)
 
-            self._log_decision(market_data, "signal_buy", "breakout_new_high",
-                               high_20=round(high_20, 2),
+            self._log_decision(market_data, "signal_sell", "breakdown_new_low",
+                               low_20=round(low_20, 2),
                                volume_ratio=round(volume_ratio, 2),
                                adx=round(adx, 1),
-                               stop=round(stop_loss, 2), target=round(take_profit, 2),
-                               atr=round(atr, 3), stop_dist=round(stop_distance, 2))
+                               stop=round(stop_loss_s, 2), target=round(take_profit_s, 2),
+                               atr=round(atr_s, 3), stop_dist=round(stop_distance_s, 2))
             return TradingSignal(
                 symbol=market_data.symbol,
-                signal_type=SignalType.BUY,
-                strength=min(0.6 + (adx / 100), 0.95),  # stronger ADX → higher strength
+                signal_type=SignalType.SELL,
+                strength=min(0.6 + (adx / 100), 0.95),
                 entry_price=market_data.close,
-                stop_loss=stop_loss,
-                take_profit=take_profit,
+                stop_loss=stop_loss_s,
+                take_profit=take_profit_s,
                 position_size=0,
                 reasoning={
-                    'strategy': 'breakout',
-                    'breakout_level': high_20,
+                    'strategy': 'breakdown',
+                    'breakdown_level': low_20,
                     'adx': adx,
                     'volume_ratio': volume_ratio,
-                    'atr': atr,
-                    'atr_mult': atr_mult,
-                    'stop_distance': stop_distance,
+                    'atr': atr_s,
+                    'atr_mult': atr_mult_s,
+                    'stop_distance': stop_distance_s,
                 },
                 confidence=min(0.6 + (adx / 200) + (volume_ratio - 1.5) * 0.1, 0.9),
             )
@@ -440,6 +564,66 @@ class MomentumStrategyWithCommentary(TradingStrategyWithCommentary):
                         'trend_strong': adx > 25
                     },
                     confidence=0.7
+                )
+
+            # v-short-mirrors-2026-04-20: bearish-momentum mirror of the
+            # long branch above. Conditions mirror long exactly:
+            #   BUY : macd>signal, 50<rsi<70, adx>25   (bullish crossover)
+            #   SELL: macd<signal, 30<rsi<50, adx>25   (bearish crossover)
+            # Extra gate: close < sma_50 to confirm established downtrend
+            # (symmetric to the falling-knife filter on the long side).
+            # Gated behind ENABLE_SHORT_MIRRORS config flag (default False) —
+            # 2026-04-20 backtest showed PF 0.69, same as breakdown short.
+            from core.config import Config as _Cfg
+            sma_50_m = float(indicators.get('sma_50', 0))
+            if (_Cfg().ENABLE_SHORT_MIRRORS
+                    and macd < macd_signal and 30 < rsi < 50 and adx > 25
+                    and sma_50_m > 0 and market_data.close < sma_50_m):
+                self.commentary.add_commentary(TradingCommentary(
+                    timestamp=datetime.now(),
+                    type=CommentaryType.OPPORTUNITY,
+                    symbol=market_data.symbol,
+                    title=f"📉 Bearish Momentum Building",
+                    message=(f"Bearish momentum: MACD bearish crossover, RSI at "
+                             f"{rsi:.1f} (weak), ADX at {adx:.1f} (strong trend), "
+                             f"price below 50-period MA."),
+                    data={
+                        'macd_crossover': False,
+                        'macd': macd,
+                        'macd_signal': macd_signal,
+                        'rsi': rsi,
+                        'adx': adx,
+                        'sma_50': sma_50_m,
+                        'trend_strength': 'strong' if adx > 30 else 'moderate',
+                    },
+                    confidence=0.7,
+                    importance=7,
+                ))
+
+                atr_m = _floored_atr(indicators.get('atr', market_data.close * 0.005), market_data.close)
+                stop_loss_m = market_data.close + 1.5 * atr_m
+                take_profit_m = market_data.close - 3.0 * atr_m
+
+                self._log_decision(market_data, "signal_sell", "macd_rsi_adx_bearish",
+                                   macd=round(macd, 4), rsi=round(rsi, 2), adx=round(adx, 2),
+                                   sma_50=round(sma_50_m, 2), atr=round(atr_m, 3),
+                                   stop=round(stop_loss_m, 2), target=round(take_profit_m, 2))
+                return TradingSignal(
+                    symbol=market_data.symbol,
+                    signal_type=SignalType.SELL,
+                    strength=0.75,
+                    entry_price=market_data.close,
+                    stop_loss=stop_loss_m,
+                    take_profit=take_profit_m,
+                    position_size=0,
+                    reasoning={
+                        'strategy': 'momentum_short',
+                        'macd_bearish': True,
+                        'rsi_weak': True,
+                        'below_sma50': True,
+                        'trend_strong': adx > 25,
+                    },
+                    confidence=0.7,
                 )
         except Exception as e:
             self._log_decision(market_data, "error", "exception", err=str(e))

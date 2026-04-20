@@ -358,6 +358,18 @@ class Config:
         return int(self.manager.get('trading.warmup_minutes_before_open', 30))
 
     @property
+    def ENABLE_SHORT_MIRRORS(self) -> bool:
+        """Enable the v-short-mirrors-2026-04-20 short branches:
+        - Breakout strategy: breakdown short (close < 20-bar low + trend/volume gates)
+        - Momentum strategy: bearish-momentum short (MACD bearish + RSI 30-50 + ADX>25 + below SMA50)
+
+        Default False. 60-day 5-min backtest (2026-04-20, 20 top-volume symbols)
+        showed both short branches at PF 0.69 — symmetric shorts fight the oversold
+        bounce. Existing mean-reversion short-side (RSI>70 fade) is unchanged by
+        this flag. Flip to True for paper testing after re-tuning gate parameters."""
+        return bool(self.manager.get('trading.enable_short_mirrors', False))
+
+    @property
     def TRADING_API_KEY(self) -> Optional[str]:
         """Bearer token that protects the REST and WebSocket API endpoints.
 
