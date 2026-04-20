@@ -2660,49 +2660,59 @@ class TradingEngineWithCommentary:
                 ))
                 logger.error(f"Error analyzing {symbol}: {e}", exc_info=True)
     
-    def _shadow_meta_evaluate_sync(self, signal) -> None:
-        """Synchronous core of shadow evaluation — runs in a thread.
+    def _shadow_meta_evaluate_sync(self, signal) -> dict | None:
+        """Synchronous core — runs in a thread, returns result for async wrapper.
 
-        Reviewers flagged that the original direct call from an async
-        context stalled the event loop on each signal (get_market_data
-        and batch_extract are both blocking CPU+I/O). Keeping the sync
-        body here and dispatching via asyncio.to_thread() in the wrapper
-        below isolates the stall from the main loop.
+        Returns a dict with audit fields if evaluation succeeds, None otherwise.
+        The async wrapper emits the _audit() call on the event loop so the
+        DB write (which requires an async context) works correctly.
         """
         if self.meta_inference is None:
-            return
+            return None
         strategy = signal.reasoning.get("strategy", "")
         if not strategy.startswith(self.meta_inference.primary_strategy):
-            return
+            return None
         try:
             df = self.data_provider.get_market_data(
                 signal.symbol, frequency_type="minute", frequency=5,
             )
             if df is None or df.empty or len(df) < 50:
-                return
+                return None
             feat_df = self.ml_predictor.model.feature_extractor.batch_extract(df)
             if feat_df.empty:
-                return
+                return None
             side = 1 if signal.signal_type == SignalType.BUY else -1
             features = feat_df.iloc[-1].to_dict()
             result = self.meta_inference.predict(features, side=side)
-            self._audit(
-                "meta_shadow", signal.symbol, "evaluated",
-                f"{strategy}_{'long' if side == 1 else 'short'}",
-                proba=round(result.win_probability, 4),
-                thr_065=result.would_trade_at_065,
-                thr_070=result.would_trade_at_070,
-                thr_075=result.would_trade_at_075,
-            )
+            return {
+                "symbol": signal.symbol,
+                "strategy": strategy,
+                "side": side,
+                "proba": round(result.win_probability, 4),
+                "thr_065": result.would_trade_at_065,
+                "thr_070": result.would_trade_at_070,
+                "thr_075": result.would_trade_at_075,
+            }
         except Exception as exc:
             logger.debug("meta_shadow_error symbol=%s err=%s", signal.symbol, exc)
+            return None
 
     async def _shadow_meta_evaluate(self, signal) -> None:
-        """Async wrapper — offloads sync body to a thread pool."""
+        """Async wrapper ��� offloads sync body to a thread, emits audit on event loop."""
         if self.meta_inference is None:
             return
         try:
-            await asyncio.to_thread(self._shadow_meta_evaluate_sync, signal)
+            result = await asyncio.to_thread(self._shadow_meta_evaluate_sync, signal)
+            if result is not None:
+                side_label = "long" if result["side"] == 1 else "short"
+                self._audit(
+                    "meta_shadow", result["symbol"], "evaluated",
+                    f"{result['strategy']}_{side_label}",
+                    proba=result["proba"],
+                    thr_065=result["thr_065"],
+                    thr_070=result["thr_070"],
+                    thr_075=result["thr_075"],
+                )
         except Exception as exc:
             logger.debug("meta_shadow_dispatch_error err=%s", exc)
 
