@@ -134,6 +134,14 @@ class TradingEngineWithCommentary:
         # Scale-out + trailing stop manager
         from analysis.scale_trail_manager import ScaleTrailManager
         self.scale_trail = ScaleTrailManager()
+        # Postgres audit logger — every decision + trade persisted to DB
+        self.db_logger = None
+        try:
+            from data_providers.db_logger import DbLogger
+            self.db_logger = DbLogger()
+            logger.info("db_logger_enabled")
+        except Exception as exc:
+            logger.warning("db_logger_disabled reason=%s", exc)
         # Stock screener
         self.screener = StockScreener(
             self.schwab_client,
@@ -239,12 +247,37 @@ class TradingEngineWithCommentary:
 
         Every decision gate that accepts, skips, or modifies a trade must
         emit one of these so trading_bot.log is a complete audit trail.
+        Also writes to Postgres bot_decisions for SQL queryability.
         """
         kv = " ".join(f"{k}={v}" for k, v in details.items())
         logger.info(
             "engine_decision component=%s symbol=%s action=%s reason=%s mode=%s %s",
             component, symbol or "-", action, reason, self.mode.value, kv,
         )
+        # Async DB write — fire-and-forget so it never blocks the loop
+        if hasattr(self, 'db_logger') and self.db_logger is not None:
+            try:
+                asyncio.get_event_loop().create_task(
+                    self.db_logger.log_decision(
+                        component=component,
+                        symbol=symbol or None,
+                        action=action,
+                        reason=reason,
+                        mode=self.mode.value,
+                        signal_type=details.get("signal_type"),
+                        confidence=details.get("confidence"),
+                        strength=details.get("strength"),
+                        meta_proba=details.get("proba"),
+                        atr=details.get("atr"),
+                        stop_distance=details.get("stop_dist") or details.get("stop_distance"),
+                        price=details.get("price"),
+                        **{k: v for k, v in details.items()
+                           if k not in ("signal_type", "confidence", "strength",
+                                        "proba", "atr", "stop_dist", "stop_distance", "price")},
+                    )
+                )
+            except Exception:
+                pass  # never break trading loop for DB
 
     # Add to rest brain - caution state:
     def reset_brain_state(self):
@@ -3827,7 +3860,38 @@ class TradingEngineWithCommentary:
             'reasoning': position.reasoning
         }
         self.trade_history.append(trade_record)
-        
+
+        # Persist to Postgres for SQL queryability
+        if self.db_logger is not None:
+            pnl_pct = ((exit_price - position.entry_price) / position.entry_price * 100
+                        if position.side == "long"
+                        else (position.entry_price - exit_price) / position.entry_price * 100)
+            try:
+                asyncio.get_event_loop().create_task(
+                    self.db_logger.log_trade(
+                        symbol=position.symbol,
+                        side=position.side or "long",
+                        strategy=(position.reasoning or {}).get("strategy"),
+                        entry_time=position.entry_time,
+                        exit_time=datetime.now(),
+                        entry_price=position.entry_price,
+                        exit_price=exit_price,
+                        quantity=position.quantity,
+                        pnl=pnl,
+                        pnl_pct=round(pnl_pct, 4),
+                        exit_reason=reason,
+                        atr_at_entry=(position.reasoning or {}).get("atr"),
+                        stop_loss=position.stop_loss,
+                        take_profit=position.take_profit,
+                        confidence=getattr(position, "confidence", None),
+                        scaled_out=getattr(position, "scaled_out", False),
+                        mode=self.mode.value,
+                        reasoning=position.reasoning,
+                    )
+                )
+            except Exception:
+                pass
+
         # Broadcast trade update immediately if we have a connection manager
         if hasattr(self, 'connection_manager') and self.connection_manager:
             try:

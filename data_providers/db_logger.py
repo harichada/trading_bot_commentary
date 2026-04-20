@@ -1,0 +1,173 @@
+"""Asynchronous Postgres logger for bot decisions and trades.
+
+Every engine decision and completed trade is written to Postgres so
+the full audit trail is queryable with SQL — no more grepping log
+files or parsing JSON state.
+
+Tables: bot_decisions, bot_trades (created by migration in engine init).
+
+Thread-safe: uses a dedicated connection pool. Non-blocking: writes
+are fire-and-forget via asyncio tasks. A failed DB write logs a
+warning but never crashes the trading loop.
+"""
+from __future__ import annotations
+
+import json
+import logging
+import os
+from datetime import datetime
+from typing import Any
+
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+
+logger = logging.getLogger("TradingBot")
+
+DEFAULT_DSN = "postgresql+asyncpg://rudra:rudra_dev_2024@localhost:5432/rudra_dev"
+
+
+class DbLogger:
+    """Fire-and-forget Postgres writer for decisions + trades."""
+
+    def __init__(self, dsn: str | None = None) -> None:
+        raw_dsn = dsn or os.environ.get("POSTGRES_DSN_ASYNC", DEFAULT_DSN)
+        # Ensure async driver
+        if "asyncpg" not in raw_dsn:
+            raw_dsn = raw_dsn.replace("postgresql://", "postgresql+asyncpg://")
+        self._engine: AsyncEngine = create_async_engine(
+            raw_dsn, pool_size=2, max_overflow=2, pool_pre_ping=True,
+        )
+        self._enabled = True
+
+    async def close(self) -> None:
+        await self._engine.dispose()
+
+    async def log_decision(
+        self,
+        component: str,
+        symbol: str | None,
+        action: str,
+        reason: str | None = None,
+        mode: str | None = None,
+        signal_type: int | None = None,
+        confidence: float | None = None,
+        strength: float | None = None,
+        meta_proba: float | None = None,
+        atr: float | None = None,
+        stop_distance: float | None = None,
+        price: float | None = None,
+        **extra: Any,
+    ) -> None:
+        """Insert one row into bot_decisions. Never raises."""
+        if not self._enabled:
+            return
+        try:
+            details = {k: _safe_json(v) for k, v in extra.items()} if extra else {}
+            async with self._engine.begin() as conn:
+                await conn.execute(
+                    text("""
+                        INSERT INTO bot_decisions
+                            (ts, component, symbol, action, reason, mode,
+                             signal_type, confidence, strength, meta_proba,
+                             atr, stop_distance, price, details_json)
+                        VALUES
+                            (NOW(), :component, :symbol, :action, :reason, :mode,
+                             :signal_type, :confidence, :strength, :meta_proba,
+                             :atr, :stop_distance, :price, :details_json)
+                    """),
+                    {
+                        "component": component,
+                        "symbol": symbol,
+                        "action": action,
+                        "reason": reason,
+                        "mode": mode,
+                        "signal_type": signal_type,
+                        "confidence": confidence,
+                        "strength": strength,
+                        "meta_proba": meta_proba,
+                        "atr": atr,
+                        "stop_distance": stop_distance,
+                        "price": price,
+                        "details_json": json.dumps(details) if details else "{}",
+                    },
+                )
+        except Exception as exc:
+            logger.warning("db_logger_decision_error err=%s", exc)
+
+    async def log_trade(
+        self,
+        symbol: str,
+        side: str,
+        strategy: str | None,
+        entry_time: datetime,
+        exit_time: datetime,
+        entry_price: float,
+        exit_price: float,
+        quantity: int,
+        pnl: float,
+        pnl_pct: float,
+        exit_reason: str,
+        atr_at_entry: float | None = None,
+        stop_loss: float | None = None,
+        take_profit: float | None = None,
+        confidence: float | None = None,
+        meta_proba: float | None = None,
+        kelly_fraction: float | None = None,
+        scaled_out: bool = False,
+        mode: str | None = None,
+        reasoning: dict | None = None,
+    ) -> None:
+        """Insert one row into bot_trades. Never raises."""
+        if not self._enabled:
+            return
+        try:
+            async with self._engine.begin() as conn:
+                await conn.execute(
+                    text("""
+                        INSERT INTO bot_trades
+                            (symbol, side, strategy, entry_time, exit_time,
+                             entry_price, exit_price, quantity, pnl, pnl_pct,
+                             exit_reason, atr_at_entry, stop_loss, take_profit,
+                             confidence, meta_proba, kelly_fraction, scaled_out,
+                             mode, reasoning_json)
+                        VALUES
+                            (:symbol, :side, :strategy, :entry_time, :exit_time,
+                             :entry_price, :exit_price, :quantity, :pnl, :pnl_pct,
+                             :exit_reason, :atr_at_entry, :stop_loss, :take_profit,
+                             :confidence, :meta_proba, :kelly_fraction, :scaled_out,
+                             :mode, :reasoning_json)
+                    """),
+                    {
+                        "symbol": symbol,
+                        "side": side,
+                        "strategy": strategy,
+                        "entry_time": entry_time,
+                        "exit_time": exit_time,
+                        "entry_price": entry_price,
+                        "exit_price": exit_price,
+                        "quantity": quantity,
+                        "pnl": pnl,
+                        "pnl_pct": pnl_pct,
+                        "exit_reason": exit_reason,
+                        "atr_at_entry": atr_at_entry,
+                        "stop_loss": stop_loss,
+                        "take_profit": take_profit,
+                        "confidence": confidence,
+                        "meta_proba": meta_proba,
+                        "kelly_fraction": kelly_fraction,
+                        "scaled_out": scaled_out,
+                        "mode": mode,
+                        "reasoning_json": json.dumps(reasoning or {}),
+                    },
+                )
+        except Exception as exc:
+            logger.warning("db_logger_trade_error err=%s", exc)
+
+
+def _safe_json(value: Any) -> Any:
+    """Coerce a value to JSON-serializable form."""
+    if isinstance(value, (str, int, float, bool, type(None))):
+        return value
+    if isinstance(value, set):
+        return list(value)
+    return str(value)
