@@ -2817,6 +2817,29 @@ class TradingEngineWithCommentary:
             self._audit("signal_router", signal.symbol, "skip", "already_tracking")
             return
 
+        # Per-symbol loss cooldown: if we just stopped out on this symbol,
+        # don't re-enter for 60 minutes. LCID re-entered 24 min after a
+        # -$81 stop-loss and lost again. The setup rarely improves that fast.
+        if not hasattr(self, '_symbol_loss_cooldown'):
+            self._symbol_loss_cooldown = {}
+        cooldown_end = self._symbol_loss_cooldown.get(signal.symbol)
+        if cooldown_end and datetime.now() < cooldown_end:
+            remaining = (cooldown_end - datetime.now()).total_seconds() / 60
+            self._audit("loss_cooldown", signal.symbol, "skip",
+                        "recent_loss", cooldown_remaining_min=round(remaining, 1))
+            self.commentary.add_commentary(TradingCommentary(
+                timestamp=datetime.now(),
+                type=CommentaryType.RISK_ASSESSMENT,
+                symbol=signal.symbol,
+                title=f"🧊 Loss Cooldown — {signal.symbol}",
+                message=(
+                    f"Skipping {signal.symbol} — lost on it recently. "
+                    f"Cooldown expires in {remaining:.0f} min."
+                ),
+                importance=6,
+            ))
+            return
+
         # Sector correlation guard — limit to 1 open position per
         # correlated group to prevent cluster stop-outs (e.g., MARA +
         # RIOT + COIN all dropping together when BTC falls).
@@ -3685,6 +3708,11 @@ class TradingEngineWithCommentary:
                 message=f"Stopped out at ${current_price:.2f}. Part of the game - on to the next one.",
                 importance=9
             ))
+            # Set 60-min cooldown on this symbol to prevent immediate re-entry
+            if not hasattr(self, '_symbol_loss_cooldown'):
+                self._symbol_loss_cooldown = {}
+            from datetime import timedelta
+            self._symbol_loss_cooldown[position.symbol] = datetime.now() + timedelta(minutes=60)
             return True, "stop_loss"
 
         # Hard take-profit check — fires on the next bar whose price
