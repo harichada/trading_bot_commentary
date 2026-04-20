@@ -13,6 +13,7 @@ from nltk.sentiment import SentimentIntensityAnalyzer
 from core.models import CommentaryType, SignalType, NewsImpact, TradingSignal, NewsItem, MarketData
 from core.commentary import TradingCommentary
 from strategies.base import TradingStrategyWithCommentary
+from strategies.builtin import _floored_atr
 
 logger = logging.getLogger('TradingBot')
 
@@ -428,7 +429,7 @@ class FreeNewsSignalStrategy(TradingStrategyWithCommentary):
 
             # ATR-scaled stops
             from core.config import Config
-            atr = float(market_data.indicators.get('atr', market_data.close * 0.02))
+            atr = _floored_atr(market_data.indicators.get('atr', market_data.close * 0.02), market_data.close)
             atr_mult = Config().ATR_STOP_MULTIPLIER
             rr_ratio = Config().ATR_REWARD_RISK_RATIO
             stop_distance = atr_mult * atr

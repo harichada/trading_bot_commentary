@@ -2518,7 +2518,19 @@ class TradingEngineWithCommentary:
         
         # Use dynamic watchlist
         watchlist = self.dynamic_watchlist
-        
+
+        # Early session guard: skip first 15 min after open (09:30-09:45 ET).
+        # Indicators computed on <15 bars of data are unreliable — ATR is
+        # microscopic, volume ratios are skewed by the opening auction.
+        # The NIO 7,052-share oversizing was caused by ATR=$0.028 on 20 min of data.
+        import pytz
+        et = datetime.now(pytz.timezone("America/New_York"))
+        market_open_time = et.replace(hour=9, minute=45, second=0, microsecond=0)
+        if et < market_open_time and et.hour == 9 and et.minute >= 30:
+            self._audit("early_session", None, "skip", "first_15min",
+                        time=et.strftime("%H:%M"))
+            return
+
         # Get current positions (both tracked and from Schwab)
         positions_held = set(self.positions.keys())
         

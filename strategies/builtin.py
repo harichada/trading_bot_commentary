@@ -10,6 +10,17 @@ from strategies.base import TradingStrategyWithCommentary
 
 logger = logging.getLogger('TradingBot')
 
+# ATR floor: 1% of price. Prevents microscopically small stops when
+# ATR is computed on too few bars (e.g., first 15 min after market open).
+# NIO at $6.70 had ATR=$0.028 → stop $0.04 from entry → 7,052 shares.
+# With floor: ATR = max(0.028, 6.70*0.01=0.067) → stop $0.10 → ~3,300 shares.
+_ATR_FLOOR_PCT = 0.01
+
+
+def _floored_atr(raw_atr: float, price: float) -> float:
+    """Ensure ATR is at least _ATR_FLOOR_PCT of price."""
+    return max(float(raw_atr), price * _ATR_FLOOR_PCT)
+
 
 class NewsSignalStrategy(TradingStrategyWithCommentary):
     """Trading strategy based on news sentiment"""
@@ -50,7 +61,7 @@ class NewsSignalStrategy(TradingStrategyWithCommentary):
 
             # ATR-scaled stops
             from core.config import Config
-            atr = float(getattr(market_data, 'indicators', {}).get('atr', market_data.close * 0.02))
+            atr = _floored_atr(getattr(market_data, 'indicators', {}).get('atr', market_data.close * 0.02), market_data.close)
             atr_mult = Config().ATR_STOP_MULTIPLIER
             rr_ratio = Config().ATR_REWARD_RISK_RATIO
             stop_distance = atr_mult * atr
@@ -139,7 +150,7 @@ class BreakoutStrategyWithCommentary(TradingStrategyWithCommentary):
 
             # ATR-scaled stops: wider stops for volatile stocks, tighter for calm
             from core.config import Config
-            atr = float(indicators.get('atr', market_data.close * 0.02))
+            atr = _floored_atr(indicators.get('atr', market_data.close * 0.02), market_data.close)
             atr_mult = Config().ATR_STOP_MULTIPLIER
             rr_ratio = Config().ATR_REWARD_RISK_RATIO
             stop_distance = atr_mult * atr
@@ -243,7 +254,7 @@ class MeanReversionStrategyWithCommentary(TradingStrategyWithCommentary):
                     importance=7
                 ))
                 from core.config import Config
-                atr = float(indicators.get('atr', market_data.close * 0.02))
+                atr = _floored_atr(indicators.get('atr', market_data.close * 0.02), market_data.close)
                 atr_mult = Config().ATR_STOP_MULTIPLIER
                 rr_ratio = Config().ATR_REWARD_RISK_RATIO
                 stop_distance = atr_mult * atr
@@ -290,7 +301,7 @@ class MeanReversionStrategyWithCommentary(TradingStrategyWithCommentary):
                     importance=7
                 ))
                 from core.config import Config
-                atr = float(indicators.get('atr', market_data.close * 0.02))
+                atr = _floored_atr(indicators.get('atr', market_data.close * 0.02), market_data.close)
                 atr_mult = Config().ATR_STOP_MULTIPLIER
                 rr_ratio = Config().ATR_REWARD_RISK_RATIO
                 stop_distance = atr_mult * atr
@@ -375,7 +386,7 @@ class MomentumStrategyWithCommentary(TradingStrategyWithCommentary):
                 # ever hit the 6% target while 47% timed out — backtest 2026-04-14.
                 # 1.5x ATR stop / 3x ATR target = 2:1 R:R, achievable in ~10-20
                 # bars given typical intraday volatility.
-                atr = float(indicators.get('atr', market_data.close * 0.005))
+                atr = _floored_atr(indicators.get('atr', market_data.close * 0.005), market_data.close)
                 stop_loss = market_data.close - 1.5 * atr
                 take_profit = market_data.close + 3.0 * atr
 
