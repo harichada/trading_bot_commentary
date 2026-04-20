@@ -3033,14 +3033,24 @@ class TradingEngineWithCommentary:
                             threshold=round(ml_veto_threshold, 3))
                 return
 
-            # Treat sim and live identically so simulation previews match
-            # what live would do. Previously sim took the trade anyway after
-            # a sub-veto-threshold ML disagreement, which made simulation a
-            # poor predictor of live behaviour.
-            self._audit("ml", signal.symbol, "skip", "ml_disagreement",
+            # v-ml-advisor-2026-04-20: below the veto threshold, ML is an
+            # ADVISOR, not a gatekeeper. The prior behaviour was to skip the
+            # trade on ANY disagreement regardless of ML confidence — which
+            # silently blocked every mean-reversion short (ML is long-biased
+            # by training distribution, will always predict BUY at high RSI)
+            # and every other contrarian signal. Backtest PF 2.31 on mean-rev
+            # long was measured with ML off; running with "any disagreement
+            # blocks" produced zero trades today.
+            #
+            # New behaviour: log the disagreement and REDUCE strategy
+            # confidence by 0.7x (same pattern the against-daily-trend check
+            # uses at line 3052). Position sizing will down-weight the trade
+            # but it still gets a chance to fire.
+            signal.confidence *= 0.7
+            self._audit("ml", signal.symbol, "proceed", "ml_disagreement_low_conf",
                         ml_signal=ml_signal, ml_conf=round(ml_confidence, 3),
-                        expected=expected_ml_signal)
-            return
+                        expected=expected_ml_signal,
+                        strategy_conf_after=round(signal.confidence, 3))
         # Multi-timeframe confirmation
         try:
             daily_data = self.data_provider.get_market_data(signal.symbol, frequency_type='daily', frequency=1)
