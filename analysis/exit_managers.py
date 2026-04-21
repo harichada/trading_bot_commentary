@@ -138,7 +138,22 @@ class DynamicExitManager:
         """
         Evaluate if we should exit - returns (should_exit, reason, exit_portion)
         exit_portion: 1.0 for full exit, 0.5 for half, etc.
+
+        v-short-exit-fix-2026-04-21: this manager is LONG-ONLY. Every
+        price comparison (pnl_percent direction, `current_price <= current_stop`
+        at line 249, extended target at pnl_percent > 3.0, exhaustion on RSI
+        > 75, etc.) is written assuming entry is below price = win.
+        For a SHORT position, current_stop comes from signal.stop_loss which
+        is ABOVE entry, so `current_price <= current_stop` trips on the very
+        first evaluation bar and exits with reason "trailing_stop". That's
+        the root of today's 37-trade churn loop (LCID/PLTR/RIVN/FUBO all
+        entered short, closed within 1-15 seconds with tiny P&L).
+        Short exits are handled correctly by analysis/scale_trail_manager.py
+        (engine.py line ~3554 onwards) — it branches on position.side and
+        computes ATR trail from the correct direction. Skip shorts here.
         """
+        if position.side == "short":
+            return False, "", 0
         symbol = position.symbol
         tracker = self.exit_trackers.get(symbol, {})
 

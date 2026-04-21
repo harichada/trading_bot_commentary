@@ -2846,6 +2846,22 @@ class TradingEngineWithCommentary:
             ))
             return
 
+        # v-short-exit-fix-2026-04-21: generic re-entry cooldown after
+        # ANY exit (not just stop-loss). Belt-and-suspenders after today's
+        # churn loop where a long-only exit manager fired "trailing_stop"
+        # on every short entry, re-entered within 30-60s, and burned
+        # 37 round-trips in 90 min. Capped at 5 min so genuine re-setups
+        # aren't locked out — this guard only fires within the fast-churn
+        # window a real re-entry shouldn't be in anyway.
+        if not hasattr(self, '_symbol_reentry_cooldown'):
+            self._symbol_reentry_cooldown = {}
+        reentry_end = self._symbol_reentry_cooldown.get(signal.symbol)
+        if reentry_end and datetime.now() < reentry_end:
+            remaining = (reentry_end - datetime.now()).total_seconds() / 60
+            self._audit("reentry_cooldown", signal.symbol, "skip",
+                        "recent_exit", cooldown_remaining_min=round(remaining, 2))
+            return
+
         # Sector correlation guard — limit to 1 open position per
         # correlated group to prevent cluster stop-outs (e.g., MARA +
         # RIOT + COIN all dropping together when BTC falls).
@@ -3964,6 +3980,15 @@ class TradingEngineWithCommentary:
             win_rate = self.strategy_performance[strategy]['wins'] / self.strategy_performance[strategy]['total']
             if win_rate < 0.35:
                 logger.warning(f"Disabling {strategy} - win rate {win_rate:.1%}")
+        # v-short-exit-fix-2026-04-21: generic 5-min re-entry cooldown
+        # on every exit. Caller-agnostic belt for the churn class of bug.
+        # The 60-min loss cooldown at engine.py:3750 still applies on top
+        # for stop-loss exits specifically.
+        if not hasattr(self, '_symbol_reentry_cooldown'):
+            self._symbol_reentry_cooldown = {}
+        from datetime import timedelta as _td
+        self._symbol_reentry_cooldown[position.symbol] = datetime.now() + _td(minutes=5)
+
         # Save state after each trade
         self._save_state()
 
