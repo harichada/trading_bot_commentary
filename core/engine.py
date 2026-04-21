@@ -4191,16 +4191,24 @@ class TradingEngineWithCommentary:
             current_cash = current_balances.get('cashBalance', 0)
             buying_power = current_balances.get('buyingPower', 0)
             
-            # Get today's P&L from positions ONLY (most reliable)
+            # v-schwab-pnl-fix-2026-04-21: prefer netChange × quantity for
+            # per-position day P&L. currentDayProfitLoss is unreliable on
+            # same-day-lot-transferred positions (observed PLTR +$21,932 on
+            # a -$3,393 position). netChange is the per-share intraday $
+            # move and is consistent across every position type we've seen.
             day_pnl = 0
             if 'positions' in account:
                 for position in account.get('positions', []):
-                    # Schwab provides currentDayProfitLoss for each position
-                    position_day_pnl = position.get('currentDayProfitLoss', 0)
-                    if position_day_pnl == 0:
-                        # Fallback: Check for other P&L fields
-                        position_day_pnl = position.get('dayGainLoss', 0)
-                    day_pnl += position_day_pnl
+                    qty = position.get('longQuantity', 0) - position.get('shortQuantity', 0)
+                    net_change = (position.get('instrument') or {}).get('netChange', 0)
+                    if net_change:
+                        day_pnl += net_change * qty
+                    else:
+                        # Fallbacks (rarely hit)
+                        position_day_pnl = position.get('currentDayProfitLoss', 0)
+                        if position_day_pnl == 0:
+                            position_day_pnl = position.get('dayGainLoss', 0)
+                        day_pnl += position_day_pnl
             
             logger.debug(f"Schwab Direct Values - Balance: ${current_value:.2f}, P&L: ${day_pnl:.2f}, Cash: ${current_cash:.2f}")
             
@@ -4283,14 +4291,36 @@ class TradingEngineWithCommentary:
                     # Get prices
                     average_price = pos.get('averagePrice', 0)
                     market_value = pos.get('marketValue', 0)
-                    
+
                     # Calculate current price
                     current_price = market_value / quantity if quantity != 0 else 0
-                    
-                    # Get P&L
-                    day_pnl = pos.get('currentDayProfitLoss', 0)
-                    total_pnl = pos.get('unrealizedProfitLoss', 0)
-                    
+
+                    # v-schwab-pnl-fix-2026-04-21: Schwab payload field names
+                    # differ from what the old code assumed.
+                    #   unrealizedProfitLoss   — NOT present in responses. The
+                    #       old .get(default=0) silently returned 0, which is
+                    #       why every position showed total_pnl=0.
+                    #   longOpenProfitLoss /   — Schwab's authoritative total
+                    #   shortOpenProfitLoss      unrealized P&L per position.
+                    #   currentDayProfitLoss   — unreliable. Same-day lot
+                    #       transfers can inflate this dramatically (e.g.
+                    #       observed PLTR value $21,932 on a -$3,393 position,
+                    #       paired with currentDayCost -$21,823 so the account
+                    #       total nets out — but the per-position number is
+                    #       broken for our purposes).
+                    #   netChange              — per-share $ move today,
+                    #       reliable for any open position.
+                    if quantity > 0:
+                        total_pnl = pos.get('longOpenProfitLoss', 0)
+                    else:
+                        total_pnl = pos.get('shortOpenProfitLoss', 0)
+
+                    net_change = (instrument or {}).get('netChange', 0)
+                    if net_change:
+                        day_pnl = net_change * quantity
+                    else:
+                        day_pnl = pos.get('currentDayProfitLoss', 0)
+
                     # Calculate percentages
                     pnl_percent = (total_pnl / (average_price * abs(quantity))) * 100 if average_price > 0 and quantity != 0 else 0
                     
