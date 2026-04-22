@@ -2319,8 +2319,15 @@ class TradingEngineWithCommentary:
                         if quote and 'price' in quote:
                             old_price = position.current_price
                             position.current_price = quote['price']
-                            # Update unrealized PnL
-                            position.unrealized_pnl = (position.current_price - position.entry_price) * position.quantity
+                            # v-pnl-sign-fix-2026-04-22: side-aware P&L.
+                            # Short profit = entry above current; long the
+                            # reverse. Without the branch, a short PLTR
+                            # short ends up with long-style P&L (+ when
+                            # price rises) overwriting side-aware writers.
+                            if position.side == 'short':
+                                position.unrealized_pnl = (position.entry_price - position.current_price) * position.quantity
+                            else:
+                                position.unrealized_pnl = (position.current_price - position.entry_price) * position.quantity
                             # Log significant price movements (guard /0)
                             if old_price:
                                 price_change = abs(position.current_price - old_price) / old_price
@@ -2340,7 +2347,11 @@ class TradingEngineWithCommentary:
                                 if symbol in quote_data:
                                     old_price = position.current_price
                                     position.current_price = quote_data[symbol]['quote']['lastPrice']
-                                    position.unrealized_pnl = (position.current_price - position.entry_price) * position.quantity
+                                    # v-pnl-sign-fix-2026-04-22: side-aware P&L (see matching fix above)
+                                    if position.side == 'short':
+                                        position.unrealized_pnl = (position.entry_price - position.current_price) * position.quantity
+                                    else:
+                                        position.unrealized_pnl = (position.current_price - position.entry_price) * position.quantity
                                     
                                     # Log significant price movements
                                     price_change = abs(position.current_price - old_price) / old_price

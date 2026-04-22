@@ -1525,8 +1525,11 @@ async def websocket_endpoint(websocket: WebSocket):
                                     quote = await trading_engine.data_provider.get_current_quote(symbol)
                                     if quote and 'price' in quote:
                                         pos.current_price = quote['price']
-                                        # Recalculate unrealized PnL
-                                        pos.unrealized_pnl = (pos.current_price - pos.entry_price) * pos.quantity
+                                        # v-pnl-sign-fix-2026-04-22: side-aware P&L
+                                        if getattr(pos, 'side', 'long') == 'short':
+                                            pos.unrealized_pnl = (pos.entry_price - pos.current_price) * pos.quantity
+                                        else:
+                                            pos.unrealized_pnl = (pos.current_price - pos.entry_price) * pos.quantity
                                 elif trading_engine.schwab_client:
                                     # Try to get quote from Schwab
                                     try:
@@ -1535,7 +1538,10 @@ async def websocket_endpoint(websocket: WebSocket):
                                             quote_data = response.json()
                                             if symbol in quote_data:
                                                 pos.current_price = quote_data[symbol]['quote']['lastPrice']
-                                                pos.unrealized_pnl = (pos.current_price - pos.entry_price) * pos.quantity
+                                                if getattr(pos, 'side', 'long') == 'short':
+                                                    pos.unrealized_pnl = (pos.entry_price - pos.current_price) * pos.quantity
+                                                else:
+                                                    pos.unrealized_pnl = (pos.current_price - pos.entry_price) * pos.quantity
                                     except Exception as e:
                                         logger.debug(f"Error getting quote for {symbol}: {e}")
                             except Exception as e:
