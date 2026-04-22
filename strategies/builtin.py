@@ -482,6 +482,19 @@ class MeanReversionStrategyWithCommentary(TradingStrategyWithCommentary):
                     confidence=0.65
                 )
             elif rsi > 70 and market_data.close > bb_upper:
+                # v-disable-shorts-2026-04-22: mean-reversion SHORT gated
+                # behind ENABLE_MEAN_REV_SHORT (default False). Live 5/5
+                # trades today: PF 0.25, realized -$115. Missing rising-peak
+                # filter equivalent to the long side's falling-knife filter.
+                # Existing open shorts keep running — this only blocks NEW
+                # entries. Re-enable via trading.enable_mean_rev_short=true.
+                from core.config import Config as _CfgMS
+                if not _CfgMS().ENABLE_MEAN_REV_SHORT:
+                    self._log_decision(market_data, "skip", "short_disabled",
+                                       rsi=round(rsi, 2),
+                                       close=round(market_data.close, 2),
+                                       bb_upper=round(bb_upper, 2))
+                    return None
                 distance_from_mean = ((market_data.close - bb_middle) / market_data.close) * 100
                 self.commentary.add_commentary(TradingCommentary(
                     timestamp=datetime.now(),

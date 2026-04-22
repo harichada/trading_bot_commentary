@@ -358,6 +358,27 @@ class Config:
         return int(self.manager.get('trading.warmup_minutes_before_open', 30))
 
     @property
+    def ENABLE_MEAN_REV_SHORT(self) -> bool:
+        """Enable the mean-reversion SHORT branch (RSI > 70 + above BB upper).
+
+        Default False. Live evidence 2026-04-22: 5 closed short trades,
+        2 wins / 3 losses, realized -$115.03, profit factor 0.25.
+        60-day backtest showed PF 1.02 — marginal on a neutral tape and
+        a loser on an uptrending one (RSI>70 is the norm, not a reversal
+        signal, during a rally).
+
+        Structural issue: no symmetric "rising peak" filter exists to
+        match the long side's "falling knife" filter. Short fires on any
+        overbought reading, including peaks in confirmed uptrends that
+        just keep making higher highs.
+
+        Flip True in Config.yaml to re-enable — ideally after adding the
+        trend-context filter (require close<SMA50 AND MACD<signal before
+        taking the short). Existing short positions remain under the bot's
+        exit management when this flag is off; only NEW shorts are blocked."""
+        return bool(self.manager.get('trading.enable_mean_rev_short', False))
+
+    @property
     def ENABLE_BREAKOUT_LONG(self) -> bool:
         """Enable the breakout-long strategy (20-bar high + volume + trend).
 
