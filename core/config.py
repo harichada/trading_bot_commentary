@@ -319,7 +319,13 @@ class Config:
 
     @property
     def MAX_POSITION_VALUE(self):
-        return self.manager.get('trading.max_position_value', 10000)
+        # v-margin-sizing-2026-04-22: raised default from $10k → $25k so the
+        # new buying-power-based cap (MAX_POSITION_VALUE_BP_PCT, 15% of BP)
+        # becomes the binding constraint on typical margin accounts. This
+        # field now acts as an absolute safety ceiling; the BP cap does the
+        # real adaptive work. Legacy config files pinning this to 10000
+        # still work — they'll just bind tighter than the BP cap.
+        return self.manager.get('trading.max_position_value', 25000)
 
     @property
     def MIN_BUYING_POWER(self):
@@ -356,6 +362,27 @@ class Config:
 
         Default 30 — set to 0 to disable warmup."""
         return int(self.manager.get('trading.warmup_minutes_before_open', 30))
+
+    @property
+    def MAX_POSITION_VALUE_BP_PCT(self) -> float:
+        """Per-position notional cap as a fraction of BUYING POWER (not
+        equity). Default 0.15 = 15% of BP. With max_positions=5, this
+        caps total utilization at 5 × 15% = 75% of BP — leaves headroom
+        for volatility and concentration rules.
+
+        On $71k buying power (observed with 2.6x margin on $27k equity):
+          0.15 × 71k = $10,650 per position  (up from old fixed $10k cap)
+          0.20 × 71k = $14,200 per position
+          0.25 × 71k = $17,750 per position
+
+        RISK per trade still comes from MAX_RISK_PER_TRADE × EQUITY,
+        NOT buying power. Position size grows with margin, but maximum
+        loss stays tied to what we can actually afford (equity).
+
+        The legacy fixed MAX_POSITION_VALUE ($10k) still applies as an
+        absolute ceiling — whichever is smaller wins. Set
+        trading.max_position_value very high to remove that ceiling."""
+        return float(self.manager.get('trading.max_position_value_bp_pct', 0.15))
 
     @property
     def ENABLE_MEAN_REV_SHORT(self) -> bool:

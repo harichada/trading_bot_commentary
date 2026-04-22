@@ -158,20 +158,30 @@ class RiskManagerWithCommentary:
             confidence, kelly,
         )
 
-        # Check against max position value
-        max_position_value = Config().MAX_POSITION_VALUE or 10000  # Default $10k
+        # v-margin-sizing-2026-04-22: cap combines two limits:
+        #   (a) MAX_POSITION_VALUE     — absolute $ ceiling (legacy, $10k default)
+        #   (b) buying_power × PCT     — scales with margin (15% of BP default)
+        # The tighter of the two wins. On a $27k/$71k BP account with default
+        # settings, (b) = $10,650 so (b) is slightly larger than (a) — bump
+        # trading.max_position_value in Config.yaml to unlock (b) fully.
+        abs_cap = Config().MAX_POSITION_VALUE or 10000
+        bp_cap = self.buying_power * Config().MAX_POSITION_VALUE_BP_PCT
+        max_position_value = min(abs_cap, bp_cap) if bp_cap > 0 else abs_cap
+
         min_position_size = Config().MIN_POSITION_SIZE or 1  # Default 1 share
         position_value = position_size * current_price
         if position_value > max_position_value:
             old_size = position_size
             position_size = int(max_position_value / current_price)
 
+            cap_source = "buying_power" if bp_cap < abs_cap else "abs_ceiling"
             self.commentary.add_commentary(TradingCommentary(
                 timestamp=datetime.now(),
                 type=CommentaryType.RISK_ASSESSMENT,
                 symbol=signal.symbol,
                 title=f"⚠️ Position Size Capped",
-                message=f"Reduced from {old_size} to {position_size} shares (max ${max_position_value})",
+                message=f"Reduced from {old_size} to {position_size} shares "
+                        f"(max ${max_position_value:,.0f} via {cap_source})",
                 importance=7
             ))
 
