@@ -364,6 +364,42 @@ class Config:
         return int(self.manager.get('trading.warmup_minutes_before_open', 30))
 
     @property
+    def TRAIL_ACTIVATION_ATR_MULT(self) -> float:
+        """ATR multiples the price must move in favor before the trailing
+        stop engages. Default 2.0. Was hardcoded 1.0 until 2026-04-23 —
+        too tight: trail fired at breakeven levels, locking in pennies.
+
+        Evidence (2026-04-23, 14 trades): avg win +$16.58 vs avg loss
+        -$56.98 = R:R 0.29, unprofitable even at 50% win rate because
+        winners never reached the 3×ATR take-profit. Raising activation
+        to 2×ATR forces price to prove momentum before the trail bites.
+
+        Tuning: higher = more patience (winners run longer, small wins
+        become no-wins); lower = more protection (catches more wins but
+        smaller). Sweet spot typically between 1.5 and 2.5 for 5-min bars."""
+        return float(self.manager.get('trading.trail_activation_atr_mult', 2.0))
+
+    @property
+    def TRAIL_WIDTH_ATR_MULT(self) -> float:
+        """Once activated, the trailing stop sits this many ATRs behind
+        the running peak. Default 1.5. Was hardcoded 1.0 — equal to the
+        average intraday noise, so any normal pullback triggered exit.
+
+        With entry stop at 1.5×ATR and trail width at 1.5×ATR, winners
+        and losers have symmetric risk — so the 3×ATR take-profit can
+        actually be reached by surviving normal pullbacks."""
+        return float(self.manager.get('trading.trail_width_atr_mult', 1.5))
+
+    @property
+    def KELLY_FLOOR(self) -> float:
+        """Minimum Kelly multiplier for position sizing. Default 0.50.
+        Was 0.25 — quarter-sized any sub-0.60 confidence signal, making
+        the bot fire trivially small trades that commissions + slippage
+        eat alive. Raising to 0.50 doubles the floor; high-confidence
+        trades (> 0.75) naturally get full-Kelly."""
+        return float(self.manager.get('trading.kelly_floor', 0.50))
+
+    @property
     def MAX_POSITION_VALUE_BP_PCT(self) -> float:
         """Per-position notional cap as a fraction of BUYING POWER (not
         equity). Default 0.15 = 15% of BP. With max_positions=5, this

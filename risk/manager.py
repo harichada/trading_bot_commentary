@@ -131,12 +131,17 @@ class RiskManagerWithCommentary:
         # For our 2:1 R:R (ATR_REWARD_RISK_RATIO=2.0):
         #   kelly_fraction = 1.5 × win_prob - 0.5
         # Maps: 0.50 → 0.25 (quarter size), 0.65 → 0.475, 0.75 → 0.625
-        # Floor at 0.25 to avoid zero-size on marginal signals.
+        #
+        # v-trail-widen-2026-04-23: floor raised 0.25 → 0.50 (Config.KELLY_FLOOR).
+        # Live evidence: trades at the 0.25 floor generated $5-40 wins that
+        # commissions + slippage ate alive. A 0.50 floor says "if the signal
+        # passed every gate, it's worth at least half size." Very-low-conf
+        # signals should be rejected upstream, not sized down.
         confidence = getattr(signal, 'confidence', 0.5) or 0.5
         rr = Config().ATR_REWARD_RISK_RATIO or 2.0
         kelly = confidence - (1.0 - confidence) / rr
-        kelly = max(kelly, 0.25)  # floor: always take at least 25%
-        kelly = min(kelly, 1.0)   # cap: never exceed base size
+        kelly = max(kelly, Config().KELLY_FLOOR)  # floor: configurable
+        kelly = min(kelly, 1.0)                    # cap: never exceed base size
         position_size = int(position_size * kelly)
         if position_size < 1:
             position_size = 1

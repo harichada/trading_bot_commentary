@@ -70,23 +70,38 @@ class ScaleTrailManager:
     ) -> Optional[float]:
         """Return a new trailing-stop level if the trail should improve, else None.
 
-        Activation:  price must be at least 1×ATR in favor of the position.
-        Trail width: 1×ATR behind price (tighter than the 1.5×ATR entry stop).
+        v-trail-widen-2026-04-23: activation + width now configurable via
+        Config.TRAIL_ACTIVATION_ATR_MULT (default 2.0, was 1.0) and
+        Config.TRAIL_WIDTH_ATR_MULT (default 1.5, was 1.0). Old settings
+        fired trail exits at micro-profits (often ≤0.3%), crushing R:R.
+
+        Activation:  price must be activation_mult × ATR in favor of position.
+        Trail width: width_mult × ATR behind price.
         Ratchet:     only moves in the favorable direction — never widens.
         """
         if atr <= 0:
             return None
 
+        # Lazy import avoids a circular dep at module load; Config singleton
+        # cost is negligible vs per-bar price evaluation.
+        from core.config import Config
+        cfg = Config()
+        activation_mult = cfg.TRAIL_ACTIVATION_ATR_MULT
+        width_mult = cfg.TRAIL_WIDTH_ATR_MULT
+
+        activation_distance = activation_mult * atr
+        trail_distance = width_mult * atr
+
         if position.side == "long":
-            if current_price < position.entry_price + atr:
+            if current_price < position.entry_price + activation_distance:
                 return None  # not activated yet
-            new_trail = current_price - atr
+            new_trail = current_price - trail_distance
             if position.trailing_stop is None or new_trail > position.trailing_stop:
                 return new_trail
         else:  # short
-            if current_price > position.entry_price - atr:
+            if current_price > position.entry_price - activation_distance:
                 return None
-            new_trail = current_price + atr
+            new_trail = current_price + trail_distance
             if position.trailing_stop is None or new_trail < position.trailing_stop:
                 return new_trail
 
