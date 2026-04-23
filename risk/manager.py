@@ -127,40 +127,52 @@ class RiskManagerWithCommentary:
         # Calculate base position size
         position_size = int(max_risk_amount / risk_per_share)
 
-        # Kelly-inspired bet sizing: scale position by signal confidence.
-        # For our 2:1 R:R (ATR_REWARD_RISK_RATIO=2.0):
-        #   kelly_fraction = 1.5 × win_prob - 0.5
-        # Maps: 0.50 → 0.25 (quarter size), 0.65 → 0.475, 0.75 → 0.625
+        # Kelly-inspired bet sizing: scale position by signal quality.
+        #
+        # v-size-by-strength-2026-04-23: combine signal.strength with
+        # signal.confidence via SIZING_STRENGTH_WEIGHT (default 0.5 = equal
+        # blend). Previously only confidence drove sizing — a news_sentiment
+        # signal with compound 0.35 (weak) got the same Kelly as one with
+        # compound 0.80 (strong). Now sizing differentiates.
+        #
+        # Formula: quality = w × strength + (1-w) × confidence
+        #          kelly   = quality - (1-quality) / rr         (2:1 R:R)
+        # Maps (w=0.5): quality 0.50 → 0.25 → floored to 0.50
+        #               quality 0.65 → 0.475 → floored to 0.50
+        #               quality 0.75 → 0.625
+        #               quality 0.85 → 0.775
+        #               quality 0.95 → 0.925
         #
         # v-trail-widen-2026-04-23: floor raised 0.25 → 0.50 (Config.KELLY_FLOOR).
-        # Live evidence: trades at the 0.25 floor generated $5-40 wins that
-        # commissions + slippage ate alive. A 0.50 floor says "if the signal
-        # passed every gate, it's worth at least half size." Very-low-conf
-        # signals should be rejected upstream, not sized down.
         confidence = getattr(signal, 'confidence', 0.5) or 0.5
+        strength = getattr(signal, 'strength', 0.5) or 0.5
+        w = Config().SIZING_STRENGTH_WEIGHT
+        quality = w * strength + (1.0 - w) * confidence
+
         rr = Config().ATR_REWARD_RISK_RATIO or 2.0
-        kelly = confidence - (1.0 - confidence) / rr
+        kelly = quality - (1.0 - quality) / rr
         kelly = max(kelly, Config().KELLY_FLOOR)  # floor: configurable
         kelly = min(kelly, 1.0)                    # cap: never exceed base size
         position_size = int(position_size * kelly)
         if position_size < 1:
             position_size = 1
 
-        # Audit log — ATR, stop distance, shares, dollar risk, kelly
+        # Audit log — ATR, stop distance, shares, dollar risk, kelly, quality inputs
         atr_val = signal.reasoning.get('atr') if hasattr(signal, 'reasoning') and signal.reasoning else None
         atr_mult_val = signal.reasoning.get('atr_mult') if hasattr(signal, 'reasoning') and signal.reasoning else None
         dollar_risk = position_size * risk_per_share
         logger.info(
             "position_sizing symbol=%s price=%.2f atr=%s atr_mult=%s "
             "stop_dist=%.2f shares=%d notional=%.0f dollar_risk=%.2f "
-            "equity=%.0f risk_pct=%.4f confidence=%.2f kelly=%.3f",
+            "equity=%.0f risk_pct=%.4f confidence=%.2f strength=%.2f "
+            "quality=%.3f kelly=%.3f",
             signal.symbol, current_price,
             round(atr_val, 3) if atr_val else "n/a",
             atr_mult_val or "n/a",
             risk_per_share, position_size,
             position_size * current_price, dollar_risk,
             self.account_balance, max_risk_pct,
-            confidence, kelly,
+            confidence, strength, quality, kelly,
         )
 
         # v-margin-sizing-2026-04-22: cap combines two limits:

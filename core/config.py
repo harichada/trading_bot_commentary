@@ -391,6 +391,24 @@ class Config:
         return float(self.manager.get('trading.trail_width_atr_mult', 1.5))
 
     @property
+    def SIZING_STRENGTH_WEIGHT(self) -> float:
+        """Weight of signal.strength in the combined sizing quality score.
+
+        Sizing uses a blended quality = strength_weight × signal.strength
+                                      + (1 - strength_weight) × signal.confidence
+
+        Default 0.5 = equal blend. Set 0.0 to size purely on confidence
+        (pre-v-size-by-strength behavior); 1.0 to size purely on strength.
+
+        Why both matter:
+          confidence  — strategy's estimate of win probability (Kelly input)
+          strength    — magnitude of the specific setup (e.g., sentiment
+                        compound 0.35 vs 0.80; oversold by 2% vs 5%)
+        A high-confidence weak signal and a low-confidence strong signal
+        both deserve less than full size. Blending captures both."""
+        return float(self.manager.get('trading.sizing_strength_weight', 0.5))
+
+    @property
     def KELLY_FLOOR(self) -> float:
         """Minimum Kelly multiplier for position sizing. Default 0.50.
         Was 0.25 — quarter-sized any sub-0.60 confidence signal, making
