@@ -436,7 +436,7 @@ class Config:
         The legacy fixed MAX_POSITION_VALUE ($10k) still applies as an
         absolute ceiling — whichever is smaller wins. Set
         trading.max_position_value very high to remove that ceiling."""
-        return float(self.manager.get('trading.max_position_value_bp_pct', 0.15))
+        return float(self.manager.get('trading.max_position_value_bp_pct', 0.20))
 
     @property
     def ENABLE_MEAN_REV_SHORT(self) -> bool:
@@ -571,8 +571,20 @@ class Config:
 
     @property
     def RISK_PER_TRADE_PCT(self):
-        """Fraction of equity risked per trade for ATR-based sizing (0.01 = 1%)."""
-        return self.manager.get('trading.risk_per_trade_pct', 0.01)
+        """Fraction of equity risked per trade for ATR-based sizing.
+
+        Default raised 0.010 → 0.015 on 2026-04-24. Live evidence from
+        2026-04-23 and -24: notional per trade was $8-9k (good, via margin
+        sizing) but dollar_risk was only $130-140 (1% × equity × Kelly 0.5).
+        Winners at 0.3-1% moves only returned $28-84; losers at 1.5-2%
+        stops cost $130-170. Raising the risk budget 50% grows BOTH wins
+        and losses proportionally — the absolute $ values finally matter
+        (wins $42-125, losses $195-255 per trade).
+
+        Tuning: 0.01 = conservative (original), 0.015 = moderate (new),
+        0.02 = aggressive. Anything above 0.02 is a professional-trader
+        territory where a bad streak can deplete equity fast."""
+        return self.manager.get('trading.risk_per_trade_pct', 0.015)
 
 # Initialize configuration
 config = Config()
