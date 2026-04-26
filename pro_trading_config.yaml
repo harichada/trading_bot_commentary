@@ -280,6 +280,17 @@ sentiment:
   alert_on_divergence: true      # Alert when price and sentiment diverge
 
 # -----------------------------------------------------------------------------
+# COST MODEL (PROMPT_PACK P2)
+# -----------------------------------------------------------------------------
+# Fees and frictions the PnL-weighted training objective charges against
+# every sample. Values are per-side; the cost model doubles them for round
+# trips. Impact follows the square-root Almgren-Chriss law.
+costs:
+  fee_bps: 5.0       # per-side venue/broker fee
+  slip_bps: 10.0     # per-side expected slippage (quoted-spread crossing)
+  impact_coef: 0.1   # Almgren-Chriss coefficient for sqrt(participation)
+
+# -----------------------------------------------------------------------------
 # RISK MANAGEMENT OVERRIDES
 # -----------------------------------------------------------------------------
 risk:
