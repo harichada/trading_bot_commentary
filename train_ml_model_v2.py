@@ -266,7 +266,7 @@ def purged_cv_evaluate(
     *,
     sample_r_multiples: np.ndarray,
     sample_cost_r: np.ndarray,
-    bars_per_year: int,
+    event_times: pd.DatetimeIndex,
     decision_threshold: float = DEFAULT_DECISION_THRESHOLD,
 ) -> dict[str, Any]:
     """Cost-aware purged-CV grading.
@@ -275,6 +275,13 @@ def purged_cv_evaluate(
     required by PROMPT_PACK P2 §2. Per-fold ``FoldMetrics`` are collected;
     aggregation uses **median** across folds (López de Prado AFML §12.3 — the
     mean is dominated by single-fold luck when fold variance is high).
+
+    Sortino is annualized by ``sqrt(trades_per_year)`` computed empirically
+    per fold from the actual trade frequency over the fold's calendar window
+    (trades_per_year = trades_taken / fold_calendar_days * 252). This matches
+    the per-trade nature of R-multiples — scaling by bars-per-year would
+    over-state the risk-adjusted return whenever the strategy is flat
+    between trades.
     """
     from sklearn.preprocessing import StandardScaler
     import xgboost as xgb
@@ -283,6 +290,7 @@ def purged_cv_evaluate(
 
     fold_reports: list[dict[str, Any]] = []
     fold_metrics_objs: list[FoldMetrics] = []
+    event_times_arr = np.asarray(event_times)
 
     for fold_idx, (train_idx, test_idx) in enumerate(cv.split(X), 1):
         if len(train_idx) == 0 or len(test_idx) == 0:
@@ -320,31 +328,52 @@ def purged_cv_evaluate(
             probas=probas,
         )
 
-        metrics = grade_fold(gross_r=gross_r, net_r=net_r, bars_per_year=bars_per_year)
+        # Empirical trades_per_year for this fold's calendar window.
+        # 252 = trading days per year. Floor calendar span at 1 day to keep
+        # very tight folds finite, and trade count at 1 to avoid log(0).
+        fold_event_times = event_times_arr[test_idx]
+        fold_span_days = max(
+            1.0,
+            (pd.Timestamp(fold_event_times.max()) - pd.Timestamp(fold_event_times.min())).total_seconds() / 86400.0,
+        )
+        n_trades_taken = max(1, int(net_r.size))
+        trades_per_year = max(1, int(round(n_trades_taken / fold_span_days * 252.0)))
+
+        metrics = grade_fold(gross_r=gross_r, net_r=net_r, bars_per_year=trades_per_year)
         fold_metrics_objs.append(metrics)
 
-        sharpe_proxy = sortino(net_r, bars_per_year=bars_per_year)
+        sharpe_proxy = sortino(net_r, bars_per_year=trades_per_year)
         fold_reports.append({
             "fold": fold_idx,
             "train_size": int(len(train_idx)),
             "test_size": int(len(test_idx)),
             "n_trades_taken": metrics.n_trades,
+            "fold_calendar_days": round(fold_span_days, 2),
+            "trades_per_year": trades_per_year,
             "metrics": {
                 "expectancy_r": metrics.expectancy_r,
                 "profit_factor": _finite_or_none(metrics.profit_factor),
                 "sortino": _finite_or_none(metrics.sortino),
                 "calmar": _finite_or_none(metrics.calmar),
                 "max_adverse_excursion": metrics.max_adverse_excursion,
-                "cost_drag_pct": _finite_or_none(metrics.cost_drag_pct),
+                "cost_drag_pct": metrics.cost_drag_pct,
+                "absolute_cost_per_trade_r": metrics.absolute_cost_per_trade_r,
             },
             "sharpe_proxy": _finite_or_none(sharpe_proxy),
         })
+        if metrics.cost_drag_pct is not None:
+            cost_str = f"cost_drag={metrics.cost_drag_pct:.1f}%"
+        else:
+            cost_str = (
+                f"cost_drag=N/A (gross ≤ 0)  "
+                f"abs_cost={metrics.absolute_cost_per_trade_r:+.4f}R/trade"
+            )
         logger.info(
-            "fold %d/%d trades=%d expectancy=%.3fR PF=%.2f sortino=%.2f cost_drag=%.1f%%",
+            "fold %d/%d trades=%d expectancy=%.3fR PF=%.2f sortino=%.2f %s",
             fold_idx, n_splits, metrics.n_trades, metrics.expectancy_r,
             metrics.profit_factor if np.isfinite(metrics.profit_factor) else float("nan"),
             metrics.sortino if np.isfinite(metrics.sortino) else float("nan"),
-            metrics.cost_drag_pct if np.isfinite(metrics.cost_drag_pct) else float("nan"),
+            cost_str,
         )
 
     aggregate = aggregate_fold_metrics(fold_metrics_objs)
@@ -374,7 +403,9 @@ def aggregate_fold_metrics(folds: list[FoldMetrics]) -> dict[str, Any]:
             "median_sortino": 0.0,
             "median_calmar": 0.0,
             "median_max_adverse_excursion": 0.0,
-            "median_cost_drag_pct": float("inf"),
+            "median_cost_drag_pct": None,
+            "median_absolute_cost_per_trade_r": 0.0,
+            "n_folds_with_undefined_cost_drag": 0,
             "var_sharpe_across_folds": 0.0,
             "n_folds_executed": 0,
         }
@@ -384,16 +415,22 @@ def aggregate_fold_metrics(folds: list[FoldMetrics]) -> dict[str, Any]:
         arr = np.asarray(values, dtype="float64")
         return arr[np.isfinite(arr)]
 
-    def _median_or_inf(values: list[float]) -> float:
-        arr = _finite(values)
-        return float(np.median(arr)) if arr.size else float("inf")
-
     def _median_or_zero(values: list[float]) -> float:
         arr = _finite(values)
         return float(np.median(arr)) if arr.size else 0.0
 
     sortino_vals = _finite([f.sortino for f in folds])
     var_sharpe = float(np.var(sortino_vals, ddof=0)) if sortino_vals.size else 0.0
+
+    drag_vals = [f.cost_drag_pct for f in folds if f.cost_drag_pct is not None]
+    abs_cost_vals = [
+        f.absolute_cost_per_trade_r for f in folds
+        if f.absolute_cost_per_trade_r is not None
+    ]
+    median_drag = round(float(np.median(drag_vals)), 1) if drag_vals else None
+    median_abs_cost = (
+        round(float(np.median(abs_cost_vals)), 4) if abs_cost_vals else 0.0
+    )
 
     return {
         "median_expectancy_r": _median_or_zero([f.expectancy_r for f in folds]),
@@ -403,7 +440,9 @@ def aggregate_fold_metrics(folds: list[FoldMetrics]) -> dict[str, Any]:
         "median_max_adverse_excursion": _median_or_zero(
             [f.max_adverse_excursion for f in folds]
         ),
-        "median_cost_drag_pct": _median_or_inf([f.cost_drag_pct for f in folds]),
+        "median_cost_drag_pct": median_drag,
+        "median_absolute_cost_per_trade_r": median_abs_cost,
+        "n_folds_with_undefined_cost_drag": len(folds) - len(drag_vals),
         "var_sharpe_across_folds": var_sharpe,
         "n_folds_executed": len(folds),
     }
@@ -482,16 +521,13 @@ def _build_reject_report(
     cv_seconds: float,
     weights: np.ndarray,
     effective_n: float,
+    reject_reason: str,
 ) -> dict[str, Any]:
     """Minimal report for the hard-reject exit path."""
-    agg = cv_summary["aggregate"]
     return {
         "timestamp": datetime.now().isoformat(),
         "rejected": True,
-        "reject_reason": (
-            f"cost_drag_pct={agg['median_cost_drag_pct']:.1f}% exceeds "
-            f"threshold {args.reject_cost_drag_pct:.1f}%"
-        ),
+        "reject_reason": reject_reason,
         "config": {
             "pt_mult": args.pt_mult,
             "sl_mult": args.sl_mult,
@@ -687,32 +723,52 @@ def main() -> int:
 
     # --- Purged CV evaluation ------------------------------------------
     t2 = datetime.now()
-    bars_per_year = max(1, int(252 * (390 / max(1, args.frequency))))
     cv_summary = purged_cv_evaluate(
         X=X, y=y, weights=weights, touch_times=touch_series,
         n_splits=args.folds, embargo_pct=args.embargo_pct,
         sample_r_multiples=sample_r_multiples,
         sample_cost_r=sample_cost_r,
-        bars_per_year=bars_per_year,
+        event_times=event_times,
         decision_threshold=args.decision_threshold,
     )
     cv_seconds = (datetime.now() - t2).total_seconds()
     agg = cv_summary["aggregate"]
+    if agg["median_cost_drag_pct"] is not None:
+        cost_log = f"median_cost_drag={agg['median_cost_drag_pct']:.1f}%"
+    else:
+        cost_log = (
+            f"median_cost_drag=N/A (gross ≤ 0 in "
+            f"{agg['n_folds_with_undefined_cost_drag']}/{agg['n_folds_executed']} folds)  "
+            f"median_abs_cost={agg['median_absolute_cost_per_trade_r']:+.4f}R/trade"
+        )
     logger.info(
-        "cv_done median_expectancy=%.3fR median_PF=%.2f median_cost_drag=%.1f%% "
+        "cv_done median_expectancy=%.3fR median_PF=%.2f %s "
         "var_sharpe=%.3f folds=%d elapsed_s=%.1f",
         agg["median_expectancy_r"], agg["median_profit_factor"],
-        agg["median_cost_drag_pct"], agg["var_sharpe_across_folds"],
+        cost_log, agg["var_sharpe_across_folds"],
         agg["n_folds_executed"], cv_seconds,
     )
 
     # --- Hard-reject on cost-drag (PROMPT_PACK P2 §4) ------------------
-    reject = agg["median_cost_drag_pct"] > args.reject_cost_drag_pct
-    if reject:
-        logger.error(
-            "model_rejected reason=cost_drag_pct median=%.1f%% threshold=%.1f%%",
-            agg["median_cost_drag_pct"], args.reject_cost_drag_pct,
+    # Reject if median cost-drag exceeds the threshold OR if it's undefined
+    # (gross edge non-positive — there is nothing to drag against, which is
+    # itself a reject condition).
+    if agg["median_cost_drag_pct"] is None:
+        reject = True
+        reject_reason = (
+            f"median cost-drag is N/A (gross ≤ 0 in "
+            f"{agg['n_folds_with_undefined_cost_drag']}/{agg['n_folds_executed']} folds); "
+            f"median absolute cost = "
+            f"{agg['median_absolute_cost_per_trade_r']:+.4f}R/trade"
         )
+    else:
+        reject = agg["median_cost_drag_pct"] > args.reject_cost_drag_pct
+        reject_reason = (
+            f"cost_drag_pct={agg['median_cost_drag_pct']:.1f}% exceeds "
+            f"threshold {args.reject_cost_drag_pct:.1f}%"
+        )
+    if reject:
+        logger.error("model_rejected reason=%s", reject_reason)
         report = _build_reject_report(
             args=args, cv_summary=cv_summary,
             label_dist=label_dist, per_sym=per_sym, symbols=symbols,
@@ -721,6 +777,7 @@ def main() -> int:
             uniqueness_seconds=uniqueness_seconds,
             cv_seconds=cv_seconds,
             weights=weights, effective_n=effective_n,
+            reject_reason=reject_reason,
         )
         Path(args.report_path).write_text(json.dumps(report, indent=2, default=str))
         return 2

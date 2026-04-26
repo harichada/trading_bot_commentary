@@ -168,12 +168,15 @@ class TestDryRunEmitsSixMetrics:
         required = {
             "expectancy_r", "profit_factor", "sortino", "calmar",
             "max_adverse_excursion", "cost_drag_pct",
+            "absolute_cost_per_trade_r",
         }
         aggregate = report["cv_summary"]["aggregate"]
         assert set(aggregate.keys()) >= {
             "median_expectancy_r",
             "median_profit_factor",
             "median_cost_drag_pct",
+            "median_absolute_cost_per_trade_r",
+            "n_folds_with_undefined_cost_drag",
             "var_sharpe_across_folds",
             "median_sortino",
             "n_folds_executed",
@@ -221,7 +224,10 @@ class TestHardRejectOnCostDrag:
         assert exit_code == 2, "expected hard-reject exit code on high cost-drag"
         report = json.loads(report_path.read_text())
         assert report.get("rejected") is True
-        assert "cost_drag" in (report.get("reject_reason") or "").lower()
+        reason = (report.get("reject_reason") or "").lower()
+        # Either the percentage exceeded the threshold, or gross was non-positive
+        # so cost-drag was undefined and the absolute-cost path tripped reject.
+        assert ("cost_drag" in reason) or ("cost-drag" in reason) or ("cost ≤" in reason) or ("absolute cost" in reason)
 
 
 class TestMedianSelection:
@@ -236,19 +242,24 @@ class TestMedianSelection:
         folds = [
             FoldMetrics(n_trades=100, expectancy_r=0.5, profit_factor=1.8,
                         sortino=1.2, calmar=2.0,
-                        max_adverse_excursion=2.0, cost_drag_pct=20.0),
+                        max_adverse_excursion=2.0, cost_drag_pct=20.0,
+                        absolute_cost_per_trade_r=None),
             FoldMetrics(n_trades=100, expectancy_r=0.5, profit_factor=1.8,
                         sortino=1.2, calmar=2.0,
-                        max_adverse_excursion=2.0, cost_drag_pct=20.0),
+                        max_adverse_excursion=2.0, cost_drag_pct=20.0,
+                        absolute_cost_per_trade_r=None),
             FoldMetrics(n_trades=100, expectancy_r=0.5, profit_factor=1.8,
                         sortino=1.2, calmar=2.0,
-                        max_adverse_excursion=2.0, cost_drag_pct=20.0),
+                        max_adverse_excursion=2.0, cost_drag_pct=20.0,
+                        absolute_cost_per_trade_r=None),
             FoldMetrics(n_trades=100, expectancy_r=0.5, profit_factor=1.8,
                         sortino=1.2, calmar=2.0,
-                        max_adverse_excursion=2.0, cost_drag_pct=20.0),
+                        max_adverse_excursion=2.0, cost_drag_pct=20.0,
+                        absolute_cost_per_trade_r=None),
             FoldMetrics(n_trades=100, expectancy_r=-5.0, profit_factor=0.3,
                         sortino=-1.5, calmar=-0.5,
-                        max_adverse_excursion=5.0, cost_drag_pct=25.0),
+                        max_adverse_excursion=5.0, cost_drag_pct=25.0,
+                        absolute_cost_per_trade_r=None),
         ]
 
         agg = aggregate_fold_metrics(folds)

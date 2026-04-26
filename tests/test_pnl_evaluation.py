@@ -116,26 +116,40 @@ class TestCostDrag:
         # gross = 1.0R/trade, net = 0.7R/trade → cost-drag 30%.
         gross = np.full(10, 1.0)
         net = np.full(10, 0.7)
-        assert cost_drag_pct(gross=gross, net=net) == pytest.approx(30.0, abs=1e-9)
+        drag, abs_cost = cost_drag_pct(gross=gross, net=net)
+        assert drag == pytest.approx(30.0, abs=1e-9)
+        assert abs_cost is None
 
-    def test_zero_gross_returns_inf(self) -> None:
+    def test_zero_gross_returns_none_pct_and_absolute(self) -> None:
+        """gross_mean == 0 — drag % undefined, absolute cost reported instead."""
         gross = np.zeros(5)
-        net = np.zeros(5)
-        assert cost_drag_pct(gross=gross, net=net) == math.inf
+        net = np.full(5, -0.30)
+        drag, abs_cost = cost_drag_pct(gross=gross, net=net)
+        assert drag is None
+        # gross_mean=0, net_mean=-0.30 → absolute cost = 0 - (-0.30) = +0.30R/trade.
+        assert abs_cost == pytest.approx(0.30, abs=1e-9)
 
-    def test_negative_gross_returns_inf(self) -> None:
-        """If the model has no gross edge, cost-drag % is undefined → inf.
+    def test_negative_gross_returns_none_pct_and_absolute(self) -> None:
+        """gross_mean = -0.05 → drag % undefined, absolute cost reported."""
+        # Construct gross_mean = -0.05, net_mean = -0.35 → absolute cost = 0.30.
+        gross = np.array([-0.05] * 4)
+        net = np.array([-0.35] * 4)
+        drag, abs_cost = cost_drag_pct(gross=gross, net=net)
+        assert drag is None
+        assert abs_cost == pytest.approx(0.30, abs=1e-4)
 
-        A negative gross return means the strategy has no edge to drag against.
-        Returning a meaningful percentage would require dividing by a negative
-        denominator and mislead. Inf signals the pipeline to reject the model.
-        """
-        gross = np.array([-0.5, -0.3, -0.2])
-        net = np.array([-0.8, -0.5, -0.4])
-        assert cost_drag_pct(gross=gross, net=net) == math.inf
+    def test_positive_gross_zero_two_returns_drag_pct(self) -> None:
+        """gross_mean = +0.20, net_mean = +0.05 → drag = (0.20-0.05)/0.20 * 100 = 75%."""
+        gross = np.array([0.20] * 6)
+        net = np.array([0.05] * 6)
+        drag, abs_cost = cost_drag_pct(gross=gross, net=net)
+        assert drag == pytest.approx(75.0, abs=1e-9)
+        assert abs_cost is None
 
-    def test_empty_returns_inf(self) -> None:
-        assert cost_drag_pct(gross=np.array([]), net=np.array([])) == math.inf
+    def test_empty_returns_none_pct_and_zero_absolute(self) -> None:
+        drag, abs_cost = cost_drag_pct(gross=np.array([]), net=np.array([]))
+        assert drag is None
+        assert abs_cost == 0.0
 
 
 class TestGradeFold:
@@ -148,14 +162,13 @@ class TestGradeFold:
         assert out.expectancy_r == pytest.approx(expectancy_r(net), abs=1e-9)
         assert out.profit_factor == pytest.approx(profit_factor(net), abs=1e-9)
         assert out.sortino == pytest.approx(sortino(net, bars_per_year=252), rel=1e-9)
-        # Calmar uses net too.
         assert math.isfinite(out.calmar) or math.isinf(out.calmar)
         assert out.max_adverse_excursion == pytest.approx(
             max_adverse_excursion(net), abs=1e-9
         )
-        assert out.cost_drag_pct == pytest.approx(
-            cost_drag_pct(gross=gross, net=net), abs=1e-9
-        )
+        expected_drag, expected_abs = cost_drag_pct(gross=gross, net=net)
+        assert out.cost_drag_pct == expected_drag
+        assert out.absolute_cost_per_trade_r == expected_abs
 
     def test_zero_trades_returns_neutral(self) -> None:
         out = grade_fold(
@@ -163,3 +176,5 @@ class TestGradeFold:
         )
         assert out.n_trades == 0
         assert out.expectancy_r == 0.0
+        assert out.cost_drag_pct is None
+        assert out.absolute_cost_per_trade_r == 0.0

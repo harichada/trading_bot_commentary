@@ -25,7 +25,14 @@ import numpy as np
 
 @dataclass(frozen=True)
 class FoldMetrics:
-    """All six cost-aware grades for a single OOS fold."""
+    """All six cost-aware grades for a single OOS fold.
+
+    ``cost_drag_pct`` is None when gross_mean <= 0 (a percentage of a
+    non-positive denominator is meaningless). In that case the absolute
+    per-trade cost in R is reported via ``absolute_cost_per_trade_r``,
+    which is the raw `gross_mean - net_mean` so the reader can still see
+    the scale of the friction. Exactly one of the two fields is non-None.
+    """
 
     n_trades: int
     expectancy_r: float
@@ -33,7 +40,8 @@ class FoldMetrics:
     sortino: float
     calmar: float
     max_adverse_excursion: float
-    cost_drag_pct: float
+    cost_drag_pct: float | None
+    absolute_cost_per_trade_r: float | None
 
 
 def expectancy_r(r: np.ndarray) -> float:
@@ -114,25 +122,33 @@ def max_adverse_excursion(r: np.ndarray) -> float:
     return float(-losses.min())  # min is most negative; sign-flip gives magnitude
 
 
-def cost_drag_pct(*, gross: np.ndarray, net: np.ndarray) -> float:
-    """Cost drag as a % of gross edge.
+def cost_drag_pct(
+    *, gross: np.ndarray, net: np.ndarray
+) -> tuple[float | None, float | None]:
+    """Cost drag report — robust to non-positive gross.
 
-    = (gross_mean - net_mean) / gross_mean * 100
-    = cost_mean / gross_mean * 100
+    Returns ``(cost_drag_pct, absolute_cost_per_trade_r)``. Exactly one of
+    the two is non-None:
 
-    Returns +inf when gross edge is non-positive or the input is empty —
-    this signals the training pipeline to reject the model (there is nothing
-    to drag against).
+    * ``gross_mean > 0``  → ``cost_drag_pct = (gross_mean - net_mean) /
+      gross_mean * 100``, rounded to 1 decimal; absolute is None.
+    * ``gross_mean <= 0`` → ``cost_drag_pct`` is None (a percentage of a
+      non-positive denominator is meaningless); ``absolute_cost_per_trade_r =
+      gross_mean - net_mean``, rounded to 4 decimals.
+
+    Empty input is treated as gross_mean <= 0 (cost_drag_pct is None;
+    absolute is 0.0). The training pipeline rejects on the absence of a
+    finite percentage, not on a sentinel infinity.
     """
     gross = np.asarray(gross, dtype="float64")
     net = np.asarray(net, dtype="float64")
     if gross.size == 0:
-        return math.inf
+        return None, 0.0
     gross_mean = float(gross.mean())
-    if gross_mean <= 0.0:
-        return math.inf
     net_mean = float(net.mean())
-    return (gross_mean - net_mean) / gross_mean * 100.0
+    if gross_mean <= 0.0:
+        return None, round(gross_mean - net_mean, 4)
+    return round((gross_mean - net_mean) / gross_mean * 100.0, 1), None
 
 
 def grade_fold(
@@ -142,6 +158,7 @@ def grade_fold(
     bars_per_year: int,
 ) -> FoldMetrics:
     """Bundle all six cost-aware metrics for one OOS fold."""
+    drag_pct, abs_cost_r = cost_drag_pct(gross=gross_r, net=net_r)
     return FoldMetrics(
         n_trades=int(net_r.size),
         expectancy_r=expectancy_r(net_r),
@@ -149,5 +166,6 @@ def grade_fold(
         sortino=sortino(net_r, bars_per_year=bars_per_year),
         calmar=calmar(net_r, bars_per_year=bars_per_year),
         max_adverse_excursion=max_adverse_excursion(net_r),
-        cost_drag_pct=cost_drag_pct(gross=gross_r, net=net_r),
+        cost_drag_pct=drag_pct,
+        absolute_cost_per_trade_r=abs_cost_r,
     )
