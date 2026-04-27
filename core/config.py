@@ -364,6 +364,23 @@ class Config:
         return int(self.manager.get('trading.warmup_minutes_before_open', 30))
 
     @property
+    def ENABLE_PROACTIVE_EXIT(self) -> bool:
+        """v-proactive-exit-2026-04-27: when at -0.5R or worse AND a primary
+        indicator (MACD / RSI / ADX) has flipped against the position, exit
+        early instead of waiting for the full -1.0R stop.
+
+        Live evidence 2026-04-27: RIOT short took the full -$236 stop after
+        75 minutes; thesis was already broken at the -0.5R mark per indicator
+        readings, but the bot rode the full move down because no proactive
+        exit existed. Default True. Disable to restore "ride to stop" behavior.
+
+        Counter-risk: catches some losses that would have reverted to wins
+        (false breakouts of indicators near 50/MACD-cross). Net should be
+        positive because we're already halfway to stop when this fires —
+        the trade was already on a losing path."""
+        return bool(self.manager.get('trading.enable_proactive_exit', True))
+
+    @property
     def TRAIL_ACTIVATION_ATR_MULT(self) -> float:
         """ATR multiples the price must move in favor before the trailing
         stop engages. Default 2.0. Was hardcoded 1.0 until 2026-04-23 —

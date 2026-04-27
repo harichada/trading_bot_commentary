@@ -3613,6 +3613,47 @@ class TradingEngineWithCommentary:
                                 )
                                 continue
 
+                        # --- Proactive exit: bail when thesis breaks at -0.5R ---
+                        # v-proactive-exit-2026-04-27: avoid riding losers all
+                        # the way to the full stop when indicators have already
+                        # turned against the position. RIOT short 04-27 took
+                        # -$236 full stop with 75-min hold; this fires earlier.
+                        if Config().ENABLE_PROACTIVE_EXIT:
+                            indicator_view = dict(market_data.indicators) if market_data is not None and getattr(market_data, 'indicators', None) else {}
+                            # Surface adx_prev for trend-collapse check (best-effort).
+                            indicator_view.setdefault('adx_prev', indicator_view.get('adx', 0))
+                            proactive_reason = self.scale_trail.check_proactive_exit(
+                                position, current_price, indicator_view,
+                            )
+                            if proactive_reason is not None:
+                                # R-multiple at fire time
+                                stop_dist = abs(position.entry_price - (position.original_stop or position.stop_loss))
+                                if position.side == 'long':
+                                    pnl_r = (current_price - position.entry_price) / stop_dist if stop_dist > 0 else 0
+                                else:
+                                    pnl_r = (position.entry_price - current_price) / stop_dist if stop_dist > 0 else 0
+                                self._audit("proactive_exit", symbol, "exit",
+                                            proactive_reason,
+                                            pnl_r=round(pnl_r, 3),
+                                            price=round(current_price, 2),
+                                            entry=round(position.entry_price, 2))
+                                self.commentary.add_commentary(TradingCommentary(
+                                    timestamp=datetime.now(),
+                                    type=CommentaryType.DECISION,
+                                    symbol=symbol,
+                                    title=f"🚪 Proactive Exit — Thesis Broken",
+                                    message=(
+                                        f"At {pnl_r:+.2f}R, indicators turned against the "
+                                        f"position ({proactive_reason}). Exiting at "
+                                        f"${current_price:.2f} instead of riding to full stop."
+                                    ),
+                                    importance=9,
+                                ))
+                                await self._close_position_with_commentary(
+                                    position, f"proactive_{proactive_reason}"
+                                )
+                                continue
+
                     # ================================================================
                     # PROFESSIONAL EXIT MANAGER
                     # ================================================================
