@@ -1,0 +1,893 @@
+{
+  "timestamp": "2026-04-27T09:23:09.199173",
+  "primary_bundle": "ml_model_v2.pkl",
+  "config": {
+    "folds": 5,
+    "embargo_pct": 0.02,
+    "frequency": 5,
+    "days": 60,
+    "primary_decision_threshold": 0.55,
+    "primary_pt_mult": 2.0,
+    "primary_sl_mult": 1.0,
+    "primary_max_holding": 60,
+    "primary_vertical_max_bars": 120,
+    "cusum_h": 0.01,
+    "cost_model": {
+      "fee_bps": 5.0,
+      "slip_bps": 10.0,
+      "impact_coef": 0.1,
+      "participation": 0.01,
+      "anchor_r_per_trade": 0.32,
+      "source": "ml.costs (single source of truth shared with P2/P4)"
+    },
+    "threshold_sweep": [
+      0.4,
+      0.45,
+      0.5,
+      0.55,
+      0.6,
+      0.65,
+      0.7,
+      0.75,
+      0.8,
+      0.85
+    ],
+    "tiebreak_within_pct": 0.05,
+    "uniqueness": "recomputed on meta-event subset (post-primary-fire)"
+  },
+  "symbols": [
+    "NVDA",
+    "TSLA",
+    "AAPL",
+    "AMD",
+    "SPY",
+    "QQQ",
+    "META",
+    "MSFT",
+    "GOOGL",
+    "AMZN"
+  ],
+  "n_primary_events": 2182,
+  "n_primary_fires": 2130,
+  "per_symbol_events": {
+    "NVDA": 217,
+    "TSLA": 275,
+    "AAPL": 128,
+    "AMD": 385,
+    "SPY": 66,
+    "QQQ": 92,
+    "META": 502,
+    "MSFT": 144,
+    "GOOGL": 179,
+    "AMZN": 194
+  },
+  "per_symbol_fires": {
+    "NVDA": 212,
+    "TSLA": 271,
+    "AAPL": 126,
+    "AMD": 370,
+    "SPY": 66,
+    "QQQ": 90,
+    "META": 485,
+    "MSFT": 141,
+    "GOOGL": 177,
+    "AMZN": 192
+  },
+  "label_distribution": {
+    "wins": 2036,
+    "losses": 94,
+    "base_win_rate": 0.9559
+  },
+  "weighting": {
+    "mean": 0.8101928732612538,
+    "median": 1.0,
+    "min": 0.08585858585858586,
+    "max": 1.0,
+    "effective_sample_size": 1725.7108200464706
+  },
+  "cv_summary": {
+    "n_folds_executed": 5,
+    "fold_detail": [
+      {
+        "fold": 1,
+        "train_size": 1662,
+        "test_size": 426,
+        "tail_size": 416,
+        "ar1_residual_autocorr": 0.10498646491726003,
+        "ljung_box_p_value": null,
+        "tail_threshold": 0.85,
+        "tail_threshold_rationale": "selected threshold=0.85 sortino=-0.387 (best=-0.387) take_rate=1.000 PF=7.965796938824715 expectancy=0.21795729530663177",
+        "tail_sweep": [
+          {
+            "threshold": 0.4,
+            "n_taken": 416,
+            "take_rate": 1.0,
+            "expectancy_net_r": 0.21795729530663177,
+            "profit_factor": 7.965796938824715,
+            "win_rate": 1.0,
+            "sortino_net": 3.1740465760627763
+          },
+          {
+            "threshold": 0.45,
+            "n_taken": 416,
+            "take_rate": 1.0,
+            "expectancy_net_r": 0.21795729530663177,
+            "profit_factor": 7.965796938824715,
+            "win_rate": 1.0,
+            "sortino_net": 3.1740465760627763
+          },
+          {
+            "threshold": 0.5,
+            "n_taken": 416,
+            "take_rate": 1.0,
+            "expectancy_net_r": 0.21795729530663177,
+            "profit_factor": 7.965796938824715,
+            "win_rate": 1.0,
+            "sortino_net": 3.1740465760627763
+          },
+          {
+            "threshold": 0.55,
+            "n_taken": 416,
+            "take_rate": 1.0,
+            "expectancy_net_r": 0.21795729530663177,
+            "profit_factor": 7.965796938824715,
+            "win_rate": 1.0,
+            "sortino_net": 3.1740465760627763
+          },
+          {
+            "threshold": 0.6,
+            "n_taken": 416,
+            "take_rate": 1.0,
+            "expectancy_net_r": 0.21795729530663177,
+            "profit_factor": 7.965796938824715,
+            "win_rate": 1.0,
+            "sortino_net": 3.1740465760627763
+          },
+          {
+            "threshold": 0.65,
+            "n_taken": 416,
+            "take_rate": 1.0,
+            "expectancy_net_r": 0.21795729530663177,
+            "profit_factor": 7.965796938824715,
+            "win_rate": 1.0,
+            "sortino_net": 3.1740465760627763
+          },
+          {
+            "threshold": 0.7,
+            "n_taken": 416,
+            "take_rate": 1.0,
+            "expectancy_net_r": 0.21795729530663177,
+            "profit_factor": 7.965796938824715,
+            "win_rate": 1.0,
+            "sortino_net": 3.1740465760627763
+          },
+          {
+            "threshold": 0.75,
+            "n_taken": 416,
+            "take_rate": 1.0,
+            "expectancy_net_r": 0.21795729530663177,
+            "profit_factor": 7.965796938824715,
+            "win_rate": 1.0,
+            "sortino_net": 3.1740465760627763
+          },
+          {
+            "threshold": 0.8,
+            "n_taken": 416,
+            "take_rate": 1.0,
+            "expectancy_net_r": 0.21795729530663177,
+            "profit_factor": 7.965796938824715,
+            "win_rate": 1.0,
+            "sortino_net": 3.1740465760627763
+          },
+          {
+            "threshold": 0.85,
+            "n_taken": 416,
+            "take_rate": 1.0,
+            "expectancy_net_r": 0.21795729530663177,
+            "profit_factor": 7.965796938824715,
+            "win_rate": 1.0,
+            "sortino_net": 3.1740465760627763
+          }
+        ]
+      },
+      {
+        "fold": 2,
+        "train_size": 1658,
+        "test_size": 426,
+        "tail_size": 414,
+        "ar1_residual_autocorr": -0.011005835800552154,
+        "ljung_box_p_value": null,
+        "tail_threshold": 0.85,
+        "tail_threshold_rationale": "selected threshold=0.85 sortino=-0.402 (best=-0.402) take_rate=1.000 PF=7.803665754567293 expectancy=0.21391269494594622",
+        "tail_sweep": [
+          {
+            "threshold": 0.4,
+            "n_taken": 414,
+            "take_rate": 1.0,
+            "expectancy_net_r": 0.21391269494594622,
+            "profit_factor": 7.803665754567293,
+            "win_rate": 1.0,
+            "sortino_net": 3.107648922274644
+          },
+          {
+            "threshold": 0.45,
+            "n_taken": 414,
+            "take_rate": 1.0,
+            "expectancy_net_r": 0.21391269494594622,
+            "profit_factor": 7.803665754567293,
+            "win_rate": 1.0,
+            "sortino_net": 3.107648922274644
+          },
+          {
+            "threshold": 0.5,
+            "n_taken": 414,
+            "take_rate": 1.0,
+            "expectancy_net_r": 0.21391269494594622,
+            "profit_factor": 7.803665754567293,
+            "win_rate": 1.0,
+            "sortino_net": 3.107648922274644
+          },
+          {
+            "threshold": 0.55,
+            "n_taken": 414,
+            "take_rate": 1.0,
+            "expectancy_net_r": 0.21391269494594622,
+            "profit_factor": 7.803665754567293,
+            "win_rate": 1.0,
+            "sortino_net": 3.107648922274644
+          },
+          {
+            "threshold": 0.6,
+            "n_taken": 414,
+            "take_rate": 1.0,
+            "expectancy_net_r": 0.21391269494594622,
+            "profit_factor": 7.803665754567293,
+            "win_rate": 1.0,
+            "sortino_net": 3.107648922274644
+          },
+          {
+            "threshold": 0.65,
+            "n_taken": 414,
+            "take_rate": 1.0,
+            "expectancy_net_r": 0.21391269494594622,
+            "profit_factor": 7.803665754567293,
+            "win_rate": 1.0,
+            "sortino_net": 3.107648922274644
+          },
+          {
+            "threshold": 0.7,
+            "n_taken": 414,
+            "take_rate": 1.0,
+            "expectancy_net_r": 0.21391269494594622,
+            "profit_factor": 7.803665754567293,
+            "win_rate": 1.0,
+            "sortino_net": 3.107648922274644
+          },
+          {
+            "threshold": 0.75,
+            "n_taken": 414,
+            "take_rate": 1.0,
+            "expectancy_net_r": 0.21391269494594622,
+            "profit_factor": 7.803665754567293,
+            "win_rate": 1.0,
+            "sortino_net": 3.107648922274644
+          },
+          {
+            "threshold": 0.8,
+            "n_taken": 414,
+            "take_rate": 1.0,
+            "expectancy_net_r": 0.21391269494594622,
+            "profit_factor": 7.803665754567293,
+            "win_rate": 1.0,
+            "sortino_net": 3.107648922274644
+          },
+          {
+            "threshold": 0.85,
+            "n_taken": 414,
+            "take_rate": 1.0,
+            "expectancy_net_r": 0.21391269494594622,
+            "profit_factor": 7.803665754567293,
+            "win_rate": 1.0,
+            "sortino_net": 3.107648922274644
+          }
+        ]
+      },
+      {
+        "fold": 3,
+        "train_size": 1660,
+        "test_size": 426,
+        "tail_size": 415,
+        "ar1_residual_autocorr": -0.002746577244493536,
+        "ljung_box_p_value": null,
+        "tail_threshold": 0.85,
+        "tail_threshold_rationale": "selected threshold=0.85 sortino=-0.404 (best=-0.402) take_rate=0.998 PF=7.786758880495767 expectancy=0.2133811292979241",
+        "tail_sweep": [
+          {
+            "threshold": 0.4,
+            "n_taken": 415,
+            "take_rate": 1.0,
+            "expectancy_net_r": 0.2140654515601365,
+            "profit_factor": 7.824970012733332,
+            "win_rate": 1.0,
+            "sortino_net": 3.1136217310750487
+          },
+          {
+            "threshold": 0.45,
+            "n_taken": 415,
+            "take_rate": 1.0,
+            "expectancy_net_r": 0.2140654515601365,
+            "profit_factor": 7.824970012733332,
+            "win_rate": 1.0,
+            "sortino_net": 3.1136217310750487
+          },
+          {
+            "threshold": 0.5,
+            "n_taken": 415,
+            "take_rate": 1.0,
+            "expectancy_net_r": 0.2140654515601365,
+            "profit_factor": 7.824970012733332,
+            "win_rate": 1.0,
+            "sortino_net": 3.1136217310750487
+          },
+          {
+            "threshold": 0.55,
+            "n_taken": 415,
+            "take_rate": 1.0,
+            "expectancy_net_r": 0.2140654515601365,
+            "profit_factor": 7.824970012733332,
+            "win_rate": 1.0,
+            "sortino_net": 3.1136217310750487
+          },
+          {
+            "threshold": 0.6,
+            "n_taken": 415,
+            "take_rate": 1.0,
+            "expectancy_net_r": 0.2140654515601365,
+            "profit_factor": 7.824970012733332,
+            "win_rate": 1.0,
+            "sortino_net": 3.1136217310750487
+          },
+          {
+            "threshold": 0.65,
+            "n_taken": 415,
+            "take_rate": 1.0,
+            "expectancy_net_r": 0.2140654515601365,
+            "profit_factor": 7.824970012733332,
+            "win_rate": 1.0,
+            "sortino_net": 3.1136217310750487
+          },
+          {
+            "threshold": 0.7,
+            "n_taken": 415,
+            "take_rate": 1.0,
+            "expectancy_net_r": 0.2140654515601365,
+            "profit_factor": 7.824970012733332,
+            "win_rate": 1.0,
+            "sortino_net": 3.1136217310750487
+          },
+          {
+            "threshold": 0.75,
+            "n_taken": 415,
+            "take_rate": 1.0,
+            "expectancy_net_r": 0.2140654515601365,
+            "profit_factor": 7.824970012733332,
+            "win_rate": 1.0,
+            "sortino_net": 3.1136217310750487
+          },
+          {
+            "threshold": 0.8,
+            "n_taken": 414,
+            "take_rate": 0.9975903614457832,
+            "expectancy_net_r": 0.2133811292979241,
+            "profit_factor": 7.786758880495767,
+            "win_rate": 1.0,
+            "sortino_net": 3.099926522191696
+          },
+          {
+            "threshold": 0.85,
+            "n_taken": 414,
+            "take_rate": 0.9975903614457832,
+            "expectancy_net_r": 0.2133811292979241,
+            "profit_factor": 7.786758880495767,
+            "win_rate": 1.0,
+            "sortino_net": 3.099926522191696
+          }
+        ]
+      },
+      {
+        "fold": 4,
+        "train_size": 1653,
+        "test_size": 426,
+        "tail_size": 413,
+        "ar1_residual_autocorr": -0.024981961721216136,
+        "ljung_box_p_value": null,
+        "tail_threshold": 0.85,
+        "tail_threshold_rationale": "selected threshold=0.85 sortino=-0.202 (best=-0.202) take_rate=0.998 PF=10.481519922284571 expectancy=0.26847882409537266",
+        "tail_sweep": [
+          {
+            "threshold": 0.4,
+            "n_taken": 413,
+            "take_rate": 1.0,
+            "expectancy_net_r": 0.2672955087338343,
+            "profit_factor": 10.28731946724984,
+            "win_rate": 1.0,
+            "sortino_net": 4.085135296370342
+          },
+          {
+            "threshold": 0.45,
+            "n_taken": 413,
+            "take_rate": 1.0,
+            "expectancy_net_r": 0.2672955087338343,
+            "profit_factor": 10.28731946724984,
+            "win_rate": 1.0,
+            "sortino_net": 4.085135296370342
+          },
+          {
+            "threshold": 0.5,
+            "n_taken": 413,
+            "take_rate": 1.0,
+            "expectancy_net_r": 0.2672955087338343,
+            "profit_factor": 10.28731946724984,
+            "win_rate": 1.0,
+            "sortino_net": 4.085135296370342
+          },
+          {
+            "threshold": 0.55,
+            "n_taken": 413,
+            "take_rate": 1.0,
+            "expectancy_net_r": 0.2672955087338343,
+            "profit_factor": 10.28731946724984,
+            "win_rate": 1.0,
+            "sortino_net": 4.085135296370342
+          },
+          {
+            "threshold": 0.6,
+            "n_taken": 413,
+            "take_rate": 1.0,
+            "expectancy_net_r": 0.2672955087338343,
+            "profit_factor": 10.28731946724984,
+            "win_rate": 1.0,
+            "sortino_net": 4.085135296370342
+          },
+          {
+            "threshold": 0.65,
+            "n_taken": 413,
+            "take_rate": 1.0,
+            "expectancy_net_r": 0.2672955087338343,
+            "profit_factor": 10.28731946724984,
+            "win_rate": 1.0,
+            "sortino_net": 4.085135296370342
+          },
+          {
+            "threshold": 0.7,
+            "n_taken": 413,
+            "take_rate": 1.0,
+            "expectancy_net_r": 0.2672955087338343,
+            "profit_factor": 10.28731946724984,
+            "win_rate": 1.0,
+            "sortino_net": 4.085135296370342
+          },
+          {
+            "threshold": 0.75,
+            "n_taken": 413,
+            "take_rate": 1.0,
+            "expectancy_net_r": 0.2672955087338343,
+            "profit_factor": 10.28731946724984,
+            "win_rate": 1.0,
+            "sortino_net": 4.085135296370342
+          },
+          {
+            "threshold": 0.8,
+            "n_taken": 412,
+            "take_rate": 0.9975786924939467,
+            "expectancy_net_r": 0.26847882409537266,
+            "profit_factor": 10.481519922284571,
+            "win_rate": 1.0,
+            "sortino_net": 4.155641599084691
+          },
+          {
+            "threshold": 0.85,
+            "n_taken": 412,
+            "take_rate": 0.9975786924939467,
+            "expectancy_net_r": 0.26847882409537266,
+            "profit_factor": 10.481519922284571,
+            "win_rate": 1.0,
+            "sortino_net": 4.155641599084691
+          }
+        ]
+      },
+      {
+        "fold": 5,
+        "train_size": 1703,
+        "test_size": 426,
+        "tail_size": 426,
+        "ar1_residual_autocorr": 0.1713165197602889,
+        "ljung_box_p_value": null,
+        "tail_threshold": 0.55,
+        "tail_threshold_rationale": "selected threshold=0.55 sortino=0.092 (best=0.096) take_rate=0.972 PF=9.559200854956087 expectancy=0.3500232511813349",
+        "tail_sweep": [
+          {
+            "threshold": 0.4,
+            "n_taken": 416,
+            "take_rate": 0.9765258215962441,
+            "expectancy_net_r": 0.351994212378373,
+            "profit_factor": 9.069293959807384,
+            "win_rate": 0.9831730769230769,
+            "sortino_net": 1.8318997010255846
+          },
+          {
+            "threshold": 0.45,
+            "n_taken": 416,
+            "take_rate": 0.9765258215962441,
+            "expectancy_net_r": 0.351994212378373,
+            "profit_factor": 9.069293959807384,
+            "win_rate": 0.9831730769230769,
+            "sortino_net": 1.8318997010255846
+          },
+          {
+            "threshold": 0.5,
+            "n_taken": 416,
+            "take_rate": 0.9765258215962441,
+            "expectancy_net_r": 0.351994212378373,
+            "profit_factor": 9.069293959807384,
+            "win_rate": 0.9831730769230769,
+            "sortino_net": 1.8318997010255846
+          },
+          {
+            "threshold": 0.55,
+            "n_taken": 414,
+            "take_rate": 0.971830985915493,
+            "expectancy_net_r": 0.3500232511813349,
+            "profit_factor": 9.559200854956087,
+            "win_rate": 0.9855072463768116,
+            "sortino_net": 1.9116451832356929
+          },
+          {
+            "threshold": 0.6,
+            "n_taken": 407,
+            "take_rate": 0.9553990610328639,
+            "expectancy_net_r": 0.33968097029992494,
+            "profit_factor": 10.935491919450508,
+            "win_rate": 0.9926289926289926,
+            "sortino_net": 2.243155361952185
+          },
+          {
+            "threshold": 0.65,
+            "n_taken": 407,
+            "take_rate": 0.9553990610328639,
+            "expectancy_net_r": 0.33968097029992494,
+            "profit_factor": 10.935491919450508,
+            "win_rate": 0.9926289926289926,
+            "sortino_net": 2.243155361952185
+          },
+          {
+            "threshold": 0.7,
+            "n_taken": 407,
+            "take_rate": 0.9553990610328639,
+            "expectancy_net_r": 0.33968097029992494,
+            "profit_factor": 10.935491919450508,
+            "win_rate": 0.9926289926289926,
+            "sortino_net": 2.243155361952185
+          },
+          {
+            "threshold": 0.75,
+            "n_taken": 407,
+            "take_rate": 0.9553990610328639,
+            "expectancy_net_r": 0.33968097029992494,
+            "profit_factor": 10.935491919450508,
+            "win_rate": 0.9926289926289926,
+            "sortino_net": 2.243155361952185
+          },
+          {
+            "threshold": 0.8,
+            "n_taken": 407,
+            "take_rate": 0.9553990610328639,
+            "expectancy_net_r": 0.33968097029992494,
+            "profit_factor": 10.935491919450508,
+            "win_rate": 0.9926289926289926,
+            "sortino_net": 2.243155361952185
+          },
+          {
+            "threshold": 0.85,
+            "n_taken": 407,
+            "take_rate": 0.9553990610328639,
+            "expectancy_net_r": 0.33968097029992494,
+            "profit_factor": 10.935491919450508,
+            "win_rate": 0.9926289926289926,
+            "sortino_net": 2.243155361952185
+          }
+        ]
+      }
+    ]
+  },
+  "calibration": {
+    "brier": 0.029003886008023057,
+    "deciles": {
+      "bins": [
+        {
+          "bin": 0,
+          "n": 6,
+          "midpoint": 0.05,
+          "empirical_p": 0.0,
+          "deviation": -0.05
+        },
+        {
+          "bin": 1,
+          "n": 9,
+          "midpoint": 0.15000000000000002,
+          "empirical_p": 0.7777777777777778,
+          "deviation": 0.6277777777777778
+        },
+        {
+          "bin": 2,
+          "n": 21,
+          "midpoint": 0.25,
+          "empirical_p": 0.2857142857142857,
+          "deviation": 0.0357142857142857
+        },
+        {
+          "bin": 3,
+          "n": 9,
+          "midpoint": 0.35000000000000003,
+          "empirical_p": 0.4444444444444444,
+          "deviation": 0.09444444444444439
+        },
+        {
+          "bin": 4,
+          "n": 14,
+          "midpoint": 0.45,
+          "empirical_p": 0.5,
+          "deviation": 0.04999999999999999
+        },
+        {
+          "bin": 5,
+          "n": 14,
+          "midpoint": 0.55,
+          "empirical_p": 0.5,
+          "deviation": -0.050000000000000044
+        },
+        {
+          "bin": 6,
+          "n": 16,
+          "midpoint": 0.6500000000000001,
+          "empirical_p": 0.5625,
+          "deviation": -0.08750000000000013
+        },
+        {
+          "bin": 7,
+          "n": 22,
+          "midpoint": 0.75,
+          "empirical_p": 0.5909090909090909,
+          "deviation": -0.15909090909090906
+        },
+        {
+          "bin": 8,
+          "n": 33,
+          "midpoint": 0.8500000000000001,
+          "empirical_p": 0.7575757575757576,
+          "deviation": -0.09242424242424252
+        },
+        {
+          "bin": 9,
+          "n": 1986,
+          "midpoint": 0.95,
+          "empirical_p": 0.9859013091641491,
+          "deviation": 0.03590130916414913
+        }
+      ],
+      "n_qualifying_bins": 2,
+      "max_abs_deviation": 0.09242424242424252
+    }
+  },
+  "threshold_sweep": [
+    {
+      "threshold": 0.4,
+      "n_taken": 2085,
+      "take_rate": 0.9788732394366197,
+      "expectancy_net_r": 0.3454637960920653,
+      "profit_factor": 9.995369268898298,
+      "win_rate": 0.9683453237410072,
+      "sortino_net": 2.433950865722122
+    },
+    {
+      "threshold": 0.45,
+      "n_taken": 2080,
+      "take_rate": 0.9765258215962441,
+      "expectancy_net_r": 0.34536085873396927,
+      "profit_factor": 10.159780240813603,
+      "win_rate": 0.9692307692307692,
+      "sortino_net": 2.4762065155346593
+    },
+    {
+      "threshold": 0.5,
+      "n_taken": 2071,
+      "take_rate": 0.9723004694835681,
+      "expectancy_net_r": 0.3394405233584864,
+      "profit_factor": 9.963804810763024,
+      "win_rate": 0.9715113471752777,
+      "sortino_net": 2.428487189209279
+    },
+    {
+      "threshold": 0.55,
+      "n_taken": 2067,
+      "take_rate": 0.9704225352112676,
+      "expectancy_net_r": 0.3377386264067156,
+      "profit_factor": 9.901635626891846,
+      "win_rate": 0.9733913884857281,
+      "sortino_net": 2.413976567489684
+    },
+    {
+      "threshold": 0.6,
+      "n_taken": 2057,
+      "take_rate": 0.9657276995305164,
+      "expectancy_net_r": 0.3321470873125664,
+      "profit_factor": 9.71190927103847,
+      "win_rate": 0.9747204666990763,
+      "sortino_net": 2.368261599991951
+    },
+    {
+      "threshold": 0.65,
+      "n_taken": 2046,
+      "take_rate": 0.9605633802816902,
+      "expectancy_net_r": 0.326143170855396,
+      "profit_factor": 9.508686498451114,
+      "win_rate": 0.9775171065493646,
+      "sortino_net": 2.3192265971432473
+    },
+    {
+      "threshold": 0.7,
+      "n_taken": 2041,
+      "take_rate": 0.9582159624413146,
+      "expectancy_net_r": 0.3228828937425746,
+      "profit_factor": 9.40304415002967,
+      "win_rate": 0.9779519843214111,
+      "sortino_net": 2.293235299375897
+    },
+    {
+      "threshold": 0.75,
+      "n_taken": 2034,
+      "take_rate": 0.9549295774647887,
+      "expectancy_net_r": 0.3207449803697279,
+      "profit_factor": 9.458528653984839,
+      "win_rate": 0.9793510324483776,
+      "sortino_net": 2.3228453179901796
+    },
+    {
+      "threshold": 0.8,
+      "n_taken": 2019,
+      "take_rate": 0.9478873239436619,
+      "expectancy_net_r": 0.31854797618596065,
+      "profit_factor": 9.837900720653607,
+      "win_rate": 0.9821693907875185,
+      "sortino_net": 2.4903917582204707
+    },
+    {
+      "threshold": 0.85,
+      "n_taken": 2002,
+      "take_rate": 0.939906103286385,
+      "expectancy_net_r": 0.31114800069358584,
+      "profit_factor": 9.760093908508729,
+      "win_rate": 0.985014985014985,
+      "sortino_net": 2.4796632661308684
+    }
+  ],
+  "per_fold_thresholds": [
+    0.85,
+    0.85,
+    0.85,
+    0.85,
+    0.55
+  ],
+  "threshold_agreement": {
+    "per_fold": [
+      0.85,
+      0.85,
+      0.85,
+      0.85,
+      0.55
+    ],
+    "median": 0.85,
+    "min": 0.55,
+    "max": 0.85,
+    "disagreement_spread": 0.29999999999999993,
+    "disagreement_flag_gate": 0.2,
+    "disagreement": true,
+    "n_folds_with_threshold": 5
+  },
+  "chosen_threshold": {
+    "threshold": 0.85,
+    "n_taken": 2002,
+    "take_rate": 0.939906103286385,
+    "expectancy_net_r": 0.31114800069358584,
+    "profit_factor": 9.760093908508729,
+    "win_rate": 0.985014985014985,
+    "sortino_net": 2.4796632661308684
+  },
+  "deployment_threshold": 0.85,
+  "iid_diagnostics": {
+    "per_fold_ar1": [
+      0.10498646491726003,
+      -0.011005835800552154,
+      -0.002746577244493536,
+      -0.024981961721216136,
+      0.1713165197602889
+    ],
+    "median_per_fold_ar1": 0.024981961721216136,
+    "max_per_fold_ar1": 0.1713165197602889,
+    "gate_thresholds": {
+      "median_lt": 0.1,
+      "max_lt": 0.2
+    }
+  },
+  "gates": {
+    "brier": {
+      "value": 0.029003886008023057,
+      "threshold": 0.22,
+      "pass": true
+    },
+    "calibration": {
+      "value": 0.09242424242424252,
+      "threshold": 0.05,
+      "pass": false
+    },
+    "take_rate": {
+      "value": 0.939906103286385,
+      "min": 0.2,
+      "max": 0.4,
+      "pass": false
+    },
+    "profit_factor": {
+      "value": 9.760093908508729,
+      "threshold": 1.3,
+      "pass": true
+    },
+    "expectancy": {
+      "value": 0.31114800069358584,
+      "threshold": 0.0,
+      "pass": true
+    },
+    "ar1": {
+      "median": 0.024981961721216136,
+      "max": 0.1713165197602889,
+      "median_threshold": 0.1,
+      "max_threshold": 0.2,
+      "pass": true
+    },
+    "all_pass": false
+  },
+  "rejected": true,
+  "reject_reason": "gates_failed: calibration,take_rate",
+  "primary_proba_summary": {
+    "mean_max_proba_at_fire": 0.8184091126135258,
+    "median_max_proba_at_fire": 0.8324297070503235
+  },
+  "p4_baseline_diff": {
+    "baseline_path": "backtest_results/P4_after.json",
+    "rows": {
+      "median_profit_factor": {
+        "P4": 0.7375625443883556,
+        "P1": 9.760093908508729
+      },
+      "median_expectancy_r": {
+        "P4": -0.19646692102227006,
+        "P1": 0.31114800069358584
+      },
+      "take_rate": {
+        "P4": "\u22480.70 (decision_threshold 0.55, no meta-filter)",
+        "P1": 0.939906103286385
+      },
+      "median_per_fold_ar1": {
+        "P4": 0.09229244946992272,
+        "P1": 0.024981961721216136
+      },
+      "max_per_fold_ar1": {
+        "P4": 0.16847827964624232,
+        "P1": 0.1713165197602889
+      },
+      "median_absolute_cost_per_trade_r": {
+        "P4": 0.32,
+        "P1_anchor": 0.32
+      }
+    }
+  }
+}
