@@ -236,3 +236,75 @@ def classify_regime(
     if pd.isna(rv_range_med) or rv <= rv_range_med:
         return "range_tight"
     return "range_wide"
+
+
+# ---------------------------------------------------------------------------
+# RegimeStabilityGate
+# ---------------------------------------------------------------------------
+
+class RegimeStabilityGate:
+    """Debouncer over a stream of regime classifications.
+
+    Maintains a "committed regime" — the regime config the bot is
+    currently operating under. Switches only when a candidate regime
+    has been the raw classifier's output for ``n`` consecutive events.
+
+    Returns the committed regime as the event's label. This matches the
+    "what would we have actually traded under?" attribution: if the raw
+    classifier flickers into chop for 3 events but never reaches the
+    n-event threshold, the trades during that window were taken under
+    the previous regime's config and must be attributed to it.
+
+    Pure (no I/O). Thread-unsafe — call from a single thread per gate
+    instance, or wrap in a lock.
+
+    Practitioner discipline rationale: the gate exists to prevent the
+    bot from acting on transient classifier flips (whipsaw on the
+    regime signal itself). Without it, a noisy ADX or CI series can
+    flap between two states each bar, producing a parade of regime
+    transitions that have no economic meaning. n=5 is a discretionary
+    buffer; tune via pro_trading_config.yaml::regime_detector::stability_n.
+    """
+
+    def __init__(self, n: int = 5) -> None:
+        if n < 1:
+            raise ValueError(f"n must be >= 1, got {n}")
+        self.n = n
+        self.committed_regime: str | None = None
+        self.pending_regime: str | None = None
+        self.pending_streak: int = 0
+        self.transition_count: int = 0
+
+    def step(self, raw_regime: str) -> str:
+        """Process one event's raw regime; return the committed label."""
+        if self.committed_regime is None:
+            # Cold start: commit the very first regime we see.
+            self.committed_regime = raw_regime
+            self.pending_regime = None
+            self.pending_streak = 0
+            self.transition_count += 1
+            return self.committed_regime
+
+        if raw_regime == self.committed_regime:
+            # Stable — reset any pending streak.
+            self.pending_regime = None
+            self.pending_streak = 0
+            return self.committed_regime
+
+        # raw differs from committed; track / advance the pending streak.
+        if raw_regime == self.pending_regime:
+            self.pending_streak += 1
+        else:
+            self.pending_regime = raw_regime
+            self.pending_streak = 1
+
+        if self.pending_streak >= self.n:
+            # Promote.
+            self.committed_regime = raw_regime
+            self.pending_regime = None
+            self.pending_streak = 0
+            self.transition_count += 1
+            return self.committed_regime
+
+        # Buffer not full — keep using last committed.
+        return self.committed_regime
