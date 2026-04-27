@@ -1,0 +1,735 @@
+{
+  "timestamp": "2026-04-27T16:23:33.176016",
+  "primary_bundle": "/home/nvidia/claude/trading_bot_enhacne/trading_bot_commentary/ml_model_v2_baserate_w14.pkl",
+  "primary_bundle_sha256": {
+    "before": "5fb6e2079fac5b590ce0892c10e3781bc2abfe76eea4c7ff4d41db7e7c0625c0",
+    "after": "5fb6e2079fac5b590ce0892c10e3781bc2abfe76eea4c7ff4d41db7e7c0625c0",
+    "unchanged": true
+  },
+  "config": {
+    "symbols": [
+      "NVDA",
+      "TSLA",
+      "AAPL",
+      "AMD",
+      "SPY",
+      "QQQ",
+      "META",
+      "MSFT",
+      "GOOGL",
+      "AMZN"
+    ],
+    "days": 60,
+    "frequency": 5,
+    "folds": 5,
+    "embargo_pct": 0.01,
+    "bootstrap_iterations": 5,
+    "stability_n": 5,
+    "decision_threshold": 0.55,
+    "regime_config_path": "/home/nvidia/claude/trading_bot_enhacne/trading_bot_commentary/regime_configs/p3.yaml",
+    "primary_config": {
+      "pt_mult": 2.0,
+      "sl_mult": 2.0,
+      "max_holding": 60,
+      "event_stride": 5,
+      "frequency": 5,
+      "embargo_pct": 0.01,
+      "n_folds": 5,
+      "n_symbols": 10,
+      "days": 60,
+      "cost_model": {
+        "fee_bps": 5.0,
+        "slip_bps": 10.0,
+        "impact_coef": 0.1,
+        "participation": 0.01
+      },
+      "decision_threshold": 0.55,
+      "cost_aware": true,
+      "labeling": {
+        "method": "triple_barrier",
+        "pt_mult": 2.0,
+        "sl_mult": 2.0,
+        "vertical_max_bars": 180,
+        "vertical_mult_expected_duration": 3.0,
+        "min_ret_atr_mult": 0.5,
+        "bar_type": "time",
+        "bar_type_deferred": [
+          "dollar",
+          "volume",
+          "imbalance"
+        ],
+        "event_source": "cusum",
+        "cusum_h": 0.015
+      },
+      "bootstrap": {
+        "method": "sequential",
+        "iterations": 5,
+        "seed": 42
+      }
+    },
+    "regime_thresholds": {
+      "adx_trending": 25.0,
+      "chop_index": 61.8,
+      "ema_fast": 50,
+      "ema_slow": 200,
+      "rv_period": 20,
+      "rv_median_lookback": 252
+    },
+    "spec_reference": "PROMPT_PACK \u00a7P3 + user-pinned median splits"
+  },
+  "symbols": [
+    "NVDA",
+    "TSLA",
+    "AAPL",
+    "AMD",
+    "SPY",
+    "QQQ",
+    "META",
+    "MSFT",
+    "GOOGL",
+    "AMZN"
+  ],
+  "n_events": 761,
+  "per_symbol_events": {
+    "NVDA": 146,
+    "TSLA": 144,
+    "AAPL": 38,
+    "AMD": 146,
+    "SPY": 17,
+    "QQQ": 27,
+    "META": 114,
+    "MSFT": 36,
+    "GOOGL": 49,
+    "AMZN": 44
+  },
+  "n_events_per_fold": [
+    153,
+    152,
+    152,
+    152,
+    152
+  ],
+  "n_events_skipped_chop_per_fold": [
+    45,
+    8,
+    10,
+    13,
+    6
+  ],
+  "regime_distribution": {
+    "bars_per_regime": {
+      "trend_up_low_vol": 3450,
+      "trend_up_high_vol": 3169,
+      "trend_dn_low_vol": 3336,
+      "trend_dn_high_vol": 3415,
+      "range_tight": 8265,
+      "range_wide": 7891,
+      "chop": 4942
+    },
+    "total_bars": 34468,
+    "pct_bars_classified_chop": 0.14337936636880586,
+    "pct_committed_per_regime": {
+      "trend_up_low_vol": 0.10009283973540675,
+      "trend_up_high_vol": 0.09194035047000117,
+      "trend_dn_low_vol": 0.09678542416154114,
+      "trend_dn_high_vol": 0.09907740512939538,
+      "range_tight": 0.23978762910525706,
+      "range_wide": 0.22893698502959267,
+      "chop": 0.14337936636880586
+    }
+  },
+  "regime_transition_count": 1793,
+  "per_regime_metrics": {
+    "trend_up_low_vol": {
+      "total_n_trades": 50,
+      "per_fold_n_trades": [
+        10,
+        15,
+        13,
+        5,
+        7
+      ],
+      "median_expectancy_r": -0.09333333333333332,
+      "median_profit_factor": 0.8275862068965518,
+      "median_pf": 0.8275862068965518,
+      "median_win_rate": 0.5333333333333333,
+      "per_fold_ar1": [
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "median_per_fold_ar1": null,
+      "max_per_fold_ar1": null,
+      "median_cost_drag_pct": 208.0,
+      "fold_detail": [
+        {
+          "fold_idx": 1,
+          "n_trades": 10,
+          "expectancy_r": -0.36,
+          "profit_factor": 0.48275862068965514,
+          "win_rate": 0.4,
+          "ar1_residual_autocorr": null,
+          "cost_drag_pct": null,
+          "absolute_cost_per_trade_r": 0.16
+        },
+        {
+          "fold_idx": 2,
+          "n_trades": 15,
+          "expectancy_r": -0.09333333333333332,
+          "profit_factor": 0.8275862068965518,
+          "win_rate": 0.5333333333333333,
+          "ar1_residual_autocorr": null,
+          "cost_drag_pct": 240.0,
+          "absolute_cost_per_trade_r": null
+        },
+        {
+          "fold_idx": 3,
+          "n_trades": 13,
+          "expectancy_r": -0.08307692307692306,
+          "profit_factor": 0.8448275862068966,
+          "win_rate": 0.5384615384615384,
+          "ar1_residual_autocorr": null,
+          "cost_drag_pct": 208.0,
+          "absolute_cost_per_trade_r": null
+        },
+        {
+          "fold_idx": 4,
+          "n_trades": 5,
+          "expectancy_r": 0.039999999999999994,
+          "profit_factor": 1.0862068965517242,
+          "win_rate": 0.6,
+          "ar1_residual_autocorr": null,
+          "cost_drag_pct": 80.0,
+          "absolute_cost_per_trade_r": null
+        },
+        {
+          "fold_idx": 5,
+          "n_trades": 7,
+          "expectancy_r": -0.3028571428571429,
+          "profit_factor": 0.5431034482758621,
+          "win_rate": 0.42857142857142855,
+          "ar1_residual_autocorr": null,
+          "cost_drag_pct": null,
+          "absolute_cost_per_trade_r": 0.16
+        }
+      ]
+    },
+    "trend_up_high_vol": {
+      "total_n_trades": 79,
+      "per_fold_n_trades": [
+        26,
+        10,
+        19,
+        8,
+        16
+      ],
+      "median_expectancy_r": 0.040000000000000015,
+      "median_profit_factor": 1.0862068965517242,
+      "median_pf": 1.0862068965517242,
+      "median_win_rate": 0.6,
+      "per_fold_ar1": [
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "median_per_fold_ar1": null,
+      "max_per_fold_ar1": null,
+      "median_cost_drag_pct": 64.0,
+      "fold_detail": [
+        {
+          "fold_idx": 1,
+          "n_trades": 26,
+          "expectancy_r": -0.16,
+          "profit_factor": 0.7241379310344828,
+          "win_rate": 0.5,
+          "ar1_residual_autocorr": null,
+          "cost_drag_pct": null,
+          "absolute_cost_per_trade_r": 0.16
+        },
+        {
+          "fold_idx": 2,
+          "n_trades": 10,
+          "expectancy_r": 0.040000000000000015,
+          "profit_factor": 1.0862068965517242,
+          "win_rate": 0.6,
+          "ar1_residual_autocorr": null,
+          "cost_drag_pct": 80.0,
+          "absolute_cost_per_trade_r": null
+        },
+        {
+          "fold_idx": 3,
+          "n_trades": 19,
+          "expectancy_r": -0.42315789473684207,
+          "profit_factor": 0.4224137931034483,
+          "win_rate": 0.3684210526315789,
+          "ar1_residual_autocorr": null,
+          "cost_drag_pct": null,
+          "absolute_cost_per_trade_r": 0.16
+        },
+        {
+          "fold_idx": 4,
+          "n_trades": 8,
+          "expectancy_r": 0.09,
+          "profit_factor": 1.2068965517241381,
+          "win_rate": 0.625,
+          "ar1_residual_autocorr": null,
+          "cost_drag_pct": 64.0,
+          "absolute_cost_per_trade_r": null
+        },
+        {
+          "fold_idx": 5,
+          "n_trades": 16,
+          "expectancy_r": 0.46499999999999997,
+          "profit_factor": 3.137931034482759,
+          "win_rate": 0.8125,
+          "ar1_residual_autocorr": null,
+          "cost_drag_pct": 25.6,
+          "absolute_cost_per_trade_r": null
+        }
+      ]
+    },
+    "trend_dn_low_vol": {
+      "total_n_trades": 56,
+      "per_fold_n_trades": [
+        4,
+        20,
+        12,
+        8,
+        12
+      ],
+      "median_expectancy_r": 0.34,
+      "median_profit_factor": 2.1724137931034484,
+      "median_pf": 2.1724137931034484,
+      "median_win_rate": 0.75,
+      "per_fold_ar1": [
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "median_per_fold_ar1": null,
+      "max_per_fold_ar1": null,
+      "median_cost_drag_pct": 28.0,
+      "fold_detail": [
+        {
+          "fold_idx": 1,
+          "n_trades": 4,
+          "expectancy_r": 0.34,
+          "profit_factor": 2.1724137931034484,
+          "win_rate": 0.75,
+          "ar1_residual_autocorr": null,
+          "cost_drag_pct": 32.0,
+          "absolute_cost_per_trade_r": null
+        },
+        {
+          "fold_idx": 2,
+          "n_trades": 20,
+          "expectancy_r": -0.16,
+          "profit_factor": 0.7241379310344828,
+          "win_rate": 0.5,
+          "ar1_residual_autocorr": null,
+          "cost_drag_pct": null,
+          "absolute_cost_per_trade_r": 0.16
+        },
+        {
+          "fold_idx": 3,
+          "n_trades": 12,
+          "expectancy_r": 0.5066666666666666,
+          "profit_factor": 3.620689655172414,
+          "win_rate": 0.8333333333333334,
+          "ar1_residual_autocorr": null,
+          "cost_drag_pct": 24.0,
+          "absolute_cost_per_trade_r": null
+        },
+        {
+          "fold_idx": 4,
+          "n_trades": 8,
+          "expectancy_r": 0.59,
+          "profit_factor": 5.06896551724138,
+          "win_rate": 0.875,
+          "ar1_residual_autocorr": null,
+          "cost_drag_pct": 21.3,
+          "absolute_cost_per_trade_r": null
+        },
+        {
+          "fold_idx": 5,
+          "n_trades": 12,
+          "expectancy_r": 0.006666666666666654,
+          "profit_factor": 1.013793103448276,
+          "win_rate": 0.5833333333333334,
+          "ar1_residual_autocorr": null,
+          "cost_drag_pct": 96.0,
+          "absolute_cost_per_trade_r": null
+        }
+      ]
+    },
+    "trend_dn_high_vol": {
+      "total_n_trades": 109,
+      "per_fold_n_trades": [
+        15,
+        18,
+        18,
+        31,
+        27
+      ],
+      "median_expectancy_r": -0.09333333333333335,
+      "median_profit_factor": 0.8275862068965518,
+      "median_pf": 0.8275862068965518,
+      "median_win_rate": 0.5333333333333333,
+      "per_fold_ar1": [
+        null,
+        null,
+        null,
+        -0.008328599915400307,
+        null
+      ],
+      "median_per_fold_ar1": -0.008328599915400307,
+      "max_per_fold_ar1": 0.008328599915400307,
+      "median_cost_drag_pct": 95.7,
+      "fold_detail": [
+        {
+          "fold_idx": 1,
+          "n_trades": 15,
+          "expectancy_r": -0.09333333333333335,
+          "profit_factor": 0.8275862068965518,
+          "win_rate": 0.5333333333333333,
+          "ar1_residual_autocorr": null,
+          "cost_drag_pct": 240.0,
+          "absolute_cost_per_trade_r": null
+        },
+        {
+          "fold_idx": 2,
+          "n_trades": 18,
+          "expectancy_r": 0.2844444444444444,
+          "profit_factor": 1.8827586206896552,
+          "win_rate": 0.7222222222222222,
+          "ar1_residual_autocorr": null,
+          "cost_drag_pct": 36.0,
+          "absolute_cost_per_trade_r": null
+        },
+        {
+          "fold_idx": 3,
+          "n_trades": 18,
+          "expectancy_r": 0.007148312392214856,
+          "profit_factor": 1.015556097652512,
+          "win_rate": 0.5555555555555556,
+          "ar1_residual_autocorr": null,
+          "cost_drag_pct": 95.7,
+          "absolute_cost_per_trade_r": null
+        },
+        {
+          "fold_idx": 4,
+          "n_trades": 31,
+          "expectancy_r": -0.3858064516129033,
+          "profit_factor": 0.4573502722323049,
+          "win_rate": 0.3870967741935484,
+          "ar1_residual_autocorr": -0.008328599915400307,
+          "cost_drag_pct": null,
+          "absolute_cost_per_trade_r": 0.16
+        },
+        {
+          "fold_idx": 5,
+          "n_trades": 27,
+          "expectancy_r": -0.34518518518518515,
+          "profit_factor": 0.49784482758620696,
+          "win_rate": 0.4074074074074074,
+          "ar1_residual_autocorr": null,
+          "cost_drag_pct": null,
+          "absolute_cost_per_trade_r": 0.16
+        }
+      ]
+    },
+    "range_tight": {
+      "total_n_trades": 155,
+      "per_fold_n_trades": [
+        20,
+        40,
+        34,
+        30,
+        31
+      ],
+      "median_expectancy_r": -0.25999999999999995,
+      "median_profit_factor": 0.5924764890282131,
+      "median_pf": 0.5924764890282131,
+      "median_win_rate": 0.45,
+      "per_fold_ar1": [
+        null,
+        -0.1779370620747774,
+        -0.07708062035505217,
+        -0.027528309011905307,
+        -0.1915857154027861
+      ],
+      "median_per_fold_ar1": -0.1275088412149148,
+      "max_per_fold_ar1": 0.1915857154027861,
+      "median_cost_drag_pct": 136.0,
+      "fold_detail": [
+        {
+          "fold_idx": 1,
+          "n_trades": 20,
+          "expectancy_r": -0.25999999999999995,
+          "profit_factor": 0.5924764890282131,
+          "win_rate": 0.45,
+          "ar1_residual_autocorr": null,
+          "cost_drag_pct": null,
+          "absolute_cost_per_trade_r": 0.16
+        },
+        {
+          "fold_idx": 2,
+          "n_trades": 40,
+          "expectancy_r": -0.30999999999999994,
+          "profit_factor": 0.5352323838080959,
+          "win_rate": 0.425,
+          "ar1_residual_autocorr": -0.1779370620747774,
+          "cost_drag_pct": null,
+          "absolute_cost_per_trade_r": 0.16
+        },
+        {
+          "fold_idx": 3,
+          "n_trades": 34,
+          "expectancy_r": -0.04235294117647057,
+          "profit_factor": 0.9172413793103449,
+          "win_rate": 0.5588235294117647,
+          "ar1_residual_autocorr": -0.07708062035505217,
+          "cost_drag_pct": 136.0,
+          "absolute_cost_per_trade_r": null
+        },
+        {
+          "fold_idx": 4,
+          "n_trades": 30,
+          "expectancy_r": -0.49333333333333323,
+          "profit_factor": 0.3620689655172414,
+          "win_rate": 0.3333333333333333,
+          "ar1_residual_autocorr": -0.027528309011905307,
+          "cost_drag_pct": null,
+          "absolute_cost_per_trade_r": 0.16
+        },
+        {
+          "fold_idx": 5,
+          "n_trades": 31,
+          "expectancy_r": -0.2567741935483871,
+          "profit_factor": 0.5963488843813388,
+          "win_rate": 0.45161290322580644,
+          "ar1_residual_autocorr": -0.1915857154027861,
+          "cost_drag_pct": null,
+          "absolute_cost_per_trade_r": 0.16
+        }
+      ]
+    },
+    "range_wide": {
+      "total_n_trades": 131,
+      "per_fold_n_trades": [
+        21,
+        22,
+        25,
+        32,
+        31
+      ],
+      "median_expectancy_r": -0.11999999999999994,
+      "median_profit_factor": 0.7844827586206896,
+      "median_pf": 0.7844827586206896,
+      "median_win_rate": 0.52,
+      "per_fold_ar1": [
+        null,
+        null,
+        null,
+        -0.04936995686706581,
+        -0.06309308030070626
+      ],
+      "median_per_fold_ar1": -0.05623151858388603,
+      "max_per_fold_ar1": 0.06309308030070626,
+      "median_cost_drag_pct": 112.0,
+      "fold_detail": [
+        {
+          "fold_idx": 1,
+          "n_trades": 21,
+          "expectancy_r": -0.017142857142857133,
+          "profit_factor": 0.9655172413793104,
+          "win_rate": 0.5714285714285714,
+          "ar1_residual_autocorr": null,
+          "cost_drag_pct": 112.0,
+          "absolute_cost_per_trade_r": null
+        },
+        {
+          "fold_idx": 2,
+          "n_trades": 22,
+          "expectancy_r": 0.021818181818181827,
+          "profit_factor": 1.0459770114942528,
+          "win_rate": 0.5909090909090909,
+          "ar1_residual_autocorr": null,
+          "cost_drag_pct": 88.0,
+          "absolute_cost_per_trade_r": null
+        },
+        {
+          "fold_idx": 3,
+          "n_trades": 25,
+          "expectancy_r": -0.11999999999999994,
+          "profit_factor": 0.7844827586206896,
+          "win_rate": 0.52,
+          "ar1_residual_autocorr": null,
+          "cost_drag_pct": 400.0,
+          "absolute_cost_per_trade_r": null
+        },
+        {
+          "fold_idx": 4,
+          "n_trades": 32,
+          "expectancy_r": -0.5349999999999999,
+          "profit_factor": 0.329153605015674,
+          "win_rate": 0.3125,
+          "ar1_residual_autocorr": -0.04936995686706581,
+          "cost_drag_pct": null,
+          "absolute_cost_per_trade_r": 0.16
+        },
+        {
+          "fold_idx": 5,
+          "n_trades": 31,
+          "expectancy_r": -0.3212903225806451,
+          "profit_factor": 0.5229885057471264,
+          "win_rate": 0.41935483870967744,
+          "ar1_residual_autocorr": -0.06309308030070626,
+          "cost_drag_pct": null,
+          "absolute_cost_per_trade_r": 0.16
+        }
+      ]
+    },
+    "chop": {
+      "total_n_trades": 0,
+      "per_fold_n_trades": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "median_expectancy_r": null,
+      "median_profit_factor": null,
+      "median_pf": null,
+      "median_win_rate": null,
+      "per_fold_ar1": [
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "median_per_fold_ar1": null,
+      "max_per_fold_ar1": null,
+      "median_cost_drag_pct": null,
+      "fold_detail": [
+        {
+          "fold_idx": 1,
+          "n_trades": 0,
+          "expectancy_r": null,
+          "profit_factor": null,
+          "win_rate": null,
+          "ar1_residual_autocorr": null,
+          "cost_drag_pct": null,
+          "absolute_cost_per_trade_r": 0.0
+        },
+        {
+          "fold_idx": 2,
+          "n_trades": 0,
+          "expectancy_r": null,
+          "profit_factor": null,
+          "win_rate": null,
+          "ar1_residual_autocorr": null,
+          "cost_drag_pct": null,
+          "absolute_cost_per_trade_r": 0.0
+        },
+        {
+          "fold_idx": 3,
+          "n_trades": 0,
+          "expectancy_r": null,
+          "profit_factor": null,
+          "win_rate": null,
+          "ar1_residual_autocorr": null,
+          "cost_drag_pct": null,
+          "absolute_cost_per_trade_r": 0.0
+        },
+        {
+          "fold_idx": 4,
+          "n_trades": 0,
+          "expectancy_r": null,
+          "profit_factor": null,
+          "win_rate": null,
+          "ar1_residual_autocorr": null,
+          "cost_drag_pct": null,
+          "absolute_cost_per_trade_r": 0.0
+        },
+        {
+          "fold_idx": 5,
+          "n_trades": 0,
+          "expectancy_r": null,
+          "profit_factor": null,
+          "win_rate": null,
+          "ar1_residual_autocorr": null,
+          "cost_drag_pct": null,
+          "absolute_cost_per_trade_r": 0.0
+        }
+      ]
+    }
+  },
+  "aggregate_across_regimes": {
+    "total_n_trades": 580,
+    "per_fold_n_trades": [
+      96,
+      125,
+      121,
+      114,
+      124
+    ],
+    "median_expectancy_r": -0.13916666666666666,
+    "median_pf": 0.7549523110785037,
+    "median_win_rate": 0.5104166666666666,
+    "median_cost_drag_pct": 222.2
+  },
+  "gate_results": {
+    "gate_a_at_least_one_regime_passes": false,
+    "gate_a_passing_regimes": [],
+    "gate_c_chop_zero_trades": true,
+    "gate_d_aggregate_geq_p4_baseline": true,
+    "p4_baseline": {
+      "median_pf": 0.738,
+      "median_expectancy_r": -0.196
+    },
+    "thresholds": {
+      "gate_a_min_pf": 1.3,
+      "gate_a_min_expectancy_r": 0.0,
+      "gate_a_min_trades": 100,
+      "gate_b_ar1_median_lt": 0.1,
+      "gate_b_ar1_max_lt": 0.2
+    }
+  },
+  "timing_seconds": {
+    "total": 14.0,
+    "collect": 1.1,
+    "uniqueness": 0.1
+  },
+  "diagnostics": {
+    "median_sample_cost_r": 0.16,
+    "mean_sample_cost_r": 0.15999999999999998,
+    "median_trade_horizon_bars": 14.0,
+    "median_gross_r_per_regime": {
+      "trend_up_low_vol": 0.0,
+      "trend_up_high_vol": 1.0,
+      "trend_dn_low_vol": 1.0,
+      "trend_dn_high_vol": 0.008669623059866892,
+      "range_tight": -1.0,
+      "range_wide": -1.0,
+      "chop": null
+    },
+    "n_trades_per_regime_total": {
+      "trend_up_low_vol": 50,
+      "trend_up_high_vol": 79,
+      "trend_dn_low_vol": 56,
+      "trend_dn_high_vol": 109,
+      "range_tight": 155,
+      "range_wide": 131,
+      "chop": 0
+    }
+  }
+}

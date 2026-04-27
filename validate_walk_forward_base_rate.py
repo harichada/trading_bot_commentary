@@ -191,15 +191,30 @@ def _read_prior_window(prior_label: str, new_label: str) -> dict:
         )
     med, mx = _ar1_summary(per_fold)
 
+    # Backfill reject_kind for prior records that pre-date the field.
+    # The prior W2/W3 rejections were AR(1) (the prompt's diagnostic
+    # confirms this); detect via reject_reason substring.
+    prior_status = src.get("trainer_status", "ok")
+    prior_reason = src.get("trainer_reject_reason") or ""
+    reject_kind: str | None = None
+    if prior_status == "rejected":
+        if "AR(1)" in prior_reason or "uniqueness" in prior_reason or "label" in prior_reason:
+            reject_kind = "p4_hard"
+        elif "cost-drag" in prior_reason or "gross" in prior_reason:
+            reject_kind = "cost_drag"
+        else:
+            reject_kind = "unknown"
+
     return {
         "label": src["label"],
         "window_start_ts": src["window_start_ts"],
         "window_end_ts": src["window_end_ts"],
-        "trainer_status": src.get("trainer_status", "ok"),
+        "trainer_status": prior_status,
         "per_fold_ar1": per_fold,
         "per_fold_ar1_median": med,
         "per_fold_ar1_max": mx,
         "trainer_reject_reason": src.get("trainer_reject_reason"),
+        "reject_kind": reject_kind,
         "training_report_path": str(training_report_path),
         "p3_report_path": src.get("p3_report_path"),
         "per_window_primary_bundle": src.get("per_window_primary_bundle"),
@@ -264,6 +279,7 @@ def _run_one_window(label: str, spec: dict) -> dict:
 
     if train_result["status"] == "rejected":
         base_record["trainer_reject_reason"] = train_result["reject_reason"]
+        base_record["reject_kind"] = train_result.get("reject_kind", "unknown")
         base_record["aggregate_across_regimes"] = {
             "median_pf": None,
             "median_expectancy_r": None,
@@ -351,14 +367,20 @@ def main() -> int:
         if w.get("per_fold_ar1_median") is not None
     ]
 
-    # Failed-window severity distribution.
+    # Failed-window severity distribution. Severity classification
+    # only applies to AR(1) rejections (rc=3); cost-drag rejections
+    # (rc=2) short-circuit before AR(1) is computed and have no median
+    # to classify.
     severity_counts = {"near-miss": 0, "moderate": 0, "far-miss": 0}
     failed_ar1_medians: list[float] = []
+    reject_kind_counts: dict[str, int] = {}
     for w in per_window.values():
         if w["trainer_status"] != "rejected":
             continue
+        kind = w.get("reject_kind") or "unknown"
+        reject_kind_counts[kind] = reject_kind_counts.get(kind, 0) + 1
         med = w.get("per_fold_ar1_median")
-        if med is None:
+        if med is None or kind != "p4_hard":
             continue
         failed_ar1_medians.append(float(med))
         severity_counts[_classify_severity(float(med))] += 1
@@ -383,7 +405,8 @@ def main() -> int:
         "passing_exps_sorted": sorted(passing_exps),
         "all_ar1_medians": all_ar1_medians,
         "failed_ar1_medians_sorted": sorted(failed_ar1_medians),
-        "severity_counts_failed": severity_counts,
+        "severity_counts_failed_p4_hard": severity_counts,
+        "reject_kind_counts": reject_kind_counts,
         "windows": per_window,
         "spec_reference": (
             "20-window AR(1) base-rate sweep (AFML §11/§4.5.3); "

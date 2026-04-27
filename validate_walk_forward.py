@@ -114,13 +114,15 @@ def _train_window_primary(window_end: pd.Timestamp, model_path: Path,
       ``status``: "ok" | "rejected" | "error"
       ``rc``:     trainer return code
       ``reject_reason``: present if status=="rejected" (reads from the
-        training report's ``reject_reason`` field — exit code 3 means
-        the trainer's own P4 acceptance gates rejected the window's
-        labeling distribution as unsuitable).
+        training report's ``reject_reason`` field).
+      ``reject_kind``: present if status=="rejected"; one of
+        ``"cost_drag"`` (rc=2) or ``"p4_hard"`` (rc=3, AR(1) /
+        uniqueness / label distribution).
 
-    Exit code 3 (P4 hard-reject) is treated as a recoverable validation
-    finding — record and continue. Other non-zero exits are unexpected
-    and surface as ``status="error"``."""
+    Exit codes 2 and 3 are both gate-fired rejections that the trainer
+    itself documents with a structured report; both are treated as
+    recoverable validation findings — record and continue. Other
+    non-zero exits are unexpected and surface as ``status="error"``."""
     import importlib
     # Reload between windows so module-level state (loggers, singletons)
     # does not contaminate.
@@ -153,18 +155,21 @@ def _train_window_primary(window_end: pd.Timestamp, model_path: Path,
     if rc == 0:
         return {"status": "ok", "rc": 0}
 
-    if rc == 3 and training_report_path.exists():
-        # P4 hard-reject (per-fold AR(1) gate, uniqueness, or label
-        # distribution). The trainer wrote a structured rejection report
-        # — read the reason out so we can record it on the validation
-        # report.
+    if rc in (2, 3) and training_report_path.exists():
+        # rc=2 → cost-drag / gross-PnL gate; rc=3 → P4 hard-reject
+        # (per-fold AR(1), uniqueness, or label distribution). Trainer
+        # writes a structured rejection report in both cases. Note: the
+        # rc=2 path short-circuits before AR(1) is computed, so the
+        # rc=2 report has no iid_diagnostics block.
         rep = json.loads(training_report_path.read_text())
         reason = rep.get("reject_reason", "(no reason recorded)")
+        kind = "cost_drag" if rc == 2 else "p4_hard"
         logger.warning(
-            "[window_end=%s] trainer P4-rejected: %s", window_end, reason,
+            "[window_end=%s] trainer %s-rejected: %s",
+            window_end, kind, reason,
         )
         return {"status": "rejected", "rc": rc, "reject_reason": reason,
-                "trainer_report": rep}
+                "reject_kind": kind, "trainer_report": rep}
 
     raise RuntimeError(
         f"train_ml_model_v2 returned non-zero ({rc}) for window end={window_end}"
