@@ -48,15 +48,16 @@ logger = logging.getLogger("train_p3_regime")
 REPO_ROOT = Path(__file__).resolve().parent
 DEFAULT_REGIME_CONFIG = REPO_ROOT / "regime_configs" / "p3.yaml"
 DEFAULT_REPORT = REPO_ROOT / "backtest_results" / "P3_after.json"
-ML_MODEL_V2_PATH = REPO_ROOT / "ml_model_v2.pkl"
+DEFAULT_PRIMARY_BUNDLE = REPO_ROOT / "ml_model_v2.pkl"
 
 
 def _enforce_no_pkl_load() -> None:
     """Optional safety: when env P3_FORBID_PKL_LOAD=1, monkey-patch
-    joblib.load to raise on any attempt to read ml_model_v2.pkl.
+    joblib.load to raise on any attempt to read the released bundle.
     Used by tests to confirm the runner relies on the nested-CV harness
-    rather than the released-bundle in-sample predictions.
-    """
+    rather than the released-bundle in-sample predictions. Alternative
+    bundles (retune experiments) bypass this guard so config-only loads
+    still work."""
     if os.environ.get("P3_FORBID_PKL_LOAD") != "1":
         return
     import joblib
@@ -64,7 +65,7 @@ def _enforce_no_pkl_load() -> None:
 
     def guarded(filename, *args, **kwargs):
         path_str = str(filename)
-        if path_str.endswith("ml_model_v2.pkl") or "ml_model_v2.pkl" in path_str:
+        if path_str.endswith("/ml_model_v2.pkl") or path_str == "ml_model_v2.pkl":
             sys.stderr.write(
                 f"P3_FORBID_PKL_LOAD violation: refused to load {path_str}\n")
             sys.stderr.flush()
@@ -88,19 +89,26 @@ def _load_yaml(path: Path) -> dict:
         return yaml.safe_load(f)
 
 
-def _load_primary_config() -> dict:
-    """Source primary_config from the released ml_model_v2.pkl.config —
-    exactly the same recipe the bundle was trained with. We DO NOT load
-    the model itself; we only read its embedded config dict."""
+def _load_primary_config(bundle_path: Path) -> dict:
+    """Source primary_config from the bundle's .config dict — the same
+    recipe the bundle was trained with. We DO NOT use the model's
+    predictions (those would be in-sample on its training window); the
+    nested-CV harness refits per fold. Reading the .config dict is
+    the documented harness contract from P1.
+
+    Set ``bundle_path`` to the released ``ml_model_v2.pkl`` for the
+    standard run; point it at an alternative bundle (e.g. a barrier-
+    retune experiment) to evaluate that recipe without overwriting the
+    released artefact."""
     import joblib
-    bundle = joblib.load(ML_MODEL_V2_PATH)
+    bundle = joblib.load(bundle_path)
     if isinstance(bundle, dict):
         cfg = bundle.get("config")
     else:
         cfg = getattr(bundle, "config", None)
     if cfg is None:
         raise RuntimeError(
-            f"{ML_MODEL_V2_PATH} has no .config attribute / 'config' key — "
+            f"{bundle_path} has no .config attribute / 'config' key — "
             "harness cannot proceed without a verified primary recipe")
     return cfg
 
@@ -170,6 +178,13 @@ def main() -> int:
     parser.add_argument("--decision-threshold", type=float, default=None,
                         help="Override decision_threshold from regime config")
     parser.add_argument("--report-path", default=str(DEFAULT_REPORT))
+    parser.add_argument(
+        "--primary-bundle-path", default=str(DEFAULT_PRIMARY_BUNDLE),
+        help="Path to a primary bundle (.pkl with .config). Defaults to the "
+             "released ml_model_v2.pkl. Point at an alternative bundle "
+             "(e.g., barrier-retune experiment) to evaluate that recipe "
+             "without touching the released one.",
+    )
     parser.add_argument("--dsn", default=os.environ.get(
         "POSTGRES_DSN",
         "postgresql://rudra:rudra_dev_2024@localhost:5432/rudra_dev"))
@@ -180,8 +195,12 @@ def main() -> int:
     Path(args.report_path).parent.mkdir(parents=True, exist_ok=True)
 
     # Load primary config (recipe only — pkl bytes are untouched).
-    pkl_sha_before = _sha256(ML_MODEL_V2_PATH)
-    primary_config = _load_primary_config()
+    primary_bundle_path = Path(args.primary_bundle_path)
+    if not primary_bundle_path.exists():
+        raise FileNotFoundError(
+            f"primary bundle not found: {primary_bundle_path}")
+    pkl_sha_before = _sha256(primary_bundle_path)
+    primary_config = _load_primary_config(primary_bundle_path)
 
     # Load regime config.
     regime_cfg = _load_yaml(Path(args.regime_config))
@@ -298,6 +317,14 @@ def main() -> int:
 
     n_events_seen_per_fold: list[int] = []
     n_events_skipped_chop_per_fold: list[int] = []
+    # Diagnostics for the retune experiment: per-regime gross R, per-trade
+    # horizon in bars, per-event cost in R.
+    gross_r_per_regime: dict[str, list[float]] = {r: [] for r in (
+        "trend_up_low_vol", "trend_up_high_vol",
+        "trend_dn_low_vol", "trend_dn_high_vol",
+        "range_tight", "range_wide", "chop",
+    )}
+    trade_horizon_bars: list[float] = []
 
     for fold_idx, (train_idx, test_idx) in enumerate(cv.split(ev.X), 1):
         if len(train_idx) == 0 or len(test_idx) == 0:
@@ -388,6 +415,16 @@ def main() -> int:
             gross_r_list.append(gross_r)
             net_r_list.append(net_r)
             residuals_list.append(float(resid))
+            gross_r_per_regime[committed].append(gross_r)
+            # Per-trade horizon in bars: (touch - event) / freq_minutes.
+            try:
+                hz_min = (
+                    pd.Timestamp(ev.touch_times[ev_idx])
+                    - pd.Timestamp(event_time)
+                ).total_seconds() / 60.0
+                trade_horizon_bars.append(hz_min / max(1, args.frequency))
+            except Exception:
+                pass
 
         agg.add_fold(
             fold_idx=fold_idx,
@@ -433,12 +470,12 @@ def main() -> int:
         and agg_pf >= p4_pf_baseline and agg_exp >= p4_exp_baseline
     )
 
-    pkl_sha_after = _sha256(ML_MODEL_V2_PATH)
+    pkl_sha_after = _sha256(primary_bundle_path)
     elapsed = time.time() - started
 
     report = {
         "timestamp": datetime.now().isoformat(),
-        "primary_bundle": "ml_model_v2.pkl",
+        "primary_bundle": str(primary_bundle_path),
         "primary_bundle_sha256": {
             "before": pkl_sha_before, "after": pkl_sha_after,
             "unchanged": pkl_sha_before == pkl_sha_after,
@@ -497,6 +534,23 @@ def main() -> int:
             "total": round(elapsed, 1),
             "collect": round(ev.timing.get("collect", 0.0), 1),
             "uniqueness": round(ev.timing.get("uniqueness", 0.0), 1),
+        },
+        "diagnostics": {
+            "median_sample_cost_r": float(np.median(ev.sample_cost_r))
+            if len(ev.sample_cost_r) else None,
+            "mean_sample_cost_r": float(np.mean(ev.sample_cost_r))
+            if len(ev.sample_cost_r) else None,
+            "median_trade_horizon_bars": (
+                float(np.median(trade_horizon_bars))
+                if trade_horizon_bars else None
+            ),
+            "median_gross_r_per_regime": {
+                r: (float(np.median(g)) if g else None)
+                for r, g in gross_r_per_regime.items()
+            },
+            "n_trades_per_regime_total": {
+                r: len(g) for r, g in gross_r_per_regime.items()
+            },
         },
     }
 
