@@ -104,12 +104,26 @@ def _patched_provider(window_end: pd.Timestamp):
 
 
 def _train_window_primary(window_end: pd.Timestamp, model_path: Path,
-                          training_report_path: Path) -> None:
+                          training_report_path: Path) -> dict:
     """Run train_ml_model_v2.main() programmatically with sys.argv set
-    to the retune parameters for this window."""
+    to the retune parameters for this window.
+
+    Returns
+    -------
+    dict with keys:
+      ``status``: "ok" | "rejected" | "error"
+      ``rc``:     trainer return code
+      ``reject_reason``: present if status=="rejected" (reads from the
+        training report's ``reject_reason`` field — exit code 3 means
+        the trainer's own P4 acceptance gates rejected the window's
+        labeling distribution as unsuitable).
+
+    Exit code 3 (P4 hard-reject) is treated as a recoverable validation
+    finding — record and continue. Other non-zero exits are unexpected
+    and surface as ``status="error"``."""
     import importlib
-    # Reload between windows so any module-level state (loggers,
-    # singletons) does not contaminate.
+    # Reload between windows so module-level state (loggers, singletons)
+    # does not contaminate.
     if "train_ml_model_v2" in sys.modules:
         importlib.reload(sys.modules["train_ml_model_v2"])
     import train_ml_model_v2
@@ -135,10 +149,26 @@ def _train_window_primary(window_end: pd.Timestamp, model_path: Path,
             rc = train_ml_model_v2.main()
     finally:
         sys.argv = saved_argv
-    if rc != 0:
-        raise RuntimeError(
-            f"train_ml_model_v2 returned non-zero ({rc}) for window end={window_end}"
+
+    if rc == 0:
+        return {"status": "ok", "rc": 0}
+
+    if rc == 3 and training_report_path.exists():
+        # P4 hard-reject (per-fold AR(1) gate, uniqueness, or label
+        # distribution). The trainer wrote a structured rejection report
+        # — read the reason out so we can record it on the validation
+        # report.
+        rep = json.loads(training_report_path.read_text())
+        reason = rep.get("reject_reason", "(no reason recorded)")
+        logger.warning(
+            "[window_end=%s] trainer P4-rejected: %s", window_end, reason,
         )
+        return {"status": "rejected", "rc": rc, "reject_reason": reason,
+                "trainer_report": rep}
+
+    raise RuntimeError(
+        f"train_ml_model_v2 returned non-zero ({rc}) for window end={window_end}"
+    )
 
 
 def _evaluate_window_p3(window_end: pd.Timestamp, primary_bundle: Path,
@@ -207,11 +237,39 @@ def main() -> int:
 
         # Step 1: train per-window primary on the windowed data.
         logger.info("[%s] step 1/2 — training primary on window data", label)
-        _train_window_primary(
+        train_result = _train_window_primary(
             window_end=window_end,
             model_path=primary_bundle,
             training_report_path=training_report,
         )
+
+        if train_result["status"] == "rejected":
+            # The trainer's own P4 acceptance gates rejected this
+            # window's labeling distribution. Record honestly and
+            # continue — this IS a validation finding, not an error.
+            per_window_results[label] = {
+                "label": spec["label"],
+                "window_start_ts": window_start.isoformat(),
+                "window_end_ts": window_end.isoformat(),
+                "trainer_status": "rejected",
+                "trainer_reject_reason": train_result["reject_reason"],
+                "training_report_path": str(training_report),
+                # Flag absence of P3 metrics so downstream tests fail
+                # honestly rather than silently passing.
+                "aggregate_across_regimes": {
+                    "median_pf": None,
+                    "median_expectancy_r": None,
+                    "total_n_trades": 0,
+                },
+                "per_regime_metrics": {},
+                "regime_distribution": {},
+                "gate_results": {},
+            }
+            logger.info(
+                "[%s] window recorded as TRAINER-REJECTED — continuing to next window",
+                label,
+            )
+            continue
 
         # Step 2: evaluate via P3 regime routing on the same window.
         logger.info("[%s] step 2/2 — P3 regime routing on per-window primary", label)
@@ -227,6 +285,7 @@ def main() -> int:
             "label": spec["label"],
             "window_start_ts": window_start.isoformat(),
             "window_end_ts": window_end.isoformat(),
+            "trainer_status": "ok",
             "per_window_primary_bundle": str(primary_bundle),
             "per_window_primary_sha256": _sha256(primary_bundle),
             "training_report_path": str(training_report),
@@ -242,17 +301,33 @@ def main() -> int:
     sha_after = _sha256(released_bundle)
     elapsed = (datetime.now() - started).total_seconds()
 
-    # Summary numbers for W4 median.
-    pfs = sorted(
+    # Summary numbers for W4 median. Trainer-rejected windows have
+    # ``median_pf=None`` — filter them out and only compute the median
+    # if we still have all 3 valid points. Anything less is surfaced as
+    # ``None`` so the W4 gate fails honestly rather than silently
+    # passing on a 1-window "median".
+    pfs_raw = [
         per_window_results[w]["aggregate_across_regimes"]["median_pf"]
         for w in ("W1", "W2", "W3")
-    )
-    exps = sorted(
+    ]
+    exps_raw = [
         per_window_results[w]["aggregate_across_regimes"]["median_expectancy_r"]
         for w in ("W1", "W2", "W3")
-    )
-    median_pf = pfs[1]
-    median_exp = exps[1]
+    ]
+    pfs_valid = sorted(p for p in pfs_raw if p is not None)
+    exps_valid = sorted(e for e in exps_raw if e is not None)
+    n_valid_windows = len(pfs_valid)
+    if n_valid_windows == 3:
+        median_pf = pfs_valid[1]
+        median_exp = exps_valid[1]
+    else:
+        median_pf = None
+        median_exp = None
+        logger.warning(
+            "W4 median undefined: only %d/3 windows produced P3 metrics "
+            "(rest were trainer-rejected). Per-window PFs=%s exps=%s",
+            n_valid_windows, pfs_raw, exps_raw,
+        )
 
     report = {
         "timestamp": datetime.now().isoformat(),
@@ -269,11 +344,24 @@ def main() -> int:
         "spec_reference": "Walk-forward validation of baseline-P4-retune (AFML §11/§12)",
         "elapsed_seconds": round(elapsed, 1),
     }
+    report["n_valid_windows"] = n_valid_windows
+    report["trainer_rejected_windows"] = [
+        w for w in ("W1", "W2", "W3")
+        if per_window_results[w].get("trainer_status") == "rejected"
+    ]
     DEFAULT_REPORT.write_text(json.dumps(report, indent=2, default=str))
-    logger.info(
-        "walk-forward validation done elapsed=%.1fs median_pf=%.3f median_exp=%.3f report=%s",
-        elapsed, median_pf, median_exp, DEFAULT_REPORT,
-    )
+    if median_pf is None:
+        logger.info(
+            "walk-forward validation done elapsed=%.1fs median undefined "
+            "(only %d/3 windows produced P3 metrics; rejected=%s) report=%s",
+            elapsed, n_valid_windows, report["trainer_rejected_windows"],
+            DEFAULT_REPORT,
+        )
+    else:
+        logger.info(
+            "walk-forward validation done elapsed=%.1fs median_pf=%.3f median_exp=%.3f report=%s",
+            elapsed, median_pf, median_exp, DEFAULT_REPORT,
+        )
     return 0
 
 

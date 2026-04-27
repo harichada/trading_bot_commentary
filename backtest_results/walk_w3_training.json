@@ -1,0 +1,233 @@
+{
+  "timestamp": "2026-04-27T15:10:02.638713",
+  "rejected": true,
+  "reject_reason": "per-fold AR(1) gate failed: median=0.160 (< 0.1), max=0.169 (< 0.2); per-fold values=[0.05936295313556714, 0.15967113430005644, 0.16912131377623765, 0.16120924094628633, 0.0966052484776817]",
+  "config": {
+    "pt_mult": 2.0,
+    "sl_mult": 2.0,
+    "max_holding": 60,
+    "event_stride": 5,
+    "frequency": 5,
+    "embargo_pct": 0.01,
+    "n_folds": 5,
+    "n_symbols": 10,
+    "days": 60,
+    "cost_model": {
+      "fee_bps": 5.0,
+      "slip_bps": 10.0,
+      "impact_coef": 0.1,
+      "participation": 0.01
+    },
+    "decision_threshold": 0.55,
+    "reject_cost_drag_pct": 999.0,
+    "cost_aware": true
+  },
+  "symbols": [
+    "NVDA",
+    "TSLA",
+    "AAPL",
+    "AMD",
+    "SPY",
+    "QQQ",
+    "META",
+    "MSFT",
+    "GOOGL",
+    "AMZN"
+  ],
+  "symbol_count": 10,
+  "per_symbol_samples": {
+    "NVDA": 167,
+    "TSLA": 189,
+    "AAPL": 72,
+    "AMD": 168,
+    "SPY": 47,
+    "QQQ": 65,
+    "META": 133,
+    "MSFT": 65,
+    "GOOGL": 91,
+    "AMZN": 117
+  },
+  "label_distribution": {
+    "total": 1114,
+    "BUY": {
+      "count": 565,
+      "pct": 50.72
+    },
+    "HOLD": {
+      "count": 2,
+      "pct": 0.18
+    },
+    "SELL": {
+      "count": 547,
+      "pct": 49.1
+    }
+  },
+  "weighting": {
+    "mean": 0.5948024827755527,
+    "median": 0.63,
+    "min": 0.0001,
+    "max": 0.84,
+    "effective_sample_size": 789.6952756502757
+  },
+  "timing_seconds": {
+    "collection": 1.2,
+    "uniqueness": 0.2,
+    "cv": 16.4
+  },
+  "cv_summary": {
+    "n_folds_executed": 5,
+    "aggregate": {
+      "median_expectancy_r": -0.16546448087431695,
+      "median_profit_factor": 0.7162668665667169,
+      "median_sortino": -14.38662040942817,
+      "median_calmar": -19.151978640616058,
+      "median_max_adverse_excursion": 1.16,
+      "median_cost_drag_pct": 404.7,
+      "median_absolute_cost_per_trade_r": 0.16,
+      "n_folds_with_undefined_cost_drag": 3,
+      "var_sharpe_across_folds": 13.856488563233915,
+      "n_folds_executed": 5
+    },
+    "fold_detail": [
+      {
+        "fold": 1,
+        "train_size": 868,
+        "test_size": 223,
+        "n_trades_taken": 181,
+        "fold_calendar_days": 11.76,
+        "trades_per_year": 3878,
+        "metrics": {
+          "expectancy_r": -0.13237569060773482,
+          "profit_factor": 0.7652821316614422,
+          "sortino": -10.191828412279968,
+          "calmar": -15.134225476910245,
+          "max_adverse_excursion": 1.16,
+          "cost_drag_pct": 579.2,
+          "absolute_cost_per_trade_r": null,
+          "ar1_residual_autocorr": 0.05936295313556714,
+          "ljung_box_p_value": null
+        },
+        "sharpe_proxy": -10.191828412279968
+      },
+      {
+        "fold": 2,
+        "train_size": 871,
+        "test_size": 223,
+        "n_trades_taken": 187,
+        "fold_calendar_days": 8.18,
+        "trades_per_year": 5758,
+        "metrics": {
+          "expectancy_r": -0.09048128342245992,
+          "profit_factor": 0.8323424494649231,
+          "sortino": -8.677562895940882,
+          "calmar": -21.247603178895762,
+          "max_adverse_excursion": 1.16,
+          "cost_drag_pct": 230.2,
+          "absolute_cost_per_trade_r": null,
+          "ar1_residual_autocorr": 0.15967113430005644,
+          "ljung_box_p_value": null
+        },
+        "sharpe_proxy": -8.677562895940882
+      },
+      {
+        "fold": 3,
+        "train_size": 875,
+        "test_size": 223,
+        "n_trades_taken": 183,
+        "fold_calendar_days": 9.02,
+        "trades_per_year": 5114,
+        "metrics": {
+          "expectancy_r": -0.16546448087431695,
+          "profit_factor": 0.7162668665667169,
+          "sortino": -14.38662040942817,
+          "calmar": -23.610082455113183,
+          "max_adverse_excursion": 1.16,
+          "cost_drag_pct": null,
+          "absolute_cost_per_trade_r": 0.16,
+          "ar1_residual_autocorr": 0.16912131377623765,
+          "ljung_box_p_value": null
+        },
+        "sharpe_proxy": -14.38662040942817
+      },
+      {
+        "fold": 4,
+        "train_size": 872,
+        "test_size": 223,
+        "n_trades_taken": 188,
+        "fold_calendar_days": 12.83,
+        "trades_per_year": 3694,
+        "metrics": {
+          "expectancy_r": -0.2131914893617022,
+          "profit_factor": 0.6509926854754442,
+          "sortino": -15.3929425061398,
+          "calmar": -19.151978640616058,
+          "max_adverse_excursion": 1.16,
+          "cost_drag_pct": null,
+          "absolute_cost_per_trade_r": 0.16,
+          "ar1_residual_autocorr": 0.16120924094628633,
+          "ljung_box_p_value": null
+        },
+        "sharpe_proxy": -15.3929425061398
+      },
+      {
+        "fold": 5,
+        "train_size": 884,
+        "test_size": 222,
+        "n_trades_taken": 190,
+        "fold_calendar_days": 13.02,
+        "trades_per_year": 3676,
+        "metrics": {
+          "expectancy_r": -0.2708915671866559,
+          "profit_factor": 0.5782213244681694,
+          "sortino": -19.04261278110539,
+          "calmar": -18.595865547163378,
+          "max_adverse_excursion": 1.16,
+          "cost_drag_pct": null,
+          "absolute_cost_per_trade_r": 0.16,
+          "ar1_residual_autocorr": 0.0966052484776817,
+          "ljung_box_p_value": null
+        },
+        "sharpe_proxy": -19.04261278110539
+      }
+    ]
+  },
+  "iid_diagnostics": {
+    "per_fold_ar1": [
+      0.05936295313556714,
+      0.15967113430005644,
+      0.16912131377623765,
+      0.16120924094628633,
+      0.0966052484776817
+    ],
+    "median_per_fold_ar1": 0.15967113430005644,
+    "max_per_fold_ar1": 0.16912131377623765,
+    "passes_per_fold_gate": false,
+    "gate_thresholds": {
+      "median_lt": 0.1,
+      "max_lt": 0.2
+    },
+    "stitched_residual_ar1": 0.14734333171712907,
+    "stitched_residual_ar1_note": "informational \u2014 measures cross-fold calibration drift, not label IID-ness; owned by P2 calibration / P14 drift work, not P4",
+    "stitched_ljung_box_p_value": null,
+    "stitched_n_residuals": 1114
+  },
+  "bootstrap_stability": {
+    "iterations": 5,
+    "expectancy_r_per_iter": [
+      -0.146811,
+      -0.147338,
+      -0.164215,
+      -0.195524,
+      -0.213465
+    ],
+    "profit_factor_per_iter": [
+      0.7431,
+      0.7424,
+      0.7177,
+      0.674,
+      0.6504
+    ],
+    "cv_of_expectancy": 0.1539,
+    "passes_cv_lt_0_5": true
+  }
+}
