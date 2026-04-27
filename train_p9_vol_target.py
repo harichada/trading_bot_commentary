@@ -733,8 +733,17 @@ def _write_diff_md(report: dict, out_path: Path) -> None:
     lines.append("|---|---|---|---|---|---|---|---|---|---|")
     for label in sorted(report["windows"]):
         w = report["windows"][label]
-        if w["trainer_status"] != "ok":
-            lines.append(f"| {label} | {w['trainer_status']} | — | — | — | — | — | — | — | — |")
+        if w["trainer_status"] != "ok" or "p9" not in w:
+            status_cell = (
+                w["trainer_status"]
+                if "p9" in w or w["trainer_status"] != "ok"
+                else f"err: {w.get('error', 'unknown')[:40]}"
+            )
+            if w["trainer_status"] == "ok" and "p9" not in w:
+                status_cell = f"ok-but-error: {w.get('error', '?')[:40]}"
+            lines.append(
+                f"| {label} | {status_cell} | — | — | — | — | — | — | — | — |"
+            )
             continue
         p9 = w["p9"]
         base = w["baseline"]
@@ -837,16 +846,30 @@ def main() -> int:
         per_window_bundle = REPO_ROOT / f"ml_model_v2_baserate_{label.lower()}.pkl"
         if not per_window_bundle.exists():
             # W01-W03 use the older per-window bundles from
-            # walk_forward_validation (ml_model_v2_walk_w{1,2,3}.pkl).
-            alt = REPO_ROOT / f"ml_model_v2_walk_{label.lower()}.pkl"
-            if alt.exists():
-                per_window_bundle = alt
+            # walk_forward_validation. Naming convention there is
+            # `ml_model_v2_walk_w{1,2,3}.pkl` — single digits with NO
+            # leading zero. Try both with and without zero-padding.
+            int_part = int(label[1:])  # 1, 2, 3, ..., 20
+            alt_candidates = [
+                REPO_ROOT / f"ml_model_v2_walk_w{int_part}.pkl",
+                REPO_ROOT / f"ml_model_v2_walk_{label.lower()}.pkl",
+            ]
+            for alt in alt_candidates:
+                if alt.exists():
+                    per_window_bundle = alt
+                    break
             else:
                 logger.error(
-                    "[%s] per-window primary bundle missing: %s — skipping",
-                    label, per_window_bundle,
+                    "[%s] per-window primary bundle missing: tried %s — skipping",
+                    label, [str(p) for p in [
+                        REPO_ROOT / f"ml_model_v2_baserate_{label.lower()}.pkl",
+                        *alt_candidates,
+                    ]],
                 )
-                rec["error"] = f"missing per-window bundle: {per_window_bundle}"
+                rec["error"] = (
+                    f"missing per-window bundle: tried baserate_{label.lower()} "
+                    f"and walk_w{int_part}"
+                )
                 per_window[label] = rec
                 continue
 
