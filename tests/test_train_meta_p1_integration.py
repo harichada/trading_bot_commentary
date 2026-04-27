@@ -230,6 +230,49 @@ class TestP1ReportSchema:
 # ---- Hard-reject paths ------------------------------------------------------
 
 
+class TestNestedPrimaryRun:
+    """End-to-end with --nested-primary: verifies the harness is wired,
+    SHA256 of ml_model_v2.pkl is recorded and unchanged, and the report
+    flags ``nested_cv: true``."""
+
+    def test_nested_run_records_sha_and_flag(
+        self, monkeypatch: pytest.MonkeyPatch, isolated_paths: dict[str, Path],
+    ) -> None:
+        _install_stubs(monkeypatch, n_features=6)
+        import train_meta_model_p1 as mod
+
+        # Capture SHA before run.
+        import hashlib
+        primary_path = isolated_paths["primary"]
+        before_sha = hashlib.sha256(primary_path.read_bytes()).hexdigest()
+
+        argv = [
+            "train_meta_model_p1.py",
+            "--symbols", "SYN1", "SYN2", "SYN3",
+            "--days", "5",
+            "--folds", "3",
+            "--primary-bundle", str(primary_path),
+            "--meta-bundle-path", str(isolated_paths["meta_bundle"]),
+            "--report-path", str(isolated_paths["report"]),
+            "--nested-primary",
+            "--allow-rejection",
+        ]
+        monkeypatch.setattr(sys, "argv", argv)
+        exit_code = mod.main()
+        assert exit_code in (0, 3)
+
+        # Primary on disk must be byte-identical.
+        after_sha = hashlib.sha256(primary_path.read_bytes()).hexdigest()
+        assert before_sha == after_sha, "primary bundle must not be modified"
+
+        report = json.loads(isolated_paths["report"].read_text())
+        assert report["config"].get("nested_cv") is True
+        assert "primary_bundle_sha256" in report
+        assert report["primary_bundle_sha256"]["before"] == before_sha
+        assert report["primary_bundle_sha256"]["after"] == before_sha
+        assert report["primary_bundle_sha256"]["unchanged"] is True
+
+
 class TestP1HardReject:
     def test_no_primary_fires_rejects(
         self, monkeypatch: pytest.MonkeyPatch, isolated_paths: dict[str, Path],
