@@ -1,0 +1,319 @@
+{
+  "timestamp": "2026-04-27T08:31:22.349942",
+  "model_path": "ml_model_v2.pkl",
+  "config": {
+    "pt_mult": 2.0,
+    "sl_mult": 1.0,
+    "max_holding": 60,
+    "event_stride": 5,
+    "frequency": 5,
+    "embargo_pct": 0.01,
+    "n_folds": 5,
+    "n_symbols": 10,
+    "days": 60,
+    "cost_model": {
+      "fee_bps": 5.0,
+      "slip_bps": 10.0,
+      "impact_coef": 0.1,
+      "participation": 0.01
+    },
+    "decision_threshold": 0.55,
+    "cost_aware": true,
+    "labeling": {
+      "method": "triple_barrier",
+      "pt_mult": 2.0,
+      "sl_mult": 1.0,
+      "vertical_max_bars": 120,
+      "vertical_mult_expected_duration": 2.0,
+      "min_ret_atr_mult": 1.0,
+      "bar_type": "time",
+      "bar_type_deferred": [
+        "dollar",
+        "volume",
+        "imbalance"
+      ],
+      "event_source": "cusum",
+      "cusum_h": 0.01
+    },
+    "bootstrap": {
+      "method": "sequential",
+      "iterations": 5,
+      "seed": 42
+    }
+  },
+  "symbols": [
+    "NVDA",
+    "TSLA",
+    "AAPL",
+    "AMD",
+    "SPY",
+    "QQQ",
+    "META",
+    "MSFT",
+    "GOOGL",
+    "AMZN"
+  ],
+  "symbol_count": 10,
+  "per_symbol_samples": {
+    "NVDA": 217,
+    "TSLA": 274,
+    "AAPL": 127,
+    "AMD": 381,
+    "SPY": 65,
+    "QQQ": 92,
+    "META": 453,
+    "MSFT": 143,
+    "GOOGL": 178,
+    "AMZN": 193
+  },
+  "label_distribution": {
+    "total": 2123,
+    "BUY": {
+      "count": 767,
+      "pct": 36.13
+    },
+    "HOLD": {
+      "count": 33,
+      "pct": 1.55
+    },
+    "SELL": {
+      "count": 1323,
+      "pct": 62.32
+    },
+    "dropped_low_magnitude": 53,
+    "dropped_no_barrier_hit": 33,
+    "candidate_events": 2176
+  },
+  "weighting": {
+    "mean": 0.8635927081180563,
+    "median": 0.6799999999999999,
+    "min": 0.0001,
+    "max": 1.68,
+    "effective_sample_size": 1760.2189849403244,
+    "compression_ratio": 0.8291
+  },
+  "sample_uniqueness": {
+    "mean": 0.8291186928593144,
+    "median": 1.0,
+    "min": 0.125,
+    "effective_sample_size": 1760.2189849403244,
+    "n_samples": 2123
+  },
+  "iid_diagnostics": {
+    "per_fold_ar1": [
+      0.07612296318838065,
+      0.05831249852521977,
+      0.15393991911684105,
+      0.16847827964624232,
+      0.09229244946992272
+    ],
+    "median_per_fold_ar1": 0.09229244946992272,
+    "max_per_fold_ar1": 0.16847827964624232,
+    "passes_per_fold_gate": true,
+    "gate_thresholds": {
+      "median_lt": 0.1,
+      "max_lt": 0.2
+    },
+    "stitched_residual_ar1": 0.1454395584332586,
+    "stitched_residual_ar1_note": "informational \u2014 measures cross-fold calibration drift, not label IID-ness; owned by P2 calibration / P14 drift work, not P4",
+    "stitched_ljung_box_p_value": null,
+    "stitched_n_residuals": 2123
+  },
+  "bootstrap_stability": {
+    "iterations": 5,
+    "expectancy_r_per_iter": [
+      -0.271471,
+      -0.306771,
+      -0.290736,
+      -0.267581,
+      -0.288749
+    ],
+    "profit_factor_per_iter": [
+      0.6562,
+      0.6201,
+      0.6378,
+      0.6601,
+      0.6384
+    ],
+    "cv_of_expectancy": 0.0498,
+    "passes_cv_lt_0_5": true
+  },
+  "timing_seconds": {
+    "collection": 2.4,
+    "uniqueness": 0.4,
+    "cv": 75.0,
+    "final_fit": 0.2
+  },
+  "cv_summary": {
+    "n_folds_executed": 5,
+    "aggregate": {
+      "median_expectancy_r": -0.19646692102227006,
+      "median_profit_factor": 0.7375625443883556,
+      "median_sortino": -13.14070036257666,
+      "median_calmar": -16.7354231747273,
+      "median_max_adverse_excursion": 2.32,
+      "median_cost_drag_pct": 224.5,
+      "median_absolute_cost_per_trade_r": 0.32,
+      "n_folds_with_undefined_cost_drag": 1,
+      "var_sharpe_across_folds": 98.46832800704058,
+      "n_folds_executed": 5
+    },
+    "fold_detail": [
+      {
+        "fold": 1,
+        "train_size": 1677,
+        "test_size": 425,
+        "n_trades_taken": 352,
+        "fold_calendar_days": 9.55,
+        "trades_per_year": 9286,
+        "metrics": {
+          "expectancy_r": -0.15158553247965487,
+          "profit_factor": 0.7799829959187062,
+          "sortino": -12.523364559383602,
+          "calmar": -22.349864574781616,
+          "max_adverse_excursion": 2.32,
+          "cost_drag_pct": 190.0,
+          "absolute_cost_per_trade_r": null,
+          "ar1_residual_autocorr": 0.07612296318838065,
+          "ljung_box_p_value": null
+        },
+        "sharpe_proxy": -12.523364559383602
+      },
+      {
+        "fold": 2,
+        "train_size": 1674,
+        "test_size": 425,
+        "n_trades_taken": 366,
+        "fold_calendar_days": 10.47,
+        "trades_per_year": 8810,
+        "metrics": {
+          "expectancy_r": -0.0975319192934839,
+          "profit_factor": 0.8531584960354983,
+          "sortino": -7.898136465919501,
+          "calmar": -13.575059158896437,
+          "max_adverse_excursion": 2.32,
+          "cost_drag_pct": 143.8,
+          "absolute_cost_per_trade_r": null,
+          "ar1_residual_autocorr": 0.05831249852521977,
+          "ljung_box_p_value": null
+        },
+        "sharpe_proxy": -7.898136465919501
+      },
+      {
+        "fold": 3,
+        "train_size": 1670,
+        "test_size": 425,
+        "n_trades_taken": 357,
+        "fold_calendar_days": 13.76,
+        "trades_per_year": 6540,
+        "metrics": {
+          "expectancy_r": -0.19646692102227006,
+          "profit_factor": 0.7375625443883556,
+          "sortino": -13.14070036257666,
+          "calmar": -14.601064357791534,
+          "max_adverse_excursion": 2.32,
+          "cost_drag_pct": 259.0,
+          "absolute_cost_per_trade_r": null,
+          "ar1_residual_autocorr": 0.15393991911684105,
+          "ljung_box_p_value": null
+        },
+        "sharpe_proxy": -13.14070036257666
+      },
+      {
+        "fold": 4,
+        "train_size": 1667,
+        "test_size": 424,
+        "n_trades_taken": 349,
+        "fold_calendar_days": 10.02,
+        "trades_per_year": 8773,
+        "metrics": {
+          "expectancy_r": -0.20117897541048171,
+          "profit_factor": 0.7189421904880273,
+          "sortino": -16.610085820818725,
+          "calmar": -20.18461975384441,
+          "max_adverse_excursion": 2.32,
+          "cost_drag_pct": 269.3,
+          "absolute_cost_per_trade_r": null,
+          "ar1_residual_autocorr": 0.16847827964624232,
+          "ljung_box_p_value": null
+        },
+        "sharpe_proxy": -16.610085820818725
+      },
+      {
+        "fold": 5,
+        "train_size": 1694,
+        "test_size": 424,
+        "n_trades_taken": 373,
+        "fold_calendar_days": 14.98,
+        "trades_per_year": 6275,
+        "metrics": {
+          "expectancy_r": -0.7167828418230563,
+          "profit_factor": 0.35276459765662826,
+          "sortino": -36.36186859320022,
+          "calmar": -16.7354231747273,
+          "max_adverse_excursion": 2.32,
+          "cost_drag_pct": null,
+          "absolute_cost_per_trade_r": 0.32,
+          "ar1_residual_autocorr": 0.09229244946992272,
+          "ljung_box_p_value": null
+        },
+        "sharpe_proxy": -36.36186859320022
+      }
+    ]
+  },
+  "feature_importance": {
+    "pivot_distance": 0.05013766139745712,
+    "volume_ratio": 0.04975111410021782,
+    "atr_ratio": 0.049101077020168304,
+    "bb_width": 0.047774601727724075,
+    "s1_distance": 0.047771211713552475,
+    "returns_1": 0.047742560505867004,
+    "bb_position": 0.04692753031849861,
+    "macd_signal": 0.046868856996297836,
+    "r1_distance": 0.0465625636279583,
+    "macd_hist": 0.046377040445804596,
+    "price_vs_sma20": 0.04566189646720886,
+    "volume_trend": 0.04484744742512703,
+    "high_low_ratio": 0.04437888413667679,
+    "returns_20": 0.04423128440976143,
+    "volume_imbalance": 0.044180236756801605,
+    "spread_proxy": 0.04371510073542595,
+    "returns_5": 0.043362997472286224,
+    "std_dev_ratio": 0.0433042049407959,
+    "rsi": 0.04314342513680458,
+    "volume_std_ratio": 0.0431363545358181,
+    "price_vs_sma50": 0.040996622294187546,
+    "macd": 0.040027402341365814
+  },
+  "p2_regression_check": {
+    "baseline_path": "backtest_results/P2_baseline_honest.json",
+    "warn_only": true,
+    "any_warning": false,
+    "diffs": {
+      "median_profit_factor": {
+        "before": 0.5860069011687026,
+        "after": 0.7375625443883556,
+        "delta": 0.15155564321965298,
+        "warn": false
+      },
+      "median_expectancy_r": {
+        "before": -0.34533667676712193,
+        "after": -0.19646692102227006,
+        "delta": 0.14886975574485187,
+        "warn": false
+      },
+      "median_absolute_cost_per_trade_r": {
+        "before": 0.32,
+        "after": 0.32,
+        "delta": 0.0,
+        "warn": false
+      },
+      "n_folds_with_undefined_cost_drag": {
+        "before": 4,
+        "after": 1,
+        "delta": -3,
+        "warn": false
+      }
+    }
+  }
+}

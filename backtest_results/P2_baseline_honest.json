@@ -1,0 +1,208 @@
+{
+  "timestamp": "2026-04-26T14:23:02.621403",
+  "model_path": "/tmp/p2_cost_aware_model.pkl",
+  "config": {
+    "pt_mult": 2.0,
+    "sl_mult": 1.0,
+    "max_holding": 60,
+    "event_stride": 5,
+    "frequency": 5,
+    "embargo_pct": 0.01,
+    "n_folds": 5,
+    "n_symbols": 10,
+    "days": 60,
+    "cost_model": {
+      "fee_bps": 5.0,
+      "slip_bps": 10.0,
+      "impact_coef": 0.1,
+      "participation": 0.01
+    },
+    "decision_threshold": 0.55,
+    "cost_aware": true
+  },
+  "symbols": [
+    "NVDA",
+    "TSLA",
+    "AAPL",
+    "AMD",
+    "SPY",
+    "QQQ",
+    "META",
+    "MSFT",
+    "GOOGL",
+    "AMZN"
+  ],
+  "symbol_count": 10,
+  "per_symbol_samples": {
+    "NVDA": 1629,
+    "TSLA": 1629,
+    "AAPL": 1525,
+    "AMD": 1594,
+    "SPY": 1629,
+    "QQQ": 1629,
+    "META": 1835,
+    "MSFT": 1624,
+    "GOOGL": 1546,
+    "AMZN": 1592
+  },
+  "label_distribution": {
+    "total": 16232,
+    "BUY": {
+      "count": 5586,
+      "pct": 34.41
+    },
+    "HOLD": {
+      "count": 393,
+      "pct": 2.42
+    },
+    "SELL": {
+      "count": 10253,
+      "pct": 63.17
+    }
+  },
+  "weighting": {
+    "mean": 0.4091732735197954,
+    "median": 0.3211111111111111,
+    "min": 0.0001,
+    "max": 1.68,
+    "effective_sample_size": 6594.378994348044,
+    "compression_ratio": 0.4063
+  },
+  "timing_seconds": {
+    "collection": 2.7,
+    "uniqueness": 2.9,
+    "cv": 5.4,
+    "final_fit": 0.3
+  },
+  "cv_summary": {
+    "n_folds_executed": 5,
+    "aggregate": {
+      "median_expectancy_r": -0.34533667676712193,
+      "median_profit_factor": 0.5860069011687026,
+      "median_sortino": -60.282565947480514,
+      "median_calmar": -20.220578388571536,
+      "median_max_adverse_excursion": 2.32,
+      "median_cost_drag_pct": 591.6,
+      "median_absolute_cost_per_trade_r": 0.32,
+      "n_folds_with_undefined_cost_drag": 4,
+      "var_sharpe_across_folds": 38.03908529932933,
+      "n_folds_executed": 5
+    },
+    "fold_detail": [
+      {
+        "fold": 1,
+        "train_size": 12823,
+        "test_size": 3247,
+        "n_trades_taken": 2279,
+        "fold_calendar_days": 10.27,
+        "trades_per_year": 55898,
+        "metrics": {
+          "expectancy_r": -0.2659060156392145,
+          "profit_factor": 0.6654965261766912,
+          "sortino": -54.32601254282607,
+          "calmar": -24.621685577029677,
+          "max_adverse_excursion": 2.32,
+          "cost_drag_pct": 591.6,
+          "absolute_cost_per_trade_r": null
+        },
+        "sharpe_proxy": -54.32601254282607
+      },
+      {
+        "fold": 2,
+        "train_size": 12787,
+        "test_size": 3247,
+        "n_trades_taken": 2265,
+        "fold_calendar_days": 12.58,
+        "trades_per_year": 45373,
+        "metrics": {
+          "expectancy_r": -0.38036680226980396,
+          "profit_factor": 0.5523145037722008,
+          "sortino": -66.9339041154093,
+          "calmar": -19.86528872462919,
+          "max_adverse_excursion": 2.32,
+          "cost_drag_pct": null,
+          "absolute_cost_per_trade_r": 0.32
+        },
+        "sharpe_proxy": -66.9339041154093
+      },
+      {
+        "fold": 3,
+        "train_size": 12811,
+        "test_size": 3246,
+        "n_trades_taken": 2254,
+        "fold_calendar_days": 12.39,
+        "trades_per_year": 45848,
+        "metrics": {
+          "expectancy_r": -0.3912461177533588,
+          "profit_factor": 0.5401158096674219,
+          "sortino": -70.93077948384368,
+          "calmar": -20.220578388571536,
+          "max_adverse_excursion": 2.32,
+          "cost_drag_pct": null,
+          "absolute_cost_per_trade_r": 0.32
+        },
+        "sharpe_proxy": -70.93077948384368
+      },
+      {
+        "fold": 4,
+        "train_size": 12800,
+        "test_size": 3246,
+        "n_trades_taken": 2253,
+        "fold_calendar_days": 13.66,
+        "trades_per_year": 41554,
+        "metrics": {
+          "expectancy_r": -0.34533667676712193,
+          "profit_factor": 0.5860069011687026,
+          "sortino": -60.282565947480514,
+          "calmar": -18.40411333444381,
+          "max_adverse_excursion": 2.32,
+          "cost_drag_pct": null,
+          "absolute_cost_per_trade_r": 0.32
+        },
+        "sharpe_proxy": -60.282565947480514
+      },
+      {
+        "fold": 5,
+        "train_size": 12968,
+        "test_size": 3246,
+        "n_trades_taken": 2312,
+        "fold_calendar_days": 10.37,
+        "trades_per_year": 56194,
+        "metrics": {
+          "expectancy_r": -0.3217210668236602,
+          "profit_factor": 0.6382166024226373,
+          "sortino": -57.070996932675214,
+          "calmar": -23.91084334350528,
+          "max_adverse_excursion": 2.32,
+          "cost_drag_pct": null,
+          "absolute_cost_per_trade_r": 0.32
+        },
+        "sharpe_proxy": -57.070996932675214
+      }
+    ]
+  },
+  "feature_importance": {
+    "pivot_distance": 0.04914464056491852,
+    "macd_signal": 0.04760885611176491,
+    "volume_ratio": 0.0473417192697525,
+    "volume_std_ratio": 0.047046054154634476,
+    "spread_proxy": 0.04689912125468254,
+    "r1_distance": 0.04656191170215607,
+    "bb_position": 0.04640093445777893,
+    "atr_ratio": 0.04616924747824669,
+    "returns_5": 0.04592626169323921,
+    "rsi": 0.045619212090969086,
+    "returns_20": 0.045390836894512177,
+    "price_vs_sma20": 0.045384787023067474,
+    "bb_width": 0.04504074156284332,
+    "s1_distance": 0.04500245675444603,
+    "price_vs_sma50": 0.04466332867741585,
+    "high_low_ratio": 0.04463529959321022,
+    "volume_imbalance": 0.04442792758345604,
+    "macd_hist": 0.043815694749355316,
+    "returns_1": 0.043692976236343384,
+    "volume_trend": 0.04359932616353035,
+    "std_dev_ratio": 0.04292847588658333,
+    "macd": 0.04270019009709358
+  }
+}

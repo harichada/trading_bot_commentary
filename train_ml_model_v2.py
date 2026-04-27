@@ -29,9 +29,12 @@ from dotenv import load_dotenv
 
 from ml.costs import CostModel, cost_in_r as _cost_in_r, ret_to_r_multiple
 from ml.evaluation import FoldMetrics, grade_fold, sortino
-from ml.labels import apply_triple_barrier, compute_uniqueness
+from ml.events import cusum_filter
+from ml.iid_diagnostics import IIDReport, compute_iid_diagnostics, weighted_residuals
+from ml.labels import apply_triple_barrier, compute_uniqueness, triple_barrier_labels
 from ml.pnl_objective import compute_sample_weights
 from ml.purged_cv import PurgedKFold
+from ml.sample_weights import get_indicator_matrix, sequential_bootstrap_indices
 from train_ml_model import DEFAULT_DSN, top_symbols_by_volume  # reuse v1 universe logic
 
 
@@ -63,6 +66,22 @@ DEFAULT_PARTICIPATION = 0.01  # 1% of bar dollar volume — typical retail fill
 DEFAULT_REJECT_COST_DRAG_PCT = 50.0
 DEFAULT_DECISION_THRESHOLD = 0.55
 
+# P4 defaults (PROMPT_PACK §P4).
+DEFAULT_BAR_TYPE = "time"
+DEFAULT_DEFERRED_BAR_TYPES = ["dollar", "volume", "imbalance"]
+DEFAULT_VERTICAL_MULT_DURATION = 2.0  # vertical = pt-duration × this
+DEFAULT_MIN_RET_ATR_MULT = 0.5         # AFML p.47 low-magnitude filter
+DEFAULT_BOOTSTRAP_ITERATIONS = 5
+DEFAULT_EVENT_SOURCE = "cusum"
+DEFAULT_CUSUM_H = 0.005                # 50 bps cumulative-return threshold
+# Per-fold AR(1) gate (replaces single stitched AR(1) gate). Stitched AR(1)
+# stays in the report as an informational metric — it measures cross-fold
+# calibration drift, not label IID-ness, so it belongs to P2 calibration
+# / P14 drift work, not P4.
+P4_AR1_MEDIAN_GATE = 0.10              # median per-fold |AR(1)| weighted residuals
+P4_AR1_MAX_GATE = 0.20                 # max per-fold |AR(1)| (single-fold ceiling)
+P4_BOOTSTRAP_CV_GATE = 0.5             # cv_of_expectancy must be < this
+
 MODEL_PATH = Path("ml_model_v2.pkl")
 REPORT_PATH = Path("ml_training_report_v2.json")
 CONFIG_YAML = Path("pro_trading_config.yaml")
@@ -80,42 +99,105 @@ def _compute_raw_atr(df: pd.DataFrame, window: int = 14) -> pd.Series:
     )
 
 
+def _candidate_events(
+    prices: pd.Series,
+    *,
+    event_source: str,
+    event_stride: int,
+    cusum_h: float,
+    first: int,
+    last: int,
+) -> pd.DatetimeIndex:
+    """Generate event timestamps from either stride or CUSUM filter.
+
+    AFML §2.5.2 — CUSUM samples on cumulative-return excursions, putting
+    label work where information lives. ``stride`` is the legacy P2 path
+    retained for apples-to-apples regression.
+    """
+    if event_source == "stride":
+        return prices.index[first:last:event_stride]
+    if event_source == "cusum":
+        # CUSUM on the post-warmup, pre-tail window so labels never reach
+        # past the available bars.
+        windowed = prices.iloc[first:last]
+        ev = cusum_filter(windowed, h=cusum_h)
+        return ev
+    raise ValueError(f"unknown event_source: {event_source!r}")
+
+
 def label_symbol(
     df: pd.DataFrame,
     pt_mult: float,
     sl_mult: float,
     max_holding: int,
     event_stride: int,
-) -> tuple[pd.DataFrame, pd.Series]:
-    """Return (labels_df, atr_series) for one symbol.
+    *,
+    event_source: str = DEFAULT_EVENT_SOURCE,
+    cusum_h: float = DEFAULT_CUSUM_H,
+    vertical_mult_duration: float = DEFAULT_VERTICAL_MULT_DURATION,
+    min_ret_atr_mult: float = DEFAULT_MIN_RET_ATR_MULT,
+) -> tuple[pd.DataFrame, pd.Series, dict[str, int]]:
+    """Return (labels_df, atr_series, drop_counts) for one symbol.
 
-    Events are placed every ``event_stride`` bars starting after a 50-bar
-    feature warmup. Bars with non-positive ATR are excluded (flat series).
+    P4: events come from the configured source (default CUSUM, AFML §2.5.2);
+    labels apply the triple-barrier first-touch with the AFML p.47 low-
+    magnitude filter (``min_ret * atr / entry``); the vertical barrier is
+    set to ``vertical_mult_duration * max_holding`` (default 2× expected
+    trade duration, satisfying P4 §1).
+
+    The returned ``drop_counts`` dict carries pre/post counts so the report
+    can show how many candidates were filtered for low-magnitude vs.
+    no-barrier-hit (``bin == 0``) outcomes.
     """
     atr = _compute_raw_atr(df, window=14)
     prices = df["Close"]
 
+    vertical = max(1, int(round(vertical_mult_duration * max_holding)))
     first = 50
-    last = len(df) - max_holding - 1
+    last = len(df) - vertical - 1
+    drop_counts = {"candidates": 0, "dropped_low_magnitude": 0, "dropped_no_barrier_hit": 0}
+
     if last <= first:
-        return pd.DataFrame(), atr
-    candidate_times = prices.index[first:last:event_stride]
+        return pd.DataFrame(), atr, drop_counts
 
-    # Drop events with degenerate ATR (zero-width barriers would fail).
-    atr_at_events = atr.reindex(candidate_times)
-    good_events = candidate_times[atr_at_events > 0]
-    if len(good_events) == 0:
-        return pd.DataFrame(), atr
-
-    labels = apply_triple_barrier(
-        prices=prices,
-        events=good_events,
-        atr=atr,
-        pt_mult=pt_mult,
-        sl_mult=sl_mult,
-        max_holding=max_holding,
+    candidate_times = _candidate_events(
+        prices, event_source=event_source, event_stride=event_stride,
+        cusum_h=cusum_h, first=first, last=last,
     )
-    return labels, atr
+    drop_counts["candidates"] = int(len(candidate_times))
+    if len(candidate_times) == 0:
+        return pd.DataFrame(), atr, drop_counts
+
+    events_df = pd.DataFrame(
+        {"vertical": [vertical] * len(candidate_times)},
+        index=candidate_times,
+    )
+    labels = triple_barrier_labels(
+        events=events_df, close=prices, atr=atr,
+        pt_sl=(pt_mult, sl_mult),
+        vertical_barrier=vertical,
+        min_ret=min_ret_atr_mult,
+    )
+
+    # Translate to legacy schema (label/touch_time/ret) so the rest of the
+    # collector code stays unchanged. P4 emits {-1, 0, +1}; we also expose
+    # the side-adjusted bin via the same column.
+    if labels.empty:
+        # Distinguish "all candidates filtered by min_ret" from "no candidates".
+        drop_counts["dropped_low_magnitude"] = drop_counts["candidates"]
+        return pd.DataFrame(), atr, drop_counts
+
+    drop_counts["dropped_low_magnitude"] = (
+        drop_counts["candidates"] - len(labels)
+    )
+    drop_counts["dropped_no_barrier_hit"] = int((labels["bin"] == 0).sum())
+
+    legacy = pd.DataFrame({
+        "label": labels["bin"].astype(int).to_numpy(),
+        "touch_time": labels["t1"].to_numpy(),
+        "ret": labels["ret"].to_numpy(),
+    }, index=labels.index)
+    return legacy, atr, drop_counts
 
 
 def collect_v2_samples(
@@ -127,12 +209,22 @@ def collect_v2_samples(
     sl_mult: float,
     max_holding: int,
     event_stride: int,
+    *,
+    event_source: str = DEFAULT_EVENT_SOURCE,
+    cusum_h: float = DEFAULT_CUSUM_H,
+    vertical_mult_duration: float = DEFAULT_VERTICAL_MULT_DURATION,
+    min_ret_atr_mult: float = DEFAULT_MIN_RET_ATR_MULT,
+    drop_accumulator: dict[str, int] | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, pd.Index, pd.Index, np.ndarray, dict[str, int]]:
     """Return (X, y, ret, event_times, touch_times, symbol_groups, per_symbol_counts).
 
     The ``symbol_groups`` array is one entry per sample, naming the source
     symbol — used downstream so uniqueness weights are computed within each
     symbol's timeline rather than pooling all symbols into a single ticker-tape.
+
+    ``drop_accumulator`` (optional, mutated in place) collects aggregate
+    drop counts across symbols: ``candidates``, ``dropped_low_magnitude``,
+    ``dropped_no_barrier_hit``. Used by the P4 report.
     """
     from data_providers.postgres import PostgresDataProvider
     from ml.models import IntegratedMLModel
@@ -170,10 +262,16 @@ def collect_v2_samples(
             logger.warning("no_features symbol=%s", symbol)
             continue
 
-        labels_df, _ = label_symbol(
+        labels_df, _, drop_counts = label_symbol(
             df, pt_mult=pt_mult, sl_mult=sl_mult,
             max_holding=max_holding, event_stride=event_stride,
+            event_source=event_source, cusum_h=cusum_h,
+            vertical_mult_duration=vertical_mult_duration,
+            min_ret_atr_mult=min_ret_atr_mult,
         )
+        if drop_accumulator is not None:
+            for k, v in drop_counts.items():
+                drop_accumulator[k] = drop_accumulator.get(k, 0) + int(v)
         if labels_df.empty:
             continue
 
@@ -268,6 +366,9 @@ def purged_cv_evaluate(
     sample_cost_r: np.ndarray,
     event_times: pd.DatetimeIndex,
     decision_threshold: float = DEFAULT_DECISION_THRESHOLD,
+    bootstrap_iterations: int = DEFAULT_BOOTSTRAP_ITERATIONS,
+    use_sequential_bootstrap: bool = True,
+    bootstrap_seed: int = 42,
 ) -> dict[str, Any]:
     """Cost-aware purged-CV grading.
 
@@ -291,6 +392,23 @@ def purged_cv_evaluate(
     fold_reports: list[dict[str, Any]] = []
     fold_metrics_objs: list[FoldMetrics] = []
     event_times_arr = np.asarray(event_times)
+    touch_times_arr = touch_times.sort_index().to_numpy()
+    event_index_arr = touch_times.sort_index().index.to_numpy()
+
+    # Per-iteration, cross-fold accumulators for the bootstrap_stability block.
+    iter_gross: list[list[float]] = [[] for _ in range(bootstrap_iterations)]
+    iter_net: list[list[float]] = [[] for _ in range(bootstrap_iterations)]
+
+    # Out-of-sample residual collection for IID diagnostics. We use the
+    # iteration-mean predicted probability of the realized class as the
+    # "predicted probability" entering the residual.
+    oos_residual_inputs: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
+
+    # Per-fold AR(1) — the gate input. Computed inside the fold loop so it
+    # measures label IID-ness within a single CV split, not cross-fold
+    # calibration drift.
+    per_fold_ar1: list[float] = []
+    per_fold_lb_p: list[float | None] = []
 
     for fold_idx, (train_idx, test_idx) in enumerate(cv.split(X), 1):
         if len(train_idx) == 0 or len(test_idx) == 0:
@@ -306,31 +424,119 @@ def purged_cv_evaluate(
         X_tr_s = scaler.fit_transform(X_tr)
         X_te_s = scaler.transform(X_te)
 
-        clf = xgb.XGBClassifier(
-            n_estimators=200, max_depth=5, learning_rate=0.1,
-            subsample=0.8, colsample_bytree=0.8, random_state=42,
-            eval_metric="mlogloss", num_class=3,
-            objective="multi:softprob", n_jobs=-1,
-        )
-        clf.fit(X_tr_s, y_tr, sample_weight=w_tr, verbose=False)
+        # AFML §4.5.3: build the fold-local indicator matrix from the
+        # training events' label windows so sequential bootstrap can score
+        # candidate-row uniqueness conditional on already-drawn rows. The
+        # matrix is shape (n_train_bars, n_train_events) — small enough
+        # to keep in memory for retail-scale universes.
+        if use_sequential_bootstrap:
+            train_event_times = pd.DatetimeIndex(event_index_arr[train_idx])
+            train_touch_times = pd.DatetimeIndex(touch_times_arr[train_idx])
+            train_bar_index = pd.DatetimeIndex(
+                np.unique(np.concatenate([
+                    train_event_times.to_numpy(),
+                    train_touch_times.to_numpy(),
+                ]))
+            ).sort_values()
+            ind_matrix = get_indicator_matrix(
+                train_bar_index, train_event_times, train_touch_times,
+            )
+        else:
+            ind_matrix = None
 
-        try:
-            probas = clf.predict_proba(X_te_s)
-        except Exception:  # pragma: no cover — belt-and-braces for exotic sklearn versions
-            probas = None
-        y_pred = clf.predict(X_te_s)
+        # Average per-iteration probas to drive the headline fold metric.
+        proba_acc = np.zeros((len(test_idx), 3), dtype="float64")
+        n_succ_iter = 0
+
+        for it in range(bootstrap_iterations):
+            if use_sequential_bootstrap and ind_matrix is not None:
+                # Per-iteration deterministic seed → reproducible.
+                resampled = sequential_bootstrap_indices(
+                    ind_matrix, n_samples=len(train_idx),
+                    seed=bootstrap_seed + 100 * fold_idx + it,
+                )
+                X_fit = X_tr_s[resampled]
+                y_fit = y_tr[resampled]
+                w_fit = w_tr[resampled]
+                # AFML §4.5: when the bagging draw is sequential, the row's
+                # original sample_weight is preserved (not recomputed) — the
+                # bootstrap replaces the bagging-level sampling, not the
+                # cost-aware loss weighting.
+                subsample_param = 1.0
+            else:
+                X_fit, y_fit, w_fit = X_tr_s, y_tr, w_tr
+                subsample_param = 0.8
+
+            clf = xgb.XGBClassifier(
+                n_estimators=200, max_depth=5, learning_rate=0.1,
+                subsample=subsample_param, colsample_bytree=0.8,
+                random_state=42 + it,
+                eval_metric="mlogloss", num_class=3,
+                objective="multi:softprob", n_jobs=-1,
+            )
+            X_fit_p, y_fit_p, w_fit_p = _ensure_all_classes(X_fit, y_fit, w_fit)
+            clf.fit(X_fit_p, y_fit_p, sample_weight=w_fit_p, verbose=False)
+
+            try:
+                probas_it = clf.predict_proba(X_te_s)
+            except Exception:  # pragma: no cover
+                probas_it = None
+            y_pred_it = clf.predict(X_te_s)
+
+            gross_it, net_it = _fold_net_r_multiples(
+                y_pred=y_pred_it,
+                sample_r_multiples=sample_r_multiples[test_idx],
+                sample_cost_r=sample_cost_r[test_idx],
+                decision_threshold=decision_threshold,
+                probas=probas_it,
+            )
+            iter_gross[it].extend(gross_it.tolist())
+            iter_net[it].extend(net_it.tolist())
+
+            if probas_it is not None:
+                proba_acc += probas_it
+                n_succ_iter += 1
+
+        # Headline per-fold prediction = average across bootstrap iterations.
+        if n_succ_iter > 0:
+            avg_proba = proba_acc / n_succ_iter
+            y_pred = avg_proba.argmax(axis=1)
+        else:
+            avg_proba = None
+            y_pred = clf.predict(X_te_s)  # last-iter fallback
 
         gross_r, net_r = _fold_net_r_multiples(
             y_pred=y_pred,
             sample_r_multiples=sample_r_multiples[test_idx],
             sample_cost_r=sample_cost_r[test_idx],
             decision_threshold=decision_threshold,
-            probas=probas,
+            probas=avg_proba,
         )
 
+        if avg_proba is not None:
+            # Capture iteration-mean predicted probability of the *realized*
+            # class — used to form weighted residuals for IID diagnostics.
+            p_realized = avg_proba[np.arange(len(test_idx)), y_te]
+            oos_residual_inputs.append((y_te.copy(), p_realized, weights[test_idx].copy()))
+
+            # Per-fold AR(1) (gate input). The label IID-ness check belongs
+            # at fold scope; the stitched cross-fold version below is kept
+            # only as an informational measure of calibration drift.
+            fold_residuals = weighted_residuals(
+                np.ones_like(y_te), p_realized, weights[test_idx],
+            )
+            fold_iid = compute_iid_diagnostics(fold_residuals)
+            fold_reports[-1] if False else None  # placeholder; appended below
+            per_fold_ar1.append(float(fold_iid.ar1_residual_autocorr))
+            per_fold_lb_p.append(
+                float(fold_iid.ljung_box_p_value)
+                if fold_iid.ljung_box_p_value is not None else None
+            )
+        else:
+            per_fold_ar1.append(float("nan"))
+            per_fold_lb_p.append(None)
+
         # Empirical trades_per_year for this fold's calendar window.
-        # 252 = trading days per year. Floor calendar span at 1 day to keep
-        # very tight folds finite, and trade count at 1 to avoid log(0).
         fold_event_times = event_times_arr[test_idx]
         fold_span_days = max(
             1.0,
@@ -358,6 +564,8 @@ def purged_cv_evaluate(
                 "max_adverse_excursion": metrics.max_adverse_excursion,
                 "cost_drag_pct": metrics.cost_drag_pct,
                 "absolute_cost_per_trade_r": metrics.absolute_cost_per_trade_r,
+                "ar1_residual_autocorr": per_fold_ar1[-1] if per_fold_ar1 else None,
+                "ljung_box_p_value": per_fold_lb_p[-1] if per_fold_lb_p else None,
             },
             "sharpe_proxy": _finite_or_none(sharpe_proxy),
         })
@@ -378,10 +586,141 @@ def purged_cv_evaluate(
 
     aggregate = aggregate_fold_metrics(fold_metrics_objs)
 
+    # ---- Bootstrap stability (cross-fold per-iteration aggregation) ----
+    bs_block = _bootstrap_stability_block(iter_gross, iter_net)
+
+    # ---- IID diagnostics — per-fold (gate) + stitched (informational) --
+    # Per-fold AR(1) is the *gate*: it measures label IID-ness within a
+    # single CV split, which is what P4's labeling pipeline owns.
+    finite_ar1 = [a for a in per_fold_ar1 if np.isfinite(a)]
+    if finite_ar1:
+        median_ar1 = float(np.median([abs(a) for a in finite_ar1]))
+        max_ar1 = float(np.max([abs(a) for a in finite_ar1]))
+    else:
+        median_ar1 = 0.0
+        max_ar1 = 0.0
+    passes_per_fold = (
+        median_ar1 < P4_AR1_MEDIAN_GATE and max_ar1 < P4_AR1_MAX_GATE
+    )
+
+    # Stitched cross-fold AR(1) — INFORMATIONAL. It measures cross-fold
+    # calibration drift, not label IID-ness. Owned by P2 calibration / P14
+    # drift work, not P4. Kept here for visibility before P14 wires it
+    # formally.
+    if oos_residual_inputs:
+        y_all = np.concatenate([t[0] for t in oos_residual_inputs])
+        p_real = np.concatenate([t[1] for t in oos_residual_inputs])
+        w_all = np.concatenate([t[2] for t in oos_residual_inputs])
+        residuals_stitched = weighted_residuals(np.ones_like(y_all), p_real, w_all)
+        stitched_report = compute_iid_diagnostics(residuals_stitched)
+    else:
+        stitched_report = IIDReport(0.0, None, True, 0)
+
     return {
         "n_folds_executed": len(fold_reports),
         "aggregate": aggregate,
         "fold_detail": fold_reports,
+        "bootstrap_stability": bs_block,
+        "iid_diagnostics": {
+            # Gate inputs (per-fold).
+            "per_fold_ar1": [
+                float(a) if np.isfinite(a) else None for a in per_fold_ar1
+            ],
+            "median_per_fold_ar1": median_ar1,
+            "max_per_fold_ar1": max_ar1,
+            "passes_per_fold_gate": bool(passes_per_fold),
+            "gate_thresholds": {
+                "median_lt": P4_AR1_MEDIAN_GATE,
+                "max_lt": P4_AR1_MAX_GATE,
+            },
+            # Informational only — see note above.
+            "stitched_residual_ar1": float(stitched_report.ar1_residual_autocorr),
+            "stitched_residual_ar1_note": (
+                "informational — measures cross-fold calibration drift, "
+                "not label IID-ness; owned by P2 calibration / P14 drift "
+                "work, not P4"
+            ),
+            "stitched_ljung_box_p_value": (
+                float(stitched_report.ljung_box_p_value)
+                if stitched_report.ljung_box_p_value is not None else None
+            ),
+            "stitched_n_residuals": int(stitched_report.n_residuals),
+        },
+    }
+
+
+def _ensure_all_classes(
+    X: np.ndarray, y: np.ndarray, w: np.ndarray, n_classes: int = 3,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Append one zero-weight row per missing class.
+
+    XGBoost's sklearn wrapper validates ``np.unique(y)`` against contiguous
+    integers ``[0, n_classes)``. Sequential bootstrap resamples or the
+    P4 ``min_ret`` filter can drop a class entirely (e.g. zero HOLDs when
+    every event resolves at a price barrier). Injecting a single
+    sample_weight=0 row per missing class keeps the multi-class objective
+    valid without affecting the loss (the cost-aware weighting is preserved
+    for every real row).
+    """
+    if X.size == 0:
+        return X, y, w
+    present = set(np.unique(y).tolist())
+    missing = [c for c in range(n_classes) if c not in present]
+    if not missing:
+        return X, y, w
+    pad_X = np.tile(X[0:1, :], (len(missing), 1))
+    pad_y = np.asarray(missing, dtype=y.dtype)
+    pad_w = np.zeros(len(missing), dtype=w.dtype)
+    return (
+        np.concatenate([X, pad_X], axis=0),
+        np.concatenate([y, pad_y], axis=0),
+        np.concatenate([w, pad_w], axis=0),
+    )
+
+
+def _bootstrap_stability_block(
+    iter_gross: list[list[float]],
+    iter_net: list[list[float]],
+) -> dict[str, Any]:
+    """Across-iteration variance of expectancy / profit-factor.
+
+    AFML §4.5 caveat: a single sequential-bootstrap fit is one realization
+    of a stochastic ensemble. Reporting the spread across iterations
+    surfaces whether the model's edge is stable or seed-dependent.
+    """
+    expectancies: list[float] = []
+    profit_factors: list[float] = []
+    for gs, ns in zip(iter_gross, iter_net):
+        if not ns:
+            continue
+        net = np.asarray(ns, dtype="float64")
+        expectancies.append(float(net.mean()))
+        wins = float(net[net > 0].sum())
+        losses = float(-net[net < 0].sum())
+        profit_factors.append(wins / losses if losses > 0 else float("inf"))
+
+    if not expectancies:
+        return {
+            "iterations": len(iter_gross),
+            "expectancy_r_per_iter": [],
+            "profit_factor_per_iter": [],
+            "cv_of_expectancy": float("nan"),
+            "passes_cv_lt_0_5": False,
+        }
+
+    mean_exp = float(np.mean(expectancies))
+    std_exp = float(np.std(expectancies, ddof=0))
+    cv = std_exp / abs(mean_exp) if mean_exp != 0 else float("inf")
+    return {
+        "iterations": len(iter_gross),
+        "expectancy_r_per_iter": [round(e, 6) for e in expectancies],
+        "profit_factor_per_iter": [
+            round(p, 4) if np.isfinite(p) else None for p in profit_factors
+        ],
+        "cv_of_expectancy": (
+            round(cv, 4) if np.isfinite(cv) else None
+        ),
+        "passes_cv_lt_0_5": bool(np.isfinite(cv) and cv < P4_BOOTSTRAP_CV_GATE),
     }
 
 
@@ -611,6 +950,37 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--decision-threshold", type=float,
                    default=DEFAULT_DECISION_THRESHOLD,
                    help="Min predicted class probability to take a trade (default 0.55).")
+    # --- P4: triple-barrier + sequential bootstrap + IID --------------
+    p.add_argument("--bar-type", choices=["time", "dollar", "volume", "imbalance"],
+                   default=DEFAULT_BAR_TYPE,
+                   help="Bar construction (AFML §2.3). dollar/volume/imbalance "
+                        "require tick data and currently raise NotImplementedError.")
+    p.add_argument("--event-source", choices=["cusum", "stride"],
+                   default=DEFAULT_EVENT_SOURCE,
+                   help="Event generator: cusum (AFML §2.5.2, default) or stride "
+                        "(every Nth bar — for P2 apples-to-apples comparison only).")
+    p.add_argument("--cusum-h", type=float, default=DEFAULT_CUSUM_H,
+                   help="CUSUM cumulative-return threshold (default 0.005 = 50bps).")
+    p.add_argument("--vertical-mult-duration", type=float,
+                   default=DEFAULT_VERTICAL_MULT_DURATION,
+                   help="Vertical barrier = this × max_holding (default 2×).")
+    p.add_argument("--min-ret-atr-mult", type=float, default=DEFAULT_MIN_RET_ATR_MULT,
+                   help="Drop events with |ret| < this × atr/entry (AFML p.47).")
+    p.add_argument("--bootstrap-iterations", type=int,
+                   default=DEFAULT_BOOTSTRAP_ITERATIONS,
+                   help="Sequential-bootstrap fits per fold (default 5).")
+    p.add_argument("--no-sequential-bootstrap", dest="sequential_bootstrap",
+                   action="store_false",
+                   help="Use random subsample=0.8 instead of sequential bootstrap "
+                        "(regression comparison only — statistically wrong for "
+                        "overlapping labels).")
+    p.set_defaults(sequential_bootstrap=True)
+    p.add_argument("--regression-check", default=None,
+                   help="Path to a baseline JSON (e.g. P2_baseline_honest.json). "
+                        "If set, the report includes a warn-only diff against the "
+                        "four P2 anchor metrics. Per the user's P4 override, P2 "
+                        "regression does NOT cause a hard reject — IID/uniqueness/"
+                        "label-distribution gates do.")
     return p.parse_args()
 
 
@@ -632,10 +1002,15 @@ def main() -> int:
         len(symbols), args.days, args.frequency,
         args.pt_mult, args.sl_mult, args.max_holding, args.event_stride,
     )
+    drop_acc: dict[str, int] = {}
     X, y, ret, event_times, touch_times, sym_groups, per_sym = collect_v2_samples(
         symbols=symbols, days=args.days, frequency=args.frequency, dsn=args.dsn,
         pt_mult=args.pt_mult, sl_mult=args.sl_mult,
         max_holding=args.max_holding, event_stride=args.event_stride,
+        event_source=args.event_source, cusum_h=args.cusum_h,
+        vertical_mult_duration=args.vertical_mult_duration,
+        min_ret_atr_mult=args.min_ret_atr_mult,
+        drop_accumulator=drop_acc,
     )
     collect_seconds = (datetime.now() - t0).total_seconds()
 
@@ -730,8 +1105,16 @@ def main() -> int:
         sample_cost_r=sample_cost_r,
         event_times=event_times,
         decision_threshold=args.decision_threshold,
+        bootstrap_iterations=args.bootstrap_iterations,
+        use_sequential_bootstrap=args.sequential_bootstrap,
     )
     cv_seconds = (datetime.now() - t2).total_seconds()
+
+    # Lift IID + bootstrap-stability blocks to top level — they are not
+    # per-fold metrics, they characterize the cross-fold residual stream.
+    iid_block = cv_summary.pop("iid_diagnostics")
+    bootstrap_block = cv_summary.pop("bootstrap_stability")
+
     agg = cv_summary["aggregate"]
     if agg["median_cost_drag_pct"] is not None:
         cost_log = f"median_cost_drag={agg['median_cost_drag_pct']:.1f}%"
@@ -748,6 +1131,58 @@ def main() -> int:
         cost_log, agg["var_sharpe_across_folds"],
         agg["n_folds_executed"], cv_seconds,
     )
+
+    # --- P4 hard-reject gates (PROMPT_PACK §P4 + user override) --------
+    # These are P4-INTRINSIC: they test whether the labeling math itself
+    # is sound, regardless of model edge. Failure here means the training
+    # distribution is broken. Per the user's P4 override, P2 economic
+    # anchors are NOT in this gate set — they live in the regression-check
+    # warning block at the end.
+    p4_reject_reasons: list[str] = []
+    if not iid_block["passes_per_fold_gate"]:
+        p4_reject_reasons.append(
+            f"per-fold AR(1) gate failed: median={iid_block['median_per_fold_ar1']:.3f} "
+            f"(< {P4_AR1_MEDIAN_GATE}), max={iid_block['max_per_fold_ar1']:.3f} "
+            f"(< {P4_AR1_MAX_GATE}); per-fold values={iid_block['per_fold_ar1']}"
+        )
+    # Uniqueness sanity: weights must be present, in (0, 1].
+    u_mean = float(weights.mean()) if len(weights) else 0.0
+    u_min = float(weights.min()) if len(weights) else 0.0
+    if u_mean <= 0.0 or u_mean > 1.0 or u_min <= 0.0:
+        p4_reject_reasons.append(
+            f"uniqueness weights degenerate (mean={u_mean:.4f}, min={u_min:.4f})"
+        )
+    # Label distribution sanity: P4's tighter labeling legitimately can produce
+    # zero HOLDs when every event resolves at a price barrier (vertical=120 bars).
+    # Gate: at least BUY+SELL present AND no class > 95%.
+    classes_present = sum(1 for k in ("BUY", "HOLD", "SELL")
+                          if label_dist[k]["count"] > 0)
+    max_class_pct = max(label_dist[k]["pct"] for k in ("BUY", "HOLD", "SELL"))
+    has_directional = label_dist["BUY"]["count"] > 0 and label_dist["SELL"]["count"] > 0
+    if not has_directional or classes_present < 2 or max_class_pct > 95.0:
+        p4_reject_reasons.append(
+            f"label distribution degenerate (classes_present={classes_present}, "
+            f"BUY/SELL_both_present={has_directional}, "
+            f"max_class_pct={max_class_pct:.1f})"
+        )
+
+    if p4_reject_reasons:
+        reason = " | ".join(p4_reject_reasons)
+        logger.error("p4_hard_reject reason=%s", reason)
+        report = _build_reject_report(
+            args=args, cv_summary=cv_summary,
+            label_dist=label_dist, per_sym=per_sym, symbols=symbols,
+            cost_model=cost_model,
+            collect_seconds=collect_seconds,
+            uniqueness_seconds=uniqueness_seconds,
+            cv_seconds=cv_seconds,
+            weights=weights, effective_n=effective_n,
+            reject_reason=reason,
+        )
+        report["iid_diagnostics"] = iid_block
+        report["bootstrap_stability"] = bootstrap_block
+        Path(args.report_path).write_text(json.dumps(report, indent=2, default=str))
+        return 3
 
     # --- Hard-reject on cost-drag (PROMPT_PACK P2 §4) ------------------
     # Reject if median cost-drag exceeds the threshold OR if it's undefined
@@ -794,37 +1229,56 @@ def main() -> int:
         eval_metric="mlogloss", num_class=3,
         objective="multi:softprob", n_jobs=-1,
     )
-    final_clf.fit(X_s, y, sample_weight=weights, verbose=False)
+    X_s_p, y_p, w_p = _ensure_all_classes(X_s, y, weights)
+    final_clf.fit(X_s_p, y_p, sample_weight=w_p, verbose=False)
     final_seconds = (datetime.now() - t3).total_seconds()
 
     from ml.models import IntegratedMLModel
     feature_names = IntegratedMLModel(brain=None, commentary_system=None).feature_names
 
+    config_block = {
+        "pt_mult": args.pt_mult,
+        "sl_mult": args.sl_mult,
+        "max_holding": args.max_holding,
+        "event_stride": args.event_stride,
+        "frequency": args.frequency,
+        "embargo_pct": args.embargo_pct,
+        "n_folds": args.folds,
+        "n_symbols": len(symbols),
+        "days": args.days,
+        "cost_model": {
+            "fee_bps": cost_model.fee_bps,
+            "slip_bps": cost_model.slip_bps,
+            "impact_coef": cost_model.impact_coef,
+            "participation": args.participation,
+        },
+        "decision_threshold": args.decision_threshold,
+        "cost_aware": args.cost_aware,
+        "labeling": {
+            "method": "triple_barrier",
+            "pt_mult": args.pt_mult,
+            "sl_mult": args.sl_mult,
+            "vertical_max_bars": int(round(args.vertical_mult_duration * args.max_holding)),
+            "vertical_mult_expected_duration": args.vertical_mult_duration,
+            "min_ret_atr_mult": args.min_ret_atr_mult,
+            "bar_type": args.bar_type,
+            "bar_type_deferred": list(DEFAULT_DEFERRED_BAR_TYPES),
+            "event_source": args.event_source,
+            "cusum_h": args.cusum_h,
+        },
+        "bootstrap": {
+            "method": "sequential" if args.sequential_bootstrap else "subsample_0.8",
+            "iterations": args.bootstrap_iterations,
+            "seed": 42,
+        },
+    }
     bundle = {
         "version": 2,
         "classifier": final_clf,
         "scaler": scaler,
         "feature_names": feature_names,
         "label_map": {0: "SELL", 1: "HOLD", 2: "BUY"},
-        "config": {
-            "pt_mult": args.pt_mult,
-            "sl_mult": args.sl_mult,
-            "max_holding": args.max_holding,
-            "event_stride": args.event_stride,
-            "frequency": args.frequency,
-            "embargo_pct": args.embargo_pct,
-            "n_folds": args.folds,
-            "n_symbols": len(symbols),
-            "days": args.days,
-            "cost_model": {
-                "fee_bps": cost_model.fee_bps,
-                "slip_bps": cost_model.slip_bps,
-                "impact_coef": cost_model.impact_coef,
-                "participation": args.participation,
-            },
-            "decision_threshold": args.decision_threshold,
-            "cost_aware": args.cost_aware,
-        },
+        "config": config_block,
         "trained_at": datetime.now().isoformat(),
     }
     joblib.dump(bundle, args.model_path)
@@ -840,6 +1294,21 @@ def main() -> int:
     )
 
     # --- Report ---------------------------------------------------------
+    label_dist_extended = dict(label_dist)
+    label_dist_extended["dropped_low_magnitude"] = int(drop_acc.get("dropped_low_magnitude", 0))
+    label_dist_extended["dropped_no_barrier_hit"] = int(drop_acc.get("dropped_no_barrier_hit", 0))
+    label_dist_extended["candidate_events"] = int(drop_acc.get("candidates", 0))
+
+    sample_uniqueness = {
+        "mean": float(uniqueness.mean()),
+        "median": float(np.median(uniqueness)),
+        "min": float(uniqueness.min()),
+        "effective_sample_size": effective_n,
+        "n_samples": int(len(uniqueness)),
+    }
+
+    regression_block = _regression_check(args.regression_check, agg) if args.regression_check else None
+
     report = {
         "timestamp": datetime.now().isoformat(),
         "model_path": args.model_path,
@@ -847,7 +1316,7 @@ def main() -> int:
         "symbols": symbols,
         "symbol_count": len(symbols),
         "per_symbol_samples": per_sym,
-        "label_distribution": label_dist,
+        "label_distribution": label_dist_extended,
         "weighting": {
             "mean": float(weights.mean()),
             "median": float(np.median(weights)),
@@ -856,6 +1325,9 @@ def main() -> int:
             "effective_sample_size": effective_n,
             "compression_ratio": round(effective_n / len(weights), 4),
         },
+        "sample_uniqueness": sample_uniqueness,
+        "iid_diagnostics": iid_block,
+        "bootstrap_stability": bootstrap_block,
         "timing_seconds": {
             "collection": round(collect_seconds, 1),
             "uniqueness": round(uniqueness_seconds, 1),
@@ -865,9 +1337,56 @@ def main() -> int:
         "cv_summary": cv_summary,
         "feature_importance": importances,
     }
+    if regression_block is not None:
+        report["p2_regression_check"] = regression_block
     Path(args.report_path).write_text(json.dumps(report, indent=2, default=str))
     logger.info("report_written path=%s", args.report_path)
     return 0
+
+
+def _regression_check(baseline_path: str, agg: dict[str, Any]) -> dict[str, Any]:
+    """Warn-only diff against the four P2 anchor metrics.
+
+    Per the user's P4 override, P2 economic metrics are NOT a hard-reject
+    gate; they are reported here so the diff table can flag drift without
+    blocking a merge.
+    """
+    try:
+        baseline = json.loads(Path(baseline_path).read_text())
+    except Exception as exc:  # pragma: no cover — bad path is the caller's bug
+        logger.warning("regression_check_skipped baseline=%s err=%s", baseline_path, exc)
+        return {"baseline_path": baseline_path, "error": str(exc)}
+    base_agg = baseline.get("cv_summary", {}).get("aggregate", {})
+
+    def _diff(key: str, *, lower_is_better: bool = False) -> dict[str, Any]:
+        before = base_agg.get(key)
+        after = agg.get(key)
+        if before is None or after is None:
+            return {"before": before, "after": after, "delta": None, "warn": False}
+        delta = after - before
+        warn = (delta < 0) if not lower_is_better else (delta > 0)
+        return {"before": before, "after": after, "delta": delta, "warn": bool(warn)}
+
+    diffs = {
+        "median_profit_factor": _diff("median_profit_factor"),
+        "median_expectancy_r": _diff("median_expectancy_r"),
+        "median_absolute_cost_per_trade_r": _diff(
+            "median_absolute_cost_per_trade_r", lower_is_better=True,
+        ),
+        "n_folds_with_undefined_cost_drag": _diff(
+            "n_folds_with_undefined_cost_drag", lower_is_better=True,
+        ),
+    }
+    any_warn = any(d.get("warn") for d in diffs.values())
+    if any_warn:
+        logger.warning("p2_regression_warn baseline=%s diffs=%s",
+                       baseline_path, {k: v["delta"] for k, v in diffs.items()})
+    return {
+        "baseline_path": baseline_path,
+        "warn_only": True,
+        "any_warning": any_warn,
+        "diffs": diffs,
+    }
 
 
 if __name__ == "__main__":

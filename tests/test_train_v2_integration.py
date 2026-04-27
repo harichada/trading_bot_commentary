@@ -151,6 +151,7 @@ class TestDryRunEmitsSixMetrics:
             "--model-path", str(model_path),
             "--report-path", str(report_path),
             "--cost-aware",
+            "--bootstrap-iterations", "1",
             # This test's purpose is to verify the report emits all six
             # cost-aware metrics. Disable the hard-reject so we reach the
             # final-fit + report block regardless of model edge on 1500
@@ -205,6 +206,14 @@ class TestHardRejectOnCostDrag:
         _install_stub_feature_names(monkeypatch, n_features)
 
         import train_ml_model_v2 as mod
+        from ml.iid_diagnostics import IIDReport
+
+        # Synthetic samples have near-perfect AR(1) (label tied to one feature),
+        # which would trip the P4 IID gate before this test reaches the P2
+        # cost-drag check. Stub the diagnostic to a passing report — this
+        # test owns cost-drag rejection only.
+        ok = IIDReport(0.0, 0.5, True, 1500)
+        monkeypatch.setattr(mod, "compute_iid_diagnostics", lambda *_a, **_kw: ok)
 
         model_path, report_path = isolated_paths
         argv = [
@@ -215,6 +224,7 @@ class TestHardRejectOnCostDrag:
             "--model-path", str(model_path),
             "--report-path", str(report_path),
             "--cost-aware",
+            "--bootstrap-iterations", "1",
             "--reject-cost-drag-pct", "50",
         ]
         monkeypatch.setattr(sys, "argv", argv)

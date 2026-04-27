@@ -115,6 +115,103 @@ def apply_triple_barrier(
     return pd.DataFrame(records, index=pd.Index(list(events), name="event_time"))
 
 
+def triple_barrier_labels(
+    events: pd.DataFrame,
+    close: pd.Series,
+    atr: pd.Series,
+    pt_sl: tuple[float, float] = (2.0, 1.0),
+    vertical_barrier: int | pd.Series = 60,
+    min_ret: float = 0.0,
+) -> pd.DataFrame:
+    """Triple-barrier labeler with asymmetric barriers and ``min_ret`` filter.
+
+    AFML §3.4. Wraps :func:`apply_triple_barrier` (legacy single-vertical API)
+    with the surface required by P4:
+
+    * ``pt_sl`` — tuple ``(pt_mult, sl_mult)``; supports asymmetric barriers.
+    * ``vertical_barrier`` — int (uniform bar count) or per-event Series.
+    * ``min_ret`` — drop events whose realized ``|ret| < min_ret * atr/entry``
+      (AFML p. 47 — discards barely-resolving events that bias the model
+      toward the "decision is irrelevant here" regime).
+    * ``side`` — optional column on ``events``; +1 long, -1 short. ``bin``
+      is reported in the side-adjusted frame, so a short whose price falls
+      gets ``bin=+1``.
+
+    Degenerate inputs (event timestamp not in ``close.index``, non-positive
+    ATR) are silently dropped — the caller is now feeding many candidate
+    events from CUSUM/stride and cannot pre-clean each one. The legacy
+    :func:`apply_triple_barrier` still raises on these conditions for
+    callers (meta-labeling) that pre-validate.
+
+    Returns
+    -------
+    DataFrame indexed by event timestamp with columns:
+        - ``t1``: barrier-touch timestamp (price barrier, vertical, or last bar).
+        - ``ret``: realized decimal return from entry close to touch close
+          (in the long frame; sign-flipped for shorts before the bin assignment).
+        - ``bin``: +1 if the trade made money in its own direction, -1 if it
+          lost, 0 if the vertical fired without barrier hit.
+        - ``side``: +1 long, -1 short.
+    """
+    pt_mult, sl_mult = pt_sl
+    if pt_mult <= 0 or sl_mult <= 0:
+        raise ValueError("pt_sl multiples must be positive")
+
+    if isinstance(vertical_barrier, pd.Series):
+        v_lookup = vertical_barrier.reindex(events.index)
+    else:
+        v_lookup = pd.Series(int(vertical_barrier), index=events.index, dtype="int64")
+
+    side_series = (
+        events["side"].astype(int) if "side" in events.columns
+        else pd.Series(1, index=events.index, dtype="int64")
+    )
+
+    price_index = close.index
+    kept_idx: list[pd.Timestamp] = []
+    records: list[dict] = []
+
+    for ts in events.index:
+        if ts not in price_index:
+            continue
+        pos = price_index.get_loc(ts)
+        atr_at = float(atr.iloc[pos])
+        if not np.isfinite(atr_at) or atr_at <= 0:
+            continue
+        max_h = int(v_lookup.loc[ts])
+        if max_h <= 0:
+            continue
+        entry = float(close.iloc[pos])
+
+        # Delegate barrier walk to the proven primitive. The labeler walks
+        # the long frame; we sign-correct for shorts here.
+        leg = apply_triple_barrier(
+            prices=close, events=[ts], atr=atr,
+            pt_mult=pt_mult, sl_mult=sl_mult, max_holding=max_h,
+        ).iloc[0]
+
+        long_ret = float(leg["ret"])
+
+        # AFML p. 47: drop |ret| < min_ret * (atr/entry). Per-event scale
+        # avoids over-dropping quiet symbols.
+        if min_ret > 0 and abs(long_ret) < min_ret * (atr_at / entry):
+            continue
+
+        side = int(side_series.loc[ts])
+        kept_idx.append(ts)
+        records.append({
+            "t1": leg["touch_time"],
+            "ret": long_ret * side,
+            "bin": int(leg["label"]) * side,
+            "side": side,
+        })
+
+    if not records:
+        return pd.DataFrame(columns=["t1", "ret", "bin", "side"])
+
+    return pd.DataFrame(records, index=pd.Index(kept_idx, name=events.index.name))
+
+
 def compute_uniqueness(
     labels: pd.DataFrame,
     price_index: pd.DatetimeIndex,
