@@ -1,0 +1,30 @@
+# P3 regime-routing configuration
+#
+# Per-regime decision flags. The classifier and stability gate live in
+# ml/regime.py; this file declares which regimes are allowed to trade
+# and what threshold gates each one's primary-softprob fires through.
+#
+# All thresholds are uniform 0.55 (matches P4 baseline) — per-regime
+# threshold tuning is a separate experiment after this run produces
+# per-regime baselines. Do not introduce per-regime divergence here
+# without an explicit user approval.
+#
+# chop: trade-forbidden (P3 hard rule, gate C). Encoded both here and
+# in the runner / tests; this YAML alone cannot relax it.
+
+stability_n: 5
+
+# Decision threshold applied to max-class softprob before taking a
+# trade. 0.55 mirrors P4's DEFAULT_DECISION_THRESHOLD.
+decision_threshold: 0.55
+
+# Per-regime overrides. Currently uniform; surface kept so future
+# experiments can override one regime at a time without code edits.
+regimes:
+  trend_up_low_vol:   {allow_trade: true,  decision_threshold: 0.55}
+  trend_up_high_vol:  {allow_trade: true,  decision_threshold: 0.55}
+  trend_dn_low_vol:   {allow_trade: true,  decision_threshold: 0.55}
+  trend_dn_high_vol:  {allow_trade: true,  decision_threshold: 0.55}
+  range_tight:        {allow_trade: true,  decision_threshold: 0.55}
+  range_wide:         {allow_trade: true,  decision_threshold: 0.55}
+  chop:               {allow_trade: false, decision_threshold: 0.55}

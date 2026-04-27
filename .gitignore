@@ -56,3 +56,5 @@ Thumbs.db
 # Alpaca ingest checkpoint (resumable state, not source)
 alpaca_ingest_checkpoint.json
 alpaca_ingest_checkpoint.json.tmp
+trading_bot.log
+trading_bot.log.*

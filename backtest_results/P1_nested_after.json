@@ -1,0 +1,445 @@
+{
+  "timestamp": "2026-04-27T09:37:27.831995",
+  "primary_bundle": "ml_model_v2.pkl",
+  "primary_bundle_sha256": {
+    "before": "70737ae7a5324f80ba63c038f30846c3793324cc044fd81c73f5f7ee00739784",
+    "after": "70737ae7a5324f80ba63c038f30846c3793324cc044fd81c73f5f7ee00739784",
+    "unchanged": true
+  },
+  "config": {
+    "nested_cv": true,
+    "folds": 5,
+    "embargo_pct": 0.02,
+    "frequency": 5,
+    "days": 60,
+    "primary_decision_threshold": 0.55,
+    "primary_pt_mult": 2.0,
+    "primary_sl_mult": 1.0,
+    "primary_max_holding": 60,
+    "primary_vertical_max_bars": 120,
+    "cusum_h": 0.01,
+    "cost_model": {
+      "fee_bps": 5.0,
+      "slip_bps": 10.0,
+      "impact_coef": 0.1,
+      "participation": 0.01,
+      "anchor_r_per_trade": 0.32,
+      "source": "ml.costs (single source of truth shared with P2/P4)"
+    },
+    "threshold_sweep": [
+      0.4,
+      0.45,
+      0.5,
+      0.55,
+      0.6,
+      0.65,
+      0.7,
+      0.75,
+      0.8,
+      0.85
+    ],
+    "tiebreak_within_pct": 0.05,
+    "uniqueness": "recomputed on OOS-fire subset per fold",
+    "nested_recipe": "AFML \u00a77.4: refit primary per meta-fold; OOS predictions used to identify fires; meta trained on those OOS fires."
+  },
+  "symbols": [
+    "NVDA",
+    "TSLA",
+    "AAPL",
+    "AMD",
+    "SPY",
+    "QQQ",
+    "META",
+    "MSFT",
+    "GOOGL",
+    "AMZN"
+  ],
+  "n_candidate_events": 2129,
+  "per_symbol_events": {
+    "NVDA": 217,
+    "TSLA": 275,
+    "AAPL": 127,
+    "AMD": 383,
+    "SPY": 65,
+    "QQQ": 92,
+    "META": 454,
+    "MSFT": 144,
+    "GOOGL": 179,
+    "AMZN": 193
+  },
+  "per_fold_fire_counts": [
+    360,
+    355,
+    367,
+    353,
+    369
+  ],
+  "n_oos_meta_samples": 451,
+  "label_distribution": {
+    "wins": 235,
+    "losses": 216,
+    "base_win_rate": 0.5211
+  },
+  "cv_summary": {
+    "n_folds_executed": 5,
+    "fold_detail": [
+      {
+        "fold": 1,
+        "train_size": 1661,
+        "test_size": 426,
+        "oos_fires": 360,
+        "meta_inner_train": 270,
+        "meta_inner_test": 90,
+        "ar1_residual_autocorr": 0.07615271562087472,
+        "ljung_box_p_value": null,
+        "tail_threshold": 0.85,
+        "tail_threshold_rationale": "selected threshold=0.85 sortino=1.784 (best=1.784) take_rate=0.044 PF=42.03649344530351 expectancy=0.7025377503818703",
+        "meta_inner_win_rate": 0.6
+      },
+      {
+        "fold": 2,
+        "train_size": 1656,
+        "test_size": 426,
+        "oos_fires": 355,
+        "meta_inner_train": 266,
+        "meta_inner_test": 89,
+        "ar1_residual_autocorr": 0.08272729419143214,
+        "ljung_box_p_value": null,
+        "tail_threshold": 0.85,
+        "tail_threshold_rationale": "selected threshold=0.85 sortino=1.244 (best=1.244) take_rate=0.152 PF=10.359559943312833 expectancy=0.7676682906694611",
+        "meta_inner_win_rate": 0.5955056179775281
+      },
+      {
+        "fold": 3,
+        "train_size": 1657,
+        "test_size": 426,
+        "oos_fires": 367,
+        "meta_inner_train": 275,
+        "meta_inner_test": 92,
+        "ar1_residual_autocorr": -0.010909585075077785,
+        "ljung_box_p_value": null,
+        "tail_threshold": 0.85,
+        "tail_threshold_rationale": "selected threshold=0.85 sortino=0.763 (best=0.763) take_rate=0.072 PF=None expectancy=0.43018402499891606",
+        "meta_inner_win_rate": 0.5217391304347826
+      },
+      {
+        "fold": 4,
+        "train_size": 1649,
+        "test_size": 426,
+        "oos_fires": 353,
+        "meta_inner_train": 265,
+        "meta_inner_test": 88,
+        "ar1_residual_autocorr": -0.03425851667012892,
+        "ljung_box_p_value": null,
+        "tail_threshold": 0.8,
+        "tail_threshold_rationale": "selected threshold=0.80 sortino=-0.682 (best=-0.682) take_rate=0.091 PF=0.5695997072065218 expectancy=-0.0815130519331446",
+        "meta_inner_win_rate": 0.4659090909090909
+      },
+      {
+        "fold": 5,
+        "train_size": 1698,
+        "test_size": 425,
+        "oos_fires": 369,
+        "meta_inner_train": 277,
+        "meta_inner_test": 92,
+        "ar1_residual_autocorr": 0.15004557592932627,
+        "ljung_box_p_value": null,
+        "tail_threshold": 0.5,
+        "tail_threshold_rationale": "selected threshold=0.50 sortino=-0.808 (best=-0.808) take_rate=0.203 PF=0.1530223801926765 expectancy=-0.3377524159103627",
+        "meta_inner_win_rate": 0.42391304347826086
+      }
+    ]
+  },
+  "calibration": {
+    "brier": 0.2817583586004364,
+    "deciles": {
+      "bins": [
+        {
+          "bin": 0,
+          "n": 5,
+          "midpoint": 0.05,
+          "empirical_p": 0.6,
+          "deviation": 0.5499999999999999
+        },
+        {
+          "bin": 1,
+          "n": 2,
+          "midpoint": 0.15000000000000002,
+          "empirical_p": 0.5,
+          "deviation": 0.35
+        },
+        {
+          "bin": 2,
+          "n": 41,
+          "midpoint": 0.25,
+          "empirical_p": 0.5853658536585366,
+          "deviation": 0.33536585365853655
+        },
+        {
+          "bin": 3,
+          "n": 4,
+          "midpoint": 0.35000000000000003,
+          "empirical_p": 0.5,
+          "deviation": 0.14999999999999997
+        },
+        {
+          "bin": 4,
+          "n": 87,
+          "midpoint": 0.45,
+          "empirical_p": 0.41379310344827586,
+          "deviation": -0.036206896551724155
+        },
+        {
+          "bin": 5,
+          "n": 84,
+          "midpoint": 0.55,
+          "empirical_p": 0.6190476190476191,
+          "deviation": 0.06904761904761902
+        },
+        {
+          "bin": 6,
+          "n": 133,
+          "midpoint": 0.6500000000000001,
+          "empirical_p": 0.5112781954887218,
+          "deviation": -0.13872180451127836
+        },
+        {
+          "bin": 7,
+          "n": 69,
+          "midpoint": 0.75,
+          "empirical_p": 0.5072463768115942,
+          "deviation": -0.24275362318840576
+        },
+        {
+          "bin": 8,
+          "n": 14,
+          "midpoint": 0.8500000000000001,
+          "empirical_p": 0.5,
+          "deviation": -0.3500000000000001
+        },
+        {
+          "bin": 9,
+          "n": 12,
+          "midpoint": 0.95,
+          "empirical_p": 0.5833333333333334,
+          "deviation": -0.3666666666666666
+        }
+      ],
+      "n_qualifying_bins": 5,
+      "max_abs_deviation": 0.33536585365853655
+    }
+  },
+  "threshold_sweep": [
+    {
+      "threshold": 0.4,
+      "n_taken": 399,
+      "take_rate": 0.88470066518847,
+      "expectancy_net_r": -0.22114988380353154,
+      "profit_factor": 0.5606148763186918,
+      "win_rate": 0.5137844611528822,
+      "sortino_net": -0.2761381794451837
+    },
+    {
+      "threshold": 0.45,
+      "n_taken": 386,
+      "take_rate": 0.8558758314855875,
+      "expectancy_net_r": -0.22949023729703624,
+      "profit_factor": 0.5507698291899541,
+      "win_rate": 0.5103626943005182,
+      "sortino_net": -0.28332910198015315
+    },
+    {
+      "threshold": 0.5,
+      "n_taken": 312,
+      "take_rate": 0.6917960088691796,
+      "expectancy_net_r": -0.16767347835255417,
+      "profit_factor": 0.6603665094302447,
+      "win_rate": 0.5416666666666666,
+      "sortino_net": -0.2046837410427241
+    },
+    {
+      "threshold": 0.55,
+      "n_taken": 232,
+      "take_rate": 0.5144124168514412,
+      "expectancy_net_r": -0.17524782164932792,
+      "profit_factor": 0.6725770123428882,
+      "win_rate": 0.5172413793103449,
+      "sortino_net": -0.2002512841790473
+    },
+    {
+      "threshold": 0.6,
+      "n_taken": 228,
+      "take_rate": 0.5055432372505543,
+      "expectancy_net_r": -0.17445673203799086,
+      "profit_factor": 0.6767275867384354,
+      "win_rate": 0.5131578947368421,
+      "sortino_net": -0.1983379166271206
+    },
+    {
+      "threshold": 0.65,
+      "n_taken": 109,
+      "take_rate": 0.24168514412416853,
+      "expectancy_net_r": -0.20376954339914355,
+      "profit_factor": 0.5967661734514261,
+      "win_rate": 0.5321100917431193,
+      "sortino_net": -0.25024130245918746
+    },
+    {
+      "threshold": 0.7,
+      "n_taken": 95,
+      "take_rate": 0.2106430155210643,
+      "expectancy_net_r": -0.20441827538665738,
+      "profit_factor": 0.6028894753076351,
+      "win_rate": 0.5157894736842106,
+      "sortino_net": -0.25050736349625946
+    },
+    {
+      "threshold": 0.75,
+      "n_taken": 71,
+      "take_rate": 0.1574279379157428,
+      "expectancy_net_r": -0.1147033603310502,
+      "profit_factor": 0.7652179621960981,
+      "win_rate": 0.5352112676056338,
+      "sortino_net": -0.14489343245369155
+    },
+    {
+      "threshold": 0.8,
+      "n_taken": 26,
+      "take_rate": 0.057649667405764965,
+      "expectancy_net_r": -0.23303071923826504,
+      "profit_factor": 0.5971576695902684,
+      "win_rate": 0.5384615384615384,
+      "sortino_net": -0.24939080979554437
+    },
+    {
+      "threshold": 0.85,
+      "n_taken": 21,
+      "take_rate": 0.04656319290465632,
+      "expectancy_net_r": -0.24123056843845647,
+      "profit_factor": 0.600986475440749,
+      "win_rate": 0.5714285714285714,
+      "sortino_net": -0.24297434523684602
+    }
+  ],
+  "per_fold_thresholds": [
+    0.85,
+    0.85,
+    0.85,
+    0.8,
+    0.5
+  ],
+  "threshold_agreement": {
+    "per_fold": [
+      0.85,
+      0.85,
+      0.85,
+      0.8,
+      0.5
+    ],
+    "median": 0.85,
+    "min": 0.5,
+    "max": 0.85,
+    "disagreement_spread": 0.35,
+    "disagreement_flag_gate": 0.2,
+    "disagreement": true,
+    "n_folds_with_threshold": 5
+  },
+  "chosen_threshold": {
+    "threshold": 0.85,
+    "n_taken": 21,
+    "take_rate": 0.04656319290465632,
+    "expectancy_net_r": -0.24123056843845647,
+    "profit_factor": 0.600986475440749,
+    "win_rate": 0.5714285714285714,
+    "sortino_net": -0.24297434523684602
+  },
+  "deployment_threshold": 0.85,
+  "iid_diagnostics": {
+    "per_fold_ar1": [
+      0.07615271562087472,
+      0.08272729419143214,
+      -0.010909585075077785,
+      -0.03425851667012892,
+      0.15004557592932627
+    ],
+    "median_per_fold_ar1": 0.07615271562087472,
+    "max_per_fold_ar1": 0.15004557592932627,
+    "gate_thresholds": {
+      "median_lt": 0.1,
+      "max_lt": 0.2
+    }
+  },
+  "gates": {
+    "brier": {
+      "value": 0.2817583586004364,
+      "threshold": 0.22,
+      "pass": false
+    },
+    "calibration": {
+      "value": 0.33536585365853655,
+      "threshold": 0.05,
+      "pass": false
+    },
+    "take_rate": {
+      "value": 0.04656319290465632,
+      "min": 0.2,
+      "max": 0.4,
+      "pass": false
+    },
+    "profit_factor": {
+      "value": 0.600986475440749,
+      "threshold": 1.3,
+      "pass": false
+    },
+    "expectancy": {
+      "value": -0.24123056843845647,
+      "threshold": 0.0,
+      "pass": false
+    },
+    "ar1": {
+      "median": 0.07615271562087472,
+      "max": 0.15004557592932627,
+      "median_threshold": 0.1,
+      "max_threshold": 0.2,
+      "pass": true
+    },
+    "all_pass": false
+  },
+  "rejected": true,
+  "reject_reason": "gates_failed: brier,calibration,take_rate,profit_factor,expectancy",
+  "primary_proba_summary": {
+    "mean_max_proba_at_fire": 0.7288549455787219
+  },
+  "timing_seconds": {
+    "collection": 2.5
+  },
+  "p4_baseline_diff": {
+    "baseline_path": "backtest_results/P4_after.json",
+    "rows": {
+      "median_profit_factor": {
+        "P4": 0.7375625443883556,
+        "P1": 0.600986475440749
+      },
+      "median_expectancy_r": {
+        "P4": -0.19646692102227006,
+        "P1": -0.24123056843845647
+      },
+      "take_rate": {
+        "P4": "\u22480.70 (decision_threshold 0.55, no meta-filter)",
+        "P1": 0.04656319290465632
+      },
+      "median_per_fold_ar1": {
+        "P4": 0.09229244946992272,
+        "P1": 0.07615271562087472
+      },
+      "max_per_fold_ar1": {
+        "P4": 0.16847827964624232,
+        "P1": 0.15004557592932627
+      },
+      "median_absolute_cost_per_trade_r": {
+        "P4": 0.32,
+        "P1_anchor": 0.32
+      }
+    }
+  }
+}

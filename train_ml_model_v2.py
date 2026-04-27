@@ -215,6 +215,7 @@ def collect_v2_samples(
     vertical_mult_duration: float = DEFAULT_VERTICAL_MULT_DURATION,
     min_ret_atr_mult: float = DEFAULT_MIN_RET_ATR_MULT,
     drop_accumulator: dict[str, int] | None = None,
+    prices_accumulator: dict[str, pd.DataFrame] | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, pd.Index, pd.Index, np.ndarray, dict[str, int]]:
     """Return (X, y, ret, event_times, touch_times, symbol_groups, per_symbol_counts).
 
@@ -225,6 +226,10 @@ def collect_v2_samples(
     ``drop_accumulator`` (optional, mutated in place) collects aggregate
     drop counts across symbols: ``candidates``, ``dropped_low_magnitude``,
     ``dropped_no_barrier_hit``. Used by the P4 report.
+
+    ``prices_accumulator`` (optional, mutated in place) retains the raw
+    per-symbol bar DataFrames keyed by symbol. Required by the P3
+    regime-routing pipeline; P4 leaves it ``None``.
     """
     from data_providers.postgres import PostgresDataProvider
     from ml.models import IntegratedMLModel
@@ -256,6 +261,11 @@ def collect_v2_samples(
         if df.empty or len(df) < max_holding + 100:
             logger.warning("insufficient_data symbol=%s bars=%d", symbol, len(df))
             continue
+
+        if prices_accumulator is not None:
+            # P3 needs per-symbol bar history for regime classification.
+            # Retain a reference; downstream consumers must not mutate.
+            prices_accumulator[symbol] = df
 
         feat_df = feature_model.feature_extractor.batch_extract(df)
         if feat_df.empty:
@@ -995,37 +1005,53 @@ def main() -> int:
         symbols = top_symbols_by_volume(args.dsn, args.top_n, args.days)
     logger.info("symbols_selected n=%d first5=%s", len(symbols), symbols[:5])
 
-    # --- Collection + labeling -----------------------------------------
-    t0 = datetime.now()
+    # --- Collection + labeling + uniqueness + cost-aware weights ------
+    # Delegated to ml.event_view.build_event_view (Step 1 of P3
+    # refactor; parity-tested in tests/test_event_view_parity.py).
+    from ml.event_view import build_event_view as _build_event_view
     logger.info(
         "collecting_v2_samples symbols=%d days=%d freq=%dmin pt=%.2f sl=%.2f mh=%d stride=%d",
         len(symbols), args.days, args.frequency,
         args.pt_mult, args.sl_mult, args.max_holding, args.event_stride,
     )
-    drop_acc: dict[str, int] = {}
-    X, y, ret, event_times, touch_times, sym_groups, per_sym = collect_v2_samples(
+    ev = _build_event_view(
         symbols=symbols, days=args.days, frequency=args.frequency, dsn=args.dsn,
         pt_mult=args.pt_mult, sl_mult=args.sl_mult,
         max_holding=args.max_holding, event_stride=args.event_stride,
+        cost_aware=args.cost_aware,
+        fee_bps=args.fee_bps, slip_bps=args.slip_bps,
+        impact_coef=args.impact_coef, participation=args.participation,
         event_source=args.event_source, cusum_h=args.cusum_h,
         vertical_mult_duration=args.vertical_mult_duration,
         min_ret_atr_mult=args.min_ret_atr_mult,
-        drop_accumulator=drop_acc,
+        collect_prices=False,  # P4 doesn't need bar history; saves memory.
     )
-    collect_seconds = (datetime.now() - t0).total_seconds()
-
-    if len(X) == 0:
+    if len(ev.X) == 0:
         logger.error("no_samples_collected — aborting")
         return 1
 
-    # Sort by event time — required for purged CV to carve chronological folds.
-    order = np.argsort(event_times.to_numpy())
-    X = X[order]
-    y = y[order]
-    ret = ret[order]
-    event_times = event_times[order]
-    touch_times = touch_times[order]
-    sym_groups = sym_groups[order]
+    # Unpack into the existing local names so the rest of main() is
+    # unchanged. This preserves byte-identical behavior of the post-
+    # event-view pipeline (purged_cv_evaluate, report assembly).
+    X = ev.X
+    y = ev.y
+    ret = ev.ret
+    event_times = ev.event_times
+    touch_times = ev.touch_times
+    sym_groups = ev.sym_groups
+    per_sym = ev.per_symbol_samples
+    drop_acc = ev.drop_counts
+    uniqueness = ev.uniqueness
+    sample_r_multiples = ev.sample_r_multiples
+    sample_cost_r = ev.sample_cost_r
+    weights = ev.weights
+    collect_seconds = ev.timing["collect"]
+    uniqueness_seconds = ev.timing["uniqueness"]
+    effective_n = float(uniqueness.sum())
+    touch_series = pd.Series(touch_times.to_numpy(), index=event_times)
+    cost_model = CostModel(
+        fee_bps=args.fee_bps, slip_bps=args.slip_bps, impact_coef=args.impact_coef,
+    )
 
     label_dist = describe_labels(y)
     logger.info(
@@ -1034,67 +1060,12 @@ def main() -> int:
         label_dist["BUY"]["pct"], label_dist["HOLD"]["pct"], label_dist["SELL"]["pct"],
         collect_seconds,
     )
-
-    # --- Uniqueness weights --------------------------------------------
-    # Grouped by symbol: an AAPL event at 10:00 AM is independent of an
-    # NVDA event at 10:00 AM, so they must not depress each other's weight.
     logger.info("computing_uniqueness n=%d groups=%d",
                 len(event_times), len(np.unique(sym_groups)))
-    t1 = datetime.now()
-    touch_series = pd.Series(touch_times.to_numpy(), index=event_times)
-    combined_index = pd.DatetimeIndex(
-        np.unique(np.concatenate([event_times.to_numpy(), touch_times.to_numpy()]))
-    ).sort_values()
-    labels_for_weights = pd.DataFrame(
-        {"touch_time": touch_series.values}, index=touch_series.index,
-    )
-    uniqueness = compute_uniqueness(
-        labels_for_weights, combined_index, groups=pd.Series(sym_groups),
-    ).to_numpy()
-    uniqueness = np.clip(uniqueness, 1e-6, 1.0)
-    uniqueness_seconds = (datetime.now() - t1).total_seconds()
-    effective_n = float(uniqueness.sum())
     logger.info(
         "uniqueness_done mean=%.3f min=%.3f effective_n=%.0f elapsed_s=%.1f",
         float(uniqueness.mean()), float(uniqueness.min()), effective_n, uniqueness_seconds,
     )
-
-    # --- Cost-aware weighting (PROMPT_PACK P2 §1) ----------------------
-    # Sample weight = max(|r_R| - cost_in_r, 0) * uniqueness.
-    # Samples where costs dominate gross edge get near-zero weight, so the
-    # classifier spends its capacity on setups that actually pay after costs.
-    cost_model = CostModel(
-        fee_bps=args.fee_bps, slip_bps=args.slip_bps, impact_coef=args.impact_coef,
-    )
-    # Backfill a synthetic entry_price + ATR per sample from the realized return.
-    # We don't persist them in the sample collector today, so we reconstruct:
-    #   1R = sl_mult * ATR / entry_price ≡ barrier_pct. Given the labeller
-    #   uses the same sl_mult for all symbols and ATR is already absorbed into
-    #   `ret` via the triple-barrier, a proxy barrier_pct comes from |ret| at
-    #   the stop-barrier hit (label == -1) — but for general grading we can
-    #   assume entry_price=100, atr = args.sl_mult_pct_hint * entry; easier to
-    #   use unit entry and let users pass normalized ATR. In practice, because
-    #   ret is already a decimal return and 1R := sl_mult * ATR / entry_price,
-    #   we compute r_multiples directly from the configured (sl_mult, pt_mult)
-    #   using the realized-return magnitude and the barrier magnitude that
-    #   fired for each label (pt for +1, sl for -1, ret for 0).
-    sample_r_multiples = _r_multiples_from_labels(
-        y=y, ret=ret, pt_mult=args.pt_mult, sl_mult=args.sl_mult,
-    )
-    sample_cost_r = _cost_r_from_constants(
-        n=len(y), cost_model=cost_model,
-        participation=args.participation,
-        sl_mult=args.sl_mult, pt_mult=args.pt_mult,
-    )
-
-    if args.cost_aware:
-        weights = compute_sample_weights(
-            r_multiples=sample_r_multiples,
-            cost_in_r=sample_cost_r,
-            uniqueness=uniqueness,
-        )
-    else:
-        weights = uniqueness.copy()
 
     # --- Purged CV evaluation ------------------------------------------
     t2 = datetime.now()

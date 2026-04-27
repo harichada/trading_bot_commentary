@@ -41,12 +41,20 @@ regime_detector:
   volatility_lookback: 20        # Bars for volatility calc
   chop_lookback: 14              # Bars for choppiness index
 
+  # P3 7-state classifier (ml/regime.py)
+  ema_fast: 50                   # Fast EMA for trend direction
+  ema_slow: 200                  # Slow EMA for trend direction
+  rv_period: 20                  # EWMA period for realized volatility
+  rv_median_lookback: 252        # Rolling window for cohort-median rv split
+  stability_n: 5                 # RegimeStabilityGate debounce length
+  chop_forbid_trade: true        # Hard rule — no trades in chop regime
+
   # Thresholds
-  adx_trending_threshold: 25     # ADX > 25 = trending
+  adx_trending_threshold: 25     # ADX > 25 = trending (Wilder 1978)
   adx_strong_trend_threshold: 40 # ADX > 40 = strong trend
-  chop_index_threshold: 61.8     # CI > 61.8 = choppy (Fibonacci)
-  volatility_high_percentile: 80 # Top 20% = high volatility
-  volatility_low_percentile: 20  # Bottom 20% = low volatility
+  chop_index_threshold: 61.8     # CI > 61.8 = choppy (Dreiss; Fibonacci 0.618)
+  volatility_high_percentile: 80 # Legacy global percentile (P3 uses median split)
+  volatility_low_percentile: 20  # Legacy global percentile (P3 uses median split)
 
 # -----------------------------------------------------------------------------
 # SESSION MANAGER SETTINGS
