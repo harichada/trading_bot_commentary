@@ -3527,6 +3527,11 @@ class TradingEngineWithCommentary:
                     # ================================================================
                     current_atr = None
                     market_df = None
+                    # v-proactive-exit-fix-2026-04-27: build indicator view from
+                    # raw_data alongside ATR so the proactive-exit check can read
+                    # MACD/RSI/ADX without depending on a `market_data` variable
+                    # that doesn't exist in this scope.
+                    proactive_indicators: dict = {}
                     if self.data_provider and not getattr(position, 'is_long_term', False):
                         try:
                             raw_data = self.data_provider.get_market_data(symbol)
@@ -3546,6 +3551,28 @@ class TradingEngineWithCommentary:
                                     'Open': 'open', 'High': 'high', 'Low': 'low',
                                     'Close': 'close', 'Volume': 'volume'
                                 })
+                                # Compute the three indicators proactive-exit needs.
+                                # ta.* funcs are vectorised; cheap on 5-min bars.
+                                try:
+                                    import ta as _ta
+                                    close_s = raw_data['Close']
+                                    high_s = raw_data['High']
+                                    low_s = raw_data['Low']
+                                    macd_obj = _ta.trend.MACD(close_s)
+                                    macd_series = macd_obj.macd()
+                                    macd_sig_series = macd_obj.macd_signal()
+                                    rsi_series = _ta.momentum.rsi(close_s, window=14)
+                                    adx_series = _ta.trend.ADXIndicator(high_s, low_s, close_s, window=14).adx()
+                                    proactive_indicators = {
+                                        'macd':        float(macd_series.iloc[-1])    if not macd_series.empty    and not np.isnan(macd_series.iloc[-1])    else 0.0,
+                                        'macd_signal': float(macd_sig_series.iloc[-1])if not macd_sig_series.empty and not np.isnan(macd_sig_series.iloc[-1])else 0.0,
+                                        'rsi':         float(rsi_series.iloc[-1])     if not rsi_series.empty     and not np.isnan(rsi_series.iloc[-1])     else 50.0,
+                                        'adx':         float(adx_series.iloc[-1])     if not adx_series.empty     and not np.isnan(adx_series.iloc[-1])     else 0.0,
+                                        'adx_prev':    float(adx_series.iloc[-2])     if len(adx_series) >= 2     and not np.isnan(adx_series.iloc[-2])     else 0.0,
+                                    }
+                                except Exception as ind_err:
+                                    logger.debug(f"proactive indicators calc skipped for {symbol}: {ind_err}")
+                                    proactive_indicators = {}
                         except Exception as e:
                             logger.debug(f"ATR calc error for {symbol}: {e}")
 
@@ -3618,12 +3645,11 @@ class TradingEngineWithCommentary:
                         # the way to the full stop when indicators have already
                         # turned against the position. RIOT short 04-27 took
                         # -$236 full stop with 75-min hold; this fires earlier.
-                        if Config().ENABLE_PROACTIVE_EXIT:
-                            indicator_view = dict(market_data.indicators) if market_data is not None and getattr(market_data, 'indicators', None) else {}
-                            # Surface adx_prev for trend-collapse check (best-effort).
-                            indicator_view.setdefault('adx_prev', indicator_view.get('adx', 0))
+                        # Indicators are computed from raw_data above (no
+                        # dependency on a `market_data` variable in this scope).
+                        if Config().ENABLE_PROACTIVE_EXIT and proactive_indicators:
                             proactive_reason = self.scale_trail.check_proactive_exit(
-                                position, current_price, indicator_view,
+                                position, current_price, proactive_indicators,
                             )
                             if proactive_reason is not None:
                                 # R-multiple at fire time
