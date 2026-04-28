@@ -364,6 +364,47 @@ class Config:
         return int(self.manager.get('trading.warmup_minutes_before_open', 30))
 
     @property
+    def ENABLE_THESIS_REVALIDATION(self) -> bool:
+        """v-thesis-revalidate-2026-04-28: re-verify both news + indicators
+        on positions older than THESIS_REVALIDATION_AGE_MIN. Closes the
+        position when BOTH the news thesis AND the indicator thesis have
+        broken (single-signal failure isn't enough — that's proactive_exit).
+
+        Default False = SHADOW MODE: log what would have fired without
+        actually closing positions. Flip True after a day of shadow data
+        confirms the gate fires appropriately."""
+        return bool(self.manager.get('trading.enable_thesis_revalidation', False))
+
+    @property
+    def THESIS_REVALIDATION_SHADOW_MODE(self) -> bool:
+        """When True (default), thesis re-validation logs the would-be
+        decision but does NOT close the position. Set False to enable
+        actual exits. Has no effect when ENABLE_THESIS_REVALIDATION=False."""
+        return bool(self.manager.get('trading.thesis_revalidation_shadow_mode', True))
+
+    @property
+    def THESIS_REVALIDATION_AGE_MIN(self) -> int:
+        """Position age in minutes before the first thesis re-check fires.
+        Default 30 — gives the trade time to develop without harvesting
+        winners that just need patience."""
+        return int(self.manager.get('trading.thesis_revalidation_age_min', 30))
+
+    @property
+    def THESIS_REVALIDATION_INTERVAL_MIN(self) -> int:
+        """Minimum minutes between thesis re-checks for the same position.
+        Default 15 — prevents per-tick spam of news API calls."""
+        return int(self.manager.get('trading.thesis_revalidation_interval_min', 15))
+
+    @property
+    def THESIS_REVALIDATION_LIMBO_R(self) -> float:
+        """Re-validation only runs when |unrealized R| < this. Default 0.5.
+        Outside ±0.5R, existing logic (breakeven_stop, proactive_exit,
+        trailing stop, hard stop) handles the position. The re-check is
+        for the in-between zone where the trade is sitting flat-ish and
+        the underlying thesis may be silently breaking."""
+        return float(self.manager.get('trading.thesis_revalidation_limbo_r', 0.5))
+
+    @property
     def BREAKEVEN_ACTIVATION_R(self) -> float:
         """v-breakeven-stop-2026-04-28: how far in favor (in R-multiples,
         where R = entry-stop distance) a trade must move before its stop

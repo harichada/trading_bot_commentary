@@ -85,6 +85,11 @@ class Position:
     # In LIVE mode this is the primary gate; in SIM mode it's also honored
     # so users can pause management on a single position from the dashboard.
     managed_by_bot: bool = False
+    # v-thesis-revalidate-2026-04-28: last time the thesis re-validation ran
+    # for this position. Tracked separately from entry/management ticks so
+    # the re-check can fire on its own cadence (default every 15 min after
+    # the 30-min mark). ISO timestamp string; None means never re-checked.
+    last_revalidation_at: Optional[str] = None
 
 @dataclass
 class MarketData:

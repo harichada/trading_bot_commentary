@@ -239,6 +239,168 @@ class TradingEngineWithCommentary:
             return False
         return bool(self.manual_close_only)
 
+    def _indicator_thesis_supportive(self, position, indicators: dict) -> tuple[bool, str]:
+        """v-thesis-revalidate-2026-04-28: is the indicator picture still
+        supportive of the position's direction? Returns (ok, reason).
+
+        For a LONG: MACD>=signal AND RSI>=45 AND close>=SMA50
+        For a SHORT: MACD<=signal AND RSI<=55 AND close<=SMA50
+        Missing indicators are treated as 'supportive' (don't close on
+        absence of data — could be a new symbol or stale feed).
+        """
+        try:
+            macd = float(indicators.get('macd', 0) or 0)
+            macd_sig = float(indicators.get('macd_signal', 0) or 0)
+            rsi = float(indicators.get('rsi', 50) or 50)
+            sma_50 = float(indicators.get('sma_50', 0) or 0)
+            close = float(indicators.get('close', position.current_price) or position.current_price)
+        except (TypeError, ValueError):
+            return True, "indicators_unparseable_treat_as_ok"
+
+        if position.side == 'long':
+            if macd < macd_sig:
+                return False, f"macd_below_signal({macd:.4f}<{macd_sig:.4f})"
+            if rsi < 45:
+                return False, f"rsi_weak({rsi:.1f}<45)"
+            if sma_50 > 0 and close < sma_50:
+                return False, f"price_below_sma50({close:.2f}<{sma_50:.2f})"
+            return True, "long_indicators_ok"
+        else:  # short
+            if macd > macd_sig:
+                return False, f"macd_above_signal({macd:.4f}>{macd_sig:.4f})"
+            if rsi > 55:
+                return False, f"rsi_strong({rsi:.1f}>55)"
+            if sma_50 > 0 and close > sma_50:
+                return False, f"price_above_sma50({close:.2f}>{sma_50:.2f})"
+            return True, "short_indicators_ok"
+
+    async def _revalidate_thesis(
+        self, symbol: str, position, current_price: float, indicators: dict
+    ) -> None:
+        """v-thesis-revalidate-2026-04-28: re-verify news + indicators on
+        positions in the limbo zone after their first 30 min. Closes only
+        when BOTH theses have broken; logs every decision for diagnostics.
+
+        Gates checked BEFORE this is called (in _manage_positions_with_commentary):
+          - position is auto-managed
+          - breakeven_stop / 1R partial / trail / proactive_exit all skipped this tick
+        Gates checked HERE:
+          - thesis revalidation enabled
+          - position age >= THESIS_REVALIDATION_AGE_MIN
+          - last_revalidation_at >= THESIS_REVALIDATION_INTERVAL_MIN ago
+          - |current_R| < THESIS_REVALIDATION_LIMBO_R
+          - breakeven_lifted == False (winners already protected, leave alone)
+        """
+        cfg = Config()
+        if not cfg.ENABLE_THESIS_REVALIDATION:
+            return
+        if getattr(position, 'breakeven_lifted', False):
+            return  # winner already protected; don't second-guess
+
+        # Age + cadence
+        age_min = (datetime.now() - position.entry_time).total_seconds() / 60.0
+        if age_min < cfg.THESIS_REVALIDATION_AGE_MIN:
+            return
+        last_str = getattr(position, 'last_revalidation_at', None)
+        if last_str:
+            try:
+                last = datetime.fromisoformat(last_str)
+                if (datetime.now() - last).total_seconds() / 60.0 < cfg.THESIS_REVALIDATION_INTERVAL_MIN:
+                    return
+            except (TypeError, ValueError):
+                pass  # bad timestamp → re-check now
+
+        # Limbo zone: outside ±limbo_R, existing exits handle it
+        original_stop = position.original_stop or position.stop_loss
+        stop_distance = abs(position.entry_price - original_stop)
+        if stop_distance <= 0:
+            return
+        if position.side == 'long':
+            current_r = (current_price - position.entry_price) / stop_distance
+        else:
+            current_r = (position.entry_price - current_price) / stop_distance
+        if abs(current_r) > cfg.THESIS_REVALIDATION_LIMBO_R:
+            return
+
+        # Stamp last_revalidation_at NOW so failed paths (verifier exception
+        # etc.) still respect the cadence.
+        position.last_revalidation_at = datetime.now().isoformat()
+
+        # --- News thesis ---
+        strategy = (getattr(position, 'reasoning', {}) or {}).get('strategy', '')
+        is_news_trade = 'news' in strategy.lower()
+        news_ok = True
+        news_detail = "non_news_strategy_skip"
+        if is_news_trade:
+            try:
+                # Reuse the news_strategy verifier — it's already initialised
+                # in the news_strategy instance. Walk the strategies list to
+                # find it. Cheap; happens at most once per position per 15 min.
+                verifier = None
+                for s in (getattr(self, 'strategies', None) or []):
+                    if hasattr(s, 'verifier'):
+                        verifier = s.verifier
+                        break
+                if verifier is None:
+                    news_detail = "verifier_unavailable"
+                else:
+                    expected_dir = 1 if position.side == 'long' else -1
+                    v = await verifier.verify(symbol, expected_dir)
+                    news_ok = v.is_verified
+                    news_detail = (
+                        f"src={v.source} fresh={v.fresh_count} "
+                        f"avg={v.avg_fresh_sentiment:+.3f} reason={v.reason}"
+                    )
+            except Exception as exc:
+                # Verifier failure is non-fatal — treat as ok (don't close
+                # on inability to confirm; would over-trigger on outages).
+                news_ok = True
+                news_detail = f"verifier_error_treat_as_ok:{str(exc)[:60]}"
+
+        # --- Indicator thesis ---
+        ind_ok, ind_detail = self._indicator_thesis_supportive(position, indicators)
+
+        # --- Decision ---
+        thesis_broken = (not news_ok) and (not ind_ok)
+        action_str = "would_close" if thesis_broken else "keep_open"
+        if thesis_broken and not cfg.THESIS_REVALIDATION_SHADOW_MODE:
+            action_str = "closed"
+
+        # Always audit
+        self._audit("thesis_revalidate", symbol, action_str,
+                    "thesis_broken" if thesis_broken else "thesis_intact",
+                    age_min=round(age_min, 1),
+                    current_r=round(current_r, 3),
+                    side=position.side,
+                    is_news_trade=is_news_trade,
+                    news_ok=news_ok, news=news_detail,
+                    ind_ok=ind_ok, ind=ind_detail,
+                    shadow=cfg.THESIS_REVALIDATION_SHADOW_MODE)
+
+        if thesis_broken:
+            self.commentary.add_commentary(TradingCommentary(
+                timestamp=datetime.now(),
+                type=CommentaryType.WARNING if cfg.THESIS_REVALIDATION_SHADOW_MODE
+                else CommentaryType.DECISION,
+                symbol=symbol,
+                title=("🔍 [SHADOW] Thesis Broken — Would Close"
+                       if cfg.THESIS_REVALIDATION_SHADOW_MODE
+                       else "🚪 Thesis Broken — Closing"),
+                message=(
+                    f"At {age_min:.0f} min ({current_r:+.2f}R), both news and "
+                    f"indicators turned against the position.\n"
+                    f"  News:       {news_detail}\n"
+                    f"  Indicators: {ind_detail}\n"
+                    + ("(shadow mode — position kept open for now)"
+                       if cfg.THESIS_REVALIDATION_SHADOW_MODE else "")
+                ),
+                importance=8,
+            ))
+            if not cfg.THESIS_REVALIDATION_SHADOW_MODE:
+                await self._close_position_with_commentary(
+                    position, "thesis_revalidation_broken"
+                )
+
     def _is_auto_managed(self, position) -> bool:
         """v-managed-by-bot-2026-04-28: per-position auto-management gate.
 
@@ -374,6 +536,7 @@ class TradingEngineWithCommentary:
                             peak_favorable_r=pd.get('peak_favorable_r', 0.0),
                             breakeven_lifted=pd.get('breakeven_lifted', False),
                             managed_by_bot=pd.get('managed_by_bot', True),  # restored sim positions: bot-managed by default
+                            last_revalidation_at=pd.get('last_revalidation_at'),
                         )
                         self.simulated_positions[symbol] = pos
                     if sim_data:
@@ -1863,6 +2026,7 @@ class TradingEngineWithCommentary:
                 'peak_favorable_r': getattr(pos, 'peak_favorable_r', 0.0),
                 'breakeven_lifted': getattr(pos, 'breakeven_lifted', False),
                 'managed_by_bot': getattr(pos, 'managed_by_bot', True),
+                'last_revalidation_at': getattr(pos, 'last_revalidation_at', None),
             }
 
         state = {
@@ -3749,6 +3913,30 @@ class TradingEngineWithCommentary:
                                     position, f"proactive_{proactive_reason}"
                                 )
                                 continue
+
+                        # --- Thesis re-validation (shadow-mode by default) ---
+                        # v-thesis-revalidate-2026-04-28: catches the "trade
+                        # sat flat for 30 min while the underlying thesis
+                        # broke" case. Only fires when no other exit triggered
+                        # this tick. Closes only when BOTH news AND indicators
+                        # are against the position. Logs every decision; in
+                        # shadow mode (default), does NOT actually close.
+                        try:
+                            # Pass the same proactive_indicators dict already
+                            # built from raw_data above; add 'close' so the
+                            # SMA50 check has a price to compare to.
+                            tv_indicators = dict(proactive_indicators) if proactive_indicators else {}
+                            if market_df is not None and len(market_df) > 50:
+                                try:
+                                    tv_indicators['sma_50'] = float(market_df['close'].rolling(50).mean().iloc[-1])
+                                except Exception:
+                                    pass
+                            tv_indicators['close'] = current_price
+                            await self._revalidate_thesis(
+                                symbol, position, current_price, tv_indicators,
+                            )
+                        except Exception as exc:
+                            logger.debug(f"thesis_revalidate error for {symbol}: {exc}")
 
                     # ================================================================
                     # PROFESSIONAL EXIT MANAGER
