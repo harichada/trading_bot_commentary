@@ -268,6 +268,172 @@ class DbLogger:
             except Exception as exc:
                 logger.warning("db_logger_positions_error err=%s", exc)
 
+    async def log_news_veto(
+        self,
+        symbol: str,
+        side: str,                  # 'long' or 'short' (would-be direction)
+        veto_reason: str,           # e.g. 'insufficient_fresh_articles_0_lt_2'
+        veto_source: str | None = None,    # 'alpaca' / 'yfinance' / 'falling_knife'
+        cached_sentiment: float | None = None,
+        fresh_count: int | None = None,
+        fresh_avg_sentiment: float | None = None,
+        latest_age_min: float | None = None,
+        would_entry_price: float | None = None,
+        would_stop_loss: float | None = None,
+        would_take_profit: float | None = None,
+    ) -> None:
+        """v-news-veto-tracker-2026-04-28: record a vetoed news signal so we
+        can later evaluate whether the veto was correct (saved a loss) or
+        wrong (missed a winner). Outcome columns are filled later by
+        evaluate_open_news_vetoes(). Never raises."""
+        if not self._enabled:
+            return
+        try:
+            async with self._engine.begin() as conn:
+                await conn.execute(
+                    text("""
+                        INSERT INTO bot_shadow_news_vetoes
+                            (symbol, side, veto_reason, veto_source,
+                             cached_sentiment, fresh_count, fresh_avg_sentiment,
+                             latest_age_min,
+                             would_entry_price, would_stop_loss, would_take_profit)
+                        VALUES
+                            (:symbol, :side, :veto_reason, :veto_source,
+                             :cached_sentiment, :fresh_count, :fresh_avg_sentiment,
+                             :latest_age_min,
+                             :would_entry_price, :would_stop_loss, :would_take_profit)
+                    """),
+                    {
+                        "symbol": symbol, "side": side,
+                        "veto_reason": veto_reason, "veto_source": veto_source,
+                        "cached_sentiment": cached_sentiment,
+                        "fresh_count": fresh_count,
+                        "fresh_avg_sentiment": fresh_avg_sentiment,
+                        "latest_age_min": latest_age_min,
+                        "would_entry_price": would_entry_price,
+                        "would_stop_loss": would_stop_loss,
+                        "would_take_profit": would_take_profit,
+                    },
+                )
+        except Exception as exc:
+            logger.warning("db_logger_news_veto_error err=%s", exc)
+
+    async def evaluate_open_news_vetoes(
+        self,
+        get_current_price,           # callable(symbol) -> Optional[float]
+        max_age_hours: int = 4,
+    ) -> int:
+        """For every veto with NULL outcome and veto_time within the
+        evaluation window, fetch the current price and decide:
+
+          long would-be:
+            current_price >= would_take_profit  →  outcome='missed_winner'
+            current_price <= would_stop_loss    →  outcome='correct_veto'
+            else (still open)                   →  leave NULL
+
+          short would-be: mirror.
+
+          If veto_time older than max_age_hours and still neither hit:
+            outcome='neutral_timeout' so we don't keep re-checking.
+
+        Returns count of rows updated. Designed to run every 5-15 min
+        from the engine main loop; cheap because the open-set is small.
+        """
+        if not self._enabled:
+            return 0
+        updated = 0
+        try:
+            async with self._engine.begin() as conn:
+                rows = (await conn.execute(
+                    text("""
+                        SELECT id, symbol, side, would_entry_price,
+                               would_stop_loss, would_take_profit, veto_time
+                        FROM bot_shadow_news_vetoes
+                        WHERE outcome IS NULL
+                          AND veto_time > NOW() - INTERVAL ':hrs hours'
+                          AND would_stop_loss IS NOT NULL
+                          AND would_take_profit IS NOT NULL
+                    """.replace(":hrs", str(max_age_hours)))
+                )).mappings().all()
+
+                for row in rows:
+                    symbol = row['symbol']
+                    side = row['side']
+                    entry = row['would_entry_price']
+                    stop = row['would_stop_loss']
+                    target = row['would_take_profit']
+                    veto_time = row['veto_time']
+                    if entry is None or stop is None or target is None:
+                        continue
+
+                    price = None
+                    try:
+                        price = get_current_price(symbol)
+                    except Exception:
+                        price = None
+                    if price is None or price <= 0:
+                        # Time out positions older than max_age_hours that
+                        # we never managed to price — mark neutral so we
+                        # don't loop on them forever.
+                        from datetime import datetime as _dt, timedelta as _td
+                        if veto_time < _dt.now() - _td(hours=max_age_hours):
+                            await conn.execute(
+                                text("""UPDATE bot_shadow_news_vetoes
+                                        SET outcome='neutral_no_price',
+                                            outcome_evaluated_at=NOW()
+                                        WHERE id=:id"""),
+                                {"id": row['id']},
+                            )
+                            updated += 1
+                        continue
+
+                    pnl_pct = ((price - entry) / entry * 100.0
+                               if side == 'long'
+                               else (entry - price) / entry * 100.0)
+
+                    hit_target = (price >= target) if side == 'long' else (price <= target)
+                    hit_stop   = (price <= stop)   if side == 'long' else (price >= stop)
+
+                    outcome = None
+                    if hit_target and not hit_stop:
+                        outcome = 'missed_winner'    # we should have entered
+                    elif hit_stop and not hit_target:
+                        outcome = 'correct_veto'     # we saved a loss
+                    elif hit_target and hit_stop:
+                        # Both crossed inside the same window — ambiguous,
+                        # call it neutral and inspect manually.
+                        outcome = 'neutral_both_crossed'
+                    else:
+                        # Still open inside window. Only resolve if past
+                        # max_age_hours; otherwise wait.
+                        from datetime import datetime as _dt, timedelta as _td
+                        if veto_time < _dt.now() - _td(hours=max_age_hours):
+                            outcome = 'neutral_timeout'
+
+                    if outcome:
+                        await conn.execute(
+                            text("""UPDATE bot_shadow_news_vetoes
+                                    SET outcome=:outcome,
+                                        outcome_evaluated_at=NOW(),
+                                        outcome_price=:price,
+                                        outcome_pnl_pct=:pnl,
+                                        outcome_hit_target=:t,
+                                        outcome_hit_stop=:s
+                                    WHERE id=:id"""),
+                            {
+                                "outcome": outcome,
+                                "price": price,
+                                "pnl": pnl_pct,
+                                "t": bool(hit_target),
+                                "s": bool(hit_stop),
+                                "id": row['id'],
+                            },
+                        )
+                        updated += 1
+        except Exception as exc:
+            logger.warning("db_logger_evaluate_vetoes_error err=%s", exc)
+        return updated
+
     async def delete_position(self, symbol: str) -> None:
         """Remove a closed position from bot_positions."""
         if not self._enabled:

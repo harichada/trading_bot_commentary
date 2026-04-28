@@ -414,6 +414,35 @@ class FreeNewsSignalStrategy(TradingStrategyWithCommentary):
                         macd=round(macd_val, 4),
                         articles=len(news_items),
                     )
+                    # v-news-veto-tracker-2026-04-28: record this veto for
+                    # post-hoc evaluation. Compute would-be stop/target the
+                    # same way the strategy WOULD have on a non-vetoed signal.
+                    try:
+                        from core.config import Config as _Cfg
+                        _atr = _floored_atr(market_data.indicators.get('atr', market_data.close * 0.02), market_data.close)
+                        _stop_dist = _Cfg().ATR_STOP_MULTIPLIER * _atr
+                        _rr = _Cfg().ATR_REWARD_RISK_RATIO
+                        wb_stop = market_data.close - _stop_dist
+                        wb_target = market_data.close + (_rr * _stop_dist)
+                        # We have access to the engine via commentary if needed
+                        # but db_logger lives on engine; emit through brain as a
+                        # fire-and-forget through the engine if available.
+                        engine = getattr(self.commentary, 'engine_ref', None)
+                        if engine is not None and getattr(engine, 'db_logger', None):
+                            import asyncio as _asyncio
+                            _asyncio.get_event_loop().create_task(
+                                engine.db_logger.log_news_veto(
+                                    symbol=symbol, side='long',
+                                    veto_reason='falling_knife_news_buy',
+                                    veto_source='falling_knife',
+                                    cached_sentiment=float(avg_sentiment),
+                                    would_entry_price=float(market_data.close),
+                                    would_stop_loss=float(wb_stop),
+                                    would_take_profit=float(wb_target),
+                                )
+                            )
+                    except Exception as _e:
+                        logger.debug(f"news veto tracker (falling_knife) skipped: {_e}")
                     self.commentary.add_commentary(TradingCommentary(
                         timestamp=datetime.now(),
                         type=CommentaryType.RISK_ASSESSMENT,
@@ -496,6 +525,30 @@ class FreeNewsSignalStrategy(TradingStrategyWithCommentary):
                     latest_age_min=(round(v.latest_age_min, 1)
                                     if v.latest_age_min is not None else None),
                 )
+                # v-news-veto-tracker-2026-04-28: persist the would-be trade
+                # for later evaluation (correct_veto vs missed_winner).
+                try:
+                    engine = getattr(self.commentary, 'engine_ref', None)
+                    if engine is not None and getattr(engine, 'db_logger', None):
+                        import asyncio as _asyncio
+                        _asyncio.get_event_loop().create_task(
+                            engine.db_logger.log_news_veto(
+                                symbol=symbol,
+                                side=('long' if signal_type == SignalType.BUY else 'short'),
+                                veto_reason=v.reason,
+                                veto_source=v.source,
+                                cached_sentiment=float(avg_sentiment),
+                                fresh_count=v.fresh_count,
+                                fresh_avg_sentiment=float(v.avg_fresh_sentiment),
+                                latest_age_min=(float(v.latest_age_min)
+                                                if v.latest_age_min is not None else None),
+                                would_entry_price=float(market_data.close),
+                                would_stop_loss=float(stop_loss),
+                                would_take_profit=float(take_profit),
+                            )
+                        )
+                except Exception as _e:
+                    logger.debug(f"news veto tracker (fresh_news_unverified) skipped: {_e}")
                 self.commentary.add_commentary(TradingCommentary(
                     timestamp=datetime.now(),
                     type=CommentaryType.RISK_ASSESSMENT,

@@ -2057,6 +2057,73 @@ async def emergency_close_all(request: dict):
         _close_all_in_flight = False
 
 
+@app.get("/api/news-vetoes/report")
+async def news_vetoes_report():
+    """v-news-veto-tracker-2026-04-28: scorecard for the news-veto gate.
+
+    Tells you whether vetoes were correct (saved a loss) or wrong (missed
+    a winner). Pull this every session to gauge gate health.
+    """
+    import os
+    from sqlalchemy import create_engine, text as sa_text
+    dsn = os.environ.get(
+        "POSTGRES_DSN",
+        "postgresql://rudra:rudra_dev_2024@localhost:5432/rudra_dev",
+    )
+    try:
+        eng = create_engine(dsn)
+        with eng.connect() as conn:
+            summary = conn.execute(sa_text("""
+                SELECT
+                  COALESCE(outcome, 'open') AS outcome,
+                  COUNT(*)                  AS n,
+                  ROUND(AVG(outcome_pnl_pct)::numeric, 3) AS avg_pnl_pct,
+                  ROUND(SUM(outcome_pnl_pct)::numeric, 2) AS total_pnl_pct
+                FROM bot_shadow_news_vetoes
+                WHERE veto_time > NOW() - INTERVAL '14 days'
+                GROUP BY outcome
+                ORDER BY n DESC
+            """)).mappings().all()
+            recent = conn.execute(sa_text("""
+                SELECT id, veto_time::text, symbol, side, veto_reason,
+                       veto_source, cached_sentiment, fresh_count,
+                       fresh_avg_sentiment, latest_age_min,
+                       would_entry_price, would_stop_loss, would_take_profit,
+                       outcome, outcome_pnl_pct, outcome_hit_target, outcome_hit_stop
+                FROM bot_shadow_news_vetoes
+                WHERE veto_time > NOW() - INTERVAL '3 days'
+                ORDER BY veto_time DESC
+                LIMIT 50
+            """)).mappings().all()
+        # Compute headline metrics
+        n_correct = sum(r['n'] for r in summary if r['outcome'] == 'correct_veto')
+        n_missed  = sum(r['n'] for r in summary if r['outcome'] == 'missed_winner')
+        n_total_resolved = n_correct + n_missed
+        gate_accuracy = (
+            round(n_correct / n_total_resolved, 3) if n_total_resolved > 0 else None
+        )
+        return {
+            "status": "success",
+            "summary": [dict(r) for r in summary],
+            "headline": {
+                "correct_vetoes": n_correct,
+                "missed_winners": n_missed,
+                "gate_accuracy_pct": gate_accuracy,
+                "interpretation": (
+                    "gate is saving more losses than it costs"
+                    if gate_accuracy is not None and gate_accuracy >= 0.6
+                    else "gate is rejecting too many winners — loosen thresholds"
+                    if gate_accuracy is not None and gate_accuracy < 0.4
+                    else "gate is roughly break-even — keep monitoring"
+                ),
+            },
+            "recent_vetoes": [dict(r) for r in recent],
+        }
+    except Exception as e:
+        logger.error(f"news_vetoes_report error: {e}")
+        return {"status": "error", "message": str(e)}
+
+
 @app.post("/api/toggle-managed-by-bot")
 async def toggle_managed_by_bot(request: dict):
     """v-managed-by-bot-2026-04-28: turn bot management on/off for a single position.

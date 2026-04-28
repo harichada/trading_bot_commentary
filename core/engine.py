@@ -82,6 +82,10 @@ class TradingEngineWithCommentary:
         self._last_bp_check = datetime.now() - timedelta(minutes=5)  # Force initial check
         # Commentary system
         self.commentary = CommentarySystem()
+        # v-news-veto-tracker-2026-04-28: back-reference so strategies can
+        # reach engine.db_logger via their commentary instance for shadow-
+        # tracking writes (avoid passing engine into every strategy ctor).
+        self.commentary.engine_ref = self
         # Initialize brain BEFORE ml_predictor
         self.brain = TradingBrain()
         # Error recovery manager
@@ -2462,6 +2466,29 @@ class TradingEngineWithCommentary:
                 if analysis_count % 10 == 0:  # Every 10 analysis cycles
                     self._save_state()
                     self.brain.save_memories()
+
+                    # v-news-veto-tracker-2026-04-28: evaluate open vetoes
+                    # against current prices. Cheap; small open-set bounded
+                    # by 4-hour eval window. Fire-and-forget — failure of
+                    # this task must never block the management loop.
+                    if self.db_logger is not None and self.data_provider is not None:
+                        def _quote_lookup(_sym):
+                            try:
+                                q = self.data_provider.get_quote(_sym)
+                                if q:
+                                    return q.get('last') or q.get('bid') or q.get('ask')
+                            except Exception:
+                                return None
+                            return None
+                        try:
+                            asyncio.get_event_loop().create_task(
+                                self.db_logger.evaluate_open_news_vetoes(
+                                    get_current_price=_quote_lookup,
+                                    max_age_hours=4,
+                                )
+                            )
+                        except Exception:
+                            pass
 
                     # Log performance snapshot for analytics
                     positions_count = len(self.positions) + len(self.simulated_positions)
