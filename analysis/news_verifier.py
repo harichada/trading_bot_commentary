@@ -3,7 +3,7 @@
 Before the news_strategy returns a BUY/SELL signal, this module re-fetches
 news for the symbol from external sources and verifies:
 
-  1. At least N fresh articles in the last M minutes (default 2 in 30 min)
+  1. At least N fresh articles in the last M minutes (default 2 in 4 hours)
   2. Fresh sentiment direction matches the original signal
   3. Optional: at least one article from a high-quality source (Reuters,
      Bloomberg, Alpaca's curated feed)
@@ -54,7 +54,7 @@ class NewsVerifier:
     def __init__(
         self,
         sentiment_analyzer,  # SentimentIntensityAnalyzer (VADER)
-        freshness_minutes: int = 30,
+        freshness_minutes: int = 240,  # 4 hours — wider than original 30 min
         min_fresh_articles: int = 2,
         min_match_strength: float = 0.10,  # avg compound must clear this in same direction
     ) -> None:

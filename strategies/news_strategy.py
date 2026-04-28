@@ -328,9 +328,14 @@ class FreeNewsSignalStrategy(TradingStrategyWithCommentary):
         self.profiles = {}
         # v-news-verify-2026-04-28: fresh-news re-verification gate
         from analysis.news_verifier import NewsVerifier
+        # v-news-verify-window-2026-04-28: widened freshness window 30min → 4h.
+        # 30-min window vetoed every signal during pre-market / lunch lulls when
+        # no new articles are published despite the original news still being
+        # the active catalyst. 4-hour window is intraday-realistic — captures
+        # morning news for an afternoon trade and vice versa.
         self.verifier = NewsVerifier(
             sentiment_analyzer=self.sentiment_analyzer,
-            freshness_minutes=30,
+            freshness_minutes=240,
             min_fresh_articles=2,
             min_match_strength=0.10,
         )
@@ -465,7 +470,7 @@ class FreeNewsSignalStrategy(TradingStrategyWithCommentary):
             # v-news-verify-2026-04-28: re-verify with fresh news from
             # Alpaca (or yfinance fallback) before committing to the trade.
             # Cached RSS news is often hours old and already priced in;
-            # require ≥2 fresh articles in last 30 min with sentiment in
+            # require ≥2 fresh articles in last 4 hours with sentiment in
             # the same direction. Skip cleanly if not verified.
             try:
                 expected_dir = 1 if signal_type == SignalType.BUY else -1
@@ -515,7 +520,7 @@ class FreeNewsSignalStrategy(TradingStrategyWithCommentary):
                 title=f"✅ Fresh News Confirmed — {signal_type.name} {symbol}",
                 message=(
                     f"Verification passed via {v.source}.\n"
-                    f"  Fresh articles (last 30 min): {v.fresh_count}\n"
+                    f"  Fresh articles (last 4h):     {v.fresh_count}\n"
                     f"  Avg fresh sentiment:          {v.avg_fresh_sentiment:+.3f} "
                     f"({'bullish' if v.avg_fresh_sentiment > 0 else 'bearish'})\n"
                     f"  Most recent article:          "
