@@ -1557,6 +1557,7 @@ async def websocket_endpoint(websocket: WebSocket):
                                 'unrealized_pnl': pos.unrealized_pnl,
                                 'type': 'simulated',
                                 'mode': getattr(pos, 'mode', 'simulation'),
+                                'managed_by_bot': bool(getattr(pos, 'managed_by_bot', True)),
                             })
 
                 # Get real Schwab positions
@@ -1580,6 +1581,7 @@ async def websocket_endpoint(websocket: WebSocket):
                             'is_long_term': is_long_term,
                             'type': 'real',
                             'mode': 'live',
+                            'managed_by_bot': bool(getattr(tracked_pos, 'managed_by_bot', False)) if tracked_pos else False,
                         })
 
                 # Get account info from Schwab
@@ -1855,6 +1857,15 @@ async def get_positions_db():
             """)).mappings().all()
 
         positions = [dict(r) for r in rows]
+        # v-managed-by-bot-2026-04-28: enrich DB rows with per-position flag from
+        # in-memory state so the dashboard checkbox reflects current truth (DB
+        # mirror lags by up to one save cycle and doesn't store this field yet).
+        if trading_engine is not None:
+            for p in positions:
+                sym = p['symbol']
+                live_pos = (trading_engine.simulated_positions.get(sym)
+                            or trading_engine.positions.get(sym))
+                p['managed_by_bot'] = bool(getattr(live_pos, 'managed_by_bot', False)) if live_pos else False
         return {"status": "success", "count": len(positions), "positions": positions}
 
     except Exception as e:
@@ -2044,6 +2055,56 @@ async def emergency_close_all(request: dict):
         }
     finally:
         _close_all_in_flight = False
+
+
+@app.post("/api/toggle-managed-by-bot")
+async def toggle_managed_by_bot(request: dict):
+    """v-managed-by-bot-2026-04-28: turn bot management on/off for a single position.
+
+    Body: { "symbol": "<SYM>", "enabled": <true|false> (optional toggle if omitted) }
+
+    When OFF, the bot stops applying:
+      - breakeven-stop ratchet
+      - 1R partial scale-out
+      - ATR trailing stop
+      - proactive exit on indicator flip
+      - take-profit / hard-stop auto-execution
+    The position is otherwise untouched (still tracked for P&L display).
+    """
+    global trading_engine
+    if not trading_engine:
+        return {"status": "error", "message": "Trading engine not initialized"}
+
+    symbol = (request.get('symbol') or '').upper()
+    if not symbol:
+        return {"status": "error", "message": "symbol required"}
+
+    # Find the position in either dict
+    pos = trading_engine.simulated_positions.get(symbol) or trading_engine.positions.get(symbol)
+    if pos is None:
+        return {"status": "error", "message": f"position {symbol} not found"}
+
+    if 'enabled' in request:
+        new_state = bool(request['enabled'])
+    else:
+        new_state = not getattr(pos, 'managed_by_bot', False)
+
+    pos.managed_by_bot = new_state
+    trading_engine._save_state()
+
+    trading_engine.commentary.add_commentary(TradingCommentary(
+        timestamp=datetime.now(),
+        type=CommentaryType.DECISION,
+        symbol=symbol,
+        title=f"{'🤖 Bot Management ON' if new_state else '🖐  Bot Management OFF'} — {symbol}",
+        message=(
+            f"Position will {'be managed' if new_state else 'no longer be managed'} "
+            f"by the bot (stops, trail, breakeven, exits)."
+        ),
+        importance=8,
+    ))
+
+    return {"status": "success", "symbol": symbol, "managed_by_bot": new_state}
 
 
 @app.post("/api/toggle-long-term")

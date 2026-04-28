@@ -239,6 +239,32 @@ class TradingEngineWithCommentary:
             return False
         return bool(self.manual_close_only)
 
+    def _is_auto_managed(self, position) -> bool:
+        """v-managed-by-bot-2026-04-28: per-position auto-management gate.
+
+        Returns True if the bot may auto-close / auto-manage this position
+        (apply trailing stops, breakeven lift, proactive exit, take profit,
+        hard stop). Returns False to leave the position untouched.
+
+        Logic:
+          SIM mode  → honour position.managed_by_bot (default True for new
+                      bot-opened entries; user can toggle off via dashboard
+                      to pause management on a single trade).
+          LIVE mode → require BOTH the global manual_close_only flag to be
+                      OFF (no global pause) AND position.managed_by_bot=True
+                      (this specific trade is bot-managed, not external).
+
+        Long-term flag still wins: any position with is_long_term=True is
+        excluded from automation regardless of mode or managed_by_bot.
+        """
+        if getattr(position, 'is_long_term', False):
+            return False
+        if not getattr(position, 'managed_by_bot', False):
+            return False
+        if self.mode == TradingMode.LIVE and self.manual_close_only:
+            return False
+        return True
+
     def _audit(self, component: str, symbol, action: str, reason: str, **details) -> None:
         """Structured audit log for engine-level decisions.
 
@@ -347,6 +373,7 @@ class TradingEngineWithCommentary:
                             mode=pd.get('mode', 'simulation'),
                             peak_favorable_r=pd.get('peak_favorable_r', 0.0),
                             breakeven_lifted=pd.get('breakeven_lifted', False),
+                            managed_by_bot=pd.get('managed_by_bot', True),  # restored sim positions: bot-managed by default
                         )
                         self.simulated_positions[symbol] = pos
                     if sim_data:
@@ -1297,6 +1324,7 @@ class TradingEngineWithCommentary:
                             entry_time=datetime.now(),
                             reasoning=signal.reasoning,
                             mode="live",
+                            managed_by_bot=True,  # bot-opened live trade
                         )
                         self.positions[signal.symbol] = position
                         
@@ -1472,6 +1500,7 @@ class TradingEngineWithCommentary:
                         side='long' if pos_data['quantity'] > 0 else 'short',
                         reasoning={'source': 'external', 'strategy': 'manual_entry'},
                         mode="live",
+                        managed_by_bot=False,  # external/manual → hands off
                     )
                     position.unrealized_pnl = pos_data['total_pnl']
                     position.is_external = True  # Flag as externally created
@@ -1833,6 +1862,7 @@ class TradingEngineWithCommentary:
                 'mode': getattr(pos, 'mode', 'simulation'),
                 'peak_favorable_r': getattr(pos, 'peak_favorable_r', 0.0),
                 'breakeven_lifted': getattr(pos, 'breakeven_lifted', False),
+                'managed_by_bot': getattr(pos, 'managed_by_bot', True),
             }
 
         state = {
@@ -1973,6 +2003,7 @@ class TradingEngineWithCommentary:
                     take_profit=float('inf'),  # No automatic take profit
                     entry_time=datetime.now() - timedelta(hours=1),  # Approximate
                     mode="live",
+                    managed_by_bot=False,  # synced from Schwab → hands off
                 )
 
                 position.unrealized_pnl = pos_data['total_pnl']
@@ -2807,6 +2838,7 @@ class TradingEngineWithCommentary:
                         unrealized_pnl=existing_position['total_pnl'],
                         reasoning={'source': 'existing_schwab_position'},
                         mode="live",
+                        managed_by_bot=False,  # pre-existing Schwab position
                     )
                     self.positions[signal.symbol] = position
                     
@@ -3289,6 +3321,7 @@ class TradingEngineWithCommentary:
                 reasoning=signal.reasoning,
                 original_stop=signal.stop_loss,
                 mode="simulation",
+                managed_by_bot=True,  # bot-opened sim trade
             )
             self.simulated_positions[signal.symbol] = position
 
@@ -3405,10 +3438,12 @@ class TradingEngineWithCommentary:
                 is_external = getattr(position, 'is_external', False)
                 is_manually_managed = getattr(position, 'is_manually_managed', False)
 
-                if (self.auto_close_disabled or (self.manual_close_only and (is_external or is_manually_managed))):
+                if not self._is_auto_managed(position):
                     self._audit("position_manager", symbol, "hold",
-                                "auto_close_disabled",
-                                external=is_external, manually_managed=is_manually_managed)
+                                "not_auto_managed",
+                                managed_by_bot=getattr(position, 'managed_by_bot', False),
+                                external=is_external, manually_managed=is_manually_managed,
+                                manual_close_only=self.manual_close_only)
                     # Only update the price for display purposes, but don't take any action
                     if self.data_provider:
                         quote = self.data_provider.get_quote(symbol)
@@ -3583,7 +3618,7 @@ class TradingEngineWithCommentary:
                     # ================================================================
                     # SCALE-OUT AT 1R + ATR TRAILING STOP
                     # ================================================================
-                    if not getattr(position, 'is_long_term', False) and not self.auto_close_disabled:
+                    if self._is_auto_managed(position):
                         # --- Breakeven Stop Lift (fires before everything else) ---
                         # v-breakeven-stop-2026-04-28: once the trade has moved
                         # +BREAKEVEN_ACTIVATION_R (default 0.5R) in our favor,
@@ -3750,7 +3785,7 @@ class TradingEngineWithCommentary:
                                     if exit_sig.exit_size_pct < 1.0:
                                         # Partial exit - scale out
                                         exit_quantity = int(position.quantity * exit_sig.exit_size_pct)
-                                        if exit_quantity > 0 and not self.auto_close_disabled:
+                                        if exit_quantity > 0 and self._is_auto_managed(position):
                                             # Execute partial close
                                             position.quantity -= exit_quantity
                                             self.commentary.add_commentary(TradingCommentary(
@@ -3764,7 +3799,7 @@ class TradingEngineWithCommentary:
                                             ))
                                     else:
                                         # Full exit
-                                        if not self.auto_close_disabled:
+                                        if self._is_auto_managed(position):
                                             await self._close_position_with_commentary(
                                                 position,
                                                 f"pro_exit_{exit_sig.exit_reason.value}"
@@ -4512,6 +4547,7 @@ class TradingEngineWithCommentary:
                         unrealized_pnl=pos_data['total_pnl'],
                         reasoning={'source': 'existing_position', 'tracked_from': datetime.now().isoformat()},
                         mode="live",
+                        managed_by_bot=False,  # discovered, not bot-opened
                     )
 
                     self.positions[symbol] = position

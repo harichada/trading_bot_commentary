@@ -920,11 +920,12 @@
                             <th>Total P&L</th>
                             <th>% Change</th>
                             <th>Long-Term</th>
+                            <th>Bot-Managed</th>
                             <th>Actions</th>
                         </tr>
                     </thead>
                     <tbody id="real-positions-body">
-                        <tr><td colspan="10" style="text-align: center; color: #666;">No real positions or Schwab not connected</td></tr>
+                        <tr><td colspan="11" style="text-align: center; color: #666;">No real positions or Schwab not connected</td></tr>
                     </tbody>
                 </table>
             </div>
@@ -942,11 +943,12 @@
                             <th>Stop Loss</th>
                             <th>Target</th>
                             <th>P&L</th>
-                            <th>Actions</th> <!-- NEW COLUMN -->
+                            <th>Bot-Managed</th>
+                            <th>Actions</th>
                         </tr>
                     </thead>
                     <tbody id="simulated-positions-body">
-                        <tr><td colspan="7" style="text-align: center; color: #666;">No simulated positions</td></tr>
+                        <tr><td colspan="9" style="text-align: center; color: #666;">No simulated positions</td></tr>
                     </tbody>
                 </table>
             </div>
@@ -1830,16 +1832,23 @@
                                 ${pos.pnl_percent >= 0 ? '+' : ''}${pos.pnl_percent.toFixed(2)}%
                             </td>
                             <td>
-                                <input type="checkbox" 
-                                    class="long-term-checkbox" 
+                                <input type="checkbox"
+                                    class="long-term-checkbox"
                                     ${pos.is_long_term ? 'checked' : ''}
-                                    onchange="toggleLongTerm('${pos.symbol}')"
+                                    onchange="toggleLongTerm('${escapeHtml(pos.symbol)}')"
                                     title="Mark as long-term hold">
                             </td>
                             <td>
-                                <button class="close-button" 
+                                <input type="checkbox"
+                                    class="managed-by-bot-checkbox"
+                                    ${pos.managed_by_bot ? 'checked' : ''}
+                                    onchange="toggleManagedByBot('${escapeHtml(pos.symbol)}', this.checked)"
+                                    title="Bot manages this position (stops, trail, breakeven, exits)">
+                            </td>
+                            <td>
+                                <button class="close-button"
                                     ${pos.is_long_term ? 'disabled' : ''}
-                                    onclick="requestClosePosition('${pos.symbol}', 'real')">
+                                    onclick="requestClosePosition('${escapeHtml(pos.symbol)}', 'real')">
                                     Close
                                 </button>
                             </td>
@@ -1847,16 +1856,16 @@
                     `).join('');
                 }
             }
-            
+
             // Update simulated positions
             if (data.simulated_positions) {
                 const tbody = document.getElementById('simulated-positions-body');
                 if (data.simulated_positions.length === 0) {
-                    tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; color: #666;">No simulated positions</td></tr>';
+                    tbody.innerHTML = '<tr><td colspan="9" style="text-align: center; color: #666;">No simulated positions</td></tr>';
                 } else {
                     tbody.innerHTML = data.simulated_positions.map(pos => `
                         <tr>
-                            <td style="font-weight: bold;">${pos.symbol}</td>
+                            <td style="font-weight: bold;">${escapeHtml(pos.symbol)}</td>
                             <td>${pos.quantity}</td>
                             <td>$${pos.entry_price.toFixed(2)}</td>
                             <td>$${pos.current_price.toFixed(2)}</td>
@@ -1864,6 +1873,19 @@
                             <td>$${pos.take_profit ? pos.take_profit.toFixed(2) : 'N/A'}</td>
                             <td class="${pos.unrealized_pnl >= 0 ? 'positive' : 'negative'}">
                                 $${pos.unrealized_pnl.toFixed(2)}
+                            </td>
+                            <td>
+                                <input type="checkbox"
+                                    class="managed-by-bot-checkbox"
+                                    ${pos.managed_by_bot ? 'checked' : ''}
+                                    onchange="toggleManagedByBot('${escapeHtml(pos.symbol)}', this.checked)"
+                                    title="Bot manages this position (stops, trail, breakeven, exits)">
+                            </td>
+                            <td>
+                                <button class="close-button"
+                                    onclick="requestClosePosition('${escapeHtml(pos.symbol)}', 'simulated')">
+                                    Close
+                                </button>
                             </td>
                         </tr>
                     `).join('');
@@ -1987,6 +2009,43 @@
             }
         }
         
+        // v-managed-by-bot-2026-04-28: minimal HTML escaper for symbol strings
+        // injected into onclick / onchange handlers. Symbols are A-Z + digits
+        // in practice but defense-in-depth prevents future field mistakes.
+        function escapeHtml(s) {
+            return String(s).replace(/[&<>"']/g, c =>
+                ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+        }
+
+        async function toggleManagedByBot(symbol, enabled) {
+            try {
+                const response = await authFetch('/api/toggle-managed-by-bot', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ symbol: symbol, enabled: enabled })
+                });
+                if (response.ok) {
+                    const data = await response.json();
+                    const msg = data.managed_by_bot
+                        ? `${symbol} — bot management ON (stops, trail, breakeven, exits active)`
+                        : `${symbol} — bot management OFF (manual control only)`;
+                    const notification = document.createElement('div');
+                    notification.style.cssText = `position:fixed;top:20px;right:20px;
+                        background:${data.managed_by_bot ? '#22c55e' : '#f59e0b'};
+                        color:white;padding:15px 20px;border-radius:5px;font-weight:bold;
+                        z-index:10000;animation:slideIn 0.3s ease-out;`;
+                    notification.textContent = msg;
+                    document.body.appendChild(notification);
+                    setTimeout(() => notification.remove(), 3000);
+                } else {
+                    const error = await response.json();
+                    alert(`Failed to toggle bot management: ${error.message}`);
+                }
+            } catch (e) {
+                console.error('Error toggling managed-by-bot:', e);
+            }
+        }
+
         async function toggleLongTerm(symbol) {
             try {
                 const response = await authFetch('/api/toggle-long-term', {

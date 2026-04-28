@@ -79,6 +79,12 @@ class Position:
     # stop_loss is lifted to entry so the trade can no longer become a loser.
     peak_favorable_r: float = 0.0
     breakeven_lifted: bool = False
+    # v-managed-by-bot-2026-04-28: per-position auto-management flag.
+    # True  = bot owns this trade — applies stops, trail, breakeven, exits.
+    # False = hands-off (Schwab-synced / human-opened / user toggled OFF).
+    # In LIVE mode this is the primary gate; in SIM mode it's also honored
+    # so users can pause management on a single position from the dashboard.
+    managed_by_bot: bool = False
 
 @dataclass
 class MarketData:
