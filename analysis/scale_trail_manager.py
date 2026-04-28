@@ -117,6 +117,53 @@ class ScaleTrailManager:
             return current_price <= position.trailing_stop
         return current_price >= position.trailing_stop  # short
 
+    def update_peak_and_breakeven(
+        self,
+        position: Position,
+        current_price: float,
+        activation_r: float,
+    ) -> Optional[float]:
+        """v-breakeven-stop-2026-04-28: track high-water mark in R-multiples
+        and lift stop to entry once peak crosses activation_r.
+
+        Returns the new stop level (= entry_price) on the FIRST tick the
+        threshold is crossed, else None. Subsequent calls return None
+        because position.breakeven_lifted is set on first lift.
+
+        The fix for the "winner-turned-loser" pattern: PLTR long entered
+        $141.69, went briefly to +0.3% favor, then reversed to -0.94%. With
+        breakeven stop armed at +0.5R, that trade exits at $141.69 (flat)
+        instead of $140.34 (-$125). Across many trades this compounds.
+        """
+        if activation_r <= 0:
+            return None  # disabled
+
+        original_stop = position.original_stop or position.stop_loss
+        stop_distance = abs(position.entry_price - original_stop)
+        if stop_distance <= 0:
+            return None
+
+        # Compute current R (positive = in favor)
+        if position.side == "long":
+            current_r = (current_price - position.entry_price) / stop_distance
+        else:
+            current_r = (position.entry_price - current_price) / stop_distance
+
+        # Track peak for diagnostics & for any future logic that needs it
+        if current_r > position.peak_favorable_r:
+            position.peak_favorable_r = current_r
+
+        if position.breakeven_lifted:
+            return None  # already moved once
+
+        if position.peak_favorable_r < activation_r:
+            return None  # not far enough in favor yet
+
+        # Cross the threshold — lift stop to entry. Use exactly entry; no
+        # buffer. A buffer would create slippage that could exit a trade
+        # that hasn't actually reversed.
+        return position.entry_price
+
     def check_proactive_exit(
         self,
         position: Position,

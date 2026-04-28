@@ -345,6 +345,8 @@ class TradingEngineWithCommentary:
                             original_stop=pd.get('original_stop'),
                             trailing_stop=pd.get('trailing_stop'),
                             mode=pd.get('mode', 'simulation'),
+                            peak_favorable_r=pd.get('peak_favorable_r', 0.0),
+                            breakeven_lifted=pd.get('breakeven_lifted', False),
                         )
                         self.simulated_positions[symbol] = pos
                     if sim_data:
@@ -1829,6 +1831,8 @@ class TradingEngineWithCommentary:
                 'original_stop': getattr(pos, 'original_stop', None),
                 'trailing_stop': getattr(pos, 'trailing_stop', None),
                 'mode': getattr(pos, 'mode', 'simulation'),
+                'peak_favorable_r': getattr(pos, 'peak_favorable_r', 0.0),
+                'breakeven_lifted': getattr(pos, 'breakeven_lifted', False),
             }
 
         state = {
@@ -3580,6 +3584,37 @@ class TradingEngineWithCommentary:
                     # SCALE-OUT AT 1R + ATR TRAILING STOP
                     # ================================================================
                     if not getattr(position, 'is_long_term', False) and not self.auto_close_disabled:
+                        # --- Breakeven Stop Lift (fires before everything else) ---
+                        # v-breakeven-stop-2026-04-28: once the trade has moved
+                        # +BREAKEVEN_ACTIVATION_R (default 0.5R) in our favor,
+                        # ratchet stop_loss to entry. Prevents the "winner
+                        # turned loser" pattern (PLTR/TSLA today: both went
+                        # positive then reversed to full -0.5R/-1.5R losses).
+                        be_new_stop = self.scale_trail.update_peak_and_breakeven(
+                            position, current_price, Config().BREAKEVEN_ACTIVATION_R,
+                        )
+                        if be_new_stop is not None:
+                            old_stop = position.stop_loss
+                            position.stop_loss = be_new_stop
+                            position.breakeven_lifted = True
+                            self._audit("breakeven_stop", symbol, "lifted",
+                                        "peak_above_activation",
+                                        peak_r=round(position.peak_favorable_r, 3),
+                                        old_stop=round(old_stop, 2),
+                                        new_stop=round(be_new_stop, 2))
+                            self.commentary.add_commentary(TradingCommentary(
+                                timestamp=datetime.now(),
+                                type=CommentaryType.DECISION,
+                                symbol=symbol,
+                                title=f"🔒 Breakeven Stop Locked",
+                                message=(
+                                    f"Trade reached {position.peak_favorable_r:+.2f}R favor. "
+                                    f"Stop lifted from ${old_stop:.2f} to ${be_new_stop:.2f} "
+                                    f"(entry). Cannot become a loser from here."
+                                ),
+                                importance=8,
+                            ))
+
                         # --- 1R Partial Exit ---
                         partial = self.scale_trail.check_partial_exit(position, current_price)
                         if partial is not None and partial.exit_qty > 0:

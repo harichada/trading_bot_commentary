@@ -74,6 +74,11 @@ class Position:
     # "simulation" so an unlabeled position never silently looks live.
     # Live-mode Position() sites must pass mode="live" explicitly.
     mode: str = "simulation"
+    # v-breakeven-stop-2026-04-28: high-water mark for favorable R-multiple.
+    # Used by breakeven-stop ratchet: once peak crosses BREAKEVEN_ACTIVATION_R,
+    # stop_loss is lifted to entry so the trade can no longer become a loser.
+    peak_favorable_r: float = 0.0
+    breakeven_lifted: bool = False
 
 @dataclass
 class MarketData:

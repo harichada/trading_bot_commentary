@@ -364,6 +364,25 @@ class Config:
         return int(self.manager.get('trading.warmup_minutes_before_open', 30))
 
     @property
+    def BREAKEVEN_ACTIVATION_R(self) -> float:
+        """v-breakeven-stop-2026-04-28: how far in favor (in R-multiples,
+        where R = entry-stop distance) a trade must move before its stop
+        is lifted to entry. Default 0.5 = once trade is halfway to take-
+        profit, lock in 'cannot lose' downside. Set 0 to disable.
+
+        Live evidence 2026-04-28: PLTR long and TSLA long both went
+        positive shortly after entry, then reversed to -0.94% / -0.80%
+        before proactive_macd exit fired. Both could have exited flat
+        if a breakeven stop had been armed at +0.5R. Net would have been
+        $0 instead of -$231 across the two trades.
+
+        Counter-risk: in chop, trades that briefly hit +0.5R then drift
+        back to entry get stopped flat instead of getting another chance
+        to run. Net positive because preventing winner→loser flips
+        compounds, while flat exits cost only commissions."""
+        return float(self.manager.get('trading.breakeven_activation_r', 0.5))
+
+    @property
     def ENABLE_PROACTIVE_EXIT(self) -> bool:
         """v-proactive-exit-2026-04-27: when at -0.5R or worse AND a primary
         indicator (MACD / RSI / ADX) has flipped against the position, exit
