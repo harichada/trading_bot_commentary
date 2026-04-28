@@ -2057,6 +2057,113 @@ async def emergency_close_all(request: dict):
         _close_all_in_flight = False
 
 
+@app.get("/logos/{symbol}")
+async def get_logo(symbol: str):
+    """v-logo-cache-2026-04-28: serve cached Alpaca company logo for a symbol.
+
+    Mounted under /logos/* (not /api/*) so it bypasses the Bearer-token
+    middleware — browsers can't easily attach Authorization headers to
+    <img src=...> requests.
+
+    Caches PNGs to static/logos/<SYMBOL>.png with 30-day TTL. On cache
+    miss, fetches from Alpaca's v1beta1/logos endpoint with the
+    placeholder=true query so missing logos return a transparent 1x1
+    PNG instead of 404 — keeps frontend rendering simple.
+
+    Symbol validation: A-Z + digits only, max 8 chars. Prevents path-
+    traversal style attacks via symbol param (e.g. ../../etc/passwd).
+    """
+    import re
+    import time
+    import aiohttp
+    from pathlib import Path
+    from fastapi.responses import FileResponse, Response
+
+    symbol = symbol.upper()
+    if not re.fullmatch(r"[A-Z0-9]{1,8}", symbol):
+        return Response(status_code=404)
+
+    cache_dir = Path("static/logos")
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cache_path = cache_dir / f"{symbol}.png"
+
+    # 30-day TTL — logos virtually never change
+    needs_refresh = (
+        not cache_path.exists()
+        or (time.time() - cache_path.stat().st_mtime) > 30 * 86400
+    )
+
+    if needs_refresh:
+        # Try sources in order: FMP (free, no auth), Alpaca (paid).
+        # Yahoo deprecated logo_url around 2023 so it's no longer included.
+        fetched = False
+
+        # 1) Financial Modeling Prep — free, no auth, ~100x100 PNGs.
+        # Tested 2026-04-28: AAPL/TSLA/NVDA/PLTR all return clean PNGs.
+        try:
+            async with aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=5)
+            ) as sess:
+                async with sess.get(
+                    f"https://financialmodelingprep.com/image-stock/{symbol}.png"
+                ) as r:
+                    if r.status == 200:
+                        content = await r.read()
+                        ctype = r.headers.get("content-type", "")
+                        if ctype.startswith("image/") and len(content) > 100:
+                            cache_path.write_bytes(content)
+                            fetched = True
+        except Exception as exc:
+            logger.debug(f"fmp logo fetch failed for {symbol}: {exc}")
+
+        # 2) Alpaca — works if/when account has the logos subscription.
+        # Currently 403 on free plan; kept so flipping the sub upgrades us
+        # automatically. Drops in front of FMP if Alpaca returns better
+        # quality (higher res) — call it second for now to favour FMP.
+        if not fetched:
+            api_key = os.getenv("ALPACA_API_KEY", "")
+            api_sec = os.getenv("ALPACA_SECRET_KEY", "")
+            if api_key and api_sec:
+                try:
+                    async with aiohttp.ClientSession(
+                        timeout=aiohttp.ClientTimeout(total=5)
+                    ) as sess:
+                        async with sess.get(
+                            f"https://data.alpaca.markets/v1beta1/logos/{symbol}",
+                            headers={
+                                "APCA-API-KEY-ID": api_key,
+                                "APCA-API-SECRET-KEY": api_sec,
+                                "accept": "image/*",
+                            },
+                            params={"placeholder": "true"},
+                        ) as r:
+                            if r.status == 200:
+                                content = await r.read()
+                                ctype = r.headers.get("content-type", "")
+                                if ctype.startswith("image/") and len(content) > 100:
+                                    cache_path.write_bytes(content)
+                                    fetched = True
+                except Exception as exc:
+                    logger.debug(f"alpaca logo fetch failed for {symbol}: {exc}")
+
+        # 3) Sentinel: 0-byte file = "tried, failed". 30-day TTL prevents
+        # hammering external APIs with retries. Frontend's onerror handler
+        # hides the broken <img>.
+        if not fetched:
+            try:
+                cache_path.write_bytes(b"")
+            except Exception:
+                pass
+
+    if cache_path.exists() and cache_path.stat().st_size > 0:
+        return FileResponse(
+            cache_path,
+            media_type="image/png",
+            headers={"Cache-Control": "public, max-age=86400"},
+        )
+    return Response(status_code=404)
+
+
 @app.get("/api/news-vetoes/report")
 async def news_vetoes_report():
     """v-news-veto-tracker-2026-04-28: scorecard for the news-veto gate.

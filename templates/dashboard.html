@@ -422,6 +422,26 @@
             margin-right: 8px;
         }
 
+        /* v-logo-cache-2026-04-28: company-logo styling. onerror hides
+           the <img> on 404 so missing logos collapse cleanly. */
+        .ticker-logo {
+            width: 16px;
+            height: 16px;
+            border-radius: 3px;
+            margin-right: 6px;
+            vertical-align: middle;
+            background: #1a1a1a;
+        }
+        .symbol-logo {
+            width: 22px;
+            height: 22px;
+            border-radius: 4px;
+            margin-right: 8px;
+            vertical-align: middle;
+            background: #1a1a1a;
+            object-fit: contain;
+        }
+
         .ticker-price {
             color: #fff;
             margin-right: 8px;
@@ -1817,7 +1837,11 @@
                 } else {
                     tbody.innerHTML = data.real_positions.map(pos => `
                         <tr>
-                            <td style="font-weight: bold;">${pos.symbol}</td>
+                            <td style="font-weight: bold;">
+                                <img class="symbol-logo" src="/logos/${escapeHtml(pos.symbol)}"
+                                     alt="" onerror="this.style.display='none'">
+                                ${escapeHtml(pos.symbol)}
+                            </td>
                             <td>${pos.quantity > 0 ? pos.quantity : Math.abs(pos.quantity)} ${pos.quantity < 0 ? '(short)' : ''}</td>
                             <td>$${pos.entry_price.toFixed(2)}</td>
                             <td>$${pos.current_price.toFixed(2)}</td>
@@ -1865,7 +1889,11 @@
                 } else {
                     tbody.innerHTML = data.simulated_positions.map(pos => `
                         <tr>
-                            <td style="font-weight: bold;">${escapeHtml(pos.symbol)}</td>
+                            <td style="font-weight: bold;">
+                                <img class="symbol-logo" src="/logos/${escapeHtml(pos.symbol)}"
+                                     alt="" onerror="this.style.display='none'">
+                                ${escapeHtml(pos.symbol)}
+                            </td>
                             <td>${pos.quantity}</td>
                             <td>$${pos.entry_price.toFixed(2)}</td>
                             <td>$${pos.current_price.toFixed(2)}</td>
@@ -1923,7 +1951,11 @@
                 } else {
                     tbody.innerHTML = data.simulated_positions.map(pos => `
                         <tr>
-                            <td style="font-weight: bold;">${pos.symbol}</td>
+                            <td style="font-weight: bold;">
+                                <img class="symbol-logo" src="/logos/${escapeHtml(pos.symbol)}"
+                                     alt="" onerror="this.style.display='none'">
+                                ${escapeHtml(pos.symbol)}
+                            </td>
                             <td>${pos.quantity}</td>
                             <td>$${pos.entry_price.toFixed(2)}</td>
                             <td>$${pos.current_price.toFixed(2)}</td>
@@ -2437,7 +2469,9 @@
                 
                 tickerHTML += `
                     <div class="ticker-item">
-                        <span class="ticker-symbol">${stock.symbol}</span>
+                        <img class="ticker-logo" src="/logos/${escapeHtml(stock.symbol)}"
+                             alt="" onerror="this.style.display='none'">
+                        <span class="ticker-symbol">${escapeHtml(stock.symbol)}</span>
                         <span class="ticker-price">$${stock.last.toFixed(2)}</span>
                         <span class="ticker-change ${changeClass}">${changeSymbol}${stock.change.toFixed(2)}%</span>
                         <span class="ticker-volatility">⚡${stock.volatility.toFixed(1)}%</span>
