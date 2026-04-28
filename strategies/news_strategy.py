@@ -326,6 +326,14 @@ class FreeNewsSignalStrategy(TradingStrategyWithCommentary):
         self.sentiment_analyzer = SentimentIntensityAnalyzer()  # VADER only
         self.last_signal_time = {}
         self.profiles = {}
+        # v-news-verify-2026-04-28: fresh-news re-verification gate
+        from analysis.news_verifier import NewsVerifier
+        self.verifier = NewsVerifier(
+            sentiment_analyzer=self.sentiment_analyzer,
+            freshness_minutes=30,
+            min_fresh_articles=2,
+            min_match_strength=0.10,
+        )
 
     async def generate_signal_with_commentary(self, market_data) -> Optional[TradingSignal]:
         """Generate signal from free news sources"""
@@ -342,7 +350,11 @@ class FreeNewsSignalStrategy(TradingStrategyWithCommentary):
         # Fetch news
         news_items = await self.aggregator.fetch_news(symbol, 24)
 
-        if len(news_items) < 3:  # Need at least 3 articles
+        # v-news-verify-2026-04-28: minimum 5 articles (was 3) — primary gate
+        # for upstream signal quality. Fresh-news verification later catches
+        # the "stale news" failure mode (PLTR/TSLA 2026-04-28 entries faded
+        # within 35 min because cached news was already priced in).
+        if len(news_items) < 5:
             self._log_decision(market_data, "skip", "insufficient_news",
                                articles=len(news_items))
             return None
@@ -368,8 +380,11 @@ class FreeNewsSignalStrategy(TradingStrategyWithCommentary):
         # Calculate average sentiment
         avg_sentiment = sum(sentiments) / len(sentiments)
 
-        # Generate signal if strong sentiment
-        if abs(avg_sentiment) > 0.3 or high_impact_news:
+        # v-news-verify-2026-04-28: tightened sentiment threshold 0.3 → 0.4.
+        # Compound 0.3 captured a lot of marginal sentiment that didn't move
+        # price (37 trades over 5 days at PF 0.58). 0.4 cuts volume ~40% and
+        # leaves only meaningfully bullish/bearish reads.
+        if abs(avg_sentiment) > 0.4 or high_impact_news:
             signal_type = SignalType.BUY if avg_sentiment > 0 else SignalType.SELL
             confidence = min(abs(avg_sentiment) + 0.3, 0.8)
 
@@ -441,6 +456,51 @@ class FreeNewsSignalStrategy(TradingStrategyWithCommentary):
                 stop_loss = market_data.close + stop_distance
                 take_profit = market_data.close - (rr_ratio * stop_distance)
 
+            # v-news-verify-2026-04-28: re-verify with fresh news from
+            # Alpaca (or yfinance fallback) before committing to the trade.
+            # Cached RSS news is often hours old and already priced in;
+            # require ≥2 fresh articles in last 30 min with sentiment in
+            # the same direction. Skip cleanly if not verified.
+            try:
+                expected_dir = 1 if signal_type == SignalType.BUY else -1
+                v = await self.verifier.verify(symbol, expected_dir)
+            except Exception as exc:
+                # Verifier failure is non-fatal — log and treat as a skip
+                # rather than blindly trusting cached sentiment.
+                logger.debug(f"news verifier exception for {symbol}: {exc}")
+                self._log_decision(
+                    market_data, "skip", "verifier_error",
+                    err=str(exc)[:80], sentiment=round(avg_sentiment, 3),
+                )
+                return None
+
+            if not v.is_verified:
+                self._log_decision(
+                    market_data, "skip", "fresh_news_unverified",
+                    cached_sentiment=round(avg_sentiment, 3),
+                    fresh_count=v.fresh_count,
+                    fresh_avg=round(v.avg_fresh_sentiment, 3),
+                    source=v.source,
+                    reason=v.reason,
+                    latest_age_min=(round(v.latest_age_min, 1)
+                                    if v.latest_age_min is not None else None),
+                )
+                self.commentary.add_commentary(TradingCommentary(
+                    timestamp=datetime.now(),
+                    type=CommentaryType.RISK_ASSESSMENT,
+                    symbol=symbol,
+                    title=f"⛔ News Signal Vetoed — Fresh Check Failed",
+                    message=(
+                        f"Cached sentiment was {avg_sentiment:+.2f} ({signal_type.name}), "
+                        f"but {v.source} verification "
+                        f"({v.fresh_count} fresh articles, avg {v.avg_fresh_sentiment:+.2f}) "
+                        f"failed: {v.reason}. News is likely stale or already priced in."
+                    ),
+                    importance=7,
+                ))
+                return None
+
+            # Verified — proceed
             self.last_signal_time[symbol] = datetime.now()
 
             self._log_decision(
@@ -449,6 +509,10 @@ class FreeNewsSignalStrategy(TradingStrategyWithCommentary):
                 "high_impact_news" if high_impact_news else "strong_sentiment",
                 sentiment=round(avg_sentiment, 3),
                 articles=len(news_items),
+                fresh_count=v.fresh_count,
+                fresh_avg=round(v.avg_fresh_sentiment, 3),
+                fresh_source=v.source,
+                latest_age_min=round(v.latest_age_min, 1) if v.latest_age_min is not None else None,
                 stop=round(stop_loss, 2),
                 target=round(take_profit, 2),
                 atr=round(atr, 3), stop_dist=round(stop_distance, 2),
