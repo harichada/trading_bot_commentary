@@ -423,15 +423,21 @@ class FreeNewsSignalStrategy(TradingStrategyWithCommentary):
                     ))
                     return None
 
-            # Commentary
+            # v-news-verify-2026-04-28: announce that we DETECTED a candidate
+            # signal but haven't fired yet — verification follows. Keeps the
+            # commentary timeline honest about the two-stage process.
             self.commentary.add_commentary(TradingCommentary(
                 timestamp=datetime.now(),
                 type=CommentaryType.OPPORTUNITY,
                 symbol=symbol,
-                title=f"📰 News Signal: {signal_type.name} {symbol}",
-                message=f"News sentiment: {'Positive' if avg_sentiment > 0 else 'Negative'} ({avg_sentiment:.2f})\n\n"
-                       f"Headlines:\n" +
-                       "\n".join([f"• {item.headline}" for item in news_items[:3]]),
+                title=f"📰 News Signal Detected: {signal_type.name} {symbol} — Verifying",
+                message=(
+                    f"Cached sentiment: {'Positive' if avg_sentiment > 0 else 'Negative'} ({avg_sentiment:+.2f})\n"
+                    f"Articles: {len(news_items)}\n\n"
+                    "Headlines:\n" +
+                    "\n".join([f"• {item.headline}" for item in news_items[:3]]) +
+                    "\n\nRe-verifying with fresh news from Alpaca/Yahoo before entering..."
+                ),
                 data={
                     'sentiment': avg_sentiment,
                     'news_count': len(news_items),
@@ -439,7 +445,7 @@ class FreeNewsSignalStrategy(TradingStrategyWithCommentary):
                     'sources': list(set(item.source for item in news_items[:5]))
                 },
                 confidence=confidence,
-                importance=8 if high_impact_news else 7
+                importance=7,
             ))
 
             # ATR-scaled stops
@@ -481,7 +487,7 @@ class FreeNewsSignalStrategy(TradingStrategyWithCommentary):
                     fresh_count=v.fresh_count,
                     fresh_avg=round(v.avg_fresh_sentiment, 3),
                     source=v.source,
-                    reason=v.reason,
+                    verifier_reason=v.reason,  # renamed from 'reason' to avoid clobbering positional arg
                     latest_age_min=(round(v.latest_age_min, 1)
                                     if v.latest_age_min is not None else None),
                 )
@@ -500,7 +506,33 @@ class FreeNewsSignalStrategy(TradingStrategyWithCommentary):
                 ))
                 return None
 
-            # Verified — proceed
+            # Verified — announce the confirmation in commentary so the user
+            # can see WHY this signal made it past the gate (vs a vetoed one).
+            self.commentary.add_commentary(TradingCommentary(
+                timestamp=datetime.now(),
+                type=CommentaryType.DECISION,
+                symbol=symbol,
+                title=f"✅ Fresh News Confirmed — {signal_type.name} {symbol}",
+                message=(
+                    f"Verification passed via {v.source}.\n"
+                    f"  Fresh articles (last 30 min): {v.fresh_count}\n"
+                    f"  Avg fresh sentiment:          {v.avg_fresh_sentiment:+.3f} "
+                    f"({'bullish' if v.avg_fresh_sentiment > 0 else 'bearish'})\n"
+                    f"  Most recent article:          "
+                    f"{v.latest_age_min:.1f} min ago\n"
+                    f"  Cached sentiment:             {avg_sentiment:+.3f}\n\n"
+                    f"News thesis is fresh and matches signal direction. Proceeding to entry."
+                ),
+                data={
+                    'verifier_source': v.source,
+                    'fresh_count': v.fresh_count,
+                    'fresh_avg_sentiment': v.avg_fresh_sentiment,
+                    'latest_age_min': v.latest_age_min,
+                    'cached_sentiment': avg_sentiment,
+                },
+                confidence=confidence,
+                importance=8,
+            ))
             self.last_signal_time[symbol] = datetime.now()
 
             self._log_decision(
