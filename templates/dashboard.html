@@ -1676,41 +1676,94 @@
             ctx.fill();
         }
 
+        // v-ws-keepalive-2026-04-29: WebSocket heartbeat + smarter reconnect.
+        // Previously the only reconnect path was onclose, but corporate
+        // proxies / routers / NAT timeouts can silently drop idle WS
+        // connections without firing onclose — browser sees "open" but no
+        // messages arrive. This adds a watchdog that forces a reconnect
+        // when no message has been received for >45s.
+        let wsLastMessageAt = 0;
+        let wsHeartbeatTimer = null;
+        let wsReconnectAttempt = 0;
+
         function connectWebSocket() {
             const wsToken = window.TRADING_API_KEY ? `?token=${window.TRADING_API_KEY}` : '';
-            ws = new WebSocket(`ws://${window.location.host}/ws${wsToken}`);
-            
+            // Use wss:// when the page itself is served over https
+            const proto = (window.location.protocol === 'https:') ? 'wss:' : 'ws:';
+            ws = new WebSocket(`${proto}//${window.location.host}/ws${wsToken}`);
+
             ws.onopen = () => {
                 console.log('WebSocket connected');
+                wsLastMessageAt = Date.now();
+                wsReconnectAttempt = 0;
+                // Heartbeat watcher: every 20s, check liveness + send ping.
+                if (wsHeartbeatTimer) clearInterval(wsHeartbeatTimer);
+                wsHeartbeatTimer = setInterval(() => {
+                    const idleMs = Date.now() - wsLastMessageAt;
+                    if (idleMs > 45000) {
+                        console.warn(`WS stale (${(idleMs/1000)|0}s no msg) — reconnecting`);
+                        try { ws.close(); } catch (e) {}
+                        return;
+                    }
+                    // Application-level ping; server may ignore but it
+                    // keeps proxies / Cloudflare / load-balancers alive.
+                    if (ws.readyState === WebSocket.OPEN) {
+                        try { ws.send(JSON.stringify({type: 'ping', ts: Date.now()})); } catch (e) {}
+                    }
+                }, 20000);
             };
-            
-            ws.onmessage = (event) => {
-            const data = JSON.parse(event.data);
 
-            if (data.type === 'commentary') {
-                addCommentary(data.data);
-            } else if (data.type === 'dashboard_update') {
-                updateDashboard(data.data);
-            } else if (data.type === 'trade_update') {
-                // Update trades table immediately when a trade is closed
-                updateTradesTable(data.data.all_trades);
-            } else if (data.type === 'close_confirmation_request') {
-                showCloseConfirmation(data.data);
-            } else if (data.type === 'sentiment_update') {
-                // Update sentiment widget from WebSocket
-                updateSentimentWidget(data.data);
-            }
-        };
-            
+            ws.onmessage = (event) => {
+                wsLastMessageAt = Date.now();
+                let data;
+                try { data = JSON.parse(event.data); }
+                catch (e) { console.warn('WS bad JSON:', e); return; }
+                // Ignore the server's pong reply if any — it just refreshes
+                // wsLastMessageAt above (already done).
+                if (data.type === 'pong') return;
+                if (data.type === 'commentary') {
+                    addCommentary(data.data);
+                } else if (data.type === 'dashboard_update') {
+                    updateDashboard(data.data);
+                } else if (data.type === 'trade_update') {
+                    updateTradesTable(data.data.all_trades);
+                } else if (data.type === 'close_confirmation_request') {
+                    showCloseConfirmation(data.data);
+                } else if (data.type === 'sentiment_update') {
+                    updateSentimentWidget(data.data);
+                }
+            };
+
             ws.onclose = () => {
                 console.log('WebSocket disconnected');
-                setTimeout(connectWebSocket, 5000);
+                if (wsHeartbeatTimer) {
+                    clearInterval(wsHeartbeatTimer);
+                    wsHeartbeatTimer = null;
+                }
+                // Exponential backoff with cap: 1s, 2s, 4s, 8s, 16s, 30s max.
+                wsReconnectAttempt++;
+                const delay = Math.min(1000 * Math.pow(2, wsReconnectAttempt - 1), 30000);
+                console.log(`WS reconnecting in ${delay/1000}s (attempt ${wsReconnectAttempt})`);
+                setTimeout(connectWebSocket, delay);
             };
-            
+
             ws.onerror = (error) => {
                 console.error('WebSocket error:', error);
+                // Force close so onclose runs the reconnect path.
+                try { ws.close(); } catch (e) {}
             };
         }
+
+        // Reconnect when tab regains focus (mobile browsers / phones often
+        // suspend WS in background and the heartbeat misses while paused).
+        window.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'visible' && ws &&
+                (ws.readyState === WebSocket.CLOSED ||
+                 ws.readyState === WebSocket.CLOSING)) {
+                console.log('Tab visible — forcing WS reconnect');
+                connectWebSocket();
+            }
+        });
         
         function addCommentary(commentary) {
             allCommentary.unshift(commentary);

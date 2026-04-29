@@ -1517,7 +1517,11 @@ async def websocket_endpoint(websocket: WebSocket):
                 # Get simulated positions
                 sim_positions_data = []
                 if trading_engine.mode == TradingMode.SIMULATION_WITH_COMMENTARY:
-                    for symbol, pos in trading_engine.simulated_positions.items():
+                    # v-ws-keepalive-2026-04-29: snapshot the dict so concurrent
+                    # opens/closes from the engine main loop don't raise
+                    # "dictionary changed size during iteration" mid-broadcast
+                    # (observed in trading_bot.log earlier).
+                    for symbol, pos in list(trading_engine.simulated_positions.items()):
                         if pos is not None:
                             # Update current price with latest market data
                             try:
