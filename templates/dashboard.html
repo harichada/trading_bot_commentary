@@ -1713,8 +1713,16 @@
             font-variant-numeric: tabular-nums;
             color: var(--fg);
         }
-        .perf-tile .value.up   { color: var(--success); }
-        .perf-tile .value.down { color: var(--destructive); }
+        .perf-tile .value.up,
+        .perf-tile .value.positive   { color: var(--success); }
+        .perf-tile .value.down,
+        .perf-tile .value.negative   { color: var(--destructive); }
+
+        /* KPI card values colored by sign.
+           v-ui-pnl-color-2026-04-29: when daily-pnl JS toggles
+           .positive/.negative, override the gradient for the strong red/green. */
+        .kpi-value.positive { color: var(--success) !important; -webkit-text-fill-color: var(--success); }
+        .kpi-value.negative { color: var(--destructive) !important; -webkit-text-fill-color: var(--destructive); }
         .perf-chart-wrap {
             position: relative;
             height: 220px;
@@ -1964,14 +1972,29 @@
                  itself is a placeholder card for now (needs per-bar
                  historical data API); donut is fully functional. -->
             <section class="row-chart-portfolio">
-                <div class="placeholder-card glass">
-                    <div class="placeholder-title">
-                        <span class="lucide-slot" data-icon="bar-chart-3" data-size="20"></span>
-                        <span>Per-Symbol Price Chart</span>
+                <div class="chart-card" id="price-chart-card">
+                    <div class="chart-card-head">
+                        <h3>
+                            <span class="lucide-slot" data-icon="bar-chart-3" data-size="16"></span>
+                            <span>Price Chart</span>
+                            <select id="price-chart-symbol" style="
+                                margin-left: 0.5rem;
+                                padding: 0.25rem 0.6rem;
+                                background: oklch(0.18 0.01 270);
+                                border: 1px solid var(--border);
+                                color: var(--fg);
+                                border-radius: calc(var(--radius) - 4px);
+                                font: 600 0.75rem var(--font-mono);
+                                cursor: pointer;
+                            "></select>
+                        </h3>
+                        <div style="display:flex;align-items:center;gap:0.75rem">
+                            <span id="price-chart-last" style="font:600 0.875rem var(--font-mono);color:var(--fg)">—</span>
+                            <span id="price-chart-change" style="font:500 0.75rem var(--font-sans)">—</span>
+                        </div>
                     </div>
-                    <div class="placeholder-sub">
-                        Intraday candle / area view with timeframe pills
-                        <span style="opacity:0.5"> — pending historical-data API</span>
+                    <div style="position:relative;height:280px;padding:0.75rem 1rem 0.5rem 1rem;">
+                        <canvas id="price-chart-canvas"></canvas>
                     </div>
                 </div>
                 <div class="chart-card" id="portfolio-allocation-card">
@@ -2021,11 +2044,11 @@
                             </div>
                             <div class="perf-tile">
                                 <div class="label">Best Trade</div>
-                                <div class="value up tabular-nums" id="perf-best-trade">—</div>
+                                <div class="value tabular-nums" id="perf-best-trade">—</div>
                             </div>
                             <div class="perf-tile">
                                 <div class="label">Worst Trade</div>
-                                <div class="value down tabular-nums" id="perf-worst-trade">—</div>
+                                <div class="value tabular-nums" id="perf-worst-trade">—</div>
                             </div>
                         </div>
                         <div class="perf-chart-wrap">
@@ -3001,9 +3024,34 @@
                 document.getElementById('buying-power').textContent = `$${data.account.buying_power.toLocaleString()}`;
                 document.getElementById('cash').textContent = `$${(data.account.cash || 0).toLocaleString()}`;
                 
+                // v-ui-pnl-color-2026-04-29: keep the new KPI class chain
+                // (kpi-value tabular-nums) and just toggle the sign class
+                // so the value still picks up the kpi-card sizing/spacing.
                 const dailyPnl = document.getElementById('daily-pnl');
-                dailyPnl.textContent = `$${data.account.daily_pnl.toFixed(2)}`;
-                dailyPnl.className = data.account.daily_pnl >= 0 ? 'stat-value positive' : 'stat-value negative';
+                const dpVal = data.account.daily_pnl || 0;
+                dailyPnl.textContent = `${dpVal < 0 ? '-' : ''}$${Math.abs(dpVal).toFixed(2)}`;
+                dailyPnl.className = 'kpi-value tabular-nums ' + (dpVal >= 0 ? 'positive' : 'negative');
+                // Swap card accent color: success when up, destructive when down.
+                const dpCard = dailyPnl.closest('.kpi-card');
+                if (dpCard) {
+                    dpCard.classList.remove('success-accent', 'warning-accent');
+                    dpCard.classList.add(dpVal >= 0 ? 'success-accent' : 'warning-accent');
+                }
+                // Show trend pill if we can derive a % from recent history.
+                const trend = document.getElementById('daily-pnl-trend');
+                if (trend) {
+                    if (typeof data.account.day_pnl_pct === 'number') {
+                        trend.style.display = 'inline-flex';
+                        trend.className = 'kpi-trend ' + (data.account.day_pnl_pct >= 0 ? 'up' : 'down');
+                        const arrow = data.account.day_pnl_pct >= 0 ? 'arrow-up-right' : 'arrow-down-right';
+                        const pctEl = document.getElementById('daily-pnl-trend-pct');
+                        if (pctEl) pctEl.textContent = `${data.account.day_pnl_pct >= 0 ? '+' : ''}${data.account.day_pnl_pct.toFixed(1)}%`;
+                        // Re-render the icon slot inside the trend
+                        trend.innerHTML = lucide(arrow, 12) + `<span id="daily-pnl-trend-pct">${data.account.day_pnl_pct >= 0 ? '+' : ''}${data.account.day_pnl_pct.toFixed(1)}%</span>`;
+                    } else {
+                        trend.style.display = 'none';
+                    }
+                }
                 
                 const marginWarning = document.getElementById('margin-warning');
                 marginWarning.style.display = data.account.margin_call ? 'block' : 'none';
@@ -3374,6 +3422,113 @@
             if (clk) clk.textContent = info.clock;
         }
 
+        // v-ui-price-chart-2026-04-29: per-symbol intraday price chart.
+        // Reads /api/historical-data/{symbol}?frequency=5&period=1.
+        // Symbol options come from the dynamic watchlist (whatever the
+        // ticker is currently showing) plus any open position symbols.
+        let _priceChart = null;
+        let _priceChartSymbol = null;
+        function _availableSymbols() {
+            const set = new Set();
+            // From the ticker tape (last screenerData)
+            const items = (_lastScreenerData || []);
+            items.forEach(s => set.add(s.symbol));
+            // From open positions (sim + live)
+            (window._lastPositionsCache || []).forEach(p => set.add(p.symbol));
+            return Array.from(set).filter(Boolean).sort();
+        }
+        function buildPriceChartSymbolOptions() {
+            const sel = document.getElementById('price-chart-symbol');
+            if (!sel) return;
+            const syms = _availableSymbols();
+            if (syms.length === 0) return;
+            const current = _priceChartSymbol || sel.value || syms[0];
+            sel.innerHTML = syms.map(s =>
+                `<option value="${escapeHtml(s)}"${s === current ? ' selected' : ''}>${escapeHtml(s)}</option>`
+            ).join('');
+            if (!_priceChartSymbol) {
+                _priceChartSymbol = current;
+                refreshPriceChart();
+            }
+        }
+        async function refreshPriceChart() {
+            const sym = _priceChartSymbol;
+            if (!sym) return;
+            try {
+                const tok = window.TRADING_API_KEY;
+                const r = await fetch(`/api/historical-data/${encodeURIComponent(sym)}?frequency=5&period=1`, {
+                    headers: tok ? {'Authorization': 'Bearer ' + tok} : {},
+                });
+                if (!r.ok) return;
+                const j = await r.json();
+                const bars = (j.bars || []).filter(b => b.close != null);
+                if (!bars.length) return;
+                const labels = bars.map(b => {
+                    const d = new Date(b.time);
+                    return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+                });
+                const closes = bars.map(b => b.close);
+                const last = closes[closes.length - 1];
+                const first = closes[0];
+                const changePct = first > 0 ? ((last - first) / first * 100) : 0;
+                const isUp = changePct >= 0;
+                const lineColor = isUp ? 'oklch(0.72 0.20 155)' : 'oklch(0.6 0.22 25)';
+                const fillColor = isUp ? 'oklch(0.72 0.20 155 / 0.15)' : 'oklch(0.6 0.22 25 / 0.15)';
+                const lastEl   = document.getElementById('price-chart-last');
+                const chgEl    = document.getElementById('price-chart-change');
+                if (lastEl) lastEl.textContent = `$${last.toFixed(2)}`;
+                if (chgEl) {
+                    chgEl.textContent = `${isUp ? '+' : ''}${changePct.toFixed(2)}%`;
+                    chgEl.className = isUp ? 'positive' : 'negative';
+                }
+                const config = {
+                    type: 'line',
+                    data: { labels, datasets: [{
+                        data: closes, borderColor: lineColor,
+                        backgroundColor: fillColor, fill: true,
+                        tension: 0.25, pointRadius: 0, pointHoverRadius: 4,
+                        borderWidth: 2,
+                    }]},
+                    options: {
+                        maintainAspectRatio: false, responsive: true,
+                        animation: { duration: 300 },
+                        plugins: {
+                            legend: { display: false },
+                            tooltip: {
+                                backgroundColor: 'oklch(0.12 0.015 270 / 0.95)',
+                                titleColor: 'oklch(0.98 0 0)', bodyColor: 'oklch(0.98 0 0)',
+                                borderColor: 'oklch(0.3 0.02 270)', borderWidth: 1,
+                                displayColors: false,
+                                callbacks: { label: c => `$${c.parsed.y.toFixed(2)}` },
+                            },
+                        },
+                        scales: {
+                            x: { grid: { color: 'oklch(0.22 0.02 270 / 0.2)' },
+                                 ticks: { color: 'oklch(0.6 0 0)', font: { size: 10 }, maxTicksLimit: 8 } },
+                            y: { grid: { color: 'oklch(0.22 0.02 270 / 0.2)' },
+                                 ticks: { color: 'oklch(0.6 0 0)', font: { size: 10 },
+                                          callback: v => '$' + v.toFixed(2) } },
+                        },
+                    },
+                };
+                const ctx = document.getElementById('price-chart-canvas');
+                if (!ctx) return;
+                if (_priceChart) {
+                    _priceChart.data = config.data;
+                    _priceChart.options.scales = config.options.scales;
+                    _priceChart.data.datasets[0].borderColor = lineColor;
+                    _priceChart.data.datasets[0].backgroundColor = fillColor;
+                    _priceChart.update('none');
+                } else {
+                    _priceChart = new Chart(ctx, config);
+                }
+            } catch (e) {
+                console.debug('price chart refresh skipped', e);
+            }
+        }
+        // Track the last screenerData so the symbol-picker has options.
+        let _lastScreenerData = [];
+
         // v-ui-charts-2026-04-29: portfolio donut chart driven by
         // /api/positions/db. Hover/click activates a slice and prints
         // symbol + % in the center. Legend below shows value + % per row.
@@ -3509,8 +3664,16 @@
                 const cumEl = document.getElementById('perf-cum-pnl');
                 cumEl.textContent = fmtCurrency(cumPnl);
                 cumEl.className = 'value tabular-nums ' + (cumPnl >= 0 ? 'up' : 'down');
-                document.getElementById('perf-best-trade').textContent   = fmtCurrency(best.pnl);
-                document.getElementById('perf-worst-trade').textContent  = fmtCurrency(worst.pnl);
+                // v-ui-pnl-color-2026-04-29: best/worst tiles colored by their actual sign.
+                const bestEl  = document.getElementById('perf-best-trade');
+                const worstEl = document.getElementById('perf-worst-trade');
+                bestEl.textContent  = fmtCurrency(best.pnl);
+                bestEl.className    = 'value tabular-nums ' + (best.pnl >= 0 ? 'positive' : 'negative');
+                worstEl.textContent = fmtCurrency(worst.pnl);
+                worstEl.className   = 'value tabular-nums ' + (worst.pnl >= 0 ? 'positive' : 'negative');
+                // Win-rate also color-tinted (>=50% positive, else negative)
+                const winRateEl = document.getElementById('perf-win-rate');
+                winRateEl.className = 'value tabular-nums ' + (winRate >= 50 ? 'positive' : 'negative');
 
                 _renderPerformanceChart(points);
             } catch (e) { console.debug('performance refresh skipped', e); }
@@ -3633,6 +3796,16 @@
                 refreshPerformanceMetrics();
                 setInterval(refreshPortfolioDonut, 30000);
                 setInterval(refreshPerformanceMetrics, 60000);
+
+                // v-ui-price-chart-2026-04-29: symbol picker change handler
+                const sel = document.getElementById('price-chart-symbol');
+                if (sel) {
+                    sel.addEventListener('change', () => {
+                        _priceChartSymbol = sel.value;
+                        refreshPriceChart();
+                    });
+                }
+                setInterval(refreshPriceChart, 60000);
             };
             _initCharts();
         })();
@@ -4044,6 +4217,9 @@
             if (!screenerData || screenerData.length === 0) return;
             // v-ui-heatmap-2026-04-29: same array drives both ticker + heatmap.
             try { renderWatchlistHeatmap(screenerData); } catch (e) { console.debug('heatmap render skipped', e); }
+            // v-ui-price-chart-2026-04-29: keep symbol picker options up to date.
+            _lastScreenerData = screenerData;
+            try { buildPriceChartSymbolOptions(); } catch (e) { console.debug('price chart options skipped', e); }
             
             const tickerContent = document.getElementById('ticker-content');
             

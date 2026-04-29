@@ -2061,6 +2061,64 @@ async def emergency_close_all(request: dict):
         _close_all_in_flight = False
 
 
+@app.get("/api/historical-data/{symbol}")
+async def get_historical_data(symbol: str, frequency: int = 5, period: int = 1):
+    """v-ui-price-chart-2026-04-29: minimal OHLC feed for the dashboard
+    price chart. Reads from the running engine's data_provider so we don't
+    add a new dependency.
+
+    frequency=5 default → 5-minute bars
+    period=1 default    → 1 day's worth
+    Returns an array of {time, open, high, low, close, volume} dicts.
+    """
+    import re as _re
+    if not _re.fullmatch(r"[A-Z0-9]{1,8}", symbol.upper()):
+        return {"status": "error", "message": "invalid symbol"}
+    if not trading_engine or not trading_engine.data_provider:
+        return {"status": "error", "message": "data provider unavailable"}
+    try:
+        df = trading_engine.data_provider.get_market_data(
+            symbol.upper(),
+            frequency_type='minute',
+            frequency=frequency,
+            period_type='day',
+            period=period,
+        )
+        if df is None or df.empty:
+            return {"status": "success", "symbol": symbol.upper(), "bars": []}
+        # Normalize column names (some providers Title-case)
+        cols = {c.lower(): c for c in df.columns}
+        get = lambda c: df[cols.get(c, c)] if (cols.get(c, c) in df.columns) else None
+        bars = []
+        opens = get('open'); highs = get('high'); lows = get('low')
+        closes = get('close'); vols = get('volume')
+        idx = df.index
+        for i in range(len(df)):
+            ts = idx[i]
+            try:
+                t_iso = ts.isoformat() if hasattr(ts, 'isoformat') else str(ts)
+            except Exception:
+                t_iso = str(ts)
+            bars.append({
+                "time":  t_iso,
+                "open":  float(opens.iloc[i])  if opens  is not None else None,
+                "high":  float(highs.iloc[i])  if highs  is not None else None,
+                "low":   float(lows.iloc[i])   if lows   is not None else None,
+                "close": float(closes.iloc[i]) if closes is not None else None,
+                "volume": int(vols.iloc[i])    if vols   is not None else 0,
+            })
+        return {
+            "status": "success",
+            "symbol": symbol.upper(),
+            "frequency_min": frequency,
+            "period_days": period,
+            "bars": bars[-200:],  # cap at last 200 points
+        }
+    except Exception as exc:
+        logger.warning(f"historical-data error for {symbol}: {exc}")
+        return {"status": "error", "message": str(exc)}
+
+
 @app.get("/logos/{symbol}")
 async def get_logo(symbol: str):
     """v-logo-cache-2026-04-28: serve cached Alpaca company logo for a symbol.
