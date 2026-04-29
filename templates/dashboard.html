@@ -1837,6 +1837,28 @@
            .positive/.negative, override the gradient for the strong red/green. */
         .kpi-value.positive { color: var(--success) !important; -webkit-text-fill-color: var(--success); }
         .kpi-value.negative { color: var(--destructive) !important; -webkit-text-fill-color: var(--destructive); }
+
+        /* =====================================================================
+           v-ui-sign-color-everywhere-2026-04-29: universal sign-coloring.
+           Strong rules (with !important) so .positive/.negative win against
+           any inherited element color. Aliases map other naming conventions
+           (sentiment-bullish/bearish, gain/loss, up/down) onto the same
+           tokens so every component uses the same green/red language.
+           ===================================================================== */
+        .positive, .gain, .change-up, .sentiment-bullish, .session-icon.open,
+        [data-sign="up"], [data-sign="positive"] {
+            color: var(--success) !important;
+        }
+        .negative, .loss, .change-down, .sentiment-bearish,
+        [data-sign="down"], [data-sign="negative"] {
+            color: var(--destructive) !important;
+        }
+        .neutral, .sentiment-neutral, [data-sign="zero"], [data-sign="neutral"] {
+            color: var(--muted-fg);
+        }
+        /* Light gradient backgrounds for chips/pills carrying a sign */
+        .bg-positive { background: oklch(0.72 0.2 155 / 0.12) !important; }
+        .bg-negative { background: oklch(0.6 0.22 25 / 0.12)  !important; }
         .perf-chart-wrap {
             position: relative;
             height: 220px;
@@ -3192,6 +3214,13 @@
         
         function updateDashboard(data) {
             if (data.account) {
+                // v-ui-sign-color-everywhere-2026-04-29: lock these absolute
+                // values so the auto-painter never tints them — they're
+                // balances, not deltas.
+                ['balance', 'buying-power', 'cash'].forEach(id => {
+                    const el = document.getElementById(id);
+                    if (el) el.dataset.signLocked = '1';
+                });
                 document.getElementById('balance').textContent = `$${data.account.balance.toLocaleString()}`;
                 document.getElementById('buying-power').textContent = `$${data.account.buying_power.toLocaleString()}`;
                 document.getElementById('cash').textContent = `$${(data.account.cash || 0).toLocaleString()}`;
@@ -3201,7 +3230,10 @@
                 // so the value still picks up the kpi-card sizing/spacing.
                 const dailyPnl = document.getElementById('daily-pnl');
                 const dpVal = data.account.daily_pnl || 0;
-                dailyPnl.textContent = `${dpVal < 0 ? '-' : ''}$${Math.abs(dpVal).toFixed(2)}`;
+                // Explicit + / - prefix so visual sign is unambiguous, AND so
+                // the auto-color pass classifies it correctly even if the
+                // explicit class below were ever stripped.
+                dailyPnl.textContent = `${dpVal >= 0 ? '+' : '-'}$${Math.abs(dpVal).toFixed(2)}`;
                 dailyPnl.className = 'kpi-value tabular-nums ' + (dpVal >= 0 ? 'positive' : 'negative');
                 // Swap card accent color: success when up, destructive when down.
                 const dpCard = dailyPnl.closest('.kpi-card');
@@ -3447,6 +3479,74 @@
         function escapeHtml(s) {
             return String(s).replace(/[&<>"']/g, c =>
                 ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+        }
+
+        // v-ui-sign-color-everywhere-2026-04-29: universal sign-coloring pass.
+        // Walks the DOM and tints any element whose visible text is a SIGNED
+        // numeric (starts with + / - or contains "(<number>)"). Never re-colors
+        // absolute values like "$21,237.67" — only deltas. Idempotent; safe to
+        // run on every refresh.
+        const _SIGN_TARGET_SELECTORS = [
+            // P&L / change values that show signed deltas
+            '.kpi-value.tabular-nums',
+            '.kpi-trend',
+            '.commentary-data .kv .v',
+            '.heatmap-tile-change',
+            '.ticker-change',
+            '#price-chart-change',
+            '.perf-tile .value.tabular-nums',
+            // Anything explicitly marked
+            '[data-auto-sign]',
+            // Inline elements inside cards that might have signed numbers
+            '.kpi-sub',
+            '.commentary-message',  // colors numbers inside multi-line msgs
+        ];
+        const _SIGN_NUM_RE = /^([+\-]?\$?[+\-]?[\d][\d,.]*)\s*(%|R|r)?\s*$/;
+        function _classifySignText(raw) {
+            if (raw == null) return null;
+            const text = String(raw).trim();
+            if (!text) return null;
+            // Explicit sign markers: starts with - or +, or wrapped in (...)
+            if (/^[\s\u00A0]*[+]/.test(text)) return 'positive';
+            if (/^[\s\u00A0]*[-]/.test(text) || /^\(\s*-?\$?\d/.test(text)) return 'negative';
+            // Try parsing — only color if the value is non-zero AND there's
+            // an explicit positive marker like "+5%" handled above.
+            return null;
+        }
+        function autoColorSigns(root) {
+            root = root || document;
+            _SIGN_TARGET_SELECTORS.forEach(sel => {
+                root.querySelectorAll(sel).forEach(el => {
+                    // Skip if already manually classed
+                    if (el.dataset.signLocked === '1') return;
+                    const sign = _classifySignText(el.textContent);
+                    if (sign === 'positive') {
+                        el.classList.add('positive');
+                        el.classList.remove('negative');
+                    } else if (sign === 'negative') {
+                        el.classList.add('negative');
+                        el.classList.remove('positive');
+                    }
+                });
+            });
+        }
+        // Watch the dashboard for live updates and re-paint after each one.
+        // Throttled — at most once every 200ms.
+        let _autoColorPending = false;
+        function scheduleAutoColor() {
+            if (_autoColorPending) return;
+            _autoColorPending = true;
+            setTimeout(() => { _autoColorPending = false; autoColorSigns(); }, 200);
+        }
+        // Run once on load, then continuously via MutationObserver on the
+        // main content area. Mutations inside table tbodies / commentary
+        // list / etc. all trigger a single throttled pass.
+        if (typeof MutationObserver !== 'undefined') {
+            document.addEventListener('DOMContentLoaded', () => {
+                autoColorSigns();
+                const obs = new MutationObserver(scheduleAutoColor);
+                obs.observe(document.body, { childList: true, subtree: true, characterData: true });
+            });
         }
 
         // v-ui-theme-tokens-2026-04-29: minimal lucide-icon renderer.
@@ -3721,6 +3821,18 @@
         function fmtCurrency(n) {
             return '$' + (n || 0).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
         }
+        // v-ui-sign-color-everywhere-2026-04-29: signed currency formatter.
+        // "+$123.45" or "-$67.89" — always carries explicit sign for clarity
+        // and so the auto-paint pass picks it up.
+        function fmtSignedCurrency(n) {
+            const v = n || 0;
+            const abs = Math.abs(v).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+            return (v >= 0 ? '+$' : '-$') + abs;
+        }
+        function fmtSignedPct(n, decimals = 2) {
+            const v = n || 0;
+            return (v >= 0 ? '+' : '') + v.toFixed(decimals) + '%';
+        }
         async function refreshPortfolioDonut() {
             try {
                 const tok = window.TRADING_API_KEY;
@@ -3841,14 +3953,14 @@
                 document.getElementById('perf-win-rate').textContent     = `${winRate.toFixed(1)}%`;
                 document.getElementById('perf-total-trades').textContent = String(total);
                 const cumEl = document.getElementById('perf-cum-pnl');
-                cumEl.textContent = fmtCurrency(cumPnl);
-                cumEl.className = 'value tabular-nums ' + (cumPnl >= 0 ? 'up' : 'down');
+                cumEl.textContent = fmtSignedCurrency(cumPnl);
+                cumEl.className = 'value tabular-nums ' + (cumPnl >= 0 ? 'positive' : 'negative');
                 // v-ui-pnl-color-2026-04-29: best/worst tiles colored by their actual sign.
                 const bestEl  = document.getElementById('perf-best-trade');
                 const worstEl = document.getElementById('perf-worst-trade');
-                bestEl.textContent  = fmtCurrency(best.pnl);
+                bestEl.textContent  = fmtSignedCurrency(best.pnl);
                 bestEl.className    = 'value tabular-nums ' + (best.pnl >= 0 ? 'positive' : 'negative');
-                worstEl.textContent = fmtCurrency(worst.pnl);
+                worstEl.textContent = fmtSignedCurrency(worst.pnl);
                 worstEl.className   = 'value tabular-nums ' + (worst.pnl >= 0 ? 'positive' : 'negative');
                 // Win-rate also color-tinted (>=50% positive, else negative)
                 const winRateEl = document.getElementById('perf-win-rate');
