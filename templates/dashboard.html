@@ -2,13 +2,180 @@
 <html>
 <head>
     <title>Trading Bot with Schwab Positions</title>
+    <!-- v-ui-theme-tokens-2026-04-29: Inter (UI) + JetBrains Mono (numerics).
+         cv02-04/11 OpenType features below give cleaner tabular digits. -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
     <style>
+        /* =====================================================================
+           v-ui-theme-tokens-2026-04-29: design tokens ported from dashboardUI/.
+           These are ADDITIVE — existing styles still work; new classes are
+           opt-in. Subsequent commits will progressively use these.
+           ===================================================================== */
+        :root {
+          /* Surface palette (oklch — perceptually uniform, scales cleanly) */
+          --bg:           oklch(0.08 0.015 270);
+          --fg:           oklch(0.98 0 0);
+          --card:         oklch(0.12 0.015 270 / 0.8);
+          --card-fg:      oklch(0.98 0 0);
+          --secondary:    oklch(0.16 0.015 270);
+          --muted:        oklch(0.18 0.01 270);
+          --muted-fg:     oklch(0.6 0 0);
+          --border:       oklch(0.22 0.02 270 / 0.5);
+          --border-soft:  oklch(0.22 0.02 270 / 0.3);
+
+          /* Brand + state */
+          --accent:       oklch(0.65 0.2 200);   /* electric cyan */
+          --accent-fg:    oklch(0.98 0 0);
+          --success:      oklch(0.72 0.2 155);   /* green */
+          --success-fg:   oklch(0.12 0.05 155);
+          --warning:      oklch(0.82 0.16 85);   /* amber */
+          --destructive:  oklch(0.6 0.22 25);    /* red */
+          --destructive-fg: oklch(0.98 0 0);
+
+          /* Chart palette */
+          --chart-1: oklch(0.65 0.2 200);
+          --chart-2: oklch(0.72 0.2 155);
+          --chart-3: oklch(0.65 0.22 25);
+          --chart-4: oklch(0.8 0.15 90);
+          --chart-5: oklch(0.7 0.2 320);
+
+          /* Glow halos (used as box-shadow for KPI cards on hover) */
+          --glow-accent:      0 0 40px -10px oklch(0.65 0.2 200 / 0.55);
+          --glow-success:     0 0 40px -10px oklch(0.72 0.2 155 / 0.55);
+          --glow-destructive: 0 0 40px -10px oklch(0.6 0.22 25 / 0.55);
+
+          /* Shape */
+          --radius: 0.75rem;
+          --radius-sm: calc(var(--radius) - 4px);
+          --radius-lg: calc(var(--radius) + 4px);
+
+          /* Typography (loaded via Google Fonts above) */
+          --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+          --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+        }
+
+        /* Glass-morphism — translucent card with blur backdrop. */
+        .glass {
+          background: oklch(0.15 0.02 270 / 0.6);
+          backdrop-filter: blur(20px) saturate(180%);
+          -webkit-backdrop-filter: blur(20px) saturate(180%);
+          border: 1px solid oklch(0.3 0.02 270 / 0.2);
+        }
+        .glass-subtle {
+          background: oklch(0.12 0.015 270 / 0.4);
+          backdrop-filter: blur(12px) saturate(150%);
+          -webkit-backdrop-filter: blur(12px) saturate(150%);
+          border: 1px solid oklch(0.25 0.02 270 / 0.15);
+        }
+
+        /* Glow utilities for KPI cards */
+        .glow-accent      { box-shadow: var(--glow-accent); }
+        .glow-success     { box-shadow: var(--glow-success); }
+        .glow-destructive { box-shadow: var(--glow-destructive); }
+
+        /* Gradient text for hero numbers ($21,237.67 etc.) */
+        .text-gradient {
+          background: linear-gradient(135deg, oklch(0.98 0 0) 0%, oklch(0.7 0 0) 100%);
+          -webkit-background-clip: text; background-clip: text;
+          -webkit-text-fill-color: transparent;
+        }
+        .text-gradient-accent {
+          background: linear-gradient(135deg, oklch(0.75 0.2 200) 0%, oklch(0.65 0.18 220) 100%);
+          -webkit-background-clip: text; background-clip: text;
+          -webkit-text-fill-color: transparent;
+        }
+        .text-gradient-success {
+          background: linear-gradient(135deg, oklch(0.78 0.2 155) 0%, oklch(0.65 0.18 165) 100%);
+          -webkit-background-clip: text; background-clip: text;
+          -webkit-text-fill-color: transparent;
+        }
+        .text-gradient-destructive {
+          background: linear-gradient(135deg, oklch(0.7 0.22 25) 0%, oklch(0.55 0.2 15) 100%);
+          -webkit-background-clip: text; background-clip: text;
+          -webkit-text-fill-color: transparent;
+        }
+
+        /* Animated indicators */
+        @keyframes pulse-glow { 0%,100% { opacity: 1; } 50% { opacity: 0.6; } }
+        .animate-pulse-glow { animation: pulse-glow 2s ease-in-out infinite; }
+        @keyframes float { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-4px); } }
+        .animate-float { animation: float 3s ease-in-out infinite; }
+        @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+        .animate-shimmer {
+          background: linear-gradient(90deg, oklch(0.15 0.02 270 / 0) 0%, oklch(0.25 0.02 270 / 0.3) 50%, oklch(0.15 0.02 270 / 0) 100%);
+          background-size: 200% 100%;
+          animation: shimmer 2s infinite;
+        }
+
+        /* Status indicator: pulsing dot (used for "Live", "Bot Active", etc.) */
+        .pulse-dot {
+          position: relative;
+          display: inline-flex;
+          width: 0.625rem; height: 0.625rem;
+        }
+        .pulse-dot::before {
+          content: '';
+          position: absolute; inset: 0;
+          border-radius: 9999px;
+          background: var(--success);
+          opacity: 0.75;
+          animation: pulse-ping 1.6s cubic-bezier(0,0,0.2,1) infinite;
+        }
+        .pulse-dot::after {
+          content: '';
+          position: relative;
+          width: 100%; height: 100%;
+          border-radius: 9999px;
+          background: var(--success);
+        }
+        @keyframes pulse-ping {
+          0%   { transform: scale(1);   opacity: 0.75; }
+          75%  { transform: scale(2);   opacity: 0; }
+          100% { transform: scale(2);   opacity: 0; }
+        }
+
+        /* Ambient gradient blobs — fixed position, behind everything.
+           Subtle depth without dominating the design. */
+        .ambient-blobs {
+          position: fixed; inset: 0;
+          pointer-events: none;
+          overflow: hidden;
+          z-index: -1;
+        }
+        .ambient-blob {
+          position: absolute;
+          border-radius: 9999px;
+          filter: blur(120px);
+          opacity: 0.35;
+        }
+        .ambient-blob-1 { top: 0;     left: 25%;  width: 600px; height: 600px;
+                          background: oklch(0.65 0.2 200 / 0.05); }
+        .ambient-blob-2 { bottom: 0;  right: 25%; width: 500px; height: 500px;
+                          background: oklch(0.72 0.2 155 / 0.05); filter: blur(100px); }
+        .ambient-blob-3 { top: 50%;   right: 0;   width: 400px; height: 400px;
+                          background: oklch(0.8 0.15 90 / 0.05);  filter: blur(80px); }
+
+        /* Scrollbar — ultra minimal, matches the dark theme. */
+        ::-webkit-scrollbar         { width: 4px; height: 4px; }
+        ::-webkit-scrollbar-track   { background: transparent; }
+        ::-webkit-scrollbar-thumb   { background: oklch(0.3 0.02 270 / 0.5); border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: oklch(0.4 0.02 270 / 0.7); }
+
+        /* Tabular numerics — keeps decimals aligned in tables. */
+        .tabular-nums { font-variant-numeric: tabular-nums; }
+        .font-mono    { font-family: var(--font-mono); }
+
+        /* === existing styles below === */
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            font-feature-settings: "cv02", "cv03", "cv04", "cv11";
             margin: 0;
             padding: 0;
-            background: #0a0a0a;
-            color: #fff;
+            background: var(--bg);
+            color: var(--fg);
+            -webkit-font-smoothing: antialiased;
         }
         .settings-row {
             display: flex;
@@ -827,7 +994,15 @@
     </style>
 </head>
 <body>
-    <!-- Add this right after <body> -->
+    <!-- v-ui-theme-tokens-2026-04-29: ambient gradient blobs.
+         Fixed position, z-index -1, pointer-events none — adds depth
+         without affecting layout or interaction. -->
+    <div class="ambient-blobs" aria-hidden="true">
+        <div class="ambient-blob ambient-blob-1"></div>
+        <div class="ambient-blob ambient-blob-2"></div>
+        <div class="ambient-blob ambient-blob-3"></div>
+    </div>
+
     <div class="ticker-tape" id="ticker-tape">
         <div class="ticker-content" id="ticker-content">
             <!-- Ticker items will be inserted here -->
@@ -2100,6 +2275,44 @@
         function escapeHtml(s) {
             return String(s).replace(/[&<>"']/g, c =>
                 ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+        }
+
+        // v-ui-theme-tokens-2026-04-29: minimal lucide-icon renderer.
+        // Returns inline SVG markup for a small set of icons we use in the
+        // header / cards. We embed paths directly instead of pulling lucide
+        // from a CDN (no extra HTTP, no version drift, no global pollution).
+        // size = px square. Color inherits from currentColor so CSS rules.
+        const LUCIDE_PATHS = {
+            // navigation / status
+            'bot':         '<path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/>',
+            'bar-chart-3': '<path d="M3 3v18h18"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/>',
+            'newspaper':   '<path d="M4 22h16a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2H8a2 2 0 0 0-2 2v16a2 2 0 0 1-2 2Zm0 0a2 2 0 0 1-2-2v-9c0-1.1.9-2 2-2h2"/><path d="M18 14h-8"/><path d="M15 18h-5"/><path d="M10 6h8v4h-8V6Z"/>',
+            'activity':    '<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>',
+            'cpu':         '<rect width="16" height="16" x="4" y="4" rx="2"/><rect width="6" height="6" x="9" y="9"/><path d="M15 2v2"/><path d="M15 20v2"/><path d="M2 15h2"/><path d="M2 9h2"/><path d="M20 15h2"/><path d="M20 9h2"/><path d="M9 2v2"/><path d="M9 20v2"/>',
+            'shield':      '<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/>',
+            'wifi':        '<path d="M5 13a10 10 0 0 1 14 0"/><path d="M8.5 16.5a5 5 0 0 1 7 0"/><path d="M2 8.82a15 15 0 0 1 20 0"/><line x1="12" x2="12.01" y1="20" y2="20"/>',
+            // controls
+            'play':        '<polygon points="6 3 20 12 6 21 6 3"/>',
+            'square':      '<rect width="18" height="18" x="3" y="3" rx="2"/>',
+            'refresh-cw':  '<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M3 21v-5h5"/>',
+            'settings':    '<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/>',
+            'zap':         '<path d="M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z"/>',
+            // KPI icons
+            'wallet':      '<path d="M19 7V4a1 1 0 0 0-1-1H5a2 2 0 0 0 0 4h15a1 1 0 0 1 1 1v4h-3a2 2 0 0 0 0 4h3a1 1 0 0 0 1-1v-2a1 1 0 0 0-1-1"/><path d="M3 5v14a2 2 0 0 0 2 2h15a1 1 0 0 0 1-1v-4"/>',
+            'dollar-sign': '<line x1="12" x2="12" y1="2" y2="22"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>',
+            'trending-up':   '<polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/>',
+            'trending-down': '<polyline points="22 17 13.5 8.5 8.5 13.5 2 7"/><polyline points="16 17 22 17 22 11"/>',
+            'arrow-up-right':   '<path d="M7 7h10v10"/><path d="m7 17 10-10"/>',
+            'arrow-down-right': '<path d="m7 7 10 10"/><path d="M17 7v10H7"/>',
+            // misc
+            'star':       '<polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>',
+            'x':          '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
+            'chevron-right': '<path d="m9 18 6-6-6-6"/>',
+        };
+        function lucide(name, size = 16, extraClass = '') {
+            const path = LUCIDE_PATHS[name];
+            if (!path) return '';
+            return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide ${extraClass}" aria-hidden="true">${path}</svg>`;
         }
 
         async function toggleManagedByBot(symbol, enabled) {
