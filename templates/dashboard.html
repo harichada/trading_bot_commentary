@@ -7,6 +7,9 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <!-- v-ui-charts-2026-04-29: Chart.js for Portfolio Donut + Performance Metrics.
+         Pinned to a known-good major version; ~80kb gzipped from CDN. -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
     <style>
         /* =====================================================================
            v-ui-theme-tokens-2026-04-29: design tokens ported from dashboardUI/.
@@ -1593,6 +1596,130 @@
         #sentiment-card .sentiment-content {
             padding: 1rem 1.25rem;
         }
+
+        /* =====================================================================
+           v-ui-charts-2026-04-29: portfolio donut + performance metrics
+           ===================================================================== */
+
+        /* Generic chart-card wrapper */
+        .chart-card {
+            border-radius: var(--radius);
+            background: oklch(0.15 0.02 270 / 0.6);
+            backdrop-filter: blur(20px) saturate(180%);
+            -webkit-backdrop-filter: blur(20px) saturate(180%);
+            border: 1px solid var(--border);
+            overflow: hidden;
+        }
+        .chart-card-head {
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 1rem 1.25rem;
+            border-bottom: 1px solid var(--border-soft);
+        }
+        .chart-card-head h3 {
+            margin: 0;
+            display: flex; align-items: center; gap: 0.75rem;
+            font: 600 0.875rem var(--font-sans); color: var(--fg);
+        }
+        .chart-card-head h3::before {
+            content: '';
+            display: inline-block;
+            height: 1.5rem; width: 3px; border-radius: 9999px;
+            background: linear-gradient(to bottom, var(--accent), oklch(0.65 0.2 200 / 0.3));
+        }
+        .chart-card-head h3.success-bar::before {
+            background: linear-gradient(to bottom, var(--success), oklch(0.72 0.2 155 / 0.3));
+        }
+
+        /* Row 2: chart placeholder (left) + portfolio donut (right) */
+        .row-chart-portfolio {
+            display: grid;
+            grid-template-columns: 2fr 1fr;
+            gap: 1rem;
+            margin-bottom: 1.5rem;
+            align-items: start;
+        }
+        @media (max-width: 1100px) {
+            .row-chart-portfolio { grid-template-columns: 1fr; }
+        }
+
+        /* Donut layout: centered chart + center label + scrollable legend */
+        .donut-wrap {
+            position: relative;
+            height: 280px;
+            padding: 1rem;
+        }
+        .donut-center {
+            position: absolute; inset: 0;
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            pointer-events: none;
+        }
+        .donut-center .symbol {
+            font: 700 1.5rem var(--font-sans);
+            color: var(--fg);
+        }
+        .donut-center .pct {
+            font: 600 1rem var(--font-sans);
+            color: var(--muted-fg);
+            margin-top: 0.1rem;
+        }
+        .donut-legend {
+            border-top: 1px solid var(--border-soft);
+            padding: 0.75rem 1rem;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+        .donut-legend-row {
+            width: 100%;
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 0.5rem 0.75rem;
+            border: 0; background: transparent;
+            border-radius: calc(var(--radius) - 4px);
+            cursor: pointer;
+            color: var(--muted-fg);
+            font: 500 0.8125rem var(--font-sans);
+            transition: background 0.15s;
+        }
+        .donut-legend-row:hover  { background: oklch(0.18 0.01 270 / 0.4); color: var(--fg); }
+        .donut-legend-row.active { background: oklch(0.18 0.01 270 / 0.6); color: var(--fg); }
+        .donut-legend-row .swatch {
+            display: inline-block; width: 0.7rem; height: 0.7rem; border-radius: 9999px;
+            margin-right: 0.55rem;
+        }
+        .donut-legend-row .value { font-family: var(--font-mono); font-size: 0.75rem; }
+
+        /* Performance Metrics replaces the placeholder card */
+        .perf-card { padding: 0; }
+        .perf-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+            gap: 0.75rem;
+            padding: 1rem 1.25rem;
+            border-bottom: 1px solid var(--border-soft);
+        }
+        .perf-tile {
+            padding: 0.75rem;
+            border-radius: calc(var(--radius) - 4px);
+            background: oklch(0.18 0.01 270 / 0.4);
+            border: 1px solid var(--border-soft);
+        }
+        .perf-tile .label {
+            font: 600 0.6875rem var(--font-sans);
+            text-transform: uppercase; letter-spacing: 0.1em;
+            color: var(--muted-fg);
+            margin-bottom: 0.25rem;
+        }
+        .perf-tile .value {
+            font: 700 1.125rem var(--font-sans);
+            font-variant-numeric: tabular-nums;
+            color: var(--fg);
+        }
+        .perf-tile .value.up   { color: var(--success); }
+        .perf-tile .value.down { color: var(--destructive); }
+        .perf-chart-wrap {
+            position: relative;
+            height: 220px;
+            padding: 0.75rem 1rem 0.5rem 1rem;
+        }
     </style>
 </head>
 <body>
@@ -1831,22 +1958,78 @@
                 </div>
             </section>
 
-            <!-- v-ui-heatmap-2026-04-29: 2-column row mirroring dashboardUI's
-                 "Performance Metrics | Watchlist Heatmap" layout. Heatmap
-                 sits in the right 1/3 column. The left 2/3 is a placeholder
-                 for the Performance Metrics chart that arrives in commit 5;
-                 reserves the visual slot now so the page doesn't reflow
-                 when that lands. -->
+            <!-- v-ui-charts-2026-04-29: row 2 — chart placeholder (left) +
+                 portfolio donut (right). Mirrors dashboardUI/page.tsx
+                 "Price Chart | Portfolio Allocation" pairing. Price chart
+                 itself is a placeholder card for now (needs per-bar
+                 historical data API); donut is fully functional. -->
+            <section class="row-chart-portfolio">
+                <div class="placeholder-card glass">
+                    <div class="placeholder-title">
+                        <span class="lucide-slot" data-icon="bar-chart-3" data-size="20"></span>
+                        <span>Per-Symbol Price Chart</span>
+                    </div>
+                    <div class="placeholder-sub">
+                        Intraday candle / area view with timeframe pills
+                        <span style="opacity:0.5"> — pending historical-data API</span>
+                    </div>
+                </div>
+                <div class="chart-card" id="portfolio-allocation-card">
+                    <div class="chart-card-head">
+                        <h3>
+                            <span class="lucide-slot" data-icon="wallet" data-size="16"></span>
+                            Portfolio Allocation
+                        </h3>
+                        <span style="font-size:0.875rem;font-weight:600;color:var(--fg);font-family:var(--font-mono)" id="portfolio-total">$0</span>
+                    </div>
+                    <div class="donut-wrap">
+                        <canvas id="portfolio-donut"></canvas>
+                        <div class="donut-center" id="portfolio-donut-center">
+                            <div class="symbol" id="portfolio-donut-symbol">—</div>
+                            <div class="pct" id="portfolio-donut-pct">—</div>
+                        </div>
+                    </div>
+                    <div class="donut-legend" id="portfolio-donut-legend"></div>
+                </div>
+            </section>
+
             <section class="row-perf-watchlist" style="margin-bottom:1.5rem;">
                 <div class="row-perf-main">
-                    <div class="placeholder-card glass">
-                        <div class="placeholder-title">
-                            <span class="lucide-slot" data-icon="bar-chart-3" data-size="20"></span>
-                            <span>Performance Metrics</span>
+                    <!-- v-ui-charts-2026-04-29: real Performance Metrics card.
+                         Replaces the placeholder from commit 3.5. Reads from
+                         /api/trades to compute cumulative P&L + summary tiles. -->
+                    <div class="chart-card perf-card" id="performance-card">
+                        <div class="chart-card-head">
+                            <h3 class="success-bar">
+                                <span class="lucide-slot" data-icon="bar-chart-3" data-size="16"></span>
+                                Performance Metrics
+                            </h3>
+                            <span style="font-size:0.6875rem;color:var(--muted-fg);text-transform:uppercase;letter-spacing:0.1em" id="perf-period-label">Last 30 Days</span>
                         </div>
-                        <div class="placeholder-sub">
-                            P&amp;L history, win rate, Sharpe, best/worst trade
-                            <span style="opacity:0.5"> — coming in commit 5/5</span>
+                        <div class="perf-grid" id="perf-tiles">
+                            <div class="perf-tile">
+                                <div class="label">Win Rate</div>
+                                <div class="value tabular-nums" id="perf-win-rate">—</div>
+                            </div>
+                            <div class="perf-tile">
+                                <div class="label">Total Trades</div>
+                                <div class="value tabular-nums" id="perf-total-trades">—</div>
+                            </div>
+                            <div class="perf-tile">
+                                <div class="label">Cumulative P&amp;L</div>
+                                <div class="value tabular-nums" id="perf-cum-pnl">—</div>
+                            </div>
+                            <div class="perf-tile">
+                                <div class="label">Best Trade</div>
+                                <div class="value up tabular-nums" id="perf-best-trade">—</div>
+                            </div>
+                            <div class="perf-tile">
+                                <div class="label">Worst Trade</div>
+                                <div class="value down tabular-nums" id="perf-worst-trade">—</div>
+                            </div>
+                        </div>
+                        <div class="perf-chart-wrap">
+                            <canvas id="performance-chart"></canvas>
                         </div>
                     </div>
                 </div>
@@ -3191,6 +3374,211 @@
             if (clk) clk.textContent = info.clock;
         }
 
+        // v-ui-charts-2026-04-29: portfolio donut chart driven by
+        // /api/positions/db. Hover/click activates a slice and prints
+        // symbol + % in the center. Legend below shows value + % per row.
+        let _portfolioChart = null;
+        let _portfolioActiveIdx = 0;
+        const _DONUT_PALETTE = [
+            'oklch(0.65 0.20 200)', 'oklch(0.72 0.20 155)', 'oklch(0.80 0.15 90)',
+            'oklch(0.70 0.20 320)', 'oklch(0.65 0.22 25)',  'oklch(0.62 0.18 280)',
+            'oklch(0.78 0.16 180)', 'oklch(0.55 0.20 50)',
+        ];
+        function fmtCurrency(n) {
+            return '$' + (n || 0).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+        }
+        async function refreshPortfolioDonut() {
+            try {
+                const tok = window.TRADING_API_KEY;
+                const r = await fetch('/api/positions/db', {
+                    headers: tok ? {'Authorization': 'Bearer ' + tok} : {},
+                });
+                if (!r.ok) return;
+                const j = await r.json();
+                const positions = (j.positions || []).filter(p => p.quantity > 0);
+                const items = positions.map((p, i) => ({
+                    name: p.symbol,
+                    value: Math.abs(p.quantity * (p.current_price || p.entry_price || 0)),
+                    color: _DONUT_PALETTE[i % _DONUT_PALETTE.length],
+                    side: p.side,
+                }));
+                if (items.length === 0) {
+                    items.push({name: 'No open positions', value: 1, color: 'oklch(0.3 0.01 270)'});
+                }
+                const total = items.reduce((s, x) => s + x.value, 0);
+                const totalEl = document.getElementById('portfolio-total');
+                if (totalEl) totalEl.textContent = fmtCurrency(total);
+                _renderPortfolioDonut(items, total);
+            } catch (e) { console.debug('portfolio donut refresh skipped', e); }
+        }
+        function _renderPortfolioDonut(items, total) {
+            const ctx = document.getElementById('portfolio-donut');
+            if (!ctx || typeof Chart === 'undefined') return;
+            const data = {
+                labels: items.map(x => x.name),
+                datasets: [{
+                    data: items.map(x => x.value),
+                    backgroundColor: items.map(x => x.color),
+                    borderColor: 'oklch(0.12 0.015 270 / 0.9)',
+                    borderWidth: 2,
+                    hoverOffset: 8,
+                }],
+            };
+            const opts = {
+                cutout: '70%',
+                animation: { duration: 500 },
+                plugins: { legend: { display: false }, tooltip: { enabled: false } },
+                onHover: (_, els) => {
+                    if (els && els.length) _setActiveSlice(els[0].index, items, total);
+                },
+            };
+            if (_portfolioChart) {
+                _portfolioChart.data = data;
+                _portfolioChart.update('none');
+            } else {
+                _portfolioChart = new Chart(ctx, { type: 'doughnut', data, options: opts });
+            }
+            // Default-active first slice
+            _setActiveSlice(0, items, total);
+            // Build legend rows
+            const legend = document.getElementById('portfolio-donut-legend');
+            if (legend) {
+                legend.innerHTML = items.map((x, i) => {
+                    const pct = total > 0 ? (x.value / total * 100).toFixed(1) : '0';
+                    return `<button class="donut-legend-row${i === 0 ? ' active' : ''}" data-idx="${i}">
+                        <span><span class="swatch" style="background:${x.color}"></span>${escapeHtml(x.name)}</span>
+                        <span><span class="value">${fmtCurrency(x.value)}</span> · ${pct}%</span>
+                    </button>`;
+                }).join('');
+                legend.querySelectorAll('.donut-legend-row').forEach(row => {
+                    row.addEventListener('click', () => {
+                        const idx = parseInt(row.dataset.idx, 10);
+                        _setActiveSlice(idx, items, total);
+                    });
+                });
+            }
+        }
+        function _setActiveSlice(idx, items, total) {
+            _portfolioActiveIdx = idx;
+            const item = items[idx]; if (!item) return;
+            const sym = document.getElementById('portfolio-donut-symbol');
+            const pct = document.getElementById('portfolio-donut-pct');
+            if (sym) sym.textContent = item.name;
+            if (pct) pct.textContent = total > 0 ? `${(item.value / total * 100).toFixed(1)}%` : '—';
+            document.querySelectorAll('.donut-legend-row').forEach(r => {
+                r.classList.toggle('active', parseInt(r.dataset.idx, 10) === idx);
+            });
+        }
+
+        // v-ui-charts-2026-04-29: performance metrics — cumulative P&L line
+        // + summary tiles. Reads from /api/trades?limit=200 (last ~30d).
+        let _performanceChart = null;
+        async function refreshPerformanceMetrics() {
+            try {
+                const tok = window.TRADING_API_KEY;
+                const r = await fetch('/api/trades?limit=200', {
+                    headers: tok ? {'Authorization': 'Bearer ' + tok} : {},
+                });
+                if (!r.ok) return;
+                const j = await r.json();
+                const trades = (j.trades || []).filter(t => typeof t.pnl === 'number');
+                if (!trades.length) {
+                    document.getElementById('perf-win-rate').textContent     = '—';
+                    document.getElementById('perf-total-trades').textContent = '0';
+                    document.getElementById('perf-cum-pnl').textContent      = fmtCurrency(0);
+                    document.getElementById('perf-best-trade').textContent   = '—';
+                    document.getElementById('perf-worst-trade').textContent  = '—';
+                    return;
+                }
+                // Sort by exit_time ascending for the line chart
+                trades.sort((a, b) => new Date(a.exit_time || a.entry_time) - new Date(b.exit_time || b.entry_time));
+                let cum = 0;
+                const points = trades.map(t => {
+                    cum += t.pnl;
+                    return { t: new Date(t.exit_time || t.entry_time), y: cum, pnl: t.pnl, sym: t.symbol };
+                });
+                const wins  = trades.filter(t => t.pnl > 0).length;
+                const total = trades.length;
+                const winRate = total > 0 ? (wins / total * 100) : 0;
+                const cumPnl  = points[points.length - 1].y;
+                const best    = trades.reduce((m, t) => t.pnl > m.pnl ? t : m, trades[0]);
+                const worst   = trades.reduce((m, t) => t.pnl < m.pnl ? t : m, trades[0]);
+
+                document.getElementById('perf-win-rate').textContent     = `${winRate.toFixed(1)}%`;
+                document.getElementById('perf-total-trades').textContent = String(total);
+                const cumEl = document.getElementById('perf-cum-pnl');
+                cumEl.textContent = fmtCurrency(cumPnl);
+                cumEl.className = 'value tabular-nums ' + (cumPnl >= 0 ? 'up' : 'down');
+                document.getElementById('perf-best-trade').textContent   = fmtCurrency(best.pnl);
+                document.getElementById('perf-worst-trade').textContent  = fmtCurrency(worst.pnl);
+
+                _renderPerformanceChart(points);
+            } catch (e) { console.debug('performance refresh skipped', e); }
+        }
+        function _renderPerformanceChart(points) {
+            const ctx = document.getElementById('performance-chart');
+            if (!ctx || typeof Chart === 'undefined') return;
+            const labels = points.map(p => p.t.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }));
+            const data = points.map(p => p.y);
+            const isUp = data[data.length - 1] >= 0;
+            const lineColor = isUp ? 'oklch(0.72 0.20 155)' : 'oklch(0.6 0.22 25)';
+            const fillColor = isUp ? 'oklch(0.72 0.20 155 / 0.15)' : 'oklch(0.6 0.22 25 / 0.15)';
+            const config = {
+                type: 'line',
+                data: {
+                    labels,
+                    datasets: [{
+                        data,
+                        borderColor: lineColor,
+                        backgroundColor: fillColor,
+                        fill: true,
+                        tension: 0.25,
+                        pointRadius: 0,
+                        pointHoverRadius: 4,
+                        borderWidth: 2,
+                    }],
+                },
+                options: {
+                    maintainAspectRatio: false,
+                    responsive: true,
+                    animation: { duration: 400 },
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: {
+                            backgroundColor: 'oklch(0.12 0.015 270 / 0.95)',
+                            titleColor: 'oklch(0.98 0 0)',
+                            bodyColor: 'oklch(0.98 0 0)',
+                            borderColor: 'oklch(0.3 0.02 270)',
+                            borderWidth: 1,
+                            displayColors: false,
+                            callbacks: {
+                                label: c => `Cumulative: $${(c.parsed.y).toLocaleString('en-US', {minimumFractionDigits: 2})}`
+                            },
+                        },
+                    },
+                    scales: {
+                        x: {
+                            grid: { color: 'oklch(0.22 0.02 270 / 0.2)' },
+                            ticks: { color: 'oklch(0.6 0 0)', font: { size: 10 }, maxTicksLimit: 6 },
+                        },
+                        y: {
+                            grid: { color: 'oklch(0.22 0.02 270 / 0.2)' },
+                            ticks: {
+                                color: 'oklch(0.6 0 0)', font: { size: 10 },
+                                callback: v => '$' + v.toLocaleString('en-US'),
+                            },
+                        },
+                    },
+                },
+            };
+            if (_performanceChart) {
+                _performanceChart.data = config.data;
+                _performanceChart.update('none');
+            } else {
+                _performanceChart = new Chart(ctx, config);
+            }
+        }
+
         // v-ui-heatmap-2026-04-29: render the watchlist heatmap from the
         // same screener-data array the ticker uses (each item has
         // {symbol, last, change, volatility}). Each tile's background
@@ -3232,6 +3620,21 @@
             tickMarketStatus();
             setInterval(tickSessionUptime, 1000);
             setInterval(tickMarketStatus, 1000);
+
+            // v-ui-charts-2026-04-29: charts. Initial render after Chart.js
+            // loads (the CDN <script> is async-ish but blocking, so by
+            // DOMContentLoaded it's defined). Refresh every 30s — light load.
+            const _initCharts = () => {
+                if (typeof Chart === 'undefined') {
+                    setTimeout(_initCharts, 250);
+                    return;
+                }
+                refreshPortfolioDonut();
+                refreshPerformanceMetrics();
+                setInterval(refreshPortfolioDonut, 30000);
+                setInterval(refreshPerformanceMetrics, 60000);
+            };
+            _initCharts();
         })();
 
         async function toggleManagedByBot(symbol, enabled) {
