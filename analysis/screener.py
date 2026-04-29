@@ -58,9 +58,11 @@ class StockScreener:
                 mover['score'] = score
                 scored_movers.append(mover)
 
-            # Sort and take top 10
+            # v-watchlist-size-2026-04-29: cap raised 10 → 30 so
+            # get_watchlist_symbols can serve up to Config.WATCHLIST_SIZE
+            # without re-running the screener.
             scored_movers.sort(key=lambda x: x['score'], reverse=True)
-            self.top_movers = scored_movers[:10]
+            self.top_movers = scored_movers[:30]
 
             self.commentary.add_commentary(TradingCommentary(
                 timestamp=datetime.now(),
@@ -230,6 +232,11 @@ class StockScreener:
 
         return volatility_score + volume_score + change_score
 
-    def get_watchlist_symbols(self) -> List[str]:
-        """Get current top mover symbols for the watchlist"""
-        return [mover['symbol'] for mover in self.top_movers[:5]]  # Top 5 for focused trading
+    def get_watchlist_symbols(self, limit: int = 20) -> List[str]:
+        """Get current top mover symbols for the watchlist.
+
+        v-watchlist-size-2026-04-29: previously hardcoded to 5 — too narrow,
+        the bot would burn cycles on the same handful of names. Caller now
+        passes Config.WATCHLIST_SIZE so the cap is centrally tunable.
+        """
+        return [mover['symbol'] for mover in self.top_movers[:limit]]

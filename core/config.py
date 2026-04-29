@@ -364,6 +364,20 @@ class Config:
         return int(self.manager.get('trading.warmup_minutes_before_open', 30))
 
     @property
+    def WATCHLIST_SIZE(self) -> int:
+        """v-watchlist-size-2026-04-29: max symbols in the dynamic watchlist.
+
+        Default 20 (was effectively 5-8 due to layered caps). Each cycle
+        the bot screens hundreds of symbols, scores them, and picks this
+        many to actually analyse and trade. Larger = more opportunities;
+        smaller = more focused. Tradeoff: each symbol adds ~2-3 seconds
+        per analysis cycle and N×N computation for correlation guard.
+
+        Sweet spot for a 5-min bar bot with max_positions=5 is ~20-25 —
+        gives the bot room to find good setups without thrashing CPU."""
+        return int(self.manager.get('trading.watchlist_size', 20))
+
+    @property
     def ENABLE_THESIS_REVALIDATION(self) -> bool:
         """v-thesis-revalidate-2026-04-28: re-verify both news + indicators
         on positions older than THESIS_REVALIDATION_AGE_MIN. Closes the

@@ -2740,10 +2740,18 @@ class TradingEngineWithCommentary:
                 await self.screener.screen_stocks()
                 
                 # Update watchlist with top movers
-                screener_symbols = self.screener.get_watchlist_symbols()
+                # v-watchlist-size-2026-04-29: size now driven by Config.
+                # Was hardcoded [:10] cap with screener-side [:5] limit;
+                # net effective watchlist was 5-8 symbols.
+                wl_size = Config().WATCHLIST_SIZE
+                screener_symbols = self.screener.get_watchlist_symbols(limit=wl_size)
                 if screener_symbols:
-                    # Combine with default symbols, keeping unique
-                    self.dynamic_watchlist = list(set(screener_symbols + ['NVDA', 'TSLA', 'PLTR']))[:10]
+                    # Combine with default anchors, keeping unique. Sort by
+                    # screener rank (input order) preserved via dict.fromkeys.
+                    combined = list(dict.fromkeys(
+                        screener_symbols + ['NVDA', 'TSLA', 'PLTR']
+                    ))
+                    self.dynamic_watchlist = combined[:wl_size]
                     
                     self.commentary.add_commentary(TradingCommentary(
                         timestamp=datetime.now(),
