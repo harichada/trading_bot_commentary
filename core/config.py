@@ -364,6 +364,25 @@ class Config:
         return int(self.manager.get('trading.warmup_minutes_before_open', 30))
 
     @property
+    def ENABLE_NEWS_VERIFIER(self) -> bool:
+        """v-news-verifier-toggle-2026-04-29: enable the fresh-news
+        re-verification gate that was added 2026-04-28.
+
+        Default False — disabled per user request. The gate's veto
+        decisions felt opaque ("vetoed for fresh_sentiment_against_signal_avg
+        =-0.137" doesn't tell you whether that was right or wrong without
+        the shadow-tracker scorecard). When disabled, news_strategy fires
+        on cached RSS sentiment alone — same behaviour as before the
+        verifier was introduced.
+
+        The shadow-tracker (bot_shadow_news_vetoes table) keeps
+        accumulating data when the verifier IS enabled, so toggling this
+        back on later still has historical evidence to compare against.
+
+        Set True in Config.yaml to re-enable."""
+        return bool(self.manager.get('trading.enable_news_verifier', False))
+
+    @property
     def WATCHLIST_SIZE(self) -> int:
         """v-watchlist-size-2026-04-29: max symbols in the dynamic watchlist.
 

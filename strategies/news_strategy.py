@@ -496,20 +496,31 @@ class FreeNewsSignalStrategy(TradingStrategyWithCommentary):
                     ))
                     return None
 
-            # v-news-verify-2026-04-28: announce that we DETECTED a candidate
-            # signal but haven't fired yet — verification follows. Keeps the
-            # commentary timeline honest about the two-stage process.
+            # v-news-verifier-toggle-2026-04-29: gate verifier behind config.
+            # When disabled, news_strategy fires on cached sentiment alone
+            # (original behaviour pre-v-news-verify-2026-04-28).
+            from core.config import Config as _CfgNV
+            _verifier_enabled = _CfgNV().ENABLE_NEWS_VERIFIER
+
+            # Detection commentary — wording depends on whether verifier
+            # will run. Honest about the two-stage process either way.
+            _verify_msg = (
+                "\n\nRe-verifying with fresh news from Alpaca/Yahoo before entering..."
+                if _verifier_enabled else
+                "\n\nVerifier disabled — proceeding to entry on cached sentiment."
+            )
             self.commentary.add_commentary(TradingCommentary(
                 timestamp=datetime.now(),
                 type=CommentaryType.OPPORTUNITY,
                 symbol=symbol,
-                title=f"📰 News Signal Detected: {signal_type.name} {symbol} — Verifying",
+                title=(f"📰 News Signal Detected: {signal_type.name} {symbol}"
+                       + (" — Verifying" if _verifier_enabled else "")),
                 message=(
                     f"Cached sentiment: {'Positive' if avg_sentiment > 0 else 'Negative'} ({avg_sentiment:+.2f})\n"
                     f"Articles: {len(news_items)}\n\n"
                     "Headlines:\n" +
                     "\n".join([f"• {item.headline}" for item in news_items[:3]]) +
-                    "\n\nRe-verifying with fresh news from Alpaca/Yahoo before entering..."
+                    _verify_msg
                 ),
                 data={
                     'sentiment': avg_sentiment,
@@ -540,20 +551,27 @@ class FreeNewsSignalStrategy(TradingStrategyWithCommentary):
             # Cached RSS news is often hours old and already priced in;
             # require ≥2 fresh articles in last 4 hours with sentiment in
             # the same direction. Skip cleanly if not verified.
-            try:
-                expected_dir = 1 if signal_type == SignalType.BUY else -1
-                v = await self.verifier.verify(symbol, expected_dir)
-            except Exception as exc:
-                # Verifier failure is non-fatal — log and treat as a skip
-                # rather than blindly trusting cached sentiment.
-                logger.debug(f"news verifier exception for {symbol}: {exc}")
-                self._log_decision(
-                    market_data, "skip", "verifier_error",
-                    err=str(exc)[:80], sentiment=round(avg_sentiment, 3),
-                )
-                return None
+            #
+            # v-news-verifier-toggle-2026-04-29: when disabled, skip the
+            # entire verifier block and treat the signal as already
+            # confirmed. The shadow-tracker also doesn't fire (no veto
+            # to track) — that data resumes when verifier is re-enabled.
+            v = None
+            if _verifier_enabled:
+                try:
+                    expected_dir = 1 if signal_type == SignalType.BUY else -1
+                    v = await self.verifier.verify(symbol, expected_dir)
+                except Exception as exc:
+                    # Verifier failure is non-fatal — log and treat as a skip
+                    # rather than blindly trusting cached sentiment.
+                    logger.debug(f"news verifier exception for {symbol}: {exc}")
+                    self._log_decision(
+                        market_data, "skip", "verifier_error",
+                        err=str(exc)[:80], sentiment=round(avg_sentiment, 3),
+                    )
+                    return None
 
-            if not v.is_verified:
+            if v is not None and not v.is_verified:
                 self._log_decision(
                     market_data, "skip", "fresh_news_unverified",
                     cached_sentiment=round(avg_sentiment, 3),
@@ -603,33 +621,34 @@ class FreeNewsSignalStrategy(TradingStrategyWithCommentary):
                 ))
                 return None
 
-            # Verified — announce the confirmation in commentary so the user
-            # can see WHY this signal made it past the gate (vs a vetoed one).
-            self.commentary.add_commentary(TradingCommentary(
-                timestamp=datetime.now(),
-                type=CommentaryType.DECISION,
-                symbol=symbol,
-                title=f"✅ Fresh News Confirmed — {signal_type.name} {symbol}",
-                message=(
-                    f"Verification passed via {v.source}.\n"
-                    f"  Fresh articles (last 4h):     {v.fresh_count}\n"
-                    f"  Avg fresh sentiment:          {v.avg_fresh_sentiment:+.3f} "
-                    f"({'bullish' if v.avg_fresh_sentiment > 0 else 'bearish'})\n"
-                    f"  Most recent article:          "
-                    f"{v.latest_age_min:.1f} min ago\n"
-                    f"  Cached sentiment:             {avg_sentiment:+.3f}\n\n"
-                    f"News thesis is fresh and matches signal direction. Proceeding to entry."
-                ),
-                data={
-                    'verifier_source': v.source,
-                    'fresh_count': v.fresh_count,
-                    'fresh_avg_sentiment': v.avg_fresh_sentiment,
-                    'latest_age_min': v.latest_age_min,
-                    'cached_sentiment': avg_sentiment,
-                },
-                confidence=confidence,
-                importance=8,
-            ))
+            # Verified (or verifier disabled) — announce in commentary so the
+            # user can see WHY this signal made it past the gate.
+            if v is not None:
+                self.commentary.add_commentary(TradingCommentary(
+                    timestamp=datetime.now(),
+                    type=CommentaryType.DECISION,
+                    symbol=symbol,
+                    title=f"✅ Fresh News Confirmed — {signal_type.name} {symbol}",
+                    message=(
+                        f"Verification passed via {v.source}.\n"
+                        f"  Fresh articles (last 4h):     {v.fresh_count}\n"
+                        f"  Avg fresh sentiment:          {v.avg_fresh_sentiment:+.3f} "
+                        f"({'bullish' if v.avg_fresh_sentiment > 0 else 'bearish'})\n"
+                        f"  Most recent article:          "
+                        f"{v.latest_age_min:.1f} min ago\n"
+                        f"  Cached sentiment:             {avg_sentiment:+.3f}\n\n"
+                        f"News thesis is fresh and matches signal direction. Proceeding to entry."
+                    ),
+                    data={
+                        'verifier_source': v.source,
+                        'fresh_count': v.fresh_count,
+                        'fresh_avg_sentiment': v.avg_fresh_sentiment,
+                        'latest_age_min': v.latest_age_min,
+                        'cached_sentiment': avg_sentiment,
+                    },
+                    confidence=confidence,
+                    importance=8,
+                ))
             self.last_signal_time[symbol] = datetime.now()
 
             self._log_decision(
@@ -638,10 +657,11 @@ class FreeNewsSignalStrategy(TradingStrategyWithCommentary):
                 "high_impact_news" if high_impact_news else "strong_sentiment",
                 sentiment=round(avg_sentiment, 3),
                 articles=len(news_items),
-                fresh_count=v.fresh_count,
-                fresh_avg=round(v.avg_fresh_sentiment, 3),
-                fresh_source=v.source,
-                latest_age_min=round(v.latest_age_min, 1) if v.latest_age_min is not None else None,
+                fresh_count=(v.fresh_count if v else None),
+                fresh_avg=(round(v.avg_fresh_sentiment, 3) if v else None),
+                fresh_source=(v.source if v else "verifier_disabled"),
+                latest_age_min=(round(v.latest_age_min, 1)
+                                if v and v.latest_age_min is not None else None),
                 stop=round(stop_loss, 2),
                 target=round(take_profit, 2),
                 atr=round(atr, 3), stop_dist=round(stop_distance, 2),
