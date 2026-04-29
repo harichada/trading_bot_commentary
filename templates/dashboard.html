@@ -991,6 +991,164 @@
             width: 0%;
             transition: width 0.3s;
         }
+        /* =====================================================================
+           v-ui-header-2026-04-29: top-bar styling (logo / tabs / controls).
+           Hides legacy .tab-navigation and .dashboard-panel > .header (their
+           markup is replaced by the new top bar below).
+           ===================================================================== */
+        .app-topbar {
+            position: sticky; top: 0; z-index: 50;
+            border-bottom: 1px solid var(--border);
+        }
+        .app-topbar::before {
+            /* Subtle accent line at the very top */
+            content: '';
+            position: absolute; left: 0; right: 0; top: 0; height: 1px;
+            background: linear-gradient(90deg, transparent, oklch(0.65 0.2 200 / 0.5), transparent);
+        }
+        .app-topbar-inner {
+            padding: 1rem 1.25rem;
+            display: flex; flex-direction: column; gap: 1rem;
+        }
+        .app-topbar-row {
+            display: flex; flex-wrap: wrap; align-items: center;
+            justify-content: space-between; gap: 1rem;
+        }
+        .app-logo {
+            display: flex; align-items: center; gap: 0.75rem;
+        }
+        .app-logo-icon {
+            position: relative;
+            padding: 0.6rem;
+            border-radius: var(--radius);
+            background: linear-gradient(135deg, oklch(0.65 0.2 200 / 0.2), oklch(0.65 0.2 200 / 0.05));
+            border: 1px solid oklch(0.65 0.2 200 / 0.2);
+            color: var(--accent);
+        }
+        .app-logo-icon::after {
+            content: '';
+            position: absolute; inset: -8px;
+            background: oklch(0.65 0.2 200 / 0.3);
+            filter: blur(20px);
+            border-radius: 9999px;
+            z-index: -1;
+        }
+        .app-logo-title {
+            font-size: 1.25rem; font-weight: 700;
+            letter-spacing: -0.02em;
+            color: var(--fg);
+        }
+        .app-logo-subtitle {
+            font-size: 0.625rem; font-weight: 600;
+            letter-spacing: 0.15em; text-transform: uppercase;
+            color: var(--muted-fg);
+        }
+        .app-nav {
+            display: flex; align-items: center; gap: 0.25rem;
+            padding: 0.25rem;
+            border-radius: var(--radius);
+        }
+        .app-nav .nav-btn {
+            display: flex; align-items: center; gap: 0.5rem;
+            padding: 0.5rem 1rem;
+            border: 0; background: transparent; cursor: pointer;
+            border-radius: calc(var(--radius) - 4px);
+            font: 500 0.875rem var(--font-sans);
+            color: var(--muted-fg);
+            transition: all 0.2s;
+        }
+        .app-nav .nav-btn:hover { color: var(--fg); background: var(--secondary); }
+        .app-nav .nav-btn.active {
+            background: oklch(0.65 0.2 200 / 0.15);
+            color: var(--accent);
+            box-shadow: 0 1px 2px oklch(0 0 0 / 0.1);
+        }
+        .app-toggles {
+            display: flex; align-items: center; gap: 0.25rem;
+            padding: 0.4rem 0.6rem;
+            border-radius: var(--radius);
+        }
+        .app-toggles > .divider { width: 1px; height: 1.5rem; background: var(--border-soft); margin: 0 0.25rem; }
+        .app-toggle {
+            display: flex; align-items: center; gap: 0.5rem;
+            padding: 0.25rem 0.5rem;
+            color: var(--muted-fg);
+            font: 500 0.6875rem var(--font-sans);
+        }
+        .app-toggle .lucide { color: var(--muted-fg); }
+        .app-toggle input[type="checkbox"] { transform: scale(0.85); accent-color: var(--accent); cursor: pointer; }
+        .app-toggle label { cursor: pointer; user-select: none; }
+        .app-actions { display: flex; align-items: center; gap: 0.5rem; }
+        .btn {
+            display: inline-flex; align-items: center; gap: 0.5rem;
+            height: 2.25rem; padding: 0 0.85rem;
+            border-radius: calc(var(--radius) - 2px);
+            border: 0; cursor: pointer;
+            font: 600 0.8125rem var(--font-sans);
+            transition: all 0.2s;
+        }
+        .btn-ghost {
+            background: transparent; color: var(--muted-fg);
+            border: 1px solid var(--border-soft);
+        }
+        .btn-ghost:hover { background: var(--secondary); color: var(--fg); }
+        .btn-success {
+            background: var(--success); color: var(--success-fg);
+            box-shadow: 0 4px 14px -4px oklch(0.72 0.2 155 / 0.3);
+        }
+        .btn-success:hover { background: oklch(0.72 0.2 155 / 0.9); }
+        .btn-destructive {
+            background: var(--destructive); color: var(--destructive-fg);
+            box-shadow: 0 4px 14px -4px oklch(0.6 0.22 25 / 0.3);
+        }
+        .btn-destructive:hover { background: oklch(0.6 0.22 25 / 0.9); }
+        .btn-icon {
+            width: 2.25rem; height: 2.25rem; padding: 0;
+            display: inline-flex; align-items: center; justify-content: center;
+        }
+        .app-status-row {
+            display: flex; flex-wrap: wrap; align-items: center; gap: 1rem;
+            padding-top: 1rem; border-top: 1px solid var(--border-soft);
+        }
+        .status-pill {
+            display: inline-flex; align-items: center; gap: 0.4rem;
+            padding: 0.25rem 0.6rem;
+            border-radius: 9999px;
+            font: 500 0.625rem var(--font-sans);
+            border: 1px solid;
+        }
+        .status-pill.connected   { color: var(--accent);     background: oklch(0.65 0.2 200 / 0.1); border-color: oklch(0.65 0.2 200 / 0.2); }
+        .status-pill.live        { color: var(--success);    background: oklch(0.72 0.2 155 / 0.1); border-color: oklch(0.72 0.2 155 / 0.2); }
+        .status-pill.ready       { color: var(--chart-4);    background: oklch(0.8 0.15 90 / 0.1);  border-color: oklch(0.8 0.15 90 / 0.2); }
+        .status-pill.error       { color: var(--destructive);background: oklch(0.6 0.22 25 / 0.1);  border-color: oklch(0.6 0.22 25 / 0.2); }
+        .uptime-display {
+            margin-left: auto;
+            font-size: 0.75rem; color: var(--muted-fg);
+            display: flex; align-items: center; gap: 0.5rem;
+        }
+        .uptime-display .value {
+            font-family: var(--font-mono);
+            color: var(--fg);
+        }
+
+        /* Restyled ticker tape with glass + edge fades */
+        .ticker-tape.modern {
+            position: relative;
+            background: oklch(0.08 0.015 270 / 0.5);
+            border-bottom: 1px solid var(--border);
+            overflow: hidden;
+        }
+        .ticker-tape.modern::before,
+        .ticker-tape.modern::after {
+            content: ''; position: absolute; top: 0; bottom: 0; width: 5rem;
+            pointer-events: none; z-index: 10;
+        }
+        .ticker-tape.modern::before { left: 0;  background: linear-gradient(to right, var(--bg), transparent); }
+        .ticker-tape.modern::after  { right: 0; background: linear-gradient(to left,  var(--bg), transparent); }
+
+        /* Hide legacy header markup that got replaced */
+        .legacy-tab-navigation,
+        .legacy-dashboard-header { display: none !important; }
     </style>
 </head>
 <body>
@@ -1003,14 +1161,97 @@
         <div class="ambient-blob ambient-blob-3"></div>
     </div>
 
-    <div class="ticker-tape" id="ticker-tape">
+    <!-- v-ui-header-2026-04-29: unified top bar — logo, nav, toggles,
+         actions, status badges + uptime. Replaces the legacy header
+         that was nested inside the dashboard tab. All existing IDs
+         (mode-toggle, confirm-toggle, etc.) preserved so existing
+         JS handlers (toggleTradingMode, toggleConfirmations, ...)
+         continue to work without modification. -->
+    <header class="app-topbar glass">
+        <div class="app-topbar-inner">
+            <div class="app-topbar-row">
+                <div style="display:flex;align-items:center;gap:1.5rem">
+                    <div class="app-logo">
+                        <div class="app-logo-icon" id="app-logo-icon"></div>
+                        <div>
+                            <div class="app-logo-title">TradingBot</div>
+                            <div class="app-logo-subtitle">Pro Dashboard</div>
+                        </div>
+                    </div>
+                    <nav class="app-nav glass-subtle" id="app-nav"></nav>
+                </div>
+
+                <div style="display:flex;flex-wrap:wrap;align-items:center;gap:0.75rem">
+                    <div class="app-toggles glass-subtle" id="app-toggles">
+                        <div class="app-toggle">
+                            <input type="checkbox" id="mode-toggle" onchange="toggleTradingMode()">
+                            <label for="mode-toggle"><span id="mode-label">Simulation</span></label>
+                        </div>
+                        <div class="divider"></div>
+                        <div class="app-toggle">
+                            <span class="lucide-slot" data-icon="shield" data-size="14"></span>
+                            <input type="checkbox" id="confirm-toggle" checked onchange="toggleConfirmations()">
+                            <label for="confirm-toggle"><span id="confirm-label">Confirms</span></label>
+                        </div>
+                        <div class="divider"></div>
+                        <div class="app-toggle">
+                            <input type="checkbox" id="close-mode-toggle" checked onchange="toggleCloseMode()">
+                            <label for="close-mode-toggle"><span id="close-mode-label">Manual Close</span></label>
+                        </div>
+                        <div class="divider"></div>
+                        <div class="app-toggle">
+                            <span class="lucide-slot" data-icon="cpu" data-size="14"></span>
+                            <input type="checkbox" id="ml-prediction-toggle" checked onchange="toggleMLPrediction()">
+                            <label for="ml-prediction-toggle"><span id="ml-prediction-label">ML</span></label>
+                        </div>
+                    </div>
+
+                    <div class="app-actions">
+                        <button class="btn btn-ghost" onclick="refreshPositions()">
+                            <span class="lucide-slot" data-icon="refresh-cw" data-size="14"></span>
+                            <span>Refresh</span>
+                        </button>
+                        <button class="btn btn-success" onclick="startTrading()">
+                            <span class="lucide-slot" data-icon="play" data-size="14"></span>
+                            <span>Start</span>
+                        </button>
+                        <button class="btn btn-destructive" onclick="stopTrading()">
+                            <span class="lucide-slot" data-icon="square" data-size="14"></span>
+                            <span>Stop</span>
+                        </button>
+                        <button class="btn btn-ghost btn-icon" title="Settings">
+                            <span class="lucide-slot" data-icon="settings" data-size="14"></span>
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="app-status-row">
+                <span style="display:inline-flex;align-items:center;gap:0.5rem">
+                    <span class="pulse-dot"></span>
+                    <span style="font:500 0.75rem var(--font-sans);color:var(--muted-fg)">Bot Active</span>
+                </span>
+                <span style="width:1px;height:1rem;background:var(--border-soft)"></span>
+                <span class="status-pill connected"><span class="lucide-slot" data-icon="shield" data-size="12"></span>Schwab</span>
+                <span class="status-pill live"><span class="lucide-slot" data-icon="wifi" data-size="12"></span>WebSocket</span>
+                <span class="status-pill ready"><span class="lucide-slot" data-icon="cpu" data-size="12"></span>ML Model</span>
+                <span class="uptime-display">
+                    <span>Session:</span>
+                    <span class="value" id="session-uptime">—</span>
+                </span>
+            </div>
+        </div>
+    </header>
+
+    <div class="ticker-tape modern" id="ticker-tape">
         <div class="ticker-content" id="ticker-content">
             <!-- Ticker items will be inserted here -->
         </div>
     </div>
 
-    <!-- Tab Navigation -->
-    <div class="tab-navigation">
+    <!-- Legacy tab nav — hidden by CSS, replaced by .app-nav above.
+         Kept in DOM only because some JS/tests may still reference IDs. -->
+    <div class="tab-navigation legacy-tab-navigation">
         <button class="tab-button active" onclick="switchTab('dashboard')">
             <span class="tab-icon">📊</span>Dashboard
         </button>
@@ -1037,7 +1278,7 @@
         </div>
         
         <div class="dashboard-panel">
-            <div class="header">
+            <div class="header legacy-dashboard-header">
                 <h1>Trading Bot Dashboard</h1>
                 <div class="settings-row">
                     <div class="toggle-group">
@@ -2314,6 +2555,72 @@
             if (!path) return '';
             return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide ${extraClass}" aria-hidden="true">${path}</svg>`;
         }
+
+        // v-ui-header-2026-04-29: replace every <span class="lucide-slot"
+        // data-icon="X" data-size="N"> with the inline SVG. Run on DOMContentLoaded
+        // and exposed for re-runs after dynamic markup insertion.
+        function renderLucideSlots(root = document) {
+            root.querySelectorAll('.lucide-slot').forEach(slot => {
+                const name = slot.dataset.icon;
+                const size = parseInt(slot.dataset.size || '16', 10);
+                slot.outerHTML = lucide(name, size);
+            });
+        }
+
+        // v-ui-header-2026-04-29: build the new top-bar nav and decorate
+        // the logo + populate session uptime. Idempotent — safe to call
+        // many times.
+        const _NAV_TABS = [
+            { id: 'dashboard',   label: 'Dashboard',         icon: 'bar-chart-3' },
+            { id: 'sentiment',   label: 'News & Sentiment',  icon: 'newspaper'   },
+            { id: 'backtest',    label: 'Backtesting',       icon: 'activity'    },
+        ];
+        function buildAppNav(activeId = 'dashboard') {
+            const nav = document.getElementById('app-nav');
+            if (!nav) return;
+            nav.innerHTML = _NAV_TABS.map(t => `
+                <button class="nav-btn ${t.id === activeId ? 'active' : ''}" onclick="switchAppTab('${t.id}')">
+                    ${lucide(t.icon, 16)}
+                    <span>${t.label}</span>
+                </button>
+            `).join('');
+        }
+        function switchAppTab(id) {
+            // Drive existing switchTab() — keeps all old DOM logic (tab-content
+            // show/hide etc.) untouched. Then refresh the active-pill state.
+            if (typeof switchTab === 'function') switchTab(id);
+            buildAppNav(id);
+        }
+        function decorateAppLogo() {
+            const el = document.getElementById('app-logo-icon');
+            if (el) el.innerHTML = lucide('bot', 20);
+        }
+
+        // v-ui-header-2026-04-29: rolling session uptime in the status row.
+        let _appLoadTime = Date.now();
+        function tickSessionUptime() {
+            const el = document.getElementById('session-uptime');
+            if (!el) return;
+            const sec = Math.floor((Date.now() - _appLoadTime) / 1000);
+            const h = Math.floor(sec / 3600);
+            const m = Math.floor((sec % 3600) / 60);
+            const s = sec % 60;
+            el.textContent = h > 0 ? `${h}h ${m}m` : `${m}m ${s}s`;
+        }
+
+        // Wire it all up once the DOM is ready, then keep slots refreshed
+        // whenever new markup is inserted that contains .lucide-slot tags.
+        (function initAppShell() {
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', initAppShell);
+                return;
+            }
+            decorateAppLogo();
+            buildAppNav('dashboard');
+            renderLucideSlots(document);
+            tickSessionUptime();
+            setInterval(tickSessionUptime, 1000);
+        })();
 
         async function toggleManagedByBot(symbol, enabled) {
             try {
