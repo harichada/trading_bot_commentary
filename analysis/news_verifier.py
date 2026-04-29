@@ -142,7 +142,12 @@ class NewsVerifier:
     async def _verify_via_yfinance(
         self, symbol: str, expected_direction: int
     ) -> Optional[VerifyResult]:
-        """Fallback: yfinance ticker.news has providerPublishTime epochs."""
+        """Fallback: yfinance ticker.news has providerPublishTime epochs.
+
+        v-async-safe-news-2026-04-29: yfinance is synchronous; wrap in
+        a thread executor with timeout to avoid blocking the event loop
+        when Yahoo hangs.
+        """
         try:
             import yfinance as yf
         except Exception:
@@ -150,8 +155,22 @@ class NewsVerifier:
 
         now_utc = datetime.now(timezone.utc)
         cutoff = now_utc - timedelta(minutes=self.freshness_minutes)
-        ticker = yf.Ticker(symbol)
-        raw = list(ticker.news or [])
+
+        import asyncio as _aio
+        def _yf_call():
+            try:
+                return list(yf.Ticker(symbol).news or [])
+            except Exception:
+                return []
+        try:
+            loop = _aio.get_event_loop()
+            raw = await _aio.wait_for(
+                loop.run_in_executor(None, _yf_call),
+                timeout=6.0,
+            )
+        except _aio.TimeoutError:
+            logger.warning(f"news_verifier yfinance timeout for {symbol}")
+            return None
         norm = []
         for a in raw:
             ts_epoch = a.get("providerPublishTime") or 0

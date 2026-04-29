@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import hashlib
 import re
@@ -16,6 +17,33 @@ from strategies.base import TradingStrategyWithCommentary
 from strategies.builtin import _floored_atr
 
 logger = logging.getLogger('TradingBot')
+
+
+# v-async-safe-news-2026-04-29: yfinance and feedparser are SYNCHRONOUS.
+# Calling them inside an async coroutine blocks the entire event loop —
+# observed today after MRVL: Yahoo's API hung, the analysis loop froze
+# for 7+ minutes, every other async task (WebSocket, position management)
+# stalled until the bot was force-restarted.
+#
+# This helper runs any sync callable in the default thread executor
+# with a hard timeout, so a hung external API can never block the loop.
+async def _run_sync_with_timeout(fn, timeout: float = 6.0, default=None):
+    """Run `fn()` in a worker thread, return its value or `default` on
+    timeout / exception. Logs the timeout for observability."""
+    try:
+        loop = asyncio.get_event_loop()
+        return await asyncio.wait_for(
+            loop.run_in_executor(None, fn),
+            timeout=timeout,
+        )
+    except asyncio.TimeoutError:
+        logger.warning(
+            f"sync_call_timeout fn={getattr(fn, '__name__', repr(fn))} after {timeout}s"
+        )
+        return default
+    except Exception as exc:
+        logger.debug(f"sync_call_error fn={fn}: {exc}")
+        return default
 
 
 class FreeNewsAggregator:
@@ -70,9 +98,12 @@ class FreeNewsAggregator:
         try:
             import yfinance as yf
 
-            # Use yfinance for news
-            ticker = yf.Ticker(symbol)
-            news_data = ticker.news
+            # v-async-safe-news-2026-04-29: yfinance is sync; wrap in
+            # executor with hard timeout to prevent event-loop blocking
+            # if Yahoo's API hangs (root cause of 11:13 MRVL freeze).
+            def _yahoo_fetch():
+                return yf.Ticker(symbol).news or []
+            news_data = await _run_sync_with_timeout(_yahoo_fetch, timeout=6.0, default=[])
 
             news_items = []
             for article in news_data:
@@ -98,9 +129,13 @@ class FreeNewsAggregator:
 
                 news_items.append(news_item)
 
-            # Also get RSS feed
+            # Also get RSS feed (feedparser also sync — wrap with timeout)
             rss_url = self.rss_feeds['yahoo'].format(symbol=symbol)
-            feed = feedparser.parse(rss_url)
+            feed = await _run_sync_with_timeout(
+                lambda: feedparser.parse(rss_url),
+                timeout=5.0,
+                default=type('Empty', (), {'entries': []})(),
+            )
 
             for entry in feed.entries[:10]:  # Last 10 entries
                 # Parse time
@@ -134,10 +169,14 @@ class FreeNewsAggregator:
         """Fetch from various RSS feeds"""
         news_items = []
 
-        # Google News RSS
+        # Google News RSS (feedparser is sync — wrap with timeout)
         try:
             google_url = self.rss_feeds['google'].format(symbol=symbol)
-            feed = feedparser.parse(google_url)
+            feed = await _run_sync_with_timeout(
+                lambda: feedparser.parse(google_url),
+                timeout=5.0,
+                default=type('Empty', (), {'entries': []})(),
+            )
 
             for entry in feed.entries[:5]:  # Top 5 from Google
                 # Extract actual source from Google News title
