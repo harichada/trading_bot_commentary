@@ -3108,6 +3108,66 @@ class TradingEngineWithCommentary:
                         "recent_exit", cooldown_remaining_min=round(remaining, 2))
             return
 
+        # v-shortable-check-2026-04-29: pre-trade shortable gate.
+        # SELL signals only — verify the broker will actually accept the
+        # short before we submit. Avoids HTB rejection at order placement
+        # time (Schwab returns generic "order rejected" without indicating
+        # shortable status, so the gate must be upstream).
+        # Skips this check when this is a closing SELL on an existing LONG
+        # position (signal.symbol already in self.positions/simulated_positions).
+        if signal.signal_type == SignalType.SELL:
+            already_long = (
+                signal.symbol in self.positions and
+                getattr(self.positions.get(signal.symbol), 'side', None) == 'long'
+            ) or (
+                signal.symbol in self.simulated_positions and
+                getattr(self.simulated_positions.get(signal.symbol), 'side', None) == 'long'
+            )
+            if not already_long:
+                # Lazy-init the checker once per engine — tiny memory cost.
+                if not hasattr(self, '_shortable_checker'):
+                    from analysis.shortable_check import ShortableChecker
+                    self._shortable_checker = ShortableChecker(
+                        cache_ttl_sec=6 * 3600,
+                        assume_shortable_on_error=False,  # fail-closed: if
+                        # we can't confirm shortable, don't risk an HTB
+                        # rejection mid-order. User can flip to True for
+                        # more aggressive sim runs.
+                    )
+                try:
+                    info = await self._shortable_checker.is_shortable(signal.symbol)
+                except Exception as _exc:
+                    info = None
+                if info is not None and not info.shortable:
+                    self._audit(
+                        "shortable_check", signal.symbol, "skip",
+                        "not_shortable",
+                        side="short",
+                        source=info.source,
+                        easy_to_borrow=info.easy_to_borrow,
+                    )
+                    self.commentary.add_commentary(TradingCommentary(
+                        timestamp=datetime.now(),
+                        type=CommentaryType.RISK_ASSESSMENT,
+                        symbol=signal.symbol,
+                        title=f"⛔ Short Skipped — Not Shortable",
+                        message=(
+                            f"{signal.symbol} is not shortable per Alpaca "
+                            f"({info.source}). Avoiding HTB rejection at "
+                            f"order placement."
+                        ),
+                        importance=7,
+                    ))
+                    return
+                # Note ETB status for audit (still proceeds; HTB borrow
+                # fees are usually small but worth tracking).
+                if info is not None and not info.easy_to_borrow:
+                    self._audit(
+                        "shortable_check", signal.symbol, "warn",
+                        "hard_to_borrow",
+                        side="short", source=info.source,
+                    )
+
         # Sector correlation guard — limit to 1 open position per
         # correlated group to prevent cluster stop-outs (e.g., MARA +
         # RIOT + COIN all dropping together when BTC falls).
