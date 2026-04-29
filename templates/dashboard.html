@@ -1573,14 +1573,128 @@
             color: var(--fg);
         }
         #commentary-list .commentary-item .commentary-time { color: var(--muted-fg); font-size: 0.6875rem; font-family: var(--font-mono); }
-        #commentary-list .commentary-item.warning,
+        #commentary-list .commentary-item.commentary-warning,
         #commentary-list .commentary-item[data-type="warning"] { border-left-color: var(--destructive); }
-        #commentary-list .commentary-item.opportunity,
+        #commentary-list .commentary-item.commentary-opportunity,
         #commentary-list .commentary-item[data-type="opportunity"] { border-left-color: var(--success); }
-        #commentary-list .commentary-item.technical,
+        #commentary-list .commentary-item.commentary-technical,
         #commentary-list .commentary-item[data-type="technical"] { border-left-color: var(--chart-4); }
-        #commentary-list .commentary-item.decision,
+        #commentary-list .commentary-item.commentary-decision,
         #commentary-list .commentary-item[data-type="decision"] { border-left-color: var(--accent); }
+        #commentary-list .commentary-item.commentary-risk_assessment,
+        #commentary-list .commentary-item[data-type="risk_assessment"] { border-left-color: var(--chart-4); }
+        #commentary-list .commentary-item.commentary-fundamental,
+        #commentary-list .commentary-item[data-type="fundamental"] { border-left-color: var(--accent); }
+        #commentary-list .commentary-item.commentary-psychology,
+        #commentary-list .commentary-item[data-type="psychology"] { border-left-color: var(--chart-5); }
+        #commentary-list .commentary-item.commentary-error,
+        #commentary-list .commentary-item[data-type="error"] { border-left-color: var(--destructive); }
+
+        /* v-ui-commentary-restyle-2026-04-29: full inner restyle of
+           commentary-item children. Existing markup keeps working;
+           these rules just give it the dashboardUI look. */
+        #commentary-list .commentary-item {
+            display: flex; flex-direction: column; gap: 0.5rem;
+        }
+        #commentary-list .commentary-header {
+            display: flex; align-items: flex-start; justify-content: space-between;
+            gap: 0.5rem;
+        }
+        #commentary-list .commentary-title-row {
+            display: flex; align-items: center; gap: 0.5rem;
+            flex: 1; min-width: 0;
+        }
+        #commentary-list .commentary-type-badge {
+            display: inline-flex; align-items: center; justify-content: center;
+            width: 1.5rem; height: 1.5rem;
+            border-radius: 9999px;
+            flex-shrink: 0;
+        }
+        #commentary-list .commentary-type-badge.commentary-decision    { background: oklch(0.65 0.2 200 / 0.15); color: var(--accent); }
+        #commentary-list .commentary-type-badge.commentary-opportunity { background: oklch(0.72 0.2 155 / 0.15); color: var(--success); }
+        #commentary-list .commentary-type-badge.commentary-warning,
+        #commentary-list .commentary-type-badge.commentary-error       { background: oklch(0.6 0.22 25 / 0.15); color: var(--destructive); }
+        #commentary-list .commentary-type-badge.commentary-technical,
+        #commentary-list .commentary-type-badge.commentary-risk_assessment { background: oklch(0.8 0.15 90 / 0.15); color: var(--chart-4); }
+        #commentary-list .commentary-type-badge.commentary-fundamental { background: oklch(0.65 0.2 200 / 0.15); color: var(--accent); }
+        #commentary-list .commentary-type-badge.commentary-psychology  { background: oklch(0.7 0.2 320 / 0.15); color: var(--chart-5); }
+        #commentary-list .commentary-type-badge.commentary-account_update,
+        #commentary-list .commentary-type-badge.commentary-info,
+        #commentary-list .commentary-type-badge.commentary-market_analysis,
+        #commentary-list .commentary-type-badge.commentary-anomaly,
+        #commentary-list .commentary-type-badge.commentary-signal_generation { background: oklch(0.18 0.01 270); color: var(--muted-fg); }
+        #commentary-list .commentary-title {
+            font: 600 0.8125rem var(--font-sans);
+            color: var(--fg);
+            line-height: 1.35;
+            overflow: hidden; text-overflow: ellipsis;
+        }
+        #commentary-list .commentary-symbol-pill {
+            display: inline-flex; align-items: center;
+            padding: 0.05rem 0.45rem;
+            font: 700 0.625rem var(--font-mono);
+            color: var(--accent);
+            background: oklch(0.65 0.2 200 / 0.1);
+            border: 1px solid oklch(0.65 0.2 200 / 0.25);
+            border-radius: calc(var(--radius) - 6px);
+            margin-left: 0.4rem;
+        }
+        #commentary-list .commentary-time {
+            font: 500 0.6875rem var(--font-mono);
+            color: var(--muted-fg);
+            white-space: nowrap;
+            display: inline-flex; align-items: center; gap: 0.25rem;
+        }
+        #commentary-list .commentary-message {
+            font: 400 0.8125rem var(--font-sans);
+            color: oklch(0.85 0 0);
+            line-height: 1.45;
+            white-space: pre-wrap;
+            margin: 0;
+        }
+        #commentary-list .commentary-data {
+            display: flex; flex-wrap: wrap; gap: 0.35rem;
+            padding: 0.5rem 0.65rem;
+            background: oklch(0.1 0.015 270 / 0.5);
+            border: 1px solid var(--border-soft);
+            border-radius: calc(var(--radius) - 4px);
+            font: 500 0.6875rem var(--font-mono);
+        }
+        #commentary-list .commentary-data .kv {
+            display: inline-flex; align-items: center; gap: 0.3rem;
+            padding: 0.15rem 0.45rem;
+            border-radius: calc(var(--radius) - 6px);
+            background: oklch(0.18 0.01 270 / 0.6);
+            color: var(--muted-fg);
+        }
+        #commentary-list .commentary-data .kv .k { color: oklch(0.5 0 0); text-transform: lowercase; }
+        #commentary-list .commentary-data .kv .v { color: var(--fg); }
+        #commentary-list .commentary-data .kv.up   .v { color: var(--success); }
+        #commentary-list .commentary-data .kv.down .v { color: var(--destructive); }
+        #commentary-list .confidence-bar {
+            height: 4px;
+            background: oklch(0.18 0.01 270);
+            border-radius: 9999px;
+            overflow: hidden;
+            margin-top: 0.25rem;
+        }
+        #commentary-list .confidence-fill {
+            height: 100%;
+            background: linear-gradient(90deg, var(--accent), var(--success));
+            border-radius: 9999px;
+            transition: width 0.4s;
+        }
+        #commentary-list .commentary-confidence-label {
+            font: 600 0.625rem var(--font-sans);
+            color: var(--muted-fg);
+            text-transform: uppercase; letter-spacing: 0.1em;
+            display: flex; justify-content: space-between;
+        }
+        #commentary-list .commentary-confidence-label .pct {
+            font-family: var(--font-mono);
+            color: var(--accent);
+            font-weight: 700;
+        }
 
         /* News-sentiment widget styling */
         #sentiment-card {
@@ -2932,40 +3046,98 @@
             }
         }
         
+        // v-ui-commentary-restyle-2026-04-29: rebuilt to match dashboardUI
+        // live-commentary card layout: type-icon badge, title with symbol
+        // pill, time chip, message text, key/value chips, confidence bar.
+        const _COMMENTARY_TYPE_ICONS = {
+            decision:        'zap',
+            opportunity:     'lightbulb',
+            warning:         'alert-triangle',
+            error:           'alert-triangle',
+            technical:       'bar-chart-3',
+            risk_assessment: 'alert-triangle',
+            fundamental:     'newspaper',
+            psychology:      'brain',
+            market_analysis: 'activity',
+            account_update:  'wallet',
+            anomaly:         'alert-triangle',
+            signal_generation: 'zap',
+            info:            'check-circle',
+        };
+        // Heuristic: should this kv chip be tinted up/down?
+        // Anything with "pnl", "change", "return" in the key, or anything
+        // that's a number with a leading +/- gets sign-tinted.
+        function _kvDirection(key, value) {
+            const k = (key || '').toLowerCase();
+            const isMoney = k.includes('pnl') || k.includes('change') || k.includes('return') || k.includes('p&l');
+            if (!isMoney) return '';
+            const n = (typeof value === 'number') ? value : parseFloat(value);
+            if (!isFinite(n)) return '';
+            return n > 0 ? 'up' : n < 0 ? 'down' : '';
+        }
+        function _formatKvValue(value) {
+            if (value === null || value === undefined) return '—';
+            if (typeof value === 'object') {
+                try { return JSON.stringify(value); } catch { return String(value); }
+            }
+            if (typeof value === 'number') {
+                // Compact formatting: dollars get 2 decimals, percents 2 decimals,
+                // small ints stay int. Defaults to 2-decimal trim.
+                if (Number.isInteger(value)) return String(value);
+                return value.toFixed(2);
+            }
+            return String(value);
+        }
+
         function createCommentaryItem(commentary) {
             const div = document.createElement('div');
-            div.className = `commentary-item commentary-${commentary.type}`;
-            
+            const t = (commentary.type || 'info').toLowerCase();
+            div.className = `commentary-item commentary-${t}`;
+            div.dataset.type = t;
+
+            const iconName = _COMMENTARY_TYPE_ICONS[t] || 'check-circle';
+            const time = new Date(commentary.timestamp).toLocaleTimeString('en-US', {
+                hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true,
+            });
+            const symbolPill = commentary.symbol
+                ? `<span class="commentary-symbol-pill">${escapeHtml(commentary.symbol)}</span>`
+                : '';
+
             let html = `
                 <div class="commentary-header">
-                    <div class="commentary-title">${commentary.title}</div>
-                    <div class="commentary-time">${new Date(commentary.timestamp).toLocaleTimeString()}</div>
+                    <div class="commentary-title-row">
+                        <span class="commentary-type-badge commentary-${t}">${lucide(iconName, 12)}</span>
+                        <span class="commentary-title">${escapeHtml(commentary.title || '')}${symbolPill}</span>
+                    </div>
+                    <span class="commentary-time">${lucide('clock', 11)}${time}</span>
                 </div>
-                <div class="commentary-message">${commentary.message}</div>
             `;
-            
-            if (commentary.data && Object.keys(commentary.data).length > 0) {
-                html += '<div class="commentary-data">';
-                for (const [key, value] of Object.entries(commentary.data)) {
-                    if (typeof value === 'object' && value !== null) {
-                        html += `${key}: ${JSON.stringify(value, null, 2)}<br>`;
-                    } else if (typeof value === 'number') {
-                        html += `${key}: ${value.toFixed ? value.toFixed(2) : value}<br>`;
-                    } else {
-                        html += `${key}: ${value}<br>`;
-                    }
-                }
-                html += '</div>';
+            if (commentary.message) {
+                html += `<div class="commentary-message">${escapeHtml(commentary.message)}</div>`;
             }
-            
-            if (commentary.confidence) {
+            if (commentary.data && Object.keys(commentary.data).length > 0) {
+                const chips = Object.entries(commentary.data).map(([k, v]) => {
+                    const dir = _kvDirection(k, v);
+                    const valStr = _formatKvValue(v);
+                    return `<span class="kv ${dir}">
+                        <span class="k">${escapeHtml(k)}</span><span class="v">${escapeHtml(valStr)}</span>
+                    </span>`;
+                }).join('');
+                html += `<div class="commentary-data">${chips}</div>`;
+            }
+            if (commentary.confidence != null) {
+                const pct = Math.round(commentary.confidence * 100);
                 html += `
+                    <div class="commentary-confidence-label">
+                        <span>Confidence</span>
+                        <span class="pct">${pct}%</span>
+                    </div>
                     <div class="confidence-bar">
-                        <div class="confidence-fill" style="width: ${commentary.confidence * 100}%"></div>
+                        <div class="confidence-fill" style="width:${pct}%"></div>
                     </div>
                 `;
             }
-            
+
             div.innerHTML = html;
             return div;
         }
@@ -3308,6 +3480,13 @@
             'star':       '<polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>',
             'x':          '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
             'chevron-right': '<path d="m9 18 6-6-6-6"/>',
+            // commentary type icons
+            'alert-triangle': '<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/>',
+            'lightbulb':      '<path d="M15 14c.2-1 .7-1.7 1.5-2.5 1-.9 1.5-2.2 1.5-3.5A6 6 0 0 0 6 8c0 1 .2 2.2 1.5 3.5.7.7 1.3 1.5 1.5 2.5"/><path d="M9 18h6"/><path d="M10 22h4"/>',
+            'brain':          '<path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/><path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/><path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4"/><path d="M17.599 6.5a3 3 0 0 0 .399-1.375"/><path d="M6.003 5.125A3 3 0 0 0 6.401 6.5"/><path d="M3.477 10.896a4 4 0 0 1 .585-.396"/><path d="M19.938 10.5a4 4 0 0 1 .585.396"/><path d="M6 18a4 4 0 0 1-1.967-.516"/><path d="M19.967 17.484A4 4 0 0 1 18 18"/>',
+            'check-circle':   '<path d="M21.801 10A10 10 0 1 1 17 3.335"/><path d="m9 11 3 3L22 4"/>',
+            'minus-circle':   '<circle cx="12" cy="12" r="10"/><path d="M8 12h8"/>',
+            'clock':          '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>',
         };
         function lucide(name, size = 16, extraClass = '') {
             const path = LUCIDE_PATHS[name];
