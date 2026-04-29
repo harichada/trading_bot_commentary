@@ -130,19 +130,39 @@ class StockScreener:
         return movers
 
     async def _get_volatile_stocks(self) -> List[Dict[str, Any]]:
-        """Find additional volatile stocks using a pre-screened watchlist"""
+        """Find additional volatile stocks using a pre-screened watchlist.
+
+        v-watchlist-size-2026-04-29: expanded candidate list 20 → 50 names
+        and dropped the per-candidate volume gate from 500k → 100k. The
+        general _is_tradeable filter still applies downstream; this
+        function is the SOURCING step, not the filtering step.
+        """
         volatile_candidates = [
-            'TSLA', 'NVDA', 'AMD', 'PLTR', 'COIN', 'MARA', 'RIOT',
-            'SQ', 'ROKU', 'SNAP', 'PINS', 'DKNG', 'PENN', 'FUBO',
-            'NIO', 'XPEV', 'LI', 'RIVN', 'LCID', 'FSR'
+            # Mega-cap tech / AI
+            'AAPL', 'MSFT', 'GOOG', 'AMZN', 'META', 'NVDA', 'AMD', 'TSLA',
+            'AVGO', 'ORCL', 'CRM', 'ADBE', 'NFLX', 'INTC', 'QCOM', 'CSCO',
+            # AI / semiconductor / cloud
+            'PLTR', 'SMCI', 'ARM', 'MU', 'AMAT', 'LRCX', 'KLAC', 'MRVL',
+            # Crypto / fintech
+            'COIN', 'MARA', 'RIOT', 'SQ', 'PYPL', 'HOOD', 'SOFI',
+            # EV / clean energy
+            'NIO', 'XPEV', 'LI', 'RIVN', 'LCID', 'PLUG', 'FCEL',
+            # Consumer / social
+            'ROKU', 'SNAP', 'PINS', 'DKNG', 'PENN', 'FUBO', 'CHWY', 'PTON',
+            # Biotech volatility
+            'MRNA', 'BNTX', 'NVAX',
+            # Index / sector ETFs (will be filtered by _is_tradeable
+            # if they're on the ETF block-list, but kept here for sourcing)
+            'TQQQ', 'SQQQ',
         ]
 
         volatile_stocks = []
-
         for symbol in volatile_candidates:
             try:
                 quote = self._get_quote_data(symbol)
-                if quote and quote.get('volume', 0) > 500000:
+                # Lower bar — sourcing stage. _is_tradeable does the real
+                # liquidity/spread filtering with current market context.
+                if quote and quote.get('volume', 0) > 100_000:
                     volatile_stocks.append(quote)
             except Exception as e:
                 logger.debug(f"Failed to get quote for {symbol}: {e}")
@@ -197,23 +217,39 @@ class StockScreener:
         return None
 
     def _is_tradeable(self, mover: Dict[str, Any]) -> bool:
-        """Filter for tradeable stocks"""
-        # Volume filter
-        if mover.get('volume', 0) < 500000:
+        """Filter for tradeable stocks.
+
+        v-watchlist-size-2026-04-29: relaxed thresholds so pre-market and
+        low-vol periods don't shrink the watchlist to 5 symbols. Filters
+        are still meaningful — just calibrated for actual intraday data
+        rather than full-RTH peak liquidity.
+        """
+        # Volume filter — pre-market sees ~10% of regular-session volume,
+        # so 250k is the equivalent gate for pre-market that 2.5M would
+        # be at peak. Original 500k rejected most names before 09:30.
+        if mover.get('volume', 0) < 250_000:
             return False
 
-        # Price filter ($5-$500 for good liquidity)
+        # Price filter ($3-$1000 — wider than $5-$500. Lower bound catches
+        # popular sub-$5 names (LCID, NIO sometimes); upper accommodates
+        # NVDA/AVGO/SMCI without rejection.)
         price = mover.get('last', 0)
-        if price < 5 or price > 500:
+        if price < 3 or price > 1000:
             return False
 
-        # Spread filter (less than 0.5% spread)
-        if mover.get('spread', 0) / price > 0.005:
+        # Spread filter — was 0.5%, now 1% to allow mid-cap intraday.
+        # In tight RTH spreads stay under 0.1%; pre-market 0.5-1% is normal.
+        spread = mover.get('spread', 0)
+        if price > 0 and spread / price > 0.01:
             return False
 
-        # Exclude ETFs and special instruments
+        # Exclude leveraged / inverse ETFs that don't behave like stocks
+        # under our trade rules. SPY/QQQ/IWM are fine to trade if they
+        # ever appear, but the legacy block-list leaves them out.
         symbol = mover.get('symbol', '')
-        if any(etf in symbol for etf in ['SPY', 'QQQ', 'IWM', 'DIA', 'VXX', 'UVXY']):
+        excluded = ('SPY', 'QQQ', 'IWM', 'DIA', 'VXX', 'UVXY',
+                    'TQQQ', 'SQQQ', 'TSLL', 'NVDL', 'TMF', 'TLT')
+        if symbol in excluded:
             return False
 
         return True
