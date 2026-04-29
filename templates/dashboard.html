@@ -1380,6 +1380,219 @@
         .heatmap-legend .swatch.bear::before    { background: oklch(0.6 0.22 25 / 0.6); }
         .heatmap-legend .swatch.neutral::before { background: oklch(0.18 0.01 270 / 0.5); }
         .heatmap-legend .swatch.bull::before    { background: oklch(0.72 0.2 155 / 0.6); }
+
+        /* =====================================================================
+           v-ui-tables-commentary-2026-04-29: modern restyle of existing
+           card + table + commentary markup. CSS overrides cascade onto
+           the existing class names so no markup needs to change.
+           ===================================================================== */
+
+        /* Card containers — replaces the old chunky .card style. */
+        .container.tab-content > .dashboard-panel > .card,
+        .container.tab-content > .dashboard-panel > #sentiment-card {
+            background: oklch(0.15 0.02 270 / 0.6);
+            backdrop-filter: blur(20px) saturate(180%);
+            -webkit-backdrop-filter: blur(20px) saturate(180%);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 0;
+            margin-bottom: 1.5rem;
+            overflow: hidden;
+            box-shadow: none;
+        }
+        .container.tab-content > .dashboard-panel > .card > h3,
+        #sentiment-card > div:first-child > h3 {
+            margin: 0;
+            padding: 1rem 1.25rem;
+            border-bottom: 1px solid var(--border-soft);
+            font: 600 0.875rem var(--font-sans);
+            color: var(--fg);
+            display: flex; align-items: center; gap: 0.75rem;
+        }
+        /* Accent bar before each card title — same visual language as section-title */
+        .container.tab-content > .dashboard-panel > .card > h3::before {
+            content: '';
+            display: inline-block;
+            height: 1.5rem; width: 3px;
+            border-radius: 9999px;
+            background: linear-gradient(to bottom, var(--accent), oklch(0.65 0.2 200 / 0.3));
+        }
+        /* Sim card uses warm accent bar */
+        .container.tab-content > .dashboard-panel > .card:has(.badge-simulated) > h3::before {
+            background: linear-gradient(to bottom, var(--chart-4), oklch(0.8 0.15 90 / 0.3));
+        }
+
+        /* REAL / SIM badges */
+        .position-badge {
+            padding: 0.15rem 0.5rem;
+            border-radius: calc(var(--radius) - 4px);
+            font: 600 0.625rem var(--font-sans);
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+            border: 1px solid;
+        }
+        .position-badge.badge-real      { color: var(--accent);  background: oklch(0.65 0.2 200 / 0.1);  border-color: oklch(0.65 0.2 200 / 0.3); }
+        .position-badge.badge-simulated { color: var(--chart-4); background: oklch(0.8 0.15 90 / 0.1);   border-color: oklch(0.8 0.15 90 / 0.3); }
+
+        /* Modern table styling — overrides existing inline / element styles */
+        #real-positions-table, #simulated-positions-table, #trades-table {
+            width: 100%;
+            border-collapse: collapse;
+            font: 500 0.8125rem var(--font-sans);
+        }
+        #real-positions-table thead th, #simulated-positions-table thead th, #trades-table thead th {
+            text-align: left;
+            padding: 0.625rem 1.25rem;
+            font: 600 0.6875rem var(--font-sans);
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            color: var(--muted-fg);
+            background: oklch(0.1 0.015 270 / 0.4);
+            border: 0;
+            border-bottom: 1px solid var(--border-soft);
+        }
+        #real-positions-table tbody td, #simulated-positions-table tbody td, #trades-table tbody td {
+            padding: 0.75rem 1.25rem;
+            border: 0;
+            border-bottom: 1px solid var(--border-soft);
+            color: var(--fg);
+            vertical-align: middle;
+            font-variant-numeric: tabular-nums;
+        }
+        #real-positions-table tbody tr:hover, #simulated-positions-table tbody tr:hover, #trades-table tbody tr:hover {
+            background: oklch(0.18 0.01 270 / 0.3);
+        }
+        #real-positions-table tbody tr:last-child td, #simulated-positions-table tbody tr:last-child td, #trades-table tbody tr:last-child td {
+            border-bottom: 0;
+        }
+
+        /* Numeric cells (currency / %) get tabular nums + mono */
+        #real-positions-table td, #simulated-positions-table td, #trades-table td {
+            font-family: var(--font-sans);
+        }
+
+        .positive { color: var(--success); font-weight: 600; }
+        .negative { color: var(--destructive); font-weight: 600; }
+
+        /* Symbol column with logo — re-tune from earlier commit */
+        .symbol-logo {
+            width: 22px; height: 22px;
+            border-radius: 0.4rem;
+            background: oklch(0.18 0.01 270);
+            margin-right: 0.6rem;
+            vertical-align: middle;
+            object-fit: contain;
+        }
+
+        /* Close + checkbox cells */
+        .close-button {
+            display: inline-flex; align-items: center; gap: 0.35rem;
+            padding: 0.3rem 0.65rem;
+            font: 500 0.6875rem var(--font-sans);
+            color: var(--destructive);
+            background: oklch(0.6 0.22 25 / 0.1);
+            border: 1px solid oklch(0.6 0.22 25 / 0.3);
+            border-radius: calc(var(--radius) - 4px);
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .close-button:hover:not(:disabled) {
+            background: oklch(0.6 0.22 25 / 0.2);
+            border-color: oklch(0.6 0.22 25 / 0.5);
+        }
+        .close-button:disabled { opacity: 0.4; cursor: not-allowed; }
+        .long-term-checkbox, .managed-by-bot-checkbox {
+            accent-color: var(--accent);
+            cursor: pointer;
+            transform: scale(1.1);
+        }
+
+        /* Commentary panel (left sidebar) — modern look */
+        .commentary-panel {
+            background: oklch(0.1 0.015 270 / 0.95);
+            backdrop-filter: blur(20px) saturate(180%);
+            -webkit-backdrop-filter: blur(20px) saturate(180%);
+            border-right: 1px solid var(--border);
+            padding: 1.25rem;
+        }
+        .commentary-panel h2 {
+            margin: 0 0 0.75rem 0;
+            font: 600 1rem var(--font-sans);
+            color: var(--fg);
+            display: flex; align-items: center; gap: 0.6rem;
+        }
+        .commentary-panel h2::before {
+            content: '';
+            display: inline-block; width: 3px; height: 1.25rem;
+            border-radius: 9999px;
+            background: linear-gradient(to bottom, var(--accent), oklch(0.65 0.2 200 / 0.3));
+        }
+
+        .filter-buttons {
+            display: flex; flex-wrap: wrap;
+            gap: 0.25rem;
+            padding: 0.25rem;
+            border-radius: var(--radius);
+            background: oklch(0.12 0.015 270 / 0.4);
+            border: 1px solid oklch(0.25 0.02 270 / 0.15);
+            margin-bottom: 1rem;
+        }
+        .filter-button {
+            padding: 0.4rem 0.75rem;
+            font: 500 0.75rem var(--font-sans);
+            color: var(--muted-fg);
+            background: transparent;
+            border: 0;
+            border-radius: calc(var(--radius) - 4px);
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .filter-button:hover { color: var(--fg); background: var(--secondary); }
+        .filter-button.active {
+            background: oklch(0.65 0.2 200 / 0.15);
+            color: var(--accent);
+        }
+
+        /* Commentary item cards */
+        #commentary-list .commentary-item {
+            padding: 0.75rem;
+            margin-bottom: 0.5rem;
+            border-radius: calc(var(--radius) - 2px);
+            background: oklch(0.12 0.015 270 / 0.5);
+            border: 1px solid var(--border-soft);
+            border-left: 3px solid var(--accent);
+            transition: background 0.2s;
+        }
+        #commentary-list .commentary-item:hover { background: oklch(0.16 0.015 270 / 0.6); }
+        #commentary-list .commentary-item .commentary-title,
+        #commentary-list .commentary-item .commentary-header {
+            font: 600 0.8125rem var(--font-sans);
+            color: var(--fg);
+        }
+        #commentary-list .commentary-item .commentary-time { color: var(--muted-fg); font-size: 0.6875rem; font-family: var(--font-mono); }
+        #commentary-list .commentary-item.warning,
+        #commentary-list .commentary-item[data-type="warning"] { border-left-color: var(--destructive); }
+        #commentary-list .commentary-item.opportunity,
+        #commentary-list .commentary-item[data-type="opportunity"] { border-left-color: var(--success); }
+        #commentary-list .commentary-item.technical,
+        #commentary-list .commentary-item[data-type="technical"] { border-left-color: var(--chart-4); }
+        #commentary-list .commentary-item.decision,
+        #commentary-list .commentary-item[data-type="decision"] { border-left-color: var(--accent); }
+
+        /* News-sentiment widget styling */
+        #sentiment-card {
+            color: var(--fg);
+        }
+        #sentiment-card > div:first-child {
+            padding: 1rem 1.25rem;
+            border-bottom: 1px solid var(--border-soft);
+            margin-bottom: 0;
+        }
+        #sentiment-card .gauge,
+        #sentiment-card #sentiment-headlines,
+        #sentiment-card .sentiment-content {
+            padding: 1rem 1.25rem;
+        }
     </style>
 </head>
 <body>
