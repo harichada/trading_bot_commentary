@@ -1390,9 +1390,11 @@
            the existing class names so no markup needs to change.
            ===================================================================== */
 
-        /* Card containers — replaces the old chunky .card style. */
-        .container.tab-content > .dashboard-panel > .card,
-        .container.tab-content > .dashboard-panel > #sentiment-card {
+        /* Card containers — replaces the old chunky .card style.
+           v-ui-news-trades-row-2026-04-29: relaxed direct-child selector
+           to match nested cards (e.g., inside .row-news-trades). */
+        .container.tab-content .dashboard-panel .card,
+        .container.tab-content .dashboard-panel #sentiment-card {
             background: oklch(0.15 0.02 270 / 0.6);
             backdrop-filter: blur(20px) saturate(180%);
             -webkit-backdrop-filter: blur(20px) saturate(180%);
@@ -1403,7 +1405,10 @@
             overflow: hidden;
             box-shadow: none;
         }
-        .container.tab-content > .dashboard-panel > .card > h3,
+        /* Inside row-news-trades, kill the bottom margin so the row
+           controls spacing — otherwise we'd get double gap. */
+        .row-news-trades .card { margin-bottom: 0; }
+        .container.tab-content .dashboard-panel .card > h3,
         #sentiment-card > div:first-child > h3 {
             margin: 0;
             padding: 1rem 1.25rem;
@@ -1413,7 +1418,7 @@
             display: flex; align-items: center; gap: 0.75rem;
         }
         /* Accent bar before each card title — same visual language as section-title */
-        .container.tab-content > .dashboard-panel > .card > h3::before {
+        .container.tab-content .dashboard-panel .card > h3::before {
             content: '';
             display: inline-block;
             height: 1.5rem; width: 3px;
@@ -1421,7 +1426,7 @@
             background: linear-gradient(to bottom, var(--accent), oklch(0.65 0.2 200 / 0.3));
         }
         /* Sim card uses warm accent bar */
-        .container.tab-content > .dashboard-panel > .card:has(.badge-simulated) > h3::before {
+        .container.tab-content .dashboard-panel .card:has(.badge-simulated) > h3::before {
             background: linear-gradient(to bottom, var(--chart-4), oklch(0.8 0.15 90 / 0.3));
         }
 
@@ -1864,6 +1869,26 @@
             height: 220px;
             padding: 0.75rem 1rem 0.5rem 1rem;
         }
+
+        /* v-ui-news-trades-row-2026-04-29: news + recent trades side by side.
+           Each child .card already has its own glass styling from commit 4;
+           we just lay them out in a 2-column grid here. */
+        .row-news-trades {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1rem;
+            align-items: start;
+            margin-bottom: 1.5rem;
+        }
+        @media (max-width: 1100px) {
+            .row-news-trades { grid-template-columns: 1fr; }
+        }
+        /* Children should never bleed past their grid cell (long headlines etc.) */
+        .row-news-trades > .card { min-width: 0; }
+        /* Tables inside a side-by-side card need horizontal scroll if they
+           overflow; the vertical column is narrower than full-width. */
+        .row-news-trades #trades-table { display: block; overflow-x: auto; }
+        .row-news-trades #trades-table thead, .row-news-trades #trades-table tbody { display: table; width: 100%; table-layout: fixed; }
     </style>
 </head>
 <body>
@@ -2259,6 +2284,9 @@
                 </table>
             </div>
 
+            <!-- v-ui-news-trades-row-2026-04-29: news + recent trades side
+                 by side. Collapses to single column on viewports <1100px. -->
+            <section class="row-news-trades">
             <!-- News Sentiment Widget -->
             <div class="card" id="sentiment-card">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
@@ -2333,6 +2361,7 @@
                     </tbody>
                 </table>
             </div>
+            </section>
         </div>
     </div>
 
