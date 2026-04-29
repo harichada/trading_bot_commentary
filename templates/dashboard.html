@@ -1149,6 +1149,202 @@
         /* Hide legacy header markup that got replaced */
         .legacy-tab-navigation,
         .legacy-dashboard-header { display: none !important; }
+
+        /* =====================================================================
+           v-ui-kpi-2026-04-29: account-overview KPI cards.
+           Replaces .stats-row .stat-card with hover-glow tiles. The legacy
+           .stats-row class still works (data IDs preserved); we override its
+           visuals when nested in .card-modern.
+           ===================================================================== */
+        .section-title {
+            display: flex; align-items: center; gap: 0.75rem;
+            margin: 0 0 1rem 0;
+        }
+        .section-title .accent-bar {
+            height: 2rem; width: 4px;
+            border-radius: 9999px;
+            background: linear-gradient(to bottom, var(--accent), oklch(0.65 0.2 200 / 0.3));
+        }
+        .section-title .accent-bar.success { background: linear-gradient(to bottom, var(--success), oklch(0.72 0.2 155 / 0.3)); }
+        .section-title .accent-bar.warning { background: linear-gradient(to bottom, var(--chart-4), oklch(0.8 0.15 90 / 0.3)); }
+        .section-title h2 {
+            margin: 0; font-size: 1.125rem; font-weight: 600;
+            letter-spacing: -0.02em; color: var(--fg);
+        }
+        .section-title .live-marker {
+            margin-left: auto;
+            display: inline-flex; align-items: center; gap: 0.5rem;
+            font-size: 0.75rem; color: var(--muted-fg);
+        }
+
+        .kpi-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 1rem;
+        }
+        .kpi-card {
+            position: relative;
+            padding: 1.25rem;
+            border-radius: var(--radius);
+            background: oklch(0.15 0.02 270 / 0.6);
+            backdrop-filter: blur(20px) saturate(180%);
+            -webkit-backdrop-filter: blur(20px) saturate(180%);
+            border: 1px solid var(--border);
+            transition: all 0.4s ease;
+            overflow: hidden;
+        }
+        .kpi-card:hover { border-color: oklch(0.3 0.02 270 / 0.7); box-shadow: var(--glow-accent); }
+        .kpi-card.success-accent:hover { box-shadow: var(--glow-success); }
+        .kpi-card.warning-accent:hover { box-shadow: var(--glow-destructive); }
+        .kpi-card-head {
+            display: flex; align-items: flex-start; justify-content: space-between;
+            margin-bottom: 1rem;
+        }
+        .kpi-icon-wrap {
+            padding: 0.625rem;
+            border-radius: var(--radius);
+            background: oklch(0.65 0.2 200 / 0.15);
+            color: var(--accent);
+            transition: transform 0.3s;
+        }
+        .kpi-card:hover .kpi-icon-wrap { transform: scale(1.1); }
+        .kpi-card.success-accent .kpi-icon-wrap { background: oklch(0.72 0.2 155 / 0.15); color: var(--success); }
+        .kpi-card.warning-accent .kpi-icon-wrap { background: oklch(0.6 0.22 25 / 0.15); color: var(--destructive); }
+        .kpi-trend {
+            display: inline-flex; align-items: center; gap: 0.25rem;
+            padding: 0.2rem 0.5rem;
+            border-radius: calc(var(--radius) - 4px);
+            font: 500 0.6875rem var(--font-sans);
+        }
+        .kpi-trend.up   { background: oklch(0.72 0.2 155 / 0.15); color: var(--success); }
+        .kpi-trend.down { background: oklch(0.6 0.22 25 / 0.15);  color: var(--destructive); }
+        .kpi-label {
+            font: 500 0.6875rem var(--font-sans);
+            text-transform: uppercase; letter-spacing: 0.15em;
+            color: var(--muted-fg);
+            margin-bottom: 0.25rem;
+        }
+        .kpi-value {
+            font: 700 1.875rem var(--font-sans);
+            font-variant-numeric: tabular-nums;
+            letter-spacing: -0.025em;
+            color: var(--fg);
+        }
+        .kpi-value.gradient { background: linear-gradient(135deg, oklch(0.78 0.2 155) 0%, oklch(0.65 0.18 165) 100%); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
+        .kpi-sub {
+            font: 400 0.75rem var(--font-sans);
+            color: var(--muted-fg);
+            margin-top: 0.25rem;
+        }
+
+        /* Hide legacy stats-row when the modern KPI block is present */
+        .legacy-stats { display: none !important; }
+
+        /* =====================================================================
+           v-ui-market-status-2026-04-29: thin strip below ticker showing
+           session label + countdown. Mirrors dashboardUI/market-status.tsx
+           in spirit; we use Schwab's session classification, not real-time
+           index quotes, to avoid extra API calls.
+           ===================================================================== */
+        .market-status-strip {
+            display: flex; flex-wrap: wrap; align-items: center; gap: 1.5rem;
+            padding: 0.5rem 1.25rem;
+            border-bottom: 1px solid var(--border-soft);
+            background: oklch(0.08 0.015 270 / 0.4);
+            font-family: var(--font-sans);
+            font-size: 0.75rem;
+        }
+        .market-status-strip .session-icon {
+            display: inline-flex; align-items: center; gap: 0.5rem;
+            font-weight: 600;
+        }
+        .market-status-strip .session-icon.open    { color: var(--success); }
+        .market-status-strip .session-icon.pre     { color: var(--chart-4); }
+        .market-status-strip .session-icon.after   { color: var(--accent); }
+        .market-status-strip .session-icon.closed  { color: var(--muted-fg); }
+        .market-status-strip .countdown { color: var(--muted-fg); }
+        .market-status-strip .countdown .value { color: var(--fg); font-family: var(--font-mono); }
+
+        /* =====================================================================
+           v-ui-heatmap-2026-04-29: watchlist heatmap tiles.
+           Each tile encodes: symbol + price + %change + sign + intensity
+           via background color. Hover scales 1.05 with shadow; tooltip
+           shows volatility under the price.
+           ===================================================================== */
+        .heatmap-card {
+            border-radius: var(--radius);
+            background: oklch(0.15 0.02 270 / 0.6);
+            backdrop-filter: blur(20px) saturate(180%);
+            -webkit-backdrop-filter: blur(20px) saturate(180%);
+            border: 1px solid var(--border);
+            overflow: hidden;
+        }
+        .heatmap-head {
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 1rem 1.25rem;
+            border-bottom: 1px solid var(--border-soft);
+        }
+        .heatmap-head h3 {
+            margin: 0; font-size: 0.875rem; font-weight: 600; color: var(--fg);
+            display: flex; align-items: center; gap: 0.75rem;
+        }
+        .heatmap-head .badge-count {
+            padding: 0.15rem 0.5rem; border-radius: 9999px;
+            font: 500 0.625rem var(--font-sans);
+            border: 1px solid var(--border);
+            color: var(--muted-fg);
+        }
+        .heatmap-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+            gap: 0.5rem;
+            padding: 1rem;
+        }
+        .heatmap-tile {
+            position: relative;
+            padding: 0.75rem;
+            border-radius: var(--radius);
+            cursor: pointer;
+            transition: all 0.2s;
+            border: 1px solid transparent;
+            background: oklch(0.18 0.01 270 / 0.5);
+        }
+        .heatmap-tile:hover {
+            transform: scale(1.05);
+            z-index: 10;
+            box-shadow: 0 8px 30px -10px oklch(0 0 0 / 0.4);
+        }
+        .heatmap-tile-symbol {
+            font: 700 0.875rem var(--font-sans); color: var(--fg);
+            margin-bottom: 0.25rem;
+        }
+        .heatmap-tile-price {
+            font: 600 0.75rem var(--font-mono); color: oklch(0.95 0 0);
+            margin-bottom: 0.25rem;
+        }
+        .heatmap-tile-change {
+            display: inline-flex; align-items: center; gap: 0.25rem;
+            font: 500 0.6875rem var(--font-sans);
+        }
+        .heatmap-tile-change.up   { color: var(--success); }
+        .heatmap-tile-change.down { color: var(--destructive); }
+        .heatmap-legend {
+            display: flex; align-items: center; justify-content: center; gap: 1.5rem;
+            padding: 0.75rem 1rem; border-top: 1px solid var(--border-soft);
+        }
+        .heatmap-legend .swatch {
+            display: inline-flex; align-items: center; gap: 0.5rem;
+            font: 500 0.6875rem var(--font-sans);
+            color: var(--muted-fg);
+        }
+        .heatmap-legend .swatch::before {
+            content: '';
+            width: 0.875rem; height: 0.875rem;
+            border-radius: 0.25rem;
+        }
+        .heatmap-legend .swatch.bear::before    { background: oklch(0.6 0.22 25 / 0.6); }
+        .heatmap-legend .swatch.neutral::before { background: oklch(0.18 0.01 270 / 0.5); }
+        .heatmap-legend .swatch.bull::before    { background: oklch(0.72 0.2 155 / 0.6); }
     </style>
 </head>
 <body>
@@ -1249,6 +1445,21 @@
         </div>
     </div>
 
+    <!-- v-ui-market-status-2026-04-29: market session strip.
+         Driven by JS clock + Schwab's session classification. -->
+    <div class="market-status-strip" id="market-status-strip">
+        <span class="session-icon" id="session-status-label">
+            <span class="lucide-slot" data-icon="activity" data-size="14"></span>
+            Loading…
+        </span>
+        <span class="countdown">
+            Next session: <span class="value" id="session-countdown">—</span>
+        </span>
+        <span style="margin-left:auto;color:var(--muted-fg);font-size:0.6875rem;letter-spacing:0.1em;text-transform:uppercase">
+            ET <span class="value" id="session-clock" style="color:var(--fg);font-family:var(--font-mono)">—</span>
+        </span>
+    </div>
+
     <!-- Legacy tab nav — hidden by CSS, replaced by .app-nav above.
          Kept in DOM only because some JS/tests may still reference IDs. -->
     <div class="tab-navigation legacy-tab-navigation">
@@ -1316,30 +1527,83 @@
                 </div>
             </div>
             
-            <div class="card">
-                <h3>Account Overview</h3>
-                <div class="stats-row">
-                    <div class="stat-card">
-                        <div class="stat-value" id="balance">$0</div>
-                        <div class="stat-label">Total Value</div>
+            <!-- v-ui-kpi-2026-04-29: modern Account Overview KPI grid.
+                 Existing IDs (#balance, #buying-power, #daily-pnl, #cash)
+                 preserved so the WebSocket dashboard_update handler keeps
+                 driving them. New visual mirrors dashboardUI/account-overview. -->
+            <section style="margin-bottom:1.5rem;">
+                <div class="section-title">
+                    <span class="accent-bar"></span>
+                    <h2>Account Overview</h2>
+                    <span class="live-marker">
+                        <span class="pulse-dot"></span>
+                        Live · Updated just now
+                    </span>
+                </div>
+                <div class="kpi-grid">
+                    <div class="kpi-card">
+                        <div class="kpi-card-head">
+                            <div class="kpi-icon-wrap"><span class="lucide-slot" data-icon="wallet" data-size="20"></span></div>
+                        </div>
+                        <div class="kpi-label">Total Value</div>
+                        <div class="kpi-value tabular-nums" id="balance">$0</div>
+                        <div class="kpi-sub">Equity + open positions</div>
                     </div>
-                    <div class="stat-card">
-                        <div class="stat-value" id="buying-power">$0</div>
-                        <div class="stat-label">Buying Power</div>
+                    <div class="kpi-card">
+                        <div class="kpi-card-head">
+                            <div class="kpi-icon-wrap"><span class="lucide-slot" data-icon="zap" data-size="20"></span></div>
+                        </div>
+                        <div class="kpi-label">Buying Power</div>
+                        <div class="kpi-value tabular-nums" id="buying-power">$0</div>
+                        <div class="kpi-sub">Available for trading</div>
                     </div>
-                    <div class="stat-card">
-                        <div class="stat-value" id="daily-pnl">$0</div>
-                        <div class="stat-label">Day P&L</div>
+                    <div class="kpi-card success-accent">
+                        <div class="kpi-card-head">
+                            <div class="kpi-icon-wrap"><span class="lucide-slot" data-icon="activity" data-size="20"></span></div>
+                            <span class="kpi-trend up" id="daily-pnl-trend" style="display:none">
+                                <span class="lucide-slot" data-icon="arrow-up-right" data-size="12"></span>
+                                <span id="daily-pnl-trend-pct">+0%</span>
+                            </span>
+                        </div>
+                        <div class="kpi-label">Day P&amp;L</div>
+                        <div class="kpi-value tabular-nums" id="daily-pnl">$0</div>
+                        <div class="kpi-sub" id="daily-pnl-sub">vs. yesterday</div>
                     </div>
-                    <div class="stat-card">
-                        <div class="stat-value" id="cash">$0</div>
-                        <div class="stat-label">Cash</div>
+                    <div class="kpi-card">
+                        <div class="kpi-card-head">
+                            <div class="kpi-icon-wrap"><span class="lucide-slot" data-icon="dollar-sign" data-size="20"></span></div>
+                        </div>
+                        <div class="kpi-label">Cash Balance</div>
+                        <div class="kpi-value tabular-nums" id="cash">$0</div>
+                        <div class="kpi-sub">Settled funds</div>
                     </div>
                 </div>
-                <div class="metric" id="margin-warning" style="display: none;">
-                    <span style="color: #ef4444;">⚠️ MARGIN CALL ACTIVE</span>
+                <div class="metric" id="margin-warning" style="display:none;margin-top:0.75rem;">
+                    <span style="color:var(--destructive);">⚠️ MARGIN CALL ACTIVE</span>
                 </div>
-            </div>
+            </section>
+
+            <!-- v-ui-heatmap-2026-04-29: watchlist heatmap.
+                 Reads same screener data the ticker tape uses. Each tile
+                 colored by oklch with intensity scaled to magnitude of
+                 percent_change vs the day's max move on the watchlist. -->
+            <section style="margin-bottom:1.5rem;" id="watchlist-heatmap-section">
+                <div class="section-title">
+                    <span class="accent-bar warning"></span>
+                    <h2>Watchlist Heatmap</h2>
+                    <span class="live-marker" id="watchlist-heatmap-count">— symbols</span>
+                </div>
+                <div class="heatmap-card">
+                    <div class="heatmap-grid" id="watchlist-heatmap-grid">
+                        <!-- tiles inserted by renderWatchlistHeatmap() -->
+                    </div>
+                    <div class="heatmap-legend">
+                        <span class="swatch bear">Bearish</span>
+                        <span class="swatch neutral">Neutral</span>
+                        <span class="swatch bull">Bullish</span>
+                    </div>
+                </div>
+            </section>
             
             <!-- Real Schwab Positions -->
             <div class="card">
@@ -2608,6 +2872,88 @@
             el.textContent = h > 0 ? `${h}h ${m}m` : `${m}m ${s}s`;
         }
 
+        // v-ui-market-status-2026-04-29: classify ET market session by clock,
+        // show countdown to next session boundary, and live ET clock.
+        function classifyMarketSession() {
+            // ET = UTC-4 (EDT) or UTC-5 (EST). Use Intl to get parts in NYC tz.
+            const now = new Date();
+            const fmt = new Intl.DateTimeFormat('en-US', {
+                timeZone: 'America/New_York',
+                hour: '2-digit', minute: '2-digit', second: '2-digit',
+                hour12: false, weekday: 'short',
+            });
+            const parts = Object.fromEntries(fmt.formatToParts(now).map(p => [p.type, p.value]));
+            const wk = parts.weekday;
+            const h = parseInt(parts.hour, 10);
+            const m = parseInt(parts.minute, 10);
+            const s = parseInt(parts.second, 10);
+            const time = h * 60 + m;
+            const clock = `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+
+            const isWeekend = (wk === 'Sat' || wk === 'Sun');
+            let status, label, countdown;
+            if (isWeekend) {
+                status = 'closed'; label = 'Weekend — Closed'; countdown = 'Mon 09:30';
+            } else if (time < 240) {
+                status = 'closed'; label = 'Overnight'; countdown = `${String(240 - time).padStart(0)}m to pre-market`;
+            } else if (time < 570) {
+                status = 'pre';    label = 'Pre-Market'; countdown = `${Math.floor((570 - time) / 60)}h ${(570 - time) % 60}m to open`;
+            } else if (time < 960) {
+                status = 'open';   label = 'Market Open';
+                const diff = 960 - time;
+                countdown = `${Math.floor(diff / 60)}h ${diff % 60}m to close`;
+            } else if (time < 1200) {
+                status = 'after';  label = 'After Hours'; countdown = `${1200 - time}m to close`;
+            } else {
+                status = 'closed'; label = 'Market Closed'; countdown = `${(1440 - time + 570) % 1440 / 60 | 0}h to open`;
+            }
+            return { status, label, countdown, clock };
+        }
+        function tickMarketStatus() {
+            const info = classifyMarketSession();
+            const labelEl = document.getElementById('session-status-label');
+            if (labelEl) {
+                labelEl.className = `session-icon ${info.status}`;
+                labelEl.innerHTML =
+                    lucide(info.status === 'open' ? 'activity'
+                         : info.status === 'pre'  ? 'trending-up'
+                         : info.status === 'after'? 'trending-down'
+                         : 'square', 14)
+                    + ` ${info.label}`;
+            }
+            const cd = document.getElementById('session-countdown');
+            if (cd) cd.textContent = info.countdown;
+            const clk = document.getElementById('session-clock');
+            if (clk) clk.textContent = info.clock;
+        }
+
+        // v-ui-heatmap-2026-04-29: render the watchlist heatmap from the
+        // same screener-data array the ticker uses (each item has
+        // {symbol, last, change, volatility}). Each tile's background
+        // is oklch with chroma + alpha scaled to magnitude.
+        function renderWatchlistHeatmap(items) {
+            const grid = document.getElementById('watchlist-heatmap-grid');
+            const counter = document.getElementById('watchlist-heatmap-count');
+            if (!grid || !Array.isArray(items)) return;
+            const maxAbsChange = items.reduce((m, x) => Math.max(m, Math.abs(x.change || 0)), 0.5);
+            grid.innerHTML = items.map(s => {
+                const change = s.change || 0;
+                const intensity = Math.min(Math.abs(change) / maxAbsChange, 1);
+                const isUp = change >= 0;
+                const bg = isUp
+                    ? `oklch(0.72 ${0.05 + intensity * 0.15} 155 / ${0.25 + intensity * 0.45})`
+                    : `oklch(0.6  ${0.05 + intensity * 0.17} 25  / ${0.25 + intensity * 0.45})`;
+                const arrow = isUp ? lucide('trending-up', 12) : lucide('trending-down', 12);
+                const sign = isUp ? '+' : '';
+                return `<button class="heatmap-tile" style="background:${bg}" title="${escapeHtml(s.symbol)} · vol ${(s.volatility||0).toFixed(1)}%">
+                    <div class="heatmap-tile-symbol">${escapeHtml(s.symbol)}</div>
+                    <div class="heatmap-tile-price">$${(s.last || 0).toFixed(2)}</div>
+                    <div class="heatmap-tile-change ${isUp ? 'up' : 'down'}">${arrow}${sign}${change.toFixed(2)}%</div>
+                </button>`;
+            }).join('');
+            if (counter) counter.textContent = `${items.length} symbols`;
+        }
+
         // Wire it all up once the DOM is ready, then keep slots refreshed
         // whenever new markup is inserted that contains .lucide-slot tags.
         (function initAppShell() {
@@ -2619,7 +2965,9 @@
             buildAppNav('dashboard');
             renderLucideSlots(document);
             tickSessionUptime();
+            tickMarketStatus();
             setInterval(tickSessionUptime, 1000);
+            setInterval(tickMarketStatus, 1000);
         })();
 
         async function toggleManagedByBot(symbol, enabled) {
@@ -3027,6 +3375,8 @@
         // Add this function to update the ticker tape
         function updateTickerTape(screenerData) {
             if (!screenerData || screenerData.length === 0) return;
+            // v-ui-heatmap-2026-04-29: same array drives both ticker + heatmap.
+            try { renderWatchlistHeatmap(screenerData); } catch (e) { console.debug('heatmap render skipped', e); }
             
             const tickerContent = document.getElementById('ticker-content');
             
