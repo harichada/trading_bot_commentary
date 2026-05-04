@@ -15,14 +15,14 @@ Exit model per trade:
 - No overnight holds (close any open position at end of the symbol's
   data window)
 
-Metrics per strategy:
-- n_trades, win_rate, avg_return_pct, median_return_pct
-- total_return_pct, max_drawdown_pct, sharpe (per-trade return / std)
-- avg_hold_bars, stop_hit_pct, target_hit_pct, timeout_pct
-
 Usage:
+    # CLI (writes JSON file)
     python backtest_strategies.py --top-n 30 --days 90
     python backtest_strategies.py --symbols NVDA TSLA --days 30
+
+    # Programmatic (returns BacktestReport)
+    from backtest_strategies import run_backtest
+    report = await run_backtest(top_n=30, days=90, frequency=5)
 """
 from __future__ import annotations
 
@@ -30,12 +30,11 @@ import argparse
 import asyncio
 import json
 import logging
-import math
 import os
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Awaitable, Callable, Optional, Union
 
 import numpy as np
 import pandas as pd
@@ -58,8 +57,14 @@ DEFAULT_FREQUENCY = 5
 MAX_HOLD_BARS = 60  # timeout (e.g. 60 * 5min = 5h for 5-min bars)
 
 
+# ---------------------------------------------------------------------------
+# Domain types
+# ---------------------------------------------------------------------------
+
 @dataclass
 class Trade:
+    """A single replayed trade. Mutable only because it's constructed
+    incrementally in replay_symbol; treat as read-only after that."""
     strategy: str
     symbol: str
     side: str  # "long" | "short"
@@ -74,6 +79,33 @@ class Trade:
     def return_pct(self) -> float:
         direction = 1 if self.side == "long" else -1
         return direction * (self.exit_price - self.entry_price) / self.entry_price * 100
+
+
+@dataclass(frozen=True)
+class SymbolMetrics:
+    """Per-(strategy, symbol) drill-down row."""
+    n_trades: int
+    win_rate_pct: float
+    sum_return_pct: float
+    avg_return_pct: float
+
+
+@dataclass(frozen=True)
+class ProgressEvent:
+    """Pushed to progress_cb during a run.
+
+    stage = "loading_data" | "replaying"
+    """
+    stage: str
+    symbols_done: int
+    symbols_total: int
+    current_symbol: str
+
+
+# Type alias: progress callbacks may be sync or async.
+ProgressCb = Callable[[ProgressEvent], Union[None, Awaitable[None]]]
+# bars_loader signature: (symbol, days, frequency) -> DataFrame
+BarsLoader = Callable[[str, int, int], pd.DataFrame]
 
 
 # ---------------------------------------------------------------------------
@@ -97,7 +129,6 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     ind["atr"] = ta.volatility.average_true_range(high, low, close, window=14)
     adx = ta.trend.ADXIndicator(high, low, close, window=14)
     ind["adx"] = adx.adx()
-    # Pivot-based resistance / support (daily session rolling 20)
     pivot = (high + low + close) / 3
     ind["resistance_1"] = 2 * pivot - low.rolling(20).min().shift(1)
     ind["support_1"] = 2 * pivot - high.rolling(20).max().shift(1)
@@ -105,7 +136,6 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     # shift(1) so the "20-bar high" excludes the current bar (avoids lookahead).
     ind["high_20"] = high.rolling(20).max().shift(1)
     ind["low_20"] = low.rolling(20).min().shift(1)
-    # Volume ratio
     ind["volume_ratio"] = volume / (volume.rolling(20).mean() + 1e-10)
     return ind
 
@@ -125,7 +155,6 @@ def load_strategies() -> list[tuple[str, Any]]:
         MeanReversionStrategyWithCommentary,
         MomentumStrategyWithCommentary,
     )
-    # Silent commentary so backtest doesn't spam UI events
     cs = CommentarySystem()
     return [
         ("breakout",       BreakoutStrategyWithCommentary(cs)),
@@ -144,7 +173,6 @@ async def replay_symbol(
 
     ind = compute_indicators(df)
     trades: list[Trade] = []
-    # Per-strategy open position state
     open_pos: dict[str, Optional[dict]] = {name: None for name, _ in strategies}
 
     for i in range(50, len(df)):  # need enough warm-up for 50-bar SMAs
@@ -171,7 +199,6 @@ async def replay_symbol(
         for name, strategy in strategies:
             pos = open_pos[name]
 
-            # Check exit on current bar if position is open
             if pos is not None:
                 pos["hold"] += 1
                 if pos["side"] == "long":
@@ -203,7 +230,6 @@ async def replay_symbol(
                     open_pos[name] = None
                     pos = None
 
-            # Consider new entry only if flat
             if pos is None:
                 try:
                     signal = await _run_strategy(strategy, md)
@@ -220,7 +246,6 @@ async def replay_symbol(
                     "hold": 0,
                 }
 
-    # Close any leftover positions at final bar
     if len(df) > 0:
         final = df.iloc[-1]
         for name in open_pos:
@@ -247,16 +272,10 @@ def summarize(trades: list[Trade]) -> dict[str, Any]:
     returns = np.array([t.return_pct for t in trades])
     wins = returns > 0
 
-    # Cross-symbol aggregate: sum of per-trade returns (each trade sized
-    # equally). Compounding isn't meaningful across parallel symbol books.
     summed = float(np.sum(returns))
-
-    # Running cumulative sum drawdown (simple additive equity curve)
     cum = np.cumsum(returns)
     peak = np.maximum.accumulate(cum)
     drawdown = cum - peak
-
-    # Per-trade Sharpe (mean / std)
     sharpe = float(np.mean(returns) / (np.std(returns) + 1e-10))
     reasons = [t.exit_reason for t in trades]
 
@@ -268,7 +287,7 @@ def summarize(trades: list[Trade]) -> dict[str, Any]:
         "win_rate_pct": round(100 * float(np.mean(wins)), 2),
         "avg_return_pct": round(float(np.mean(returns)), 3),
         "median_return_pct": round(float(np.median(returns)), 3),
-        "avg_win_pct":  round(float(np.mean(wins_r))  if len(wins_r)   else 0.0, 3),
+        "avg_win_pct":  round(float(np.mean(wins_r))   if len(wins_r)   else 0.0, 3),
         "avg_loss_pct": round(float(np.mean(losses_r)) if len(losses_r) else 0.0, 3),
         "sum_return_pct": round(summed, 2),
         "max_drawdown_pct": round(float(drawdown.min()), 2),
@@ -286,8 +305,171 @@ def summarize(trades: list[Trade]) -> dict[str, Any]:
     }
 
 
+def summarize_per_symbol(trades: list[Trade]) -> dict[str, dict[str, Any]]:
+    """Per-symbol slice of per-strategy trades, for the drill-down table."""
+    by_sym: dict[str, list[Trade]] = {}
+    for t in trades:
+        by_sym.setdefault(t.symbol, []).append(t)
+
+    out: dict[str, dict[str, Any]] = {}
+    for sym, sym_trades in by_sym.items():
+        returns = np.array([t.return_pct for t in sym_trades])
+        wins = returns > 0
+        out[sym] = asdict(SymbolMetrics(
+            n_trades=len(sym_trades),
+            win_rate_pct=round(100 * float(np.mean(wins)), 2),
+            sum_return_pct=round(float(np.sum(returns)), 2),
+            avg_return_pct=round(float(np.mean(returns)), 3),
+        ))
+    return out
+
+
 # ---------------------------------------------------------------------------
-# CLI
+# Default bars loader (Postgres)
+# ---------------------------------------------------------------------------
+
+def _default_bars_loader(dsn: str) -> BarsLoader:
+    """Wrap a PostgresDataProvider in the BarsLoader signature."""
+    from data_providers.postgres import PostgresDataProvider
+    provider = PostgresDataProvider(dsn)
+
+    def _load(symbol: str, days: int, frequency: int) -> pd.DataFrame:
+        period_type = "day" if days < 30 else "month"
+        period = days if period_type == "day" else max(1, days // 30)
+        return provider.get_market_data(
+            symbol, period_type=period_type, period=period,
+            frequency_type="minute", frequency=frequency,
+        )
+    return _load
+
+
+def _default_symbols_picker(dsn: str, top_n: int, days: int) -> list[str]:
+    from train_ml_model import top_symbols_by_volume
+    return top_symbols_by_volume(dsn, top_n, days)
+
+
+async def _emit(progress_cb: Optional[ProgressCb], event: ProgressEvent) -> None:
+    if progress_cb is None:
+        return
+    result = progress_cb(event)
+    if asyncio.iscoroutine(result):
+        await result
+
+
+# ---------------------------------------------------------------------------
+# Main importable entry point
+# ---------------------------------------------------------------------------
+
+async def run_backtest(
+    *,
+    symbols: Optional[list[str]] = None,
+    top_n: Optional[int] = None,
+    days: int = DEFAULT_DAYS,
+    frequency: int = DEFAULT_FREQUENCY,
+    dsn: Optional[str] = None,
+    bars_loader: Optional[BarsLoader] = None,
+    progress_cb: Optional[ProgressCb] = None,
+    run_id: Optional[str] = None,
+) -> dict[str, Any]:
+    """Run the per-strategy backtest and return a JSON-serialisable report.
+
+    Exactly one of `symbols` or `top_n` must be provided. `bars_loader` is
+    injectable for tests; it defaults to a Postgres-backed loader using
+    `dsn` (or POSTGRES_DSN env var, or DEFAULT_DSN).
+    """
+    if (symbols is None) == (top_n is None):
+        raise ValueError("provide exactly one of: symbols, top_n")
+    if days < 1 or days > 365:
+        raise ValueError("days must be in [1, 365]")
+    if frequency not in (1, 5, 15):
+        raise ValueError("frequency must be one of {1, 5, 15}")
+
+    effective_dsn = dsn or os.environ.get("POSTGRES_DSN", DEFAULT_DSN)
+
+    if bars_loader is None:
+        bars_loader = _default_bars_loader(effective_dsn)
+
+    if symbols is None:
+        symbols = _default_symbols_picker(effective_dsn, top_n, days)
+    else:
+        symbols = [s.upper() for s in symbols]
+
+    strategies = load_strategies()
+    logger.info("backtest_start run_id=%s symbols=%d days=%d frequency=%dmin",
+                run_id, len(symbols), days, frequency)
+
+    all_trades: list[Trade] = []
+    t0 = datetime.now()
+    total = len(symbols)
+
+    for i, symbol in enumerate(symbols, 1):
+        await _emit(progress_cb, ProgressEvent(
+            stage="loading_data", symbols_done=i - 1,
+            symbols_total=total, current_symbol=symbol,
+        ))
+        try:
+            df = bars_loader(symbol, days, frequency)
+        except Exception as e:
+            logger.error("load_failed symbol=%s err=%s", symbol, e)
+            continue
+        if df.empty or len(df) < 100:
+            continue
+
+        await _emit(progress_cb, ProgressEvent(
+            stage="replaying", symbols_done=i - 1,
+            symbols_total=total, current_symbol=symbol,
+        ))
+        trades = await replay_symbol(symbol, df, strategies)
+        all_trades.extend(trades)
+        if i % 5 == 0 or i == total:
+            logger.info("progress done=%d/%d cumulative_trades=%d",
+                        i, total, len(all_trades))
+
+    # Final progress beat — all symbols processed.
+    if total > 0:
+        await _emit(progress_cb, ProgressEvent(
+            stage="replaying", symbols_done=total,
+            symbols_total=total, current_symbol=symbols[-1],
+        ))
+
+    by_strategy: dict[str, list[Trade]] = {name: [] for name, _ in strategies}
+    for t in all_trades:
+        by_strategy[t.strategy].append(t)
+
+    def _split_summary(trades: list[Trade]) -> dict:
+        longs = [t for t in trades if t.side == "long"]
+        shorts = [t for t in trades if t.side == "short"]
+        all_summary = summarize(trades)
+        # Add per_symbol drill-down only on the `all` aggregate. The long/short
+        # mirrors stay slim because the UI doesn't drill into them.
+        if trades:
+            all_summary["per_symbol"] = summarize_per_symbol(trades)
+        return {
+            "all": all_summary,
+            "long": summarize(longs),
+            "short": summarize(shorts),
+        }
+
+    elapsed = round((datetime.now() - t0).total_seconds(), 1)
+    report: dict[str, Any] = {
+        "run_id": run_id or f"bt_{t0.strftime('%Y%m%d_%H%M%S')}",
+        "timestamp": datetime.now().isoformat(),
+        "symbols": symbols,
+        "symbol_count": len(symbols),
+        "days": days,
+        "frequency_minutes": frequency,
+        "total_trades": len(all_trades),
+        "elapsed_seconds": elapsed,
+        "per_strategy": {name: _split_summary(trades)
+                         for name, trades in by_strategy.items()},
+    }
+    logger.info("backtest_done run_id=%s elapsed_s=%.1f total_trades=%d",
+                report["run_id"], elapsed, len(all_trades))
+    return report
+
+
+# ---------------------------------------------------------------------------
+# CLI wrapper
 # ---------------------------------------------------------------------------
 
 def _parse_args() -> argparse.Namespace:
@@ -303,75 +485,10 @@ def _parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-async def main_async(args: argparse.Namespace) -> int:
-    from data_providers.postgres import PostgresDataProvider
-    from train_ml_model import top_symbols_by_volume
-
-    provider = PostgresDataProvider(args.dsn)
-    strategies = load_strategies()
-
-    if args.symbols:
-        symbols = [s.upper() for s in args.symbols]
-    else:
-        symbols = top_symbols_by_volume(args.dsn, args.top_n, args.days)
-    logger.info("backtest_start symbols=%d days=%d frequency=%dmin",
-                len(symbols), args.days, args.frequency)
-
-    period_type = "day" if args.days < 30 else "month"
-    period = args.days if period_type == "day" else max(1, args.days // 30)
-
-    all_trades: list[Trade] = []
-    t0 = datetime.now()
-    for i, symbol in enumerate(symbols, 1):
-        try:
-            df = provider.get_market_data(
-                symbol, period_type=period_type, period=period,
-                frequency_type="minute", frequency=args.frequency,
-            )
-        except Exception as e:
-            logger.error("load_failed symbol=%s err=%s", symbol, e)
-            continue
-        if df.empty or len(df) < 100:
-            continue
-        trades = await replay_symbol(symbol, df, strategies)
-        all_trades.extend(trades)
-        if i % 5 == 0 or i == len(symbols):
-            logger.info("progress done=%d/%d cumulative_trades=%d",
-                        i, len(symbols), len(all_trades))
-
-    # Aggregate — keep (strategy, all), (strategy, long), (strategy, short)
-    # so v-short-mirrors report can verify long-side stats didn't regress.
-    by_strategy: dict[str, list[Trade]] = {name: [] for name, _ in strategies}
-    for t in all_trades:
-        by_strategy[t.strategy].append(t)
-
-    def _split_summary(trades: list[Trade]) -> dict:
-        longs = [t for t in trades if t.side == "long"]
-        shorts = [t for t in trades if t.side == "short"]
-        return {
-            "all": summarize(trades),
-            "long": summarize(longs),
-            "short": summarize(shorts),
-        }
-
-    report = {
-        "timestamp": datetime.now().isoformat(),
-        "symbols": symbols,
-        "symbol_count": len(symbols),
-        "days": args.days,
-        "frequency_minutes": args.frequency,
-        "total_trades": len(all_trades),
-        "elapsed_seconds": round((datetime.now() - t0).total_seconds(), 1),
-        "per_strategy": {name: _split_summary(trades)
-                         for name, trades in by_strategy.items()},
-    }
-
-    logger.info("backtest_done elapsed_s=%.1f total_trades=%d",
-                report["elapsed_seconds"], report["total_trades"])
-
+def _print_human_report(report: dict[str, Any]) -> None:
     print("\n" + "=" * 70)
-    print(f"BACKTEST REPORT — {len(symbols)} symbols × {args.days} days "
-          f"× {args.frequency}min bars")
+    print(f"BACKTEST REPORT — {report['symbol_count']} symbols × "
+          f"{report['days']} days × {report['frequency_minutes']}min bars")
     print("=" * 70)
 
     def _print_row(label: str, s: dict) -> None:
@@ -391,14 +508,23 @@ async def main_async(args: argparse.Namespace) -> int:
               f"{s['exit_breakdown']['target']}/"
               f"{s['exit_breakdown']['timeout']}%")
 
-    for name in by_strategy:
+    for name, by_side in report["per_strategy"].items():
         print(f"\n{name.upper()}")
-        by_side = report["per_strategy"][name]
         _print_row("all",   by_side["all"])
         _print_row("long",  by_side["long"])
         _print_row("short", by_side["short"])
     print("=" * 70 + "\n")
 
+
+async def main_async(args: argparse.Namespace) -> int:
+    report = await run_backtest(
+        symbols=args.symbols,
+        top_n=args.top_n if not args.symbols else None,
+        days=args.days,
+        frequency=args.frequency,
+        dsn=args.dsn,
+    )
+    _print_human_report(report)
     Path(args.report_path).write_text(json.dumps(report, indent=2, default=str))
     logger.info("report_written path=%s", args.report_path)
     return 0
