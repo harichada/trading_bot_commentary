@@ -177,15 +177,20 @@ class ScaleTrailManager:
         Returns a short reason string if proactive exit is warranted, else None.
         Caller passes ATR-period indicators (macd, macd_signal, rsi, adx).
 
-        Triggers (any one):
-          T1: pnl <= -0.5R AND macd flip against position
-          T2: pnl <= -0.5R AND rsi crossed back through 50 against us
-          T3: pnl <= -0.5R AND adx falling AND below 20 (trend disintegrating)
+        Triggers (any one), AFTER pnl crosses the strategy-specific threshold:
+          T1: macd flip against position
+          T2: rsi crossed back through 50 against us
+          T3: adx falling AND below 20 (trend disintegrating)
 
-        -0.5R is the halfway point to the entry stop. Earlier than that,
-        normal noise can pull positions to -0.3R; later than that we're
-        close enough to the stop to just let it hit. -0.5R is "thesis is
-        struggling, get a second opinion from the indicators."
+        Per-strategy threshold (v-proactive-strategy-thresh-2026-04-30):
+          news trades:   require pnl_r <= -0.70  (give it more room)
+          other:         require pnl_r <= -0.50  (legacy default)
+        Whipsaw analysis 2026-04-30 showed news-strategy trades with 100%
+        whipsaw rate on RSI-below-50 and MACD-flip-bullish proactive
+        exits — they were just barely past -0.5R when the indicator
+        flipped, then fully recovered. Pulling the trigger back to -0.7R
+        for news (closer to the genuine stop) cuts whipsaws by giving
+        the trade more room to absorb noise.
         """
         original_stop = position.original_stop or position.stop_loss
         stop_distance = abs(position.entry_price - original_stop)
@@ -198,8 +203,13 @@ class ScaleTrailManager:
         else:  # short
             pnl_r = (position.entry_price - current_price) / stop_distance
 
-        # Only consider proactive exit when at least halfway to stop.
-        if pnl_r > -0.5:
+        # Per-strategy threshold. News trades get -0.7 instead of -0.5
+        # because the whipsaw analysis showed they were the dominant
+        # whipsaw category with 100% recovery rates on -0.5 to -0.6 exits.
+        _strategy = (getattr(position, 'reasoning', {}) or {}).get('strategy', '')
+        _is_news = 'news' in _strategy.lower() or _strategy == 'free_news_sentiment'
+        _threshold = -0.70 if _is_news else -0.50
+        if pnl_r > _threshold:
             return None
 
         macd = float(indicators.get("macd", 0) or 0)

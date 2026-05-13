@@ -198,12 +198,19 @@ class SchwabDataProvider:
     def calculate_market_breadth(self) -> Dict[str, float]:
         """Calculate market breadth using Schwab data"""
         try:
-            # Get movers data
+            # v-schwab-provider-movers-api-fix-2026-05-11: second copy of
+            # the same Schwab movers bug fixed in analysis/screener.py:
+            # old API used (`direction='up'/'down'`, `change='percent'`)
+            # and old index name (`$SPX.X`). schwab-py migrated to
+            # `sort_order=PERCENT_CHANGE_UP/DOWN` and index `$SPX`. This
+            # call site was silently failing at DEBUG level every cycle,
+            # so market-breadth metrics (advance/decline, new highs/lows)
+            # have been zero or stale for weeks.
             try:
-                gainers = self._get_movers('$SPX.X', 'up')
-                losers = self._get_movers('$SPX.X', 'down')
+                gainers = self._get_movers('$SPX', 'PERCENT_CHANGE_UP')
+                losers = self._get_movers('$SPX', 'PERCENT_CHANGE_DOWN')
             except Exception as e:
-                logger.debug(f"Failed to fetch movers: {e}")
+                logger.warning(f"Failed to fetch movers: {e}")
                 gainers = []
                 losers = []
 
@@ -263,12 +270,34 @@ class SchwabDataProvider:
                 'put_call_ratio': 1.0
             }
 
-    def _get_movers(self, index: str, direction: str) -> List[Dict]:
-        """Get market movers"""
+    def _get_movers(self, index: str, sort_order: str = 'PERCENT_CHANGE_UP') -> List[Dict]:
+        """Get market movers.
+
+        v-schwab-provider-movers-api-fix-2026-05-11: see
+        calculate_market_breadth for context. Resolves the enum members
+        from the client class so this is type-safe regardless of
+        enforce_enums setting.
+        """
         try:
-            response = self.client.get_movers(index, direction=direction, change='percent')
+            _Index = type(self.client).Movers.Index
+            _SortOrder = type(self.client).Movers.SortOrder
+            index_enum = getattr(_Index, index.lstrip('$'), None) or _Index(index)
+            sort_enum = getattr(_SortOrder, sort_order, None) or _SortOrder(sort_order)
+            response = self.client.get_movers(index_enum, sort_order=sort_enum)
             if response.status_code == 200:
-                return response.json()
+                payload = response.json()
+                # New API returns {'screeners': [...]} ; old returned bare list
+                if isinstance(payload, dict):
+                    return payload.get('screeners', []) or []
+                return payload if isinstance(payload, list) else []
+            logger.warning(
+                "schwab_provider: get_movers(%s, %s) returned HTTP %s",
+                index, sort_order, response.status_code,
+            )
         except Exception as e:
-            logger.debug(f"Failed to get movers for {index} {direction}: {e}")
+            # Promote to WARNING — DEBUG-level let this break go silent.
+            logger.warning(
+                "schwab_provider: get_movers(%s, %s) raised %s: %s",
+                index, sort_order, type(e).__name__, e,
+            )
         return []

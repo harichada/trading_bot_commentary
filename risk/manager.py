@@ -144,6 +144,18 @@ class RiskManagerWithCommentary:
         #               quality 0.95 → 0.925
         #
         # v-trail-widen-2026-04-23: floor raised 0.25 → 0.50 (Config.KELLY_FLOOR).
+        # v-quality-tier-2026-04-29: per-trade tier overrides the global floor
+        # so genuinely weak signals get genuinely small positions. The 0.50
+        # floor was the structural reason last 30 trades had a 70% WR but
+        # net −$473: weak entries (strength<0.4) still got half-size, which
+        # turns into ~$5k notional that produces ~$150 losses on a 1.5% move.
+        # Tiers (use strength alone — the more reliable signal of "how loud
+        # is this": a +0.012 sentiment is universally tiny regardless of
+        # how high the model's confidence is on its own scale):
+        #   strength >= 0.70  → full Kelly (no override)
+        #   strength >= 0.45  → cap kelly at 0.60  (3% account risk → 1.8%)
+        #   strength >= 0.25  → cap kelly at 0.35  (3% account risk → 1.05%)
+        #   strength <  0.25  → cap kelly at 0.20  (3% account risk → 0.6%)
         confidence = getattr(signal, 'confidence', 0.5) or 0.5
         strength = getattr(signal, 'strength', 0.5) or 0.5
         w = Config().SIZING_STRENGTH_WEIGHT
@@ -151,8 +163,18 @@ class RiskManagerWithCommentary:
 
         rr = Config().ATR_REWARD_RISK_RATIO or 2.0
         kelly = quality - (1.0 - quality) / rr
-        kelly = max(kelly, Config().KELLY_FLOOR)  # floor: configurable
-        kelly = min(kelly, 1.0)                    # cap: never exceed base size
+        kelly = max(kelly, Config().KELLY_FLOOR)
+        kelly = min(kelly, 1.0)
+
+        # Strength-tier cap — overrides the floor for weak signals so a
+        # KELLY_FLOOR of 0.50 doesn't undo the safety we want here.
+        if strength < 0.25:
+            kelly = min(kelly, 0.20)
+        elif strength < 0.45:
+            kelly = min(kelly, 0.35)
+        elif strength < 0.70:
+            kelly = min(kelly, 0.60)
+
         position_size = int(position_size * kelly)
         if position_size < 1:
             position_size = 1

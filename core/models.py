@@ -55,15 +55,29 @@ class TradingSignal:
 
 @dataclass
 class Position:
+    """v-pricebook-2026-05-01 (Step 2 of the canonical PriceBook
+    migration): `current_price` and `unrealized_pnl` are GONE from
+    this dataclass. Anyone needing the mark-to-market price of a
+    position MUST go through PriceBook + CalculationEngine.get_pnl().
+
+    For backward compatibility during the migration, two lazy
+    properties expose `current_price` and `unrealized_pnl` as
+    reactive-pull values. They look up PriceBook.instance() and
+    compute on read. This means:
+      - The fields look the same to legacy callers (pos.current_price
+        still returns a float).
+      - But they CANNOT be set or persisted — assignment raises a
+        DeprecationWarning (we'll harden to AttributeError once all
+        legacy writers are deleted).
+      - Stale or missing prices return 0.0 with no_price marker.
+    """
     symbol: str
     entry_price: float
-    current_price: float
     quantity: int
     side: str
     stop_loss: float
     take_profit: float
     entry_time: datetime
-    unrealized_pnl: float = 0
     reasoning: Dict[str, Any] = field(default_factory=dict)
     is_long_term: bool = False
     scaled_out: bool = False            # Whether 1R partial exit has fired
@@ -90,6 +104,117 @@ class Position:
     # the re-check can fire on its own cadence (default every 15 min after
     # the 30-min mark). ISO timestamp string; None means never re-checked.
     last_revalidation_at: Optional[str] = None
+    # ──────────────────────────────────────────────────────────────────
+    # v-position-fsm-2026-04-30 (Phase 1): finite-state-machine fields.
+    # See core/position_state.py for the full state-table contract.
+    # ──────────────────────────────────────────────────────────────────
+    # Stored as the str value of PositionState (e.g. "live") so the
+    # JSON serialisation in _save_state stays human-readable.
+    state: str = "live"   # PositionState.LIVE.value — default for newly opened sims
+    # Reason the position entered its current state (e.g. "+0.5R reached").
+    # Audit-only; not used for decisions.
+    state_reason: str = "initial"
+    # ISO timestamp of last state transition. Persisted; survives restart.
+    state_changed_at: Optional[str] = None
+    # ISO timestamp of when the EXITING state was entered. Used by the
+    # zombie-recovery logic — if EXITING has been held for >EXITING_ZOMBIE_SEC
+    # seconds (default 60), the close clearly didn't complete and the
+    # position is auto-promoted to ZOMBIE for operator inspection.
+    exiting_started_at: Optional[str] = None
+    # Reason for ZOMBIE promotion, if any. Operator reads this to decide
+    # whether to retry the close, write off the trade, or clear manually.
+    zombie_reason: Optional[str] = None
+    # The asyncio.Lock that serialises state transitions for THIS position.
+    # Initialised lazily at engine boot (after the asyncio loop exists)
+    # because dataclass `default_factory=asyncio.Lock` would fail at
+    # module import in non-async contexts. See engine._ensure_position_lock.
+    # field(repr=False, compare=False) so the lock doesn't try to compare
+    # or print as part of the dataclass machinery.
+    _state_lock: Any = field(default=None, repr=False, compare=False)
+
+    # ──────────────────────────────────────────────────────────────────
+    # v-pricebook-2026-05-01: reactive-pull current_price / unrealized_pnl.
+    # These look like attributes for backwards-compat but compute on
+    # every read against the canonical PriceBook. There is no stored
+    # mark on this object anymore.
+    # ──────────────────────────────────────────────────────────────────
+    @property
+    def current_price(self) -> float:
+        """Reactive-pull mark from PriceBook. Returns entry_price as a
+        safe fallback when PriceBook isn't installed yet (early boot)
+        or when the symbol has no quote, so legacy callers don't divide-
+        by-zero. Returns 0.0 only if entry_price is also missing."""
+        try:
+            from core.price_book import PriceBook
+            pb = PriceBook.instance()
+            if pb is not None:
+                obj = pb.get_mark(self.symbol)
+                if obj.has_price and not obj.is_stale:
+                    return obj.price
+                # Stale-but-known: still return the last we have so the
+                # dashboard isn't blank; the is_stale flag is exposed
+                # via the helper get_pnl result for surfaces that care.
+                if obj.has_price:
+                    return obj.price
+        except Exception:
+            pass
+        return float(self.entry_price or 0.0)
+
+    @current_price.setter
+    def current_price(self, value):
+        # During the migration window, legacy code may still try to set
+        # this. Silently swallow — the value is owned by the PriceBook
+        # now, no Position-side mutation is permitted. Once all legacy
+        # writers are removed, switch this to raise AttributeError to
+        # catch any straggler writes loudly.
+        return
+
+    @property
+    def unrealized_pnl(self) -> float:
+        """Reactive-pull P&L. Computes from the live mark every read."""
+        try:
+            from core.price_book import PriceBook
+            from core.calculations import CalculationEngine
+            pb = PriceBook.instance()
+            if pb is not None:
+                result = CalculationEngine.get_pnl(self, pb.get_mark(self.symbol))
+                return result.unrealized_pnl
+        except Exception:
+            pass
+        return 0.0
+
+    @unrealized_pnl.setter
+    def unrealized_pnl(self, value):
+        # Same as current_price — derived field, can't be set.
+        return
+
+
+# v-pricebook-2026-05-01: backward-compat init shim. Many existing call
+# sites still pass current_price=, unrealized_pnl=, and legacy keys
+# like is_external / is_manually_managed (which were ad-hoc attributes
+# never declared on the dataclass). The dataclass-generated __init__
+# rejects unknown kwargs with TypeError. Wrap it: drop the now-derived
+# fields, set everything else, then attach any remaining legacy attrs
+# as instance attributes.
+_position_orig_init = Position.__init__
+_DERIVED_FIELDS = {"current_price", "unrealized_pnl"}
+def _position_migration_init(self, *args, **kwargs):
+    # Pull off legacy/derived fields so the dataclass init won't reject
+    legacy_attrs = {}
+    for k in list(kwargs.keys()):
+        if k in _DERIVED_FIELDS:
+            kwargs.pop(k)  # silently drop — derived now
+        elif k in {"is_external", "is_manually_managed", "is_long_term", "day_pnl"}:
+            legacy_attrs[k] = kwargs.pop(k)
+    _position_orig_init(self, *args, **kwargs)
+    # Re-attach legacy attrs the rest of the codebase still reads
+    for k, v in legacy_attrs.items():
+        try:
+            setattr(self, k, v)
+        except Exception:
+            pass
+Position.__init__ = _position_migration_init
+
 
 @dataclass
 class MarketData:

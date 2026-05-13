@@ -25,20 +25,73 @@ class StockScreener:
         self._cache_timeout = 60  # 1 minute cache for API efficiency
 
     async def screen_stocks(self) -> List[Dict[str, Any]]:
-        """Screen for top moving and volatile stocks"""
+        """Screen for top moving and volatile stocks.
+
+        v-screener-fresh-daily-2026-05-08: prior implementation called
+        the schwab-py movers API with `direction=` and `change=` kwargs
+        which were removed when schwab-py migrated to the new
+        sort_order/frequency API. Every dynamic source raised
+        TypeError, got swallowed by logger.debug, and the screener
+        silently fell back to the static volatile_candidates pool. As a
+        result, RKLB / OPEN / CRWV style names never appeared even on
+        days when they were the market's biggest movers.
+
+        v-yahoo-most-active-2026-05-11: prepended Yahoo Finance
+        most-active as Source 0. Yahoo's screener pulls retail-favorite
+        catalyst names (RKLB, IREN, RDW, EOSE, etc.) that Schwab's
+        index-bound movers consistently miss. The endpoint is the
+        undocumented but stable internal Yahoo screener JSON, same data
+        that powers https://finance.yahoo.com/markets/stocks/most-active/.
+        No auth, no quota, ~30 names per call.
+
+        Sources in priority order (deduped at the end):
+          0. Yahoo most-active (30 names) — retail catalyst breadth
+          1. EQUITY_ALL by VOLUME            — Schwab volume leaders
+          2. EQUITY_ALL by PERCENT_CHANGE_UP  — Schwab % gainers
+          3. EQUITY_ALL by PERCENT_CHANGE_DOWN — Schwab % losers
+          4. $SPX  by PERCENT_CHANGE_UP/DOWN  — S&P leaders
+          5. $COMPX by PERCENT_CHANGE_UP/DOWN — NASDAQ leaders
+          6. volatile_candidates              — operator's curated floor
+        """
         try:
-            # Get movers from major indices
+            # Get movers from major indices and broad equity universe
             all_movers = []
 
-            # Get S&P 500 movers
-            sp500_movers = await self._get_index_movers('$SPX.X')
-            all_movers.extend(sp500_movers)
+            # Source 0: Yahoo Finance most-active (best breadth).
+            # Catches RKLB / IREN / RDW / EOSE class catalyst names that
+            # Schwab's index movers regularly miss because those indices
+            # are market-cap-weighted toward large caps.
+            yahoo_active = await self._get_yahoo_most_active()
+            all_movers.extend(yahoo_active)
 
-            # Get NASDAQ movers
-            nasdaq_movers = await self._get_index_movers('$COMPX')
-            all_movers.extend(nasdaq_movers)
+            # Source 1: EQUITY_ALL by VOLUME — today's most-active.
+            # Catches RKLB-class names that are heavily traded but not
+            # in the % movers leaderboard. This is THE source for the
+            # "names everyone is watching today" signal.
+            most_active = await self._get_index_movers(
+                'EQUITY_ALL', sort_order='VOLUME',
+            )
+            all_movers.extend(most_active)
 
-            # Get additional volatile stocks
+            # Sources 2–3: broad-universe % gainers / losers
+            equity_up = await self._get_index_movers(
+                'EQUITY_ALL', sort_order='PERCENT_CHANGE_UP',
+            )
+            all_movers.extend(equity_up)
+            equity_down = await self._get_index_movers(
+                'EQUITY_ALL', sort_order='PERCENT_CHANGE_DOWN',
+            )
+            all_movers.extend(equity_down)
+
+            # Sources 4–5: S&P + NASDAQ leaders for index-aware flow
+            for idx in ('$SPX', '$COMPX'):
+                up = await self._get_index_movers(idx, sort_order='PERCENT_CHANGE_UP')
+                all_movers.extend(up)
+                down = await self._get_index_movers(idx, sort_order='PERCENT_CHANGE_DOWN')
+                all_movers.extend(down)
+
+            # Source 6: operator's curated floor — names you always want
+            # the bot to consider regardless of today's tape.
             volatile_stocks = await self._get_volatile_stocks()
             all_movers.extend(volatile_stocks)
 
@@ -84,9 +137,33 @@ class StockScreener:
             logger.error(f"Screener error: {e}")
             return []
 
-    async def _get_index_movers(self, index: str) -> List[Dict[str, Any]]:
-        """Get movers for a specific index"""
-        cache_key = f"movers_{index}"
+    async def _get_index_movers(
+        self,
+        index: str,
+        sort_order: str = 'PERCENT_CHANGE_UP',
+    ) -> List[Dict[str, Any]]:
+        """Get movers for a specific index, sorted by VOLUME, TRADES,
+        PERCENT_CHANGE_UP, or PERCENT_CHANGE_DOWN.
+
+        v-screener-api-fix-2026-05-08: schwab-py migrated this endpoint
+        from `(index, direction=, change=)` to
+        `(index, sort_order=, frequency=)`. The prior call signature
+        raised TypeError on every invocation, was swallowed by the
+        debug logger, and the screener silently became static-only.
+
+        Direction is implicit in the sort_order:
+          PERCENT_CHANGE_UP   → top gainers
+          PERCENT_CHANGE_DOWN → top losers
+          VOLUME              → most active (direction=neutral)
+          TRADES              → most traded (direction=neutral)
+
+        Schwab returns up to 10 names per call (the API uses to be 20;
+        new docs say 10). We take whatever is returned. The response
+        shape also changed: items live under the 'screeners' key in
+        the new payload, with fields described, lastPrice, netChange,
+        netPercentChange, volume.
+        """
+        cache_key = f"movers_{index}_{sort_order}"
 
         # Check cache
         if cache_key in self._movers_cache:
@@ -95,37 +172,220 @@ class StockScreener:
                 return cached_data
 
         movers = []
+        direction_for_label = (
+            'up' if sort_order == 'PERCENT_CHANGE_UP'
+            else 'down' if sort_order == 'PERCENT_CHANGE_DOWN'
+            else 'neutral'
+        )
+
+        # v-screener-enum-fix-2026-05-11: schwab-py enforces enum types
+        # by default (enforce_enums=True). Passing strings raises
+        # ValueError. Resolve the enum members from the client class so
+        # the call is type-safe regardless of enforce_enums setting.
+        try:
+            _Index = type(self.client).Movers.Index
+            _SortOrder = type(self.client).Movers.SortOrder
+            index_enum = getattr(_Index, index.lstrip('$'), None) or _Index(index)
+            sort_enum = getattr(_SortOrder, sort_order, None) or _SortOrder(sort_order)
+        except Exception as exc:
+            logger.warning(
+                "screener: enum resolution failed for index=%s sort_order=%s: %s",
+                index, sort_order, exc,
+            )
+            self._movers_cache[cache_key] = ([], time.time())
+            return []
 
         try:
-            # Get both gainers and losers
-            for direction in ['up', 'down']:
-                response = self.client.get_movers(index, direction=direction, change='percent')
+            response = self.client.get_movers(index_enum, sort_order=sort_enum)
 
-                if response.status_code == 200:
-                    data = response.json()
+            if response.status_code == 200:
+                payload = response.json()
+                # New API: screeners list. Old fallback: a bare list.
+                items = (
+                    payload.get('screeners')
+                    if isinstance(payload, dict)
+                    else (payload if isinstance(payload, list) else [])
+                ) or []
 
-                    for item in data[:20]:  # Top 20 from each
-                        if 'symbol' in item:
-                            mover = {
-                                'symbol': item['symbol'],
-                                'description': item.get('description', ''),
-                                'last': item.get('last', 0),
-                                'change': item.get('change', 0),
-                                'percent_change': item.get('changePercent', 0),
-                                'volume': item.get('totalVolume', 0),
-                                'direction': direction
-                            }
+                for item in items:
+                    sym = item.get('symbol') or item.get('description')
+                    if not sym:
+                        continue
+                    last_price = (
+                        item.get('lastPrice')
+                        or item.get('last')
+                        or 0
+                    )
+                    net_change = (
+                        item.get('netChange')
+                        or item.get('change')
+                        or 0
+                    )
+                    pct_change = (
+                        item.get('netPercentChange')
+                        or item.get('changePercent')
+                        or 0
+                    )
+                    volume = (
+                        item.get('volume')
+                        or item.get('totalVolume')
+                        or 0
+                    )
 
-                            # Get detailed quote for more data
-                            quote = self._get_quote_data(mover['symbol'])
-                            if quote:
-                                mover.update(quote)
+                    mover = {
+                        'symbol': sym,
+                        'description': item.get('description', ''),
+                        'last': last_price,
+                        'change': net_change,
+                        'percent_change': pct_change,
+                        'volume': volume,
+                        'direction': direction_for_label,
+                        'source': f"{index}/{sort_order}",
+                    }
 
-                            movers.append(mover)
+                    # Get detailed quote for more data
+                    try:
+                        quote = self._get_quote_data(sym)
+                        if quote:
+                            mover.update(quote)
+                    except Exception as exc:
+                        logger.debug(f"quote fetch failed for {sym}: {exc}")
+
+                    movers.append(mover)
+            else:
+                # Promote to warning so the operator sees a broken sub-source
+                logger.warning(
+                    "screener: get_movers(%s, %s) returned HTTP %s",
+                    index, sort_order, response.status_code,
+                )
         except Exception as e:
-            logger.debug(f"Error getting movers for {index}: {e}")
+            # Promote to warning. The old debug-level log let the API
+            # signature break go unnoticed for weeks.
+            logger.warning(
+                "screener: get_movers(%s, %s) raised %s: %s",
+                index, sort_order, type(e).__name__, e,
+            )
 
         # Cache results
+        self._movers_cache[cache_key] = (movers, time.time())
+        return movers
+
+    async def _get_yahoo_most_active(self) -> List[Dict[str, Any]]:
+        """Fetch Yahoo Finance most-active list.
+
+        v-yahoo-most-active-2026-05-11: hits the same undocumented JSON
+        endpoint that powers
+        https://finance.yahoo.com/markets/stocks/most-active/. Returns
+        the top ~30 most-traded names by current-session volume, no
+        auth required. Operator's #1 ask after noticing the bot's
+        Schwab-only screener kept missing retail catalyst names.
+
+        Defensive against:
+          - Yahoo rate-limiting (HTTP 429)
+          - schema drift (every field has a safe default)
+          - network hiccups (timeout=10s)
+          - sync `requests` blocking the event loop (offloaded via
+            asyncio.to_thread)
+        """
+        cache_key = "movers_yahoo_most_active"
+        if cache_key in self._movers_cache:
+            cached_data, timestamp = self._movers_cache[cache_key]
+            if time.time() - timestamp < self._cache_timeout:
+                return cached_data
+
+        import asyncio as _asyncio
+        movers: List[Dict[str, Any]] = []
+
+        def _fetch():
+            import requests
+            url = "https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved"
+            params = {
+                "formatted": "true",
+                "lang": "en-US",
+                "region": "US",
+                "scrIds": "most_actives",
+                "count": 30,
+            }
+            headers = {
+                # Yahoo blocks requests without a UA.
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/120.0.0.0 Safari/537.36"
+                ),
+            }
+            return requests.get(url, params=params, headers=headers, timeout=10)
+
+        try:
+            response = await _asyncio.to_thread(_fetch)
+            if response.status_code != 200:
+                logger.warning(
+                    "screener: yahoo most-active returned HTTP %s",
+                    response.status_code,
+                )
+                self._movers_cache[cache_key] = ([], time.time())
+                return []
+
+            payload = response.json()
+            quotes = (
+                payload.get("finance", {})
+                .get("result", [{}])[0]
+                .get("quotes", [])
+            )
+
+            def _scalar(v):
+                """Yahoo returns either raw value or {raw, fmt} dict."""
+                if isinstance(v, dict):
+                    return v.get("raw", 0)
+                return v or 0
+
+            for q in quotes:
+                sym = q.get("symbol")
+                if not sym:
+                    continue
+                last_price = float(_scalar(q.get("regularMarketPrice")) or 0)
+                net_change = float(_scalar(q.get("regularMarketChange")) or 0)
+                pct_change = float(_scalar(q.get("regularMarketChangePercent")) or 0)
+                volume = float(_scalar(q.get("regularMarketVolume")) or 0)
+
+                mover = {
+                    "symbol": sym,
+                    "description": q.get("shortName", "") or q.get("longName", ""),
+                    "last": last_price,
+                    "change": net_change,
+                    "percent_change": pct_change,
+                    "volume": volume,
+                    "direction": (
+                        "up" if pct_change > 0
+                        else "down" if pct_change < 0
+                        else "neutral"
+                    ),
+                    "source": "yahoo_most_active",
+                }
+
+                # Best-effort enrich from Schwab for full-quote fields
+                # downstream code expects (spread, bid/ask). Failure is
+                # fine — Yahoo data alone is enough for ranking.
+                try:
+                    quote = self._get_quote_data(sym)
+                    if quote:
+                        mover.update(quote)
+                except Exception as exc:
+                    logger.debug(f"quote enrich failed for {sym}: {exc}")
+
+                movers.append(mover)
+
+            logger.info(
+                "screener: yahoo most-active returned %d names (top: %s)",
+                len(movers),
+                ", ".join(m["symbol"] for m in movers[:5]),
+            )
+        except Exception as exc:
+            logger.warning(
+                "screener: yahoo most-active raised %s: %s",
+                type(exc).__name__, exc,
+            )
+
         self._movers_cache[cache_key] = (movers, time.time())
         return movers
 
@@ -143,14 +403,22 @@ class StockScreener:
             'AVGO', 'ORCL', 'CRM', 'ADBE', 'NFLX', 'INTC', 'QCOM', 'CSCO',
             # AI / semiconductor / cloud
             'PLTR', 'SMCI', 'ARM', 'MU', 'AMAT', 'LRCX', 'KLAC', 'MRVL',
+            'CRWV',  # v-watchlist-add-2026-05-08: AI/GPU cloud infra
             # Crypto / fintech
             'COIN', 'MARA', 'RIOT', 'SQ', 'PYPL', 'HOOD', 'SOFI',
+            'OPEN',  # v-watchlist-add-2026-05-08: real-estate iBuying, news-sensitive
             # EV / clean energy
             'NIO', 'XPEV', 'LI', 'RIVN', 'LCID', 'PLUG', 'FCEL',
             # Consumer / social
             'ROKU', 'SNAP', 'PINS', 'DKNG', 'PENN', 'FUBO', 'CHWY', 'PTON',
             # Biotech volatility
             'MRNA', 'BNTX', 'NVAX',
+            # v-aerospace-space-2026-05-08: aerospace / space / eVTOL
+            # category was missing entirely. Operator flagged RKLB as a
+            # notable absence 2026-05-08. These names regularly produce
+            # double-digit moves on launch / contract / analyst news and
+            # match the bot's news-strategy edge.
+            'RKLB', 'JOBY', 'ACHR', 'LUNR', 'ASTS',
             # Index / sector ETFs (will be filtered by _is_tradeable
             # if they're on the ETF block-list, but kept here for sourcing)
             'TQQQ', 'SQQQ',

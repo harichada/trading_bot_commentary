@@ -86,6 +86,11 @@ class APIAuthMiddleware(BaseHTTPMiddleware):
 
 app.add_middleware(APIAuthMiddleware)
 
+# Register backtest endpoints (POST /api/backtest/run, WS /ws/backtest/{run_id},
+# GET /api/backtest/latest). Implementation in api/backtest.py.
+from api.backtest import register as _register_backtest
+_register_backtest(app)
+
 # Global instances
 trading_engine = None
 connection_manager = ConnectionManager()
@@ -100,172 +105,6 @@ except FileNotFoundError:
     DASHBOARD_HTML_WITH_COMMENTARY = "<html><body><h1>Dashboard template not found</h1></body></html>"
 
 
-async def simulate_backtest(historical_data: Dict[str, pd.DataFrame], config: dict) -> dict:
-    """Simulate a backtest with the given historical data"""
-    initial_capital = config.get('initial_capital', 100000)
-    commission = config.get('commission', 0.001)  # 0.1% per trade
-
-    # Initialize tracking variables
-    cash = initial_capital
-    positions = {}
-    trades = []
-    equity_curve = []
-
-    # Get all unique timestamps across all symbols
-    all_timestamps = set()
-    for df in historical_data.values():
-        all_timestamps.update(df.index)
-    all_timestamps = sorted(list(all_timestamps))
-
-    # Simulate trading
-    for timestamp in all_timestamps:
-        current_equity = cash
-
-        # Update positions with current prices
-        for symbol, position in list(positions.items()):
-            if symbol in historical_data and timestamp in historical_data[symbol].index:
-                current_price = historical_data[symbol].loc[timestamp, 'Close']
-                position['current_price'] = current_price
-                position['value'] = position['quantity'] * current_price
-                position['unrealized_pnl'] = (current_price - position['entry_price']) * position['quantity']
-                current_equity += position['value']
-
-                # Simple exit logic - exit if 2% profit or 1% loss
-                pnl_pct = (current_price - position['entry_price']) / position['entry_price']
-                if pnl_pct > 0.02 or pnl_pct < -0.01:
-                    # Close position
-                    trade_pnl = position['unrealized_pnl'] - (position['value'] * commission)
-                    cash += position['value'] - (position['value'] * commission)
-
-                    trades.append({
-                        'symbol': symbol,
-                        'entry_time': position['entry_time'],
-                        'exit_time': timestamp,
-                        'entry_price': position['entry_price'],
-                        'exit_price': current_price,
-                        'quantity': position['quantity'],
-                        'pnl': trade_pnl,
-                        'pnl_pct': pnl_pct
-                    })
-
-                    del positions[symbol]
-
-        # Generate entry signals (simple momentum strategy for demo)
-        for symbol, df in historical_data.items():
-            if timestamp in df.index and symbol not in positions and len(positions) < 5:
-                # Get recent data
-                idx = df.index.get_loc(timestamp)
-                if idx >= 20:  # Need at least 20 periods
-                    recent_data = df.iloc[max(0, idx-20):idx+1]
-
-                    # Simple momentum signal
-                    returns = recent_data['Close'].pct_change().dropna()
-                    if len(returns) > 0 and returns.mean() > 0.001 and returns.iloc[-1] > 0:
-                        # Enter position
-                        position_size = (current_equity * 0.1) / recent_data['Close'].iloc[-1]  # 10% of equity
-                        position_value = position_size * recent_data['Close'].iloc[-1]
-
-                        if cash >= position_value * (1 + commission):
-                            positions[symbol] = {
-                                'quantity': position_size,
-                                'entry_price': recent_data['Close'].iloc[-1],
-                                'entry_time': timestamp,
-                                'current_price': recent_data['Close'].iloc[-1],
-                                'value': position_value
-                            }
-                            cash -= position_value * (1 + commission)
-
-        # Record equity
-        equity_curve.append({
-            'date': timestamp.strftime('%Y-%m-%d'),
-            'value': current_equity
-        })
-
-    # Calculate performance metrics
-    equity_df = pd.DataFrame(equity_curve)
-    if not equity_df.empty:
-        equity_df['date'] = pd.to_datetime(equity_df['date'])
-        equity_df.set_index('date', inplace=True)
-
-        # Remove duplicates by keeping last value for each date
-        equity_df = equity_df.groupby(equity_df.index).last()
-
-        daily_returns = equity_df['value'].pct_change().dropna()
-
-        total_return = (equity_df['value'].iloc[-1] - initial_capital) / initial_capital
-        annual_return = (1 + total_return) ** (252 / len(equity_df)) - 1 if len(equity_df) > 0 else 0
-
-        sharpe_ratio = np.sqrt(252) * daily_returns.mean() / daily_returns.std() if daily_returns.std() > 0 else 0
-
-        # Calculate drawdown
-        rolling_max = equity_df['value'].expanding().max()
-        drawdown = (equity_df['value'] - rolling_max) / rolling_max
-        max_drawdown = drawdown.min()
-
-        # Trade statistics
-        winning_trades = [t for t in trades if t['pnl'] > 0]
-        losing_trades = [t for t in trades if t['pnl'] <= 0]
-
-        win_rate = len(winning_trades) / len(trades) if trades else 0
-        avg_win = np.mean([t['pnl'] for t in winning_trades]) if winning_trades else 0
-        avg_loss = np.mean([t['pnl'] for t in losing_trades]) if losing_trades else 0
-        profit_factor = abs(sum(t['pnl'] for t in winning_trades) / sum(t['pnl'] for t in losing_trades)) if losing_trades and sum(t['pnl'] for t in losing_trades) != 0 else 0
-
-        # Monthly returns
-        monthly_returns = []
-        if not equity_df.empty:
-            monthly = equity_df.resample('M').last()
-            monthly_pct = monthly['value'].pct_change().dropna()
-            for date, ret in monthly_pct.items():
-                monthly_returns.append({
-                    'month': date.strftime('%Y-%m'),
-                    'return': ret
-                })
-    else:
-        # Default values if no data
-        total_return = 0
-        annual_return = 0
-        sharpe_ratio = 0
-        max_drawdown = 0
-        win_rate = 0
-        avg_win = 0
-        avg_loss = 0
-        profit_factor = 0
-        monthly_returns = []
-
-    return {
-        'summary': {
-            'total_return': total_return,
-            'annual_return': annual_return,
-            'sharpe_ratio': sharpe_ratio,
-            'sortino_ratio': sharpe_ratio * 0.8,  # Approximation
-            'max_drawdown': max_drawdown,
-            'win_rate': win_rate,
-            'total_trades': len(trades),
-            'winning_trades': len(winning_trades) if trades else 0,
-            'losing_trades': len(losing_trades) if trades else 0,
-            'profit_factor': profit_factor,
-            'average_win': avg_win,
-            'average_loss': avg_loss,
-            'best_trade': max([t['pnl'] for t in trades]) if trades else 0,
-            'worst_trade': min([t['pnl'] for t in trades]) if trades else 0,
-            'commission_paid': sum([t.get('commission', 0) for t in trades]),
-            'initial_capital': initial_capital,
-            'final_capital': equity_df['value'].iloc[-1] if not equity_df.empty else initial_capital
-        },
-        'trades': trades,
-        'equity_curve': equity_curve[-100:],  # Last 100 points
-        'monthly_returns': monthly_returns,
-        'strategy_performance': {
-            'momentum': {
-                'trades': len(trades),
-                'win_rate': win_rate,
-                'avg_return': total_return / len(trades) if trades else 0,
-                'total_return': total_return
-            }
-        }
-    }
-
 @app.post("/api/toggle-mode")
 async def toggle_trading_mode(request: dict):
     global trading_engine
@@ -274,6 +113,14 @@ async def toggle_trading_mode(request: dict):
         return {"status": "error", "message": "Trading engine not initialized"}
 
     new_mode = request.get('mode', 'simulation')
+    # v-mode-toggle-stale-state-2026-05-08: explicit `clear_inactive` flag
+    # lets the operator opt into clearing the position collection that
+    # belongs to the OPPOSITE mode of where they're going. Default False
+    # (preserves prior behavior). Stale sim positions persisting across
+    # toggles caused real bugs (leftover INTC sim blocked live QCOM via
+    # correlation guard before mode-isolation fix). Surface the inactive
+    # collection size in the response either way so the operator can see.
+    clear_inactive = bool(request.get('clear_inactive', False))
 
     if new_mode == 'live':
         trading_engine.mode = TradingMode.LIVE
@@ -284,17 +131,50 @@ async def toggle_trading_mode(request: dict):
         # Sync external positions when switching to live mode
         await trading_engine._update_real_positions()
 
+        # Inactive collection for live mode = simulated_positions
+        sim_count = len(getattr(trading_engine, 'simulated_positions', {}) or {})
+        sim_symbols = list((getattr(trading_engine, 'simulated_positions', {}) or {}).keys())
+        cleared = 0
+        if clear_inactive and sim_count > 0:
+            try:
+                trading_engine.simulated_positions.clear()
+                cleared = sim_count
+            except Exception as exc:
+                logger.warning("toggle_mode: failed to clear sim positions: %s", exc)
+
     else:
         trading_engine.mode = TradingMode.SIMULATION_WITH_COMMENTARY
+        sim_count = 0
+        sim_symbols = []
+        # Inactive collection for sim mode = positions (live)
+        # Do NOT auto-clear live positions on a sim toggle — those are
+        # real money on Schwab; clearing the bot's tracking is a no-op
+        # for the broker but loses bot-side exit management. Operator
+        # must use a separate explicit endpoint if they truly want to
+        # forget about live positions.
+        cleared = 0
 
     trading_engine.commentary.add_commentary(TradingCommentary(
         timestamp=datetime.now(),
         type=CommentaryType.DECISION,
         symbol=None,
         title=f"\U0001f504 Mode Changed",
-        message=f"Switched to {'LIVE TRADING' if new_mode == 'live' else 'SIMULATION'} mode",
+        message=(
+            f"Switched to {'LIVE TRADING' if new_mode == 'live' else 'SIMULATION'} mode" +
+            (f". Cleared {cleared} stale sim positions ({', '.join(sim_symbols)})."
+             if cleared > 0 else
+             (f". {sim_count} sim positions remain in tracking ({', '.join(sim_symbols)}). "
+              "Pass clear_inactive=true to drop them."
+              if sim_count > 0 and new_mode == 'live' else ""))
+        ),
         importance=10
     ))
+    if hasattr(trading_engine, '_audit'):
+        trading_engine._audit(
+            "mode_toggle", None, "changed",
+            f"to_{new_mode}",
+            sim_remaining=sim_count, cleared=cleared,
+        )
 
     return {"status": "success", "mode": trading_engine.mode.value}
 
@@ -331,15 +211,327 @@ async def get_dashboard():
     html = DASHBOARD_HTML_WITH_COMMENTARY.replace("</head>", f"{auth_script}</head>", 1)
     return HTMLResponse(content=html)
 
+
+@app.get("/stream")
+async def get_stream_view():
+    """v-stream-monitor-2026-05-01: dedicated tick-level monitor at /stream.
+
+    Pure live-price screen — one row per subscribed symbol with sub-second
+    updates from the same WebSocket the dashboard uses. Diagnostic-first:
+    "is the stream actually flowing?" answered at a glance.
+
+    Renders rows via DOM API (no innerHTML for dynamic content) so tainted
+    symbol strings cannot inject markup, even though upstream PriceBook
+    constrains symbols to [A-Z0-9]{1,8}.
+    """
+    api_key = os.getenv("TRADING_API_KEY", "")
+    api_json = json.dumps(api_key)
+    html = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Stream Monitor</title>
+<script>window.TRADING_API_KEY=__APIKEY__;</script>
+<style>
+  :root {
+    --bg: oklch(0.10 0.012 270); --panel: oklch(0.13 0.014 270);
+    --border: oklch(0.22 0.02 270); --fg: oklch(0.94 0.01 270);
+    --muted: oklch(0.56 0.02 270); --green: oklch(0.72 0.20 155);
+    --red: oklch(0.65 0.22 25); --amber: oklch(0.78 0.16 80);
+    --mono: ui-monospace, "JetBrains Mono", "SF Mono", Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--fg); font-family: var(--sans); padding: 1rem; }
+  header { display: flex; justify-content: space-between; align-items: center;
+           padding: 0.75rem 1rem; background: var(--panel); border: 1px solid var(--border);
+           border-radius: 8px; margin-bottom: 1rem; }
+  header h1 { font-size: 1.1rem; font-weight: 600; margin-bottom: 0.2rem; }
+  header .meta { display: flex; gap: 1.5rem; font: 500 0.8rem var(--mono); color: var(--muted); }
+  header .meta span b { color: var(--fg); font-weight: 600; }
+  .controls { display: flex; gap: 0.75rem; padding: 0.75rem 1rem; background: var(--panel);
+              border: 1px solid var(--border); border-radius: 8px; margin-bottom: 1rem; align-items: center; }
+  .controls input[type="text"] { background: oklch(0.18 0.01 270); border: 1px solid var(--border);
+                                  color: var(--fg); padding: 0.4rem 0.7rem; border-radius: 4px;
+                                  font: 500 0.85rem var(--mono); width: 220px; }
+  .controls select { background: oklch(0.18 0.01 270); border: 1px solid var(--border);
+                     color: var(--fg); padding: 0.4rem 0.7rem; border-radius: 4px;
+                     font: 500 0.8rem var(--sans); cursor: pointer; }
+  .controls .stat { font: 500 0.8rem var(--mono); color: var(--muted); margin-left: auto; }
+  .controls .stat b { color: var(--fg); }
+  table { width: 100%; border-collapse: collapse; background: var(--panel);
+          border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  th { text-align: left; padding: 0.6rem 0.85rem; font: 600 0.75rem var(--sans);
+       text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted);
+       background: oklch(0.16 0.014 270); border-bottom: 1px solid var(--border); }
+  td { padding: 0.55rem 0.85rem; font: 500 0.875rem var(--mono);
+       border-bottom: 1px solid oklch(0.18 0.01 270 / 0.5); }
+  tr:hover td { background: oklch(0.16 0.014 270 / 0.5); }
+  .sym { font-weight: 600; color: var(--fg); }
+  .price { font-weight: 600; }
+  .delta-up   { color: var(--green); }
+  .delta-down { color: var(--red); }
+  .arrow { display: inline-block; min-width: 0.8rem; text-align: center; }
+  .age-fresh { color: var(--green); }
+  .age-warm  { color: var(--amber); }
+  .age-stale { color: var(--red); }
+  .source-stream { color: var(--green); font-size: 0.7rem; }
+  .source-rest   { color: var(--amber); font-size: 0.7rem; }
+  .source-stale, .source-none { color: var(--muted); font-size: 0.7rem; }
+  .flash      { animation: flash 0.4s ease-out; }
+  .flash-down { animation: flash-down 0.4s ease-out; }
+  @keyframes flash      { 0% { background: oklch(0.72 0.20 155 / 0.30); } 100% { background: transparent; } }
+  @keyframes flash-down { 0% { background: oklch(0.65 0.22 25 / 0.30); } 100% { background: transparent; } }
+  .ticks-bar { display: inline-block; height: 10px; background: var(--green);
+               vertical-align: middle; border-radius: 2px; margin-right: 0.5rem; }
+  a.back { color: var(--muted); text-decoration: none; font: 500 0.85rem var(--sans); }
+  a.back:hover { color: var(--fg); }
+  .pulse { display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+           background: var(--green); animation: pulse 1s ease-in-out infinite; }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+  .pulse-off { background: var(--muted); animation: none; }
+</style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>📡 Stream Monitor</h1>
+      <a class="back" href="/">← Back to Dashboard</a>
+    </div>
+    <div class="meta">
+      <span><span id="conn-pulse" class="pulse"></span>&nbsp;<b id="conn-state">connecting…</b></span>
+      <span>Symbols: <b id="sym-count">0</b></span>
+      <span>Total ticks: <b id="tick-total">0</b></span>
+      <span>Tick rate: <b id="tick-rate">0</b>/s</span>
+      <span>Msgs: <b id="msg-count">0</b></span>
+      <span>Last msg: <b id="last-msg-age">—</b></span>
+    </div>
+  </header>
+  <div class="controls">
+    <input type="text" id="filter" placeholder="Filter symbols (e.g. PLTR, AAPL)">
+    <select id="sort">
+      <option value="ticks">Sort: Most active first</option>
+      <option value="age">Sort: Freshest first</option>
+      <option value="sym">Sort: Symbol A-Z</option>
+      <option value="price">Sort: Price desc</option>
+    </select>
+    <span class="stat">Last update: <b id="last-update">—</b></span>
+  </div>
+  <div id="log-container" style="background: var(--panel); border: 1px solid var(--border);
+       border-radius: 8px; padding: 0.5rem; height: calc(100vh - 200px); overflow-y: auto;
+       font: 12px/1.4 var(--mono);">
+    <pre id="log" style="white-space: pre-wrap; word-break: break-all; margin: 0;"></pre>
+  </div>
+
+<script>
+(function() {
+  const TOKEN = window.TRADING_API_KEY;
+  const logEl = document.getElementById('log');
+  const logContainer = document.getElementById('log-container');
+  const connState = document.getElementById('conn-state');
+  const connPulse = document.getElementById('conn-pulse');
+  const symCountEl = document.getElementById('sym-count');
+  const tickTotalEl = document.getElementById('tick-total');
+  const tickRateEl = document.getElementById('tick-rate');
+  const lastUpdEl = document.getElementById('last-update');
+  const filterIn = document.getElementById('filter');
+  const sortSel = document.getElementById('sort');
+
+  // Per-symbol state, accumulated for the page's lifetime
+  const state = {};
+  let totalTicks = 0;
+  const tickTimestamps = [];
+  // v-stream-heartbeat-2026-05-01: track WS health to recover from
+  // silent drops (NAT timeout, idle proxies, server-side cull).
+  let msgCount = 0;
+  let lastMsgAt = Date.now();
+  let heartbeatTimer = null;
+  let watchdogTimer = null;
+
+  // Symbols only ever come from the server's PriceBook (constrained
+  // to [A-Z0-9]{1,8}); still defensive-validate in the browser.
+  const SYM_RX = /^[A-Z0-9]{1,8}$/;
+  const safeSymbol = (s) => (typeof s === 'string' && SYM_RX.test(s)) ? s : null;
+
+  function fmtAge(sec) {
+    if (sec == null) return '—';
+    if (sec < 1)    return sec.toFixed(2) + 's';
+    if (sec < 60)   return sec.toFixed(1) + 's';
+    if (sec < 3600) return (sec/60).toFixed(1) + 'm';
+    return (sec/3600).toFixed(1) + 'h';
+  }
+  function ageClass(sec) {
+    if (sec == null) return 'age-stale';
+    if (sec < 5)  return 'age-fresh';
+    if (sec < 30) return 'age-warm';
+    return 'age-stale';
+  }
+  function fmtPrice(p, dec) {
+    if (p == null || p === 0) return '—';
+    if (p < 0.01) return '$' + p.toFixed(6);
+    if (p < 1)    return '$' + p.toFixed(4);
+    return '$' + p.toFixed(dec ?? 2);
+  }
+
+  // v-stream-raw-2026-05-01: append one Schwab message as a JSON
+  // block to the scrolling log. Trim the buffer to MAX_LINES so the
+  // page doesn't grow unbounded over a long session.
+  const MAX_LOG_ENTRIES = 500;
+  const logEntries = [];
+  function appendRaw(rawMsg) {
+    const filterStr = filterIn.value.trim().toUpperCase();
+    // Apply optional symbol filter — only include messages whose
+    // content[*].key matches the filter. Empty filter = show all.
+    if (filterStr) {
+      try {
+        const content = rawMsg && rawMsg.content;
+        const hasMatch = Array.isArray(content) && content.some(r => {
+          const k = (r && (r.key || r.KEY)) || '';
+          return String(k).toUpperCase().includes(filterStr);
+        });
+        if (!hasMatch) return;   // doesn't mention any symbol matching filter
+      } catch (e) { /* fall through */ }
+    }
+
+    const ts = new Date().toLocaleTimeString('en-US', {hour12: false}) +
+               '.' + String(Date.now() % 1000).padStart(3, '0');
+    const pretty = JSON.stringify(rawMsg, null, 2);
+    const entry = '[' + ts + ']\\n' + pretty + '\\n';
+    logEntries.push(entry);
+    if (logEntries.length > MAX_LOG_ENTRIES) logEntries.shift();
+    // Render — preserve scroll position UNLESS user is near bottom
+    const wasNearBottom =
+      logContainer.scrollHeight - logContainer.scrollTop - logContainer.clientHeight < 80;
+    logEl.textContent = logEntries.join('\\n');
+    if (wasNearBottom) logContainer.scrollTop = logContainer.scrollHeight;
+    totalTicks += 1;
+    tickTimestamps.push(Date.now());
+    // Track unique symbols seen
+    try {
+      const content = rawMsg && rawMsg.content;
+      if (Array.isArray(content)) {
+        content.forEach(r => {
+          const k = r && (r.key || r.KEY);
+          if (k && safeSymbol(String(k))) state[k] = state[k] || true;
+        });
+      }
+    } catch (e) {}
+  }
+
+  // v-stream-raw-2026-05-01: only header counters need refreshing on
+  // a timer. The log body is appended to in appendRaw() directly when
+  // schwab_raw messages arrive.
+  function render() {
+    const now = Date.now();
+    symCountEl.textContent = Object.keys(state).length;
+    tickTotalEl.textContent = totalTicks.toLocaleString();
+    const fiveSecAgo = now - 5000;
+    while (tickTimestamps.length && tickTimestamps[0] < fiveSecAgo) tickTimestamps.shift();
+    tickRateEl.textContent = (tickTimestamps.length / 5).toFixed(1);
+    lastUpdEl.textContent = new Date().toLocaleTimeString();
+  }
+
+  let ws = null, reconnectAttempt = 0;
+  function connect() {
+    const url = (location.protocol === 'https:' ? 'wss://' : 'ws://')
+                + location.host + '/ws?token=' + encodeURIComponent(TOKEN);
+    ws = new WebSocket(url);
+    ws.onopen = () => {
+      connState.textContent = 'connected';
+      connPulse.classList.remove('pulse-off');
+      reconnectAttempt = 0;
+    };
+    ws.onmessage = (ev) => {
+      lastMsgAt = Date.now();
+      msgCount += 1;
+      try {
+        const msg = JSON.parse(ev.data);
+        // v-stream-raw-2026-05-01: only render schwab_raw messages —
+        // ignore dashboard_update / commentary / etc. on this page.
+        // The /stream view's job is to print exactly what the
+        // streamer delivers, nothing else.
+        if (msg.type !== 'schwab_raw') return;
+        appendRaw(msg.data);
+      } catch (e) { console.warn('parse error', e); }
+    };
+    ws.onclose = () => {
+      connState.textContent = 'disconnected — reconnecting…';
+      connPulse.classList.add('pulse-off');
+      stopHeartbeat();
+      const delay = Math.min(30000, 1000 * Math.pow(2, reconnectAttempt++));
+      setTimeout(connect, delay);
+    };
+    ws.onerror = () => { connState.textContent = 'error'; };
+    // v-stream-heartbeat-2026-05-01: send a ping every 10s. Keeps the
+    // TCP connection from being idled out by NAT/proxies/uvicorn.
+    // Server may or may not respond — the act of writing keeps it alive.
+    stopHeartbeat();
+    heartbeatTimer = setInterval(() => {
+      try {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({type: 'ping', t: Date.now()}));
+        }
+      } catch (e) { /* swallow */ }
+    }, 10000);
+  }
+  function stopHeartbeat() {
+    if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
+  }
+  connect();
+
+  // v-stream-heartbeat-2026-05-01: watchdog. If we haven't seen a
+  // message in >8 seconds (server normally sends 4Hz, so ~32 should
+  // arrive in 8s), the connection is dead even if onclose hasn't
+  // fired yet (some proxies silently sink without RST). Force-close
+  // and let onclose's reconnect kick in.
+  watchdogTimer = setInterval(() => {
+    const since = Date.now() - lastMsgAt;
+    document.getElementById('msg-count').textContent = msgCount.toLocaleString();
+    document.getElementById('last-msg-age').textContent =
+      since < 1000 ? '<1s' :
+      since < 60000 ? Math.round(since/1000) + 's' :
+      Math.round(since/60000) + 'm';
+    if (ws && ws.readyState === WebSocket.OPEN && since > 8000) {
+      console.warn('stream watchdog: no msg for', since, 'ms — closing to reconnect');
+      try { ws.close(); } catch (e) {}
+    }
+  }, 1000);
+
+  filterIn.addEventListener('input', render);
+  sortSel.addEventListener('change', render);
+  setInterval(render, 1000);  // refresh age column even on quiet windows
+})();
+</script>
+</body>
+</html>
+"""
+    html = html.replace("__APIKEY__", api_json)
+    return HTMLResponse(content=html)
+
 @app.post("/api/start")
 async def start_trading():
+    """v-api-start-async-init-2026-04-30: previously this endpoint blocked
+    for ~13 s while the engine constructor loaded the 2.7M-sample ML model
+    and 354+ brain memories synchronously inside the FastAPI handler.
+    The HTTP response only returned after that load completed.
+    Fix: run the heavy constructor in a thread executor so the HTTP
+    handler returns in milliseconds. The trading engine's own start()
+    still runs in its dedicated thread (unchanged).
+    """
     global trading_engine, connection_manager, trading_task
 
     # Import here to avoid circular imports
     from trading_bot_commentary_updated import TradingEngineWithCommentary, config_manager
 
     if not trading_engine:
-        trading_engine = TradingEngineWithCommentary(connection_manager=connection_manager)
+        # Build the engine off the request thread — this is where the
+        # 13s delay used to live. Run the synchronous constructor in
+        # the default thread executor.
+        _loop = asyncio.get_event_loop()
+        trading_engine = await _loop.run_in_executor(
+            None,
+            lambda: TradingEngineWithCommentary(connection_manager=connection_manager),
+        )
 
         # Subscribe to commentary updates
         async def broadcast_commentary(commentary):
@@ -362,6 +554,9 @@ async def start_trading():
 
         # Get the current event loop for cross-thread communication
         main_loop = asyncio.get_event_loop()
+        # Engine may run on a background thread/loop; force WS broadcasts
+        # back onto the FastAPI loop that owns WebSocket objects.
+        trading_engine._ws_broadcast_loop = main_loop
 
         # Background task to process commentary broadcasts
         async def commentary_broadcaster():
@@ -552,17 +747,21 @@ async def get_account_stats():
             }
         }
 
-    # Determine if we're in live mode with Schwab connected
-    is_live = trading_engine.mode == TradingMode.LIVE
+    # v-account-stats-schwab-2026-04-30: previously this only fetched
+    # Schwab data when mode==LIVE. The dashboard wants the user's REAL
+    # account numbers visible even while paper-trading in sim, so fetch
+    # whenever schwab_client is connected — regardless of mode.
     has_schwab = trading_engine.schwab_client is not None
 
-    # Try to get real Schwab data if available
-    if is_live and has_schwab:
+    # v-day-pnl-schwab-only-2026-04-30: Day P&L is Schwab's number, period.
+    # Schwab is the authoritative source for the user's actual account P&L.
+    # Sim/paper trades are bot bookkeeping and shouldn't muddy the live
+    # account dashboard.
+    if has_schwab:
         try:
             account_info = await trading_engine._get_real_account_info()
             schwab_positions = await trading_engine.get_schwab_positions()
 
-            # Calculate total unrealized P&L from positions
             total_pnl = sum(pos.get('total_pnl', 0) for pos in schwab_positions)
 
             if account_info:
@@ -603,6 +802,30 @@ async def get_account_stats():
             "cash": 0
         }
     }
+
+@app.get("/api/quote-cache")
+async def quote_cache_dump():
+    """v-pricebook-2026-05-01: introspection of the canonical
+    PriceBook (replaces the legacy QuoteCache dump). Each entry shows
+    the canonical mark, last/bid/ask, age, source, and is_stale flag —
+    everything a debugger needs to answer "why is this symbol's price
+    not updating?". A symbol with is_stale=True for >30s means Schwab
+    has stopped sending updates for it (quiet stock or subscription
+    issue). A symbol absent from the rows list has never received a
+    tick since the stream connected."""
+    if not trading_engine or not getattr(trading_engine, 'price_book', None):
+        return {"status": "error", "message": "price_book not initialised"}
+    pb = trading_engine.price_book
+    stream = getattr(trading_engine, '_schwab_quote_stream', None)
+    return {
+        "status": "success",
+        "stream_available": (stream is not None and stream.is_available()) if stream else False,
+        "stream_healthy":   stream.is_healthy() if stream else False,
+        "stream_tick_count": getattr(stream, '_tick_count', 0) if stream else 0,
+        "stream_last_tick_at": (stream._last_tick_at.isoformat() if stream and stream._last_tick_at else None),
+        "price_book": pb.status(),
+    }
+
 
 @app.post("/api/refresh-positions")
 async def refresh_positions():
@@ -721,280 +944,6 @@ async def get_risk_metrics():
         'total_exposure': total_value,
         'position_count': len(positions)
     }
-
-@app.get("/api/professional/backtest/report/latest")
-async def get_latest_backtest_report():
-    """Get the latest backtest report"""
-    # Check if we have a saved backtest report
-    backtest_report_path = Path("backtest_results/latest_report.json")
-
-    if backtest_report_path.exists():
-        try:
-            with open(backtest_report_path, 'r') as f:
-                report = json.load(f)
-            return report
-        except Exception as e:
-            logger.error(f"Error loading backtest report: {e}")
-
-    # Return a sample backtest report
-    return {
-        "summary": {
-            "total_return": 0.152,
-            "annual_return": 0.183,
-            "sharpe_ratio": 1.24,
-            "sortino_ratio": 1.68,
-            "max_drawdown": -0.078,
-            "win_rate": 0.565,
-            "total_trades": 48,
-            "winning_trades": 27,
-            "losing_trades": 21,
-            "profit_factor": 1.42,
-            "average_win": 0.0089,
-            "average_loss": -0.0052,
-            "best_trade": 0.0234,
-            "worst_trade": -0.0156,
-            "commission_paid": 96.50,
-            "start_date": "2024-01-01",
-            "end_date": "2024-12-31",
-            "initial_capital": 10000,
-            "final_capital": 11520
-        },
-        "trades": [
-            {
-                "date": "2024-01-15",
-                "symbol": "AAPL",
-                "side": "buy",
-                "quantity": 50,
-                "entry_price": 185.20,
-                "exit_price": 188.50,
-                "pnl": 165.00,
-                "return_pct": 0.0178
-            },
-            {
-                "date": "2024-02-03",
-                "symbol": "MSFT",
-                "side": "buy",
-                "quantity": 30,
-                "entry_price": 405.30,
-                "exit_price": 402.10,
-                "pnl": -96.00,
-                "return_pct": -0.0079
-            }
-        ],
-        "equity_curve": [
-            {"date": "2024-01-01", "value": 10000},
-            {"date": "2024-02-01", "value": 10250},
-            {"date": "2024-03-01", "value": 10480},
-            {"date": "2024-04-01", "value": 10650},
-            {"date": "2024-05-01", "value": 10900},
-            {"date": "2024-06-01", "value": 11100},
-            {"date": "2024-07-01", "value": 11000},
-            {"date": "2024-08-01", "value": 11200},
-            {"date": "2024-09-01", "value": 11350},
-            {"date": "2024-10-01", "value": 11400},
-            {"date": "2024-11-01", "value": 11450},
-            {"date": "2024-12-31", "value": 11520}
-        ],
-        "monthly_returns": [
-            {"month": "2024-01", "return": 0.025},
-            {"month": "2024-02", "return": 0.022},
-            {"month": "2024-03", "return": 0.016},
-            {"month": "2024-04", "return": 0.023},
-            {"month": "2024-05", "return": 0.018},
-            {"month": "2024-06", "return": -0.009},
-            {"month": "2024-07", "return": 0.018},
-            {"month": "2024-08", "return": 0.013},
-            {"month": "2024-09", "return": 0.004},
-            {"month": "2024-10", "return": 0.004},
-            {"month": "2024-11", "return": 0.006}
-        ],
-        "strategy_performance": {
-            "momentum": {
-                "trades": 18,
-                "win_rate": 0.611,
-                "avg_return": 0.008,
-                "total_return": 0.144
-            },
-            "mean_reversion": {
-                "trades": 15,
-                "win_rate": 0.533,
-                "avg_return": 0.005,
-                "total_return": 0.075
-            },
-            "breakout": {
-                "trades": 15,
-                "win_rate": 0.600,
-                "avg_return": 0.007,
-                "total_return": 0.105
-            }
-        }
-    }
-
-@app.post("/api/professional/backtest")
-async def run_professional_backtest(config: dict):
-    """Run a backtest with specified configuration"""
-    try:
-        # Validate config
-        symbols = config.get('symbols', ['SPY'])
-        start_date = config.get('start_date', (datetime.now() - timedelta(days=30)).isoformat())
-        end_date = config.get('end_date', datetime.now().isoformat())
-        initial_capital = config.get('initial_capital', 100000)
-
-        # Get historical data from Schwab if available
-        historical_data = {}
-
-        if trading_engine and trading_engine.schwab_client:
-            try:
-                for symbol in symbols:
-                    # Get price history from Schwab
-                    # Convert dates to datetime objects
-                    start_dt = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
-                    end_dt = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
-
-                    # Calculate period parameters for Schwab API
-                    period_days = (end_dt - start_dt).days
-
-                    # Import Schwab enums
-                    from schwab.client import Client
-
-                    # Schwab API parameters - use proper enums
-                    if period_days <= 10:
-                        period_type = Client.PriceHistory.PeriodType.DAY
-                        period = Client.PriceHistory.Period.TEN_DAYS
-                    elif period_days <= 30:
-                        period_type = Client.PriceHistory.PeriodType.MONTH
-                        period = Client.PriceHistory.Period.ONE_MONTH
-                    elif period_days <= 180:
-                        period_type = Client.PriceHistory.PeriodType.MONTH
-                        period = Client.PriceHistory.Period.SIX_MONTHS
-                    else:
-                        period_type = Client.PriceHistory.PeriodType.YEAR
-                        period = Client.PriceHistory.Period.ONE_YEAR
-
-                    frequency_type = Client.PriceHistory.FrequencyType.MINUTE
-                    frequency = Client.PriceHistory.Frequency.EVERY_FIVE_MINUTES
-
-                    # Get price history
-                    response = trading_engine.schwab_client.get_price_history(
-                        symbol,
-                        period_type=period_type,
-                        period=period,
-                        frequency_type=frequency_type,
-                        frequency=frequency,
-                        start_datetime=start_dt,
-                        end_datetime=end_dt
-                    )
-
-                    if response.status_code == 200:
-                        data = response.json()
-                        candles = data.get('candles', [])
-
-                        if candles:
-                            # Convert to DataFrame
-                            df = pd.DataFrame(candles)
-                            df['datetime'] = pd.to_datetime(df['datetime'], unit='ms')
-                            df.set_index('datetime', inplace=True)
-
-                            # Rename columns to match expected format
-                            column_mapping = {
-                                'open': 'Open',
-                                'high': 'High',
-                                'low': 'Low',
-                                'close': 'Close',
-                                'volume': 'Volume'
-                            }
-                            df.rename(columns=column_mapping, inplace=True)
-
-                            historical_data[symbol] = df
-
-                            # Add commentary about data loaded
-                            trading_engine.commentary.add_commentary(TradingCommentary(
-                                timestamp=datetime.now(),
-                                type=CommentaryType.DATA,
-                                symbol=symbol,
-                                title=f"\U0001f4ca Historical Data Loaded",
-                                message=f"Loaded {len(df)} candles for {symbol} from {start_date} to {end_date}",
-                                importance=6
-                            ))
-            except Exception as e:
-                logger.error(f"Error fetching historical data from Schwab: {e}")
-
-        # If we couldn't get data from Schwab, generate sample data
-        if not historical_data:
-            for symbol in symbols:
-                # Generate realistic sample data
-                dates = pd.date_range(start=start_date, end=end_date, freq='5min')
-                # Filter for market hours only (9:30 AM - 4:00 PM ET)
-                dates = dates[(dates.hour >= 9) & ((dates.hour < 16) | ((dates.hour == 16) & (dates.minute == 0)))]
-                dates = dates[(dates.hour > 9) | ((dates.hour == 9) & (dates.minute >= 30))]
-
-                # Generate price data with realistic volatility
-                base_price = 400 if symbol == 'SPY' else 100
-                returns = np.random.normal(0.0001, 0.001, len(dates))  # Small returns with volatility
-                prices = base_price * np.exp(np.cumsum(returns))
-
-                # Create OHLCV data
-                df = pd.DataFrame(index=dates)
-                df['Open'] = prices * (1 + np.random.normal(0, 0.0005, len(dates)))
-                df['High'] = prices * (1 + np.abs(np.random.normal(0, 0.001, len(dates))))
-                df['Low'] = prices * (1 - np.abs(np.random.normal(0, 0.001, len(dates))))
-                df['Close'] = prices
-                df['Volume'] = np.random.randint(1000000, 5000000, len(dates))
-
-                historical_data[symbol] = df
-
-        # Run backtest simulation
-        backtest_results = await simulate_backtest(historical_data, config)
-
-        # Save results
-        results_path = Path("backtest_results")
-        results_path.mkdir(exist_ok=True)
-
-        # Convert numpy types to Python native types for JSON serialization
-        def convert_to_serializable(obj):
-            if isinstance(obj, (np.int64, np.int32, np.int16, np.int8)):
-                return int(obj)
-            elif isinstance(obj, (np.float64, np.float32, np.float16)):
-                return float(obj)
-            elif isinstance(obj, np.ndarray):
-                return obj.tolist()
-            elif isinstance(obj, pd.Timestamp):
-                return obj.isoformat()
-            elif isinstance(obj, dict):
-                return {k: convert_to_serializable(v) for k, v in obj.items()}
-            elif isinstance(obj, list):
-                return [convert_to_serializable(item) for item in obj]
-            return obj
-
-        report = {
-            "config": config,
-            "summary": convert_to_serializable(backtest_results['summary']),
-            "trades": convert_to_serializable(backtest_results['trades'][:100]),  # Limit to 100 trades for report
-            "equity_curve": convert_to_serializable(backtest_results['equity_curve']),
-            "monthly_returns": convert_to_serializable(backtest_results['monthly_returns']),
-            "strategy_performance": convert_to_serializable(backtest_results['strategy_performance']),
-            "timestamp": datetime.now().isoformat()
-        }
-
-        with open(results_path / "latest_report.json", 'w') as f:
-            json.dump(report, f, indent=2)
-
-        summary = convert_to_serializable(backtest_results['summary'])
-        return {
-            'total_return': summary['total_return'],
-            'annual_return': summary['annual_return'],
-            'sharpe_ratio': summary['sharpe_ratio'],
-            'max_drawdown': summary['max_drawdown'],
-            'win_rate': summary['win_rate'],
-            'total_trades': summary['total_trades'],
-            'profit_factor': summary['profit_factor'],
-            'report_url': '/api/professional/backtest/report/latest',
-            'config': config,
-            'data_source': 'schwab' if trading_engine and trading_engine.schwab_client and historical_data else 'simulated'
-        }
-    except Exception as e:
-        logger.error(f"Backtest error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/professional/strategies")
 async def get_strategies():
@@ -1278,183 +1227,6 @@ async def get_upcoming_earnings():
 # BACKTESTING API ENDPOINTS
 # ============================================================================
 
-@app.post("/api/backtest/run")
-async def run_backtest_schwab(config: dict):
-    """Run a backtest with the given configuration using Schwab historical data"""
-    try:
-        from backtesting_engine import BacktestingEngine, BacktestConfig, BacktestMode
-        from datetime import datetime, timedelta
-        from schwab.client import Client
-
-        # Check if trading engine and Schwab client are available
-        if not trading_engine or not trading_engine.schwab_client:
-            return {
-                'status': 'error',
-                'message': 'Schwab client not connected. Please ensure the trading bot is running with valid Schwab credentials.'
-            }
-
-        # Parse configuration
-        symbols = config.get('symbols', ['TSLA', 'NVDA'])
-        start_date = datetime.strptime(config.get('start_date', '2024-01-01'), '%Y-%m-%d')
-        end_date = datetime.strptime(config.get('end_date', '2024-12-31'), '%Y-%m-%d')
-        initial_capital = config.get('initial_capital', 100000)
-        timeframe = config.get('timeframe', '5min')
-        mode = BacktestMode[config.get('mode', 'REALISTIC')]
-        max_positions = config.get('max_positions', 5)
-        commission = config.get('commission', 0.001)
-
-        # Create backtest config
-        bt_config = BacktestConfig(
-            start_date=start_date,
-            end_date=end_date,
-            initial_capital=initial_capital,
-            symbols=symbols,
-            timeframe=timeframe,
-            mode=mode,
-            max_positions=max_positions,
-            commission=commission
-        )
-
-        # Fetch historical data from Schwab
-        market_data = {}
-
-        # Calculate days from now to start_date for minute data validation
-        days_ago = (datetime.now() - start_date).days
-
-        # Map timeframe to Schwab frequency
-        # Note: Schwab minute data is only available for the last 30 days
-        use_minute_data = timeframe in ['1min', '5min', '15min', '1hour']
-
-        if use_minute_data and days_ago > 30:
-            # Minute data not available for dates > 30 days ago, fall back to daily
-            logger.warning(f"Minute data only available for last 30 days. Falling back to daily data for backtest starting {start_date.date()}")
-            frequency_type = Client.PriceHistory.FrequencyType.DAILY
-            frequency = Client.PriceHistory.Frequency.DAILY
-            # Update config to reflect actual timeframe used
-            bt_config = BacktestConfig(
-                start_date=start_date,
-                end_date=end_date,
-                initial_capital=initial_capital,
-                symbols=symbols,
-                timeframe='1day',  # Fallback to daily
-                mode=mode,
-                max_positions=max_positions,
-                commission=commission
-            )
-        elif timeframe == '1min':
-            frequency_type = Client.PriceHistory.FrequencyType.MINUTE
-            frequency = Client.PriceHistory.Frequency.EVERY_MINUTE
-        elif timeframe == '5min':
-            frequency_type = Client.PriceHistory.FrequencyType.MINUTE
-            frequency = Client.PriceHistory.Frequency.EVERY_FIVE_MINUTES
-        elif timeframe == '15min':
-            frequency_type = Client.PriceHistory.FrequencyType.MINUTE
-            frequency = Client.PriceHistory.Frequency.EVERY_FIFTEEN_MINUTES
-        elif timeframe == '1hour':
-            frequency_type = Client.PriceHistory.FrequencyType.MINUTE
-            frequency = Client.PriceHistory.Frequency.EVERY_THIRTY_MINUTES  # Closest to 1hr
-        else:  # 1day
-            frequency_type = Client.PriceHistory.FrequencyType.DAILY
-            frequency = Client.PriceHistory.Frequency.DAILY
-
-        for symbol in symbols:
-            try:
-                # Fetch from Schwab API using only start/end datetime (not period)
-                # Note: Schwab API requires EITHER period_type+period OR start_datetime+end_datetime, not both
-                response = trading_engine.schwab_client.get_price_history(
-                    symbol,
-                    frequency_type=frequency_type,
-                    frequency=frequency,
-                    start_datetime=start_date,
-                    end_datetime=end_date
-                )
-
-                if response.status_code == 200:
-                    data = response.json()
-                    candles = data.get('candles', [])
-
-                    if candles:
-                        # Convert to DataFrame
-                        df = pd.DataFrame(candles)
-                        df['datetime'] = pd.to_datetime(df['datetime'], unit='ms')
-                        df.set_index('datetime', inplace=True)
-
-                        # Filter by date range
-                        df = df[(df.index >= start_date) & (df.index <= end_date)]
-
-                        # Rename columns to lowercase (backtesting engine expects lowercase)
-                        df.columns = df.columns.str.lower()
-
-                        if len(df) > 0:
-                            market_data[symbol] = df
-                            logger.info(f"Fetched {len(df)} bars for {symbol} from Schwab")
-                else:
-                    logger.warning(f"Schwab API returned {response.status_code} for {symbol}")
-
-            except Exception as e:
-                logger.warning(f"Failed to fetch data for {symbol} from Schwab: {e}")
-
-        if not market_data:
-            return {
-                'status': 'error',
-                'message': 'No historical data available from Schwab. Check symbol names and ensure market data access is enabled.'
-            }
-
-        # Run backtest
-        engine = BacktestingEngine(bt_config)
-        results = engine.run(market_data)
-
-        # Convert results to dict
-        return {
-            'status': 'success',
-            'data': {
-                'total_return': results.total_return,
-                'annual_return': results.annual_return,
-                'sharpe_ratio': results.sharpe_ratio,
-                'sortino_ratio': results.sortino_ratio,
-                'max_drawdown': results.max_drawdown,
-                'win_rate': results.win_rate,
-                'profit_factor': results.profit_factor,
-                'total_trades': results.total_trades,
-                'winning_trades': results.winning_trades,
-                'losing_trades': results.losing_trades,
-                'avg_win': results.avg_win,
-                'avg_loss': results.avg_loss,
-                'initial_capital': results.initial_capital,
-                'final_capital': results.final_capital,
-                'equity_curve': [
-                    {'date': d.isoformat(), 'equity': float(v)}
-                    for d, v in results.equity_curve.items()
-                ][-500:],  # Limit to last 500 points
-                'trades': [
-                    {
-                        'symbol': t.symbol,
-                        'entry_time': t.entry_time.isoformat(),
-                        'exit_time': t.exit_time.isoformat(),
-                        'entry_price': t.entry_price,
-                        'exit_price': t.exit_price,
-                        'side': t.side,
-                        'pnl': t.pnl,
-                        'pnl_pct': t.pnl_pct,
-                        'exit_reason': t.exit_reason
-                    }
-                    for t in results.trades
-                ]
-            }
-        }
-
-    except ImportError as e:
-        return {'status': 'error', 'message': f'Backtesting engine not available: {e}'}
-    except Exception as e:
-        logger.error(f"Backtest failed: {e}")
-        return {'status': 'error', 'message': str(e)}
-
-@app.get("/api/backtest/status")
-async def get_backtest_status():
-    """Get current backtest status (for polling during long backtests)"""
-    # This would track progress for long-running backtests
-    return {'status': 'idle', 'progress': 0}
-
 @app.post("/api/professional/risk/settings")
 async def update_risk_settings(settings: dict):
     """Update risk management settings"""
@@ -1502,6 +1274,24 @@ async def toggle_strategy(strategy_key: str):
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
+    """v-ws-cached-state-2026-04-30: WebSocket dashboard updater.
+
+    Previously every WS tick (1 Hz, per client) made:
+      - 1× sync schwab_client.get_quote per simulated position (sync, blocking)
+      - 1× await trading_engine.get_schwab_positions() (Schwab API)
+      - 1× await trading_engine._get_real_account_info() (Schwab API)
+      - Sentiment update on a 30-tick counter
+
+    With multiple WS clients and Schwab latency, the WS event loop spent
+    most of its time awaiting Schwab — a single client's first message
+    could take 3 minutes if Schwab calls were slow.
+
+    Fix: read CACHED engine state. The engine's own main loop already
+    syncs Schwab every 5 cycles and updates position.current_price /
+    position.unrealized_pnl in memory. WS just reads what's already there.
+    Schwab account info is similarly cached in risk_manager fields. No
+    network calls inside the WS handler.
+    """
     # Verify WebSocket auth token from query params
     token = websocket.query_params.get("token")
     if not verify_ws_token(token):
@@ -1510,118 +1300,206 @@ async def websocket_endpoint(websocket: WebSocket):
     await connection_manager.connect(websocket)
 
     try:
+        # v-realtime-quote-overlay-2026-05-01: 4Hz dashboard tick (was 1Hz).
+        # The QuoteCache is now fed by the websocket stream at tick rate;
+        # broadcasting at 250ms means the browser sees price moves within
+        # ~250ms of Schwab's tick. JSON payload is small (~3KB); 4Hz is
+        # trivial CPU. Keeps the bot's own dashboard feeling as live as
+        # the embedded TradingView chart.
+        _DASH_TICK_SEC = 0.25
         while True:
-            await asyncio.sleep(1)
+            await asyncio.sleep(_DASH_TICK_SEC)
 
             if trading_engine:
-                # Get simulated positions
+                # Sim positions — read from PriceBook (single source of truth).
+                # v-pricebook-2026-05-01: WS handler now pulls marks
+                # from the canonical PriceBook via CalculationEngine.
+                # No more reading pos.current_price (which is now a
+                # reactive-pull property anyway) and no more touching
+                # the legacy QuoteCache. is_stale comes through to the
+                # frontend so it can grey out unfresh values.
+                from core.calculations import CalculationEngine
+                from core.price_book import PriceBook
+                pb = getattr(trading_engine, 'price_book', None) or PriceBook.instance()
                 sim_positions_data = []
                 if trading_engine.mode == TradingMode.SIMULATION_WITH_COMMENTARY:
-                    # v-ws-keepalive-2026-04-29: snapshot the dict so concurrent
-                    # opens/closes from the engine main loop don't raise
-                    # "dictionary changed size during iteration" mid-broadcast
-                    # (observed in trading_bot.log earlier).
                     for symbol, pos in list(trading_engine.simulated_positions.items()):
-                        if pos is not None:
-                            # Update current price with latest market data
-                            try:
-                                if trading_engine.data_provider and hasattr(trading_engine.data_provider, 'get_current_quote'):
-                                    quote = await trading_engine.data_provider.get_current_quote(symbol)
-                                    if quote and 'price' in quote:
-                                        pos.current_price = quote['price']
-                                        # v-pnl-sign-fix-2026-04-22: side-aware P&L
-                                        if getattr(pos, 'side', 'long') == 'short':
-                                            pos.unrealized_pnl = (pos.entry_price - pos.current_price) * pos.quantity
-                                        else:
-                                            pos.unrealized_pnl = (pos.current_price - pos.entry_price) * pos.quantity
-                                elif trading_engine.schwab_client:
-                                    # Try to get quote from Schwab
-                                    try:
-                                        response = trading_engine.schwab_client.get_quote(symbol)
-                                        if response.status_code == 200:
-                                            quote_data = response.json()
-                                            if symbol in quote_data:
-                                                pos.current_price = quote_data[symbol]['quote']['lastPrice']
-                                                if getattr(pos, 'side', 'long') == 'short':
-                                                    pos.unrealized_pnl = (pos.entry_price - pos.current_price) * pos.quantity
-                                                else:
-                                                    pos.unrealized_pnl = (pos.current_price - pos.entry_price) * pos.quantity
-                                    except Exception as e:
-                                        logger.debug(f"Error getting quote for {symbol}: {e}")
-                            except Exception as e:
-                                logger.debug(f"Error updating price for {symbol}: {e}")
+                        if pos is None:
+                            continue
+                        if pb is not None:
+                            mark = pb.get_mark(symbol)
+                            pnl = CalculationEngine.get_pnl(pos, mark)
+                            live_price = mark.price if mark.has_price else pos.entry_price
+                            live_upnl = pnl.unrealized_pnl
+                            is_stale = pnl.is_stale
+                        else:
+                            live_price = pos.entry_price
+                            live_upnl = 0.0
+                            is_stale = True
+                        sim_positions_data.append({
+                            'symbol': pos.symbol,
+                            'quantity': pos.quantity,
+                            'entry_price': pos.entry_price,
+                            'current_price': live_price,
+                            'stop_loss': getattr(pos, 'stop_loss', None),
+                            'take_profit': getattr(pos, 'take_profit', None),
+                            'unrealized_pnl': live_upnl,
+                            'is_stale': is_stale,   # frontend can grey out
+                            'type': 'simulated',
+                            'mode': getattr(pos, 'mode', 'simulation'),
+                            'managed_by_bot': bool(getattr(pos, 'managed_by_bot', True)),
+                        })
 
-                            sim_positions_data.append({
-                                'symbol': pos.symbol,
-                                'quantity': pos.quantity,
-                                'entry_price': pos.entry_price,
-                                'current_price': pos.current_price,
-                                'stop_loss': getattr(pos, 'stop_loss', None),
-                                'take_profit': getattr(pos, 'take_profit', None),
-                                'unrealized_pnl': pos.unrealized_pnl,
-                                'type': 'simulated',
-                                'mode': getattr(pos, 'mode', 'simulation'),
-                                'managed_by_bot': bool(getattr(pos, 'managed_by_bot', True)),
-                            })
-
-                # Get real Schwab positions
+                # Real Schwab positions — PriceBook-driven.
+                # v-pricebook-2026-05-01: structural baseline (qty,
+                # average_price, day_pnl baseline at the time of the
+                # last REST snapshot) still comes from
+                # `_schwab_positions_cache`. The MARK is canonical —
+                # PriceBook.get_mark(). All derived P&L (unrealized,
+                # percent, market value, day-P&L drift) flows through
+                # the SAME CalculationEngine that the FSM uses, so
+                # there can never be a divergence between "what the bot
+                # decides" and "what the dashboard shows."
                 real_positions_data = []
                 if trading_engine.schwab_client:
-                    schwab_positions = await trading_engine.get_schwab_positions()
-                    for pos in schwab_positions:
-                        # Check if we have a tracked position with long-term flag
-                        tracked_pos = trading_engine.positions.get(pos['symbol'])
+                    cache = getattr(trading_engine, '_schwab_positions_cache', None) or []
+                    for sp in cache:
+                        sym = sp.get('symbol')
+                        tracked_pos = trading_engine.positions.get(sym)
                         is_long_term = getattr(tracked_pos, 'is_long_term', False) if tracked_pos else False
+                        managed = bool(getattr(tracked_pos, 'managed_by_bot', False)) if tracked_pos else False
+
+                        # Baseline from Schwab REST snapshot
+                        qty = sp.get('quantity', 0)
+                        avg = sp.get('average_price', 0) or 0
+                        rest_price = sp.get('current_price', 0) or 0
+                        rest_day_pnl = sp.get('day_pnl', 0) or 0
+
+                        # Build a synthetic Position-shaped object the
+                        # CalculationEngine can score. We don't have the
+                        # tracked Position for some pre-existing Schwab
+                        # holdings; this works whether tracked_pos is
+                        # present or not.
+                        side = 'short' if qty < 0 else 'long'
+                        class _Synthetic:
+                            symbol = sym
+                            entry_price = avg
+                            quantity = abs(qty) if side == 'short' else qty
+                        _syn = _Synthetic()
+                        _syn.side = side
+
+                        # Reactive-pull mark from PriceBook
+                        if pb is not None:
+                            mark = pb.get_mark(sym)
+                            pnl = CalculationEngine.get_pnl(_syn, mark)
+                            live_price = mark.price if mark.has_price else rest_price
+                            live_total_pnl = pnl.unrealized_pnl
+                            live_pct = pnl.unrealized_pnl_pct
+                            is_stale = pnl.is_stale
+                            mv = pnl.market_value or (abs(qty) * live_price)
+                        else:
+                            live_price = rest_price
+                            live_total_pnl = sp.get('total_pnl', 0) or 0
+                            live_pct = sp.get('pnl_percent', 0) or 0
+                            is_stale = True
+                            mv = sp.get('market_value', 0)
+
+                        # Day-P&L drift: tick the day-P&L value with
+                        # the price move since the REST snapshot, so
+                        # the day-P&L tile also feels live.
+                        if rest_price and live_price:
+                            price_drift = (live_price - rest_price) * (qty if side == 'long' else -abs(qty))
+                            live_day_pnl = rest_day_pnl + price_drift
+                        else:
+                            live_day_pnl = rest_day_pnl
 
                         real_positions_data.append({
-                            'symbol': pos['symbol'],
-                            'quantity': pos['quantity'],
-                            'entry_price': pos['average_price'],
-                            'current_price': pos['current_price'],
-                            'unrealized_pnl': pos['total_pnl'],
-                            'day_pnl': pos['day_pnl'],
-                            'pnl_percent': pos['pnl_percent'],
-                            'market_value': pos['market_value'],
+                            'symbol': sym,
+                            'quantity': qty,
+                            'entry_price': avg,
+                            'current_price': live_price,
+                            'unrealized_pnl': live_total_pnl,
+                            'day_pnl': live_day_pnl,
+                            'pnl_percent': live_pct,
+                            'market_value': mv,
+                            'is_stale': is_stale,
                             'is_long_term': is_long_term,
                             'type': 'real',
                             'mode': 'live',
-                            'managed_by_bot': bool(getattr(tracked_pos, 'managed_by_bot', False)) if tracked_pos else False,
+                            'managed_by_bot': managed,
                         })
 
-                # Get account info from Schwab
-                account_info = {}
-                if trading_engine.schwab_client:
-                    try:
-                        account_info = await trading_engine._get_real_account_info()
-                        # Log if we got real data
-                        if account_info:
-                            logger.debug(f"WebSocket: Got real Schwab data - Balance=${account_info.get('balance', 0):.2f}, P&L=${account_info.get('day_pnl', 0):.2f}")
-                    except Exception as e:
-                        logger.error(f"WebSocket: Failed to get Schwab account info: {e}")
-                        account_info = {}
+                # Account info — read CACHED risk_manager state, which is
+                # synced from Schwab every 5 engine cycles (and once at
+                # startup). day_pnl is Schwab's authoritative number for
+                # the user's account; sim trade P&L is NOT mixed in.
+                # v-day-pnl-schwab-only-2026-04-30.
+                rm = trading_engine.risk_manager
+                account_info = {
+                    'balance': getattr(rm, 'account_balance', 0),
+                    'buying_power': getattr(rm, 'buying_power', 0),
+                    'day_pnl': getattr(rm, 'schwab_daily_pnl', None)
+                               or getattr(rm, 'daily_pnl', 0) or 0,
+                    'cash': 0,
+                }
 
-                # If no Schwab data, use risk manager values
-                if not account_info:
-                    logger.debug("WebSocket: Using risk manager fallback values")
-                    account_info = {
-                        'balance': trading_engine.risk_manager.account_balance,
-                        'buying_power': trading_engine.risk_manager.buying_power,
-                        'day_pnl': trading_engine.risk_manager.schwab_daily_pnl if hasattr(trading_engine.risk_manager, 'schwab_daily_pnl') else trading_engine.risk_manager.daily_pnl,
-                        'cash': 0
-                    }
-
-                # Get screener data
+                # Get screener data — overlay LIVE price from PriceBook.
+                # v-watchlist-stream-2026-05-01: ticker tape used to
+                # show prices from the screener's REST snapshot only —
+                # which only refreshed every 60-120s. Now: structural
+                # fields (volume, volatility, high/low/change) still
+                # come from the screener snapshot, but `last` is
+                # overlaid from the streaming PriceBook so the ticker
+                # tape ticks in lockstep with the position rows.
+                # v-watchlist-ui-cap-2026-05-11: dashboard had a hardcoded
+                # `[:10]` slice even though the engine's WATCHLIST_SIZE
+                # was 20 (and Config.yaml was the same). UI was clipping
+                # half the analyzed names. Honor the same config knob.
+                try:
+                    _ui_cap = int(Config().WATCHLIST_SIZE or 20)
+                except Exception:
+                    _ui_cap = 20
                 screener_data = []
                 if trading_engine.screener and trading_engine.screener.top_movers:
-                    screener_data = [{
-                        'symbol': m['symbol'],
-                        'last': m.get('last', 0),
-                        'change': m.get('percent_change', 0),
-                        'volume': m.get('volume', 0),
-                        'volatility': m.get('volatility', 0),
-                        'high': m.get('high', 0),
-                        'low': m.get('low', 0)
-                    } for m in trading_engine.screener.top_movers[:10]]
+                    for m in trading_engine.screener.top_movers[:_ui_cap]:
+                        sym = m['symbol']
+                        rest_last = m.get('last', 0) or 0
+                        live_last = rest_last
+                        if pb is not None:
+                            obj = pb.get_mark(sym)
+                            if obj.has_price and not obj.is_stale:
+                                live_last = obj.price
+                        screener_data.append({
+                            'symbol': sym,
+                            'last': live_last,
+                            'change': m.get('percent_change', 0),
+                            'volume': m.get('volume', 0),
+                            'volatility': m.get('volatility', 0),
+                            'high': m.get('high', 0),
+                            'low': m.get('low', 0),
+                        })
+
+                # v-watchlist-stream-2026-05-01: live_quotes block —
+                # the canonical "every symbol the bot has skin in,
+                # right now, with its current mark." Frontend handlers
+                # patch any element tagged data-price-symbol="X" by
+                # looking up live_quotes[X].price. Single source of
+                # truth for every price displayed on the dashboard.
+                live_quotes = {}
+                if pb is not None:
+                    snap = pb.status().get('rows', [])
+                    for r in snap:
+                        sym = r.get('symbol')
+                        if not sym:
+                            continue
+                        live_quotes[sym] = {
+                            'price': r.get('price'),
+                            'bid': r.get('bid'),
+                            'ask': r.get('ask'),
+                            'is_stale': r.get('is_stale', False),
+                            'source': r.get('source'),
+                            'age_sec': r.get('age_sec'),
+                        }
 
                 # Get sentiment data (every 30 seconds to avoid excessive API calls)
                 sentiment_data = None
@@ -1654,7 +1532,8 @@ async def websocket_endpoint(websocket: WebSocket):
                             'simulated_positions': sim_positions_data,
                             'real_positions': real_positions_data,
                             'trades': trading_engine.get_todays_trades(),
-                            'screener': screener_data
+                            'screener': screener_data,
+                            'live_quotes': live_quotes,  # v-watchlist-stream-2026-05-01
                         }
                     })
 
@@ -1678,7 +1557,21 @@ async def websocket_endpoint(websocket: WebSocket):
                     # Connection closed, break the loop
                     break
                 except Exception as e:
-                    if "Connection closed" in str(e) or "sent 1012" in str(e):
+                    # v-ws-broadcast-resilience-2026-05-04: starlette/uvicorn
+                    # raises a plain RuntimeError ("Cannot call \"send\" once
+                    # a close message has been sent.") on a half-closed
+                    # socket — not a ConnectionClosedError. Without matching
+                    # this string, the loop kept retrying the same dead
+                    # socket every 250 ms, producing ~240 errors/minute and
+                    # never shipping a real dashboard payload.
+                    s = str(e)
+                    if (
+                        "Connection closed" in s
+                        or "sent 1012" in s
+                        or "close message has been sent" in s
+                        or "WebSocket is not connected" in s
+                        or "websocket.close" in s
+                    ):
                         break
                     logger.debug(f"Error sending WebSocket data: {e}")
 
@@ -1773,11 +1666,32 @@ async def get_trades(date: str = None, symbol: str = None, strategy: str = None,
             rows = conn.execute(sql, params).mappings().all()
 
         trades = [dict(r) for r in rows]
+        # v-json-nan-sanitize-trades-2026-05-05: same NaN/inf scrub as
+        # /api/positions/db — Postgres can return non-finite floats
+        # (pnl_pct, atr_at_entry, meta_proba) which json.dumps rejects
+        # with "Out of range float values are not JSON compliant".
+        import math as _math
+        def _scrub(v):
+            if isinstance(v, float):
+                return None if (_math.isnan(v) or _math.isinf(v)) else v
+            return v
+        trades = [{k: _scrub(v) for k, v in t.items()} for t in trades]
+
+        def _safe_pnl(t):
+            v = t.get("pnl")
+            try:
+                f = float(v)
+                if _math.isnan(f) or _math.isinf(f):
+                    return 0.0
+                return f
+            except (TypeError, ValueError):
+                return 0.0
+
         summary = {
             "count": len(trades),
-            "total_pnl": round(sum(t["pnl"] for t in trades), 2),
-            "winners": sum(1 for t in trades if t["pnl"] > 0),
-            "losers": sum(1 for t in trades if t["pnl"] < 0),
+            "total_pnl": round(sum(_safe_pnl(t) for t in trades), 2),
+            "winners": sum(1 for t in trades if _safe_pnl(t) > 0),
+            "losers": sum(1 for t in trades if _safe_pnl(t) < 0),
         }
         if trades:
             summary["win_rate"] = round(100 * summary["winners"] / summary["count"], 1)
@@ -1831,7 +1745,14 @@ async def get_decisions(date: str = None, symbol: str = None, component: str = N
         with engine.connect() as conn:
             rows = conn.execute(sql, params).mappings().all()
 
-        return {"status": "success", "count": len(rows), "decisions": [dict(r) for r in rows]}
+        decisions = [dict(r) for r in rows]
+        import math as _math
+        def _scrub(v):
+            if isinstance(v, float):
+                return None if (_math.isnan(v) or _math.isinf(v)) else v
+            return v
+        decisions = [{k: _scrub(v) for k, v in d.items()} for d in decisions]
+        return {"status": "success", "count": len(decisions), "decisions": decisions}
 
     except Exception as e:
         logger.error(f"Error querying decisions: {e}")
@@ -1840,9 +1761,78 @@ async def get_decisions(date: str = None, symbol: str = None, component: str = N
 
 @app.get("/api/positions/db")
 async def get_positions_db():
-    """Current open positions from Postgres (synced every 60s)."""
+    """Current open positions.
+
+    Prefer live in-memory + PriceBook-derived marks when engine is running.
+    Fall back to Postgres mirror when engine is unavailable.
+    """
     import os
     from sqlalchemy import create_engine, text as sa_text
+
+    # v-live-positions-db-api-2026-05-04: `/api/positions/db` used to read
+    # only the Postgres mirror, which lags the websocket path by one save
+    # cycle and can make symbol price/PnL disagree across dashboard widgets.
+    # Build from live engine state first so all surfaces use the same marks.
+    if trading_engine is not None:
+        try:
+            from core.calculations import CalculationEngine
+            from core.price_book import PriceBook
+
+            pb = getattr(trading_engine, "price_book", None) or PriceBook.instance()
+            # Live wins when same symbol exists in both collections.
+            all_positions = {
+                **getattr(trading_engine, "simulated_positions", {}),
+                **getattr(trading_engine, "positions", {}),
+            }
+
+            positions = []
+            for sym, pos in all_positions.items():
+                if pos is None or getattr(pos, "quantity", 0) <= 0:
+                    continue
+
+                if pb is not None:
+                    mark = pb.get_mark(sym)
+                    pnl = CalculationEngine.get_pnl(pos, mark)
+                    live_price = mark.price if mark.has_price else float(getattr(pos, "entry_price", 0) or 0)
+                    live_upnl = float(pnl.unrealized_pnl or 0)
+                else:
+                    live_price = float(getattr(pos, "current_price", 0) or 0)
+                    live_upnl = float(getattr(pos, "unrealized_pnl", 0) or 0)
+
+                positions.append({
+                    "symbol": sym,
+                    "side": getattr(pos, "side", "long"),
+                    "strategy": (getattr(pos, "reasoning", {}) or {}).get("strategy"),
+                    "mode": getattr(pos, "mode", "simulation"),
+                    "entry_time": getattr(pos, "entry_time", None).isoformat() if getattr(pos, "entry_time", None) else None,
+                    "entry_price": float(getattr(pos, "entry_price", 0) or 0),
+                    "current_price": live_price,
+                    "quantity": int(getattr(pos, "quantity", 0) or 0),
+                    "stop_loss": float(getattr(pos, "stop_loss", 0) or 0),
+                    "take_profit": float(getattr(pos, "take_profit", 0) or 0),
+                    "trailing_stop": getattr(pos, "trailing_stop", None),
+                    "scaled_out": bool(getattr(pos, "scaled_out", False)),
+                    "unrealized_pnl": round(live_upnl, 2),
+                    "updated_at": datetime.now().isoformat(),
+                    "managed_by_bot": bool(getattr(pos, "managed_by_bot", False)),
+                })
+
+            positions.sort(key=lambda p: p.get("entry_time") or "")
+            # v-json-nan-sanitize-2026-05-04: Python's json.dumps rejects
+            # NaN/inf with "Out of range float values are not JSON compliant",
+            # which used to make /api/positions/db return 500 on any
+            # position whose P&L or trailing_stop computed to inf (e.g.
+            # HQGE with current_price=0). Replace non-finite floats with
+            # None so the dashboard's positions feed always returns 200.
+            import math as _math
+            def _scrub(v):
+                if isinstance(v, float):
+                    return None if (_math.isnan(v) or _math.isinf(v)) else v
+                return v
+            positions = [{k: _scrub(v) for k, v in p.items()} for p in positions]
+            return {"status": "success", "count": len(positions), "positions": positions}
+        except Exception as exc:
+            logger.debug(f"live positions build failed, falling back to DB: {exc}")
 
     dsn = os.environ.get(
         "POSTGRES_DSN",
@@ -2119,52 +2109,33 @@ async def get_historical_data(symbol: str, frequency: int = 5, period: int = 1):
         return {"status": "error", "message": str(exc)}
 
 
-@app.get("/logos/{symbol}")
-async def get_logo(symbol: str):
-    """v-logo-cache-2026-04-28: serve cached Alpaca company logo for a symbol.
+_logo_inflight: set = set()  # symbols currently being fetched in background
 
-    Mounted under /logos/* (not /api/*) so it bypasses the Bearer-token
-    middleware — browsers can't easily attach Authorization headers to
-    <img src=...> requests.
+# v-logo-transparent-2026-04-30: smallest valid 1×1 transparent PNG (67 bytes).
+# Used as a placeholder when a logo can't be fetched, so the browser caches a
+# 200 response instead of repeatedly re-requesting the 404. Generated from:
+#   PIL.Image.new("RGBA",(1,1),(0,0,0,0)).save("t.png","PNG")
+import base64 as _b64_logo
+_TRANSPARENT_PNG_1x1 = _b64_logo.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
+)
 
-    Caches PNGs to static/logos/<SYMBOL>.png with 30-day TTL. On cache
-    miss, fetches from Alpaca's v1beta1/logos endpoint with the
-    placeholder=true query so missing logos return a transparent 1x1
-    PNG instead of 404 — keeps frontend rendering simple.
 
-    Symbol validation: A-Z + digits only, max 8 chars. Prevents path-
-    traversal style attacks via symbol param (e.g. ../../etc/passwd).
+async def _fetch_logo_background(symbol: str, cache_path):
+    """v-logo-async-bg-2026-04-30: fetch one logo in the background.
+
+    Runs out-of-band of any HTTP request so a 5-10s upstream wait can
+    never freeze the dashboard. On success, writes the PNG to cache.
+    On failure, writes a 0-byte sentinel so we don't keep retrying.
     """
-    import re
-    import time
     import aiohttp
-    from pathlib import Path
-    from fastapi.responses import FileResponse, Response
 
-    symbol = symbol.upper()
-    if not re.fullmatch(r"[A-Z0-9]{1,8}", symbol):
-        return Response(status_code=404)
-
-    cache_dir = Path("static/logos")
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    cache_path = cache_dir / f"{symbol}.png"
-
-    # 30-day TTL — logos virtually never change
-    needs_refresh = (
-        not cache_path.exists()
-        or (time.time() - cache_path.stat().st_mtime) > 30 * 86400
-    )
-
-    if needs_refresh:
-        # Try sources in order: FMP (free, no auth), Alpaca (paid).
-        # Yahoo deprecated logo_url around 2023 so it's no longer included.
-        fetched = False
-
-        # 1) Financial Modeling Prep — free, no auth, ~100x100 PNGs.
-        # Tested 2026-04-28: AAPL/TSLA/NVDA/PLTR all return clean PNGs.
+    fetched = False
+    try:
+        # 1) FMP (free, no auth)
         try:
             async with aiohttp.ClientSession(
-                timeout=aiohttp.ClientTimeout(total=5)
+                timeout=aiohttp.ClientTimeout(total=4)
             ) as sess:
                 async with sess.get(
                     f"https://financialmodelingprep.com/image-stock/{symbol}.png"
@@ -2176,19 +2147,16 @@ async def get_logo(symbol: str):
                             cache_path.write_bytes(content)
                             fetched = True
         except Exception as exc:
-            logger.debug(f"fmp logo fetch failed for {symbol}: {exc}")
+            logger.debug(f"bg fmp logo fetch failed for {symbol}: {exc}")
 
-        # 2) Alpaca — works if/when account has the logos subscription.
-        # Currently 403 on free plan; kept so flipping the sub upgrades us
-        # automatically. Drops in front of FMP if Alpaca returns better
-        # quality (higher res) — call it second for now to favour FMP.
+        # 2) Alpaca (paid; 403 on free plan)
         if not fetched:
             api_key = os.getenv("ALPACA_API_KEY", "")
             api_sec = os.getenv("ALPACA_SECRET_KEY", "")
             if api_key and api_sec:
                 try:
                     async with aiohttp.ClientSession(
-                        timeout=aiohttp.ClientTimeout(total=5)
+                        timeout=aiohttp.ClientTimeout(total=4)
                     ) as sess:
                         async with sess.get(
                             f"https://data.alpaca.markets/v1beta1/logos/{symbol}",
@@ -2206,24 +2174,92 @@ async def get_logo(symbol: str):
                                     cache_path.write_bytes(content)
                                     fetched = True
                 except Exception as exc:
-                    logger.debug(f"alpaca logo fetch failed for {symbol}: {exc}")
+                    logger.debug(f"bg alpaca logo fetch failed for {symbol}: {exc}")
 
         # 3) Sentinel: 0-byte file = "tried, failed". 30-day TTL prevents
-        # hammering external APIs with retries. Frontend's onerror handler
-        # hides the broken <img>.
+        # repeated retries of impossible symbols.
         if not fetched:
             try:
                 cache_path.write_bytes(b"")
             except Exception:
                 pass
+    finally:
+        _logo_inflight.discard(symbol)
 
-    if cache_path.exists() and cache_path.stat().st_size > 0:
-        return FileResponse(
-            cache_path,
+
+@app.get("/logos/{symbol}")
+async def get_logo(symbol: str):
+    """v-logo-cache-2026-04-28: serve cached company logo for a symbol.
+
+    v-logo-async-bg-2026-04-30: the previous version awaited two upstream
+    HTTP fetches (FMP 5s + Alpaca 5s) inside the request handler. On a
+    fresh dashboard load with 10-20 watchlist symbols, those 10-second
+    waits queued up and froze the FastAPI event loop for 30-100+ seconds.
+    Now: cache hit → serve instantly. Cache miss → return 404 with a
+    Cache-Control header AND fire the upstream fetch as a background
+    task. The next dashboard refresh (or any subsequent request) gets
+    the cached PNG. The user sees a missing logo for one cycle instead
+    of a frozen page.
+
+    Mounted under /logos/* (not /api/*) so it bypasses the Bearer-token
+    middleware — browsers can't easily attach Authorization headers to
+    <img src=...> requests.
+
+    Symbol validation: A-Z + digits only, max 8 chars. Prevents path-
+    traversal style attacks via symbol param (e.g. ../../etc/passwd).
+    """
+    import asyncio as _asyncio
+    import re
+    import time
+    from pathlib import Path
+    from fastapi.responses import FileResponse, Response
+
+    symbol = symbol.upper()
+    if not re.fullmatch(r"[A-Z0-9]{1,8}", symbol):
+        return Response(status_code=404)
+
+    cache_dir = Path("static/logos")
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cache_path = cache_dir / f"{symbol}.png"
+
+    cache_exists = cache_path.exists()
+    cache_stale = cache_exists and (
+        (time.time() - cache_path.stat().st_mtime) > 30 * 86400
+    )
+
+    # Cache hit: return immediately. This is the >99% path once warmed.
+    if cache_exists and not cache_stale:
+        if cache_path.stat().st_size > 0:
+            return FileResponse(
+                cache_path,
+                media_type="image/png",
+                headers={"Cache-Control": "public, max-age=86400"},
+            )
+        # Sentinel (0-byte) = "tried, failed". v-logo-transparent-2026-04-30:
+        # serve a 1×1 transparent PNG with HTTP 200 so the browser actually
+        # caches it. Cache-Control on 404 is ignored by Chrome/Firefox by
+        # default — they don't cache error responses regardless of header.
+        # That meant the dashboard re-fetched NFLX/CRM/SNAP every WS tick
+        # (~1Hz) for the entire session. Returning a real 200 PNG fixes it.
+        return Response(
+            content=_TRANSPARENT_PNG_1x1,
             media_type="image/png",
             headers={"Cache-Control": "public, max-age=86400"},
         )
-    return Response(status_code=404)
+
+    # Cache miss or stale: kick off background fetch (idempotent — only
+    # one in-flight task per symbol) and respond with a transparent PNG
+    # immediately. Browser caches it for a short window; next dashboard
+    # reload picks up the real logo if the background fetch succeeded.
+    if symbol not in _logo_inflight:
+        _logo_inflight.add(symbol)
+        _asyncio.create_task(_fetch_logo_background(symbol, cache_path))
+
+    return Response(
+        content=_TRANSPARENT_PNG_1x1,
+        media_type="image/png",
+        headers={"Cache-Control": "public, max-age=60"},  # 1-min retry window
+    )
 
 
 @app.get("/api/news-vetoes/report")
@@ -2428,78 +2464,6 @@ async def reset_brain():
         trading_engine.reset_brain_state()
         return {"status": "success", "message": "Brain state reset"}
     return {"status": "error", "message": "Engine not running"}
-
-@app.post("/api/run-backtest")
-async def run_backtest_legacy(request: dict):
-    """Run backtest on historical data using Schwab API"""
-    try:
-        from trading_bot_commentary_updated import config_manager
-        from backtesting_engine import BacktestingEngine, BacktestConfig
-
-        start_date = request.get('start_date', '2023-01-01')
-        end_date = request.get('end_date', '2024-01-01')
-        symbols = request.get('symbols', ['AAPL', 'MSFT', 'GOOGL'])
-        strategy_name = request.get('strategy', 'breakout')
-
-        # Check if we have Schwab connection
-        if not trading_engine or not trading_engine.schwab_client:
-            return {"status": "error", "message": "Schwab not connected. Please authenticate first."}
-
-        # Initialize backtest engine
-        backtest_engine = FixedBacktestEngine(config_manager.config)
-
-        # Get historical data from Schwab
-        data = {}
-        data_provider = trading_engine.data_provider
-
-        for symbol in symbols:
-            try:
-                # Use Schwab to get daily data for backtesting
-                df = data_provider.get_market_data(
-                    symbol,
-                    period_type='year',
-                    period=2,  # 2 years of data
-                    frequency_type='minute',
-                    frequency=1
-                )
-
-                if not df.empty and len(df) > 50:
-                    # Filter by date range
-                    df = df[(df.index >= pd.to_datetime(start_date)) &
-                           (df.index <= pd.to_datetime(end_date))]
-
-                    if len(df) > 50:  # Still have enough data after filtering
-                        data[symbol] = df
-                        logger.info(f"Downloaded {len(df)} bars for {symbol} from Schwab")
-
-            except Exception as e:
-                logger.error(f"Error downloading data for {symbol}: {e}")
-
-        if not data:
-            return {"status": "error", "message": "No data available for backtesting"}
-
-        # Use the simulate_backtest helper
-        backtest_config = {
-            'initial_capital': request.get('initial_capital', 100000),
-            'commission': request.get('commission', 0.001),
-            'strategy': strategy_name,
-        }
-        result = await simulate_backtest(data, backtest_config)
-
-        # simulate_backtest returns a dict with metrics already formatted
-        response_data = {
-            "status": "success",
-            "message": "Backtest completed successfully",
-            "results": result.get('metrics', {}),
-            "equity_curve": result.get('equity_curve', [])[-100:],
-            "trades": result.get('trades', []),
-        }
-
-        return response_data
-
-    except Exception as e:
-        logger.error(f"Backtest error: {e}", exc_info=True)
-        return {"status": "error", "message": f"Backtest failed: {str(e)}"}
 
 @app.get("/api/performance-metrics")
 async def get_performance_metrics():

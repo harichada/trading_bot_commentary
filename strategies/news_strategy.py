@@ -385,7 +385,13 @@ class FreeNewsSignalStrategy(TradingStrategyWithCommentary):
 
         # Check cooldown
         if symbol in self.last_signal_time:
-            cooldown_left = 3600 - (datetime.now() - self.last_signal_time[symbol]).total_seconds()
+            # v-news-cooldown-shorten-2026-05-08: 60min → 20min. The 60-min
+            # cooldown locked out add-on opportunities after legitimate
+            # entries (INTC 2026-05-08 12:53 entry → no re-engagement
+            # for 60 minutes while INTC moved from $124.75 to $127 then
+            # back). 20 minutes is enough to prevent same-bar churn but
+            # short enough to react to developing news on a moving name.
+            cooldown_left = 1200 - (datetime.now() - self.last_signal_time[symbol]).total_seconds()
             if cooldown_left > 0:
                 self._log_decision(market_data, "skip", "cooldown",
                                    cooldown_remaining_s=int(cooldown_left))
@@ -428,7 +434,23 @@ class FreeNewsSignalStrategy(TradingStrategyWithCommentary):
         # Compound 0.3 captured a lot of marginal sentiment that didn't move
         # price (37 trades over 5 days at PF 0.58). 0.4 cuts volume ~40% and
         # leaves only meaningfully bullish/bearish reads.
-        if abs(avg_sentiment) > 0.4 or high_impact_news:
+        #
+        # v-news-min-strength-2026-04-29: require BOTH a minimum sentiment
+        # magnitude AND (strong sentiment OR impact keyword). The previous
+        # `or high_impact_news` arm let weak signals through: QCOM
+        # (avg=0.012) and HOOD (avg=0.065) both got strength≈0 entries
+        # because one article happened to contain "earnings"/"sec". Those
+        # near-zero-strength positions then got Kelly-floored sizing and
+        # bled out on noise. Floor at 0.20 keeps the impact signal but
+        # cuts the noise floor.
+        # v-sentiment-thresh-2026-05-05: 0.40 → 0.30 when ≥5 articles
+        # corroborate. 509/3000 recent skips were weak_sentiment, mostly
+        # in the 0.25–0.40 band where article count was already strong.
+        # Falling-knife / rising-knife trend filters downstream still
+        # block bad-trend traps. 0.40 stays as the floor when articles<5.
+        _strong_corroborated = (abs(avg_sentiment) > 0.30 and len(news_items) >= 5)
+        _strong_uncorroborated = (abs(avg_sentiment) > 0.40)
+        if _strong_corroborated or _strong_uncorroborated or (high_impact_news and abs(avg_sentiment) >= 0.20):
             signal_type = SignalType.BUY if avg_sentiment > 0 else SignalType.SELL
             confidence = min(abs(avg_sentiment) + 0.3, 0.8)
 
@@ -436,16 +458,54 @@ class FreeNewsSignalStrategy(TradingStrategyWithCommentary):
             # Same LCID-style "falling knife" pattern the mean-rev strategy had.
             # Keep symmetric short side open since short-of-uptrend-on-bad-news
             # is a legitimate fade setup (exhaustion, reversal).
+            # Compute trend context once — both BUY and SELL guards use it.
+            indicators = market_data.indicators or {}
+            try:
+                sma_50 = float(indicators.get("sma_50", 0))
+                macd_val = float(indicators.get("macd", 0))
+                macd_sig = float(indicators.get("macd_signal", 0))
+            except (TypeError, ValueError):
+                sma_50, macd_val, macd_sig = 0.0, 0.0, 0.0
+
+            # v-conviction-bypass-knife-2026-05-06: when sentiment is
+            # extreme AND well-corroborated, the falling/rising-knife
+            # guards become the wrong call. They block the very V-bottom
+            # / V-top reversals the news strategy is supposed to catch
+            # — MSFT 2026-05-06 09:27–09:31 ET fired sentiment 0.642 →
+            # 0.707 with 10 articles at the bottom ($406.64), trend
+            # filter killed each tick, bot eventually entered at $417.65
+            # after MACD turned. The MACD/SMA50 are lagging trend signals
+            # while sentiment > 0.55 with ≥8 articles is a leading
+            # catalyst signal. Trust the catalyst.
+            _conviction_bypass = (
+                abs(avg_sentiment) >= 0.55 and len(news_items) >= 8
+            )
+            _knife_would_block_buy = (
+                signal_type == SignalType.BUY
+                and sma_50 > 0
+                and market_data.close < sma_50
+                and macd_val < macd_sig
+            )
+            _knife_would_block_sell = (
+                signal_type == SignalType.SELL
+                and sma_50 > 0
+                and market_data.close > sma_50
+                and macd_val > macd_sig
+            )
+            if _conviction_bypass and (_knife_would_block_buy or _knife_would_block_sell):
+                self._log_decision(
+                    market_data, "bypass", "conviction_overrides_knife",
+                    sentiment=round(avg_sentiment, 3),
+                    articles=len(news_items),
+                    sma_50=round(sma_50, 2),
+                    macd=round(macd_val, 4),
+                    side=("buy" if signal_type == SignalType.BUY else "sell"),
+                )
+
             if signal_type == SignalType.BUY:
-                indicators = market_data.indicators or {}
-                try:
-                    sma_50 = float(indicators.get("sma_50", 0))
-                    macd_val = float(indicators.get("macd", 0))
-                    macd_sig = float(indicators.get("macd_signal", 0))
-                except (TypeError, ValueError):
-                    sma_50, macd_val, macd_sig = 0.0, 0.0, 0.0
                 if (sma_50 > 0 and market_data.close < sma_50
-                        and macd_val < macd_sig):
+                        and macd_val < macd_sig
+                        and not _conviction_bypass):
                     self._log_decision(
                         market_data, "skip", "falling_knife_news_buy",
                         sentiment=round(avg_sentiment, 3),
@@ -496,11 +556,321 @@ class FreeNewsSignalStrategy(TradingStrategyWithCommentary):
                     ))
                     return None
 
+            # v-rising-knife-2026-05-01: symmetric guard for SHORT entries.
+            # The cost of NOT having this: RIOT 2026-05-01 — bot shorted at
+            # $18.75 on negative news (sentiment −0.579) AFTER price had
+            # spiked from $18.05 to $19.20 in 25 minutes (uptrend confirmed:
+            # close > sma_50, MACD bullish, RSI 88). Stopped out at $19.15
+            # for −$218. The mean_reversion strategy refused to short on
+            # the same setup ('short_disabled') but news_strategy had no
+            # equivalent guard and fired anyway. This is the rising-knife
+            # mirror of falling_knife: don't fade momentum on a counter-
+            # trend news signal.
+            if signal_type == SignalType.SELL:
+                if (sma_50 > 0 and market_data.close > sma_50
+                        and macd_val > macd_sig
+                        and not _conviction_bypass):
+                    self._log_decision(
+                        market_data, "skip", "rising_knife_news_sell",
+                        sentiment=round(avg_sentiment, 3),
+                        sma_50=round(sma_50, 2),
+                        macd=round(macd_val, 4),
+                        articles=len(news_items),
+                    )
+                    # Same shadow-tracker write so post-hoc analysis can
+                    # tell us whether the rising-knife veto saved a loss
+                    # or missed a winner.
+                    try:
+                        from core.config import Config as _Cfg
+                        _atr = _floored_atr(
+                            market_data.indicators.get('atr', market_data.close * 0.02),
+                            market_data.close,
+                        )
+                        _stop_dist = _Cfg().ATR_STOP_MULTIPLIER * _atr
+                        _rr = _Cfg().ATR_REWARD_RISK_RATIO
+                        # Mirrored: short stop is ABOVE entry, target BELOW
+                        wb_stop = market_data.close + _stop_dist
+                        wb_target = market_data.close - (_rr * _stop_dist)
+                        engine = getattr(self.commentary, 'engine_ref', None)
+                        if engine is not None and getattr(engine, 'db_logger', None):
+                            import asyncio as _asyncio
+                            _asyncio.get_event_loop().create_task(
+                                engine.db_logger.log_news_veto(
+                                    symbol=symbol, side='short',
+                                    veto_reason='rising_knife_news_sell',
+                                    veto_source='rising_knife',
+                                    cached_sentiment=float(avg_sentiment),
+                                    would_entry_price=float(market_data.close),
+                                    would_stop_loss=float(wb_stop),
+                                    would_take_profit=float(wb_target),
+                                )
+                            )
+                    except Exception as _e:
+                        logger.debug(f"news veto tracker (rising_knife) skipped: {_e}")
+                    self.commentary.add_commentary(TradingCommentary(
+                        timestamp=datetime.now(),
+                        type=CommentaryType.RISK_ASSESSMENT,
+                        symbol=symbol,
+                        title=f"⛔ News SELL Skipped — Rising Knife",
+                        message=(f"Negative news sentiment ({avg_sentiment:+.2f}) "
+                                 f"but price above MA50 and MACD bullish. "
+                                 "Refusing to short into a confirmed uptrend."),
+                        data={"sentiment": avg_sentiment, "sma_50": sma_50,
+                              "macd": macd_val, "macd_signal": macd_sig},
+                        importance=6,
+                    ))
+                    return None
+
+            # v-news-price-direction-gate-2026-05-08: require the latest
+            # bar's price action to AGREE with the news direction before
+            # placing the trade. Pure-sentiment entries got bot into
+            # PINS / TSLA / META "buy the falling knife" trades multiple
+            # times — sentiment was positive (cached, multi-hour rolling
+            # average) but the live tape was making lower highs.
+            #
+            # Gate:
+            #   BUY  → require close > open AND volume_ratio >= 1.2
+            #   SELL → require close < open AND volume_ratio >= 1.2
+            # The volume_ratio floor (current bar volume vs avg) ensures
+            # we only act on bars with real participation, not noise.
+            #
+            # Conviction-bypass override: same as the falling/rising-knife
+            # filter — when sentiment is extreme (≥0.55, articles ≥8) we
+            # trust the catalyst signal even if the latest bar hasn't
+            # confirmed yet. The MSFT 09:27–09:31 V-bottom that we want
+            # to catch will sometimes have the catalyst arriving DURING
+            # the down-bar and we'd miss it otherwise.
+            try:
+                bar_open = float(getattr(market_data, "open", market_data.close) or market_data.close)
+            except Exception:
+                bar_open = market_data.close
+            volume_ratio = float(indicators.get("volume_ratio", 1.0) or 1.0)
+            # v-price-direction-relax-2026-05-08: AMD 2026-05-08 14:46–14:50
+            # ran $444→$448 (+$4 over an hour) but bot blocked every entry
+            # because individual 5-min bars closed slightly red on
+            # consolidation pullbacks within an obvious uptrend. The
+            # original gate was too literal (current bar must be green).
+            #
+            # Relaxed semantics:
+            #   - **Strong sentiment ≥0.50**: skip the gate entirely. The
+            #     news IS the catalyst; demanding bar-level confirmation
+            #     on top of strong news is overgated.
+            #   - **0.35–0.50**: require close within 0.2% of open
+            #     (`>= bar_open * 0.998`) AND volume_ratio >= 1.0.
+            #     Permits normal in-bar consolidation while still
+            #     requiring real participation.
+            #   - **< 0.35**: keep the strict original gate
+            #     (`close > bar_open` AND vol_ratio >= 1.2). Weak
+            #     sentiment needs every confirmation it can get.
+            _abs_sent = abs(avg_sentiment)
+            if _abs_sent >= 0.50:
+                _bar_floor_factor_buy = 0.0  # any close passes
+                _bar_ceil_factor_sell = float("inf")
+                _vol_floor = 0.0
+            elif _abs_sent >= 0.35:
+                _bar_floor_factor_buy = 0.998   # close >= open * 0.998
+                _bar_ceil_factor_sell = 1.002   # close <= open * 1.002
+                _vol_floor = 1.0
+            else:
+                _bar_floor_factor_buy = 1.0     # close > open
+                _bar_ceil_factor_sell = 1.0     # close < open
+                _vol_floor = 1.2
+            _MIN_VOL_RATIO = _vol_floor  # kept for log-line readability
+            if not _conviction_bypass and _abs_sent < 0.50:
+                if signal_type == SignalType.BUY:
+                    if not (market_data.close >= bar_open * _bar_floor_factor_buy
+                            and volume_ratio >= _vol_floor):
+                        self._log_decision(
+                            market_data, "skip", "price_direction_disagrees_buy",
+                            sentiment=round(avg_sentiment, 3),
+                            close=round(market_data.close, 2),
+                            bar_open=round(bar_open, 2),
+                            volume_ratio=round(volume_ratio, 2),
+                            articles=len(news_items),
+                        )
+                        self.commentary.add_commentary(TradingCommentary(
+                            timestamp=datetime.now(),
+                            type=CommentaryType.RISK_ASSESSMENT,
+                            symbol=symbol,
+                            title=f"⛔ News BUY Skipped — Tape Doesn't Confirm",
+                            message=(
+                                f"Positive news sentiment ({avg_sentiment:+.2f}) "
+                                f"but the latest bar is "
+                                f"{'down' if market_data.close < bar_open else 'flat'} "
+                                f"({bar_open:.2f}→{market_data.close:.2f}) and "
+                                f"volume ratio {volume_ratio:.2f} is below {_MIN_VOL_RATIO}. "
+                                "Waiting for the tape to confirm the news direction."
+                            ),
+                            data={
+                                "sentiment": avg_sentiment,
+                                "open": bar_open,
+                                "close": market_data.close,
+                                "volume_ratio": volume_ratio,
+                            },
+                            importance=6,
+                        ))
+                        return None
+                else:  # SELL
+                    if not (market_data.close <= bar_open * _bar_ceil_factor_sell
+                            and volume_ratio >= _vol_floor):
+                        self._log_decision(
+                            market_data, "skip", "price_direction_disagrees_sell",
+                            sentiment=round(avg_sentiment, 3),
+                            close=round(market_data.close, 2),
+                            bar_open=round(bar_open, 2),
+                            volume_ratio=round(volume_ratio, 2),
+                            articles=len(news_items),
+                        )
+                        self.commentary.add_commentary(TradingCommentary(
+                            timestamp=datetime.now(),
+                            type=CommentaryType.RISK_ASSESSMENT,
+                            symbol=symbol,
+                            title=f"⛔ News SELL Skipped — Tape Doesn't Confirm",
+                            message=(
+                                f"Negative news sentiment ({avg_sentiment:+.2f}) "
+                                f"but the latest bar is "
+                                f"{'up' if market_data.close > bar_open else 'flat'} "
+                                f"({bar_open:.2f}→{market_data.close:.2f}) and "
+                                f"volume ratio {volume_ratio:.2f} is below {_MIN_VOL_RATIO}. "
+                                "Waiting for the tape to confirm the news direction."
+                            ),
+                            data={
+                                "sentiment": avg_sentiment,
+                                "open": bar_open,
+                                "close": market_data.close,
+                                "volume_ratio": volume_ratio,
+                            },
+                            importance=6,
+                        ))
+                        return None
+
+            # v-news-late-entry-guard-2026-05-08: refuse entries where the
+            # move has already happened. Operator's observation 2026-05-08:
+            # the bot kept buying tops — INTC entered $124.75 on 148-min-
+            # old news with close 11% above bb_lower, MSFT yesterday
+            # entered at bb_upper (RSI 83), INTC yesterday at $109 with
+            # RSI 86–94. Pure-sentiment entries with no overextension
+            # check confirm the late-entry pattern.
+            #
+            # Gate (no conviction-bypass — overextension is risk regardless
+            # of sentiment magnitude; the V-bottom case fires at LOW RSI
+            # with high sentiment, which this gate doesn't block):
+            #
+            # v-late-entry-tighten-2026-05-11: NVDA 2026-05-11 09:54 bought
+            # at $218.34 with RSI 75.48 and ~1.77% above sma_20. Original
+            # 2%-SMA threshold + RSI>70 AND-combo missed it by 23 bps.
+            # Tightened to 1% (was 2%). NVDA at 1.77% above + RSI 75 now
+            # triggers the gate. LUNR earlier (RSI 84, 3.22% above SMA20)
+            # also still triggers — was 64% above the old threshold,
+            # now 222% above.
+            #
+            # Why not OR-of-two: pure RSI>70 in a sustained trend is
+            # legitimate continuation; pure 1%-above-SMA on quiet stocks
+            # is noise. The combination is the late-entry pattern.
+            try:
+                rsi_now = float(indicators.get("rsi", 50) or 50)
+                sma_20 = float(indicators.get("sma_20", 0) or 0)
+            except Exception:
+                rsi_now, sma_20 = 50.0, 0.0
+            if signal_type == SignalType.BUY:
+                if (
+                    rsi_now > 70.0
+                    and sma_20 > 0
+                    and market_data.close > sma_20 * 1.01
+                ):
+                    pct_above = ((market_data.close / sma_20) - 1.0) * 100.0
+                    self._log_decision(
+                        market_data, "skip", "extended_already_ran",
+                        sentiment=round(avg_sentiment, 3),
+                        rsi=round(rsi_now, 2),
+                        close=round(market_data.close, 2),
+                        sma_20=round(sma_20, 2),
+                        pct_above_sma20=round(pct_above, 2),
+                        articles=len(news_items),
+                    )
+                    self.commentary.add_commentary(TradingCommentary(
+                        timestamp=datetime.now(),
+                        type=CommentaryType.RISK_ASSESSMENT,
+                        symbol=symbol,
+                        title=f"⛔ News BUY Skipped — Already Extended",
+                        message=(
+                            f"Positive news sentiment ({avg_sentiment:+.2f}) "
+                            f"but RSI {rsi_now:.0f} and price is "
+                            f"{pct_above:.1f}% above SMA20 (${sma_20:.2f}). "
+                            "The move has already happened — chasing here "
+                            "is buying the top. Waiting for a pullback or "
+                            "skipping this catalyst."
+                        ),
+                        data={
+                            "sentiment": avg_sentiment,
+                            "rsi": rsi_now,
+                            "close": market_data.close,
+                            "sma_20": sma_20,
+                            "pct_above_sma20": pct_above,
+                        },
+                        importance=7,
+                    ))
+                    return None
+            else:  # SELL
+                # v-late-entry-tighten-2026-05-11: symmetric tightening
+                # 0.98 → 0.99 (1% below SMA, was 2%).
+                if (
+                    rsi_now < 30.0
+                    and sma_20 > 0
+                    and market_data.close < sma_20 * 0.99
+                ):
+                    pct_below = (1.0 - (market_data.close / sma_20)) * 100.0
+                    self._log_decision(
+                        market_data, "skip", "extended_already_dropped",
+                        sentiment=round(avg_sentiment, 3),
+                        rsi=round(rsi_now, 2),
+                        close=round(market_data.close, 2),
+                        sma_20=round(sma_20, 2),
+                        pct_below_sma20=round(pct_below, 2),
+                        articles=len(news_items),
+                    )
+                    self.commentary.add_commentary(TradingCommentary(
+                        timestamp=datetime.now(),
+                        type=CommentaryType.RISK_ASSESSMENT,
+                        symbol=symbol,
+                        title=f"⛔ News SELL Skipped — Already Extended",
+                        message=(
+                            f"Negative news sentiment ({avg_sentiment:+.2f}) "
+                            f"but RSI {rsi_now:.0f} and price is "
+                            f"{pct_below:.1f}% below SMA20 (${sma_20:.2f}). "
+                            "The drop has already happened — shorting here "
+                            "is selling the bottom. Waiting for a bounce or "
+                            "skipping this catalyst."
+                        ),
+                        data={
+                            "sentiment": avg_sentiment,
+                            "rsi": rsi_now,
+                            "close": market_data.close,
+                            "sma_20": sma_20,
+                            "pct_below_sma20": pct_below,
+                        },
+                        importance=7,
+                    ))
+                    return None
+
             # v-news-verifier-toggle-2026-04-29: gate verifier behind config.
             # When disabled, news_strategy fires on cached sentiment alone
             # (original behaviour pre-v-news-verify-2026-04-28).
+            #
+            # v-news-verifier-advisory-2026-05-08: NEW advisory mode runs
+            # the verifier purely for observability. The verdict is
+            # logged but does not gate. When advisory is on AND the hard
+            # gate is off, the verifier still executes and we log
+            # `news_verifier_advisory action=advisory reason=<verdict>`
+            # for every news entry — over a week we can grade whether
+            # its vetoes would have improved P&L, then re-enable hard
+            # gating with evidence.
             from core.config import Config as _CfgNV
             _verifier_enabled = _CfgNV().ENABLE_NEWS_VERIFIER
+            _verifier_advisory = (
+                (not _verifier_enabled) and _CfgNV().NEWS_VERIFIER_ADVISORY
+            )
+            _verifier_runs = _verifier_enabled or _verifier_advisory
 
             # Detection commentary — wording depends on whether verifier
             # will run. Honest about the two-stage process either way.
@@ -557,21 +927,50 @@ class FreeNewsSignalStrategy(TradingStrategyWithCommentary):
             # confirmed. The shadow-tracker also doesn't fire (no veto
             # to track) — that data resumes when verifier is re-enabled.
             v = None
-            if _verifier_enabled:
+            if _verifier_runs:
                 try:
                     expected_dir = 1 if signal_type == SignalType.BUY else -1
                     v = await self.verifier.verify(symbol, expected_dir)
                 except Exception as exc:
                     # Verifier failure is non-fatal — log and treat as a skip
-                    # rather than blindly trusting cached sentiment.
+                    # rather than blindly trusting cached sentiment WHEN
+                    # the verifier is in gating mode. In advisory mode,
+                    # treat verifier failure as "no advisory data" and
+                    # let the signal pass through.
                     logger.debug(f"news verifier exception for {symbol}: {exc}")
-                    self._log_decision(
-                        market_data, "skip", "verifier_error",
-                        err=str(exc)[:80], sentiment=round(avg_sentiment, 3),
-                    )
-                    return None
+                    if _verifier_enabled:
+                        self._log_decision(
+                            market_data, "skip", "verifier_error",
+                            err=str(exc)[:80], sentiment=round(avg_sentiment, 3),
+                        )
+                        return None
+                    else:
+                        self._log_decision(
+                            market_data, "advisory", "verifier_error",
+                            err=str(exc)[:80], sentiment=round(avg_sentiment, 3),
+                        )
+                        v = None
 
-            if v is not None and not v.is_verified:
+            # v-news-verifier-advisory-2026-05-08: when advisory mode is
+            # on, log every verifier verdict (pass OR fail) for the
+            # signal that's about to fire. We log but never veto.
+            if _verifier_advisory and v is not None:
+                self._log_decision(
+                    market_data,
+                    "advisory",
+                    ("would_pass" if v.is_verified else "would_veto"),
+                    cached_sentiment=round(avg_sentiment, 3),
+                    fresh_count=v.fresh_count,
+                    fresh_avg=round(v.avg_fresh_sentiment, 3),
+                    source=v.source,
+                    verifier_reason=v.reason,
+                    latest_age_min=(
+                        round(v.latest_age_min, 1)
+                        if v.latest_age_min is not None else None
+                    ),
+                )
+
+            if _verifier_enabled and v is not None and not v.is_verified:
                 self._log_decision(
                     market_data, "skip", "fresh_news_unverified",
                     cached_sentiment=round(avg_sentiment, 3),
@@ -624,6 +1023,34 @@ class FreeNewsSignalStrategy(TradingStrategyWithCommentary):
             # Verified (or verifier disabled) — announce in commentary so the
             # user can see WHY this signal made it past the gate.
             if v is not None:
+                # v-verifier-commentary-none-guard-2026-05-08: latest_age_min
+                # can be None (e.g. yfinance source returns no age) AND
+                # avg_fresh_sentiment can be None when fresh_count==0.
+                # Pre-T5 the verifier was disabled by default so this
+                # block never ran; advisory mode (T5) now exercises it
+                # and the unguarded f-string formats raised TypeError.
+                #
+                # v-verifier-none-guard-bulletproof-2026-05-08: replaced
+                # conditional-expression guards with explicit if/else
+                # because production was still throwing
+                # `unsupported format string passed to NoneType.__format__`
+                # at the conditional-expression line. Whatever the cause
+                # of the original guard not protecting (a coercion to
+                # numpy NaN, a stale .pyc, or a Python edge case I don't
+                # see), the if/else form is unambiguous.
+                _lam = getattr(v, "latest_age_min", None)
+                if _lam is None:
+                    _age_str = "unknown"
+                else:
+                    try:
+                        _age_str = f"{float(_lam):.1f} min ago"
+                    except (TypeError, ValueError):
+                        _age_str = "unknown"
+                _afs = getattr(v, "avg_fresh_sentiment", None)
+                try:
+                    _avg_fresh = float(_afs) if _afs is not None else 0.0
+                except (TypeError, ValueError):
+                    _avg_fresh = 0.0
                 self.commentary.add_commentary(TradingCommentary(
                     timestamp=datetime.now(),
                     type=CommentaryType.DECISION,
@@ -632,10 +1059,9 @@ class FreeNewsSignalStrategy(TradingStrategyWithCommentary):
                     message=(
                         f"Verification passed via {v.source}.\n"
                         f"  Fresh articles (last 4h):     {v.fresh_count}\n"
-                        f"  Avg fresh sentiment:          {v.avg_fresh_sentiment:+.3f} "
-                        f"({'bullish' if v.avg_fresh_sentiment > 0 else 'bearish'})\n"
-                        f"  Most recent article:          "
-                        f"{v.latest_age_min:.1f} min ago\n"
+                        f"  Avg fresh sentiment:          {_avg_fresh:+.3f} "
+                        f"({'bullish' if _avg_fresh > 0 else 'bearish'})\n"
+                        f"  Most recent article:          {_age_str}\n"
                         f"  Cached sentiment:             {avg_sentiment:+.3f}\n\n"
                         f"News thesis is fresh and matches signal direction. Proceeding to entry."
                     ),
@@ -649,7 +1075,25 @@ class FreeNewsSignalStrategy(TradingStrategyWithCommentary):
                     confidence=confidence,
                     importance=8,
                 ))
-            self.last_signal_time[symbol] = datetime.now()
+            # v-cooldown-regular-only-2026-05-05: only burn the per-symbol
+            # cooldown when the signal had a chance of being placed — i.e.
+            # we're inside regular hours. Previously, after-hours news ticks
+            # set this timer; the engine then rejected for session_closed,
+            # but the next-day open inherited a 60-min cooldown and silently
+            # blocked clean entries (LRCX/NVDA/TSLA/SOFI all dead 09:40 ET
+            # on 2026-05-05 with cooldown_remaining 30–53 min).
+            try:
+                import pytz as _pytz
+                _et_now = datetime.now(_pytz.timezone("America/New_York"))
+                _is_regular = (
+                    _et_now.weekday() < 5
+                    and ((_et_now.hour == 9 and _et_now.minute >= 30)
+                         or 10 <= _et_now.hour < 16)
+                )
+            except Exception:
+                _is_regular = True
+            if _is_regular:
+                self.last_signal_time[symbol] = datetime.now()
 
             self._log_decision(
                 market_data,

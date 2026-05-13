@@ -10,6 +10,10 @@
     <!-- v-ui-charts-2026-04-29: Chart.js for Portfolio Donut + Performance Metrics.
          Pinned to a known-good major version; ~80kb gzipped from CDN. -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+    <!-- v-ui-tradingview-2026-04-30: TradingView Advanced Chart widget
+         (replaces our local Chart.js intraday line). Free, no API key,
+         loads ~200ms. Defines window.TradingView. -->
+    <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
     <style>
         /* =====================================================================
            v-ui-theme-tokens-2026-04-29: design tokens ported from dashboardUI/.
@@ -994,6 +998,76 @@
             width: 0%;
             transition: width 0.3s;
         }
+
+        /* Backtest screen — per-strategy table + drill-down + exit chart */
+        .bt-symbol-mode {
+            display: flex;
+            gap: 18px;
+            font-size: 13px;
+            color: #ccc;
+            margin-bottom: 6px;
+        }
+        .bt-symbol-mode label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+        .bt-strategy-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+        }
+        .bt-strategy-table th,
+        .bt-strategy-table td {
+            padding: 10px 12px;
+            text-align: right;
+            border-bottom: 1px solid #2a2a2a;
+        }
+        .bt-strategy-table th {
+            color: #888;
+            font-weight: 600;
+            font-size: 11px;
+            text-transform: uppercase;
+            background: #181818;
+        }
+        .bt-strategy-table th:first-child,
+        .bt-strategy-table td:first-child { text-align: left; }
+        .bt-strategy-row { cursor: pointer; transition: background 0.12s; }
+        .bt-strategy-row:hover { background: #1f1f1f; }
+        .bt-strategy-row .bt-caret {
+            display: inline-block; width: 14px; color: #4a9eff; font-weight: bold;
+        }
+        .bt-strategy-row.expanded .bt-caret::before { content: '▾'; }
+        .bt-strategy-row:not(.expanded) .bt-caret::before { content: '▸'; }
+        .bt-symbol-drill {
+            background: #0d0d0d;
+        }
+        .bt-symbol-drill td {
+            padding: 0;
+            border-bottom: 1px solid #2a2a2a;
+        }
+        .bt-symbol-drill .inner {
+            padding: 12px 18px 16px 30px;
+        }
+        .bt-symbol-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 12px;
+        }
+        .bt-symbol-table th,
+        .bt-symbol-table td {
+            padding: 6px 10px;
+            text-align: right;
+            border-bottom: 1px solid #1f1f1f;
+        }
+        .bt-symbol-table th { color: #777; font-weight: 600; }
+        .bt-symbol-table th:first-child,
+        .bt-symbol-table td:first-child { text-align: left; }
+        .bt-meta {
+            display: flex; gap: 24px; flex-wrap: wrap;
+            color: #888; font-size: 12px; margin-bottom: 12px;
+        }
+        .bt-meta span strong { color: #ddd; margin-left: 4px; }
+        .bt-warnings {
+            margin-top: 8px; font-size: 12px; color: #f5a524;
+        }
+
         /* =====================================================================
            v-ui-header-2026-04-29: top-bar styling (logo / tabs / controls).
            Hides legacy .tab-navigation and .dashboard-panel > .header (their
@@ -1761,16 +1835,78 @@
             .row-chart-portfolio { grid-template-columns: 1fr; }
         }
 
-        /* Donut layout: centered chart + center label + scrollable legend */
+        /* Donut layout: centered chart + center label + scrollable legend.
+           v-ui-donut-3d-2026-04-29: stacked radial gradients give the donut
+           a bowl-and-rim look — outer "rim shadow" recesses the chart, inner
+           gradient is the curved-surface highlight, drop-shadow lifts the
+           whole canvas off the card. The pseudo-elements layer two specular
+           highlights (top-left bright spot + bottom dark crescent) so each
+           slice reads as a torus rather than a flat ring. */
         .donut-wrap {
             position: relative;
-            height: 280px;
+            height: 300px;
             padding: 1rem;
+            isolation: isolate;
+        }
+        .donut-wrap::before {
+            /* Recessed bowl shadow — outside the donut */
+            content: ''; position: absolute;
+            top: 50%; left: 50%;
+            width: 240px; height: 240px;
+            transform: translate(-50%, -50%);
+            border-radius: 50%;
+            background: radial-gradient(circle at 50% 45%,
+                oklch(0.10 0.012 270 / 0) 38%,
+                oklch(0.08 0.014 270 / 0.55) 48%,
+                oklch(0.06 0.016 270 / 0.85) 56%,
+                oklch(0.06 0.016 270 / 0) 70%);
+            filter: blur(4px);
+            z-index: 0;
+            pointer-events: none;
+        }
+        .donut-wrap::after {
+            /* Specular top-light + bottom shadow band painted over the chart.
+               Tuned narrow (44%-58%) so it falls on the donut ring itself. */
+            content: ''; position: absolute;
+            top: 50%; left: 50%;
+            width: 220px; height: 220px;
+            transform: translate(-50%, -50%);
+            border-radius: 50%;
+            background:
+                radial-gradient(ellipse 80% 55% at 50% 18%,
+                    oklch(1 0 0 / 0.18) 0%,
+                    oklch(1 0 0 / 0.05) 35%,
+                    transparent 60%),
+                radial-gradient(ellipse 75% 45% at 50% 95%,
+                    oklch(0 0 0 / 0.45) 0%,
+                    oklch(0 0 0 / 0.12) 40%,
+                    transparent 65%);
+            mix-blend-mode: overlay;
+            z-index: 2;
+            pointer-events: none;
+            mask: radial-gradient(circle, transparent 38%, #000 42%, #000 58%, transparent 62%);
+            -webkit-mask: radial-gradient(circle, transparent 38%, #000 42%, #000 58%, transparent 62%);
+        }
+        .donut-wrap > canvas {
+            position: relative;
+            z-index: 1;
+            filter:
+                drop-shadow(0 6px 14px oklch(0 0 0 / 0.55))
+                drop-shadow(0 2px 4px oklch(0 0 0 / 0.35));
+            transform: perspective(900px) rotateX(18deg);
+            transform-origin: 50% 60%;
+            transition: transform 0.3s ease;
+        }
+        .donut-wrap:hover > canvas {
+            transform: perspective(900px) rotateX(14deg) scale(1.02);
         }
         .donut-center {
             position: absolute; inset: 0;
             display: flex; flex-direction: column; align-items: center; justify-content: center;
             pointer-events: none;
+            z-index: 3;
+            transform: perspective(900px) rotateX(18deg);
+            transform-origin: 50% 60%;
         }
         .donut-center .symbol {
             font: 700 1.5rem var(--font-sans);
@@ -1889,6 +2025,36 @@
            overflow; the vertical column is narrower than full-width. */
         .row-news-trades #trades-table { display: block; overflow-x: auto; }
         .row-news-trades #trades-table thead, .row-news-trades #trades-table tbody { display: table; width: 100%; table-layout: fixed; }
+        /* v-live-price-paint-2026-05-01: visual feedback for tick updates */
+        .price-flash {
+            transition: background-color 0.25s ease, color 0.15s ease;
+            background-color: oklch(0.72 0.20 155 / 0.18);
+            border-radius: 3px;
+        }
+        .price-stale {
+            opacity: 0.55;
+        }
+        /* v-row-flash-2026-05-04: whole-row blink on any price movement.
+           Uses CSS animation so quick consecutive ticks each retrigger
+           a clean flash. Up = green, down = red, neutral = soft amber. */
+        .row-flash-up   { animation: rowFlashUp   0.55s ease-out; }
+        .row-flash-down { animation: rowFlashDown 0.55s ease-out; }
+        .row-flash      { animation: rowFlash     0.55s ease-out; }
+        @keyframes rowFlashUp {
+            0%   { background-color: oklch(0.72 0.20 155 / 0); }
+            20%  { background-color: oklch(0.72 0.20 155 / 0.20); }
+            100% { background-color: oklch(0.72 0.20 155 / 0); }
+        }
+        @keyframes rowFlashDown {
+            0%   { background-color: oklch(0.62 0.22 25  / 0); }
+            20%  { background-color: oklch(0.62 0.22 25  / 0.20); }
+            100% { background-color: oklch(0.62 0.22 25  / 0); }
+        }
+        @keyframes rowFlash {
+            0%   { background-color: oklch(0.78 0.16 85  / 0); }
+            20%  { background-color: oklch(0.78 0.16 85  / 0.18); }
+            100% { background-color: oklch(0.78 0.16 85  / 0); }
+        }
     </style>
 </head>
 <body>
@@ -2133,6 +2299,15 @@
                  itself is a placeholder card for now (needs per-bar
                  historical data API); donut is fully functional. -->
             <section class="row-chart-portfolio">
+                <!-- v-ui-tradingview-2026-04-30: drop the Chart.js intraday
+                     line in favour of TradingView's Advanced Chart widget.
+                     TradingView serves data + drawing tools / intervals /
+                     indicators for free, loads in ~200ms (vs our ~1.5s
+                     fetch+render), updates real-time via their socket, and
+                     looks vastly better. The symbol selector now drives the
+                     widget instead of our /api/historical-data call. The
+                     header price/change spans are removed since the widget
+                     shows them inside its own toolbar. -->
                 <div class="chart-card" id="price-chart-card">
                     <div class="chart-card-head">
                         <h3>
@@ -2149,14 +2324,9 @@
                                 cursor: pointer;
                             "></select>
                         </h3>
-                        <div style="display:flex;align-items:center;gap:0.75rem">
-                            <span id="price-chart-last" style="font:600 0.875rem var(--font-mono);color:var(--fg)">—</span>
-                            <span id="price-chart-change" style="font:500 0.75rem var(--font-sans)">—</span>
-                        </div>
+                        <span style="font-size:0.6875rem;color:var(--muted-fg);text-transform:uppercase;letter-spacing:0.1em">via TradingView</span>
                     </div>
-                    <div style="position:relative;height:280px;padding:0.75rem 1rem 0.5rem 1rem;">
-                        <canvas id="price-chart-canvas"></canvas>
-                    </div>
+                    <div id="tradingview-widget-host" style="position:relative;height:340px;padding:0;border-radius:0 0 var(--radius) var(--radius);overflow:hidden;"></div>
                 </div>
                 <div class="chart-card" id="portfolio-allocation-card">
                     <div class="chart-card-head">
@@ -2470,53 +2640,36 @@
         <div class="backtest-panel">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
                 <h2 style="margin: 0;">🔬 Strategy Backtesting</h2>
+                <span id="bt-last-run-meta" style="color:#888; font-size:12px;"></span>
             </div>
 
             <!-- Configuration -->
             <div class="card">
                 <h3>Backtest Configuration</h3>
+                <div class="bt-symbol-mode">
+                    <label><input type="radio" name="bt-symbol-mode" value="top_n" checked onchange="onBacktestModeChange()"> Top-N most active</label>
+                    <label><input type="radio" name="bt-symbol-mode" value="explicit" onchange="onBacktestModeChange()"> Explicit list</label>
+                </div>
                 <div class="backtest-config">
-                    <div class="backtest-input-group">
+                    <div class="backtest-input-group" id="bt-topn-group">
+                        <label>Top-N symbols</label>
+                        <input type="number" id="bt-top-n" value="30" min="1" max="200">
+                    </div>
+                    <div class="backtest-input-group" id="bt-symbols-group" style="display:none;">
                         <label>Symbols (comma-separated)</label>
-                        <input type="text" id="bt-symbols" value="TSLA,NVDA,AMD,AAPL" placeholder="TSLA,NVDA,AMD">
+                        <input type="text" id="bt-symbols" value="NVDA,TSLA,AMD,AAPL" placeholder="NVDA,TSLA,AMD">
                     </div>
                     <div class="backtest-input-group">
-                        <label>Start Date</label>
-                        <input type="date" id="bt-start-date" value="2024-01-01">
+                        <label>Lookback (days)</label>
+                        <input type="number" id="bt-days" value="90" min="1" max="365">
                     </div>
                     <div class="backtest-input-group">
-                        <label>End Date</label>
-                        <input type="date" id="bt-end-date" value="2024-12-31">
-                    </div>
-                    <div class="backtest-input-group">
-                        <label>Initial Capital ($)</label>
-                        <input type="number" id="bt-capital" value="100000" min="1000">
-                    </div>
-                    <div class="backtest-input-group">
-                        <label>Timeframe</label>
-                        <select id="bt-timeframe">
-                            <option value="1min">1 Minute</option>
-                            <option value="5min" selected>5 Minutes</option>
-                            <option value="15min">15 Minutes</option>
-                            <option value="1hour">1 Hour</option>
-                            <option value="1day">Daily</option>
+                        <label>Bar frequency (min)</label>
+                        <select id="bt-frequency">
+                            <option value="1">1 minute</option>
+                            <option value="5" selected>5 minutes</option>
+                            <option value="15">15 minutes</option>
                         </select>
-                    </div>
-                    <div class="backtest-input-group">
-                        <label>Mode</label>
-                        <select id="bt-mode">
-                            <option value="FAST">Fast (no slippage)</option>
-                            <option value="REALISTIC" selected>Realistic</option>
-                            <option value="DETAILED">Detailed</option>
-                        </select>
-                    </div>
-                    <div class="backtest-input-group">
-                        <label>Max Positions</label>
-                        <input type="number" id="bt-max-positions" value="5" min="1" max="20">
-                    </div>
-                    <div class="backtest-input-group">
-                        <label>Commission (%)</label>
-                        <input type="number" id="bt-commission" value="0.1" step="0.01" min="0">
                     </div>
                 </div>
                 <div style="text-align: center; margin-top: 20px;">
@@ -2532,40 +2685,39 @@
                     <div class="progress-bar">
                         <div class="progress-bar-fill" id="backtest-progress-fill"></div>
                     </div>
+                    <div class="bt-warnings" id="backtest-warnings"></div>
                 </div>
             </div>
 
-            <!-- Results (hidden until backtest runs) -->
+            <!-- Results (hidden until backtest runs or latest is loaded) -->
             <div id="backtest-results-container" style="display: none;">
                 <div class="card">
-                    <h3>Performance Metrics</h3>
-                    <div class="backtest-results" id="backtest-metrics">
-                        <!-- Will be populated by JS -->
-                    </div>
-                </div>
-
-                <div class="card backtest-chart">
-                    <h3>Equity Curve</h3>
-                    <canvas id="equity-chart" style="width: 100%; height: 250px;"></canvas>
-                </div>
-
-                <div class="card backtest-trades-table">
-                    <h3>Trade History</h3>
-                    <table>
+                    <h3>Per-Strategy Summary <span style="color:#666; font-weight:400; font-size:12px;">— click a row to drill down by symbol</span></h3>
+                    <div class="bt-meta" id="bt-meta"></div>
+                    <table class="bt-strategy-table">
                         <thead>
                             <tr>
-                                <th>Symbol</th>
-                                <th>Entry</th>
-                                <th>Exit</th>
-                                <th>Side</th>
-                                <th>P&L</th>
-                                <th>P&L %</th>
-                                <th>Exit Reason</th>
+                                <th></th>
+                                <th>Strategy</th>
+                                <th>Trades</th>
+                                <th>Win %</th>
+                                <th>Avg %</th>
+                                <th>Sum R %</th>
+                                <th>PF</th>
+                                <th>Sharpe</th>
+                                <th>Max DD %</th>
+                                <th>Avg Hold</th>
                             </tr>
                         </thead>
-                        <tbody id="backtest-trades-body">
-                        </tbody>
+                        <tbody id="bt-strategy-body"></tbody>
                     </table>
+                </div>
+
+                <div class="card">
+                    <h3>Exit Reason Mix</h3>
+                    <div style="position: relative; height: 260px;">
+                        <canvas id="bt-exit-chart"></canvas>
+                    </div>
                 </div>
             </div>
 
@@ -2573,12 +2725,10 @@
             <div id="backtest-no-data" class="card" style="text-align: center; padding: 60px 20px;">
                 <div style="font-size: 64px; margin-bottom: 20px;">📈</div>
                 <h3 style="color: #4a9eff;">Configure and Run a Backtest</h3>
-                <p style="color: #888; max-width: 500px; margin: 15px auto;">
-                    Set your parameters above and click "Run Backtest" to test your strategies against historical data.
-                    Results will include performance metrics, equity curves, and detailed trade history.
-                </p>
-                <p style="color: #666; font-size: 12px; margin-top: 20px;">
-                    Note: Requires historical data files in the ./historical_data/ directory
+                <p style="color: #888; max-width: 560px; margin: 15px auto;">
+                    Replays the live <b>breakout</b>, <b>mean_reversion</b>, and <b>momentum</b> strategies
+                    against historical Postgres minute_bars and reports each strategy's raw signal quality
+                    (no ML veto, no brain gate, no risk manager). Click a strategy row to see per-symbol breakdown.
                 </p>
             </div>
         </div>
@@ -2606,11 +2756,18 @@
         function switchTab(tabName) {
             currentTab = tabName;
 
-            // Update tab buttons
+            // Update tab buttons.
+            // Legacy nav uses .tab-button; new top bar uses .nav-btn and calls
+            // this via switchAppTab which then re-renders the nav. Optional-
+            // chaining keeps the legacy click path working without crashing
+            // when no implicit `event` is in scope (programmatic callers, or
+            // clicks on the new top bar where `.closest('.tab-button')` is null).
             document.querySelectorAll('.tab-button').forEach(btn => {
                 btn.classList.remove('active');
             });
-            event.target.closest('.tab-button').classList.add('active');
+            (typeof event !== 'undefined' && event && event.target)
+                ? event.target.closest('.tab-button')?.classList.add('active')
+                : null;
 
             // Update tab content
             document.querySelectorAll('.tab-content').forEach(content => {
@@ -2621,6 +2778,8 @@
             // Load tab-specific data
             if (tabName === 'sentiment') {
                 loadSentimentTab();
+            } else if (tabName === 'backtest') {
+                loadBacktestLatest();
             }
         }
 
@@ -2795,200 +2954,310 @@
             }
         }
 
-        // ============== BACKTESTING FUNCTIONS ==============
-        async function runBacktest() {
-            if (backtestRunning) return;
+        // ============== BACKTESTING (per-strategy replay) ==============
+        // Backed by api/backtest.py + backtest_strategies.run_backtest().
+        // Flow: POST /api/backtest/run -> {run_id} immediately, then open
+        // WS /ws/backtest/{run_id} for progress + complete events.
 
-            backtestRunning = true;
-            const btn = document.getElementById('run-backtest-btn');
-            btn.disabled = true;
-            btn.textContent = '⏳ Running...';
+        let _btWs = null;
+        let _btExitChart = null;
+        let _btLastReport = null;
 
-            // Show progress
-            const progress = document.getElementById('backtest-progress');
-            progress.classList.add('active');
-            document.getElementById('backtest-status').textContent = 'Initializing...';
-            document.getElementById('backtest-percent').textContent = '0%';
-            document.getElementById('backtest-progress-fill').style.width = '0%';
+        // Defense-in-depth: every string interpolated into innerHTML below
+        // goes through escHtml(), even when the source is server-validated
+        // (symbols pass ^[A-Z.]{1,8}$ at the API boundary, strategy names
+        // are a hardcoded set in backtest_strategies.load_strategies()).
+        function escHtml(s) {
+            if (s === null || s === undefined) return '';
+            return String(s)
+                .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+        }
 
-            // Get configuration
-            const config = {
-                symbols: document.getElementById('bt-symbols').value.split(',').map(s => s.trim()),
-                start_date: document.getElementById('bt-start-date').value,
-                end_date: document.getElementById('bt-end-date').value,
-                initial_capital: parseFloat(document.getElementById('bt-capital').value),
-                timeframe: document.getElementById('bt-timeframe').value,
-                mode: document.getElementById('bt-mode').value,
-                max_positions: parseInt(document.getElementById('bt-max-positions').value),
-                commission: parseFloat(document.getElementById('bt-commission').value) / 100
-            };
+        function onBacktestModeChange() {
+            const mode = document.querySelector('input[name="bt-symbol-mode"]:checked').value;
+            document.getElementById('bt-topn-group').style.display    = (mode === 'top_n')    ? '' : 'none';
+            document.getElementById('bt-symbols-group').style.display = (mode === 'explicit') ? '' : 'none';
+        }
 
+        async function loadBacktestLatest() {
+            // Quietly hydrate the screen from the last completed run if any.
+            // 404 just means "no run yet" — leave the no-data placeholder.
+            // Old-format reports (pre-2026-05 redesign) lack per_strategy
+            // with per-side breakdowns; we ignore them rather than render
+            // half-empty cards.
             try {
-                // Simulate progress updates
-                let progressPercent = 0;
-                const progressInterval = setInterval(() => {
-                    if (progressPercent < 90) {
-                        progressPercent += Math.random() * 10;
-                        document.getElementById('backtest-progress-fill').style.width = progressPercent + '%';
-                        document.getElementById('backtest-percent').textContent = Math.round(progressPercent) + '%';
-                        document.getElementById('backtest-status').textContent =
-                            progressPercent < 30 ? 'Loading historical data...' :
-                            progressPercent < 60 ? 'Running strategy signals...' :
-                            'Calculating metrics...';
-                    }
-                }, 500);
+                const resp = await authFetch('/api/backtest/latest');
+                if (!resp.ok) return;
+                const report = await resp.json();
+                if (!report || typeof report.per_strategy !== 'object') return;
+                const first = Object.values(report.per_strategy)[0];
+                if (!first || typeof first.all === 'undefined') return;
+                renderBacktestReport(report, /*fromLatest=*/true);
+            } catch (e) { /* ignore */ }
+        }
 
-                const response = await authFetch('/api/backtest/run', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify(config)
-                });
+        function readBacktestForm() {
+            const mode = document.querySelector('input[name="bt-symbol-mode"]:checked').value;
+            const body = {
+                symbol_mode: mode,
+                days: parseInt(document.getElementById('bt-days').value, 10),
+                frequency: parseInt(document.getElementById('bt-frequency').value, 10),
+            };
+            if (mode === 'top_n') {
+                body.top_n = parseInt(document.getElementById('bt-top-n').value, 10);
+            } else {
+                body.symbols = document.getElementById('bt-symbols').value
+                    .split(',').map(s => s.trim()).filter(Boolean);
+            }
+            return body;
+        }
 
-                clearInterval(progressInterval);
-
-                if (response.ok) {
-                    const result = await response.json();
-                    document.getElementById('backtest-progress-fill').style.width = '100%';
-                    document.getElementById('backtest-percent').textContent = '100%';
-                    document.getElementById('backtest-status').textContent = 'Complete!';
-
-                    if (result.status === 'success') {
-                        displayBacktestResults(result.data);
-                    } else {
-                        alert('Backtest failed: ' + result.message);
-                    }
-                } else {
-                    alert('Backtest request failed');
-                }
-            } catch (err) {
-                console.error('Backtest error:', err);
-                alert('Backtest error: ' + err.message);
-            } finally {
-                backtestRunning = false;
-                btn.disabled = false;
-                btn.textContent = '🚀 Run Backtest';
-                setTimeout(() => {
-                    progress.classList.remove('active');
-                }, 2000);
+        function setBacktestProgress(pct, label) {
+            document.getElementById('backtest-progress-fill').style.width = pct + '%';
+            document.getElementById('backtest-percent').textContent = Math.round(pct) + '%';
+            if (label !== undefined && label !== null) {
+                document.getElementById('backtest-status').textContent = label;
             }
         }
 
-        function displayBacktestResults(results) {
-            // Show results container, hide no-data message
+        async function runBacktest() {
+            if (backtestRunning) return;
+            const btn = document.getElementById('run-backtest-btn');
+            const progress = document.getElementById('backtest-progress');
+            const warningsEl = document.getElementById('backtest-warnings');
+
+            const body = readBacktestForm();
+            backtestRunning = true;
+            btn.disabled = true;
+            btn.textContent = '⏳ Running...';
+            progress.classList.add('active');
+            warningsEl.textContent = '';
+            setBacktestProgress(2, 'Submitting…');
+
+            let runId = null;
+            try {
+                const resp = await authFetch('/api/backtest/run', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(body),
+                });
+                const data = await resp.json().catch(() => ({}));
+                if (resp.status === 429) {
+                    runId = (data && data.detail && data.detail.run_id) || (data && data.run_id);
+                    if (runId) {
+                        warningsEl.textContent = 'A backtest is already running — attaching to it.';
+                        setBacktestProgress(5, 'Attaching to in-flight run…');
+                    } else {
+                        throw new Error('Backtest already running');
+                    }
+                } else if (!resp.ok) {
+                    const msg = (data && (data.detail || data.message)) || ('HTTP ' + resp.status);
+                    throw new Error(typeof msg === 'string' ? msg : JSON.stringify(msg));
+                } else {
+                    runId = data.run_id;
+                    setBacktestProgress(5, 'Run started…');
+                }
+            } catch (err) {
+                _onBacktestError(err.message || String(err));
+                return;
+            }
+
+            _openBacktestWs(runId);
+        }
+
+        function _openBacktestWs(runId) {
+            if (_btWs) { try { _btWs.close(); } catch (e) {} _btWs = null; }
+            const tokenQs = window.TRADING_API_KEY ? `?token=${encodeURIComponent(window.TRADING_API_KEY)}` : '';
+            const proto = (window.location.protocol === 'https:') ? 'wss:' : 'ws:';
+            const url = `${proto}//${window.location.host}/ws/backtest/${encodeURIComponent(runId)}${tokenQs}`;
+            _btWs = new WebSocket(url);
+
+            _btWs.onmessage = (ev) => {
+                let msg;
+                try { msg = JSON.parse(ev.data); } catch (e) { return; }
+                if (msg.type === 'progress') {
+                    const total = msg.symbols_total || 1;
+                    const done = msg.symbols_done || 0;
+                    const pct = Math.min(98, 5 + (done / total) * 93);
+                    const stageLabel = (msg.stage === 'loading_data' ? 'Loading data: ' : 'Replaying: ');
+                    setBacktestProgress(pct, stageLabel + (msg.current_symbol || '') + ' (' + done + '/' + total + ')');
+                } else if (msg.type === 'warning') {
+                    const el = document.getElementById('backtest-warnings');
+                    el.textContent = (el.textContent ? el.textContent + ' • ' : '') + (msg.message || '');
+                } else if (msg.type === 'complete') {
+                    setBacktestProgress(100, 'Complete!');
+                    renderBacktestReport(msg.report, false);
+                    _finishBacktestRun();
+                } else if (msg.type === 'error') {
+                    _onBacktestError(msg.message || 'Backtest failed');
+                }
+            };
+            _btWs.onerror = () => _onBacktestError('WebSocket error');
+            _btWs.onclose = () => { /* no-op; handled by complete/error */ };
+        }
+
+        function _finishBacktestRun() {
+            backtestRunning = false;
+            const btn = document.getElementById('run-backtest-btn');
+            btn.disabled = false;
+            btn.textContent = '🚀 Run Backtest';
+            setTimeout(() => {
+                document.getElementById('backtest-progress').classList.remove('active');
+            }, 1500);
+            if (_btWs) { try { _btWs.close(); } catch (e) {} _btWs = null; }
+        }
+
+        function _onBacktestError(message) {
+            console.error('Backtest error:', message);
+            setBacktestProgress(100, 'Error');
+            document.getElementById('backtest-warnings').textContent = message;
+            _finishBacktestRun();
+        }
+
+        function _fmtSigned(n, digits) {
+            if (n === null || n === undefined || Number.isNaN(n)) return '—';
+            const s = n.toFixed(digits);
+            return n > 0 ? '+' + s : s;
+        }
+
+        function _signClass(n) {
+            if (n === null || n === undefined || Number.isNaN(n)) return '';
+            return n >= 0 ? 'positive' : 'negative';
+        }
+
+        function renderBacktestReport(report, fromLatest) {
+            _btLastReport = report;
             document.getElementById('backtest-results-container').style.display = 'block';
             document.getElementById('backtest-no-data').style.display = 'none';
 
-            // Display metrics
-            const metricsHtml = `
-                <div class="backtest-metric">
-                    <div class="value ${results.total_return >= 0 ? 'positive' : 'negative'}">
-                        ${(results.total_return * 100).toFixed(2)}%
-                    </div>
-                    <div class="label">Total Return</div>
-                </div>
-                <div class="backtest-metric">
-                    <div class="value ${results.annual_return >= 0 ? 'positive' : 'negative'}">
-                        ${(results.annual_return * 100).toFixed(2)}%
-                    </div>
-                    <div class="label">Annual Return</div>
-                </div>
-                <div class="backtest-metric">
-                    <div class="value">${results.sharpe_ratio.toFixed(2)}</div>
-                    <div class="label">Sharpe Ratio</div>
-                </div>
-                <div class="backtest-metric">
-                    <div class="value negative">${(results.max_drawdown * 100).toFixed(2)}%</div>
-                    <div class="label">Max Drawdown</div>
-                </div>
-                <div class="backtest-metric">
-                    <div class="value">${(results.win_rate * 100).toFixed(1)}%</div>
-                    <div class="label">Win Rate</div>
-                </div>
-                <div class="backtest-metric">
-                    <div class="value">${results.profit_factor.toFixed(2)}</div>
-                    <div class="label">Profit Factor</div>
-                </div>
-                <div class="backtest-metric">
-                    <div class="value">${results.total_trades}</div>
-                    <div class="label">Total Trades</div>
-                </div>
-                <div class="backtest-metric">
-                    <div class="value">$${results.final_capital.toLocaleString()}</div>
-                    <div class="label">Final Capital</div>
-                </div>
-            `;
-            document.getElementById('backtest-metrics').innerHTML = metricsHtml;
+            const meta = document.getElementById('bt-meta');
+            const ts = report.timestamp ? new Date(report.timestamp).toLocaleString() : '—';
+            meta.innerHTML = ''
+                + '<span>Run<strong>'      + escHtml(report.run_id || '—') + '</strong></span>'
+                + '<span>Symbols<strong>'  + escHtml(report.symbol_count) + '</strong></span>'
+                + '<span>Lookback<strong>' + escHtml(report.days) + 'd</strong></span>'
+                + '<span>Bars<strong>'     + escHtml(report.frequency_minutes) + 'm</strong></span>'
+                + '<span>Total trades<strong>' + escHtml(report.total_trades) + '</strong></span>'
+                + '<span>Elapsed<strong>'  + escHtml(report.elapsed_seconds) + 's</strong></span>'
+                + '<span>When<strong>'     + escHtml(ts) + '</strong></span>';
+            document.getElementById('bt-last-run-meta').textContent =
+                (fromLatest ? 'Showing latest saved run · ' : 'Last run · ') + ts;
 
-            // Draw equity curve (simple canvas chart)
-            if (results.equity_curve) {
-                drawEquityCurve(results.equity_curve);
-            }
-
-            // Display trades
-            if (results.trades && results.trades.length > 0) {
-                document.getElementById('backtest-trades-body').innerHTML = results.trades.slice(0, 50).map(t => `
-                    <tr>
-                        <td style="font-weight: bold;">${t.symbol}</td>
-                        <td>${new Date(t.entry_time).toLocaleDateString()}</td>
-                        <td>${new Date(t.exit_time).toLocaleDateString()}</td>
-                        <td>${t.side.toUpperCase()}</td>
-                        <td class="${t.pnl >= 0 ? 'positive' : 'negative'}">$${t.pnl.toFixed(2)}</td>
-                        <td class="${t.pnl_pct >= 0 ? 'positive' : 'negative'}">${(t.pnl_pct * 100).toFixed(2)}%</td>
-                        <td>${t.exit_reason}</td>
-                    </tr>
-                `).join('');
-            }
+            renderStrategyTable(report);
+            renderExitChart(report);
         }
 
-        function drawEquityCurve(equityCurve) {
-            const canvas = document.getElementById('equity-chart');
-            const ctx = canvas.getContext('2d');
-
-            // Set canvas size
-            canvas.width = canvas.parentElement.clientWidth - 40;
-            canvas.height = 250;
-
-            const data = Array.isArray(equityCurve) ? equityCurve : Object.values(equityCurve);
-            if (data.length < 2) return;
-
-            const values = data.map(d => typeof d === 'object' ? d.equity || d : d);
-            const minVal = Math.min(...values) * 0.95;
-            const maxVal = Math.max(...values) * 1.05;
-
-            // Clear and draw
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-            // Draw grid
-            ctx.strokeStyle = '#333';
-            ctx.lineWidth = 1;
-            for (let i = 0; i <= 4; i++) {
-                const y = (canvas.height / 4) * i;
-                ctx.beginPath();
-                ctx.moveTo(0, y);
-                ctx.lineTo(canvas.width, y);
-                ctx.stroke();
+        function renderStrategyTable(report) {
+            const tbody = document.getElementById('bt-strategy-body');
+            const rows = [];
+            const strategies = report.per_strategy || {};
+            for (const [name, sides] of Object.entries(strategies)) {
+                const sname = escHtml(name);
+                const s = (sides && sides.all) || {};
+                if (!s.n_trades) {
+                    rows.push(
+                        '<tr class="bt-strategy-row" data-strategy="' + sname + '">' +
+                          '<td><span class="bt-caret"></span></td>' +
+                          '<td><b>' + sname + '</b></td>' +
+                          '<td colspan="8" style="color:#666; text-align:left;">no trades</td>' +
+                        '</tr>' +
+                        '<tr class="bt-symbol-drill" data-strategy="' + sname + '" style="display:none;"><td colspan="10"></td></tr>'
+                    );
+                    continue;
+                }
+                const pf = (s.profit_factor === null || s.profit_factor === undefined) ? '—' : s.profit_factor.toFixed(2);
+                rows.push(
+                    '<tr class="bt-strategy-row" data-strategy="' + sname + '" onclick="toggleSymbolDrill(\'' + sname + '\')">' +
+                      '<td><span class="bt-caret"></span></td>' +
+                      '<td><b>' + sname + '</b></td>' +
+                      '<td>' + s.n_trades.toLocaleString() + '</td>' +
+                      '<td>' + s.win_rate_pct.toFixed(1) + '%</td>' +
+                      '<td class="' + _signClass(s.avg_return_pct) + '">' + _fmtSigned(s.avg_return_pct, 3) + '%</td>' +
+                      '<td class="' + _signClass(s.sum_return_pct) + '">' + _fmtSigned(s.sum_return_pct, 2) + '%</td>' +
+                      '<td>' + escHtml(pf) + '</td>' +
+                      '<td class="' + _signClass(s.per_trade_sharpe) + '">' + _fmtSigned(s.per_trade_sharpe, 3) + '</td>' +
+                      '<td class="negative">' + s.max_drawdown_pct.toFixed(2) + '%</td>' +
+                      '<td>' + s.avg_hold_bars.toFixed(1) + '</td>' +
+                    '</tr>' +
+                    '<tr class="bt-symbol-drill" id="bt-drill-' + sname + '" data-strategy="' + sname + '" style="display:none;">' +
+                      '<td colspan="10"><div class="inner">' + renderSymbolDrillHtml(s.per_symbol) + '</div></td>' +
+                    '</tr>'
+                );
             }
+            tbody.innerHTML = rows.join('');
+        }
 
-            // Draw equity line
-            ctx.strokeStyle = '#4a9eff';
-            ctx.lineWidth = 2;
-            ctx.beginPath();
+        function renderSymbolDrillHtml(perSymbol) {
+            if (!perSymbol || !Object.keys(perSymbol).length) {
+                return '<span style="color:#666;">no per-symbol data</span>';
+            }
+            // Sort by sum_return_pct descending — most profitable symbols first.
+            const entries = Object.entries(perSymbol).sort(
+                (a, b) => (b[1].sum_return_pct || 0) - (a[1].sum_return_pct || 0)
+            );
+            const rows = entries.map(([sym, m]) =>
+                '<tr>' +
+                  '<td><b>' + escHtml(sym) + '</b></td>' +
+                  '<td>' + m.n_trades.toLocaleString() + '</td>' +
+                  '<td>' + m.win_rate_pct.toFixed(1) + '%</td>' +
+                  '<td class="' + _signClass(m.avg_return_pct) + '">' + _fmtSigned(m.avg_return_pct, 3) + '%</td>' +
+                  '<td class="' + _signClass(m.sum_return_pct) + '">' + _fmtSigned(m.sum_return_pct, 2) + '%</td>' +
+                '</tr>'
+            ).join('');
+            return ''
+                + '<table class="bt-symbol-table">'
+                +   '<thead><tr>'
+                +     '<th>Symbol</th><th>Trades</th><th>Win %</th><th>Avg %</th><th>Sum R %</th>'
+                +   '</tr></thead>'
+                +   '<tbody>' + rows + '</tbody>'
+                + '</table>';
+        }
 
-            values.forEach((val, i) => {
-                const x = (i / (values.length - 1)) * canvas.width;
-                const y = canvas.height - ((val - minVal) / (maxVal - minVal)) * canvas.height;
+        function toggleSymbolDrill(strategyName) {
+            const row = document.querySelector('tr.bt-strategy-row[data-strategy="' + strategyName + '"]');
+            const drill = document.getElementById('bt-drill-' + strategyName);
+            if (!row || !drill) return;
+            const open = drill.style.display !== 'none';
+            drill.style.display = open ? 'none' : '';
+            row.classList.toggle('expanded', !open);
+        }
 
-                if (i === 0) ctx.moveTo(x, y);
-                else ctx.lineTo(x, y);
+        function renderExitChart(report) {
+            const canvas = document.getElementById('bt-exit-chart');
+            if (!canvas || typeof Chart === 'undefined') return;
+            const strategies = Object.keys(report.per_strategy || {});
+            const stop    = strategies.map(n => (report.per_strategy[n].all.exit_breakdown || {}).stop    || 0);
+            const target  = strategies.map(n => (report.per_strategy[n].all.exit_breakdown || {}).target  || 0);
+            const timeout = strategies.map(n => (report.per_strategy[n].all.exit_breakdown || {}).timeout || 0);
+            const eod     = strategies.map(n => (report.per_strategy[n].all.exit_breakdown || {}).eod     || 0);
+
+            if (_btExitChart) { _btExitChart.destroy(); _btExitChart = null; }
+            _btExitChart = new Chart(canvas.getContext('2d'), {
+                type: 'bar',
+                data: {
+                    labels: strategies,
+                    datasets: [
+                        { label: 'stop',    data: stop,    backgroundColor: '#ef4444' },
+                        { label: 'target',  data: target,  backgroundColor: '#22c55e' },
+                        { label: 'timeout', data: timeout, backgroundColor: '#eab308' },
+                        { label: 'eod',     data: eod,     backgroundColor: '#6366f1' },
+                    ],
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { labels: { color: '#ccc' } } },
+                    scales: {
+                        x: { stacked: true, ticks: { color: '#ccc' }, grid: { color: '#222' } },
+                        y: {
+                            stacked: true, beginAtZero: true, max: 100,
+                            ticks: { color: '#ccc', callback: v => v + '%' },
+                            grid: { color: '#222' },
+                        },
+                    },
+                },
             });
-            ctx.stroke();
-
-            // Fill under curve
-            ctx.lineTo(canvas.width, canvas.height);
-            ctx.lineTo(0, canvas.height);
-            ctx.closePath();
-            ctx.fillStyle = 'rgba(74, 158, 255, 0.1)';
-            ctx.fill();
         }
 
         // v-ws-keepalive-2026-04-29: WebSocket heartbeat + smarter reconnect.
@@ -3040,6 +3309,12 @@
                     addCommentary(data.data);
                 } else if (data.type === 'dashboard_update') {
                     updateDashboard(data.data);
+                    // v-live-price-paint-2026-05-01: paint every element
+                    // tagged data-price-symbol="X" with the live mark
+                    // from the canonical PriceBook snapshot. This is the
+                    // single point of contact between the dashboard's
+                    // live-price requirement and the bot's price book.
+                    paintLivePrices(data.data.live_quotes || {});
                 } else if (data.type === 'trade_update') {
                     updateTradesTable(data.data.all_trades);
                 } else if (data.type === 'close_confirmation_request') {
@@ -3151,7 +3426,7 @@
                 hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true,
             });
             const symbolPill = commentary.symbol
-                ? `<span class="commentary-symbol-pill">${escapeHtml(commentary.symbol)}</span>`
+                ? `<span class="commentary-symbol-pill" data-chart-symbol="${escapeHtml(commentary.symbol)}" style="cursor:pointer;" title="Click to chart ${escapeHtml(commentary.symbol)}">${escapeHtml(commentary.symbol)}</span>`
                 : '';
 
             let html = `
@@ -3241,6 +3516,140 @@
             }
         }
         
+        // v-live-price-paint-2026-05-01: tick painter.
+        // For every element tagged `data-price-symbol="X"`, look up
+        // live_quotes[X] and patch its textContent with the formatted
+        // price. Skips elements when the symbol has no fresh mark
+        // (null mark, stale, missing) — preserves the prior on-screen
+        // value, which honors the user directive: "no update for
+        // symbols where there is no streamed change."
+        // Optional `data-price-format="dollar|percent|raw"` and
+        // `data-price-decimals="N"` attributes control formatting.
+        function paintLivePrices(liveQuotes) {
+            if (!liveQuotes) return;
+            const elements = document.querySelectorAll('[data-price-symbol]');
+            if (!elements.length) return;
+            // v-row-flash-2026-05-04: track last-seen price per symbol so we
+            // can colour the row blink (up = green, down = red, equal = no
+            // flash at all). Comparing the formatted text alone would also
+            // work, but using the numeric price is robust against decimal
+            // padding edge cases.
+            paintLivePrices._lastPrice = paintLivePrices._lastPrice || {};
+            const lastPrice = paintLivePrices._lastPrice;
+            elements.forEach(el => {
+                const sym = String(el.getAttribute('data-price-symbol') || '').toUpperCase();
+                const q = liveQuotes[sym];
+                // No quote, no price, or stale → leave the on-screen
+                // value alone. This is the user's "null = no change"
+                // contract surfaced at the DOM layer.
+                if (!q || q.is_stale || q.price == null || q.price <= 0) {
+                    el.classList.add('price-stale');
+                    return;
+                }
+                el.classList.remove('price-stale');
+                const fmt = el.getAttribute('data-price-format') || 'dollar';
+                const dec = parseInt(el.getAttribute('data-price-decimals') || '2', 10);
+                let txt;
+                if (fmt === 'raw') {
+                    txt = q.price.toFixed(dec);
+                } else if (fmt === 'percent') {
+                    txt = q.price.toFixed(dec) + '%';
+                } else {
+                    txt = '$' + q.price.toFixed(dec);
+                }
+                if (el.textContent !== txt) {
+                    el.textContent = txt;
+                    // Brief cell flash (legacy)
+                    el.classList.add('price-flash');
+                    setTimeout(() => el.classList.remove('price-flash'), 250);
+
+                    // v-row-flash-2026-05-04: also flash the whole row /
+                    // ticker tile so a moving price stands out at a glance,
+                    // not just the small number cell. The container is the
+                    // closest ancestor with [data-chart-symbol] (set on
+                    // both <tr> rows in tables and <div> ticker tiles).
+                    // Fall back to <tr> for older markup that lacks the
+                    // chart-symbol attribute.
+                    const row = el.closest('[data-chart-symbol]') || el.closest('tr');
+                    if (row) {
+                        const prev = lastPrice[sym];
+                        const cls = (prev != null && q.price > prev) ? 'row-flash-up'
+                                  : (prev != null && q.price < prev) ? 'row-flash-down'
+                                  : 'row-flash';
+                        // Remove first + force reflow so a fresh tick
+                        // restarts the animation even if the previous one
+                        // hasn't finished yet.
+                        row.classList.remove('row-flash', 'row-flash-up', 'row-flash-down');
+                        // eslint-disable-next-line no-unused-expressions
+                        void row.offsetWidth;
+                        row.classList.add(cls);
+                        setTimeout(() => row.classList.remove(cls), 600);
+                    }
+                    lastPrice[sym] = q.price;
+                }
+            });
+        }
+
+        // v-live-pnl-paint-2026-05-04: patch symbol-linked PnL/value cells
+        // so every place on screen reflects the same latest mark-to-market.
+        function paintSymbolMetrics(metricsBySymbol) {
+            if (!metricsBySymbol) return;
+
+            const paintMoney = (selector, key) => {
+                const nodes = document.querySelectorAll(selector);
+                nodes.forEach(el => {
+                    const sym = String(el.getAttribute(selector.includes('data-day') ? 'data-day-pnl-symbol'
+                        : selector.includes('data-market') ? 'data-market-value-symbol'
+                        : 'data-unrealized-pnl-symbol') || '').toUpperCase();
+                    if (!sym) return;
+                    const m = metricsBySymbol[sym];
+                    if (!m || typeof m[key] !== 'number' || !isFinite(m[key])) return;
+                    const val = m[key];
+                    const txt = '$' + val.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+                    if (el.textContent !== txt) el.textContent = txt;
+                    if (key !== 'market_value') {
+                        el.classList.remove('positive', 'negative');
+                        el.classList.add(val >= 0 ? 'positive' : 'negative');
+                    }
+                });
+            };
+
+            paintMoney('[data-unrealized-pnl-symbol]', 'unrealized_pnl');
+            paintMoney('[data-day-pnl-symbol]', 'day_pnl');
+            paintMoney('[data-market-value-symbol]', 'market_value');
+        }
+
+        // v-row-flash-on-rerender-2026-05-04: positions tables get fully
+        // re-rendered via tbody.innerHTML on every WS dashboard_update tick.
+        // That destroys the [data-price-symbol] cells and re-creates them
+        // with the latest current_price already baked in — so paintLivePrices
+        // sees no diff and never flashes the row. Solution: in this rerender
+        // path, we explicitly compare the freshly-rendered price to the last
+        // tracked value (shared with paintLivePrices._lastPrice) and apply
+        // the row-flash class on the new rows directly.
+        function flashRowsForChangedPrices(positions) {
+            if (!Array.isArray(positions) || !positions.length) return;
+            paintLivePrices._lastPrice = paintLivePrices._lastPrice || {};
+            const lastPrice = paintLivePrices._lastPrice;
+            positions.forEach(pos => {
+                const sym = String(pos.symbol || '').toUpperCase();
+                const cur = Number(pos.current_price);
+                if (!isFinite(cur) || cur <= 0) return;
+                const prev = lastPrice[sym];
+                if (prev != null && cur !== prev) {
+                    const cls = cur > prev ? 'row-flash-up' : 'row-flash-down';
+                    document.querySelectorAll(`[data-chart-symbol="${CSS.escape(sym)}"]`).forEach(row => {
+                        row.classList.remove('row-flash', 'row-flash-up', 'row-flash-down');
+                        // eslint-disable-next-line no-unused-expressions
+                        void row.offsetWidth;
+                        row.classList.add(cls);
+                        setTimeout(() => row.classList.remove(cls), 600);
+                    });
+                }
+                lastPrice[sym] = cur;
+            });
+        }
+
         function updateDashboard(data) {
             if (data.account) {
                 // v-ui-sign-color-everywhere-2026-04-29: lock these absolute
@@ -3297,7 +3706,7 @@
                     tbody.innerHTML = '<tr><td colspan="10" style="text-align: center; color: #666;">No real positions or Schwab not connected</td></tr>';
                 } else {
                     tbody.innerHTML = data.real_positions.map(pos => `
-                        <tr>
+                        <tr data-chart-symbol="${escapeHtml(pos.symbol)}" style="cursor:pointer;">
                             <td style="font-weight: bold;">
                                 <img class="symbol-logo" src="/logos/${escapeHtml(pos.symbol)}"
                                      alt="" onerror="this.style.display='none'">
@@ -3305,12 +3714,12 @@
                             </td>
                             <td>${pos.quantity > 0 ? pos.quantity : Math.abs(pos.quantity)} ${pos.quantity < 0 ? '(short)' : ''}</td>
                             <td>$${pos.entry_price.toFixed(2)}</td>
-                            <td>$${pos.current_price.toFixed(2)}</td>
-                            <td>$${pos.market_value.toLocaleString()}</td>
-                            <td class="${pos.day_pnl >= 0 ? 'positive' : 'negative'}">
+                            <td data-price-symbol="${escapeHtml(pos.symbol)}">$${pos.current_price.toFixed(2)}</td>
+                            <td data-market-value-symbol="${escapeHtml(pos.symbol)}">$${pos.market_value.toLocaleString()}</td>
+                            <td class="${pos.day_pnl >= 0 ? 'positive' : 'negative'}" data-day-pnl-symbol="${escapeHtml(pos.symbol)}">
                                 $${pos.day_pnl.toFixed(2)}
                             </td>
-                            <td class="${pos.unrealized_pnl >= 0 ? 'positive' : 'negative'}">
+                            <td class="${pos.unrealized_pnl >= 0 ? 'positive' : 'negative'}" data-unrealized-pnl-symbol="${escapeHtml(pos.symbol)}">
                                 $${pos.unrealized_pnl.toFixed(2)}
                             </td>
                             <td class="${pos.pnl_percent >= 0 ? 'positive' : 'negative'}">
@@ -3339,6 +3748,10 @@
                             </td>
                         </tr>
                     `).join('');
+                    // v-row-flash-on-rerender-2026-05-04: rerender just baked
+                    // the latest price into every cell, so paintLivePrices
+                    // can't detect a change. Flash the row here instead.
+                    flashRowsForChangedPrices(data.real_positions);
                 }
             }
 
@@ -3349,7 +3762,7 @@
                     tbody.innerHTML = '<tr><td colspan="9" style="text-align: center; color: #666;">No simulated positions</td></tr>';
                 } else {
                     tbody.innerHTML = data.simulated_positions.map(pos => `
-                        <tr>
+                        <tr data-chart-symbol="${escapeHtml(pos.symbol)}" style="cursor:pointer;">
                             <td style="font-weight: bold;">
                                 <img class="symbol-logo" src="/logos/${escapeHtml(pos.symbol)}"
                                      alt="" onerror="this.style.display='none'">
@@ -3357,10 +3770,10 @@
                             </td>
                             <td>${pos.quantity}</td>
                             <td>$${pos.entry_price.toFixed(2)}</td>
-                            <td>$${pos.current_price.toFixed(2)}</td>
+                            <td data-price-symbol="${escapeHtml(pos.symbol)}">$${pos.current_price.toFixed(2)}</td>
                             <td>$${pos.stop_loss ? pos.stop_loss.toFixed(2) : 'N/A'}</td>
                             <td>$${pos.take_profit ? pos.take_profit.toFixed(2) : 'N/A'}</td>
-                            <td class="${pos.unrealized_pnl >= 0 ? 'positive' : 'negative'}">
+                            <td class="${pos.unrealized_pnl >= 0 ? 'positive' : 'negative'}" data-unrealized-pnl-symbol="${escapeHtml(pos.symbol)}">
                                 $${pos.unrealized_pnl.toFixed(2)}
                             </td>
                             <td>
@@ -3401,39 +3814,34 @@
                             </tr>
                         `;
                     }).join('');
+                    // v-row-flash-on-rerender-2026-05-04: same as real
+                    // positions — flash sim rows when the rerender baked
+                    // in a price that differs from the prior tick.
+                    flashRowsForChangedPrices(data.simulated_positions);
                 }
             }
-            
-            // Update simulated positions
-            if (data.simulated_positions) {
-                const tbody = document.getElementById('simulated-positions-body');
-                if (data.simulated_positions.length === 0) {
-                    tbody.innerHTML = '<tr><td colspan="8" style="text-align: center; color: #666;">No simulated positions</td></tr>';
-                } else {
-                    tbody.innerHTML = data.simulated_positions.map(pos => `
-                        <tr>
-                            <td style="font-weight: bold;">
-                                <img class="symbol-logo" src="/logos/${escapeHtml(pos.symbol)}"
-                                     alt="" onerror="this.style.display='none'">
-                                ${escapeHtml(pos.symbol)}
-                            </td>
-                            <td>${pos.quantity}</td>
-                            <td>$${pos.entry_price.toFixed(2)}</td>
-                            <td>$${pos.current_price.toFixed(2)}</td>
-                            <td>$${pos.stop_loss ? pos.stop_loss.toFixed(2) : 'N/A'}</td>
-                            <td>$${pos.take_profit ? pos.take_profit.toFixed(2) : 'N/A'}</td>
-                            <td class="${pos.unrealized_pnl >= 0 ? 'positive' : 'negative'}">
-                                $${pos.unrealized_pnl.toFixed(2)}
-                            </td>
-                            <td>
-                                <button class="close-button" onclick="requestClosePosition('${pos.symbol}', 'simulated')">
-                                    Close
-                                </button>
-                            </td>
-                        </tr>
-                    `).join('');
-                }
-            }
+
+            // Build a per-symbol metric map and repaint every tagged cell.
+            const symbolMetrics = {};
+            (data.real_positions || []).forEach(p => {
+                const s = String(p.symbol || '').toUpperCase();
+                if (!s) return;
+                symbolMetrics[s] = {
+                    unrealized_pnl: Number(p.unrealized_pnl || 0),
+                    day_pnl: Number(p.day_pnl || 0),
+                    market_value: Number(p.market_value || 0),
+                };
+            });
+            (data.simulated_positions || []).forEach(p => {
+                const s = String(p.symbol || '').toUpperCase();
+                if (!s) return;
+                // Sim metrics update unrealized PnL everywhere they appear.
+                symbolMetrics[s] = {
+                    ...(symbolMetrics[s] || {}),
+                    unrealized_pnl: Number(p.unrealized_pnl || 0),
+                };
+            });
+            paintSymbolMetrics(symbolMetrics);
             if (data.screener) {
                 updateTickerTape(data.screener);
             }   
@@ -3730,11 +4138,10 @@
             if (clk) clk.textContent = info.clock;
         }
 
-        // v-ui-price-chart-2026-04-29: per-symbol intraday price chart.
-        // Reads /api/historical-data/{symbol}?frequency=5&period=1.
-        // Symbol options come from the dynamic watchlist (whatever the
-        // ticker is currently showing) plus any open position symbols.
-        let _priceChart = null;
+        // v-ui-tradingview-2026-04-30: price chart is now a TradingView
+        // Advanced Chart widget (see _renderTradingViewWidget below).
+        // Symbol options still come from the dynamic watchlist (ticker
+        // tape) plus any open positions.
         let _priceChartSymbol = null;
         function _availableSymbols() {
             const set = new Set();
@@ -3759,81 +4166,112 @@
                 refreshPriceChart();
             }
         }
+        // v-ui-tradingview-2026-04-30: TradingView Advanced Chart widget
+        // replaces the Chart.js price chart. Loads from TradingView's CDN,
+        // renders ~200ms, free, no API key. Symbol picker change re-creates
+        // the widget for the new symbol.
+        //
+        // TradingView resolves bare symbols (e.g. "AAPL") to their primary
+        // listing automatically. We don't prefix NASDAQ:/NYSE: — let TV
+        // pick. For symbols TV can't resolve, the widget shows a friendly
+        // "Symbol not found" inside its own UI; nothing in our app breaks.
+        function _renderTradingViewWidget(symbol) {
+            const host = document.getElementById('tradingview-widget-host');
+            if (!host) return;
+            // Wipe host so the previous widget's iframe is GC'd and the
+            // new symbol mounts cleanly. TradingView's widget script is
+            // synchronous-ish — re-running new TradingView.widget(...) in
+            // the same container creates duplicate iframes.
+            host.innerHTML = '<div id="tradingview-mount" style="height:100%;width:100%;"></div>';
+            if (typeof TradingView === 'undefined') {
+                // CDN script not loaded yet — defer. Loading state is the
+                // empty mount; the script tag at the bottom of the page
+                // will eventually trigger this path on its onload.
+                host.dataset.pendingSymbol = symbol;
+                return;
+            }
+            try {
+                new TradingView.widget({
+                    autosize: true,
+                    symbol: symbol,
+                    interval: '5',           // 5-min bars
+                    timezone: 'America/New_York',
+                    theme: 'dark',
+                    style: '1',              // candles. '3' = area, '2' = bars
+                    locale: 'en',
+                    toolbar_bg: 'rgba(0,0,0,0)',
+                    enable_publishing: false,
+                    allow_symbol_change: false,  // we drive symbol from our picker
+                    hide_legend: false,
+                    hide_side_toolbar: true,     // hide drawing tools sidebar (saves space)
+                    hide_top_toolbar: false,     // keep interval picker visible
+                    save_image: false,
+                    container_id: 'tradingview-mount',
+                });
+            } catch (e) {
+                console.warn('TradingView widget failed:', e);
+                host.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--muted-fg);font-size:0.875rem;">Chart unavailable — TradingView script failed to load.</div>';
+            }
+        }
+        // Backwards-compat shims so the rest of the file (loops, picker
+        // handlers, init code) doesn't need to change. refreshPriceChart()
+        // and _setPriceChartLoading() now both delegate to TradingView.
+        function _setPriceChartLoading(sym) {
+            const host = document.getElementById('tradingview-widget-host');
+            if (host) host.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--muted-fg);font-size:0.875rem;opacity:0.6;">Loading ' + (sym || '') + '…</div>';
+        }
         async function refreshPriceChart() {
             const sym = _priceChartSymbol;
             if (!sym) return;
-            try {
-                const tok = window.TRADING_API_KEY;
-                const r = await fetch(`/api/historical-data/${encodeURIComponent(sym)}?frequency=5&period=1`, {
-                    headers: tok ? {'Authorization': 'Bearer ' + tok} : {},
-                });
-                if (!r.ok) return;
-                const j = await r.json();
-                const bars = (j.bars || []).filter(b => b.close != null);
-                if (!bars.length) return;
-                const labels = bars.map(b => {
-                    const d = new Date(b.time);
-                    return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
-                });
-                const closes = bars.map(b => b.close);
-                const last = closes[closes.length - 1];
-                const first = closes[0];
-                const changePct = first > 0 ? ((last - first) / first * 100) : 0;
-                const isUp = changePct >= 0;
-                const lineColor = isUp ? 'oklch(0.72 0.20 155)' : 'oklch(0.6 0.22 25)';
-                const fillColor = isUp ? 'oklch(0.72 0.20 155 / 0.15)' : 'oklch(0.6 0.22 25 / 0.15)';
-                const lastEl   = document.getElementById('price-chart-last');
-                const chgEl    = document.getElementById('price-chart-change');
-                if (lastEl) lastEl.textContent = `$${last.toFixed(2)}`;
-                if (chgEl) {
-                    chgEl.textContent = `${isUp ? '+' : ''}${changePct.toFixed(2)}%`;
-                    chgEl.className = isUp ? 'positive' : 'negative';
+            _renderTradingViewWidget(sym);
+        }
+        // v-click-to-chart-2026-05-01: any element in the dashboard
+        // tagged with data-chart-symbol="SYMBOL" routes a click to the
+        // price chart. Delegated on document so WS-driven DOM rebuilds
+        // (which throw away old listeners) don't need re-binding.
+        // Tagging sites: position rows, ticker tape, donut legend,
+        // commentary symbol pills, heatmap tiles. Add the attribute
+        // to any new render site and clicks just work.
+        function selectChartSymbol(sym) {
+            if (!sym) return;
+            sym = String(sym).toUpperCase().trim();
+            if (!sym || sym === _priceChartSymbol) return;
+            _priceChartSymbol = sym;
+            // Sync the picker dropdown so it reflects the active symbol;
+            // add the option if it isn't already in the list.
+            const sel = document.getElementById('price-chart-symbol');
+            if (sel) {
+                const has = Array.from(sel.options).some(o => o.value === sym);
+                if (!has) {
+                    const o = document.createElement('option');
+                    o.value = sym; o.textContent = sym; o.selected = true;
+                    sel.appendChild(o);
                 }
-                const config = {
-                    type: 'line',
-                    data: { labels, datasets: [{
-                        data: closes, borderColor: lineColor,
-                        backgroundColor: fillColor, fill: true,
-                        tension: 0.25, pointRadius: 0, pointHoverRadius: 4,
-                        borderWidth: 2,
-                    }]},
-                    options: {
-                        maintainAspectRatio: false, responsive: true,
-                        animation: { duration: 300 },
-                        plugins: {
-                            legend: { display: false },
-                            tooltip: {
-                                backgroundColor: 'oklch(0.12 0.015 270 / 0.95)',
-                                titleColor: 'oklch(0.98 0 0)', bodyColor: 'oklch(0.98 0 0)',
-                                borderColor: 'oklch(0.3 0.02 270)', borderWidth: 1,
-                                displayColors: false,
-                                callbacks: { label: c => `$${c.parsed.y.toFixed(2)}` },
-                            },
-                        },
-                        scales: {
-                            x: { grid: { color: 'oklch(0.22 0.02 270 / 0.2)' },
-                                 ticks: { color: 'oklch(0.6 0 0)', font: { size: 10 }, maxTicksLimit: 8 } },
-                            y: { grid: { color: 'oklch(0.22 0.02 270 / 0.2)' },
-                                 ticks: { color: 'oklch(0.6 0 0)', font: { size: 10 },
-                                          callback: v => '$' + v.toFixed(2) } },
-                        },
-                    },
-                };
-                const ctx = document.getElementById('price-chart-canvas');
-                if (!ctx) return;
-                if (_priceChart) {
-                    _priceChart.data = config.data;
-                    _priceChart.options.scales = config.options.scales;
-                    _priceChart.data.datasets[0].borderColor = lineColor;
-                    _priceChart.data.datasets[0].backgroundColor = fillColor;
-                    _priceChart.update('none');
-                } else {
-                    _priceChart = new Chart(ctx, config);
-                }
-            } catch (e) {
-                console.debug('price chart refresh skipped', e);
+                sel.value = sym;
+            }
+            _setPriceChartLoading(sym);
+            refreshPriceChart();
+            // Smooth-scroll the chart card into view so the user sees
+            // the change happen, even if they clicked from far away.
+            const card = document.getElementById('price-chart-card');
+            if (card) {
+                card.scrollIntoView({behavior: 'smooth', block: 'nearest'});
             }
         }
+        document.addEventListener('click', (ev) => {
+            // Walk up to find the closest element carrying the data-chart-symbol attr
+            const el = ev.target.closest && ev.target.closest('[data-chart-symbol]');
+            if (!el) return;
+            // Don't hijack clicks that hit form controls inside a tagged row
+            // (close buttons, checkboxes, selects, inputs).
+            const t = ev.target;
+            if (t.closest('button, input, select, textarea, a[href]:not([data-chart-symbol]), label')) {
+                return;
+            }
+            const sym = el.getAttribute('data-chart-symbol');
+            if (sym) selectChartSymbol(sym);
+        }, false);
+
         // Track the last screenerData so the symbol-picker has options.
         let _lastScreenerData = [];
 
@@ -3870,7 +4308,15 @@
                 });
                 if (!r.ok) return;
                 const j = await r.json();
-                const positions = (j.positions || []).filter(p => p.quantity > 0);
+                // v-donut-mode-filter-2026-05-05: donut must match active
+                // trading mode — sim donut shows sim positions, live donut
+                // shows live positions only. Previously it merged both,
+                // so live mode still showed simulated allocations.
+                const toggle = document.getElementById('mode-toggle');
+                const activeMode = (toggle && toggle.checked) ? 'live' : 'simulation';
+                const positions = (j.positions || []).filter(p =>
+                    p.quantity > 0 && (p.mode || 'simulation') === activeMode
+                );
                 const items = positions.map((p, i) => ({
                     name: p.symbol,
                     value: Math.abs(p.quantity * (p.current_price || p.entry_price || 0)),
@@ -3889,19 +4335,27 @@
         function _renderPortfolioDonut(items, total) {
             const ctx = document.getElementById('portfolio-donut');
             if (!ctx || typeof Chart === 'undefined') return;
+            // v-ui-donut-3d-2026-04-29: deeper bevel + lifted hover + slimmer
+            // ring (cutout 72%) so the CSS rim/bowl effects read clearly.
             const data = {
                 labels: items.map(x => x.name),
                 datasets: [{
                     data: items.map(x => x.value),
                     backgroundColor: items.map(x => x.color),
-                    borderColor: 'oklch(0.12 0.015 270 / 0.9)',
-                    borderWidth: 2,
-                    hoverOffset: 8,
+                    borderColor: 'oklch(0.06 0.018 270 / 1)',
+                    borderWidth: 3,
+                    borderRadius: 2,
+                    hoverOffset: 14,
+                    hoverBorderColor: 'oklch(0.10 0.018 270 / 1)',
+                    hoverBorderWidth: 3,
+                    spacing: 1,
                 }],
             };
             const opts = {
-                cutout: '70%',
-                animation: { duration: 500 },
+                cutout: '72%',
+                radius: '92%',
+                rotation: -25,
+                animation: { duration: 500, animateRotate: true, animateScale: true },
                 plugins: { legend: { display: false }, tooltip: { enabled: false } },
                 onHover: (_, els) => {
                     if (els && els.length) _setActiveSlice(els[0].index, items, total);
@@ -3920,7 +4374,10 @@
             if (legend) {
                 legend.innerHTML = items.map((x, i) => {
                     const pct = total > 0 ? (x.value / total * 100).toFixed(1) : '0';
-                    return `<button class="donut-legend-row${i === 0 ? ' active' : ''}" data-idx="${i}">
+                    // v-click-to-chart-2026-05-01: data-chart-symbol on
+                    // each legend row so clicking it routes the chart to
+                    // that symbol IN ADDITION to highlighting the slice.
+                    return `<button class="donut-legend-row${i === 0 ? ' active' : ''}" data-idx="${i}" data-chart-symbol="${escapeHtml(x.name)}">
                         <span><span class="swatch" style="background:${x.color}"></span>${escapeHtml(x.name)}</span>
                         <span><span class="value">${fmtCurrency(x.value)}</span> · ${pct}%</span>
                     </button>`;
@@ -3929,6 +4386,8 @@
                     row.addEventListener('click', () => {
                         const idx = parseInt(row.dataset.idx, 10);
                         _setActiveSlice(idx, items, total);
+                        const sym = row.getAttribute('data-chart-symbol');
+                        if (sym) selectChartSymbol(sym);
                     });
                 });
             }
@@ -4080,7 +4539,7 @@
                     : `oklch(0.6  ${0.05 + intensity * 0.17} 25  / ${0.25 + intensity * 0.45})`;
                 const arrow = isUp ? lucide('trending-up', 12) : lucide('trending-down', 12);
                 const sign = isUp ? '+' : '';
-                return `<button class="heatmap-tile" style="background:${bg}" title="${escapeHtml(s.symbol)} · vol ${(s.volatility||0).toFixed(1)}%">
+                return `<button class="heatmap-tile" style="background:${bg}" data-chart-symbol="${escapeHtml(s.symbol)}" title="${escapeHtml(s.symbol)} · vol ${(s.volatility||0).toFixed(1)}% · click to chart" onclick="selectChartSymbol('${escapeHtml(s.symbol)}')">
                     <div class="heatmap-tile-symbol">${escapeHtml(s.symbol)}</div>
                     <div class="heatmap-tile-price">$${(s.last || 0).toFixed(2)}</div>
                     <div class="heatmap-tile-change ${isUp ? 'up' : 'down'}">${arrow}${sign}${change.toFixed(2)}%</div>
@@ -4117,15 +4576,19 @@
                 setInterval(refreshPortfolioDonut, 30000);
                 setInterval(refreshPerformanceMetrics, 60000);
 
-                // v-ui-price-chart-2026-04-29: symbol picker change handler
+                // v-ui-price-chart-2026-04-29: symbol picker change handler.
+                // v-ui-price-chart-snappy-2026-04-30: paint loading state
+                // immediately on switch so the picker feels responsive.
                 const sel = document.getElementById('price-chart-symbol');
                 if (sel) {
                     sel.addEventListener('change', () => {
                         _priceChartSymbol = sel.value;
+                        _setPriceChartLoading(_priceChartSymbol);
                         refreshPriceChart();
                     });
                 }
-                setInterval(refreshPriceChart, 60000);
+                // v-ui-tradingview-2026-04-30: TradingView updates itself
+                // via its own websocket — no polling needed.
             };
             _initCharts();
         })();
@@ -4241,9 +4704,13 @@
             if (response.ok) {
                 const data = await response.json();
                 console.log('Mode changed to:', data.mode);
+                // v-donut-mode-filter-2026-05-05: re-render the donut so
+                // it reflects the new mode immediately, instead of waiting
+                // for the 30s refresh tick.
+                try { refreshPortfolioDonut(); } catch (_) {}
             }
         }
-        
+
         async function refreshPositions() {
             const response = await authFetch('/api/refresh-positions', { method: 'POST' });
             if (response.ok) {
@@ -4554,11 +5021,11 @@
                 const changeSymbol = stock.change >= 0 ? '+' : '';
                 
                 tickerHTML += `
-                    <div class="ticker-item">
+                    <div class="ticker-item" data-chart-symbol="${escapeHtml(stock.symbol)}" style="cursor:pointer;" title="Click to chart ${escapeHtml(stock.symbol)}">
                         <img class="ticker-logo" src="/logos/${escapeHtml(stock.symbol)}"
                              alt="" onerror="this.style.display='none'">
                         <span class="ticker-symbol">${escapeHtml(stock.symbol)}</span>
-                        <span class="ticker-price">$${stock.last.toFixed(2)}</span>
+                        <span class="ticker-price" data-price-symbol="${escapeHtml(stock.symbol)}">$${stock.last.toFixed(2)}</span>
                         <span class="ticker-change ${changeClass}">${changeSymbol}${stock.change.toFixed(2)}%</span>
                         <span class="ticker-volatility">⚡${stock.volatility.toFixed(1)}%</span>
                     </div>

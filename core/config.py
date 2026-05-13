@@ -307,7 +307,11 @@ class Config:
 
     @property
     def MAX_POSITIONS(self):
-        return self.manager.get('trading.max_positions', 5)
+        # v-max-positions-default-2026-05-06: 5 → 10. Hard cap on
+        # concurrent bot-managed trades. Positions that are hands-off
+        # (managed_by_bot=False, e.g. pre-existing Schwab holdings) do
+        # NOT count against this limit.
+        return self.manager.get('trading.max_positions', 10)
 
     @property
     def RESERVE_CASH_PERCENT(self):
@@ -381,6 +385,35 @@ class Config:
 
         Set True in Config.yaml to re-enable."""
         return bool(self.manager.get('trading.enable_news_verifier', False))
+
+    @property
+    def NEWS_VERIFIER_ADVISORY(self) -> bool:
+        """v-news-verifier-advisory-2026-05-08: run the fresh-news
+        verifier in advisory mode — it executes and logs its verdict
+        on every news signal, but does NOT veto the trade.
+
+        Rationale: the operator complained that 100% gating felt opaque
+        (you can't tell whether a veto was right without seeing the
+        outcome). Advisory mode emits an audit line
+        `engine_decision component=news_verifier_advisory action=advisory
+        reason=<verdict> fresh_count=N latest_age_min=...` for every
+        news entry, AND records the decision against the eventual
+        bot_trades outcome. After a week of data we can grade whether
+        the verifier's vetoes would have improved or hurt P&L, then
+        flip ENABLE_NEWS_VERIFIER True with evidence.
+
+        Default True — the cost of running verification is one HTTP
+        call; the benefit is observability. Set False to silence."""
+        return bool(self.manager.get('trading.news_verifier_advisory', True))
+
+    @property
+    def SCREENER_LOOP_SEC(self) -> int:
+        """v-parallel-screener-loop-2026-05-12: cadence for the supervised
+        screener loop. Default 120s matches the old in-line gate inside
+        `_analyze_markets_with_commentary`. Tuning down increases Yahoo +
+        Schwab REST traffic; tuning up means a slower watchlist refresh
+        when the tape rotates."""
+        return int(self.manager.get('trading.screener_loop_sec', 120))
 
     @property
     def WATCHLIST_SIZE(self) -> int:
@@ -472,6 +505,110 @@ class Config:
         positive because we're already halfway to stop when this fires —
         the trade was already on a losing path."""
         return bool(self.manager.get('trading.enable_proactive_exit', True))
+
+    @property
+    def PROACTIVE_EXIT_MIN_AGE_NEWS(self) -> int:
+        """v-proactive-time-floor-2026-04-30: minimum minutes a news-driven
+        position must be open before proactive_exit can fire. Whipsaw
+        analysis on 2026-04-30 showed 5 of 5 whipsaws closed within 5 min
+        of entry; news theses (institutional re-rate after earnings,
+        guidance, M&A) play out over hours, not 5-min bars. Holding
+        through the first 30 min would have saved ~$1,400 today.
+        Default 30. Lower to 15 for faster news plays; raise to 60 if
+        whipsaw rate is still high after measurement."""
+        return int(self.manager.get('trading.proactive_exit_min_age_news', 30))
+
+    @property
+    def PROACTIVE_EXIT_MIN_AGE_MEANREV(self) -> int:
+        """Min age before proactive_exit fires for mean-reversion trades.
+        Bounces are typically fast — 10 min gives the snap-back time to
+        materialize without letting MACD-flip wiggle kick us out
+        prematurely. Default 10."""
+        return int(self.manager.get('trading.proactive_exit_min_age_meanrev', 10))
+
+    @property
+    def PROACTIVE_EXIT_MIN_AGE_DEFAULT(self) -> int:
+        """Min age for proactive_exit on any other strategy
+        (momentum, breakout, ML, etc). Default 15 — middle ground."""
+        return int(self.manager.get('trading.proactive_exit_min_age_default', 15))
+
+    # ──────────────────────────────────────────────────────────────────
+    # v-loop-decoupling-2026-04-30 (Phase 2): cadence + staleness knobs
+    # for the three-task model (analysis_loop / position_loop / streamer).
+    # ──────────────────────────────────────────────────────────────────
+    @property
+    def POSITION_LOOP_SEC(self) -> float:
+        """Cadence of the FSM exit dispatcher loop. 1.0s = stops fire
+        within ~1s of breach. Lowering helps responsiveness; raising
+        saves CPU. Below 0.5s noisy, above 3s defeats the purpose."""
+        return float(self.manager.get('trading.position_loop_sec', 1.0))
+
+    @property
+    def QUOTE_REFRESH_SEC(self) -> float:
+        """Cadence of the quote streamer per active symbol. 3s × 10
+        symbols = ~3.3 req/s to Schwab. Tighten only if you have
+        broker headroom."""
+        return float(self.manager.get('trading.quote_refresh_sec', 3.0))
+
+    @property
+    def ANALYSIS_LOOP_SEC(self) -> float:
+        """Cadence of the slow loop (screener / signal routing / new
+        entries). 60s aligns with 1-min bars; finer cadence buys
+        nothing for a 5-min-bar bot."""
+        return float(self.manager.get('trading.analysis_loop_sec', 60.0))
+
+    @property
+    def ANALYSIS_LOOP_RTH_SEC(self) -> float:
+        """v-off-hours-analysis-2026-05-01: cadence DURING regular
+        trading hours. 30s matches the legacy default; the analysis
+        loop runs the full screener/signal/ML pipeline this often.
+        Tighten only if you have Schwab quote-budget headroom."""
+        return float(self.manager.get('trading.analysis_loop_rth_sec', 30.0))
+
+    @property
+    def ANALYSIS_LOOP_OFF_HOURS_SEC(self) -> float:
+        """v-off-hours-analysis-2026-05-01: cadence OUTSIDE regular
+        hours. Analysis still runs (news, indicators, ML) but at a
+        reduced rate — data sources don't update meaningfully overnight
+        and the screener/quotes burn budget for no return. Default 300s
+        (5 min) keeps the bot informed without hammering APIs.
+        Signal-router market_hours gate still blocks new orders."""
+        return float(self.manager.get('trading.analysis_loop_off_hours_sec', 300.0))
+
+    @property
+    def QUOTE_MAX_STALE_SEC(self) -> float:
+        """Soft cliff: position_loop will SKIP exit evaluation on a
+        quote older than this. 15s tolerates a Schwab hiccup but never
+        acts on yesterday's price."""
+        return float(self.manager.get('trading.quote_max_stale_sec', 15.0))
+
+    @property
+    def QUOTE_HARD_STALE_SEC(self) -> float:
+        """Hard cliff: cache older than this means the streamer is
+        broken. Trips an alert; new entries pause via analysis_loop
+        gating. Default 60s."""
+        return float(self.manager.get('trading.quote_hard_stale_sec', 60.0))
+
+    @property
+    def QUOTE_FETCH_TIMEOUT_SEC(self) -> float:
+        """Per-symbol quote fetch timeout. 3s gives Schwab room; longer
+        starves other symbols when one hangs."""
+        return float(self.manager.get('trading.quote_fetch_timeout_sec', 3.0))
+
+    @property
+    def QUOTE_FETCH_CONCURRENCY(self) -> int:
+        """Max in-flight quote fetches at once across all symbols."""
+        return int(self.manager.get('trading.quote_fetch_concurrency', 8))
+
+    @property
+    def TASK_RESTART_MAX_CRASHES(self) -> int:
+        """Supervisor: number of crashes-in-window before circuit-break."""
+        return int(self.manager.get('trading.task_restart_max_crashes', 3))
+
+    @property
+    def TASK_RESTART_WINDOW_SEC(self) -> float:
+        """Supervisor: rolling window for crash counting."""
+        return float(self.manager.get('trading.task_restart_window_sec', 300.0))
 
     @property
     def TRAIL_ACTIVATION_ATR_MULT(self) -> float:
