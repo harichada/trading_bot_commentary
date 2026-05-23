@@ -406,6 +406,75 @@ class Config:
         call; the benefit is observability. Set False to silence."""
         return bool(self.manager.get('trading.news_verifier_advisory', True))
 
+    # ── v-side-classifier-config-2026-05-13 ───────────────────────────
+    # Side-classifier subsystem flags. All default OFF so the live
+    # trading path is unaffected until the operator explicitly opts in.
+    # Rollout flavor B (per-strategy gradual) chosen 2026-05-13:
+    # USE_SIDE_CLASSIFIER is the master switch; the per-strategy
+    # switches let us gate news_strategy first, then mean_reversion.
+
+    @property
+    def USE_SIDE_CLASSIFIER(self) -> bool:
+        """Master switch for the side classifier. Default False.
+        When False, no part of `core/classifier` is consulted by the
+        live trading path. Flip via `Config().yaml: trading.use_side_classifier`."""
+        return bool(self.manager.get('trading.use_side_classifier', False))
+
+    @property
+    def SIDE_CLASSIFIER_NEWS_STRATEGY(self) -> bool:
+        """Per-strategy gate. When `USE_SIDE_CLASSIFIER=True`, this
+        decides whether news_strategy signals pass through the
+        classifier. Rollout flavor B starts with this True, then
+        flips mean-reversion on after N clean sessions."""
+        return bool(self.manager.get('trading.side_classifier_news_strategy', False))
+
+    @property
+    def SIDE_CLASSIFIER_MEAN_REVERSION(self) -> bool:
+        """Per-strategy gate for mean-reversion entries. Starts False
+        and flips True after news_strategy gating proves itself."""
+        return bool(self.manager.get('trading.side_classifier_mean_reversion', False))
+
+    @property
+    def SIDE_CLASSIFIER_LONG_THRESHOLD(self) -> float:
+        """Minimum `long_score` for the rule layer to allow LONG.
+        Default 0.55 per PLAN §5.3. Tunable post-backtest."""
+        return float(self.manager.get('trading.side_classifier_long_threshold', 0.55))
+
+    @property
+    def SIDE_CLASSIFIER_SHORT_THRESHOLD(self) -> float:
+        """Minimum `short_score` for the rule layer to allow SHORT.
+        Default 0.55 per PLAN §5.3."""
+        return float(self.manager.get('trading.side_classifier_short_threshold', 0.55))
+
+    @property
+    def SIDE_CLASSIFIER_CACHE_TTL_SEC(self) -> int:
+        """How long a per-symbol classifier decision stays valid before
+        re-computation. Default 1800s (30min) per PLAN §7."""
+        return int(self.manager.get('trading.side_classifier_cache_ttl_sec', 1800))
+
+    @property
+    def SIDE_CLASSIFIER_SHADOW_MODE(self) -> bool:
+        """Run the classifier alongside live trading but log only.
+        Decisions are surfaced in audit logs (component=side_classifier)
+        without affecting any gating. Default False.
+
+        v-classifier-runtime-2026-05-13. Per ``.claude/PLAN_trained_side_
+        classifier.md`` §8: shadow → advisory → live. This flag is
+        what 'shadow' looks like at the code level.
+        """
+        return bool(self.manager.get(
+            'trading.side_classifier_shadow_mode', False))
+
+    @property
+    def SIDE_CLASSIFIER_MODEL_PATH(self) -> str:
+        """Filesystem path to the FFN (or future TFT) checkpoint.
+        Defaults to the watchlist-v1 smoke checkpoint we trained today.
+        If the file is absent, ClassifierRuntime fails open
+        (rule-only decisions) and logs a single WARNING."""
+        return str(self.manager.get(
+            'trading.side_classifier_model_path',
+            'models/classifier/ffn_watchlist_v1.pt'))
+
     @property
     def SCREENER_LOOP_SEC(self) -> int:
         """v-parallel-screener-loop-2026-05-12: cadence for the supervised
@@ -531,6 +600,52 @@ class Config:
         """Min age for proactive_exit on any other strategy
         (momentum, breakout, ML, etc). Default 15 — middle ground."""
         return int(self.manager.get('trading.proactive_exit_min_age_default', 15))
+
+    @property
+    def LIVE_SIZE_MULTIPLIER(self) -> float:
+        """Global live-launch safety dial applied after strategy multipliers.
+
+        Composes with ``strategy_size_multipliers`` — final sizing is
+        ``base * strategy_mult * live_mult``. Default 1.0 (no change).
+        Set to 0.25 for the 2026-05-26 quarter-size live launch; graduate
+        when walk-forward bootstrap CI lower bound clears 1.0 (use
+        ``research/news_strategy_validation.py`` to measure).
+        """
+        try:
+            return float(self.manager.get('trading.live_size_multiplier', 1.0))
+        except (TypeError, ValueError):
+            return 1.0
+
+    @property
+    def LATE_ENTRY_CUTOFF_HOUR(self) -> int:
+        """Hour-of-day ET past which no new entries are accepted. See
+        engine.py late-entry cutoff guard. Default 15 (3 PM ET)."""
+        return int(self.manager.get('trading.late_entry_cutoff_hour', 15))
+
+    @property
+    def LATE_ENTRY_CUTOFF_MINUTE(self) -> int:
+        """Minute-of-hour ET past which no new entries are accepted on the
+        cutoff hour. Default 30 — combined with hour=15, gives 15:30 ET."""
+        return int(self.manager.get('trading.late_entry_cutoff_minute', 30))
+
+    def STRATEGY_SIZE_MULTIPLIER(self, strategy_name: str) -> float:
+        """Per-strategy size multiplier applied after Kelly sizing.
+
+        Looked up by ``signal.reasoning['strategy']`` in
+        ``risk/manager.py``. Missing or invalid keys return 1.0
+        (no change).
+
+        Configured via ``trading.strategy_size_multipliers`` (dict).
+        Used to under-size strategies still proving edge — e.g.
+        mean_reversion at 0.5 until N>=20 confirms PF>=1.5.
+        """
+        mults = self.manager.get('trading.strategy_size_multipliers', {}) or {}
+        if not isinstance(mults, dict):
+            return 1.0
+        try:
+            return float(mults.get(strategy_name, 1.0))
+        except (TypeError, ValueError):
+            return 1.0
 
     # ──────────────────────────────────────────────────────────────────
     # v-loop-decoupling-2026-04-30 (Phase 2): cadence + staleness knobs
@@ -751,6 +866,25 @@ class Config:
         return bool(self.manager.get('trading.enable_strict_long_gates', True))
 
     @property
+    def ENABLE_UNIVERSE_QUALITY_FILTER(self) -> bool:
+        """v-universe-quality-filter-2026-05-22: filter screener candidates
+        at universe-build time before strategies see them. Three sub-gates:
+        leveraged-ETF blocklist, close > SMA50 (uptrend), and 5-day return
+        > SPY 5-day return (relative strength). Default True — turn off
+        in yaml to backtest the impact (set `trading.enable_universe_quality_filter: false`)."""
+        return bool(self.manager.get('trading.enable_universe_quality_filter', True))
+
+    @property
+    def USE_OVERSOLD_BOUNCE_V2(self) -> bool:
+        """v-oversold-v2-2026-05-19: gate for the OversoldBounceV2Strategy.
+        Default changed to FALSE on 2026-05-19 after backtest showed v2
+        underperforms legacy (12 trades, 16.7% win rate, PF 1.04 vs legacy's
+        62 trades, 61.3% win rate, PF 1.72 on 30-day NVDA/AMD/RKLB/FCEL/POET
+        sample). Strategy code retained for further iteration. Flip True
+        in yaml only after v2 outperforms in a fresh backtest."""
+        return bool(self.manager.get('trading.use_oversold_bounce_v2', False))
+
+    @property
     def ENABLE_RELAXED_MEAN_REV_LONG(self) -> bool:
         """Enable the v-profitability-pass-2026-04-20 relaxed falling-knife
         filter for mean-reversion LONG. Default True.
@@ -810,6 +944,27 @@ class Config:
     def ATR_STOP_MULTIPLIER(self):
         """ATR multiplier for stop-loss distance (1.5 = stop at 1.5×ATR from entry)."""
         return self.manager.get('trading.atr_stop_multiplier', 1.5)
+
+    @property
+    def MEAN_REV_ATR_STOP_MULTIPLIER(self):
+        """v-mean-rev-wider-stop-2026-05-20: mean-reversion-specific stop
+        multiplier. Default 2.5× ATR — wider than the global 1.5×.
+
+        Rationale: with the bounce-confirmation filter (v-bounce-2026-05-20)
+        only firing on real reversal candles, mean-rev entries are higher
+        quality and deserve room to breathe through normal intraday
+        whipsaw. 1.5× ATR puts stops inside the noise band on volatile
+        names (FIG on 5/20: stopped at $22.16, day low $21.78, current
+        $22.23 — recovered above the stop level). Wider stop = fewer
+        whipsaw exits but bigger loss when stop genuinely hits;
+        position-sizing automatically scales down to keep dollar_risk
+        constant per trade.
+
+        Falls back to ATR_STOP_MULTIPLIER if yaml key missing."""
+        v = self.manager.get('trading.mean_rev_atr_stop_multiplier', None)
+        if v is None:
+            return 2.5  # mean-rev-specific default
+        return v
 
     @property
     def ATR_REWARD_RISK_RATIO(self):

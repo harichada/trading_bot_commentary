@@ -145,6 +145,34 @@ class TradingEngineWithCommentary:
         self.pending_orders = {}
         self.order_id_to_symbol = {}
         self.last_order_check = datetime.now()
+
+        # v-classifier-runtime-2026-05-13: side-classifier shadow hook.
+        # Lazy-built — the import lives inside this conditional so a
+        # torch-less environment can start the bot without dragging in
+        # the trained classifier subpackage. When the flag is False
+        # (default), ``self._classifier_runtime`` is None and the
+        # signal_router skips the shadow_evaluate call entirely.
+        self._classifier_runtime = None
+        try:
+            if Config().SIDE_CLASSIFIER_SHADOW_MODE:
+                from core.classifier.runtime import ClassifierRuntime
+                self._classifier_runtime = ClassifierRuntime(
+                    enabled=True,
+                    model_path=Config().SIDE_CLASSIFIER_MODEL_PATH,
+                    long_threshold=Config().SIDE_CLASSIFIER_LONG_THRESHOLD,
+                    short_threshold=Config().SIDE_CLASSIFIER_SHORT_THRESHOLD,
+                )
+                logger.info(
+                    "side_classifier: shadow mode ENABLED (model_path=%s) — "
+                    "decisions logged, no gating applied.",
+                    Config().SIDE_CLASSIFIER_MODEL_PATH,
+                )
+        except Exception as _cl_exc:
+            logger.warning(
+                "side_classifier: failed to initialize shadow runtime: %s. "
+                "Continuing without classifier.", _cl_exc,
+            )
+            self._classifier_runtime = None
         
         # Risk manager
         self.risk_manager = RiskManagerWithCommentary(
@@ -205,9 +233,21 @@ class TradingEngineWithCommentary:
         self.dynamic_watchlist = ['NVDA', 'TSLA', 'PLTR']  # Default symbols
         self.last_screener_run = None
         # Trading strategies
+        # v-oversold-v2-2026-05-19: conditional swap of the legacy
+        # MeanReversionStrategyWithCommentary for the new
+        # OversoldBounceV2Strategy. Controlled by
+        # Config().USE_OVERSOLD_BOUNCE_V2 (yaml: trading.use_oversold_bounce_v2,
+        # default True). Old class preserved for one-flag rollback.
+        if Config().USE_OVERSOLD_BOUNCE_V2:
+            from strategies.oversold_bounce_v2 import OversoldBounceV2Strategy
+            _mean_rev = OversoldBounceV2Strategy(self.commentary)
+            logger.info("strategy_swap: using OversoldBounceV2Strategy (v2)")
+        else:
+            _mean_rev = MeanReversionStrategyWithCommentary(self.commentary)
+            logger.info("strategy_swap: using legacy MeanReversionStrategyWithCommentary")
         self.strategies = [
             BreakoutStrategyWithCommentary(self.commentary),
-            MeanReversionStrategyWithCommentary(self.commentary),
+            _mean_rev,
         ]
         # Momentum disabled 2026-04-15: backtest PF 0.78–0.83 across 1/5/15-min
         # timeframes — consistently losing. Re-enable via ENABLE_MOMENTUM=1.
@@ -217,6 +257,15 @@ class TradingEngineWithCommentary:
         
 	    # Initialize brain and exit manager
         self.brain = TradingBrain()
+        # v-brain-session-reset-2026-05-19: pull greed_level/fear_level 60%
+        # toward neutral on each startup so yesterday's accumulated state
+        # doesn't lock the bot into all-day veto mode. Fixes the 5/19
+        # incident where greed_level was stuck at 0.8 after morning
+        # RKLB win and vetoed every news signal for the rest of the day.
+        try:
+            self.brain.reset_for_new_session()
+        except Exception as _ex:
+            logger.warning("brain.reset_for_new_session failed: %s", _ex)
         self.exit_manager = DynamicExitManager(self.brain, self.commentary)
 
 	    # Load previous state
@@ -553,7 +602,44 @@ class TradingEngineWithCommentary:
                 with open(state_file, 'r') as f:
                     state = json.load(f)
                     self.trade_history = state.get('trade_history', [])
-                    self.risk_manager.consecutive_losses = state.get('consecutive_losses', 0)
+                    # v-consec-loss-daily-reset-2026-05-21: reset
+                    # consecutive_losses counter at session boundary.
+                    # Previously it persisted across days, so a single
+                    # losing day's count would carry forward and could
+                    # trip the MAX_CONSECUTIVE_LOSSES gate without giving
+                    # the next session a fresh start. Compare last_save's
+                    # calendar date (ET) to today; if different, reset.
+                    _loaded_cl = state.get('consecutive_losses', 0)
+                    _last_save = state.get('last_save', '')
+                    _should_reset = False
+                    try:
+                        from datetime import datetime as _dt
+                        _today_date = _dt.now().date()
+                        if _last_save:
+                            _save_dt = _dt.fromisoformat(str(_last_save).replace('Z', ''))
+                            _save_date = _save_dt.date()
+                            if _save_date < _today_date:
+                                _should_reset = True
+                    except Exception as _ex:
+                        logger.debug("consec_loss daily-reset date parse failed: %s", _ex)
+                    if _should_reset and _loaded_cl > 0:
+                        logger.info(
+                            "consecutive_losses session_reset: %d -> 0 (last_save=%s)",
+                            _loaded_cl, _last_save,
+                        )
+                        self.risk_manager.consecutive_losses = 0
+                    else:
+                        self.risk_manager.consecutive_losses = _loaded_cl
+                    # v-consec-loss-daily-reset-2026-05-21: also load
+                    # last_loss_date so the runtime daily-rollover check
+                    # in risk/manager.py works after restart.
+                    _lld = state.get('last_loss_date')
+                    if _lld:
+                        try:
+                            from datetime import date as _date
+                            self.risk_manager.last_loss_date = _date.fromisoformat(str(_lld))
+                        except Exception:
+                            self.risk_manager.last_loss_date = None
 
                     # Load real position long-term flags
                     positions_data = state.get('positions_data', {})
@@ -1134,7 +1220,11 @@ class TradingEngineWithCommentary:
                     order_id = order.get('orderId')
                     if order_id:
                         try:
-                            response = self.schwab_client.cancel_order(self.account_id, order_id)
+                            # v-schwab-arg-order-2026-05-18: cancel_order signature
+                            # is (order_id, account_hash). Was passing
+                            # (account_id, order_id) — wrong arg order AND
+                            # account_id instead of account_hash.
+                            response = self.schwab_client.cancel_order(order_id, self.account_hash)
                             if response.status_code in [200, 201, 202]:
                                 logger.info(f"Canceled order {order_id}")
                         except Exception as e:
@@ -1401,6 +1491,18 @@ class TradingEngineWithCommentary:
     
     async def _place_bracket_orders(self, signal, parent_order_id: str):
         """Place stop loss and take profit orders as OCO"""
+        # v-bracket-diagnostic-2026-05-18: log every attempt so silent
+        # failures surface. Before this, an exception or non-2xx
+        # response would either get swallowed by the caller's try/except
+        # (engine.py:920) or quietly logged once and never seen again.
+        logger.info(
+            "bracket_attempt symbol=%s stop=%s target=%s qty=%s parent_order=%s",
+            signal.symbol,
+            getattr(signal, 'stop_loss', None),
+            getattr(signal, 'take_profit', None),
+            getattr(signal, 'position_size', None),
+            parent_order_id,
+        )
         try:
             from schwab.orders.common import one_cancels_other, Duration, Session, OrderType
             from schwab.orders.equities import equity_sell_limit
@@ -1428,6 +1530,10 @@ class TradingEngineWithCommentary:
 
             # Build and place the OCO order
             response = self.schwab_client.place_order(self.account_hash, oco_order.build())
+            logger.info(
+                "bracket_response symbol=%s http=%s body=%s",
+                signal.symbol, response.status_code, response.text[:200],
+            )
 
             if response.status_code in [200, 201]:
                 # Extract order ID from response
@@ -1542,8 +1648,15 @@ class TradingEngineWithCommentary:
     async def _check_specific_order_status(self, order_id: str) -> str:
         """Check status of a specific order immediately"""
         try:
-            response = self.schwab_client.get_order(self.account_hash, order_id)
-            
+            # v-schwab-arg-order-2026-05-18: get_order signature is
+            # (order_id, account_hash). Was swapped — Schwab returned 400
+            # "not a valid orderId" on every call, so _verify_order_fill
+            # never saw FILLED status, never created managed_by_bot
+            # Position, never called _place_bracket_orders. Every trade
+            # since the bot was written exited via external_close because
+            # of this one swap.
+            response = self.schwab_client.get_order(order_id, self.account_hash)
+
             if response.status_code == 200:
                 order_info = response.json()
                 status = order_info.get('status', 'UNKNOWN')
@@ -1630,7 +1743,8 @@ class TradingEngineWithCommentary:
         # because it actually JUST filled (race), check one more time and
         # return True so the Position gets created.
         try:
-            self.schwab_client.cancel_order(self.account_hash, order_id)
+            # v-schwab-arg-order-2026-05-18: cancel_order(order_id, account_hash)
+            self.schwab_client.cancel_order(order_id, self.account_hash)
             del self.pending_orders[order_id]
         except Exception as e:
             logger.warning(f"Failed to cancel unfilled order {order_id}: {e}")
@@ -1660,9 +1774,10 @@ class TradingEngineWithCommentary:
         
         for order_id, order_data in list(self.pending_orders.items()):
             try:
+                # v-schwab-arg-order-2026-05-18: get_order(order_id, account_hash)
                 response = self.schwab_client.get_order(
+                    order_id,
                     self.account_hash,
-                    order_id
                     #fields=[schwab_client.Orders.Fields.EXECUTION_LEGS]
                 )
                 
@@ -1955,7 +2070,9 @@ class TradingEngineWithCommentary:
                 _is_live_close_sweep = (getattr(position, "mode", "live") == "live")
                 if _is_live_close_sweep:
                     if final_pnl < 0:
+                        # v-consec-loss-daily-reset-2026-05-21: also stamp date.
                         self.risk_manager.consecutive_losses += 1
+                        self.risk_manager.last_loss_date = datetime.now().date()
                     else:
                         self.risk_manager.consecutive_losses = 0
                 
@@ -2297,6 +2414,11 @@ class TradingEngineWithCommentary:
             'trade_history': self.trade_history[-100:],
             'schwab_pnl': self.risk_manager.schwab_daily_pnl,
             'consecutive_losses': self.risk_manager.consecutive_losses,
+            # v-consec-loss-daily-reset-2026-05-21: persist last_loss_date.
+            'last_loss_date': (
+                self.risk_manager.last_loss_date.isoformat()
+                if self.risk_manager.last_loss_date is not None else None
+            ),
             'positions_data': positions_data,
             'simulated_positions': sim_data,
             'last_save': datetime.now().isoformat()
@@ -2664,8 +2786,21 @@ class TradingEngineWithCommentary:
 
         # ── BREAKEVEN LIFT ── (LIVE → AT_BREAKEVEN)
         if is_exit_rule_allowed(_state, ExitRule.BREAKEVEN_LIFT):
+            # v-oversold-v2-2026-05-19: per-position activation override
+            # from reasoning. OversoldBounceV2 stores breakeven_atr_mult
+            # (e.g. 1.5 = lift at +1.5×ATR); engine converts to R-multiple
+            # using stop_distance. Other strategies' positions don't carry
+            # this key → falls back to Config().BREAKEVEN_ACTIVATION_R.
+            _r_dict = getattr(position, 'reasoning', {}) or {}
+            _be_mult = _r_dict.get('breakeven_atr_mult')
+            _be_atr = _r_dict.get('atr')
+            _be_sd = _r_dict.get('stop_distance')
+            if _be_mult and _be_atr and _be_sd and _be_sd > 0:
+                _be_activation_r = _be_mult * _be_atr / _be_sd
+            else:
+                _be_activation_r = Config().BREAKEVEN_ACTIVATION_R
             be_new_stop = self.scale_trail.update_peak_and_breakeven(
-                position, current_price, Config().BREAKEVEN_ACTIVATION_R,
+                position, current_price, _be_activation_r,
             )
             if be_new_stop is not None:
                 old_stop = position.stop_loss
@@ -2685,7 +2820,16 @@ class TradingEngineWithCommentary:
 
         # ── SCALE OUT 1R ── (AT_BREAKEVEN → AT_1R)
         if is_exit_rule_allowed(_state, ExitRule.SCALE_OUT_1R):
-            partial = self.scale_trail.check_partial_exit(position, current_price)
+            # v-oversold-v2-2026-05-19: per-position activation override.
+            # OversoldBounceV2 stores scale_out_r_override=0.5 (since its
+            # stop_distance = 2×ATR, +0.5R = +1×ATR for the partial).
+            # Other strategies fall back to 1.0R (legacy behavior).
+            _so_override = (getattr(position, 'reasoning', {}) or {}).get(
+                'scale_out_r_override', 1.0,
+            )
+            partial = self.scale_trail.check_partial_exit_at_r(
+                position, current_price, activation_r=_so_override,
+            )
             if partial is not None and partial.exit_qty > 0:
                 position.quantity -= partial.exit_qty
                 position.scaled_out = True
@@ -2985,6 +3129,17 @@ class TradingEngineWithCommentary:
                         else:
                             token_data = token_file_data
                     
+                    # v-token-health-2026-05-23: warn the operator if the
+                    # Schwab refresh token is close to expiring (7-day TTL
+                    # from creation). Non-fatal — just logs a warning so
+                    # the user knows to re-auth before the bot starts
+                    # failing mid-session.
+                    try:
+                        from core.token_health import check_token_health
+                        check_token_health(Path(Config().SCHWAB_TOKEN_PATH))
+                    except Exception as _tok_exc:
+                        logger.debug("token_health check failed: %s", _tok_exc)
+
                     # Create client from token
                     self.schwab_client = auth.client_from_token_file(
                         Config().SCHWAB_TOKEN_PATH,
@@ -4258,8 +4413,14 @@ class TradingEngineWithCommentary:
                         signal = await strategy.generate_signal_with_commentary(market_data)
                         await asyncio.sleep(0)  # yield between strategies
                         if signal:
-                            # Process the signal with full explanation
-                            await self._process_signal_with_commentary(signal, ml_signal, ml_explanation)
+                            # Process the signal with full explanation. Pass
+                            # market_data through so the classifier shadow
+                            # hook can build SymbolFeatures from indicators
+                            # (signal itself doesn't carry the MarketData).
+                            await self._process_signal_with_commentary(
+                                signal, ml_signal, ml_explanation,
+                                market_data=market_data,
+                            )
                 
             except Exception as e:
                 self.commentary.add_commentary(TradingCommentary(
@@ -4337,8 +4498,16 @@ class TradingEngineWithCommentary:
         except Exception as exc:
             logger.debug("meta_shadow_dispatch_error err=%s", exc)
 
-    async def _process_signal_with_commentary(self, signal, ml_signal, ml_explanation):
-        """Process trading signal with detailed explanation"""
+    async def _process_signal_with_commentary(self, signal, ml_signal,
+                                                ml_explanation,
+                                                market_data=None):
+        """Process trading signal with detailed explanation.
+
+        ``market_data`` is the MarketData that the strategy used to
+        generate ``signal``. Threaded through so the classifier shadow
+        hook can read indicators (RSI, SMA, ATR, volume_ratio) — the
+        TradingSignal dataclass itself doesn't carry them.
+        """
         self._audit("signal_router", signal.symbol, "received",
                     signal.reasoning.get("strategy", "unknown"),
                     signal_type=signal.signal_type.value,
@@ -4350,6 +4519,32 @@ class TradingEngineWithCommentary:
         # Dispatched via asyncio.to_thread so the sync sklearn/xgb call
         # does not block the event loop.
         await self._shadow_meta_evaluate(signal)
+
+        # v-classifier-runtime-2026-05-13: side-classifier shadow hook.
+        # When SIDE_CLASSIFIER_SHADOW_MODE is True, we ask the rule+
+        # trained composer for a verdict on this signal's symbol and
+        # log it as an audit line. The verdict does NOT affect
+        # gating — that comes later, per rollout flavor B (news_strategy
+        # first, then mean_reversion). Today this is pure data
+        # collection: after N sessions of shadow data, we'll have
+        # empirical numbers on whether the classifier blocks the bad
+        # trades it claims to.
+        if self._classifier_runtime is not None and market_data is not None:
+            try:
+                decision = self._classifier_runtime.shadow_evaluate(market_data)
+                if decision is not None:
+                    self._audit(
+                        "side_classifier", signal.symbol, "shadow",
+                        decision.primary_reason,
+                        long_score=round(decision.long_score, 3),
+                        short_score=round(decision.short_score, 3),
+                        allows_long=decision.allows_long(),
+                        allows_short=decision.allows_short(),
+                        signal_side=signal.signal_type.value,
+                    )
+            except Exception as _cl_exc:
+                # Pure logging path — never let it crash signal flow.
+                logger.debug("side_classifier shadow evaluate error: %s", _cl_exc)
 
         # v-health-gate-2026-05-08: fail-closed guard on new live entries.
         # Two conditions block placement:
@@ -4485,16 +4680,22 @@ class TradingEngineWithCommentary:
         #
         # v-early-session-narrow-2026-05-05: narrowed 15min → 5min, AND
         # exempt signals with strong meta-shadow conviction (proba>=0.65).
-        # Prior policy missed clean setups like ORCL 09:40 oversold_bounce
-        # (proba 0.6725, thr_065=True) and PINS 09:35. Opening-auction
-        # noise dominates the first 5 minutes; after that ATR/volume
-        # normalize and the ML head adds an independent quality filter.
+        #
+        # v-early-session-hard-2026-05-23: REMOVED meta_proba bypass.
+        # Weekly report 2026-05-22 (docs/weekly_report_2026-05-22.md
+        # Section 4) showed first_5min slot was -$247 on FIG mean_reversion
+        # (3-min stop-out). The bypass case (ORCL 09:40) cited when adding
+        # the escape was actually outside the 9:30-9:34 window, so the
+        # bypass never had real positive evidence — only a defensive
+        # "what if" that data now contradicts. Hard block until 09:35 ET.
+        # We still record meta_proba in the audit line so we can later
+        # measure whether hard-blocking left money on the table.
         import pytz as _pytz
         _et = datetime.now(_pytz.timezone("America/New_York"))
         meta_proba = float((signal.reasoning or {}).get("meta_proba") or 0.0)
         in_first_5 = (_et.hour == 9 and 30 <= _et.minute < 35)
-        if in_first_5 and meta_proba < 0.65:
-            self._audit("early_session", signal.symbol, "skip", "first_5min",
+        if in_first_5:
+            self._audit("early_session", signal.symbol, "skip", "first_5min_hard_block",
                         time=_et.strftime("%H:%M"),
                         strategy=signal.reasoning.get("strategy", "unknown"),
                         meta_proba=round(meta_proba, 4))
@@ -4504,11 +4705,46 @@ class TradingEngineWithCommentary:
                 symbol=signal.symbol,
                 title=f"⏳ Opening Auction — Holding Off",
                 message=(f"Signal seen at {_et.strftime('%H:%M')} ET. "
-                         "Waiting until 09:35 ET to let opening-auction "
-                         "noise settle (ATR microscopic, volume ratios "
-                         "skewed). High-conviction signals (meta_proba "
-                         "≥ 0.65) bypass this block."),
+                         "Hard block until 09:35 ET (no bypass). "
+                         "Backed by weekly report: first_5min slot lost "
+                         "$247 on FIG (3-min stop-out)."),
                 importance=5,
+            ))
+            return
+
+        # v-late-entry-cutoff-2026-05-23: no new entries after the
+        # configured cutoff (default 15:30 ET). Bot is in manual_close_only
+        # mode globally (line ~280), meaning all exits are delegated to
+        # Schwab OCO brackets. Without an EOD flatten, a late-day entry
+        # can become an unintended overnight hold (see ASTS 2026-05-21:
+        # entered 15:30, OCO target hit next morning, 17-hour hold,
+        # +$303 only because of a favorable gap). The trade was profitable
+        # this time but the exposure was asymmetric overnight gap risk.
+        # Until EOD-flatten exists, refuse new entries close to the bell.
+        cutoff_hour = Config().LATE_ENTRY_CUTOFF_HOUR
+        cutoff_minute = Config().LATE_ENTRY_CUTOFF_MINUTE
+        past_cutoff = (
+            _et.hour > cutoff_hour
+            or (_et.hour == cutoff_hour and _et.minute >= cutoff_minute)
+        )
+        before_close = _et.hour < 16  # 16:00 ET = market close
+        if past_cutoff and before_close:
+            self._audit("late_entry", signal.symbol, "skip", "after_entry_cutoff",
+                        time=_et.strftime("%H:%M"),
+                        strategy=signal.reasoning.get("strategy", "unknown"),
+                        cutoff=f"{cutoff_hour:02d}:{cutoff_minute:02d}")
+            self.commentary.add_commentary(TradingCommentary(
+                timestamp=datetime.now(),
+                type=CommentaryType.RISK_ASSESSMENT,
+                symbol=signal.symbol,
+                title=f"🌅 Late-Day Entry — Skipping",
+                message=(f"Signal at {_et.strftime('%H:%M')} ET is past "
+                         f"the {cutoff_hour:02d}:{cutoff_minute:02d} entry "
+                         f"cutoff. Bot delegates exits to Schwab OCO and "
+                         f"has no EOD flatten, so late entries risk "
+                         f"becoming overnight holds (ASTS 5/21 incident). "
+                         f"Re-enable after EOD-flatten is implemented."),
+                importance=6,
             ))
             return
 
@@ -4574,6 +4810,69 @@ class TradingEngineWithCommentary:
             ))
             self._audit("signal_router", signal.symbol, "skip", "already_tracking")
             return
+
+        # v-anti-pyramiding-2026-05-13: defense-in-depth against the
+        # FCEL × 3 pattern observed on 2026-05-12 (35 and 21 minutes
+        # between three buys, far past any verify-fill window).
+        # Two checks:
+        #   (a) Pending order in flight for this symbol — order_id
+        #       exists in self.pending_orders but the Position hasn't
+        #       materialized yet.
+        #   (b) Recent entry-attempt cooldown — within 30 minutes of
+        #       the last accepted entry for this symbol, refuse a new
+        #       one regardless of strategy or position-state.
+        # Audit grep: `engine_decision .* action=skip .* reason=anti_pyramid`
+        for _pending in self.pending_orders.values():
+            if _pending.get('symbol') == signal.symbol:
+                self._audit(
+                    "signal_router", signal.symbol, "skip",
+                    "anti_pyramid_pending_order_for_symbol",
+                    order_status=_pending.get('status'),
+                )
+                self.commentary.add_commentary(TradingCommentary(
+                    timestamp=datetime.now(),
+                    type=CommentaryType.DECISION,
+                    symbol=signal.symbol,
+                    title=f"🛑 Anti-Pyramiding (Order In-Flight)",
+                    message=(
+                        f"Order already in flight for {signal.symbol}; "
+                        f"refusing duplicate entry."
+                    ),
+                    importance=5,
+                ))
+                return
+
+        if not hasattr(self, '_recent_entry_attempts'):
+            self._recent_entry_attempts = {}
+        _last_attempt = self._recent_entry_attempts.get(signal.symbol)
+        if _last_attempt is not None:
+            _age_min = (datetime.now() - _last_attempt).total_seconds() / 60
+            # v-anti-pyramid-widen-2026-05-18: 30→240 min. On 5/15 RKLB
+            # doubled-up at 63 min gap (loaded $17.7K = 59% of equity in
+            # one name). Same-direction same-day adds during the same
+            # news cycle compound the same bet; 4-hour window keeps the
+            # gap > a typical news half-life.
+            if _age_min < 240:
+                self._audit(
+                    "signal_router", signal.symbol, "skip",
+                    "anti_pyramid_recent_attempt",
+                    age_min=round(_age_min, 1),
+                )
+                self.commentary.add_commentary(TradingCommentary(
+                    timestamp=datetime.now(),
+                    type=CommentaryType.DECISION,
+                    symbol=signal.symbol,
+                    title=f"🛑 Anti-Pyramiding (Recent Entry)",
+                    message=(
+                        f"Entered {signal.symbol} {_age_min:.0f} min ago; "
+                        f"4-hour anti-pyramid window not elapsed."
+                    ),
+                    importance=5,
+                ))
+                return
+        # Record this attempt — set BEFORE the order goes out so two
+        # parallel signals don't race past the cooldown.
+        self._recent_entry_attempts[signal.symbol] = datetime.now()
 
         # Per-symbol loss cooldown: if we just stopped out on this symbol,
         # don't re-enter for 60 minutes. LCID re-entered 24 min after a
@@ -4725,11 +5024,23 @@ class TradingEngineWithCommentary:
             _max_positions = int(Config().MAX_POSITIONS or 10)
         except Exception:
             _max_positions = 10
-        bot_managed_count = sum(
-            1 for p in active_pos_objs
+        # v-max-positions-pending-2026-05-18: also count pending entry
+        # orders. On 5/18 the bot took 6 mean-rev oversold_bounce trades
+        # in 8 min vs a cap of 5 because new orders hadn't reconciled to
+        # managed_by_bot=True yet — bot_managed_count was 0 throughout
+        # the burst. Counting distinct symbols across (managed positions)
+        # ∪ (pending orders) closes the burst-window bypass.
+        _managed_syms = {
+            getattr(p, 'symbol', None) for p in active_pos_objs
             if bool(getattr(p, 'managed_by_bot', False))
             and int(getattr(p, 'quantity', 0) or 0) > 0
-        )
+        }
+        _pending_syms = {
+            info.get('symbol') for info in self.pending_orders.values()
+            if isinstance(info, dict) and info.get('symbol')
+            and info.get('status') == 'PENDING'
+        }
+        bot_managed_count = len(_managed_syms | _pending_syms)
         already_in = signal.symbol in active_positions
         if bot_managed_count >= _max_positions and not already_in:
             self._audit("max_positions_gate", signal.symbol, "skip",
@@ -5488,8 +5799,18 @@ class TradingEngineWithCommentary:
                         # positive then reversed to full -0.5R/-1.5R losses).
                         be_new_stop = None
                         if is_exit_rule_allowed(_state, ExitRule.BREAKEVEN_LIFT):
+                            # v-oversold-v2-2026-05-19: per-position override
+                            # (sim-path mirror of the live-path block above).
+                            _r_dict_s = getattr(position, 'reasoning', {}) or {}
+                            _be_mult_s = _r_dict_s.get('breakeven_atr_mult')
+                            _be_atr_s = _r_dict_s.get('atr')
+                            _be_sd_s = _r_dict_s.get('stop_distance')
+                            if _be_mult_s and _be_atr_s and _be_sd_s and _be_sd_s > 0:
+                                _be_activation_r_s = _be_mult_s * _be_atr_s / _be_sd_s
+                            else:
+                                _be_activation_r_s = Config().BREAKEVEN_ACTIVATION_R
                             be_new_stop = self.scale_trail.update_peak_and_breakeven(
-                                position, current_price, Config().BREAKEVEN_ACTIVATION_R,
+                                position, current_price, _be_activation_r_s,
                             )
                         if be_new_stop is not None:
                             old_stop = position.stop_loss
@@ -5526,7 +5847,14 @@ class TradingEngineWithCommentary:
                         # --- 1R Partial Exit ---
                         partial = None
                         if is_exit_rule_allowed(_state, ExitRule.SCALE_OUT_1R):
-                            partial = self.scale_trail.check_partial_exit(position, current_price)
+                            # v-oversold-v2-2026-05-19: per-position override
+                            # (sim-path mirror of the live-path block above).
+                            _so_override_s = (getattr(position, 'reasoning', {}) or {}).get(
+                                'scale_out_r_override', 1.0,
+                            )
+                            partial = self.scale_trail.check_partial_exit_at_r(
+                                position, current_price, activation_r=_so_override_s,
+                            )
                         if partial is not None and partial.exit_qty > 0:
                             position.quantity -= partial.exit_qty
                             position.scaled_out = True
@@ -6245,7 +6573,10 @@ class TradingEngineWithCommentary:
         _is_live_close = (getattr(position, "mode", "live") == "live")
         if _is_live_close:
             if pnl < 0:
+                # v-consec-loss-daily-reset-2026-05-21: stamp date for
+                # the runtime daily-rollover check in risk/manager.py.
                 self.risk_manager.consecutive_losses += 1
+                self.risk_manager.last_loss_date = datetime.now().date()
             else:
                 self.risk_manager.consecutive_losses = 0
 

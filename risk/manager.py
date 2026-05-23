@@ -28,6 +28,11 @@ class RiskManagerWithCommentary:
         self.account_balance = account_balance
         self.schwab_daily_pnl = 0  # ONLY use Schwab P&L
         self.consecutive_losses = 0
+        # v-consec-loss-daily-reset-2026-05-21: track date of last loss
+        # so the gate can auto-reset at calendar-day rollover without
+        # requiring a bot restart. Updated whenever consecutive_losses
+        # is incremented. Persisted to / loaded from state.json.
+        self.last_loss_date = None
         self.positions = {}
         self.max_portfolio_heat = 0.06
         self.margin_call = False
@@ -179,6 +184,34 @@ class RiskManagerWithCommentary:
         if position_size < 1:
             position_size = 1
 
+        # v-strategy-size-mult-2026-05-23: per-strategy size multiplier
+        # applied after Kelly sizing. mean_reversion runs at 0.5 until
+        # N>=20 confirms the PF 1.96 read holds up. See weekly_report_2026-05-22.md.
+        strategy_name = ''
+        if hasattr(signal, 'reasoning') and signal.reasoning:
+            strategy_name = signal.reasoning.get('strategy', '') or ''
+        strategy_mult = Config().STRATEGY_SIZE_MULTIPLIER(strategy_name)
+        if strategy_mult != 1.0 and strategy_name:
+            old_size = position_size
+            position_size = max(1, int(position_size * strategy_mult))
+            logger.info(
+                "strategy_size_multiplier symbol=%s strategy=%s mult=%.2f old=%d new=%d",
+                signal.symbol, strategy_name, strategy_mult, old_size, position_size,
+            )
+
+        # v-live-launch-safety-dial-2026-05-23: global live-launch dial,
+        # composed AFTER per-strategy multipliers. Final sizing =
+        # base * kelly * strategy_mult * live_mult. Default 1.0 (no
+        # change); set to 0.25 for Tuesday 2026-05-26 launch.
+        live_mult = Config().LIVE_SIZE_MULTIPLIER
+        if live_mult != 1.0:
+            old_size = position_size
+            position_size = max(1, int(position_size * live_mult))
+            logger.info(
+                "live_size_multiplier symbol=%s mult=%.2f old=%d new=%d",
+                signal.symbol, live_mult, old_size, position_size,
+            )
+
         # Audit log — ATR, stop distance, shares, dollar risk, kelly, quality inputs
         atr_val = signal.reasoning.get('atr') if hasattr(signal, 'reasoning') and signal.reasoning else None
         atr_mult_val = signal.reasoning.get('atr_mult') if hasattr(signal, 'reasoning') and signal.reasoning else None
@@ -287,6 +320,21 @@ class RiskManagerWithCommentary:
         # ONLY use Schwab's P&L
         if self.schwab_daily_pnl <= -Config().MAX_DAILY_LOSS * self.account_balance:
             return False, f"Daily loss limit exceeded (P&L: ${self.schwab_daily_pnl:.2f})"
+
+        # v-consec-loss-daily-reset-2026-05-21: auto-reset at calendar-day
+        # rollover. If the last loss was on a prior date, today is a fresh
+        # session and the counter should start at 0.
+        try:
+            from datetime import datetime as _dt
+            _today = _dt.now().date()
+            if self.last_loss_date is not None and self.last_loss_date < _today:
+                logger.info(
+                    "consecutive_losses runtime_reset: %d -> 0 (last_loss=%s, today=%s)",
+                    self.consecutive_losses, self.last_loss_date, _today,
+                )
+                self.consecutive_losses = 0
+        except Exception as _ex:
+            logger.debug("consec_loss runtime-reset check failed: %s", _ex)
 
         if self.consecutive_losses >= Config().MAX_CONSECUTIVE_LOSSES:
             return False, "Max consecutive losses reached"

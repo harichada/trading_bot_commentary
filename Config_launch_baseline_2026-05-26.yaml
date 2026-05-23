@@ -1,0 +1,152 @@
+backtesting:
+  commission: 0.005
+  enabled: true
+  end_date: '2024-01-01'
+  initial_capital: 100000
+  slippage: 0.001
+  start_date: '2023-01-01'
+commentary:
+  detail_level: verbose
+  enabled: true
+  max_history: 100
+error_recovery:
+  circuit_breaker_enabled: true
+  emergency_stop_loss: 0.15
+  max_daily_loss_threshold: 0.1
+  max_retries: 3
+  retry_delay: 1.0
+order_management:
+  auto_cancel_existing_orders: true
+  confirm_only_losses: false
+  confirm_threshold_percent: 5
+  require_close_confirmation: true
+paths:
+  backtest_results: backtest_results.json
+  commentary_log: trading_commentary.json
+  log: trading_bot.log
+  model: trading_model.pkl
+  trade_journal: trade_journal.json
+performance_metrics:
+  calculate_max_drawdown: true
+  calculate_sharpe: true
+  calculate_sortino: true
+  risk_free_rate: 0.02
+schwab:
+  callback_url: https://127.0.0.1
+  token_path: token_1.json
+technical_analysis:
+  fibonacci_levels:
+  - 0.236
+  - 0.382
+  - 0.5
+  - 0.618
+  - 0.786
+  timeframes:
+  - 1min
+  - 5min
+  - 15min
+  - 1hour
+  - 1day
+trading:
+  default_stop_loss_pct: 0.05
+  default_take_profit_pct: 0.1
+  extended_hours:
+    afterhours_end: '20:00'
+    allow_afterhours: false
+    allow_premarket: false
+    market_close: '16:00'
+    market_open: 09:30
+    premarket_start: 04:00
+    use_limit_orders: true
+  limit_order_slippage: 0.001
+  max_consecutive_losses: 7  # v-consec-loss-loosen-2026-05-22: was 3, too tight given daily-reset behavior. Daily-reset (v-consec-loss-daily-reset-2026-05-21) ensures yesterday's losses don't bleed in; 7 lets the bot survive a losing streak within a day. Tighten if a 7-loss day actually happens.
+  # v-tighten-daily-loss-2026-05-23: tightened 0.05 → 0.01 (1% account)
+  # for live-launch week. At ~$29k account that's ~$290 max daily loss.
+  # Pairs with live_size_multiplier=0.25 — typical news loss at quarter
+  # size is ~$36, so 8 losing trades trips the daily cap. Raise back to
+  # 0.05 after week 1 if bot behaves as expected.
+  max_daily_loss: 0.01
+  max_position_value: 25000  # v-margin-sizing-2026-04-22: abs ceiling; BP cap does adaptive work
+  max_position_value_bp_pct: 0.20  # v-bigger-trades-2026-04-24: 20% of BP (was 15%, was binding too tight)
+  max_position_value_pct: 0.25
+  max_positions: 5  # v-max-positions-tighten-2026-05-18: 10→5 after 5/15 hit 12 positions / 345% net long; capping concurrency to limit basket drift
+  enable_news_verifier: true  # v-news-verifier-gating-2026-05-18: promote advisory→gating; last week 712 weak news signals slipped through with fresh_count=1, all losers
+  news_verifier_advisory: false  # paired with enable_news_verifier=true above
+  max_risk_per_trade: 0.02
+  risk_per_trade_pct: 0.015  # v-bigger-trades-2026-04-24: 1.5% per trade for meaningful $ P&L
+  watchlist_size: 30  # v-watchlist-size-2026-05-11: 20→30. Yahoo most-active returns 30; capping at 20 dropped the bottom 10 catalyst names. Screener internally already keeps top 30 so this is a free expansion.
+  # v-disable-mean-rev-short-2026-05-12: reverted to false. Operator observed
+  # that re-enabling produced shorts-only behavior (5 shorts -$665 unrealized,
+  # all entered into momentum continuation: IONQ RSI=92, RGTI 78, EOSE 75,
+  # RKLB 72, SMR 74). The news-strategy filters cited in the v-enable comment
+  # (rising-knife, late-entry-guard, price-direction-gate) live in
+  # strategies/news_strategy.py — the mean-rev SHORT branch in
+  # strategies/builtin.py does NOT read them, so the structural protection
+  # never applied. Re-enable only after: (a) a mirror trend-direction filter
+  # is added directly to the mean-rev SHORT branch, and (b) a sim soak.
+  enable_mean_rev_short: false
+  # v-breakout-enable-2026-05-20: operator directive to re-enable breakout
+  # for trending tapes (today: SPY +0.7%, QQQ +1.1%, ARM +14.7%). Backtest
+  # PF was 0.79-0.83 on aggregate so this is best-used selectively. Strict
+  # gates (ADX>=25, volume>=2.0x, price>SMA20) keep entries scarce —
+  # quality > quantity.
+  # v-breakout-disable-2026-05-23: weekly report (docs/weekly_report_2026-05-22.md)
+  # showed PF 1.14 on N=2 (APLD -$277, FUTU +$316). Sample too small to
+  # distinguish skill from luck. Disabled until walk-forward validation
+  # produces N>=20 with PF>=1.5. Live trading uses news strategy only.
+  enable_breakout_long: false
+  # v-strict-gates-loose-2026-05-20: operator wants more activity in
+  # this trending tape. Loose mode: breakout multiplier 1.003→1.0,
+  # ADX min 25→20, vol_ratio min 2.0→1.5. Backtest PF was 0.85 in
+  # loose mode (worse than 0.79 strict on aggregate), so this is
+  # situational — re-enable strict (true) when noise picks back up.
+  enable_strict_long_gates: false
+  # ENABLE_SHORT_MIRRORS stays off — breakout/momentum shorts need separate re-tuning
+  # before live; they don't benefit from the new news-strategy filters.
+
+  # v-classifier-runtime-2026-05-13: shadow-mode side classifier.
+  # When True, the rule+trained classifier runs alongside every accepted
+  # signal and emits `engine_decision component=side_classifier action=shadow`
+  # audit lines. NO gating happens at this flag — purely data collection.
+  # Per-strategy gating uses `side_classifier_news_strategy` /
+  # `side_classifier_mean_reversion` (default off, flipped only after
+  # N sessions of shadow data show the classifier blocks bad trades).
+  side_classifier_shadow_mode: true
+  side_classifier_model_path: models/classifier/ffn_watchlist_v1.pt
+  side_classifier_long_threshold: 0.4
+  side_classifier_short_threshold: 0.4
+  # v-late-entry-cutoff-2026-05-23: refuse new entries after this ET time.
+  # Bot is manual_close_only=True (engine.py:280) so all exits are Schwab
+  # OCO brackets. Without an EOD-flatten, late-day entries become
+  # overnight holds (ASTS 5/21 incident). 15:30 ET gives any taken
+  # position ~30 min to play out before close. Tighten to 15:00 if news
+  # strategy's avg hold (~116 min) keeps producing overnight holds.
+  late_entry_cutoff_hour: 15
+  late_entry_cutoff_minute: 30
+  # v-thesis-revalidate-2026-04-28: re-verify news + indicators after 30 min on flat trades
+  enable_thesis_revalidation: true   # turn ON to start collecting shadow-mode data
+  thesis_revalidation_shadow_mode: true   # log only; do not close positions
+  thesis_revalidation_age_min: 30
+  thesis_revalidation_interval_min: 15
+  thesis_revalidation_limbo_r: 0.5
+  min_buying_power: 100
+  min_position_size: 1
+  min_risk_reward_ratio: 2.0
+  ml_prediction_enabled: true
+  position_size_kelly_fraction: 0.25
+  reserve_cash_percent: 0.1
+  # v-strategy-size-mult-2026-05-23: per-strategy size multiplier applied
+  # after Kelly sizing. Looked up by signal.reasoning['strategy']. Missing
+  # keys default to 1.0 (no change). Weekly report 2026-05-22 showed
+  # mean_reversion PF 1.96 on thin N=7 — running half-size until N>=20.
+  strategy_size_multipliers:
+    mean_reversion: 0.5
+  # v-live-launch-safety-dial-2026-05-23: global live-launch safety dial.
+  # Composes with strategy_size_multipliers (final = base * strat_mult *
+  # live_mult). Set to 0.25 for Tuesday 2026-05-26 quarter-size launch.
+  # Walk-forward (research/news_strategy_validation.py) showed news PF
+  # 95% CI [0.59, 12.31] — too wide for full size. Graduate to 0.50
+  # after week 1 if bootstrap CI lower bound > 1.0, then 1.0 at >1.3.
+  # This dial is independent of strategy multipliers so per-strategy
+  # confidence decisions persist across launch phases.
+  live_size_multiplier: 0.25
