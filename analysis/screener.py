@@ -600,6 +600,13 @@ class StockScreener:
             # double-digit moves on launch / contract / analyst news and
             # match the bot's news-strategy edge.
             'RKLB', 'JOBY', 'ACHR', 'LUNR', 'ASTS',
+            # v-watchlist-add-2026-05-26: LRCX rallied +15% on 2026-05-26
+            # with zero bot evaluations because it wasn't in any input
+            # source (not yahoo-active that day, no quality-filter ever
+            # reached). Add it + adjacent semi-equipment names. ASML is
+            # the ADR. Adding cloud/marketplace names that move on
+            # earnings + analyst notes but lack steady high-vol sourcing.
+            'ASML', 'NOW', 'SHOP', 'UBER', 'ABNB',
             # Index / sector ETFs (will be filtered by _is_tradeable
             # if they're on the ETF block-list, but kept here for sourcing)
             'TQQQ', 'SQQQ',
@@ -786,14 +793,26 @@ class StockScreener:
             # Threshold determined empirically on 5/22 data: MSFT was
             # 1.7pp under SPY but otherwise healthy → pass. SOXS was
             # 18pp under → catastrophic → correctly blocked.
-            if spy_df is not None and 'Close' in spy_df.columns and len(spy_df) >= 6:
+            # v-rs-window-widen-2026-05-26: 5d → 10d window. The 5d
+            # window over-amplifies single-session rotations. Mega-cap
+            # names (NVDA, GOOG, META, MSFT, etc.) showed -4 to -6pp
+            # vs SPY on the 5d window today during a broad-market
+            # rotation, blowing through the -3pp gate. 10d window
+            # smooths single-day moves; threshold loosening below
+            # picks up where window-widening leaves off.
+            if spy_df is not None and 'Close' in spy_df.columns and len(spy_df) >= 11:
                 spy_closes = spy_df['Close']
-                if len(closes) >= 6:
-                    sym_ret = (last_close / float(closes.iloc[-6])) - 1.0
-                    spy_ret = (float(spy_closes.iloc[-1]) / float(spy_closes.iloc[-6])) - 1.0
-                    # Block only if symbol's 5d return is 3pp or more
-                    # below SPY (catastrophic relative weakness).
-                    if (sym_ret - spy_ret) < -0.03:
+                if len(closes) >= 11:
+                    sym_ret = (last_close / float(closes.iloc[-11])) - 1.0
+                    spy_ret = (float(spy_closes.iloc[-1]) / float(spy_closes.iloc[-11])) - 1.0
+                    # v-rs-threshold-loosen-2026-05-26: -0.03 → -0.05.
+                    # Today (2026-05-26) NVDA was -5.49pp vs SPY over
+                    # the original 5d window — straight into the reject
+                    # bucket while it appeared in yahoo_most_active. -3pp
+                    # was calibrated 5/22 against MSFT (-1.7pp pass) and
+                    # SOXS (-18pp block); -5pp keeps the SOXS block
+                    # while admitting normal mega-cap pullbacks.
+                    if (sym_ret - spy_ret) < -0.05:
                         self._quality_filter_rejects[symbol] = self._quality_filter_rejects.get(symbol, 0) + 1
                         return False
         except Exception as exc:
