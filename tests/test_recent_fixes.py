@@ -420,16 +420,24 @@ class TestVerifyTimeoutAndRescue:
     fills downstream, the discovered position needs to be claimed as
     bot-managed instead of left external."""
 
-    def test_verify_retries_extended_to_10(self):
+    def test_verify_retries_extended(self):
+        """Default max_retries has been raised twice:
+          - 2026-05-11: 3 → 10 (slow Schwab status API)
+          - 2026-05-26: 10 → 30 (QBTS silent auto-cancel incident)
+        Both v-tags must remain in source as breadcrumbs."""
         src = ENGINE_PATH.read_text()
         assert "v-verify-timeout-extend-2026-05-11" in src
-        # Default max_retries is now 10 (was 3)
-        assert "max_retries: int = 10" in src
+        assert "v-verify-timeout-extend-2026-05-26" in src
+        # Current default. Drift downward should fail this assertion.
+        assert "max_retries: int = 30" in src
 
     def test_verify_does_final_check_before_cancel(self):
         src = ENGINE_PATH.read_text()
         idx = src.index("v-verify-timeout-extend-2026-05-11")
-        block = src[idx : idx + 4000]
+        # widen window: original block was 4000 chars but post-2026-05-26
+        # the surrounding doc string + new code path made the relevant
+        # logic land further down.
+        block = src[idx : idx + 6000]
         # Final status check before cancel attempt
         assert "final_status" in block
         # Race-condition check during cancel failure
@@ -1011,3 +1019,105 @@ class TestFixTagInventory:
         )
         missing = [t for t in self.EXPECTED_TAGS if t not in all_src]
         assert missing == [], f"missing fix tags: {missing}"
+
+
+# ── v-autocancel-fix-2026-05-26 + v-autocancel-logging-2026-05-26 + v-verify-timeout-extend-2026-05-26 ─
+
+class TestAutocancelGhostAttemptFix:
+    """Three-part fix triggered by QBTS 2026-05-26 09:37:27 silent auto-
+    cancel incident.
+
+    Bug chain on launch day:
+      1. QBTS limit BUY @ $27.45 placed at 09:37:27.
+      2. _verify_order_fill polled status every 2s for 10 retries = 20s.
+         Order stayed WORKING (limit price never crossed).
+      3. After 20s the bot called schwab_client.cancel_order silently.
+         No log line on the success path of the try-block — only the
+         failure path logged a warning.
+      4. _recent_entry_attempts[QBTS] was set at signal time (engine.py
+         ~L4875) and never cleared. The 4-hour anti-pyramid window
+         was now ticking on a ghost order.
+      5. At 10:45:32 the news strategy fired a fresh QBTS BUY signal.
+         signal_router blocked it with reason=anti_pyramid_recent_attempt
+         age_min=68.1 — based on the ghost attempt that had been dead
+         since 09:37:47.
+
+    Fix has three parts, all in core/engine.py around _verify_order_fill:
+      A. Helper _clear_recent_attempt_for_order(order_id, reason) removes
+         _recent_entry_attempts[symbol] for an order that never filled.
+      B. Helper is called from the three terminal-not-filled paths:
+         retry-loop CANCELED/REJECTED, final-check CANCELED/REJECTED,
+         and the post-timeout schwab_client.cancel_order() block.
+      C. max_retries default raised from 10 → 30 (20s → 60s) to lower
+         the false-cancel rate on slow-fill limit orders.
+      D. The post-timeout cancel block emits an INFO log
+         "auto_cancelled_unfilled_order ..." so future "where did my
+         order go" investigations are not silent.
+    """
+
+    def test_clear_helper_exists(self):
+        """_clear_recent_attempt_for_order is defined on the engine
+        class with the expected (order_id, reason) signature."""
+        src = ENGINE_PATH.read_text()
+        assert "def _clear_recent_attempt_for_order(self, order_id: str, reason: str)" in src
+
+    def test_helper_pops_recent_entry_attempts(self):
+        """The helper actually pops the symbol from
+        self._recent_entry_attempts (not just looks at it)."""
+        src = ENGINE_PATH.read_text()
+        marker = "def _clear_recent_attempt_for_order"
+        start = src.index(marker)
+        body = src[start : start + 1200]
+        assert "self._recent_entry_attempts.pop(sym, None)" in body
+        # Must look up symbol from pending_orders so callers can pass
+        # only order_id (the only thing in scope inside _verify_order_fill).
+        assert "self.pending_orders.get(order_id, {}).get('symbol')" in body
+
+    def test_verify_timeout_extended_to_30(self):
+        """Default max_retries should be 30, giving a 60s verify window
+        (vs prior 10/20s). Anchored to the v-verify-timeout-extend-
+        2026-05-26 marker so future timeout drift is caught."""
+        src = ENGINE_PATH.read_text()
+        # The signature line is the source of truth.
+        assert "_verify_order_fill(self, order_id: str, signal, max_retries: int = 30)" in src
+        assert "v-verify-timeout-extend-2026-05-26" in src
+
+    def test_autocancel_log_line_present(self):
+        """The post-timeout cancel block must INFO-log when it
+        silently cancels an order — otherwise the user has no way
+        to know why their order disappeared from Schwab."""
+        src = ENGINE_PATH.read_text()
+        assert "auto_cancelled_unfilled_order" in src
+        assert "v-autocancel-logging-2026-05-26" in src
+
+    def test_clear_helper_called_from_three_sites(self):
+        """The ghost-attempt cleanup must run at every terminal-not-
+        filled path inside _verify_order_fill:
+          1. retry-loop sees Schwab status REJECTED/CANCELED
+          2. final post-retry check sees REJECTED/CANCELED
+          3. bot itself calls cancel_order after timeout
+
+        Anchor each call site by the unique `reason=` string we pass.
+        """
+        src = ENGINE_PATH.read_text()
+        # Pull just the _verify_order_fill body for the assertion so
+        # we don't accidentally match calls from elsewhere.
+        start = src.index("async def _verify_order_fill")
+        end = src.index("async def _check_order_status", start)
+        body = src[start:end]
+        # Retry loop CANCELED/REJECTED
+        assert 'reason=f"schwab_{status.lower()}"' in body
+        # Final post-retry check CANCELED/REJECTED
+        assert 'reason=f"schwab_final_{final_status.lower()}"' in body
+        # Bot-initiated cancel after timeout
+        assert 'reason="auto_cancel_verify_timeout"' in body
+
+    def test_autocancel_block_cleans_up_order_id_dict(self):
+        """The post-timeout cancel block also clears order_id_to_symbol
+        so the inverse-lookup dict doesn't accumulate dead entries."""
+        src = ENGINE_PATH.read_text()
+        start = src.index("v-autocancel-logging-2026-05-26")
+        block = src[start : start + 1500]
+        # both the pending_orders and the inverse map should be cleaned
+        assert "del self.pending_orders[order_id]" in block
+        assert "self.order_id_to_symbol.pop(order_id, None)" in block

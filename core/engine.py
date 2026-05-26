@@ -1695,7 +1695,27 @@ class TradingEngineWithCommentary:
             logger.error(f"Error checking order {order_id}: {e}")
             return 'UNKNOWN'
         
-    async def _verify_order_fill(self, order_id: str, signal, max_retries: int = 10) -> bool:
+    def _clear_recent_attempt_for_order(self, order_id: str, reason: str) -> None:
+        """v-autocancel-fix-2026-05-26: clear ghost entry attempt.
+
+        anti-pyramid blocks re-entry for 4 hours after _recent_entry_attempts
+        is set. That dict is set BEFORE the order goes out so two parallel
+        signals don't race past the cooldown. If the order then fails to
+        fill (auto-cancel, Schwab REJECTED/CANCELED), no position was opened
+        and the cooldown is a false positive. QBTS 2026-05-26 09:37 was
+        auto-cancelled at 09:37:47; the 10:45 news signal was then anti-
+        pyramid-blocked based on the ghost attempt. Clear the entry so
+        re-entry is permitted.
+        """
+        sym = self.pending_orders.get(order_id, {}).get('symbol')
+        if sym and hasattr(self, '_recent_entry_attempts'):
+            if self._recent_entry_attempts.pop(sym, None) is not None:
+                logger.debug(
+                    "cleared_recent_entry_attempt symbol=%s order_id=%s reason=%s",
+                    sym, order_id, reason,
+                )
+
+    async def _verify_order_fill(self, order_id: str, signal, max_retries: int = 30) -> bool:
         """Verify order filled with retries.
 
         v-verify-timeout-extend-2026-05-11: 3 → 10 retries (6s → 20s).
@@ -1704,6 +1724,11 @@ class TradingEngineWithCommentary:
         all filled on Schwab but verify timed out → no Position with
         managed_by_bot=True → no `_place_bracket_orders` → naked broker
         positions. 20s covers >99% of fills based on observation.
+
+        v-verify-timeout-extend-2026-05-26: 10 → 30 retries (20s → 60s).
+        QBTS 09:37:27 was a limit BUY @ $27.45 that didn't fill in 20s and
+        was silently auto-cancelled at 09:37:47. Limit orders on fast-
+        moving names need more patience; 60s reduces the false-cancel rate.
 
         Also: after timeout, do ONE MORE status check before cancelling.
         If status is FILLED, return True so the caller's Position-
@@ -1717,6 +1742,10 @@ class TradingEngineWithCommentary:
             if status == 'FILLED':
                 return True
             elif status in ['REJECTED', 'CANCELED']:
+                # v-autocancel-fix-2026-05-26: Schwab reported terminal-
+                # not-filled status. Clear the ghost attempt so subsequent
+                # signals for this symbol aren't blocked by anti-pyramid.
+                self._clear_recent_attempt_for_order(order_id, reason=f"schwab_{status.lower()}")
                 return False
             await asyncio.sleep(2)
 
@@ -1732,6 +1761,8 @@ class TradingEngineWithCommentary:
                 )
                 return True
             if final_status in ('REJECTED', 'CANCELED'):
+                # v-autocancel-fix-2026-05-26: same ghost-attempt cleanup.
+                self._clear_recent_attempt_for_order(order_id, reason=f"schwab_final_{final_status.lower()}")
                 return False
         except Exception as exc:
             logger.warning(
@@ -1745,7 +1776,20 @@ class TradingEngineWithCommentary:
         try:
             # v-schwab-arg-order-2026-05-18: cancel_order(order_id, account_hash)
             self.schwab_client.cancel_order(order_id, self.account_hash)
+            # v-autocancel-logging-2026-05-26: prior version silently
+            # cancelled unfilled limit orders after the verify window
+            # with NO log line on the success path. QBTS 2026-05-26 09:37
+            # was the trigger incident. Log the cancel + clear the ghost
+            # attempt so anti-pyramid doesn't block follow-up signals.
+            cancelled_symbol = self.pending_orders.get(order_id, {}).get('symbol')
+            logger.info(
+                "auto_cancelled_unfilled_order order_id=%s symbol=%s "
+                "after_seconds=%d reason=verify_timeout",
+                order_id, cancelled_symbol, max_retries * 2,
+            )
+            self._clear_recent_attempt_for_order(order_id, reason="auto_cancel_verify_timeout")
             del self.pending_orders[order_id]
+            self.order_id_to_symbol.pop(order_id, None)
         except Exception as e:
             logger.warning(f"Failed to cancel unfilled order {order_id}: {e}")
             try:
