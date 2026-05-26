@@ -36,7 +36,31 @@ class ScaleTrailManager:
     def check_partial_exit(
         self, position: Position, current_price: float
     ) -> Optional[PartialExitAction]:
-        """Return a PartialExitAction if 1R has been reached, else None."""
+        """Return a PartialExitAction if 1R has been reached, else None.
+
+        Backward-compat shim: delegates to check_partial_exit_at_r with the
+        legacy +1R activation threshold. All pre-existing callers continue
+        to get the same behavior.
+        """
+        return self.check_partial_exit_at_r(
+            position, current_price, activation_r=1.0
+        )
+
+    def check_partial_exit_at_r(
+        self,
+        position: Position,
+        current_price: float,
+        activation_r: float = 1.0,
+    ) -> Optional[PartialExitAction]:
+        """Variant that lets the caller override the partial-exit R-threshold.
+
+        Existing check_partial_exit fires at exactly +1×stop_distance (= +1R).
+        OversoldBounceV2 uses stop_distance=2×ATR so +1×ATR = +0.5R; the
+        strategy stores scale_out_r_override=0.5 in reasoning and the engine
+        reads it here.
+
+        v-partial-exit-override-2026-05-19.
+        """
         if position.scaled_out:
             return None
 
@@ -49,15 +73,18 @@ class ScaleTrailManager:
         if exit_qty < 1:
             return None  # can't split 1 share
 
+        # Distance from entry at which the partial fires.
+        activation_distance = activation_r * stop_distance
+
         if position.side == "long":
-            if current_price >= position.entry_price + stop_distance:
+            if current_price >= position.entry_price + activation_distance:
                 return PartialExitAction(
                     exit_fraction=0.5,
                     new_stop=position.entry_price,
                     exit_qty=exit_qty,
                 )
         else:  # short
-            if current_price <= position.entry_price - stop_distance:
+            if current_price <= position.entry_price - activation_distance:
                 return PartialExitAction(
                     exit_fraction=0.5,
                     new_stop=position.entry_price,

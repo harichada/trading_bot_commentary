@@ -456,6 +456,151 @@ class TestVerifyTimeoutAndRescue:
         assert "self.pending_orders.pop" in block
 
 
+# ── v-mean-rev-price-direction-gate-2026-05-13 ───────────────────────
+
+BUILTIN_PATH = REPO_ROOT / "strategies" / "builtin.py"
+
+
+class TestMeanRevPriceDirectionGate:
+    """v-mean-rev-price-direction-gate-2026-05-13.
+
+    Operator incident 2026-05-12: mean-rev LONG entered ORCL at 12:31
+    after a 46-min slide (184.50 → 182.44) and CRWV at 12:47 after
+    63 minutes of continued weakness. Both met the textbook setup
+    (RSI < 30, close < BB_lower), but neither had any reversal
+    confirmation at the entry bar. The existing falling-knife guard
+    was bypassed because the entry bar itself happened to print green.
+
+    Fix: require POSITIVE bar-level confirmation:
+      - close > bar_open (green bar at entry)
+      - volume_ratio >= 1.0 (real participation, not noise)
+    Either alone is necessary; both are required.
+
+    Mirror of v-news-price-direction-gate-2026-05-08 from news_strategy.
+    """
+
+    def test_gate_present_in_mean_rev_long(self):
+        src = BUILTIN_PATH.read_text()
+        assert "v-mean-rev-price-direction-gate-2026-05-13" in src
+
+    def test_gate_skips_with_mean_rev_specific_reason(self):
+        """Operator must be able to grep
+        ``strategy_decision strategy=mean_reversion .* action=skip
+        .* reason=mean_rev_price_direction_disagrees`` in logs."""
+        src = BUILTIN_PATH.read_text()
+        idx = src.index("v-mean-rev-price-direction-gate-2026-05-13")
+        block = src[idx : idx + 3000]
+        assert "mean_rev_price_direction_disagrees" in block
+
+    def test_gate_requires_both_close_and_volume(self):
+        """Both conditions are required — not one or the other."""
+        src = BUILTIN_PATH.read_text()
+        idx = src.index("v-mean-rev-price-direction-gate-2026-05-13")
+        block = src[idx : idx + 3000]
+        # The check must use AND, with both close > bar_open and
+        # volume_ratio >= 1.0
+        assert "market_data.close > _bar_open" in block
+        assert "_vol_ratio_now >= 1.0" in block
+        # And combined with AND (Python keyword)
+        assert " and " in block
+
+
+# ── v-anti-pyramiding-2026-05-13 ─────────────────────────────────────
+
+class TestAntiPyramiding:
+    """v-anti-pyramiding-2026-05-13.
+
+    Operator incident 2026-05-12: FCEL entered THREE times in 1 hour
+    (11:46, 12:21, 12:42). The existing ``already_tracking`` guard at
+    signal_router checked ``self.positions`` + ``self.simulated_positions``
+    but missed two gap paths:
+
+      1. Orders in flight (in ``self.pending_orders``) that haven't yet
+         materialized as a Position object.
+      2. Recently-attempted entries where the order succeeded but the
+         position-tracking state lagged for whatever reason (the FCEL
+         pattern — 35 and 21 minutes between entries, way past any
+         normal verify-fill window).
+
+    Defense in depth: add a pending-order check AND a recent-attempt
+    cooldown (30 minutes). Either alone catches the documented incident;
+    both together makes the anti-pyramiding invariant hard to violate
+    even through paths we haven't considered.
+    """
+
+    def test_pending_order_blocks_re_entry(self):
+        src = ENGINE_PATH.read_text()
+        assert "v-anti-pyramiding-2026-05-13" in src
+        idx = src.index("v-anti-pyramiding-2026-05-13")
+        block = src[idx : idx + 4000]
+        # The check must scan pending_orders for the symbol
+        assert "pending_orders" in block
+        # And bail with a skip audit
+        assert 'signal_router' in block
+        assert 'pending_order_for_symbol' in block or 'in_flight' in block
+
+    def test_recent_attempt_cooldown_present(self):
+        src = ENGINE_PATH.read_text()
+        idx = src.index("v-anti-pyramiding-2026-05-13")
+        block = src[idx : idx + 4000]
+        # A 30-minute cooldown for recent entry attempts
+        assert "_recent_entry_attempts" in block
+        # 30 minutes = 1800 seconds OR timedelta(minutes=30)
+        assert "30" in block
+
+    def test_audit_reason_grep_able(self):
+        """Operator must be able to grep ``engine_decision .* action=skip
+        .* reason=anti_pyramid`` to find blocked entries during review."""
+        src = ENGINE_PATH.read_text()
+        idx = src.index("v-anti-pyramiding-2026-05-13")
+        block = src[idx : idx + 4000]
+        assert 'anti_pyramid' in block
+
+
+# ── v-news-verifier-gate-zero-fresh-2026-05-13 ───────────────────────
+
+class TestNewsVerifierGateZeroFresh:
+    """v-news-verifier-gate-zero-fresh-2026-05-13.
+
+    Operator incident 2026-05-12: FCEL entered 3 times in 1 hour, each
+    with ``cached_sentiment=0.527 fresh_count=0`` and the verifier
+    flagging ``insufficient_fresh_articles_0_lt_2``. The verifier was
+    running in *advisory* mode (``v-news-verifier-advisory-2026-05-08``)
+    which logs the veto but does not gate. That made sense for the
+    'fresh_count=1, almost-but-not-quite-corroborated' edge case the
+    operator wanted to surface; it does NOT make sense for
+    fresh_count=0 — zero fresh articles means we're acting on
+    sentiment cached from articles that have aged out of any
+    reasonable freshness window.
+
+    New behavior: even in advisory mode, ``fresh_count == 0`` is a
+    HARD veto. ≥1 fresh article keeps the advisory-only behavior.
+    """
+
+    def test_zero_fresh_articles_hard_vetoes_even_in_advisory(self):
+        """Code path: when v.fresh_count == 0, signal is dropped
+        regardless of NEWS_VERIFIER_ADVISORY."""
+        src = NEWS_STRATEGY_PATH.read_text()
+        assert "v-news-verifier-gate-zero-fresh-2026-05-13" in src
+        idx = src.index("v-news-verifier-gate-zero-fresh-2026-05-13")
+        block = src[idx : idx + 3000]
+        # The gate must check fresh_count == 0 and return None unconditionally.
+        assert "fresh_count == 0" in block
+        assert "return None" in block
+
+    def test_advisory_still_works_with_some_fresh(self):
+        """The gate must NOT fire when fresh_count >= 1 — that case
+        stays under advisory mode per v-news-verifier-advisory."""
+        src = NEWS_STRATEGY_PATH.read_text()
+        idx = src.index("v-news-verifier-gate-zero-fresh-2026-05-13")
+        block = src[idx : idx + 3000]
+        # The gate condition must be specifically the zero case;
+        # >= 1 must stay advisory.
+        assert "fresh_count == 0" in block
+        # NOT a broader veto that catches fresh_count >= 1
+        assert "fresh_count < 2" not in block
+
+
 # ── v-discovered-position-tagging-2026-05-11 ─────────────────────────
 
 class TestDiscoveredPositionTagging:
@@ -889,6 +1034,80 @@ class TestJsonScrub:
         assert "v-json-nan-sanitize-trades-2026-05-05" in src
 
 
+# ── v-classifier-stays-isolated-2026-05-13 ──────────────────────────
+
+class TestClassifierStaysIsolated:
+    """The side-classifier subtree is *experimental* and must not be
+    imported by the live trading path until ``Config.USE_SIDE_CLASSIFIER``
+    is approved (rollout flavor B — per-strategy gradual).
+
+    This meta-test fails CI the moment someone accidentally wires
+    ``core.classifier`` into the bot. The cost of an accidental import
+    is that broken/half-built classifier code could affect the live
+    bot in ways the rule-based + research separation was designed to
+    prevent.
+
+    Tightened only when integration begins — at that point the test
+    moves to assert the import is *gated by the config flag*, not that
+    it's absent.
+    """
+
+    def test_engine_only_imports_classifier_conditionally(self):
+        """Updated 2026-05-13: shadow-mode wiring is allowed but only
+        when the import is *inside a function body* (i.e., lazy /
+        gated). No top-level imports of core.classifier in engine.py
+        — a torch-less env must still be able to start the bot.
+
+        Top-level imports load at module-parse time, before any config
+        is read. Conditional/lazy imports inside the relevant
+        functions guarantee that ``SIDE_CLASSIFIER_SHADOW_MODE=False``
+        (the default) means zero classifier code runs.
+        """
+        src = ENGINE_PATH.read_text()
+        for lineno, line in enumerate(src.splitlines(), start=1):
+            stripped = line.lstrip()
+            if not stripped.startswith(("from core.classifier",
+                                         "import core.classifier")):
+                continue
+            # An import line — must be indented (i.e., inside a function
+            # body). Top-level imports start at column 0.
+            indent = len(line) - len(stripped)
+            assert indent > 0, (
+                f"core/engine.py:{lineno} imports core.classifier at "
+                f"the top level: {line!r}. Move it inside the function "
+                f"that uses it, gated by a SIDE_CLASSIFIER config flag."
+            )
+
+    def test_signal_router_does_not_import_classifier(self):
+        """If a signal_router module exists separately, it must also
+        not import classifier yet. Today the routing is inline in
+        engine.py; this test is forward-looking but cheap."""
+        candidates = [
+            REPO_ROOT / "core" / "signal_router.py",
+            REPO_ROOT / "core" / "router.py",
+        ]
+        for p in candidates:
+            if p.exists():
+                src = p.read_text()
+                assert "core.classifier" not in src, (
+                    f"{p} imports the classifier — gate behind "
+                    "Config.USE_SIDE_CLASSIFIER first."
+                )
+
+    def test_classifier_package_is_importable_standalone(self):
+        """Counterpart guard: the classifier package itself MUST import
+        cleanly without dragging engine internals. Catches accidental
+        circular dependencies."""
+        # If this import succeeds in a clean interpreter sequence, the
+        # classifier is properly isolated. The actual import lives in
+        # the test process; what we're asserting is the existence and
+        # cleanliness of the public surface.
+        from core.classifier import (    # noqa: F401
+            Side, SymbolFeatures, SymbolSideDecision,
+            classify, classify_rule_based,
+        )
+
+
 # ── v-mode-toggle-stale-state-2026-05-08 ─────────────────────────────
 
 class TestModeToggleStaleState:
@@ -989,6 +1208,33 @@ class TestFixTagInventory:
         "v-disable-mean-rev-short-2026-05-12",
         "v-day-pnl-intraday-entry-2026-05-12",
         "v-stream-watchdog-recover-2026-05-12",
+        # 2026-05-13 — side-classifier subsystem (isolated, gated off)
+        "v-side-classifier-types-2026-05-13",
+        "v-rule-based-classifier-2026-05-13",
+        "v-classifier-composer-2026-05-13",
+        "v-side-classifier-package-2026-05-13",
+        "v-side-classifier-config-2026-05-13",
+        "v-classifier-features-2026-05-13",
+        "v-triple-barrier-labels-2026-05-13",
+        "v-classifier-backtest-2026-05-13",
+        "v-research-isolation-2026-05-13",
+        "v-classifier-stays-isolated-2026-05-13",
+        # Trained-classifier scaffolding (RTX 3090)
+        "v-predictor-protocol-2026-05-13",
+        "v-stub-predictor-2026-05-13",
+        "v-feature-encoder-2026-05-13",
+        "v-trained-baseline-model-2026-05-13",
+        "v-ffn-predictor-2026-05-13",
+        "v-trained-classifier-package-2026-05-13",
+        "v-train-classifier-2026-05-13",
+        # Strategy-layer gating fixes (financial-expert decision over TFT)
+        "v-news-verifier-gate-zero-fresh-2026-05-13",
+        "v-anti-pyramiding-2026-05-13",
+        "v-mean-rev-price-direction-gate-2026-05-13",
+        "v-classifier-runtime-2026-05-13",
+        "v-session-reporter-2026-05-13",
+        "v-drift-monitor-2026-05-13",
+        "v-shadow-integration-2026-05-13",
     ]
 
     EXPECTED_TAGS_BY_FILE = {
@@ -1016,6 +1262,31 @@ class TestFixTagInventory:
             + (REPO_ROOT / "core" / "loops" / "screener_loop.py").read_text()
             + (REPO_ROOT / "core" / "schwab_stream_watchdog.py").read_text()
             + (REPO_ROOT / "core" / "stream_health.py").read_text()
+            # 2026-05-13 — side-classifier subsystem
+            + (REPO_ROOT / "core" / "classifier" / "__init__.py").read_text()
+            + (REPO_ROOT / "core" / "classifier" / "types.py").read_text()
+            + (REPO_ROOT / "core" / "classifier" / "rule_based.py").read_text()
+            + (REPO_ROOT / "core" / "classifier" / "composer.py").read_text()
+            + (REPO_ROOT / "research" / "__init__.py").read_text()
+            + (REPO_ROOT / "research" / "features.py").read_text()
+            + (REPO_ROOT / "research" / "labels.py").read_text()
+            + (REPO_ROOT / "research" / "classifier_backtest.py").read_text()
+            # Trained-classifier subtree (anchors all v-trained-*-2026-05-13)
+            + (REPO_ROOT / "core" / "classifier" / "trained" / "__init__.py").read_text()
+            + (REPO_ROOT / "core" / "classifier" / "trained" / "predictor_protocol.py").read_text()
+            + (REPO_ROOT / "core" / "classifier" / "trained" / "stub_predictor.py").read_text()
+            + (REPO_ROOT / "core" / "classifier" / "trained" / "feature_encoder.py").read_text()
+            + (REPO_ROOT / "core" / "classifier" / "trained" / "model.py").read_text()
+            + (REPO_ROOT / "core" / "classifier" / "trained" / "ffn_predictor.py").read_text()
+            + (REPO_ROOT / "research" / "train_classifier.py").read_text()
+            # 2026-05-13 strategy-layer fixes
+            + (REPO_ROOT / "strategies" / "builtin.py").read_text()
+            # 2026-05-13 runtime + reporters
+            + (REPO_ROOT / "core" / "classifier" / "runtime.py").read_text()
+            + (REPO_ROOT / "research" / "session_reporter.py").read_text()
+            + (REPO_ROOT / "research" / "drift_monitor.py").read_text()
+            + (REPO_ROOT / "tests" / "core" / "classifier" /
+               "test_shadow_integration.py").read_text()
         )
         missing = [t for t in self.EXPECTED_TAGS if t not in all_src]
         assert missing == [], f"missing fix tags: {missing}"

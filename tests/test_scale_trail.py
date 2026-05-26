@@ -159,3 +159,73 @@ class TestPositionDefaults:
         assert pos.scaled_out is False
         assert pos.original_stop is None
         assert pos.trailing_stop is None
+
+
+class TestPartialExitAtR:
+    """v-partial-exit-override-2026-05-19: check_partial_exit_at_r lets the
+    caller override the partial-exit R-threshold (e.g. OversoldBounceV2
+    fires at +0.5R instead of +1R)."""
+
+    mgr = ScaleTrailManager()
+
+    def test_fires_at_half_r(self):
+        """Entry 100, stop_distance=2 (stop=98). At 101 → 0.5R.
+        With activation_r=0.5, partial must fire.
+        """
+        pos = _pos(entry=100, stop=98)  # stop_distance = 2
+        action = self.mgr.check_partial_exit_at_r(
+            pos, current_price=101.0, activation_r=0.5
+        )
+
+        assert action is not None
+        assert action.exit_qty == 50
+        assert action.new_stop == 100.0  # breakeven
+        assert action.exit_fraction == 0.5
+
+    def test_not_at_quarter_r(self):
+        """Entry 100, stop_distance=2. At 100.4 → 0.2R.
+        With activation_r=0.5, partial must NOT fire.
+        """
+        pos = _pos(entry=100, stop=98)
+        assert self.mgr.check_partial_exit_at_r(
+            pos, current_price=100.4, activation_r=0.5
+        ) is None
+
+    def test_backward_compat(self):
+        """check_partial_exit (no activation_r arg) still fires at +1R
+        exactly as before — entry 100, stop 97, price 102 = 1.0R."""
+        pos = _pos(entry=100, stop=97)  # stop_distance = 3
+        action = self.mgr.check_partial_exit(pos, current_price=103.0)
+
+        assert action is not None
+        assert action.exit_qty == 50
+        assert action.new_stop == 100.0
+        assert action.exit_fraction == 0.5
+
+    def test_already_partialed(self):
+        """scaled_out=True must prevent a second partial even on the
+        override path — same guard as the legacy method."""
+        pos = _pos(entry=100, stop=98, scaled_out=True)
+        assert self.mgr.check_partial_exit_at_r(
+            pos, current_price=101.0, activation_r=0.5
+        ) is None
+        # And the default path also blocks it.
+        assert self.mgr.check_partial_exit(pos, current_price=999.0) is None
+
+    def test_short_fires_at_half_r(self):
+        """Symmetry: short entry 100, stop 102 (stop_distance=2).
+        At 99 → 0.5R favorable. activation_r=0.5 fires.
+        """
+        pos = _pos(entry=100, stop=102, tp=96, side="short")
+        action = self.mgr.check_partial_exit_at_r(
+            pos, current_price=99.0, activation_r=0.5
+        )
+        assert action is not None
+        assert action.exit_qty == 50
+        assert action.new_stop == 100.0
+
+    def test_short_not_at_quarter_r(self):
+        pos = _pos(entry=100, stop=102, tp=96, side="short")
+        assert self.mgr.check_partial_exit_at_r(
+            pos, current_price=99.6, activation_r=0.5
+        ) is None

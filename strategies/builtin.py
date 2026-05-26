@@ -433,6 +433,75 @@ class MeanReversionStrategyWithCommentary(TradingStrategyWithCommentary):
                     ))
                     return None
 
+                # v-mean-rev-price-direction-gate-2026-05-13: require the
+                # ENTRY bar itself to confirm reversal — close > open AND
+                # volume_ratio >= 1.0. Operator incident 2026-05-12: ORCL
+                # entered at 12:31 after a 46-minute slide (184.50 → 182.44),
+                # CRWV at 12:47 after a 63-minute slide. Both had RSI < 30
+                # and close < BB_lower (the setup), AND the existing
+                # falling-knife guard was bypassed because the entry bar
+                # itself happened to close green. But there was no positive
+                # confirmation that the slide had ended — the bar was
+                # simply a brief uptick inside continued weakness.
+                #
+                # Mirror of v-news-price-direction-gate-2026-05-08, which
+                # the news strategy uses to refuse low-conviction buys.
+                # Mean-rev LONG by definition is a contrarian entry; the
+                # entry bar's price-action confirmation is the difference
+                # between "buying the bottom" and "catching the knife".
+                # v-bounce-confirmation-2026-05-20: strengthened the
+                # price-direction gate after the 5/20 FIG -$247 incident.
+                # The OLD check only required `close > bar_open AND vol_ratio >= 1.0`
+                # — which can pass on a marginally green bar inside a continuing
+                # slide. FIG met the old check (5-min bar happened to be green
+                # at the open tick) but stopped out in 3 minutes as the slide
+                # resumed. We now require:
+                #   1. Current bar green (close > open)
+                #   2. Volume conviction (vol_ratio >= 1.5, was 1.0)
+                #   3. Visible rejection of the low: lower_wick > body
+                #      (a "hammer-like" pattern — seller exhaustion).
+                # All three must be true. This is the "wait for the sign of
+                # bouncing" rule, not "RSI is low so jump in".
+                _bar_open = float(getattr(market_data, "open", market_data.close) or market_data.close)
+                _bar_low = float(getattr(market_data, "low", market_data.close) or market_data.close)
+                _vol_ratio_now = float(indicators.get("volume_ratio", 1.0) or 1.0)
+                _lower_wick = min(_bar_open, market_data.close) - _bar_low
+                _body = abs(market_data.close - _bar_open)
+                _is_green = market_data.close > _bar_open
+                _has_volume = _vol_ratio_now >= 1.5
+                _has_rejection = _lower_wick > _body  # lower wick > body = rejection of lows
+                if not (_is_green and _has_volume and _has_rejection):
+                    self._log_decision(
+                        market_data, "skip", "mean_rev_price_direction_disagrees",
+                        rsi=round(rsi, 2),
+                        close=round(market_data.close, 2),
+                        bar_open=round(_bar_open, 2),
+                        bar_low=round(_bar_low, 2),
+                        volume_ratio=round(_vol_ratio_now, 2),
+                        lower_wick=round(_lower_wick, 3),
+                        body=round(_body, 3),
+                        is_green=_is_green,
+                        has_volume=_has_volume,
+                        has_rejection=_has_rejection,
+                    )
+                    self.commentary.add_commentary(TradingCommentary(
+                        timestamp=datetime.now(),
+                        type=CommentaryType.RISK_ASSESSMENT,
+                        symbol=market_data.symbol,
+                        title=f"⛔ Mean Reversion Skipped — No Bar-Level Reversal",
+                        message=(
+                            f"RSI {rsi:.1f} oversold but the entry bar isn't "
+                            f"confirming reversal: close={market_data.close:.2f} "
+                            f"vs bar_open={_bar_open:.2f}, vol_ratio={_vol_ratio_now:.2f}. "
+                            f"Waiting for a confirming green bar with real volume."
+                        ),
+                        data={'rsi': rsi, 'close': market_data.close,
+                              'bar_open': _bar_open,
+                              'volume_ratio': _vol_ratio_now},
+                        importance=6
+                    ))
+                    return None
+
                 distance_from_mean = ((bb_middle - market_data.close) / market_data.close) * 100
                 self.commentary.add_commentary(TradingCommentary(
                     timestamp=datetime.now(),
@@ -453,7 +522,11 @@ class MeanReversionStrategyWithCommentary(TradingStrategyWithCommentary):
                 ))
                 from core.config import Config
                 atr = _floored_atr(indicators.get('atr', market_data.close * 0.02), market_data.close)
-                atr_mult = Config().ATR_STOP_MULTIPLIER
+                # v-mean-rev-wider-stop-2026-05-20: use mean-rev-specific
+                # multiplier (default 2.5× ATR vs the global 1.5×). Pairs
+                # with the bounce-confirmation filter — higher-quality
+                # entries deserve room to breathe through intraday noise.
+                atr_mult = Config().MEAN_REV_ATR_STOP_MULTIPLIER
                 rr_ratio = Config().ATR_REWARD_RISK_RATIO
                 stop_distance = atr_mult * atr
                 stop_loss = market_data.close - stop_distance
@@ -513,7 +586,9 @@ class MeanReversionStrategyWithCommentary(TradingStrategyWithCommentary):
                 ))
                 from core.config import Config
                 atr = _floored_atr(indicators.get('atr', market_data.close * 0.02), market_data.close)
-                atr_mult = Config().ATR_STOP_MULTIPLIER
+                # v-mean-rev-wider-stop-2026-05-20: mean-rev-specific multiplier
+                # (mirror of the long-side change above).
+                atr_mult = Config().MEAN_REV_ATR_STOP_MULTIPLIER
                 rr_ratio = Config().ATR_REWARD_RISK_RATIO
                 stop_distance = atr_mult * atr
                 stop_loss = market_data.close + stop_distance

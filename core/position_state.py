@@ -58,6 +58,8 @@ class ExitRule(str, Enum):
     PROACTIVE_EXIT       = "proactive_exit"       # indicator-flip early bail
     THESIS_REVALIDATE    = "thesis_revalidate"    # news verifier re-check
     BROKER_FILL_TIMEOUT  = "broker_fill_timeout"  # OPENING took too long, abort
+    # v-time-stop-2026-05-19: TIME_STOP exit rule for OversoldBounceV2
+    TIME_STOP            = "time_stop"            # bail if thesis hasn't played out in time
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -88,6 +90,8 @@ ALLOWED_EXITS: dict[PositionState, FrozenSet[ExitRule]] = {
         ExitRule.BREAKEVEN_LIFT,
         ExitRule.PROACTIVE_EXIT,
         ExitRule.THESIS_REVALIDATE,
+        # v-time-stop-2026-05-19: TIME_STOP exit rule for OversoldBounceV2
+        ExitRule.TIME_STOP,
     }),
     PositionState.AT_BREAKEVEN: frozenset({
         # Stop is now at entry — protected from a full -1R loss.
@@ -108,6 +112,8 @@ ALLOWED_EXITS: dict[PositionState, FrozenSet[ExitRule]] = {
         ExitRule.TRAILING_STOP_ATR,   # ← Bug 2 fix
         ExitRule.PROACTIVE_EXIT,
         ExitRule.THESIS_REVALIDATE,
+        # v-time-stop-2026-05-19: TIME_STOP exit rule for OversoldBounceV2
+        ExitRule.TIME_STOP,
     }),
     PositionState.AT_1R: frozenset({
         # Half is out, half remains. The remainder is now riding on

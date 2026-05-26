@@ -12,6 +12,33 @@ from core.commentary import TradingCommentary
 logger = logging.getLogger('TradingBot')
 
 
+# v-universe-quality-filter-2026-05-22: leveraged / inverse / volatility
+# ETFs to always exclude from the bot's tradeable universe. These
+# decay daily regardless of direction, so mean-reversion and breakout
+# logic both break. SOXS -$228 loss on 5/22 was the prompt for this.
+LEVERAGED_ETF_BLOCKLIST = frozenset({
+    # 2x / 3x long
+    "TQQQ", "SQQQ", "UPRO", "SPXU", "SPXL", "SPXS",
+    "TNA", "TZA", "FAS", "FAZ", "TMF", "TMV",
+    "QLD", "QID", "SSO", "SDS",
+    "SOXL", "SOXS",
+    "LABU", "LABD",
+    "NUGT", "DUST",
+    "JNUG", "JDST",
+    "ERX", "ERY",
+    "URTY", "SRTY",
+    "TECL", "TECS",
+    # Volatility
+    "UVXY", "SVXY", "VXX", "VIXY", "TVIX",
+    # Single-name 2x/3x
+    "TSLL", "TSLT", "TSLZ", "NVDL", "NVDS", "NVDD",
+    "MSTU", "MSTX", "AMDL", "AMDS",
+    # Currency / commodity leveraged
+    "UCO", "SCO", "USO", "USL",
+    "AGQ", "ZSL", "UGL", "GLL",
+})
+
+
 class StockScreener:
     """Real-time stock screener using Schwab API"""
 
@@ -23,6 +50,15 @@ class StockScreener:
         self.screen_interval = 120  # 2 minutes
         self._movers_cache = {}
         self._cache_timeout = 60  # 1 minute cache for API efficiency
+        # v-universe-quality-filter-2026-05-22: batch-fetched 60d daily
+        # bars cached for ~30 min so we don't hammer yfinance every
+        # screener cycle. SMA50 / relative strength / 5d return all
+        # derive from this cache.
+        self._quality_data_cache: Dict[str, pd.DataFrame] = {}
+        self._quality_data_timestamp: float = 0.0
+        self._quality_data_ttl_s: int = 30 * 60
+        # Track filter rejections per cycle for observability.
+        self._quality_filter_rejects: Dict[str, int] = {}
 
     async def screen_stocks(self) -> List[Dict[str, Any]]:
         """Screen for top moving and volatile stocks.
@@ -64,6 +100,15 @@ class StockScreener:
             yahoo_active = await self._get_yahoo_most_active()
             all_movers.extend(yahoo_active)
 
+            # Source 0b (v-yahoo-top-movers-2026-05-20): Yahoo day_gainers
+            # + day_losers. Most-active sorts by VOLUME, missing big-%-move
+            # names with moderate volume. ARM (+14% on 5/20, ~6.8M vol)
+            # was the canonical example — invisible to the bot all day
+            # because it never cleared the most-active top-30. Day_gainers
+            # is %-ranked and catches these directly.
+            yahoo_top = await self._get_yahoo_top_movers()
+            all_movers.extend(yahoo_top)
+
             # Source 1: EQUITY_ALL by VOLUME — today's most-active.
             # Catches RKLB-class names that are heavily traded but not
             # in the % movers leaderboard. This is THE source for the
@@ -99,10 +144,38 @@ class StockScreener:
             seen = set()
             unique_movers = []
 
+            # v-universe-quality-filter-2026-05-22: refresh quality data
+            # cache once per cycle if stale, then apply 3-gate filter
+            # alongside existing _is_tradeable + dedup. Filter rejections
+            # are logged per-symbol with reason for backtestability.
+            try:
+                from core.config import Config as _CfgUQ
+                _enabled = _CfgUQ().ENABLE_UNIVERSE_QUALITY_FILTER
+            except Exception:
+                _enabled = True
+            if _enabled:
+                _candidate_syms = list({m['symbol'] for m in all_movers
+                                        if m.get('symbol')})
+                await self._refresh_quality_data(_candidate_syms)
+                self._quality_filter_rejects = {}  # reset per cycle
+
             for mover in all_movers:
-                if mover['symbol'] not in seen and self._is_tradeable(mover):
-                    seen.add(mover['symbol'])
-                    unique_movers.append(mover)
+                sym = mover.get('symbol')
+                if sym in seen:
+                    continue
+                if not self._is_tradeable(mover):
+                    continue
+                if _enabled and not self._passes_quality_filter(sym):
+                    continue
+                seen.add(sym)
+                unique_movers.append(mover)
+
+            if _enabled and self._quality_filter_rejects:
+                logger.info(
+                    "screener: universe quality filter rejected %d candidates: %s",
+                    sum(self._quality_filter_rejects.values()),
+                    ", ".join(f"{k}={v}" for k, v in self._quality_filter_rejects.items()),
+                )
 
             # Sort by combined score (volatility + volume)
             scored_movers = []
@@ -389,6 +462,114 @@ class StockScreener:
         self._movers_cache[cache_key] = (movers, time.time())
         return movers
 
+    async def _get_yahoo_top_movers(self) -> List[Dict[str, Any]]:
+        """v-yahoo-top-movers-2026-05-20: fetch Yahoo day_gainers + day_losers.
+
+        Closes the "big-move, moderate-volume" blind spot in the screener.
+        On 5/20 the bot missed ARM (+14.4%, $32 gap) because ARM was not in
+        Yahoo's most-active list (volume-ranked). Day_gainers IS percent-
+        ranked, so ARM would appear there.
+
+        Returns the union of top 30 gainers + top 30 losers (deduplicated
+        by symbol). Defensive against the same failure modes as
+        _get_yahoo_most_active.
+        """
+        cache_key = "movers_yahoo_top_movers"
+        if cache_key in self._movers_cache:
+            cached_data, ts = self._movers_cache[cache_key]
+            if time.time() - ts < self._cache_timeout:
+                return cached_data
+
+        import asyncio as _asyncio
+        movers: List[Dict[str, Any]] = []
+        seen_symbols: set = set()
+
+        def _fetch(scr_id: str):
+            import requests
+            url = "https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved"
+            params = {
+                "formatted": "true",
+                "lang": "en-US",
+                "region": "US",
+                "scrIds": scr_id,
+                "count": 30,
+            }
+            headers = {
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/120.0.0.0 Safari/537.36"
+                ),
+            }
+            return requests.get(url, params=params, headers=headers, timeout=10)
+
+        def _scalar(v):
+            if isinstance(v, dict):
+                return v.get("raw", 0)
+            return v or 0
+
+        for scr_id, source_tag in (("day_gainers", "yahoo_day_gainers"),
+                                   ("day_losers", "yahoo_day_losers")):
+            try:
+                response = await _asyncio.to_thread(_fetch, scr_id)
+                if response.status_code != 200:
+                    logger.warning(
+                        "screener: yahoo %s returned HTTP %s",
+                        scr_id, response.status_code,
+                    )
+                    continue
+                payload = response.json()
+                quotes = (
+                    payload.get("finance", {})
+                    .get("result", [{}])[0]
+                    .get("quotes", [])
+                )
+                added = 0
+                for q in quotes:
+                    sym = q.get("symbol")
+                    if not sym or sym in seen_symbols:
+                        continue
+                    seen_symbols.add(sym)
+                    last_price = float(_scalar(q.get("regularMarketPrice")) or 0)
+                    net_change = float(_scalar(q.get("regularMarketChange")) or 0)
+                    pct_change = float(_scalar(q.get("regularMarketChangePercent")) or 0)
+                    volume = float(_scalar(q.get("regularMarketVolume")) or 0)
+                    mover = {
+                        "symbol": sym,
+                        "description": q.get("shortName", "") or q.get("longName", ""),
+                        "last": last_price,
+                        "change": net_change,
+                        "percent_change": pct_change,
+                        "volume": volume,
+                        "direction": (
+                            "up" if pct_change > 0
+                            else "down" if pct_change < 0
+                            else "neutral"
+                        ),
+                        "source": source_tag,
+                    }
+                    # Best-effort Schwab enrich (same pattern as most_active).
+                    try:
+                        quote = self._get_quote_data(sym)
+                        if quote:
+                            mover.update(quote)
+                    except Exception as exc:
+                        logger.debug("quote enrich failed for %s: %s", sym, exc)
+                    movers.append(mover)
+                    added += 1
+                logger.info(
+                    "screener: yahoo %s returned %d names (added %d new)",
+                    scr_id, len(quotes), added,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "screener: yahoo %s raised %s: %s",
+                    scr_id, type(exc).__name__, exc,
+                )
+
+        self._movers_cache[cache_key] = (movers, time.time())
+        return movers
+
     async def _get_volatile_stocks(self) -> List[Dict[str, Any]]:
         """Find additional volatile stocks using a pre-screened watchlist.
 
@@ -483,6 +664,143 @@ class StockScreener:
             logger.debug(f"Quote error for {symbol}: {e}")
 
         return None
+
+    async def _refresh_quality_data(self, symbols: List[str]) -> None:
+        """v-universe-quality-filter-2026-05-22: batch-fetch 60d daily
+        bars for all candidates + SPY in one yfinance call. Cached for
+        30 min so screener cycles (every ~3 min) don't hammer yfinance.
+
+        SMA50 and 5d-return derive from this cache. Pure side-effect:
+        populates self._quality_data_cache. Never raises — yfinance
+        failures degrade to "no quality data → all pass the filter".
+        """
+        now = time.time()
+        if now - self._quality_data_timestamp < self._quality_data_ttl_s:
+            # Cache still valid; only fetch symbols we don't have yet.
+            missing = [s for s in symbols if s not in self._quality_data_cache]
+            if not missing:
+                return
+        else:
+            missing = list(symbols)
+
+        # Always include SPY for relative-strength comparisons.
+        if 'SPY' not in self._quality_data_cache or now - self._quality_data_timestamp >= self._quality_data_ttl_s:
+            if 'SPY' not in missing:
+                missing.append('SPY')
+
+        if not missing:
+            return
+
+        import asyncio as _asyncio
+
+        def _fetch():
+            try:
+                import yfinance as yf
+            except Exception as exc:
+                logger.warning("screener: yfinance import failed: %s", exc)
+                return {}
+            try:
+                # 60 trading days ≈ 90 calendar days. Daily bars only.
+                # auto_adjust=True → splits/dividends handled.
+                df = yf.download(
+                    tickers=missing,
+                    period='90d',
+                    interval='1d',
+                    group_by='ticker',
+                    auto_adjust=True,
+                    progress=False,
+                    threads=True,
+                )
+                return df
+            except Exception as exc:
+                logger.warning("screener: yfinance batch fetch failed: %s", exc)
+                return {}
+
+        result = await _asyncio.to_thread(_fetch)
+        # Result shape: MultiIndex columns when multiple tickers,
+        # flat DataFrame when single. Normalize to {sym: DataFrame}.
+        try:
+            if isinstance(result, pd.DataFrame):
+                if isinstance(result.columns, pd.MultiIndex):
+                    for sym in missing:
+                        if sym in result.columns.get_level_values(0):
+                            sym_df = result[sym].dropna()
+                            if not sym_df.empty:
+                                self._quality_data_cache[sym] = sym_df
+                elif len(missing) == 1:
+                    self._quality_data_cache[missing[0]] = result.dropna()
+        except Exception as exc:
+            logger.warning("screener: quality data normalize failed: %s", exc)
+
+        self._quality_data_timestamp = now
+        logger.info(
+            "screener: quality_data refreshed for %d symbols (cache size %d)",
+            len(missing), len(self._quality_data_cache),
+        )
+
+    def _passes_quality_filter(self, symbol: str) -> bool:
+        """v-universe-quality-filter-2026-05-22: three-gate quality check.
+
+        1. Leveraged/inverse ETF blocklist — daily-decay instruments
+           break mean-rev and breakout logic; exclude entirely.
+        2. Trend filter — close > SMA50. Don't fade names making new
+           50-day lows (avoids catching falling knives at universe time).
+        3. Relative strength — 5-day return > SPY 5-day return. Filters
+           "everyone's selling this name" candidates.
+
+        Returns True if symbol passes all three. Logs reason via
+        self._quality_filter_rejects on any reject.
+
+        Conservative: if data is missing for a symbol, the trend +
+        relative-strength gates pass-through (don't block on missing
+        data). Only the blocklist is hard.
+        """
+        # Gate 1: hard blocklist
+        if symbol in LEVERAGED_ETF_BLOCKLIST:
+            self._quality_filter_rejects[symbol] = self._quality_filter_rejects.get(symbol, 0) + 1
+            return False
+
+        sym_df = self._quality_data_cache.get(symbol)
+        spy_df = self._quality_data_cache.get('SPY')
+
+        # If no price history, fall through (don't block).
+        if sym_df is None or sym_df.empty:
+            return True
+
+        try:
+            closes = sym_df['Close'] if 'Close' in sym_df.columns else None
+            if closes is None or len(closes) < 50:
+                return True  # not enough history; pass
+            last_close = float(closes.iloc[-1])
+            sma50 = float(closes.tail(50).mean())
+
+            # Gate 2: trend filter
+            if last_close < sma50:
+                self._quality_filter_rejects[symbol] = self._quality_filter_rejects.get(symbol, 0) + 1
+                return False
+
+            # Gate 3: relative strength — only blocks CATASTROPHIC
+            # underperformance (3+ percentage points worse than SPY).
+            # Tier-1 names lagging SPY by 1-2pp should still pass —
+            # they're noise, not "everyone's selling this name."
+            # Threshold determined empirically on 5/22 data: MSFT was
+            # 1.7pp under SPY but otherwise healthy → pass. SOXS was
+            # 18pp under → catastrophic → correctly blocked.
+            if spy_df is not None and 'Close' in spy_df.columns and len(spy_df) >= 6:
+                spy_closes = spy_df['Close']
+                if len(closes) >= 6:
+                    sym_ret = (last_close / float(closes.iloc[-6])) - 1.0
+                    spy_ret = (float(spy_closes.iloc[-1]) / float(spy_closes.iloc[-6])) - 1.0
+                    # Block only if symbol's 5d return is 3pp or more
+                    # below SPY (catastrophic relative weakness).
+                    if (sym_ret - spy_ret) < -0.03:
+                        self._quality_filter_rejects[symbol] = self._quality_filter_rejects.get(symbol, 0) + 1
+                        return False
+        except Exception as exc:
+            logger.debug("screener: quality eval error for %s: %s", symbol, exc)
+            return True  # don't block on eval error
+
+        return True
 
     def _is_tradeable(self, mover: Dict[str, Any]) -> bool:
         """Filter for tradeable stocks.

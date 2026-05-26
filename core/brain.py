@@ -41,21 +41,59 @@ class TradingBrain:
         }
         self._load_memories()
 
+    def reset_for_new_session(self):
+        """v-brain-session-reset-2026-05-19: pull emotional state 60%
+        toward neutral (0.5) at the start of each RTH day.
+
+        Without this, yesterday's pain (or yesterday's hot streak) dictates
+        today's behavior for the first few hours of trading. Called from
+        engine.py startup AFTER memories are loaded but BEFORE the first
+        trading tick. Confidence is left alone — that's a slower-moving
+        skill estimate, not a session-emotional state. last_update is NOT
+        touched so `recover_confidence` still computes time-since-last-trade
+        correctly.
+        """
+        before = {k: self.emotional_state.get(k) for k in ('greed_level', 'fear_level')}
+        for key in ('greed_level', 'fear_level'):
+            current = self.emotional_state.get(key, 0.5)
+            self.emotional_state[key] = current + 0.60 * (0.5 - current)
+        after = {k: round(self.emotional_state[k], 3) for k in ('greed_level', 'fear_level')}
+        logger.info(
+            "brain_session_reset before=%s after=%s confidence=%.3f",
+            before, after, self.emotional_state.get('confidence', 0.5),
+        )
+
     def recover_confidence(self):
-        """Gradually recover confidence over time"""
+        """Gradually recover confidence AND decay extreme emotional states toward neutral.
+
+        v-brain-decay-2026-05-19: previously only confidence and fear decayed;
+        greed_level had no decay path and would lock to 0.8 once tripped.
+        Now ALL emotional states drift toward neutral (0.5) over time so
+        a single hot streak or losing streak doesn't dictate behavior for
+        the rest of the session/week.
+        """
         # Handle both string and datetime objects
         if isinstance(self.emotional_state['last_update'], str):
             last_update = datetime.fromisoformat(self.emotional_state['last_update'])
         else:
             last_update = self.emotional_state['last_update']
 
-        time_since_update = (datetime.now() - last_update).seconds
+        time_since_update_s = (datetime.now() - last_update).total_seconds()
 
         # Recover 1% confidence per hour of no trading
-        if time_since_update > 3600:
-            recovery = (time_since_update / 3600) * 0.01
+        if time_since_update_s > 3600:
+            hours = time_since_update_s / 3600.0
+            recovery = hours * 0.01
             self.emotional_state['confidence'] = min(0.7, self.emotional_state['confidence'] + recovery)
-            self.emotional_state['fear_level'] = max(0.3, self.emotional_state['fear_level'] - recovery)
+            # v-brain-decay-2026-05-19: per-hour 20% drift toward neutral 0.5
+            # for greed AND fear. Half-life ~3.1 hours — quick enough to
+            # clear an overnight elevated state, slow enough that a fresh
+            # win/loss still moves the needle within a session.
+            decay_per_hour = 0.20
+            for key in ('fear_level', 'greed_level'):
+                current = self.emotional_state.get(key, 0.5)
+                step = min(1.0, decay_per_hour * hours)
+                self.emotional_state[key] = current + step * (0.5 - current)
             self.emotional_state['last_update'] = datetime.now().isoformat()
 
     def _load_memories(self):
@@ -182,14 +220,27 @@ class TradingBrain:
         return np.random.choice(lessons)
 
     def _adjust_emotional_state(self, pnl_percent: float):
-        """Adjust emotional state based on trade outcomes - like a real trader"""
+        """Adjust emotional state based on trade outcomes.
+
+        v-brain-semantics-2026-05-19: previously winners INCREASED greed
+        (winners → +0.05 greed), which is backwards for a trading bot —
+        the goal is to avoid chasing returns, not to celebrate them.
+        Combined with no decay this locked the bot into all-day veto mode
+        after a single win. Corrected: winners REDUCE greed (we banked
+        the win, no need to chase) and slightly reduce fear; losers raise
+        fear but do NOT raise greed (revenge trading is the trap, not a
+        feature to model).
+        """
         # Confidence adjustment
         if pnl_percent > 0:
             self.emotional_state['confidence'] = min(0.95, self.emotional_state['confidence'] + 0.02)
-            self.emotional_state['greed_level'] = min(0.8, self.emotional_state['greed_level'] + 0.05)
+            # FIXED: winners reduce greed (banked the win) and reduce fear
+            self.emotional_state['greed_level'] = max(0.2, self.emotional_state['greed_level'] - 0.05)
+            self.emotional_state['fear_level'] = max(0.2, self.emotional_state['fear_level'] - 0.02)
         else:
             self.emotional_state['confidence'] = max(0.3, self.emotional_state['confidence'] - 0.03)
             self.emotional_state['fear_level'] = min(0.8, self.emotional_state['fear_level'] + 0.05)
+            # Losers do NOT raise greed — revenge trading is the trap.
 
         # Patience adjustment based on recent outcomes
         recent_trades = self.memories[-5:] if len(self.memories) >= 5 else self.memories

@@ -132,13 +132,23 @@ class TechnicalAnalyzerWithCommentary:
                 indicators['high_20'] = float(np.max(high))
                 indicators['low_20'] = float(np.min(low))
 
+            # v-oversold-v2-indicators-2026-05-19: prev_low, lows_50 for OversoldBounceV2Strategy
+            if len(low) >= 2:
+                indicators['prev_low'] = float(low[-2])
+            indicators['lows_50'] = low[-50:].tolist() if len(low) >= 50 else (low.tolist() if len(low) >= 10 else [])
+
             # Add calculated metrics for ML
             indicators['returns'] = float((close[-1] - close[-2]) / close[-2]) if len(close) > 1 else 0.0
             indicators['volume_ratio'] = float(volume[-1] / np.mean(volume[-20:])) if len(volume) > 20 and np.mean(volume[-20:]) > 0 else 1.0
             indicators['high_low_ratio'] = float((high[-1] - low[-1]) / close[-1]) if close[-1] > 0 else 0.02
 
             # Ensure all indicators are float type
+            # v-oversold-v2-indicators-2026-05-19: skip non-scalar entries
+            # (e.g. lows_50 is a list) so the float-coercion loop doesn't
+            # blow up on container indicators.
             for key, value in indicators.items():
+                if isinstance(value, (list, tuple)):
+                    continue
                 if isinstance(value, (np.floating, np.integer)):
                     indicators[key] = float(value)
                 elif np.isnan(value) or np.isinf(value):

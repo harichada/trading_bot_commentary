@@ -391,7 +391,7 @@ class FreeNewsSignalStrategy(TradingStrategyWithCommentary):
             # for 60 minutes while INTC moved from $124.75 to $127 then
             # back). 20 minutes is enough to prevent same-bar churn but
             # short enough to react to developing news on a moving name.
-            cooldown_left = 1200 - (datetime.now() - self.last_signal_time[symbol]).total_seconds()
+            cooldown_left = 1200 - (market_data.timestamp - self.last_signal_time[symbol]).total_seconds()  # v-determinism-2026-05-19
             if cooldown_left > 0:
                 self._log_decision(market_data, "skip", "cooldown",
                                    cooldown_remaining_s=int(cooldown_left))
@@ -970,6 +970,40 @@ class FreeNewsSignalStrategy(TradingStrategyWithCommentary):
                     ),
                 )
 
+            # v-news-verifier-gate-zero-fresh-2026-05-13: even in
+            # advisory mode, fresh_count == 0 is a hard veto. Zero
+            # fresh articles means the bot is acting on cached
+            # sentiment from articles that have aged out of any
+            # reasonable freshness window. Operator incident 2026-05-12:
+            # FCEL entered 3 times in 1 hour, each with fresh_count=0
+            # and the verifier flagging insufficient_fresh_articles_0_lt_2.
+            # Advisory mode was correct for the fresh_count==1 case
+            # (rare but possible early news) but wrong for zero.
+            # ≥1 fresh keeps the advisory behavior unchanged.
+            if v is not None and v.fresh_count == 0:
+                self._log_decision(
+                    market_data,
+                    "skip",
+                    "zero_fresh_articles_hard_veto",
+                    cached_sentiment=round(avg_sentiment, 3),
+                    fresh_count=v.fresh_count,
+                    source=v.source,
+                    verifier_reason=v.reason,
+                )
+                self.commentary.add_commentary(TradingCommentary(
+                    timestamp=datetime.now(),
+                    type=CommentaryType.RISK_ASSESSMENT,
+                    symbol=symbol,
+                    title=f"⛔ {symbol}: Stale News Hard-Vetoed",
+                    message=(
+                        f"Cached sentiment {avg_sentiment:+.2f} but ZERO fresh "
+                        f"articles in the verifier window — refusing to trade on "
+                        f"stale data regardless of advisory mode."
+                    ),
+                    importance=7,
+                ))
+                return None
+
             if _verifier_enabled and v is not None and not v.is_verified:
                 self._log_decision(
                     market_data, "skip", "fresh_news_unverified",
@@ -1084,7 +1118,15 @@ class FreeNewsSignalStrategy(TradingStrategyWithCommentary):
             # on 2026-05-05 with cooldown_remaining 30–53 min).
             try:
                 import pytz as _pytz
-                _et_now = datetime.now(_pytz.timezone("America/New_York"))
+                # v-determinism-2026-05-19: derive session check from
+                # market_data.timestamp (bar time) instead of wall-clock,
+                # so replay backtests reproduce the same gate decisions.
+                _et_tz = _pytz.timezone("America/New_York")
+                _bar_ts = market_data.timestamp
+                if _bar_ts.tzinfo is None:
+                    _et_now = _et_tz.localize(_bar_ts)
+                else:
+                    _et_now = _bar_ts.astimezone(_et_tz)
                 _is_regular = (
                     _et_now.weekday() < 5
                     and ((_et_now.hour == 9 and _et_now.minute >= 30)
@@ -1093,7 +1135,7 @@ class FreeNewsSignalStrategy(TradingStrategyWithCommentary):
             except Exception:
                 _is_regular = True
             if _is_regular:
-                self.last_signal_time[symbol] = datetime.now()
+                self.last_signal_time[symbol] = market_data.timestamp  # v-determinism-2026-05-19
 
             self._log_decision(
                 market_data,
