@@ -8,13 +8,22 @@ set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "${REPO}"
 
-PYTHON="${PYTHON:-/home/nvidia/anaconda3/bin/python}"
+PYTHON="${PYTHON:-/home/nvidia/anaconda3/envs/trading-bot/bin/python}"
 if [ ! -x "${PYTHON}" ]; then
-  PYTHON="$(command -v python3 || true)"
-fi
-if [ -z "${PYTHON}" ]; then
-  echo "ERROR: no Python interpreter found" >&2
+  echo "ERROR: trading-bot conda env python not found at ${PYTHON}" >&2
+  echo "       The bot was built/tested against the 'trading-bot' env." >&2
+  echo "       Refusing to fall back to a different interpreter — version" >&2
+  echo "       skew (pandas 2.3 vs 3.0, sklearn 1.6 vs 1.5) would cause" >&2
+  echo "       silent prediction errors or hard crashes." >&2
+  echo "       Override with PYTHON=<path> if you know what you're doing." >&2
   exit 1
+fi
+
+EXPECTED_ENV="trading-bot"
+if [[ "${PYTHON}" != *"/envs/${EXPECTED_ENV}/"* ]]; then
+  echo "WARNING: Python is not from the '${EXPECTED_ENV}' conda env" >&2
+  echo "         (got: ${PYTHON})" >&2
+  echo "         Continuing because PYTHON was explicitly overridden." >&2
 fi
 
 echo "================================================================"
