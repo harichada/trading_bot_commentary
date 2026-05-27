@@ -1486,3 +1486,75 @@ class TestNewsTechnicalConfirmationGate:
         start = src.index("v-news-confirmation-gate-2026-05-27")
         body = src[start : start + 4500]
         assert '"no_technical_confirmation"' in body
+
+
+# ── v-state-persistence-loop-2026-05-27 ──────────────────────────────
+
+class TestStatePersistenceLoop:
+    """Periodic trading_state.json save loop.
+
+    Triggered by 2026-05-27 QCOM incident: user closed QCOM at ~15:30,
+    sync_positions_with_schwab correctly removed it from in-memory
+    self.positions, but trading_state.json stayed stale for 38 minutes
+    because no _save_state call fired in that window. Without periodic
+    saves, any user-manual close of a bot-tracked position leaves the
+    disk state lying about positions the bot doesn't think it holds.
+
+    Fix: dedicated NORMAL-priority loop calling _save_state every
+    _SAVE_INTERVAL_SEC. Defensive (try/except around save call), exits
+    cleanly on self.is_running=False, skips first cycle via initial
+    asyncio.sleep so startup race conditions don't write a half-built
+    state file.
+    """
+
+    def test_loop_method_exists_with_marker(self):
+        """Anchored to v-state-persistence-loop-2026-05-27 so future
+        grep finds both the v-tag and the implementation."""
+        src = ENGINE_PATH.read_text()
+        assert "async def _state_persistence_loop" in src
+        assert "v-state-persistence-loop-2026-05-27" in src
+
+    def test_loop_registered_with_supervisor(self):
+        """Without `sup.register("state_persistence", ...)` the method
+        never runs. Catch a silent removal of the registration line."""
+        src = ENGINE_PATH.read_text()
+        assert 'sup.register("state_persistence"' in src
+        assert "self._state_persistence_loop" in src
+
+    def test_loop_calls_save_state_in_try_except(self):
+        """A bare _save_state call would crash the supervised task
+        on the first write failure (disk full, permissions, etc.) and
+        the loop would never recover. Verify the call is guarded."""
+        src = ENGINE_PATH.read_text()
+        start = src.index("async def _state_persistence_loop")
+        body = src[start : start + 2500]
+        assert "self._save_state()" in body
+        # The save call must be inside a try block. Anchor on the
+        # warning log line that the except branch writes.
+        assert "state_persistence_loop: save failed" in body
+
+    def test_loop_respects_is_running_for_clean_shutdown(self):
+        """Loop must exit when self.is_running=False so SIGTERM
+        shutdown can complete without forcing a kill. Without this,
+        the loop would block shutdown waiting for the next sleep
+        to elapse."""
+        src = ENGINE_PATH.read_text()
+        start = src.index("async def _state_persistence_loop")
+        body = src[start : start + 2500]
+        assert "while self.is_running:" in body
+
+    def test_loop_initial_sleep_before_first_save(self):
+        """First-cycle save would race against engine startup
+        (positions not yet synced, brain not yet loaded). Verify
+        the loop sleeps the full interval before the first save."""
+        src = ENGINE_PATH.read_text()
+        start = src.index("async def _state_persistence_loop")
+        body = src[start : start + 2500]
+        # The initial sleep must come BEFORE the while loop.
+        sleep_pos = body.find("await asyncio.sleep")
+        while_pos = body.find("while self.is_running:")
+        assert sleep_pos != -1 and while_pos != -1
+        assert sleep_pos < while_pos, (
+            "first asyncio.sleep must come before the while loop "
+            "so we don't write a half-built state on startup"
+        )

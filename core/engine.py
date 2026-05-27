@@ -2687,6 +2687,44 @@ class TradingEngineWithCommentary:
                 source="schwab",
             ))
 
+    async def _state_persistence_loop(self) -> None:
+        """v-state-persistence-loop-2026-05-27: periodic trading_state.json
+        save.
+
+        Background. sync_positions_with_schwab updates self.positions in
+        memory when external closes are detected (line 3577), but
+        trading_state.json was only written by ad-hoc _save_state calls
+        scattered through the codebase. When a user manually closed a
+        bot-tracked position outside an active save path, the on-disk
+        state stayed stale indefinitely — until the bot's next restart
+        forced a sync.
+
+        Trigger: 2026-05-27 user closed QCOM at ~15:30. Bot's in-memory
+        view caught up via sync_positions_with_schwab (QCOM correctly
+        removed from self.positions, API /api/positions/db returned 6
+        positions without QCOM), but trading_state.json mtime stayed
+        15:32:47 with stale QCOM entry intact for 38+ minutes.
+
+        Fix: a dedicated NORMAL-priority loop that calls _save_state
+        every _SAVE_INTERVAL_SEC. Writes are cheap (~50KB JSON file).
+        Errors are caught and logged so a transient write failure
+        doesn't kill the loop. Loop checks self.is_running so it
+        exits cleanly during shutdown.
+        """
+        _SAVE_INTERVAL_SEC = 30
+        # Don't save immediately on startup — give the bot a moment
+        # to finish initial position sync and brain load so we don't
+        # write a half-built state file.
+        await asyncio.sleep(_SAVE_INTERVAL_SEC)
+        while self.is_running:
+            try:
+                self._save_state()
+            except Exception as exc:
+                logger.warning(
+                    "state_persistence_loop: save failed: %s", exc,
+                )
+            await asyncio.sleep(_SAVE_INTERVAL_SEC)
+
     async def _market_indices_loop(self) -> None:
         """v-market-indices-strip-2026-05-27: refresh dashboard regime strip.
 
@@ -3119,6 +3157,13 @@ class TradingEngineWithCommentary:
         # NORMAL priority — purely cosmetic, must never starve trading
         # decisions. Failures degrade gracefully (strip shows "stale").
         sup.register("market_indices", self._market_indices_loop,  TaskPriority.NORMAL)
+        # v-state-persistence-loop-2026-05-27: every 30s, write the
+        # current in-memory positions/trade_history/risk state to
+        # trading_state.json. Without this loop trading_state.json
+        # would only update on ad-hoc save calls and a user's manual
+        # close of a bot-tracked position would leave the file stale
+        # for minutes-to-hours. NORMAL priority.
+        sup.register("state_persistence", self._state_persistence_loop, TaskPriority.NORMAL)
 
         # v-parallel-screener-loop-2026-05-12: extracted from
         # `_analyze_markets_with_commentary` so a crash in the signal
