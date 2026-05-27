@@ -47,12 +47,23 @@ t = cfg.get("trading", {})
 
 # Hard expectations for the live-launch period (week of 2026-05-26).
 # Update these as the bot graduates through size tiers.
+#
+# 2026-05-27 update: enable_breakout_long flipped True after the
+# 2026-05-26 ASTS/LUNR/RDW/MU rally exposed the strategy-coverage
+# gap. enable_strict_long_gates pinned True so the breakout
+# strategy uses ADX>=25 + vol>=2.0x + 1.003x break as its regime
+# filter (replacing the deferred SpyRegimeCache wiring).
+# enable_news_technical_confirmation pinned True — news strategy
+# now demands RSI/SMA20/MACD/volume confirmation before firing
+# signal_buy/signal_sell (the FLY/ASTS/TSLA pattern fix).
 expected = {
-    "enable_breakout_long":    False,
-    "live_size_multiplier":    0.25,
-    "max_daily_loss":          0.01,
-    "late_entry_cutoff_hour":  15,
-    "late_entry_cutoff_minute": 30,
+    "enable_breakout_long":              True,
+    "enable_strict_long_gates":          True,
+    "enable_news_technical_confirmation": True,
+    "live_size_multiplier":              0.25,
+    "max_daily_loss":                    0.01,
+    "late_entry_cutoff_hour":            15,
+    "late_entry_cutoff_minute":          30,
 }
 mults = t.get("strategy_size_multipliers", {}) or {}
 expected_mr = 0.5
