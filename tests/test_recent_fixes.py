@@ -1392,3 +1392,97 @@ class TestAutocancelGhostAttemptFix:
         # both the pending_orders and the inverse map should be cleaned
         assert "del self.pending_orders[order_id]" in block
         assert "self.order_id_to_symbol.pop(order_id, None)" in block
+
+
+# ── v-news-confirmation-gate-2026-05-27 ──────────────────────────────
+
+class TestNewsTechnicalConfirmationGate:
+    """News-as-consulting-not-decision gate.
+
+    Triggered by 3-for-3 losing entries on bullish-news + already-moved
+    pattern: FLY 2026-05-26 -$72.50, ASTS 2026-05-26 -$59.84, TSLA
+    2026-05-27 (user manually shorted +$360 after the news strategy's
+    BUY signal would have lost). The gate requires technical
+    confirmation before news_strategy emits signal_buy/signal_sell.
+
+    For BUY: rsi<55, price within 5% of sma_20, macd_val >= macd_sig,
+             volume_ratio >= 1.2x.
+    For SELL: mirror image.
+
+    Behind ENABLE_NEWS_TECHNICAL_CONFIRMATION (default True) so it can
+    be toggled off via API if proven too restrictive in live trading.
+    """
+
+    def test_config_property_exists(self):
+        from core.config import Config
+        cfg = Config()
+        # Default must be True so the gate is on out of the box.
+        assert cfg.ENABLE_NEWS_TECHNICAL_CONFIRMATION is True
+
+    def test_gate_marker_in_news_strategy(self):
+        src = NEWS_STRATEGY_PATH.read_text()
+        assert "v-news-confirmation-gate-2026-05-27" in src
+        # Must also be referenced in config.py so future-me can grep
+        # both ends of the wiring.
+        cfg_src = CONFIG_PATH.read_text()
+        assert "v-news-confirmation-gate-2026-05-27" in cfg_src
+
+    def test_gate_reads_config_flag(self):
+        """The gate must read ENABLE_NEWS_TECHNICAL_CONFIRMATION so
+        operators can flip it without a restart. Hardcoded gate would
+        defeat the whole point of making it toggle-able."""
+        src = NEWS_STRATEGY_PATH.read_text()
+        start = src.index("v-news-confirmation-gate-2026-05-27")
+        body = src[start : start + 4500]
+        assert "ENABLE_NEWS_TECHNICAL_CONFIRMATION" in body
+
+    def test_all_four_buy_criteria_present(self):
+        """BUY direction must check all four: RSI, price extension
+        vs SMA20, MACD direction, and volume_ratio.
+        Anchor each by the failure-tag string we log so log grep
+        stays stable even if the implementation refactors."""
+        src = NEWS_STRATEGY_PATH.read_text()
+        start = src.index("v-news-confirmation-gate-2026-05-27")
+        body = src[start : start + 4500]
+        # BUY branch failure tags
+        assert 'rsi_extended=' in body
+        assert 'price_extended_above_sma20=' in body
+        assert 'macd_bearish_cross=' in body
+        assert 'low_volume=' in body
+
+    def test_sell_direction_mirror_criteria(self):
+        """SELL direction must use mirror-image thresholds (RSI>=45
+        for oversold, price extended BELOW SMA20, MACD bullish cross).
+        Without this, SELL signals would bypass the gate entirely."""
+        src = NEWS_STRATEGY_PATH.read_text()
+        start = src.index("v-news-confirmation-gate-2026-05-27")
+        body = src[start : start + 4500]
+        assert 'rsi_oversold=' in body
+        assert 'price_extended_below_sma20=' in body
+        assert 'macd_bullish_cross=' in body
+
+    def test_gate_runs_after_verifier_before_signal_emission(self):
+        """The gate must run AFTER the verifier success path (so we
+        don't burn verifier cycles on signals the gate would block)
+        but BEFORE the `_log_decision("signal_buy", ...)` emission.
+        Anchor by relative position of the v-tag and the emission."""
+        src = NEWS_STRATEGY_PATH.read_text()
+        gate_pos = src.index("v-news-confirmation-gate-2026-05-27")
+        # Find the next signal_buy emission after the gate.
+        emit_pos = src.index('"signal_buy" if signal_type', gate_pos)
+        assert gate_pos < emit_pos
+        # And the "Fresh News Confirmed" commentary should come AFTER
+        # the gate (gate runs first; if gate skips, no "confirmed"
+        # banner shown to the user — which would be misleading).
+        confirmed_pos = src.index("Fresh News Confirmed", gate_pos)
+        assert gate_pos < confirmed_pos
+        assert confirmed_pos < emit_pos
+
+    def test_skip_log_reason_is_no_technical_confirmation(self):
+        """Anchor on the exact reason string used in
+        `_log_decision(..., "skip", "no_technical_confirmation", ...)`
+        so audit grep stays stable."""
+        src = NEWS_STRATEGY_PATH.read_text()
+        start = src.index("v-news-confirmation-gate-2026-05-27")
+        body = src[start : start + 4500]
+        assert '"no_technical_confirmation"' in body

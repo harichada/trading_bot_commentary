@@ -1054,6 +1054,101 @@ class FreeNewsSignalStrategy(TradingStrategyWithCommentary):
                 ))
                 return None
 
+            # v-news-confirmation-gate-2026-05-27: news as consulting,
+            # not decision-maker. Three losing patterns in 2 sessions
+            # (FLY 2026-05-26 -$72.50, ASTS 2026-05-26 -$59.84, TSLA
+            # 2026-05-27 — user shorted manually after the strategy's
+            # BUY signal would have lost) all shared the same shape:
+            # bullish news on stocks that had already moved up. News
+            # alone is a lagging indicator — by the time the strategy
+            # sees "fresh articles + bullish sentiment," the move it
+            # would predict has already happened. Require multiple
+            # technical confirmations before emitting the signal.
+            #
+            # For BUY: RSI not in chase territory (<55), price not
+            # extended above SMA20 (<=5%), MACD agreeing with bullish
+            # direction, volume showing real interest (>=1.2x avg).
+            # For SELL: mirror image.
+            # All four must agree — any failure skips with a single
+            # rolled-up reason string for log audit.
+            #
+            # Gated by Config.ENABLE_NEWS_TECHNICAL_CONFIRMATION so we
+            # can toggle off via API without a restart if needed.
+            try:
+                from core.config import Config as _CfgConf
+                _gate_on = _CfgConf().ENABLE_NEWS_TECHNICAL_CONFIRMATION
+            except Exception:
+                _gate_on = True
+
+            if _gate_on:
+                _indicators = market_data.indicators or {}
+                _rsi = float(_indicators.get('rsi', 50.0) or 50.0)
+                _sma_20 = float(_indicators.get('sma_20', 0.0) or 0.0)
+                _macd_val = float(_indicators.get('macd', 0.0) or 0.0)
+                _macd_sig = float(_indicators.get('macd_signal', 0.0) or 0.0)
+                _vol_ratio = float(_indicators.get('volume_ratio', 1.0) or 1.0)
+                _close = float(market_data.close)
+
+                _ext_pct = (
+                    (_close - _sma_20) / _sma_20 * 100
+                    if _sma_20 > 0 else 0.0
+                )
+
+                _failures = []
+                if signal_type == SignalType.BUY:
+                    if _rsi >= 55.0:
+                        _failures.append(f"rsi_extended={_rsi:.1f}>=55")
+                    if _sma_20 > 0 and _ext_pct > 5.0:
+                        _failures.append(f"price_extended_above_sma20={_ext_pct:+.1f}%")
+                    if _macd_val < _macd_sig:
+                        _failures.append(
+                            f"macd_bearish_cross={_macd_val:.3f}<{_macd_sig:.3f}"
+                        )
+                    if _vol_ratio < 1.2:
+                        _failures.append(f"low_volume={_vol_ratio:.2f}<1.2x")
+                else:  # SELL — mirror
+                    if _rsi <= 45.0:
+                        _failures.append(f"rsi_oversold={_rsi:.1f}<=45")
+                    if _sma_20 > 0 and _ext_pct < -5.0:
+                        _failures.append(f"price_extended_below_sma20={_ext_pct:+.1f}%")
+                    if _macd_val > _macd_sig:
+                        _failures.append(
+                            f"macd_bullish_cross={_macd_val:.3f}>{_macd_sig:.3f}"
+                        )
+                    if _vol_ratio < 1.2:
+                        _failures.append(f"low_volume={_vol_ratio:.2f}<1.2x")
+
+                if _failures:
+                    self._log_decision(
+                        market_data, "skip", "no_technical_confirmation",
+                        side=("buy" if signal_type == SignalType.BUY else "sell"),
+                        sentiment=round(avg_sentiment, 3),
+                        rsi=round(_rsi, 1),
+                        sma_20=round(_sma_20, 2),
+                        ext_pct=round(_ext_pct, 2),
+                        macd_val=round(_macd_val, 4),
+                        macd_sig=round(_macd_sig, 4),
+                        vol_ratio=round(_vol_ratio, 2),
+                        failures="|".join(_failures),
+                    )
+                    self.commentary.add_commentary(TradingCommentary(
+                        timestamp=datetime.now(),
+                        type=CommentaryType.RISK_ASSESSMENT,
+                        symbol=symbol,
+                        title=f"⛔ News Skip — No Technical Confirmation",
+                        message=(
+                            f"News signal "
+                            f"{'BUY' if signal_type == SignalType.BUY else 'SELL'} "
+                            f"on {symbol} but technicals don't agree:\n  "
+                            + "\n  ".join(_failures) +
+                            "\n\nNews is a consulting input, not a "
+                            "decision-maker. Waiting for a technical setup "
+                            "that confirms the news read."
+                        ),
+                        importance=6,
+                    ))
+                    return None
+
             # Verified (or verifier disabled) — announce in commentary so the
             # user can see WHY this signal made it past the gate.
             if v is not None:

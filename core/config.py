@@ -368,6 +368,30 @@ class Config:
         return int(self.manager.get('trading.warmup_minutes_before_open', 30))
 
     @property
+    def ENABLE_NEWS_TECHNICAL_CONFIRMATION(self) -> bool:
+        """v-news-confirmation-gate-2026-05-27: require technical
+        confirmation before news strategy fires signal_buy/signal_sell.
+
+        Operator decision 2026-05-27 after 3-for-3 losing entries
+        across 2 sessions (FLY/ASTS 2026-05-26, TSLA would-have on
+        2026-05-27) all of shape: bullish news sentiment + already-
+        moved price. News alone is a lagging indicator. With this
+        gate on, news_strategy demands matching technical state:
+          BUY: rsi<55, price within 5% of sma_20, macd_val>=macd_sig,
+               volume_ratio>=1.2x average. SELL: inverted.
+
+        Default True. Toggle False via API
+        (PUT /api/settings/trading) if the gate proves too restrictive
+        in practice and we lose real opportunities. Audit grep:
+        `engine_decision .* reason=no_technical_confirmation`.
+        """
+        return bool(
+            self.manager.get(
+                'trading.enable_news_technical_confirmation', True
+            )
+        )
+
+    @property
     def ENABLE_NEWS_VERIFIER(self) -> bool:
         """v-news-verifier-toggle-2026-04-29: enable the fresh-news
         re-verification gate that was added 2026-04-28.
