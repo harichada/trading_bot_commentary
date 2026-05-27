@@ -718,6 +718,21 @@ async def reset_settings():
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
+@app.get("/api/market-indices")
+async def get_market_indices():
+    """v-market-indices-strip-2026-05-27: regime strip data.
+
+    Returns the latest cached snapshot of S&P 500, Dow, Nasdaq,
+    Russell 2000, and VIX prices + intraday % change. The cache is
+    populated by an engine background task every 10s; this route
+    simply returns the snapshot. On cold start (before first refresh)
+    returns `{"indices": [], "stale": true, ...}` with HTTP 200 so
+    the frontend renders "—" placeholders instead of an error.
+    """
+    from core.market_indices import MarketIndicesCache
+    return MarketIndicesCache.instance().snapshot()
+
+
 @app.get("/api/status")
 async def get_bot_status():
     """Get current bot status"""

@@ -2687,6 +2687,29 @@ class TradingEngineWithCommentary:
                 source="schwab",
             ))
 
+    async def _market_indices_loop(self) -> None:
+        """v-market-indices-strip-2026-05-27: refresh dashboard regime strip.
+
+        Calls ``MarketIndicesCache.instance().refresh(schwab_client)``
+        every ``_REFRESH_SEC`` seconds. Single Schwab batched call per
+        cycle, which gates against per-tab amplification we'd get with
+        on-demand fetching. Failures are logged at DEBUG; the strip
+        renders a "stale" badge after 30s without an update.
+        """
+        _REFRESH_SEC = 10
+        # Light initial sleep so we don't hammer Schwab in the first
+        # second of startup while other loops are still initializing.
+        await asyncio.sleep(2)
+        from core.market_indices import MarketIndicesCache
+        cache = MarketIndicesCache.instance()
+        while self.is_running:
+            try:
+                if self.schwab_client is not None:
+                    cache.refresh(self.schwab_client)
+            except Exception as exc:
+                logger.debug("market_indices_loop iteration failed: %s", exc)
+            await asyncio.sleep(_REFRESH_SEC)
+
     async def _quote_streamer_loop(self) -> None:
         """Position-interest reconciler — stream-only, no REST fallback.
 
@@ -3092,6 +3115,10 @@ class TradingEngineWithCommentary:
         sup.register("quote_streamer", self._quote_streamer_loop, TaskPriority.NORMAL)
         sup.register("position_loop",  self._position_loop,        TaskPriority.CRITICAL)
         sup.register("analysis_loop",  self._analysis_loop,        TaskPriority.NORMAL)
+        # v-market-indices-strip-2026-05-27: regime strip refresh loop.
+        # NORMAL priority — purely cosmetic, must never starve trading
+        # decisions. Failures degrade gracefully (strip shows "stale").
+        sup.register("market_indices", self._market_indices_loop,  TaskPriority.NORMAL)
 
         # v-parallel-screener-loop-2026-05-12: extracted from
         # `_analyze_markets_with_commentary` so a crash in the signal
