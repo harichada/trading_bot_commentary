@@ -599,7 +599,26 @@ class MeanReversionStrategyWithCommentary(TradingStrategyWithCommentary):
                 stop_distance = atr_mult * atr
                 stop_loss = market_data.close - stop_distance
                 rr_target = market_data.close + (rr_ratio * stop_distance)
-                take_profit = min(bb_middle * self.take_profit_mult, rr_target)
+                # v-mean-rev-target-uncap-2026-05-28: drop the
+                # min(bb_middle * take_profit_mult, rr_target) cap.
+                # Operator reported 2026-05-28 OCO targets sitting only
+                # $2 from entry on real fills today. Inspection of the
+                # log lines confirmed: KEEL target dist $0.125 vs stop
+                # dist $0.135 (R:R 0.93), SNAP R:R 0.72, MRVL 1.20,
+                # RDW 1.37 — all far below the configured 2.0 R:R.
+                # Root cause: when bb_middle sits just above entry
+                # (common on a shallow pullback or a stock that's
+                # already mean-reverted partway), `min(bb_middle,
+                # rr_target)` collapsed to bb_middle and capped the
+                # winner before it could run.
+                #
+                # New rule: take_profit is the ATR-based rr_target,
+                # unconditionally. Preserves the configured 2.0 R:R.
+                # Earlier "revert to mean" logic was correct in theory
+                # but in practice killed winners — the trailing stop
+                # in the exit manager handles "revert to mean" exits
+                # better than a hard cap on take_profit ever did.
+                take_profit = rr_target
                 self._log_decision(market_data, "signal_buy", _entry_pattern,
                                    rsi=round(rsi, 2), distance_pct=round(distance_from_mean, 2),
                                    stop=round(stop_loss, 2), target=round(take_profit, 2),
