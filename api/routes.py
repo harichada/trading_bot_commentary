@@ -208,7 +208,28 @@ async def get_dashboard():
     # replace with a proper login flow (e.g. session cookie from POST /api/login).
     api_key = os.getenv("TRADING_API_KEY", "")
     auth_script = f'<script>window.TRADING_API_KEY={json.dumps(api_key)};</script>'
-    html = DASHBOARD_HTML_WITH_COMMENTARY.replace("</head>", f"{auth_script}</head>", 1)
+
+    # v-dashboard-hotreload-2026-05-28: re-read dashboard.html from
+    # disk on every request instead of using the cached
+    # DASHBOARD_HTML_WITH_COMMENTARY captured at module import time.
+    #
+    # Why: HTML/CSS changes are common during development and operator
+    # tuning. The cached read meant every edit required a full bot
+    # restart to land in the browser — exactly the trap that hid the
+    # centering/restyle work today (operator hard-refreshing repeatedly
+    # while the bot kept serving the morning-startup snapshot).
+    #
+    # Cost: one ~250KB file read per dashboard page load. Negligible
+    # on local SSD. If this ever becomes a real perf concern in a
+    # multi-user deployment, add an mtime-based cache. For single-user
+    # localhost, always-fresh wins.
+    try:
+        with open(_os.path.join(_template_dir, 'dashboard.html'), 'r') as _f:
+            template_html = _f.read()
+    except FileNotFoundError:
+        template_html = DASHBOARD_HTML_WITH_COMMENTARY  # fallback to import-time copy
+
+    html = template_html.replace("</head>", f"{auth_script}</head>", 1)
     return HTMLResponse(content=html)
 
 

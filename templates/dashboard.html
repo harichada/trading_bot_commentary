@@ -1224,47 +1224,70 @@
         .ticker-tape.modern::after  { right: 0; background: linear-gradient(to left,  var(--bg), transparent); }
 
         /* v-market-indices-strip-2026-05-27: regime strip above ticker tape.
-           Thin, mono, dark — at-a-glance read of S&P/Dow/Nasdaq/Russell/VIX
-           without dominating the dashboard. */
+           Centered, larger, mono — easy at-a-glance read of
+           S&P/Dow/Nasdaq/Russell/VIX. Restyled 2026-05-28 per operator
+           feedback ("too small, can you center it and make little large"):
+           font 12→16px, gap 28→44px, padding 8/20 → 14/24, justify centered.
+           Stale badge still pinned right via absolute positioning so the
+           centered row stays visually balanced. */
         .market-indices-strip {
+            position: relative;
             display: flex;
-            gap: 28px;
-            padding: 8px 20px;
-            background: #0a0a0a;
-            border-bottom: 1px solid #1f1f1f;
-            font-family: 'SF Mono', Menlo, Consolas, monospace;
-            font-size: 12px;
+            justify-content: center !important;
             align-items: center;
+            gap: 40px;
+            padding: 10px 24px;
+            background: #0a0a0a;
+            border-bottom: 1px solid #1a1a1a;
+            font-family: 'SF Pro Text', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            font-size: 14px;
             flex-wrap: wrap;
+            width: 100%;
+            box-sizing: border-box;
         }
         .mi-item {
-            color: #cfcfcf;
+            color: #c8c8c8;
             white-space: nowrap;
+            display: inline-flex;
+            align-items: baseline;
+            gap: 8px;
         }
         .mi-item .mi-name {
-            color: #6ea8ff;
-            font-weight: 600;
-            margin-right: 6px;
+            color: #9aa4b2;
+            font-weight: 500;
+            letter-spacing: 0.2px;
+            font-size: 0.95em;
         }
         .mi-item .mi-value {
-            color: #f1f1f1;
-            font-weight: 500;
+            color: #ffffff;
+            font-weight: 700;
+            font-variant-numeric: tabular-nums;
         }
         .mi-change {
-            margin-left: 4px;
-            font-weight: 500;
+            font-weight: 600;
+            font-variant-numeric: tabular-nums;
+            display: inline-flex;
+            align-items: center;
+            gap: 2px;
         }
         .mi-change.up   { color: #22c55e; }
         .mi-change.down { color: #ef4444; }
+        .mi-arrow { font-size: 0.85em; }
         .mi-stale {
-            margin-left: auto;
-            padding: 1px 6px;
+            position: absolute;
+            right: 16px;
+            top: 50%;
+            transform: translateY(-50%);
+            padding: 2px 8px;
             background: #3a2a08;
             color: #f59e0b;
             font-size: 10px;
             text-transform: uppercase;
             border-radius: 3px;
             letter-spacing: 0.5px;
+        }
+        @media (max-width: 720px) {
+            .market-indices-strip { gap: 22px; font-size: 14px; padding: 10px 16px; }
         }
 
         /* Hide legacy header markup that got replaced */
@@ -4630,7 +4653,14 @@
             // wasted requests while keeping the strip visibly live.
             async function refreshMarketIndices() {
                 try {
-                    const r = await fetch('/api/market-indices');
+                    // v-market-indices-strip-2026-05-27: mirror the auth
+                    // pattern used by refreshPortfolioDonut/Performance —
+                    // /api/* is gated by APIAuthMiddleware when
+                    // TRADING_API_KEY is set in the bot's env.
+                    const tok = window.TRADING_API_KEY;
+                    const r = await fetch('/api/market-indices', {
+                        headers: tok ? {'Authorization': 'Bearer ' + tok} : {},
+                    });
                     if (!r.ok) return;  // leave last values, will retry
                     const d = await r.json();
                     const staleEl = document.getElementById('mi-stale');
@@ -4644,13 +4674,24 @@
                         const el = document.querySelector(sel);
                         if (!el) continue;
                         const up = ix.change_pct >= 0;
-                        const arrow = up ? '▲' : '▼';
+                        // v-market-indices-restyle-2026-05-28: match the
+                        // sample's compact format. Diagonal arrows ↗/↘
+                        // (Unicode U+2197 / U+2198) feel less heavy than
+                        // ▲/▼ and read as "trend" not "buy/sell signal".
+                        // Numbers comma-formatted via toLocaleString —
+                        // S&P 500 reads as "5,847.23" not "5847.23".
+                        const arrow = up ? '↗' : '↘';
                         const cls = up ? 'up' : 'down';
                         const sign = up ? '+' : '';
+                        const priceStr = ix.last.toLocaleString('en-US', {
+                            minimumFractionDigits: 2,
+                            maximumFractionDigits: 2,
+                        });
                         el.innerHTML =
-                            `${ix.last.toFixed(2)} ` +
+                            `${priceStr} ` +
                             `<span class="mi-change ${cls}">` +
-                            `${arrow} ${sign}${ix.change_pct.toFixed(2)}%</span>`;
+                            `<span class="mi-arrow">${arrow}</span>` +
+                            `${sign}${ix.change_pct.toFixed(2)}%</span>`;
                     }
                 } catch (e) {
                     // Silent — strip keeps last good values. We don't
@@ -4763,15 +4804,86 @@
             const response = await authFetch('/api/start', { method: 'POST' });
             if (response.ok) {
                 console.log('Trading started');
+                applyBotStatusToUi({ bot_running: true });
             }
         }
-        
+
         async function stopTrading() {
             const response = await authFetch('/api/stop', { method: 'POST' });
             if (response.ok) {
                 console.log('Trading stopped');
+                applyBotStatusToUi({ bot_running: false });
             }
         }
+
+        // v-ui-status-restore-2026-05-28: on page refresh, the dashboard
+        // used to start with Start enabled + mode-toggle unchecked
+        // regardless of whether the bot was actually running in live
+        // mode. Operator complaint 2026-05-28: "if I refresh the screen
+        // I again have to click start and change to live trading mode,
+        // why doesnt UI maintain the status".
+        //
+        // Fix: on DOMContentLoaded, fetch /api/status and reflect:
+        //   - bot_running -> disable Start, enable Stop (button states)
+        //   - mode == "live" -> mode-toggle checked + mode-label red
+        //
+        // Browser refresh now picks up authoritative server state
+        // instead of resetting to "stopped + simulation."
+        function applyBotStatusToUi(status) {
+            try {
+                const running = !!status.bot_running;
+                const isLive  = status.mode === 'live';
+                // There are duplicate id="mode-toggle" elements (the
+                // dashboard has both a hidden legacy header and the
+                // new app-shell header, both with the same id). Browser
+                // returns only the first via getElementById; use
+                // querySelectorAll so both stay in sync.
+                document.querySelectorAll('#mode-toggle').forEach((el) => {
+                    el.checked = isLive;
+                });
+                document.querySelectorAll('#mode-label').forEach((el) => {
+                    el.textContent = isLive ? 'LIVE TRADING' : 'Simulation Mode';
+                    el.style.color = isLive ? '#ef4444' : '#4a9eff';
+                });
+                // Start/Stop buttons: gray out the inapplicable one.
+                document.querySelectorAll('button').forEach((btn) => {
+                    const txt = (btn.textContent || '').trim();
+                    if (txt.startsWith('Start')) {
+                        btn.disabled = running;
+                        btn.style.opacity = running ? '0.45' : '1';
+                        btn.style.cursor  = running ? 'not-allowed' : 'pointer';
+                    } else if (txt.startsWith('Stop')) {
+                        btn.disabled = !running;
+                        btn.style.opacity = running ? '1' : '0.45';
+                        btn.style.cursor  = running ? 'pointer' : 'not-allowed';
+                    }
+                });
+            } catch (e) {
+                console.debug('applyBotStatusToUi failed', e);
+            }
+        }
+
+        async function restoreBotStatusOnLoad() {
+            try {
+                const tok = window.TRADING_API_KEY;
+                const r = await fetch('/api/status', {
+                    headers: tok ? {'Authorization': 'Bearer ' + tok} : {},
+                });
+                if (!r.ok) return;
+                const d = await r.json();
+                applyBotStatusToUi(d);
+                // Re-sync every 30s so a manual change made via API
+                // or a backend-side mode flip is reflected in the UI
+                // without requiring another refresh.
+                setTimeout(restoreBotStatusOnLoad, 30000);
+            } catch (e) {
+                console.debug('restoreBotStatusOnLoad fetch failed', e);
+                // Retry sooner on failure so a transient hiccup doesn't
+                // leave the UI in the "fresh page load" state for 30s.
+                setTimeout(restoreBotStatusOnLoad, 5000);
+            }
+        }
+        document.addEventListener('DOMContentLoaded', restoreBotStatusOnLoad);
         
         async function toggleTradingMode() {
             const toggle = document.getElementById('mode-toggle');
