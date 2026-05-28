@@ -386,7 +386,46 @@ class MeanReversionStrategyWithCommentary(TradingStrategyWithCommentary):
                 self._log_decision(market_data, "skip", "invalid_indicators",
                                    rsi=rsi, bb_lower=bb_lower)
                 return None
-            if rsi < self.rsi_threshold and market_data.close < bb_lower:
+            # v-mean-rev-uptrend-pullback-2026-05-28: alternative entry
+            # path. Operator complaint 2026-05-28 mid-morning: bot has
+            # been silent for 3 sessions while specific stocks rise on
+            # momentum. Mean-rev currently fires only on oversold
+            # extremes (RSI<30 + below BB lower) — never catches the
+            # "stock in uptrend pulls back to support" pattern that's
+            # been the regime this week.
+            #
+            # New trigger: RSI in 30-45 (mildly soft, not extreme) AND
+            # close >= SMA50 (uptrend confirmation) AND close within 2%
+            # of BB lower (still pulling back to support). The existing
+            # falling-knife gate doesn't trigger for this path since
+            # it requires close<SMA50. The existing price-direction
+            # gate (green bar + vol>=1.5x + rejection of lows) DOES
+            # still run — confirms a bounce at the bar level before
+            # entry. Same ATR-based stop/target as the classic path.
+            #
+            # Gated by Config.ENABLE_MEAN_REV_UPTREND_PULLBACK (default
+            # True). Toggle False via API if it proves too noisy.
+            # Audit grep: `engine_decision .* signal_buy .* uptrend_pullback`.
+            from core.config import Config as _CfgUP
+            _classic_oversold = rsi < self.rsi_threshold and market_data.close < bb_lower
+            _sma_50_for_uptrend = float(indicators.get('sma_50', 0))
+            _bb_lower_dist_pct = (
+                (market_data.close - bb_lower) / bb_lower * 100
+                if bb_lower > 0 else 999.0
+            )
+            _uptrend_pullback = (
+                _CfgUP().ENABLE_MEAN_REV_UPTREND_PULLBACK
+                and 30 <= rsi <= 45
+                and _sma_50_for_uptrend > 0
+                and market_data.close >= _sma_50_for_uptrend
+                and bb_lower > 0
+                and -1.0 <= _bb_lower_dist_pct <= 2.0  # near BB lower, either side
+            )
+            _entry_pattern = (
+                "oversold_bounce" if _classic_oversold
+                else ("uptrend_pullback" if _uptrend_pullback else None)
+            )
+            if _entry_pattern is not None:
                 # Trend filter: don't catch a falling knife.
                 # Skip the long when price is below MA50 AND momentum is bearish.
                 # This is the LCID 2026-04-14 setup: oversold inside a downtrend
@@ -532,10 +571,11 @@ class MeanReversionStrategyWithCommentary(TradingStrategyWithCommentary):
                 stop_loss = market_data.close - stop_distance
                 rr_target = market_data.close + (rr_ratio * stop_distance)
                 take_profit = min(bb_middle * self.take_profit_mult, rr_target)
-                self._log_decision(market_data, "signal_buy", "oversold_bounce",
+                self._log_decision(market_data, "signal_buy", _entry_pattern,
                                    rsi=round(rsi, 2), distance_pct=round(distance_from_mean, 2),
                                    stop=round(stop_loss, 2), target=round(take_profit, 2),
-                                   atr=round(atr, 3), stop_dist=round(stop_distance, 2))
+                                   atr=round(atr, 3), stop_dist=round(stop_distance, 2),
+                                   bb_lower_dist_pct=round(_bb_lower_dist_pct, 2))
                 return TradingSignal(
                     symbol=market_data.symbol,
                     signal_type=SignalType.BUY,

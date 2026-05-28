@@ -368,6 +368,34 @@ class Config:
         return int(self.manager.get('trading.warmup_minutes_before_open', 30))
 
     @property
+    def ENABLE_MEAN_REV_UPTREND_PULLBACK(self) -> bool:
+        """v-mean-rev-uptrend-pullback-2026-05-28: alternative mean-rev
+        entry for stocks pulling back to support inside an uptrend.
+
+        Operator instruction 2026-05-28 ~10:00 ET after 3 sessions of
+        the bot being silent while specific names ran on momentum.
+        Existing mean-rev fires only on extreme oversold (RSI<30 +
+        close below BB lower); never catches the "in uptrend, pulling
+        back to support" pattern that's been today's regime.
+
+        New trigger:
+          RSI between 30 and 45 (mild)
+          close >= SMA50 (uptrend confirmation)
+          close within 2% of BB lower OR up to 1% below it
+        Same downstream gates: price-direction (green bar + vol>=1.5x
+        + rejection of lows). Same ATR-based stop/target. Pattern is
+        logged as `signal_buy reason=uptrend_pullback` for audit.
+
+        Default True. Toggle False via API if it produces too many
+        false starts. Reversible without code change.
+        """
+        return bool(
+            self.manager.get(
+                'trading.enable_mean_rev_uptrend_pullback', True
+            )
+        )
+
+    @property
     def ENABLE_NEWS_TECHNICAL_CONFIRMATION(self) -> bool:
         """v-news-confirmation-gate-2026-05-27: require technical
         confirmation before news strategy fires signal_buy/signal_sell.

@@ -1558,3 +1558,74 @@ class TestStatePersistenceLoop:
             "first asyncio.sleep must come before the while loop "
             "so we don't write a half-built state on startup"
         )
+
+
+# ── v-mean-rev-uptrend-pullback-2026-05-28 ───────────────────────────
+
+class TestMeanRevUptrendPullback:
+    """Alternative mean-rev entry for stocks pulling back to support
+    inside an uptrend.
+
+    Triggered 2026-05-28 ~10:00 ET. Three sessions of the bot being
+    silent while specific names ran on momentum. Existing mean-rev
+    fires only on extreme oversold (RSI<30 + close below BB lower);
+    never catches "uptrend pulling back to support" — a pattern that
+    today's regime keeps producing.
+
+    New trigger: RSI 30-45 + close>=SMA50 + close within 2% of
+    BB lower (or up to 1% below). Same downstream gates: falling-
+    knife (naturally inactive since close>=SMA50), price-direction
+    (still must see green bar + vol>=1.5x + lower-wick > body).
+    Same ATR-based stop/target. Pattern logged with
+    `reason=uptrend_pullback` for audit.
+
+    Gated by ENABLE_MEAN_REV_UPTREND_PULLBACK (default True).
+    """
+
+    def test_config_property_exists(self):
+        from core.config import Config
+        cfg = Config()
+        assert cfg.ENABLE_MEAN_REV_UPTREND_PULLBACK is True
+
+    def test_marker_in_strategy(self):
+        src = (REPO_ROOT / "strategies" / "builtin.py").read_text()
+        assert "v-mean-rev-uptrend-pullback-2026-05-28" in src
+        cfg_src = CONFIG_PATH.read_text()
+        assert "v-mean-rev-uptrend-pullback-2026-05-28" in cfg_src
+
+    def test_rsi_window_30_to_45(self):
+        """The new path must fire on RSI in the 30-45 band, not
+        outside it. Anchoring on the exact comparison string so a
+        refactor that drifts the band gets caught."""
+        src = (REPO_ROOT / "strategies" / "builtin.py").read_text()
+        start = src.index("v-mean-rev-uptrend-pullback-2026-05-28")
+        body = src[start : start + 3500]
+        assert "30 <= rsi <= 45" in body
+
+    def test_requires_close_at_or_above_sma50(self):
+        """Uptrend confirmation must demand close>=SMA50. Without
+        this the new path becomes a generic 'buy mid-RSI' entry."""
+        src = (REPO_ROOT / "strategies" / "builtin.py").read_text()
+        start = src.index("v-mean-rev-uptrend-pullback-2026-05-28")
+        body = src[start : start + 3500]
+        assert "market_data.close >= _sma_50_for_uptrend" in body
+
+    def test_bb_lower_proximity_band(self):
+        """Must be within 2% of BB lower (or up to 1% below).
+        Wider band would not be a 'pullback to support'; narrower
+        would miss most setups."""
+        src = (REPO_ROOT / "strategies" / "builtin.py").read_text()
+        start = src.index("v-mean-rev-uptrend-pullback-2026-05-28")
+        body = src[start : start + 3500]
+        assert "-1.0 <= _bb_lower_dist_pct <= 2.0" in body
+
+    def test_signal_log_uses_pattern_string(self):
+        """Anchor on the exact reason="uptrend_pullback" string so
+        audit grep stays stable."""
+        src = (REPO_ROOT / "strategies" / "builtin.py").read_text()
+        start = src.index("v-mean-rev-uptrend-pullback-2026-05-28")
+        body = src[start : start + 6000]
+        assert '"uptrend_pullback"' in body
+        # And the classic path's pattern is preserved (regression
+        # guard — don't accidentally rename the existing trigger).
+        assert '"oversold_bounce"' in body
