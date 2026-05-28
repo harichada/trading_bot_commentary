@@ -142,6 +142,95 @@ class TechnicalAnalyzerWithCommentary:
             indicators['volume_ratio'] = float(volume[-1] / np.mean(volume[-20:])) if len(volume) > 20 and np.mean(volume[-20:]) > 0 else 1.0
             indicators['high_low_ratio'] = float((high[-1] - low[-1]) / close[-1]) if close[-1] > 0 else 0.02
 
+            # v-direction-reader-features-2026-05-28: slope-over-time
+            # features required by the direction reader. Snapshot
+            # indicators (rsi, ema_20, macd) tell you WHERE the stock is.
+            # Slopes tell you WHICH WAY it's heading. Direction reading
+            # without slopes is a still photo; with slopes it's a movie.
+            #
+            # All slopes are computed as % change over a window of bars,
+            # which normalizes across stocks (a $5 stock and a $500 stock
+            # both express their trend strength in the same units).
+            try:
+                # EMA-20 slope over last 5 bars: trend direction + steepness.
+                ema_20_series = ta.trend.ema_indicator(
+                    data['Close'], window=20
+                )
+                if len(ema_20_series) >= 6 and ema_20_series.iloc[-6] > 0:
+                    indicators['ema_20_slope_pct'] = float(
+                        (ema_20_series.iloc[-1] - ema_20_series.iloc[-6])
+                        / ema_20_series.iloc[-6] * 100
+                    )
+                else:
+                    indicators['ema_20_slope_pct'] = 0.0
+
+                # SMA-50 slope over last 10 bars: dominant trend direction.
+                sma_50_series = ta.trend.sma_indicator(
+                    data['Close'], window=50
+                )
+                if len(sma_50_series) >= 11 and sma_50_series.iloc[-11] > 0:
+                    indicators['sma_50_slope_pct'] = float(
+                        (sma_50_series.iloc[-1] - sma_50_series.iloc[-11])
+                        / sma_50_series.iloc[-11] * 100
+                    )
+                else:
+                    indicators['sma_50_slope_pct'] = 0.0
+
+                # RSI slope over last 3 bars: momentum building or fading.
+                rsi_series = ta.momentum.rsi(data['Close'], window=14)
+                if len(rsi_series) >= 4:
+                    indicators['rsi_slope'] = float(
+                        rsi_series.iloc[-1] - rsi_series.iloc[-4]
+                    )
+                else:
+                    indicators['rsi_slope'] = 0.0
+
+                # OBV slope over last 10 bars: smart-money direction
+                # via volume. Rising OBV in flat-price = accumulation;
+                # falling OBV in flat-price = distribution.
+                obv_series = ta.volume.on_balance_volume(
+                    data['Close'], data['Volume']
+                )
+                if len(obv_series) >= 11 and abs(obv_series.iloc[-11]) > 0:
+                    indicators['obv_slope_pct'] = float(
+                        (obv_series.iloc[-1] - obv_series.iloc[-11])
+                        / abs(obv_series.iloc[-11]) * 100
+                    )
+                else:
+                    indicators['obv_slope_pct'] = 0.0
+
+                # MACD histogram direction over last 3 bars: trend
+                # acceleration/deceleration. Rising histogram = trend
+                # gaining force; falling histogram = trend losing steam.
+                macd_hist_series = macd.macd_diff()
+                if len(macd_hist_series) >= 4:
+                    indicators['macd_hist_slope'] = float(
+                        macd_hist_series.iloc[-1] - macd_hist_series.iloc[-4]
+                    )
+                else:
+                    indicators['macd_hist_slope'] = 0.0
+
+                # Close-vs-SMA50 percentage: location within the trend
+                # cycle. Far above SMA50 = late-trend (extended);
+                # near SMA50 = pulling back; far below = downtrend.
+                if indicators.get('sma_50', 0) > 0:
+                    indicators['close_vs_sma50_pct'] = float(
+                        (close[-1] - indicators['sma_50'])
+                        / indicators['sma_50'] * 100
+                    )
+                else:
+                    indicators['close_vs_sma50_pct'] = 0.0
+            except Exception as exc:
+                # Slope features are nice-to-have, not load-bearing.
+                # If anything fails, default to neutral (0.0) so the
+                # direction reader treats this as "no trend signal".
+                logger.debug("direction-reader slope features failed: %s", exc)
+                for k in (
+                    'ema_20_slope_pct', 'sma_50_slope_pct', 'rsi_slope',
+                    'obv_slope_pct', 'macd_hist_slope', 'close_vs_sma50_pct',
+                ):
+                    indicators.setdefault(k, 0.0)
+
             # Ensure all indicators are float type
             # v-oversold-v2-indicators-2026-05-19: skip non-scalar entries
             # (e.g. lows_50 is a list) so the float-coercion loop doesn't
