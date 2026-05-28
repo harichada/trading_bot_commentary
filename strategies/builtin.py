@@ -413,13 +413,24 @@ class MeanReversionStrategyWithCommentary(TradingStrategyWithCommentary):
                 (market_data.close - bb_lower) / bb_lower * 100
                 if bb_lower > 0 else 999.0
             )
+            # v-mean-rev-uptrend-pullback-widen-2026-05-28: aggressive
+            # widening after the initial deploy produced 0 fires in 90
+            # minutes of RTH evaluation. The original RSI 30-45 +
+            # within 2% of BB lower band was too narrow for today's
+            # regime — market is showing momentum (RSI 45-70 widely),
+            # not classic pullbacks. Widened to:
+            #   RSI 30-55  (was 30-45) — catches mid-pullbacks
+            #   close vs BB lower in (-1%, +8%) (was (-1%, +2%)) —
+            #     captures pullbacks that paused above support
+            # Safety remains intact: still requires close >= SMA50
+            # (real uptrend) so falling-knife pattern stays excluded.
             _uptrend_pullback = (
                 _CfgUP().ENABLE_MEAN_REV_UPTREND_PULLBACK
-                and 30 <= rsi <= 45
+                and 30 <= rsi <= 55
                 and _sma_50_for_uptrend > 0
                 and market_data.close >= _sma_50_for_uptrend
                 and bb_lower > 0
-                and -1.0 <= _bb_lower_dist_pct <= 2.0  # near BB lower, either side
+                and -1.0 <= _bb_lower_dist_pct <= 8.0
             )
             _entry_pattern = (
                 "oversold_bounce" if _classic_oversold
@@ -509,7 +520,25 @@ class MeanReversionStrategyWithCommentary(TradingStrategyWithCommentary):
                 _is_green = market_data.close > _bar_open
                 _has_volume = _vol_ratio_now >= 1.5
                 _has_rejection = _lower_wick > _body  # lower wick > body = rejection of lows
-                if not (_is_green and _has_volume and _has_rejection):
+
+                # v-uptrend-pullback-gate-relax-2026-05-28: relax the
+                # bar-level confirmation for the uptrend_pullback path.
+                # For classic falling-knife oversold (rsi<30 + below BB),
+                # the hammer-pattern bar (green + vol>=1.5x + lower_wick
+                # > body) is the difference between "buying the bottom"
+                # and "catching the knife." For uptrend_pullback, the
+                # close>=SMA50 requirement IS the safety net — the
+                # stock is already in a defined uptrend. Requiring a
+                # full hammer ON TOP OF that double-counts caution and
+                # makes the path fire ~never in practice (0 fires in
+                # 90 min on the original strict gate).
+                # New rule: uptrend_pullback only requires GREEN BAR
+                # (close > bar_open). Classic oversold keeps all three.
+                if _entry_pattern == "uptrend_pullback":
+                    _bar_ok = _is_green
+                else:
+                    _bar_ok = _is_green and _has_volume and _has_rejection
+                if not _bar_ok:
                     self._log_decision(
                         market_data, "skip", "mean_rev_price_direction_disagrees",
                         rsi=round(rsi, 2),

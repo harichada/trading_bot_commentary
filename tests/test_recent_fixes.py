@@ -1593,14 +1593,17 @@ class TestMeanRevUptrendPullback:
         cfg_src = CONFIG_PATH.read_text()
         assert "v-mean-rev-uptrend-pullback-2026-05-28" in cfg_src
 
-    def test_rsi_window_30_to_45(self):
-        """The new path must fire on RSI in the 30-45 band, not
-        outside it. Anchoring on the exact comparison string so a
-        refactor that drifts the band gets caught."""
+    def test_rsi_window(self):
+        """The new path's RSI band. Widened 2026-05-28 from 30-45 to
+        30-55 after the initial deploy produced 0 RTH fires —
+        regime was momentum, not classic pullback. Anchor on the
+        current value so future drift gets caught."""
         src = (REPO_ROOT / "strategies" / "builtin.py").read_text()
         start = src.index("v-mean-rev-uptrend-pullback-2026-05-28")
-        body = src[start : start + 3500]
-        assert "30 <= rsi <= 45" in body
+        body = src[start : start + 5000]
+        assert "30 <= rsi <= 55" in body
+        # And the widen v-tag is present so the history is grep-able.
+        assert "v-mean-rev-uptrend-pullback-widen-2026-05-28" in body
 
     def test_requires_close_at_or_above_sma50(self):
         """Uptrend confirmation must demand close>=SMA50. Without
@@ -1611,13 +1614,25 @@ class TestMeanRevUptrendPullback:
         assert "market_data.close >= _sma_50_for_uptrend" in body
 
     def test_bb_lower_proximity_band(self):
-        """Must be within 2% of BB lower (or up to 1% below).
-        Wider band would not be a 'pullback to support'; narrower
-        would miss most setups."""
+        """BB-lower proximity band. Widened 2026-05-28 from 2% to 8%
+        above bb_lower (still -1% below allowed). Captures pullbacks
+        that paused above support, not just at it."""
         src = (REPO_ROOT / "strategies" / "builtin.py").read_text()
         start = src.index("v-mean-rev-uptrend-pullback-2026-05-28")
-        body = src[start : start + 3500]
-        assert "-1.0 <= _bb_lower_dist_pct <= 2.0" in body
+        body = src[start : start + 5000]
+        assert "-1.0 <= _bb_lower_dist_pct <= 8.0" in body
+
+    def test_bar_gate_relaxed_for_uptrend_pullback(self):
+        """Original gate (green + vol>=1.5x + lower_wick>body) is
+        applied to classic falling-knife oversold. Uptrend_pullback
+        only needs green bar — close>=SMA50 IS the safety. Anchor
+        on the branching code."""
+        src = (REPO_ROOT / "strategies" / "builtin.py").read_text()
+        assert "v-uptrend-pullback-gate-relax-2026-05-28" in src
+        start = src.index("v-uptrend-pullback-gate-relax-2026-05-28")
+        body = src[start : start + 1500]
+        assert 'if _entry_pattern == "uptrend_pullback":' in body
+        assert "_bar_ok = _is_green" in body  # relaxed branch
 
     def test_signal_log_uses_pattern_string(self):
         """Anchor on the exact reason="uptrend_pullback" string so
