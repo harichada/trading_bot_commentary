@@ -368,6 +368,39 @@ class Config:
         return int(self.manager.get('trading.warmup_minutes_before_open', 30))
 
     @property
+    def ENABLE_DIRECTION_GATE_MEAN_REV(self) -> bool:
+        """v-direction-gate-mean-rev-uptrend-pullback-2026-05-29:
+        require direction reader to confirm uptrend before mean-rev's
+        uptrend_pullback path fires. Classic oversold_bounce path is
+        not gated by this — its edge is buying bounces in downtrends.
+        Default True. Toggle False via API if the gate rejects too
+        many valid uptrend pullbacks."""
+        return bool(
+            self.manager.get('trading.enable_direction_gate_mean_rev', True)
+        )
+
+    @property
+    def ENABLE_DIRECTION_GATE_BREAKOUT(self) -> bool:
+        """v-direction-gate-breakout-2026-05-29: require direction
+        reader to confirm a strong, non-late uptrend before breakout
+        BUY fires. Prevents late breakouts (the most common
+        false-signal pattern). Default True."""
+        return bool(
+            self.manager.get('trading.enable_direction_gate_breakout', True)
+        )
+
+    @property
+    def ENABLE_DIRECTION_GATE_NEWS(self) -> bool:
+        """v-direction-gate-news-2026-05-29: require direction reader
+        to NOT disagree with the news signal direction. BUY needs
+        direction>=0 and not exhausted; SELL inverted. Layered ON TOP
+        of v-news-confirmation-gate-2026-05-27's technical checks for
+        defense-in-depth. Default True."""
+        return bool(
+            self.manager.get('trading.enable_direction_gate_news', True)
+        )
+
+    @property
     def ENABLE_MEAN_REV_UPTREND_PULLBACK(self) -> bool:
         """v-mean-rev-uptrend-pullback-2026-05-28: alternative mean-rev
         entry for stocks pulling back to support inside an uptrend.

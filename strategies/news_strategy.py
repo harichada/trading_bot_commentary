@@ -1149,6 +1149,64 @@ class FreeNewsSignalStrategy(TradingStrategyWithCommentary):
                     ))
                     return None
 
+            # v-direction-gate-news-2026-05-29: second-layer gate on
+            # top of the existing technical-confirmation gate
+            # (v-news-confirmation-gate-2026-05-27 above). The technical
+            # gate checks individual indicators (RSI<55, price-vs-SMA20,
+            # MACD agreement, volume); the direction reader synthesizes
+            # them into a single direction + phase classification with
+            # explicit "exhaustion" detection.
+            #
+            # For BUY signals: require direction >= 0 (not in clear
+            # downtrend — don't fight bearish news against bullish
+            # sentiment) AND phase != 'exhausted' (don't catch the
+            # climax buy). The direction allowance of 0 is more
+            # permissive than mean-rev/breakout because news catalysts
+            # can legitimately flip a flat-to-slightly-bearish chart.
+            #
+            # For SELL signals: mirror. Direction <= 0 + phase
+            # != 'exhausted'.
+            #
+            # Gated by Config.ENABLE_DIRECTION_GATE_NEWS (default True).
+            try:
+                from core.config import Config as _CfgDirNews
+                if _CfgDirNews().ENABLE_DIRECTION_GATE_NEWS:
+                    from core.direction_reader import read_direction
+                    _dr = read_direction(market_data.close, market_data.indicators or {})
+                    if signal_type == SignalType.BUY:
+                        _direction_ok = _dr.allows_long_entry
+                    else:
+                        _direction_ok = _dr.allows_short_entry
+                    if not _direction_ok:
+                        self._log_decision(
+                            market_data, "skip",
+                            "direction_gate_rejected_news",
+                            side=("buy" if signal_type == SignalType.BUY else "sell"),
+                            direction=_dr.direction,
+                            phase=_dr.phase,
+                            ema_stack=_dr.ema_stack,
+                            sentiment=round(avg_sentiment, 3),
+                            reason_text=_dr.reason,
+                        )
+                        self.commentary.add_commentary(TradingCommentary(
+                            timestamp=datetime.now(),
+                            type=CommentaryType.RISK_ASSESSMENT,
+                            symbol=symbol,
+                            title=f"⛔ News Skip — Direction/Phase Gate",
+                            message=(
+                                f"News {'BUY' if signal_type == SignalType.BUY else 'SELL'} "
+                                f"on {symbol} but direction reader disagrees: "
+                                f"{_dr.reason} (phase: {_dr.phase}, "
+                                f"score {_dr.direction:+.1f}). "
+                                f"News strength doesn't override chart structure."
+                            ),
+                            importance=6,
+                        ))
+                        return None
+            except Exception:
+                # Direction reader failure must not block the bot.
+                pass
+
             # Verified (or verifier disabled) — announce in commentary so the
             # user can see WHY this signal made it past the gate.
             if v is not None:

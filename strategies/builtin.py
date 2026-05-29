@@ -179,6 +179,55 @@ class BreakoutStrategyWithCommentary(TradingStrategyWithCommentary):
                     ))
                     return None
 
+                # v-direction-gate-breakout-2026-05-29: late breakouts
+                # systematically underperform. The 20-bar-high break +
+                # ADX + volume gates verify "right now this is a clear
+                # break"; the direction reader verifies "this break is
+                # not the climax of an already-extended trend." A break
+                # firing on a stock already 10% above SMA50 with RSI 75+
+                # is the textbook failed breakout setup (exhaustion).
+                #
+                # Require direction >= +3 (strong uptrend) AND phase
+                # in {early, middle} (not late or exhausted). This is
+                # stricter than mean-rev's gate because breakout
+                # explicitly commits to "buy strength" — the strength
+                # better be confirmed.
+                #
+                # Gated by Config.ENABLE_DIRECTION_GATE_BREAKOUT
+                # (default True).
+                try:
+                    from core.config import Config as _CfgDirBO
+                    if _CfgDirBO().ENABLE_DIRECTION_GATE_BREAKOUT:
+                        from core.direction_reader import read_direction
+                        _dr = read_direction(market_data.close, indicators)
+                        if not (_dr.direction >= 3.0 and _dr.phase in ("early", "middle")):
+                            self._log_decision(
+                                market_data, "skip",
+                                "direction_gate_rejected_breakout",
+                                direction=_dr.direction,
+                                phase=_dr.phase,
+                                ema_stack=_dr.ema_stack,
+                                adx=round(adx, 1),
+                                high_20=round(high_20, 2),
+                                reason_text=_dr.reason,
+                            )
+                            self.commentary.add_commentary(TradingCommentary(
+                                timestamp=datetime.now(),
+                                type=CommentaryType.RISK_ASSESSMENT,
+                                symbol=market_data.symbol,
+                                title=f"⛔ Breakout Skipped — Direction/Phase Gate",
+                                message=(
+                                    f"20-bar high break confirmed but direction "
+                                    f"reader says {_dr.reason} (phase: {_dr.phase}, "
+                                    f"score {_dr.direction:+.1f}). Need direction>=3 "
+                                    f"and phase early/middle — late breakouts fail."
+                                ),
+                                importance=6,
+                            ))
+                            return None
+                except Exception:
+                    pass
+
                 # All gates passed — genuine breakout
                 breakout_distance_pct = ((market_data.close - high_20) / high_20) * 100
                 self.commentary.add_commentary(TradingCommentary(
@@ -436,6 +485,46 @@ class MeanReversionStrategyWithCommentary(TradingStrategyWithCommentary):
                 "oversold_bounce" if _classic_oversold
                 else ("uptrend_pullback" if _uptrend_pullback else None)
             )
+
+            # v-direction-gate-mean-rev-uptrend-pullback-2026-05-29: the
+            # uptrend_pullback path explicitly claims "in uptrend." If
+            # the direction reader says we're NOT in an uptrend, the
+            # path should not fire — the SMA50 check is a snapshot,
+            # the direction reader is a multi-feature read over time.
+            # Classic oversold_bounce path is NOT gated because its
+            # edge is buying bounces in downtrends; the falling-knife
+            # filter already handles direction risk there.
+            #
+            # Gated by Config.ENABLE_DIRECTION_GATE_MEAN_REV (default
+            # True). Toggle False via API if the reader produces too
+            # many false rejections in practice.
+            if _entry_pattern == "uptrend_pullback":
+                try:
+                    from core.config import Config as _CfgDir
+                    if _CfgDir().ENABLE_DIRECTION_GATE_MEAN_REV:
+                        from core.direction_reader import read_direction
+                        _dr = read_direction(market_data.close, indicators)
+                        # Require mild bullish direction (>= +2) AND
+                        # phase not exhausted. allows_long_entry alone
+                        # would pass mild ranges (direction 0..2) but
+                        # for the explicit uptrend_pullback path we
+                        # want a CLEAR uptrend reading.
+                        if not (_dr.direction >= 2.0 and _dr.phase != "exhausted"):
+                            self._log_decision(
+                                market_data, "skip",
+                                "direction_gate_rejected_uptrend_pullback",
+                                direction=_dr.direction,
+                                phase=_dr.phase,
+                                ema_stack=_dr.ema_stack,
+                                rsi=round(rsi, 2),
+                                reason_text=_dr.reason,
+                            )
+                            return None
+                except Exception:
+                    # Direction reader failure should not block trading.
+                    # The strategy's existing gates still run.
+                    pass
+
             if _entry_pattern is not None:
                 # Trend filter: don't catch a falling knife.
                 # Skip the long when price is below MA50 AND momentum is bearish.

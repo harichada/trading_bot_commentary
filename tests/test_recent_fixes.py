@@ -1634,6 +1634,111 @@ class TestMeanRevUptrendPullback:
         assert 'if _entry_pattern == "uptrend_pullback":' in body
         assert "_bar_ok = _is_green" in body  # relaxed branch
 
+
+# ── v-direction-gate-*-2026-05-29 ────────────────────────────────────
+
+class TestDirectionGates:
+    """Three new direction-reader gates wired into strategies.
+
+    Each gate calls core.direction_reader.read_direction(close,
+    indicators) and skips the signal if the directional read
+    disagrees with the strategy's premise:
+
+      Mean-rev uptrend_pullback:  direction>=2 AND phase!=exhausted.
+                                  Classic oversold_bounce NOT gated
+                                  (its edge is buying downtrends).
+      Breakout BUY:               direction>=3 AND phase in {early,
+                                  middle}. Stricter — late breakouts
+                                  systematically fail.
+      News BUY:                   allows_long_entry (direction>=0 +
+                                  not exhausted). News SELL: mirror.
+
+    Each gate is behind its own Config flag (default True). If the
+    direction reader raises an exception the strategy gates fall
+    through to existing logic — defense-in-depth, not single-point-
+    of-failure.
+    """
+
+    def test_config_flags_exist_with_defaults(self):
+        from core.config import Config
+        cfg = Config()
+        assert cfg.ENABLE_DIRECTION_GATE_MEAN_REV is True
+        assert cfg.ENABLE_DIRECTION_GATE_BREAKOUT is True
+        assert cfg.ENABLE_DIRECTION_GATE_NEWS is True
+
+    def test_mean_rev_uptrend_pullback_gate_marker_in_builtin(self):
+        src = (REPO_ROOT / "strategies" / "builtin.py").read_text()
+        assert "v-direction-gate-mean-rev-uptrend-pullback-2026-05-29" in src
+
+    def test_mean_rev_gate_only_applies_to_uptrend_pullback(self):
+        """The gate must be inside an `if _entry_pattern ==
+        'uptrend_pullback':` block so it doesn't accidentally also
+        block the classic oversold_bounce path."""
+        src = (REPO_ROOT / "strategies" / "builtin.py").read_text()
+        start = src.index("v-direction-gate-mean-rev-uptrend-pullback-2026-05-29")
+        body = src[start : start + 3000]
+        assert 'if _entry_pattern == "uptrend_pullback":' in body
+        # The skip log reason must match the audit grep
+        assert '"direction_gate_rejected_uptrend_pullback"' in body
+
+    def test_mean_rev_gate_requires_direction_at_least_2(self):
+        """Mean-rev uptrend_pullback needs CLEAR uptrend reading,
+        not just mild bullish. direction>=2 + phase!=exhausted."""
+        src = (REPO_ROOT / "strategies" / "builtin.py").read_text()
+        start = src.index("v-direction-gate-mean-rev-uptrend-pullback-2026-05-29")
+        body = src[start : start + 3000]
+        assert "_dr.direction >= 2.0" in body
+        assert '_dr.phase != "exhausted"' in body
+
+    def test_breakout_gate_marker_in_builtin(self):
+        src = (REPO_ROOT / "strategies" / "builtin.py").read_text()
+        assert "v-direction-gate-breakout-2026-05-29" in src
+
+    def test_breakout_gate_requires_direction_3_and_early_middle(self):
+        """Breakout is stricter — requires direction>=3 (strong
+        uptrend) AND phase in {early, middle} (not late or
+        exhausted). The whole point is to prevent late breakouts."""
+        src = (REPO_ROOT / "strategies" / "builtin.py").read_text()
+        start = src.index("v-direction-gate-breakout-2026-05-29")
+        body = src[start : start + 3000]
+        assert "_dr.direction >= 3.0" in body
+        assert '_dr.phase in ("early", "middle")' in body
+        assert '"direction_gate_rejected_breakout"' in body
+
+    def test_news_gate_marker_in_news_strategy(self):
+        src = (REPO_ROOT / "strategies" / "news_strategy.py").read_text()
+        assert "v-direction-gate-news-2026-05-29" in src
+
+    def test_news_gate_uses_allows_long_or_short_helper(self):
+        """News gate must use the DirectionRead.allows_long_entry /
+        allows_short_entry helpers rather than re-implementing the
+        phase+direction logic. Centralizes the rule."""
+        src = (REPO_ROOT / "strategies" / "news_strategy.py").read_text()
+        start = src.index("v-direction-gate-news-2026-05-29")
+        body = src[start : start + 3500]
+        assert "_dr.allows_long_entry" in body
+        assert "_dr.allows_short_entry" in body
+        assert '"direction_gate_rejected_news"' in body
+
+    def test_all_three_gates_swallow_exceptions(self):
+        """If direction_reader raises (NaN inputs, missing keys,
+        etc.) the strategy MUST fall through to existing logic, not
+        block the signal. Pattern: try/except around the read +
+        comparison; pass on exception."""
+        for path, tag in [
+            ("strategies/builtin.py", "v-direction-gate-mean-rev-uptrend-pullback-2026-05-29"),
+            ("strategies/builtin.py", "v-direction-gate-breakout-2026-05-29"),
+            ("strategies/news_strategy.py", "v-direction-gate-news-2026-05-29"),
+        ]:
+            src = (REPO_ROOT / path).read_text()
+            start = src.index(tag)
+            body = src[start : start + 3500]
+            assert "try:" in body, f"{tag} missing try/except"
+            # And the except must just pass (not raise / return None)
+            assert "except Exception:" in body, f"{tag} missing except"
+            # Look for the pass — it's how we fall through.
+            assert "pass" in body, f"{tag} except block must `pass`"
+
     def test_signal_log_uses_pattern_string(self):
         """Anchor on the exact reason="uptrend_pullback" string so
         audit grep stays stable."""
