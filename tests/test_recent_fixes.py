@@ -1739,6 +1739,70 @@ class TestDirectionGates:
             # Look for the pass — it's how we fall through.
             assert "pass" in body, f"{tag} except block must `pass`"
 
+
+# ── v-rr-audit-2026-06-01 ────────────────────────────────────────────
+
+class TestRRAudit:
+    """Risk:reward sanity check at the signal_router accept point.
+
+    Triggered by the 2026-05-28 bb_middle bug where mean-rev signals
+    fired with R:R 0.7-1.4 (vs configured 2.0). The bug went unnoticed
+    for hours because every signal_buy log line showed stop+target
+    individually but never the computed ratio.
+
+    The audit fires AT THE ROUTER (one place) so it covers every
+    strategy without per-strategy plumbing. WARNING (not block) so
+    it surfaces during normal log review without interrupting trading.
+    """
+
+    def test_marker_in_engine(self):
+        src = ENGINE_PATH.read_text()
+        assert "v-rr-audit-2026-06-01" in src
+
+    def test_audit_fires_after_accepted_audit(self):
+        """The R:R check must run AFTER the existing signal_router
+        'accepted' audit line so we know the signal made it through
+        all gates before we warn about its sizing."""
+        src = ENGINE_PATH.read_text()
+        accept_pos = src.index('self._audit("signal_router", signal.symbol, "accepted"')
+        audit_pos = src.index("v-rr-audit-2026-06-01")
+        assert accept_pos < audit_pos, (
+            "R:R audit must follow signal_router accept so we know "
+            "we're auditing a real accepted trade"
+        )
+
+    def test_audit_floor_is_1_8(self):
+        """Configured floor is 1.8 R:R — below the default 2.0 R:R
+        the strategies target, with a 10% tolerance for normal
+        variation. Anything below 1.8 indicates a real bug (like
+        bb_middle capping) or a strategy author intentionally
+        deviating from R:R discipline."""
+        src = ENGINE_PATH.read_text()
+        start = src.index("v-rr-audit-2026-06-01")
+        body = src[start : start + 2500]
+        assert "_RR_FLOOR = 1.8" in body
+
+    def test_audit_uses_warning_not_error(self):
+        """WARNING level so it surfaces in log review without
+        triggering operator alerts as if a trade had failed."""
+        src = ENGINE_PATH.read_text()
+        start = src.index("v-rr-audit-2026-06-01")
+        body = src[start : start + 2500]
+        assert "logger.warning(" in body
+        assert "rr_audit_low" in body
+
+    def test_audit_swallows_exceptions(self):
+        """Audit math must never block the trade. Pattern: try/
+        except → logger.debug → pass."""
+        src = ENGINE_PATH.read_text()
+        start = src.index("v-rr-audit-2026-06-01")
+        body = src[start : start + 2500]
+        assert "try:" in body
+        # The except must log at debug + continue (we don't want a
+        # math error to cancel the trade).
+        assert "except Exception" in body
+        assert "logger.debug(" in body
+
     def test_signal_log_uses_pattern_string(self):
         """Anchor on the exact reason="uptrend_pullback" string so
         audit grep stays stable."""

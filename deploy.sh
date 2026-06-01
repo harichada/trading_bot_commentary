@@ -56,11 +56,17 @@ t = cfg.get("trading", {})
 # enable_news_technical_confirmation pinned True — news strategy
 # now demands RSI/SMA20/MACD/volume confirmation before firing
 # signal_buy/signal_sell (the FLY/ASTS/TSLA pattern fix).
+# 2026-06-01 update: graduated trade sizing after 1 week of live
+# trading. live_size_multiplier 0.25 -> 0.40 + risk_per_trade_pct
+# 0.015 -> 0.020 + atr_reward_risk_ratio 2.0 -> 2.5. Daily-loss cap
+# stays at 0.01 = ~$290 so the safety floor is unchanged.
 expected = {
     "enable_breakout_long":              True,
     "enable_strict_long_gates":          True,
     "enable_news_technical_confirmation": True,
-    "live_size_multiplier":              0.25,
+    "live_size_multiplier":              0.40,
+    "risk_per_trade_pct":                0.020,
+    "atr_reward_risk_ratio":             2.5,
     "max_daily_loss":                    0.01,
     "late_entry_cutoff_hour":            15,
     "late_entry_cutoff_minute":          30,

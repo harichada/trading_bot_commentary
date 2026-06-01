@@ -5547,6 +5547,39 @@ class TradingEngineWithCommentary:
                     stop=round(signal.stop_loss, 2),
                     target=round(signal.take_profit, 2),
                     total_cost=round(position_size * signal.entry_price, 2))
+
+        # v-rr-audit-2026-06-01: warn if the accepted signal's
+        # risk:reward is below the configured floor. Would have
+        # caught the 2026-05-28 bb_middle bug in minutes: that bug
+        # produced R:R 0.7-1.4 across mean-rev signals because the
+        # strategy capped take_profit at bb_middle when bb_middle
+        # sat just above entry. The audit fires at the router (one
+        # place) so it covers every strategy without per-strategy
+        # plumbing.
+        try:
+            _stop_dist = abs(signal.entry_price - signal.stop_loss)
+            _target_dist = abs(signal.take_profit - signal.entry_price)
+            if _stop_dist > 0:
+                _actual_rr = _target_dist / _stop_dist
+                # Tolerance: most signals target 2.0 R:R or higher.
+                # Anything below 1.8 is suspect — either a tight-
+                # target bug (like bb_middle) or an unusual setup
+                # the strategy author didn't intend.
+                _RR_FLOOR = 1.8
+                if _actual_rr < _RR_FLOOR:
+                    logger.warning(
+                        "rr_audit_low symbol=%s strategy=%s "
+                        "entry=%.4f stop=%.4f target=%.4f "
+                        "stop_dist=%.4f target_dist=%.4f actual_rr=%.2f "
+                        "floor=%.2f — strategy may be capping target",
+                        signal.symbol,
+                        signal.reasoning.get("strategy", "unknown"),
+                        signal.entry_price, signal.stop_loss, signal.take_profit,
+                        _stop_dist, _target_dist, _actual_rr, _RR_FLOOR,
+                    )
+        except Exception as _exc:
+            # Audit must never block the trade. Swallow.
+            logger.debug("rr_audit calc failed: %s", _exc)
         
         # Execute the trade based on mode
         position = None
