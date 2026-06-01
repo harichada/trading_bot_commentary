@@ -71,7 +71,7 @@ expected = {
     "enable_news_technical_confirmation": True,
     "live_size_multiplier":              0.50,
     "risk_per_trade_pct":                0.020,
-    "atr_reward_risk_ratio":             2.5,
+    "atr_reward_risk_ratio":             2.0,
     "max_daily_loss":                    0.01,
     "late_entry_cutoff_hour":            15,
     "late_entry_cutoff_minute":          30,
