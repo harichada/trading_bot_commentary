@@ -57,14 +57,19 @@ t = cfg.get("trading", {})
 # now demands RSI/SMA20/MACD/volume confirmation before firing
 # signal_buy/signal_sell (the FLY/ASTS/TSLA pattern fix).
 # 2026-06-01 update: graduated trade sizing after 1 week of live
-# trading. live_size_multiplier 0.25 -> 0.40 + risk_per_trade_pct
-# 0.015 -> 0.020 + atr_reward_risk_ratio 2.0 -> 2.5. Daily-loss cap
-# stays at 0.01 = ~$290 so the safety floor is unchanged.
+# trading. live_size_multiplier 0.25 -> 0.40 -> 0.50 (two bumps
+# same day after operator observed actual trades were sub-budget by
+# 10x — Kelly × strategy_mult × live_mult was multiplicatively
+# eroding the configured risk-per-trade). strategy_size_multipliers
+# .mean_reversion 0.5 -> 0.75 (mean-rev graduated probation after
+# 10+ trades with no catastrophic losses). risk_per_trade_pct
+# 0.015 -> 0.020 + atr_reward_risk_ratio 2.0 -> 2.5. Daily-loss
+# cap stays at 0.01 = ~$290 so the safety floor is unchanged.
 expected = {
     "enable_breakout_long":              True,
     "enable_strict_long_gates":          True,
     "enable_news_technical_confirmation": True,
-    "live_size_multiplier":              0.40,
+    "live_size_multiplier":              0.50,
     "risk_per_trade_pct":                0.020,
     "atr_reward_risk_ratio":             2.5,
     "max_daily_loss":                    0.01,
@@ -72,7 +77,7 @@ expected = {
     "late_entry_cutoff_minute":          30,
 }
 mults = t.get("strategy_size_multipliers", {}) or {}
-expected_mr = 0.5
+expected_mr = 0.75
 
 ok = True
 print("Safety config:")
