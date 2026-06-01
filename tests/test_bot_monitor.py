@@ -205,3 +205,92 @@ class TestBuildReport:
         assert isinstance(result, str)
         assert "Bot Monitor" in result
         assert "Process health" in result
+
+
+# ── v-bot-monitor-tail-fix-2026-06-01 ────────────────────────────────
+
+class TestTailLogSplitsLinesCorrectly:
+    """Regression test: tail_log used to call `data.split('\\n', 1)[1:]`
+    which produced a list of ONE string containing everything after the
+    first newline, then iterated once and tried json.loads on that whole
+    multi-line blob. Net effect: monitor returned 0 entries despite a
+    busy log.
+
+    Fix: use `data.splitlines()[1:]` which properly returns one entry
+    per line.
+
+    This test writes a small JSONL log fixture, monkeypatches the
+    module's LOG_FILE constant, and asserts tail_log returns the
+    expected number of entries.
+    """
+
+    def test_tail_log_returns_multiple_entries(self, tmp_path, monkeypatch):
+        from datetime import datetime, timedelta
+        # Build a fixture with 5 lines all from the last 10 seconds
+        # (so they fall inside the default window).
+        now = datetime.now()
+        lines = []
+        for i in range(5):
+            ts = (now - timedelta(seconds=i)).strftime("%Y-%m-%d %H:%M:%S,000")
+            lines.append(
+                '{"timestamp": "' + ts + '", "level": "INFO", '
+                '"message": "entry_' + str(i) + '", "module": "x", '
+                '"function": "y", "line": 1}'
+            )
+        # Prepend a partial-looking first line that the parser is
+        # expected to skip (mimics seeking mid-file).
+        fixture = "...partial first line cut off\n" + "\n".join(lines) + "\n"
+        log_path = tmp_path / "test_trading_bot.log"
+        log_path.write_text(fixture)
+        monkeypatch.setattr(bm, "LOG_FILE", log_path)
+
+        entries = bm.tail_log(seconds_back=60)
+        # 5 entries should be returned (partial line skipped).
+        assert len(entries) == 5, (
+            f"expected 5 entries from 5 JSON lines, got {len(entries)} — "
+            "splitlines may have regressed back to split('\\n', 1)"
+        )
+        messages = [e["message"] for e in entries]
+        assert "entry_0" in messages
+        assert "entry_4" in messages
+
+    def test_tail_log_handles_single_line(self, tmp_path, monkeypatch):
+        """One-line log should still produce zero or one entry without
+        crashing. The 'skip first line' rule means this returns 0."""
+        from datetime import datetime
+        now = datetime.now()
+        ts = now.strftime("%Y-%m-%d %H:%M:%S,000")
+        line = (
+            '{"timestamp": "' + ts + '", "level": "INFO", '
+            '"message": "only", "module": "x", "function": "y", "line": 1}\n'
+        )
+        log_path = tmp_path / "test_one_line.log"
+        log_path.write_text(line)
+        monkeypatch.setattr(bm, "LOG_FILE", log_path)
+
+        entries = bm.tail_log(seconds_back=60)
+        # First line is treated as partial -> skipped. 0 entries expected.
+        # The point is no crash.
+        assert isinstance(entries, list)
+
+    def test_tail_log_filters_by_time_window(self, tmp_path, monkeypatch):
+        """An entry older than the window must NOT appear in results.
+        Catches a regression where time filtering breaks while line
+        parsing works."""
+        from datetime import datetime, timedelta
+        now = datetime.now()
+        old_ts = (now - timedelta(hours=2)).strftime("%Y-%m-%d %H:%M:%S,000")
+        new_ts = (now - timedelta(seconds=5)).strftime("%Y-%m-%d %H:%M:%S,000")
+        lines = [
+            '{"timestamp": "' + old_ts + '", "level": "INFO", "message": "old"}',
+            '{"timestamp": "' + new_ts + '", "level": "INFO", "message": "new"}',
+        ]
+        fixture = "...partial\n" + "\n".join(lines) + "\n"
+        log_path = tmp_path / "test_window.log"
+        log_path.write_text(fixture)
+        monkeypatch.setattr(bm, "LOG_FILE", log_path)
+
+        entries = bm.tail_log(seconds_back=60)
+        messages = [e.get("message") for e in entries]
+        assert "new" in messages
+        assert "old" not in messages

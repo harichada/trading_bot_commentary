@@ -158,8 +158,15 @@ def tail_log(seconds_back: int = 3600) -> list[dict]:
         with LOG_FILE.open("rb") as f:
             f.seek(size - read_back)
             data = f.read().decode("utf-8", errors="ignore")
-        # Skip the first (likely partial) line.
-        lines = data.split("\n", 1)[1:] if "\n" in data else []
+        # v-bot-monitor-tail-fix-2026-06-01: previous code did
+        # `data.split("\n", 1)[1:]` which yielded a SINGLE string
+        # (the rest of the file after the first newline) rather
+        # than a list of lines. The loop then called json.loads()
+        # on the whole multi-entry blob and failed silently, so
+        # the monitor produced empty reports despite a busy log.
+        # splitlines() properly returns one entry per line; the
+        # [1:] skips the (likely partial) first line.
+        lines = data.splitlines()[1:] if "\n" in data else []
         for line in lines:
             line = line.strip()
             if not line:
