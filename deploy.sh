@@ -72,7 +72,7 @@ expected = {
     "live_size_multiplier":              0.50,
     "risk_per_trade_pct":                0.020,
     "atr_reward_risk_ratio":             2.0,
-    "max_daily_loss":                    0.01,
+    "max_daily_loss":                    0.03,
     "late_entry_cutoff_hour":            15,
     "late_entry_cutoff_minute":          30,
 }
