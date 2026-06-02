@@ -256,7 +256,42 @@ class BreakoutStrategyWithCommentary(TradingStrategyWithCommentary):
                 rr_ratio = Config().ATR_REWARD_RISK_RATIO
                 stop_distance = atr_mult * atr
                 stop_loss = market_data.close - stop_distance
-                take_profit = market_data.close + (rr_ratio * stop_distance)
+
+                # v-smart-target-breakout-2026-06-02: pick a reachable
+                # take_profit. For breakout, the entry is above
+                # high_20 so smart_target's high_20_projection
+                # candidate fires (5% above the broken level).
+                _bo_smart_target = None
+                try:
+                    if Config().ENABLE_SMART_TAKE_PROFIT:
+                        from core.smart_target import compute_smart_target
+                        _st_bo = compute_smart_target(
+                            entry=market_data.close,
+                            stop_distance=stop_distance,
+                            indicators=indicators,
+                            rr_ratio=rr_ratio,
+                        )
+                        if _st_bo is None:
+                            self._log_decision(
+                                market_data, "skip", "no_reachable_target",
+                                strategy="breakout",
+                                stop_dist=round(stop_distance, 2),
+                            )
+                            return None
+                        _bo_smart_target = _st_bo.target
+                        self._log_decision(
+                            market_data, "smart_target_picked",
+                            "smart_take_profit_breakout",
+                            source=_st_bo.source,
+                            target=round(_st_bo.target, 4),
+                            R=_st_bo.R,
+                        )
+                except Exception:
+                    _bo_smart_target = None
+                take_profit = (
+                    _bo_smart_target if _bo_smart_target is not None
+                    else market_data.close + (rr_ratio * stop_distance)
+                )
 
                 self._log_decision(market_data, "signal_buy", "breakout_new_high",
                                    high_20=round(high_20, 2),
@@ -688,6 +723,50 @@ class MeanReversionStrategyWithCommentary(TradingStrategyWithCommentary):
                 stop_distance = atr_mult * atr
                 stop_loss = market_data.close - stop_distance
                 rr_target = market_data.close + (rr_ratio * stop_distance)
+
+                # v-smart-target-2026-06-02: try to pick a reachable
+                # take_profit from price structure (bb_upper, high_20,
+                # recent range) instead of blindly setting rr_target.
+                # If the nearest meaningful resistance doesn't give
+                # at least 1.5R, SKIP the trade — don't place an OCO
+                # at an unreachable level. Operator complaint
+                # 2026-06-01: only 5/100 historical bot trades hit
+                # take_profit because targets were aspirational.
+                _smart_tp_target = None
+                try:
+                    from core.config import Config as _CfgSTP
+                    if _CfgSTP().ENABLE_SMART_TAKE_PROFIT:
+                        from core.smart_target import compute_smart_target
+                        _st = compute_smart_target(
+                            entry=market_data.close,
+                            stop_distance=stop_distance,
+                            indicators=indicators,
+                            rr_ratio=rr_ratio,
+                        )
+                        if _st is None:
+                            # No reachable target gives 1.5R — skip.
+                            self._log_decision(
+                                market_data, "skip", "no_reachable_target",
+                                pattern=_entry_pattern,
+                                rsi=round(rsi, 2),
+                                rr_ratio=rr_ratio,
+                                stop_dist=round(stop_distance, 2),
+                            )
+                            return None
+                        _smart_tp_target = _st.target
+                        self._log_decision(
+                            market_data, "smart_target_picked",
+                            "smart_take_profit",
+                            pattern=_entry_pattern,
+                            source=_st.source,
+                            target=round(_st.target, 4),
+                            R=_st.R,
+                        )
+                except Exception as _exc:
+                    # Smart-target failure must not block trades.
+                    # Fall through to the legacy rr_target.
+                    _smart_tp_target = None
+
                 # v-mean-rev-target-uncap-2026-05-28: drop the
                 # min(bb_middle * take_profit_mult, rr_target) cap.
                 # Operator reported 2026-05-28 OCO targets sitting only
@@ -707,7 +786,10 @@ class MeanReversionStrategyWithCommentary(TradingStrategyWithCommentary):
                 # but in practice killed winners — the trailing stop
                 # in the exit manager handles "revert to mean" exits
                 # better than a hard cap on take_profit ever did.
-                take_profit = rr_target
+                # v-smart-target-2026-06-02: when smart-target is on
+                # and found a destination, use it; otherwise fall
+                # through to the rr_target fallback.
+                take_profit = _smart_tp_target if _smart_tp_target is not None else rr_target
                 self._log_decision(market_data, "signal_buy", _entry_pattern,
                                    rsi=round(rsi, 2), distance_pct=round(distance_from_mean, 2),
                                    stop=round(stop_loss, 2), target=round(take_profit, 2),

@@ -911,7 +911,41 @@ class FreeNewsSignalStrategy(TradingStrategyWithCommentary):
 
             if signal_type == SignalType.BUY:
                 stop_loss = market_data.close - stop_distance
-                take_profit = market_data.close + (rr_ratio * stop_distance)
+                # v-smart-target-news-2026-06-02: pick a reachable
+                # take_profit for BUY signals. (SELL uses legacy
+                # rr_target — short logic not yet covered by
+                # smart_target.)
+                _news_smart_tp = None
+                try:
+                    if Config().ENABLE_SMART_TAKE_PROFIT:
+                        from core.smart_target import compute_smart_target
+                        _st_news = compute_smart_target(
+                            entry=market_data.close,
+                            stop_distance=stop_distance,
+                            indicators=market_data.indicators or {},
+                            rr_ratio=rr_ratio,
+                        )
+                        if _st_news is None:
+                            self._log_decision(
+                                market_data, "skip", "no_reachable_target",
+                                strategy="news",
+                                stop_dist=round(stop_distance, 2),
+                            )
+                            return None
+                        _news_smart_tp = _st_news.target
+                        self._log_decision(
+                            market_data, "smart_target_picked",
+                            "smart_take_profit_news",
+                            source=_st_news.source,
+                            target=round(_st_news.target, 4),
+                            R=_st_news.R,
+                        )
+                except Exception:
+                    _news_smart_tp = None
+                take_profit = (
+                    _news_smart_tp if _news_smart_tp is not None
+                    else market_data.close + (rr_ratio * stop_distance)
+                )
             else:
                 stop_loss = market_data.close + stop_distance
                 take_profit = market_data.close - (rr_ratio * stop_distance)

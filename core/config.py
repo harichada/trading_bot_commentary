@@ -368,6 +368,26 @@ class Config:
         return int(self.manager.get('trading.warmup_minutes_before_open', 30))
 
     @property
+    def ENABLE_SMART_TAKE_PROFIT(self) -> bool:
+        """v-smart-target-2026-06-02: pick take_profit from price
+        structure (bb_upper, high_20, recent-range) rather than
+        blindly setting rr_ratio × stop_distance above entry.
+
+        Triggered by operator observation 2026-06-01 that take_profit
+        targets were unreachable; data showed only 5/100 historical
+        bot trades hit take_profit.
+
+        When enabled, signals whose nearest meaningful resistance
+        doesn't give at least 1.5R are SKIPPED rather than placed
+        with an unreachable target.
+
+        Default True. Toggle False via API to fall back to the old
+        rr-target formula without a code change."""
+        return bool(
+            self.manager.get('trading.enable_smart_take_profit', True)
+        )
+
+    @property
     def ENABLE_DIRECTION_GATE_MEAN_REV(self) -> bool:
         """v-direction-gate-mean-rev-uptrend-pullback-2026-05-29:
         require direction reader to confirm uptrend before mean-rev's
