@@ -143,7 +143,7 @@ class TestSkipThinEdge:
         )
         # Only candidate: rr_target = 100 + 2 × 2 = 104 → R = 2.0
         assert result is not None
-        assert result.source == "rr_target"
+        assert result.source == "rr_target_capped"
         assert abs(result.R - 2.0) < 0.05
 
 
@@ -227,7 +227,7 @@ class TestRobustness:
         )
         # Should fall back to rr_target
         assert result is not None
-        assert result.source == "rr_target"
+        assert result.source == "rr_target_capped"
 
     def test_missing_indicators_uses_rr_fallback(self):
         result = compute_smart_target(
@@ -237,5 +237,5 @@ class TestRobustness:
             rr_ratio=2.5,
         )
         assert result is not None
-        assert result.source == "rr_target"
+        assert result.source == "rr_target_capped"
         assert abs(result.target - 52.5) < 0.001

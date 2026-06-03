@@ -114,11 +114,35 @@ def _candidate_half_20bar_range(entry: float, indicators: Dict[str, Any]) -> Opt
     return None
 
 
-def _candidate_rr_target(entry: float, rr_ratio: float, stop_distance: float) -> tuple:
-    """Aspirational fallback. ALWAYS a candidate; the floor check
-    filters it out if rr_ratio × stop_distance is too tight to
-    matter."""
-    return ('rr_target', entry + rr_ratio * stop_distance)
+def _candidate_rr_target(
+    entry: float,
+    rr_ratio: float,
+    stop_distance: float,
+    high_20: float = 0.0,
+    low_20: float = 0.0,
+) -> tuple:
+    """Aspirational fallback, CAPPED at half the 20-bar range.
+
+    v-smart-target-cap-rr-2026-06-03: Operator 2026-06-03 reported
+    targets still unreachable on wide-ATR-stop stocks (AVGO at +5%,
+    CRWV at +5%, NOK at +5%). Root cause: when chart-based candidates
+    (bb_upper, high_20, half_20bar_range) all give < 1.5R, the
+    algorithm fell back to rr_target = entry + rr_ratio × stop_distance.
+    For stocks where stop_distance is large relative to recent range,
+    rr_target is the original "+5%-in-a-day" fantasy.
+
+    New rule: rr_target is capped at half the 20-bar range. If the
+    capped value gives < min_R, the candidate is rejected by the
+    floor check → if no other candidate qualifies, return None and
+    the signal is skipped. Better to take fewer trades with reachable
+    targets than many trades with decorative ones.
+    """
+    rr_target_price = entry + rr_ratio * stop_distance
+    if high_20 > 0 and low_20 > 0 and high_20 > low_20:
+        half_range_cap = entry + 0.5 * (high_20 - low_20)
+        if half_range_cap > entry and half_range_cap < rr_target_price:
+            rr_target_price = half_range_cap
+    return ('rr_target_capped', rr_target_price)
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -169,8 +193,12 @@ def compute_smart_target(
     if c is not None:
         candidates.append(c)
 
-    # Priority 4: rr_target — always available
-    candidates.append(_candidate_rr_target(entry, rr_ratio, stop_distance))
+    # Priority 4: rr_target (capped at half-20bar-range)
+    high_20 = _safe_float(indicators.get('high_20'))
+    low_20 = _safe_float(indicators.get('low_20'))
+    candidates.append(
+        _candidate_rr_target(entry, rr_ratio, stop_distance, high_20, low_20)
+    )
 
     # Among candidates that clear the min_R floor, pick the SMALLEST
     # R that qualifies. "Smallest valid R" means "nearest reachable
