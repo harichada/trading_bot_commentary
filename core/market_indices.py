@@ -38,13 +38,40 @@ _INSTANCE: Optional["MarketIndicesCache"] = None
 # Symbol → display name. The leading "$" on $VIX signals to Schwab
 # that this is an index, not an equity; the response payload shape
 # differs (no assetSubType, no extended-hours fields).
+# v-sector-etfs-2026-06-08: extended to track the 11 SPDR sector
+# ETFs alongside major indices. Sector ETFs are the cleanest live
+# proxy for "is this stock's sector running today?" — pros watch
+# XLK/XLF/XLE constantly to decide whether single-stock signals
+# have sector tailwind or are fighting their own sector.
+#
+# Schwab quote API handles all 16 symbols in a single get_quotes
+# batched call — same cost as the original 5. The dashboard strip
+# rendering filters to the 5 major indices via _MAJOR_INDEX_SYMBOLS
+# (separate constant below) so the UI stays compact.
 _DISPLAY_NAMES: Dict[str, str] = {
+    # Major indices (shown on dashboard strip)
     "SPY": "S&P 500",
     "DIA": "Dow Jones",
     "QQQ": "Nasdaq",
     "IWM": "Russell 2000",
     "$VIX": "VIX",
+    # SPDR sector ETFs (used by MarketContext, not shown in strip)
+    "XLK": "Technology",
+    "XLF": "Financials",
+    "XLE": "Energy",
+    "XLV": "Healthcare",
+    "XLY": "Consumer Discretionary",
+    "XLP": "Consumer Staples",
+    "XLI": "Industrials",
+    "XLB": "Materials",
+    "XLU": "Utilities",
+    "XLRE": "Real Estate",
+    "XLC": "Communication Services",
 }
+
+# Subset shown on the dashboard strip — keeps the UI compact while
+# the cache holds all 16 symbols for MarketContext consumption.
+_MAJOR_INDEX_SYMBOLS = ("SPY", "DIA", "QQQ", "IWM", "$VIX")
 
 # Considered stale after this many seconds without a successful refresh.
 # 30s = 3x the refresh cadence; below that we'd flag transient hiccups
@@ -169,10 +196,13 @@ class MarketIndicesCache:
             self.last_updated is None
             or (now - self.last_updated).total_seconds() > _STALE_AFTER_SEC
         )
-        # Order indices in the same order as _DISPLAY_NAMES so the
-        # frontend can render them consistently (S&P first, VIX last).
+        # v-sector-etfs-2026-06-08: dashboard strip stays compact
+        # (5 major indices); MarketContext consumes the full set via
+        # `snapshot_full()`. Backwards-compat for /api/market-indices
+        # which renders the strip.
         ordered = [
-            self._snapshot[sym] for sym in _DISPLAY_NAMES if sym in self._snapshot
+            self._snapshot[sym] for sym in _MAJOR_INDEX_SYMBOLS
+            if sym in self._snapshot
         ]
         return {
             "indices": [
@@ -188,3 +218,13 @@ class MarketIndicesCache:
             "stale": stale,
             "error": self.last_error,
         }
+
+    def get_quote(self, symbol: str) -> Optional[IndexQuote]:
+        """Return the cached IndexQuote for a symbol, or None if missing.
+
+        v-sector-etfs-2026-06-08: used by MarketContext to read the
+        sector ETF for a stock's sector classification. The major-
+        indices snapshot() filters to dashboard symbols only, so
+        we expose this lookup separately.
+        """
+        return self._snapshot.get(symbol)
