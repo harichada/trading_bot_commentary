@@ -1720,6 +1720,53 @@ class TestDirectionGates:
         assert "_dr.allows_short_entry" in body
         assert '"direction_gate_rejected_news"' in body
 
+    def test_market_context_gates_wired_in_strategies(self):
+        """v-market-context-gate-{mean-rev,breakout,news}-2026-06-08:
+        each strategy must check MarketContext before signal emission
+        when ENABLE_MARKET_CONTEXT_GATE is True, and skip with a
+        canonical reason if regime blocks the side.
+
+        Anchor on the exact skip-reason strings so audit grep stays
+        stable."""
+        builtin_src = (REPO_ROOT / "strategies" / "builtin.py").read_text()
+        news_src = (REPO_ROOT / "strategies" / "news_strategy.py").read_text()
+
+        # Mean-rev gate
+        assert "v-market-context-gate-mean-rev-2026-06-08" in builtin_src
+        assert '"market_context_blocks_long"' in builtin_src
+
+        # Breakout gate
+        assert "v-market-context-gate-breakout-2026-06-08" in builtin_src
+        assert '"market_context_blocks_breakout"' in builtin_src
+
+        # News gates (BUY and SELL)
+        assert "v-market-context-gate-news-2026-06-08" in news_src
+        assert '"market_context_blocks_news_buy"' in news_src
+        assert '"market_context_blocks_news_sell"' in news_src
+
+    def test_market_context_conviction_threads_to_risk_manager(self):
+        """Each strategy must inject market_context_conviction into
+        signal.reasoning so risk_manager can apply the sizing
+        multiplier. Anchor on the key name."""
+        builtin_src = (REPO_ROOT / "strategies" / "builtin.py").read_text()
+        news_src = (REPO_ROOT / "strategies" / "news_strategy.py").read_text()
+        risk_src = (REPO_ROOT / "risk" / "manager.py").read_text()
+
+        # Strategies set the key in reasoning dict
+        assert "'market_context_conviction'" in builtin_src
+        assert "'market_context_conviction'" in news_src
+
+        # Risk manager reads + applies it
+        assert "v-market-context-sizing-2026-06-08" in risk_src
+        assert "market_context_conviction" in risk_src
+        assert "ENABLE_MARKET_CONTEXT_SIZING" in risk_src
+
+    def test_market_context_config_flags_default_true(self):
+        from core.config import Config
+        cfg = Config()
+        assert cfg.ENABLE_MARKET_CONTEXT_GATE is True
+        assert cfg.ENABLE_MARKET_CONTEXT_SIZING is True
+
     def test_all_three_gates_swallow_exceptions(self):
         """If direction_reader raises (NaN inputs, missing keys,
         etc.) the strategy MUST fall through to existing logic, not

@@ -1241,6 +1241,44 @@ class FreeNewsSignalStrategy(TradingStrategyWithCommentary):
                 # Direction reader failure must not block the bot.
                 pass
 
+            # v-market-context-gate-news-2026-06-08: pro-level
+            # context check. News BUY into risk_off tape is the
+            # FLY/ASTS/TSLA pattern that lost on 2026-05-26. News
+            # SELL into risk_on is shorting a rally. Both blocked.
+            _mc_news_conviction = 1.0
+            _mc_news_regime = None
+            _mc_news_sector = None
+            try:
+                from core.config import Config as _CfgMCN
+                cfg_mc_n = _CfgMCN()
+                if cfg_mc_n.ENABLE_MARKET_CONTEXT_GATE or cfg_mc_n.ENABLE_MARKET_CONTEXT_SIZING:
+                    from core.market_context import read_market_context
+                    _mc_ctx_n = read_market_context(symbol)
+                    if cfg_mc_n.ENABLE_MARKET_CONTEXT_GATE:
+                        if signal_type == SignalType.BUY and not _mc_ctx_n.allows_long:
+                            self._log_decision(
+                                market_data, "skip", "market_context_blocks_news_buy",
+                                regime=_mc_ctx_n.regime,
+                                spy_change_pct=_mc_ctx_n.spy_change_pct,
+                                sector_etf=_mc_ctx_n.sector_etf,
+                                sector_strength_pct=_mc_ctx_n.sector_strength_pct,
+                                reason_text=_mc_ctx_n.reason,
+                            )
+                            return None
+                        if signal_type == SignalType.SELL and not _mc_ctx_n.allows_short:
+                            self._log_decision(
+                                market_data, "skip", "market_context_blocks_news_sell",
+                                regime=_mc_ctx_n.regime,
+                                spy_change_pct=_mc_ctx_n.spy_change_pct,
+                                reason_text=_mc_ctx_n.reason,
+                            )
+                            return None
+                    _mc_news_conviction = _mc_ctx_n.conviction_multiplier
+                    _mc_news_regime = _mc_ctx_n.regime
+                    _mc_news_sector = _mc_ctx_n.sector_etf
+            except Exception:
+                pass
+
             # Verified (or verifier disabled) — announce in commentary so the
             # user can see WHY this signal made it past the gate.
             if v is not None:
@@ -1354,6 +1392,10 @@ class FreeNewsSignalStrategy(TradingStrategyWithCommentary):
                     'sources': [item.source for item in news_items[:3]],
                     'atr': atr, 'atr_mult': atr_mult,
                     'stop_distance': stop_distance,
+                    # v-market-context-2026-06-08
+                    'market_context_conviction': _mc_news_conviction,
+                    'market_context_regime': _mc_news_regime,
+                    'market_context_sector': _mc_news_sector,
                 },
                 confidence=confidence
             )

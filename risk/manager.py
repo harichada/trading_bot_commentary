@@ -199,6 +199,33 @@ class RiskManagerWithCommentary:
                 signal.symbol, strategy_name, strategy_mult, old_size, position_size,
             )
 
+        # v-market-context-sizing-2026-06-08: scale position by the
+        # MarketContext conviction multiplier (0.5..1.5). Strategies
+        # set signal.reasoning['market_context_conviction'] when the
+        # context gate passes; risk_manager just reads + applies.
+        # Applied AFTER strategy_mult but BEFORE live_mult so the
+        # global launch dial still composes on top. Gated by
+        # Config.ENABLE_MARKET_CONTEXT_SIZING — disable to revert
+        # to pre-context behavior without code change.
+        if Config().ENABLE_MARKET_CONTEXT_SIZING and signal.reasoning:
+            mc_conv = signal.reasoning.get('market_context_conviction')
+            if mc_conv is not None and mc_conv != 1.0:
+                try:
+                    mc_conv = float(mc_conv)
+                    if 0.4 <= mc_conv <= 1.6:  # sanity-clamp to known range
+                        old_size = position_size
+                        position_size = max(1, int(position_size * mc_conv))
+                        logger.info(
+                            "market_context_conviction symbol=%s mult=%.2f "
+                            "regime=%s sector=%s old=%d new=%d",
+                            signal.symbol, mc_conv,
+                            signal.reasoning.get('market_context_regime', '?'),
+                            signal.reasoning.get('market_context_sector', '?'),
+                            old_size, position_size,
+                        )
+                except (TypeError, ValueError):
+                    pass  # bad value → skip the multiplier, don't crash
+
         # v-live-launch-safety-dial-2026-05-23: global live-launch dial,
         # composed AFTER per-strategy multipliers. Final sizing =
         # base * kelly * strategy_mult * live_mult. Default 1.0 (no

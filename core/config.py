@@ -388,6 +388,35 @@ class Config:
         )
 
     @property
+    def ENABLE_MARKET_CONTEXT_GATE(self) -> bool:
+        """v-market-context-gate-2026-06-08: skip entries when the
+        broader market regime disagrees with the signal direction.
+
+        Mean-rev / breakout / news BUY: skip if regime is 'risk_off'.
+        News SELL: skip if regime is 'risk_on'.
+
+        Default True. Toggle via API if it proves too restrictive."""
+        return bool(
+            self.manager.get('trading.enable_market_context_gate', True)
+        )
+
+    @property
+    def ENABLE_MARKET_CONTEXT_SIZING(self) -> bool:
+        """v-market-context-sizing-2026-06-08: scale position size
+        by MarketContext.conviction_multiplier (range 0.5-1.5).
+
+        Applied in risk/manager.py AFTER strategy_size_multiplier
+        but BEFORE live_size_multiplier. A risk-on day with sector
+        tailwind produces full size; mixed/midday/sector-headwind
+        setups get downsized to 0.5-0.7x.
+
+        Default True. Independent of ENABLE_MARKET_CONTEXT_GATE —
+        you can size on context without gating on it."""
+        return bool(
+            self.manager.get('trading.enable_market_context_sizing', True)
+        )
+
+    @property
     def ENABLE_DIRECTION_GATE_MEAN_REV(self) -> bool:
         """v-direction-gate-mean-rev-uptrend-pullback-2026-05-29:
         require direction reader to confirm uptrend before mean-rev's

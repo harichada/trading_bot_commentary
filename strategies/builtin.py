@@ -228,6 +228,36 @@ class BreakoutStrategyWithCommentary(TradingStrategyWithCommentary):
                 except Exception:
                     pass
 
+                # v-market-context-gate-breakout-2026-06-08: even a
+                # technically-clean breakout can fail when the broader
+                # market is panic-selling. Apply the same regime gate
+                # as mean-rev. Conviction multiplier flows through
+                # risk_manager via signal.reasoning.
+                _mc_conviction_bo = 1.0
+                _mc_regime_bo = None
+                _mc_sector_bo = None
+                try:
+                    from core.config import Config as _CfgMCBO
+                    cfg_mc_bo = _CfgMCBO()
+                    if cfg_mc_bo.ENABLE_MARKET_CONTEXT_GATE or cfg_mc_bo.ENABLE_MARKET_CONTEXT_SIZING:
+                        from core.market_context import read_market_context
+                        _mc_ctx_bo = read_market_context(market_data.symbol)
+                        if cfg_mc_bo.ENABLE_MARKET_CONTEXT_GATE and not _mc_ctx_bo.allows_long:
+                            self._log_decision(
+                                market_data, "skip", "market_context_blocks_breakout",
+                                regime=_mc_ctx_bo.regime,
+                                spy_change_pct=_mc_ctx_bo.spy_change_pct,
+                                sector_etf=_mc_ctx_bo.sector_etf,
+                                sector_strength_pct=_mc_ctx_bo.sector_strength_pct,
+                                reason_text=_mc_ctx_bo.reason,
+                            )
+                            return None
+                        _mc_conviction_bo = _mc_ctx_bo.conviction_multiplier
+                        _mc_regime_bo = _mc_ctx_bo.regime
+                        _mc_sector_bo = _mc_ctx_bo.sector_etf
+                except Exception:
+                    pass
+
                 # All gates passed — genuine breakout
                 breakout_distance_pct = ((market_data.close - high_20) / high_20) * 100
                 self.commentary.add_commentary(TradingCommentary(
@@ -315,6 +345,10 @@ class BreakoutStrategyWithCommentary(TradingStrategyWithCommentary):
                         'atr': atr,
                         'atr_mult': atr_mult,
                         'stop_distance': stop_distance,
+                        # v-market-context-2026-06-08
+                        'market_context_conviction': _mc_conviction_bo,
+                        'market_context_regime': _mc_regime_bo,
+                        'market_context_sector': _mc_sector_bo,
                     },
                     confidence=min(0.6 + (adx / 200) + (volume_ratio - 1.5) * 0.1, 0.9),
                 )
@@ -559,6 +593,38 @@ class MeanReversionStrategyWithCommentary(TradingStrategyWithCommentary):
                     # Direction reader failure should not block trading.
                     # The strategy's existing gates still run.
                     pass
+
+            # v-market-context-gate-mean-rev-2026-06-08: pro-level
+            # context check. Mean-rev long entries should respect
+            # broader market regime + sector tailwind. If risk_off,
+            # don't catch a "pullback" that's actually capitulation.
+            # The conviction multiplier flows through risk_manager
+            # (read from signal.reasoning).
+            _mc_conviction = 1.0
+            _mc_regime = None
+            _mc_sector = None
+            try:
+                from core.config import Config as _CfgMC
+                cfg_mc = _CfgMC()
+                if cfg_mc.ENABLE_MARKET_CONTEXT_GATE or cfg_mc.ENABLE_MARKET_CONTEXT_SIZING:
+                    from core.market_context import read_market_context
+                    _mc_ctx = read_market_context(market_data.symbol)
+                    if cfg_mc.ENABLE_MARKET_CONTEXT_GATE and not _mc_ctx.allows_long:
+                        self._log_decision(
+                            market_data, "skip", "market_context_blocks_long",
+                            regime=_mc_ctx.regime,
+                            spy_change_pct=_mc_ctx.spy_change_pct,
+                            sector_etf=_mc_ctx.sector_etf,
+                            sector_strength_pct=_mc_ctx.sector_strength_pct,
+                            vix_change_pct=_mc_ctx.vix_change_pct,
+                            reason_text=_mc_ctx.reason,
+                        )
+                        return None
+                    _mc_conviction = _mc_ctx.conviction_multiplier
+                    _mc_regime = _mc_ctx.regime
+                    _mc_sector = _mc_ctx.sector_etf
+            except Exception:
+                pass  # fail-open
 
             if _entry_pattern is not None:
                 # Trend filter: don't catch a falling knife.
@@ -810,6 +876,13 @@ class MeanReversionStrategyWithCommentary(TradingStrategyWithCommentary):
                         'distance_from_mean': distance_from_mean,
                         'atr': atr, 'atr_mult': atr_mult,
                         'stop_distance': stop_distance,
+                        # v-market-context-2026-06-08: include
+                        # context so risk_manager can size by
+                        # conviction and the trade record carries
+                        # the regime for post-trade analysis.
+                        'market_context_conviction': _mc_conviction,
+                        'market_context_regime': _mc_regime,
+                        'market_context_sector': _mc_sector,
                     },
                     confidence=0.65
                 )
