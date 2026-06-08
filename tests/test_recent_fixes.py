@@ -1860,3 +1860,454 @@ class TestRRAudit:
         # And the classic path's pattern is preserved (regression
         # guard — don't accidentally rename the existing trigger).
         assert '"oversold_bounce"' in body
+
+
+# ── v-cancel-bracket-before-close-2026-06-08 ────────────────────────
+
+class TestCancelBracketBeforeClose:
+    """Manual close must cancel the active OCO bracket BEFORE placing
+    the sell order. Bug observed 2026-06-08 11:12 ET: closes for NOK,
+    GLW, OWL were rejected by Schwab with `oversold position` because
+    the OCO's stop+target legs still pledged the shares. The override
+    path in `_close_real_position` placed the sell directly without
+    cancelling the bracket first.
+
+    Fix: in `_close_real_position`, call `_cancel_existing_orders` for
+    the position's symbol BEFORE constructing/placing the close order.
+    The helper already exists (line ~1204) and is used in the entry
+    path (line ~5241) for the same reason.
+    """
+
+    MARKER = "v-cancel-bracket-before-close-2026-06-08"
+
+    def test_marker_present_in_close_real_position(self):
+        """v-tag must live inside _close_real_position so future
+        regressions are grep-discoverable."""
+        src = ENGINE_PATH.read_text()
+        assert self.MARKER in src, (
+            "v-tag missing — fix regressed or never landed"
+        )
+        # And it must be inside _close_real_position, not floating
+        # in some unrelated comment elsewhere.
+        fn_start = src.index("async def _close_real_position")
+        # Find the next top-level def to bound the function body.
+        # Searching for the next `\n    async def ` or `\n    def `.
+        m = re.search(
+            r"\n    (?:async )?def ",
+            src[fn_start + 1 :],
+        )
+        fn_end = (fn_start + 1 + m.start()) if m else len(src)
+        body = src[fn_start:fn_end]
+        assert self.MARKER in body, (
+            "v-tag exists but not inside _close_real_position body"
+        )
+
+    def test_cancel_existing_orders_called_in_close_path(self):
+        """The fix is to call `await self._cancel_existing_orders(
+        position.symbol)` inside `_close_real_position`."""
+        src = ENGINE_PATH.read_text()
+        fn_start = src.index("async def _close_real_position")
+        m = re.search(
+            r"\n    (?:async )?def ",
+            src[fn_start + 1 :],
+        )
+        fn_end = (fn_start + 1 + m.start()) if m else len(src)
+        body = src[fn_start:fn_end]
+        assert "_cancel_existing_orders(position.symbol)" in body, (
+            "_close_real_position must call "
+            "_cancel_existing_orders(position.symbol) before placing "
+            "the sell — otherwise Schwab rejects with 'oversold "
+            "position' when an OCO bracket is active."
+        )
+
+    def test_cancel_happens_before_place_order(self):
+        """Lexical-ordering check: in _close_real_position, the
+        _cancel_existing_orders call must appear BEFORE the
+        place_order call. Otherwise the order will still race the
+        bracket."""
+        src = ENGINE_PATH.read_text()
+        fn_start = src.index("async def _close_real_position")
+        m = re.search(
+            r"\n    (?:async )?def ",
+            src[fn_start + 1 :],
+        )
+        fn_end = (fn_start + 1 + m.start()) if m else len(src)
+        body = src[fn_start:fn_end]
+
+        cancel_pos = body.find("_cancel_existing_orders(position.symbol)")
+        place_pos = body.find("self.schwab_client.place_order(")
+        assert cancel_pos != -1, "cancel call missing"
+        assert place_pos != -1, "place_order call missing"
+        assert cancel_pos < place_pos, (
+            "_cancel_existing_orders must be called BEFORE "
+            "place_order — bracket release has to settle before the "
+            "sell or Schwab will reject."
+        )
+
+
+# ── v-rising-peak-filter-2026-06-08 ─────────────────────────────────
+
+BUILTIN_PATH = REPO_ROOT / "strategies" / "builtin.py"
+
+
+class TestRisingPeakFilter:
+    """Mean-rev SHORT entries must require a confirmed downtrend before
+    firing. Symmetric to the falling-knife filter on the LONG side.
+
+    May 11 2026 incident: re-enabling mean-rev SHORT produced
+    shorts-only behavior — 5 simultaneous shorts at -$665 unrealized —
+    because RSI>70 fires constantly during a sustained rally (it's the
+    norm, not a reversal signal). The long-side has a falling-knife
+    filter (close<SMA50 blocks longs in downtrends). The short-side
+    never got the symmetric "rising peak" filter blocking shorts in
+    uptrends.
+
+    Spec:
+      * Apply ONLY to the mean-rev SHORT branch (rsi>70 + close>bb_upper)
+      * Apply AFTER the ENABLE_MEAN_REV_SHORT gate (so the existing
+        disable still wins)
+      * Required gates (BOTH):
+          - close < SMA50          (downtrend confirmation)
+          - MACD < MACD signal     (bearish momentum confirmation)
+      * If either fails → skip with audit reason "rising_peak_uptrend"
+      * If indicator data is missing (sma_50 == 0) → skip with audit
+        reason "rising_peak_no_data" (fail-closed)
+      * Gateable via Config.ENABLE_RISING_PEAK_FILTER (default True)
+      * Must NOT touch any LONG path (oversold_bounce, uptrend_pullback)
+      * Must NOT touch news strategy, breakout, or momentum branches
+    """
+
+    MARKER = "v-rising-peak-filter-2026-06-08"
+
+    def test_config_flag_exists_with_default_true(self):
+        """The filter is safety-on by default. Operators flip it OFF
+        only for backtest comparison."""
+        from core.config import Config
+        cfg = Config()
+        assert hasattr(cfg, "ENABLE_RISING_PEAK_FILTER"), (
+            "Config.ENABLE_RISING_PEAK_FILTER property missing"
+        )
+        assert cfg.ENABLE_RISING_PEAK_FILTER is True, (
+            "default must be True — re-enabling SHORT without the "
+            "filter is the exact path to the May 11 -$665 incident"
+        )
+
+    def test_marker_present_in_mean_rev_short_branch(self):
+        """v-tag lives inside the mean-rev SHORT branch (between the
+        `elif rsi > 70` line and the SELL signal construction)."""
+        src = BUILTIN_PATH.read_text()
+        assert self.MARKER in src, "v-tag missing"
+        # And it must be after the elif that opens the SHORT branch
+        short_branch_start = src.find("elif rsi > 70 and market_data.close > bb_upper")
+        assert short_branch_start != -1, (
+            "mean-rev SHORT branch signature drifted — verify spec"
+        )
+        marker_pos = src.find(self.MARKER, short_branch_start)
+        assert marker_pos != -1, "v-tag not inside SHORT branch"
+
+    def test_filter_uses_required_indicators(self):
+        """Filter must check close<sma_50 AND macd<macd_signal.
+        Anchored on the literal indicator keys."""
+        src = BUILTIN_PATH.read_text()
+        marker_pos = src.index(self.MARKER)
+        # Filter logic lives in the ~1000 chars after the marker.
+        body = src[marker_pos : marker_pos + 2000]
+        assert "sma_50" in body, "filter must read sma_50"
+        assert "macd_signal" in body, "filter must read macd_signal"
+
+    def test_filter_skip_audit_reasons(self):
+        """When the filter blocks, it must emit auditable skip
+        reasons so live behavior is grep-discoverable."""
+        src = BUILTIN_PATH.read_text()
+        marker_pos = src.index(self.MARKER)
+        body = src[marker_pos : marker_pos + 2000]
+        assert "rising_peak_uptrend" in body, (
+            "block-path audit reason must be 'rising_peak_uptrend'"
+        )
+        assert "rising_peak_no_data" in body, (
+            "missing-data fail-closed audit reason must be "
+            "'rising_peak_no_data'"
+        )
+
+    def test_filter_gateable_via_config(self):
+        """The filter itself must check ENABLE_RISING_PEAK_FILTER —
+        so operators can flip it off for backtest comparison without
+        editing code."""
+        src = BUILTIN_PATH.read_text()
+        marker_pos = src.index(self.MARKER)
+        body = src[marker_pos : marker_pos + 2000]
+        assert "ENABLE_RISING_PEAK_FILTER" in body, (
+            "filter must be gated by Config.ENABLE_RISING_PEAK_FILTER"
+        )
+
+    def test_long_branch_untouched_by_filter(self):
+        """REGRESSION GUARD: filter must not touch the LONG paths.
+        Verify the marker is NOT inside the oversold_bounce or
+        uptrend_pullback code paths."""
+        src = BUILTIN_PATH.read_text()
+        marker_pos = src.index(self.MARKER)
+        # The LONG SELL signal_buy paths come before the SHORT branch.
+        # If our marker appears before any LONG construction, the patch
+        # landed in the wrong place.
+        long_signal_pos = src.find("signal_buy")
+        if long_signal_pos != -1:
+            assert marker_pos > long_signal_pos, (
+                "v-tag landed before LONG signal_buy — wrong location"
+            )
+
+    def test_news_strategy_untouched(self):
+        """REGRESSION GUARD: news strategy must not reference this
+        filter. The news strategy has its own rising-knife filter and
+        its own short discipline; mixing them risks unintended
+        coupling."""
+        news_src = NEWS_STRATEGY_PATH.read_text()
+        assert "ENABLE_RISING_PEAK_FILTER" not in news_src, (
+            "news strategy must not couple to mean-rev's filter"
+        )
+        assert self.MARKER not in news_src, (
+            "v-tag must not be inside news strategy"
+        )
+
+
+# ── v-verify-close-fill-2026-06-08 ──────────────────────────────────
+
+class TestVerifyCloseFill:
+    """`_close_real_position` must verify the close order actually
+    filled at Schwab before returning True. Bug observed 2026-06-08
+    11:12 ET alongside the OCO-before-close bug:
+
+    1. close path placed sell order
+    2. Schwab returned HTTP 201 ("accepted into validation")
+    3. close path returned True
+    4. caller (`_close_position_with_commentary`) popped the position
+       from local state
+    5. Schwab asynchronously REJECTED the order ("oversold position")
+    6. position now gone from local state but STILL OPEN at Schwab
+       with active OCO bracket — bot blind to it
+
+    Fix: after place_order returns 201, await `_verify_order_fill` to
+    confirm the FILLED status. Same helper as the entry path. Return
+    False on REJECTED/CANCELED/timeout so the caller promotes the
+    position to ZOMBIE state instead of removing it.
+
+    This sits on top of #33 (cancel OCO before sell). Both must land
+    together — #33 prevents most rejections, #34 catches the remaining
+    failure modes (margin, halt, etc.) without state corruption.
+    """
+
+    MARKER = "v-verify-close-fill-2026-06-08"
+
+    def test_marker_present_in_close_real_position(self):
+        """v-tag must live inside _close_real_position so regressions
+        are grep-discoverable."""
+        src = ENGINE_PATH.read_text()
+        assert self.MARKER in src, "v-tag missing"
+        fn_start = src.index("async def _close_real_position")
+        m = re.search(
+            r"\n    (?:async )?def ",
+            src[fn_start + 1 :],
+        )
+        fn_end = (fn_start + 1 + m.start()) if m else len(src)
+        body = src[fn_start:fn_end]
+        assert self.MARKER in body, (
+            "v-tag must be inside _close_real_position body, not "
+            "elsewhere in the file"
+        )
+
+    def test_verify_called_on_success_path(self):
+        """The fix is calling `_verify_order_fill` after the 201 status
+        check, before returning True."""
+        src = ENGINE_PATH.read_text()
+        fn_start = src.index("async def _close_real_position")
+        m = re.search(
+            r"\n    (?:async )?def ",
+            src[fn_start + 1 :],
+        )
+        fn_end = (fn_start + 1 + m.start()) if m else len(src)
+        body = src[fn_start:fn_end]
+        assert "_verify_order_fill" in body, (
+            "_close_real_position must call _verify_order_fill before "
+            "returning True — Schwab's 201 means accepted-for-validation, "
+            "not filled."
+        )
+
+    def test_verify_gated_on_status_check(self):
+        """The verify call must appear AFTER the
+        `response.status_code in [200, 201]` check — otherwise we'd
+        verify on a non-existent order ID."""
+        src = ENGINE_PATH.read_text()
+        fn_start = src.index("async def _close_real_position")
+        m = re.search(
+            r"\n    (?:async )?def ",
+            src[fn_start + 1 :],
+        )
+        fn_end = (fn_start + 1 + m.start()) if m else len(src)
+        body = src[fn_start:fn_end]
+        status_check_pos = body.find("response.status_code in [200, 201]")
+        verify_pos = body.find("_verify_order_fill")
+        assert status_check_pos != -1, "status-code check signature drifted"
+        assert verify_pos > status_check_pos, (
+            "_verify_order_fill must be called inside the success "
+            "branch, after the status_code check"
+        )
+
+    def test_verify_failure_returns_false(self):
+        """When `_verify_order_fill` returns False (REJECTED, CANCELED,
+        timeout), `_close_real_position` must return False so the
+        caller's ZOMBIE escalation path runs.
+
+        Grep-anchor: the body must contain `if not filled` (or
+        equivalent) and a `return False` inside that block."""
+        src = ENGINE_PATH.read_text()
+        fn_start = src.index("async def _close_real_position")
+        m = re.search(
+            r"\n    (?:async )?def ",
+            src[fn_start + 1 :],
+        )
+        fn_end = (fn_start + 1 + m.start()) if m else len(src)
+        body = src[fn_start:fn_end]
+        # Find the verify call, then look for the failure-return
+        # within the next 500 chars.
+        verify_pos = body.find("_verify_order_fill")
+        assert verify_pos != -1, "verify call missing"
+        tail = body[verify_pos : verify_pos + 800]
+        assert "return False" in tail, (
+            "after _verify_order_fill the close path must `return "
+            "False` on verify failure so the caller promotes to ZOMBIE"
+        )
+
+    def test_zombie_escalation_path_unchanged(self):
+        """REGRESSION GUARD: the caller's ZOMBIE escalation logic in
+        `_close_position_with_commentary` must remain — that's what
+        catches our new `return False`."""
+        src = ENGINE_PATH.read_text()
+        # The ZOMBIE promotion lives in the close-with-commentary path
+        # after `success = await self._close_real_position(position)`.
+        assert "broker_close_returned_false" in src, (
+            "ZOMBIE escalation reason string missing — the close "
+            "caller may have lost the `if not success` guard that "
+            "depends on this fix returning False"
+        )
+        assert "PositionState.ZOMBIE.value" in src, (
+            "ZOMBIE state assignment missing — caller logic regressed"
+        )
+
+
+# ── v-bot-only-pnl-circuit-2026-06-08 ───────────────────────────────
+
+RISK_PATH = REPO_ROOT / "risk" / "manager.py"
+
+
+class TestBotOnlyPnLCircuit:
+    """Daily-loss circuit must use BOT-managed P&L, not account-wide
+    Schwab P&L. Account-wide P&L includes external holdings that the
+    bot never opened (e.g., HQGE/PINS/COIN in the operator's account).
+
+    Why it matters: if external positions gap-down -8% overnight, the
+    account-wide P&L crosses the -1% circuit threshold even when the
+    bot's own performance is flat or positive. The bot then pauses
+    trading on losses that are not its responsibility. The operator
+    observed this exact pattern multiple times in May 2026.
+
+    Fix:
+      * Compute bot_daily_pnl = today's realized P&L of closed
+        bot-managed trades + unrealized P&L of currently-open
+        bot-managed positions.
+      * Use bot_daily_pnl in `can_trade()` instead of schwab_daily_pnl.
+      * Keep schwab_daily_pnl tracked and displayed (still useful
+        for the user's overall portfolio view).
+      * Gate via Config.ENABLE_BOT_ONLY_PNL_CIRCUIT (default True).
+        Fallback to schwab_daily_pnl if flag is False.
+    """
+
+    MARKER = "v-bot-only-pnl-circuit-2026-06-08"
+
+    def test_config_flag_exists_with_default_true(self):
+        from core.config import Config
+        cfg = Config()
+        assert hasattr(cfg, "ENABLE_BOT_ONLY_PNL_CIRCUIT"), (
+            "Config.ENABLE_BOT_ONLY_PNL_CIRCUIT missing"
+        )
+        assert cfg.ENABLE_BOT_ONLY_PNL_CIRCUIT is True, (
+            "Default must be True — using account-wide P&L for the "
+            "bot's daily-loss circuit is the documented failure mode"
+        )
+
+    def test_marker_in_risk_manager(self):
+        src = RISK_PATH.read_text()
+        assert self.MARKER in src, "v-tag missing from risk/manager.py"
+
+    def test_risk_manager_tracks_bot_daily_pnl(self):
+        """RiskManager must hold `bot_daily_pnl` (parallel to
+        schwab_daily_pnl) so the engine sync loop can update it."""
+        src = RISK_PATH.read_text()
+        assert "self.bot_daily_pnl" in src, (
+            "RiskManager must initialize self.bot_daily_pnl in __init__"
+        )
+
+    def test_check_trading_allowed_uses_bot_pnl_when_flag_on(self):
+        """`check_trading_allowed()` (the daily-loss circuit entry
+        point) must check ENABLE_BOT_ONLY_PNL_CIRCUIT and use
+        bot_daily_pnl when True, schwab_daily_pnl otherwise."""
+        src = RISK_PATH.read_text()
+        # Find check_trading_allowed and its surrounding context.
+        # The method is called check_trading_allowed in
+        # RiskManagerWithCommentary (not can_trade).
+        anchor = src.find("def check_trading_allowed(self)")
+        assert anchor != -1, "check_trading_allowed signature drifted"
+        body = src[anchor : anchor + 3000]
+        assert "ENABLE_BOT_ONLY_PNL_CIRCUIT" in body, (
+            "check_trading_allowed must reference "
+            "ENABLE_BOT_ONLY_PNL_CIRCUIT"
+        )
+        assert "self.bot_daily_pnl" in body, (
+            "check_trading_allowed must use bot_daily_pnl in the "
+            "active branch"
+        )
+
+    def test_compute_bot_daily_pnl_in_engine(self):
+        """Engine must provide a `_compute_bot_daily_pnl` method that
+        sums today's realized bot trades + open bot positions'
+        unrealized P&L."""
+        src = ENGINE_PATH.read_text()
+        assert "_compute_bot_daily_pnl" in src, (
+            "engine must expose _compute_bot_daily_pnl"
+        )
+        # The method must filter on managed_by_bot
+        method_pos = src.find("def _compute_bot_daily_pnl")
+        assert method_pos != -1, "method definition missing"
+        method_body = src[method_pos : method_pos + 2500]
+        assert "managed_by_bot" in method_body, (
+            "computation must filter on managed_by_bot"
+        )
+
+    def test_schwab_daily_pnl_still_tracked(self):
+        """REGRESSION GUARD: schwab_daily_pnl must still be tracked
+        and synced — it remains the source of truth for the
+        operator-facing account-wide display."""
+        src = RISK_PATH.read_text()
+        assert "schwab_daily_pnl" in src, (
+            "schwab_daily_pnl tracking regressed — required for "
+            "dashboard P&L display"
+        )
+        eng_src = ENGINE_PATH.read_text()
+        # The existing sync line must still set schwab_daily_pnl.
+        assert "schwab_daily_pnl = schwab_pnl" in eng_src, (
+            "engine sync loop must still update schwab_daily_pnl"
+        )
+
+    def test_bot_daily_pnl_synced_alongside_schwab(self):
+        """The engine sync loop that sets schwab_daily_pnl must also
+        update bot_daily_pnl on the same cadence — otherwise the
+        circuit reads stale bot P&L."""
+        src = ENGINE_PATH.read_text()
+        # Find the schwab sync line and inspect the surrounding block
+        # for a parallel bot_daily_pnl update.
+        anchor = src.find("schwab_daily_pnl = schwab_pnl")
+        assert anchor != -1, "engine schwab sync anchor missing"
+        # Look in a wide window around the anchor.
+        window = src[max(0, anchor - 500) : anchor + 800]
+        assert "bot_daily_pnl" in window, (
+            "engine sync loop must set risk_manager.bot_daily_pnl "
+            "alongside schwab_daily_pnl"
+        )

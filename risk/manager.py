@@ -26,7 +26,14 @@ class RiskManagerWithCommentary:
 
     def __init__(self, account_balance: float, commentary_system):
         self.account_balance = account_balance
-        self.schwab_daily_pnl = 0  # ONLY use Schwab P&L
+        self.schwab_daily_pnl = 0  # Account-wide; for display only
+        # v-bot-only-pnl-circuit-2026-06-08: BOT-managed P&L only
+        # (realized today's bot trades + unrealized of open bot
+        # positions). This is what the daily-loss circuit reads when
+        # Config.ENABLE_BOT_ONLY_PNL_CIRCUIT is True (default). Set
+        # by the engine's sync loop alongside schwab_daily_pnl. The
+        # default of 0 is the "no losses yet" starting point.
+        self.bot_daily_pnl = 0
         self.consecutive_losses = 0
         # v-consec-loss-daily-reset-2026-05-21: track date of last loss
         # so the gate can auto-reset at calendar-day rollover without
@@ -344,9 +351,28 @@ class RiskManagerWithCommentary:
         if self.buying_power < 100:
             return False, f"Insufficient buying power: ${self.buying_power:.2f}"
 
-        # ONLY use Schwab's P&L
-        if self.schwab_daily_pnl <= -Config().MAX_DAILY_LOSS * self.account_balance:
-            return False, f"Daily loss limit exceeded (P&L: ${self.schwab_daily_pnl:.2f})"
+        # v-bot-only-pnl-circuit-2026-06-08: prefer BOT-managed P&L
+        # over account-wide schwab_daily_pnl for the circuit decision.
+        # External holdings (HQGE/PINS/COIN etc.) can move the
+        # account-wide P&L past the threshold without the bot losing
+        # anything — pausing the bot for losses that aren't its
+        # responsibility. When the flag is True (default), evaluate
+        # bot_daily_pnl. When False, fall back to schwab_daily_pnl
+        # so an operator can revert behavior at runtime via Config.yaml.
+        # schwab_daily_pnl remains updated for dashboard display.
+        _cfg_circuit = Config()
+        if _cfg_circuit.ENABLE_BOT_ONLY_PNL_CIRCUIT:
+            _circuit_pnl = self.bot_daily_pnl
+            _circuit_label = "Bot daily loss"
+        else:
+            _circuit_pnl = self.schwab_daily_pnl
+            _circuit_label = "Daily loss"
+        if _circuit_pnl <= -_cfg_circuit.MAX_DAILY_LOSS * self.account_balance:
+            return False, (
+                f"{_circuit_label} limit exceeded "
+                f"(P&L: ${_circuit_pnl:.2f}, "
+                f"schwab_pnl: ${self.schwab_daily_pnl:.2f})"
+            )
 
         # v-consec-loss-daily-reset-2026-05-21: auto-reset at calendar-day
         # rollover. If the last loss was on a prior date, today is a fresh

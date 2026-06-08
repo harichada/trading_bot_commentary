@@ -952,8 +952,64 @@ class Config:
         Flip True in Config.yaml to re-enable — ideally after adding the
         trend-context filter (require close<SMA50 AND MACD<signal before
         taking the short). Existing short positions remain under the bot's
-        exit management when this flag is off; only NEW shorts are blocked."""
+        exit management when this flag is off; only NEW shorts are blocked.
+
+        v-rising-peak-filter-2026-06-08: the trend-context filter now
+        exists — see ENABLE_RISING_PEAK_FILTER below. Re-enabling
+        mean-rev SHORT also still requires sim soak before live; the
+        filter narrows the failure mode but doesn't eliminate the need
+        to verify the new gate produces sensible trade counts."""
         return bool(self.manager.get('trading.enable_mean_rev_short', False))
+
+    @property
+    def ENABLE_RISING_PEAK_FILTER(self) -> bool:
+        """Rising-peak filter on mean-rev SHORT entries (default True).
+
+        Symmetric to the falling-knife filter on the LONG side. When
+        True, the mean-rev SHORT branch requires both:
+          * close < SMA50          (downtrend confirmation)
+          * MACD < MACD signal     (bearish momentum confirmation)
+        before firing the SELL signal. Either gate failing → skip with
+        audit reason 'rising_peak_uptrend'. Missing indicator data
+        (sma_50 == 0, insufficient bars) → fail-closed with
+        'rising_peak_no_data'.
+
+        Context: re-enabling ENABLE_MEAN_REV_SHORT on 2026-05-11 produced
+        shorts-only behavior — 5 simultaneous shorts at -$665 unrealized
+        — because RSI>70 fires constantly during a sustained rally. The
+        long-side falling-knife filter (close<SMA50 blocks longs in
+        downtrends) had no short-side mirror; this property is that
+        mirror.
+
+        Default True — flip to False ONLY for backtest comparisons
+        (filter-on vs filter-off) where you want to characterize the
+        gate's lift. In live, do not flip False; the filter is the
+        precondition for re-enabling ENABLE_MEAN_REV_SHORT."""
+        return bool(self.manager.get('trading.enable_rising_peak_filter', True))
+
+    @property
+    def ENABLE_BOT_ONLY_PNL_CIRCUIT(self) -> bool:
+        """Use BOT-managed P&L (not account-wide Schwab P&L) for the
+        daily-loss circuit. Default True.
+
+        Why this exists: the operator's Schwab account holds external
+        positions the bot never opened (HQGE/PINS/COIN as of 2026-06-08).
+        When those externals gap down (e.g., PINS -8% overnight), the
+        account-wide day P&L crosses the -1% circuit threshold even
+        when the bot's own performance is flat or positive. The bot
+        then pauses trading for losses that aren't its responsibility.
+
+        When True, `can_trade()` evaluates:
+          bot_daily_pnl = sum(today's realized bot trades)
+                        + sum(unrealized P&L of open bot-managed positions)
+        instead of the account-wide schwab_daily_pnl.
+
+        When False, falls back to the original behavior (schwab_daily_pnl).
+
+        schwab_daily_pnl remains tracked regardless — the dashboard
+        still shows the operator's full-account P&L; only the
+        circuit-decision input changes."""
+        return bool(self.manager.get('trading.enable_bot_only_pnl_circuit', True))
 
     @property
     def ENABLE_BREAKOUT_LONG(self) -> bool:

@@ -1925,15 +1925,34 @@ class TradingEngineWithCommentary:
         """Close real position through Schwab"""
         if not self.schwab_client:
             return False
-        
+
         try:
-            from schwab.orders.equities import (equity_sell_market, equity_buy_market, 
+            from schwab.orders.equities import (equity_sell_market, equity_buy_market,
                                                 equity_buy_to_cover_market, equity_sell_limit,
                                                 equity_buy_limit, equity_buy_to_cover_limit)
             from schwab.orders.common import Duration, Session
-            
+
             quantity_to_sell = int(position.quantity * exit_portion)
-            
+
+            # v-cancel-bracket-before-close-2026-06-08: cancel the
+            # active OCO bracket BEFORE placing the close order.
+            # Bug observed 2026-06-08 11:12 ET (NOK/GLW/OWL manual
+            # closes): Schwab rejected every sell with `oversold
+            # position` because the OCO's stop+target legs still
+            # pledged the shares. The 4 reconciled trades (~$533
+            # realized) were only saved by the user closing in the
+            # Schwab app after cancelling the bracket manually —
+            # a 6-cancel workflow that should be one API call.
+            #
+            # `_cancel_existing_orders` is the same helper used in the
+            # entry path (engine.py:5241) and includes a 1s settle
+            # sleep so Schwab releases the shares before the sell
+            # hits. If no bracket exists (e.g., partial fill, external
+            # position), the helper is a no-op and returns False —
+            # safe to call unconditionally.
+            if exit_portion >= 1.0:
+                await self._cancel_existing_orders(position.symbol)
+
             # Check market hours for order type
             use_limit, reason = self.should_use_limit_order()
             is_regular, session = self.is_market_hours()
@@ -2008,7 +2027,51 @@ class TradingEngineWithCommentary:
                     'status': 'PENDING',
                     'placed_time': datetime.now()
                 }
-                
+
+                # v-verify-close-fill-2026-06-08: Schwab's 201 means the
+                # order was accepted for validation, NOT filled. Without
+                # this verify the caller (`_close_position_with_commentary`)
+                # pops the position from local state on any 201 — even if
+                # Schwab asynchronously rejects (the 2026-06-08 NOK/GLW/OWL
+                # incident: 3 closes rejected for "oversold position", but
+                # local state was already cleaned up → bot blind to live
+                # positions still at the broker).
+                #
+                # Reuse the entry path's `_verify_order_fill` helper. It
+                # polls Schwab's order-status API for up to 60s (30 × 2s
+                # backoff), returns True only on FILLED, and on
+                # REJECTED/CANCELED/timeout it self-cleans (cancels stuck
+                # orders, clears anti-pyramid attempt tracking). The
+                # `signal` parameter is unused inside the body — passing
+                # `position` is safe and self-documenting at the call site.
+                #
+                # When verify returns False, we return False so the caller
+                # promotes the position to ZOMBIE state (see the
+                # `broker_close_returned_false` reason in
+                # `_close_position_with_commentary`) — the position stays
+                # in local state, the operator gets a dashboard alert,
+                # and no other exit rule second-guesses the stuck close.
+                filled = await self._verify_order_fill(order_id, position)
+                if not filled:
+                    logger.warning(
+                        "close_verify_failed symbol=%s order_id=%s — "
+                        "caller will promote to ZOMBIE",
+                        position.symbol, order_id,
+                    )
+                    self.commentary.add_commentary(TradingCommentary(
+                        timestamp=datetime.now(),
+                        type=CommentaryType.WARNING,
+                        symbol=position.symbol,
+                        title=f"⚠️ Close Did Not Fill",
+                        message=(
+                            f"Close order for {position.symbol} was accepted "
+                            f"by Schwab but did not reach FILLED status. "
+                            f"Position will be marked ZOMBIE for operator review."
+                        ),
+                        importance=10,
+                    ))
+                    return False
+
                 return True
             else:
                 self.commentary.add_commentary(TradingCommentary(
@@ -3935,6 +3998,29 @@ class TradingEngineWithCommentary:
                         schwab_pnl = fresh_info.get('day_pnl', 0)
                         # Update risk manager with Schwab data
                         self.risk_manager.schwab_daily_pnl = schwab_pnl
+                        # v-bot-only-pnl-circuit-2026-06-08: also update
+                        # bot_daily_pnl on the same cadence so the
+                        # circuit reads fresh bot-only P&L (used by
+                        # can_trade when ENABLE_BOT_ONLY_PNL_CIRCUIT
+                        # is True). Failure here must NOT raise — the
+                        # circuit falls back to the prior bot_daily_pnl
+                        # value (initialized 0). Computation is pure
+                        # local state — never blocks on network.
+                        try:
+                            self.risk_manager.bot_daily_pnl = self._compute_bot_daily_pnl()
+                            logger.info(
+                                "Bot-only P&L Check: $%.2f (Schwab P&L: $%.2f, "
+                                "Limit: $%.2f)",
+                                self.risk_manager.bot_daily_pnl,
+                                schwab_pnl,
+                                self.risk_manager.account_balance * 0.05,
+                            )
+                        except Exception as _bp_exc:
+                            logger.warning(
+                                "compute_bot_daily_pnl failed: %s — "
+                                "circuit will use stale bot P&L",
+                                _bp_exc,
+                            )
                         logger.info(f"Schwab P&L Check: ${schwab_pnl:.2f} (Limit: ${self.risk_manager.account_balance * 0.05:.2f})")
                 
                 # Only check emergency stop with real Schwab P&L
@@ -6902,6 +6988,77 @@ class TradingEngineWithCommentary:
             )
 
         return compute_position_day_pnl(position, on_outlier=_on_outlier)
+
+    def _compute_bot_daily_pnl(self) -> float:
+        """v-bot-only-pnl-circuit-2026-06-08: realized + unrealized
+        P&L of BOT-managed positions only.
+
+        Used by `risk/manager.py:can_trade` when
+        `Config.ENABLE_BOT_ONLY_PNL_CIRCUIT` is True. Excludes
+        external holdings (HQGE/PINS/COIN etc.) so the daily-loss
+        circuit doesn't pause the bot for losses on positions the
+        operator opened outside the bot.
+
+        Components:
+          * realized — sum of `pnl` on trade_history entries closed
+            today AND flagged managed_by_bot (default True for entries
+            the bot created via _execute_real_trade or reconciled via
+            _reconcile_external_closes with bot-tagged context).
+          * unrealized — sum of `unrealized_pnl` on currently-open
+            `self.positions` where `position.managed_by_bot` is True.
+
+        Robustness: every entry/position is wrapped in a per-item
+        try/except. A single malformed record (missing field, bad
+        datetime) is skipped, not raised — the circuit cannot block
+        on a data hygiene issue. Returns 0.0 if everything fails.
+
+        Pure local-state read; no network calls. Safe to invoke from
+        the analysis loop on every cycle.
+        """
+        today = datetime.now().date()
+
+        realized = 0.0
+        try:
+            for trade in self.trade_history:
+                try:
+                    exit_time = trade.get('exit_time')
+                    if not exit_time:
+                        continue
+                    if isinstance(exit_time, str):
+                        try:
+                            exit_dt = datetime.fromisoformat(exit_time)
+                        except (TypeError, ValueError):
+                            continue
+                    else:
+                        exit_dt = exit_time
+                    if exit_dt.date() != today:
+                        continue
+                    # Default True: trade_history entries that predate
+                    # the managed_by_bot field are assumed to be bot
+                    # trades (the field was added only for distinguishing
+                    # externally-discovered closes from bot-driven ones).
+                    if not trade.get('managed_by_bot', True):
+                        continue
+                    pnl_val = trade.get('pnl') or trade.get('realized_pnl') or 0
+                    realized += float(pnl_val)
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+        unrealized = 0.0
+        try:
+            for symbol, position in self.positions.items():
+                try:
+                    if not getattr(position, 'managed_by_bot', False):
+                        continue
+                    unrealized += float(getattr(position, 'unrealized_pnl', 0) or 0)
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+        return realized + unrealized
 
     async def _get_real_account_info(self) -> Dict[str, float]:
         """Get real account information directly from Schwab - NO CALCULATIONS"""

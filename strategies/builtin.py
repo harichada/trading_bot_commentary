@@ -900,6 +900,58 @@ class MeanReversionStrategyWithCommentary(TradingStrategyWithCommentary):
                                        close=round(market_data.close, 2),
                                        bb_upper=round(bb_upper, 2))
                     return None
+
+                # v-rising-peak-filter-2026-06-08: symmetric to the
+                # falling-knife filter on the LONG side. Mean-rev SHORT
+                # must NOT fire when the broader trend is up — RSI>70
+                # is the *norm* during a sustained rally, not a reversal
+                # signal. May 11 2026 incident: re-enabling SHORT without
+                # this filter produced 5 simultaneous shorts at -$665
+                # unrealized inside one session because every rally peak
+                # read as "overbought" and the strategy piled in.
+                #
+                # Gates (BOTH required when the filter is on):
+                #   * close < SMA50          (price below the 50-period
+                #                             MA — established downtrend)
+                #   * MACD < MACD signal     (bearish momentum confirmed)
+                #
+                # Indicator availability: sma_50 / macd / macd_signal are
+                # computed by analysis/technical.py for every bar with
+                # sufficient history. sma_50 == 0 means insufficient bars
+                # or a freshly-listed name → fail-closed with audit reason
+                # 'rising_peak_no_data'. Block path uses audit reason
+                # 'rising_peak_uptrend' for grep-discoverability.
+                #
+                # Gated by Config.ENABLE_RISING_PEAK_FILTER (default
+                # True). Flip False ONLY for backtest comparison.
+                from core.config import Config as _CfgRP
+                if _CfgRP().ENABLE_RISING_PEAK_FILTER:
+                    _sma_50_rp = float(indicators.get('sma_50', 0))
+                    _macd_rp = float(indicators.get('macd', 0))
+                    _macd_signal_rp = float(indicators.get('macd_signal', 0))
+                    if _sma_50_rp <= 0:
+                        self._log_decision(
+                            market_data, "skip", "rising_peak_no_data",
+                            rsi=round(rsi, 2),
+                            close=round(market_data.close, 2),
+                            sma_50=round(_sma_50_rp, 2),
+                        )
+                        return None
+                    _in_downtrend = market_data.close < _sma_50_rp
+                    _bearish_momentum = _macd_rp < _macd_signal_rp
+                    if not (_in_downtrend and _bearish_momentum):
+                        self._log_decision(
+                            market_data, "skip", "rising_peak_uptrend",
+                            rsi=round(rsi, 2),
+                            close=round(market_data.close, 2),
+                            sma_50=round(_sma_50_rp, 2),
+                            in_downtrend=_in_downtrend,
+                            macd=round(_macd_rp, 4),
+                            macd_signal=round(_macd_signal_rp, 4),
+                            bearish_momentum=_bearish_momentum,
+                        )
+                        return None
+
                 distance_from_mean = ((market_data.close - bb_middle) / market_data.close) * 100
                 self.commentary.add_commentary(TradingCommentary(
                     timestamp=datetime.now(),
