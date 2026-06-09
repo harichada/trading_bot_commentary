@@ -894,7 +894,80 @@ class MeanReversionStrategyWithCommentary(TradingStrategyWithCommentary):
                 # Existing open shorts keep running — this only blocks NEW
                 # entries. Re-enable via trading.enable_mean_rev_short=true.
                 from core.config import Config as _CfgMS
-                if not _CfgMS().ENABLE_MEAN_REV_SHORT:
+                _cfg_ms = _CfgMS()
+                if not _cfg_ms.ENABLE_MEAN_REV_SHORT:
+                    # v-mean-rev-short-shadow-2026-06-09: before returning
+                    # None, log the would-be signal to shadow ledger if
+                    # shadow mode is on. Pure observation — no order
+                    # placed. Computes full hypothetical OCO bracket
+                    # (stop/target) using the same ATR-based logic the
+                    # live SHORT branch uses below, so the shadow data
+                    # is comparable to a real signal had it fired.
+                    if _cfg_ms.ENABLE_MEAN_REV_SHORT_SHADOW:
+                        try:
+                            from core.config import Config as _CfgShadow
+                            _cfg_sh = _CfgShadow()
+                            _atr_sh = _floored_atr(
+                                indicators.get('atr', market_data.close * 0.02),
+                                market_data.close
+                            )
+                            _atr_mult_sh = _cfg_sh.MEAN_REV_ATR_STOP_MULTIPLIER
+                            _rr_ratio_sh = _cfg_sh.ATR_REWARD_RISK_RATIO
+                            _stop_dist_sh = _atr_mult_sh * _atr_sh
+                            _hyp_stop = market_data.close + _stop_dist_sh
+                            _hyp_target = market_data.close - (_rr_ratio_sh * _stop_dist_sh)
+                            _shadow_entry = {
+                                'timestamp': datetime.now().isoformat(),
+                                'symbol': market_data.symbol,
+                                'signal_type': 'SHORT',
+                                'reason': 'overbought_fade',
+                                'signal_close': float(market_data.close),
+                                'rsi': float(rsi),
+                                'bb_upper': float(bb_upper),
+                                'bb_middle': float(bb_middle),
+                                'sma_50': float(indicators.get('sma_50', 0) or 0),
+                                'macd': float(indicators.get('macd', 0) or 0),
+                                'macd_signal': float(indicators.get('macd_signal', 0) or 0),
+                                'atr': float(_atr_sh),
+                                'hypothetical_stop': float(_hyp_stop),
+                                'hypothetical_target': float(_hyp_target),
+                                'rr_ratio': float(_rr_ratio_sh),
+                                'stop_dist': float(_stop_dist_sh),
+                            }
+                            import json as _json_sh
+                            import os as _os_sh
+                            _ledger_path = 'shadow_short_log.json'
+                            try:
+                                if _os_sh.path.exists(_ledger_path):
+                                    with open(_ledger_path) as _f:
+                                        _existing = _json_sh.load(_f)
+                                else:
+                                    _existing = []
+                                _existing.append(_shadow_entry)
+                                with open(_ledger_path, 'w') as _f:
+                                    _json_sh.dump(_existing, _f, default=str)
+                            except Exception as _shadow_io_exc:
+                                logger.warning(
+                                    "shadow_short_log write failed for %s: %s",
+                                    market_data.symbol, _shadow_io_exc,
+                                )
+                            # Emit audit line so the shadow event is
+                            # also visible in the structured log.
+                            self._log_decision(
+                                market_data, "shadow", "short_shadow_logged",
+                                rsi=round(rsi, 2),
+                                close=round(market_data.close, 2),
+                                bb_upper=round(bb_upper, 2),
+                                hyp_stop=round(_hyp_stop, 2),
+                                hyp_target=round(_hyp_target, 2),
+                                sma_50=round(float(indicators.get('sma_50', 0) or 0), 2),
+                                macd=round(float(indicators.get('macd', 0) or 0), 4),
+                            )
+                        except Exception as _shadow_exc:
+                            logger.debug(
+                                "short_shadow capture failed for %s: %s",
+                                market_data.symbol, _shadow_exc,
+                            )
                     self._log_decision(market_data, "skip", "short_disabled",
                                        rsi=round(rsi, 2),
                                        close=round(market_data.close, 2),
