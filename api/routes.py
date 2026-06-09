@@ -93,6 +93,14 @@ _register_backtest(app)
 
 # Global instances
 trading_engine = None
+# v-shutdown-stops-engine-thread-2026-06-09: keep a handle to the
+# engine thread so shutdown_handler can stop and join it. Without
+# this, SIGINT exited only the main thread; the non-daemon engine
+# thread kept the Schwab stream, token refreshes, and state writes
+# alive as a zombie process, and the next bot instance fought it
+# (token rotation race + concurrent state-file reads) — observed
+# 2026-06-09 as the "engine init hang" on mid-session restarts.
+trading_thread = None
 connection_manager = ConnectionManager()
 
 # Load dashboard HTML from template file
@@ -539,7 +547,7 @@ async def start_trading():
     handler returns in milliseconds. The trading engine's own start()
     still runs in its dedicated thread (unchanged).
     """
-    global trading_engine, connection_manager, trading_task
+    global trading_engine, connection_manager, trading_task, trading_thread
 
     # Import here to avoid circular imports
     from trading_bot_commentary_updated import TradingEngineWithCommentary, config_manager
@@ -626,9 +634,16 @@ async def start_trading():
         trading_engine.commentary.subscribe(queue_commentary)
 
     if not trading_engine.is_running:
-        threading.Thread(
-            target=lambda: asyncio.run(trading_engine.start())
-        ).start()
+        # v-shutdown-stops-engine-thread-2026-06-09: daemon=True is the
+        # backstop — a main-thread exit must never be blocked by this
+        # thread. Graceful stop (is_running=False + join) lives in
+        # shutdown_handler; state is saved there before exit, so a
+        # daemon kill at interpreter teardown loses nothing.
+        trading_thread = threading.Thread(
+            target=lambda: asyncio.run(trading_engine.start()),
+            daemon=True,
+        )
+        trading_thread.start()
 
         return {"status": "success", "message": "Trading with commentary started"}
 
@@ -2779,6 +2794,29 @@ def main():
         sig_name = signal.Signals(signum).name
         logger.info(f"Received {sig_name}, shutting down gracefully...")
         if trading_engine:
+            # v-shutdown-stops-engine-thread-2026-06-09: stop the engine
+            # loop and wait for its thread BEFORE saving state. The old
+            # handler exited the main thread while the engine kept
+            # trading on a non-daemon thread — the process never died,
+            # and the zombie's Schwab stream / token refreshes / state
+            # writes corrupted the next instance's startup ("init hang").
+            trading_engine.is_running = False
+            if trading_thread is not None and trading_thread.is_alive():
+                trading_thread.join(timeout=15.0)
+                if trading_thread.is_alive():
+                    # Engine still mid-loop: saving now would race its
+                    # own periodic state writes (torn JSON). The
+                    # freshest consistent snapshot is already on disk
+                    # from those periodic saves. os._exit skips
+                    # interpreter teardown — sys.exit would clear
+                    # module globals under the still-running thread.
+                    logger.critical(
+                        "Engine thread did not stop within 15s — "
+                        "skipping final state save (engine owns the "
+                        "state files) and force-exiting."
+                    )
+                    os._exit(1)
+                logger.info("Engine thread stopped cleanly")
             try:
                 trading_engine._save_state()
                 logger.info("Trading state saved")

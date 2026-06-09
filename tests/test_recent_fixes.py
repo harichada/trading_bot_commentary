@@ -2311,3 +2311,65 @@ class TestBotOnlyPnLCircuit:
             "engine sync loop must set risk_manager.bot_daily_pnl "
             "alongside schwab_daily_pnl"
         )
+
+
+# ── v-shutdown-stops-engine-thread-2026-06-09 ────────────────────────
+
+class TestShutdownStopsEngineThread:
+    """2026-06-09 'init hang' root cause: shutdown_handler saved state
+    and called sys.exit(0) but never stopped the engine thread. The
+    thread was non-daemon, so the interpreter waited on it forever —
+    a zombie process kept the Schwab stream, token refreshes, and
+    state-file writes alive. The next instance then fought the zombie
+    (token rotation race, concurrent state-file reads), which looked
+    like an engine-init hang. Proof in trading_bot.log 2026-06-09:
+    stream ticks logged at 10:41:19, AFTER 'Shutdown complete' at
+    10:41:17."""
+
+    def test_engine_thread_is_daemon(self):
+        """The engine thread must be daemon=True so a main-thread exit
+        can never be blocked by it (backstop — graceful stop below is
+        the primary mechanism)."""
+        src = ROUTES_PATH.read_text()
+        anchor = src.find("target=lambda: asyncio.run(trading_engine.start())")
+        assert anchor != -1, "engine thread creation anchor missing"
+        window = src[max(0, anchor - 300) : anchor + 300]
+        assert "daemon=True" in window, (
+            "engine thread must be created with daemon=True — "
+            "non-daemon engine thread caused the 2026-06-09 zombie"
+        )
+
+    def test_shutdown_handler_stops_engine_loop(self):
+        """shutdown_handler must set is_running = False BEFORE saving
+        state, so the engine loop winds down and the saved state is
+        final, not mid-iteration."""
+        src = ROUTES_PATH.read_text()
+        anchor = src.find("def shutdown_handler(")
+        assert anchor != -1, "shutdown_handler definition missing"
+        body = src[anchor : src.find("signal.signal(signal.SIGINT", anchor)]
+        assert "is_running = False" in body, (
+            "shutdown_handler must stop the engine loop "
+            "(is_running = False) — it previously exited the main "
+            "thread while the engine kept trading"
+        )
+
+    def test_shutdown_handler_joins_engine_thread(self):
+        """shutdown_handler must join the engine thread (bounded
+        timeout) so state is saved only after the loop actually
+        stopped."""
+        src = ROUTES_PATH.read_text()
+        anchor = src.find("def shutdown_handler(")
+        body = src[anchor : src.find("signal.signal(signal.SIGINT", anchor)]
+        assert ".join(timeout=" in body, (
+            "shutdown_handler must join the engine thread with a "
+            "bounded timeout before saving state"
+        )
+
+    def test_engine_thread_reference_kept(self):
+        """/api/start must keep a module-level reference to the engine
+        thread so shutdown_handler can join it."""
+        src = ROUTES_PATH.read_text()
+        assert "trading_thread" in src, (
+            "engine thread must be stored (trading_thread) for the "
+            "shutdown path to join"
+        )
