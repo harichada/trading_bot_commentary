@@ -939,7 +939,21 @@ class MeanReversionStrategyWithCommentary(TradingStrategyWithCommentary):
                         return None
                     _in_downtrend = market_data.close < _sma_50_rp
                     _bearish_momentum = _macd_rp < _macd_signal_rp
-                    if not (_in_downtrend and _bearish_momentum):
+                    # v-rising-peak-filter-loosen-2026-06-08-evening:
+                    # 60d AND 360d backtests showed `_in_downtrend AND
+                    # _bearish_momentum` rejected 100% of the 1,176-trade
+                    # (60d) and 4,965-trade (360d) candidate pool — too
+                    # strict to ever fire. Loosened to require ONLY
+                    # `_in_downtrend` (close < SMA50). Rationale: the
+                    # May 11 incident was 5 simultaneous shorts on a
+                    # confirmed-uptrend tape — every name had close >
+                    # SMA50. The MACD-bearish check was redundant for
+                    # that failure mode (it would have failed too).
+                    # close<SMA50 alone is the necessary-and-sufficient
+                    # structural signal. _bearish_momentum is kept in
+                    # the audit log for diagnostics on rare borderline
+                    # cases (price below SMA50 but MACD just turned up).
+                    if not _in_downtrend:
                         self._log_decision(
                             market_data, "skip", "rising_peak_uptrend",
                             rsi=round(rsi, 2),
