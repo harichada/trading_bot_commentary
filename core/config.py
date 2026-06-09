@@ -988,6 +988,41 @@ class Config:
         return bool(self.manager.get('trading.enable_rising_peak_filter', True))
 
     @property
+    def ENABLE_MEAN_REV_SHORT_SHADOW(self) -> bool:
+        """Log would-be mean-rev SHORT signals WITHOUT placing trades.
+
+        v-mean-rev-short-shadow-2026-06-09: live evidence-gathering for
+        the SHORT branch. The 360-day backtest (2026-06-08) said SHORT
+        is marginal (PF 1.05) — but the backtest window was mostly
+        bullish. 2026-06-09 produced 21 SHORT signal opportunities on
+        a half-day-reversal tape where many would have profited; one
+        day is not a verdict, so we accumulate live data without
+        risking capital.
+
+        When True AND ENABLE_MEAN_REV_SHORT is False, the mean-rev
+        SHORT branch:
+          * computes the full hypothetical signal (stop, target,
+            indicators)
+          * appends the entry to `shadow_short_log.json` for later
+            resolution
+          * returns None (no live order placed)
+
+        When True AND ENABLE_MEAN_REV_SHORT is True (contradictory):
+          * the live path takes precedence; shadow logging skipped to
+            avoid double-counting. Operator should pick one mode.
+
+        Default False — opt-in only. Flip in Config.yaml when ready to
+        start the shadow-mode accumulation period (target 5-10
+        sessions).
+
+        Resolution: `research/shadow_short_resolver.py` walks the log,
+        compares each entry to subsequent bars, and computes whether
+        the hypothetical OCO bracket would have hit stop or target.
+        Aggregate PF / win-rate / max-simultaneous-shorts informs the
+        decision to flip ENABLE_MEAN_REV_SHORT live."""
+        return bool(self.manager.get('trading.enable_mean_rev_short_shadow', False))
+
+    @property
     def ENABLE_BOT_ONLY_PNL_CIRCUIT(self) -> bool:
         """Use BOT-managed P&L (not account-wide Schwab P&L) for the
         daily-loss circuit. Default True.
