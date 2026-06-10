@@ -71,7 +71,13 @@ class TestAllocate:
 
 
 class TestShadowLedger:
+    """evaluate() is async (the SPY fetch runs in a thread executor
+    with a timeout so a hung Schwab API can never block the engine's
+    event loop — review finding 2026-06-10). Tests drive it with
+    asyncio.run."""
+
     def test_evaluate_writes_ndjson(self, tmp_path):
+        import asyncio
         from allocators.regime_allocator import RegimeAllocatorShadow
         ledger = tmp_path / "ledger.ndjson"
         shadow = RegimeAllocatorShadow(
@@ -79,8 +85,8 @@ class TestShadowLedger:
             threshold=0.30,
             ledger_path=ledger,
         )
-        a = shadow.evaluate(strategy="breakout", symbol="NVDA",
-                            signal_side="buy")
+        a = asyncio.run(shadow.evaluate(strategy="breakout", symbol="NVDA",
+                                        signal_side="buy"))
         assert a is not None and a.tape == "trending"
         lines = [json.loads(l) for l in ledger.read_text().splitlines()]
         assert len(lines) == 1
@@ -91,6 +97,7 @@ class TestShadowLedger:
         assert "er" in row and "timestamp" in row
 
     def test_fetch_failure_is_silent_and_fails_open(self, tmp_path):
+        import asyncio
         from allocators.regime_allocator import RegimeAllocatorShadow
 
         def _boom():
@@ -100,12 +107,13 @@ class TestShadowLedger:
             fetch_daily_closes=_boom, threshold=0.30,
             ledger_path=tmp_path / "ledger.ndjson",
         )
-        a = shadow.evaluate(strategy="mean_reversion", symbol="AMD",
-                            signal_side="buy")
+        a = asyncio.run(shadow.evaluate(strategy="mean_reversion",
+                                        symbol="AMD", signal_side="buy"))
         assert a is not None and a.tape == "unknown"
         assert a.mean_rev_allowed  # fail-open
 
     def test_er_is_cached_between_evaluations(self, tmp_path):
+        import asyncio
         from allocators.regime_allocator import RegimeAllocatorShadow
         calls = {"n": 0}
 
@@ -117,9 +125,22 @@ class TestShadowLedger:
             fetch_daily_closes=_fetch, threshold=0.30,
             ledger_path=tmp_path / "ledger.ndjson",
         )
-        shadow.evaluate(strategy="breakout", symbol="A", signal_side="buy")
-        shadow.evaluate(strategy="breakout", symbol="B", signal_side="buy")
+
+        async def _two():
+            await shadow.evaluate(strategy="breakout", symbol="A",
+                                  signal_side="buy")
+            await shadow.evaluate(strategy="breakout", symbol="B",
+                                  signal_side="buy")
+
+        asyncio.run(_two())
         assert calls["n"] == 1, "daily closes must be cached, not re-fetched"
+
+    def test_fetch_runs_in_executor_with_timeout(self):
+        """Source marker: the fetch must go through run_in_executor +
+        wait_for, never directly on the event loop (MRVL 2026-04-29
+        class of bug)."""
+        src = (REPO_ROOT / "allocators" / "regime_allocator.py").read_text()
+        assert "run_in_executor" in src and "wait_for" in src
 
 
 class TestEngineWiring:

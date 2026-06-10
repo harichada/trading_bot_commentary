@@ -4790,7 +4790,7 @@ class TradingEngineWithCommentary:
         if self._regime_allocator is not None:
             try:
                 _ra_strategy = signal.reasoning.get("strategy", "unknown")
-                _alloc = self._regime_allocator.evaluate(
+                _alloc = await self._regime_allocator.evaluate(
                     strategy=_ra_strategy,
                     symbol=signal.symbol,
                     signal_side=signal.signal_type.value,

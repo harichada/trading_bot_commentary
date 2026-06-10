@@ -20,6 +20,7 @@ so they are trivially testable and reusable by the backtest harness.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -128,12 +129,20 @@ class RegimeAllocatorShadow:
         self._cached_er: Optional[float] = None
         self._cached_at: float = 0.0
 
-    def _current_er(self) -> Optional[float]:
+    async def _current_er(self) -> Optional[float]:
+        """Cached ER. The fetch is a synchronous Schwab HTTP call —
+        run it in the default thread executor with a hard timeout so a
+        hung API can never block the engine's event loop (same pattern
+        as strategies/news_strategy.py _run_sync_with_timeout; the
+        MRVL 2026-04-29 incident is why this is non-negotiable)."""
         now = time.monotonic()
         if self._cached_at and now - self._cached_at < _CLOSES_CACHE_TTL_SEC:
             return self._cached_er
         try:
-            closes = self._fetch()
+            loop = asyncio.get_event_loop()
+            closes = await asyncio.wait_for(
+                loop.run_in_executor(None, self._fetch), timeout=8.0
+            )
             self._cached_er = efficiency_ratio(closes, self._lookback)
         except Exception as exc:
             logger.warning("regime_allocator: SPY closes fetch failed: %s",
@@ -142,14 +151,14 @@ class RegimeAllocatorShadow:
         self._cached_at = now
         return self._cached_er
 
-    def evaluate(
+    async def evaluate(
         self, strategy: str, symbol: str, signal_side: str
     ) -> Optional[RegimeAllocation]:
         """Evaluate a routed signal and append the would-be decision to
         the ledger. Returns the allocation, or None on total failure
         (callers treat None as 'no opinion')."""
         try:
-            allocation = allocate(self._current_er(), self._threshold)
+            allocation = allocate(await self._current_er(), self._threshold)
             entry = {
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "strategy": strategy,
@@ -162,10 +171,16 @@ class RegimeAllocatorShadow:
                 "would_allow": allocation.allows(strategy),
                 "reason": allocation.reason,
             }
-            # NDJSON append — O_APPEND < 4 KiB is atomic on Linux, same
-            # rationale as shadow_short_log.ndjson.
-            with open(self._ledger_path, "a") as f:
-                f.write(json.dumps(entry) + "\n")
+            try:
+                # NDJSON append — O_APPEND < 4 KiB is atomic on Linux,
+                # same rationale as shadow_short_log.ndjson.
+                with open(self._ledger_path, "a") as f:
+                    f.write(json.dumps(entry) + "\n")
+            except OSError as io_exc:
+                # Disk full / permissions: shadow data is the whole
+                # point of this module — surface it, don't debug-bury.
+                logger.warning("regime_allocator: ledger write failed: %s",
+                               io_exc)
             return allocation
         except Exception as exc:
             logger.debug("regime_allocator shadow evaluate error: %s", exc)
