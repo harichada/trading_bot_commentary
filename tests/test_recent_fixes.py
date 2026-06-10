@@ -2446,3 +2446,62 @@ class TestShadowLoggerGating:
             "shadow capture must consult the session/throttle gate "
             "before logging"
         )
+
+
+# ── v-ownership-survives-restart-2026-06-10 ──────────────────────────
+
+class TestOwnershipSurvivesRestart:
+    """2026-06-10 incident: the bot opened NET 19sh at 10:18 with
+    managed_by_bot=True; the 11:03 restart (token-expiry recovery)
+    emptied self.positions, the Schwab sync re-discovered NET and
+    defaulted it to external/manual. The bot disowned its own trade:
+    no exit management, no brain learning, excluded from the bot-only
+    P&L circuit. Three-part fix: persist ownership fields, stash saved
+    metadata at load, restore ownership on rediscovery with strict
+    identity guards."""
+
+    def test_save_state_persists_ownership_fields(self):
+        src = ENGINE_PATH.read_text()
+        anchor = src.find("def _save_state")
+        body = src[anchor: anchor + 1200]
+        # the REAL-position block (positions_data), not the sim block
+        real_block = body[: body.find("sim_data")]
+        for fld in ("managed_by_bot", "stop_loss", "take_profit"):
+            assert f"'{fld}'" in real_block, (
+                f"real-position save must persist {fld} — its absence "
+                "is why NET could not be reclaimed after the restart"
+            )
+
+    def test_load_state_stashes_position_meta(self):
+        src = ENGINE_PATH.read_text()
+        anchor = src.find("def _load_state")
+        body = src[anchor: anchor + 4000]
+        assert "_saved_positions_meta" in body, (
+            "_load_state must stash positions_data for the Schwab "
+            "sync to consult on rediscovery"
+        )
+
+    def test_sync_restores_ownership_with_guards(self):
+        src = ENGINE_PATH.read_text()
+        anchor = src.find("Newly discovered position (pre-existing on Schwab")
+        assert anchor != -1, "newly-discovered branch anchor missing"
+        window = src[max(0, anchor - 3000): anchor + 3000]
+        assert "_saved_positions_meta" in window, (
+            "rediscovery must consult saved metadata before defaulting "
+            "to external"
+        )
+        assert "position_ownership_restored" in window, (
+            "restoration must emit an audit line"
+        )
+
+    def test_restore_guard_requires_identity_match(self):
+        """Ownership restore must verify side AND quantity match the
+        saved record — quantity drift means the operator intervened,
+        and the position must stay external."""
+        src = ENGINE_PATH.read_text()
+        anchor = src.find("position_ownership_restored")
+        assert anchor != -1
+        window = src[max(0, anchor - 1500): anchor]
+        assert "side" in window and "quantity" in window, (
+            "restore guard must check side + quantity identity"
+        )

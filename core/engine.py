@@ -303,6 +303,10 @@ class TradingEngineWithCommentary:
         self.exit_manager = DynamicExitManager(self.brain, self.commentary)
 
 	    # Load previous state
+        # v-ownership-survives-restart-2026-06-10: default before
+        # _load_state so a missing/corrupt state file leaves an empty
+        # dict, not an AttributeError in the Schwab sync.
+        self._saved_positions_meta = {}
         self._load_state()
 
         # Connection manager for WebSocket
@@ -680,6 +684,12 @@ class TradingEngineWithCommentary:
                     for symbol, pos_data in positions_data.items():
                         if symbol in self.positions:
                             self.positions[symbol].is_long_term = pos_data.get('is_long_term', False)
+                    # v-ownership-survives-restart-2026-06-10: stash the
+                    # full saved records. At startup self.positions is
+                    # empty, so the Schwab sync re-discovers every
+                    # position — it consults this dict to restore
+                    # bot ownership instead of defaulting to external.
+                    self._saved_positions_meta = dict(positions_data)
 
                     # Restore simulated positions so they survive restarts
                     sim_data = state.get('simulated_positions', {})
@@ -2505,6 +2515,10 @@ class TradingEngineWithCommentary:
     def _save_state(self):
         """Save current trading state including simulated positions."""
         # Save real position metadata (long-term flags etc.)
+        # v-ownership-survives-restart-2026-06-10: persist the ownership
+        # and bracket fields too. Their absence is why the 11:03 restart
+        # demoted the bot's own NET trade to external — the rediscovery
+        # path had nothing to restore from.
         positions_data = {}
         for symbol, pos in self.positions.items():
             positions_data[symbol] = {
@@ -2512,7 +2526,16 @@ class TradingEngineWithCommentary:
                 'entry_price': pos.entry_price,
                 'quantity': pos.quantity,
                 'side': pos.side,
-                'entry_time': pos.entry_time.isoformat()
+                'entry_time': pos.entry_time.isoformat(),
+                'managed_by_bot': getattr(pos, 'managed_by_bot', False),
+                'stop_loss': getattr(pos, 'stop_loss', 0),
+                # inf (external positions' "no target") is not valid
+                # strict JSON — store None and restore as inf.
+                'take_profit': (
+                    None if getattr(pos, 'take_profit', 0) == float('inf')
+                    else getattr(pos, 'take_profit', 0)
+                ),
+                'state': getattr(pos, 'state', None),
             }
 
         # Save simulated positions in full so they survive restarts.
@@ -3676,22 +3699,68 @@ class TradingEngineWithCommentary:
                     self.positions[symbol] = existing
                 else:
                     # Newly discovered position (pre-existing on Schwab,
-                    # or opened outside the bot). Default to hands-off.
-                    position = Position(
-                        symbol=symbol,
-                        entry_price=pos_data['average_price'],
-                        current_price=pos_data['current_price'],
-                        quantity=qty_abs,
-                        side=side,
-                        stop_loss=0,
-                        take_profit=float('inf'),
-                        entry_time=datetime.now() - timedelta(hours=1),
-                        mode="live",
-                        managed_by_bot=False,
+                    # or opened outside the bot). Default to hands-off —
+                    # UNLESS the saved state proves the bot owned it.
+                    #
+                    # v-ownership-survives-restart-2026-06-10: after a
+                    # restart self.positions is empty, so every position
+                    # lands here and used to be demoted to external —
+                    # the bot disowned its own NET trade on 2026-06-10.
+                    # Restore ownership only on strict identity match:
+                    # saved record says managed_by_bot=True AND side
+                    # matches AND quantity matches (drift means the
+                    # operator intervened — stay hands-off).
+                    saved = self._saved_positions_meta.get(symbol) or {}
+                    _restore = (
+                        saved.get('managed_by_bot') is True
+                        and saved.get('side') == side
+                        and abs(float(saved.get('quantity', -1)) - qty_abs) < 1e-6
                     )
+                    if _restore:
+                        try:
+                            _entry_time = datetime.fromisoformat(
+                                saved['entry_time'])
+                        except (KeyError, ValueError):
+                            _entry_time = datetime.now() - timedelta(hours=1)
+                        _tp = saved.get('take_profit')
+                        position = Position(
+                            symbol=symbol,
+                            entry_price=pos_data['average_price'],
+                            current_price=pos_data['current_price'],
+                            quantity=qty_abs,
+                            side=side,
+                            stop_loss=saved.get('stop_loss', 0) or 0,
+                            take_profit=float('inf') if _tp is None else _tp,
+                            entry_time=_entry_time,
+                            mode="live",
+                            managed_by_bot=True,
+                        )
+                        position.is_external = False
+                        position.is_manually_managed = False
+                        self._audit(
+                            "position_sync", symbol,
+                            "position_ownership_restored",
+                            "saved_state_identity_match",
+                            side=side, quantity=qty_abs,
+                            stop=saved.get('stop_loss', 0),
+                            target=_tp,
+                        )
+                    else:
+                        position = Position(
+                            symbol=symbol,
+                            entry_price=pos_data['average_price'],
+                            current_price=pos_data['current_price'],
+                            quantity=qty_abs,
+                            side=side,
+                            stop_loss=0,
+                            take_profit=float('inf'),
+                            entry_time=datetime.now() - timedelta(hours=1),
+                            mode="live",
+                            managed_by_bot=False,
+                        )
+                        position.is_external = True
+                        position.is_manually_managed = True
                     position.unrealized_pnl = pos_data.get('total_pnl', 0)
-                    position.is_external = True
-                    position.is_manually_managed = True
                     self.positions[symbol] = position
 
             # Drop tracked positions that no longer exist on Schwab
