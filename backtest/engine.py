@@ -83,6 +83,29 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     # Gate C bar-structure check. `lows_50` (a 50-bar array) is added
     # per-bar inside replay_symbol since it can't live in a flat DataFrame.
     ind["prev_low"] = low.shift(1)
+    # v-bt-direction-features-2026-06-10: the direction reader
+    # (core/direction_reader.py, wired into breakout and mean-rev gates
+    # 2026-05-29) reads five features that live analysis/technical.py
+    # provides but replay never did. With all five absent they default
+    # to 0.0 inside read_direction, direction can never reach the
+    # breakout gate's +3.0, and the gate rejects 100% of candidates —
+    # the 2026-06-09 walk-forward took zero breakout trades in a year
+    # purely because of this gap. Formulas mirror technical.py
+    # line-for-line (5-bar EMA slope, 10-bar OBV slope), vectorized.
+    ema_20 = ta.trend.ema_indicator(close, window=20)
+    ind["ema_20"] = ema_20
+    ind["macd_histogram"] = macd.macd_diff()
+    ind["ema_20_slope_pct"] = (
+        (ema_20 - ema_20.shift(5)) / ema_20.shift(5) * 100
+    ).where(ema_20.shift(5) > 0, 0.0)
+    obv = ta.volume.on_balance_volume(close, volume)
+    obv_prev = obv.shift(10)
+    ind["obv_slope_pct"] = (
+        (obv - obv_prev) / obv_prev.abs() * 100
+    ).where(obv_prev.abs() > 0, 0.0)
+    ind["close_vs_sma50_pct"] = (
+        (close - ind["sma_50"]) / ind["sma_50"] * 100
+    ).where(ind["sma_50"] > 0, 0.0)
     return ind
 
 

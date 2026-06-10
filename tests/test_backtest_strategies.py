@@ -192,3 +192,61 @@ class TestPerSymbol:
                           sum_return_pct=2.0, avg_return_pct=2.0)
         with pytest.raises(FrozenInstanceError):
             m.n_trades = 999  # type: ignore[misc]
+
+
+# ── v-bt-direction-features-2026-06-10 ───────────────────────────────
+
+class TestDirectionReaderFeaturesInReplay:
+    """The 2026-05-29 direction gate (breakout + mean-rev) reads five
+    features that live analysis/technical.py computes but the backtest
+    compute_indicators never provided: ema_20, macd_histogram,
+    ema_20_slope_pct, close_vs_sma50_pct, obv_slope_pct. With all five
+    defaulting to 0.0, read_direction can never reach the +3.0 the
+    breakout gate requires — the 2026-06-09 walk-forward showed the
+    gate rejecting 1016/1016 candidates that had passed every other
+    gate. Replay must provide the same features live provides."""
+
+    def _frame(self, n=120):
+        import numpy as np
+        import pandas as pd
+        idx = pd.date_range("2026-01-05 09:30", periods=n, freq="5min")
+        base = np.linspace(100.0, 110.0, n)  # steady uptrend
+        return pd.DataFrame({
+            "Open": base, "High": base + 0.5, "Low": base - 0.5,
+            "Close": base + 0.1,
+            "Volume": np.full(n, 10_000.0),
+        }, index=idx)
+
+    def test_direction_features_present(self):
+        from backtest.engine import compute_indicators
+        ind = compute_indicators(self._frame())
+        for col in ("ema_20", "macd_histogram", "ema_20_slope_pct",
+                    "close_vs_sma50_pct", "obv_slope_pct"):
+            assert col in ind.columns, f"replay missing {col}"
+
+    def test_uptrend_yields_positive_direction(self):
+        """In a clean uptrend the direction reader must be able to
+        clear the breakout gate's +3.0 — proves the features carry
+        real signal in replay, not zeros."""
+        from backtest.engine import compute_indicators
+        from core.direction_reader import read_direction
+        df = self._frame()
+        ind = compute_indicators(df)
+        row = ind.iloc[-1].to_dict()
+        dr = read_direction(float(df["Close"].iloc[-1]), row)
+        assert dr.direction >= 3.0, (
+            f"clean uptrend read direction={dr.direction} (<3.0) — "
+            f"components={dr.components}"
+        )
+
+    def test_slope_matches_live_formula(self):
+        """ema_20_slope_pct must equal the live 5-bar formula from
+        analysis/technical.py: (ema[-1]-ema[-6])/ema[-6]*100."""
+        import ta as _ta
+        from backtest.engine import compute_indicators
+        df = self._frame()
+        ind = compute_indicators(df)
+        ema = _ta.trend.ema_indicator(df["Close"], window=20)
+        expected = (ema.iloc[-1] - ema.iloc[-6]) / ema.iloc[-6] * 100
+        got = ind["ema_20_slope_pct"].iloc[-1]
+        assert abs(got - expected) < 1e-9, f"{got} != {expected}"
