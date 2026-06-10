@@ -1,0 +1,86 @@
+{
+  "generated": "2026-06-10T09:47:12.830926",
+  "n_core_trades": 1509,
+  "policies": {
+    "baseline_all_trades": {
+      "n_trades": 1509,
+      "profit_factor": 1.04,
+      "sum_return_pct": 105.6,
+      "win_rate_pct": 38.4
+    },
+    "oracle_per_window_best": {
+      "n_trades": 737,
+      "profit_factor": 1.236,
+      "sum_return_pct": 292.4,
+      "win_rate_pct": 41.9
+    },
+    "allocated_er>=0.2": {
+      "n_trades": 773,
+      "profit_factor": 1.025,
+      "sum_return_pct": 36.2,
+      "win_rate_pct": 37.6
+    },
+    "allocated_er>=0.25": {
+      "n_trades": 816,
+      "profit_factor": 1.036,
+      "sum_return_pct": 55.7,
+      "win_rate_pct": 38.4
+    },
+    "allocated_er>=0.3": {
+      "n_trades": 837,
+      "profit_factor": 1.114,
+      "sum_return_pct": 188.0,
+      "win_rate_pct": 39.4
+    },
+    "allocated_er>=0.35": {
+      "n_trades": 865,
+      "profit_factor": 1.101,
+      "sum_return_pct": 174.5,
+      "win_rate_pct": 40.1
+    },
+    "allocated_er>=0.4": {
+      "n_trades": 908,
+      "profit_factor": 1.081,
+      "sum_return_pct": 150.1,
+      "win_rate_pct": 40.4
+    }
+  },
+  "per_window_allocated_0.30": {
+    "1": {
+      "n_trades": 97,
+      "profit_factor": 1.238,
+      "sum_return_pct": 34.4,
+      "win_rate_pct": 39.2
+    },
+    "2": {
+      "n_trades": 73,
+      "profit_factor": 1.085,
+      "sum_return_pct": 10.3,
+      "win_rate_pct": 37.0
+    },
+    "3": {
+      "n_trades": 88,
+      "profit_factor": 1.126,
+      "sum_return_pct": 17.2,
+      "win_rate_pct": 42.0
+    },
+    "4": {
+      "n_trades": 212,
+      "profit_factor": 0.976,
+      "sum_return_pct": -11.8,
+      "win_rate_pct": 39.6
+    },
+    "5": {
+      "n_trades": 201,
+      "profit_factor": 0.954,
+      "sum_return_pct": -20.0,
+      "win_rate_pct": 37.8
+    },
+    "6": {
+      "n_trades": 166,
+      "profit_factor": 1.489,
+      "sum_return_pct": 158.1,
+      "win_rate_pct": 41.0
+    }
+  }
+}
