@@ -191,10 +191,15 @@ class TechnicalAnalyzerWithCommentary:
                 obv_series = ta.volume.on_balance_volume(
                     data['Close'], data['Volume']
                 )
-                if len(obv_series) >= 11 and abs(obv_series.iloc[-11]) > 0:
+                # v-obv-slope-guard-2026-06-10: denominator floored at
+                # 1 share. OBV legitimately crosses zero; a near-zero
+                # prior value produced ~1e11 "slopes" that saturated the
+                # direction reader's volume component. Same floor lives
+                # in backtest/engine.py compute_indicators — lockstep.
+                if len(obv_series) >= 11 and not pd.isna(obv_series.iloc[-11]):
                     indicators['obv_slope_pct'] = float(
                         (obv_series.iloc[-1] - obv_series.iloc[-11])
-                        / abs(obv_series.iloc[-11]) * 100
+                        / max(abs(obv_series.iloc[-11]), 1.0) * 100
                     )
                 else:
                     indicators['obv_slope_pct'] = 0.0

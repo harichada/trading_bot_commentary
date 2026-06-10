@@ -250,3 +250,29 @@ class TestDirectionReaderFeaturesInReplay:
         expected = (ema.iloc[-1] - ema.iloc[-6]) / ema.iloc[-6] * 100
         got = ind["ema_20_slope_pct"].iloc[-1]
         assert abs(got - expected) < 1e-9, f"{got} != {expected}"
+
+    def test_obv_zero_crossing_bounded(self):
+        """v-obv-slope-guard-2026-06-10: a tiny prior OBV must not
+        produce astronomical slopes (was ~1e11 before the 1-share
+        denominator floor). Construct volumes so OBV hovers near zero
+        ten bars before the end."""
+        import numpy as np
+        import pandas as pd
+        from backtest.engine import compute_indicators
+        n = 80
+        idx = pd.date_range("2026-01-05 09:30", periods=n, freq="5min")
+        close = pd.Series(np.r_[np.tile([100.0, 99.0], 35), 
+                                np.full(10, 101.0)], index=idx)
+        # Alternating up/down closes with equal volume → OBV oscillates
+        # around 0; final 10 rising bars add huge volume on top.
+        vol = pd.Series(np.r_[np.full(70, 1000.0), np.full(10, 1e6)],
+                        index=idx)
+        df = pd.DataFrame({"Open": close, "High": close + 1,
+                           "Low": close - 1, "Close": close,
+                           "Volume": vol})
+        ind = compute_indicators(df)
+        finite = ind["obv_slope_pct"].dropna()
+        assert np.isfinite(finite).all(), "inf leaked through the guard"
+        assert finite.abs().max() < 1e10, (
+            f"unbounded OBV slope: {finite.abs().max():.3g}"
+        )

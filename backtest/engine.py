@@ -92,6 +92,10 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     # the 2026-06-09 walk-forward took zero breakout trades in a year
     # purely because of this gap. Formulas mirror technical.py
     # line-for-line (5-bar EMA slope, 10-bar OBV slope), vectorized.
+    # NO .shift(1) on these five — deliberate, matching live: technical.py
+    # computes each on the bar series inclusive of the current bar
+    # (iloc[-1] = the bar being evaluated). Only the breakout reference
+    # levels (high_20/low_20/pivots above) exclude the current bar.
     ema_20 = ta.trend.ema_indicator(close, window=20)
     ind["ema_20"] = ema_20
     ind["macd_histogram"] = macd.macd_diff()
@@ -100,9 +104,13 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     ).where(ema_20.shift(5) > 0, 0.0)
     obv = ta.volume.on_balance_volume(close, volume)
     obv_prev = obv.shift(10)
+    # Denominator floored at 1 share: OBV legitimately crosses zero, and
+    # a near-zero prior value would otherwise produce ~1e11 "slopes"
+    # that saturate the direction reader's volume component. Same floor
+    # applied in live technical.py — keep the two in lockstep.
     ind["obv_slope_pct"] = (
-        (obv - obv_prev) / obv_prev.abs() * 100
-    ).where(obv_prev.abs() > 0, 0.0)
+        (obv - obv_prev) / obv_prev.abs().clip(lower=1.0) * 100
+    ).where(obv_prev.notna(), 0.0)
     ind["close_vs_sma50_pct"] = (
         (close - ind["sma_50"]) / ind["sma_50"] * 100
     ).where(ind["sma_50"] > 0, 0.0)
