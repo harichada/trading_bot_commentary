@@ -2488,11 +2488,48 @@ class TradingEngineWithCommentary:
                     }
                     todays_trades.append(trade)
             
+            # v-trades-fifo-pairing-2026-06-10: SELL fills used to ship
+            # entry_price=0 / pnl=0 (the operator's +$1,089 MU scalp
+            # rendered as a zero-P&L stub). Pair same-day SELL fills
+            # against BUY fills FIFO per symbol so closed round-trips
+            # show their realized P&L. Cross-day basis is left at 0 —
+            # Schwab's cost-basis endpoint is the authority there.
+            _buys: dict = {}
+            for t in sorted(todays_trades, key=lambda x: x.get('exit_time')
+                            or x.get('entry_time') or ''):
+                if t.get('instruction') in ('BUY', 'BUY_TO_OPEN') and t.get('entry_price'):
+                    _buys.setdefault(t['symbol'], []).append(
+                        [t['quantity'], t['entry_price']])
+                elif (t.get('instruction') in ('SELL', 'SELL_TO_CLOSE')
+                      and t.get('exit_price') and not t.get('entry_price')):
+                    lots = _buys.get(t['symbol'], [])
+                    remaining = t['quantity']
+                    cost = 0.0
+                    matched = 0.0
+                    while lots and remaining > 0:
+                        lot_qty, lot_px = lots[0]
+                        take = min(lot_qty, remaining)
+                        cost += take * lot_px
+                        matched += take
+                        remaining -= take
+                        lot_qty -= take
+                        if lot_qty <= 0:
+                            lots.pop(0)
+                        else:
+                            lots[0][0] = lot_qty
+                    if matched > 0:
+                        avg_cost = cost / matched
+                        t['entry_price'] = avg_cost
+                        t['pnl'] = round(
+                            (t['exit_price'] - avg_cost) * matched, 2)
+                        t['status'] = 'CLOSED'
+                        t['reason'] = 'Round trip (same day)'
+
             # Sort by time (most recent first)
             todays_trades.sort(key=lambda x: x.get('entry_time', ''), reverse=True)
-            
+
             return todays_trades
-            
+
         except Exception as e:
             logger.error(f"Error getting Schwab trades: {e}")
             # Fallback to internal history
@@ -3816,6 +3853,9 @@ class TradingEngineWithCommentary:
     async def start(self):
         """Start the trading engine with commentary"""
         self.is_running = True
+        # v-uptime-2026-06-10: /api/status reads this; it was never set,
+        # so the dashboard showed uptime 0:00:00 forever.
+        self.start_time = datetime.now()
 
         # v-startup-schwab-sync-2026-04-30: previously this branch only
         # ran in LIVE mode, so SIM-mode dashboards saw the default
