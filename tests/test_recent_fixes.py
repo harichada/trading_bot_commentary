@@ -2505,3 +2505,43 @@ class TestOwnershipSurvivesRestart:
         assert "side" in window and "quantity" in window, (
             "restore guard must check side + quantity identity"
         )
+
+
+# ── v-news-socket-timeouts-2026-06-10 ────────────────────────────────
+
+class TestNewsSocketTimeouts:
+    """The _run_sync_with_timeout wrapper abandons hung fetch threads
+    after 5-6s, but the threads keep running — feedparser.parse(url)
+    fetches with NO network timeout, so abandoned threads accumulate
+    in the executor and block asyncio.run teardown at shutdown (the
+    reason every shutdown hits the os._exit backstop instead of the
+    clean save path)."""
+
+    def test_feedparser_not_fetching_urls_directly(self):
+        """feedparser.parse must receive pre-fetched bytes (requests
+        with explicit timeout), never a URL it would fetch itself
+        without one."""
+        src = NEWS_STRATEGY_PATH.read_text()
+        assert "_fetch_feed_bytes" in src, (
+            "RSS fetches must go through the timeout-bounded helper"
+        )
+        # No remaining direct URL parse calls
+        import re
+        direct = re.findall(r"feedparser\.parse\((rss_url|google_url|\w*url\w*)\)", src)
+        assert direct == [], f"direct URL parse remains: {direct}"
+
+    def test_fetch_helper_has_explicit_timeout(self):
+        src = NEWS_STRATEGY_PATH.read_text()
+        anchor = src.find("def _fetch_feed_bytes")
+        assert anchor != -1
+        body = src[anchor: anchor + 800]
+        assert "timeout=" in body, "feed fetch must pass an explicit timeout"
+
+    def test_socket_default_backstop(self):
+        """yfinance's internals can't take an injected timeout — a
+        module-level socket default converts 'hang forever' into
+        'die in seconds' for any library that doesn't set its own.
+        Libraries with explicit timeouts (httpx/aiohttp/schwab) are
+        unaffected."""
+        src = NEWS_STRATEGY_PATH.read_text()
+        assert "setdefaulttimeout" in src

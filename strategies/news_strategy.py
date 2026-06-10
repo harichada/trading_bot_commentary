@@ -27,6 +27,38 @@ logger = logging.getLogger('TradingBot')
 #
 # This helper runs any sync callable in the default thread executor
 # with a hard timeout, so a hung external API can never block the loop.
+# v-news-socket-timeouts-2026-06-10: _run_sync_with_timeout abandons a
+# hung thread after 5-6s, but the THREAD keeps running — feedparser
+# fetched URLs with no network timeout, so abandoned threads piled up
+# in the default executor and blocked asyncio.run() teardown at
+# shutdown (every shutdown was hitting the os._exit backstop instead
+# of the clean save path).
+#
+# Two-part fix:
+#  1. RSS feeds are pre-fetched with requests + explicit timeout and
+#     the BYTES are handed to feedparser (it never opens a socket).
+#  2. A module-level socket default timeout backstops libraries whose
+#     internals we can't inject into (yfinance). Libraries that set
+#     explicit timeouts (httpx/aiohttp/schwab-py) are unaffected —
+#     setdefaulttimeout only applies where none is specified.
+import socket as _socket
+_socket.setdefaulttimeout(15.0)
+
+
+def _fetch_feed_bytes(url: str, timeout: float = 8.0) -> bytes:
+    """Fetch an RSS feed body with a hard network timeout. Returns
+    b'' on any failure — feedparser.parse(b'') yields empty entries."""
+    import requests
+    try:
+        resp = requests.get(
+            url, timeout=timeout,
+            headers={"User-Agent": "Mozilla/5.0 (trading-bot RSS)"},
+        )
+        return resp.content if resp.ok else b""
+    except Exception:
+        return b""
+
+
 async def _run_sync_with_timeout(fn, timeout: float = 6.0, default=None):
     """Run `fn()` in a worker thread, return its value or `default` on
     timeout / exception. Logs the timeout for observability."""
@@ -132,7 +164,7 @@ class FreeNewsAggregator:
             # Also get RSS feed (feedparser also sync — wrap with timeout)
             rss_url = self.rss_feeds['yahoo'].format(symbol=symbol)
             feed = await _run_sync_with_timeout(
-                lambda: feedparser.parse(rss_url),
+                lambda: feedparser.parse(_fetch_feed_bytes(rss_url)),
                 timeout=5.0,
                 default=type('Empty', (), {'entries': []})(),
             )
@@ -173,7 +205,7 @@ class FreeNewsAggregator:
         try:
             google_url = self.rss_feeds['google'].format(symbol=symbol)
             feed = await _run_sync_with_timeout(
-                lambda: feedparser.parse(google_url),
+                lambda: feedparser.parse(_fetch_feed_bytes(google_url)),
                 timeout=5.0,
                 default=type('Empty', (), {'entries': []})(),
             )
