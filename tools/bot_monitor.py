@@ -463,6 +463,48 @@ def build_report(window_seconds: int = 3600) -> str:
             lines.append(f"- {ts_only}: {err['msg']}")
         lines.append("")
 
+    # ── Shadow ledgers ──────────────────────────────────────────────
+    # v-monitor-shadows-2026-06-10: the two evidence-collection shadows
+    # (regime allocator, SHORT shadow) write NDJSON ledgers. Surface
+    # today's row counts + last entry so the morning soak review is a
+    # single file read. Pure read — same observer contract.
+    lines.append("## Shadow ledgers")
+    lines.append("")
+    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    for label, fname in (("Regime allocator", "regime_allocator_shadow.ndjson"),
+                         ("SHORT shadow", "shadow_short_log.ndjson")):
+        path = REPO / fname
+        if not path.exists():
+            lines.append(f"- **{label}:** no ledger yet")
+            continue
+        rows_today = 0
+        last_entry = None
+        try:
+            with open(path) as f:
+                for line in f:
+                    try:
+                        row = json.loads(line)
+                    except (ValueError, TypeError):
+                        continue
+                    last_entry = row
+                    if str(row.get("timestamp", "")).startswith(today_str):
+                        rows_today += 1
+        except OSError as exc:
+            lines.append(f"- **{label}:** unreadable ({exc})")
+            continue
+        if last_entry is None:
+            lines.append(f"- **{label}:** empty")
+        else:
+            sym = last_entry.get("symbol", "?")
+            ts = str(last_entry.get("timestamp", ""))[:16]
+            extra = (f"tape={last_entry.get('tape')}"
+                     if "tape" in last_entry
+                     else f"rsi={last_entry.get('rsi', '?')}")
+            lines.append(
+                f"- **{label}:** {rows_today} rows today (UTC) — "
+                f"last: {sym} at {ts} ({extra})")
+    lines.append("")
+
     # ── Market regime ───────────────────────────────────────────────
     if indices and indices.get("indices"):
         lines.append("## Market regime")
