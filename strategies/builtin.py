@@ -22,6 +22,42 @@ def _floored_atr(raw_atr: float, price: float) -> float:
     return max(float(raw_atr), price * _ATR_FLOOR_PCT)
 
 
+# v-shadow-log-gating-2026-06-10: session + throttle gate for the SHORT
+# shadow ledger. Day-1 soak wrote 81,970 rows of which ~1 was usable:
+# after-close evaluations carried corrupt prices (NVDA at half its real
+# price), the pre-open/warm-up window showed every watchlist symbol
+# RSI>=70 at once (indicators on too few fresh bars), and each symbol
+# re-logged every analysis pass. Window starts 10:00 ET, not 09:30 —
+# the 2026-06-10 ledger shows artifacts persisting until ~10:00.
+_SHADOW_LOG_THROTTLE: Dict[str, datetime] = {}
+_SHADOW_THROTTLE_MIN = 30.0  # minutes between entries per symbol
+
+
+def _shadow_short_should_log(
+    symbol: str,
+    now_utc: Optional[datetime] = None,
+    _throttle: Optional[Dict[str, datetime]] = None,
+) -> bool:
+    """True when a shadow SHORT entry for `symbol` is worth recording:
+    weekday, 10:00-16:00 ET, and not logged within the last 30 min.
+    `now_utc`/`_throttle` are injectable for tests."""
+    from datetime import timezone
+    from zoneinfo import ZoneInfo
+    throttle = _SHADOW_LOG_THROTTLE if _throttle is None else _throttle
+    now = now_utc or datetime.now(timezone.utc)
+    et = now.astimezone(ZoneInfo("America/New_York"))
+    if et.weekday() >= 5:
+        return False
+    minutes = et.hour * 60 + et.minute
+    if not (10 * 60 <= minutes < 16 * 60):
+        return False
+    last = throttle.get(symbol)
+    if last is not None and (now - last).total_seconds() < _SHADOW_THROTTLE_MIN * 60:
+        return False
+    throttle[symbol] = now
+    return True
+
+
 class NewsSignalStrategy(TradingStrategyWithCommentary):
     """Trading strategy based on news sentiment"""
 
@@ -903,7 +939,8 @@ class MeanReversionStrategyWithCommentary(TradingStrategyWithCommentary):
                     # (stop/target) using the same ATR-based logic the
                     # live SHORT branch uses below, so the shadow data
                     # is comparable to a real signal had it fired.
-                    if _cfg_ms.ENABLE_MEAN_REV_SHORT_SHADOW:
+                    if (_cfg_ms.ENABLE_MEAN_REV_SHORT_SHADOW
+                            and _shadow_short_should_log(market_data.symbol)):
                         try:
                             from core.config import Config as _CfgShadow
                             _cfg_sh = _CfgShadow()

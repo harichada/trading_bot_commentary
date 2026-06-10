@@ -2373,3 +2373,76 @@ class TestShutdownStopsEngineThread:
             "engine thread must be stored (trading_thread) for the "
             "shutdown path to join"
         )
+
+
+# ── v-shadow-log-gating-2026-06-10 ───────────────────────────────────
+
+class TestShadowLoggerGating:
+    """Day-1 shadow soak produced 81,970 rows of which ~1 was real:
+    after-close rows had corrupt prices (NVDA logged at half its real
+    price), pre-open/warm-up rows showed all 92 symbols RSI>=70
+    simultaneously, and the same symbol re-logged every analysis pass
+    (TSLA: 1,028 rows in 10 min). The logger now gates on session time
+    and throttles per symbol."""
+
+    def test_gate_helper_exists(self):
+        from strategies.builtin import _shadow_short_should_log
+        assert callable(_shadow_short_should_log)
+
+    def test_rejects_after_hours(self):
+        from datetime import datetime, timezone
+        from strategies.builtin import _shadow_short_should_log
+        # 2026-06-09 20:51 UTC = 16:51 ET — yesterday's corrupt burst
+        ts = datetime(2026, 6, 9, 20, 51, tzinfo=timezone.utc)
+        assert _shadow_short_should_log("TSLA", now_utc=ts,
+                                        _throttle={}) is False
+
+    def test_rejects_warmup_window(self):
+        from datetime import datetime, timezone
+        from strategies.builtin import _shadow_short_should_log
+        # 13:45 UTC = 09:45 ET — this morning's artifact burst
+        ts = datetime(2026, 6, 10, 13, 45, tzinfo=timezone.utc)
+        assert _shadow_short_should_log("AMD", now_utc=ts,
+                                        _throttle={}) is False
+
+    def test_accepts_midday_rth(self):
+        from datetime import datetime, timezone
+        from strategies.builtin import _shadow_short_should_log
+        ts = datetime(2026, 6, 10, 18, 0, tzinfo=timezone.utc)  # 14:00 ET
+        assert _shadow_short_should_log("NVDA", now_utc=ts,
+                                        _throttle={}) is True
+
+    def test_rejects_weekend(self):
+        from datetime import datetime, timezone
+        from strategies.builtin import _shadow_short_should_log
+        ts = datetime(2026, 6, 13, 18, 0, tzinfo=timezone.utc)  # Saturday
+        assert _shadow_short_should_log("NVDA", now_utc=ts,
+                                        _throttle={}) is False
+
+    def test_throttles_same_symbol_30min(self):
+        from datetime import datetime, timezone, timedelta
+        from strategies.builtin import _shadow_short_should_log
+        throttle = {}
+        t0 = datetime(2026, 6, 10, 18, 0, tzinfo=timezone.utc)
+        assert _shadow_short_should_log("NVDA", now_utc=t0,
+                                        _throttle=throttle) is True
+        # 10 minutes later: same symbol suppressed, other symbol passes
+        t1 = t0 + timedelta(minutes=10)
+        assert _shadow_short_should_log("NVDA", now_utc=t1,
+                                        _throttle=throttle) is False
+        assert _shadow_short_should_log("AMD", now_utc=t1,
+                                        _throttle=throttle) is True
+        # 31 minutes later: NVDA logs again
+        t2 = t0 + timedelta(minutes=31)
+        assert _shadow_short_should_log("NVDA", now_utc=t2,
+                                        _throttle=throttle) is True
+
+    def test_shadow_block_wired_to_gate(self):
+        src = (REPO_ROOT / "strategies" / "builtin.py").read_text()
+        anchor = src.find("_cfg_ms.ENABLE_MEAN_REV_SHORT_SHADOW")
+        assert anchor != -1
+        window = src[anchor: anchor + 600]
+        assert "_shadow_short_should_log" in window, (
+            "shadow capture must consult the session/throttle gate "
+            "before logging"
+        )
