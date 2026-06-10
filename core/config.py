@@ -1023,6 +1023,27 @@ class Config:
         return bool(self.manager.get('trading.enable_mean_rev_short_shadow', False))
 
     @property
+    def ENABLE_REGIME_ALLOCATOR_SHADOW(self) -> bool:
+        """v-regime-allocator-shadow-2026-06-10 (roadmap P1). When True,
+        every signal routed through the engine gets a shadow allocation
+        verdict (SPY 20-day efficiency ratio → trending/choppy →
+        breakout-vs-mean-rev permission) logged to
+        regime_allocator_shadow.ndjson. Pure observation — gates
+        nothing. Default True: zero-risk data collection.
+
+        Evidence: research/regime_allocated_report_2026-06-10.json —
+        allocated walk-forward PF 1.11 vs baseline 1.04. Promotion to
+        an actual gate requires 2 weeks of live shadow agreement."""
+        return bool(self.manager.get('trading.enable_regime_allocator_shadow', True))
+
+    @property
+    def REGIME_ALLOCATOR_ER_THRESHOLD(self) -> float:
+        """ER cut separating trending from choppy tape. Walk-forward
+        showed a stable plateau at 0.30-0.40; degrades below 0.25.
+        Default 0.30."""
+        return float(self.manager.get('trading.regime_allocator_er_threshold', 0.30))
+
+    @property
     def ENABLE_BOT_ONLY_PNL_CIRCUIT(self) -> bool:
         """Use BOT-managed P&L (not account-wide Schwab P&L) for the
         daily-loss circuit. Default True.

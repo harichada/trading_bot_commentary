@@ -173,6 +173,40 @@ class TradingEngineWithCommentary:
                 "Continuing without classifier.", _cl_exc,
             )
             self._classifier_runtime = None
+
+        # v-regime-allocator-shadow-2026-06-10 (roadmap P1): regime
+        # allocator shadow. Logs which strategy the SPY-trend-efficiency
+        # allocator WOULD permit for each routed signal. Pure logging —
+        # gates nothing. Built lazily; SPY daily closes come from the
+        # data provider, fetched at most every 4h (allocator caches).
+        self._regime_allocator = None
+        try:
+            if Config().ENABLE_REGIME_ALLOCATOR_SHADOW:
+                from allocators.regime_allocator import RegimeAllocatorShadow
+
+                def _spy_daily_closes():
+                    df = self.data_provider.get_market_data(
+                        "SPY", period_type="month", period=2,
+                        frequency_type="daily", frequency=1,
+                    )
+                    col = "Close" if "Close" in df.columns else "close"
+                    return df[col].dropna().tolist()
+
+                self._regime_allocator = RegimeAllocatorShadow(
+                    fetch_daily_closes=_spy_daily_closes,
+                    threshold=Config().REGIME_ALLOCATOR_ER_THRESHOLD,
+                )
+                logger.info(
+                    "regime_allocator: shadow mode ENABLED (threshold=%.2f)"
+                    " — allocations logged, no gating applied.",
+                    Config().REGIME_ALLOCATOR_ER_THRESHOLD,
+                )
+        except Exception as _ra_exc:
+            logger.warning(
+                "regime_allocator: failed to initialize shadow: %s. "
+                "Continuing without it.", _ra_exc,
+            )
+            self._regime_allocator = None
         
         # Risk manager
         self.risk_manager = RiskManagerWithCommentary(
@@ -4747,6 +4781,31 @@ class TradingEngineWithCommentary:
             except Exception as _cl_exc:
                 # Pure logging path — never let it crash signal flow.
                 logger.debug("side_classifier shadow evaluate error: %s", _cl_exc)
+
+        # v-regime-allocator-shadow-2026-06-10 (roadmap P1): log what
+        # the regime allocator would have decided for this signal.
+        # Audit line + NDJSON ledger; affects nothing. After 2 weeks,
+        # research compares would_allow=False signals' outcomes to
+        # the walk-forward prediction before any gating wire-up.
+        if self._regime_allocator is not None:
+            try:
+                _ra_strategy = signal.reasoning.get("strategy", "unknown")
+                _alloc = self._regime_allocator.evaluate(
+                    strategy=_ra_strategy,
+                    symbol=signal.symbol,
+                    signal_side=signal.signal_type.value,
+                )
+                if _alloc is not None:
+                    self._audit(
+                        "regime_allocator", signal.symbol, "shadow",
+                        _alloc.tape,
+                        er=None if _alloc.er is None
+                           else round(_alloc.er, 3),
+                        strategy=_ra_strategy,
+                        would_allow=_alloc.allows(_ra_strategy),
+                    )
+            except Exception as _ra_exc:
+                logger.debug("regime_allocator shadow error: %s", _ra_exc)
 
         # v-health-gate-2026-05-08: fail-closed guard on new live entries.
         # Two conditions block placement:
