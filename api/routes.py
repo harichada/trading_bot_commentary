@@ -1585,6 +1585,16 @@ async def websocket_endpoint(websocket: WebSocket):
                             'trades': trading_engine.get_todays_trades(),
                             'screener': screener_data,
                             'live_quotes': live_quotes,  # v-watchlist-stream-2026-05-01
+                            # v-symbol-intel-2026-06-10: per-symbol
+                            # composite reads for the Symbol
+                            # Intelligence panel. Top 40 by quality
+                            # keeps the 4Hz payload light.
+                            'symbol_intel': (
+                                trading_engine._symbol_intel_hub.snapshot()[:40]
+                                if getattr(trading_engine,
+                                           '_symbol_intel_hub', None)
+                                else []
+                            ),
                         }
                     })
 

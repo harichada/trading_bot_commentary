@@ -207,6 +207,19 @@ class TradingEngineWithCommentary:
                 "Continuing without it.", _ra_exc,
             )
             self._regime_allocator = None
+
+        # v-symbol-intel-2026-06-10: per-symbol realtime intelligence
+        # hub. The analysis loop pushes a composite view per evaluated
+        # symbol; the dashboard WS payload reads snapshot(); the NDJSON
+        # ledger doubles as Composite View Phase 1 evidence. Read-only
+        # everywhere — affects no trading decision.
+        self._symbol_intel_hub = None
+        try:
+            from core.symbol_intel import SymbolIntelHub
+            self._symbol_intel_hub = SymbolIntelHub()
+            logger.info("symbol_intel: hub enabled (panel + Phase 1 ledger)")
+        except Exception as _si_exc:
+            logger.warning("symbol_intel: failed to initialize: %s", _si_exc)
         
         # Risk manager
         self.risk_manager = RiskManagerWithCommentary(
@@ -4719,7 +4732,22 @@ class TradingEngineWithCommentary:
                         timeframe='5min',
                         indicators=indicators
                     )
-                    
+
+                    # v-symbol-intel-2026-06-10: publish this symbol's
+                    # composite read to the intelligence hub (UI panel +
+                    # Phase 1 ledger). Pure observation; never raises.
+                    if self._symbol_intel_hub is not None and indicators:
+                        try:
+                            from core.symbol_intel import build_symbol_view
+                            self._symbol_intel_hub.update(build_symbol_view(
+                                symbol, market_data.close, indicators,
+                                tape_er=getattr(self._regime_allocator,
+                                                '_cached_er', None),
+                            ))
+                        except Exception as _si_exc:
+                            logger.debug("symbol_intel publish error: %s",
+                                         _si_exc)
+
                     # Validate market data
                     if np.isnan(market_data.close) or market_data.close <= 0:
                         self.commentary.add_commentary(TradingCommentary(

@@ -2486,6 +2486,35 @@
                 </aside>
             </section>
             
+            <!-- Symbol Intelligence (v-symbol-intel-2026-06-10) -->
+            <div class="card">
+                <h3>Symbol Intelligence
+                    <span style="font-size: 0.7em; color: #888;">
+                        — the bot's live read per symbol (direction · tape · quality)
+                    </span>
+                </h3>
+                <table id="symbol-intel-table">
+                    <thead>
+                        <tr>
+                            <th>Symbol</th>
+                            <th>Price</th>
+                            <th title="Direction reader score −10…+10 with trend phase">Direction</th>
+                            <th title="SPY 20-day efficiency ratio: ≥0.30 trending, else choppy">Tape</th>
+                            <th>RSI</th>
+                            <th title="MACD histogram — trend acceleration">MACD-h</th>
+                            <th title="Position within Bollinger bands: 0=lower, 1=upper">BB</th>
+                            <th title="ATR as % of price — volatility">ATR%</th>
+                            <th title="Volume vs 20-bar average">Vol×</th>
+                            <th title="News sentiment (lands with Composite View Phase 3)">News</th>
+                            <th title="Quality v1: direction conviction 50% + ADX 25% + volume 25%">Quality</th>
+                        </tr>
+                    </thead>
+                    <tbody id="symbol-intel-body">
+                        <tr><td colspan="11" style="text-align: center; color: #666;">Waiting for analysis cycles…</td></tr>
+                    </tbody>
+                </table>
+            </div>
+
             <!-- Real Schwab Positions -->
             <div class="card">
                 <h3>Schwab Account Positions <span class="position-badge badge-real">REAL</span></h3>
@@ -3780,6 +3809,34 @@
             }
             
             // Update real positions from Schwab
+            // v-symbol-intel-2026-06-10: live per-symbol composite reads
+            if (data.symbol_intel) {
+                const tbody = document.getElementById('symbol-intel-body');
+                if (data.symbol_intel.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="11" style="text-align: center; color: #666;">Waiting for analysis cycles…</td></tr>';
+                } else {
+                    const dirColor = d => d >= 3 ? '#26a69a' : (d <= -3 ? '#ef5350' : '#999');
+                    const phaseTag = p => ({early:'🌱', middle:'📈', late:'⚠️', exhausted:'🔻'}[p] || '');
+                    tbody.innerHTML = data.symbol_intel.map(s => `
+                        <tr data-chart-symbol="${escapeHtml(s.symbol)}" style="cursor:pointer;">
+                            <td style="font-weight: bold;">${escapeHtml(s.symbol)}</td>
+                            <td>$${(s.price ?? 0).toFixed(2)}</td>
+                            <td style="color:${dirColor(s.direction)}" title="${escapeHtml(s.direction_reason || '')}">
+                                ${s.direction > 0 ? '+' : ''}${s.direction} ${phaseTag(s.phase)} ${escapeHtml(s.phase || '')}
+                            </td>
+                            <td>${s.tape_er == null ? '—' : (s.tape_er >= 0.30 ? 'trend' : 'chop') + ' (' + s.tape_er.toFixed(2) + ')'}</td>
+                            <td class="${s.rsi >= 70 ? 'negative' : (s.rsi <= 30 ? 'positive' : '')}">${s.rsi}</td>
+                            <td class="${s.macd_hist >= 0 ? 'positive' : 'negative'}">${s.macd_hist}</td>
+                            <td>${s.bb_position == null ? '—' : s.bb_position}</td>
+                            <td>${s.atr_pct}%</td>
+                            <td class="${s.volume_ratio >= 1.5 ? 'positive' : ''}">${s.volume_ratio}</td>
+                            <td>${s.sentiment == null ? '—' : s.sentiment}</td>
+                            <td style="font-weight: bold;">${s.quality}</td>
+                        </tr>
+                    `).join('');
+                }
+            }
+
             if (data.real_positions) {
                 const tbody = document.getElementById('real-positions-body');
                 if (data.real_positions.length === 0) {
