@@ -2545,3 +2545,39 @@ class TestNewsSocketTimeouts:
         unaffected."""
         src = NEWS_STRATEGY_PATH.read_text()
         assert "setdefaulttimeout" in src
+
+
+# ── v-daypnl-accuracy-2026-06-11 ─────────────────────────────────────
+
+class TestDayPnlAccuracy:
+    """08:20 ET 2026-06-11: dashboard day-P&L skewed ±$25/position vs
+    Schwab and the account tile was $53 off. Two causes: (1) stream-
+    mark drift was applied on top of the REST baseline even pre-market,
+    when stream marks are sparse/lagging — drift must be RTH-only;
+    (2) the account tile showed the last sync verbatim with no drift
+    correction while positions drifted — the tile and the rows
+    disagreed with each other by construction."""
+
+    def test_drift_gated_to_rth(self):
+        src = ROUTES_PATH.read_text()
+        anchor = src.find("Day-P&L drift")
+        assert anchor != -1, "drift block anchor missing"
+        window = src[anchor: anchor + 1200]
+        assert "_is_rth_now" in window, (
+            "stream-mark drift must only apply during regular hours — "
+            "pre-market marks are sparse and skew the number"
+        )
+
+    def test_rth_helper_exists(self):
+        src = ROUTES_PATH.read_text()
+        assert "def _is_rth_now" in src
+
+    def test_account_tile_gets_drift_sum(self):
+        src = ROUTES_PATH.read_text()
+        anchor = src.find("'day_pnl': ")
+        assert anchor != -1
+        window = src[max(0, anchor - 2000): anchor + 400]
+        assert "_total_drift" in window, (
+            "account tile must apply the same drift correction the "
+            "position rows get, or the two disagree by construction"
+        )

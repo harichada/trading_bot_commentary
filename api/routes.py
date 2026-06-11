@@ -103,6 +103,21 @@ trading_engine = None
 trading_thread = None
 connection_manager = ConnectionManager()
 
+
+def _is_rth_now() -> bool:
+    """True during regular trading hours (09:30–16:00 ET, weekdays).
+
+    v-daypnl-accuracy-2026-06-11: stream-mark drift on top of the
+    Schwab REST baseline is only trustworthy when the stream is dense.
+    Pre/post-market ticks are sparse and lag the REST mark — applying
+    drift there skewed day-P&L ±$25/position on 2026-06-11 08:20."""
+    from zoneinfo import ZoneInfo
+    et = datetime.now(ZoneInfo("America/New_York"))
+    if et.weekday() >= 5:
+        return False
+    minutes = et.hour * 60 + et.minute
+    return 9 * 60 + 30 <= minutes < 16 * 60
+
 # Load dashboard HTML from template file
 import os as _os
 _template_dir = _os.path.join(_os.path.dirname(_os.path.dirname(__file__)), 'templates')
@@ -1412,6 +1427,12 @@ async def websocket_endpoint(websocket: WebSocket):
                 # there can never be a divergence between "what the bot
                 # decides" and "what the dashboard shows."
                 real_positions_data = []
+                # v-daypnl-accuracy-2026-06-11: accumulate the drift we
+                # add to position rows so the account tile gets the SAME
+                # correction — tile and rows previously disagreed by
+                # construction (tile showed last sync verbatim).
+                _total_drift = 0.0
+                _rth = _is_rth_now()
                 if trading_engine.schwab_client:
                     cache = getattr(trading_engine, '_schwab_positions_cache', None) or []
                     for sp in cache:
@@ -1458,9 +1479,14 @@ async def websocket_endpoint(websocket: WebSocket):
                         # Day-P&L drift: tick the day-P&L value with
                         # the price move since the REST snapshot, so
                         # the day-P&L tile also feels live.
-                        if rest_price and live_price:
+                        # v-daypnl-accuracy-2026-06-11: RTH only — see
+                        # _is_rth_now(). Outside regular hours Schwab's
+                        # REST number IS the truth; sparse pre-market
+                        # stream marks made drift subtract accuracy.
+                        if _rth and rest_price and live_price:
                             price_drift = (live_price - rest_price) * (qty if side == 'long' else -abs(qty))
                             live_day_pnl = rest_day_pnl + price_drift
+                            _total_drift += price_drift
                         else:
                             live_day_pnl = rest_day_pnl
 
@@ -1486,11 +1512,15 @@ async def websocket_endpoint(websocket: WebSocket):
                 # the user's account; sim trade P&L is NOT mixed in.
                 # v-day-pnl-schwab-only-2026-04-30.
                 rm = trading_engine.risk_manager
+                # v-daypnl-accuracy-2026-06-11: tile = last-sync Schwab
+                # baseline + the same stream drift applied to the rows
+                # above, so the tile always equals what the rows imply.
+                _base_day_pnl = (getattr(rm, 'schwab_daily_pnl', None)
+                                 or getattr(rm, 'daily_pnl', 0) or 0)
                 account_info = {
                     'balance': getattr(rm, 'account_balance', 0),
                     'buying_power': getattr(rm, 'buying_power', 0),
-                    'day_pnl': getattr(rm, 'schwab_daily_pnl', None)
-                               or getattr(rm, 'daily_pnl', 0) or 0,
+                    'day_pnl': _base_day_pnl + _total_drift,
                     'cash': 0,
                 }
 
