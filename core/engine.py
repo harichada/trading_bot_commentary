@@ -6878,6 +6878,33 @@ class TradingEngineWithCommentary:
             # Request confirmation if needed
             if needs_confirmation:
                 if not await self._get_close_confirmation(position, reason):
+                    # v-exiting-revert-on-deny-2026-06-11 (review
+                    # finding on the armed exit ladder): the call site
+                    # already transitioned the position to EXITING.
+                    # Returning here used to strand it there — the FSM
+                    # allows no exit rules in EXITING, so the 60s
+                    # watchdog promoted it to ZOMBIE and management
+                    # stopped. Revert to the ladder state implied by
+                    # the position's own flags so the FSM resumes.
+                    self._ensure_position_lock(position)
+                    async with position._state_lock:
+                        if position.state == PositionState.EXITING.value:
+                            if getattr(position, 'trailing_stop', None):
+                                _revert = PositionState.TRAILING
+                            elif getattr(position, 'scaled_out', False):
+                                _revert = PositionState.AT_1R
+                            elif getattr(position, 'breakeven_lifted', False):
+                                _revert = PositionState.AT_BREAKEVEN
+                            else:
+                                _revert = PositionState.LIVE
+                            position.state = _revert.value
+                            position.state_reason = "confirmation_denied"
+                            self._audit(
+                                "position_manager", position.symbol,
+                                "state_reverted", "confirmation_denied",
+                                reverted_to=_revert.value,
+                                requested_reason=reason,
+                            )
                     self.commentary.add_commentary(TradingCommentary(
                         timestamp=datetime.now(),
                         type=CommentaryType.DECISION,

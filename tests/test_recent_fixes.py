@@ -2691,3 +2691,37 @@ class TestLiveExitLadder:
         assert "if exit_portion >= 1.0:" not in window, (
             "bracket cancel must not be conditional on full exit"
         )
+
+
+# ── v-exiting-revert-on-deny-2026-06-11 ──────────────────────────────
+
+class TestExitingRevertOnDeny:
+    """Review finding on c2b125b (HIGH): ladder call sites transition
+    the position to EXITING before _close_position_with_commentary;
+    if the close-confirmation gate then denies or times out, the
+    function returns with the position stranded in EXITING — the FSM
+    allows no exit rules there, and the 60s watchdog promotes it to
+    ZOMBIE. Unreachable in the manual_close_only era; reachable on
+    every live dynamic exit once the ladder is armed. The denial path
+    must revert the FSM state."""
+
+    def test_denial_path_reverts_state(self):
+        src = ENGINE_PATH.read_text()
+        anchor = src.find("User cancelled position close")
+        assert anchor != -1, "denial path anchor missing"
+        # The revert executes BEFORE the cancellation commentary —
+        # look backwards from the anchor.
+        window = src[max(0, anchor - 2500): anchor + 500]
+        assert "confirmation_denied" in window, (
+            "denial must revert EXITING with reason=confirmation_denied"
+        )
+        assert "PositionState.LIVE" in window, (
+            "denial path must restore a managed FSM state"
+        )
+
+    def test_revert_is_audited(self):
+        src = ENGINE_PATH.read_text()
+        anchor = src.find("confirmation_denied")
+        assert anchor != -1
+        window = src[max(0, anchor - 2000): anchor + 800]
+        assert "_audit" in window, "state revert must emit an audit line"
