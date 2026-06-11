@@ -328,7 +328,11 @@ class TradingEngineWithCommentary:
         self.require_confirmations = Config().REQUIRE_CLOSE_CONFIRMATION
         self.confirm_only_losses = Config().CONFIRM_ONLY_LOSSES
         self.confirm_threshold_percent = Config().CONFIRM_THRESHOLD_PERCENT
-        self.manual_close_only = True  # NEW: Only close positions manually
+        # v-live-exit-ladder-2026-06-11: was hardcoded True since the
+        # manual-supervision era, silently disabling breakeven/trail/
+        # tp/stop enforcement for ALL live positions — they only ever
+        # had their static OCO. Now config-driven, default False.
+        self.manual_close_only = Config().MANUAL_CLOSE_ONLY
 
         # Market state tracking
         self.market_state = {
@@ -2007,8 +2011,12 @@ class TradingEngineWithCommentary:
             # hits. If no bracket exists (e.g., partial fill, external
             # position), the helper is a no-op and returns False —
             # safe to call unconditionally.
-            if exit_portion >= 1.0:
-                await self._cancel_existing_orders(position.symbol)
+            # v-live-exit-ladder-2026-06-11: cancel for ANY portion,
+            # not only full closes — a partial sell against pledged
+            # shares is the same June-8 "oversold position" reject.
+            # (Re-bracketing the remainder after a partial is part of
+            # the ENABLE_LIVE_SCALE_OUT work, not yet armed.)
+            await self._cancel_existing_orders(position.symbol)
 
             # Check market hours for order type
             use_limit, reason = self.should_use_limit_order()
@@ -3095,15 +3103,30 @@ class TradingEngineWithCommentary:
 
         # ── SCALE OUT 1R ── (AT_BREAKEVEN → AT_1R)
         if is_exit_rule_allowed(_state, ExitRule.SCALE_OUT_1R):
-            # v-oversold-v2-2026-05-19: per-position activation override.
-            # OversoldBounceV2 stores scale_out_r_override=0.5 (since its
-            # stop_distance = 2×ATR, +0.5R = +1×ATR for the partial).
-            # Other strategies fall back to 1.0R (legacy behavior).
-            _so_override = (getattr(position, 'reasoning', {}) or {}).get(
-                'scale_out_r_override', 1.0,
-            )
-            partial = self.scale_trail.check_partial_exit_at_r(
-                position, current_price, activation_r=_so_override,
+            # v-live-exit-ladder-2026-06-11: this block is BOOKKEEPING-
+            # ONLY (no real order placed). Fine in sim — in live it
+            # would desync share counts from Schwab while the OCO
+            # still pledges the full size. Gated until partial closes
+            # are implemented end-to-end (cancel → sell → verify →
+            # re-bracket). Audited so the gap stays visible.
+            if (self.mode == TradingMode.LIVE
+                    and not Config().ENABLE_LIVE_SCALE_OUT):
+                self._audit("scale_out", symbol, "scale_out_skipped",
+                            "live_partials_not_armed")
+                _so_override = None
+            else:
+                # v-oversold-v2-2026-05-19: per-position activation
+                # override. OversoldBounceV2 stores
+                # scale_out_r_override=0.5 (its stop_distance = 2×ATR,
+                # so +0.5R = +1×ATR for the partial). Other strategies
+                # fall back to 1.0R (legacy behavior).
+                _so_override = (getattr(position, 'reasoning', {}) or {}).get(
+                    'scale_out_r_override', 1.0,
+                )
+            partial = (
+                self.scale_trail.check_partial_exit_at_r(
+                    position, current_price, activation_r=_so_override,
+                ) if _so_override is not None else None
             )
             if partial is not None and partial.exit_qty > 0:
                 position.quantity -= partial.exit_qty

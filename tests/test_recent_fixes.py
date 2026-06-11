@@ -2635,3 +2635,59 @@ class TestStreamNetChange:
         assert "net_change" in window, (
             "extracted net_change must be passed to the PriceBook write"
         )
+
+
+# ── v-live-exit-ladder-2026-06-11 ────────────────────────────────────
+
+class TestLiveExitLadder:
+    """Operator request 2026-06-11 ("trailing stops so we don't go
+    negative after a rally"): the graduated exit ladder (breakeven
+    ratchet → scale-out → ATR trail) existed but manual_close_only
+    was HARDCODED True, disabling all of it in live — both bot trades
+    that day rallied and faded with static stops while the operator
+    hand-built trails via rejected order tickets.
+
+    Armed: breakeven + trail + tp/stop (all full-close paths, bracket-
+    safe via v-cancel-bracket-before-close). NOT armed: live scale-out
+    — its block is bookkeeping-only (no real order placed), so in live
+    it would desync share counts from Schwab. Gated behind
+    ENABLE_LIVE_SCALE_OUT (default False) until partial closes are
+    implemented end-to-end."""
+
+    def test_manual_close_only_is_config_driven(self):
+        src = ENGINE_PATH.read_text()
+        assert "self.manual_close_only = True  # NEW" not in src, (
+            "manual_close_only must not be hardcoded True"
+        )
+        assert "self.manual_close_only = Config().MANUAL_CLOSE_ONLY" in src
+
+    def test_config_default_is_false(self):
+        from core.config import Config
+        # default in code (yaml may override deliberately)
+        import inspect
+        src = inspect.getsource(type(Config()).MANUAL_CLOSE_ONLY.fget)
+        assert "False" in src.split("return")[-1]
+
+    def test_live_scale_out_gated(self):
+        src = ENGINE_PATH.read_text()
+        anchor = src.find("ExitRule.SCALE_OUT_1R)")
+        assert anchor != -1
+        window = src[anchor: anchor + 1200]
+        assert "ENABLE_LIVE_SCALE_OUT" in window, (
+            "scale-out must be gated off in live until partial closes "
+            "place real orders"
+        )
+        assert "scale_out_skipped" in window, (
+            "the skip must be audited so the gap stays visible"
+        )
+
+    def test_partial_close_cancels_bracket_any_portion(self):
+        """Defense-in-depth: _close_real_position must cancel the OCO
+        for ANY exit portion, not only full closes — so arming live
+        partials later cannot resurrect the June-8 oversold reject."""
+        src = ENGINE_PATH.read_text()
+        anchor = src.find("v-cancel-bracket-before-close-2026-06-08")
+        window = src[anchor: anchor + 2400]
+        assert "if exit_portion >= 1.0:" not in window, (
+            "bracket cancel must not be conditional on full exit"
+        )

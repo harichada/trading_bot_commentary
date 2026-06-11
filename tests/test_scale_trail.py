@@ -87,38 +87,45 @@ class TestPartialExit:
 
 
 class TestTrailingStop:
+    """Re-baselined 2026-06-11 to the v-trail-widen-2026-04-23
+    defaults (activation 2.0×ATR, width 1.5×ATR — old 1×/1× fired
+    trail exits at micro-profits). These tests had asserted the
+    pre-April behavior and were failing ever since; fixed the same
+    night the ladder went live (v-live-exit-ladder-2026-06-11)."""
     mgr = ScaleTrailManager()
 
-    def test_long_not_activated_below_1_atr(self):
+    def test_long_not_activated_below_activation(self):
+        """Entry 100, ATR=3, activation 2×ATR → nothing below 106."""
         pos = _pos(entry=100)
-        assert self.mgr.update_trailing_stop(pos, current_price=102.9, atr=3.0) is None
+        assert self.mgr.update_trailing_stop(pos, current_price=105.9, atr=3.0) is None
 
-    def test_long_activates_at_1_atr(self):
-        """Entry 100, ATR=3. At 103 (1×ATR), trail activates at 103-3=100."""
+    def test_long_activates_at_2_atr(self):
+        """Entry 100, ATR=3. At 106 (2×ATR), trail = 106 − 1.5×3 = 101.5."""
         pos = _pos(entry=100)
-        trail = self.mgr.update_trailing_stop(pos, current_price=103.0, atr=3.0)
-        assert trail == pytest.approx(100.0)
+        trail = self.mgr.update_trailing_stop(pos, current_price=106.0, atr=3.0)
+        assert trail == pytest.approx(101.5)
 
     def test_long_trail_ratchets_up(self):
-        """Trail at 100, price moves to 106 → new trail 103 (better)."""
-        pos = _pos(entry=100, trailing_stop=100.0)
-        trail = self.mgr.update_trailing_stop(pos, current_price=106.0, atr=3.0)
-        assert trail == pytest.approx(103.0)
+        """Trail at 101.5, price moves to 108 → new trail 103.5 (better)."""
+        pos = _pos(entry=100, trailing_stop=101.5)
+        trail = self.mgr.update_trailing_stop(pos, current_price=108.0, atr=3.0)
+        assert trail == pytest.approx(103.5)
 
     def test_long_trail_never_moves_down(self):
-        """Trail at 103, price dips to 104 → new trail 101 (worse) → None."""
-        pos = _pos(entry=100, trailing_stop=103.0)
-        assert self.mgr.update_trailing_stop(pos, current_price=104.0, atr=3.0) is None
+        """Trail at 103.5, price dips to 107 → 102.5 (worse) → None."""
+        pos = _pos(entry=100, trailing_stop=103.5)
+        assert self.mgr.update_trailing_stop(pos, current_price=107.0, atr=3.0) is None
 
-    def test_short_activates_at_1_atr(self):
+    def test_short_activates_at_2_atr(self):
+        """Short entry 100, ATR=3. At 94 (2×ATR), trail = 94 + 4.5 = 98.5."""
         pos = _pos(entry=100, stop=103, side="short")
-        trail = self.mgr.update_trailing_stop(pos, current_price=97.0, atr=3.0)
-        assert trail == pytest.approx(100.0)
+        trail = self.mgr.update_trailing_stop(pos, current_price=94.0, atr=3.0)
+        assert trail == pytest.approx(98.5)
 
     def test_short_trail_ratchets_down(self):
-        pos = _pos(entry=100, stop=103, side="short", trailing_stop=100.0)
-        trail = self.mgr.update_trailing_stop(pos, current_price=94.0, atr=3.0)
-        assert trail == pytest.approx(97.0)
+        pos = _pos(entry=100, stop=103, side="short", trailing_stop=98.5)
+        trail = self.mgr.update_trailing_stop(pos, current_price=92.0, atr=3.0)
+        assert trail == pytest.approx(96.5)
 
     def test_short_trail_never_moves_up(self):
         pos = _pos(entry=100, stop=103, side="short", trailing_stop=97.0)

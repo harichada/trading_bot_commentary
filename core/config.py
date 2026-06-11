@@ -1023,6 +1023,30 @@ class Config:
         return bool(self.manager.get('trading.enable_mean_rev_short_shadow', False))
 
     @property
+    def MANUAL_CLOSE_ONLY(self) -> bool:
+        """v-live-exit-ladder-2026-06-11. Global pause on the bot's
+        dynamic exit management in LIVE mode (breakeven ratchet, ATR
+        trail, take-profit/hard-stop enforcement on bot-owned
+        positions). Was HARDCODED True in engine __init__ since the
+        early manual-supervision era — meaning live positions only
+        ever had their static OCO while the full exit ladder ran in
+        sim. Default False: the ladder is live. External/manual
+        positions remain untouchable regardless (managed_by_bot
+        gating + the external-position guard in the close path)."""
+        return bool(self.manager.get('trading.manual_close_only', False))
+
+    @property
+    def ENABLE_LIVE_SCALE_OUT(self) -> bool:
+        """v-live-exit-ladder-2026-06-11. The +1R 50% scale-out block
+        is BOOKKEEPING-ONLY — it decrements position.quantity without
+        placing a real order. Safe in sim; in live it would desync
+        share counts from Schwab while the OCO still pledges the full
+        size. Default False. DO NOT enable until partial closes place
+        real orders end-to-end (cancel bracket → sell partial → verify
+        fill → re-bracket remainder)."""
+        return bool(self.manager.get('trading.enable_live_scale_out', False))
+
+    @property
     def ENABLE_REGIME_ALLOCATOR_SHADOW(self) -> bool:
         """v-regime-allocator-shadow-2026-06-10 (roadmap P1). When True,
         every signal routed through the engine gets a shadow allocation
