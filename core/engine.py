@@ -208,6 +208,21 @@ class TradingEngineWithCommentary:
             )
             self._regime_allocator = None
 
+        # v-conviction-sizer-shadow-2026-06-11: conviction-weighted
+        # sizing shadow (operator directive: "real solid confirmation
+        # → more risk"). Historical validation: meta-proba buckets ran
+        # PF 0.44 / 3.01 / 5.02 across 89 trades. Logs would-be size
+        # multipliers only — sizing is unchanged until the live shadow
+        # reproduces the gradient (promotion gate in the roadmap).
+        self._conviction_sizer = None
+        try:
+            from sizing.conviction_sizer import ConvictionSizerShadow
+            self._conviction_sizer = ConvictionSizerShadow()
+            logger.info("conviction_sizer: shadow enabled — multipliers "
+                        "logged, sizing unchanged.")
+        except Exception as _cs_exc:
+            logger.warning("conviction_sizer: failed to init: %s", _cs_exc)
+
         # v-symbol-intel-2026-06-10: per-symbol realtime intelligence
         # hub. The analysis loop pushes a composite view per evaluated
         # symbol; the dashboard WS payload reads snapshot(); the NDJSON
@@ -4947,6 +4962,7 @@ class TradingEngineWithCommentary:
         # Audit line + NDJSON ledger; affects nothing. After 2 weeks,
         # research compares would_allow=False signals' outcomes to
         # the walk-forward prediction before any gating wire-up.
+        _alloc = None  # also read by the conviction-sizer hook below
         if self._regime_allocator is not None:
             try:
                 _ra_strategy = signal.reasoning.get("strategy", "unknown")
@@ -4966,6 +4982,47 @@ class TradingEngineWithCommentary:
                     )
             except Exception as _ra_exc:
                 logger.debug("regime_allocator shadow error: %s", _ra_exc)
+
+        # v-conviction-sizer-shadow-2026-06-11: log the would-be size
+        # multiplier for this signal from the confluence of independent
+        # confirmations. Pure observation — actual sizing unchanged.
+        if self._conviction_sizer is not None:
+            try:
+                _ind = (getattr(market_data, "indicators", None) or {}) \
+                    if market_data is not None else {}
+                _dir_score = None
+                try:
+                    from core.direction_reader import read_direction
+                    if market_data is not None and _ind:
+                        _dir_score = read_direction(
+                            market_data.close, _ind).direction
+                except Exception:
+                    pass
+                _conv = self._conviction_sizer.evaluate(
+                    strategy=signal.reasoning.get("strategy", "unknown"),
+                    symbol=signal.symbol,
+                    meta_proba=signal.reasoning.get("meta_proba"),
+                    ml_agrees=(
+                        None if ml_signal is None
+                        else ml_signal == signal.signal_type.value
+                    ),
+                    allocator_allows=(
+                        _alloc.allows(signal.reasoning.get("strategy", ""))
+                        if _alloc is not None else None
+                    ),
+                    direction=_dir_score,
+                    volume_ratio=_ind.get("volume_ratio"),
+                )
+                if _conv is not None:
+                    self._audit(
+                        "conviction_sizer", signal.symbol, "shadow",
+                        "confluence",
+                        score=_conv.score,
+                        would_be_mult=_conv.multiplier,
+                        meta=signal.reasoning.get("meta_proba"),
+                    )
+            except Exception as _cs_exc:
+                logger.debug("conviction_sizer shadow error: %s", _cs_exc)
 
         # v-health-gate-2026-05-08: fail-closed guard on new live entries.
         # Two conditions block placement:
