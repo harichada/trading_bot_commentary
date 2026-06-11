@@ -1434,6 +1434,34 @@ async def websocket_endpoint(websocket: WebSocket):
                 _total_drift = 0.0
                 _rth = _is_rth_now()
                 if trading_engine.schwab_client:
+                    # v-daypnl-accuracy-2026-06-11 (part 2): the engine
+                    # refreshes this cache every 5 ANALYSIS cycles —
+                    # minutes each — so the baseline could be 10+ min
+                    # old (COIN drifted $57 in that window pre-market).
+                    # The dashboard now keeps its own 45s freshness:
+                    # single-flight, fire-and-forget, executor-backed
+                    # with a 6s timeout inside get_schwab_positions.
+                    import time as _time
+                    _cache_at = getattr(trading_engine,
+                                        '_schwab_positions_cache_at', 0.0)
+                    if (_time.time() - _cache_at > 45.0
+                            and not getattr(trading_engine,
+                                            '_pos_cache_refreshing', False)):
+                        trading_engine._pos_cache_refreshing = True
+
+                        async def _refresh_pos_cache():
+                            try:
+                                fresh = await trading_engine.get_schwab_positions()
+                                if fresh:
+                                    trading_engine._schwab_positions_cache = fresh
+                                trading_engine._schwab_positions_cache_at = _time.time()
+                            except Exception as _exc:
+                                logger.debug("dashboard pos-cache refresh "
+                                             "failed: %s", _exc)
+                            finally:
+                                trading_engine._pos_cache_refreshing = False
+
+                        asyncio.create_task(_refresh_pos_cache())
                     cache = getattr(trading_engine, '_schwab_positions_cache', None) or []
                     for sp in cache:
                         sym = sp.get('symbol')
