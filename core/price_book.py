@@ -70,6 +70,10 @@ class _PriceRow:
     last: Optional[float] = None       # raw last trade
     bid: float = 0.0
     ask: float = 0.0
+    # v-stream-netchange-2026-06-11: Schwab's day net change (vs prior
+    # close) from the stream's NET_CHANGE field. Legitimately negative
+    # or zero — must never pass through the positive-price filter.
+    net_change: Optional[float] = None
     updated_at: Optional[datetime] = None
     source: str = "none"
 
@@ -139,6 +143,7 @@ class PriceBook:
         last: Optional[float] = None,
         bid: Optional[float] = None,
         ask: Optional[float] = None,
+        net_change: Optional[float] = None,
         source: str = "stream",
     ) -> None:
         """Sync write path. Used by the Schwab stream tick handler
@@ -171,6 +176,12 @@ class PriceBook:
         if ask is not None:
             try:
                 row.ask = float(ask)
+            except (TypeError, ValueError):
+                pass
+        if net_change is not None:
+            try:
+                # No positivity filter — net_change is signed by nature.
+                row.net_change = float(net_change)
             except (TypeError, ValueError):
                 pass
         row.source = source
@@ -234,6 +245,13 @@ class PriceBook:
         """Bulk read. Single-pass, no per-symbol lock — _rows reads
         are GIL-atomic at the dict level for our usage pattern."""
         return {s: self._row_to_object(self._rows.get(s), s) for s in symbols}
+
+    def get_net_change(self, symbol: str) -> Optional[float]:
+        """v-stream-netchange-2026-06-11: Schwab's day net change (vs
+        prior close) for a symbol, from the stream. None if no tick
+        has carried the field yet (or unknown symbol)."""
+        row = self._rows.get(symbol)
+        return row.net_change if row is not None else None
 
     def all_symbols(self) -> List[str]:
         return list(self._rows.keys())

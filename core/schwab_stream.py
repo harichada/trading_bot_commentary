@@ -216,6 +216,13 @@ class SchwabQuoteStream:
                 ask = record.get("ASK_PRICE")
                 if ask is None:
                     ask = record.get("2")
+                # v-stream-netchange-2026-06-11: NET_CHANGE has been in
+                # the subscription since v-stream-rich-fields-2026-05-01
+                # but was discarded here. "18" is the LEVELONE_EQUITIES
+                # numeric field id, same fallback pattern as "1"/"2"/"3".
+                net_change = record.get("NET_CHANGE")
+                if net_change is None:
+                    net_change = record.get("18")
 
                 # v-null-tick-noop-2026-05-01: per architectural
                 # directive — if Schwab sends a tick that has NO price
@@ -261,6 +268,7 @@ class SchwabQuoteStream:
                             last=last,
                             bid=bid,
                             ask=ask,
+                            net_change=net_change,
                             source="stream",
                         )
                 except Exception as exc:

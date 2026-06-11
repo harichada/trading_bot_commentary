@@ -2581,3 +2581,57 @@ class TestDayPnlAccuracy:
             "account tile must apply the same drift correction the "
             "position rows get, or the two disagree by construction"
         )
+
+
+# ── v-stream-netchange-2026-06-11 ────────────────────────────────────
+
+class TestStreamNetChange:
+    """NET_CHANGE has been in the stream subscription since
+    v-stream-rich-fields-2026-05-01 but the tick parser discarded it.
+    Now parsed and stored on the PriceBook row — the first step toward
+    stream-native day-movement instead of REST-only baselines."""
+
+    def test_pricebook_row_has_net_change(self):
+        from core.price_book import PriceBook
+        pb = PriceBook(stale_threshold_sec=600)
+        pb.apply_tick_sync("TEST", last=100.0, net_change=-2.5,
+                           source="stream")
+        assert pb.get_net_change("TEST") == -2.5
+
+    def test_net_change_partial_merge(self):
+        """A later bid/ask-only tick must not erase net_change."""
+        from core.price_book import PriceBook
+        pb = PriceBook(stale_threshold_sec=600)
+        pb.apply_tick_sync("TEST", last=100.0, net_change=1.25,
+                           source="stream")
+        pb.apply_tick_sync("TEST", bid=99.9, ask=100.1, source="stream")
+        assert pb.get_net_change("TEST") == 1.25
+
+    def test_net_change_accepts_negative_and_zero(self):
+        """Unlike prices, net_change is legitimately <= 0 — it must
+        not pass through the positive-price filter."""
+        from core.price_book import PriceBook
+        pb = PriceBook(stale_threshold_sec=600)
+        pb.apply_tick_sync("TEST", last=100.0, net_change=0.0,
+                           source="stream")
+        assert pb.get_net_change("TEST") == 0.0
+
+    def test_unknown_symbol_returns_none(self):
+        from core.price_book import PriceBook
+        pb = PriceBook(stale_threshold_sec=600)
+        assert pb.get_net_change("NOPE") is None
+
+    def test_stream_handler_extracts_net_change(self):
+        src = (REPO_ROOT / "core" / "schwab_stream.py").read_text()
+        assert 'record.get("NET_CHANGE")' in src, (
+            "tick handler must extract NET_CHANGE"
+        )
+        assert '"18"' in src, (
+            "numeric field-id fallback (18) required — Schwab sends "
+            "numeric keys on some connections, same as '1'/'2'/'3'"
+        )
+        anchor = src.find("apply_tick_sync")
+        window = src[anchor: anchor + 400]
+        assert "net_change" in window, (
+            "extracted net_change must be passed to the PriceBook write"
+        )
