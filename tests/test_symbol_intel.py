@@ -113,3 +113,36 @@ class TestWiring:
         assert "'symbol_intel'" in src, (
             "dashboard_update payload must carry symbol_intel"
         )
+
+
+class TestSnapshotFreshness:
+    """v-intel-freshness-2026-06-11: the hub kept every symbol's last
+    view forever — the morning panel mixed 5-minute-fresh rows with
+    12-hour-old rows from symbols that left the watchlist, at stale
+    prices, with no distinction. snapshot() now drops views older
+    than max_age_sec (default 30 min)."""
+
+    def test_stale_views_filtered(self, tmp_path):
+        from datetime import datetime, timedelta, timezone
+        from core.symbol_intel import SymbolIntelHub, build_symbol_view
+        hub = SymbolIntelHub(ledger_path=tmp_path / "l.ndjson")
+        fresh = build_symbol_view("FRESH", 10.0, {})
+        stale = build_symbol_view("STALE", 20.0, {})
+        stale["updated_at"] = (
+            datetime.now(timezone.utc) - timedelta(hours=5)
+        ).isoformat()
+        hub.update(fresh)
+        hub.update(stale)
+        snap = hub.snapshot()
+        assert [s["symbol"] for s in snap] == ["FRESH"]
+
+    def test_max_age_none_returns_all(self, tmp_path):
+        from datetime import datetime, timedelta, timezone
+        from core.symbol_intel import SymbolIntelHub, build_symbol_view
+        hub = SymbolIntelHub(ledger_path=tmp_path / "l.ndjson")
+        old = build_symbol_view("OLD", 20.0, {})
+        old["updated_at"] = (
+            datetime.now(timezone.utc) - timedelta(hours=5)
+        ).isoformat()
+        hub.update(old)
+        assert len(hub.snapshot(max_age_sec=None)) == 1

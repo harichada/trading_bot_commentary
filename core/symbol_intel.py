@@ -167,7 +167,26 @@ class SymbolIntelHub:
         except Exception as exc:
             logger.debug("symbol_intel update error: %s", exc)
 
-    def snapshot(self) -> List[Dict[str, Any]]:
-        """All current views, best quality first (panel default sort)."""
-        return sorted(self._views.values(),
-                      key=lambda v: v.get("quality", 0), reverse=True)
+    def snapshot(
+        self, max_age_sec: Optional[float] = 30 * 60.0
+    ) -> List[Dict[str, Any]]:
+        """Current views, best quality first (panel default sort).
+
+        v-intel-freshness-2026-06-11: views older than max_age_sec are
+        dropped — without this the morning panel mixed 5-minute-fresh
+        rows with 12-hour-old rows from symbols that rotated out of
+        the watchlist, at stale prices. Pass None to disable (research
+        reads of the full cache)."""
+        views = self._views.values()
+        if max_age_sec is not None:
+            cutoff = datetime.now(timezone.utc).timestamp() - max_age_sec
+            fresh = []
+            for v in views:
+                try:
+                    ts = datetime.fromisoformat(v["updated_at"]).timestamp()
+                    if ts >= cutoff:
+                        fresh.append(v)
+                except (KeyError, ValueError, TypeError):
+                    continue
+            views = fresh
+        return sorted(views, key=lambda v: v.get("quality", 0), reverse=True)
