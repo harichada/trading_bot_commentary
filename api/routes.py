@@ -1454,6 +1454,25 @@ async def websocket_endpoint(websocket: WebSocket):
                                 fresh = await trading_engine.get_schwab_positions()
                                 if fresh:
                                     trading_engine._schwab_positions_cache = fresh
+                                # v-tile-row-same-clock-2026-06-12: the
+                                # account tile read risk_manager state
+                                # refreshed only by the ENGINE sync
+                                # (minutes), while the rows refresh here
+                                # every 45s — measured 08:15: COIN's row
+                                # moved +$11 while the tile sat frozen.
+                                # Same refresher now syncs both. Fields
+                                # set directly (mirrors
+                                # sync_with_schwab_data) because that
+                                # method INFO-logs per call — 45s
+                                # cadence would add ~2k log lines/day.
+                                acct = await trading_engine._get_real_account_info()
+                                if acct:
+                                    _rm = trading_engine.risk_manager
+                                    _rm.schwab_daily_pnl = acct.get('day_pnl', 0)
+                                    _rm.buying_power = acct.get(
+                                        'buying_power', _rm.buying_power)
+                                    _rm.account_balance = acct.get(
+                                        'balance', _rm.account_balance)
                                 trading_engine._schwab_positions_cache_at = _time.time()
                             except Exception as _exc:
                                 logger.debug("dashboard pos-cache refresh "
