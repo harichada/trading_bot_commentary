@@ -169,3 +169,63 @@ class TestEngineWiring:
             "regime allocator shadow hook must follow the classifier "
             "hook in the signal router"
         )
+
+
+# ── v-regime-gate-live-meanrev-2026-06-16 ────────────────────────────
+
+class TestLiveMeanRevGate:
+    """Promotes the allocator from shadow to a LIVE veto on mean-rev
+    signals in trending tape (ER >= threshold). Evidence:
+    research/meanrev_gated_report_2026-06-15.json — gating mean-rev to
+    choppy tape removed the -104.7% w2 disaster (-> +1.4%), lifted
+    pooled PF 1.06 -> 1.12 and return +127% -> +180% with 28% fewer
+    trades. Breakout/news untouched; fail-open on unknown ER."""
+
+    def test_gate_config_flag_default_on(self):
+        from core.config import Config
+        assert Config().REGIME_GATE_LIVE_MEANREV is True
+
+    def test_allows_semantics_for_gate(self):
+        """The gate vetoes exactly when allows() is False — mean-rev is
+        blocked in trending tape, permitted in choppy, permitted on
+        unknown ER (fail-open)."""
+        from allocators.regime_allocator import allocate
+        trending = allocate(0.45, threshold=0.30)
+        choppy = allocate(0.10, threshold=0.30)
+        unknown = allocate(None, threshold=0.30)
+        assert trending.allows("mean_reversion") is False   # VETOED
+        assert choppy.allows("mean_reversion") is True       # allowed
+        assert unknown.allows("mean_reversion") is True      # fail-open
+        # breakout/news are never the gate's target
+        assert trending.allows("breakout") is True
+        assert trending.allows("news") is True
+
+    def test_oversold_v2_also_gated(self):
+        """The v2 mean-rev swap must be gated identically."""
+        from allocators.regime_allocator import allocate
+        trending = allocate(0.45, threshold=0.30)
+        assert trending.allows("oversold_v2") is False
+
+    def test_engine_has_live_veto_wired(self):
+        from pathlib import Path
+        src = (Path(__file__).resolve().parent.parent
+               / "core" / "engine.py").read_text()
+        anchor = src.find("v-regime-gate-live-meanrev-2026-06-16")
+        assert anchor != -1, "live gate block missing"
+        block = src[anchor: anchor + 1400]
+        assert "REGIME_GATE_LIVE_MEANREV" in block
+        assert "mean_reversion" in block
+        assert "return" in block, "veto must abort the signal"
+        assert "regime_gate_meanrev" in block, "veto must be audited"
+
+    def test_veto_only_targets_meanrev_family(self):
+        """The veto condition must restrict to the mean-rev family so
+        breakout/news signals are never blocked by it."""
+        from pathlib import Path
+        src = (Path(__file__).resolve().parent.parent
+               / "core" / "engine.py").read_text()
+        anchor = src.find("v-regime-gate-live-meanrev-2026-06-16")
+        block = src[anchor: anchor + 1400]
+        assert ('"mean_reversion", "oversold_v2"' in block
+                or "'mean_reversion', 'oversold_v2'" in block), (
+            "gate must scope to the mean-rev family explicitly")

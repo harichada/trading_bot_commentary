@@ -1068,6 +1068,23 @@ class Config:
         return float(self.manager.get('trading.regime_allocator_er_threshold', 0.30))
 
     @property
+    def REGIME_GATE_LIVE_MEANREV(self) -> bool:
+        """v-regime-gate-live-meanrev-2026-06-16. Promote the regime
+        allocator from shadow to a LIVE veto on mean-reversion signals
+        when the tape is trending (SPY 20-day ER >= threshold). Mean-rev
+        is a chop strategy; it bled -104.7% in a trending walk-forward
+        window it never should have traded. Gating it to choppy tape
+        removed that disaster (-> +1.4%), lifted pooled PF 1.06 -> 1.12
+        and return +127% -> +180% with 28% fewer trades
+        (research/meanrev_gated_report_2026-06-15.json).
+
+        Scope: mean_reversion + oversold_v2 ONLY. Breakout/news are
+        untouched (still shadow). Fail-open: unknown ER never vetoes.
+        Default True. One-line reversible via
+        trading.regime_gate_live_meanrev."""
+        return bool(self.manager.get('trading.regime_gate_live_meanrev', True))
+
+    @property
     def ENABLE_BOT_ONLY_PNL_CIRCUIT(self) -> bool:
         """Use BOT-managed P&L (not account-wide Schwab P&L) for the
         daily-loss circuit. Default True.

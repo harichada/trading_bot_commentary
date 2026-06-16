@@ -4983,6 +4983,46 @@ class TradingEngineWithCommentary:
             except Exception as _ra_exc:
                 logger.debug("regime_allocator shadow error: %s", _ra_exc)
 
+        # v-regime-gate-live-meanrev-2026-06-16: the allocator's FIRST
+        # live veto. Mean-reversion is a chop strategy — in the
+        # walk-forward it bled -104.7% in a trending window it never
+        # should have traded. Gating it to choppy tape removed that
+        # disaster (-> +1.4%) and lifted pooled PF 1.06 -> 1.12
+        # (research/meanrev_gated_report_2026-06-15.json). Scope is the
+        # mean-rev family ONLY; breakout/news stay in shadow. Fail-open
+        # is inherited from RegimeAllocation.allows() — unknown ER
+        # returns True, so a Schwab data hiccup never blocks trading.
+        _ra_strategy = signal.reasoning.get("strategy", "unknown") \
+            if signal.reasoning else "unknown"
+        if (Config().REGIME_GATE_LIVE_MEANREV
+                and _alloc is not None
+                and _ra_strategy in ("mean_reversion", "oversold_v2")
+                and not _alloc.allows(_ra_strategy)):
+            self._audit(
+                "regime_gate", signal.symbol, "blocked",
+                "regime_gate_meanrev",
+                strategy=_ra_strategy, tape=_alloc.tape,
+                er=None if _alloc.er is None else round(_alloc.er, 3),
+                threshold=_alloc.threshold,
+            )
+            self.commentary.add_commentary(TradingCommentary(
+                timestamp=datetime.now(),
+                type=CommentaryType.RISK_ASSESSMENT,
+                symbol=signal.symbol,
+                title=f"⛔ Regime Gate — {signal.symbol} mean-rev blocked",
+                message=(
+                    f"Tape is trending (SPY efficiency "
+                    f"{_alloc.er:.2f} ≥ {_alloc.threshold:.2f}). "
+                    f"Mean-reversion sits out trending tapes — this is "
+                    f"the gate that removed the −104% walk-forward "
+                    f"window. Waiting for chop."
+                    if _alloc.er is not None else
+                    f"Mean-reversion blocked by regime gate ({_alloc.tape})."
+                ),
+                importance=7,
+            ))
+            return  # abort the signal — no order placed
+
         # v-conviction-sizer-shadow-2026-06-11: log the would-be size
         # multiplier for this signal from the confluence of independent
         # confirmations. Pure observation — actual sizing unchanged.
