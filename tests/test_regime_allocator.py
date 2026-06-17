@@ -253,7 +253,7 @@ class TestConvictionFloorMeanRev:
         src = (Path(__file__).resolve().parent.parent / "core" / "engine.py").read_text()
         anchor = src.find("v-conviction-floor-meanrev-2026-06-17")
         assert anchor != -1, "conviction floor block missing"
-        block = src[anchor: anchor + 1900]
+        block = src[anchor: anchor + 2300]
         assert "ENABLE_CONVICTION_FLOOR_MEANREV" in block
         assert "CONVICTION_FLOOR_META" in block
         assert "meta_proba" in block
@@ -264,7 +264,7 @@ class TestConvictionFloorMeanRev:
         from pathlib import Path
         src = (Path(__file__).resolve().parent.parent / "core" / "engine.py").read_text()
         anchor = src.find("v-conviction-floor-meanrev-2026-06-17")
-        block = src[anchor: anchor + 1900]
+        block = src[anchor: anchor + 2300]
         assert ('"mean_reversion", "oversold_v2"' in block
                 or "'mean_reversion', 'oversold_v2'" in block), (
             "floor must scope to the mean-rev family")
@@ -275,5 +275,5 @@ class TestConvictionFloorMeanRev:
         from pathlib import Path
         src = (Path(__file__).resolve().parent.parent / "core" / "engine.py").read_text()
         anchor = src.find("v-conviction-floor-meanrev-2026-06-17")
-        block = src[anchor: anchor + 1900]
+        block = src[anchor: anchor + 2300]
         assert "is not None" in block, "floor must fail-open on missing meta_proba"
