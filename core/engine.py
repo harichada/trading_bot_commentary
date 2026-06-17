@@ -4217,15 +4217,49 @@ class TradingEngineWithCommentary:
                             )
                         logger.info(f"Schwab P&L Check: ${schwab_pnl:.2f} (Limit: ${self.risk_manager.account_balance * 0.05:.2f})")
                 
-                # Only check emergency stop with real Schwab P&L
-                if schwab_pnl < 0 and abs(schwab_pnl) > self.risk_manager.account_balance * 0.05:
-                    # Double-check with fresh Schwab data before closing positions
-                    if self.schwab_client:
+                # v-emergency-stop-bot-only-2026-06-17: this emergency
+                # stop used to trip on ACCOUNT-WIDE schwab_pnl, which
+                # includes external/manual holdings. On 2026-06-17 a
+                # manual SPCX position bled past 5% of equity, fired
+                # this stop, set is_running=False, and silently zombied
+                # the bot (0 bot trades that day). Same flaw the #31
+                # circuit fix addressed in risk/manager — but this is a
+                # SEPARATE path. Honour the same flag: under
+                # ENABLE_BOT_ONLY_PNL_CIRCUIT the emergency stop reads
+                # bot-only P&L, so external positions can never kill
+                # the engine. Fall back to account-wide only when the
+                # circuit is explicitly off.
+                _emrg_cfg = Config()
+                if _emrg_cfg.ENABLE_BOT_ONLY_PNL_CIRCUIT:
+                    _emrg_pnl = self.risk_manager.bot_daily_pnl
+                else:
+                    _emrg_pnl = schwab_pnl
+                # Only check emergency stop with the circuit-selected P&L
+                if _emrg_pnl < 0 and abs(_emrg_pnl) > self.risk_manager.account_balance * 0.05:
+                    # Double-check before halting. Under the bot-only
+                    # circuit, recompute bot P&L from local state (it's
+                    # the authoritative, network-free value) — do NOT
+                    # abort on account-wide fresh_pnl, which would let
+                    # external profit cancel a legitimate bot stop (and
+                    # was half of the 2026-06-17 confusion). Account-wide
+                    # mode keeps the original fresh-Schwab re-check.
+                    if _emrg_cfg.ENABLE_BOT_ONLY_PNL_CIRCUIT:
+                        try:
+                            _recheck = self._compute_bot_daily_pnl()
+                            self.risk_manager.bot_daily_pnl = _recheck
+                        except Exception:
+                            _recheck = _emrg_pnl
+                        if _recheck >= 0 or abs(_recheck) <= self.risk_manager.account_balance * 0.05:
+                            logger.warning(
+                                "Emergency stop ABORTED - bot-only P&L "
+                                "recheck within limit: $%.2f", _recheck)
+                            continue
+                    elif self.schwab_client:
                         fresh_account_info = await self._get_real_account_info()
                         if fresh_account_info:
                             fresh_pnl = fresh_account_info.get('day_pnl', 0)
                             logger.warning(f"Emergency stop check - Fresh P&L: ${fresh_pnl:.2f}")
-                            
+
                             # If fresh data shows we're not in loss, abort emergency stop
                             if fresh_pnl >= 0:
                                 logger.warning(f"Emergency stop ABORTED - Fresh data shows profit: ${fresh_pnl:.2f}")

@@ -2725,3 +2725,36 @@ class TestExitingRevertOnDeny:
         assert anchor != -1
         window = src[max(0, anchor - 2000): anchor + 800]
         assert "_audit" in window, "state revert must emit an audit line"
+
+
+# ── v-emergency-stop-bot-only-2026-06-17 ─────────────────────────────
+
+class TestEmergencyStopBotOnly:
+    """2026-06-17 incident: the analysis-loop emergency stop tripped on
+    ACCOUNT-WIDE Schwab P&L (schwab_pnl), which includes external
+    holdings. SPCX (a manual position) bled past 5% of equity, the
+    emergency stop fired, set is_running=False, and silently zombied
+    the bot — same flaw class as the #31 circuit fix, but this is a
+    SEPARATE code path that never got the bot-only treatment. The bot
+    had 0 trades that day; its own P&L was ~$0. The emergency stop
+    must use the bot-only circuit P&L when ENABLE_BOT_ONLY_PNL_CIRCUIT
+    is on, matching risk/manager.check_trading_allowed."""
+
+    def test_emergency_stop_uses_circuit_pnl(self):
+        src = ENGINE_PATH.read_text()
+        anchor = src.find("v-emergency-stop-bot-only-2026-06-17")
+        assert anchor != -1, "emergency-stop bot-only fix missing"
+        block = src[anchor: anchor + 1400]
+        assert "ENABLE_BOT_ONLY_PNL_CIRCUIT" in block, (
+            "emergency stop must consult the bot-only circuit flag")
+        assert "bot_daily_pnl" in block, (
+            "emergency stop must use bot_daily_pnl under the circuit")
+
+    def test_emergency_stop_no_longer_keys_on_raw_schwab_pnl(self):
+        """The trip condition must reference the circuit-selected pnl,
+        not raw schwab_pnl directly."""
+        src = ENGINE_PATH.read_text()
+        anchor = src.find("v-emergency-stop-bot-only-2026-06-17")
+        block = src[anchor: anchor + 1400]
+        assert "_emrg_pnl" in block, (
+            "trip must use the circuit-selected _emrg_pnl variable")
