@@ -1085,6 +1085,28 @@ class Config:
         return bool(self.manager.get('trading.regime_gate_live_meanrev', True))
 
     @property
+    def ENABLE_CONVICTION_FLOOR_MEANREV(self) -> bool:
+        """v-conviction-floor-meanrev-2026-06-17. Block mean-rev signals
+        whose meta-model probability is below CONVICTION_FLOOR_META.
+
+        Evidence: research/conviction_validation_2026-06-11.json — the
+        meta_proba < 0.60 bucket ran PF 0.44 (losing) across 89 trades,
+        vs PF 3.01 / 5.02 above. 2026-06-16 live: an all-medium-
+        conviction basket netted -$268; this floor would have blocked
+        ARM+ELF (saved $150, killed no wins) — halving the loss.
+
+        Scope: mean_reversion + oversold_v2 ONLY. Fail-open: a signal
+        with no meta_proba is never blocked. Default True; reversible
+        via trading.enable_conviction_floor_meanrev."""
+        return bool(self.manager.get('trading.enable_conviction_floor_meanrev', True))
+
+    @property
+    def CONVICTION_FLOOR_META(self) -> float:
+        """Minimum meta_proba for a mean-rev entry. 0.60 = the 89-trade
+        bucket boundary where PF flips 0.44 -> 3.01. Below it, skip."""
+        return float(self.manager.get('trading.conviction_floor_meta', 0.60))
+
+    @property
     def ENABLE_BOT_ONLY_PNL_CIRCUIT(self) -> bool:
         """Use BOT-managed P&L (not account-wide Schwab P&L) for the
         daily-loss circuit. Default True.

@@ -229,3 +229,51 @@ class TestLiveMeanRevGate:
         assert ('"mean_reversion", "oversold_v2"' in block
                 or "'mean_reversion', 'oversold_v2'" in block), (
             "gate must scope to the mean-rev family explicitly")
+
+
+# ── v-conviction-floor-meanrev-2026-06-17 ────────────────────────────
+
+class TestConvictionFloorMeanRev:
+    """Blocks mean-rev signals whose meta_proba is below a floor.
+    Evidence: research/conviction_validation_2026-06-11.json — meta<0.60
+    bucket ran PF 0.44 (losing) across 89 trades. 2026-06-16 live: the
+    bot's all-medium-conviction basket netted -$268; meta<0.60 would
+    have blocked ARM+ELF (saved $150, killed no wins). Scope: mean-rev
+    family ONLY. Fail-open: a signal with no meta_proba is never
+    blocked (can't floor what wasn't measured)."""
+
+    def test_config_flags(self):
+        from core.config import Config
+        c = Config()
+        assert c.ENABLE_CONVICTION_FLOOR_MEANREV is True
+        assert abs(c.CONVICTION_FLOOR_META - 0.60) < 1e-9
+
+    def test_engine_has_floor_wired(self):
+        from pathlib import Path
+        src = (Path(__file__).resolve().parent.parent / "core" / "engine.py").read_text()
+        anchor = src.find("v-conviction-floor-meanrev-2026-06-17")
+        assert anchor != -1, "conviction floor block missing"
+        block = src[anchor: anchor + 1900]
+        assert "ENABLE_CONVICTION_FLOOR_MEANREV" in block
+        assert "CONVICTION_FLOOR_META" in block
+        assert "meta_proba" in block
+        assert "return" in block, "floor must abort the signal"
+        assert "conviction_floor" in block, "must audit the block"
+
+    def test_floor_scope_meanrev_only(self):
+        from pathlib import Path
+        src = (Path(__file__).resolve().parent.parent / "core" / "engine.py").read_text()
+        anchor = src.find("v-conviction-floor-meanrev-2026-06-17")
+        block = src[anchor: anchor + 1900]
+        assert ('"mean_reversion", "oversold_v2"' in block
+                or "'mean_reversion', 'oversold_v2'" in block), (
+            "floor must scope to the mean-rev family")
+
+    def test_floor_fails_open_on_missing_meta(self):
+        """Source marker: the block must require meta_proba is not None
+        so a signal without a meta score is never floored."""
+        from pathlib import Path
+        src = (Path(__file__).resolve().parent.parent / "core" / "engine.py").read_text()
+        anchor = src.find("v-conviction-floor-meanrev-2026-06-17")
+        block = src[anchor: anchor + 1900]
+        assert "is not None" in block, "floor must fail-open on missing meta_proba"

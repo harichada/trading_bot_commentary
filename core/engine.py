@@ -5023,6 +5023,39 @@ class TradingEngineWithCommentary:
             ))
             return  # abort the signal — no order placed
 
+        # v-conviction-floor-meanrev-2026-06-17: skip mean-rev signals
+        # below the meta-model conviction floor. The meta<0.60 bucket
+        # ran PF 0.44 across 89 trades; 2026-06-16 live, an all-medium-
+        # conviction basket netted -$268. Scope = mean-rev family only.
+        # Fail-open: a signal whose meta_proba is None is never blocked
+        # (the meta model is shadow — can't floor what wasn't measured).
+        _cf_meta = signal.reasoning.get("meta_proba") if signal.reasoning else None
+        if (Config().ENABLE_CONVICTION_FLOOR_MEANREV
+                and _ra_strategy in ("mean_reversion", "oversold_v2")
+                and _cf_meta is not None
+                and float(_cf_meta) < Config().CONVICTION_FLOOR_META):
+            _cf_floor = Config().CONVICTION_FLOOR_META
+            self._audit(
+                "conviction_floor", signal.symbol, "blocked",
+                "below_meta_floor",
+                strategy=_ra_strategy, meta_proba=round(float(_cf_meta), 3),
+                floor=_cf_floor,
+            )
+            self.commentary.add_commentary(TradingCommentary(
+                timestamp=datetime.now(),
+                type=CommentaryType.RISK_ASSESSMENT,
+                symbol=signal.symbol,
+                title=f"⛔ Conviction Floor — {signal.symbol} skipped",
+                message=(
+                    f"Meta-model conviction {float(_cf_meta):.2f} below "
+                    f"floor {_cf_floor:.2f}. The <0.60 bucket historically "
+                    f"runs PF 0.44 (losing). Skipping low-conviction "
+                    f"mean-rev entry."
+                ),
+                importance=6,
+            ))
+            return  # abort the signal — no order placed
+
         # v-conviction-sizer-shadow-2026-06-11: log the would-be size
         # multiplier for this signal from the confluence of independent
         # confirmations. Pure observation — actual sizing unchanged.
