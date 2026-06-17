@@ -5029,11 +5029,18 @@ class TradingEngineWithCommentary:
         # conviction basket netted -$268. Scope = mean-rev family only.
         # Fail-open: a signal whose meta_proba is None is never blocked
         # (the meta model is shadow — can't floor what wasn't measured).
+        # Coerce meta_proba defensively — the only current writer stores
+        # a float, but a future path writing a non-numeric must fail
+        # OPEN (allow the trade), never raise into the signal router.
         _cf_meta = signal.reasoning.get("meta_proba") if signal.reasoning else None
+        try:
+            _cf_meta = float(_cf_meta) if _cf_meta is not None else None
+        except (TypeError, ValueError):
+            _cf_meta = None
         if (Config().ENABLE_CONVICTION_FLOOR_MEANREV
                 and _ra_strategy in ("mean_reversion", "oversold_v2")
                 and _cf_meta is not None
-                and float(_cf_meta) < Config().CONVICTION_FLOOR_META):
+                and _cf_meta < Config().CONVICTION_FLOOR_META):
             _cf_floor = Config().CONVICTION_FLOOR_META
             self._audit(
                 "conviction_floor", signal.symbol, "blocked",
