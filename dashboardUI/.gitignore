@@ -19,3 +19,6 @@ node_modules
 
 # TS incremental build info
 *.tsbuildinfo
+
+# Static export output
+out/
