@@ -1,0 +1,270 @@
+@import 'tailwindcss';
+@import 'tw-animate-css';
+
+@custom-variant dark (&:is(.dark *));
+
+/*
+  ────────────────────────────────────────────────────────────────────────
+  CALM INSTITUTIONAL TERMINAL
+  Near-black layered surfaces · hairline borders · one restrained accent.
+  Green/red are SEMANTIC — reserved for P&L and price direction only.
+  Depth comes from elevation + hairlines, not colored glow.
+  ────────────────────────────────────────────────────────────────────────
+*/
+:root {
+  /* Layered neutral surfaces — cool near-black, low chroma for calm */
+  --background: oklch(0.145 0.004 264);
+  --foreground: oklch(0.965 0.002 264);
+
+  --card: oklch(0.178 0.004 264);
+  --card-foreground: oklch(0.965 0.002 264);
+  --popover: oklch(0.196 0.005 264);
+  --popover-foreground: oklch(0.965 0.002 264);
+
+  /* "primary" = the restrained cool accent (cyan-teal), not white */
+  --primary: oklch(0.74 0.105 205);
+  --primary-foreground: oklch(0.145 0.01 230);
+
+  --secondary: oklch(0.225 0.005 264);
+  --secondary-foreground: oklch(0.92 0.003 264);
+
+  --muted: oklch(0.225 0.004 264);
+  --muted-foreground: oklch(0.635 0.006 264);
+
+  --accent: oklch(0.74 0.105 205);
+  --accent-foreground: oklch(0.145 0.01 230);
+
+  --destructive: oklch(0.64 0.185 22);
+  --destructive-foreground: oklch(0.97 0.01 22);
+
+  /* Hairline borders — defined as low-alpha light over dark */
+  --border: oklch(1 0 0 / 0.075);
+  --input: oklch(1 0 0 / 0.10);
+  --ring: oklch(0.74 0.105 205 / 0.55);
+
+  /* Chart palette — muted, cohesive, not neon */
+  --chart-1: oklch(0.74 0.105 205);
+  --chart-2: oklch(0.74 0.13 158);
+  --chart-3: oklch(0.66 0.16 22);
+  --chart-4: oklch(0.80 0.115 88);
+  --chart-5: oklch(0.70 0.115 295);
+
+  --radius: 0.625rem;
+
+  --sidebar: oklch(0.165 0.004 264);
+  --sidebar-foreground: oklch(0.94 0.002 264);
+  --sidebar-primary: oklch(0.74 0.105 205);
+  --sidebar-primary-foreground: oklch(0.145 0.01 230);
+  --sidebar-accent: oklch(0.225 0.005 264);
+  --sidebar-accent-foreground: oklch(0.92 0.003 264);
+  --sidebar-border: oklch(1 0 0 / 0.06);
+  --sidebar-ring: oklch(0.74 0.105 205 / 0.5);
+
+  /* Trading semantics — calmer than neon, still unmistakable */
+  --success: oklch(0.745 0.135 158);
+  --success-foreground: oklch(0.145 0.03 158);
+  --warning: oklch(0.80 0.115 88);
+  --warning-foreground: oklch(0.16 0.04 88);
+
+  /* Glass / elevation primitives */
+  --glass: oklch(0.185 0.004 264 / 0.72);
+  --glass-border: oklch(1 0 0 / 0.07);
+
+  /* Elevation shadow tokens — neutral depth, NOT colored glow */
+  --elev-1: 0 1px 0 0 oklch(1 0 0 / 0.04) inset, 0 1px 2px 0 oklch(0 0 0 / 0.4);
+  --elev-2: 0 1px 0 0 oklch(1 0 0 / 0.05) inset, 0 8px 24px -14px oklch(0 0 0 / 0.7);
+
+  /* Subtle accent washes (used sparingly, low alpha) */
+  --glow-accent: oklch(0.74 0.105 205 / 0.16);
+  --glow-success: oklch(0.745 0.135 158 / 0.16);
+  --glow-destructive: oklch(0.64 0.185 22 / 0.16);
+}
+
+@theme inline {
+  --font-sans: 'Inter', 'Inter Fallback', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', 'JetBrains Mono Fallback', ui-monospace, monospace;
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-glass: var(--glass);
+  --color-glass-border: var(--glass-border);
+  --color-glow-accent: var(--glow-accent);
+  --color-glow-success: var(--glow-success);
+  --color-glow-destructive: var(--glow-destructive);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground antialiased;
+    /* Inter character-set refinements + true optical kerning */
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11", "ss01";
+    text-rendering: optimizeLegibility;
+    letter-spacing: -0.011em;
+  }
+
+  /* Every number reads as aligned, monospaced data */
+  .tnum { font-variant-numeric: tabular-nums; font-feature-settings: "tnum" 1, "lnum" 1; }
+
+  /* Micro-labels — the terminal signature */
+  .eyebrow {
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    font-size: 0.625rem;
+    font-weight: 600;
+    color: var(--muted-foreground);
+  }
+
+  /* Refined scrollbars — present but quiet */
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb {
+    background: oklch(1 0 0 / 0.08);
+    border-radius: 8px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+  }
+  ::-webkit-scrollbar-thumb:hover { background: oklch(1 0 0 / 0.16); background-clip: padding-box; }
+  * { scrollbar-width: thin; scrollbar-color: oklch(1 0 0 / 0.10) transparent; }
+
+  ::selection { background: oklch(0.74 0.105 205 / 0.28); }
+}
+
+@layer utilities {
+  /*
+    Surfaces — calm elevation, hairline border, near-opaque (not neon glass).
+    .glass is the panel; .glass-subtle is a quieter inset chip.
+  */
+  .glass {
+    background: var(--card);
+    border: 1px solid var(--glass-border);
+    box-shadow: var(--elev-1);
+  }
+  .glass-subtle {
+    background: oklch(1 0 0 / 0.018);
+    border: 1px solid oklch(1 0 0 / 0.05);
+  }
+
+  /* Real glass only where it overlaps content (header, palette, overlays) */
+  .glass-blur {
+    background: var(--glass);
+    backdrop-filter: blur(20px) saturate(150%);
+    -webkit-backdrop-filter: blur(20px) saturate(150%);
+    border: 1px solid var(--glass-border);
+  }
+
+  /*
+    "glow-*" now mean ELEVATION, not colored halo — the redesign keeps
+    existing component class usage but renders calm depth instead of neon.
+    A 1px top accent hairline hints the color without a glow blob.
+  */
+  .glow-accent   { box-shadow: var(--elev-2); }
+  .glow-success  { box-shadow: var(--elev-2); }
+  .glow-destructive { box-shadow: var(--elev-2); }
+
+  /* Optional: a faint top edge of accent color for hero surfaces */
+  .edge-accent { box-shadow: var(--elev-2), 0 1px 0 0 var(--glow-accent) inset; }
+  .edge-success { box-shadow: var(--elev-2), 0 1px 0 0 var(--glow-success) inset; }
+
+  /* Hover lift for interactive rows/cards — subtle, fast */
+  .lift { transition: background-color .15s ease, border-color .15s ease, transform .15s ease; }
+  .lift:hover { background: oklch(1 0 0 / 0.022); }
+
+  /* Text treatments — desaturated, calm */
+  .text-gradient {
+    background: linear-gradient(180deg, oklch(0.98 0 0) 0%, oklch(0.78 0.004 264) 100%);
+    -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+  }
+  .text-gradient-accent {
+    background: linear-gradient(135deg, oklch(0.82 0.085 205) 0%, oklch(0.70 0.10 220) 100%);
+    -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+  }
+  .text-gradient-success {
+    background: linear-gradient(135deg, oklch(0.80 0.12 158) 0%, oklch(0.70 0.13 165) 100%);
+    -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+  }
+
+  /* Hairline divider */
+  .hairline { border-color: oklch(1 0 0 / 0.07); }
+
+  /* ── Functional motion ───────────────────────────────────────────── */
+
+  /* Page-load staggered reveal */
+  .reveal { opacity: 0; transform: translateY(8px); animation: reveal .5s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+  @keyframes reveal { to { opacity: 1; transform: translateY(0); } }
+
+  /* Price tick flash — the one trading micro-interaction that matters */
+  .flash-up   { animation: flashUp .6s ease-out; }
+  .flash-down { animation: flashDown .6s ease-out; }
+  @keyframes flashUp {
+    0% { background-color: oklch(0.745 0.135 158 / 0.22); }
+    100% { background-color: transparent; }
+  }
+  @keyframes flashDown {
+    0% { background-color: oklch(0.64 0.185 22 / 0.22); }
+    100% { background-color: transparent; }
+  }
+
+  /* Live status dot — quiet breathing, not a ping explosion */
+  .live-dot { position: relative; }
+  .live-dot::after {
+    content: ""; position: absolute; inset: -3px; border-radius: 9999px;
+    background: currentColor; opacity: 0.35; animation: breathe 2.4s ease-in-out infinite;
+  }
+  @keyframes breathe { 0%,100% { opacity: 0.12; transform: scale(1); } 50% { opacity: 0.30; transform: scale(1.35); } }
+
+  /* Shimmer for skeletons */
+  .animate-shimmer {
+    background: linear-gradient(90deg, oklch(1 0 0 / 0) 0%, oklch(1 0 0 / 0.05) 50%, oklch(1 0 0 / 0) 100%);
+    background-size: 200% 100%; animation: shimmer 1.6s infinite;
+  }
+  @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+
+  /* Legacy decorative animations neutralized to "calm" (kept for compat) */
+  .animate-pulse-glow { animation: none; }
+  .animate-float { animation: none; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .reveal, .flash-up, .flash-down, .live-dot::after, .animate-shimmer { animation: none; }
+    .reveal { opacity: 1; transform: none; }
+  }
+}
