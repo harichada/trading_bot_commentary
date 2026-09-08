@@ -798,6 +798,95 @@ async def get_bot_status():
         "uptime": str(datetime.now() - trading_engine.start_time) if trading_engine and hasattr(trading_engine, 'start_time') else "0:00:00"
     }
 
+
+@app.get("/api/system-stats")
+async def get_system_stats():
+    """Get system observability stats: NewsBus, supervisor, profile.
+    
+    v-newsbus-observability-2026-09-08: exposes metrics for monitoring:
+      - NewsBus item counts, high-impact alerts, refresh status
+      - Supervisor task states and crash counts
+      - Current autonomy profile and confirmation settings
+    """
+    from core.config import Config
+    cfg = Config()
+    
+    result = {
+        "status": "success",
+        "profile": {
+            "name": cfg.TRADING_PROFILE,
+            "confirmation_timeout_sec": cfg.CONFIRMATION_TIMEOUT_SEC,
+            "confirmation_timeout_action": cfg.CONFIRMATION_TIMEOUT_ACTION,
+            "require_close_confirmation": cfg.REQUIRE_CLOSE_CONFIRMATION,
+            "flatten_on_circuit": cfg.FLATTEN_ON_CIRCUIT,
+        },
+        "news_bus": None,
+        "news_loop": None,
+        "supervisor": None,
+        "last_wake_reason": None,
+    }
+    
+    if not trading_engine:
+        return result
+    
+    # NewsBus stats
+    bus = getattr(trading_engine, "_news_bus", None)
+    if bus is not None:
+        stats = bus.get_stats()
+        result["news_bus"] = {
+            "total_items": stats.total_items,
+            "symbols_tracked": stats.symbols_tracked,
+            "high_impact_items": stats.high_impact_items,
+            "refresh_count": stats.refresh_count,
+            "items_evicted": stats.items_evicted,
+            "fetch_errors": stats.fetch_errors,
+            "wake_events_fired": stats.wake_events_fired,
+            "last_refresh": stats.last_refresh.isoformat() if stats.last_refresh else None,
+        }
+    
+    # NewsLoop stats
+    news_loop = getattr(trading_engine, "_news_loop", None)
+    if news_loop is not None:
+        result["news_loop"] = news_loop.get_status()
+    
+    # Supervisor stats
+    supervisor = getattr(trading_engine, "_supervisor", None)
+    if supervisor is not None:
+        result["supervisor"] = supervisor.status()
+    
+    # Last wake reason
+    result["last_wake_reason"] = getattr(trading_engine, "_last_wake_reason", None)
+    
+    return result
+
+
+@app.get("/api/news-bus/{symbol}")
+async def get_news_bus_symbol(symbol: str, max_age_sec: float = 14400):
+    """Get NewsBus items for a specific symbol.
+    
+    v-newsbus-observability-2026-09-08: inspect cached news for a symbol.
+    Useful for debugging why a news signal did or didn't fire.
+    """
+    if not trading_engine:
+        return {"status": "error", "message": "Engine not running"}
+    
+    bus = getattr(trading_engine, "_news_bus", None)
+    if bus is None:
+        return {"status": "error", "message": "NewsBus not available"}
+    
+    items = await bus.get_items(symbol.upper(), max_age_sec=max_age_sec)
+    aggregate = await bus.get_aggregate_sentiment(symbol.upper(), max_age_sec=max_age_sec)
+    
+    return {
+        "status": "success",
+        "symbol": symbol.upper(),
+        "item_count": len(items),
+        "aggregate": aggregate,
+        "items": [item.to_dict() for item in items[:20]],  # Limit to 20 for payload size
+        "has_high_impact": bus.has_high_impact(symbol.upper()),
+    }
+
+
 @app.get("/api/account-stats")
 async def get_account_stats():
     """Get detailed account statistics - returns real Schwab data when in live mode"""
