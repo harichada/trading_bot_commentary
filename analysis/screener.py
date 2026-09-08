@@ -198,7 +198,12 @@ class StockScreener:
                 message=f"Found {len(self.top_movers)} high-opportunity stocks",
                 data={
                     'top_gainer': self.top_movers[0]['symbol'] if self.top_movers else None,
-                    'avg_volatility': np.mean([m['volatility'] for m in self.top_movers]) if self.top_movers else 0
+                    # v-screener-volatility-keyerror-2026-09-02: movers
+                    # only carry 'volatility' when Schwab quote enrichment
+                    # succeeded. Hard access here killed every cycle while
+                    # the token was expired (7/29–7/31), disabling the
+                    # Yahoo-only fallback exactly when it was needed.
+                    'avg_volatility': np.mean([m.get('volatility', 0) for m in self.top_movers]) if self.top_movers else 0
                 },
                 importance=6
             ))
