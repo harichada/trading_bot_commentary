@@ -264,6 +264,18 @@ class RiskManagerWithCommentary:
             confidence, strength, quality, kelly,
         )
 
+        # v-trade-record-ml-columns-2026-09-02: persist the sizing
+        # inputs into signal.reasoning (same vehicle meta_proba already
+        # uses) so the close path can write them to bot_trades. Without
+        # this, confidence/kelly_fraction land as NULL and post-hoc
+        # threshold analysis on the shadow ledgers loses its inputs.
+        if hasattr(signal, 'reasoning') and isinstance(signal.reasoning, dict):
+            try:
+                signal.reasoning['confidence'] = float(confidence)
+                signal.reasoning['kelly_fraction'] = float(kelly)
+            except (TypeError, ValueError):
+                pass  # sizing must never crash on a bad value
+
         # v-margin-sizing-2026-04-22: cap combines two limits:
         #   (a) MAX_POSITION_VALUE     — absolute $ ceiling (legacy, $10k default)
         #   (b) buying_power × PCT     — scales with margin (15% of BP default)

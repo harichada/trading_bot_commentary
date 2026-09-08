@@ -2609,6 +2609,11 @@ class TradingEngineWithCommentary:
                     else getattr(pos, 'take_profit', 0)
                 ),
                 'state': getattr(pos, 'state', None),
+                # v-trade-record-ml-columns-2026-09-02: without this, a
+                # position surviving a restart loses confidence/
+                # meta_proba/kelly_fraction and its close writes NULL
+                # ML columns to bot_trades (sim_data already saves it).
+                'reasoning': getattr(pos, 'reasoning', None) or {},
             }
 
         # Save simulated positions in full so they survive restarts.
@@ -3822,6 +3827,10 @@ class TradingEngineWithCommentary:
                             entry_time=_entry_time,
                             mode="live",
                             managed_by_bot=True,
+                            # v-trade-record-ml-columns-2026-09-02:
+                            # rehydrate reasoning so ML columns survive
+                            # a restart-then-close.
+                            reasoning=saved.get('reasoning') or {},
                         )
                         position.is_external = False
                         position.is_manually_managed = False
@@ -5089,9 +5098,10 @@ class TradingEngineWithCommentary:
                 title=f"⛔ Conviction Floor — {signal.symbol} skipped",
                 message=(
                     f"Meta-model conviction {float(_cf_meta):.2f} below "
-                    f"floor {_cf_floor:.2f}. The <0.60 bucket historically "
-                    f"runs PF 0.44 (losing). Skipping low-conviction "
-                    f"mean-rev entry."
+                    f"floor {_cf_floor:.2f}. Sub-floor trades historically "
+                    f"lose (meta<0.60: PF 0.44 over 89 trades; "
+                    f"0.60–0.65: -$247 over 9). Skipping "
+                    f"low-conviction mean-rev entry."
                 ),
                 importance=6,
             ))
@@ -7281,14 +7291,25 @@ class TradingEngineWithCommentary:
                         atr_at_entry=(position.reasoning or {}).get("atr"),
                         stop_loss=position.stop_loss,
                         take_profit=position.take_profit,
-                        confidence=getattr(position, "confidence", None),
+                        # v-trade-record-ml-columns-2026-09-02: Position has
+                        # no `confidence` attribute — the old getattr always
+                        # wrote NULL. Pull confidence/meta_proba/kelly from
+                        # reasoning, same as the external-close reconcile path.
+                        confidence=(position.reasoning or {}).get("confidence"),
+                        meta_proba=(position.reasoning or {}).get("meta_proba"),
+                        kelly_fraction=(position.reasoning or {}).get("kelly_fraction"),
                         scaled_out=getattr(position, "scaled_out", False),
                         mode=self.mode.value,
                         reasoning=position.reasoning,
                     )
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                # v-trade-record-ml-columns-2026-09-02: was a bare pass —
+                # a failed bot_trades write vanished without a trace.
+                logger.warning(
+                    "log_trade task creation failed for %s: %s",
+                    position.symbol, exc,
+                )
 
         # Broadcast trade update immediately if we have a connection manager
         if hasattr(self, 'connection_manager') and self.connection_manager:
