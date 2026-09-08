@@ -1,0 +1,191 @@
+{
+  "generated": "2026-09-03T16:06:49.880597",
+  "entry_params": {
+    "prox": 0.99,
+    "vol_min": 2.0,
+    "range_atr": 1.3,
+    "rsi_max": 80.0,
+    "er_period": 20,
+    "er_min": 0.3,
+    "stop_atr": 1.5,
+    "target_atr": 3.0
+  },
+  "ladder_params": {
+    "be_r": 0.5,
+    "trail_act_atr": 2.0,
+    "trail_width_atr": 1.5
+  },
+  "ship_criterion": "pass B aggregate PF >= 1.5 AND no window PF < 1.0",
+  "no_gate": [
+    {
+      "window": 1,
+      "n_trades": 1608,
+      "win_rate_pct": 23.94,
+      "profit_factor": 1.016,
+      "sum_return_pct": 10.24,
+      "exit_breakdown": {
+        "stop": 38.1,
+        "target": 19.3,
+        "timeout": 0.3,
+        "eod": 0.0
+      },
+      "avg_hold_bars": 5.7
+    },
+    {
+      "window": 2,
+      "n_trades": 1623,
+      "win_rate_pct": 29.27,
+      "profit_factor": 1.208,
+      "sum_return_pct": 147.78,
+      "exit_breakdown": {
+        "stop": 39.2,
+        "target": 23.8,
+        "timeout": 0.3,
+        "eod": 0.0
+      },
+      "avg_hold_bars": 4.9
+    },
+    {
+      "window": 3,
+      "n_trades": 1641,
+      "win_rate_pct": 25.84,
+      "profit_factor": 1.098,
+      "sum_return_pct": 52.6,
+      "exit_breakdown": {
+        "stop": 38.5,
+        "target": 20.4,
+        "timeout": 0.0,
+        "eod": 0.0
+      },
+      "avg_hold_bars": 4.3
+    },
+    {
+      "window": 4,
+      "n_trades": 4765,
+      "win_rate_pct": 22.77,
+      "profit_factor": 0.751,
+      "sum_return_pct": -365.17,
+      "exit_breakdown": {
+        "stop": 42.2,
+        "target": 15.0,
+        "timeout": 0.3,
+        "eod": 0.0
+      },
+      "avg_hold_bars": 5.3
+    },
+    {
+      "window": 5,
+      "n_trades": 4108,
+      "win_rate_pct": 22.25,
+      "profit_factor": 0.686,
+      "sum_return_pct": -388.94,
+      "exit_breakdown": {
+        "stop": 43.7,
+        "target": 15.6,
+        "timeout": 0.3,
+        "eod": 0.0
+      },
+      "avg_hold_bars": 5.2
+    },
+    {
+      "window": 6,
+      "n_trades": 4671,
+      "win_rate_pct": 24.45,
+      "profit_factor": 0.845,
+      "sum_return_pct": -208.04,
+      "exit_breakdown": {
+        "stop": 40.4,
+        "target": 17.2,
+        "timeout": 0.3,
+        "eod": 0.0
+      },
+      "avg_hold_bars": 5.1
+    }
+  ],
+  "er_gate": [
+    {
+      "window": 1,
+      "n_trades": 649,
+      "win_rate_pct": 24.5,
+      "profit_factor": 1.126,
+      "sum_return_pct": 36.98,
+      "exit_breakdown": {
+        "stop": 38.4,
+        "target": 19.9,
+        "timeout": 0.3,
+        "eod": 0.0
+      },
+      "avg_hold_bars": 5.5
+    },
+    {
+      "window": 2,
+      "n_trades": 776,
+      "win_rate_pct": 29.64,
+      "profit_factor": 1.167,
+      "sum_return_pct": 70.68,
+      "exit_breakdown": {
+        "stop": 37.5,
+        "target": 23.3,
+        "timeout": 0.3,
+        "eod": 0.0
+      },
+      "avg_hold_bars": 4.2
+    },
+    {
+      "window": 3,
+      "n_trades": 786,
+      "win_rate_pct": 26.08,
+      "profit_factor": 1.156,
+      "sum_return_pct": 43.07,
+      "exit_breakdown": {
+        "stop": 37.0,
+        "target": 20.4,
+        "timeout": 0.0,
+        "eod": 0.0
+      },
+      "avg_hold_bars": 4.2
+    },
+    {
+      "window": 4,
+      "n_trades": 1734,
+      "win_rate_pct": 21.97,
+      "profit_factor": 0.774,
+      "sum_return_pct": -142.79,
+      "exit_breakdown": {
+        "stop": 42.2,
+        "target": 14.4,
+        "timeout": 0.3,
+        "eod": 0.0
+      },
+      "avg_hold_bars": 4.8
+    },
+    {
+      "window": 5,
+      "n_trades": 1549,
+      "win_rate_pct": 21.11,
+      "profit_factor": 0.628,
+      "sum_return_pct": -190.03,
+      "exit_breakdown": {
+        "stop": 42.2,
+        "target": 14.3,
+        "timeout": 0.3,
+        "eod": 0.0
+      },
+      "avg_hold_bars": 4.8
+    },
+    {
+      "window": 6,
+      "n_trades": 1830,
+      "win_rate_pct": 25.14,
+      "profit_factor": 0.981,
+      "sum_return_pct": -11.32,
+      "exit_breakdown": {
+        "stop": 39.8,
+        "target": 17.8,
+        "timeout": 0.2,
+        "eod": 0.0
+      },
+      "avg_hold_bars": 4.5
+    }
+  ]
+}
