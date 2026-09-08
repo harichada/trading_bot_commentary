@@ -386,17 +386,28 @@ class FreeNewsAggregator:
 
 
 class FreeNewsSignalStrategy(TradingStrategyWithCommentary):
-    """News strategy using only free sources"""
+    """News strategy using only free sources.
+    
+    v-newsbus-2026-09-08: when a NewsBus is available, the strategy reads
+    from the bus instead of fetching independently. The news_loop populates
+    the bus on a ~20s cadence; strategies just consume. This centralizes
+    news fetching and removes per-strategy independent RSS refetch. When
+    no bus is available (e.g., in tests or legacy mode), falls back to
+    direct aggregator fetch.
+    """
     from nltk.sentiment import SentimentIntensityAnalyzer
 
     name = "news"
 
-    def __init__(self, commentary_system):
+    def __init__(self, commentary_system, news_bus=None):
         super().__init__(commentary_system)
         self.aggregator = FreeNewsAggregator()
         self.sentiment_analyzer = SentimentIntensityAnalyzer()  # VADER only
         self.last_signal_time = {}
         self.profiles = {}
+        # v-newsbus-2026-09-08: optional NewsBus for centralized news reads.
+        # If provided, we read from it instead of fetching directly.
+        self._news_bus = news_bus
         # v-news-verify-2026-04-28: fresh-news re-verification gate
         from analysis.news_verifier import NewsVerifier
         # v-news-verify-window-2026-04-28: widened freshness window 30min → 4h.
@@ -410,6 +421,51 @@ class FreeNewsSignalStrategy(TradingStrategyWithCommentary):
             min_fresh_articles=2,
             min_match_strength=0.10,
         )
+
+    def set_news_bus(self, bus) -> None:
+        """Set the NewsBus for centralized news reads."""
+        self._news_bus = bus
+
+    def _convert_bus_items_to_news_items(self, bus_items: List) -> List[NewsItem]:
+        """Convert ScoredNewsItem from NewsBus to NewsItem for strategy logic.
+        
+        The strategy's downstream logic expects NewsItem objects with specific
+        attributes. This adapter preserves the pre-computed sentiment scores
+        from the bus while converting to the expected type.
+        """
+        result = []
+        for bi in bus_items:
+            try:
+                # Map NewsImpactLevel from bus to NewsImpact from models
+                impact_map = {
+                    "high": NewsImpact.HIGH,
+                    "medium": NewsImpact.MEDIUM,
+                    "low": NewsImpact.LOW,
+                }
+                impact_val = getattr(bi, 'impact', None)
+                if hasattr(impact_val, 'value'):
+                    impact = impact_map.get(impact_val.value, NewsImpact.MEDIUM)
+                else:
+                    impact = NewsImpact.MEDIUM
+
+                news_item = NewsItem(
+                    id=bi.id,
+                    symbol=bi.symbol,
+                    headline=bi.headline,
+                    summary=getattr(bi, 'summary', ''),
+                    source=bi.source,
+                    url=getattr(bi, 'url', ''),
+                    published_time=bi.published_time,
+                    sentiment_score=bi.sentiment_score,
+                    sentiment_confidence=bi.sentiment_confidence,
+                    impact=impact,
+                    relevance_score=0.8,  # Default; bus items passed quality filters
+                )
+                result.append(news_item)
+            except Exception as e:
+                logger.debug(f"_convert_bus_items_to_news_items failed for item: {e}")
+                continue
+        return result
 
     async def generate_signal_with_commentary(self, market_data) -> Optional[TradingSignal]:
         """Generate signal from free news sources"""
@@ -429,8 +485,31 @@ class FreeNewsSignalStrategy(TradingStrategyWithCommentary):
                                    cooldown_remaining_s=int(cooldown_left))
                 return None
 
-        # Fetch news
-        news_items = await self.aggregator.fetch_news(symbol, 24)
+        # v-newsbus-2026-09-08: read from NewsBus if available, otherwise
+        # fall back to direct aggregator fetch. Bus items are pre-scored.
+        news_items = []
+        news_age_sec = None
+        if self._news_bus is not None:
+            try:
+                from core.news_bus import ScoredNewsItem
+                bus_items = await self._news_bus.get_items(symbol, max_age_sec=14400)
+                if bus_items:
+                    freshest = bus_items[0] if bus_items else None
+                    news_age_sec = freshest.age_sec() if freshest else None
+                    news_items = self._convert_bus_items_to_news_items(bus_items)
+                    logger.debug(
+                        "news_strategy: read %d items from bus for %s (freshest: %.0fs old)",
+                        len(news_items), symbol, news_age_sec or 0,
+                    )
+            except Exception as e:
+                logger.debug("news_strategy: bus read failed for %s: %s, falling back", symbol, e)
+                news_items = []
+
+        if not news_items:
+            news_items = await self.aggregator.fetch_news(symbol, 24)
+            if news_items:
+                freshest = min(news_items, key=lambda x: getattr(x, 'published_time', datetime.now()))
+                news_age_sec = (datetime.now() - getattr(freshest, 'published_time', datetime.now())).total_seconds()
 
         # v-news-verify-2026-04-28: minimum 5 articles (was 3) — primary gate
         # for upstream signal quality. Fresh-news verification later catches
@@ -438,7 +517,8 @@ class FreeNewsSignalStrategy(TradingStrategyWithCommentary):
         # within 35 min because cached news was already priced in).
         if len(news_items) < 5:
             self._log_decision(market_data, "skip", "insufficient_news",
-                               articles=len(news_items))
+                               articles=len(news_items),
+                               news_age_sec=news_age_sec)
             return None
 
         # Analyze sentiment
@@ -446,13 +526,16 @@ class FreeNewsSignalStrategy(TradingStrategyWithCommentary):
         high_impact_news = []
 
         for item in news_items:
-            # Simple sentiment analysis
-            text = f"{item.headline} {item.summary}"
-            scores = self.sentiment_analyzer.polarity_scores(text)
-            item.sentiment_score = scores['compound']
-            item.sentiment_confidence = abs(scores['compound'])
+            # v-newsbus-2026-09-08: bus items are pre-scored; only score
+            # if sentiment_score is not already set.
+            if not hasattr(item, 'sentiment_score') or item.sentiment_score == 0.0:
+                text = f"{item.headline} {item.summary}"
+                scores = self.sentiment_analyzer.polarity_scores(text)
+                item.sentiment_score = scores['compound']
+                item.sentiment_confidence = abs(scores['compound'])
 
             # Detect high impact
+            text = f"{item.headline} {getattr(item, 'summary', '')}"
             if any(keyword in text.lower() for keyword in ['earnings', 'beat', 'miss', 'sec', 'investigation']):
                 item.impact = NewsImpact.HIGH
                 high_impact_news.append(item)
@@ -1394,12 +1477,14 @@ class FreeNewsSignalStrategy(TradingStrategyWithCommentary):
             if _is_regular:
                 self.last_signal_time[symbol] = market_data.timestamp  # v-determinism-2026-05-19
 
+            # v-newsbus-observability-2026-09-08: include news_age_sec for latency tracking
             self._log_decision(
                 market_data,
                 "signal_buy" if signal_type == SignalType.BUY else "signal_sell",
                 "high_impact_news" if high_impact_news else "strong_sentiment",
                 sentiment=round(avg_sentiment, 3),
                 articles=len(news_items),
+                news_age_sec=(round(news_age_sec, 1) if news_age_sec is not None else None),
                 fresh_count=(v.fresh_count if v else None),
                 fresh_avg=(round(v.avg_fresh_sentiment, 3) if v else None),
                 fresh_source=(v.source if v else "verifier_disabled"),
@@ -1424,6 +1509,8 @@ class FreeNewsSignalStrategy(TradingStrategyWithCommentary):
                     'sources': [item.source for item in news_items[:3]],
                     'atr': atr, 'atr_mult': atr_mult,
                     'stop_distance': stop_distance,
+                    # v-newsbus-observability-2026-09-08: news age at decision
+                    'news_age_sec': news_age_sec,
                     # v-market-context-2026-06-08
                     'market_context_conviction': _mc_news_conviction,
                     'market_context_regime': _mc_news_regime,

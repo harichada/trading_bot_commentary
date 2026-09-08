@@ -347,6 +347,85 @@ class Config:
     def CONFIRM_THRESHOLD_PERCENT(self):
         return self.manager.get('order_management.confirm_threshold_percent', 5)
 
+    # ──────────────────────────────────────────────────────────────────
+    # v-autonomy-profile-2026-09-08: autonomy profiles for supervised
+    # vs autonomous operation. The 'supervised' profile (default) requires
+    # UI confirmation for exits and times out to deny. The 'autonomous_live'
+    # profile either disables confirmation entirely or uses fail-open
+    # timeout (execute the close if UI doesn't respond).
+    # ──────────────────────────────────────────────────────────────────
+
+    @property
+    def TRADING_PROFILE(self) -> str:
+        """Operating profile: 'supervised' (default) or 'autonomous_live'.
+        
+        Profiles control:
+          - require_close_confirmation behavior
+          - confirmation_timeout_action (deny vs execute)
+          - flatten_on_circuit behavior
+        
+        Set via environment variable TRADING_PROFILE or config file.
+        """
+        env_profile = os.getenv("TRADING_PROFILE")
+        if env_profile:
+            return env_profile.lower()
+        return self.manager.get('profile', 'supervised').lower()
+
+    @property
+    def CONFIRMATION_TIMEOUT_SEC(self) -> float:
+        """Timeout in seconds for close confirmation requests.
+        
+        Default 30s. After this timeout, the action is determined by
+        CONFIRMATION_TIMEOUT_ACTION.
+        """
+        return float(self.manager.get('order_management.confirmation_timeout_sec', 30.0))
+
+    @property
+    def CONFIRMATION_TIMEOUT_ACTION(self) -> str:
+        """Action when close confirmation times out: 'deny' or 'execute'.
+        
+        - 'deny' (default for supervised): block the close, position stays open
+        - 'execute' (autonomous_live): fail-open, execute the close
+        
+        For autonomous operation, 'execute' prevents the scenario where a
+        losing position stays open because the operator wasn't watching.
+        """
+        profile = self.TRADING_PROFILE
+        if profile == 'autonomous_live':
+            default = 'execute'
+        else:
+            default = 'deny'
+        return self.manager.get('order_management.confirmation_timeout_action', default).lower()
+
+    @property
+    def FLATTEN_ON_CIRCUIT(self) -> bool:
+        """Close all positions when the daily-loss circuit trips.
+        
+        Default False for supervised profile (alert only).
+        Recommended True for autonomous_live profile to prevent
+        unattended bleed-out.
+        
+        WARNING: When enabled, the bot will close ALL bot-managed
+        positions when the circuit trips. This is aggressive but
+        prevents catastrophic loss from an unmonitored runaway.
+        """
+        profile = self.TRADING_PROFILE
+        if profile == 'autonomous_live':
+            default = True
+        else:
+            default = False
+        return bool(self.manager.get('trading.flatten_on_circuit', default))
+
+    @property
+    def NEWS_LOOP_SEC(self) -> float:
+        """Cadence of the news_loop that refreshes the NewsBus.
+        
+        Default 20s — fast enough to catch breaking news but not so
+        fast as to hammer free RSS feeds. Adjust based on watchlist
+        size and API rate limits.
+        """
+        return float(self.manager.get('trading.news_loop_sec', 20.0))
+
     @property
     def ML_PREDICTION_ENABLED(self):
         return self.manager.get('trading.ml_prediction_enabled', True)

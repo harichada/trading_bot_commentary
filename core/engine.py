@@ -3385,7 +3385,33 @@ class TradingEngineWithCommentary:
         self._screener_loop = ScreenerLoop(self)
         sup.register("screener_loop", self._screener_loop.run, TaskPriority.NORMAL)
 
+        # v-newsbus-2026-09-08: news_loop refreshes the NewsBus from
+        # FreeNewsAggregator on a ~20s cadence. Strategies read from
+        # the bus instead of fetching independently. High-impact items
+        # trigger wake events for the analysis loop.
+        from core.loops.news_loop import NewsLoop
+        from core.news_bus import get_news_bus
+        self._news_bus = get_news_bus(
+            on_high_impact=self._on_news_high_impact,
+        )
+        self._news_loop = NewsLoop(self, bus=self._news_bus)
+        sup.register("news_loop", self._news_loop.run, TaskPriority.NORMAL)
+
         return sup
+
+    def _on_news_high_impact(self, symbol: str, item) -> None:
+        """Callback for high-impact news events from NewsBus.
+        
+        Sets the wake event so the analysis loop can evaluate entry
+        opportunities early instead of waiting for the next cadence tick.
+        """
+        try:
+            logger.info(
+                "news_high_impact_wake symbol=%s headline=%s sentiment=%.3f",
+                symbol, item.headline[:60], item.sentiment_score,
+            )
+        except Exception:
+            pass
 
     def _on_task_crash(self, st, exc) -> None:
         """Surface task crashes on the dashboard. NORMAL — we don't pause
@@ -4388,12 +4414,37 @@ class TradingEngineWithCommentary:
                 # Tradable hours: 30s (frequent screener / signal scans).
                 # Off-hours: 5 min by default (data barely changes; news
                 # arrives episodically). Both knobs are config-tunable.
+                #
+                # v-newsbus-wake-2026-09-08: analysis loop can wake early
+                # on high-impact news alerts. The NewsBus sets the wake
+                # event when a HIGH impact item arrives; we check it with
+                # wait_for so we either wake early or complete the full
+                # cadence sleep. After handling, clear the event so we
+                # don't spin. This is the "event-driven entry wake" from
+                # the P0 spec — 30s backstop with early wake on alerts.
                 cadence = (
                     Config().ANALYSIS_LOOP_RTH_SEC
                     if getattr(self, "_is_tradable_now", True)
                     else Config().ANALYSIS_LOOP_OFF_HOURS_SEC
                 )
-                await asyncio.sleep(cadence)
+                wake_reason = "poll"
+                try:
+                    bus = getattr(self, "_news_bus", None)
+                    if bus is not None:
+                        wake_event = bus.get_wake_event()
+                        try:
+                            await asyncio.wait_for(wake_event.wait(), timeout=cadence)
+                            wake_reason = "news_alert"
+                            bus.clear_wake_event()
+                        except asyncio.TimeoutError:
+                            pass  # Normal cadence completed
+                    else:
+                        await asyncio.sleep(cadence)
+                except Exception as _wake_exc:
+                    logger.debug("analysis_loop wake failed: %s", _wake_exc)
+                    await asyncio.sleep(cadence)
+                
+                self._last_wake_reason = wake_reason
                 
             except Exception as e:
                 self.commentary.add_commentary(TradingCommentary(
@@ -7319,13 +7370,26 @@ class TradingEngineWithCommentary:
                 logger.debug(f"Could not broadcast trade update: {e}")
     
     async def _get_close_confirmation(self, position, reason: str) -> bool:
-        """Get user confirmation before closing position"""
+        """Get user confirmation before closing position.
+        
+        v-autonomy-profile-2026-09-08: respects autonomy profile settings.
+        - supervised profile: timeout defaults to deny (position stays open)
+        - autonomous_live profile: timeout defaults to execute (close position)
+        
+        The CONFIRMATION_TIMEOUT_ACTION config controls this behavior.
+        """
         # Initialize pending requests dict if it doesn't exist
         if not hasattr(self, 'pending_close_requests'):
             self.pending_close_requests = {}
         # Store pending close request
         close_request_id = f"close_{position.symbol}_{int(time.time())}"
         self.pending_close_requests = getattr(self, 'pending_close_requests', {})
+        
+        # v-autonomy-profile-2026-09-08: read timeout settings from config
+        cfg = Config()
+        timeout = cfg.CONFIRMATION_TIMEOUT_SEC
+        timeout_action = cfg.CONFIRMATION_TIMEOUT_ACTION
+        profile = cfg.TRADING_PROFILE
         
         # Create confirmation request
         self.pending_close_requests[close_request_id] = {
@@ -7339,7 +7403,10 @@ class TradingEngineWithCommentary:
         pnl = position.unrealized_pnl
         roi = (pnl / (position.entry_price * position.quantity)) * 100
         # Log that we're requesting confirmation
-        logger.info(f"Requesting close confirmation for {position.symbol}")
+        logger.info(
+            "close_confirmation_request symbol=%s reason=%s profile=%s timeout_sec=%.0f timeout_action=%s",
+            position.symbol, reason, profile, timeout, timeout_action,
+        )
         # Send confirmation request to UI
         try:
             await self._broadcast_ui({
@@ -7353,15 +7420,26 @@ class TradingEngineWithCommentary:
                     'pnl': pnl,
                     'roi': roi,
                     'reason': reason,
+                    'profile': profile,
+                    'timeout_sec': timeout,
+                    'timeout_action': timeout_action,
                     'message': f"Close {position.symbol} with {'profit' if pnl > 0 else 'loss'} of ${abs(pnl):.2f} ({abs(roi):.1f}%)?"
                 }
             })
         except Exception as e:
             logger.error(f"Error broadcasting close confirmation: {e}")
+            # v-autonomy-profile-2026-09-08: on broadcast failure, follow
+            # the profile's default behavior. autonomous_live should still
+            # execute risk exits (stops) even if UI is unreachable.
+            if timeout_action == 'execute':
+                logger.warning(
+                    "close_confirmation broadcast failed, fail-open executing close for %s",
+                    position.symbol,
+                )
+                return True
             return False
         
         # Wait for user response (with timeout)
-        timeout = 30  # 30 seconds timeout
         start_time = time.time()
         
         while time.time() - start_time < timeout:
@@ -7369,23 +7447,61 @@ class TradingEngineWithCommentary:
                 if self.pending_close_requests[close_request_id]['confirmed'] is not None:
                     confirmed = self.pending_close_requests[close_request_id]['confirmed']
                     del self.pending_close_requests[close_request_id]
+                    logger.info(
+                        "close_confirmation_response symbol=%s confirmed=%s profile=%s",
+                        position.symbol, confirmed, profile,
+                    )
                     return confirmed
             await asyncio.sleep(0.1)
         
-        # Timeout - default to not closing
-        self.commentary.add_commentary(TradingCommentary(
-            timestamp=datetime.now(),
-            type=CommentaryType.WARNING,
-            symbol=position.symbol,
-            title=f"⏱️ Close Confirmation Timeout",
-            message=f"No response received for closing {position.symbol}. Position remains open.",
-            importance=8
-        ))
+        # v-autonomy-profile-2026-09-08: timeout behavior depends on profile
+        should_execute = (timeout_action == 'execute')
+        
+        if should_execute:
+            self.commentary.add_commentary(TradingCommentary(
+                timestamp=datetime.now(),
+                type=CommentaryType.WARNING,
+                symbol=position.symbol,
+                title=f"⏱️ Close Confirmation Timeout — Executing (Fail-Open)",
+                message=(
+                    f"No response received for closing {position.symbol}. "
+                    f"Profile '{profile}' with timeout_action='{timeout_action}' "
+                    f"— executing close to protect against unattended risk."
+                ),
+                data={
+                    'profile': profile,
+                    'timeout_action': timeout_action,
+                    'confirmation_timeout_action': 'execute',
+                },
+                importance=9
+            ))
+            logger.warning(
+                "close_confirmation_timeout symbol=%s profile=%s action=execute reason=%s",
+                position.symbol, profile, reason,
+            )
+        else:
+            self.commentary.add_commentary(TradingCommentary(
+                timestamp=datetime.now(),
+                type=CommentaryType.WARNING,
+                symbol=position.symbol,
+                title=f"⏱️ Close Confirmation Timeout",
+                message=f"No response received for closing {position.symbol}. Position remains open.",
+                data={
+                    'profile': profile,
+                    'timeout_action': timeout_action,
+                    'confirmation_timeout_action': 'deny',
+                },
+                importance=8
+            ))
+            logger.info(
+                "close_confirmation_timeout symbol=%s profile=%s action=deny reason=%s",
+                position.symbol, profile, reason,
+            )
         
         if close_request_id in self.pending_close_requests:
             del self.pending_close_requests[close_request_id]
         
-        return False
+        return should_execute
     def _generate_post_trade_analysis(self, position, exit_reason: str, pnl: float) -> str:
         """Generate insightful post-trade analysis"""
         analysis = []
