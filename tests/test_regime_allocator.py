@@ -246,7 +246,8 @@ class TestConvictionFloorMeanRev:
         from core.config import Config
         c = Config()
         assert c.ENABLE_CONVICTION_FLOOR_MEANREV is True
-        assert abs(c.CONVICTION_FLOOR_META - 0.60) < 1e-9
+        # v-conviction-floor-065-2026-09-02: raised 0.60 -> 0.65
+        assert abs(c.CONVICTION_FLOOR_META - 0.65) < 1e-9
 
     def test_engine_has_floor_wired(self):
         from pathlib import Path

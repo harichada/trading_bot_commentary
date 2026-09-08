@@ -1102,9 +1102,17 @@ class Config:
 
     @property
     def CONVICTION_FLOOR_META(self) -> float:
-        """Minimum meta_proba for a mean-rev entry. 0.60 = the 89-trade
-        bucket boundary where PF flips 0.44 -> 3.01. Below it, skip."""
-        return float(self.manager.get('trading.conviction_floor_meta', 0.60))
+        """Minimum meta_proba for a mean-rev entry.
+
+        0.60 was the original 89-trade bucket boundary (PF 0.44 below
+        vs 3.01 above). v-conviction-floor-065-2026-09-02: raised to
+        0.65 — counterfactual over all 35 mean-rev-long trades with
+        meta_proba recorded (5/8–9/2): the 0.60–0.65 band held 9
+        trades netting -$247.27 (incl. both 9/2 live losers, NVAX
+        0.6235 / HYMC 0.6117); floor 0.65 keeps 16 trades at
+        +$1,208.13, PF 3.70 vs 0.98 ungated. Kill-switch:
+        trading.enable_conviction_floor_meanrev."""
+        return float(self.manager.get('trading.conviction_floor_meta', 0.65))
 
     @property
     def ENABLE_BOT_ONLY_PNL_CIRCUIT(self) -> bool:
