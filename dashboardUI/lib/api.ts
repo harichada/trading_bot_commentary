@@ -80,9 +80,95 @@ export interface MarketIndices {
   stale?: boolean
 }
 
+// ── Position types ─────────────────────────────────────────────────────────
+
+export interface Position {
+  symbol: string
+  side: string
+  strategy?: string | null
+  mode: string
+  entry_time?: string | null
+  entry_price: number
+  current_price: number
+  quantity: number
+  stop_loss: number
+  take_profit: number
+  trailing_stop?: number | null
+  scaled_out: boolean
+  unrealized_pnl: number
+  updated_at?: string | null
+  managed_by_bot: boolean
+}
+
+export interface PositionsResponse {
+  status: string
+  count: number
+  positions: Position[]
+}
+
+// ── Commentary types (from WebSocket) ──────────────────────────────────────
+
+export interface Commentary {
+  timestamp: string
+  type: string
+  symbol?: string | null
+  title: string
+  message: string
+  data?: Record<string, unknown> | null
+  confidence?: number | null
+  importance: number
+}
+
+// ── WebSocket message types ────────────────────────────────────────────────
+
+export interface WsCommentaryMessage {
+  type: "commentary"
+  data: Commentary
+}
+
+export interface WsDashboardUpdate {
+  type: "dashboard_update"
+  data: {
+    account: {
+      balance: number
+      buying_power: number
+      daily_pnl: number
+      margin_call?: boolean
+      cash: number
+    }
+    simulated_positions: unknown[]
+    real_positions: unknown[]
+    trades: unknown[]
+    screener: ScreenerItem[]
+    live_quotes: Record<string, LiveQuote>
+  }
+}
+
+export interface ScreenerItem {
+  symbol: string
+  last: number
+  change: number
+  volume: number
+  volatility?: number
+  high?: number
+  low?: number
+}
+
+export interface LiveQuote {
+  price: number | null
+  bid?: number | null
+  ask?: number | null
+  is_stale: boolean
+  source?: string
+  age_sec?: number
+}
+
+export type WsMessage = WsCommentaryMessage | WsDashboardUpdate | { type: string; data?: unknown }
+
 export const fetchAccountStats = () => authFetch<AccountStats>("/api/account-stats")
 export const fetchBotStatus = () => authFetch<BotStatus>("/api/status")
 export const fetchMarketIndices = () => authFetch<MarketIndices>("/api/market-indices")
+export const fetchPositions = () => authFetch<PositionsResponse>("/api/positions/db")
 
 /** Whether the account source represents real brokerage data. */
 export const isLiveSource = (s: AccountSource) => s === "schwab"

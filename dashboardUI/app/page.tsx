@@ -8,7 +8,7 @@ import { AccountOverview } from "@/components/trading/account-overview"
 import { PriceChart } from "@/components/trading/price-chart"
 import { PortfolioAllocation } from "@/components/trading/portfolio-allocation"
 import { PerformanceMetrics } from "@/components/trading/performance-metrics"
-import { PositionsTable, schwabPositions, simulatedPositions } from "@/components/trading/positions-table"
+import { LivePositionsSection } from "@/components/trading/positions-table"
 import { NewsSentiment } from "@/components/trading/news-sentiment"
 import { WatchlistHeatmap } from "@/components/trading/watchlist-heatmap"
 import { QuickTrade } from "@/components/trading/quick-trade"
@@ -89,22 +89,7 @@ export default function TradingDashboard() {
             </div>
             
             {/* Fourth Row: Positions Tables */}
-            <section className="space-y-6">
-              <PositionsTable 
-                title="Schwab Account Positions" 
-                badge="LIVE"
-                positions={schwabPositions}
-              />
-              
-              <PositionsTable 
-                title="Simulated Positions" 
-                badge="SIM"
-                badgeVariant="outline"
-                positions={simulatedPositions}
-                showStopLoss
-                showTarget
-              />
-            </section>
+            <LivePositionsSection />
             
             {/* Fifth Row: News Sentiment */}
             <NewsSentiment />

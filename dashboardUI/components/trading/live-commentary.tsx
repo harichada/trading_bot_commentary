@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useMemo } from "react"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import {
   AlertTriangle,
@@ -10,106 +10,62 @@ import {
   CheckCircle2,
   XCircle,
   Minus,
-  Brain
+  Brain,
+  Wifi,
+  WifiOff
 } from "lucide-react"
+import { useWsCommentary } from "@/hooks/use-bot-data"
+import type { Commentary } from "@/lib/api"
 
-type CommentaryType = "all" | "decisions" | "opportunities" | "warnings" | "technical"
+type CommentaryFilter = "all" | "decisions" | "opportunities" | "warnings" | "technical"
 
-interface CommentaryItem {
-  id: string
-  type: CommentaryType
-  title: string
-  content: string
-  time: string
-  symbol?: string
-  confidence?: number
-  indicators?: {
-    label: string
-    value: string
-    status: "bullish" | "bearish" | "neutral"
-  }[]
+const typeConfig: Record<string, { icon: typeof Brain; label: string; color: string; accent: string }> = {
+  DECISION:        { icon: Brain,          label: "SIGNAL",  color: "text-accent",            accent: "bg-accent/50" },
+  SIGNAL:          { icon: Brain,          label: "SIGNAL",  color: "text-accent",            accent: "bg-accent/50" },
+  DATA:            { icon: Lightbulb,      label: "DATA",    color: "text-muted-foreground",  accent: "bg-border" },
+  OPPORTUNITY:     { icon: Lightbulb,      label: "DATA",    color: "text-muted-foreground",  accent: "bg-border" },
+  WARNING:         { icon: AlertTriangle,  label: "ALERT",   color: "text-chart-4",           accent: "bg-chart-4/60" },
+  RISK_ALERT:      { icon: AlertTriangle,  label: "ALERT",   color: "text-chart-4",           accent: "bg-chart-4/60" },
+  TECHNICAL:       { icon: BarChart3,      label: "TECH",    color: "text-muted-foreground",  accent: "bg-border" },
+  MARKET_ANALYSIS: { icon: BarChart3,      label: "TECH",    color: "text-muted-foreground",  accent: "bg-border" },
+  INFO:            { icon: Activity,       label: "INFO",    color: "text-muted-foreground",  accent: "bg-border" },
 }
 
-const commentary: CommentaryItem[] = [
-  {
-    id: "1",
-    type: "warnings",
-    title: "Market Afterhours — Bot Paused",
-    content: "Markets are currently afterhours. Pausing analysis until the next regular session opens at 2026-04-16 09:30:00.",
-    time: "4:00:42 PM",
-  },
-  {
-    id: "2",
-    type: "decisions",
-    title: "ML Signal: BUY PLTR",
-    content: "Confidence: 65.0%\nKey factors: Multiple technical factors",
-    time: "4:00:28 PM",
-    symbol: "PLTR",
-    confidence: 65,
-  },
-  {
-    id: "3",
-    type: "technical",
-    title: "Technical Analysis: PLTR",
-    content: "",
-    time: "4:00:08 PM",
-    symbol: "PLTR",
-    indicators: [
-      { label: "Price above 50 SMA", value: "Uptrend", status: "bullish" },
-      { label: "RSI at 63.2", value: "Neutral", status: "neutral" },
-      { label: "MACD below signal", value: "Bearish momentum", status: "bearish" },
-      { label: "ADX at 41.2", value: "Strong trend", status: "bullish" },
-    ],
-  },
-  {
-    id: "4",
-    type: "opportunities",
-    title: "Data Retrieved: PLTR",
-    content: "Got 39957 price candles from Schwab\ncandle_count: 39957.00\ntimeframe: 1d,30m",
-    time: "4:00:07 PM",
-    symbol: "PLTR",
-  },
-  {
-    id: "5",
-    type: "all",
-    title: "Analyzing PLTR",
-    content: "Fetching price data and calculating technical indicators...",
-    time: "4:00:05 PM",
-    symbol: "PLTR",
-  },
-  {
-    id: "6",
-    type: "decisions",
-    title: "ML Signal: BUY TSLA",
-    content: "Confidence: 50.9%\nKey factors: Multiple technical factors",
-    time: "4:00:03 PM",
-    symbol: "TSLA",
-    confidence: 50.9,
-  },
-  {
-    id: "7",
-    type: "technical",
-    title: "Technical Analysis: TSLA",
-    content: "",
-    time: "3:59:58 PM",
-    symbol: "TSLA",
-    indicators: [
-      { label: "Price above 50 SMA", value: "Uptrend", status: "bullish" },
-      { label: "RSI at 53.6", value: "Neutral", status: "neutral" },
-      { label: "MACD below signal", value: "Bearish momentum", status: "bearish" },
-      { label: "ADX at 28.9", value: "Strong trend", status: "bullish" },
-    ],
-  },
-]
+const defaultConfig = { icon: Activity, label: "INFO", color: "text-muted-foreground", accent: "bg-border" }
 
-// Chrome-neutral by default. Color is reserved for semantic meaning
-// (signal outcome shown via confidence / indicator status, not the tag itself).
-const typeConfig = {
-  decisions:     { icon: Brain,          label: "SIGNAL",  color: "text-accent",            accent: "bg-accent/50" },
-  opportunities: { icon: Lightbulb,      label: "DATA",    color: "text-muted-foreground",  accent: "bg-border" },
-  warnings:      { icon: AlertTriangle,  label: "ALERT",   color: "text-chart-4",           accent: "bg-chart-4/60" },
-  technical:     { icon: BarChart3,      label: "TECH",    color: "text-muted-foreground",  accent: "bg-border" },
-  all:           { icon: Activity,       label: "INFO",    color: "text-muted-foreground",  accent: "bg-border" },
+function getConfig(type: string) {
+  return typeConfig[type.toUpperCase()] ?? defaultConfig
+}
+
+function matchesFilter(type: string, filter: CommentaryFilter): boolean {
+  if (filter === "all") return true
+  const upper = type.toUpperCase()
+  switch (filter) {
+    case "decisions":
+      return upper === "DECISION" || upper === "SIGNAL"
+    case "opportunities":
+      return upper === "DATA" || upper === "OPPORTUNITY"
+    case "warnings":
+      return upper === "WARNING" || upper === "RISK_ALERT"
+    case "technical":
+      return upper === "TECHNICAL" || upper === "MARKET_ANALYSIS"
+    default:
+      return true
+  }
+}
+
+function formatTime(isoString: string): string {
+  try {
+    const date = new Date(isoString)
+    return date.toLocaleTimeString("en-US", {
+      hour: "numeric",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: true,
+    })
+  } catch {
+    return "—"
+  }
 }
 
 function getStatusIcon(status: "bullish" | "bearish" | "neutral") {
@@ -123,23 +79,33 @@ function getStatusIcon(status: "bullish" | "bearish" | "neutral") {
   }
 }
 
+interface IndicatorDisplay {
+  label: string
+  value: string
+  status: "bullish" | "bearish" | "neutral"
+}
+
+function parseIndicators(data: Record<string, unknown> | null | undefined): IndicatorDisplay[] {
+  if (!data) return []
+  const indicators = data.indicators as IndicatorDisplay[] | undefined
+  if (Array.isArray(indicators)) {
+    return indicators.filter(
+      (i) => i && typeof i.label === "string" && typeof i.value === "string"
+    )
+  }
+  return []
+}
+
 export function LiveCommentary() {
-  const [activeTab, setActiveTab] = useState<CommentaryType>("all")
-  const [isLive, setIsLive] = useState(true)
+  const [activeTab, setActiveTab] = useState<CommentaryFilter>("all")
+  const { items, connected } = useWsCommentary()
 
-  const filteredCommentary = activeTab === "all"
-    ? commentary
-    : commentary.filter(item => item.type === activeTab)
+  const filteredItems = useMemo(
+    () => items.filter((item) => matchesFilter(item.type, activeTab)),
+    [items, activeTab]
+  )
 
-  // Simulate live updates
-  useEffect(() => {
-    const interval = setInterval(() => {
-      setIsLive(prev => !prev)
-    }, 2000)
-    return () => clearInterval(interval)
-  }, [])
-
-  const tabs: { id: CommentaryType; label: string }[] = [
+  const tabs: { id: CommentaryFilter; label: string }[] = [
     { id: "all", label: "All" },
     { id: "decisions", label: "Signals" },
     { id: "opportunities", label: "Data" },
@@ -157,10 +123,19 @@ export function LiveCommentary() {
             <p className="eyebrow mt-0.5">Bot decision feed</p>
           </div>
           <div className="flex items-center gap-1.5 shrink-0">
-            <span className={`relative flex h-1.5 w-1.5 transition-opacity ${isLive ? 'opacity-100' : 'opacity-40'}`}>
-              <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-success" />
-            </span>
-            <span className="eyebrow">Live</span>
+            {connected ? (
+              <>
+                <span className="live-dot relative flex h-1.5 w-1.5">
+                  <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-success" />
+                </span>
+                <span className="eyebrow">Live</span>
+              </>
+            ) : (
+              <>
+                <WifiOff className="h-3.5 w-3.5 text-muted-foreground" />
+                <span className="eyebrow text-muted-foreground">Connecting…</span>
+              </>
+            )}
           </div>
         </div>
 
@@ -185,101 +160,113 @@ export function LiveCommentary() {
       {/* Content */}
       <ScrollArea className="flex-1">
         <div className="px-4">
-          {filteredCommentary.map((item, idx) => {
-            const config = typeConfig[item.type] || typeConfig.all
-            const Icon = config.icon
-
-            return (
-              <article
-                key={item.id}
-                className={`relative flex gap-3 py-3.5 border-b border-border/40 ${idx === 0 ? "reveal" : ""}`}
-              >
-                {/* Severity left bar */}
-                <span className={`absolute left-0 top-3.5 bottom-3.5 w-0.5 rounded-full ${config.accent}`} />
-
-                <Icon className={`h-3.5 w-3.5 mt-0.5 shrink-0 ${config.color}`} />
-
-                <div className="min-w-0 flex-1 space-y-1.5">
-                  {/* Header row */}
-                  <div className="flex items-baseline justify-between gap-2">
-                    <span className="text-[13px] font-medium text-foreground leading-snug">{item.title}</span>
-                    <time className="eyebrow font-mono tabular-nums shrink-0">{item.time}</time>
-                  </div>
-
-                  {/* Tags */}
-                  {(item.symbol || true) && (
-                    <div className="flex items-center gap-1.5">
-                      <span className="eyebrow px-1.5 py-px rounded border border-border/60 text-muted-foreground">
-                        {config.label}
-                      </span>
-                      {item.symbol && (
-                        <span className="eyebrow px-1.5 py-px rounded border border-accent/25 bg-accent/[0.06] text-accent font-mono tabular-nums">
-                          {item.symbol}
-                        </span>
-                      )}
-                    </div>
-                  )}
-
-                  {/* Content */}
-                  {item.content && (
-                    <pre className="text-[11px] text-muted-foreground font-mono tabular-nums whitespace-pre-wrap leading-relaxed">
-                      {item.content}
-                    </pre>
-                  )}
-
-                  {/* Confidence Bar */}
-                  {item.confidence && (
-                    <div className="flex items-center gap-2.5 pt-0.5">
-                      <div className="flex-1 h-1 bg-secondary/60 rounded-full overflow-hidden">
-                        <div
-                          className={`h-full rounded-full transition-all duration-700 ease-out ${
-                            item.confidence >= 60
-                              ? 'bg-success'
-                              : item.confidence >= 40
-                                ? 'bg-chart-4'
-                                : 'bg-destructive'
-                          }`}
-                          style={{ width: `${item.confidence}%` }}
-                        />
-                      </div>
-                      <span className={`text-[11px] font-semibold font-mono tabular-nums ${
-                        item.confidence >= 60 ? 'text-success' : item.confidence >= 40 ? 'text-chart-4' : 'text-destructive'
-                      }`}>
-                        {item.confidence.toFixed(1)}%
-                      </span>
-                    </div>
-                  )}
-
-                  {/* Technical Indicators */}
-                  {item.indicators && (
-                    <div className="space-y-1 pt-0.5">
-                      {item.indicators.map((indicator, i) => (
-                        <div key={i} className="flex items-center gap-2 text-[11px]">
-                          {getStatusIcon(indicator.status)}
-                          <span className="text-muted-foreground truncate">{indicator.label}</span>
-                          <span className="text-foreground font-medium ml-auto shrink-0">{indicator.value}</span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </article>
-            )
-          })}
+          {filteredItems.length === 0 ? (
+            <div className="py-8 text-center text-sm text-muted-foreground">
+              {connected ? "No commentary yet" : "Waiting for connection…"}
+            </div>
+          ) : (
+            filteredItems.map((item, idx) => (
+              <CommentaryItem key={`${item.timestamp}-${idx}`} item={item} isFirst={idx === 0} />
+            ))
+          )}
         </div>
       </ScrollArea>
 
       {/* Footer Stats */}
       <div className="shrink-0 px-4 py-3 border-t border-border/40 bg-secondary/20">
         <div className="flex items-center justify-between">
-          <span className="eyebrow">Today&apos;s signals</span>
-          <span className="text-xs font-semibold font-mono tabular-nums text-foreground">24</span>
+          <span className="eyebrow">Messages</span>
+          <span className="text-xs font-semibold font-mono tabular-nums text-foreground">
+            {items.length}
+          </span>
         </div>
         <div className="flex items-center justify-between mt-1.5">
-          <span className="eyebrow">Win rate</span>
-          <span className="text-xs font-semibold font-mono tabular-nums text-success">67.3%</span>
+          <span className="eyebrow">Status</span>
+          <span className={`text-xs font-semibold font-mono tabular-nums ${connected ? "text-success" : "text-muted-foreground"}`}>
+            {connected ? "Connected" : "Disconnected"}
+          </span>
         </div>
       </div>
     </div>
+  )
+}
+
+function CommentaryItem({ item, isFirst }: { item: Commentary; isFirst: boolean }) {
+  const config = getConfig(item.type)
+  const Icon = config.icon
+  const indicators = parseIndicators(item.data)
+
+  return (
+    <article
+      className={`relative flex gap-3 py-3.5 border-b border-border/40 ${isFirst ? "reveal" : ""}`}
+    >
+      {/* Severity left bar */}
+      <span className={`absolute left-0 top-3.5 bottom-3.5 w-0.5 rounded-full ${config.accent}`} />
+
+      <Icon className={`h-3.5 w-3.5 mt-0.5 shrink-0 ${config.color}`} />
+
+      <div className="min-w-0 flex-1 space-y-1.5">
+        {/* Header row */}
+        <div className="flex items-baseline justify-between gap-2">
+          <span className="text-[13px] font-medium text-foreground leading-snug">{item.title}</span>
+          <time className="eyebrow font-mono tabular-nums shrink-0">{formatTime(item.timestamp)}</time>
+        </div>
+
+        {/* Tags */}
+        <div className="flex items-center gap-1.5">
+          <span className="eyebrow px-1.5 py-px rounded border border-border/60 text-muted-foreground">
+            {config.label}
+          </span>
+          {item.symbol && (
+            <span className="eyebrow px-1.5 py-px rounded border border-accent/25 bg-accent/[0.06] text-accent font-mono tabular-nums">
+              {item.symbol}
+            </span>
+          )}
+        </div>
+
+        {/* Content */}
+        {item.message && (
+          <pre className="text-[11px] text-muted-foreground font-mono tabular-nums whitespace-pre-wrap leading-relaxed">
+            {item.message}
+          </pre>
+        )}
+
+        {/* Confidence Bar */}
+        {item.confidence != null && item.confidence > 0 && (
+          <div className="flex items-center gap-2.5 pt-0.5">
+            <div className="flex-1 h-1 bg-secondary/60 rounded-full overflow-hidden">
+              <div
+                className={`h-full rounded-full transition-all duration-700 ease-out ${
+                  item.confidence >= 60
+                    ? 'bg-success'
+                    : item.confidence >= 40
+                      ? 'bg-chart-4'
+                      : 'bg-destructive'
+                }`}
+                style={{ width: `${item.confidence}%` }}
+              />
+            </div>
+            <span className={`text-[11px] font-semibold font-mono tabular-nums ${
+              item.confidence >= 60 ? 'text-success' : item.confidence >= 40 ? 'text-chart-4' : 'text-destructive'
+            }`}>
+              {item.confidence.toFixed(1)}%
+            </span>
+          </div>
+        )}
+
+        {/* Technical Indicators */}
+        {indicators.length > 0 && (
+          <div className="space-y-1 pt-0.5">
+            {indicators.map((indicator, i) => (
+              <div key={i} className="flex items-center gap-2 text-[11px]">
+                {getStatusIcon(indicator.status)}
+                <span className="text-muted-foreground truncate">{indicator.label}</span>
+                <span className="text-foreground font-medium ml-auto shrink-0">{indicator.value}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </article>
   )
 }
