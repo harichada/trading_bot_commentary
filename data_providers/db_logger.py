@@ -16,7 +16,7 @@ import asyncio
 import json
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import text
@@ -477,6 +477,12 @@ class DbLogger:
         
         try:
             snap_dict = snapshot.to_dict()
+            # v-fix-snapshot-ts-2026-09-09: asyncpg requires datetime objects for
+            # TIMESTAMPTZ columns; snap_dict["ts"] is an ISO string from to_dict().
+            ts_value = _ensure_datetime(snap_dict["ts"])
+            if ts_value is None:
+                logger.warning("db_logger_snapshot_error: ts is None or unparseable")
+                return
             async with self._engine.begin() as conn:
                 await conn.execute(
                     text("""
@@ -497,7 +503,7 @@ class DbLogger:
                     {
                         "snapshot_id": snap_dict["snapshot_id"],
                         "symbol": snap_dict["symbol"],
-                        "ts": snap_dict["ts"],
+                        "ts": ts_value,
                         "mode": snap_dict["mode"],
                         "strategy_id": snap_dict["strategy_id"],
                         "action": snap_dict["action"],
@@ -659,3 +665,32 @@ def _safe_json(value: Any) -> Any:
     if isinstance(value, set):
         return list(value)
     return str(value)
+
+
+def _ensure_datetime(value: Any) -> datetime | None:
+    """Coerce a value to datetime for asyncpg bind parameters.
+    
+    asyncpg requires actual datetime objects for TIMESTAMPTZ columns;
+    ISO format strings cause DataError. This function normalizes:
+      - datetime objects: returned as-is (timezone added if naive)
+      - ISO strings: parsed to datetime (timezone-aware)
+      - None: returned as None
+    
+    v-fix-snapshot-ts-2026-09-09: fixes asyncpg DataError on snapshot insert.
+    """
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value
+    if isinstance(value, str):
+        try:
+            dt = datetime.fromisoformat(value)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt
+        except ValueError:
+            logger.warning("_ensure_datetime: could not parse %r", value)
+            return None
+    return None

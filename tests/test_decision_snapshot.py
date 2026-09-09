@@ -635,3 +635,177 @@ class TestBlackoutVetoSnapshot:
         assert snapshot.gate_name == "econ_blackout"
         assert snapshot.reason == "blackout_soft_veto"
         assert snapshot.extra["event_name"] == "FOMC Rate Decision"
+
+
+class TestEnsureDatetime:
+    """v-fix-snapshot-ts-2026-09-09: test _ensure_datetime helper for asyncpg binding.
+    
+    Regression tests for the bug where ISO string ts caused:
+    asyncpg.exceptions.DataError: invalid input for query argument $3
+    """
+
+    def test_ensure_datetime_from_iso_string(self):
+        """_ensure_datetime parses ISO string to datetime."""
+        from data_providers.db_logger import _ensure_datetime
+        from datetime import datetime, timezone
+        
+        iso_str = "2026-09-09T16:48:37.582153"
+        result = _ensure_datetime(iso_str)
+        
+        assert isinstance(result, datetime)
+        assert result.year == 2026
+        assert result.month == 9
+        assert result.day == 9
+        assert result.hour == 16
+        assert result.minute == 48
+        assert result.second == 37
+        assert result.tzinfo == timezone.utc  # naive strings get UTC
+
+    def test_ensure_datetime_from_iso_string_with_tz(self):
+        """_ensure_datetime preserves timezone from ISO string."""
+        from data_providers.db_logger import _ensure_datetime
+        from datetime import datetime, timezone
+        
+        iso_str = "2026-09-09T16:48:37.582153+00:00"
+        result = _ensure_datetime(iso_str)
+        
+        assert isinstance(result, datetime)
+        assert result.tzinfo is not None
+
+    def test_ensure_datetime_from_datetime(self):
+        """_ensure_datetime passes datetime through, adding tz if naive."""
+        from data_providers.db_logger import _ensure_datetime
+        from datetime import datetime, timezone
+        
+        # Naive datetime gets UTC
+        naive_dt = datetime(2026, 9, 9, 12, 0, 0)
+        result = _ensure_datetime(naive_dt)
+        
+        assert isinstance(result, datetime)
+        assert result.tzinfo == timezone.utc
+        
+        # Aware datetime passes through
+        aware_dt = datetime(2026, 9, 9, 12, 0, 0, tzinfo=timezone.utc)
+        result2 = _ensure_datetime(aware_dt)
+        
+        assert result2 is aware_dt  # Same object
+
+    def test_ensure_datetime_from_none(self):
+        """_ensure_datetime returns None for None input."""
+        from data_providers.db_logger import _ensure_datetime
+        
+        assert _ensure_datetime(None) is None
+
+    def test_ensure_datetime_invalid_string(self):
+        """_ensure_datetime returns None for unparseable string."""
+        from data_providers.db_logger import _ensure_datetime
+        
+        assert _ensure_datetime("not-a-date") is None
+        assert _ensure_datetime("") is None
+
+
+class TestSnapshotInsertIsoString:
+    """v-fix-snapshot-ts-2026-09-09: regression test for snapshot insert with ISO string.
+    
+    Verifies that log_decision_snapshot accepts snapshots where ts has been
+    serialized to ISO string (via to_dict) and correctly binds a datetime.
+    """
+
+    def test_to_dict_produces_iso_string_ts(self):
+        """DecisionSnapshot.to_dict() converts ts to ISO string.
+        
+        This is the behavior that triggers the bug: to_dict serializes the
+        datetime ts to an ISO string, but asyncpg expects a datetime object.
+        """
+        from core.decision_snapshot import DecisionAction, build_snapshot
+        from datetime import datetime, timezone
+        
+        test_ts = datetime(2026, 9, 9, 16, 48, 37, 582153, tzinfo=timezone.utc)
+        snapshot = build_snapshot(
+            symbol="TSLA",
+            strategy_id="oversold_v2",
+            action=DecisionAction.SKIP,
+            reason="gate_a_not_extreme",
+            ts=test_ts,
+        )
+        
+        snap_dict = snapshot.to_dict()
+        assert isinstance(snap_dict["ts"], str), "to_dict should produce ISO string ts"
+        assert "2026-09-09T16:48:37" in snap_dict["ts"]
+
+    def test_ensure_datetime_fixes_iso_string(self):
+        """_ensure_datetime converts ISO string back to datetime for asyncpg.
+        
+        This test verifies the fix for:
+        asyncpg.exceptions.DataError: invalid input for query argument $3:
+        '2026-09-09T16:48:37.582153' (expected datetime, got str)
+        """
+        from data_providers.db_logger import _ensure_datetime
+        from core.decision_snapshot import DecisionAction, build_snapshot
+        from datetime import datetime, timezone
+        
+        test_ts = datetime(2026, 9, 9, 16, 48, 37, 582153, tzinfo=timezone.utc)
+        snapshot = build_snapshot(
+            symbol="TSLA",
+            strategy_id="oversold_v2",
+            action=DecisionAction.SKIP,
+            reason="gate_a_not_extreme",
+            ts=test_ts,
+        )
+        
+        # Get ISO string from to_dict (what db_logger receives)
+        snap_dict = snapshot.to_dict()
+        iso_ts = snap_dict["ts"]
+        
+        # _ensure_datetime should convert back to datetime
+        bound_ts = _ensure_datetime(iso_ts)
+        
+        assert isinstance(bound_ts, datetime), \
+            f"ts should be datetime but was {type(bound_ts)}: {bound_ts}"
+        assert bound_ts.tzinfo is not None, "ts should be timezone-aware"
+        assert bound_ts.year == 2026
+        assert bound_ts.month == 9
+        assert bound_ts.day == 9
+        assert bound_ts.hour == 16
+        assert bound_ts.minute == 48
+
+    def test_bind_params_preparation(self):
+        """Verify the full bind params preparation path produces datetime ts.
+        
+        This simulates what log_decision_snapshot does internally to prepare
+        the ts bind parameter.
+        """
+        from data_providers.db_logger import _ensure_datetime
+        from core.decision_snapshot import DecisionAction, build_snapshot
+        from datetime import datetime, timezone
+        
+        test_ts = datetime(2026, 9, 9, 16, 48, 37, 582153, tzinfo=timezone.utc)
+        snapshot = build_snapshot(
+            symbol="NVDA",
+            strategy_id="momentum",
+            action=DecisionAction.SIGNAL_BUY,
+            reason="breakout_confirmed",
+            ts=test_ts,
+            confidence=0.85,
+        )
+        
+        # Simulate what log_decision_snapshot does
+        snap_dict = snapshot.to_dict()
+        ts_value = _ensure_datetime(snap_dict["ts"])
+        
+        # Build params dict as log_decision_snapshot would
+        params = {
+            "snapshot_id": snap_dict["snapshot_id"],
+            "symbol": snap_dict["symbol"],
+            "ts": ts_value,  # This is the fixed value
+            "mode": snap_dict["mode"],
+            "strategy_id": snap_dict["strategy_id"],
+            "action": snap_dict["action"],
+        }
+        
+        # Verify ts is datetime (this is what asyncpg needs)
+        assert isinstance(params["ts"], datetime)
+        assert params["ts"].tzinfo is not None
+        # Original data preserved
+        assert params["symbol"] == "NVDA"
+        assert params["action"] == "signal_buy"
