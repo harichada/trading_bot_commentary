@@ -302,3 +302,255 @@ class TestSingleton:
         reset_news_bus()
         bus2 = get_news_bus()
         assert bus1 is not bus2
+
+
+class TestNewsGate:
+    """v-newsbus-gates-2026-09-09: tests for the news thesis gate system."""
+    
+    @pytest.fixture
+    def gate_bus(self):
+        """Create a fresh NewsBus for gate tests with long TTL."""
+        reset_news_bus()
+        return NewsBus(ttl_sec=86400, max_items_per_symbol=50)
+    
+    @pytest.mark.asyncio
+    async def test_gate_veto_no_corroboration(self, gate_bus):
+        """Test that empty bus returns VETO_NO_CORROBORATION."""
+        from core.news_bus import NewsGateAction
+        
+        result = await gate_bus.evaluate_gate("AAPL", max_age_sec=1800)
+        
+        assert result.action == NewsGateAction.VETO_NO_CORROBORATION
+        assert result.size_multiplier == 0.0
+        assert result.corroboration_n == 0
+        assert result.is_veto()
+        assert gate_bus.get_stats().gate_veto_no_corroboration == 1
+    
+    @pytest.mark.asyncio
+    async def test_gate_veto_stale(self, gate_bus):
+        """Test that stale news returns VETO_STALE (not NO_CORROBORATION)."""
+        from core.news_bus import NewsGateAction
+        
+        # Create an old item (2 hours old, within TTL but outside freshness window)
+        old_item = ScoredNewsItem(
+            id="old1",
+            symbol="AAPL",
+            headline="Old News",
+            summary="",
+            source="Yahoo Finance",
+            source_tier=1,
+            url="http://test.com/old",
+            published_time=datetime.now() - timedelta(hours=2),
+            fetched_at=datetime.now() - timedelta(hours=2),
+            sentiment_score=0.5,
+            sentiment_confidence=0.5,
+            impact=NewsImpactLevel.MEDIUM,
+        )
+        await gate_bus.publish([old_item])
+        
+        # Gate with 30-min max_age should return VETO_STALE (not NO_CORROBORATION)
+        # because we HAVE news, it's just too old
+        result = await gate_bus.evaluate_gate("AAPL", max_age_sec=1800)
+        
+        assert result.action == NewsGateAction.VETO_STALE
+        assert result.is_veto()
+        assert result.news_age_sec is not None
+        assert result.news_age_sec > 1800  # Older than threshold
+        assert gate_bus.get_stats().gate_veto_stale == 1
+    
+    @pytest.mark.asyncio
+    async def test_gate_veto_low_tier(self, gate_bus):
+        """Test that scrape-only sources are vetoed when tier floor is 2."""
+        from core.news_bus import NewsGateAction
+        
+        # Create a scrape-tier item (tier 3)
+        scrape_item = ScoredNewsItem(
+            id="scrape1",
+            symbol="AAPL",
+            headline="Scrape News",
+            summary="",
+            source="MarketWatch",
+            source_tier=3,
+            url="http://test.com/scrape",
+            published_time=datetime.now() - timedelta(minutes=5),
+            fetched_at=datetime.now(),
+            sentiment_score=0.5,
+            sentiment_confidence=0.5,
+            impact=NewsImpactLevel.MEDIUM,
+        )
+        await gate_bus.publish([scrape_item])
+        
+        # Gate with tier floor 2 should veto tier-3 only sources
+        result = await gate_bus.evaluate_gate(
+            "AAPL", max_age_sec=1800, source_tier_floor=2
+        )
+        
+        assert result.action == NewsGateAction.VETO_LOW_TIER
+        assert result.size_multiplier == 0.0
+        assert result.source_tier_min == 3
+        assert result.is_veto()
+        assert gate_bus.get_stats().gate_veto_low_tier == 1
+    
+    @pytest.mark.asyncio
+    async def test_gate_reduced_size_single_source(self, gate_bus):
+        """Test that single-source fresh news gives REDUCED_SIZE (0.5×)."""
+        from core.news_bus import NewsGateAction
+        
+        # Create a single fresh tier-1 item
+        fresh_item = ScoredNewsItem(
+            id="fresh1",
+            symbol="AAPL",
+            headline="Fresh News",
+            summary="",
+            source="Yahoo Finance",
+            source_tier=1,
+            url="http://test.com/fresh",
+            published_time=datetime.now() - timedelta(minutes=5),
+            fetched_at=datetime.now(),
+            sentiment_score=0.5,
+            sentiment_confidence=0.5,
+            impact=NewsImpactLevel.MEDIUM,
+        )
+        await gate_bus.publish([fresh_item])
+        
+        result = await gate_bus.evaluate_gate(
+            "AAPL", max_age_sec=1800, source_tier_floor=2, min_corroboration=2
+        )
+        
+        assert result.action == NewsGateAction.REDUCED_SIZE
+        assert result.size_multiplier == 0.5
+        assert result.corroboration_n == 1
+        assert not result.is_veto()
+        assert gate_bus.get_stats().gate_size_reduced == 1
+    
+    @pytest.mark.asyncio
+    async def test_gate_full_size_multi_source(self, gate_bus):
+        """Test that multi-source fresh news gives FULL_SIZE (1.0×)."""
+        from core.news_bus import NewsGateAction
+        
+        # Create items from two different sources
+        item1 = ScoredNewsItem(
+            id="multi1",
+            symbol="AAPL",
+            headline="News from Yahoo",
+            summary="",
+            source="Yahoo Finance",
+            source_tier=1,
+            url="http://test.com/yahoo",
+            published_time=datetime.now() - timedelta(minutes=5),
+            fetched_at=datetime.now(),
+            sentiment_score=0.5,
+            sentiment_confidence=0.5,
+            impact=NewsImpactLevel.MEDIUM,
+        )
+        item2 = ScoredNewsItem(
+            id="multi2",
+            symbol="AAPL",
+            headline="News from Google",
+            summary="",
+            source="Google News",
+            source_tier=2,
+            url="http://test.com/google",
+            published_time=datetime.now() - timedelta(minutes=3),
+            fetched_at=datetime.now(),
+            sentiment_score=0.6,
+            sentiment_confidence=0.6,
+            impact=NewsImpactLevel.MEDIUM,
+        )
+        await gate_bus.publish([item1, item2])
+        
+        result = await gate_bus.evaluate_gate(
+            "AAPL", max_age_sec=1800, source_tier_floor=2, min_corroboration=2
+        )
+        
+        assert result.action == NewsGateAction.FULL_SIZE
+        assert result.size_multiplier == 1.0
+        assert result.corroboration_n == 2
+        assert result.source_tier_min == 1
+        assert not result.is_veto()
+        assert gate_bus.get_stats().gate_pass == 1
+    
+    @pytest.mark.asyncio
+    async def test_gate_full_size_high_impact_single(self, gate_bus):
+        """Test that high-impact single source gives FULL_SIZE even below min_corroboration."""
+        from core.news_bus import NewsGateAction
+        
+        # Create a single HIGH impact item
+        high_impact_item = ScoredNewsItem(
+            id="high1",
+            symbol="AAPL",
+            headline="Apple Beats Earnings Expectations",
+            summary="Record quarterly results.",
+            source="Yahoo Finance",
+            source_tier=1,
+            url="http://test.com/earnings",
+            published_time=datetime.now() - timedelta(minutes=5),
+            fetched_at=datetime.now(),
+            sentiment_score=0.8,
+            sentiment_confidence=0.8,
+            impact=NewsImpactLevel.HIGH,
+        )
+        await gate_bus.publish([high_impact_item])
+        
+        # Use min_corroboration=2 to prove high-impact bypasses corroboration requirement
+        result = await gate_bus.evaluate_gate(
+            "AAPL", max_age_sec=1800, source_tier_floor=2, min_corroboration=2
+        )
+        
+        assert result.action == NewsGateAction.FULL_SIZE
+        assert result.size_multiplier == 1.0
+        assert result.corroboration_n == 1  # Only one source
+        assert "high_impact" in result.reason
+    
+    @pytest.mark.asyncio
+    async def test_gate_custom_single_source_multiplier(self, gate_bus):
+        """Test that single_source_multiplier is passed through from config."""
+        from core.news_bus import NewsGateAction
+        
+        # Create a single fresh non-high-impact item
+        fresh_item = ScoredNewsItem(
+            id="custom1",
+            symbol="AAPL",
+            headline="Regular News",
+            summary="",
+            source="Yahoo Finance",
+            source_tier=1,
+            url="http://test.com/custom",
+            published_time=datetime.now() - timedelta(minutes=5),
+            fetched_at=datetime.now(),
+            sentiment_score=0.5,
+            sentiment_confidence=0.5,
+            impact=NewsImpactLevel.MEDIUM,
+        )
+        await gate_bus.publish([fresh_item])
+        
+        # Use custom multiplier of 0.3 instead of default 0.5
+        result = await gate_bus.evaluate_gate(
+            "AAPL", max_age_sec=1800, source_tier_floor=2, 
+            min_corroboration=2, single_source_multiplier=0.3
+        )
+        
+        assert result.action == NewsGateAction.REDUCED_SIZE
+        assert result.size_multiplier == 0.3  # Custom value, not 0.5
+    
+    @pytest.mark.asyncio
+    async def test_gate_stats_accumulate(self, gate_bus):
+        """Test that gate stats accumulate correctly."""
+        # Trigger different gate outcomes
+        await gate_bus.evaluate_gate("EMPTY", max_age_sec=1800)  # veto_no_corroboration
+        
+        item = ScoredNewsItem(
+            id="t1", symbol="TIER3",
+            headline="Scrape", summary="", source="MarketWatch", source_tier=3,
+            url="http://test.com/1",
+            published_time=datetime.now() - timedelta(minutes=5),
+            fetched_at=datetime.now(),
+            sentiment_score=0.5, sentiment_confidence=0.5,
+            impact=NewsImpactLevel.MEDIUM,
+        )
+        await gate_bus.publish([item])
+        await gate_bus.evaluate_gate("TIER3", max_age_sec=1800, source_tier_floor=2)  # veto_low_tier
+        
+        stats = gate_bus.get_stats()
+        assert stats.gate_veto_no_corroboration >= 1
+        assert stats.gate_veto_low_tier >= 1

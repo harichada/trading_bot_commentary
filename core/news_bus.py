@@ -81,6 +81,43 @@ class NewsBusStats:
     items_evicted: int = 0
     fetch_errors: int = 0
     wake_events_fired: int = 0
+    # v-newsbus-gates-2026-09-09: gate decision counters
+    gate_pass: int = 0
+    gate_veto_stale: int = 0
+    gate_veto_low_tier: int = 0
+    gate_veto_no_corroboration: int = 0
+    gate_size_reduced: int = 0
+
+
+class NewsGateAction(str, Enum):
+    """Result of a news thesis gate check."""
+    FULL_SIZE = "full_size"           # Multi-source, fresh, high-tier → 1.0×
+    REDUCED_SIZE = "reduced_size"     # Single-source fresh → 0.5×
+    VETO_STALE = "veto_stale"         # News too old
+    VETO_LOW_TIER = "veto_low_tier"   # Source tier below floor
+    VETO_NO_CORROBORATION = "veto_no_corroboration"  # Insufficient sources
+
+
+@dataclass
+class NewsGateResult:
+    """Result of news thesis gate evaluation.
+    
+    v-newsbus-gates-2026-09-09: deterministic sizing based on news quality.
+    Strategies consult this before placing trades.
+    """
+    action: NewsGateAction
+    size_multiplier: float  # 0.0 (veto), 0.5 (reduced), 1.0 (full)
+    news_age_sec: Optional[float]
+    source_tier_min: Optional[int]  # Lowest tier among consulted items (1=best)
+    corroboration_n: int  # Number of distinct sources
+    reason: str
+
+    def is_veto(self) -> bool:
+        return self.action in (
+            NewsGateAction.VETO_STALE,
+            NewsGateAction.VETO_LOW_TIER,
+            NewsGateAction.VETO_NO_CORROBORATION,
+        )
 
 
 class NewsBus:
@@ -252,6 +289,133 @@ class NewsBus:
             "freshest_age_sec": freshest.age_sec(),
             "sources": sources,
         }
+
+    async def evaluate_gate(
+        self,
+        symbol: str,
+        max_age_sec: float = 1800.0,  # 30 min default freshness
+        source_tier_floor: int = 2,   # tier 1-2 allowed; 3 rejected
+        min_corroboration: int = 2,   # distinct sources for full size (without high-impact)
+        single_source_multiplier: float = 0.5,  # size multiplier for single-source
+    ) -> NewsGateResult:
+        """Evaluate news thesis gate for a symbol.
+        
+        v-newsbus-gates-2026-09-09: deterministic sizing tiers:
+          - VETO_STALE: all news in bus is older than max_age_sec
+          - VETO_LOW_TIER: best source tier > source_tier_floor (all scrape-tier)
+          - VETO_NO_NEWS: no news in bus for this symbol
+          - REDUCED_SIZE: single fresh source (non-high-impact)
+          - FULL_SIZE: multi-source fresh OR any high-impact item
+        
+        Args:
+            symbol: Ticker to evaluate.
+            max_age_sec: News older than this is considered stale.
+            source_tier_floor: Sources with tier > this are rejected.
+                1=primary (Yahoo), 2=secondary (Google), 3=scrape (MW)
+            min_corroboration: Minimum distinct sources for full size (without high-impact).
+            single_source_multiplier: Size multiplier for single-source fresh (from config).
+        
+        Returns:
+            NewsGateResult with action, size_multiplier, and diagnostics.
+        """
+        symbol = symbol.upper()
+        
+        # Get ALL items first (no age filter) to distinguish VETO_NO_NEWS from VETO_STALE
+        all_items = await self.get_items(symbol, max_age_sec=self._ttl_sec)
+        
+        # No news at all for this symbol
+        if not all_items:
+            self._stats.gate_veto_no_corroboration += 1
+            return NewsGateResult(
+                action=NewsGateAction.VETO_NO_CORROBORATION,
+                size_multiplier=0.0,
+                news_age_sec=None,
+                source_tier_min=None,
+                corroboration_n=0,
+                reason="no_news_in_bus",
+            )
+        
+        # Check freshness: filter by max_age_sec
+        fresh_items = [i for i in all_items if i.age_sec() <= max_age_sec]
+        
+        if not fresh_items:
+            # We have news but it's all stale
+            freshest_stale = min(all_items, key=lambda x: x.age_sec())
+            self._stats.gate_veto_stale += 1
+            return NewsGateResult(
+                action=NewsGateAction.VETO_STALE,
+                size_multiplier=0.0,
+                news_age_sec=freshest_stale.age_sec(),
+                source_tier_min=freshest_stale.source_tier,
+                corroboration_n=len(set(i.source for i in all_items)),
+                reason=f"all_news_stale_freshest_{freshest_stale.age_sec():.0f}s_exceeds_{max_age_sec:.0f}s",
+            )
+        
+        # Filter by source tier
+        tier_filtered = [i for i in fresh_items if i.source_tier <= source_tier_floor]
+        if not tier_filtered:
+            # All fresh items are low-tier (scrape only)
+            best_tier = min(i.source_tier for i in fresh_items)
+            freshest = min(fresh_items, key=lambda x: x.age_sec())
+            self._stats.gate_veto_low_tier += 1
+            return NewsGateResult(
+                action=NewsGateAction.VETO_LOW_TIER,
+                size_multiplier=0.0,
+                news_age_sec=freshest.age_sec(),
+                source_tier_min=best_tier,
+                corroboration_n=len(set(i.source for i in fresh_items)),
+                reason=f"all_fresh_sources_below_tier_floor_{source_tier_floor}",
+            )
+        
+        freshest = min(tier_filtered, key=lambda x: x.age_sec())
+        news_age = freshest.age_sec()
+        
+        # Count distinct sources (corroboration)
+        distinct_sources = set(i.source for i in tier_filtered)
+        corroboration_n = len(distinct_sources)
+        source_tier_min = min(i.source_tier for i in tier_filtered)
+        
+        # Check for high-impact items
+        has_high_impact = any(i.impact == NewsImpactLevel.HIGH for i in tier_filtered)
+        
+        # Sizing decision: FULL_SIZE when corroborated OR high-impact
+        if corroboration_n >= min_corroboration or has_high_impact:
+            # Multi-source fresh OR high-impact → full size
+            self._stats.gate_pass += 1
+            reason = (
+                "high_impact" if has_high_impact and corroboration_n < min_corroboration
+                else "multi_source_corroborated"
+            )
+            return NewsGateResult(
+                action=NewsGateAction.FULL_SIZE,
+                size_multiplier=1.0,
+                news_age_sec=news_age,
+                source_tier_min=source_tier_min,
+                corroboration_n=corroboration_n,
+                reason=reason,
+            )
+        elif corroboration_n >= 1:
+            # Single-source fresh (non-high-impact) → reduced size
+            self._stats.gate_size_reduced += 1
+            return NewsGateResult(
+                action=NewsGateAction.REDUCED_SIZE,
+                size_multiplier=single_source_multiplier,
+                news_age_sec=news_age,
+                source_tier_min=source_tier_min,
+                corroboration_n=corroboration_n,
+                reason="single_source_fresh",
+            )
+        else:
+            # Should not reach here if tier_filtered is non-empty, but defensive
+            self._stats.gate_veto_no_corroboration += 1
+            return NewsGateResult(
+                action=NewsGateAction.VETO_NO_CORROBORATION,
+                size_multiplier=0.0,
+                news_age_sec=news_age,
+                source_tier_min=source_tier_min,
+                corroboration_n=0,
+                reason="no_qualifying_sources",
+            )
 
     def get_wake_event(self) -> asyncio.Event:
         """Get the wake event for analysis loop early-wake triggering."""

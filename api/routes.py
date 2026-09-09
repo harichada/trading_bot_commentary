@@ -842,6 +842,12 @@ async def get_system_stats():
             "fetch_errors": stats.fetch_errors,
             "wake_events_fired": stats.wake_events_fired,
             "last_refresh": stats.last_refresh.isoformat() if stats.last_refresh else None,
+            # v-newsbus-gates-2026-09-09: gate decision counters
+            "gate_pass": stats.gate_pass,
+            "gate_veto_stale": stats.gate_veto_stale,
+            "gate_veto_low_tier": stats.gate_veto_low_tier,
+            "gate_veto_no_corroboration": stats.gate_veto_no_corroboration,
+            "gate_size_reduced": stats.gate_size_reduced,
         }
     
     # NewsLoop stats
@@ -880,6 +886,7 @@ async def get_news_bus_symbol(symbol: str, max_age_sec: float = 14400):
     return {
         "status": "success",
         "symbol": symbol.upper(),
+        "as_of": datetime.now().isoformat(),  # v-newsbus-gates-2026-09-09: timestamp for dashboard
         "item_count": len(items),
         "aggregate": aggregate,
         "items": [item.to_dict() for item in items[:20]],  # Limit to 20 for payload size

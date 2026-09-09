@@ -13,6 +13,7 @@ from nltk.sentiment import SentimentIntensityAnalyzer
 
 from core.models import CommentaryType, SignalType, NewsImpact, TradingSignal, NewsItem, MarketData
 from core.commentary import TradingCommentary
+from core.news_bus import NewsGateAction, NewsGateResult
 from strategies.base import TradingStrategyWithCommentary
 from strategies.builtin import _floored_atr
 
@@ -968,6 +969,72 @@ class FreeNewsSignalStrategy(TradingStrategyWithCommentary):
                     ))
                     return None
 
+            # ────────────────────────────────────────────────────────────────
+            # v-newsbus-gates-2026-09-09: NewsBus thesis gates
+            # Deterministic sizing based on freshness, source tier, and
+            # corroboration. Run BEFORE the verifier.
+            # ────────────────────────────────────────────────────────────────
+            _news_gate_result: Optional[NewsGateResult] = None
+            _news_gate_multiplier = 1.0
+            if self._news_bus is not None:
+                try:
+                    from core.config import Config as _CfgGate
+                    _cfg_gate = _CfgGate()
+                    _news_gate_result = await self._news_bus.evaluate_gate(
+                        symbol=symbol,
+                        max_age_sec=_cfg_gate.NEWS_GATE_MAX_AGE_SEC,
+                        source_tier_floor=_cfg_gate.NEWS_GATE_SOURCE_TIER_FLOOR,
+                        min_corroboration=_cfg_gate.NEWS_GATE_MIN_CORROBORATION,
+                        single_source_multiplier=_cfg_gate.NEWS_GATE_SINGLE_SOURCE_MULTIPLIER,
+                    )
+                    
+                    # Log the gate decision
+                    self._log_decision(
+                        market_data,
+                        "news_gate",
+                        _news_gate_result.action.value,
+                        news_age_sec=(
+                            round(_news_gate_result.news_age_sec, 1)
+                            if _news_gate_result.news_age_sec else None
+                        ),
+                        source_tier_min=_news_gate_result.source_tier_min,
+                        corroboration_n=_news_gate_result.corroboration_n,
+                        size_multiplier=_news_gate_result.size_multiplier,
+                        gate_reason=_news_gate_result.reason,
+                    )
+                    
+                    # Veto check
+                    if _news_gate_result.is_veto():
+                        self.commentary.add_commentary(TradingCommentary(
+                            timestamp=datetime.now(),
+                            type=CommentaryType.RISK_ASSESSMENT,
+                            symbol=symbol,
+                            title=f"⛔ News Gate Vetoed — {_news_gate_result.action.value}",
+                            message=(
+                                f"News signal {signal_type.name} on {symbol} blocked by "
+                                f"thesis gate: {_news_gate_result.reason}.\n"
+                                f"  Age: {_news_gate_result.news_age_sec:.0f}s\n"
+                                f"  Source tier (best): {_news_gate_result.source_tier_min}\n"
+                                f"  Corroboration: {_news_gate_result.corroboration_n} sources"
+                                if _news_gate_result.news_age_sec else
+                                f"News signal {signal_type.name} on {symbol} blocked: "
+                                f"{_news_gate_result.reason}"
+                            ),
+                            importance=7,
+                        ))
+                        return None
+                    
+                    _news_gate_multiplier = _news_gate_result.size_multiplier
+                except Exception as _gate_exc:
+                    # v-newsbus-gates-2026-09-09: fail-closed on gate exception
+                    # Cap size at single-source multiplier instead of allowing full size
+                    logger.warning(f"news gate exception for {symbol}, fail-closed: {_gate_exc}")
+                    self._log_decision(
+                        market_data, "news_gate", "error_fail_closed",
+                        err=str(_gate_exc)[:80],
+                    )
+                    _news_gate_multiplier = _cfg_gate.NEWS_GATE_SINGLE_SOURCE_MULTIPLIER
+
             # v-news-verifier-toggle-2026-04-29: gate verifier behind config.
             # When disabled, news_strategy fires on cached sentiment alone
             # (original behaviour pre-v-news-verify-2026-04-28).
@@ -1515,6 +1582,14 @@ class FreeNewsSignalStrategy(TradingStrategyWithCommentary):
                     'market_context_conviction': _mc_news_conviction,
                     'market_context_regime': _mc_news_regime,
                     'market_context_sector': _mc_news_sector,
+                    # v-newsbus-gates-2026-09-09: gate-based size multiplier
+                    'news_gate_multiplier': _news_gate_multiplier,
+                    'news_gate_action': (
+                        _news_gate_result.action.value if _news_gate_result else None
+                    ),
+                    'news_gate_corroboration': (
+                        _news_gate_result.corroboration_n if _news_gate_result else None
+                    ),
                 },
                 confidence=confidence
             )
