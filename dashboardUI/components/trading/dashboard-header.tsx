@@ -17,6 +17,7 @@ import {
   Shield,
   Search,
 } from "lucide-react"
+import { PulseChip } from "@/components/trading/decision-card"
 
 interface DashboardHeaderProps {
   activeTab: string
@@ -136,6 +137,8 @@ export function DashboardHeader({ activeTab, onTabChange }: DashboardHeaderProps
         <StatusBadge icon={Shield} label="Schwab" tone="success" />
         <StatusBadge icon={Wifi} label="WebSocket" tone="success" />
         <StatusBadge icon={Cpu} label="ML model" tone="neutral" />
+        <div className="mx-1 h-4 w-px bg-border/60" />
+        <PulseChip />
         <div className="ml-auto flex items-center gap-1.5">
           <span className="eyebrow">Session</span>
           <span className="font-mono text-xs tabular-nums text-foreground">4h 23m</span>
