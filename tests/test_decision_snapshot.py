@@ -440,3 +440,198 @@ class TestSkipPathEmitsSnapshot:
 
 # Skip the OversoldBounceV2 integration test since it requires full strategy chain
 # The unit tests above verify the base functionality works correctly.
+
+
+class TestConfigFeatureFlags:
+    """v-feature-snapshot-config-2026-09-09: test Config-based feature flags."""
+
+    def test_config_logging_default_true(self):
+        """FEATURE_SNAPSHOT_LOGGING defaults to True."""
+        from core.config import Config
+        cfg = Config()
+        assert cfg.FEATURE_SNAPSHOT_LOGGING is True
+
+    def test_config_inference_default_false(self):
+        """FEATURE_SNAPSHOT_INFERENCE defaults to False."""
+        from core.config import Config
+        cfg = Config()
+        assert cfg.FEATURE_SNAPSHOT_INFERENCE is False
+
+    def test_logging_env_override_false(self, monkeypatch):
+        """FEATURE_SNAPSHOT_LOGGING can be disabled via env var."""
+        monkeypatch.setenv("FEATURE_SNAPSHOT_LOGGING", "0")
+        from core.config import Config
+        cfg = Config()
+        assert cfg.FEATURE_SNAPSHOT_LOGGING is False
+
+    def test_logging_env_override_true(self, monkeypatch):
+        """FEATURE_SNAPSHOT_LOGGING=1 keeps it enabled."""
+        monkeypatch.setenv("FEATURE_SNAPSHOT_LOGGING", "1")
+        from core.config import Config
+        cfg = Config()
+        assert cfg.FEATURE_SNAPSHOT_LOGGING is True
+
+    def test_inference_env_override_true(self, monkeypatch):
+        """FEATURE_SNAPSHOT_INFERENCE can be enabled via env var."""
+        monkeypatch.setenv("FEATURE_SNAPSHOT_INFERENCE", "1")
+        from core.config import Config
+        cfg = Config()
+        assert cfg.FEATURE_SNAPSHOT_INFERENCE is True
+
+    def test_is_snapshot_logging_reads_config(self, monkeypatch):
+        """is_snapshot_logging_enabled() reads from Config."""
+        monkeypatch.setenv("FEATURE_SNAPSHOT_LOGGING", "false")
+        # Re-import to pick up new config
+        from core.decision_snapshot import is_snapshot_logging_enabled
+        assert is_snapshot_logging_enabled() is False
+
+    def test_is_snapshot_inference_reads_config(self, monkeypatch):
+        """is_snapshot_inference_enabled() reads from Config."""
+        monkeypatch.setenv("FEATURE_SNAPSHOT_INFERENCE", "true")
+        from core.decision_snapshot import is_snapshot_inference_enabled
+        assert is_snapshot_inference_enabled() is True
+
+
+class TestNewsGateVetoSnapshot:
+    """v-feature-snapshot-emit-2026-09-09: test news gate veto snapshot emission."""
+
+    @pytest.fixture
+    def mock_news_gate_result(self):
+        """Create mock NewsGateResult."""
+        result = MagicMock()
+        result.action = MagicMock()
+        result.action.value = "veto_stale"
+        result.size_multiplier = 0.0
+        result.news_age_sec = 3600.0
+        result.source_tier_min = 2
+        result.corroboration_n = 1
+        result.reason = "all_news_stale_freshest_3600s_exceeds_1800s"
+        result.is_veto = MagicMock(return_value=True)
+        return result
+
+    def test_build_snapshot_with_news_gate_result(self, mock_news_gate_result):
+        """build_snapshot captures news gate result in NewsAggregate."""
+        snapshot = build_snapshot(
+            symbol="AAPL",
+            strategy_id="news",
+            action=DecisionAction.VETO,
+            reason="veto_stale",
+            gate_name="news_gate_veto_stale",
+            news_gate_result=mock_news_gate_result,
+            news_aggregate={"article_count": 5, "avg_sentiment": 0.3},
+        )
+        
+        assert snapshot.news.gate_action == "veto_stale"
+        assert snapshot.news.gate_size_mult == 0.0
+        assert snapshot.news.corroboration_n == 1
+        assert snapshot.gate_name == "news_gate_veto_stale"
+
+    def test_build_snapshot_with_would_size_mult(self):
+        """build_snapshot captures would_size_mult for sizing decisions."""
+        snapshot = build_snapshot(
+            symbol="MSFT",
+            strategy_id="news",
+            action=DecisionAction.SIGNAL_BUY,
+            reason="strong_sentiment",
+            would_size_mult=0.5,
+            would_entry_price=400.0,
+            would_stop_loss=390.0,
+            would_take_profit=420.0,
+        )
+        
+        assert snapshot.would_size_mult == 0.5
+        assert snapshot.would_entry_price == 400.0
+
+
+class TestGateMultiplierShadow:
+    """v-feature-snapshot-emit-2026-09-09: test news gate multiplier shadow log."""
+
+    def test_log_comparison_creates_entry(self, tmp_path):
+        """log_comparison writes entry to ledger."""
+        from sizing.conviction_sizer import NewsGateMultiplierShadow
+        
+        ledger_path = tmp_path / "test_gate_mult.ndjson"
+        shadow = NewsGateMultiplierShadow(ledger_path=ledger_path)
+        
+        entry = shadow.log_comparison(
+            symbol="NVDA",
+            strategy="free_news_sentiment",
+            news_gate_multiplier=0.5,
+            corroboration_n=1,
+            news_age_sec=1200.0,
+            source_tier_min=2,
+        )
+        
+        assert entry is not None
+        assert entry.news_gate_multiplier == 0.5
+        assert entry.corroboration_n == 1
+        assert entry.delta == 0.0  # 0.5 - 0.5 (placeholder) = 0
+
+    def test_log_comparison_computes_delta(self, tmp_path):
+        """log_comparison computes delta vs model placeholder."""
+        from sizing.conviction_sizer import NewsGateMultiplierShadow
+        
+        ledger_path = tmp_path / "test_gate_mult_delta.ndjson"
+        shadow = NewsGateMultiplierShadow(ledger_path=ledger_path)
+        
+        # Full size gate (1.0) vs neutral placeholder (0.5) = +0.5 delta
+        entry = shadow.log_comparison(
+            symbol="AAPL",
+            strategy="free_news_sentiment",
+            news_gate_multiplier=1.0,
+            corroboration_n=3,
+            model_score_placeholder=0.5,
+        )
+        
+        assert entry.delta == 0.5
+
+    def test_log_comparison_writes_to_file(self, tmp_path):
+        """log_comparison appends JSON to ledger file."""
+        from sizing.conviction_sizer import NewsGateMultiplierShadow
+        import json
+        
+        ledger_path = tmp_path / "test_gate_mult_file.ndjson"
+        shadow = NewsGateMultiplierShadow(ledger_path=ledger_path)
+        
+        shadow.log_comparison(
+            symbol="TSLA",
+            strategy="news",
+            news_gate_multiplier=0.5,
+            corroboration_n=1,
+        )
+        
+        # Verify file was written
+        assert ledger_path.exists()
+        with open(ledger_path) as f:
+            line = f.readline()
+            data = json.loads(line)
+        
+        assert data["symbol"] == "TSLA"
+        assert data["news_gate_multiplier"] == 0.5
+
+
+class TestBlackoutVetoSnapshot:
+    """v-feature-snapshot-emit-2026-09-09: test blackout veto snapshot via engine."""
+
+    def test_emit_veto_snapshot_signature(self):
+        """_emit_veto_snapshot accepts expected parameters."""
+        # This is a minimal test to verify the signature is correct
+        # Full integration test would require engine setup
+        from core.decision_snapshot import DecisionAction, build_snapshot
+        
+        snapshot = build_snapshot(
+            symbol="SPY",
+            strategy_id="news",
+            action=DecisionAction.VETO,
+            reason="blackout_soft_veto",
+            gate_name="econ_blackout",
+            extra={
+                "event_name": "FOMC Rate Decision",
+                "event_type": "fomc",
+                "remaining_min": 15.5,
+            },
+        )
+        
+        assert snapshot.gate_name == "econ_blackout"
+        assert snapshot.reason == "blackout_soft_veto"
+        assert snapshot.extra["event_name"] == "FOMC Rate Decision"

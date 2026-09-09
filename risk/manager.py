@@ -238,6 +238,26 @@ class RiskManagerWithCommentary:
         # Applied AFTER market_context but BEFORE live_mult.
         if signal.reasoning:
             ng_mult = signal.reasoning.get('news_gate_multiplier')
+            ng_action = signal.reasoning.get('news_gate_action')
+            ng_corroboration = signal.reasoning.get('news_gate_corroboration')
+            
+            # v-feature-snapshot-emit-2026-09-09: shadow log gate mult vs model score
+            if ng_mult is not None:
+                try:
+                    from sizing.conviction_sizer import get_gate_mult_shadow
+                    shadow = get_gate_mult_shadow()
+                    shadow.log_comparison(
+                        symbol=signal.symbol,
+                        strategy=strategy_name or 'unknown',
+                        news_gate_multiplier=float(ng_mult),
+                        corroboration_n=int(ng_corroboration or 0),
+                        news_age_sec=signal.reasoning.get('news_age_sec'),
+                        source_tier_min=None,  # Not in reasoning; add if needed
+                        model_score_placeholder=None,  # Future: inference model output
+                    )
+                except Exception as _shadow_exc:
+                    logger.debug("news_gate_mult_shadow: %s", _shadow_exc)
+            
             if ng_mult is not None and ng_mult != 1.0:
                 try:
                     ng_mult = float(ng_mult)
@@ -248,8 +268,8 @@ class RiskManagerWithCommentary:
                             "news_gate_multiplier symbol=%s mult=%.2f "
                             "action=%s corroboration=%s old=%d new=%d",
                             signal.symbol, ng_mult,
-                            signal.reasoning.get('news_gate_action', '?'),
-                            signal.reasoning.get('news_gate_corroboration', '?'),
+                            ng_action or '?',
+                            ng_corroboration or '?',
                             old_size, position_size,
                         )
                 except (TypeError, ValueError):

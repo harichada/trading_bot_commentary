@@ -1005,6 +1005,32 @@ class FreeNewsSignalStrategy(TradingStrategyWithCommentary):
                     
                     # Veto check
                     if _news_gate_result.is_veto():
+                        # v-feature-snapshot-emit-2026-09-09: emit snapshot on news gate veto
+                        from strategies.builtin import _floored_atr as _floored_atr_veto
+                        _atr_veto = _floored_atr_veto(
+                            market_data.indicators.get('atr', market_data.close * 0.02),
+                            market_data.close,
+                        )
+                        _stop_dist_veto = Config().ATR_STOP_MULTIPLIER * _atr_veto
+                        _rr_veto = Config().ATR_REWARD_RISK_RATIO
+                        _wb_stop = market_data.close - _stop_dist_veto if signal_type == SignalType.BUY else market_data.close + _stop_dist_veto
+                        _wb_target = market_data.close + (_rr_veto * _stop_dist_veto) if signal_type == SignalType.BUY else market_data.close - (_rr_veto * _stop_dist_veto)
+                        
+                        self._log_decision(
+                            market_data,
+                            "veto",
+                            _news_gate_result.action.value,
+                            gate_name=f"news_gate_{_news_gate_result.action.value}",
+                            confidence=confidence,
+                            would_entry_price=float(market_data.close),
+                            would_stop_loss=float(_wb_stop),
+                            would_take_profit=float(_wb_target),
+                            would_size_mult=_news_gate_result.size_multiplier,
+                            news_gate_result=_news_gate_result,
+                            sentiment=round(avg_sentiment, 3),
+                            articles=len(news_items),
+                        )
+                        
                         self.commentary.add_commentary(TradingCommentary(
                             timestamp=datetime.now(),
                             type=CommentaryType.RISK_ASSESSMENT,
@@ -1545,10 +1571,17 @@ class FreeNewsSignalStrategy(TradingStrategyWithCommentary):
                 self.last_signal_time[symbol] = market_data.timestamp  # v-determinism-2026-05-19
 
             # v-newsbus-observability-2026-09-08: include news_age_sec for latency tracking
+            # v-feature-snapshot-emit-2026-09-09: include news_gate_result + would_size_mult
             self._log_decision(
                 market_data,
                 "signal_buy" if signal_type == SignalType.BUY else "signal_sell",
                 "high_impact_news" if high_impact_news else "strong_sentiment",
+                confidence=confidence,
+                would_entry_price=float(market_data.close),
+                would_stop_loss=float(stop_loss),
+                would_take_profit=float(take_profit),
+                would_size_mult=_news_gate_multiplier,
+                news_gate_result=_news_gate_result,
                 sentiment=round(avg_sentiment, 3),
                 articles=len(news_items),
                 news_age_sec=(round(news_age_sec, 1) if news_age_sec is not None else None),
