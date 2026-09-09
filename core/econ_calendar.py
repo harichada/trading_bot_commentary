@@ -93,40 +93,60 @@ class EconCalendarProvider(ABC):
 
 
 class StaticEconCalendar(EconCalendarProvider):
-    """Static economic calendar with hardcoded daily event times.
+    """Static economic calendar with hardcoded event times and day filters.
     
     This is the default provider. Events are approximate recurring times
-    for major economic releases. It's a conservative baseline — real
-    events may shift by a few minutes or not occur on all days.
+    for major economic releases with realistic weekday filters:
+    
+      - CPI: ~10th-13th of month, 8:30 ET (weekdays only)
+      - Jobs Report (NFP): First Friday of month, 8:30 ET (Fridays only)
+      - Consumer Confidence: Last Tuesday of month, 10:00 ET (Tuesdays only)
+      - FOMC: 8 times per year, Wednesdays, 14:00 ET (Wednesdays only)
+      - Fed Speech: Variable, after FOMC (Wednesdays only as proxy)
     
     For precise event times, use ConfigEconCalendar with operator-
     maintained schedules, or integrate with a real calendar API.
+    
+    NOTE: This is conservative — may trigger blackout on non-event days
+    that match the weekday pattern. For production, prefer ConfigEconCalendar
+    with actual event dates or an API provider.
     """
     
     DEFAULT_EVENTS = [
         EconEvent(
             event_type=EconEventType.CPI,
-            name="CPI/Jobs Report",
+            name="CPI Release",
             time_et=time(8, 30),
             duration_minutes=15,
+            days_of_week=[0, 1, 2, 3, 4],  # Mon-Fri (CPI dates vary)
+        ),
+        EconEvent(
+            event_type=EconEventType.JOBS_REPORT,
+            name="Jobs Report (NFP)",
+            time_et=time(8, 30),
+            duration_minutes=15,
+            days_of_week=[4],  # Friday only (first Friday of month)
         ),
         EconEvent(
             event_type=EconEventType.CONSUMER_CONFIDENCE,
             name="Consumer Confidence",
             time_et=time(10, 0),
             duration_minutes=15,
+            days_of_week=[1],  # Tuesday only (last Tuesday of month)
         ),
         EconEvent(
             event_type=EconEventType.FOMC,
             name="FOMC Rate Decision",
             time_et=time(14, 0),
             duration_minutes=30,
+            days_of_week=[2],  # Wednesday only (FOMC days)
         ),
         EconEvent(
             event_type=EconEventType.FED_SPEECH,
-            name="Fed Chair Speech",
+            name="Fed Chair Press Conference",
             time_et=time(14, 30),
             duration_minutes=15,
+            days_of_week=[2],  # Wednesday only (after FOMC)
         ),
     ]
     

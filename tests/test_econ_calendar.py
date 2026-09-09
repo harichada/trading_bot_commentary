@@ -112,30 +112,54 @@ class TestEconEvent:
 
 class TestStaticEconCalendar:
     def test_default_events_exist(self):
-        """Test that static calendar has default events."""
+        """Test that static calendar has default events with day filters."""
         calendar = StaticEconCalendar()
         events = calendar.get_events()
         
         assert len(events) >= 4
         event_names = [e.name for e in events]
-        assert any("CPI" in n or "Jobs" in n for n in event_names)
+        assert any("CPI" in n for n in event_names)
+        assert any("Jobs" in n or "NFP" in n for n in event_names)
         assert any("FOMC" in n for n in event_names)
+        
+        # Verify day filters are set
+        for event in events:
+            assert event.days_of_week is not None, f"{event.name} should have days_of_week set"
     
-    def test_is_blackout_during_cpi(self):
-        """Test blackout during CPI release time."""
+    def test_is_blackout_during_cpi_weekday(self):
+        """Test blackout during CPI release time on a weekday."""
         calendar = StaticEconCalendar()
         
-        # 8:35 ET is during CPI/Jobs blackout
-        during_cpi = datetime(2026, 9, 9, 8, 35, 0, tzinfo=ET_TZ)
+        # 8:35 ET on a Wednesday (weekday) is during CPI blackout
+        during_cpi = datetime(2026, 9, 9, 8, 35, 0, tzinfo=ET_TZ)  # Wednesday
         assert calendar.is_blackout(during_cpi)
     
-    def test_is_blackout_during_fomc(self):
-        """Test blackout during FOMC window."""
+    def test_no_blackout_cpi_weekend(self):
+        """Test no CPI blackout on weekend even at same time."""
         calendar = StaticEconCalendar()
         
-        # 14:15 ET is during FOMC blackout
-        during_fomc = datetime(2026, 9, 9, 14, 15, 0, tzinfo=ET_TZ)
+        # 8:35 ET on a Saturday should NOT be blackout
+        saturday = datetime(2026, 9, 12, 8, 35, 0, tzinfo=ET_TZ)  # Saturday
+        # CPI is weekdays only, so no blackout
+        # But we need to check the full is_blackout which checks all events
+        # None of our events fire on Saturday
+        assert not calendar.is_blackout(saturday)
+    
+    def test_is_blackout_during_fomc_wednesday(self):
+        """Test blackout during FOMC window on Wednesday."""
+        calendar = StaticEconCalendar()
+        
+        # 14:15 ET on Wednesday is during FOMC blackout
+        during_fomc = datetime(2026, 9, 9, 14, 15, 0, tzinfo=ET_TZ)  # Wednesday
         assert calendar.is_blackout(during_fomc)
+    
+    def test_no_fomc_blackout_thursday(self):
+        """Test no FOMC blackout on Thursday (FOMC is Wednesday only)."""
+        calendar = StaticEconCalendar()
+        
+        # 14:15 ET on Thursday should NOT be FOMC blackout
+        thursday = datetime(2026, 9, 10, 14, 15, 0, tzinfo=ET_TZ)  # Thursday
+        assert not calendar.is_blackout(thursday)
     
     def test_no_blackout_normal_hours(self):
         """Test no blackout during normal trading hours."""

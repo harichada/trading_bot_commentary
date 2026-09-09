@@ -985,6 +985,7 @@ class FreeNewsSignalStrategy(TradingStrategyWithCommentary):
                         max_age_sec=_cfg_gate.NEWS_GATE_MAX_AGE_SEC,
                         source_tier_floor=_cfg_gate.NEWS_GATE_SOURCE_TIER_FLOOR,
                         min_corroboration=_cfg_gate.NEWS_GATE_MIN_CORROBORATION,
+                        single_source_multiplier=_cfg_gate.NEWS_GATE_SINGLE_SOURCE_MULTIPLIER,
                     )
                     
                     # Log the gate decision
@@ -1025,12 +1026,14 @@ class FreeNewsSignalStrategy(TradingStrategyWithCommentary):
                     
                     _news_gate_multiplier = _news_gate_result.size_multiplier
                 except Exception as _gate_exc:
-                    # Gate failure is non-fatal — log and continue
-                    logger.debug(f"news gate exception for {symbol}: {_gate_exc}")
+                    # v-newsbus-gates-2026-09-09: fail-closed on gate exception
+                    # Cap size at single-source multiplier instead of allowing full size
+                    logger.warning(f"news gate exception for {symbol}, fail-closed: {_gate_exc}")
                     self._log_decision(
-                        market_data, "news_gate", "error",
+                        market_data, "news_gate", "error_fail_closed",
                         err=str(_gate_exc)[:80],
                     )
+                    _news_gate_multiplier = _cfg_gate.NEWS_GATE_SINGLE_SOURCE_MULTIPLIER
 
             # v-news-verifier-toggle-2026-04-29: gate verifier behind config.
             # When disabled, news_strategy fires on cached sentiment alone
