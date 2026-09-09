@@ -351,14 +351,22 @@ def build_snapshot(
     )
 
 
-# Feature flag for inference (logging always on, inference gated)
-FEATURE_SNAPSHOT_LOGGING_ENABLED = True
-FEATURE_SNAPSHOT_INFERENCE_ENABLED = False  # OFF by default
+# v-feature-snapshot-config-2026-09-09: module constants kept for backward
+# compat; actual flags now live in Config with env override.
+FEATURE_SNAPSHOT_LOGGING_ENABLED = True   # Deprecated: use Config().FEATURE_SNAPSHOT_LOGGING
+FEATURE_SNAPSHOT_INFERENCE_ENABLED = False  # Deprecated: use Config().FEATURE_SNAPSHOT_INFERENCE
 
 
 def is_snapshot_logging_enabled() -> bool:
-    """Check if snapshot logging is enabled."""
-    return FEATURE_SNAPSHOT_LOGGING_ENABLED
+    """Check if snapshot logging is enabled.
+    
+    v-feature-snapshot-config-2026-09-09: reads from Config with env override.
+    """
+    try:
+        from core.config import Config
+        return Config().FEATURE_SNAPSHOT_LOGGING
+    except Exception:
+        return FEATURE_SNAPSHOT_LOGGING_ENABLED
 
 
 def is_snapshot_inference_enabled() -> bool:
@@ -367,5 +375,11 @@ def is_snapshot_inference_enabled() -> bool:
     This is separate from logging — we can log snapshots for training
     without using them for live inference. Inference requires explicit
     opt-in via Config or environment variable.
+    
+    v-feature-snapshot-config-2026-09-09: reads from Config with env override.
     """
-    return FEATURE_SNAPSHOT_INFERENCE_ENABLED
+    try:
+        from core.config import Config
+        return Config().FEATURE_SNAPSHOT_INFERENCE
+    except Exception:
+        return FEATURE_SNAPSHOT_INFERENCE_ENABLED

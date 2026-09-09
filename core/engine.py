@@ -5555,12 +5555,27 @@ class TradingEngineWithCommentary:
         # user see strategy_decision logs during blackout.
         active_blackout = self._get_active_blackout()
         if active_blackout:
+            strategy_id = signal.reasoning.get("strategy", "unknown") if signal.reasoning else "unknown"
             self._audit("econ_blackout", signal.symbol, "skip", "blackout_soft_veto",
                         event=active_blackout.name,
                         event_type=active_blackout.event_type.value,
                         ends=active_blackout.end_time.strftime("%H:%M"),
                         remaining_min=round(active_blackout.remaining_minutes, 1),
-                        strategy=signal.reasoning.get("strategy", "unknown") if signal.reasoning else "unknown")
+                        strategy=strategy_id)
+            
+            # v-feature-snapshot-emit-2026-09-09: emit snapshot for blackout veto
+            self._emit_veto_snapshot(
+                signal=signal,
+                strategy_id=strategy_id,
+                reason="blackout_soft_veto",
+                gate_name="econ_blackout",
+                extra={
+                    "event_name": active_blackout.name,
+                    "event_type": active_blackout.event_type.value,
+                    "remaining_min": round(active_blackout.remaining_minutes, 1),
+                },
+            )
+            
             self.commentary.add_commentary(TradingCommentary(
                 timestamp=datetime.now(),
                 type=CommentaryType.RISK_ASSESSMENT,

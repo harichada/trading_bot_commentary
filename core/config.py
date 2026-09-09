@@ -1469,6 +1469,48 @@ class Config:
         territory where a bad streak can deplete equity fast."""
         return self.manager.get('trading.risk_per_trade_pct', 0.015)
 
+    # ──────────────────────────────────────────────────────────────────
+    # v-feature-snapshot-config-2026-09-09: decision snapshot feature flags.
+    # Moved from module constants in core/decision_snapshot.py to Config
+    # for runtime configurability via env vars or Config.yaml.
+    # ──────────────────────────────────────────────────────────────────
+
+    @property
+    def FEATURE_SNAPSHOT_LOGGING(self) -> bool:
+        """Enable snapshot logging for ML training data collection.
+        
+        When True, DecisionSnapshot objects are built and persisted to
+        the bot_decision_snapshots table on every strategy decision.
+        Zero inference cost — just data collection.
+        
+        Default True. Set via env FEATURE_SNAPSHOT_LOGGING=0 or
+        trading.feature_snapshot_logging: false in Config.yaml.
+        """
+        env_val = os.getenv("FEATURE_SNAPSHOT_LOGGING")
+        if env_val is not None:
+            return env_val.lower() not in ("0", "false", "no", "off")
+        return bool(self.manager.get('trading.feature_snapshot_logging', True))
+
+    @property
+    def FEATURE_SNAPSHOT_INFERENCE(self) -> bool:
+        """Enable snapshot-based inference for trade decisions.
+        
+        When True, the bot uses trained models on DecisionSnapshot
+        features to influence sizing or gate decisions. Requires a
+        trained model checkpoint at SNAPSHOT_MODEL_PATH.
+        
+        DANGER: Only enable after sufficient training data and
+        walk-forward validation. Default False — logging is on,
+        inference is off.
+        
+        Set via env FEATURE_SNAPSHOT_INFERENCE=1 or
+        trading.feature_snapshot_inference: true in Config.yaml.
+        """
+        env_val = os.getenv("FEATURE_SNAPSHOT_INFERENCE")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.feature_snapshot_inference', False))
+
 # Initialize configuration
 config = Config()
 # ============================================================================
