@@ -573,6 +573,105 @@ class TradingEngineWithCommentary:
                     position, "thesis_revalidation_broken"
                 )
 
+    async def _check_news_thesis_flip(
+        self, symbol: str, position, current_price: float
+    ) -> bool:
+        """v-newsbus-gates-2026-09-09: check if fresh news has flipped against position.
+        
+        Uses the NewsBus directly (no external API call) to detect when
+        sentiment has reversed against an open news-driven position.
+        
+        Returns True if the position should be flagged for exit (thesis flipped).
+        Returns False otherwise (no flip, non-news trade, or feature disabled).
+        
+        Gates:
+          - ENABLE_NEWS_THESIS_EXIT must be True
+          - Position must be from a news strategy
+          - Fresh news (< NEWS_GATE_MAX_AGE_SEC) must exist
+          - Sentiment must have flipped past NEWS_THESIS_EXIT_SENTIMENT_FLIP
+        """
+        cfg = Config()
+        if not cfg.ENABLE_NEWS_THESIS_EXIT:
+            return False
+        
+        # Only applies to news-driven positions
+        strategy = (getattr(position, 'reasoning', {}) or {}).get('strategy', '')
+        if 'news' not in strategy.lower():
+            return False
+        
+        # Need a NewsBus to check
+        if self._news_bus is None:
+            return False
+        
+        try:
+            # Get aggregate sentiment from fresh news
+            agg = await self._news_bus.get_aggregate_sentiment(
+                symbol,
+                max_age_sec=cfg.NEWS_GATE_MAX_AGE_SEC,
+            )
+            
+            if agg['article_count'] == 0:
+                return False  # No fresh news to evaluate
+            
+            avg_sentiment = agg['avg_sentiment']
+            flip_threshold = cfg.NEWS_THESIS_EXIT_SENTIMENT_FLIP
+            
+            # Detect flip: long needs bearish news, short needs bullish news
+            if position.side == 'long' and avg_sentiment < -flip_threshold:
+                self._audit(
+                    "news_thesis_flip", symbol, "flip_detected",
+                    "bearish_news_on_long",
+                    side=position.side,
+                    avg_sentiment=round(avg_sentiment, 3),
+                    flip_threshold=flip_threshold,
+                    article_count=agg['article_count'],
+                )
+                self.commentary.add_commentary(TradingCommentary(
+                    timestamp=datetime.now(),
+                    type=CommentaryType.WARNING,
+                    symbol=symbol,
+                    title=f"⚠️ News Thesis Flip — {symbol} LONG",
+                    message=(
+                        f"Fresh news sentiment has turned bearish ({avg_sentiment:+.2f}) "
+                        f"against your LONG position.\n"
+                        f"  Articles: {agg['article_count']}\n"
+                        f"  Flip threshold: {-flip_threshold:+.2f}\n"
+                        "Position flagged for early exit."
+                    ),
+                    importance=8,
+                ))
+                return True
+            
+            if position.side == 'short' and avg_sentiment > flip_threshold:
+                self._audit(
+                    "news_thesis_flip", symbol, "flip_detected",
+                    "bullish_news_on_short",
+                    side=position.side,
+                    avg_sentiment=round(avg_sentiment, 3),
+                    flip_threshold=flip_threshold,
+                    article_count=agg['article_count'],
+                )
+                self.commentary.add_commentary(TradingCommentary(
+                    timestamp=datetime.now(),
+                    type=CommentaryType.WARNING,
+                    symbol=symbol,
+                    title=f"⚠️ News Thesis Flip — {symbol} SHORT",
+                    message=(
+                        f"Fresh news sentiment has turned bullish ({avg_sentiment:+.2f}) "
+                        f"against your SHORT position.\n"
+                        f"  Articles: {agg['article_count']}\n"
+                        f"  Flip threshold: {flip_threshold:+.2f}\n"
+                        "Position flagged for early exit."
+                    ),
+                    importance=8,
+                ))
+                return True
+            
+            return False
+        except Exception as exc:
+            logger.debug(f"news_thesis_flip check error for {symbol}: {exc}")
+            return False
+
     def _is_auto_managed(self, position) -> bool:
         """v-managed-by-bot-2026-04-28: per-position auto-management gate.
 
@@ -6745,6 +6844,20 @@ class TradingEngineWithCommentary:
                         except Exception as exc:
                             logger.debug(f"thesis_revalidate error for {symbol}: {exc}")
 
+                        # --- News thesis flip check (v-newsbus-gates-2026-09-09) ---
+                        # Quick NewsBus-based sentiment flip detection. Fires when
+                        # fresh news sentiment has flipped against the position
+                        # direction (e.g., bullish news on a short position).
+                        # Gated by ENABLE_NEWS_THESIS_EXIT (default False).
+                        try:
+                            if await self._check_news_thesis_flip(symbol, position, current_price):
+                                await self._close_position_with_commentary(
+                                    position, "news_thesis_flip"
+                                )
+                                continue
+                        except Exception as exc:
+                            logger.debug(f"news_thesis_flip error for {symbol}: {exc}")
+
                     # ================================================================
                     # PROFESSIONAL EXIT MANAGER
                     # ================================================================
@@ -7991,20 +8104,16 @@ class TradingEngineWithCommentary:
             logger.error(f"Error updating real positions: {e}")
     
     def _is_news_blackout(self) -> bool:
-        """Check if we're in news blackout period"""
-        now = datetime.now()
+        """Check if we're in news blackout period.
         
-        # Economic calendar blackouts (EST)
-        blackouts = [
-            # (hour, minute, duration_minutes)
-            (8, 30, 15),   # CPI/Jobs
-            (10, 0, 15),   # Consumer confidence
-            (14, 0, 30),   # FOMC
-            (14, 30, 15),  # Powell speaks
-        ]
+        v-econ-calendar-2026-09-09: delegates to EconCalendarProvider.
+        Provider selection (in order):
+          1. API provider (if ECON_CALENDAR_API_URL env var is set)
+          2. Config provider (if trading.econ_calendar_events in yaml)
+          3. Static provider (hardcoded CPI/Jobs/FOMC/Fed times)
         
-        for hour, minute, duration in blackouts:
-            event_time = now.replace(hour=hour, minute=minute, second=0)
-            if event_time <= now <= event_time + timedelta(minutes=duration):
-                return True
-        return False
+        To customize blackout windows without code changes, add events
+        to Config.yaml under trading.econ_calendar_events.
+        """
+        from core.econ_calendar import get_econ_calendar
+        return get_econ_calendar().is_blackout()

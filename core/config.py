@@ -619,6 +619,91 @@ class Config:
         call; the benefit is observability. Set False to silence."""
         return bool(self.manager.get('trading.news_verifier_advisory', True))
 
+    # ── v-newsbus-gates-2026-09-09 ────────────────────────────────────
+    # News thesis gates: deterministic sizing based on freshness,
+    # source tier, and corroboration. See ARCHITECTURE.md §NewsBus.
+
+    @property
+    def NEWS_GATE_MAX_AGE_SEC(self) -> float:
+        """Maximum age in seconds for news to be considered fresh.
+        
+        News older than this vetoes the trade. Default 1800 (30 min).
+        Context: 30-min window is aggressive but appropriate for
+        intraday news plays. For swing trades or EOD entries, consider
+        raising to 3600-7200 (1-2h).
+        """
+        return float(self.manager.get('trading.news_gate_max_age_sec', 1800.0))
+
+    @property
+    def NEWS_GATE_SOURCE_TIER_FLOOR(self) -> int:
+        """Minimum acceptable source tier (1=best, 3=worst).
+        
+        Sources with tier > this are rejected.
+          tier 1: Yahoo Finance (curated, API-backed)
+          tier 2: Google News (aggregated, decent latency)
+          tier 3: MarketWatch scrape (unreliable, may lag)
+        
+        Default 2 — allows tiers 1-2; rejects scrape-only sources.
+        Set to 3 to allow all sources (not recommended for live).
+        """
+        return int(self.manager.get('trading.news_gate_source_tier_floor', 2))
+
+    @property
+    def NEWS_GATE_MIN_CORROBORATION(self) -> int:
+        """Minimum distinct sources for full position size.
+        
+        1 fresh source → 0.5× size (reduced confidence).
+        2+ fresh sources → 1.0× size (corroborated thesis).
+        
+        Default 2. Set to 1 to allow full size on single-source news
+        (increases risk of trading on rumor/error).
+        """
+        return int(self.manager.get('trading.news_gate_min_corroboration', 2))
+
+    @property
+    def NEWS_GATE_SINGLE_SOURCE_MULTIPLIER(self) -> float:
+        """Size multiplier for single-source fresh news.
+        
+        When only one source corroborates the thesis, we reduce
+        position size as a hedge against single-source error.
+        Default 0.5 (half size). Range 0.25-0.75 recommended.
+        """
+        return float(self.manager.get('trading.news_gate_single_source_multiplier', 0.5))
+
+    @property
+    def ENABLE_NEWS_THESIS_EXIT(self) -> bool:
+        """Enable thesis-break exit when news flips against position.
+        
+        v-newsbus-gates-2026-09-09: when enabled, open positions are
+        monitored for news that contradicts the entry thesis. If fresh
+        news sentiment flips direction (bullish→bearish for longs,
+        vice versa), the position is flagged for early exit.
+        
+        Default False — enable after validating on shadow data.
+        """
+        return bool(self.manager.get('trading.enable_news_thesis_exit', False))
+
+    @property
+    def NEWS_THESIS_EXIT_SENTIMENT_FLIP(self) -> float:
+        """Sentiment threshold for thesis-break detection.
+        
+        For a long position entered on sentiment +0.40, a flip is
+        detected when fresh sentiment falls below -NEWS_THESIS_EXIT_SENTIMENT_FLIP.
+        Default 0.15 — relatively tight; catches genuine reversals
+        without exiting on neutral noise.
+        """
+        return float(self.manager.get('trading.news_thesis_exit_sentiment_flip', 0.15))
+
+    # ── ENABLE_NEWS_VERIFIER promotion criteria ──────────────────────
+    # Research-approved floors for enabling the news verifier in live.
+    # See ARCHITECTURE.md §9 for full promotion criteria.
+    #
+    # Stage A: n≥80 verified signals, PF≥1.30
+    # Stage B: n≥200 verified signals, PF≥1.50
+    #
+    # ENABLE_NEWS_VERIFIER remains False by default until Stage B
+    # metrics are met in walk-forward validation.
+
     # ── v-side-classifier-config-2026-05-13 ───────────────────────────
     # Side-classifier subsystem flags. All default OFF so the live
     # trading path is unaffected until the operator explicitly opts in.

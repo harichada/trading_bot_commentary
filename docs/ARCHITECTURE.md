@@ -135,9 +135,80 @@ Every strategy decision logs:
 - `news_count`: number of items in the bus for that symbol
 - `news_source`: source of the freshest item
 
+### News Thesis Gates (v-newsbus-gates-2026-09-09)
+
+Deterministic sizing based on news quality:
+
+| Gate | Condition | Action |
+|------|-----------|--------|
+| **VETO_STALE** | Freshest news > `NEWS_GATE_MAX_AGE_SEC` (30 min) | Block trade |
+| **VETO_LOW_TIER** | All sources below `NEWS_GATE_SOURCE_TIER_FLOOR` | Block trade |
+| **VETO_NO_CORROBORATION** | Zero fresh articles | Block trade |
+| **REDUCED_SIZE** | Single source, fresh | 0.5× position size |
+| **FULL_SIZE** | Multi-source fresh OR high-impact single | 1.0× position size |
+
+Source tiers:
+- Tier 1: Yahoo Finance (API-backed, curated)
+- Tier 2: Google News (aggregated)
+- Tier 3: MarketWatch scrape (lowest reliability)
+
+Gate counters are tracked in `NewsBusStats` for observability.
+
 ---
 
-## 4. Autonomy Profiles
+## 4. News Verifier Promotion Criteria
+
+The `ENABLE_NEWS_VERIFIER` flag gates the fresh-news re-verification system.
+It is **disabled by default** (`False`) and should only be enabled after meeting
+research-validated promotion criteria.
+
+### Stage A: Initial Validation
+
+**Criteria:**
+- Minimum 80 verified signals in walk-forward validation
+- Profit Factor (PF) ≥ 1.30 on gated signals
+- No significant degradation in signal quality vs ungated baseline
+
+**Actions:**
+- Run `research/news_strategy_validation.py` with verifier enabled
+- Compare gated vs ungated signal outcomes
+- Track in `bot_shadow_news_vetoes` table
+
+### Stage B: Production Promotion
+
+**Criteria:**
+- Minimum 200 verified signals
+- Profit Factor (PF) ≥ 1.50 on gated signals
+- Win rate stable at 45-55%
+- Veto accuracy ≥ 60% (vetoed signals would have lost)
+
+**Actions:**
+- Set `ENABLE_NEWS_VERIFIER: true` in Config.yaml
+- Monitor via dashboard news verifier metrics
+- Maintain `NEWS_VERIFIER_ADVISORY: true` for first week post-promotion
+
+### Current Status
+
+```yaml
+# Config.yaml — DO NOT CHANGE unless Stage B criteria met
+trading:
+  enable_news_verifier: false        # Disabled until n≥200, PF≥1.50
+  news_verifier_advisory: true       # Logging verdicts for Stage A data collection
+```
+
+### Metrics Collection
+
+While disabled, advisory mode logs every verifier verdict:
+```
+engine_decision component=news_verifier_advisory action=advisory 
+  reason=<verdict> fresh_count=N latest_age_min=...
+```
+
+Use `scripts/analyze_news_vetoes.py` (future) to compute promotion metrics.
+
+---
+
+## 5. Autonomy Profiles
 
 The bot supports two operating profiles, selected via config or environment:
 
@@ -192,7 +263,58 @@ watching the dashboard.
 
 ---
 
-## 5. Explicit Non-Goals
+## 6. Economic Calendar Blackouts
+
+The bot pauses new entries during high-impact economic events (CPI, FOMC, etc.)
+via the `EconCalendarProvider` interface.
+
+### Provider Hierarchy
+
+1. **ApiEconCalendar**: Uses external API (Trading Economics, etc.) if `ECON_CALENDAR_API_URL` is set
+2. **ConfigEconCalendar**: Reads events from `Config.yaml` under `trading.econ_calendar_events`
+3. **StaticEconCalendar** (default): Hardcoded daily event times
+
+### Configuration
+
+```yaml
+trading:
+  econ_calendar_events:
+    - name: "CPI Release"
+      type: cpi
+      time: "08:30"
+      duration: 15
+    - name: "FOMC Decision"
+      type: fomc
+      time: "14:00"
+      duration: 30
+    - name: "Powell Speech"
+      type: fed_speech
+      time: "14:30"
+      duration: 15
+```
+
+### Default Blackout Windows (Static Provider)
+
+| Event | Time (ET) | Duration |
+|-------|-----------|----------|
+| CPI/Jobs Report | 08:30 | 15 min |
+| Consumer Confidence | 10:00 | 15 min |
+| FOMC Rate Decision | 14:00 | 30 min |
+| Fed Chair Speech | 14:30 | 15 min |
+
+### Future API Integration
+
+Set environment variables to use a real calendar API:
+```bash
+ECON_CALENDAR_API_URL=https://api.tradingeconomics.com/calendar
+ECON_CALENDAR_API_KEY=your_api_key
+```
+
+The API provider falls back to static if the API is unavailable.
+
+---
+
+## 7. Explicit Non-Goals
 
 This system is designed for disciplined, measurable, rule-based trading.
 The following are **explicitly out of scope**:
@@ -235,7 +357,7 @@ positive expectancy under specific market regimes, but:
 
 ---
 
-## 6. Success Metrics
+## 8. Success Metrics
 
 These metrics define what "working correctly" means:
 
@@ -281,7 +403,7 @@ Every trade entry must log:
 
 ---
 
-## 7. Configuration Reference
+## 9. Configuration Reference
 
 ### Profile-Related Settings
 
@@ -333,7 +455,7 @@ news:
 
 ---
 
-## 8. Appendix: FSM Exit States
+## 10. Appendix: FSM Exit States
 
 ```
                     ┌──────────────────────────────────────────┐

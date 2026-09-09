@@ -233,6 +233,28 @@ class RiskManagerWithCommentary:
                 except (TypeError, ValueError):
                     pass  # bad value → skip the multiplier, don't crash
 
+        # v-newsbus-gates-2026-09-09: scale position by the news gate
+        # multiplier (0.5 for single-source, 1.0 for corroborated).
+        # Applied AFTER market_context but BEFORE live_mult.
+        if signal.reasoning:
+            ng_mult = signal.reasoning.get('news_gate_multiplier')
+            if ng_mult is not None and ng_mult != 1.0:
+                try:
+                    ng_mult = float(ng_mult)
+                    if 0.1 <= ng_mult <= 1.0:  # sanity-clamp (never scale UP)
+                        old_size = position_size
+                        position_size = max(1, int(position_size * ng_mult))
+                        logger.info(
+                            "news_gate_multiplier symbol=%s mult=%.2f "
+                            "action=%s corroboration=%s old=%d new=%d",
+                            signal.symbol, ng_mult,
+                            signal.reasoning.get('news_gate_action', '?'),
+                            signal.reasoning.get('news_gate_corroboration', '?'),
+                            old_size, position_size,
+                        )
+                except (TypeError, ValueError):
+                    pass
+
         # v-live-launch-safety-dial-2026-05-23: global live-launch dial,
         # composed AFTER per-strategy multipliers. Final sizing =
         # base * kelly * strategy_mult * live_mult. Default 1.0 (no
