@@ -317,6 +317,11 @@ class TradingEngineWithCommentary:
             self.strategies.append(MomentumStrategyWithCommentary(self.commentary))
         self.strategies.append(FreeNewsSignalStrategy(self.commentary))
         
+        # v-feature-snapshot-2026-09-09: wire engine ref on all strategies
+        # so they can emit DecisionSnapshots via db_logger
+        for strat in self.strategies:
+            strat._engine_ref = self
+        
 	    # Initialize brain and exit manager
         self.brain = TradingBrain()
         # v-brain-session-reset-2026-05-19: pull greed_level/fear_level 60%
@@ -737,6 +742,60 @@ class TradingEngineWithCommentary:
                 )
             except Exception:
                 pass  # never break trading loop for DB
+
+    def _emit_veto_snapshot(
+        self,
+        signal,
+        strategy_id: str,
+        reason: str,
+        gate_name: str,
+        extra: dict | None = None,
+    ) -> None:
+        """v-feature-snapshot-2026-09-09: emit DecisionSnapshot on engine-level veto.
+        
+        Called when a signal is vetoed by the signal router (ML veto, regime gate,
+        conviction floor, etc.). Fire-and-forget async write.
+        """
+        if self.db_logger is None:
+            return
+        try:
+            from core.decision_snapshot import (
+                DecisionAction, build_snapshot, is_snapshot_logging_enabled
+            )
+            if not is_snapshot_logging_enabled():
+                return
+            
+            # Extract what we can from the signal
+            indicators = {}
+            price = float(getattr(signal, "entry_price", 0) or 0)
+            if hasattr(signal, "reasoning") and signal.reasoning:
+                indicators = signal.reasoning.copy()
+            
+            snapshot = build_snapshot(
+                symbol=signal.symbol,
+                strategy_id=strategy_id,
+                action=DecisionAction.VETO,
+                reason=reason,
+                mode=self.mode.value,
+                gate_name=gate_name,
+                confidence=float(getattr(signal, "confidence", 0) or 0),
+                indicators=indicators,
+                price=price,
+                would_entry_price=float(getattr(signal, "entry_price", 0) or 0),
+                would_stop_loss=float(getattr(signal, "stop_loss", 0) or 0),
+                would_take_profit=float(getattr(signal, "take_profit", 0) or 0),
+                would_size_shares=int(getattr(signal, "position_size", 0) or 0),
+                extra=extra,
+            )
+            
+            try:
+                asyncio.get_event_loop().create_task(
+                    self.db_logger.log_decision_snapshot(snapshot)
+                )
+            except RuntimeError:
+                pass
+        except Exception as exc:
+            logger.debug("veto_snapshot_emit_error: %s", exc)
 
     # Add to rest brain - caution state:
     def reset_brain_state(self):
@@ -4042,6 +4101,14 @@ class TradingEngineWithCommentary:
         # so the dashboard showed uptime 0:00:00 forever.
         self.start_time = datetime.now()
 
+        # v-feature-snapshot-2026-09-09: ensure snapshot table exists
+        if self.db_logger is not None:
+            try:
+                await self.db_logger.ensure_snapshot_table()
+                logger.info("snapshot_table_ready")
+            except Exception as exc:
+                logger.warning("snapshot_table_create_failed: %s", exc)
+
         # v-startup-schwab-sync-2026-04-30: previously this branch only
         # ran in LIVE mode, so SIM-mode dashboards saw the default
         # $100,000 / $50,000 placeholder values for the entire 5-cycle
@@ -5259,6 +5326,14 @@ class TradingEngineWithCommentary:
                 ),
                 importance=7,
             ))
+            # v-feature-snapshot-2026-09-09: emit snapshot on regime veto
+            self._emit_veto_snapshot(
+                signal=signal,
+                strategy_id=_ra_strategy,
+                reason="regime_gate_meanrev",
+                gate_name="regime_gate",
+                extra={"tape": _alloc.tape, "er": _alloc.er, "threshold": _alloc.threshold},
+            )
             return  # abort the signal — no order placed
 
         # v-conviction-floor-meanrev-2026-06-17: skip mean-rev signals
@@ -6071,6 +6146,14 @@ class TradingEngineWithCommentary:
                 self._audit("ml", signal.symbol, "skip", "ml_veto_high_confidence",
                             ml_signal=ml_signal, ml_conf=round(ml_confidence, 3),
                             threshold=round(ml_veto_threshold, 3))
+                # v-feature-snapshot-2026-09-09: emit snapshot on ML veto
+                self._emit_veto_snapshot(
+                    signal=signal,
+                    strategy_id=signal.reasoning.get("strategy", "unknown") if signal.reasoning else "unknown",
+                    reason="ml_veto_high_confidence",
+                    gate_name="ml_veto",
+                    extra={"ml_signal": ml_signal, "ml_conf": ml_confidence, "threshold": ml_veto_threshold},
+                )
                 return
 
             # v-ml-advisor-2026-04-20: below the veto threshold, ML is an

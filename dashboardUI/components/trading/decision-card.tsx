@@ -46,6 +46,10 @@ export interface DecisionData {
   risks?: string[]
   source?: string
   wakeReason?: string
+  // v-feature-snapshot-2026-09-09: ML training snapshot reference
+  snapshotId?: string
+  snapshotTs?: string
+  snapshotStrategy?: string
 }
 
 interface DecisionCardContextValue {
@@ -140,6 +144,24 @@ function parseWakeReason(data: Record<string, unknown> | null | undefined): stri
   return typeof wake === "string" && wake.trim() ? wake.trim() : undefined
 }
 
+function parseSnapshotId(data: Record<string, unknown> | null | undefined): string | undefined {
+  if (!data) return undefined
+  const id = data.snapshot_id ?? data.snapshotId
+  return typeof id === "string" && id.trim() ? id.trim() : undefined
+}
+
+function parseSnapshotTs(data: Record<string, unknown> | null | undefined): string | undefined {
+  if (!data) return undefined
+  const ts = data.snapshot_ts ?? data.snapshotTs
+  return typeof ts === "string" && ts.trim() ? ts.trim() : undefined
+}
+
+function parseSnapshotStrategy(data: Record<string, unknown> | null | undefined): string | undefined {
+  if (!data) return undefined
+  const strat = data.snapshot_strategy ?? data.snapshotStrategy
+  return typeof strat === "string" && strat.trim() ? strat.trim() : undefined
+}
+
 function commentaryToDecision(commentary: Commentary): DecisionData {
   const data = commentary.data ?? {}
   const stanceRaw = data.stance ?? data.direction ?? data.action ?? data.signal ?? commentary.type
@@ -153,6 +175,9 @@ function commentaryToDecision(commentary: Commentary): DecisionData {
     risks: parseRisks(data),
     source: parseSource(data),
     wakeReason: parseWakeReason(data),
+    snapshotId: parseSnapshotId(data),
+    snapshotTs: parseSnapshotTs(data),
+    snapshotStrategy: parseSnapshotStrategy(data),
   }
 }
 
