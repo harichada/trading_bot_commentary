@@ -6,9 +6,11 @@ import {
   X,
   ExternalLink,
   ChevronRight,
-  Loader2
+  Loader2,
+  Brain
 } from "lucide-react"
 import { usePositions, fmtUsd } from "@/hooks/use-bot-data"
+import { useDecisionCard } from "@/components/trading/decision-card"
 import type { Position as ApiPosition } from "@/lib/api"
 
 interface Position {
@@ -24,6 +26,9 @@ interface Position {
   stopLoss?: number
   target?: number
   managedByBot?: boolean
+  side?: string
+  strategy?: string | null
+  updatedAt?: string | null
 }
 
 interface PositionsTableProps {
@@ -54,6 +59,9 @@ function apiToDisplayPosition(pos: ApiPosition): Position {
     stopLoss: pos.stop_loss > 0 ? pos.stop_loss : undefined,
     target: pos.take_profit > 0 ? pos.take_profit : undefined,
     managedByBot: pos.managed_by_bot,
+    side: pos.side,
+    strategy: pos.strategy,
+    updatedAt: pos.updated_at,
   }
 }
 
@@ -184,23 +192,7 @@ export function PositionsTable({
                     <ChangeCell value={position.change} />
                   </td>
                   <td className="text-right px-4 py-3">
-                    <div className="flex items-center justify-end gap-1.5">
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-7 w-7 p-0 text-muted-foreground hover:text-foreground"
-                      >
-                        <ExternalLink className="h-3.5 w-3.5" />
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-7 px-2.5 text-xs gap-1.5 text-muted-foreground hover:text-destructive"
-                      >
-                        <X className="h-3 w-3" />
-                        Close
-                      </Button>
-                    </div>
+                    <PositionActions position={position} />
                   </td>
                 </tr>
               ))}
@@ -208,6 +200,63 @@ export function PositionsTable({
           </table>
         )}
       </div>
+    </div>
+  )
+}
+
+function PositionActions({ position }: { position: Position }) {
+  const { openDecision } = useDecisionCard()
+
+  const handleViewDecision = () => {
+    const stance = position.side === "short" ? "short" : "long"
+    const keyFacts: Array<{ label: string; value: string }> = [
+      { label: "Entry Price", value: `$${position.avgCost.toFixed(2)}` },
+      { label: "Current Price", value: `$${position.current.toFixed(2)}` },
+      { label: "Quantity", value: position.shares.toLocaleString() },
+    ]
+    if (position.stopLoss) {
+      keyFacts.push({ label: "Stop Loss", value: `$${position.stopLoss.toFixed(2)}` })
+    }
+    if (position.target) {
+      keyFacts.push({ label: "Take Profit", value: `$${position.target.toFixed(2)}` })
+    }
+    openDecision({
+      symbol: position.symbol,
+      timestamp: position.updatedAt ?? new Date().toISOString(),
+      stance: stance as "long" | "short",
+      keyFacts,
+      source: position.strategy ?? undefined,
+    })
+  }
+
+  return (
+    <div className="flex items-center justify-end gap-1.5">
+      {position.managedByBot && (
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-7 w-7 p-0 text-accent hover:text-accent hover:bg-accent/10"
+          onClick={handleViewDecision}
+          title="View decision"
+        >
+          <Brain className="h-3.5 w-3.5" />
+        </Button>
+      )}
+      <Button
+        variant="ghost"
+        size="sm"
+        className="h-7 w-7 p-0 text-muted-foreground hover:text-foreground"
+      >
+        <ExternalLink className="h-3.5 w-3.5" />
+      </Button>
+      <Button
+        variant="ghost"
+        size="sm"
+        className="h-7 px-2.5 text-xs gap-1.5 text-muted-foreground hover:text-destructive"
+      >
+        <X className="h-3 w-3" />
+        Close
+      </Button>
     </div>
   )
 }
