@@ -2103,6 +2103,269 @@ async def get_positions_db():
         return {"status": "error", "message": str(e)}
 
 
+# ============================================================================
+# DECISION SNAPSHOT API — v-feature-snapshot-2026-09-09
+# Exposes decision snapshots for ML training pipelines and tooling.
+# ============================================================================
+
+@app.get("/api/decision-snapshots")
+async def get_decision_snapshots(
+    symbol: str = None,
+    strategy_id: str = None,
+    action: str = None,
+    limit: int = 100,
+    offset: int = 0,
+    since: str = None,
+):
+    """v-feature-snapshot-2026-09-09: query decision snapshots for ML training.
+    
+    Returns machine-readable snapshots capturing what the bot saw at each
+    decision point (signal, skip, veto). These snapshots are the training
+    data for GPU-based policy models.
+    
+    Query params:
+        symbol: Filter by ticker symbol
+        strategy_id: Filter by strategy name
+        action: Filter by action (signal_buy, signal_sell, skip, veto, error)
+        limit: Max results (default 100, max 1000)
+        offset: Pagination offset
+        since: ISO timestamp — only return snapshots after this time
+    
+    Returns:
+        {
+            "status": "success",
+            "count": N,
+            "snapshots": [...]
+        }
+    
+    GPU inference sidecar integration:
+        Poll this endpoint or connect to the WebSocket for real-time snapshots.
+        Each snapshot contains price_vol (17-dim feature vector), news aggregate,
+        and regime context — ready for model input.
+    """
+    import os
+    from datetime import datetime
+    from sqlalchemy.ext.asyncio import create_async_engine
+    from sqlalchemy import text as sa_text
+    
+    limit = min(limit, 1000)
+    
+    # If engine has db_logger, use it
+    if trading_engine is not None and getattr(trading_engine, "db_logger", None) is not None:
+        try:
+            since_dt = datetime.fromisoformat(since) if since else None
+            snapshots = await trading_engine.db_logger.get_decision_snapshots(
+                symbol=symbol,
+                strategy_id=strategy_id,
+                action=action,
+                limit=limit,
+                offset=offset,
+                since=since_dt,
+            )
+            return {"status": "success", "count": len(snapshots), "snapshots": snapshots}
+        except Exception as e:
+            logger.error(f"Error querying snapshots via db_logger: {e}")
+    
+    # Fallback: direct DB query
+    dsn = os.environ.get("POSTGRES_DSN", "postgresql://rudra:rudra_dev_2024@localhost:5432/rudra_dev")
+    if "asyncpg" not in dsn:
+        dsn = dsn.replace("postgresql://", "postgresql+asyncpg://")
+    
+    try:
+        engine = create_async_engine(dsn, pool_size=1, max_overflow=0)
+        
+        filters = []
+        params = {"limit": limit, "offset": offset}
+        
+        if symbol:
+            filters.append("symbol = :symbol")
+            params["symbol"] = symbol.upper()
+        if strategy_id:
+            filters.append("strategy_id = :strategy_id")
+            params["strategy_id"] = strategy_id
+        if action:
+            filters.append("action = :action")
+            params["action"] = action
+        if since:
+            filters.append("ts >= :since")
+            params["since"] = since
+        
+        where = "WHERE " + " AND ".join(filters) if filters else ""
+        
+        async with engine.begin() as conn:
+            rows = (await conn.execute(
+                sa_text(f"""
+                    SELECT snapshot_id, symbol, ts, mode, strategy_id,
+                           action, reason, gate_name, confidence, price,
+                           price_vol_json, news_json, regime_json,
+                           would_entry_price, would_stop_loss, would_take_profit,
+                           would_size_shares, would_size_mult, extra_json
+                    FROM bot_decision_snapshots
+                    {where}
+                    ORDER BY ts DESC
+                    LIMIT :limit OFFSET :offset
+                """),
+                params,
+            )).mappings().all()
+        
+        await engine.dispose()
+        
+        import json
+        snapshots = []
+        for row in rows:
+            snapshots.append({
+                "snapshot_id": row["snapshot_id"],
+                "symbol": row["symbol"],
+                "ts": row["ts"].isoformat() if hasattr(row["ts"], "isoformat") else row["ts"],
+                "mode": row["mode"],
+                "strategy_id": row["strategy_id"],
+                "action": row["action"],
+                "reason": row["reason"],
+                "gate_name": row["gate_name"],
+                "confidence": row["confidence"],
+                "price_vol": json.loads(row["price_vol_json"]) if row["price_vol_json"] else {},
+                "news": json.loads(row["news_json"]) if row["news_json"] else {},
+                "regime": json.loads(row["regime_json"]) if row["regime_json"] else {},
+                "would_entry_price": row["would_entry_price"],
+                "would_stop_loss": row["would_stop_loss"],
+                "would_take_profit": row["would_take_profit"],
+                "would_size_shares": row["would_size_shares"],
+                "would_size_mult": row["would_size_mult"],
+                "extra": json.loads(row["extra_json"]) if row["extra_json"] else {},
+            })
+        
+        return {"status": "success", "count": len(snapshots), "snapshots": snapshots}
+        
+    except Exception as e:
+        logger.error(f"Error querying snapshots: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+@app.get("/api/features/{symbol}")
+async def get_symbol_features(symbol: str):
+    """v-feature-snapshot-2026-09-09: get the latest feature snapshot for a symbol.
+    
+    Returns the most recent DecisionSnapshot for the given symbol, with the
+    full feature vector (price_vol, news, regime) that can be fed directly
+    to a policy model.
+    
+    Returns:
+        {
+            "status": "success",
+            "symbol": "TSLA",
+            "snapshot": {...},
+            "feature_vector": [0.01, -0.02, ...]  // 17-dim price_vol vector
+        }
+    
+    GPU inference sidecar integration:
+        Call this endpoint to get the latest features for a symbol before
+        making an inference decision. The feature_vector is in the same
+        order as MLFeatureExtractor.feature_names.
+    """
+    import os
+    from sqlalchemy.ext.asyncio import create_async_engine
+    from sqlalchemy import text as sa_text
+    
+    symbol = symbol.upper()
+    
+    # If engine has db_logger, use it
+    if trading_engine is not None and getattr(trading_engine, "db_logger", None) is not None:
+        try:
+            snapshot = await trading_engine.db_logger.get_latest_snapshot(symbol)
+            if snapshot:
+                # Extract feature vector from price_vol
+                pv = snapshot.get("price_vol", {})
+                feature_vector = [
+                    pv.get("returns_1", 0), pv.get("returns_5", 0), pv.get("returns_20", 0),
+                    pv.get("price_vs_sma20", 0), pv.get("price_vs_sma50", 0),
+                    pv.get("rsi", 0.5), pv.get("macd", 0), pv.get("macd_signal", 0), pv.get("macd_hist", 0),
+                    pv.get("bb_position", 0.5), pv.get("bb_width", 0),
+                    pv.get("volume_ratio", 1), pv.get("volume_std_ratio", 0), pv.get("volume_trend", 0),
+                    pv.get("atr_ratio", 0), pv.get("high_low_ratio", 0), pv.get("std_dev_ratio", 0),
+                ]
+                return {
+                    "status": "success",
+                    "symbol": symbol,
+                    "snapshot": snapshot,
+                    "feature_vector": feature_vector,
+                }
+            return {"status": "success", "symbol": symbol, "snapshot": None, "feature_vector": None}
+        except Exception as e:
+            logger.error(f"Error getting features via db_logger: {e}")
+    
+    # Fallback: direct DB query
+    dsn = os.environ.get("POSTGRES_DSN", "postgresql://rudra:rudra_dev_2024@localhost:5432/rudra_dev")
+    if "asyncpg" not in dsn:
+        dsn = dsn.replace("postgresql://", "postgresql+asyncpg://")
+    
+    try:
+        engine = create_async_engine(dsn, pool_size=1, max_overflow=0)
+        
+        async with engine.begin() as conn:
+            row = (await conn.execute(
+                sa_text("""
+                    SELECT snapshot_id, symbol, ts, mode, strategy_id,
+                           action, reason, gate_name, confidence, price,
+                           price_vol_json, news_json, regime_json,
+                           would_entry_price, would_stop_loss, would_take_profit,
+                           would_size_shares, would_size_mult, extra_json
+                    FROM bot_decision_snapshots
+                    WHERE symbol = :symbol
+                    ORDER BY ts DESC
+                    LIMIT 1
+                """),
+                {"symbol": symbol},
+            )).mappings().first()
+        
+        await engine.dispose()
+        
+        if not row:
+            return {"status": "success", "symbol": symbol, "snapshot": None, "feature_vector": None}
+        
+        import json
+        pv = json.loads(row["price_vol_json"]) if row["price_vol_json"] else {}
+        feature_vector = [
+            pv.get("returns_1", 0), pv.get("returns_5", 0), pv.get("returns_20", 0),
+            pv.get("price_vs_sma20", 0), pv.get("price_vs_sma50", 0),
+            pv.get("rsi", 0.5), pv.get("macd", 0), pv.get("macd_signal", 0), pv.get("macd_hist", 0),
+            pv.get("bb_position", 0.5), pv.get("bb_width", 0),
+            pv.get("volume_ratio", 1), pv.get("volume_std_ratio", 0), pv.get("volume_trend", 0),
+            pv.get("atr_ratio", 0), pv.get("high_low_ratio", 0), pv.get("std_dev_ratio", 0),
+        ]
+        
+        snapshot = {
+            "snapshot_id": row["snapshot_id"],
+            "symbol": row["symbol"],
+            "ts": row["ts"].isoformat() if hasattr(row["ts"], "isoformat") else row["ts"],
+            "mode": row["mode"],
+            "strategy_id": row["strategy_id"],
+            "action": row["action"],
+            "reason": row["reason"],
+            "gate_name": row["gate_name"],
+            "confidence": row["confidence"],
+            "price_vol": pv,
+            "news": json.loads(row["news_json"]) if row["news_json"] else {},
+            "regime": json.loads(row["regime_json"]) if row["regime_json"] else {},
+            "would_entry_price": row["would_entry_price"],
+            "would_stop_loss": row["would_stop_loss"],
+            "would_take_profit": row["would_take_profit"],
+            "would_size_shares": row["would_size_shares"],
+            "would_size_mult": row["would_size_mult"],
+            "extra": json.loads(row["extra_json"]) if row["extra_json"] else {},
+        }
+        
+        return {
+            "status": "success",
+            "symbol": symbol,
+            "snapshot": snapshot,
+            "feature_vector": feature_vector,
+        }
+        
+    except Exception as e:
+        logger.error(f"Error querying features: {e}")
+        return {"status": "error", "message": str(e)}
+
+
 @app.post("/api/reset-pnl")
 async def reset_pnl():
     """Reset P&L values when they're incorrect"""

@@ -447,6 +447,210 @@ class DbLogger:
         except Exception as exc:
             logger.warning("db_logger_delete_position_error err=%s", exc)
 
+    # =========================================================================
+    # v-feature-snapshot-2026-09-09: Decision snapshots for ML training
+    # =========================================================================
+    async def log_decision_snapshot(self, snapshot) -> None:
+        """v-feature-snapshot-2026-09-09: persist a DecisionSnapshot for ML training.
+        
+        Table: bot_decision_snapshots
+        - snapshot_id (TEXT PK): deterministic hash for deduplication
+        - symbol, ts, mode, strategy_id, action, reason, gate_name
+        - confidence, price
+        - price_vol_json: PriceVolumeFeatures as JSON
+        - news_json: NewsAggregate as JSON
+        - regime_json: RegimeContext as JSON
+        - would_entry_price, would_stop_loss, would_take_profit
+        - would_size_shares, would_size_mult
+        - extra_json: strategy-specific extras
+        
+        Never raises. Fire-and-forget.
+        """
+        if not self._enabled:
+            return
+        try:
+            from core.decision_snapshot import is_snapshot_logging_enabled
+            if not is_snapshot_logging_enabled():
+                return
+        except ImportError:
+            return
+        
+        try:
+            snap_dict = snapshot.to_dict()
+            async with self._engine.begin() as conn:
+                await conn.execute(
+                    text("""
+                        INSERT INTO bot_decision_snapshots
+                            (snapshot_id, symbol, ts, mode, strategy_id,
+                             action, reason, gate_name, confidence, price,
+                             price_vol_json, news_json, regime_json,
+                             would_entry_price, would_stop_loss, would_take_profit,
+                             would_size_shares, would_size_mult, extra_json)
+                        VALUES
+                            (:snapshot_id, :symbol, :ts, :mode, :strategy_id,
+                             :action, :reason, :gate_name, :confidence, :price,
+                             :price_vol_json, :news_json, :regime_json,
+                             :would_entry_price, :would_stop_loss, :would_take_profit,
+                             :would_size_shares, :would_size_mult, :extra_json)
+                        ON CONFLICT (snapshot_id) DO NOTHING
+                    """),
+                    {
+                        "snapshot_id": snap_dict["snapshot_id"],
+                        "symbol": snap_dict["symbol"],
+                        "ts": snap_dict["ts"],
+                        "mode": snap_dict["mode"],
+                        "strategy_id": snap_dict["strategy_id"],
+                        "action": snap_dict["action"],
+                        "reason": snap_dict["reason"],
+                        "gate_name": snap_dict.get("gate_name"),
+                        "confidence": snap_dict["confidence"],
+                        "price": snap_dict["price_vol"]["price"],
+                        "price_vol_json": json.dumps(snap_dict["price_vol"]),
+                        "news_json": json.dumps(snap_dict["news"]),
+                        "regime_json": json.dumps(snap_dict["regime"]),
+                        "would_entry_price": snap_dict.get("would_entry_price"),
+                        "would_stop_loss": snap_dict.get("would_stop_loss"),
+                        "would_take_profit": snap_dict.get("would_take_profit"),
+                        "would_size_shares": snap_dict.get("would_size_shares"),
+                        "would_size_mult": snap_dict.get("would_size_mult"),
+                        "extra_json": json.dumps(snap_dict.get("extra", {})),
+                    },
+                )
+        except Exception as exc:
+            logger.warning("db_logger_snapshot_error err=%s", exc)
+
+    async def get_decision_snapshots(
+        self,
+        symbol: str | None = None,
+        strategy_id: str | None = None,
+        action: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+        since: datetime | None = None,
+    ) -> list[dict]:
+        """v-feature-snapshot-2026-09-09: query decision snapshots.
+        
+        Returns list of snapshot dicts for ML training pipelines.
+        Filters are optional and combinable.
+        """
+        if not self._enabled:
+            return []
+        
+        try:
+            filters = []
+            params: dict = {"limit": limit, "offset": offset}
+            
+            if symbol:
+                filters.append("symbol = :symbol")
+                params["symbol"] = symbol
+            if strategy_id:
+                filters.append("strategy_id = :strategy_id")
+                params["strategy_id"] = strategy_id
+            if action:
+                filters.append("action = :action")
+                params["action"] = action
+            if since:
+                filters.append("ts >= :since")
+                params["since"] = since.isoformat()
+            
+            where = "WHERE " + " AND ".join(filters) if filters else ""
+            
+            async with self._engine.begin() as conn:
+                rows = (await conn.execute(
+                    text(f"""
+                        SELECT snapshot_id, symbol, ts, mode, strategy_id,
+                               action, reason, gate_name, confidence, price,
+                               price_vol_json, news_json, regime_json,
+                               would_entry_price, would_stop_loss, would_take_profit,
+                               would_size_shares, would_size_mult, extra_json
+                        FROM bot_decision_snapshots
+                        {where}
+                        ORDER BY ts DESC
+                        LIMIT :limit OFFSET :offset
+                    """),
+                    params,
+                )).mappings().all()
+            
+            result = []
+            for row in rows:
+                result.append({
+                    "snapshot_id": row["snapshot_id"],
+                    "symbol": row["symbol"],
+                    "ts": row["ts"].isoformat() if hasattr(row["ts"], "isoformat") else row["ts"],
+                    "mode": row["mode"],
+                    "strategy_id": row["strategy_id"],
+                    "action": row["action"],
+                    "reason": row["reason"],
+                    "gate_name": row["gate_name"],
+                    "confidence": row["confidence"],
+                    "price_vol": json.loads(row["price_vol_json"]) if row["price_vol_json"] else {},
+                    "news": json.loads(row["news_json"]) if row["news_json"] else {},
+                    "regime": json.loads(row["regime_json"]) if row["regime_json"] else {},
+                    "would_entry_price": row["would_entry_price"],
+                    "would_stop_loss": row["would_stop_loss"],
+                    "would_take_profit": row["would_take_profit"],
+                    "would_size_shares": row["would_size_shares"],
+                    "would_size_mult": row["would_size_mult"],
+                    "extra": json.loads(row["extra_json"]) if row["extra_json"] else {},
+                })
+            return result
+        except Exception as exc:
+            logger.warning("db_logger_get_snapshots_error err=%s", exc)
+            return []
+
+    async def get_latest_snapshot(self, symbol: str) -> dict | None:
+        """v-feature-snapshot-2026-09-09: get the most recent snapshot for a symbol."""
+        snapshots = await self.get_decision_snapshots(symbol=symbol, limit=1)
+        return snapshots[0] if snapshots else None
+
+    async def ensure_snapshot_table(self) -> None:
+        """v-feature-snapshot-2026-09-09: create bot_decision_snapshots table if missing.
+        
+        Called during engine init. Idempotent.
+        """
+        if not self._enabled:
+            return
+        try:
+            async with self._engine.begin() as conn:
+                await conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS bot_decision_snapshots (
+                        snapshot_id TEXT PRIMARY KEY,
+                        symbol TEXT NOT NULL,
+                        ts TIMESTAMPTZ NOT NULL,
+                        mode TEXT,
+                        strategy_id TEXT NOT NULL,
+                        action TEXT NOT NULL,
+                        reason TEXT,
+                        gate_name TEXT,
+                        confidence REAL,
+                        price REAL,
+                        price_vol_json JSONB,
+                        news_json JSONB,
+                        regime_json JSONB,
+                        would_entry_price REAL,
+                        would_stop_loss REAL,
+                        would_take_profit REAL,
+                        would_size_shares INTEGER,
+                        would_size_mult REAL,
+                        extra_json JSONB,
+                        created_at TIMESTAMPTZ DEFAULT NOW()
+                    )
+                """))
+                await conn.execute(text("""
+                    CREATE INDEX IF NOT EXISTS idx_snapshots_symbol_ts
+                    ON bot_decision_snapshots (symbol, ts DESC)
+                """))
+                await conn.execute(text("""
+                    CREATE INDEX IF NOT EXISTS idx_snapshots_strategy_ts
+                    ON bot_decision_snapshots (strategy_id, ts DESC)
+                """))
+                await conn.execute(text("""
+                    CREATE INDEX IF NOT EXISTS idx_snapshots_action
+                    ON bot_decision_snapshots (action)
+                """))
+        except Exception as exc:
+            logger.warning("db_logger_ensure_snapshot_table_error err=%s", exc)
+
 
 def _safe_json(value: Any) -> Any:
     """Coerce a value to JSON-serializable form."""
