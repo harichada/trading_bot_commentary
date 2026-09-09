@@ -272,7 +272,60 @@ via the `EconCalendarProvider` interface.
 
 1. **ApiEconCalendar**: Uses external API (Trading Economics, etc.) if `ECON_CALENDAR_API_URL` is set
 2. **ConfigEconCalendar**: Reads events from `Config.yaml` under `trading.econ_calendar_events`
-3. **StaticEconCalendar** (default): Hardcoded daily event times
+3. **DatedEconCalendar** (default): Uses actual event dates (v-econ-calendar-dated-2026-09-09)
+
+### CRITICAL: Dated vs Static Calendar (v-econ-calendar-dated-2026-09-09)
+
+**Problem fixed**: The original `StaticEconCalendar` treated EVERY Wednesday 14:00
+as FOMC and 14:30 as Fed speech using `days_of_week` patterns. This caused phantom
+blackouts on non-FOMC Wednesdays, freezing LIVE mode analysis while SIM ignored them.
+
+**Solution**: `DatedEconCalendar` is now the default. It uses actual event dates
+(e.g. 2026-09-17 for September FOMC) instead of weekday patterns. FOMC only happens
+8 times per year, not every Wednesday.
+
+**Static patterns are FORBIDDEN** for FOMC/Fed events. Use explicit dates via:
+- `DatedEconCalendar` (default, has 2026-2027 FOMC dates built-in)
+- `ConfigEconCalendar` with `date: "YYYY-MM-DD"` field per event
+
+### Blackout Behavior: LIVE vs SIM
+
+Both LIVE and SIM modes now handle blackouts consistently (v-econ-calendar-dated-2026-09-09):
+
+| Aspect | Old Behavior | New Behavior |
+|--------|--------------|--------------|
+| Analysis during blackout | LIVE: **skipped entirely** | LIVE: **continues** |
+| | SIM: ran normally | SIM: continues |
+| New entries during blackout | LIVE: blocked (by skip) | LIVE: **soft veto at signal router** |
+| | SIM: allowed | SIM: soft veto at signal router |
+| `strategy_decision` logs | LIVE: none during blackout | LIVE: **logged** (veto reason shown) |
+| | SIM: logged | SIM: logged |
+
+**Key principle**: Blackout blocks **new entries only**, not analysis. The bot
+continues to think, evaluate opportunities, and log decisions. It just doesn't
+place new orders during high-volatility news windows. This matches how a pro
+trading desk operates.
+
+### Observability
+
+When a blackout is active, the following are logged:
+
+1. **INFO-level log** in `_evaluate_trading_conditions`:
+   ```
+   econ_blackout_in_effect event=FOMC ends=14:30 ET remaining_min=15.0 — analysis continues, new entries blocked
+   ```
+
+2. **Commentary** visible in dashboard:
+   ```
+   📰 Econ Blackout Active — FOMC Rate Decision
+   Economic event blackout in effect until 14:30 ET (~15min remaining).
+   Analysis continues; new entries blocked at signal router.
+   ```
+
+3. **Audit log** when signal is vetoed:
+   ```
+   engine_decision component=econ_blackout action=skip reason=blackout_soft_veto event=FOMC ends=14:30
+   ```
 
 ### Configuration
 
@@ -283,24 +336,29 @@ trading:
       type: cpi
       time: "08:30"
       duration: 15
+      date: "2026-09-10"  # Explicit date (required for accurate blackouts)
     - name: "FOMC Decision"
       type: fomc
       time: "14:00"
       duration: 30
+      date: "2026-09-17"  # Explicit FOMC date (8 per year)
     - name: "Powell Speech"
       type: fed_speech
       time: "14:30"
-      duration: 15
+      duration: 45
+      date: "2026-09-17"  # Same day as FOMC
 ```
 
-### Default Blackout Windows (Static Provider)
+### Default Blackout Windows (DatedEconCalendar)
 
-| Event | Time (ET) | Duration |
-|-------|-----------|----------|
-| CPI/Jobs Report | 08:30 | 15 min |
-| Consumer Confidence | 10:00 | 15 min |
-| FOMC Rate Decision | 14:00 | 30 min |
-| Fed Chair Speech | 14:30 | 15 min |
+FOMC 2026 dates (announcement days at 14:00 ET):
+- Jan 29, Mar 19, May 7, Jun 18, Jul 30, Sep 17, Nov 5, Dec 17
+
+CPI releases (~10th-13th of each month at 08:30 ET):
+- Jan 14, Feb 12, Mar 11, Apr 10, May 13, Jun 10, Jul 14, Aug 12, Sep 10, Oct 13, Nov 12, Dec 10
+
+Jobs Report (first Friday of each month at 08:30 ET):
+- Automatically calculated
 
 ### Future API Integration
 
@@ -310,7 +368,7 @@ ECON_CALENDAR_API_URL=https://api.tradingeconomics.com/calendar
 ECON_CALENDAR_API_KEY=your_api_key
 ```
 
-The API provider falls back to static if the API is unavailable.
+The API provider falls back to `DatedEconCalendar` if the API is unavailable.
 
 ---
 

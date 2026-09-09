@@ -4746,7 +4746,22 @@ class TradingEngineWithCommentary:
                 logger.debug(f"Gap analysis error for {symbol}: {e}")
 
     async def _evaluate_trading_conditions(self) -> Tuple[bool, str]:
-        """Evaluate if we should trade with detailed reasoning"""
+        """Evaluate if we should trade with detailed reasoning.
+        
+        v-econ-calendar-dated-2026-09-09: Blackout check REMOVED from here.
+        Previously, a blackout would return (False, "Major economic news event"),
+        causing the ENTIRE analysis loop to be skipped in LIVE mode. This made
+        the bot appear frozen (no strategy_decision logs, no indicator updates).
+        
+        Now:
+          - Analysis ALWAYS runs (bot keeps thinking during blackout)
+          - Blackout blocks NEW ENTRIES only (soft veto in _process_signal_with_commentary)
+          - LIVE and SIM both behave consistently (blackout respected in both)
+        
+        This matches how a pro desk operates: analysts still evaluate opportunities
+        during news events, they just don't place new orders until the volatility
+        window passes.
+        """
         # In commentary mode, we always "trade" but don't execute real orders
         if self.mode == TradingMode.SIMULATION_WITH_COMMENTARY:
             if self.risk_manager.margin_call:
@@ -4765,8 +4780,38 @@ class TradingEngineWithCommentary:
                 ))
             return True, "Simulation mode - always analyze"
         
-        if self._is_news_blackout():
-            return False, "Major economic news event"
+        # v-econ-calendar-dated-2026-09-09: Blackout no longer blocks analysis.
+        # Check is moved to _process_signal_with_commentary as soft veto.
+        # Log active blackout at INFO level for observability but continue analysis.
+        active_blackout = self._get_active_blackout()
+        if active_blackout:
+            logger.info(
+                "econ_blackout_in_effect event=%s ends=%s remaining_min=%.1f "
+                "— analysis continues, new entries blocked",
+                active_blackout.name,
+                active_blackout.end_time.strftime("%H:%M ET"),
+                active_blackout.remaining_minutes,
+            )
+            self.commentary.add_commentary(TradingCommentary(
+                timestamp=datetime.now(),
+                type=CommentaryType.INFO,
+                symbol=None,
+                title=f"📰 Econ Blackout Active — {active_blackout.name}",
+                message=(
+                    f"Economic event blackout in effect until "
+                    f"{active_blackout.end_time.strftime('%H:%M ET')} "
+                    f"(~{active_blackout.remaining_minutes:.0f}min remaining). "
+                    f"Analysis continues; new entries blocked at signal router."
+                ),
+                data={
+                    'event_name': active_blackout.name,
+                    'event_type': active_blackout.event_type.value,
+                    'end_time': active_blackout.end_time.isoformat(),
+                    'remaining_minutes': active_blackout.remaining_minutes,
+                },
+                importance=7
+            ))
+        
         # For other modes, check actual conditions
         allowed, reason = self.risk_manager.check_trading_allowed()
         
@@ -5423,6 +5468,45 @@ class TradingEngineWithCommentary:
                     importance=5,
                 ))
                 return
+
+        # v-econ-calendar-dated-2026-09-09: Blackout soft veto on NEW ENTRIES.
+        # Analysis continues during blackout (bot keeps thinking/logging), but
+        # we block placing new orders until the high-impact news window passes.
+        # This matches how a pro desk operates: still evaluate opportunities,
+        # just don't enter new positions during wild volatility spikes.
+        #
+        # Unlike the old approach (which skipped the entire analysis loop in
+        # LIVE mode but not SIM), this is consistent across modes and lets the
+        # user see strategy_decision logs during blackout.
+        active_blackout = self._get_active_blackout()
+        if active_blackout:
+            self._audit("econ_blackout", signal.symbol, "skip", "blackout_soft_veto",
+                        event=active_blackout.name,
+                        event_type=active_blackout.event_type.value,
+                        ends=active_blackout.end_time.strftime("%H:%M"),
+                        remaining_min=round(active_blackout.remaining_minutes, 1),
+                        strategy=signal.reasoning.get("strategy", "unknown") if signal.reasoning else "unknown")
+            self.commentary.add_commentary(TradingCommentary(
+                timestamp=datetime.now(),
+                type=CommentaryType.RISK_ASSESSMENT,
+                symbol=signal.symbol,
+                title=f"📰 Econ Blackout — Holding Off Entry",
+                message=(
+                    f"Signal for {signal.symbol} received during economic event "
+                    f"'{active_blackout.name}' (until {active_blackout.end_time.strftime('%H:%M ET')}). "
+                    f"Blocking new entry to avoid volatility spike. "
+                    f"Analysis logged; will re-evaluate after window closes."
+                ),
+                data={
+                    'event_name': active_blackout.name,
+                    'event_type': active_blackout.event_type.value,
+                    'end_time': active_blackout.end_time.isoformat(),
+                    'remaining_minutes': active_blackout.remaining_minutes,
+                    'signal_type': signal.signal_type.value if hasattr(signal, 'signal_type') else 'unknown',
+                },
+                importance=6,
+            ))
+            return
 
         # v-early-session-soft-2026-04-30: soft veto on the first 15 minutes
         # after open. Indicators computed on <15 bars of post-open data are
@@ -8107,13 +8191,30 @@ class TradingEngineWithCommentary:
         """Check if we're in news blackout period.
         
         v-econ-calendar-2026-09-09: delegates to EconCalendarProvider.
+        v-econ-calendar-dated-2026-09-09: default changed to DatedEconCalendar
+        which uses real FOMC/CPI dates instead of every-Wednesday patterns.
+        
         Provider selection (in order):
           1. API provider (if ECON_CALENDAR_API_URL env var is set)
           2. Config provider (if trading.econ_calendar_events in yaml)
-          3. Static provider (hardcoded CPI/Jobs/FOMC/Fed times)
+          3. DatedEconCalendar (default, uses real event dates)
         
         To customize blackout windows without code changes, add events
         to Config.yaml under trading.econ_calendar_events.
         """
         from core.econ_calendar import get_econ_calendar
         return get_econ_calendar().is_blackout()
+    
+    def _get_active_blackout(self):
+        """Get details about the currently active blackout, if any.
+        
+        v-econ-calendar-dated-2026-09-09: Returns ActiveBlackout object with
+        event name, start/end times, and remaining duration for observability.
+        Returns None if no blackout is active.
+        
+        Used by:
+          - _evaluate_trading_conditions: INFO-level logging (analysis continues)
+          - _process_signal_with_commentary: soft veto on new entries
+        """
+        from core.econ_calendar import get_econ_calendar
+        return get_econ_calendar().get_active_event()
