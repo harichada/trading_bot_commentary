@@ -9379,23 +9379,80 @@ class TradingEngineWithCommentary:
                             _matching_order_id,
                         )
                     else:
-                        # Truly external — pre-existing or operator-opened.
-                        position = Position(
-                            symbol=symbol,
-                            entry_price=pos_data['average_price'],
-                            current_price=pos_data['current_price'],
-                            quantity=pos_data['quantity'],
-                            side='long' if pos_data['quantity'] > 0 else 'short',
-                            stop_loss=pos_data['average_price'] * (1 - Config().DEFAULT_STOP_LOSS_PCT),
-                            take_profit=pos_data['average_price'] * (1 + Config().DEFAULT_TAKE_PROFIT_PCT),
-                            entry_time=datetime.now() - timedelta(hours=1),
-                            unrealized_pnl=pos_data['total_pnl'],
-                            reasoning={'source': 'existing_position', 'tracked_from': datetime.now().isoformat()},
-                            mode="live",
-                            managed_by_bot=False,
+                        # v-ownership-survives-restart-2026-09-10: check saved
+                        # state before defaulting to external. At startup,
+                        # self.positions is empty so every Schwab position
+                        # lands here. Previously all were tagged external;
+                        # bot-opened positions lost managed_by_bot=True.
+                        # Restore ownership when saved record matches.
+                        _qty_abs = abs(pos_data['quantity'])
+                        _side = 'long' if pos_data['quantity'] > 0 else 'short'
+                        saved = getattr(self, '_saved_positions_meta', {}).get(symbol) or {}
+                        _restore_managed = (
+                            saved.get('managed_by_bot') is True
+                            and saved.get('side') == _side
+                            and abs(float(saved.get('quantity', -1)) - _qty_abs) < 1e-6
                         )
-                        position.is_external = True
-                        position.is_manually_managed = True
+                        # is_long_term positions stay hands-off regardless of
+                        # managed_by_bot flag — they're user-designated LT holds
+                        _is_lt = saved.get('is_long_term', False)
+                        
+                        if _restore_managed and not _is_lt:
+                            # Bot-opened trade — restore as managed
+                            try:
+                                _entry_time = datetime.fromisoformat(saved['entry_time'])
+                            except (KeyError, ValueError):
+                                _entry_time = datetime.now() - timedelta(hours=1)
+                            _tp = saved.get('take_profit')
+                            position = Position(
+                                symbol=symbol,
+                                entry_price=pos_data['average_price'],
+                                current_price=pos_data['current_price'],
+                                quantity=_qty_abs,
+                                side=_side,
+                                stop_loss=saved.get('stop_loss', 0) or 0,
+                                take_profit=float('inf') if _tp is None else _tp,
+                                entry_time=_entry_time,
+                                unrealized_pnl=pos_data['total_pnl'],
+                                reasoning=saved.get('reasoning') or {},
+                                mode="live",
+                                managed_by_bot=True,
+                                is_long_term=False,
+                            )
+                            position.is_external = False
+                            position.is_manually_managed = False
+                            if hasattr(self, '_audit'):
+                                self._audit(
+                                    "position_sync", symbol,
+                                    "position_ownership_restored",
+                                    "saved_state_identity_match_update_track",
+                                    side=_side, quantity=_qty_abs,
+                                    stop=saved.get('stop_loss', 0),
+                                    target=_tp,
+                                )
+                            logger.info(
+                                "update_track_restore: %s %s qty=%d — managed_by_bot=True from saved state",
+                                symbol, _side, _qty_abs,
+                            )
+                        else:
+                            # Truly external or is_long_term — hands off
+                            position = Position(
+                                symbol=symbol,
+                                entry_price=pos_data['average_price'],
+                                current_price=pos_data['current_price'],
+                                quantity=_qty_abs,
+                                side=_side,
+                                stop_loss=pos_data['average_price'] * (1 - Config().DEFAULT_STOP_LOSS_PCT),
+                                take_profit=pos_data['average_price'] * (1 + Config().DEFAULT_TAKE_PROFIT_PCT),
+                                entry_time=datetime.now() - timedelta(hours=1),
+                                unrealized_pnl=pos_data['total_pnl'],
+                                reasoning={'source': 'existing_position', 'tracked_from': datetime.now().isoformat()},
+                                mode="live",
+                                managed_by_bot=False,
+                                is_long_term=_is_lt,  # preserve LT flag from saved state
+                            )
+                            position.is_external = True
+                            position.is_manually_managed = True
                         self.positions[symbol] = position
                     
                     # Initialize exit tracking for existing positions
