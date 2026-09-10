@@ -1921,6 +1921,190 @@ class Config:
             return env_val.lower() in ("1", "true", "yes", "on")
         return bool(self.manager.get('trading.feature_snapshot_inference', False))
 
+    # ──────────────────────────────────────────────────────────────────
+    # v-orb-prototype-2026-09-10: ORB (Opening Range Breakout) + volatility
+    # contraction + relative volume (RVOL) prototype strategy.
+    #
+    # Hari APPROVED order: #1 ORB+contraction+RVOL → then #2 RVOL continuation
+    # → #3 Gao late-day. This is ONLY #1.
+    #
+    # CRITICAL Research+CoS lock: skip ORB ENTIRELY in risk_off (NOT size-down).
+    # If regime is risk_off, do not signal/enter ORB at all.
+    #
+    # Stage-A promotion floors (LOCKED — do NOT loosen):
+    #   n>=150 trades, >=10 sessions, PF>=1.30, WR>=48%, exp>=+0.05R,
+    #   DD<=6%, max losing day<=2R.
+    # ──────────────────────────────────────────────────────────────────
+
+    @property
+    def ENABLE_ORB_STRATEGY(self) -> bool:
+        """Enable the ORB + contraction + RVOL prototype strategy.
+        
+        v-orb-prototype-2026-09-10: Hari APPROVED product call.
+        
+        When True, the ORBContractionRVOLStrategy is activated and can
+        generate signals for sim/shadow analysis. LIVE order placement
+        is controlled separately by ORB_LIVE_ENTRIES_ENABLED.
+        
+        CRITICAL: This strategy HARD-SKIPS when regime is risk_off.
+        Unlike momentum which reduces size on risk_off, ORB does NOT
+        signal at all — ORB is an opening-range directional bet that
+        doesn't make sense when the market is in panic mode.
+        
+        Default False. Enable via env ENABLE_ORB_STRATEGY=1 or
+        trading.enable_orb_strategy: true in Config.yaml.
+        """
+        env_val = os.getenv("ENABLE_ORB_STRATEGY")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.enable_orb_strategy', False))
+
+    @property
+    def ORB_LIVE_ENTRIES_ENABLED(self) -> bool:
+        """Master switch for LIVE ORB entries.
+        
+        When False (default), the ORB strategy generates signals for
+        sim/shadow analysis but BLOCKS actual LIVE order placement.
+        
+        CRITICAL: Keep default False until Stage-A validation:
+          n>=150 trades, >=10 sessions, PF>=1.30, WR>=48%, exp>=+0.05R,
+          DD<=6%, max losing day<=2R.
+        
+        Default False. Set via env ORB_LIVE_ENTRIES_ENABLED=1 or
+        trading.orb_live_entries_enabled: true in Config.yaml.
+        """
+        env_val = os.getenv("ORB_LIVE_ENTRIES_ENABLED")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.orb_live_entries_enabled', False))
+
+    @property
+    def ORB_SIM_SHADOW_ENABLED(self) -> bool:
+        """Enable ORB strategy for sim/shadow soak testing.
+        
+        When True (default), ORB signals are generated and logged for
+        sim/shadow analysis even when ORB_LIVE_ENTRIES_ENABLED=False.
+        This allows paper testing and collecting performance data
+        before promoting to LIVE.
+        
+        Default True. Set trading.orb_sim_shadow_enabled: false to
+        disable completely (including sim/shadow).
+        """
+        env_val = os.getenv("ORB_SIM_SHADOW_ENABLED")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.orb_sim_shadow_enabled', True))
+
+    @property
+    def ORB_OPENING_RANGE_MINUTES(self) -> int:
+        """Duration of the opening range window in minutes.
+        
+        The opening range is the high/low of the first N minutes after
+        market open (09:30 ET). Classic ORB uses 15 or 30 minutes.
+        
+        Default 15 minutes. Set trading.orb_opening_range_minutes to
+        adjust (common values: 5, 15, 30).
+        """
+        return int(self.manager.get('trading.orb_opening_range_minutes', 15))
+
+    @property
+    def ORB_MIN_CONTRACTION_PCT(self) -> float:
+        """Minimum volatility contraction percentage for ORB entry.
+        
+        ORB works best after a volatility squeeze (contraction) followed
+        by an expansion (breakout). This is the minimum contraction %
+        vs the N-bar ATR before the strategy considers a setup valid.
+        
+        Calculation: (ATR_N - current_range) / ATR_N >= this threshold
+        
+        Default 0.20 (20% contraction). Higher = more selective, fewer
+        signals; lower = more signals, less filtered.
+        """
+        return float(self.manager.get('trading.orb_min_contraction_pct', 0.20))
+
+    @property
+    def ORB_MIN_RVOL(self) -> float:
+        """Minimum relative volume (RVOL) for ORB entry.
+        
+        RVOL = current_volume / average_volume. ORB breakouts need volume
+        confirmation to distinguish real moves from fakeouts.
+        
+        Default 1.2 (20% above average). Set trading.orb_min_rvol to adjust.
+        """
+        return float(self.manager.get('trading.orb_min_rvol', 1.2))
+
+    @property
+    def ORB_PRIMARY_SYMBOLS(self) -> list:
+        """Primary symbols for ORB strategy (SPY/QQQ first per Hari).
+        
+        Hari instruction: prefer SPY/QQQ first as primary symbols.
+        Liquid index ETFs have clean ORB setups with minimal spread/slippage.
+        
+        Default ['SPY', 'QQQ']. Extend via trading.orb_primary_symbols list.
+        """
+        default = ['SPY', 'QQQ']
+        configured = self.manager.get('trading.orb_primary_symbols', None)
+        if configured and isinstance(configured, list):
+            return configured
+        return default
+
+    @property
+    def ORB_ATR_STOP_MULTIPLIER(self) -> float:
+        """ATR multiplier for ORB stop-loss distance.
+        
+        ORB stops are typically tighter than swing trades — the opening
+        range itself provides a natural stop level (entry near the range
+        boundary, stop at the opposite boundary or slightly beyond).
+        
+        Default 1.0 (stop at 1.0x ATR from entry). Set trading.orb_atr_stop_multiplier.
+        """
+        return float(self.manager.get('trading.orb_atr_stop_multiplier', 1.0))
+
+    @property
+    def ORB_REWARD_RISK_RATIO(self) -> float:
+        """Reward:Risk ratio for ORB take-profit.
+        
+        Default 2.0 (2:1 R:R). Tighter than swing trades because ORB is
+        an intraday pattern that plays out quickly.
+        """
+        return float(self.manager.get('trading.orb_reward_risk_ratio', 2.0))
+
+    @property
+    def ORB_MAX_ENTRY_MINUTES_AFTER_OPEN(self) -> int:
+        """Maximum minutes after market open to take ORB entries.
+        
+        ORB is an opening-range strategy — entries taken too late lose
+        the edge (the range has already resolved). This gate prevents
+        chasing late setups.
+        
+        Default 60 (1 hour after open, i.e., by 10:30 ET). Set
+        trading.orb_max_entry_minutes_after_open to adjust.
+        """
+        return int(self.manager.get('trading.orb_max_entry_minutes_after_open', 60))
+
+    @property
+    def ORB_FLATTEN_BY_HOUR(self) -> int:
+        """Hour (ET) by which ORB positions should be flattened.
+        
+        ORB is an intraday pattern. Positions should close by EOD to
+        avoid overnight gap risk. The exit manager will trail more
+        aggressively after this hour.
+        
+        Default 15 (3 PM ET). Set trading.orb_flatten_by_hour to adjust.
+        """
+        return int(self.manager.get('trading.orb_flatten_by_hour', 15))
+
+    @property
+    def ORB_SIZE_MULTIPLIER(self) -> float:
+        """Size multiplier for ORB entries.
+        
+        Applied on top of Kelly sizing. During prototype phase, use
+        smaller size until Stage-A validation completes.
+        
+        Default 0.5 (half-size vs swing). Set trading.orb_size_multiplier.
+        """
+        return float(self.manager.get('trading.orb_size_multiplier', 0.5))
+
 # Initialize configuration
 config = Config()
 # ============================================================================
