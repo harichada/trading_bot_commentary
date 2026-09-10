@@ -957,6 +957,15 @@ class Config:
         return float(self.manager.get('trading.position_loop_sec', 1.0))
 
     @property
+    def ORDER_MONITOR_INTERVAL_SEC(self) -> float:
+        """v-order-monitor-2026-09-10: cadence of the WORKING bracket/OCO
+        order monitor loop. Polls Schwab for fills/cancels/rejects on
+        bot-managed brackets and syncs Position state. 5s default balances
+        responsiveness vs API rate. Lower only if bracket fills frequently
+        lag >5s behind market."""
+        return float(self.manager.get('trading.order_monitor_interval_sec', 5.0))
+
+    @property
     def QUOTE_REFRESH_SEC(self) -> float:
         """Cadence of the quote streamer per active symbol. 3s × 10
         symbols = ~3.3 req/s to Schwab. Tighten only if you have

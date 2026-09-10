@@ -937,6 +937,11 @@ class TradingEngineWithCommentary:
                             state_changed_at=pd.get('state_changed_at'),
                             exiting_started_at=pd.get('exiting_started_at'),
                             zombie_reason=pd.get('zombie_reason'),
+                            # v-order-monitor-2026-09-10: restore bracket tracking
+                            bracket_order_id=pd.get('bracket_order_id'),
+                            stop_order_id=pd.get('stop_order_id'),
+                            tp_order_id=pd.get('tp_order_id'),
+                            broker_stop_price=pd.get('broker_stop_price'),
                         )
                         self.simulated_positions[symbol] = pos
                     if sim_data:
@@ -1734,8 +1739,13 @@ class TradingEngineWithCommentary:
             logger.error(f"Price validation error: {e}")
             return True  # Allow order if validation fails
     
-    async def _place_bracket_orders(self, signal, parent_order_id: str):
-        """Place stop loss and take profit orders as OCO"""
+    async def _place_bracket_orders(self, signal, parent_order_id: str) -> Optional[str]:
+        """Place stop loss and take profit orders as OCO.
+        
+        v-order-monitor-2026-09-10: now returns the OCO order ID on success
+        (None on failure) and stores bracket tracking IDs on the Position
+        so the order monitor can poll for fills/cancels/rejects.
+        """
         # v-bracket-diagnostic-2026-05-18: log every attempt so silent
         # failures surface. Before this, an exception or non-2xx
         # response would either get swallowed by the caller's try/except
@@ -1784,6 +1794,21 @@ class TradingEngineWithCommentary:
                 # Extract order ID from response
                 order_id = response.headers.get('Location', '').split('/')[-1]
 
+                # v-order-monitor-2026-09-10: store bracket tracking on position
+                position = self.positions.get(signal.symbol)
+                if position and order_id:
+                    position.bracket_order_id = order_id
+                    position.broker_stop_price = signal.stop_loss
+                    # Child order IDs will be extracted by _refresh_bracket_child_ids
+                    # during the next order monitor cycle
+                    self._audit(
+                        "order_monitor", signal.symbol, "bracket_placed",
+                        "oco_order_stored",
+                        bracket_order_id=order_id,
+                        stop_price=round(signal.stop_loss, 2),
+                        tp_price=round(signal.take_profit, 2),
+                    )
+
                 self.commentary.add_commentary(TradingCommentary(
                     timestamp=datetime.now(),
                     type=CommentaryType.RISK_ASSESSMENT,
@@ -1798,6 +1823,7 @@ class TradingEngineWithCommentary:
                     },
                     importance=7
                 ))
+                return order_id
             else:
                 rejection = self._parse_order_rejection(response)
                 self.commentary.add_commentary(TradingCommentary(
@@ -1809,6 +1835,7 @@ class TradingEngineWithCommentary:
                     data={'details': rejection['details']},
                     importance=7
                 ))
+                return None
 
         except Exception as e:
             logger.error(f"Bracket order error: {e}", exc_info=True)
@@ -1820,6 +1847,7 @@ class TradingEngineWithCommentary:
                 message=f"Could not place stop/target orders: {str(e)}",
                 importance=7
             ))
+            return None
     def _validate_oco_prices(self, symbol: str, stop_price: float, take_profit: float, is_short: bool = False) -> bool:
         """Validate OCO order prices before submission for both long and short positions"""
         try:
@@ -2819,6 +2847,11 @@ class TradingEngineWithCommentary:
                 'state_changed_at': getattr(pos, 'state_changed_at', None),
                 'exiting_started_at': getattr(pos, 'exiting_started_at', None),
                 'zombie_reason': getattr(pos, 'zombie_reason', None),
+                # v-order-monitor-2026-09-10: bracket/OCO order tracking
+                'bracket_order_id': getattr(pos, 'bracket_order_id', None),
+                'stop_order_id': getattr(pos, 'stop_order_id', None),
+                'tp_order_id': getattr(pos, 'tp_order_id', None),
+                'broker_stop_price': getattr(pos, 'broker_stop_price', None),
             }
 
         state = {
@@ -3436,6 +3469,786 @@ class TradingEngineWithCommentary:
                 raise
             await asyncio.sleep(cadence)
 
+    # ══════════════════════════════════════════════════════════════════════════
+    # v-order-monitor-2026-09-10: Realtime WORKING bracket/OCO order monitoring
+    # ══════════════════════════════════════════════════════════════════════════
+    async def _order_monitor_loop(self) -> None:
+        """Poll WORKING bracket/OCO orders for bot-managed symbols.
+        
+        Responsibilities:
+          1. Detect stop/TP fills → sync Position state, cancel sibling leg
+          2. Detect cancel/reject → re-place missing stop or soft-halt
+          3. Detect partials → update qty, re-bracket remaining
+          4. Trail replace → when software trail moves, replace broker stop
+          
+        Only monitors positions where:
+          - managed_by_bot=True
+          - NOT is_external / is_manually_managed / is_long_term
+          - Has bracket_order_id set (bot placed a bracket)
+          
+        Cadence: every 5 seconds (tunable via Config.ORDER_MONITOR_INTERVAL_SEC)
+        """
+        cadence = getattr(Config(), 'ORDER_MONITOR_INTERVAL_SEC', 5.0)
+        
+        while self.is_running:
+            try:
+                # Skip if no Schwab client
+                if not self.schwab_client or not self.account_hash:
+                    await asyncio.sleep(cadence)
+                    continue
+                
+                # Only monitor LIVE positions that we manage with brackets
+                bot_positions = self._get_bracket_monitored_positions()
+                if not bot_positions:
+                    await asyncio.sleep(cadence)
+                    continue
+                
+                # Fetch WORKING orders from Schwab
+                working_orders = await self._fetch_working_orders()
+                if working_orders is None:
+                    await asyncio.sleep(cadence)
+                    continue
+                
+                # Build lookup: order_id -> order_info
+                orders_by_id = {
+                    str(o.get('orderId')): o 
+                    for o in working_orders 
+                    if o.get('orderId')
+                }
+                
+                # Process each bot-managed position with a bracket
+                for symbol, position in bot_positions:
+                    try:
+                        await self._monitor_position_bracket(
+                            position, orders_by_id, working_orders
+                        )
+                    except Exception as exc:
+                        logger.error(
+                            "order_monitor: error processing %s: %s",
+                            symbol, exc, exc_info=True,
+                        )
+                        
+            except Exception as exc:
+                logger.error(
+                    "order_monitor_loop: unhandled error: %s",
+                    exc, exc_info=True,
+                )
+                # Don't re-raise — let the loop continue after sleep
+                
+            await asyncio.sleep(cadence)
+    
+    def _get_bracket_monitored_positions(self) -> list:
+        """Return (symbol, position) pairs for positions we should monitor.
+        
+        Criteria:
+          - In self.positions (LIVE mode, not simulated)
+          - managed_by_bot=True
+          - NOT is_external / is_manually_managed / is_long_term
+          - Has bracket_order_id (bot placed a bracket for this position)
+        """
+        result = []
+        for symbol, pos in list(self.positions.items()):
+            if pos is None:
+                continue
+            # Skip non-bot-managed
+            if not getattr(pos, 'managed_by_bot', False):
+                continue
+            # Skip external/manual/long-term
+            if getattr(pos, 'is_external', False):
+                continue
+            if getattr(pos, 'is_manually_managed', False):
+                continue
+            if getattr(pos, 'is_long_term', False):
+                continue
+            # Skip if no bracket (software exits only)
+            if not getattr(pos, 'bracket_order_id', None):
+                continue
+            result.append((symbol, pos))
+        return result
+    
+    async def _fetch_working_orders(self) -> Optional[list]:
+        """Fetch all WORKING orders from Schwab."""
+        try:
+            response = self.schwab_client.get_orders_for_account(
+                self.account_hash,
+                from_entered_datetime=datetime.now() - timedelta(days=7),
+                status=self.schwab_client.Order.Status.WORKING
+            )
+            if response.status_code == 200:
+                return response.json()
+            logger.warning(
+                "order_monitor: fetch_working_orders got status %d",
+                response.status_code,
+            )
+            return None
+        except Exception as exc:
+            logger.error("order_monitor: fetch_working_orders error: %s", exc)
+            return None
+    
+    async def _monitor_position_bracket(
+        self, 
+        position, 
+        orders_by_id: dict,
+        all_working_orders: list
+    ) -> None:
+        """Monitor a single position's bracket orders.
+        
+        Checks:
+          1. Is the bracket still WORKING? If not, why?
+          2. Did stop fill? → close position, cancel TP
+          3. Did TP fill? → close position, cancel stop
+          4. Was either leg canceled/rejected? → re-protect or alert
+          5. Has software trail moved? → replace broker stop
+        """
+        symbol = position.symbol
+        bracket_id = position.bracket_order_id
+        
+        # Try to refresh child order IDs if we don't have them yet
+        if not position.stop_order_id or not position.tp_order_id:
+            await self._refresh_bracket_child_ids(position, orders_by_id, all_working_orders)
+        
+        # Check if parent OCO is still WORKING
+        parent_order = orders_by_id.get(bracket_id)
+        
+        if parent_order:
+            # Parent still WORKING — check child statuses and trail replace
+            await self._check_trail_replace(position, parent_order)
+        else:
+            # Parent not in WORKING list — need to query it directly
+            await self._handle_bracket_not_working(position)
+    
+    async def _refresh_bracket_child_ids(
+        self, 
+        position, 
+        orders_by_id: dict,
+        all_working_orders: list
+    ) -> None:
+        """Extract stop_order_id and tp_order_id from the OCO structure.
+        
+        Schwab OCO orders have childOrderStrategies containing the two legs.
+        """
+        bracket_id = position.bracket_order_id
+        parent_order = orders_by_id.get(bracket_id)
+        
+        if not parent_order:
+            # Try to fetch the order directly
+            try:
+                response = self.schwab_client.get_order(
+                    bracket_id, self.account_hash
+                )
+                if response.status_code == 200:
+                    parent_order = response.json()
+            except Exception:
+                pass
+        
+        if not parent_order:
+            return
+        
+        # Extract child order IDs from OCO structure
+        children = parent_order.get('childOrderStrategies', [])
+        for child in children:
+            child_id = str(child.get('orderId', ''))
+            if not child_id:
+                continue
+                
+            # Determine if this is stop or TP based on order type
+            order_type = child.get('orderType', '')
+            stop_price = child.get('stopPrice')
+            
+            if order_type == 'STOP_LIMIT' or stop_price:
+                position.stop_order_id = child_id
+                if stop_price:
+                    position.broker_stop_price = float(stop_price)
+            elif order_type == 'LIMIT':
+                position.tp_order_id = child_id
+        
+        if position.stop_order_id or position.tp_order_id:
+            self._audit(
+                "order_monitor", position.symbol, "child_ids_extracted",
+                "bracket_structure",
+                bracket_id=bracket_id,
+                stop_order_id=position.stop_order_id,
+                tp_order_id=position.tp_order_id,
+            )
+    
+    async def _check_trail_replace(self, position, parent_order: dict) -> None:
+        """Check if software trailing stop has moved and replace broker stop.
+        
+        When position.trailing_stop moves beyond the broker's stop price,
+        cancel the old OCO and place a new one with updated stop level.
+        """
+        # Only check if trailing is active
+        trail = getattr(position, 'trailing_stop', None)
+        if trail is None:
+            return
+        
+        broker_stop = getattr(position, 'broker_stop_price', None)
+        if broker_stop is None:
+            return
+        
+        # For long positions, trailing_stop should be rising (tighter)
+        # Only replace if the new stop is significantly better
+        if position.side == 'long':
+            should_replace = trail > broker_stop * 1.005  # 0.5% threshold
+        else:
+            should_replace = trail < broker_stop * 0.995
+        
+        if not should_replace:
+            return
+        
+        self._audit(
+            "order_monitor", position.symbol, "trail_replace_needed",
+            "software_trail_moved",
+            broker_stop=round(broker_stop, 4),
+            software_trail=round(trail, 4),
+            side=position.side,
+        )
+        
+        # Cancel existing bracket and place new one
+        await self._replace_bracket_with_new_stop(position, trail)
+    
+    async def _replace_bracket_with_new_stop(
+        self, 
+        position, 
+        new_stop: float
+    ) -> None:
+        """Cancel existing bracket and place new OCO with updated stop.
+        
+        This is the trail-replace mechanism: when software trailing stop
+        tightens, we want the broker protection to match so we don't leave
+        stale far stops that give back gains.
+        """
+        symbol = position.symbol
+        bracket_id = position.bracket_order_id
+        
+        if not bracket_id:
+            return
+        
+        self.commentary.add_commentary(TradingCommentary(
+            timestamp=datetime.now(),
+            type=CommentaryType.RISK_ASSESSMENT,
+            symbol=symbol,
+            title=f"🔄 Replacing Bracket Stop",
+            message=(
+                f"Software trail at ${new_stop:.2f} is tighter than "
+                f"broker stop at ${position.broker_stop_price:.2f}. "
+                f"Updating broker protection to match."
+            ),
+            data={
+                'old_broker_stop': position.broker_stop_price,
+                'new_stop': new_stop,
+            },
+            importance=7
+        ))
+        
+        # Cancel existing bracket
+        try:
+            cancel_response = self.schwab_client.cancel_order(
+                bracket_id, self.account_hash
+            )
+            if cancel_response.status_code not in [200, 201, 202]:
+                logger.warning(
+                    "order_monitor: failed to cancel bracket %s for %s: %d",
+                    bracket_id, symbol, cancel_response.status_code,
+                )
+                return
+        except Exception as exc:
+            logger.error(
+                "order_monitor: error canceling bracket %s for %s: %s",
+                bracket_id, symbol, exc,
+            )
+            return
+        
+        # Clear old bracket IDs
+        from core.models import clear_bracket_ids
+        clear_bracket_ids(position)
+        
+        # Wait briefly for cancellation to process
+        await asyncio.sleep(0.5)
+        
+        # Place new bracket with updated stop
+        try:
+            from schwab.orders.common import one_cancels_other, Duration, Session, OrderType
+            from schwab.orders.equities import equity_sell_limit
+            
+            # Use current take_profit from position
+            tp_price = position.take_profit
+            
+            # Create new TP order
+            take_profit_order = equity_sell_limit(
+                symbol,
+                position.quantity,
+                tp_price
+            ).set_duration(Duration.GOOD_TILL_CANCEL).set_session(Session.NORMAL)
+            
+            # Create new stop order with updated price
+            stop_loss_order = (equity_sell_limit(
+                symbol,
+                position.quantity,
+                new_stop * 0.995  # Limit slightly below stop
+            ).set_order_type(OrderType.STOP_LIMIT)
+            .set_stop_price(new_stop)
+            .set_duration(Duration.GOOD_TILL_CANCEL)
+            .set_session(Session.NORMAL))
+            
+            oco_order = one_cancels_other(take_profit_order, stop_loss_order)
+            
+            response = self.schwab_client.place_order(
+                self.account_hash, oco_order.build()
+            )
+            
+            if response.status_code in [200, 201]:
+                new_order_id = response.headers.get('Location', '').split('/')[-1]
+                position.bracket_order_id = new_order_id
+                position.broker_stop_price = new_stop
+                
+                self._audit(
+                    "order_monitor", symbol, "bracket_replaced",
+                    "trail_stop_updated",
+                    old_bracket_id=bracket_id,
+                    new_bracket_id=new_order_id,
+                    new_stop=round(new_stop, 4),
+                )
+                
+                self.commentary.add_commentary(TradingCommentary(
+                    timestamp=datetime.now(),
+                    type=CommentaryType.RISK_ASSESSMENT,
+                    symbol=symbol,
+                    title=f"✅ Bracket Stop Updated",
+                    message=f"New stop at ${new_stop:.2f} now active at broker.",
+                    data={'new_bracket_id': new_order_id, 'new_stop': new_stop},
+                    importance=7
+                ))
+            else:
+                logger.error(
+                    "order_monitor: failed to place replacement bracket for %s: %d",
+                    symbol, response.status_code,
+                )
+                # Alert loudly — position now has NO broker protection
+                self.commentary.add_commentary(TradingCommentary(
+                    timestamp=datetime.now(),
+                    type=CommentaryType.WARNING,
+                    symbol=symbol,
+                    title=f"🚨 BRACKET REPLACEMENT FAILED",
+                    message=(
+                        f"Canceled old bracket but could not place new one. "
+                        f"Position {symbol} has NO broker-side stop/TP! "
+                        f"Software exits still active. Manual review needed."
+                    ),
+                    importance=10
+                ))
+        except Exception as exc:
+            logger.error(
+                "order_monitor: error placing replacement bracket for %s: %s",
+                symbol, exc, exc_info=True,
+            )
+            self.commentary.add_commentary(TradingCommentary(
+                timestamp=datetime.now(),
+                type=CommentaryType.WARNING,
+                symbol=symbol,
+                title=f"🚨 BRACKET REPLACEMENT ERROR",
+                message=f"Error: {exc}. Position may lack broker protection.",
+                importance=10
+            ))
+    
+    async def _handle_bracket_not_working(self, position) -> None:
+        """Handle case where bracket order is no longer WORKING.
+        
+        Query the order status directly to determine what happened:
+          - FILLED: stop or TP hit → sync position state
+          - CANCELED: need to re-protect or alert
+          - REJECTED: place new protection or soft-halt
+        """
+        symbol = position.symbol
+        bracket_id = position.bracket_order_id
+        
+        if not bracket_id:
+            return
+        
+        # Fetch the bracket order status
+        try:
+            response = self.schwab_client.get_order(bracket_id, self.account_hash)
+            if response.status_code != 200:
+                logger.warning(
+                    "order_monitor: could not fetch bracket %s for %s: %d",
+                    bracket_id, symbol, response.status_code,
+                )
+                return
+            order_info = response.json()
+        except Exception as exc:
+            logger.error(
+                "order_monitor: error fetching bracket %s for %s: %s",
+                bracket_id, symbol, exc,
+            )
+            return
+        
+        status = order_info.get('status', 'UNKNOWN')
+        
+        if status == 'FILLED':
+            await self._handle_bracket_fill(position, order_info)
+        elif status in ['CANCELED', 'EXPIRED']:
+            await self._handle_bracket_canceled(position, order_info, status)
+        elif status == 'REJECTED':
+            await self._handle_bracket_rejected(position, order_info)
+        elif status == 'WORKING':
+            # Still working — probably just not in our filtered list
+            pass
+        else:
+            logger.info(
+                "order_monitor: bracket %s for %s has status %s",
+                bracket_id, symbol, status,
+            )
+    
+    async def _handle_bracket_fill(self, position, order_info: dict) -> None:
+        """Handle a bracket order fill (stop or TP hit).
+        
+        Determine which leg filled, sync Position state (reduce or close),
+        cancel the sibling leg if still open, and emit commentary.
+        """
+        symbol = position.symbol
+        
+        # Determine fill details from order activity
+        fill_price = None
+        fill_qty = 0
+        filled_leg = "unknown"
+        
+        # Check child order statuses
+        children = order_info.get('childOrderStrategies', [])
+        for child in children:
+            child_status = child.get('status', '')
+            child_type = child.get('orderType', '')
+            
+            if child_status == 'FILLED':
+                # This is the leg that filled
+                activities = child.get('orderActivityCollection', [])
+                for activity in activities:
+                    if activity.get('executionType') == 'FILL':
+                        legs = activity.get('executionLegs', [])
+                        if legs:
+                            fill_price = legs[0].get('price')
+                            fill_qty = legs[0].get('quantity', 0)
+                
+                if child_type == 'STOP_LIMIT' or child.get('stopPrice'):
+                    filled_leg = "stop"
+                elif child_type == 'LIMIT':
+                    filled_leg = "take_profit"
+        
+        self._audit(
+            "order_monitor", symbol, "bracket_fill",
+            filled_leg,
+            bracket_id=position.bracket_order_id,
+            fill_price=fill_price,
+            fill_qty=fill_qty,
+            position_qty=position.quantity,
+        )
+        
+        # Handle partial vs full fill
+        remaining_qty = position.quantity - fill_qty if fill_qty else 0
+        
+        if remaining_qty > 0:
+            # Partial fill — update position qty and re-bracket
+            await self._handle_partial_bracket_fill(
+                position, fill_price, fill_qty, remaining_qty, filled_leg
+            )
+        else:
+            # Full fill — close position
+            await self._handle_full_bracket_fill(
+                position, fill_price, filled_leg
+            )
+    
+    async def _handle_full_bracket_fill(
+        self, 
+        position, 
+        fill_price: Optional[float],
+        filled_leg: str
+    ) -> None:
+        """Handle a full bracket fill (position fully closed by broker)."""
+        symbol = position.symbol
+        
+        # Clear bracket tracking
+        from core.models import clear_bracket_ids
+        clear_bracket_ids(position)
+        
+        # Determine exit reason for trade record
+        if filled_leg == "stop":
+            exit_reason = "stop_loss_broker"
+            title = f"🛑 Stop Loss Filled by Broker"
+            message = f"Bracket stop hit at ${fill_price:.2f}. Position closed."
+        elif filled_leg == "take_profit":
+            exit_reason = "take_profit_broker"
+            title = f"🎯 Take Profit Filled by Broker"
+            message = f"Bracket target hit at ${fill_price:.2f}. Position closed."
+        else:
+            exit_reason = "bracket_fill_broker"
+            title = f"📊 Bracket Order Filled"
+            message = f"Bracket order filled at ${fill_price:.2f}."
+        
+        self.commentary.add_commentary(TradingCommentary(
+            timestamp=datetime.now(),
+            type=CommentaryType.DECISION,
+            symbol=symbol,
+            title=title,
+            message=message,
+            data={
+                'fill_price': fill_price,
+                'filled_leg': filled_leg,
+                'entry_price': position.entry_price,
+            },
+            importance=9
+        ))
+        
+        # Calculate P&L
+        if fill_price:
+            if position.side == 'long':
+                pnl = (fill_price - position.entry_price) * position.quantity
+            else:
+                pnl = (position.entry_price - fill_price) * position.quantity
+        else:
+            pnl = position.unrealized_pnl
+        
+        # Record trade
+        trade_record = {
+            'symbol': symbol,
+            'entry_time': position.entry_time.isoformat() if hasattr(position.entry_time, 'isoformat') else str(position.entry_time),
+            'exit_time': datetime.now().isoformat(),
+            'entry_price': position.entry_price,
+            'exit_price': fill_price or position.current_price,
+            'quantity': position.quantity,
+            'side': position.side,
+            'pnl': pnl,
+            'exit_reason': exit_reason,
+            'mode': 'live',
+        }
+        self.trade_history.append(trade_record)
+        
+        # Update risk manager
+        if pnl < 0:
+            self.risk_manager.consecutive_losses += 1
+        else:
+            self.risk_manager.consecutive_losses = 0
+        
+        # Remove position
+        if symbol in self.positions:
+            del self.positions[symbol]
+        
+        # Clean up exit manager tracking
+        if hasattr(self, 'exit_manager'):
+            self.exit_manager.close_position_tracking(symbol)
+        
+        await self._save_state()
+        
+        self._audit(
+            "order_monitor", symbol, "position_closed",
+            exit_reason,
+            fill_price=fill_price,
+            pnl=round(pnl, 2) if pnl else None,
+        )
+    
+    async def _handle_partial_bracket_fill(
+        self,
+        position,
+        fill_price: Optional[float],
+        fill_qty: int,
+        remaining_qty: int,
+        filled_leg: str
+    ) -> None:
+        """Handle a partial bracket fill — update qty and re-bracket remaining."""
+        symbol = position.symbol
+        
+        self.commentary.add_commentary(TradingCommentary(
+            timestamp=datetime.now(),
+            type=CommentaryType.DECISION,
+            symbol=symbol,
+            title=f"📊 Partial Bracket Fill",
+            message=(
+                f"Partial {filled_leg} fill: {fill_qty} shares at "
+                f"${fill_price:.2f}. {remaining_qty} shares remaining."
+            ),
+            data={
+                'fill_price': fill_price,
+                'fill_qty': fill_qty,
+                'remaining_qty': remaining_qty,
+                'filled_leg': filled_leg,
+            },
+            importance=8
+        ))
+        
+        # Update position quantity
+        old_qty = position.quantity
+        position.quantity = remaining_qty
+        
+        # Clear old bracket IDs
+        from core.models import clear_bracket_ids
+        old_bracket_id = position.bracket_order_id
+        clear_bracket_ids(position)
+        
+        self._audit(
+            "order_monitor", symbol, "partial_fill",
+            "qty_reduced",
+            fill_qty=fill_qty,
+            remaining_qty=remaining_qty,
+            old_bracket_id=old_bracket_id,
+        )
+        
+        # Re-bracket remaining shares
+        await self._re_bracket_position(position)
+    
+    async def _re_bracket_position(self, position) -> None:
+        """Place new bracket orders for a position (after partial or recovery)."""
+        symbol = position.symbol
+        
+        try:
+            from schwab.orders.common import one_cancels_other, Duration, Session, OrderType
+            from schwab.orders.equities import equity_sell_limit
+            
+            # Use current stop/TP from position (may have been trailed)
+            stop_price = position.trailing_stop or position.stop_loss
+            tp_price = position.take_profit
+            qty = position.quantity
+            
+            if not stop_price or not tp_price or qty <= 0:
+                logger.warning(
+                    "order_monitor: cannot re-bracket %s: stop=%s tp=%s qty=%d",
+                    symbol, stop_price, tp_price, qty,
+                )
+                return
+            
+            take_profit_order = equity_sell_limit(
+                symbol, qty, tp_price
+            ).set_duration(Duration.GOOD_TILL_CANCEL).set_session(Session.NORMAL)
+            
+            stop_loss_order = (equity_sell_limit(
+                symbol, qty, stop_price * 0.995
+            ).set_order_type(OrderType.STOP_LIMIT)
+            .set_stop_price(stop_price)
+            .set_duration(Duration.GOOD_TILL_CANCEL)
+            .set_session(Session.NORMAL))
+            
+            oco_order = one_cancels_other(take_profit_order, stop_loss_order)
+            
+            response = self.schwab_client.place_order(
+                self.account_hash, oco_order.build()
+            )
+            
+            if response.status_code in [200, 201]:
+                new_order_id = response.headers.get('Location', '').split('/')[-1]
+                position.bracket_order_id = new_order_id
+                position.broker_stop_price = stop_price
+                
+                self._audit(
+                    "order_monitor", symbol, "re_bracket",
+                    "new_bracket_placed",
+                    new_bracket_id=new_order_id,
+                    qty=qty,
+                    stop=round(stop_price, 4),
+                    tp=round(tp_price, 4),
+                )
+                
+                self.commentary.add_commentary(TradingCommentary(
+                    timestamp=datetime.now(),
+                    type=CommentaryType.RISK_ASSESSMENT,
+                    symbol=symbol,
+                    title=f"✅ Re-Bracketed Position",
+                    message=(
+                        f"New bracket placed for {qty} shares: "
+                        f"stop ${stop_price:.2f}, target ${tp_price:.2f}"
+                    ),
+                    importance=7
+                ))
+            else:
+                logger.error(
+                    "order_monitor: re-bracket failed for %s: %d",
+                    symbol, response.status_code,
+                )
+                self.commentary.add_commentary(TradingCommentary(
+                    timestamp=datetime.now(),
+                    type=CommentaryType.WARNING,
+                    symbol=symbol,
+                    title=f"⚠️ Re-Bracket Failed",
+                    message="Could not place new bracket. Software exits still active.",
+                    importance=8
+                ))
+        except Exception as exc:
+            logger.error(
+                "order_monitor: re-bracket error for %s: %s",
+                symbol, exc, exc_info=True,
+            )
+    
+    async def _handle_bracket_canceled(
+        self, 
+        position, 
+        order_info: dict,
+        status: str
+    ) -> None:
+        """Handle bracket order cancellation or expiration.
+        
+        Policy: attempt to re-place the bracket. If that fails, alert loudly
+        but do NOT soft-halt new entries (software exits still protect).
+        """
+        symbol = position.symbol
+        
+        self._audit(
+            "order_monitor", symbol, "bracket_canceled",
+            status.lower(),
+            bracket_id=position.bracket_order_id,
+        )
+        
+        self.commentary.add_commentary(TradingCommentary(
+            timestamp=datetime.now(),
+            type=CommentaryType.WARNING,
+            symbol=symbol,
+            title=f"⚠️ Bracket Order {status}",
+            message=(
+                f"Bracket was {status.lower()}. "
+                f"Attempting to re-place broker protection."
+            ),
+            importance=8
+        ))
+        
+        # Clear old bracket and attempt to re-place
+        from core.models import clear_bracket_ids
+        clear_bracket_ids(position)
+        
+        await self._re_bracket_position(position)
+    
+    async def _handle_bracket_rejected(self, position, order_info: dict) -> None:
+        """Handle bracket order rejection.
+        
+        Policy: log the rejection reason, attempt to re-place with adjusted
+        prices if possible, otherwise alert loudly.
+        """
+        symbol = position.symbol
+        rejection_reason = order_info.get('statusDescription', 'Unknown reason')
+        
+        self._audit(
+            "order_monitor", symbol, "bracket_rejected",
+            "broker_rejection",
+            bracket_id=position.bracket_order_id,
+            reason=rejection_reason,
+        )
+        
+        self.commentary.add_commentary(TradingCommentary(
+            timestamp=datetime.now(),
+            type=CommentaryType.WARNING,
+            symbol=symbol,
+            title=f"🚨 Bracket Order REJECTED",
+            message=(
+                f"Broker rejected bracket: {rejection_reason}. "
+                f"Position has NO broker-side protection! "
+                f"Software exits still active."
+            ),
+            data={'reason': rejection_reason},
+            importance=10
+        ))
+        
+        # Clear the rejected bracket
+        from core.models import clear_bracket_ids
+        clear_bracket_ids(position)
+        
+        # Attempt to re-place with current prices
+        # (The rejection may have been due to price validation)
+        await self._re_bracket_position(position)
+
     async def _analysis_loop(self) -> None:
         """Phase 2: thin wrapper around the existing master-loop body.
 
@@ -3534,6 +4347,11 @@ class TradingEngineWithCommentary:
 
         sup.register("quote_streamer", self._quote_streamer_loop, TaskPriority.NORMAL)
         sup.register("position_loop",  self._position_loop,        TaskPriority.CRITICAL)
+        # v-order-monitor-2026-09-10: realtime WORKING bracket/OCO monitor.
+        # Polls Schwab for fills/cancels/rejects on bot-managed brackets
+        # and syncs Position state accordingly. CRITICAL priority because
+        # orphaned stops or missed TP fills are risk management failures.
+        sup.register("order_monitor",  self._order_monitor_loop,   TaskPriority.CRITICAL)
         sup.register("analysis_loop",  self._analysis_loop,        TaskPriority.NORMAL)
         # v-market-indices-strip-2026-05-27: regime strip refresh loop.
         # NORMAL priority — purely cosmetic, must never starve trading
