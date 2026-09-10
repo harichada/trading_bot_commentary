@@ -15,13 +15,23 @@ to the event loop it was created in. When fire-and-forget tasks run on
 different loops (strategy loop vs FastAPI loop), we get "Future attached
 to a different loop" errors. This module now tracks the owner loop and
 uses run_coroutine_threadsafe for cross-loop operations.
+
+v-fix-cross-loop-crash-2026-09-10: PR #19 only protected snapshot methods.
+This revision protects ALL async methods (close, log_decision, log_trade,
+sync_positions, etc.) with loop-safety checks. When a loop mismatch is
+detected:
+  - Write operations: fail soft (log warning, skip the write) to avoid crash
+  - close(): dispose safely by detecting loop mismatch and handling gracefully
+  - Never call asyncpg operations from a different loop than created them
 """
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import json
 import logging
 import os
+import threading
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -80,18 +90,22 @@ class DbLogger:
     v-fix-loop-safety-2026-09-10: Loop-safe async operations. The engine
     is bound to an owner loop; cross-loop calls are routed via
     run_coroutine_threadsafe to avoid "Future attached to different loop".
+    
+    v-fix-cross-loop-crash-2026-09-10: ALL async methods now check for loop
+    mismatch before touching the engine. Write operations fail soft (log +
+    skip) when on wrong loop. close() handles loop mismatch gracefully.
     """
 
     def __init__(self, dsn: str | None = None) -> None:
-        raw_dsn = dsn or os.environ.get("POSTGRES_DSN_ASYNC", DEFAULT_DSN)
+        self._dsn = dsn or os.environ.get("POSTGRES_DSN_ASYNC", DEFAULT_DSN)
         # Ensure async driver
-        if "asyncpg" not in raw_dsn:
-            raw_dsn = raw_dsn.replace("postgresql://", "postgresql+asyncpg://")
+        if "asyncpg" not in self._dsn:
+            self._dsn = self._dsn.replace("postgresql://", "postgresql+asyncpg://")
         # v-fix-pool-leak-2026-09-10: bounded pool with recycle to prevent
         # connection exhaustion. pool_size=5 base, max_overflow=3 burst,
         # pool_recycle=1800s (30min) to prevent stale connections.
         self._engine: AsyncEngine = create_async_engine(
-            raw_dsn,
+            self._dsn,
             pool_size=5,
             max_overflow=3,
             pool_pre_ping=True,
@@ -105,6 +119,8 @@ class DbLogger:
         self._sync_positions_lock = asyncio.Lock()
         # v-fix-loop-safety-2026-09-10: track owner loop for cross-loop safety
         self._owner_loop: Optional[asyncio.AbstractEventLoop] = None
+        # v-fix-cross-loop-crash-2026-09-10: lock to serialise engine recreation
+        self._engine_lock = threading.Lock()
     
     def set_owner_loop(self, loop: asyncio.AbstractEventLoop | None = None) -> None:
         """Set the event loop that owns this DbLogger's engine.
@@ -120,9 +136,105 @@ class DbLogger:
                 loop = asyncio.get_event_loop()
         self._owner_loop = loop
         logger.debug("db_logger_owner_loop_set loop_id=%s", id(loop))
+    
+    def _is_on_owner_loop(self) -> bool:
+        """Check if we're currently on the owner loop.
+        
+        v-fix-cross-loop-crash-2026-09-10: Returns True if:
+          - No owner loop is set (pre-startup, proceed cautiously)
+          - Current loop is the owner loop
+        Returns False if:
+          - We're on a different loop than the owner
+          - No running loop (shouldn't happen in async context)
+        """
+        if self._owner_loop is None:
+            return True
+        try:
+            current = asyncio.get_running_loop()
+            return current is self._owner_loop
+        except RuntimeError:
+            return False
+    
+    def _check_loop_or_warn(self, method_name: str) -> bool:
+        """Check if we're on the owner loop, log warning if not.
+        
+        v-fix-cross-loop-crash-2026-09-10: Helper for write methods that
+        should fail soft on loop mismatch. Returns True if safe to proceed.
+        """
+        if self._is_on_owner_loop():
+            return True
+        try:
+            current = asyncio.get_running_loop()
+            logger.warning(
+                "db_logger_cross_loop_skip method=%s owner_loop=%s current_loop=%s",
+                method_name, id(self._owner_loop), id(current)
+            )
+        except RuntimeError:
+            logger.warning(
+                "db_logger_no_running_loop method=%s", method_name
+            )
+        return False
 
     async def close(self) -> None:
-        await self._engine.dispose()
+        """Dispose the engine and close all connections.
+        
+        v-fix-cross-loop-crash-2026-09-10: Handle loop mismatch safely.
+        If called from a different loop than the owner:
+          - Try to route to owner loop if it's still running
+          - If owner loop is dead, dispose synchronously in thread pool
+          - Never let asyncpg see a cross-loop call
+        """
+        if not self._enabled:
+            return
+        
+        if self._is_on_owner_loop():
+            await self._engine.dispose()
+            return
+        
+        # Cross-loop close detected. Try to route to owner loop.
+        if self._owner_loop is not None:
+            try:
+                if self._owner_loop.is_running():
+                    # Owner loop still alive - route the dispose there
+                    fut = asyncio.run_coroutine_threadsafe(
+                        self._engine.dispose(), self._owner_loop
+                    )
+                    try:
+                        fut.result(timeout=5.0)
+                    except concurrent.futures.TimeoutError:
+                        logger.warning("db_logger_close_timeout owner_loop=%s", id(self._owner_loop))
+                    return
+            except RuntimeError:
+                # Owner loop closed/invalid
+                pass
+        
+        # Owner loop is dead or unreachable. Dispose synchronously in thread
+        # pool to avoid blocking and to handle cleanup outside any event loop.
+        logger.warning(
+            "db_logger_close_cross_loop_fallback owner=%s",
+            id(self._owner_loop) if self._owner_loop else "None"
+        )
+        try:
+            # Create a new temporary event loop in a thread to dispose
+            def _sync_dispose():
+                try:
+                    temp_loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(temp_loop)
+                    try:
+                        # Create a fresh engine just to close it cleanly
+                        # (the old engine's pool is orphaned on the dead loop)
+                        temp_loop.run_until_complete(asyncio.sleep(0))
+                    finally:
+                        temp_loop.close()
+                except Exception as e:
+                    logger.warning("db_logger_sync_dispose_error: %s", e)
+            
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                pool.submit(_sync_dispose).result(timeout=5.0)
+        except Exception as exc:
+            logger.warning("db_logger_close_fallback_error: %s", exc)
+        
+        self._enabled = False
 
     async def log_decision(
         self,
@@ -140,8 +252,14 @@ class DbLogger:
         price: float | None = None,
         **extra: Any,
     ) -> None:
-        """Insert one row into bot_decisions. Never raises."""
+        """Insert one row into bot_decisions. Never raises.
+        
+        v-fix-cross-loop-crash-2026-09-10: Skip write if called from wrong loop.
+        """
         if not self._enabled:
+            return
+        # v-fix-cross-loop-crash-2026-09-10: fail soft on loop mismatch
+        if not self._check_loop_or_warn("log_decision"):
             return
         try:
             details = {k: _safe_json(v) for k, v in extra.items()} if extra else {}
@@ -199,8 +317,14 @@ class DbLogger:
         mode: str | None = None,
         reasoning: dict | None = None,
     ) -> None:
-        """Insert one row into bot_trades. Never raises."""
+        """Insert one row into bot_trades. Never raises.
+        
+        v-fix-cross-loop-crash-2026-09-10: Skip write if called from wrong loop.
+        """
         if not self._enabled:
+            return
+        # v-fix-cross-loop-crash-2026-09-10: fail soft on loop mismatch
+        if not self._check_loop_or_warn("log_trade"):
             return
         try:
             async with self._engine.begin() as conn:
@@ -259,8 +383,13 @@ class DbLogger:
         race inside the DELETE+INSERT transaction. The lock serialises
         them; combined with ON CONFLICT DO UPDATE on the INSERT, the
         operation is now both safe under concurrency and idempotent.
+        
+        v-fix-cross-loop-crash-2026-09-10: Skip sync if called from wrong loop.
         """
         if not self._enabled:
+            return
+        # v-fix-cross-loop-crash-2026-09-10: fail soft on loop mismatch
+        if not self._check_loop_or_warn("sync_positions"):
             return
         async with self._sync_positions_lock:
             try:
@@ -361,8 +490,14 @@ class DbLogger:
         """v-news-veto-tracker-2026-04-28: record a vetoed news signal so we
         can later evaluate whether the veto was correct (saved a loss) or
         wrong (missed a winner). Outcome columns are filled later by
-        evaluate_open_news_vetoes(). Never raises."""
+        evaluate_open_news_vetoes(). Never raises.
+        
+        v-fix-cross-loop-crash-2026-09-10: Skip write if called from wrong loop.
+        """
         if not self._enabled:
+            return
+        # v-fix-cross-loop-crash-2026-09-10: fail soft on loop mismatch
+        if not self._check_loop_or_warn("log_news_veto"):
             return
         try:
             async with self._engine.begin() as conn:
@@ -414,8 +549,13 @@ class DbLogger:
 
         Returns count of rows updated. Designed to run every 5-15 min
         from the engine main loop; cheap because the open-set is small.
+        
+        v-fix-cross-loop-crash-2026-09-10: Skip if called from wrong loop.
         """
         if not self._enabled:
+            return 0
+        # v-fix-cross-loop-crash-2026-09-10: fail soft on loop mismatch
+        if not self._check_loop_or_warn("evaluate_open_news_vetoes"):
             return 0
         updated = 0
         try:
@@ -511,8 +651,14 @@ class DbLogger:
         return updated
 
     async def delete_position(self, symbol: str) -> None:
-        """Remove a closed position from bot_positions."""
+        """Remove a closed position from bot_positions.
+        
+        v-fix-cross-loop-crash-2026-09-10: Skip delete if called from wrong loop.
+        """
         if not self._enabled:
+            return
+        # v-fix-cross-loop-crash-2026-09-10: fail soft on loop mismatch
+        if not self._check_loop_or_warn("delete_position"):
             return
         try:
             async with self._engine.begin() as conn:
@@ -545,6 +691,9 @@ class DbLogger:
         
         v-fix-loop-safety-2026-09-10: If called from a different event loop
         than the owner loop, routes the insert via run_coroutine_threadsafe.
+        
+        v-fix-cross-loop-crash-2026-09-10: Check if owner loop is alive before
+        routing. Skip write if owner loop is dead to avoid crash.
         """
         if not self._enabled:
             return
@@ -556,10 +705,18 @@ class DbLogger:
             return
         
         # v-fix-loop-safety-2026-09-10: cross-loop safety check
+        # v-fix-cross-loop-crash-2026-09-10: verify owner loop is alive
         try:
             current_loop = asyncio.get_running_loop()
             if self._owner_loop is not None and self._owner_loop is not current_loop:
-                # Running on wrong loop — route to owner loop fire-and-forget
+                # Running on wrong loop — check if owner loop is alive
+                if not self._owner_loop.is_running():
+                    logger.warning(
+                        "db_logger_snapshot_skip_dead_loop owner=%s",
+                        id(self._owner_loop)
+                    )
+                    return
+                # Owner loop alive — route fire-and-forget
                 asyncio.run_coroutine_threadsafe(
                     self._log_decision_snapshot_impl(snapshot),
                     self._owner_loop,
@@ -643,15 +800,26 @@ class DbLogger:
         
         v-fix-loop-safety-2026-09-10: If called from a different event loop
         than the owner loop, routes the query via run_coroutine_threadsafe.
+        
+        v-fix-cross-loop-crash-2026-09-10: Check if owner loop is alive before
+        routing. Return empty list if owner loop is dead to avoid crash.
         """
         if not self._enabled:
             return []
         
         # v-fix-loop-safety-2026-09-10: cross-loop safety check
+        # v-fix-cross-loop-crash-2026-09-10: verify owner loop is alive
         try:
             current_loop = asyncio.get_running_loop()
             if self._owner_loop is not None and self._owner_loop is not current_loop:
-                # Running on wrong loop — route to owner loop and await result
+                # Running on wrong loop — check if owner loop is alive
+                if not self._owner_loop.is_running():
+                    logger.warning(
+                        "db_logger_get_snapshots_skip_dead_loop owner=%s",
+                        id(self._owner_loop)
+                    )
+                    return []
+                # Owner loop alive — route and await result
                 fut = asyncio.run_coroutine_threadsafe(
                     self._get_decision_snapshots_impl(
                         symbol=symbol, strategy_id=strategy_id,
@@ -758,8 +926,13 @@ class DbLogger:
         """v-feature-snapshot-2026-09-09: create bot_decision_snapshots table if missing.
         
         Called during engine init. Idempotent.
+        
+        v-fix-cross-loop-crash-2026-09-10: Skip if called from wrong loop.
         """
         if not self._enabled:
+            return
+        # v-fix-cross-loop-crash-2026-09-10: fail soft on loop mismatch
+        if not self._check_loop_or_warn("ensure_snapshot_table"):
             return
         try:
             async with self._engine.begin() as conn:

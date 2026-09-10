@@ -1136,3 +1136,432 @@ class TestSinceBindFix:
         params = call_args[0][1]  # Second positional arg is params dict
         assert params['since'] is since_dt
         assert isinstance(params['since'], datetime)
+
+
+# ============================================================================
+# v-fix-cross-loop-crash-2026-09-10: Regression tests for cross-loop safety
+# ============================================================================
+
+class TestCrossLoopCrashFix:
+    """v-fix-cross-loop-crash-2026-09-10: regression tests for cross-loop DbLogger crashes.
+    
+    PR #19 only protected log_decision_snapshot and get_decision_snapshots with
+    loop safety checks. This left close(), log_decision(), log_trade(), 
+    sync_positions(), and other methods vulnerable to "Future attached to a
+    different loop" errors when called from a different event loop.
+    
+    These tests verify that ALL async methods now handle loop mismatches safely.
+    """
+
+    @pytest.fixture
+    def mock_db_logger(self):
+        """Create a DbLogger with mocked engine for testing loop safety."""
+        from data_providers.db_logger import DbLogger
+        from unittest.mock import patch, MagicMock
+        
+        with patch('data_providers.db_logger.create_async_engine') as mock_create:
+            mock_engine = MagicMock()
+            mock_create.return_value = mock_engine
+            db_logger = DbLogger(dsn="postgresql+asyncpg://test:test@localhost/test")
+        
+        return db_logger
+
+    def test_is_on_owner_loop_no_owner(self, mock_db_logger):
+        """_is_on_owner_loop returns True when no owner is set (pre-startup)."""
+        assert mock_db_logger._owner_loop is None
+        assert mock_db_logger._is_on_owner_loop() is True
+
+    def test_is_on_owner_loop_same_loop(self, mock_db_logger):
+        """_is_on_owner_loop returns True when on the owner loop."""
+        import asyncio
+        
+        async def test():
+            loop = asyncio.get_running_loop()
+            mock_db_logger.set_owner_loop(loop)
+            assert mock_db_logger._is_on_owner_loop() is True
+        
+        asyncio.run(test())
+
+    def test_is_on_owner_loop_different_loop(self, mock_db_logger):
+        """_is_on_owner_loop returns False when on a different loop."""
+        import asyncio
+        
+        # Set owner loop to one loop
+        loop1 = asyncio.new_event_loop()
+        mock_db_logger.set_owner_loop(loop1)
+        
+        # Check from a different loop
+        async def check_from_different_loop():
+            return mock_db_logger._is_on_owner_loop()
+        
+        loop2 = asyncio.new_event_loop()
+        try:
+            result = loop2.run_until_complete(check_from_different_loop())
+            assert result is False
+        finally:
+            loop1.close()
+            loop2.close()
+
+    def test_check_loop_or_warn_returns_false_on_mismatch(self, mock_db_logger):
+        """_check_loop_or_warn returns False and logs warning on loop mismatch."""
+        import asyncio
+        
+        # Set owner loop to one loop
+        loop1 = asyncio.new_event_loop()
+        mock_db_logger.set_owner_loop(loop1)
+        
+        # Check from a different loop
+        async def check_from_different_loop():
+            return mock_db_logger._check_loop_or_warn("test_method")
+        
+        loop2 = asyncio.new_event_loop()
+        try:
+            result = loop2.run_until_complete(check_from_different_loop())
+            assert result is False
+        finally:
+            loop1.close()
+            loop2.close()
+
+    @pytest.mark.asyncio
+    async def test_log_decision_skips_on_wrong_loop(self, mock_db_logger):
+        """log_decision skips silently when called from wrong loop."""
+        import asyncio
+        from unittest.mock import MagicMock, AsyncMock
+        
+        # Set owner loop to current loop
+        current_loop = asyncio.get_running_loop()
+        mock_db_logger.set_owner_loop(current_loop)
+        
+        # Mock engine.begin
+        mock_cm = MagicMock()
+        mock_cm.__aenter__ = AsyncMock(return_value=MagicMock())
+        mock_cm.__aexit__ = AsyncMock()
+        mock_db_logger._engine.begin = MagicMock(return_value=mock_cm)
+        
+        # Call from same loop - should work
+        await mock_db_logger.log_decision("test", "TSLA", "buy", "test_reason")
+        mock_db_logger._engine.begin.assert_called_once()
+        
+        # Reset mock
+        mock_db_logger._engine.begin.reset_mock()
+        
+        # Now simulate call from a different loop by manually setting _owner_loop
+        # to a different loop object
+        other_loop = asyncio.new_event_loop()
+        mock_db_logger._owner_loop = other_loop
+        
+        # Call should be skipped (no begin called)
+        await mock_db_logger.log_decision("test", "TSLA", "buy", "test_reason")
+        mock_db_logger._engine.begin.assert_not_called()
+        
+        other_loop.close()
+
+    @pytest.mark.asyncio
+    async def test_log_trade_skips_on_wrong_loop(self, mock_db_logger):
+        """log_trade skips silently when called from wrong loop."""
+        import asyncio
+        from unittest.mock import MagicMock, AsyncMock
+        from datetime import datetime, timezone
+        
+        # Set owner to a different loop
+        other_loop = asyncio.new_event_loop()
+        mock_db_logger.set_owner_loop(other_loop)
+        
+        # Mock engine.begin
+        mock_cm = MagicMock()
+        mock_cm.__aenter__ = AsyncMock(return_value=MagicMock())
+        mock_cm.__aexit__ = AsyncMock()
+        mock_db_logger._engine.begin = MagicMock(return_value=mock_cm)
+        
+        now = datetime.now(timezone.utc)
+        
+        # Call should be skipped (no begin called)
+        await mock_db_logger.log_trade(
+            symbol="TSLA", side="long", strategy="test",
+            entry_time=now, exit_time=now,
+            entry_price=100.0, exit_price=105.0,
+            quantity=10, pnl=50.0, pnl_pct=5.0,
+            exit_reason="take_profit"
+        )
+        mock_db_logger._engine.begin.assert_not_called()
+        
+        other_loop.close()
+
+    @pytest.mark.asyncio
+    async def test_sync_positions_skips_on_wrong_loop(self, mock_db_logger):
+        """sync_positions skips silently when called from wrong loop."""
+        import asyncio
+        from unittest.mock import MagicMock, AsyncMock
+        
+        # Set owner to a different loop
+        other_loop = asyncio.new_event_loop()
+        mock_db_logger.set_owner_loop(other_loop)
+        
+        # Mock engine.begin
+        mock_cm = MagicMock()
+        mock_cm.__aenter__ = AsyncMock(return_value=MagicMock())
+        mock_cm.__aexit__ = AsyncMock()
+        mock_db_logger._engine.begin = MagicMock(return_value=mock_cm)
+        
+        # Call should be skipped (no begin called)
+        await mock_db_logger.sync_positions({"TSLA": MagicMock(quantity=10)})
+        mock_db_logger._engine.begin.assert_not_called()
+        
+        other_loop.close()
+
+    @pytest.mark.asyncio
+    async def test_delete_position_skips_on_wrong_loop(self, mock_db_logger):
+        """delete_position skips silently when called from wrong loop."""
+        import asyncio
+        from unittest.mock import MagicMock, AsyncMock
+        
+        # Set owner to a different loop
+        other_loop = asyncio.new_event_loop()
+        mock_db_logger.set_owner_loop(other_loop)
+        
+        # Mock engine.begin
+        mock_cm = MagicMock()
+        mock_cm.__aenter__ = AsyncMock(return_value=MagicMock())
+        mock_cm.__aexit__ = AsyncMock()
+        mock_db_logger._engine.begin = MagicMock(return_value=mock_cm)
+        
+        # Call should be skipped (no begin called)
+        await mock_db_logger.delete_position("TSLA")
+        mock_db_logger._engine.begin.assert_not_called()
+        
+        other_loop.close()
+
+    @pytest.mark.asyncio
+    async def test_log_news_veto_skips_on_wrong_loop(self, mock_db_logger):
+        """log_news_veto skips silently when called from wrong loop."""
+        import asyncio
+        from unittest.mock import MagicMock, AsyncMock
+        
+        # Set owner to a different loop
+        other_loop = asyncio.new_event_loop()
+        mock_db_logger.set_owner_loop(other_loop)
+        
+        # Mock engine.begin
+        mock_cm = MagicMock()
+        mock_cm.__aenter__ = AsyncMock(return_value=MagicMock())
+        mock_cm.__aexit__ = AsyncMock()
+        mock_db_logger._engine.begin = MagicMock(return_value=mock_cm)
+        
+        # Call should be skipped (no begin called)
+        await mock_db_logger.log_news_veto(
+            symbol="TSLA", side="long", veto_reason="stale_news"
+        )
+        mock_db_logger._engine.begin.assert_not_called()
+        
+        other_loop.close()
+
+    @pytest.mark.asyncio
+    async def test_ensure_snapshot_table_skips_on_wrong_loop(self, mock_db_logger):
+        """ensure_snapshot_table skips silently when called from wrong loop."""
+        import asyncio
+        from unittest.mock import MagicMock, AsyncMock
+        
+        # Set owner to a different loop
+        other_loop = asyncio.new_event_loop()
+        mock_db_logger.set_owner_loop(other_loop)
+        
+        # Mock engine.begin
+        mock_cm = MagicMock()
+        mock_cm.__aenter__ = AsyncMock(return_value=MagicMock())
+        mock_cm.__aexit__ = AsyncMock()
+        mock_db_logger._engine.begin = MagicMock(return_value=mock_cm)
+        
+        # Call should be skipped (no begin called)
+        await mock_db_logger.ensure_snapshot_table()
+        mock_db_logger._engine.begin.assert_not_called()
+        
+        other_loop.close()
+
+    @pytest.mark.asyncio
+    async def test_close_handles_cross_loop_gracefully(self, mock_db_logger):
+        """close() handles cross-loop calls without crashing."""
+        import asyncio
+        from unittest.mock import MagicMock, AsyncMock
+        
+        # Set owner to a different loop that is NOT running
+        other_loop = asyncio.new_event_loop()
+        mock_db_logger.set_owner_loop(other_loop)
+        other_loop.close()  # Close it so it's not running
+        
+        # Mock engine.dispose
+        mock_db_logger._engine.dispose = AsyncMock()
+        
+        # close() should handle this gracefully without crashing
+        await mock_db_logger.close()
+        
+        # Should have disabled the logger since owner loop is dead
+        assert mock_db_logger._enabled is False
+
+    @pytest.mark.asyncio
+    async def test_close_routes_to_alive_owner_loop(self, mock_db_logger):
+        """close() routes dispose to owner loop if it's still running."""
+        import asyncio
+        import threading
+        from unittest.mock import MagicMock, AsyncMock
+        from concurrent.futures import Future
+        
+        # Create a separate loop in a thread
+        owner_loop = asyncio.new_event_loop()
+        loop_thread = threading.Thread(target=owner_loop.run_forever, daemon=True)
+        loop_thread.start()
+        
+        try:
+            # Set owner to that loop
+            mock_db_logger.set_owner_loop(owner_loop)
+            
+            # Track if dispose was called
+            dispose_called = Future()
+            original_dispose = mock_db_logger._engine.dispose
+            
+            async def mock_dispose():
+                dispose_called.set_result(True)
+            
+            mock_db_logger._engine.dispose = mock_dispose
+            
+            # close() from current loop should route to owner loop
+            await mock_db_logger.close()
+            
+            # Verify dispose was routed and completed
+            assert dispose_called.result(timeout=2.0) is True
+        finally:
+            owner_loop.call_soon_threadsafe(owner_loop.stop)
+            loop_thread.join(timeout=2.0)
+
+    def test_all_async_methods_have_loop_check(self):
+        """Verify all async methods that touch the engine have loop checks.
+        
+        This is a meta-test to ensure we don't miss adding loop checks to
+        new methods in the future.
+        """
+        import ast
+        from pathlib import Path
+        
+        src = Path("data_providers/db_logger.py").read_text()
+        tree = ast.parse(src)
+        
+        # Find the DbLogger class
+        db_logger_class = None
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef) and node.name == "DbLogger":
+                db_logger_class = node
+                break
+        
+        assert db_logger_class is not None, "DbLogger class not found"
+        
+        # Methods that should have loop checks (touch the engine)
+        expected_protected_methods = {
+            "close",
+            "log_decision",
+            "log_trade",
+            "sync_positions",
+            "log_news_veto",
+            "delete_position",
+            "ensure_snapshot_table",
+            "evaluate_open_news_vetoes",
+            "log_decision_snapshot",
+            "get_decision_snapshots",
+        }
+        
+        # Methods that are internal impl or don't need checks
+        exempt_methods = {
+            "__init__",
+            "set_owner_loop",
+            "_is_on_owner_loop",
+            "_check_loop_or_warn",
+            "_log_decision_snapshot_impl",  # Called after check in public method
+            "_get_decision_snapshots_impl",  # Called after check in public method
+            "get_latest_snapshot",  # Delegates to get_decision_snapshots
+        }
+        
+        # Check that all expected methods exist and have the pattern
+        for method in db_logger_class.body:
+            if isinstance(method, ast.AsyncFunctionDef):
+                method_name = method.name
+                if method_name in exempt_methods:
+                    continue
+                if method_name.startswith("_"):
+                    continue
+                
+                # Method should have a loop check
+                method_src = ast.unparse(method)
+                has_loop_check = (
+                    "_check_loop_or_warn" in method_src or
+                    "_is_on_owner_loop" in method_src or
+                    "self._owner_loop" in method_src
+                )
+                
+                assert has_loop_check, (
+                    f"Async method {method_name} may need a loop safety check. "
+                    f"If it touches self._engine, add _check_loop_or_warn()."
+                )
+
+
+class TestCrossLoopSnapshotRouting:
+    """v-fix-cross-loop-crash-2026-09-10: test snapshot method cross-loop routing.
+    
+    Verifies that snapshot methods check if owner loop is alive before routing.
+    """
+
+    @pytest.fixture
+    def mock_db_logger(self):
+        """Create a DbLogger with mocked engine for testing."""
+        from data_providers.db_logger import DbLogger
+        from unittest.mock import patch, MagicMock
+        
+        with patch('data_providers.db_logger.create_async_engine') as mock_create:
+            mock_engine = MagicMock()
+            mock_create.return_value = mock_engine
+            db_logger = DbLogger(dsn="postgresql+asyncpg://test:test@localhost/test")
+        
+        return db_logger
+
+    @pytest.mark.asyncio
+    async def test_log_decision_snapshot_skips_dead_owner_loop(self, mock_db_logger):
+        """log_decision_snapshot skips when owner loop is dead."""
+        import asyncio
+        from unittest.mock import MagicMock, patch
+        
+        # Create a closed (dead) loop as owner
+        dead_loop = asyncio.new_event_loop()
+        mock_db_logger.set_owner_loop(dead_loop)
+        dead_loop.close()
+        
+        # Mock the impl method - should NOT be called
+        with patch.object(mock_db_logger, '_log_decision_snapshot_impl') as mock_impl:
+            from core.decision_snapshot import build_snapshot, DecisionAction
+            
+            snapshot = build_snapshot(
+                symbol="TSLA",
+                strategy_id="test",
+                action=DecisionAction.SKIP,
+                reason="test"
+            )
+            
+            # Should skip because owner loop is dead
+            await mock_db_logger.log_decision_snapshot(snapshot)
+            mock_impl.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_get_decision_snapshots_returns_empty_on_dead_loop(self, mock_db_logger):
+        """get_decision_snapshots returns [] when owner loop is dead."""
+        import asyncio
+        from unittest.mock import patch
+        
+        # Create a closed (dead) loop as owner
+        dead_loop = asyncio.new_event_loop()
+        mock_db_logger.set_owner_loop(dead_loop)
+        dead_loop.close()
+        
+        # Mock the impl method - should NOT be called
+        with patch.object(mock_db_logger, '_get_decision_snapshots_impl') as mock_impl:
+            mock_impl.return_value = [{"test": "data"}]
+            
+            # Should return empty list because owner loop is dead
+            result = await mock_db_logger.get_decision_snapshots(symbol="TSLA")
+            assert result == []
+            mock_impl.assert_not_called()
