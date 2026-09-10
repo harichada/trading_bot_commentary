@@ -3785,13 +3785,13 @@ class TradingEngineWithCommentary:
                 position_qty=position_qty,
             )
             
+            _stop = position.broker_stop_price or 0.0
             self.commentary.add_commentary(TradingCommentary(
                 timestamp=datetime.now(),
                 type=CommentaryType.INFO,
                 symbol=symbol,
                 title=f"🔗 OCO Bracket Attached for {symbol}",
-                message=f"Found and attached existing WORKING OCO order "
-                        f"(stop @ ${position.broker_stop_price:.2f if position.broker_stop_price else 0:.2f})",
+                message=f"Found and attached existing WORKING OCO order (stop @ ${_stop:.2f})",
                 importance=6,  # Low-noise
             ))
         
