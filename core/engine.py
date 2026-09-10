@@ -4332,8 +4332,32 @@ class TradingEngineWithCommentary:
         await self._re_bracket_position(position)
     
     async def _re_bracket_position(self, position) -> None:
-        """Place new bracket orders for a position (after partial or recovery)."""
+        """Place new bracket orders for a position (after partial or recovery).
+        
+        v-broker-flat-detection-2026-09-10: added broker position verification
+        before placing bracket to prevent placing orders for positions that
+        no longer exist at the broker.
+        """
         symbol = position.symbol
+        
+        # v-broker-flat-detection-2026-09-10: verify position still exists at broker
+        # before attempting to place bracket orders. This is a belt-and-suspenders
+        # check in addition to the one in _handle_bracket_rejected.
+        if self.mode == TradingMode.LIVE and self.schwab_client:
+            broker_qty = await self._check_broker_position_qty(symbol)
+            if broker_qty == 0:
+                logger.warning(
+                    "re_bracket_aborted_broker_flat symbol=%s local_qty=%d — broker shows flat",
+                    symbol, position.quantity,
+                )
+                self._audit(
+                    "order_monitor", symbol, "re_bracket_aborted",
+                    "broker_flat_pre_check",
+                    local_qty=position.quantity,
+                )
+                # Handle as external close instead of placing invalid bracket
+                await self._handle_broker_flat_detected(position, "re_bracket_pre_check_flat")
+                return
         
         try:
             from schwab.orders.common import one_cancels_other, Duration, Session, OrderType
@@ -4449,11 +4473,144 @@ class TradingEngineWithCommentary:
         
         await self._re_bracket_position(position)
     
+    async def _check_broker_position_qty(self, symbol: str) -> int:
+        """v-broker-flat-detection-2026-09-10: query Schwab for actual position qty.
+        
+        Returns the absolute quantity at the broker for `symbol`, or 0 if
+        the position doesn't exist (broker-flat). This is the authoritative
+        source when handling bracket rejections — if Schwab says we're flat,
+        we must stop trying to manage/re-bracket that position.
+        
+        Returns 0 on any error (fail-safe: if we can't verify, assume flat
+        to prevent infinite re_bracket loops).
+        """
+        if not self.schwab_client or not self.account_id:
+            return 0
+        try:
+            schwab_positions = await self.get_schwab_positions()
+            for pos_data in schwab_positions:
+                if pos_data.get('symbol') == symbol:
+                    return abs(pos_data.get('quantity', 0))
+            return 0  # symbol not in broker positions → flat
+        except Exception as exc:
+            logger.warning(
+                "broker_position_check_error symbol=%s err=%s",
+                symbol, exc,
+            )
+            return 0  # fail-safe: assume flat on error
+
+    async def _handle_broker_flat_detected(
+        self,
+        position,
+        reason: str,
+    ) -> None:
+        """v-broker-flat-detection-2026-09-10: handle external close detection.
+        
+        Called when we discover the broker shows qty=0 for a position we
+        thought was still open. This is the canonical "user closed at Schwab"
+        or "broker stop filled externally" scenario.
+        
+        Actions:
+          1. Clear managed_by_bot → stop all exit management
+          2. Cancel any working exit orders for this symbol
+          3. Mark position as CLOSED (external close)
+          4. Remove from active tracking
+          5. Audit for post-mortem
+        
+        This breaks the infinite re_bracket loop that occurs when:
+          - Bot thinks it has a position (ghost qty in self.positions)
+          - Schwab rejects bracket for oversold/overbought (shares gone)
+          - _handle_bracket_rejected calls _re_bracket_position
+          - New bracket rejected → repeat forever
+        """
+        symbol = position.symbol
+        
+        self._audit(
+            "order_monitor", symbol, "broker_flat_detected",
+            reason,
+            local_qty=position.quantity,
+            managed_by_bot=getattr(position, 'managed_by_bot', False),
+        )
+        
+        # Clear managed_by_bot to stop any other exit paths
+        position.managed_by_bot = False
+        
+        # Cancel any working exit orders for this symbol
+        try:
+            await self._cancel_existing_orders(symbol)
+        except Exception as exc:
+            logger.warning(
+                "broker_flat_cancel_orders_error symbol=%s err=%s",
+                symbol, exc,
+            )
+        
+        # Clear bracket IDs (already rejected/cancelled anyway)
+        from core.models import clear_bracket_ids
+        clear_bracket_ids(position)
+        
+        # Transition to CLOSED state
+        from core.position_state import PositionState, try_transition
+        await try_transition(
+            position,
+            PositionState.CLOSED,
+            f"broker_flat_{reason}",
+            audit_fn=self._audit,
+        )
+        
+        # Remove from active tracking (will be picked up by next sync)
+        self.positions.pop(symbol, None)
+        
+        self.commentary.add_commentary(TradingCommentary(
+            timestamp=datetime.now(),
+            type=CommentaryType.WARNING,
+            symbol=symbol,
+            title=f"🔄 External Close Detected",
+            message=(
+                f"Position {symbol} was closed externally (broker shows flat). "
+                f"Reason: {reason}. Bot will stop managing this position."
+            ),
+            data={'reason': reason},
+            importance=9
+        ))
+        
+        logger.info(
+            "broker_flat_handled symbol=%s reason=%s — position removed from tracking",
+            symbol, reason,
+        )
+
+    def _is_broker_flat_rejection(self, rejection_reason: str) -> bool:
+        """v-broker-flat-detection-2026-09-10: detect oversold/overbought rejection.
+        
+        Returns True if the rejection reason indicates the position is already
+        flat at the broker (the shares are gone, so any sell/cover order is
+        invalid).
+        
+        Known Schwab rejection patterns:
+          - "oversold position" → selling more than owned (long already closed)
+          - "overbought position" → covering more than shorted (short already closed)
+          - variations with "oversold", "overbought", "insufficient shares"
+        """
+        if not rejection_reason:
+            return False
+        reason_lower = rejection_reason.lower()
+        flat_indicators = [
+            'oversold',
+            'overbought',
+            'insufficient shares',
+            'insufficient position',
+            'no position',
+            'position not found',
+        ]
+        return any(indicator in reason_lower for indicator in flat_indicators)
+
     async def _handle_bracket_rejected(self, position, order_info: dict) -> None:
         """Handle bracket order rejection.
         
-        Policy: log the rejection reason, attempt to re-place with adjusted
-        prices if possible, otherwise alert loudly.
+        v-broker-flat-detection-2026-09-10: enhanced policy:
+          1. Check if rejection indicates broker-flat (oversold/overbought)
+          2. If so, verify with broker and handle as external close
+          3. Otherwise, attempt to re-place with adjusted prices
+          4. Track re_bracket attempts to prevent infinite loops
         """
         symbol = position.symbol
         rejection_reason = order_info.get('statusDescription', 'Unknown reason')
@@ -4482,6 +4639,52 @@ class TradingEngineWithCommentary:
         # Clear the rejected bracket
         from core.models import clear_bracket_ids
         clear_bracket_ids(position)
+        
+        # v-broker-flat-detection-2026-09-10: check if this is an oversold/overbought
+        # rejection, which indicates the position is already closed at the broker
+        if self._is_broker_flat_rejection(rejection_reason):
+            logger.info(
+                "bracket_rejected_flat_indicator symbol=%s reason=%s — checking broker position",
+                symbol, rejection_reason,
+            )
+            broker_qty = await self._check_broker_position_qty(symbol)
+            if broker_qty == 0:
+                # Confirmed broker-flat — handle as external close, DO NOT re_bracket
+                await self._handle_broker_flat_detected(position, "reject_oversold_overbought")
+                return
+            else:
+                # Broker still shows position — log the mismatch but proceed
+                logger.warning(
+                    "bracket_rejected_flat_mismatch symbol=%s reason=%s broker_qty=%d — proceeding with re_bracket",
+                    symbol, rejection_reason, broker_qty,
+                )
+        
+        # v-broker-flat-detection-2026-09-10: track re_bracket attempts to prevent
+        # infinite loops even if broker-flat detection fails
+        re_bracket_attempts = getattr(position, '_re_bracket_attempts', 0) + 1
+        position._re_bracket_attempts = re_bracket_attempts
+        
+        MAX_RE_BRACKET_ATTEMPTS = 3
+        if re_bracket_attempts > MAX_RE_BRACKET_ATTEMPTS:
+            self._audit(
+                "order_monitor", symbol, "re_bracket_exhausted",
+                "max_attempts_exceeded",
+                attempts=re_bracket_attempts,
+                rejection_detail=rejection_reason,
+            )
+            self.commentary.add_commentary(TradingCommentary(
+                timestamp=datetime.now(),
+                type=CommentaryType.WARNING,
+                symbol=symbol,
+                title=f"🛑 Re-Bracket Attempts Exhausted",
+                message=(
+                    f"Failed to re-bracket after {MAX_RE_BRACKET_ATTEMPTS} attempts. "
+                    f"Last rejection: {rejection_reason}. "
+                    f"Position has software exits only (no broker stop)."
+                ),
+                importance=10
+            ))
+            return
         
         # Attempt to re-place with current prices
         # (The rejection may have been due to price validation)

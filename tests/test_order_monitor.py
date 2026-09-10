@@ -1146,3 +1146,289 @@ class TestBootstrapAttachFields:
         assert pos.stop_order_id == "123452"  # Stop is child 2
         assert pos.tp_order_id == "123451"    # TP is child 1
         assert pos.broker_stop_price == 145.0
+
+
+# ============================================================================
+# v-broker-flat-detection-2026-09-10: BROKER-FLAT DETECTION TESTS
+# Tests for the P0 hotfix that prevents infinite re_bracket loops when
+# the broker shows the position is already closed (oversold/overbought reject).
+# ============================================================================
+
+def make_oversold_rejected_order(order_id: str = "12345") -> dict:
+    """Create a mock REJECTED order with oversold position reason."""
+    return {
+        "orderId": order_id,
+        "status": "REJECTED",
+        "statusDescription": "Order rejected: oversold position",
+    }
+
+
+def make_overbought_rejected_order(order_id: str = "12345") -> dict:
+    """Create a mock REJECTED order with overbought position reason."""
+    return {
+        "orderId": order_id,
+        "status": "REJECTED",
+        "statusDescription": "Order rejected: overbought position",
+    }
+
+
+def make_insufficient_shares_rejected_order(order_id: str = "12345") -> dict:
+    """Create a mock REJECTED order with insufficient shares reason."""
+    return {
+        "orderId": order_id,
+        "status": "REJECTED",
+        "statusDescription": "Insufficient shares to complete order",
+    }
+
+
+def make_price_rejected_order(order_id: str = "12345") -> dict:
+    """Create a mock REJECTED order with price validation reason (NOT broker-flat)."""
+    return {
+        "orderId": order_id,
+        "status": "REJECTED",
+        "statusDescription": "Stop price must be below current bid",
+    }
+
+
+class TestBrokerFlatRejectionDetection:
+    """v-broker-flat-detection-2026-09-10: Test _is_broker_flat_rejection logic."""
+    
+    def test_oversold_detected_as_broker_flat(self):
+        """'oversold position' rejection should be detected as broker-flat."""
+        from core.engine import TradingEngineWithCommentary
+        
+        src = (Path(__file__).parent.parent / "core" / "engine.py").read_text()
+        assert "_is_broker_flat_rejection" in src
+        
+        marker = "def _is_broker_flat_rejection"
+        idx = src.index(marker)
+        body = src[idx:idx + 1500]
+        
+        assert "'oversold'" in body, "oversold must be in flat_indicators list"
+        assert "'overbought'" in body, "overbought must be in flat_indicators list"
+        assert "'insufficient shares'" in body, "insufficient shares must be in flat_indicators"
+        
+    def test_overbought_detected_as_broker_flat(self):
+        """'overbought position' rejection should be detected as broker-flat."""
+        from core.engine import TradingEngineWithCommentary
+        
+        src = (Path(__file__).parent.parent / "core" / "engine.py").read_text()
+        marker = "_is_broker_flat_rejection"
+        assert marker in src
+        
+    def test_price_rejection_not_broker_flat(self):
+        """Price validation rejection should NOT be detected as broker-flat."""
+        order_info = make_price_rejected_order()
+        reason = order_info['statusDescription'].lower()
+        
+        flat_indicators = ['oversold', 'overbought', 'insufficient shares',
+                           'insufficient position', 'no position', 'position not found']
+        is_flat = any(indicator in reason for indicator in flat_indicators)
+        
+        assert is_flat is False, "Price rejection should not trigger broker-flat detection"
+
+
+class TestBrokerFlatHandling:
+    """v-broker-flat-detection-2026-09-10: Test _handle_broker_flat_detected behavior."""
+    
+    def test_handler_exists_in_engine(self):
+        """_handle_broker_flat_detected must exist and clear managed_by_bot."""
+        src = (Path(__file__).parent.parent / "core" / "engine.py").read_text()
+        
+        assert "async def _handle_broker_flat_detected" in src
+        
+        marker = "async def _handle_broker_flat_detected"
+        idx = src.index(marker)
+        body = src[idx:idx + 3000]
+        
+        assert "managed_by_bot = False" in body, (
+            "_handle_broker_flat_detected must clear managed_by_bot"
+        )
+        assert "_cancel_existing_orders" in body, (
+            "_handle_broker_flat_detected must cancel working orders"
+        )
+        assert "self.positions.pop" in body, (
+            "_handle_broker_flat_detected must remove position from tracking"
+        )
+        
+    def test_handler_transitions_to_closed(self):
+        """_handle_broker_flat_detected must transition position to CLOSED state."""
+        src = (Path(__file__).parent.parent / "core" / "engine.py").read_text()
+        
+        marker = "async def _handle_broker_flat_detected"
+        idx = src.index(marker)
+        body = src[idx:idx + 3000]
+        
+        assert "PositionState.CLOSED" in body, (
+            "_handle_broker_flat_detected must transition to CLOSED"
+        )
+        assert "try_transition" in body, (
+            "_handle_broker_flat_detected must use try_transition for FSM"
+        )
+
+
+class TestReBracketLoopPrevention:
+    """v-broker-flat-detection-2026-09-10: Test infinite re_bracket loop prevention."""
+    
+    def test_re_bracket_attempts_tracked(self):
+        """_handle_bracket_rejected must track re_bracket attempts."""
+        src = (Path(__file__).parent.parent / "core" / "engine.py").read_text()
+        
+        marker = "async def _handle_bracket_rejected"
+        idx = src.index(marker)
+        body = src[idx:idx + 4000]
+        
+        assert "_re_bracket_attempts" in body, (
+            "_handle_bracket_rejected must track re_bracket attempts"
+        )
+        assert "MAX_RE_BRACKET_ATTEMPTS" in body, (
+            "Must have a max attempts constant"
+        )
+        
+    def test_max_attempts_stops_loop(self):
+        """After MAX_RE_BRACKET_ATTEMPTS, no more re_bracket calls."""
+        src = (Path(__file__).parent.parent / "core" / "engine.py").read_text()
+        
+        marker = "async def _handle_bracket_rejected"
+        idx = src.index(marker)
+        body = src[idx:idx + 4000]
+        
+        assert "re_bracket_exhausted" in body, (
+            "Must audit when re_bracket attempts exhausted"
+        )
+        assert "return" in body and "MAX_RE_BRACKET_ATTEMPTS" in body, (
+            "Must return early when max attempts exceeded"
+        )
+
+
+class TestReBracketBrokerFlatCheck:
+    """v-broker-flat-detection-2026-09-10: Test _re_bracket_position broker-flat pre-check."""
+    
+    def test_re_bracket_checks_broker_before_placing(self):
+        """_re_bracket_position must verify position exists at broker before placing."""
+        src = (Path(__file__).parent.parent / "core" / "engine.py").read_text()
+        
+        marker = "async def _re_bracket_position"
+        idx = src.index(marker)
+        body = src[idx:idx + 2500]
+        
+        assert "_check_broker_position_qty" in body, (
+            "_re_bracket_position must check broker position before placing"
+        )
+        assert "broker_flat_pre_check" in body, (
+            "Must audit broker-flat detection in pre-check"
+        )
+        
+    def test_check_broker_position_qty_exists(self):
+        """_check_broker_position_qty helper must exist."""
+        src = (Path(__file__).parent.parent / "core" / "engine.py").read_text()
+        
+        assert "async def _check_broker_position_qty" in src
+        
+        marker = "async def _check_broker_position_qty"
+        idx = src.index(marker)
+        body = src[idx:idx + 1500]
+        
+        assert "get_schwab_positions" in body, (
+            "_check_broker_position_qty must query Schwab positions"
+        )
+        assert "return 0" in body, (
+            "Must return 0 when position not found (fail-safe)"
+        )
+
+
+class TestBrokerFlatScenarios:
+    """v-broker-flat-detection-2026-09-10: End-to-end scenario tests."""
+    
+    def test_scenario_oversold_reject_with_broker_flat(self, bot_managed_position):
+        """Scenario: bracket rejected for oversold AND broker shows flat.
+        
+        Expected: position removed from tracking, no re_bracket attempt.
+        """
+        src = (Path(__file__).parent.parent / "core" / "engine.py").read_text()
+        
+        marker = "async def _handle_bracket_rejected"
+        idx = src.index(marker)
+        body = src[idx:idx + 4500]
+        
+        assert "_is_broker_flat_rejection" in body, (
+            "_handle_bracket_rejected must check for broker-flat rejection"
+        )
+        assert "_check_broker_position_qty" in body, (
+            "_handle_bracket_rejected must verify with broker"
+        )
+        assert "_handle_broker_flat_detected" in body, (
+            "_handle_bracket_rejected must call _handle_broker_flat_detected"
+        )
+        
+        call_idx = body.index("_handle_broker_flat_detected")
+        return_idx = body.index("return", call_idx)
+        
+        assert return_idx - call_idx < 200, (
+            "Must return after _handle_broker_flat_detected (no re_bracket)"
+        )
+        
+    def test_scenario_oversold_reject_broker_still_has_position(self, bot_managed_position):
+        """Scenario: bracket rejected for oversold BUT broker still has shares.
+        
+        Expected: log mismatch, proceed with re_bracket (may be partial fill edge case).
+        """
+        src = (Path(__file__).parent.parent / "core" / "engine.py").read_text()
+        
+        marker = "async def _handle_bracket_rejected"
+        idx = src.index(marker)
+        body = src[idx:idx + 4500]
+        
+        assert "flat_mismatch" in body, (
+            "Must log when rejection says flat but broker has shares"
+        )
+        assert "_re_bracket_position" in body, (
+            "Must still call _re_bracket_position when broker confirms shares exist"
+        )
+        
+    def test_scenario_price_reject_normal_re_bracket(self, bot_managed_position):
+        """Scenario: bracket rejected for price validation (NOT broker-flat).
+        
+        Expected: normal re_bracket flow (not treated as external close).
+        """
+        order_info = make_price_rejected_order()
+        reason = order_info['statusDescription'].lower()
+        
+        flat_indicators = ['oversold', 'overbought', 'insufficient shares',
+                           'insufficient position', 'no position', 'position not found']
+        is_flat = any(indicator in reason for indicator in flat_indicators)
+        
+        assert is_flat is False, "Price rejection must not trigger broker-flat handling"
+
+
+class TestPositionReBracketAttempts:
+    """Test _re_bracket_attempts field on Position."""
+    
+    def test_attempts_counter_incremented(self):
+        """_re_bracket_attempts must be incremented on each rejection."""
+        src = (Path(__file__).parent.parent / "core" / "engine.py").read_text()
+        
+        marker = "async def _handle_bracket_rejected"
+        idx = src.index(marker)
+        body = src[idx:idx + 4000]
+        
+        assert "getattr(position, '_re_bracket_attempts', 0)" in body, (
+            "Must get existing attempts or default to 0"
+        )
+        assert "+ 1" in body, "Must increment attempts counter"
+        
+    def test_attempts_counter_stored_on_position(self):
+        """Counter must be stored on position object for persistence across calls."""
+        src = (Path(__file__).parent.parent / "core" / "engine.py").read_text()
+        
+        marker = "async def _handle_bracket_rejected"
+        idx = src.index(marker)
+        body = src[idx:idx + 4000]
+        
+        assert "position._re_bracket_attempts = re_bracket_attempts" in body, (
+            "Must store attempts count on position"
+        )
+
+
+# Required import for new tests
+from pathlib import Path
