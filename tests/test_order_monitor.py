@@ -844,3 +844,305 @@ class TestChildOrderIdExtraction:
         order_types = {child['orderType'] for child in children}
         assert 'LIMIT' in order_types  # TP
         assert 'STOP_LIMIT' in order_types  # Stop
+
+
+# ============================================================================
+# BOOTSTRAP OCO ATTACH TESTS
+# v-bootstrap-oco-2026-09-10: Tests for attaching orphan WORKING OCO brackets
+# to positions missing bracket_order_id.
+# ============================================================================
+
+def _get_positions_missing_brackets_logic(positions: dict) -> list:
+    """Pure logic test of position filtering for bootstrap (no engine import needed).
+    
+    This replicates the logic of _get_positions_missing_brackets for testing.
+    Same filters as _get_bracket_monitored_positions EXCEPT the bracket_order_id
+    requirement is inverted (we want positions WITHOUT bracket_order_id).
+    """
+    result = []
+    for symbol, pos in list(positions.items()):
+        if pos is None:
+            continue
+        if not getattr(pos, 'managed_by_bot', False):
+            continue
+        if getattr(pos, 'is_external', False):
+            continue
+        if getattr(pos, 'is_manually_managed', False):
+            continue
+        if getattr(pos, 'is_long_term', False):
+            continue
+        # Inverse: include only if MISSING bracket_order_id
+        if getattr(pos, 'bracket_order_id', None):
+            continue
+        result.append((symbol, pos))
+    return result
+
+
+def _bootstrap_match_oco_to_position(
+    position_qty: int,
+    candidates: list,
+) -> tuple:
+    """Pure logic test of OCO matching for bootstrap.
+    
+    Returns (chosen_oco, reason) or (None, reason) if no match.
+    """
+    def get_oco_qty(oco: dict) -> int:
+        for child in oco.get('childOrderStrategies', []):
+            for leg in child.get('orderLegCollection', []):
+                qty = leg.get('quantity')
+                if qty is not None:
+                    return int(qty)
+        return 0
+    
+    exact_qty_matches = [o for o in candidates if get_oco_qty(o) == position_qty]
+    
+    if len(exact_qty_matches) == 1:
+        return exact_qty_matches[0], "exact_qty_match"
+    elif len(exact_qty_matches) > 1:
+        return None, "ambiguous_multiple_exact_qty"
+    elif len(candidates) == 1:
+        return candidates[0], "single_candidate_qty_differs"
+    else:
+        return None, "ambiguous_multiple_no_exact_qty"
+
+
+class TestGetPositionsMissingBrackets:
+    """Test _get_positions_missing_brackets filtering logic."""
+    
+    def test_includes_position_without_bracket(self):
+        """Should include bot-managed positions WITHOUT bracket_order_id."""
+        pos = Position(
+            symbol="AAPL",
+            entry_price=150.0,
+            quantity=100,
+            side="long",
+            stop_loss=145.0,
+            take_profit=160.0,
+            entry_time=datetime.now(),
+            mode="live",
+            managed_by_bot=True,
+            # No bracket_order_id
+        )
+        
+        positions = {"AAPL": pos}
+        result = _get_positions_missing_brackets_logic(positions)
+        
+        assert len(result) == 1
+        assert result[0][0] == "AAPL"
+        
+    def test_excludes_position_with_bracket(self, bot_managed_position):
+        """Should exclude positions that already have bracket_order_id."""
+        # bot_managed_position fixture has bracket_order_id set
+        positions = {"AAPL": bot_managed_position}
+        result = _get_positions_missing_brackets_logic(positions)
+        
+        assert len(result) == 0
+        
+    def test_excludes_external_positions(self, external_position):
+        """Should exclude external positions even without bracket."""
+        positions = {"NVDA": external_position}
+        result = _get_positions_missing_brackets_logic(positions)
+        
+        assert len(result) == 0
+        
+    def test_excludes_long_term_positions(self):
+        """Should exclude long-term positions (Hari's 4 LT holds)."""
+        pos = Position(
+            symbol="MSFT",
+            entry_price=300.0,
+            quantity=200,
+            side="long",
+            stop_loss=280.0,
+            take_profit=350.0,
+            entry_time=datetime.now(),
+            mode="live",
+            managed_by_bot=True,
+            is_long_term=True,
+            # No bracket_order_id
+        )
+        
+        positions = {"MSFT": pos}
+        result = _get_positions_missing_brackets_logic(positions)
+        
+        assert len(result) == 0
+        
+    def test_excludes_manually_managed(self):
+        """Should exclude manually managed positions."""
+        pos = Position(
+            symbol="COIN",
+            entry_price=100.0,
+            quantity=20,
+            side="long",
+            stop_loss=90.0,
+            take_profit=120.0,
+            entry_time=datetime.now(),
+            mode="live",
+            managed_by_bot=False,
+        )
+        pos.is_manually_managed = True
+        
+        positions = {"COIN": pos}
+        result = _get_positions_missing_brackets_logic(positions)
+        
+        assert len(result) == 0
+
+
+class TestBootstrapOCOMatching:
+    """Test OCO matching logic for bootstrap attach."""
+    
+    def test_match_by_symbol_and_qty(self):
+        """Should match OCO to position by symbol and exact qty."""
+        position_qty = 100
+        oco = make_working_oco_order(order_id="12345", symbol="AAPL", qty=100)
+        candidates = [oco]
+        
+        chosen, reason = _bootstrap_match_oco_to_position(position_qty, candidates)
+        
+        assert chosen is oco
+        assert reason == "exact_qty_match"
+        
+    def test_match_single_candidate_qty_differs(self):
+        """Should match single OCO even if qty differs (with warning)."""
+        position_qty = 100
+        oco = make_working_oco_order(order_id="12345", symbol="AAPL", qty=50)
+        candidates = [oco]
+        
+        chosen, reason = _bootstrap_match_oco_to_position(position_qty, candidates)
+        
+        assert chosen is oco
+        assert reason == "single_candidate_qty_differs"
+        
+    def test_skip_ambiguous_multiple_exact_qty(self):
+        """Should skip when multiple OCOs have exact qty match."""
+        position_qty = 100
+        oco1 = make_working_oco_order(order_id="111", symbol="AAPL", qty=100)
+        oco2 = make_working_oco_order(order_id="222", symbol="AAPL", qty=100)
+        candidates = [oco1, oco2]
+        
+        chosen, reason = _bootstrap_match_oco_to_position(position_qty, candidates)
+        
+        assert chosen is None
+        assert reason == "ambiguous_multiple_exact_qty"
+        
+    def test_skip_ambiguous_multiple_no_exact(self):
+        """Should skip when multiple OCOs and none have exact qty."""
+        position_qty = 100
+        oco1 = make_working_oco_order(order_id="111", symbol="AAPL", qty=50)
+        oco2 = make_working_oco_order(order_id="222", symbol="AAPL", qty=75)
+        candidates = [oco1, oco2]
+        
+        chosen, reason = _bootstrap_match_oco_to_position(position_qty, candidates)
+        
+        assert chosen is None
+        assert reason == "ambiguous_multiple_no_exact_qty"
+        
+    def test_prefer_exact_qty_over_single_candidate(self):
+        """Should prefer exact qty match over single different qty."""
+        position_qty = 100
+        oco_exact = make_working_oco_order(order_id="111", symbol="AAPL", qty=100)
+        oco_other = make_working_oco_order(order_id="222", symbol="AAPL", qty=50)
+        candidates = [oco_exact, oco_other]
+        
+        chosen, reason = _bootstrap_match_oco_to_position(position_qty, candidates)
+        
+        assert chosen is oco_exact
+        assert reason == "exact_qty_match"
+
+
+class TestBootstrapIdempotent:
+    """Test that bootstrap is idempotent when bracket_order_id already set."""
+    
+    def test_skip_if_bracket_already_set(self, bot_managed_position):
+        """Should not include position if bracket_order_id already set."""
+        # bot_managed_position has bracket_order_id="12345"
+        positions = {"AAPL": bot_managed_position}
+        
+        result = _get_positions_missing_brackets_logic(positions)
+        
+        assert len(result) == 0
+        
+    def test_include_same_position_after_bracket_cleared(self, bot_managed_position):
+        """Should include position after bracket_order_id is cleared."""
+        clear_bracket_ids(bot_managed_position)
+        positions = {"AAPL": bot_managed_position}
+        
+        result = _get_positions_missing_brackets_logic(positions)
+        
+        assert len(result) == 1
+
+
+class TestBootstrapAttachFields:
+    """Test that bootstrap correctly sets all bracket tracking fields."""
+    
+    def test_attach_sets_bracket_order_id(self):
+        """Attach should set bracket_order_id from OCO orderId."""
+        pos = Position(
+            symbol="AAPL",
+            entry_price=150.0,
+            quantity=100,
+            side="long",
+            stop_loss=145.0,
+            take_profit=160.0,
+            entry_time=datetime.now(),
+            mode="live",
+            managed_by_bot=True,
+        )
+        
+        oco = make_working_oco_order(
+            order_id="12345",
+            symbol="AAPL",
+            stop_price=145.0,
+            tp_price=160.0,
+            qty=100,
+        )
+        
+        # Simulate attach logic
+        order_id = str(oco.get('orderId', ''))
+        pos.bracket_order_id = order_id
+        
+        assert pos.bracket_order_id == "12345"
+        
+    def test_attach_extracts_child_ids(self):
+        """Attach should extract stop_order_id and tp_order_id from children."""
+        pos = Position(
+            symbol="AAPL",
+            entry_price=150.0,
+            quantity=100,
+            side="long",
+            stop_loss=145.0,
+            take_profit=160.0,
+            entry_time=datetime.now(),
+            mode="live",
+            managed_by_bot=True,
+        )
+        
+        oco = make_working_oco_order(
+            order_id="12345",
+            symbol="AAPL",
+            stop_price=145.0,
+            tp_price=160.0,
+            qty=100,
+        )
+        
+        # Simulate child ID extraction (matches engine logic)
+        pos.bracket_order_id = str(oco.get('orderId', ''))
+        
+        for child in oco.get('childOrderStrategies', []):
+            child_id = str(child.get('orderId', ''))
+            if not child_id:
+                continue
+            
+            order_type = child.get('orderType', '')
+            stop_price = child.get('stopPrice')
+            
+            if order_type == 'STOP_LIMIT' or stop_price:
+                pos.stop_order_id = child_id
+                if stop_price:
+                    pos.broker_stop_price = float(stop_price)
+            elif order_type == 'LIMIT':
+                pos.tp_order_id = child_id
+        
+        assert pos.bracket_order_id == "12345"
+        assert pos.stop_order_id == "123452"  # Stop is child 2
+        assert pos.tp_order_id == "123451"    # TP is child 1
+        assert pos.broker_stop_price == 145.0
