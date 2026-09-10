@@ -2817,3 +2817,56 @@ class TestEmergencyStopBotOnly:
         block = src[anchor: anchor + 1400]
         assert "_emrg_pnl" in block, (
             "trip must use the circuit-selected _emrg_pnl variable")
+
+
+# ── v-bracket-rejected-audit-fix-2026-09-10 ──────────────────────────
+
+class TestBracketRejectedAuditFix:
+    """2026-09-10 P0: _handle_bracket_rejected passed 'reason' both as
+    a positional arg (4th position) AND as a keyword arg in **details,
+    causing TypeError: _audit() got multiple values for argument 'reason'.
+
+    The _audit signature is:
+        def _audit(self, component: str, symbol, action: str, reason: str, **details)
+
+    Any call that passes reason=... as a keyword will blow up because
+    the 4th positional already fills that slot. The fix renames the
+    keyword to rejection_detail (or similar) to avoid collision.
+    """
+
+    def test_audit_signature_has_reason_as_positional(self):
+        """Verify _audit takes reason as its 4th positional arg."""
+        src = ENGINE_PATH.read_text()
+        sig_match = re.search(
+            r"def _audit\(self,\s*component:\s*str,\s*symbol,\s*action:\s*str,\s*reason:\s*str,",
+            src,
+        )
+        assert sig_match is not None, "_audit signature changed unexpectedly"
+
+    def test_no_audit_call_passes_reason_as_keyword(self):
+        """No _audit call should pass reason=... as a keyword argument,
+        since reason is a required positional parameter."""
+        src = ENGINE_PATH.read_text()
+        bad_calls = re.findall(
+            r"self\._audit\([^)]*,\s*reason\s*=",
+            src,
+            re.DOTALL,
+        )
+        assert bad_calls == [], (
+            f"_audit calls with reason=... keyword found (will cause TypeError): "
+            f"{bad_calls[:3]}"
+        )
+
+    def test_bracket_rejected_uses_rejection_detail(self):
+        """_handle_bracket_rejected must pass rejection info as
+        rejection_detail, not reason."""
+        src = ENGINE_PATH.read_text()
+        anchor = src.find("async def _handle_bracket_rejected")
+        assert anchor != -1, "_handle_bracket_rejected not found"
+        block = src[anchor: anchor + 600]
+        assert "rejection_detail=" in block, (
+            "bracket_rejected should use rejection_detail= for broker message"
+        )
+        assert "reason=" not in block.split("_audit")[1].split(")")[0], (
+            "bracket_rejected _audit call must not have reason= keyword"
+        )

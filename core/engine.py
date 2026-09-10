@@ -4462,7 +4462,7 @@ class TradingEngineWithCommentary:
             "order_monitor", symbol, "bracket_rejected",
             "broker_rejection",
             bracket_id=position.bracket_order_id,
-            reason=rejection_reason,
+            rejection_detail=rejection_reason,
         )
         
         self.commentary.add_commentary(TradingCommentary(
