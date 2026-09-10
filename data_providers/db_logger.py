@@ -7,8 +7,14 @@ files or parsing JSON state.
 Tables: bot_decisions, bot_trades (created by migration in engine init).
 
 Thread-safe: uses a dedicated connection pool. Non-blocking: writes
-are fire-and-forget via asyncio tasks. A failed DB write logs a
+    are fire-and-forget via asyncio tasks. A failed DB write logs a
 warning but never crashes the trading loop.
+
+v-fix-loop-safety-2026-09-10: The async engine's connection pool is bound
+to the event loop it was created in. When fire-and-forget tasks run on
+different loops (strategy loop vs FastAPI loop), we get "Future attached
+to a different loop" errors. This module now tracks the owner loop and
+uses run_coroutine_threadsafe for cross-loop operations.
 """
 from __future__ import annotations
 
@@ -17,7 +23,7 @@ import json
 import logging
 import os
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Optional
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
@@ -28,7 +34,12 @@ DEFAULT_DSN = "postgresql+asyncpg://rudra:rudra_dev_2024@localhost:5432/rudra_de
 
 
 class DbLogger:
-    """Fire-and-forget Postgres writer for decisions + trades."""
+    """Fire-and-forget Postgres writer for decisions + trades.
+    
+    v-fix-loop-safety-2026-09-10: Loop-safe async operations. The engine
+    is bound to an owner loop; cross-loop calls are routed via
+    run_coroutine_threadsafe to avoid "Future attached to different loop".
+    """
 
     def __init__(self, dsn: str | None = None) -> None:
         raw_dsn = dsn or os.environ.get("POSTGRES_DSN_ASYNC", DEFAULT_DSN)
@@ -44,6 +55,23 @@ class DbLogger:
         # UniqueViolationError on bot_positions_pkey when _save_state
         # fires twice in quick succession).
         self._sync_positions_lock = asyncio.Lock()
+        # v-fix-loop-safety-2026-09-10: track owner loop for cross-loop safety
+        self._owner_loop: Optional[asyncio.AbstractEventLoop] = None
+    
+    def set_owner_loop(self, loop: asyncio.AbstractEventLoop | None = None) -> None:
+        """Set the event loop that owns this DbLogger's engine.
+        
+        v-fix-loop-safety-2026-09-10: Call this once from the main async
+        context (e.g., FastAPI startup) so cross-loop operations can route
+        back correctly. If loop is None, uses the current running loop.
+        """
+        if loop is None:
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = asyncio.get_event_loop()
+        self._owner_loop = loop
+        logger.debug("db_logger_owner_loop_set loop_id=%s", id(loop))
 
     async def close(self) -> None:
         await self._engine.dispose()
@@ -449,6 +477,7 @@ class DbLogger:
 
     # =========================================================================
     # v-feature-snapshot-2026-09-09: Decision snapshots for ML training
+    # v-fix-loop-safety-2026-09-10: Loop-safe with cross-loop routing
     # =========================================================================
     async def log_decision_snapshot(self, snapshot) -> None:
         """v-feature-snapshot-2026-09-09: persist a DecisionSnapshot for ML training.
@@ -465,6 +494,9 @@ class DbLogger:
         - extra_json: strategy-specific extras
         
         Never raises. Fire-and-forget.
+        
+        v-fix-loop-safety-2026-09-10: If called from a different event loop
+        than the owner loop, routes the insert via run_coroutine_threadsafe.
         """
         if not self._enabled:
             return
@@ -475,6 +507,28 @@ class DbLogger:
         except ImportError:
             return
         
+        # v-fix-loop-safety-2026-09-10: cross-loop safety check
+        try:
+            current_loop = asyncio.get_running_loop()
+            if self._owner_loop is not None and self._owner_loop is not current_loop:
+                # Running on wrong loop — route to owner loop fire-and-forget
+                asyncio.run_coroutine_threadsafe(
+                    self._log_decision_snapshot_impl(snapshot),
+                    self._owner_loop,
+                )
+                return
+        except RuntimeError:
+            # No running loop — shouldn't happen in async context, but proceed
+            pass
+        
+        await self._log_decision_snapshot_impl(snapshot)
+
+    async def _log_decision_snapshot_impl(self, snapshot) -> None:
+        """Internal impl: actually insert the snapshot into the database.
+        
+        v-fix-loop-safety-2026-09-10: separated from log_decision_snapshot
+        for cross-loop routing.
+        """
         try:
             snap_dict = snapshot.to_dict()
             # v-fix-snapshot-ts-2026-09-09: asyncpg requires datetime objects for
@@ -538,10 +592,49 @@ class DbLogger:
         
         Returns list of snapshot dicts for ML training pipelines.
         Filters are optional and combinable.
+        
+        v-fix-loop-safety-2026-09-10: If called from a different event loop
+        than the owner loop, routes the query via run_coroutine_threadsafe.
         """
         if not self._enabled:
             return []
         
+        # v-fix-loop-safety-2026-09-10: cross-loop safety check
+        try:
+            current_loop = asyncio.get_running_loop()
+            if self._owner_loop is not None and self._owner_loop is not current_loop:
+                # Running on wrong loop — route to owner loop and await result
+                fut = asyncio.run_coroutine_threadsafe(
+                    self._get_decision_snapshots_impl(
+                        symbol=symbol, strategy_id=strategy_id,
+                        action=action, limit=limit, offset=offset, since=since,
+                    ),
+                    self._owner_loop,
+                )
+                return await asyncio.wrap_future(fut)
+        except RuntimeError:
+            # No running loop — proceed (shouldn't happen in async context)
+            pass
+        
+        return await self._get_decision_snapshots_impl(
+            symbol=symbol, strategy_id=strategy_id,
+            action=action, limit=limit, offset=offset, since=since,
+        )
+
+    async def _get_decision_snapshots_impl(
+        self,
+        symbol: str | None = None,
+        strategy_id: str | None = None,
+        action: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+        since: datetime | None = None,
+    ) -> list[dict]:
+        """Internal impl: actually query snapshots from the database.
+        
+        v-fix-loop-safety-2026-09-10: separated from get_decision_snapshots
+        for cross-loop routing.
+        """
         try:
             filters = []
             params: dict = {"limit": limit, "offset": offset}
@@ -579,6 +672,8 @@ class DbLogger:
             
             result = []
             for row in rows:
+                # v-fix-json-decode-2026-09-10: use _safe_json_decode for JSONB
+                # columns since asyncpg may return dicts directly
                 result.append({
                     "snapshot_id": row["snapshot_id"],
                     "symbol": row["symbol"],
@@ -589,15 +684,15 @@ class DbLogger:
                     "reason": row["reason"],
                     "gate_name": row["gate_name"],
                     "confidence": row["confidence"],
-                    "price_vol": json.loads(row["price_vol_json"]) if row["price_vol_json"] else {},
-                    "news": json.loads(row["news_json"]) if row["news_json"] else {},
-                    "regime": json.loads(row["regime_json"]) if row["regime_json"] else {},
+                    "price_vol": _safe_json_decode(row["price_vol_json"]),
+                    "news": _safe_json_decode(row["news_json"]),
+                    "regime": _safe_json_decode(row["regime_json"]),
                     "would_entry_price": row["would_entry_price"],
                     "would_stop_loss": row["would_stop_loss"],
                     "would_take_profit": row["would_take_profit"],
                     "would_size_shares": row["would_size_shares"],
                     "would_size_mult": row["would_size_mult"],
-                    "extra": json.loads(row["extra_json"]) if row["extra_json"] else {},
+                    "extra": _safe_json_decode(row["extra_json"]),
                 })
             return result
         except Exception as exc:
@@ -665,6 +760,31 @@ def _safe_json(value: Any) -> Any:
     if isinstance(value, set):
         return list(value)
     return str(value)
+
+
+def _safe_json_decode(value: Any) -> dict | list:
+    """Decode JSON, handling asyncpg's automatic JSONB deserialization.
+    
+    v-fix-json-decode-2026-09-10: asyncpg/SQLAlchemy returns JSONB columns
+    as Python dicts directly. Calling json.loads() on an already-deserialized
+    dict raises: "the JSON object must be str, bytes or bytearray, not dict".
+    
+    This helper:
+      - Returns dict/list values as-is (already deserialized by asyncpg)
+      - Parses str/bytes/bytearray via json.loads()
+      - Returns {} for None or unparseable values
+    """
+    if value is None:
+        return {}
+    if isinstance(value, (dict, list)):
+        return value
+    if isinstance(value, (str, bytes, bytearray)):
+        try:
+            return json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            logger.warning("_safe_json_decode: failed to parse %r", value[:100] if hasattr(value, '__getitem__') else value)
+            return {}
+    return {}
 
 
 def _ensure_datetime(value: Any) -> datetime | None:
