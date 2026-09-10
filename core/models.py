@@ -133,6 +133,21 @@ class Position:
     _state_lock: Any = field(default=None, repr=False, compare=False)
 
     # ──────────────────────────────────────────────────────────────────
+    # v-order-monitor-2026-09-10: bracket/OCO order tracking fields.
+    # When _place_bracket_orders succeeds, these IDs track the broker-side
+    # orders so the order monitor can:
+    #   1. Detect stop/TP fills and sync Position state
+    #   2. Cancel sibling legs when one side fills
+    #   3. Replace stops when software trail moves
+    # All three are optional (None = no active bracket for this position).
+    # ──────────────────────────────────────────────────────────────────
+    bracket_order_id: Optional[str] = None   # Parent OCO order ID
+    stop_order_id: Optional[str] = None      # Stop loss leg order ID
+    tp_order_id: Optional[str] = None        # Take profit leg order ID
+    # Last broker stop price (for detecting when trail replacement is needed)
+    broker_stop_price: Optional[float] = None
+
+    # ──────────────────────────────────────────────────────────────────
     # v-pricebook-2026-05-01: reactive-pull current_price / unrealized_pnl.
     # These look like attributes for backwards-compat but compute on
     # every read against the canonical PriceBook. There is no stored
@@ -214,6 +229,18 @@ def _position_migration_init(self, *args, **kwargs):
         except Exception:
             pass
 Position.__init__ = _position_migration_init
+
+
+def clear_bracket_ids(position: Position) -> None:
+    """Clear all bracket/OCO order tracking IDs on a position.
+    
+    v-order-monitor-2026-09-10: called after bracket fills/cancels/rejects
+    to reset tracking state so the order monitor stops watching stale IDs.
+    """
+    position.bracket_order_id = None
+    position.stop_order_id = None
+    position.tp_order_id = None
+    position.broker_stop_price = None
 
 
 @dataclass
