@@ -44,6 +44,7 @@ class TradingStrategyWithCommentary(ABC):
         news_aggregate: Optional[Dict[str, Any]] = None,
         news_gate_result: Optional[Any] = None,
         regime_context: Optional[Any] = None,
+        skip_snapshot: bool = False,
         **details: Any,
     ) -> None:
         """Structured per-tick decision log + snapshot capture.
@@ -54,6 +55,11 @@ class TradingStrategyWithCommentary(ABC):
         reason: short snake_case label
         
         v-feature-snapshot-2026-09-09: also emits DecisionSnapshot for ML training.
+        
+        v-fix-double-emit-2026-09-10: added skip_snapshot parameter. Set to True
+        for informational logs (like news_gate intermediate checks, size_reduced)
+        that should not emit ML snapshots. Only the final decision point should
+        emit the snapshot to avoid double-emit causing connection exhaustion.
         """
         symbol = getattr(market_data, "symbol", "?")
         close = getattr(market_data, "close", None)
@@ -64,6 +70,9 @@ class TradingStrategyWithCommentary(ABC):
         )
         
         # v-feature-snapshot-2026-09-09: emit DecisionSnapshot for ML training
+        # v-fix-double-emit-2026-09-10: skip snapshot for informational logs
+        if skip_snapshot:
+            return
         self._emit_snapshot(
             market_data=market_data,
             action=action,

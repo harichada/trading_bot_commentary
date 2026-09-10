@@ -1429,21 +1429,27 @@ class DayTradeMomentumStrategy(TradingStrategyWithCommentary):
                 # risk_off: reduce size, don't hard-block
                 if _mc_regime == "risk_off":
                     _mc_size_mult = cfg.MOMENTUM_RISK_OFF_SIZE_MULT
+                    # v-fix-double-emit-2026-09-10: skip_snapshot=True for informational
+                    # size reduction logs (not decision points, just context)
                     self._log_decision(
                         market_data, "size_reduced", "risk_off_not_blocked",
                         regime=_mc_regime,
                         size_mult=_mc_size_mult,
                         spy_change=round(_mc_spy_change, 2),
+                        skip_snapshot=True,
                     )
                 
                 # opening_30: reduce size, don't hard-block
                 if _mc_time_of_day == "opening_30":
                     _opening_mult = cfg.MOMENTUM_OPENING_30_SIZE_MULT
                     _mc_size_mult = min(_mc_size_mult, _opening_mult)
+                    # v-fix-double-emit-2026-09-10: skip_snapshot=True for informational
+                    # size reduction logs (not decision points, just context)
                     self._log_decision(
                         market_data, "size_reduced", "opening_30_not_blocked",
                         time_of_day=_mc_time_of_day,
                         size_mult=_mc_size_mult,
+                        skip_snapshot=True,
                     )
                     
             except Exception as _mc_exc:

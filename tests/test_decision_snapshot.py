@@ -941,3 +941,198 @@ class TestDbLoggerLoopSafety:
             db_logger = DbLogger(dsn="postgresql+asyncpg://test:test@localhost/test")
         
         assert db_logger._owner_loop is None
+
+
+# ============================================================================
+# v-fix-pool-leak-2026-09-10: Tests for Postgres connection pool leak fixes
+# ============================================================================
+
+class TestDbLoggerSingleton:
+    """v-fix-pool-leak-2026-09-10: test singleton pattern for DbLogger.
+    
+    Verifies that get_shared_db_logger() returns the same instance to
+    prevent multiple engine/pool creations exhausting max_connections.
+    """
+
+    def test_get_shared_db_logger_returns_singleton(self):
+        """get_shared_db_logger returns the same instance on repeated calls."""
+        from data_providers.db_logger import get_shared_db_logger, _shared_instance
+        from unittest.mock import patch
+        import data_providers.db_logger as db_logger_module
+        
+        # Reset singleton for test isolation
+        db_logger_module._shared_instance = None
+        
+        with patch('data_providers.db_logger.create_async_engine'):
+            instance1 = get_shared_db_logger(dsn="postgresql+asyncpg://test:test@localhost/test")
+            instance2 = get_shared_db_logger(dsn="postgresql+asyncpg://test:test@localhost/test")
+        
+        assert instance1 is instance2
+        
+        # Cleanup
+        db_logger_module._shared_instance = None
+
+    def test_singleton_pool_configuration(self):
+        """Singleton has proper pool configuration to prevent leaks."""
+        from data_providers.db_logger import DbLogger
+        from unittest.mock import patch, MagicMock
+        
+        mock_engine = MagicMock()
+        with patch('data_providers.db_logger.create_async_engine', return_value=mock_engine) as mock_create:
+            db_logger = DbLogger(dsn="postgresql+asyncpg://test:test@localhost/test")
+        
+        # Verify pool configuration
+        call_kwargs = mock_create.call_args[1]
+        assert call_kwargs['pool_size'] == 5
+        assert call_kwargs['max_overflow'] == 3
+        assert call_kwargs['pool_pre_ping'] is True
+        assert call_kwargs['pool_recycle'] == 1800
+
+
+class TestDoubleEmitFix:
+    """v-fix-double-emit-2026-09-10: test skip_snapshot parameter.
+    
+    Verifies that informational logs (news_gate, size_reduced) do not
+    emit snapshots when skip_snapshot=True.
+    """
+
+    def test_log_decision_skip_snapshot_param_exists(self):
+        """_log_decision accepts skip_snapshot parameter."""
+        import inspect
+        from strategies.base import TradingStrategyWithCommentary
+        
+        sig = inspect.signature(TradingStrategyWithCommentary._log_decision)
+        assert 'skip_snapshot' in sig.parameters
+        
+        # Default should be False
+        assert sig.parameters['skip_snapshot'].default is False
+
+    def test_skip_snapshot_prevents_emit(self):
+        """skip_snapshot=True prevents _emit_snapshot call."""
+        from strategies.base import TradingStrategyWithCommentary
+        from unittest.mock import MagicMock, patch
+        
+        class TestStrategy(TradingStrategyWithCommentary):
+            name = "test_strategy"
+            async def generate_signal_with_commentary(self, market_data):
+                return None
+        
+        strategy = TestStrategy(MagicMock())
+        strategy._emit_snapshot = MagicMock()
+        
+        mock_market_data = MagicMock()
+        mock_market_data.symbol = "TEST"
+        mock_market_data.close = 100.0
+        
+        # With skip_snapshot=True, _emit_snapshot should NOT be called
+        strategy._log_decision(mock_market_data, "news_gate", "test", skip_snapshot=True)
+        strategy._emit_snapshot.assert_not_called()
+        
+        # Without skip_snapshot (default), _emit_snapshot SHOULD be called
+        strategy._log_decision(mock_market_data, "skip", "test_reason")
+        strategy._emit_snapshot.assert_called_once()
+
+    def test_news_strategy_news_gate_uses_skip_snapshot(self):
+        """NewsStrategy news_gate log uses skip_snapshot=True."""
+        import ast
+        from pathlib import Path
+        
+        src = Path("strategies/news_strategy.py").read_text()
+        tree = ast.parse(src)
+        
+        # Find all _log_decision calls with action="news_gate"
+        found_skip_snapshot = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                if hasattr(node.func, 'attr') and node.func.attr == '_log_decision':
+                    # Check positional args for "news_gate"
+                    for arg in node.args:
+                        if isinstance(arg, ast.Constant) and arg.value == "news_gate":
+                            # Check for skip_snapshot=True in kwargs
+                            for kw in node.keywords:
+                                if kw.arg == 'skip_snapshot':
+                                    if isinstance(kw.value, ast.Constant) and kw.value.value is True:
+                                        found_skip_snapshot = True
+        
+        assert found_skip_snapshot, "news_gate _log_decision should have skip_snapshot=True"
+
+    def test_day_trade_size_reduced_uses_skip_snapshot(self):
+        """DayTradeMomentumStrategy size_reduced logs use skip_snapshot=True."""
+        import ast
+        from pathlib import Path
+        
+        src = Path("strategies/builtin.py").read_text()
+        tree = ast.parse(src)
+        
+        # Find all _log_decision calls with action="size_reduced"
+        found_count = 0
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                if hasattr(node.func, 'attr') and node.func.attr == '_log_decision':
+                    # Check positional args for "size_reduced"
+                    for arg in node.args:
+                        if isinstance(arg, ast.Constant) and arg.value == "size_reduced":
+                            # Check for skip_snapshot=True in kwargs
+                            for kw in node.keywords:
+                                if kw.arg == 'skip_snapshot':
+                                    if isinstance(kw.value, ast.Constant) and kw.value.value is True:
+                                        found_count += 1
+        
+        # Should find at least 2 (risk_off and opening_30)
+        assert found_count >= 2, f"Expected at least 2 size_reduced with skip_snapshot=True, found {found_count}"
+
+
+class TestSinceBindFix:
+    """v-fix-since-bind-2026-09-10: test since parameter uses datetime, not isoformat.
+    
+    Verifies that get_decision_snapshots passes datetime objects to asyncpg,
+    not ISO format strings which cause DataError.
+    """
+
+    def test_since_bind_is_datetime_not_string(self):
+        """_get_decision_snapshots_impl passes datetime for since, not isoformat string."""
+        import ast
+        from pathlib import Path
+        
+        src = Path("data_providers/db_logger.py").read_text()
+        
+        # Check that params["since"] = since (datetime) not since.isoformat()
+        assert 'params["since"] = since.isoformat()' not in src
+        assert 'params["since"] = since' in src
+
+    @pytest.mark.asyncio
+    async def test_get_decision_snapshots_since_datetime(self):
+        """get_decision_snapshots accepts datetime since parameter."""
+        from data_providers.db_logger import DbLogger
+        from unittest.mock import patch, MagicMock, AsyncMock
+        from datetime import datetime, timezone
+        
+        with patch('data_providers.db_logger.create_async_engine'):
+            db_logger = DbLogger(dsn="postgresql+asyncpg://test:test@localhost/test")
+        
+        # Mock the engine.begin() context manager
+        mock_conn = MagicMock()
+        mock_result = MagicMock()
+        mock_result.mappings.return_value.all.return_value = []
+        mock_conn.execute = AsyncMock(return_value=mock_result)
+        
+        mock_cm = MagicMock()
+        mock_cm.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_cm.__aexit__ = AsyncMock(return_value=None)
+        db_logger._engine.begin = MagicMock(return_value=mock_cm)
+        
+        since_dt = datetime(2026, 9, 10, 12, 0, 0, tzinfo=timezone.utc)
+        
+        # This should not raise
+        result = await db_logger._get_decision_snapshots_impl(since=since_dt)
+        
+        assert result == []
+        
+        # Verify execute was called
+        mock_conn.execute.assert_called_once()
+        
+        # Verify the since param is a datetime, not a string
+        call_args = mock_conn.execute.call_args
+        params = call_args[0][1]  # Second positional arg is params dict
+        assert params['since'] is since_dt
+        assert isinstance(params['since'], datetime)
