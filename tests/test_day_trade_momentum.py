@@ -954,3 +954,523 @@ class TestStageAConfigFloors:
         from core.config import Config
         cfg = Config()
         assert cfg.MOMENTUM_ALLOW_OVERNIGHT_HOLD is False
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# v-pause-live-daytrade-2026-09-10: Tests for Part A - Pause NEW LIVE day-trade
+# entries. Hari APPROVED product call 2026-09-10.
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestDayTradeLiveEntriesDisabled:
+    """Test DAY_TRADE_LIVE_ENTRIES_ENABLED flag and LIVE entry blocking.
+    
+    v-pause-live-daytrade-2026-09-10: immediately pause new LIVE day-trade
+    entries while keeping sim/commentary analysis running and existing
+    positions' exits intact.
+    """
+    
+    def test_day_trade_live_entries_default_false(self):
+        """DAY_TRADE_LIVE_ENTRIES_ENABLED must default to False.
+        
+        This is the immediate pause. DO NOT CHANGE without Stage-A validation.
+        """
+        from core.config import Config
+        cfg = Config()
+        assert cfg.DAY_TRADE_LIVE_ENTRIES_ENABLED is False, (
+            "DAY_TRADE_LIVE_ENTRIES_ENABLED must default to False — "
+            "Stage-A validation required before enabling LIVE entries"
+        )
+    
+    def test_enable_day_trade_momentum_still_true(self):
+        """ENABLE_DAY_TRADE_MOMENTUM should still be True (strategy generates signals).
+        
+        The pause is only for LIVE order placement, not signal generation.
+        Sim/commentary analysis should continue working.
+        """
+        from core.config import Config
+        cfg = Config()
+        assert cfg.ENABLE_DAY_TRADE_MOMENTUM is True, (
+            "ENABLE_DAY_TRADE_MOMENTUM should be True — "
+            "we want signals generated for sim/commentary, just LIVE blocked"
+        )
+    
+    @pytest.mark.asyncio
+    async def test_strategy_still_generates_signals_when_live_disabled(self):
+        """DayTradeMomentumStrategy must still generate signals for sim/commentary.
+        
+        The LIVE blocking happens in the engine, not the strategy. Strategy
+        should always generate signals when conditions are met.
+        """
+        from strategies.builtin import DayTradeMomentumStrategy
+        
+        strategy = DayTradeMomentumStrategy(MagicMock())
+        
+        market_data = MagicMock()
+        market_data.symbol = 'TEST'
+        market_data.close = 102.0
+        market_data.open = 99.0
+        market_data.timestamp = datetime.now()
+        market_data.indicators = {
+            'rsi': 60,
+            'volume_ratio': 2.0,
+            'adx': 30,
+            'atr': 1.5,
+            'high_20': 100.0,
+            'sma_20': 98.0,
+            'macd': 0.5,
+            'macd_signal': 0.3,
+            'day_change_pct': 4.0,
+        }
+        
+        with patch('core.market_context.read_market_context') as mock_mc:
+            mock_mc.return_value = MagicMock(
+                regime='risk_on',
+                time_of_day='midday',
+                spy_change_pct=0.5,
+                vix_change_pct=-1.0,
+                sector_etf='XLK',
+                reason='test',
+            )
+            
+            with patch('core.config.Config') as mock_cfg:
+                mock_cfg_instance = MagicMock()
+                mock_cfg_instance.ENABLE_DAY_TRADE_MOMENTUM = True
+                mock_cfg_instance.DAY_TRADE_LIVE_ENTRIES_ENABLED = False  # KEY: False
+                mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_SPY_PCT = -1.5
+                mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_VIX_SPIKE = 15.0
+                mock_cfg_instance.MOMENTUM_RISK_OFF_SIZE_MULT = 0.25
+                mock_cfg_instance.MOMENTUM_OPENING_30_SIZE_MULT = 0.5
+                mock_cfg_instance.MOMENTUM_MIN_RS_VS_SPY = 0.5
+                mock_cfg_instance.MOMENTUM_MIN_VOLUME_RATIO = 1.5
+                mock_cfg_instance.DAY_TRADE_SIZE_MULTIPLIER = 0.5
+                mock_cfg_instance.DAY_TRADE_FLATTEN_HOUR = 15
+                mock_cfg_instance.ENABLE_SHADOW_VETO_CONTINUATION_RISKOFF = True
+                mock_cfg_instance.SHADOW_VETO_RSI_THRESHOLD = 70.0
+                mock_cfg.return_value = mock_cfg_instance
+                
+                signal = await strategy.generate_signal_with_commentary(market_data)
+        
+        # Signal should STILL be generated (strategy doesn't check LIVE mode)
+        # The engine handles LIVE blocking, not the strategy
+        assert signal is not None, (
+            "Strategy must still generate signals even when "
+            "DAY_TRADE_LIVE_ENTRIES_ENABLED=False — blocking is in engine"
+        )
+
+
+class TestEngineBlocksLiveDayTrade:
+    """Test that the engine blocks LIVE day-trade entries when flag is False.
+    
+    These tests verify the engine's signal routing gate, not the strategy.
+    """
+    
+    def test_engine_has_daytrade_live_pause_gate(self):
+        """Engine must have the v-pause-live-daytrade-2026-09-10 gate."""
+        from pathlib import Path
+        src = Path("core/engine.py").read_text()
+        
+        assert "v-pause-live-daytrade-2026-09-10" in src, (
+            "Engine must contain v-pause-live-daytrade-2026-09-10 gate"
+        )
+        assert "DAY_TRADE_LIVE_ENTRIES_ENABLED" in src, (
+            "Engine must check DAY_TRADE_LIVE_ENTRIES_ENABLED flag"
+        )
+        assert "daytrade_live_pause" in src, (
+            "Engine must audit with component=daytrade_live_pause"
+        )
+    
+    def test_engine_gate_checks_strategy_name(self):
+        """Engine gate must specifically check for day_trade_momentum strategy."""
+        from pathlib import Path
+        src = Path("core/engine.py").read_text()
+        
+        anchor = src.find("v-pause-live-daytrade-2026-09-10")
+        assert anchor != -1
+        window = src[anchor: anchor + 3000]
+        
+        assert "day_trade_momentum" in window, (
+            "Engine gate must check for strategy == 'day_trade_momentum'"
+        )
+        assert "TradingMode.LIVE" in window, (
+            "Engine gate must check for LIVE mode"
+        )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# v-shadow-veto-2026-09-10: Tests for Part B - Shadow veto for continuation
+# pattern + RSI>=70 + risk_off.
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestShadowVetoContinuationRiskoffRsi70:
+    """Test shadow veto for continuation + RSI>=70 + risk_off.
+    
+    v-shadow-veto-2026-09-10: shadow (log-only) veto for the dangerous
+    pattern. This is instrumentation for later promotion scoring.
+    """
+    
+    def test_enable_shadow_veto_default_true(self):
+        """ENABLE_SHADOW_VETO_CONTINUATION_RISKOFF must default to True."""
+        from core.config import Config
+        cfg = Config()
+        assert cfg.ENABLE_SHADOW_VETO_CONTINUATION_RISKOFF is True
+    
+    def test_shadow_veto_rsi_threshold_default_70(self):
+        """SHADOW_VETO_RSI_THRESHOLD must default to 70.0."""
+        from core.config import Config
+        cfg = Config()
+        assert cfg.SHADOW_VETO_RSI_THRESHOLD == 70.0
+    
+    @pytest.mark.asyncio
+    async def test_shadow_veto_fires_on_continuation_rsi70_riskoff(self):
+        """Shadow veto must fire when continuation + RSI>=70 + risk_off.
+        
+        This is the dangerous pattern: continuation into overbought during
+        risk_off is the classic failed-breakout exhaustion setup.
+        """
+        from strategies.builtin import DayTradeMomentumStrategy
+        
+        strategy = DayTradeMomentumStrategy(MagicMock())
+        
+        market_data = MagicMock()
+        market_data.symbol = 'RISKY'
+        market_data.close = 100.0
+        market_data.open = 98.0
+        market_data.timestamp = datetime.now()
+        market_data.indicators = {
+            'rsi': 72.0,  # KEY: RSI >= 70 (overbought)
+            'volume_ratio': 2.0,
+            'adx': 30,  # > 25 for continuation
+            'atr': 1.5,
+            'high_20': 95.0,  # Not breakout (close not > high_20)
+            'sma_20': 98.0,  # Close > sma_20 for continuation
+            'macd': 0.5,
+            'macd_signal': 0.3,  # MACD > signal for continuation
+            'day_change_pct': 3.0,
+        }
+        
+        with patch('core.market_context.read_market_context') as mock_mc:
+            mock_mc.return_value = MagicMock(
+                regime='risk_off',  # KEY: risk_off regime
+                time_of_day='midday',
+                spy_change_pct=-0.8,
+                vix_change_pct=8.0,
+                sector_etf='XLK',
+                reason='test',
+            )
+            
+            with patch('core.config.Config') as mock_cfg:
+                mock_cfg_instance = MagicMock()
+                mock_cfg_instance.ENABLE_DAY_TRADE_MOMENTUM = True
+                mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_SPY_PCT = -1.5
+                mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_VIX_SPIKE = 15.0
+                mock_cfg_instance.MOMENTUM_RISK_OFF_SIZE_MULT = 0.25
+                mock_cfg_instance.MOMENTUM_OPENING_30_SIZE_MULT = 0.5
+                mock_cfg_instance.MOMENTUM_MIN_RS_VS_SPY = 0.5
+                mock_cfg_instance.MOMENTUM_MIN_VOLUME_RATIO = 1.5
+                mock_cfg_instance.DAY_TRADE_SIZE_MULTIPLIER = 0.5
+                mock_cfg_instance.DAY_TRADE_FLATTEN_HOUR = 15
+                # Shadow veto enabled
+                mock_cfg_instance.ENABLE_SHADOW_VETO_CONTINUATION_RISKOFF = True
+                mock_cfg_instance.SHADOW_VETO_RSI_THRESHOLD = 70.0
+                mock_cfg.return_value = mock_cfg_instance
+                
+                signal = await strategy.generate_signal_with_commentary(market_data)
+        
+        # Signal should be BLOCKED (None) due to shadow veto
+        assert signal is None, (
+            "Shadow veto must block signal for continuation + RSI>=70 + risk_off"
+        )
+    
+    @pytest.mark.asyncio
+    async def test_shadow_veto_does_not_fire_on_breakout_pattern(self):
+        """Shadow veto must NOT fire for breakout pattern (only continuation)."""
+        from strategies.builtin import DayTradeMomentumStrategy
+        
+        strategy = DayTradeMomentumStrategy(MagicMock())
+        
+        market_data = MagicMock()
+        market_data.symbol = 'SAFE'
+        market_data.close = 102.0  # Above high_20 = breakout
+        market_data.open = 98.0
+        market_data.timestamp = datetime.now()
+        market_data.indicators = {
+            'rsi': 72.0,  # RSI >= 70
+            'volume_ratio': 2.0,
+            'adx': 30,
+            'atr': 1.5,
+            'high_20': 100.0,  # Close > high_20 = BREAKOUT pattern
+            'sma_20': 98.0,
+            'macd': 0.5,
+            'macd_signal': 0.3,
+            'day_change_pct': 4.0,
+        }
+        
+        with patch('core.market_context.read_market_context') as mock_mc:
+            mock_mc.return_value = MagicMock(
+                regime='risk_off',  # risk_off
+                time_of_day='midday',
+                spy_change_pct=-0.8,
+                vix_change_pct=8.0,
+                sector_etf='XLK',
+                reason='test',
+            )
+            
+            with patch('core.config.Config') as mock_cfg:
+                mock_cfg_instance = MagicMock()
+                mock_cfg_instance.ENABLE_DAY_TRADE_MOMENTUM = True
+                mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_SPY_PCT = -1.5
+                mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_VIX_SPIKE = 15.0
+                mock_cfg_instance.MOMENTUM_RISK_OFF_SIZE_MULT = 0.25
+                mock_cfg_instance.MOMENTUM_OPENING_30_SIZE_MULT = 0.5
+                mock_cfg_instance.MOMENTUM_MIN_RS_VS_SPY = 0.5
+                mock_cfg_instance.MOMENTUM_MIN_VOLUME_RATIO = 1.5
+                mock_cfg_instance.DAY_TRADE_SIZE_MULTIPLIER = 0.5
+                mock_cfg_instance.DAY_TRADE_FLATTEN_HOUR = 15
+                mock_cfg_instance.ENABLE_SHADOW_VETO_CONTINUATION_RISKOFF = True
+                mock_cfg_instance.SHADOW_VETO_RSI_THRESHOLD = 70.0
+                mock_cfg.return_value = mock_cfg_instance
+                
+                signal = await strategy.generate_signal_with_commentary(market_data)
+        
+        # Signal should be GENERATED (not None) because pattern is BREAKOUT
+        assert signal is not None, (
+            "Shadow veto should NOT fire for breakout pattern "
+            "(only continuation is vetoed)"
+        )
+        assert signal.reasoning['entry_pattern'] == 'breakout'
+    
+    @pytest.mark.asyncio
+    async def test_shadow_veto_does_not_fire_on_risk_on_regime(self):
+        """Shadow veto must NOT fire when regime is NOT risk_off."""
+        from strategies.builtin import DayTradeMomentumStrategy
+        
+        strategy = DayTradeMomentumStrategy(MagicMock())
+        
+        market_data = MagicMock()
+        market_data.symbol = 'SAFE2'
+        market_data.close = 100.0
+        market_data.open = 98.0
+        market_data.timestamp = datetime.now()
+        market_data.indicators = {
+            'rsi': 72.0,  # RSI >= 70
+            'volume_ratio': 2.0,
+            'adx': 30,
+            'atr': 1.5,
+            'high_20': 95.0,  # Close NOT > high_20 = NOT breakout
+            'sma_20': 98.0,  # Close > sma_20 = continuation pattern
+            'macd': 0.5,
+            'macd_signal': 0.3,
+            'day_change_pct': 3.0,
+        }
+        
+        with patch('core.market_context.read_market_context') as mock_mc:
+            mock_mc.return_value = MagicMock(
+                regime='risk_on',  # KEY: NOT risk_off
+                time_of_day='midday',
+                spy_change_pct=0.5,
+                vix_change_pct=-1.0,
+                sector_etf='XLK',
+                reason='test',
+            )
+            
+            with patch('core.config.Config') as mock_cfg:
+                mock_cfg_instance = MagicMock()
+                mock_cfg_instance.ENABLE_DAY_TRADE_MOMENTUM = True
+                mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_SPY_PCT = -1.5
+                mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_VIX_SPIKE = 15.0
+                mock_cfg_instance.MOMENTUM_RISK_OFF_SIZE_MULT = 0.25
+                mock_cfg_instance.MOMENTUM_OPENING_30_SIZE_MULT = 0.5
+                mock_cfg_instance.MOMENTUM_MIN_RS_VS_SPY = 0.5
+                mock_cfg_instance.MOMENTUM_MIN_VOLUME_RATIO = 1.5
+                mock_cfg_instance.DAY_TRADE_SIZE_MULTIPLIER = 0.5
+                mock_cfg_instance.DAY_TRADE_FLATTEN_HOUR = 15
+                mock_cfg_instance.ENABLE_SHADOW_VETO_CONTINUATION_RISKOFF = True
+                mock_cfg_instance.SHADOW_VETO_RSI_THRESHOLD = 70.0
+                mock_cfg.return_value = mock_cfg_instance
+                
+                signal = await strategy.generate_signal_with_commentary(market_data)
+        
+        # Signal should be GENERATED because regime is risk_on
+        assert signal is not None, (
+            "Shadow veto should NOT fire when regime is risk_on"
+        )
+        assert signal.reasoning['entry_pattern'] == 'continuation'
+    
+    @pytest.mark.asyncio
+    async def test_shadow_veto_does_not_fire_below_rsi_threshold(self):
+        """Shadow veto must NOT fire when RSI < threshold."""
+        from strategies.builtin import DayTradeMomentumStrategy
+        
+        strategy = DayTradeMomentumStrategy(MagicMock())
+        
+        market_data = MagicMock()
+        market_data.symbol = 'SAFE3'
+        market_data.close = 100.0
+        market_data.open = 98.0
+        market_data.timestamp = datetime.now()
+        market_data.indicators = {
+            'rsi': 65.0,  # KEY: RSI < 70
+            'volume_ratio': 2.0,
+            'adx': 30,
+            'atr': 1.5,
+            'high_20': 95.0,  # Not breakout
+            'sma_20': 98.0,  # Continuation pattern
+            'macd': 0.5,
+            'macd_signal': 0.3,
+            'day_change_pct': 3.0,
+        }
+        
+        with patch('core.market_context.read_market_context') as mock_mc:
+            mock_mc.return_value = MagicMock(
+                regime='risk_off',  # risk_off
+                time_of_day='midday',
+                spy_change_pct=-0.8,
+                vix_change_pct=8.0,
+                sector_etf='XLK',
+                reason='test',
+            )
+            
+            with patch('core.config.Config') as mock_cfg:
+                mock_cfg_instance = MagicMock()
+                mock_cfg_instance.ENABLE_DAY_TRADE_MOMENTUM = True
+                mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_SPY_PCT = -1.5
+                mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_VIX_SPIKE = 15.0
+                mock_cfg_instance.MOMENTUM_RISK_OFF_SIZE_MULT = 0.25
+                mock_cfg_instance.MOMENTUM_OPENING_30_SIZE_MULT = 0.5
+                mock_cfg_instance.MOMENTUM_MIN_RS_VS_SPY = 0.5
+                mock_cfg_instance.MOMENTUM_MIN_VOLUME_RATIO = 1.5
+                mock_cfg_instance.DAY_TRADE_SIZE_MULTIPLIER = 0.5
+                mock_cfg_instance.DAY_TRADE_FLATTEN_HOUR = 15
+                mock_cfg_instance.ENABLE_SHADOW_VETO_CONTINUATION_RISKOFF = True
+                mock_cfg_instance.SHADOW_VETO_RSI_THRESHOLD = 70.0
+                mock_cfg.return_value = mock_cfg_instance
+                
+                signal = await strategy.generate_signal_with_commentary(market_data)
+        
+        # Signal should be GENERATED because RSI < 70
+        assert signal is not None, (
+            "Shadow veto should NOT fire when RSI < threshold"
+        )
+        assert signal.reasoning['entry_pattern'] == 'continuation'
+    
+    @pytest.mark.asyncio
+    async def test_shadow_veto_disabled_when_flag_false(self):
+        """Shadow veto must NOT fire when ENABLE_SHADOW_VETO=False."""
+        from strategies.builtin import DayTradeMomentumStrategy
+        
+        strategy = DayTradeMomentumStrategy(MagicMock())
+        
+        market_data = MagicMock()
+        market_data.symbol = 'BYPASS'
+        market_data.close = 100.0
+        market_data.open = 98.0
+        market_data.timestamp = datetime.now()
+        market_data.indicators = {
+            'rsi': 72.0,  # RSI >= 70
+            'volume_ratio': 2.0,
+            'adx': 30,
+            'atr': 1.5,
+            'high_20': 95.0,  # Not breakout
+            'sma_20': 98.0,  # Continuation pattern
+            'macd': 0.5,
+            'macd_signal': 0.3,
+            'day_change_pct': 3.0,
+        }
+        
+        with patch('core.market_context.read_market_context') as mock_mc:
+            mock_mc.return_value = MagicMock(
+                regime='risk_off',  # risk_off
+                time_of_day='midday',
+                spy_change_pct=-0.8,
+                vix_change_pct=8.0,
+                sector_etf='XLK',
+                reason='test',
+            )
+            
+            with patch('core.config.Config') as mock_cfg:
+                mock_cfg_instance = MagicMock()
+                mock_cfg_instance.ENABLE_DAY_TRADE_MOMENTUM = True
+                mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_SPY_PCT = -1.5
+                mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_VIX_SPIKE = 15.0
+                mock_cfg_instance.MOMENTUM_RISK_OFF_SIZE_MULT = 0.25
+                mock_cfg_instance.MOMENTUM_OPENING_30_SIZE_MULT = 0.5
+                mock_cfg_instance.MOMENTUM_MIN_RS_VS_SPY = 0.5
+                mock_cfg_instance.MOMENTUM_MIN_VOLUME_RATIO = 1.5
+                mock_cfg_instance.DAY_TRADE_SIZE_MULTIPLIER = 0.5
+                mock_cfg_instance.DAY_TRADE_FLATTEN_HOUR = 15
+                # KEY: Shadow veto DISABLED
+                mock_cfg_instance.ENABLE_SHADOW_VETO_CONTINUATION_RISKOFF = False
+                mock_cfg_instance.SHADOW_VETO_RSI_THRESHOLD = 70.0
+                mock_cfg.return_value = mock_cfg_instance
+                
+                signal = await strategy.generate_signal_with_commentary(market_data)
+        
+        # Signal should be GENERATED because shadow veto is disabled
+        assert signal is not None, (
+            "Shadow veto should NOT fire when ENABLE_SHADOW_VETO=False"
+        )
+
+
+class TestStageAFloorsNotLoosened:
+    """Test that Stage-A floors are NOT loosened.
+    
+    v-pause-live-daytrade-2026-09-10: Hari constraint — do NOT loosen
+    Stage A floors (n>=150/>=10 sess, PF>=1.30, WR>=48%, exp>=+0.05R,
+    DD<=6%, max losing day<=2R).
+    """
+    
+    def test_stage_a_min_trades_still_150(self):
+        """Stage-A min trades must still be 150."""
+        from core.config import Config
+        cfg = Config()
+        assert cfg.MOMENTUM_STAGE_A_MIN_TRADES == 150, (
+            "Stage-A MIN_TRADES must be 150 — DO NOT LOOSEN"
+        )
+    
+    def test_stage_a_min_sessions_still_10(self):
+        """Stage-A min sessions must still be 10."""
+        from core.config import Config
+        cfg = Config()
+        assert cfg.MOMENTUM_STAGE_A_MIN_SESSIONS == 10, (
+            "Stage-A MIN_SESSIONS must be 10 — DO NOT LOOSEN"
+        )
+    
+    def test_stage_a_min_pf_still_130(self):
+        """Stage-A min PF must still be 1.30."""
+        from core.config import Config
+        cfg = Config()
+        assert cfg.MOMENTUM_STAGE_A_MIN_PF == 1.30, (
+            "Stage-A MIN_PF must be 1.30 — DO NOT LOOSEN"
+        )
+    
+    def test_stage_a_min_win_rate_still_048(self):
+        """Stage-A min win rate must still be 0.48."""
+        from core.config import Config
+        cfg = Config()
+        assert cfg.MOMENTUM_STAGE_A_MIN_WIN_RATE == 0.48, (
+            "Stage-A MIN_WIN_RATE must be 0.48 — DO NOT LOOSEN"
+        )
+    
+    def test_stage_a_min_expectancy_still_005(self):
+        """Stage-A min expectancy must still be 0.05 R."""
+        from core.config import Config
+        cfg = Config()
+        assert cfg.MOMENTUM_STAGE_A_MIN_EXPECTANCY_R == 0.05, (
+            "Stage-A MIN_EXPECTANCY_R must be 0.05 — DO NOT LOOSEN"
+        )
+    
+    def test_stage_a_max_dd_still_006(self):
+        """Stage-A max DD must still be 6%."""
+        from core.config import Config
+        cfg = Config()
+        assert cfg.MOMENTUM_STAGE_A_MAX_DD_PCT == 0.06, (
+            "Stage-A MAX_DD_PCT must be 0.06 — DO NOT LOOSEN (raise)"
+        )
+    
+    def test_stage_a_max_losing_day_still_2r(self):
+        """Stage-A max losing day must still be 2.0 R."""
+        from core.config import Config
+        cfg = Config()
+        assert cfg.MOMENTUM_STAGE_A_MAX_LOSING_DAY_R == 2.0, (
+            "Stage-A MAX_LOSING_DAY_R must be 2.0 — DO NOT LOOSEN (raise)"
+        )
