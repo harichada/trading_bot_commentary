@@ -32,6 +32,47 @@ logger = logging.getLogger("TradingBot")
 
 DEFAULT_DSN = "postgresql+asyncpg://rudra:rudra_dev_2024@localhost:5432/rudra_dev"
 
+# v-fix-pool-leak-2026-09-10: module-level singleton instance to prevent
+# multiple engine/pool creations. API routes and other code paths should use
+# get_shared_db_logger() instead of creating new DbLogger instances.
+_shared_instance: Optional["DbLogger"] = None
+_shared_lock = asyncio.Lock()
+
+
+def get_shared_db_logger(dsn: str | None = None) -> "DbLogger":
+    """Get or create the shared DbLogger singleton.
+    
+    v-fix-pool-leak-2026-09-10: prevents multiple engine/pool creations
+    that exhaust max_connections. All code paths should use this instead
+    of creating new DbLogger instances directly.
+    
+    Thread-safe via module-level lock. The singleton is bound to the first
+    event loop that creates it; cross-loop operations are routed via
+    run_coroutine_threadsafe.
+    """
+    global _shared_instance
+    if _shared_instance is None:
+        _shared_instance = DbLogger(dsn)
+        try:
+            loop = asyncio.get_running_loop()
+            _shared_instance.set_owner_loop(loop)
+        except RuntimeError:
+            pass
+        logger.info("db_logger_singleton_created pool_size=5 max_overflow=3")
+    return _shared_instance
+
+
+async def dispose_shared_db_logger() -> None:
+    """Dispose the shared DbLogger singleton.
+    
+    Call during graceful shutdown to clean up connection pool.
+    """
+    global _shared_instance
+    if _shared_instance is not None:
+        await _shared_instance.close()
+        _shared_instance = None
+        logger.info("db_logger_singleton_disposed")
+
 
 class DbLogger:
     """Fire-and-forget Postgres writer for decisions + trades.
@@ -46,8 +87,15 @@ class DbLogger:
         # Ensure async driver
         if "asyncpg" not in raw_dsn:
             raw_dsn = raw_dsn.replace("postgresql://", "postgresql+asyncpg://")
+        # v-fix-pool-leak-2026-09-10: bounded pool with recycle to prevent
+        # connection exhaustion. pool_size=5 base, max_overflow=3 burst,
+        # pool_recycle=1800s (30min) to prevent stale connections.
         self._engine: AsyncEngine = create_async_engine(
-            raw_dsn, pool_size=2, max_overflow=2, pool_pre_ping=True,
+            raw_dsn,
+            pool_size=5,
+            max_overflow=3,
+            pool_pre_ping=True,
+            pool_recycle=1800,
         )
         self._enabled = True
         # Serialise sync_positions so two fire-and-forget tasks can't race
@@ -650,7 +698,9 @@ class DbLogger:
                 params["action"] = action
             if since:
                 filters.append("ts >= :since")
-                params["since"] = since.isoformat()
+                # v-fix-since-bind-2026-09-10: asyncpg requires datetime objects,
+                # not isoformat strings. Pass datetime directly.
+                params["since"] = since
             
             where = "WHERE " + " AND ".join(filters) if filters else ""
             

@@ -1906,6 +1906,9 @@ async def get_trades(date: str = None, symbol: str = None, strategy: str = None,
         with engine.connect() as conn:
             rows = conn.execute(sql, params).mappings().all()
 
+        # v-fix-pool-leak-2026-09-10: dispose engine to release connection pool
+        engine.dispose()
+
         trades = [dict(r) for r in rows]
         # v-json-nan-sanitize-trades-2026-05-05: same NaN/inf scrub as
         # /api/positions/db — Postgres can return non-finite floats
@@ -1985,6 +1988,9 @@ async def get_decisions(date: str = None, symbol: str = None, component: str = N
 
         with engine.connect() as conn:
             rows = conn.execute(sql, params).mappings().all()
+
+        # v-fix-pool-leak-2026-09-10: dispose engine to release connection pool
+        engine.dispose()
 
         decisions = [dict(r) for r in rows]
         import math as _math
@@ -2090,6 +2096,9 @@ async def get_positions_db():
                        updated_at::text
                 FROM bot_positions ORDER BY entry_time
             """)).mappings().all()
+
+        # v-fix-pool-leak-2026-09-10: dispose engine to release connection pool
+        engine.dispose()
 
         positions = [dict(r) for r in rows]
         # v-managed-by-bot-2026-04-28: enrich DB rows with per-position flag from
@@ -2804,6 +2813,8 @@ async def news_vetoes_report():
                 ORDER BY veto_time DESC
                 LIMIT 50
             """)).mappings().all()
+        # v-fix-pool-leak-2026-09-10: dispose engine to release connection pool
+        eng.dispose()
         # Compute headline metrics
         n_correct = sum(r['n'] for r in summary if r['outcome'] == 'correct_veto')
         n_missed  = sum(r['n'] for r in summary if r['outcome'] == 'missed_winner')

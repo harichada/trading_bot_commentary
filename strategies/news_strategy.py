@@ -988,7 +988,9 @@ class FreeNewsSignalStrategy(TradingStrategyWithCommentary):
                         single_source_multiplier=_cfg_gate.NEWS_GATE_SINGLE_SOURCE_MULTIPLIER,
                     )
                     
-                    # Log the gate decision
+                    # Log the gate decision (informational, not a decision point)
+                    # v-fix-double-emit-2026-09-10: skip_snapshot=True to prevent
+                    # double-emit when this is followed by a veto _log_decision
                     self._log_decision(
                         market_data,
                         "news_gate",
@@ -1001,6 +1003,7 @@ class FreeNewsSignalStrategy(TradingStrategyWithCommentary):
                         corroboration_n=_news_gate_result.corroboration_n,
                         size_multiplier=_news_gate_result.size_multiplier,
                         gate_reason=_news_gate_result.reason,
+                        skip_snapshot=True,
                     )
                     
                     # Veto check
