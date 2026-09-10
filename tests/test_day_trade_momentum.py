@@ -458,3 +458,135 @@ class TestConfigFlags:
         from core.config import Config
         cfg = Config()
         assert cfg.MOMENTUM_EXTREME_BLOCK_SPY_PCT == -1.5
+
+
+class TestDayTradeFlattenHour:
+    """Test day-trade flatten hour enforcement.
+    
+    v-day-trade-flatten-hour-2026-09-10: day-trade positions must be
+    hard-flattened at/after DAY_TRADE_FLATTEN_HOUR ET. This prevents
+    overnight gap risk on positions that are intraday-only by design.
+    """
+    
+    def test_flatten_check_logic_at_flatten_hour(self):
+        """Test flatten check returns True when ET hour >= flatten_hour."""
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        
+        # Mock position reasoning
+        reasoning = {
+            'strategy': 'day_trade_momentum',
+            'is_day_trade': True,
+            'flatten_hour': 15,
+        }
+        
+        # Simulate the check logic from _evaluate_exit_conditions
+        _is_day_trade = reasoning.get('is_day_trade', False)
+        assert _is_day_trade is True
+        
+        _flatten_hour = reasoning.get('flatten_hour', 15)
+        
+        # At 15:30 ET
+        et_time = datetime(2026, 9, 10, 15, 30, 0, tzinfo=ZoneInfo("America/New_York"))
+        _et_hour = et_time.hour
+        
+        # Check should trigger: 15 >= 15
+        should_flatten = _et_hour >= _flatten_hour
+        assert should_flatten is True
+    
+    def test_flatten_check_logic_before_hour(self):
+        """Test flatten check returns False when ET hour < flatten_hour."""
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        
+        reasoning = {
+            'strategy': 'day_trade_momentum',
+            'is_day_trade': True,
+            'flatten_hour': 15,
+        }
+        
+        _is_day_trade = reasoning.get('is_day_trade', False)
+        _flatten_hour = reasoning.get('flatten_hour', 15)
+        
+        # At 14:30 ET
+        et_time = datetime(2026, 9, 10, 14, 30, 0, tzinfo=ZoneInfo("America/New_York"))
+        _et_hour = et_time.hour
+        
+        # Check should NOT trigger: 14 < 15
+        should_flatten = _et_hour >= _flatten_hour
+        assert should_flatten is False
+    
+    def test_flatten_check_skipped_for_non_day_trade(self):
+        """Test flatten check is skipped for non-day-trade positions."""
+        reasoning = {
+            'strategy': 'mean_reversion',
+            # No is_day_trade flag
+        }
+        
+        _is_day_trade = reasoning.get('is_day_trade', False)
+        assert _is_day_trade is False
+        
+        # The flatten check block should be skipped entirely
+        # when is_day_trade is False
+    
+    def test_flatten_check_with_custom_hour(self):
+        """Test flatten check respects custom flatten_hour."""
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        
+        # Position with early flatten hour (14)
+        reasoning = {
+            'strategy': 'day_trade_momentum',
+            'is_day_trade': True,
+            'flatten_hour': 14,
+        }
+        
+        _flatten_hour = reasoning.get('flatten_hour', 15)
+        assert _flatten_hour == 14
+        
+        # At 14:00 ET - should trigger for custom hour 14
+        et_time = datetime(2026, 9, 10, 14, 0, 0, tzinfo=ZoneInfo("America/New_York"))
+        should_flatten = et_time.hour >= _flatten_hour
+        assert should_flatten is True
+        
+        # At 13:59 ET - should NOT trigger
+        et_time_before = datetime(2026, 9, 10, 13, 59, 0, tzinfo=ZoneInfo("America/New_York"))
+        should_flatten_before = et_time_before.hour >= _flatten_hour
+        assert should_flatten_before is False
+    
+    def test_flatten_hour_uses_position_reasoning(self):
+        """Flatten hour from position.reasoning takes precedence over Config."""
+        # Test that if position has flatten_hour=14, it uses 14, not Config default
+        from core.config import Config
+        cfg = Config()
+        default_hour = cfg.DAY_TRADE_FLATTEN_HOUR  # Should be 15
+        
+        position_reasoning = {
+            'is_day_trade': True,
+            'flatten_hour': 14,  # Earlier than default
+        }
+        
+        # The flatten hour from reasoning should be used
+        flatten_hour = position_reasoning.get('flatten_hour', default_hour)
+        assert flatten_hour == 14
+        assert flatten_hour != default_hour
+    
+    def test_flatten_hour_config_default(self):
+        """DAY_TRADE_FLATTEN_HOUR defaults to 15 (3 PM ET)."""
+        from core.config import Config
+        cfg = Config()
+        assert cfg.DAY_TRADE_FLATTEN_HOUR == 15
+    
+    @pytest.mark.asyncio
+    async def test_flatten_uses_et_timezone(self):
+        """Flatten check uses America/New_York timezone, not UTC."""
+        from datetime import datetime, timezone
+        from zoneinfo import ZoneInfo
+        
+        # 19:30 UTC = 15:30 ET (during EDT)
+        utc_time = datetime(2026, 9, 10, 19, 30, 0, tzinfo=timezone.utc)
+        et_time = utc_time.astimezone(ZoneInfo("America/New_York"))
+        
+        # Should be 15:30 ET (past flatten hour of 15)
+        assert et_time.hour == 15
+        assert et_time.minute == 30

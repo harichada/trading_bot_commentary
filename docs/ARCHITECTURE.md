@@ -557,7 +557,35 @@ trading:
 
 4. **Stop/Target**: ATR-based, tighter than swing (1.5x ATR stop, 2:1 R:R target)
 
-5. **Time Stop**: Flatten by `DAY_TRADE_FLATTEN_HOUR` (default 3 PM ET)
+5. **Hard EOD Flatten**: Force-close at/after `DAY_TRADE_FLATTEN_HOUR` ET (default 15 = 3 PM)
+
+### Hard EOD Flatten (v-day-trade-flatten-hour-2026-09-10)
+
+Day-trade momentum positions are **hard-flattened** when the local ET time reaches
+or exceeds `DAY_TRADE_FLATTEN_HOUR`. This is NOT a soft trail—it's a forced full exit.
+
+**Mechanism**:
+1. At entry, the strategy stamps `reasoning['is_day_trade']=True` and 
+   `reasoning['flatten_hour']=Config.DAY_TRADE_FLATTEN_HOUR` on the signal
+2. The `reasoning` dict is copied to the Position object at creation
+3. On every position evaluation in `_evaluate_exit_conditions`, positions with
+   `is_day_trade=True` check: if current ET hour >= `flatten_hour`, exit immediately
+4. Exit reason: `day_trade_flatten_hour`
+5. Uses same supervised confirmation path as other risk exits (respects TRADING_PROFILE)
+
+**Why Hard Flatten**:
+- Day-trade momentum is intraday by design—overnight gap risk is unacceptable
+- A 3 PM flatten leaves 1 hour of regular session to close without market-on-close chaos
+- Positions that survive to flatten hour are usually in limbo (not stopped, not at target)—
+  better to close flat than hold overnight and wake up to a gap against
+
+**Audit Log**:
+```
+engine_decision component=day_trade_flatten symbol=NVDA action=exit reason=flatten_hour_reached
+  flatten_hour=15 et_now=15:05 strategy=day_trade_momentum entry_pattern=breakout
+```
+
+**Observability**: Commentary displays the flatten event with importance=9.
 
 ### Market Context Gates (Size, Not Freeze)
 
