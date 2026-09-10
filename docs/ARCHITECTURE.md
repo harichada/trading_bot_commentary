@@ -679,6 +679,99 @@ trading:
   day_trade_flatten_hour: 15    # Flatten by 3 PM ET
 ```
 
+### Stage-A Promotion Criteria (v-momentum-stage-a-2026-09-10)
+
+The day-trade momentum desk operates in a **supervised pilot phase** until it
+meets rigorous promotion criteria. These floors are **RESEARCH-LOCKED** — do NOT
+relax them without walk-forward validation evidence.
+
+#### Promotion Requirements (ALL must pass)
+
+| Metric | Floor | Rationale |
+|--------|-------|-----------|
+| **n (trades)** | ≥ 150 closed | Statistical significance |
+| **Sessions** | ≥ 10 distinct days | Market condition diversity |
+| **Profit Factor** | ≥ 1.30 after fees/slippage | Edge exists |
+| **Win Rate** | ≥ 48% | (scratches out of rate, in n) |
+| **Expectancy** | ≥ +0.05 R | Positive edge per trade |
+| **Max Drawdown** | ≤ 6% of allocated | Risk management |
+| **Max Losing Day** | ≤ 2.0 R | No blow-up days |
+| **Throughput** | 3-12 trades/session | *Informational only, not a gate* |
+
+#### Hard Veto for Promotion
+
+These conditions **permanently block** promotion until resolved:
+
+1. **Overnight holds without flag**: Any position held overnight when
+   `MOMENTUM_ALLOW_OVERNIGHT_HOLD=False` (default) disqualifies the sample.
+
+2. **Capital scale before Stage A green**: The `MOMENTUM_STAGE_A_PROMOTED`
+   flag must be `True` before increasing position sizes or capital allocation.
+   Premature scaling invalidates the pilot data.
+
+#### Instrumentation Fields
+
+Every momentum signal includes these fields for Stage-A tracking:
+
+| Field | Purpose | Example |
+|-------|---------|---------|
+| `session_id` | Group trades by trading day | `"2026-09-10"` |
+| `setup_type` | Strategy + pattern ID | `"momentum_breakout"` |
+| `risk_off` | Explicit boolean for regime | `true` / `false` |
+| `mc_size_mult` | Size multiplier applied | `0.25` |
+| `rs_vs_spy` | Relative strength delta | `+2.5` |
+
+These flow into `DecisionSnapshot.momentum` for offline analysis.
+
+#### Daily Rollup Fields
+
+For Stage-A metrics computation, track:
+
+```python
+# Per-session aggregates
+{
+    "session_id": "2026-09-10",
+    "trades_opened": 8,
+    "trades_closed": 7,
+    "gross_pnl": 127.50,
+    "gross_fees": 7.00,
+    "net_pnl": 120.50,
+    "max_drawdown_pct": 1.2,
+    "risk_off_trades": 2,
+    "scratches": 1,  # exits within ±0.1 R
+}
+```
+
+#### Config Reference (Stage-A)
+
+```yaml
+trading:
+  # Stage-A floors (RESEARCH-LOCKED)
+  momentum_stage_a_min_trades: 150
+  momentum_stage_a_min_sessions: 10
+  momentum_stage_a_min_pf: 1.30
+  momentum_stage_a_min_win_rate: 0.48
+  momentum_stage_a_min_expectancy_r: 0.05
+  momentum_stage_a_max_dd_pct: 0.06
+  momentum_stage_a_max_losing_day_r: 2.0
+  
+  # Throughput (informational only)
+  momentum_stage_a_throughput_min: 3
+  momentum_stage_a_throughput_max: 12
+  
+  # Hard veto flags
+  momentum_allow_overnight_hold: false  # Must be false during pilot
+  momentum_stage_a_promoted: false      # Flip ONLY after all floors met
+```
+
+#### Promotion Process
+
+1. Run pilot for ≥ 10 sessions with `momentum_stage_a_promoted: false`
+2. Aggregate metrics via `research/momentum_stage_a_report.py` (future)
+3. Verify ALL floors pass
+4. Set `momentum_stage_a_promoted: true` in Config.yaml
+5. Optionally increase `day_trade_size_multiplier` from 0.5 to 0.75 or 1.0
+
 ---
 
 ## 11. Appendix: FSM Exit States

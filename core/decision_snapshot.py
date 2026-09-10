@@ -188,6 +188,51 @@ class RegimeContext:
 
 
 @dataclass(frozen=True)
+class MomentumContext:
+    """Momentum-specific context for day-trade desk Stage-A instrumentation.
+    
+    v-momentum-stage-a-2026-09-10: captures fields needed for Stage-A
+    promotion tracking and daily rollup analysis.
+    """
+    session_id: str  # Trading date in ET (YYYY-MM-DD)
+    setup_type: str  # Entry setup type (momentum_breakout/momentum_pullback/momentum_continuation)
+    risk_off: bool  # Whether market context is risk_off
+    mc_size_mult: float  # Market context size multiplier applied
+    rs_vs_spy: float  # Relative strength vs SPY
+    is_day_trade: bool  # True for day-trade momentum entries
+    flatten_hour: int  # Hour by which position should flatten (15 = 3PM ET)
+    entry_pattern: str  # Raw pattern (breakout/pullback/continuation)
+    
+    @classmethod
+    def from_signal_reasoning(cls, reasoning: Dict[str, Any]) -> "MomentumContext":
+        """Build from signal.reasoning dict."""
+        return cls(
+            session_id=reasoning.get("session_id", ""),
+            setup_type=reasoning.get("setup_type", ""),
+            risk_off=bool(reasoning.get("risk_off", False)),
+            mc_size_mult=float(reasoning.get("mc_size_mult", 1.0)),
+            rs_vs_spy=float(reasoning.get("rs_vs_spy", 0.0)),
+            is_day_trade=bool(reasoning.get("is_day_trade", False)),
+            flatten_hour=int(reasoning.get("flatten_hour", 15)),
+            entry_pattern=reasoning.get("entry_pattern", ""),
+        )
+    
+    @classmethod
+    def empty(cls) -> "MomentumContext":
+        """Return empty momentum context (for non-momentum strategies)."""
+        return cls(
+            session_id="",
+            setup_type="",
+            risk_off=False,
+            mc_size_mult=1.0,
+            rs_vs_spy=0.0,
+            is_day_trade=False,
+            flatten_hour=15,
+            entry_pattern="",
+        )
+
+
+@dataclass(frozen=True)
 class DecisionSnapshot:
     """Complete snapshot of decision context for ML training.
     
@@ -219,6 +264,10 @@ class DecisionSnapshot:
     news: NewsAggregate  # News context
     regime: RegimeContext  # Market regime context
     
+    # Momentum-specific context (v-momentum-stage-a-2026-09-10)
+    # Optional for non-momentum strategies, populated for day_trade_momentum
+    momentum: Optional[MomentumContext] = None
+    
     # Sizing (if applicable)
     would_entry_price: Optional[float] = None  # Intended entry
     would_stop_loss: Optional[float] = None  # Intended stop
@@ -237,7 +286,7 @@ class DecisionSnapshot:
     
     def to_dict(self) -> Dict[str, Any]:
         """Serialize to dict for JSON/DB storage."""
-        return {
+        result = {
             "snapshot_id": self.snapshot_id,
             "symbol": self.symbol,
             "ts": self.ts.isoformat(),
@@ -250,6 +299,7 @@ class DecisionSnapshot:
             "price_vol": asdict(self.price_vol),
             "news": asdict(self.news),
             "regime": asdict(self.regime),
+            "momentum": asdict(self.momentum) if self.momentum else None,
             "would_entry_price": self.would_entry_price,
             "would_stop_loss": self.would_stop_loss,
             "would_take_profit": self.would_take_profit,
@@ -257,6 +307,7 @@ class DecisionSnapshot:
             "would_size_mult": self.would_size_mult,
             "extra": self.extra,
         }
+        return result
     
     def to_json(self) -> str:
         """Serialize to JSON string."""
@@ -265,6 +316,8 @@ class DecisionSnapshot:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "DecisionSnapshot":
         """Deserialize from dict."""
+        momentum_data = data.get("momentum")
+        momentum = MomentumContext(**momentum_data) if momentum_data else None
         return cls(
             snapshot_id=data["snapshot_id"],
             symbol=data["symbol"],
@@ -278,6 +331,7 @@ class DecisionSnapshot:
             price_vol=PriceVolumeFeatures(**data["price_vol"]),
             news=NewsAggregate(**data["news"]),
             regime=RegimeContext(**data["regime"]),
+            momentum=momentum,
             would_entry_price=data.get("would_entry_price"),
             would_stop_loss=data.get("would_stop_loss"),
             would_take_profit=data.get("would_take_profit"),
@@ -300,6 +354,8 @@ def build_snapshot(
     news_aggregate: Optional[Dict[str, Any]] = None,
     news_gate_result: Optional[Any] = None,
     regime_context: Optional[RegimeContext] = None,
+    momentum_context: Optional[MomentumContext] = None,
+    signal_reasoning: Optional[Dict[str, Any]] = None,
     would_entry_price: Optional[float] = None,
     would_stop_loss: Optional[float] = None,
     would_take_profit: Optional[float] = None,
@@ -311,6 +367,11 @@ def build_snapshot(
     """Factory function to build a DecisionSnapshot with sensible defaults.
     
     Use this instead of the dataclass constructor for convenience.
+    
+    v-momentum-stage-a-2026-09-10: added momentum_context and signal_reasoning
+    parameters for Stage-A instrumentation. If signal_reasoning is provided
+    and contains momentum-specific fields (is_day_trade=True), a MomentumContext
+    is automatically built from it.
     """
     now = ts or datetime.now()
     snapshot_id = DecisionSnapshot.compute_id(symbol, now, strategy_id, action.value)
@@ -329,6 +390,12 @@ def build_snapshot(
     
     regime = regime_context or RegimeContext.empty()
     
+    # Build momentum context if provided directly or extract from signal reasoning
+    momentum = momentum_context
+    if momentum is None and signal_reasoning:
+        if signal_reasoning.get("is_day_trade") or signal_reasoning.get("strategy") == "day_trade_momentum":
+            momentum = MomentumContext.from_signal_reasoning(signal_reasoning)
+    
     return DecisionSnapshot(
         snapshot_id=snapshot_id,
         symbol=symbol,
@@ -342,6 +409,7 @@ def build_snapshot(
         price_vol=price_vol,
         news=news,
         regime=regime,
+        momentum=momentum,
         would_entry_price=would_entry_price,
         would_stop_loss=would_stop_loss,
         would_take_profit=would_take_profit,

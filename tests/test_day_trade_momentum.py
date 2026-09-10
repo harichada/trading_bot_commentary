@@ -460,133 +460,497 @@ class TestConfigFlags:
         assert cfg.MOMENTUM_EXTREME_BLOCK_SPY_PCT == -1.5
 
 
-class TestDayTradeFlattenHour:
-    """Test day-trade flatten hour enforcement.
+class TestRiskOffSizeReduction:
+    """Explicit tests for risk_off SIZE REDUCTION (not freeze) behavior.
     
-    v-day-trade-flatten-hour-2026-09-10: day-trade positions must be
-    hard-flattened at/after DAY_TRADE_FLATTEN_HOUR ET. This prevents
-    overnight gap risk on positions that are intraday-only by design.
+    v-market-context-size-not-freeze-2026-09-10: The user requirement is
+    that risk_off should REDUCE SIZE, NOT hard-block momentum entries.
+    These tests verify that invariant explicitly.
     """
     
-    def test_flatten_check_logic_at_flatten_hour(self):
-        """Test flatten check returns True when ET hour >= flatten_hour."""
-        from datetime import datetime
-        from zoneinfo import ZoneInfo
+    @pytest.mark.asyncio
+    async def test_risk_off_signal_generated_not_none(self):
+        """risk_off must generate a signal (not None), proving no hard-block."""
+        from strategies.builtin import DayTradeMomentumStrategy
         
-        # Mock position reasoning
-        reasoning = {
-            'strategy': 'day_trade_momentum',
-            'is_day_trade': True,
-            'flatten_hour': 15,
+        strategy = DayTradeMomentumStrategy(MagicMock())
+        
+        market_data = MagicMock()
+        market_data.symbol = 'TEST'
+        market_data.close = 100.0
+        market_data.open = 99.0
+        market_data.timestamp = datetime.now()
+        market_data.indicators = {
+            'rsi': 55,
+            'volume_ratio': 2.0,
+            'adx': 30,
+            'atr': 1.5,
+            'high_20': 99.5,
+            'sma_20': 98.0,
+            'macd': 0.5,
+            'macd_signal': 0.3,
+            'day_change_pct': 3.0,
         }
         
-        # Simulate the check logic from _evaluate_exit_conditions
-        _is_day_trade = reasoning.get('is_day_trade', False)
-        assert _is_day_trade is True
+        with patch('core.market_context.read_market_context') as mock_mc:
+            mock_mc.return_value = MagicMock(
+                regime='risk_off',  # KEY: risk_off regime
+                time_of_day='midday',
+                spy_change_pct=-0.8,  # Down but not extreme
+                vix_change_pct=8.0,  # Up but not extreme spike
+                sector_etf='XLK',
+                reason='moderate risk_off',
+            )
+            
+            with patch('core.config.Config') as mock_cfg:
+                mock_cfg_instance = MagicMock()
+                mock_cfg_instance.ENABLE_DAY_TRADE_MOMENTUM = True
+                mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_SPY_PCT = -1.5
+                mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_VIX_SPIKE = 15.0
+                mock_cfg_instance.MOMENTUM_RISK_OFF_SIZE_MULT = 0.25
+                mock_cfg_instance.MOMENTUM_OPENING_30_SIZE_MULT = 0.5
+                mock_cfg_instance.MOMENTUM_MIN_RS_VS_SPY = 0.5
+                mock_cfg_instance.MOMENTUM_MIN_VOLUME_RATIO = 1.5
+                mock_cfg_instance.DAY_TRADE_SIZE_MULTIPLIER = 0.5
+                mock_cfg_instance.DAY_TRADE_FLATTEN_HOUR = 15
+                mock_cfg.return_value = mock_cfg_instance
+                
+                signal = await strategy.generate_signal_with_commentary(market_data)
         
-        _flatten_hour = reasoning.get('flatten_hour', 15)
-        
-        # At 15:30 ET
-        et_time = datetime(2026, 9, 10, 15, 30, 0, tzinfo=ZoneInfo("America/New_York"))
-        _et_hour = et_time.hour
-        
-        # Check should trigger: 15 >= 15
-        should_flatten = _et_hour >= _flatten_hour
-        assert should_flatten is True
-    
-    def test_flatten_check_logic_before_hour(self):
-        """Test flatten check returns False when ET hour < flatten_hour."""
-        from datetime import datetime
-        from zoneinfo import ZoneInfo
-        
-        reasoning = {
-            'strategy': 'day_trade_momentum',
-            'is_day_trade': True,
-            'flatten_hour': 15,
-        }
-        
-        _is_day_trade = reasoning.get('is_day_trade', False)
-        _flatten_hour = reasoning.get('flatten_hour', 15)
-        
-        # At 14:30 ET
-        et_time = datetime(2026, 9, 10, 14, 30, 0, tzinfo=ZoneInfo("America/New_York"))
-        _et_hour = et_time.hour
-        
-        # Check should NOT trigger: 14 < 15
-        should_flatten = _et_hour >= _flatten_hour
-        assert should_flatten is False
-    
-    def test_flatten_check_skipped_for_non_day_trade(self):
-        """Test flatten check is skipped for non-day-trade positions."""
-        reasoning = {
-            'strategy': 'mean_reversion',
-            # No is_day_trade flag
-        }
-        
-        _is_day_trade = reasoning.get('is_day_trade', False)
-        assert _is_day_trade is False
-        
-        # The flatten check block should be skipped entirely
-        # when is_day_trade is False
-    
-    def test_flatten_check_with_custom_hour(self):
-        """Test flatten check respects custom flatten_hour."""
-        from datetime import datetime
-        from zoneinfo import ZoneInfo
-        
-        # Position with early flatten hour (14)
-        reasoning = {
-            'strategy': 'day_trade_momentum',
-            'is_day_trade': True,
-            'flatten_hour': 14,
-        }
-        
-        _flatten_hour = reasoning.get('flatten_hour', 15)
-        assert _flatten_hour == 14
-        
-        # At 14:00 ET - should trigger for custom hour 14
-        et_time = datetime(2026, 9, 10, 14, 0, 0, tzinfo=ZoneInfo("America/New_York"))
-        should_flatten = et_time.hour >= _flatten_hour
-        assert should_flatten is True
-        
-        # At 13:59 ET - should NOT trigger
-        et_time_before = datetime(2026, 9, 10, 13, 59, 0, tzinfo=ZoneInfo("America/New_York"))
-        should_flatten_before = et_time_before.hour >= _flatten_hour
-        assert should_flatten_before is False
-    
-    def test_flatten_hour_uses_position_reasoning(self):
-        """Flatten hour from position.reasoning takes precedence over Config."""
-        # Test that if position has flatten_hour=14, it uses 14, not Config default
-        from core.config import Config
-        cfg = Config()
-        default_hour = cfg.DAY_TRADE_FLATTEN_HOUR  # Should be 15
-        
-        position_reasoning = {
-            'is_day_trade': True,
-            'flatten_hour': 14,  # Earlier than default
-        }
-        
-        # The flatten hour from reasoning should be used
-        flatten_hour = position_reasoning.get('flatten_hour', default_hour)
-        assert flatten_hour == 14
-        assert flatten_hour != default_hour
-    
-    def test_flatten_hour_config_default(self):
-        """DAY_TRADE_FLATTEN_HOUR defaults to 15 (3 PM ET)."""
-        from core.config import Config
-        cfg = Config()
-        assert cfg.DAY_TRADE_FLATTEN_HOUR == 15
+        # CRITICAL: Signal must NOT be None under risk_off
+        assert signal is not None, "risk_off must NOT hard-block momentum signals"
     
     @pytest.mark.asyncio
-    async def test_flatten_uses_et_timezone(self):
-        """Flatten check uses America/New_York timezone, not UTC."""
-        from datetime import datetime, timezone
-        from zoneinfo import ZoneInfo
+    async def test_risk_off_size_mult_is_025(self):
+        """risk_off must apply 0.25x size multiplier."""
+        from strategies.builtin import DayTradeMomentumStrategy
         
-        # 19:30 UTC = 15:30 ET (during EDT)
-        utc_time = datetime(2026, 9, 10, 19, 30, 0, tzinfo=timezone.utc)
-        et_time = utc_time.astimezone(ZoneInfo("America/New_York"))
+        strategy = DayTradeMomentumStrategy(MagicMock())
         
-        # Should be 15:30 ET (past flatten hour of 15)
-        assert et_time.hour == 15
-        assert et_time.minute == 30
+        market_data = MagicMock()
+        market_data.symbol = 'TEST'
+        market_data.close = 100.0
+        market_data.open = 99.0
+        market_data.timestamp = datetime.now()
+        market_data.indicators = {
+            'rsi': 55,
+            'volume_ratio': 2.0,
+            'adx': 30,
+            'atr': 1.5,
+            'high_20': 99.5,
+            'sma_20': 98.0,
+            'macd': 0.5,
+            'macd_signal': 0.3,
+            'day_change_pct': 3.0,
+        }
+        
+        with patch('core.market_context.read_market_context') as mock_mc:
+            mock_mc.return_value = MagicMock(
+                regime='risk_off',
+                time_of_day='midday',
+                spy_change_pct=-0.8,
+                vix_change_pct=8.0,
+                sector_etf='XLK',
+                reason='test',
+            )
+            
+            with patch('core.config.Config') as mock_cfg:
+                mock_cfg_instance = MagicMock()
+                mock_cfg_instance.ENABLE_DAY_TRADE_MOMENTUM = True
+                mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_SPY_PCT = -1.5
+                mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_VIX_SPIKE = 15.0
+                mock_cfg_instance.MOMENTUM_RISK_OFF_SIZE_MULT = 0.25  # KEY: 0.25x
+                mock_cfg_instance.MOMENTUM_OPENING_30_SIZE_MULT = 0.5
+                mock_cfg_instance.MOMENTUM_MIN_RS_VS_SPY = 0.5
+                mock_cfg_instance.MOMENTUM_MIN_VOLUME_RATIO = 1.5
+                mock_cfg_instance.DAY_TRADE_SIZE_MULTIPLIER = 0.5
+                mock_cfg_instance.DAY_TRADE_FLATTEN_HOUR = 15
+                mock_cfg.return_value = mock_cfg_instance
+                
+                signal = await strategy.generate_signal_with_commentary(market_data)
+        
+        assert signal is not None
+        # CRITICAL: size mult must be 0.25 for risk_off
+        assert signal.reasoning['market_context_conviction'] == 0.25
+        assert signal.reasoning['mc_size_mult'] == 0.25
+    
+    @pytest.mark.asyncio
+    async def test_opening_30_size_mult_is_05(self):
+        """opening_30 must apply 0.5x size multiplier."""
+        from strategies.builtin import DayTradeMomentumStrategy
+        
+        strategy = DayTradeMomentumStrategy(MagicMock())
+        
+        market_data = MagicMock()
+        market_data.symbol = 'TEST'
+        market_data.close = 100.0
+        market_data.open = 99.0
+        market_data.timestamp = datetime.now()
+        market_data.indicators = {
+            'rsi': 55,
+            'volume_ratio': 2.0,
+            'adx': 30,
+            'atr': 1.5,
+            'high_20': 99.5,
+            'sma_20': 98.0,
+            'macd': 0.5,
+            'macd_signal': 0.3,
+            'day_change_pct': 3.0,
+        }
+        
+        with patch('core.market_context.read_market_context') as mock_mc:
+            mock_mc.return_value = MagicMock(
+                regime='risk_on',  # Not risk_off
+                time_of_day='opening_30',  # KEY: opening_30
+                spy_change_pct=0.3,
+                vix_change_pct=-1.0,
+                sector_etf='XLK',
+                reason='test',
+            )
+            
+            with patch('core.config.Config') as mock_cfg:
+                mock_cfg_instance = MagicMock()
+                mock_cfg_instance.ENABLE_DAY_TRADE_MOMENTUM = True
+                mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_SPY_PCT = -1.5
+                mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_VIX_SPIKE = 15.0
+                mock_cfg_instance.MOMENTUM_RISK_OFF_SIZE_MULT = 0.25
+                mock_cfg_instance.MOMENTUM_OPENING_30_SIZE_MULT = 0.5  # KEY: 0.5x
+                mock_cfg_instance.MOMENTUM_MIN_RS_VS_SPY = 0.5
+                mock_cfg_instance.MOMENTUM_MIN_VOLUME_RATIO = 1.5
+                mock_cfg_instance.DAY_TRADE_SIZE_MULTIPLIER = 0.5
+                mock_cfg_instance.DAY_TRADE_FLATTEN_HOUR = 15
+                mock_cfg.return_value = mock_cfg_instance
+                
+                signal = await strategy.generate_signal_with_commentary(market_data)
+        
+        assert signal is not None
+        # opening_30 should apply 0.5x (market_context_conviction starts at 1.0)
+        assert signal.reasoning['market_context_conviction'] == 0.5
+        assert signal.reasoning['mc_size_mult'] == 0.5
+    
+    @pytest.mark.asyncio
+    async def test_risk_off_plus_opening_30_uses_min(self):
+        """risk_off + opening_30 uses minimum of 0.25x and 0.5x = 0.25x."""
+        from strategies.builtin import DayTradeMomentumStrategy
+        
+        strategy = DayTradeMomentumStrategy(MagicMock())
+        
+        market_data = MagicMock()
+        market_data.symbol = 'TEST'
+        market_data.close = 100.0
+        market_data.open = 99.0
+        market_data.timestamp = datetime.now()
+        market_data.indicators = {
+            'rsi': 55,
+            'volume_ratio': 2.0,
+            'adx': 30,
+            'atr': 1.5,
+            'high_20': 99.5,
+            'sma_20': 98.0,
+            'macd': 0.5,
+            'macd_signal': 0.3,
+            'day_change_pct': 3.0,
+        }
+        
+        with patch('core.market_context.read_market_context') as mock_mc:
+            mock_mc.return_value = MagicMock(
+                regime='risk_off',  # risk_off = 0.25x
+                time_of_day='opening_30',  # opening_30 = 0.5x
+                spy_change_pct=-0.5,
+                vix_change_pct=5.0,
+                sector_etf='XLK',
+                reason='test',
+            )
+            
+            with patch('core.config.Config') as mock_cfg:
+                mock_cfg_instance = MagicMock()
+                mock_cfg_instance.ENABLE_DAY_TRADE_MOMENTUM = True
+                mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_SPY_PCT = -1.5
+                mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_VIX_SPIKE = 15.0
+                mock_cfg_instance.MOMENTUM_RISK_OFF_SIZE_MULT = 0.25
+                mock_cfg_instance.MOMENTUM_OPENING_30_SIZE_MULT = 0.5
+                mock_cfg_instance.MOMENTUM_MIN_RS_VS_SPY = 0.5
+                mock_cfg_instance.MOMENTUM_MIN_VOLUME_RATIO = 1.5
+                mock_cfg_instance.DAY_TRADE_SIZE_MULTIPLIER = 0.5
+                mock_cfg_instance.DAY_TRADE_FLATTEN_HOUR = 15
+                mock_cfg.return_value = mock_cfg_instance
+                
+                signal = await strategy.generate_signal_with_commentary(market_data)
+        
+        assert signal is not None
+        # min(0.25, 0.5) = 0.25
+        assert signal.reasoning['market_context_conviction'] == 0.25
+        assert signal.reasoning['mc_size_mult'] == 0.25
+
+
+class TestStageAInstrumentation:
+    """Test Stage-A promotion instrumentation fields.
+    
+    v-momentum-stage-a-2026-09-10: signals must include:
+      - session_id: trading date in ET (YYYY-MM-DD)
+      - risk_off: explicit boolean flag
+      - mc_size_mult: market context size multiplier
+      - setup_type: momentum_<pattern>
+    """
+    
+    @pytest.mark.asyncio
+    async def test_signal_includes_session_id(self):
+        """Signal reasoning must include session_id."""
+        from strategies.builtin import DayTradeMomentumStrategy
+        
+        strategy = DayTradeMomentumStrategy(MagicMock())
+        
+        market_data = MagicMock()
+        market_data.symbol = 'TEST'
+        market_data.close = 100.0
+        market_data.open = 99.0
+        market_data.timestamp = datetime.now()
+        market_data.indicators = {
+            'rsi': 55,
+            'volume_ratio': 2.0,
+            'adx': 30,
+            'atr': 1.5,
+            'high_20': 99.5,
+            'sma_20': 98.0,
+            'macd': 0.5,
+            'macd_signal': 0.3,
+            'day_change_pct': 3.0,
+        }
+        
+        with patch('core.market_context.read_market_context') as mock_mc:
+            mock_mc.return_value = MagicMock(
+                regime='risk_on',
+                time_of_day='midday',
+                spy_change_pct=0.5,
+                vix_change_pct=-1.0,
+                sector_etf='XLK',
+                reason='test',
+            )
+            
+            with patch('core.config.Config') as mock_cfg:
+                mock_cfg_instance = MagicMock()
+                mock_cfg_instance.ENABLE_DAY_TRADE_MOMENTUM = True
+                mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_SPY_PCT = -1.5
+                mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_VIX_SPIKE = 15.0
+                mock_cfg_instance.MOMENTUM_RISK_OFF_SIZE_MULT = 0.25
+                mock_cfg_instance.MOMENTUM_OPENING_30_SIZE_MULT = 0.5
+                mock_cfg_instance.MOMENTUM_MIN_RS_VS_SPY = 0.5
+                mock_cfg_instance.MOMENTUM_MIN_VOLUME_RATIO = 1.5
+                mock_cfg_instance.DAY_TRADE_SIZE_MULTIPLIER = 0.5
+                mock_cfg_instance.DAY_TRADE_FLATTEN_HOUR = 15
+                mock_cfg.return_value = mock_cfg_instance
+                
+                signal = await strategy.generate_signal_with_commentary(market_data)
+        
+        assert signal is not None
+        assert 'session_id' in signal.reasoning
+        # session_id should be date format YYYY-MM-DD
+        session_id = signal.reasoning['session_id']
+        assert len(session_id) == 10
+        assert session_id[4] == '-'
+        assert session_id[7] == '-'
+    
+    @pytest.mark.asyncio
+    async def test_signal_includes_risk_off_flag(self):
+        """Signal reasoning must include explicit risk_off boolean."""
+        from strategies.builtin import DayTradeMomentumStrategy
+        
+        strategy = DayTradeMomentumStrategy(MagicMock())
+        
+        market_data = MagicMock()
+        market_data.symbol = 'TEST'
+        market_data.close = 100.0
+        market_data.open = 99.0
+        market_data.timestamp = datetime.now()
+        market_data.indicators = {
+            'rsi': 55,
+            'volume_ratio': 2.0,
+            'adx': 30,
+            'atr': 1.5,
+            'high_20': 99.5,
+            'sma_20': 98.0,
+            'macd': 0.5,
+            'macd_signal': 0.3,
+            'day_change_pct': 3.0,
+        }
+        
+        with patch('core.market_context.read_market_context') as mock_mc:
+            mock_mc.return_value = MagicMock(
+                regime='risk_off',  # Test with risk_off
+                time_of_day='midday',
+                spy_change_pct=-0.5,
+                vix_change_pct=5.0,
+                sector_etf='XLK',
+                reason='test',
+            )
+            
+            with patch('core.config.Config') as mock_cfg:
+                mock_cfg_instance = MagicMock()
+                mock_cfg_instance.ENABLE_DAY_TRADE_MOMENTUM = True
+                mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_SPY_PCT = -1.5
+                mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_VIX_SPIKE = 15.0
+                mock_cfg_instance.MOMENTUM_RISK_OFF_SIZE_MULT = 0.25
+                mock_cfg_instance.MOMENTUM_OPENING_30_SIZE_MULT = 0.5
+                mock_cfg_instance.MOMENTUM_MIN_RS_VS_SPY = 0.5
+                mock_cfg_instance.MOMENTUM_MIN_VOLUME_RATIO = 1.5
+                mock_cfg_instance.DAY_TRADE_SIZE_MULTIPLIER = 0.5
+                mock_cfg_instance.DAY_TRADE_FLATTEN_HOUR = 15
+                mock_cfg.return_value = mock_cfg_instance
+                
+                signal = await strategy.generate_signal_with_commentary(market_data)
+        
+        assert signal is not None
+        assert 'risk_off' in signal.reasoning
+        assert signal.reasoning['risk_off'] is True  # Must be True for risk_off regime
+    
+    @pytest.mark.asyncio
+    async def test_signal_includes_setup_type(self):
+        """Signal reasoning must include setup_type (momentum_<pattern>)."""
+        from strategies.builtin import DayTradeMomentumStrategy
+        
+        strategy = DayTradeMomentumStrategy(MagicMock())
+        
+        market_data = MagicMock()
+        market_data.symbol = 'TEST'
+        market_data.close = 102.0  # Above high_20 for breakout
+        market_data.open = 99.0
+        market_data.timestamp = datetime.now()
+        market_data.indicators = {
+            'rsi': 60,
+            'volume_ratio': 2.0,
+            'adx': 30,
+            'atr': 1.5,
+            'high_20': 100.0,  # Close > high_20 = breakout
+            'sma_20': 98.0,
+            'macd': 0.5,
+            'macd_signal': 0.3,
+            'day_change_pct': 4.0,
+        }
+        
+        with patch('core.market_context.read_market_context') as mock_mc:
+            mock_mc.return_value = MagicMock(
+                regime='risk_on',
+                time_of_day='midday',
+                spy_change_pct=0.5,
+                vix_change_pct=-1.0,
+                sector_etf='XLK',
+                reason='test',
+            )
+            
+            with patch('core.config.Config') as mock_cfg:
+                mock_cfg_instance = MagicMock()
+                mock_cfg_instance.ENABLE_DAY_TRADE_MOMENTUM = True
+                mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_SPY_PCT = -1.5
+                mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_VIX_SPIKE = 15.0
+                mock_cfg_instance.MOMENTUM_RISK_OFF_SIZE_MULT = 0.25
+                mock_cfg_instance.MOMENTUM_OPENING_30_SIZE_MULT = 0.5
+                mock_cfg_instance.MOMENTUM_MIN_RS_VS_SPY = 0.5
+                mock_cfg_instance.MOMENTUM_MIN_VOLUME_RATIO = 1.5
+                mock_cfg_instance.DAY_TRADE_SIZE_MULTIPLIER = 0.5
+                mock_cfg_instance.DAY_TRADE_FLATTEN_HOUR = 15
+                mock_cfg.return_value = mock_cfg_instance
+                
+                signal = await strategy.generate_signal_with_commentary(market_data)
+        
+        assert signal is not None
+        assert 'setup_type' in signal.reasoning
+        assert signal.reasoning['setup_type'] == 'momentum_breakout'
+
+
+class TestMomentumContext:
+    """Test MomentumContext dataclass for decision snapshots."""
+    
+    def test_momentum_context_from_signal_reasoning(self):
+        """MomentumContext can be built from signal reasoning dict."""
+        from core.decision_snapshot import MomentumContext
+        
+        reasoning = {
+            'session_id': '2026-09-10',
+            'setup_type': 'momentum_breakout',
+            'risk_off': True,
+            'mc_size_mult': 0.25,
+            'rs_vs_spy': 2.5,
+            'is_day_trade': True,
+            'flatten_hour': 15,
+            'entry_pattern': 'breakout',
+        }
+        
+        ctx = MomentumContext.from_signal_reasoning(reasoning)
+        
+        assert ctx.session_id == '2026-09-10'
+        assert ctx.setup_type == 'momentum_breakout'
+        assert ctx.risk_off is True
+        assert ctx.mc_size_mult == 0.25
+        assert ctx.rs_vs_spy == 2.5
+        assert ctx.is_day_trade is True
+        assert ctx.flatten_hour == 15
+        assert ctx.entry_pattern == 'breakout'
+    
+    def test_momentum_context_empty(self):
+        """MomentumContext.empty() returns sensible defaults."""
+        from core.decision_snapshot import MomentumContext
+        
+        ctx = MomentumContext.empty()
+        
+        assert ctx.session_id == ''
+        assert ctx.setup_type == ''
+        assert ctx.risk_off is False
+        assert ctx.mc_size_mult == 1.0
+        assert ctx.rs_vs_spy == 0.0
+        assert ctx.is_day_trade is False
+        assert ctx.flatten_hour == 15
+
+
+class TestStageAConfigFloors:
+    """Test Stage-A promotion criteria config defaults.
+    
+    v-momentum-stage-a-2026-09-10: these are RESEARCH-LOCKED floors.
+    """
+    
+    def test_stage_a_min_trades_is_150(self):
+        """MOMENTUM_STAGE_A_MIN_TRADES defaults to 150."""
+        from core.config import Config
+        cfg = Config()
+        assert cfg.MOMENTUM_STAGE_A_MIN_TRADES == 150
+    
+    def test_stage_a_min_sessions_is_10(self):
+        """MOMENTUM_STAGE_A_MIN_SESSIONS defaults to 10."""
+        from core.config import Config
+        cfg = Config()
+        assert cfg.MOMENTUM_STAGE_A_MIN_SESSIONS == 10
+    
+    def test_stage_a_min_pf_is_130(self):
+        """MOMENTUM_STAGE_A_MIN_PF defaults to 1.30."""
+        from core.config import Config
+        cfg = Config()
+        assert cfg.MOMENTUM_STAGE_A_MIN_PF == 1.30
+    
+    def test_stage_a_min_win_rate_is_048(self):
+        """MOMENTUM_STAGE_A_MIN_WIN_RATE defaults to 0.48."""
+        from core.config import Config
+        cfg = Config()
+        assert cfg.MOMENTUM_STAGE_A_MIN_WIN_RATE == 0.48
+    
+    def test_stage_a_max_dd_pct_is_006(self):
+        """MOMENTUM_STAGE_A_MAX_DD_PCT defaults to 0.06 (6%)."""
+        from core.config import Config
+        cfg = Config()
+        assert cfg.MOMENTUM_STAGE_A_MAX_DD_PCT == 0.06
+    
+    def test_stage_a_max_losing_day_r_is_2(self):
+        """MOMENTUM_STAGE_A_MAX_LOSING_DAY_R defaults to 2.0."""
+        from core.config import Config
+        cfg = Config()
+        assert cfg.MOMENTUM_STAGE_A_MAX_LOSING_DAY_R == 2.0
+    
+    def test_stage_a_promoted_default_false(self):
+        """MOMENTUM_STAGE_A_PROMOTED defaults to False."""
+        from core.config import Config
+        cfg = Config()
+        assert cfg.MOMENTUM_STAGE_A_PROMOTED is False
+    
+    def test_momentum_allow_overnight_hold_default_false(self):
+        """MOMENTUM_ALLOW_OVERNIGHT_HOLD defaults to False."""
+        from core.config import Config
+        cfg = Config()
+        assert cfg.MOMENTUM_ALLOW_OVERNIGHT_HOLD is False

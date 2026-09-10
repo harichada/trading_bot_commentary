@@ -1656,6 +1656,151 @@ class Config:
         return bool(self.manager.get('trading.momentum_news_optional', True))
 
     # ──────────────────────────────────────────────────────────────────
+    # v-momentum-stage-a-2026-09-10: Stage-A promotion criteria for the
+    # day-trade momentum desk. These are RESEARCH-LOCKED floors — do NOT
+    # relax without walk-forward validation evidence.
+    #
+    # Promote to full capital allocation ONLY when ALL pass:
+    #   n ≥ 150 closed day-trades across ≥ 10 sessions
+    #   PF ≥ 1.30 after fees + slippage
+    #   Win rate ≥ 48% (scratches out of rate but counted in n)
+    #   Expectancy ≥ +0.05 R AND positive small $/day edge
+    #   Max DD ≤ 6% of allocated
+    #   Max losing day ≤ 2.0 R
+    #   Throughput 3-12/session is product report only (not a gate)
+    #
+    # HARD VETO for promotion:
+    #   - Overnight holds without explicit flag
+    #   - Capital scale before Stage A green
+    # ──────────────────────────────────────────────────────────────────
+
+    @property
+    def MOMENTUM_STAGE_A_MIN_TRADES(self) -> int:
+        """Minimum closed day-trades for Stage-A promotion.
+        
+        RESEARCH-LOCKED: n ≥ 150 closed trades required before promoting
+        to full capital. This ensures statistical significance.
+        
+        Default 150. DO NOT LOWER without walk-forward evidence.
+        """
+        return int(self.manager.get('trading.momentum_stage_a_min_trades', 150))
+
+    @property
+    def MOMENTUM_STAGE_A_MIN_SESSIONS(self) -> int:
+        """Minimum trading sessions for Stage-A promotion.
+        
+        RESEARCH-LOCKED: ≥ 10 sessions ensures the strategy has been
+        tested across different market conditions, not just one regime.
+        
+        Default 10. DO NOT LOWER without walk-forward evidence.
+        """
+        return int(self.manager.get('trading.momentum_stage_a_min_sessions', 10))
+
+    @property
+    def MOMENTUM_STAGE_A_MIN_PF(self) -> float:
+        """Minimum Profit Factor for Stage-A promotion.
+        
+        RESEARCH-LOCKED: PF ≥ 1.30 after fees + slippage. A PF below this
+        means the strategy is barely profitable and risky to scale.
+        
+        Default 1.30. DO NOT LOWER without walk-forward evidence.
+        """
+        return float(self.manager.get('trading.momentum_stage_a_min_pf', 1.30))
+
+    @property
+    def MOMENTUM_STAGE_A_MIN_WIN_RATE(self) -> float:
+        """Minimum win rate for Stage-A promotion.
+        
+        RESEARCH-LOCKED: Win rate ≥ 48%. Scratches (breakeven exits) are
+        counted OUT of win rate but IN the trade count n.
+        
+        At 2:1 R:R, 48% win rate gives expectancy ~0.44 R/trade.
+        
+        Default 0.48. DO NOT LOWER without walk-forward evidence.
+        """
+        return float(self.manager.get('trading.momentum_stage_a_min_win_rate', 0.48))
+
+    @property
+    def MOMENTUM_STAGE_A_MIN_EXPECTANCY_R(self) -> float:
+        """Minimum expectancy in R-multiples for Stage-A promotion.
+        
+        RESEARCH-LOCKED: Expectancy ≥ +0.05 R per trade AND positive
+        small $/day edge. This ensures the strategy has edge even after
+        accounting for variance.
+        
+        Default 0.05. DO NOT LOWER without walk-forward evidence.
+        """
+        return float(self.manager.get('trading.momentum_stage_a_min_expectancy_r', 0.05))
+
+    @property
+    def MOMENTUM_STAGE_A_MAX_DD_PCT(self) -> float:
+        """Maximum drawdown % for Stage-A promotion.
+        
+        RESEARCH-LOCKED: Max DD ≤ 6% of allocated capital during the
+        Stage-A evaluation period. Higher DD indicates poor risk management
+        or strategy flaws.
+        
+        Default 0.06 (6%). DO NOT RAISE without walk-forward evidence.
+        """
+        return float(self.manager.get('trading.momentum_stage_a_max_dd_pct', 0.06))
+
+    @property
+    def MOMENTUM_STAGE_A_MAX_LOSING_DAY_R(self) -> float:
+        """Maximum losing day in R-multiples for Stage-A promotion.
+        
+        RESEARCH-LOCKED: Max losing day ≤ 2.0 R. A single day losing more
+        than 2R indicates poor position sizing or lack of circuit breakers.
+        
+        Default 2.0. DO NOT RAISE without walk-forward evidence.
+        """
+        return float(self.manager.get('trading.momentum_stage_a_max_losing_day_r', 2.0))
+
+    @property
+    def MOMENTUM_STAGE_A_THROUGHPUT_MIN(self) -> int:
+        """Minimum trades per session for Stage-A (PRODUCT REPORT ONLY).
+        
+        NOT A PROMOTION GATE — throughput 3-12/session is informational.
+        Too few trades = desk is too selective; too many = overtrading.
+        
+        Default 3. This is for reporting, not gating.
+        """
+        return int(self.manager.get('trading.momentum_stage_a_throughput_min', 3))
+
+    @property
+    def MOMENTUM_STAGE_A_THROUGHPUT_MAX(self) -> int:
+        """Maximum trades per session for Stage-A (PRODUCT REPORT ONLY).
+        
+        NOT A PROMOTION GATE — throughput 3-12/session is informational.
+        
+        Default 12. This is for reporting, not gating.
+        """
+        return int(self.manager.get('trading.momentum_stage_a_throughput_max', 12))
+
+    @property
+    def MOMENTUM_ALLOW_OVERNIGHT_HOLD(self) -> bool:
+        """Allow overnight holds for day-trade momentum positions.
+        
+        HARD VETO FOR PROMOTION: Overnight holds without this flag
+        explicitly set to True will block Stage-A promotion.
+        
+        Default False. Day-trade positions should flatten by EOD.
+        Set True ONLY if you explicitly want swing-style holds.
+        """
+        return bool(self.manager.get('trading.momentum_allow_overnight_hold', False))
+
+    @property
+    def MOMENTUM_STAGE_A_PROMOTED(self) -> bool:
+        """Whether the momentum desk has passed Stage-A promotion.
+        
+        HARD VETO: Capital scale before Stage A green is forbidden.
+        This flag should only be set True AFTER all promotion criteria
+        are met and validated by research.
+        
+        Default False. Flip to True only after Stage-A validation.
+        """
+        return bool(self.manager.get('trading.momentum_stage_a_promoted', False))
+
+    # ──────────────────────────────────────────────────────────────────
     # v-feature-snapshot-config-2026-09-09: decision snapshot feature flags.
     # Moved from module constants in core/decision_snapshot.py to Config
     # for runtime configurability via env vars or Config.yaml.

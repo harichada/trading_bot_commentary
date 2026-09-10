@@ -1305,6 +1305,22 @@ class MomentumStrategyWithCommentary(TradingStrategyWithCommentary):
         return None
 
 
+def _get_session_id() -> str:
+    """Get current trading session ID (date in ET timezone).
+    
+    v-momentum-stage-a-2026-09-10: session_id groups trades for Stage-A
+    daily rollup. Format: YYYY-MM-DD in America/New_York timezone.
+    """
+    try:
+        from datetime import timezone
+        from zoneinfo import ZoneInfo
+        now_utc = datetime.now(timezone.utc)
+        et = now_utc.astimezone(ZoneInfo("America/New_York"))
+        return et.strftime("%Y-%m-%d")
+    except Exception:
+        return datetime.now().strftime("%Y-%m-%d")
+
+
 class DayTradeMomentumStrategy(TradingStrategyWithCommentary):
     """Day-trade momentum strategy for intraday movers.
     
@@ -1327,6 +1343,12 @@ class DayTradeMomentumStrategy(TradingStrategyWithCommentary):
       - extreme conditions (SPY <= -1.5% AND VIX spike): HARD BLOCK
     
     News: OPTIONAL confirmation / size bump, NOT required
+    
+    Stage-A Instrumentation (v-momentum-stage-a-2026-09-10):
+      - session_id: trading date in ET (YYYY-MM-DD)
+      - risk_off: explicit boolean flag
+      - mc_size_mult: market context size multiplier
+      - setup_type: entry_pattern (breakout/pullback/continuation)
     """
     
     name = "day_trade_momentum"
@@ -1578,6 +1600,13 @@ class DayTradeMomentumStrategy(TradingStrategyWithCommentary):
                 atr=round(atr, 3),
             )
             
+            # ────────────────────────────────────────────────────────────────
+            # Stage-A Instrumentation: session_id, risk_off flag, setup_type
+            # v-momentum-stage-a-2026-09-10
+            # ────────────────────────────────────────────────────────────────
+            _session_id = _get_session_id()
+            _risk_off = (_mc_regime == "risk_off")
+            
             return TradingSignal(
                 symbol=symbol,
                 signal_type=SignalType.BUY,
@@ -1603,6 +1632,11 @@ class DayTradeMomentumStrategy(TradingStrategyWithCommentary):
                     'is_day_trade': True,
                     'day_trade_size_multiplier': cfg.DAY_TRADE_SIZE_MULTIPLIER,
                     'flatten_hour': cfg.DAY_TRADE_FLATTEN_HOUR,
+                    # Stage-A instrumentation (v-momentum-stage-a-2026-09-10)
+                    'session_id': _session_id,
+                    'risk_off': _risk_off,
+                    'mc_size_mult': _mc_size_mult,
+                    'setup_type': f"momentum_{_entry_pattern}",
                 },
                 confidence=_confidence,
             )
