@@ -1507,6 +1507,37 @@ class Config:
         return bool(self.manager.get('trading.enable_day_trade_momentum', True))
 
     @property
+    def DAY_TRADE_LIVE_ENTRIES_ENABLED(self) -> bool:
+        """v-pause-live-daytrade-2026-09-10: master switch for LIVE day-trade
+        momentum entries.
+        
+        When False (default), the day-trade momentum strategy generates
+        signals for sim/commentary/shadow analysis but BLOCKS actual LIVE
+        order placement. This is the immediate pause requested by Hari on
+        2026-09-10 product call.
+        
+        MUST KEEP intact (these work regardless of this flag):
+          - Hard loss circuits / ENABLE_BOT_ONLY_PNL_CIRCUIT
+          - Flatten / software exits / order_monitor / OCO / bootstrap
+            for EXISTING bot day-trades
+          - LT hands-off forever: MU, SNAP, HQGE, SPCX (is_long_term flag)
+        
+        The flag does NOT flip autonomous_live. It only blocks NEW live
+        entries via day_trade_momentum lane.
+        
+        Promotion to True requires Stage-A validation:
+          n>=150 trades, >=10 sessions, PF>=1.30, WR>=48%, exp>=+0.05R,
+          DD<=6%, max losing day<=2R.
+        
+        Default False. Set via env DAY_TRADE_LIVE_ENTRIES_ENABLED=1 or
+        trading.day_trade_live_entries_enabled: true in Config.yaml.
+        """
+        env_val = os.getenv("DAY_TRADE_LIVE_ENTRIES_ENABLED")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.day_trade_live_entries_enabled', False))
+
+    @property
     def ENABLE_MOVER_QUALITY_RELAX(self) -> bool:
         """Relax quality filters for mover-sourced symbols.
         
@@ -1808,6 +1839,45 @@ class Config:
         Default False. Flip to True only after Stage-A validation.
         """
         return bool(self.manager.get('trading.momentum_stage_a_promoted', False))
+
+    # ──────────────────────────────────────────────────────────────────
+    # v-shadow-veto-2026-09-10: shadow (log-only) veto for risky setups.
+    # Instrumentation for later promotion scoring. LIVE Schwab fills only
+    # count for scorecard later — this is shadow first.
+    # ──────────────────────────────────────────────────────────────────
+
+    @property
+    def ENABLE_SHADOW_VETO_CONTINUATION_RISKOFF(self) -> bool:
+        """v-shadow-veto-2026-09-10: shadow veto for continuation pattern
+        when RSI >= 70 AND risk_off regime.
+        
+        When True, the day-trade momentum strategy logs would-be entries
+        that match the dangerous pattern (continuation + RSI>=70 + risk_off)
+        without placing orders. This is instrumentation for later promotion
+        scoring — LIVE Schwab fills only count for scorecard later.
+        
+        Pattern rationale: continuation into overbought on a risk-off day
+        is the classic failed breakout setup (exhaustion gap). Shadow-first
+        to gather evidence before promoting to a hard veto.
+        
+        Default True. Set trading.enable_shadow_veto_continuation_riskoff: false
+        to disable shadow logging.
+        """
+        env_val = os.getenv("ENABLE_SHADOW_VETO_CONTINUATION_RISKOFF")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.enable_shadow_veto_continuation_riskoff', True))
+
+    @property
+    def SHADOW_VETO_RSI_THRESHOLD(self) -> float:
+        """RSI threshold for shadow veto on continuation + risk_off.
+        
+        Continuation entries with RSI >= this AND risk_off regime get
+        shadow-logged (not placed). 70 is the classic overbought level.
+        
+        Default 70.0. Set trading.shadow_veto_rsi_threshold to adjust.
+        """
+        return float(self.manager.get('trading.shadow_veto_rsi_threshold', 70.0))
 
     # ──────────────────────────────────────────────────────────────────
     # v-feature-snapshot-config-2026-09-09: decision snapshot feature flags.

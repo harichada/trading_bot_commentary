@@ -1536,6 +1536,115 @@ class DayTradeMomentumStrategy(TradingStrategyWithCommentary):
                 return None
             
             # ────────────────────────────────────────────────────────────────
+            # v-shadow-veto-2026-09-10: Shadow veto for continuation + RSI>=70 + risk_off
+            #
+            # Pattern: continuation pattern into overbought (RSI>=70) during
+            # risk_off regime is the classic failed breakout setup (exhaustion
+            # gap). This is instrumentation for later promotion scoring.
+            #
+            # Shadow mode (log-only): we log the would-be entry with full
+            # instrumentation but return None (don't place the trade). LIVE
+            # Schwab fills will count for scorecard later when promoted to
+            # a hard veto.
+            #
+            # Gated by Config.ENABLE_SHADOW_VETO_CONTINUATION_RISKOFF (default True)
+            # ────────────────────────────────────────────────────────────────
+            _shadow_veto_rsi_threshold = cfg.SHADOW_VETO_RSI_THRESHOLD
+            _shadow_veto_triggered = (
+                cfg.ENABLE_SHADOW_VETO_CONTINUATION_RISKOFF
+                and _entry_pattern == "continuation"
+                and rsi >= _shadow_veto_rsi_threshold
+                and _mc_regime == "risk_off"
+            )
+            
+            if _shadow_veto_triggered:
+                # Log the shadow veto with full instrumentation for later scoring
+                self._log_decision(
+                    market_data, "shadow_veto", "continuation_riskoff_rsi70",
+                    pattern=_entry_pattern,
+                    rsi=round(rsi, 2),
+                    rsi_threshold=_shadow_veto_rsi_threshold,
+                    regime=_mc_regime,
+                    rs_vs_spy=round(_rs_vs_spy, 2),
+                    volume_ratio=round(volume_ratio, 2),
+                    adx=round(adx, 2),
+                    high_20=round(high_20, 2),
+                    close=round(market_data.close, 2),
+                    sma_20=round(sma_20, 2) if sma_20 > 0 else 0,
+                    macd=round(macd, 4),
+                    macd_signal=round(macd_signal, 4),
+                    spy_change=round(_mc_spy_change, 2),
+                    vix_change=round(_mc_vix_change, 2),
+                    session_id=_get_session_id(),
+                )
+                
+                # Log to shadow veto file for later resolution
+                try:
+                    from datetime import timezone as _tz_sv
+                    import json as _json_sv
+                    _shadow_veto_entry = {
+                        'timestamp': datetime.now(_tz_sv.utc).isoformat(),
+                        'symbol': symbol,
+                        'veto_type': 'continuation_riskoff_rsi70',
+                        'entry_pattern': _entry_pattern,
+                        'rsi': float(rsi),
+                        'rsi_threshold': float(_shadow_veto_rsi_threshold),
+                        'regime': _mc_regime,
+                        'signal_close': float(market_data.close),
+                        'rs_vs_spy': float(_rs_vs_spy),
+                        'volume_ratio': float(volume_ratio),
+                        'adx': float(adx),
+                        'high_20': float(high_20),
+                        'sma_20': float(sma_20) if sma_20 > 0 else 0,
+                        'macd': float(macd),
+                        'macd_signal': float(macd_signal),
+                        'spy_change_pct': float(_mc_spy_change),
+                        'vix_change_pct': float(_mc_vix_change),
+                        'session_id': _get_session_id(),
+                        # Include hypothetical stop/target for later outcome tracking
+                        'hypothetical_atr': float(_floored_atr(atr, market_data.close)),
+                        'hypothetical_stop': float(market_data.close - 1.5 * _floored_atr(atr, market_data.close)),
+                        'hypothetical_target': float(market_data.close + 2.0 * 1.5 * _floored_atr(atr, market_data.close)),
+                    }
+                    _shadow_veto_ledger = 'shadow_veto_log.ndjson'
+                    with open(_shadow_veto_ledger, 'a') as _f:
+                        _f.write(_json_sv.dumps(_shadow_veto_entry, default=str) + "\n")
+                except Exception as _sv_io_exc:
+                    logger.warning(
+                        "shadow_veto_log write failed for %s: %s",
+                        symbol, _sv_io_exc,
+                    )
+                
+                # Emit commentary about the shadow veto
+                self.commentary.add_commentary(TradingCommentary(
+                    timestamp=datetime.now(),
+                    type=CommentaryType.RISK_ASSESSMENT,
+                    symbol=symbol,
+                    title=f"👁️ Shadow Veto: {_entry_pattern.upper()} + RSI≥70 + risk_off",
+                    message=(
+                        f"WOULD HAVE entered {symbol} via continuation pattern but:\n"
+                        f"  RSI {rsi:.1f} >= {_shadow_veto_rsi_threshold} (overbought)\n"
+                        f"  Regime: {_mc_regime} (risk off)\n\n"
+                        f"This combination is the classic failed-breakout exhaustion setup.\n"
+                        f"Shadow logged for later scoring; no order placed.\n\n"
+                        f"Signal details: RS vs SPY {_rs_vs_spy:+.2f}%, Vol {volume_ratio:.1f}x"
+                    ),
+                    data={
+                        'veto_type': 'shadow',
+                        'pattern': _entry_pattern,
+                        'rsi': rsi,
+                        'rsi_threshold': _shadow_veto_rsi_threshold,
+                        'regime': _mc_regime,
+                        'rs_vs_spy': _rs_vs_spy,
+                        'volume_ratio': volume_ratio,
+                    },
+                    importance=7,
+                ))
+                
+                # Return None to prevent order placement
+                return None
+            
+            # ────────────────────────────────────────────────────────────────
             # Calculate Stop/Target (ATR-based, tighter for day-trade)
             # ────────────────────────────────────────────────────────────────
             atr = _floored_atr(atr, market_data.close)
