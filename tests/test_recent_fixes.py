@@ -2506,6 +2506,65 @@ class TestOwnershipSurvivesRestart:
             "restore guard must check side + quantity identity"
         )
 
+    # v-ownership-survives-restart-2026-09-10: additional tests for
+    # _update_and_track_real_positions path which was missing the
+    # saved-state check. This caused bot-opened positions to be demoted
+    # to external on restart (F/ERAS/ONDS/COO incident).
+
+    def test_update_track_also_checks_saved_meta(self):
+        """_update_and_track_real_positions must also check _saved_positions_meta
+        when creating new positions (startup path), not just sync_positions_with_schwab."""
+        src = ENGINE_PATH.read_text()
+        anchor = src.find("async def _update_and_track_real_positions")
+        assert anchor != -1, "_update_and_track_real_positions not found"
+        body = src[anchor: anchor + 12000]  # larger window to cover full function
+        assert "_saved_positions_meta" in body, (
+            "_update_and_track_real_positions must check saved metadata — "
+            "without this, bot-opened positions are demoted to external on restart"
+        )
+        assert "position_ownership_restored" in body or "update_track_restore" in body, (
+            "restore path must emit an audit line for traceability"
+        )
+
+    def test_update_track_restore_has_identity_guards(self):
+        """The restore logic in _update_and_track_real_positions must verify
+        side AND quantity match before restoring ownership."""
+        src = ENGINE_PATH.read_text()
+        anchor = src.find("v-ownership-survives-restart-2026-09-10")
+        assert anchor != -1, "2026-09-10 fix marker not found"
+        window = src[anchor: anchor + 2000]
+        assert "_restore_managed" in window, "restore logic variable missing"
+        assert "'side'" in window or "side" in window
+        assert "'quantity'" in window or "quantity" in window
+
+    def test_long_term_stays_unmanaged_on_restore(self):
+        """is_long_term positions must NOT be auto-flipped to managed_by_bot=True
+        even if the saved state has managed_by_bot=True — LT holds are user-
+        designated hands-off positions (MU, SNAP, HQGE, SPCX)."""
+        src = ENGINE_PATH.read_text()
+        anchor = src.find("v-ownership-survives-restart-2026-09-10")
+        assert anchor != -1
+        window = src[anchor: anchor + 2500]
+        assert "is_long_term" in window, (
+            "restore path must check is_long_term flag — LT holds must stay "
+            "hands-off regardless of managed_by_bot saved state"
+        )
+        assert "_is_lt" in window or "is_long_term" in window
+
+    def test_new_unknown_position_stays_unmanaged(self):
+        """Positions not in saved state must default to unmanaged/external —
+        the safe default for unknown Schwab positions (newly added outside bot)."""
+        src = ENGINE_PATH.read_text()
+        anchor = src.find("v-ownership-survives-restart-2026-09-10")
+        assert anchor != -1
+        window = src[anchor: anchor + 5500]  # larger window for full else block
+        assert "managed_by_bot=False" in window, (
+            "positions without saved state must default to unmanaged"
+        )
+        assert "is_external = True" in window, (
+            "positions without saved state must be marked external"
+        )
+
 
 # ── v-news-socket-timeouts-2026-06-10 ────────────────────────────────
 
