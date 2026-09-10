@@ -42,7 +42,8 @@ from risk.backtest import PerformanceAnalyzer
 from strategies.builtin import (BreakoutStrategyWithCommentary,
                                 MeanReversionStrategyWithCommentary,
                                 MomentumStrategyWithCommentary,
-                                DayTradeMomentumStrategy)
+                                DayTradeMomentumStrategy,
+                                ORBContractionRVOLStrategy)
 from strategies.news_strategy import FreeNewsSignalStrategy
 from data_providers.realtime import RealTimeDataProvider, DummyDataProvider
 from data_providers.schwab import SchwabDataProvider
@@ -327,6 +328,24 @@ class TradingEngineWithCommentary:
         if Config().ENABLE_DAY_TRADE_MOMENTUM:
             self.strategies.append(DayTradeMomentumStrategy(self.commentary))
             logger.info("day_trade_momentum: strategy enabled")
+        
+        # v-orb-prototype-2026-09-10: ORB (Opening Range Breakout) + volatility
+        # contraction + relative volume (RVOL) prototype strategy.
+        # Hari APPROVED order: #1 ORB+contraction+RVOL (this), then #2 RVOL
+        # continuation, then #3 Gao late-day.
+        #
+        # CRITICAL: This strategy HARD-SKIPS when regime is risk_off (NOT
+        # size-down). Unlike momentum which reduces size, ORB does NOT signal
+        # at all in risk_off — ORB is a directional bet that doesn't make
+        # sense when the market is in panic mode.
+        #
+        # Primary symbols: SPY/QQQ first (Hari instruction).
+        # LIVE entries gated by ORB_LIVE_ENTRIES_ENABLED (default False).
+        if Config().ENABLE_ORB_STRATEGY:
+            self.strategies.append(ORBContractionRVOLStrategy(self.commentary))
+            logger.info("orb_contraction_rvol: strategy enabled (sim_shadow=%s, live=%s)",
+                        Config().ORB_SIM_SHADOW_ENABLED,
+                        Config().ORB_LIVE_ENTRIES_ENABLED)
         
         # v-feature-snapshot-2026-09-09: wire engine ref on all strategies
         # so they can emit DecisionSnapshots via db_logger
@@ -7029,6 +7048,57 @@ class TradingEngineWithCommentary:
                     'entry_pattern': (signal.reasoning or {}).get('entry_pattern'),
                     'mode': self.mode.value,
                     'flag': 'DAY_TRADE_LIVE_ENTRIES_ENABLED',
+                    'flag_value': False,
+                },
+                importance=8,
+            ))
+            return
+
+        # v-orb-prototype-2026-09-10: block NEW LIVE ORB entries when
+        # ORB_LIVE_ENTRIES_ENABLED=False.
+        #
+        # Same pattern as day_trade_momentum pause: sim/shadow analysis
+        # continues, only LIVE order placement is blocked.
+        #
+        # Stage-A validation required before promotion:
+        #   n>=150 trades, >=10 sessions, PF>=1.30, WR>=48%,
+        #   exp>=+0.05R, DD<=6%, max losing day<=2R.
+        if (_signal_strategy == "orb_contraction_rvol"
+                and self.mode == TradingMode.LIVE
+                and not Config().ORB_LIVE_ENTRIES_ENABLED):
+            self._audit(
+                "orb_live_pause", signal.symbol, "skip",
+                "live_entries_disabled",
+                strategy=_signal_strategy,
+                mode=self.mode.value,
+                flag="ORB_LIVE_ENTRIES_ENABLED=False",
+                breakout_type=(signal.reasoning or {}).get("breakout_type"),
+                orb_high=round(float((signal.reasoning or {}).get("orb_high", 0)), 2),
+                orb_low=round(float((signal.reasoning or {}).get("orb_low", 0)), 2),
+                contraction_pct=round(float((signal.reasoning or {}).get("contraction_pct", 0)), 3),
+                volume_ratio=round(float((signal.reasoning or {}).get("volume_ratio", 0)), 2),
+                regime=(signal.reasoning or {}).get("market_context_regime"),
+            )
+            self.commentary.add_commentary(TradingCommentary(
+                timestamp=datetime.now(),
+                type=CommentaryType.RISK_ASSESSMENT,
+                symbol=signal.symbol,
+                title=f"🛑 ORB LIVE Entry Paused",
+                message=(
+                    f"Signal for {signal.symbol} via orb_contraction_rvol "
+                    f"(type: {(signal.reasoning or {}).get('breakout_type', 'unknown')}) "
+                    f"blocked in LIVE mode. ORB_LIVE_ENTRIES_ENABLED=False.\n\n"
+                    f"Stage-A validation required before promotion:\n"
+                    f"  n>=150 trades, >=10 sessions, PF>=1.30, WR>=48%,\n"
+                    f"  exp>=+0.05R, DD<=6%, max losing day<=2R.\n\n"
+                    f"Sim/shadow analysis continues. Enable for sim/shadow testing "
+                    f"with ENABLE_ORB_STRATEGY=1 and ORB_SIM_SHADOW_ENABLED=1."
+                ),
+                data={
+                    'strategy': _signal_strategy,
+                    'breakout_type': (signal.reasoning or {}).get('breakout_type'),
+                    'mode': self.mode.value,
+                    'flag': 'ORB_LIVE_ENTRIES_ENABLED',
                     'flag_value': False,
                 },
                 importance=8,

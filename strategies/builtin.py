@@ -1,6 +1,6 @@
 import logging
-from datetime import datetime
-from typing import Dict, Any, Optional
+from datetime import datetime, timezone
+from typing import Dict, Any, Optional, Tuple
 
 import numpy as np
 
@@ -1759,4 +1759,415 @@ class DayTradeMomentumStrategy(TradingStrategyWithCommentary):
         except Exception as e:
             self._log_decision(market_data, "error", "exception", err=str(e))
             logger.debug(f"DayTradeMomentumStrategy error for {symbol}: {e}")
+            return None
+
+
+def _get_minutes_since_open(now_utc: Optional[datetime] = None) -> int:
+    """Get minutes since market open (09:30 ET).
+    
+    v-orb-prototype-2026-09-10: helper for ORB time-based gates.
+    Returns negative if before open, positive if after.
+    """
+    from datetime import timezone
+    from zoneinfo import ZoneInfo
+    
+    if now_utc is None:
+        now_utc = datetime.now(timezone.utc)
+    
+    et = now_utc.astimezone(ZoneInfo("America/New_York"))
+    market_open_minutes = 9 * 60 + 30  # 09:30 ET in minutes
+    current_minutes = et.hour * 60 + et.minute
+    return current_minutes - market_open_minutes
+
+
+class ORBContractionRVOLStrategy(TradingStrategyWithCommentary):
+    """ORB (Opening Range Breakout) + volatility contraction + RVOL strategy.
+    
+    v-orb-prototype-2026-09-10: Hari APPROVED prototype #1.
+    
+    The Opening Range Breakout strategy identifies breakouts from the
+    high/low of the first N minutes after market open, filtered by:
+      1. Volatility contraction (squeeze before expansion)
+      2. Relative volume (RVOL) confirmation
+      3. Market context (regime, time-of-day)
+    
+    CRITICAL: This strategy HARD-SKIPS when regime is risk_off.
+    Unlike momentum which reduces size on risk_off, ORB does NOT
+    signal at all — ORB is an opening-range directional bet that
+    doesn't make sense when the market is in panic mode.
+    
+    Primary symbols: SPY/QQQ first (Hari instruction).
+    
+    Stage-A promotion floors (LOCKED — do NOT loosen):
+      n>=150 trades, >=10 sessions, PF>=1.30, WR>=48%, exp>=+0.05R,
+      DD<=6%, max losing day<=2R.
+    """
+    
+    name = "orb_contraction_rvol"
+    
+    def __init__(self, commentary_system):
+        super().__init__(commentary_system)
+        self._opening_range_cache: Dict[str, Dict[str, float]] = {}
+    
+    def _get_opening_range(
+        self, symbol: str, indicators: Dict[str, Any]
+    ) -> Optional[Dict[str, float]]:
+        """Get or compute the opening range for a symbol.
+        
+        Returns {'high': float, 'low': float, 'range': float, 'computed_at': str}
+        or None if range is not yet established.
+        """
+        from core.config import Config as _Cfg
+        cfg = _Cfg()
+        
+        minutes_since_open = _get_minutes_since_open()
+        range_minutes = cfg.ORB_OPENING_RANGE_MINUTES
+        
+        if minutes_since_open < range_minutes:
+            return None
+        
+        session_id = _get_session_id()
+        cache_key = f"{symbol}_{session_id}"
+        
+        if cache_key in self._opening_range_cache:
+            return self._opening_range_cache[cache_key]
+        
+        orb_high = float(indicators.get('orb_high', 0) or indicators.get('high_20', 0))
+        orb_low = float(indicators.get('orb_low', 0) or indicators.get('low_20', 0))
+        
+        if orb_high <= 0 or orb_low <= 0 or orb_high <= orb_low:
+            return None
+        
+        orb_range = orb_high - orb_low
+        
+        result = {
+            'high': orb_high,
+            'low': orb_low,
+            'range': orb_range,
+            'computed_at': datetime.now(timezone.utc).isoformat(),
+        }
+        self._opening_range_cache[cache_key] = result
+        return result
+    
+    def _compute_volatility_contraction(
+        self, indicators: Dict[str, Any], orb_range: float, price: float
+    ) -> Tuple[bool, float]:
+        """Compute volatility contraction status.
+        
+        Returns (is_contracted, contraction_pct) where is_contracted is True
+        if the current range is contracted relative to N-bar ATR.
+        """
+        from core.config import Config as _Cfg
+        cfg = _Cfg()
+        
+        atr = float(indicators.get('atr', 0))
+        if atr <= 0:
+            return False, 0.0
+        
+        atr_as_pct = atr / price if price > 0 else 0
+        range_as_pct = orb_range / price if price > 0 else 0
+        
+        if atr_as_pct <= 0:
+            return False, 0.0
+        
+        contraction_pct = (atr_as_pct - range_as_pct) / atr_as_pct
+        min_contraction = cfg.ORB_MIN_CONTRACTION_PCT
+        
+        return contraction_pct >= min_contraction, contraction_pct
+    
+    async def generate_signal_with_commentary(self, market_data) -> Optional[TradingSignal]:
+        """Generate ORB + contraction + RVOL signal.
+        
+        CRITICAL: HARD-SKIP when regime is risk_off (NOT size-down).
+        """
+        from core.config import Config as _Cfg
+        cfg = _Cfg()
+        
+        if not cfg.ENABLE_ORB_STRATEGY:
+            return None
+        
+        indicators = market_data.indicators or {}
+        symbol = market_data.symbol
+        
+        try:
+            # ────────────────────────────────────────────────────────────────
+            # Gate 0: Symbol eligibility (prefer SPY/QQQ)
+            # ────────────────────────────────────────────────────────────────
+            primary_symbols = cfg.ORB_PRIMARY_SYMBOLS
+            is_primary = symbol.upper() in [s.upper() for s in primary_symbols]
+            
+            # ────────────────────────────────────────────────────────────────
+            # Gate 1: CRITICAL — regime risk_off HARD SKIP (NOT size-down)
+            #
+            # Research+CoS lock: ORB is an opening-range directional bet.
+            # In risk_off conditions (panic selling, VIX spiking), the
+            # opening range is noise — breakouts fail systematically.
+            # Unlike momentum which reduces size, ORB does NOT signal at all.
+            # ────────────────────────────────────────────────────────────────
+            _mc_regime = None
+            _mc_time_of_day = None
+            _mc_spy_change = 0.0
+            _mc_vix_change = 0.0
+            _mc_sector = None
+            _mc_reason = ""
+            
+            try:
+                from core.market_context import read_market_context
+                _mc = read_market_context(symbol)
+                _mc_regime = _mc.regime
+                _mc_time_of_day = _mc.time_of_day
+                _mc_spy_change = _mc.spy_change_pct
+                _mc_vix_change = _mc.vix_change_pct
+                _mc_sector = _mc.sector_etf
+                _mc_reason = _mc.reason
+                
+                # CRITICAL: risk_off => HARD SKIP, NOT size-down
+                if _mc_regime == "risk_off":
+                    self._log_decision(
+                        market_data, "skip", "risk_off_hard_skip",
+                        gate_name="orb_risk_off_lock",
+                        regime=_mc_regime,
+                        spy_change=round(_mc_spy_change, 2),
+                        vix_change=round(_mc_vix_change, 2),
+                        reason_text=_mc_reason,
+                    )
+                    self.commentary.add_commentary(TradingCommentary(
+                        timestamp=datetime.now(),
+                        type=CommentaryType.RISK_ASSESSMENT,
+                        symbol=symbol,
+                        title=f"⛔ ORB SKIPPED — risk_off (HARD SKIP, not size-down)",
+                        message=(
+                            f"ORB strategy DOES NOT SIGNAL in risk_off regime.\n"
+                            f"  Regime: {_mc_regime}\n"
+                            f"  SPY: {_mc_spy_change:+.2f}% | VIX: {_mc_vix_change:+.1f}%\n\n"
+                            f"Research+CoS lock: ORB breakouts fail systematically "
+                            f"in panic conditions. This is a HARD SKIP, not a size "
+                            f"reduction. Wait for regime to clear before ORB signals."
+                        ),
+                        importance=8,
+                    ))
+                    return None
+                    
+            except Exception as _mc_exc:
+                logger.debug("orb_strategy: market_context failed: %s", _mc_exc)
+            
+            # ────────────────────────────────────────────────────────────────
+            # Gate 2: Time-based gates
+            # ────────────────────────────────────────────────────────────────
+            minutes_since_open = _get_minutes_since_open()
+            range_minutes = cfg.ORB_OPENING_RANGE_MINUTES
+            max_entry_minutes = cfg.ORB_MAX_ENTRY_MINUTES_AFTER_OPEN
+            
+            if minutes_since_open < range_minutes:
+                self._log_decision(
+                    market_data, "skip", "orb_not_yet_established",
+                    minutes_since_open=minutes_since_open,
+                    range_minutes=range_minutes,
+                )
+                return None
+            
+            if minutes_since_open > max_entry_minutes:
+                self._log_decision(
+                    market_data, "skip", "orb_entry_window_closed",
+                    minutes_since_open=minutes_since_open,
+                    max_entry_minutes=max_entry_minutes,
+                )
+                return None
+            
+            # ────────────────────────────────────────────────────────────────
+            # Gate 3: Opening Range Data
+            # ────────────────────────────────────────────────────────────────
+            orb = self._get_opening_range(symbol, indicators)
+            if orb is None:
+                self._log_decision(
+                    market_data, "skip", "orb_no_range_data",
+                    symbol=symbol,
+                )
+                return None
+            
+            orb_high = orb['high']
+            orb_low = orb['low']
+            orb_range = orb['range']
+            
+            # ────────────────────────────────────────────────────────────────
+            # Gate 4: Volatility Contraction Check
+            # ────────────────────────────────────────────────────────────────
+            is_contracted, contraction_pct = self._compute_volatility_contraction(
+                indicators, orb_range, market_data.close
+            )
+            
+            if not is_contracted:
+                self._log_decision(
+                    market_data, "skip", "orb_no_contraction",
+                    contraction_pct=round(contraction_pct, 3),
+                    min_contraction=cfg.ORB_MIN_CONTRACTION_PCT,
+                )
+                return None
+            
+            # ────────────────────────────────────────────────────────────────
+            # Gate 5: RVOL (Relative Volume) Check
+            # ────────────────────────────────────────────────────────────────
+            volume_ratio = float(indicators.get('volume_ratio', 1.0))
+            min_rvol = cfg.ORB_MIN_RVOL
+            
+            if volume_ratio < min_rvol:
+                self._log_decision(
+                    market_data, "skip", "orb_insufficient_rvol",
+                    volume_ratio=round(volume_ratio, 2),
+                    min_rvol=min_rvol,
+                )
+                return None
+            
+            # ────────────────────────────────────────────────────────────────
+            # Gate 6: Breakout Detection
+            # ────────────────────────────────────────────────────────────────
+            price = market_data.close
+            breakout_type = None
+            
+            if price > orb_high:
+                breakout_type = "bullish"
+            elif price < orb_low:
+                breakout_type = "bearish"
+            else:
+                self._log_decision(
+                    market_data, "skip", "orb_no_breakout",
+                    price=round(price, 2),
+                    orb_high=round(orb_high, 2),
+                    orb_low=round(orb_low, 2),
+                )
+                return None
+            
+            # ────────────────────────────────────────────────────────────────
+            # Calculate Stop/Target
+            # ────────────────────────────────────────────────────────────────
+            atr = _floored_atr(
+                float(indicators.get('atr', price * 0.02)),
+                price
+            )
+            
+            stop_mult = cfg.ORB_ATR_STOP_MULTIPLIER
+            rr_ratio = cfg.ORB_REWARD_RISK_RATIO
+            
+            stop_distance = stop_mult * atr
+            
+            if breakout_type == "bullish":
+                signal_type = SignalType.BUY
+                stop_loss = max(price - stop_distance, orb_low - (0.5 * atr))
+                take_profit = price + (rr_ratio * stop_distance)
+            else:
+                signal_type = SignalType.SELL
+                stop_loss = min(price + stop_distance, orb_high + (0.5 * atr))
+                take_profit = price - (rr_ratio * stop_distance)
+            
+            # ────────────────────────────────────────────────────────────────
+            # Calculate Confidence and Strength
+            # ────────────────────────────────────────────────────────────────
+            _strength = min(0.90, (
+                0.40 +  # base
+                min(0.20, (volume_ratio - 1.0) / 2.0) +  # RVOL contribution
+                min(0.15, contraction_pct / 0.5) +  # Contraction contribution
+                (0.15 if is_primary else 0.0)  # Primary symbol bonus
+            ))
+            
+            _confidence = min(0.80, (
+                0.50 +
+                min(0.15, (volume_ratio - 1.0) / 3.0) +
+                min(0.10, contraction_pct / 0.4) +
+                (0.05 if is_primary else 0.0)
+            ))
+            
+            # ────────────────────────────────────────────────────────────────
+            # Emit Commentary
+            # ────────────────────────────────────────────────────────────────
+            action_desc = "BREAKOUT" if breakout_type == "bullish" else "BREAKDOWN"
+            self.commentary.add_commentary(TradingCommentary(
+                timestamp=datetime.now(),
+                type=CommentaryType.OPPORTUNITY,
+                symbol=symbol,
+                title=f"📊 ORB {action_desc}: {symbol}",
+                message=(
+                    f"Opening Range {action_desc} detected.\n"
+                    f"  ORB High: ${orb_high:.2f} | ORB Low: ${orb_low:.2f}\n"
+                    f"  Current: ${price:.2f}\n"
+                    f"  Contraction: {contraction_pct*100:.1f}% (min {cfg.ORB_MIN_CONTRACTION_PCT*100:.0f}%)\n"
+                    f"  RVOL: {volume_ratio:.1f}x (min {min_rvol:.1f}x)\n"
+                    f"  Regime: {_mc_regime or 'unknown'} | ToD: {_mc_time_of_day or 'unknown'}\n"
+                    f"  Stop: ${stop_loss:.2f} | Target: ${take_profit:.2f}"
+                ),
+                data={
+                    'breakout_type': breakout_type,
+                    'orb_high': orb_high,
+                    'orb_low': orb_low,
+                    'orb_range': orb_range,
+                    'contraction_pct': contraction_pct,
+                    'volume_ratio': volume_ratio,
+                    'regime': _mc_regime,
+                    'is_primary': is_primary,
+                },
+                confidence=_confidence,
+                importance=8,
+            ))
+            
+            # ────────────────────────────────────────────────────────────────
+            # Log Decision
+            # ────────────────────────────────────────────────────────────────
+            action = "signal_buy" if signal_type == SignalType.BUY else "signal_sell"
+            self._log_decision(
+                market_data, action, f"orb_{breakout_type}_breakout",
+                orb_high=round(orb_high, 2),
+                orb_low=round(orb_low, 2),
+                orb_range=round(orb_range, 3),
+                contraction_pct=round(contraction_pct, 3),
+                volume_ratio=round(volume_ratio, 2),
+                regime=_mc_regime,
+                time_of_day=_mc_time_of_day,
+                is_primary=is_primary,
+                stop=round(stop_loss, 2),
+                target=round(take_profit, 2),
+                atr=round(atr, 3),
+            )
+            
+            # ────────────────────────────────────────────────────────────────
+            # Stage-A Instrumentation
+            # ────────────────────────────────────────────────────────────────
+            _session_id = _get_session_id()
+            
+            return TradingSignal(
+                symbol=symbol,
+                signal_type=signal_type,
+                strength=_strength,
+                entry_price=price,
+                stop_loss=stop_loss,
+                take_profit=take_profit,
+                position_size=0,  # Sized by risk manager
+                reasoning={
+                    'strategy': 'orb_contraction_rvol',
+                    'breakout_type': breakout_type,
+                    'orb_high': orb_high,
+                    'orb_low': orb_low,
+                    'orb_range': orb_range,
+                    'contraction_pct': contraction_pct,
+                    'volume_ratio': volume_ratio,
+                    'atr': atr,
+                    'atr_mult': stop_mult,
+                    'stop_distance': stop_distance,
+                    # Market context
+                    'market_context_regime': _mc_regime,
+                    'market_context_sector': _mc_sector,
+                    'market_context_time_of_day': _mc_time_of_day,
+                    # ORB-specific
+                    'is_orb': True,
+                    'is_primary_symbol': is_primary,
+                    'orb_size_multiplier': cfg.ORB_SIZE_MULTIPLIER,
+                    'flatten_by_hour': cfg.ORB_FLATTEN_BY_HOUR,
+                    # Stage-A instrumentation
+                    'session_id': _session_id,
+                    'setup_type': f"orb_{breakout_type}",
+                },
+                confidence=_confidence,
+            )
+            
+        except Exception as e:
+            self._log_decision(market_data, "error", "exception", err=str(e))
+            logger.debug(f"ORBContractionRVOLStrategy error for {symbol}: {e}")
             return None
