@@ -603,6 +603,11 @@ async def start_trading():
         # Engine may run on a background thread/loop; force WS broadcasts
         # back onto the FastAPI loop that owns WebSocket objects.
         trading_engine._ws_broadcast_loop = main_loop
+        
+        # v-fix-loop-safety-2026-09-10: Set db_logger owner loop so cross-loop
+        # snapshot writes/reads route back to this (FastAPI) loop.
+        if hasattr(trading_engine, 'db_logger') and trading_engine.db_logger is not None:
+            trading_engine.db_logger.set_owner_loop(main_loop)
 
         # Background task to process commentary broadcasts
         async def commentary_broadcaster():

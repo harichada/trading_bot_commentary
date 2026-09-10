@@ -809,3 +809,135 @@ class TestSnapshotInsertIsoString:
         # Original data preserved
         assert params["symbol"] == "NVDA"
         assert params["action"] == "signal_buy"
+
+
+class TestSafeJsonDecode:
+    """v-fix-json-decode-2026-09-10: regression test for JSON decode with asyncpg.
+    
+    asyncpg/SQLAlchemy returns JSONB columns as Python dicts directly. The old
+    code called json.loads() on these dicts, causing:
+    "the JSON object must be str, bytes or bytearray, not dict"
+    
+    _safe_json_decode handles both pre-deserialized dicts and JSON strings.
+    """
+
+    def test_dict_passthrough(self):
+        """_safe_json_decode returns dicts as-is without calling json.loads."""
+        from data_providers.db_logger import _safe_json_decode
+        
+        test_dict = {"price": 123.45, "rsi": 0.75, "nested": {"a": 1}}
+        result = _safe_json_decode(test_dict)
+        
+        assert result is test_dict  # Same object, not a copy
+        assert result["price"] == 123.45
+        assert result["nested"]["a"] == 1
+
+    def test_list_passthrough(self):
+        """_safe_json_decode returns lists as-is."""
+        from data_providers.db_logger import _safe_json_decode
+        
+        test_list = [1, 2, {"key": "value"}]
+        result = _safe_json_decode(test_list)
+        
+        assert result is test_list
+
+    def test_json_string_parsed(self):
+        """_safe_json_decode parses JSON strings correctly."""
+        from data_providers.db_logger import _safe_json_decode
+        
+        json_str = '{"price": 456.78, "volume": 1000}'
+        result = _safe_json_decode(json_str)
+        
+        assert isinstance(result, dict)
+        assert result["price"] == 456.78
+        assert result["volume"] == 1000
+
+    def test_json_bytes_parsed(self):
+        """_safe_json_decode parses JSON bytes correctly."""
+        from data_providers.db_logger import _safe_json_decode
+        
+        json_bytes = b'{"symbol": "TSLA", "count": 42}'
+        result = _safe_json_decode(json_bytes)
+        
+        assert isinstance(result, dict)
+        assert result["symbol"] == "TSLA"
+
+    def test_none_returns_empty_dict(self):
+        """_safe_json_decode returns {} for None."""
+        from data_providers.db_logger import _safe_json_decode
+        
+        result = _safe_json_decode(None)
+        
+        assert result == {}
+
+    def test_invalid_json_returns_empty_dict(self):
+        """_safe_json_decode returns {} for invalid JSON strings."""
+        from data_providers.db_logger import _safe_json_decode
+        
+        result = _safe_json_decode("not valid json {")
+        
+        assert result == {}
+
+    def test_empty_string_returns_empty_dict(self):
+        """_safe_json_decode returns {} for empty string."""
+        from data_providers.db_logger import _safe_json_decode
+        
+        result = _safe_json_decode("")
+        
+        assert result == {}
+
+    def test_simulated_asyncpg_jsonb_column(self):
+        """Simulate the actual bug scenario: asyncpg returns dict for JSONB.
+        
+        This is the key regression test. When asyncpg returns a JSONB column,
+        it's already a dict. The old code would call json.loads(dict) and fail.
+        """
+        from data_providers.db_logger import _safe_json_decode
+        
+        # Simulated asyncpg JSONB column value (already deserialized)
+        asyncpg_jsonb_value = {
+            "price": 150.25,
+            "returns_1": 0.02,
+            "rsi": 0.65,
+            "macd": 0.001,
+        }
+        
+        # This should NOT raise "JSON object must be str, bytes..."
+        result = _safe_json_decode(asyncpg_jsonb_value)
+        
+        assert isinstance(result, dict)
+        assert result["price"] == 150.25
+
+
+class TestDbLoggerLoopSafety:
+    """v-fix-loop-safety-2026-09-10: test loop ownership tracking.
+    
+    Verifies that DbLogger tracks its owner loop and can detect when
+    operations are called from a different loop.
+    """
+
+    def test_set_owner_loop(self):
+        """set_owner_loop captures the provided loop."""
+        from data_providers.db_logger import DbLogger
+        from unittest.mock import MagicMock
+        
+        db_logger = DbLogger.__new__(DbLogger)
+        db_logger._owner_loop = None
+        db_logger._enabled = True
+        db_logger._engine = MagicMock()
+        
+        mock_loop = MagicMock()
+        db_logger.set_owner_loop(mock_loop)
+        
+        assert db_logger._owner_loop is mock_loop
+
+    def test_init_has_no_owner_loop(self):
+        """DbLogger.__init__ starts with no owner loop (set later at startup)."""
+        from data_providers.db_logger import DbLogger
+        from unittest.mock import patch
+        
+        # Mock create_async_engine to avoid DB connection
+        with patch('data_providers.db_logger.create_async_engine'):
+            db_logger = DbLogger(dsn="postgresql+asyncpg://test:test@localhost/test")
+        
+        assert db_logger._owner_loop is None
