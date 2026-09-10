@@ -7164,6 +7164,59 @@ class TradingEngineWithCommentary:
             # External positions are NEVER auto-managed
             return False, ""
 
+        # ────────────────────────────────────────────────────────────────────
+        # v-day-trade-flatten-hour-2026-09-10: hard EOD flatten for day-trade
+        # momentum positions. When local ET hour >= DAY_TRADE_FLATTEN_HOUR,
+        # force full exit. This prevents overnight gap risk on intraday-only
+        # positions. Uses same confirmation path as other risk exits.
+        # ────────────────────────────────────────────────────────────────────
+        _reasoning = getattr(position, 'reasoning', {}) or {}
+        _is_day_trade = _reasoning.get('is_day_trade', False)
+        if _is_day_trade:
+            try:
+                from zoneinfo import ZoneInfo
+                from core.config import Config as _CfgFlatten
+                _cfg_flatten = _CfgFlatten()
+                _flatten_hour = _reasoning.get('flatten_hour', _cfg_flatten.DAY_TRADE_FLATTEN_HOUR)
+                _et_now = datetime.now(ZoneInfo("America/New_York"))
+                _et_hour = _et_now.hour
+                _et_minute = _et_now.minute
+                if _et_hour >= _flatten_hour:
+                    self._audit(
+                        "day_trade_flatten", position.symbol, "exit",
+                        "flatten_hour_reached",
+                        flatten_hour=_flatten_hour,
+                        et_now=_et_now.strftime("%H:%M"),
+                        et_hour=_et_hour,
+                        strategy=_reasoning.get('strategy', 'day_trade_momentum'),
+                        entry_pattern=_reasoning.get('entry_pattern', 'unknown'),
+                    )
+                    self.commentary.add_commentary(TradingCommentary(
+                        timestamp=datetime.now(),
+                        type=CommentaryType.RISK_ASSESSMENT,
+                        symbol=position.symbol,
+                        title=f"🔔 Day-Trade Flatten Hour",
+                        message=(
+                            f"Day-trade position {position.symbol} must close — "
+                            f"flatten hour {_flatten_hour}:00 ET reached "
+                            f"(current: {_et_now.strftime('%H:%M')} ET). "
+                            f"Avoiding overnight gap risk."
+                        ),
+                        data={
+                            'flatten_hour': _flatten_hour,
+                            'et_now': _et_now.strftime('%H:%M'),
+                            'current_price': current_price,
+                            'unrealized_pnl': getattr(position, 'unrealized_pnl', 0),
+                        },
+                        importance=9
+                    ))
+                    return True, "day_trade_flatten_hour"
+            except Exception as _flatten_exc:
+                logger.warning(
+                    "day_trade_flatten check failed for %s: %s",
+                    position.symbol, _flatten_exc
+                )
+
         # Check if stop loss / take profit are hit based on position side.
         # Both use the same simple price comparison — no indicator logic.
         # The dynamic exit manager below still runs for softer/partial exits
