@@ -2111,7 +2111,26 @@ class TradingEngineWithCommentary:
                         # at the bottom of this loop swallowed it silently,
                         # so the sweep path's Position-creation never ran.
                         # Hoist the assignment to the top of the branch.
-                        signal = order_data['signal']
+                        #
+                        # v-guard-missing-signal-2026-09-10: close orders
+                        # (e.g. day_trade flatten fills) don't carry a
+                        # 'signal' key — they only have symbol/type/quantity.
+                        # Use .get() to avoid KeyError spam on FILLED closes.
+                        signal = order_data.get('signal')
+                        
+                        if signal is None:
+                            # Close order without signal metadata — just
+                            # clean up the pending order and log success.
+                            symbol = order_data.get('symbol', 'UNKNOWN')
+                            logger.info(
+                                "close_order_filled order_id=%s symbol=%s "
+                                "(no signal metadata, skipping position creation)",
+                                order_id, symbol,
+                            )
+                            self.pending_orders.pop(order_id, None)
+                            self.order_id_to_symbol.pop(order_id, None)
+                            continue
+                        
                         # Get fill price
                         fill_price = signal.entry_price  # Default
                         if 'orderActivityCollection' in order_info:
@@ -2120,7 +2139,7 @@ class TradingEngineWithCommentary:
                                     legs = activity.get('executionLegs', [])
                                     if legs:
                                         fill_price = legs[0].get('price', signal.entry_price)
-                                        expected = order_data['signal'].entry_price
+                                        expected = signal.entry_price
                                         slippage = abs(fill_price - expected) / expected
                                         self.performance_metrics['slippage'].append(slippage)
                         # v-sweep-skip-if-already-managed-2026-05-08: the
