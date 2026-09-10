@@ -513,7 +513,147 @@ news:
 
 ---
 
-## 10. Appendix: FSM Exit States
+## 10. Day-Trade Momentum Desk (v-day-trade-momentum-desk-2026-09-10)
+
+A supervised intraday momentum lane for Yahoo day_gainers/losers/most-active
+movers. This desk operates differently from the existing mean-reversion + news
+strategies — it's designed to take profitable intraday trades on liquid movers
+without getting frozen behind stacked skip gates.
+
+### How It Differs from Mean-Rev + News Freeze
+
+| Aspect | Mean-Rev + News | Day-Trade Momentum |
+|--------|-----------------|-------------------|
+| **Market context (risk_off)** | Hard block | **Size reduction** (0.25x) |
+| **Market context (opening_30)** | Hard block | **Size reduction** (0.5x) |
+| **News requirement** | Required (fresh articles) | **Optional** (confirmation/size bump) |
+| **Quality filter** | SMA50 + RS vs SPY | **Relaxed** for movers (price/vol only) |
+| **Entry logic** | RSI oversold + BB | RS vs SPY + volume + pattern |
+| **Position size** | Full (1.0x) | Smaller (0.5x default) |
+| **Holding period** | Swing (hours to days) | Intraday (flatten by EOD) |
+
+### Enable / Disable
+
+```yaml
+trading:
+  enable_day_trade_momentum: true   # Master switch (default True)
+  enable_mover_quality_relax: true  # Bypass SMA50/RS for movers (default True)
+  day_trade_size_multiplier: 0.5    # Position size vs swing (default 0.5)
+  day_trade_flatten_hour: 15        # ET hour to flatten (default 15 = 3 PM)
+```
+
+### Entry Logic (Like a Human Scalper)
+
+1. **Relative Strength vs SPY**: Symbol must be outperforming SPY on the day.
+   Minimum delta: `MOMENTUM_MIN_RS_VS_SPY` (default +0.5%)
+
+2. **Volume Surge**: Current bar volume must be at least `MOMENTUM_MIN_VOLUME_RATIO`
+   (default 1.5x) the 20-bar average.
+
+3. **Entry Pattern** (one of):
+   - **Breakout**: Price > 20-bar high, ADX > 20, not chasing (< 3% above)
+   - **Pullback**: RSI 40-60, price within 2% of SMA20, MACD bullish
+   - **Continuation**: RSI 55-75, ADX > 25, MACD bullish, price > SMA20
+
+4. **Stop/Target**: ATR-based, tighter than swing (1.5x ATR stop, 2:1 R:R target)
+
+5. **Time Stop**: Flatten by `DAY_TRADE_FLATTEN_HOUR` (default 3 PM ET)
+
+### Market Context Gates (Size, Not Freeze)
+
+For the momentum lane, market context gates REDUCE size instead of hard-blocking:
+
+| Condition | Action | Multiplier |
+|-----------|--------|------------|
+| `risk_off` (SPY down, VIX up) | **Reduce size** | `MOMENTUM_RISK_OFF_SIZE_MULT` (0.25) |
+| `opening_30` (first 30 min) | **Reduce size** | `MOMENTUM_OPENING_30_SIZE_MULT` (0.5) |
+| **Extreme** (SPY ≤ -1.5% AND VIX +15%) | **Hard block** | N/A |
+
+This lets the desk take high-quality setups even in adverse conditions, just smaller.
+The hard block only fires in extreme panic conditions.
+
+### Mover Universe / Quality Bypass
+
+Symbols from Yahoo day_gainers/day_losers/most_active bypass the standard quality
+filter (SMA50 + RS). They still respect:
+
+- Leveraged ETF blocklist (TQQQ, SOXL, etc.) — always blocked
+- `MIN_MOVER_PRICE` ($5 default) — no penny stocks
+- `MIN_MOVER_VOLUME` (500k default) — liquidity floor
+- Spread filter (1% max) — no illiquid names
+
+Rationale: Day-gainers ARE the momentum names. Requiring them to also be above
+SMA50 with positive 10-day RS is circular — they're moving BECAUSE something
+changed today. Quality-for-swing is wrong for intraday momentum.
+
+### News Lane Interaction
+
+The momentum lane does **NOT** require fresh news articles. News is:
+- Optional confirmation (can bump signal strength)
+- Not a veto gate (unlike the news strategy)
+
+This prevents the `insufficient_news` / `zero_fresh_articles_hard_veto` pattern
+that kills near-misses like CHYM.
+
+### Position Sizing
+
+Day-trade positions are sized smaller than swing via `DAY_TRADE_SIZE_MULTIPLIER`:
+
+```
+final_size = base_kelly_size * day_trade_mult * market_context_mult * live_mult
+```
+
+Default: 0.5x base size, further reduced to 0.125x in risk_off (0.5 × 0.25).
+
+### Observability
+
+Every decision logs:
+- `strategy_id`: `day_trade_momentum`
+- `entry_pattern`: `breakout`, `pullback`, or `continuation`
+- `rs_vs_spy`: Relative strength delta
+- `mc_size_mult`: Market context size multiplier applied
+- `regime` / `time_of_day`: Market context state
+
+### Risk Remaining
+
+- **Intraday gap risk**: Eliminated by EOD flatten
+- **Extreme drawdown**: Hard block at SPY ≤ -1.5% AND VIX +15%
+- **Overnight risk**: None (positions close by 3 PM default)
+- **Concentration**: Still respects `MAX_POSITIONS`
+
+### Config Reference
+
+```yaml
+trading:
+  # Master switches
+  enable_day_trade_momentum: true
+  enable_mover_quality_relax: true
+  
+  # Quality floors (movers bypass SMA50/RS but not these)
+  min_mover_price: 5.0          # $5 floor
+  min_mover_volume: 500000      # 500k volume floor
+  
+  # Entry gates
+  momentum_min_rs_vs_spy: 0.5   # +0.5% vs SPY required
+  momentum_min_volume_ratio: 1.5 # 1.5x average volume
+  momentum_news_optional: true   # News NOT required
+  
+  # Sizing
+  day_trade_size_multiplier: 0.5  # Half-size vs swing
+  momentum_risk_off_size_mult: 0.25  # Quarter in risk_off
+  momentum_opening_30_size_mult: 0.5  # Half in first 30 min
+  
+  # Hard block thresholds
+  momentum_extreme_block_spy_pct: -1.5  # SPY down 1.5%+
+  momentum_extreme_block_vix_spike: 15.0 # VIX up 15%+
+  
+  # Time management
+  day_trade_flatten_hour: 15    # Flatten by 3 PM ET
+```
+
+---
+
+## 11. Appendix: FSM Exit States
 
 ```
                     ┌──────────────────────────────────────────┐

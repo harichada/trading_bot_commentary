@@ -275,6 +275,29 @@ class RiskManagerWithCommentary:
                 except (TypeError, ValueError):
                     pass
 
+        # v-day-trade-momentum-desk-2026-09-10: apply day-trade size multiplier
+        # for positions from the day-trade momentum strategy. This keeps day-
+        # trade positions smaller than swing positions to manage intraday
+        # portfolio heat. Applied AFTER news_gate but BEFORE live_mult.
+        if signal.reasoning:
+            _is_day_trade = signal.reasoning.get('is_day_trade', False)
+            _dt_mult = signal.reasoning.get('day_trade_size_multiplier')
+            if _is_day_trade and _dt_mult is not None:
+                try:
+                    _dt_mult = float(_dt_mult)
+                    if 0.1 <= _dt_mult <= 1.0:
+                        old_size = position_size
+                        position_size = max(1, int(position_size * _dt_mult))
+                        logger.info(
+                            "day_trade_size_multiplier symbol=%s mult=%.2f "
+                            "strategy=%s old=%d new=%d",
+                            signal.symbol, _dt_mult,
+                            strategy_name or 'day_trade_momentum',
+                            old_size, position_size,
+                        )
+                except (TypeError, ValueError):
+                    pass
+
         # v-live-launch-safety-dial-2026-05-23: global live-launch dial,
         # composed AFTER per-strategy multipliers. Final sizing =
         # base * kelly * strategy_mult * live_mult. Default 1.0 (no

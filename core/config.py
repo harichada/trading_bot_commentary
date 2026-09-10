@@ -1470,6 +1470,192 @@ class Config:
         return self.manager.get('trading.risk_per_trade_pct', 0.015)
 
     # ──────────────────────────────────────────────────────────────────
+    # v-day-trade-momentum-desk-2026-09-10: supervised day-trade momentum
+    # for Yahoo day_gainers/losers/most-active movers.
+    #
+    # Operator request: take profitable intraday trades on liquid movers
+    # without sitting frozen behind stacked skip gates. This desk is
+    # separate from the existing mean-rev + news strategies.
+    # ──────────────────────────────────────────────────────────────────
+
+    @property
+    def ENABLE_DAY_TRADE_MOMENTUM(self) -> bool:
+        """Enable the day-trade momentum strategy lane.
+        
+        When True, the DayTradeMomentumStrategy is activated for symbols
+        flagged as 'movers' (Yahoo day_gainers/losers/most-active + watchlist).
+        Entry logic: relative strength vs SPY, volume surge, pullback-or-
+        breakout confirmation, defined ATR stop, trail/time stop.
+        
+        Size is smaller than swing (via DAY_TRADE_SIZE_MULTIPLIER), respects
+        max_positions. Closes supervised unless TRADING_PROFILE=autonomous_live.
+        
+        Default True. Set trading.enable_day_trade_momentum: false to disable.
+        """
+        env_val = os.getenv("ENABLE_DAY_TRADE_MOMENTUM")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.enable_day_trade_momentum', True))
+
+    @property
+    def ENABLE_MOVER_QUALITY_RELAX(self) -> bool:
+        """Relax quality filters for mover-sourced symbols.
+        
+        When True, symbols from Yahoo day_gainers/day_losers/most_active
+        bypass the SMA50/RS quality filters. They still respect:
+          - Leveraged ETF blocklist (hard block)
+          - MIN_MOVER_PRICE floor ($5 default)
+          - MIN_MOVER_VOLUME floor (500k default)
+          - Spread filter (1% max)
+        
+        Rationale: day-gainers ARE the momentum names; requiring them to
+        also be above SMA50 with positive RS is circular — they're moving
+        BECAUSE something changed today. Quality-for-swing is wrong for
+        intraday momentum.
+        
+        Default True. Set trading.enable_mover_quality_relax: false to
+        apply full quality filters to movers.
+        """
+        env_val = os.getenv("ENABLE_MOVER_QUALITY_RELAX")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.enable_mover_quality_relax', True))
+
+    @property
+    def MIN_MOVER_PRICE(self) -> float:
+        """Minimum price floor for mover-sourced symbols.
+        
+        Even with quality relax, reject sub-$5 names to avoid illiquid
+        penny stocks that appear in Yahoo screeners. The bot's ATR-based
+        sizing breaks down below $5 (1.5×ATR can be 20%+ of price).
+        
+        Default 5.0. Set trading.min_mover_price to adjust.
+        """
+        return float(self.manager.get('trading.min_mover_price', 5.0))
+
+    @property
+    def MIN_MOVER_VOLUME(self) -> int:
+        """Minimum volume floor for mover-sourced symbols.
+        
+        Movers with <500k daily volume are too thin for intraday trades.
+        The bot's typical position ($5-15k notional) needs liquidity to
+        enter/exit without moving the tape.
+        
+        Default 500000. Set trading.min_mover_volume to adjust.
+        """
+        return int(self.manager.get('trading.min_mover_volume', 500000))
+
+    @property
+    def DAY_TRADE_SIZE_MULTIPLIER(self) -> float:
+        """Size multiplier for day-trade momentum entries.
+        
+        Applied on top of Kelly sizing. Day trades have shorter holding
+        periods and more frequent trades; smaller size per trade keeps
+        the portfolio heat manageable.
+        
+        Default 0.5 (half-size vs swing). Set trading.day_trade_size_multiplier
+        to adjust.
+        """
+        return float(self.manager.get('trading.day_trade_size_multiplier', 0.5))
+
+    @property
+    def DAY_TRADE_FLATTEN_HOUR(self) -> int:
+        """Hour (ET) by which day-trade positions should be flattened.
+        
+        Day-trade momentum is intraday by definition. Positions entered
+        via this lane should close by EOD to avoid overnight gap risk.
+        The exit manager will start trailing more aggressively after
+        this hour and force-close by LATE_ENTRY_CUTOFF.
+        
+        Default 15 (3 PM ET). Set trading.day_trade_flatten_hour to adjust.
+        """
+        return int(self.manager.get('trading.day_trade_flatten_hour', 15))
+
+    @property
+    def MOMENTUM_RISK_OFF_SIZE_MULT(self) -> float:
+        """Size multiplier for momentum lane when market context is risk_off.
+        
+        v-market-context-size-not-freeze-2026-09-10: instead of hard-blocking
+        momentum longs on risk_off, reduce size. This lets the desk take
+        high-quality setups even in adverse conditions, just smaller.
+        
+        Default 0.25 (quarter-size). Set trading.momentum_risk_off_size_mult.
+        """
+        return float(self.manager.get('trading.momentum_risk_off_size_mult', 0.25))
+
+    @property
+    def MOMENTUM_OPENING_30_SIZE_MULT(self) -> float:
+        """Size multiplier for momentum lane during opening 30 minutes.
+        
+        Opening 30 is volatile chop. For momentum/breakout, we reduce size
+        rather than blocking entirely — first 30 min breakouts CAN be valid,
+        just riskier.
+        
+        Default 0.5 (half-size). Set trading.momentum_opening_30_size_mult.
+        """
+        return float(self.manager.get('trading.momentum_opening_30_size_mult', 0.5))
+
+    @property
+    def MOMENTUM_EXTREME_BLOCK_SPY_PCT(self) -> float:
+        """SPY down % threshold for hard-blocking momentum longs.
+        
+        When SPY is down MORE than this AND VIX spikes (see below), the
+        desk hard-blocks new longs entirely. This is the circuit breaker
+        for extreme risk-off conditions.
+        
+        Default -1.5 (SPY down 1.5%+). Set trading.momentum_extreme_block_spy_pct.
+        """
+        return float(self.manager.get('trading.momentum_extreme_block_spy_pct', -1.5))
+
+    @property
+    def MOMENTUM_EXTREME_BLOCK_VIX_SPIKE(self) -> float:
+        """VIX spike % threshold for hard-blocking momentum longs.
+        
+        When VIX is UP more than this AND SPY is down past the threshold,
+        hard-block new momentum longs. This catches panic days.
+        
+        Default 15.0 (VIX up 15%+). Set trading.momentum_extreme_block_vix_spike.
+        """
+        return float(self.manager.get('trading.momentum_extreme_block_vix_spike', 15.0))
+
+    @property
+    def MOMENTUM_MIN_RS_VS_SPY(self) -> float:
+        """Minimum relative strength vs SPY for momentum entries.
+        
+        Momentum entries require the symbol to be outperforming SPY on the
+        day. This is the minimum delta (symbol_change_pct - spy_change_pct).
+        
+        Default 0.5 (symbol at least 0.5% above SPY). Set trading.momentum_min_rs_vs_spy.
+        """
+        return float(self.manager.get('trading.momentum_min_rs_vs_spy', 0.5))
+
+    @property
+    def MOMENTUM_MIN_VOLUME_RATIO(self) -> float:
+        """Minimum volume ratio (vs 20-bar avg) for momentum entries.
+        
+        Volume surge confirms institutional interest. Breakouts without
+        volume are more likely to fail.
+        
+        Default 1.5 (50% above average). Set trading.momentum_min_volume_ratio.
+        """
+        return float(self.manager.get('trading.momentum_min_volume_ratio', 1.5))
+
+    @property
+    def MOMENTUM_NEWS_OPTIONAL(self) -> bool:
+        """Whether news is optional for momentum entries.
+        
+        When True (default), the momentum lane does NOT require fresh news
+        articles. News is an optional confirmation that can bump size, not
+        a gate that vetoes entries.
+        
+        This differs from the news strategy which requires fresh articles.
+        Momentum is price-action-driven, not news-driven.
+        
+        Default True. Set trading.momentum_news_optional: false to require news.
+        """
+        return bool(self.manager.get('trading.momentum_news_optional', True))
+
+    # ──────────────────────────────────────────────────────────────────
     # v-feature-snapshot-config-2026-09-09: decision snapshot feature flags.
     # Moved from module constants in core/decision_snapshot.py to Config
     # for runtime configurability via env vars or Config.yaml.

@@ -1303,3 +1303,311 @@ class MomentumStrategyWithCommentary(TradingStrategyWithCommentary):
         self._log_decision(market_data, "skip", "no_setup",
                            macd=round(macd, 4), rsi=round(rsi, 2), adx=round(adx, 2))
         return None
+
+
+class DayTradeMomentumStrategy(TradingStrategyWithCommentary):
+    """Day-trade momentum strategy for intraday movers.
+    
+    v-day-trade-momentum-desk-2026-09-10: supervised day-trade momentum
+    for Yahoo day_gainers/losers/most-active movers.
+    
+    Entry logic (like a human scalper/day trader):
+      1. Relative strength vs SPY (symbol outperforming SPY on the day)
+      2. Volume surge (volume_ratio >= 1.5x)
+      3. Pullback-or-breakout confirmation:
+         - Pullback: RSI 40-60 after move, price near VWAP/EMA support
+         - Breakout: Price above 20-bar high with volume
+      4. Defined ATR stop (1.5-2x ATR, tighter than swing)
+      5. Defined target (2-3x ATR) with trail option
+      6. Time stop: flatten by late_entry / EOD
+    
+    Market context:
+      - risk_off: REDUCE SIZE (0.25x), don't hard-block
+      - opening_30: REDUCE SIZE (0.5x), don't hard-block  
+      - extreme conditions (SPY <= -1.5% AND VIX spike): HARD BLOCK
+    
+    News: OPTIONAL confirmation / size bump, NOT required
+    """
+    
+    name = "day_trade_momentum"
+    
+    async def generate_signal_with_commentary(self, market_data) -> Optional[TradingSignal]:
+        """Generate day-trade momentum signal."""
+        from core.config import Config as _Cfg
+        cfg = _Cfg()
+        
+        if not cfg.ENABLE_DAY_TRADE_MOMENTUM:
+            return None
+        
+        indicators = market_data.indicators or {}
+        symbol = market_data.symbol
+        
+        try:
+            rsi = float(indicators.get('rsi', 50))
+            volume_ratio = float(indicators.get('volume_ratio', 1.0))
+            adx = float(indicators.get('adx', 0))
+            atr = float(indicators.get('atr', market_data.close * 0.02))
+            high_20 = float(indicators.get('high_20', 0))
+            sma_20 = float(indicators.get('sma_20', 0))
+            macd = float(indicators.get('macd', 0))
+            macd_signal = float(indicators.get('macd_signal', 0))
+            
+            if np.isnan(rsi) or np.isnan(volume_ratio) or high_20 <= 0:
+                self._log_decision(market_data, "skip", "invalid_indicators",
+                                   rsi=rsi, volume_ratio=volume_ratio, high_20=high_20)
+                return None
+            
+            # ────────────────────────────────────────────────────────────────
+            # Gate 1: Market Context Check (size-based, not hard-block)
+            # ────────────────────────────────────────────────────────────────
+            _mc_size_mult = 1.0
+            _mc_regime = None
+            _mc_time_of_day = None
+            _mc_spy_change = 0.0
+            _mc_vix_change = 0.0
+            _mc_sector = None
+            _mc_reason = ""
+            
+            try:
+                from core.market_context import read_market_context
+                _mc = read_market_context(symbol)
+                _mc_regime = _mc.regime
+                _mc_time_of_day = _mc.time_of_day
+                _mc_spy_change = _mc.spy_change_pct
+                _mc_vix_change = _mc.vix_change_pct
+                _mc_sector = _mc.sector_etf
+                _mc_reason = _mc.reason
+                
+                # Extreme condition: HARD BLOCK
+                _extreme_spy = cfg.MOMENTUM_EXTREME_BLOCK_SPY_PCT
+                _extreme_vix = cfg.MOMENTUM_EXTREME_BLOCK_VIX_SPIKE
+                if _mc_spy_change <= _extreme_spy and _mc_vix_change >= _extreme_vix:
+                    self._log_decision(
+                        market_data, "skip", "extreme_risk_hard_block",
+                        regime=_mc_regime,
+                        spy_change=round(_mc_spy_change, 2),
+                        vix_change=round(_mc_vix_change, 2),
+                        threshold_spy=_extreme_spy,
+                        threshold_vix=_extreme_vix,
+                    )
+                    self.commentary.add_commentary(TradingCommentary(
+                        timestamp=datetime.now(),
+                        type=CommentaryType.RISK_ASSESSMENT,
+                        symbol=symbol,
+                        title=f"⛔ Day-Trade Momentum BLOCKED — Extreme Risk",
+                        message=(
+                            f"SPY {_mc_spy_change:+.2f}% AND VIX +{_mc_vix_change:.1f}% "
+                            f"exceeds hard-block thresholds ({_extreme_spy}% / +{_extreme_vix}%). "
+                            f"This is a circuit-breaker condition; no new momentum longs."
+                        ),
+                        importance=9,
+                    ))
+                    return None
+                
+                # risk_off: reduce size, don't hard-block
+                if _mc_regime == "risk_off":
+                    _mc_size_mult = cfg.MOMENTUM_RISK_OFF_SIZE_MULT
+                    self._log_decision(
+                        market_data, "size_reduced", "risk_off_not_blocked",
+                        regime=_mc_regime,
+                        size_mult=_mc_size_mult,
+                        spy_change=round(_mc_spy_change, 2),
+                    )
+                
+                # opening_30: reduce size, don't hard-block
+                if _mc_time_of_day == "opening_30":
+                    _opening_mult = cfg.MOMENTUM_OPENING_30_SIZE_MULT
+                    _mc_size_mult = min(_mc_size_mult, _opening_mult)
+                    self._log_decision(
+                        market_data, "size_reduced", "opening_30_not_blocked",
+                        time_of_day=_mc_time_of_day,
+                        size_mult=_mc_size_mult,
+                    )
+                    
+            except Exception as _mc_exc:
+                logger.debug("day_trade_momentum: market_context failed: %s", _mc_exc)
+            
+            # ────────────────────────────────────────────────────────────────
+            # Gate 2: Relative Strength vs SPY
+            # ────────────────────────────────────────────────────────────────
+            # Symbol must be outperforming SPY on the day
+            _symbol_change = float(indicators.get('day_change_pct', 0))
+            if _symbol_change == 0:
+                # Fallback: estimate from price vs open
+                _bar_open = float(getattr(market_data, 'open', market_data.close) or market_data.close)
+                if _bar_open > 0:
+                    _symbol_change = ((market_data.close - _bar_open) / _bar_open) * 100
+            
+            _rs_vs_spy = _symbol_change - _mc_spy_change
+            _min_rs = cfg.MOMENTUM_MIN_RS_VS_SPY
+            
+            if _rs_vs_spy < _min_rs:
+                self._log_decision(
+                    market_data, "skip", "weak_relative_strength",
+                    symbol_change=round(_symbol_change, 2),
+                    spy_change=round(_mc_spy_change, 2),
+                    rs_vs_spy=round(_rs_vs_spy, 2),
+                    min_rs=_min_rs,
+                )
+                return None
+            
+            # ────────────────────────────────────────────────────────────────
+            # Gate 3: Volume Surge Confirmation
+            # ────────────────────────────────────────────────────────────────
+            _min_vol_ratio = cfg.MOMENTUM_MIN_VOLUME_RATIO
+            if volume_ratio < _min_vol_ratio:
+                self._log_decision(
+                    market_data, "skip", "insufficient_volume",
+                    volume_ratio=round(volume_ratio, 2),
+                    min_vol_ratio=_min_vol_ratio,
+                )
+                return None
+            
+            # ────────────────────────────────────────────────────────────────
+            # Gate 4: Entry Pattern (Pullback or Breakout)
+            # ────────────────────────────────────────────────────────────────
+            _entry_pattern = None
+            _entry_confidence = 0.0
+            
+            # Breakout pattern: price > 20-bar high, ADX > 20
+            if market_data.close > high_20 and adx > 20:
+                _breakout_dist_pct = ((market_data.close - high_20) / high_20) * 100
+                if _breakout_dist_pct < 3.0:  # Not chasing if <3% above
+                    _entry_pattern = "breakout"
+                    _entry_confidence = 0.70 + (adx / 100) * 0.2
+                    
+            # Pullback pattern: RSI 40-60, price near SMA20, MACD bullish
+            if _entry_pattern is None:
+                if (40 <= rsi <= 60 and
+                    sma_20 > 0 and
+                    abs((market_data.close - sma_20) / sma_20) < 0.02 and  # within 2% of SMA20
+                    macd > macd_signal):
+                    _entry_pattern = "pullback"
+                    _entry_confidence = 0.65 + (volume_ratio - 1.0) * 0.1
+            
+            # Continuation pattern: strong momentum (RSI 55-75, price trending)
+            if _entry_pattern is None:
+                if (55 <= rsi <= 75 and
+                    adx > 25 and
+                    macd > macd_signal and
+                    market_data.close > sma_20 if sma_20 > 0 else True):
+                    _entry_pattern = "continuation"
+                    _entry_confidence = 0.60 + (adx / 100) * 0.2
+            
+            if _entry_pattern is None:
+                self._log_decision(
+                    market_data, "skip", "no_entry_pattern",
+                    rsi=round(rsi, 2),
+                    adx=round(adx, 2),
+                    high_20=round(high_20, 2),
+                    close=round(market_data.close, 2),
+                    sma_20=round(sma_20, 2) if sma_20 > 0 else 0,
+                    macd=round(macd, 4),
+                    macd_signal=round(macd_signal, 4),
+                )
+                return None
+            
+            # ────────────────────────────────────────────────────────────────
+            # Calculate Stop/Target (ATR-based, tighter for day-trade)
+            # ────────────────────────────────────────────────────────────────
+            atr = _floored_atr(atr, market_data.close)
+            
+            # Day-trade uses tighter stops than swing (1.5x ATR vs 2.5x)
+            _atr_stop_mult = 1.5
+            _rr_ratio = 2.0  # 2:1 R:R for day trades
+            
+            stop_distance = _atr_stop_mult * atr
+            stop_loss = market_data.close - stop_distance
+            take_profit = market_data.close + (_rr_ratio * stop_distance)
+            
+            # ────────────────────────────────────────────────────────────────
+            # Calculate signal strength and confidence
+            # ────────────────────────────────────────────────────────────────
+            # Strength combines: RS vs SPY, volume surge, ADX
+            _strength = min(0.95, (
+                0.3 +  # base
+                min(0.25, _rs_vs_spy / 5.0) +  # RS contribution (up to +0.25 at 5% RS)
+                min(0.25, (volume_ratio - 1.0) / 2.0) +  # Volume contribution
+                min(0.15, adx / 100)  # ADX contribution
+            ))
+            
+            _confidence = min(0.85, _entry_confidence * (1.0 + _rs_vs_spy / 10.0))
+            
+            # ────────────────────────────────────────────────────────────────
+            # Emit commentary and signal
+            # ────────────────────────────────────────────────────────────────
+            self.commentary.add_commentary(TradingCommentary(
+                timestamp=datetime.now(),
+                type=CommentaryType.OPPORTUNITY,
+                symbol=symbol,
+                title=f"🚀 Day-Trade Momentum: {_entry_pattern.upper()}",
+                message=(
+                    f"Intraday momentum setup detected.\n"
+                    f"  Pattern: {_entry_pattern}\n"
+                    f"  RS vs SPY: {_rs_vs_spy:+.2f}%\n"
+                    f"  Volume: {volume_ratio:.1f}x average\n"
+                    f"  RSI: {rsi:.1f}  ADX: {adx:.1f}\n"
+                    f"  Market: {_mc_regime or 'unknown'} | {_mc_time_of_day or 'unknown'}\n"
+                    f"  Size mult: {_mc_size_mult:.2f}x"
+                ),
+                data={
+                    'pattern': _entry_pattern,
+                    'rs_vs_spy': _rs_vs_spy,
+                    'volume_ratio': volume_ratio,
+                    'rsi': rsi,
+                    'adx': adx,
+                    'market_regime': _mc_regime,
+                    'size_mult': _mc_size_mult,
+                },
+                confidence=_confidence,
+                importance=8,
+            ))
+            
+            self._log_decision(
+                market_data, "signal_buy", f"day_trade_{_entry_pattern}",
+                pattern=_entry_pattern,
+                rs_vs_spy=round(_rs_vs_spy, 2),
+                volume_ratio=round(volume_ratio, 2),
+                rsi=round(rsi, 2),
+                adx=round(adx, 2),
+                regime=_mc_regime,
+                time_of_day=_mc_time_of_day,
+                mc_size_mult=_mc_size_mult,
+                stop=round(stop_loss, 2),
+                target=round(take_profit, 2),
+                atr=round(atr, 3),
+            )
+            
+            return TradingSignal(
+                symbol=symbol,
+                signal_type=SignalType.BUY,
+                strength=_strength,
+                entry_price=market_data.close,
+                stop_loss=stop_loss,
+                take_profit=take_profit,
+                position_size=0,  # Sized by risk manager
+                reasoning={
+                    'strategy': 'day_trade_momentum',
+                    'entry_pattern': _entry_pattern,
+                    'rs_vs_spy': _rs_vs_spy,
+                    'volume_ratio': volume_ratio,
+                    'atr': atr,
+                    'atr_mult': _atr_stop_mult,
+                    'stop_distance': stop_distance,
+                    # Market context for sizing
+                    'market_context_conviction': _mc_size_mult,
+                    'market_context_regime': _mc_regime,
+                    'market_context_sector': _mc_sector,
+                    'market_context_time_of_day': _mc_time_of_day,
+                    # Day-trade specific
+                    'is_day_trade': True,
+                    'day_trade_size_multiplier': cfg.DAY_TRADE_SIZE_MULTIPLIER,
+                    'flatten_hour': cfg.DAY_TRADE_FLATTEN_HOUR,
+                },
+                confidence=_confidence,
+            )
+            
+        except Exception as e:
+            self._log_decision(market_data, "error", "exception", err=str(e))
+            logger.debug(f"DayTradeMomentumStrategy error for {symbol}: {e}")
+            return None

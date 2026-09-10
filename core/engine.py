@@ -41,7 +41,8 @@ from risk.manager import RiskManagerWithCommentary
 from risk.backtest import PerformanceAnalyzer
 from strategies.builtin import (BreakoutStrategyWithCommentary,
                                 MeanReversionStrategyWithCommentary,
-                                MomentumStrategyWithCommentary)
+                                MomentumStrategyWithCommentary,
+                                DayTradeMomentumStrategy)
 from strategies.news_strategy import FreeNewsSignalStrategy
 from data_providers.realtime import RealTimeDataProvider, DummyDataProvider
 from data_providers.schwab import SchwabDataProvider
@@ -316,6 +317,16 @@ class TradingEngineWithCommentary:
         if os.environ.get("ENABLE_MOMENTUM", "0") == "1":
             self.strategies.append(MomentumStrategyWithCommentary(self.commentary))
         self.strategies.append(FreeNewsSignalStrategy(self.commentary))
+        
+        # v-day-trade-momentum-desk-2026-09-10: supervised day-trade momentum
+        # for Yahoo day_gainers/losers/most-active movers. Entry logic is like
+        # a human scalper: RS vs SPY, volume surge, pullback/breakout confirmation.
+        # Market context gates are SIZE-BASED (reduce, don't hard-block) for this
+        # lane. News is OPTIONAL (confirmation/size bump, not a veto).
+        # Enabled by ENABLE_DAY_TRADE_MOMENTUM (default True).
+        if Config().ENABLE_DAY_TRADE_MOMENTUM:
+            self.strategies.append(DayTradeMomentumStrategy(self.commentary))
+            logger.info("day_trade_momentum: strategy enabled")
         
         # v-feature-snapshot-2026-09-09: wire engine ref on all strategies
         # so they can emit DecisionSnapshots via db_logger
