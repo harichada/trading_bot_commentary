@@ -7,12 +7,26 @@ A dark, kinetic, trust-forward trader co-pilot UI. Institutional quality, retail
 ## Quick Start
 
 ```bash
+# From monorepo root
 cd helm-copilot
 npm install
 npm run dev
 ```
 
-Open [http://localhost:3001](http://localhost:3001) in your browser.
+Opens at [http://localhost:3001](http://localhost:3001).
+
+**With a running bot** (typically `:9000`):
+```bash
+# Default wires to http://127.0.0.1:9000
+npm run dev
+```
+
+**Standalone demo** (no bot needed):
+```bash
+# Falls back to demo fixtures automatically
+npm run dev
+# → UI shows DEMO badge, simulated data
+```
 
 ## Configuration
 
@@ -67,26 +81,27 @@ Query param: `?token=<auth_token>` if authentication is required.
 ## Screens
 
 ### Live Pulse (`/`)
-Ranked decision/event stream showing the bot's analysis in real-time:
-- Signal BUY/SELL → **ACT** verdicts (cyan)
-- Skip → **WAIT** verdicts (amber)
-- Veto → **DO NOTHING** verdicts (gray)
+Ranked decision stream — 8-second glance design:
+- **ACT** (cyan) — signal_buy / signal_sell
+- **WAIT** (amber) — skip, conditions unclear
+- **PASS** (gray) — veto, blocked by risk guard
+
+Smooth stream-insert animation, as-of chips on every card.
 
 ### Decision Card (`/decision/:id`)
-Full detail view for a decision:
-- Verdict with confidence score
-- Thesis and entry details
-- Risk factors
-- News sources with tier ratings
-- Technical context (regime, RSI, volume)
+Full detail view — verdict + key numbers above the fold:
+- Hero banner: symbol, verdict badge, price, as-of timestamp
+- Metrics strip: Confidence / RSI / Volume / Sentiment
+- Thesis, risks, news sources with tier badges
+- Technical context (regime, VIX, strategy, gate)
 - UI-only actions: Paper Trade, Dismiss, Mute Symbol
 
 ### Portfolio Radar (`/radar`)
-Live positions grid:
-- Real-time P&L (from WebSocket or REST fallback)
-- Stop loss / take profit levels
-- Position mode (LIVE vs SIM)
-- Stale data indicators
+Positions grid with Live vs Simulated split:
+- Separate cards for LIVE (broker) and SIM (paper) positions
+- Readable P&L: price, dollar gain/loss, percent
+- Managed vs hands-off indicator (cyan border = bot-managed)
+- Stop/target levels, entry time
 
 ### Inbox (`/inbox`) — Stub
 Placeholder for future alerts and notifications.
@@ -114,11 +129,13 @@ The persistent **Trust Strip** at the bottom shows:
 
 ## Demo Mode
 
-When the API is unreachable, Helm automatically switches to demo mode with:
-- 3 sample decision cards (BUY/WAIT/VETO examples)
-- 2 sample positions
-- Sample market indices
-- All data clearly labeled as DEMO
+When the API is unreachable, Helm automatically switches to demo mode:
+- 3 sample decision cards (ACT-BUY / WAIT / PASS-VETO)
+- 2 sample positions with P&L
+- Sample market indices (SPY, DIA, QQQ, IWM, VIX)
+- **All data clearly labeled DEMO** — never shown as LIVE
+
+The UI degrades gracefully: connection banner appears, trust badges flip to DEMO/OFFLINE, and demo fixtures populate the screens.
 
 ## Project Structure
 

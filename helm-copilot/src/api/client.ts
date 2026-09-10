@@ -77,7 +77,29 @@ async function apiGet<T>(endpoint: string, timeout?: number): Promise<T> {
     )
   }
   
-  return response.json()
+  try {
+    const data = await response.json()
+    return data as T
+  } catch {
+    throw new ApiError('Invalid JSON response', response.status)
+  }
+}
+
+// Safe number extraction — handles NaN, null, undefined
+export function safeNum(val: unknown, fallback = 0): number {
+  if (typeof val === 'number' && Number.isFinite(val)) return val
+  if (typeof val === 'string') {
+    const parsed = parseFloat(val)
+    if (Number.isFinite(parsed)) return parsed
+  }
+  return fallback
+}
+
+// Safe string extraction
+export function safeStr(val: unknown, fallback = ''): string {
+  if (typeof val === 'string') return val
+  if (val == null) return fallback
+  return String(val)
 }
 
 // Track connectivity state

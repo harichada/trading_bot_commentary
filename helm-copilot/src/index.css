@@ -19,85 +19,153 @@
   body {
     @apply bg-helm-bg text-white;
     font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    letter-spacing: -0.01em;
+  }
+
+  /* Tighter heading hierarchy */
+  h1, h2, h3 {
+    letter-spacing: -0.02em;
   }
 
   /* Scrollbar styling */
   ::-webkit-scrollbar {
-    width: 8px;
-    height: 8px;
+    width: 6px;
+    height: 6px;
   }
 
   ::-webkit-scrollbar-track {
-    @apply bg-helm-bg;
+    @apply bg-transparent;
   }
 
   ::-webkit-scrollbar-thumb {
-    @apply bg-helm-border rounded-full;
+    @apply bg-helm-border/60 rounded-full;
   }
 
   ::-webkit-scrollbar-thumb:hover {
-    @apply bg-helm-muted;
+    @apply bg-helm-muted/60;
   }
 }
 
 @layer components {
-  /* Price flash animations */
-  .price-up {
-    @apply animate-flash-green;
-  }
-
-  .price-down {
-    @apply animate-flash-red;
-  }
-
-  /* Monospace numbers */
+  /* Monospace numbers — tighter, crisper */
   .mono-nums {
     font-family: 'JetBrains Mono', monospace;
     font-variant-numeric: tabular-nums;
+    letter-spacing: -0.02em;
   }
 
-  /* Trust signal badges */
+  /* Trust signal badges — refined */
   .trust-badge {
-    @apply inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium;
+    @apply inline-flex items-center gap-1.5 px-2 py-0.5 rounded-sm text-[10px] font-semibold uppercase tracking-wide;
   }
 
   .trust-live {
-    @apply bg-emerald-500/20 text-emerald-400 border border-emerald-500/30;
+    @apply bg-emerald-500/15 text-emerald-400 border border-emerald-500/25;
   }
 
   .trust-stale {
-    @apply bg-amber-500/20 text-amber-400 border border-amber-500/30;
+    @apply bg-amber-500/15 text-amber-400 border border-amber-500/25;
   }
 
   .trust-offline {
-    @apply bg-red-500/20 text-red-400 border border-red-500/30;
+    @apply bg-red-500/15 text-red-400 border border-red-500/25;
   }
 
   .trust-demo {
-    @apply bg-purple-500/20 text-purple-400 border border-purple-500/30;
+    @apply bg-purple-500/15 text-purple-400 border border-purple-500/25;
   }
 
-  /* Decision verdict badges */
+  /* Decision verdict badges — stronger visual weight */
   .verdict-act {
-    @apply bg-cyan-500/20 text-cyan-400 border border-cyan-500/30;
+    @apply bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 font-bold;
   }
 
   .verdict-wait {
-    @apply bg-amber-500/20 text-amber-400 border border-amber-500/30;
+    @apply bg-amber-500/15 text-amber-400 border border-amber-500/30 font-semibold;
   }
 
   .verdict-nothing {
-    @apply bg-zinc-500/20 text-zinc-400 border border-zinc-500/30;
+    @apply bg-zinc-600/20 text-zinc-400 border border-zinc-600/30 font-medium;
   }
 
-  /* Card hover effects */
+  /* Card hover effects — subtle lift */
   .card-interactive {
-    @apply transition-all duration-150 hover:bg-helm-elevated/50 hover:border-helm-border/80;
+    @apply transition-all duration-200 ease-out;
+    @apply hover:bg-helm-elevated/40 hover:border-helm-border/60;
+    @apply hover:shadow-lg hover:shadow-black/20;
   }
 
-  /* Skeleton loading */
+  /* Skeleton loading — smoother */
   .skeleton {
-    @apply animate-pulse bg-helm-border/50 rounded;
+    @apply animate-pulse bg-helm-border/40 rounded;
+  }
+
+  /* Stream insert animation — smoother slide */
+  .stream-insert {
+    animation: stream-insert 0.3s ease-out;
+  }
+
+  @keyframes stream-insert {
+    0% { 
+      opacity: 0; 
+      transform: translateY(-8px) scale(0.98);
+    }
+    100% { 
+      opacity: 1; 
+      transform: translateY(0) scale(1);
+    }
+  }
+
+  /* Price flash — micro-animation */
+  .price-flash-up {
+    animation: price-up 0.4s ease-out;
+  }
+
+  .price-flash-down {
+    animation: price-down 0.4s ease-out;
+  }
+
+  @keyframes price-up {
+    0%, 100% { background-color: transparent; }
+    20% { background-color: rgba(16, 185, 129, 0.25); }
+  }
+
+  @keyframes price-down {
+    0%, 100% { background-color: transparent; }
+    20% { background-color: rgba(239, 68, 68, 0.25); }
+  }
+
+  /* Empty state container */
+  .empty-state {
+    @apply py-16 px-6 text-center;
+  }
+
+  .empty-state-icon {
+    @apply w-12 h-12 mx-auto mb-4 text-zinc-600;
+  }
+
+  .empty-state-title {
+    @apply text-base font-medium text-zinc-400 mb-1;
+  }
+
+  .empty-state-subtitle {
+    @apply text-sm text-zinc-500;
+  }
+
+  /* As-of chip */
+  .as-of-chip {
+    @apply inline-flex items-center gap-1 px-1.5 py-0.5;
+    @apply text-[10px] text-zinc-500 bg-helm-bg/50 rounded;
+    @apply border border-helm-border/30;
+  }
+
+  /* Unmanaged/hands-off position indicator */
+  .position-unmanaged {
+    @apply opacity-70 border-l-2 border-l-zinc-600;
+  }
+
+  .position-managed {
+    @apply border-l-2 border-l-cyan-500/50;
   }
 }
 
@@ -107,20 +175,25 @@
     @apply bg-clip-text text-transparent bg-gradient-to-r from-cyan-400 to-cyan-600;
   }
 
-  /* Glow effects */
+  /* Subtle glow effects */
   .glow-cyan {
-    box-shadow: 0 0 20px rgba(6, 182, 212, 0.3);
+    box-shadow: 0 0 16px rgba(6, 182, 212, 0.2);
   }
 
   .glow-amber {
-    box-shadow: 0 0 20px rgba(245, 158, 11, 0.3);
+    box-shadow: 0 0 16px rgba(245, 158, 11, 0.2);
   }
 
-  /* Grid backgrounds */
+  /* Subtle grid backgrounds */
   .bg-grid {
     background-image: 
-      linear-gradient(rgba(42, 42, 56, 0.3) 1px, transparent 1px),
-      linear-gradient(90deg, rgba(42, 42, 56, 0.3) 1px, transparent 1px);
-    background-size: 20px 20px;
+      linear-gradient(rgba(42, 42, 56, 0.2) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(42, 42, 56, 0.2) 1px, transparent 1px);
+    background-size: 24px 24px;
+  }
+
+  /* Tighter line heights for data */
+  .leading-data {
+    line-height: 1.2;
   }
 }

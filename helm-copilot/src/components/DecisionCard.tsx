@@ -17,66 +17,71 @@ import {
   BookmarkPlus,
 } from 'lucide-react'
 import { Card, CardContent, CardHeader } from './ui/Card'
-import { Badge, DemoBadge } from './ui/Badge'
+import { Badge, DemoBadge, AsOfChip } from './ui/Badge'
 import { Button } from './ui/Button'
 import type { DecisionSnapshot } from '../api/types'
 import { DEMO_DECISION_CARDS } from '../fixtures/demo'
 
 function getVerdictInfo(action: string): { 
   label: string
+  subLabel: string
   variant: 'act' | 'wait' | 'nothing'
   Icon: typeof TrendingUp
   description: string
+  color: string
 } {
   switch (action) {
     case 'signal_buy':
       return { 
-        label: 'ACT — BUY', 
+        label: 'ACT', 
+        subLabel: 'BUY',
         variant: 'act', 
         Icon: TrendingUp,
-        description: 'Signal indicates a buying opportunity'
+        description: 'Signal favors entry',
+        color: 'cyan',
       }
     case 'signal_sell':
       return { 
-        label: 'ACT — SELL', 
+        label: 'ACT', 
+        subLabel: 'SELL',
         variant: 'act', 
         Icon: TrendingDown,
-        description: 'Signal indicates a selling opportunity'
+        description: 'Signal favors exit',
+        color: 'cyan',
       }
     case 'skip':
       return { 
         label: 'WAIT', 
+        subLabel: 'HOLD',
         variant: 'wait', 
         Icon: Pause,
-        description: 'Conditions not favorable — waiting for better setup'
+        description: 'Conditions unclear — wait for better setup',
+        color: 'amber',
       }
     case 'veto':
       return { 
-        label: 'DO NOTHING', 
+        label: 'PASS', 
+        subLabel: 'NO ACTION',
         variant: 'nothing', 
         Icon: XCircle,
-        description: 'Signal blocked by risk guard'
+        description: 'Blocked by risk guard',
+        color: 'zinc',
       }
     default:
       return { 
         label: action.toUpperCase(), 
+        subLabel: '',
         variant: 'nothing', 
         Icon: Pause,
-        description: 'Unknown decision type'
+        description: 'Unknown decision type',
+        color: 'zinc',
       }
   }
 }
 
-function formatTimestamp(ts: string): string {
-  const date = new Date(ts)
-  return date.toLocaleString('en-US', {
-    weekday: 'short',
-    month: 'short',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-    hour12: true,
-  })
+function safeNumber(val: unknown, fallback = 0): number {
+  if (typeof val === 'number' && isFinite(val)) return val
+  return fallback
 }
 
 interface StatRowProps {
@@ -84,21 +89,24 @@ interface StatRowProps {
   value: string | number
   subValue?: string
   highlight?: boolean
+  muted?: boolean
 }
 
-function StatRow({ label, value, subValue, highlight }: StatRowProps) {
+function StatRow({ label, value, subValue, highlight, muted }: StatRowProps) {
   return (
-    <div className="flex items-center justify-between py-2 border-b border-helm-border last:border-0">
-      <span className="text-sm text-zinc-400">{label}</span>
+    <div className="flex items-center justify-between py-1.5 border-b border-helm-border/50 last:border-0">
+      <span className="text-xs text-zinc-500">{label}</span>
       <div className="text-right">
         <span className={clsx(
           'mono-nums text-sm font-medium',
-          highlight ? 'text-cyan-400' : 'text-white'
+          highlight && 'text-cyan-400',
+          muted && 'text-zinc-500',
+          !highlight && !muted && 'text-white'
         )}>
           {value}
         </span>
         {subValue && (
-          <span className="block text-xs text-zinc-500">{subValue}</span>
+          <span className="block text-[10px] text-zinc-600">{subValue}</span>
         )}
       </div>
     </div>
@@ -111,112 +119,128 @@ export function DecisionCard() {
   
   // Get decision from location state or fallback to demo
   const decision: DecisionSnapshot = location.state?.decision ?? DEMO_DECISION_CARDS[0]
+  // NEVER label demo as live — explicit check
   const isDemo = decision.mode === 'demo' || !location.state?.decision
   
-  const { label, variant, Icon, description } = getVerdictInfo(decision.action)
+  const { label, subLabel, variant, Icon, description } = getVerdictInfo(decision.action)
   const extra = decision.extra as {
     thesis?: string
     risks?: string[]
     sources?: Array<{ name: string; tier: number; headline: string }>
   }
 
+  // Safe number extraction
+  const price = safeNumber(decision.price_vol?.price)
+  const confidence = safeNumber(decision.confidence)
+  const rsi = safeNumber(decision.price_vol?.rsi) * 100
+  const volRatio = safeNumber(decision.price_vol?.volume_ratio, 1)
+  const sentiment = safeNumber(decision.news?.avg_sentiment)
+
   return (
     <div className="p-4 max-w-3xl mx-auto pb-24">
       {/* Back Button */}
       <button
         onClick={() => navigate(-1)}
-        className="flex items-center gap-2 text-zinc-400 hover:text-white transition-colors mb-4"
+        className="flex items-center gap-1.5 text-zinc-500 hover:text-white transition-colors mb-3"
       >
-        <ArrowLeft className="w-4 h-4" />
-        <span className="text-sm">Back to Pulse</span>
+        <ArrowLeft className="w-3.5 h-3.5" />
+        <span className="text-xs">Pulse</span>
       </button>
 
-      {/* Verdict Card */}
-      <Card className="mb-4">
-        <CardHeader className="pb-2">
-          <div className="flex items-start justify-between">
-            <div className="flex items-center gap-3">
-              <div className={clsx(
-                'p-3 rounded-lg',
-                variant === 'act' && 'bg-cyan-500/20',
-                variant === 'wait' && 'bg-amber-500/20',
-                variant === 'nothing' && 'bg-zinc-500/20',
-              )}>
-                <Icon className={clsx(
-                  'w-6 h-6',
-                  variant === 'act' && 'text-cyan-400',
-                  variant === 'wait' && 'text-amber-400',
-                  variant === 'nothing' && 'text-zinc-400',
-                )} />
-              </div>
-              
-              <div>
-                <div className="flex items-center gap-2">
-                  <span className="text-2xl font-bold text-white">
-                    {decision.symbol}
-                  </span>
-                  <Badge variant={variant} className="text-sm px-3 py-1">
-                    {label}
-                  </Badge>
-                  {isDemo && <DemoBadge />}
-                </div>
-                <p className="text-sm text-zinc-400 mt-1">{description}</p>
-              </div>
+      {/* Hero: Verdict + Key Numbers (8-second glance) */}
+      <Card className="mb-3 overflow-hidden">
+        {/* Verdict Banner */}
+        <div className={clsx(
+          'px-4 py-3 flex items-center justify-between',
+          variant === 'act' && 'bg-gradient-to-r from-cyan-500/15 to-cyan-500/5',
+          variant === 'wait' && 'bg-gradient-to-r from-amber-500/10 to-amber-500/5',
+          variant === 'nothing' && 'bg-gradient-to-r from-zinc-600/15 to-zinc-600/5',
+        )}>
+          <div className="flex items-center gap-3">
+            <div className={clsx(
+              'p-2.5 rounded-lg',
+              variant === 'act' && 'bg-cyan-500/20',
+              variant === 'wait' && 'bg-amber-500/15',
+              variant === 'nothing' && 'bg-zinc-600/20',
+            )}>
+              <Icon className={clsx(
+                'w-5 h-5',
+                variant === 'act' && 'text-cyan-400',
+                variant === 'wait' && 'text-amber-400',
+                variant === 'nothing' && 'text-zinc-400',
+              )} />
             </div>
             
-            <div className="text-right">
-              <span className="mono-nums text-2xl font-bold text-white">
-                ${decision.price_vol.price.toFixed(2)}
-              </span>
-              <p className="text-xs text-zinc-500 mt-1">
-                {formatTimestamp(decision.ts)}
-              </p>
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="text-xl font-bold text-white tracking-tight">
+                  {decision.symbol || '—'}
+                </span>
+                <Badge variant={variant} size="lg">
+                  {label}{subLabel ? ` · ${subLabel}` : ''}
+                </Badge>
+                {isDemo && <DemoBadge />}
+              </div>
+              <p className="text-xs text-zinc-400 mt-0.5">{description}</p>
             </div>
           </div>
-        </CardHeader>
+          
+          <div className="text-right">
+            <span className="mono-nums text-xl font-bold text-white leading-data block">
+              ${price.toFixed(2)}
+            </span>
+            <AsOfChip time={decision.ts} className="mt-1" />
+          </div>
+        </div>
         
-        <CardContent>
-          {/* Key Stats Grid */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 py-4 border-b border-helm-border">
-            <div className="text-center">
-              <span className={clsx(
-                'mono-nums text-xl font-bold',
-                decision.confidence >= 0.7 && 'text-emerald-400',
-                decision.confidence >= 0.5 && decision.confidence < 0.7 && 'text-amber-400',
-                decision.confidence < 0.5 && 'text-zinc-400',
-              )}>
-                {(decision.confidence * 100).toFixed(0)}%
-              </span>
-              <p className="text-xs text-zinc-500 mt-1">Confidence</p>
-            </div>
-            
-            <div className="text-center">
-              <span className="mono-nums text-xl font-bold text-white">
-                {(decision.price_vol.rsi * 100).toFixed(0)}
-              </span>
-              <p className="text-xs text-zinc-500 mt-1">RSI</p>
-            </div>
-            
-            <div className="text-center">
-              <span className="mono-nums text-xl font-bold text-white">
-                {decision.price_vol.volume_ratio.toFixed(1)}x
-              </span>
-              <p className="text-xs text-zinc-500 mt-1">Vol Ratio</p>
-            </div>
-            
-            <div className="text-center">
-              <span className={clsx(
-                'mono-nums text-xl font-bold',
-                decision.news.avg_sentiment > 0.3 && 'text-emerald-400',
-                decision.news.avg_sentiment < -0.3 && 'text-red-400',
-                Math.abs(decision.news.avg_sentiment) <= 0.3 && 'text-zinc-400',
-              )}>
-                {decision.news.avg_sentiment >= 0 ? '+' : ''}{decision.news.avg_sentiment.toFixed(2)}
-              </span>
-              <p className="text-xs text-zinc-500 mt-1">Sentiment</p>
-            </div>
+        {/* Key Metrics Strip — above fold */}
+        <div className="grid grid-cols-4 divide-x divide-helm-border/50 bg-helm-surface/50">
+          <div className="px-3 py-2.5 text-center">
+            <span className={clsx(
+              'mono-nums text-lg font-bold leading-data block',
+              confidence >= 0.7 && 'text-emerald-400',
+              confidence >= 0.5 && confidence < 0.7 && 'text-amber-400',
+              confidence < 0.5 && 'text-zinc-500',
+            )}>
+              {(confidence * 100).toFixed(0)}%
+            </span>
+            <p className="text-[10px] text-zinc-500 uppercase tracking-wide">Conf</p>
           </div>
-        </CardContent>
+          
+          <div className="px-3 py-2.5 text-center">
+            <span className={clsx(
+              'mono-nums text-lg font-bold text-white leading-data block',
+              rsi > 70 && 'text-red-400',
+              rsi < 30 && 'text-emerald-400',
+            )}>
+              {rsi.toFixed(0)}
+            </span>
+            <p className="text-[10px] text-zinc-500 uppercase tracking-wide">RSI</p>
+          </div>
+          
+          <div className="px-3 py-2.5 text-center">
+            <span className={clsx(
+              'mono-nums text-lg font-bold leading-data block',
+              volRatio >= 1.5 && 'text-cyan-400',
+              volRatio < 1.5 && 'text-white',
+            )}>
+              {volRatio.toFixed(1)}×
+            </span>
+            <p className="text-[10px] text-zinc-500 uppercase tracking-wide">Vol</p>
+          </div>
+          
+          <div className="px-3 py-2.5 text-center">
+            <span className={clsx(
+              'mono-nums text-lg font-bold leading-data block',
+              sentiment > 0.3 && 'text-emerald-400',
+              sentiment < -0.3 && 'text-red-400',
+              Math.abs(sentiment) <= 0.3 && 'text-zinc-400',
+            )}>
+              {sentiment >= 0 ? '+' : ''}{sentiment.toFixed(2)}
+            </span>
+            <p className="text-[10px] text-zinc-500 uppercase tracking-wide">Sent</p>
+          </div>
+        </div>
       </Card>
 
       {/* Thesis */}
