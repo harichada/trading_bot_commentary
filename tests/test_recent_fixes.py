@@ -50,20 +50,23 @@ class TestFillCreatesPosition:
         assert "self.pending_orders.pop(order_id, None)" in block
 
     def test_sweep_signal_assignment_hoisted(self):
-        """The sweep path's `signal = order_data['signal']` must appear
-        BEFORE the first reference to `signal.entry_price`."""
+        """The sweep path's signal assignment must appear BEFORE
+        the first reference to `signal.entry_price`.
+        
+        Note: v-guard-missing-signal-2026-09-10 changed the access from
+        order_data['signal'] to order_data.get('signal') to avoid
+        KeyError on close orders without signal metadata."""
         src = ENGINE_PATH.read_text()
         # Look for the v-tag block
         marker = "v-sweep-signal-scope-fix-2026-05-08"
         assert marker in src
         idx = src.index(marker)
-        block = src[idx : idx + 1500]
-        # The fix is "signal = order_data['signal']" appears at the top
-        # of the FILLED branch, before fill_price assignment
-        assign_pos = block.find("signal = order_data['signal']")
+        block = src[idx : idx + 2500]
+        # v-guard-missing-signal-2026-09-10: changed to .get('signal')
+        assign_pos = block.find("signal = order_data.get('signal')")
         fill_price_pos = block.find("fill_price = signal.entry_price")
-        assert assign_pos != -1
-        assert fill_price_pos != -1
+        assert assign_pos != -1, "signal assignment not found"
+        assert fill_price_pos != -1, "fill_price assignment not found"
         assert assign_pos < fill_price_pos, (
             "signal must be assigned before fill_price reads signal.entry_price"
         )
@@ -2869,4 +2872,67 @@ class TestBracketRejectedAuditFix:
         )
         assert "reason=" not in block.split("_audit")[1].split(")")[0], (
             "bracket_rejected _audit call must not have reason= keyword"
+        )
+
+
+# ── v-guard-missing-signal-2026-09-10 ─────────────────────────────────
+
+class TestCloseOrderSignalKeyError:
+    """2026-09-10 hotfix: _check_order_status threw KeyError: 'signal'
+    on FILLED close orders (e.g. day_trade flatten fills on FCX).
+
+    Close orders (from _close_real_position) only carry:
+        {'symbol': ..., 'type': 'CLOSE', 'quantity': ..., 'status': ..., 'placed_time': ...}
+
+    Entry orders carry a 'signal' key with the full signal object.
+    The FILLED handler assumed 'signal' was always present.
+
+    Fix: use order_data.get('signal') and early-exit with cleanup
+    when signal is None.
+    """
+
+    def test_signal_accessed_with_get_in_check_order_status(self):
+        """_check_order_status must use .get('signal') not ['signal']."""
+        src = ENGINE_PATH.read_text()
+        marker = "v-guard-missing-signal-2026-09-10"
+        assert marker in src, "v-tag not found in engine.py"
+        idx = src.index(marker)
+        block = src[idx : idx + 500]
+        assert "signal = order_data.get('signal')" in block, (
+            "signal must be accessed with .get() to avoid KeyError"
+        )
+
+    def test_signal_none_guard_present(self):
+        """When signal is None, the code must early-exit without
+        trying to access signal attributes."""
+        src = ENGINE_PATH.read_text()
+        marker = "v-guard-missing-signal-2026-09-10"
+        idx = src.index(marker)
+        block = src[idx : idx + 1200]
+        assert "if signal is None:" in block, (
+            "must guard against signal being None"
+        )
+        assert "self.pending_orders.pop(order_id, None)" in block, (
+            "must clean up pending_orders when signal is None"
+        )
+        assert "continue" in block, (
+            "must skip the rest of the FILLED handler when signal is None"
+        )
+
+    def test_no_bare_signal_key_access_in_filled_handler(self):
+        """After the fix, no order_data['signal'] (in actual code, not
+        comments) should remain in the FILLED status handler."""
+        src = ENGINE_PATH.read_text()
+        filled_marker = "if status == 'FILLED':"
+        filled_idx = src.index(filled_marker, src.index("async def _check_order_status"))
+        elif_marker = "elif status in ['CANCELED', 'REJECTED', 'EXPIRED']:"
+        elif_idx = src.index(elif_marker, filled_idx)
+        filled_block = src[filled_idx:elif_idx]
+        lines = filled_block.split('\n')
+        code_lines = [l for l in lines if not l.strip().startswith('#')]
+        code_only = '\n'.join(code_lines)
+        bad_accesses = re.findall(r"order_data\['signal'\]", code_only)
+        assert bad_accesses == [], (
+            f"Bare order_data['signal'] still present in FILLED handler code: "
+            f"will cause KeyError on close orders"
         )
