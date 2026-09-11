@@ -954,6 +954,16 @@ class MeanReversionStrategyWithCommentary(TradingStrategyWithCommentary):
                             _hyp_stop = market_data.close + _stop_dist_sh
                             _hyp_target = market_data.close - (_rr_ratio_sh * _stop_dist_sh)
                             from datetime import timezone as _tz_sh
+                            # v-shadow-rising-peak-2026-09-11: compute whether
+                            # this entry would pass the rising-peak filter
+                            # (close < SMA50 = downtrend). Log with flag so
+                            # Stage A resolver can optionally filter.
+                            _sma_50_sh = float(indicators.get('sma_50', 0) or 0)
+                            _macd_sh = float(indicators.get('macd', 0) or 0)
+                            _macd_sig_sh = float(indicators.get('macd_signal', 0) or 0)
+                            _in_downtrend_sh = (
+                                _sma_50_sh > 0 and market_data.close < _sma_50_sh
+                            )
                             _shadow_entry = {
                                 'timestamp': datetime.now(_tz_sh.utc).isoformat(),
                                 'symbol': market_data.symbol,
@@ -963,16 +973,18 @@ class MeanReversionStrategyWithCommentary(TradingStrategyWithCommentary):
                                 'rsi': float(rsi),
                                 'bb_upper': float(bb_upper),
                                 'bb_middle': float(bb_middle),
-                                'sma_50': float(indicators.get('sma_50', 0) or 0),
-                                'macd': float(indicators.get('macd', 0) or 0),
-                                'macd_signal': float(indicators.get('macd_signal', 0) or 0),
+                                'sma_50': _sma_50_sh,
+                                'macd': _macd_sh,
+                                'macd_signal': _macd_sig_sh,
                                 'atr': float(_atr_sh),
                                 'hypothetical_stop': float(_hyp_stop),
                                 'hypothetical_target': float(_hyp_target),
                                 'rr_ratio': float(_rr_ratio_sh),
                                 'stop_dist': float(_stop_dist_sh),
+                                'rising_peak_pass': _in_downtrend_sh,
                             }
                             import json as _json_sh
+                            from pathlib import Path as _PathSh
                             # NDJSON append-only (one JSON object per
                             # line). The original read-modify-rewrite
                             # had two failure modes: lost updates when
@@ -981,7 +993,16 @@ class MeanReversionStrategyWithCommentary(TradingStrategyWithCommentary):
                             # and dump (the bot WAS hard-killed today).
                             # O_APPEND writes of < 4 KiB are atomic on
                             # Linux, so concurrent captures can't tear.
-                            _ledger_path = 'shadow_short_log.ndjson'
+                            #
+                            # v-shadow-ledger-path-2026-09-11: use absolute
+                            # path under repo data/ to avoid cwd-relative
+                            # write misses when bot cwd differs from repo.
+                            # Resolver reads both repo-root and data/ for
+                            # backward compat with historical rows.
+                            _repo_root = _PathSh(__file__).resolve().parent.parent
+                            _ledger_dir = _repo_root / "data"
+                            _ledger_dir.mkdir(parents=True, exist_ok=True)
+                            _ledger_path = str(_ledger_dir / "shadow_short_log.ndjson")
                             try:
                                 with open(_ledger_path, 'a') as _f:
                                     _f.write(
@@ -1003,8 +1024,9 @@ class MeanReversionStrategyWithCommentary(TradingStrategyWithCommentary):
                                 bb_upper=round(bb_upper, 2),
                                 hyp_stop=round(_hyp_stop, 2),
                                 hyp_target=round(_hyp_target, 2),
-                                sma_50=round(float(indicators.get('sma_50', 0) or 0), 2),
-                                macd=round(float(indicators.get('macd', 0) or 0), 4),
+                                sma_50=round(_sma_50_sh, 2),
+                                macd=round(_macd_sh, 4),
+                                rising_peak_pass=_in_downtrend_sh,
                             )
                         except Exception as _shadow_exc:
                             logger.debug(
