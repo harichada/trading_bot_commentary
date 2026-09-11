@@ -1,6 +1,7 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
+    <meta charset="utf-8">
     <title>Helm — Market Co-Pilot</title>
     <!-- v-ui-theme-tokens-2026-04-29: Inter (UI) + JetBrains Mono (numerics).
          cv02-04/11 OpenType features below give cleaner tabular digits. -->
@@ -48,10 +49,10 @@
           --chart-4: oklch(0.8 0.15 90);
           --chart-5: oklch(0.7 0.2 320);
 
-          /* Glow halos (used as box-shadow for KPI cards on hover) */
-          --glow-accent:      0 0 40px -10px oklch(0.65 0.2 200 / 0.55);
-          --glow-success:     0 0 40px -10px oklch(0.72 0.2 155 / 0.55);
-          --glow-destructive: 0 0 40px -10px oklch(0.6 0.22 25 / 0.55);
+          /* Glow halos — subtle, institutional */
+          --glow-accent:      0 0 20px -6px oklch(0.65 0.2 200 / 0.2);
+          --glow-success:     0 0 20px -6px oklch(0.72 0.2 155 / 0.2);
+          --glow-destructive: 0 0 20px -6px oklch(0.6 0.22 25 / 0.2);
 
           /* Shape */
           --radius: 0.75rem;
@@ -343,19 +344,22 @@
         table {
             width: 100%;
             border-collapse: collapse;
-            color: #fff;
+            color: var(--fg);
+            table-layout: auto;
         }
         th, td {
             text-align: left;
-            padding: 12px;
-            border-bottom: 1px solid #333;
+            padding: 0.625rem 0.75rem;
+            border-bottom: 1px solid var(--border-soft);
+            white-space: nowrap;
         }
         th {
-            color: #4a9eff;
             font-weight: 600;
-            font-size: 12px;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
+            font-size: 0.6875rem;
+            color: oklch(0.55 0 0);
+        }
+        td {
+            font-size: 0.8125rem;
         }
         td {
             font-size: 14px;
@@ -440,10 +444,8 @@
             margin-bottom: 5px;
         }
         .stat-label {
-            font-size: 12px;
-            color: #999;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
+            font-size: 11px;
+            color: oklch(0.55 0 0);
         }
         /* Modal styles for close confirmation */
         .modal-overlay {
@@ -542,14 +544,14 @@
         }
         /* Ticker tape styles */
         .ticker-tape {
-            background: #0a0a0a;
-            border-bottom: 1px solid #333;
-            padding: 10px 20px;
+            background: oklch(0.06 0.01 270);
+            border-bottom: 1px solid var(--border-soft);
+            padding: 6px 12px;
             overflow-x: auto;
             overflow-y: hidden;
             position: relative;
             scrollbar-width: thin;
-            scrollbar-color: #333 #0a0a0a;
+            scrollbar-color: oklch(0.25 0.01 270) oklch(0.06 0.01 270);
         }
         
         .ticker-tape::-webkit-scrollbar {
@@ -1084,8 +1086,8 @@
             background: linear-gradient(90deg, transparent, oklch(0.65 0.2 200 / 0.5), transparent);
         }
         .app-topbar-inner {
-            padding: 1rem 1.25rem;
-            display: flex; flex-direction: column; gap: 1rem;
+            padding: 0.625rem 1rem;
+            display: flex; flex-direction: column; gap: 0.5rem;
         }
         .app-topbar-row {
             display: flex; flex-wrap: wrap; align-items: center;
@@ -1096,28 +1098,21 @@
         }
         .app-logo-icon {
             position: relative;
-            padding: 0.6rem;
-            border-radius: var(--radius);
-            background: linear-gradient(135deg, oklch(0.65 0.2 200 / 0.2), oklch(0.65 0.2 200 / 0.05));
-            border: 1px solid oklch(0.65 0.2 200 / 0.2);
+            padding: 0.4rem;
+            border-radius: var(--radius-sm);
+            background: linear-gradient(135deg, oklch(0.65 0.2 200 / 0.15), oklch(0.65 0.2 200 / 0.05));
+            border: 1px solid oklch(0.65 0.2 200 / 0.15);
             color: var(--accent);
         }
-        .app-logo-icon::after {
-            content: '';
-            position: absolute; inset: -8px;
-            background: oklch(0.65 0.2 200 / 0.3);
-            filter: blur(20px);
-            border-radius: 9999px;
-            z-index: -1;
-        }
+        .app-logo-icon::after { display: none; }
         .app-logo-title {
-            font-size: 1.25rem; font-weight: 700;
+            font-size: 1rem; font-weight: 700;
             letter-spacing: -0.02em;
             color: var(--fg);
         }
         .app-logo-subtitle {
-            font-size: 0.625rem; font-weight: 600;
-            letter-spacing: 0.15em; text-transform: uppercase;
+            font-size: 0.5625rem; font-weight: 600;
+            letter-spacing: 0.1em; text-transform: uppercase;
             color: var(--muted-fg);
         }
         .app-nav {
@@ -1141,27 +1136,27 @@
             box-shadow: 0 1px 2px oklch(0 0 0 / 0.1);
         }
         .app-toggles {
-            display: flex; align-items: center; gap: 0.25rem;
-            padding: 0.4rem 0.6rem;
-            border-radius: var(--radius);
+            display: flex; align-items: center; gap: 0.15rem;
+            padding: 0.25rem 0.4rem;
+            border-radius: var(--radius-sm);
         }
-        .app-toggles > .divider { width: 1px; height: 1.5rem; background: var(--border-soft); margin: 0 0.25rem; }
+        .app-toggles > .divider { width: 1px; height: 1rem; background: var(--border-soft); margin: 0 0.15rem; }
         .app-toggle {
-            display: flex; align-items: center; gap: 0.5rem;
-            padding: 0.25rem 0.5rem;
+            display: flex; align-items: center; gap: 0.35rem;
+            padding: 0.15rem 0.35rem;
             color: var(--muted-fg);
-            font: 500 0.6875rem var(--font-sans);
+            font: 500 0.625rem var(--font-sans);
         }
-        .app-toggle .lucide { color: var(--muted-fg); }
-        .app-toggle input[type="checkbox"] { transform: scale(0.85); accent-color: var(--accent); cursor: pointer; }
+        .app-toggle .lucide { color: var(--muted-fg); display: none; }
+        .app-toggle input[type="checkbox"] { transform: scale(0.8); accent-color: var(--accent); cursor: pointer; }
         .app-toggle label { cursor: pointer; user-select: none; }
         .app-actions { display: flex; align-items: center; gap: 0.5rem; }
         .btn {
-            display: inline-flex; align-items: center; gap: 0.5rem;
-            height: 2.25rem; padding: 0 0.85rem;
+            display: inline-flex; align-items: center; gap: 0.35rem;
+            height: 1.75rem; padding: 0 0.6rem;
             border-radius: calc(var(--radius) - 2px);
             border: 0; cursor: pointer;
-            font: 600 0.8125rem var(--font-sans);
+            font: 600 0.6875rem var(--font-sans);
             transition: all 0.2s;
         }
         .btn-ghost {
@@ -1171,21 +1166,19 @@
         .btn-ghost:hover { background: var(--secondary); color: var(--fg); }
         .btn-success {
             background: var(--success); color: var(--success-fg);
-            box-shadow: 0 4px 14px -4px oklch(0.72 0.2 155 / 0.3);
         }
         .btn-success:hover { background: oklch(0.72 0.2 155 / 0.9); }
         .btn-destructive {
             background: var(--destructive); color: var(--destructive-fg);
-            box-shadow: 0 4px 14px -4px oklch(0.6 0.22 25 / 0.3);
         }
         .btn-destructive:hover { background: oklch(0.6 0.22 25 / 0.9); }
         .btn-icon {
-            width: 2.25rem; height: 2.25rem; padding: 0;
+            width: 1.75rem; height: 1.75rem; padding: 0;
             display: inline-flex; align-items: center; justify-content: center;
         }
         .app-status-row {
-            display: flex; flex-wrap: wrap; align-items: center; gap: 1rem;
-            padding-top: 1rem; border-top: 1px solid var(--border-soft);
+            display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem;
+            padding-top: 0.5rem; border-top: 1px solid var(--border-soft);
         }
         .status-pill {
             display: inline-flex; align-items: center; gap: 0.4rem;
@@ -1203,13 +1196,11 @@
         .trust-strip {
             display: flex;
             align-items: center;
-            gap: 0.75rem;
-            padding: 0.375rem 0.75rem;
+            gap: 0.5rem;
+            padding: 0.25rem 0.5rem;
             background: oklch(0.06 0.015 270 / 0.9);
             border-radius: calc(var(--radius) - 2px);
-            font: 600 0.6875rem var(--font-sans);
-            text-transform: uppercase;
-            letter-spacing: 0.08em;
+            font: 600 0.625rem var(--font-sans);
         }
         .trust-badge {
             display: inline-flex;
@@ -1256,6 +1247,23 @@
             text-transform: none;
             letter-spacing: 0;
         }
+        .trust-divider {
+            width: 1px;
+            height: 1rem;
+            background: var(--border-soft);
+            margin: 0 0.25rem;
+        }
+        .trust-sub {
+            font: 500 0.625rem var(--font-sans);
+            color: var(--muted-fg);
+            padding: 0.2rem 0.4rem;
+            border-radius: calc(var(--radius) - 4px);
+            background: oklch(0.12 0.01 270 / 0.5);
+            transition: all 0.3s;
+        }
+        .trust-sub.connected { color: var(--success); background: oklch(0.72 0.2 155 / 0.1); }
+        .trust-sub.error { color: var(--destructive); background: oklch(0.6 0.22 25 / 0.1); }
+        .trust-badge.offline ~ .trust-sub { opacity: 0.5; }
 
         /* Live Pulse — elevated commentary/decision stream */
         .pulse-header {
@@ -1275,6 +1283,51 @@
             background: oklch(0.18 0.01 270);
             padding: 0.2rem 0.5rem;
             border-radius: calc(var(--radius) - 4px);
+        }
+
+        /* Pulse empty state — calm institutional placeholder */
+        .pulse-empty {
+            display: none;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 3rem 1.5rem;
+            text-align: center;
+            color: var(--muted-fg);
+        }
+        .pulse-empty.visible { display: flex; }
+        .pulse-empty-icon {
+            width: 2.5rem;
+            height: 2.5rem;
+            margin-bottom: 1rem;
+            border-radius: 50%;
+            background: oklch(0.14 0.01 270);
+            position: relative;
+        }
+        .pulse-empty-icon::before {
+            content: '';
+            position: absolute;
+            inset: 0.5rem;
+            border-radius: 50%;
+            border: 2px solid oklch(0.25 0.01 270);
+            border-top-color: var(--muted-fg);
+            animation: pulse-empty-spin 2s linear infinite;
+        }
+        @keyframes pulse-empty-spin {
+            to { transform: rotate(360deg); }
+        }
+        .pulse-empty.offline .pulse-empty-icon::before {
+            animation: none;
+            border-color: oklch(0.25 0.01 270);
+        }
+        .pulse-empty-title {
+            font: 500 0.875rem var(--font-sans);
+            color: oklch(0.65 0 0);
+            margin-bottom: 0.25rem;
+        }
+        .pulse-empty-sub {
+            font: 400 0.75rem var(--font-sans);
+            color: var(--muted-fg);
         }
 
         /* Verdict chips: ACT / WAIT / PASS */
@@ -1467,10 +1520,10 @@
             font-style: italic;
         }
 
-        /* Portfolio hands-off: long-term unmanaged positions */
+        /* Portfolio hands-off: long-term unmanaged positions — calm styling */
         .hands-off-row {
             position: relative;
-            opacity: 0.7;
+            opacity: 0.85;
         }
         .hands-off-row td:first-child::before {
             content: '';
@@ -1478,28 +1531,22 @@
             left: 0;
             top: 0;
             bottom: 0;
-            width: 3px;
-            background: var(--warning);
-            border-radius: 3px 0 0 3px;
+            width: 2px;
+            background: oklch(0.55 0.08 85);
+            border-radius: 2px 0 0 2px;
         }
         .hands-off-badge {
             display: inline-flex;
             align-items: center;
-            gap: 0.25rem;
-            padding: 0.15rem 0.4rem;
+            gap: 0.2rem;
+            padding: 0.1rem 0.35rem;
             border-radius: calc(var(--radius) - 4px);
-            font: 600 0.5625rem var(--font-sans);
-            text-transform: uppercase;
-            letter-spacing: 0.03em;
-            color: var(--warning);
-            background: oklch(0.82 0.16 85 / 0.12);
-            border: 1px solid oklch(0.82 0.16 85 / 0.3);
-            margin-left: 0.5rem;
+            font: 500 0.5625rem var(--font-sans);
+            color: oklch(0.55 0.08 85);
+            background: oklch(0.16 0.02 85 / 0.4);
+            border: 1px solid oklch(0.55 0.08 85 / 0.2);
+            margin-left: 0.35rem;
             white-space: nowrap;
-        }
-        .hands-off-badge::before {
-            content: '🔒';
-            font-size: 0.6rem;
         }
 
         /* Polish: tighten density, improve co-pilot feel */
@@ -1626,10 +1673,10 @@
             display: flex;
             justify-content: center !important;
             align-items: center;
-            gap: 40px;
-            padding: 10px 24px;
-            background: #0a0a0a;
-            border-bottom: 1px solid #1a1a1a;
+            gap: 32px;
+            padding: 6px 16px;
+            background: oklch(0.06 0.01 270);
+            border-bottom: 1px solid var(--border-soft);
             font-family: 'SF Pro Text', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
             font-size: 14px;
             flex-wrap: wrap;
@@ -1728,9 +1775,11 @@
             transition: all 0.4s ease;
             overflow: hidden;
         }
-        .kpi-card:hover { border-color: oklch(0.3 0.02 270 / 0.7); box-shadow: var(--glow-accent); }
-        .kpi-card.success-accent:hover { box-shadow: var(--glow-success); }
-        .kpi-card.warning-accent:hover { box-shadow: var(--glow-destructive); }
+        .kpi-card:hover { border-color: oklch(0.3 0.02 270 / 0.7); box-shadow: 0 0 24px -8px oklch(0.65 0.2 200 / 0.25); }
+        .kpi-card.success-accent:hover { box-shadow: 0 0 24px -8px oklch(0.72 0.2 155 / 0.25); }
+        .kpi-card.warning-accent:hover { box-shadow: 0 0 24px -8px oklch(0.6 0.22 25 / 0.25); }
+        .kpi-card.empty, .chart-card.empty { opacity: 0.7; }
+        .kpi-card.empty:hover, .chart-card.empty:hover { box-shadow: none; transform: none; }
         .kpi-card-head {
             display: flex; align-items: flex-start; justify-content: space-between;
             margin-bottom: 1rem;
@@ -1754,9 +1803,8 @@
         .kpi-trend.up   { background: oklch(0.72 0.2 155 / 0.15); color: var(--success); }
         .kpi-trend.down { background: oklch(0.6 0.22 25 / 0.15);  color: var(--destructive); }
         .kpi-label {
-            font: 500 0.6875rem var(--font-sans);
-            text-transform: uppercase; letter-spacing: 0.15em;
-            color: var(--muted-fg);
+            font: 500 0.75rem var(--font-sans);
+            color: oklch(0.6 0 0);
             margin-bottom: 0.25rem;
         }
         .kpi-value {
@@ -1782,12 +1830,12 @@
            index quotes, to avoid extra API calls.
            ===================================================================== */
         .market-status-strip {
-            display: flex; flex-wrap: wrap; align-items: center; gap: 1.5rem;
-            padding: 0.5rem 1.25rem;
+            display: flex; flex-wrap: wrap; align-items: center; gap: 1rem;
+            padding: 0.35rem 1rem;
             border-bottom: 1px solid var(--border-soft);
-            background: oklch(0.08 0.015 270 / 0.4);
+            background: oklch(0.06 0.01 270 / 0.6);
             font-family: var(--font-sans);
-            font-size: 0.75rem;
+            font-size: 0.6875rem;
         }
         .market-status-strip .session-icon {
             display: inline-flex; align-items: center; gap: 0.5rem;
@@ -1975,17 +2023,16 @@
         .position-badge.badge-simulated { color: var(--chart-4); background: oklch(0.8 0.15 90 / 0.1);   border-color: oklch(0.8 0.15 90 / 0.3); }
 
         /* Modern table styling — overrides existing inline / element styles */
-        #real-positions-table, #simulated-positions-table, #trades-table {
+        #real-positions-table, #simulated-positions-table, #trades-table, #symbol-intel-table {
             width: 100%;
             border-collapse: collapse;
             font: 500 0.8125rem var(--font-sans);
         }
-        #real-positions-table thead th, #simulated-positions-table thead th, #trades-table thead th {
+        #real-positions-table thead th, #simulated-positions-table thead th, #trades-table thead th, #symbol-intel-table thead th {
             text-align: left;
-            padding: 0.625rem 1.25rem;
-            font: 600 0.6875rem var(--font-sans);
-            text-transform: uppercase;
-            letter-spacing: 0.1em;
+            padding: 0.5rem 0.75rem;
+            font: 500 0.6875rem var(--font-sans);
+            color: oklch(0.55 0 0);
             color: var(--muted-fg);
             background: oklch(0.1 0.015 270 / 0.4);
             border: 0;
@@ -2591,22 +2638,17 @@
             </div>
 
             <div class="app-status-row">
-                <!-- Trust strip: LIVE / STALE / OFFLINE -->
+                <!-- Trust strip: single authoritative LIVE / STALE / OFFLINE -->
                 <div class="trust-strip" id="trust-strip">
                     <span class="trust-badge live" id="trust-badge">
                         <span class="dot"></span>
                         <span id="trust-label">LIVE</span>
                     </span>
                     <span class="trust-asof" id="trust-asof">as-of —</span>
+                    <span class="trust-divider"></span>
+                    <span class="trust-sub" id="schwab-status" title="Schwab API connection">Schwab</span>
+                    <span class="trust-sub" id="ml-status" title="ML model loaded">ML</span>
                 </div>
-                <span style="width:1px;height:1rem;background:var(--border-soft)"></span>
-                <span style="display:inline-flex;align-items:center;gap:0.5rem">
-                    <span class="pulse-dot" id="bot-active-dot"></span>
-                    <span style="font:500 0.75rem var(--font-sans);color:var(--muted-fg)">Bot Active</span>
-                </span>
-                <span style="width:1px;height:1rem;background:var(--border-soft)"></span>
-                <span class="status-pill connected" id="schwab-status"><span class="lucide-slot" data-icon="shield" data-size="12"></span>Schwab</span>
-                <span class="status-pill ready" id="ml-status"><span class="lucide-slot" data-icon="cpu" data-size="12"></span>ML Model</span>
                 <span class="uptime-display">
                     <span>Session:</span>
                     <span class="value" id="session-uptime">—</span>
@@ -2700,6 +2742,11 @@
                 <button class="filter-button" onclick="filterCommentary('warning')">Alerts</button>
             </div>
             <div id="commentary-list"></div>
+            <div class="pulse-empty" id="pulse-empty">
+                <div class="pulse-empty-icon"></div>
+                <div class="pulse-empty-title" id="pulse-empty-title">Scanning for setups</div>
+                <div class="pulse-empty-sub" id="pulse-empty-sub">No actionable opportunities detected</div>
+            </div>
         </div>
         
         <div class="dashboard-panel">
@@ -3832,6 +3879,7 @@
                 label.textContent = 'LIVE';
                 asof.textContent = 'as-of now';
             }
+            if (typeof updatePulseEmptyState === 'function') updatePulseEmptyState();
         }
         setInterval(updateTrustStrip, 1000);
 
@@ -4154,9 +4202,31 @@
 
         function updatePulseCount() {
             const countEl = document.getElementById('pulse-count');
+            const emptyEl = document.getElementById('pulse-empty');
+            const listEl = document.getElementById('commentary-list');
             if (countEl) {
                 const actCount = allCommentary.filter(c => _getVerdict(c) === 'act').length;
                 countEl.textContent = `${actCount} actions`;
+            }
+            if (emptyEl && listEl) {
+                const hasItems = listEl.children.length > 0;
+                emptyEl.classList.toggle('visible', !hasItems);
+            }
+        }
+
+        function updatePulseEmptyState() {
+            const emptyEl = document.getElementById('pulse-empty');
+            const titleEl = document.getElementById('pulse-empty-title');
+            const subEl = document.getElementById('pulse-empty-sub');
+            if (!emptyEl || !titleEl || !subEl) return;
+            if (wsConnected) {
+                emptyEl.classList.remove('offline');
+                titleEl.textContent = 'Scanning for setups';
+                subEl.textContent = 'No actionable opportunities detected';
+            } else {
+                emptyEl.classList.add('offline');
+                titleEl.textContent = 'Connection offline';
+                subEl.textContent = 'Waiting to reconnect to data stream';
             }
         }
 
