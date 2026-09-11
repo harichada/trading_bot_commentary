@@ -143,6 +143,13 @@
           75%  { transform: scale(2);   opacity: 0; }
           100% { transform: scale(2);   opacity: 0; }
         }
+        /* v-connection-state-unify-2026-09-11: stale/offline states for pulse-dot */
+        .pulse-dot.stale::before,
+        .pulse-dot.stale::after { background: var(--warning); }
+        .pulse-dot.stale::before { animation: none; opacity: 0.5; }
+        .pulse-dot.offline::before,
+        .pulse-dot.offline::after { background: var(--muted-fg); }
+        .pulse-dot.offline::before { animation: none; opacity: 0.3; }
 
         /* Ambient gradient blobs — fixed position, behind everything.
            Subtle depth without dominating the design. */
@@ -2796,9 +2803,9 @@
                 <div class="section-title">
                     <span class="accent-bar"></span>
                     <h2>Account Overview</h2>
-                    <span class="live-marker">
-                        <span class="pulse-dot"></span>
-                        Live · Updated just now
+                    <span class="live-marker" id="account-live-marker">
+                        <span class="pulse-dot" id="account-live-dot"></span>
+                        <span id="account-live-text">Live · Updated just now</span>
                     </span>
                 </div>
                 <div class="kpi-grid">
@@ -3855,29 +3862,45 @@
         // LIVE = WS connected + data received within 10s
         // STALE = WS connected but no data for 10-45s
         // OFFLINE = WS disconnected or no data for >45s
+        // v-connection-state-unify-2026-09-11: single source of truth for
+        // trust strip AND Account Overview live-marker
+        let _connectionState = 'offline';
         function updateTrustStrip() {
             const badge = document.getElementById('trust-badge');
             const label = document.getElementById('trust-label');
             const asof = document.getElementById('trust-asof');
+            const accountDot = document.getElementById('account-live-dot');
+            const accountText = document.getElementById('account-live-text');
             if (!badge || !label || !asof) return;
 
             const now = Date.now();
             const idleMs = wsLastMessageAt > 0 ? now - wsLastMessageAt : Infinity;
 
             if (!wsConnected || idleMs > 45000) {
+                _connectionState = 'offline';
                 badge.className = 'trust-badge offline';
                 label.textContent = 'OFFLINE';
-                asof.textContent = wsLastMessageAt > 0
+                const offlineAsof = wsLastMessageAt > 0
                     ? `last: ${new Date(wsLastMessageAt).toLocaleTimeString()}`
                     : 'no data';
+                asof.textContent = offlineAsof;
+                if (accountDot) accountDot.className = 'pulse-dot offline';
+                if (accountText) accountText.textContent = `Offline · ${offlineAsof}`;
             } else if (idleMs > 10000) {
+                _connectionState = 'stale';
                 badge.className = 'trust-badge stale';
                 label.textContent = 'STALE';
-                asof.textContent = `${Math.round(idleMs / 1000)}s ago`;
+                const staleAsof = `${Math.round(idleMs / 1000)}s ago`;
+                asof.textContent = staleAsof;
+                if (accountDot) accountDot.className = 'pulse-dot stale';
+                if (accountText) accountText.textContent = `Stale · ${staleAsof}`;
             } else {
+                _connectionState = 'live';
                 badge.className = 'trust-badge live';
                 label.textContent = 'LIVE';
                 asof.textContent = 'as-of now';
+                if (accountDot) accountDot.className = 'pulse-dot';
+                if (accountText) accountText.textContent = 'Live · Updated just now';
             }
             if (typeof updatePulseEmptyState === 'function') updatePulseEmptyState();
         }
@@ -4219,7 +4242,8 @@
             const titleEl = document.getElementById('pulse-empty-title');
             const subEl = document.getElementById('pulse-empty-sub');
             if (!emptyEl || !titleEl || !subEl) return;
-            if (wsConnected) {
+            // v-connection-state-unify-2026-09-11: use shared _connectionState
+            if (_connectionState !== 'offline') {
                 emptyEl.classList.remove('offline');
                 titleEl.textContent = 'Scanning for setups';
                 subEl.textContent = 'No actionable opportunities detected';
@@ -6086,6 +6110,9 @@
 
         // Connect on load
         connectWebSocket();
+        // v-connection-state-unify-2026-09-11: init pulse empty state on load
+        updatePulseCount();
+        updatePulseEmptyState();
         // Load initial sentiment data
         refreshSentiment();
     </script>
