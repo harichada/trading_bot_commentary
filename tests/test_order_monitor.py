@@ -1432,3 +1432,332 @@ class TestPositionReBracketAttempts:
 
 # Required import for new tests
 from pathlib import Path
+
+
+# ============================================================================
+# v-broker-flat-close-2026-09-11: FSM BROKER-FLAT CLOSE TRANSITION TESTS
+# Tests for allowing direct CLOSED transitions from managed states when
+# broker confirms position is flat (external close).
+# ============================================================================
+
+class TestFSMBrokerFlatCloseTransitions:
+    """v-broker-flat-close-2026-09-11: Test FSM allows direct CLOSED transitions.
+    
+    Incident context:
+      - TNON: live→closed illegal_transition on broker_flat_reject_oversold_overbought
+      - ALM: at_breakeven→closed illegal_transition after broker_flat_handled
+    
+    Fix: Allow CLOSED from LIVE, AT_BREAKEVEN, AT_1R, TRAILING when broker
+    confirms position is flat. These are external closes, not bot-initiated
+    exits (which go through EXITING first).
+    """
+    
+    def test_live_to_closed_is_legal(self):
+        """LIVE → CLOSED must be legal for broker-flat scenarios."""
+        from core.position_state import can_transition, PositionState
+        
+        assert can_transition(PositionState.LIVE, PositionState.CLOSED), (
+            "LIVE → CLOSED must be legal (broker_flat external close)"
+        )
+        
+    def test_at_breakeven_to_closed_is_legal(self):
+        """AT_BREAKEVEN → CLOSED must be legal for broker-flat scenarios."""
+        from core.position_state import can_transition, PositionState
+        
+        assert can_transition(PositionState.AT_BREAKEVEN, PositionState.CLOSED), (
+            "AT_BREAKEVEN → CLOSED must be legal (broker_flat external close)"
+        )
+        
+    def test_at_1r_to_closed_is_legal(self):
+        """AT_1R → CLOSED must be legal for broker-flat scenarios."""
+        from core.position_state import can_transition, PositionState
+        
+        assert can_transition(PositionState.AT_1R, PositionState.CLOSED), (
+            "AT_1R → CLOSED must be legal (broker_flat external close)"
+        )
+        
+    def test_trailing_to_closed_is_legal(self):
+        """TRAILING → CLOSED must be legal for broker-flat scenarios."""
+        from core.position_state import can_transition, PositionState
+        
+        assert can_transition(PositionState.TRAILING, PositionState.CLOSED), (
+            "TRAILING → CLOSED must be legal (broker_flat external close)"
+        )
+        
+    def test_exiting_to_closed_still_legal(self):
+        """EXITING → CLOSED must remain legal (bot-initiated close flow)."""
+        from core.position_state import can_transition, PositionState
+        
+        assert can_transition(PositionState.EXITING, PositionState.CLOSED), (
+            "EXITING → CLOSED must remain legal"
+        )
+        
+    def test_opening_to_closed_not_allowed(self):
+        """OPENING → CLOSED should NOT be legal (must go through LIVE first)."""
+        from core.position_state import can_transition, PositionState
+        
+        assert not can_transition(PositionState.OPENING, PositionState.CLOSED), (
+            "OPENING → CLOSED should not be legal (incomplete entry)"
+        )
+        
+    def test_all_managed_states_allow_closed(self):
+        """All managed states (LIVE+) must allow direct CLOSED transition."""
+        from core.position_state import can_transition, PositionState
+        
+        managed_states = [
+            PositionState.LIVE,
+            PositionState.AT_BREAKEVEN,
+            PositionState.AT_1R,
+            PositionState.TRAILING,
+        ]
+        
+        for state in managed_states:
+            assert can_transition(state, PositionState.CLOSED), (
+                f"{state.value} → CLOSED must be legal for broker-flat"
+            )
+            
+    def test_normal_transitions_still_work(self):
+        """Normal progression transitions must still work."""
+        from core.position_state import can_transition, PositionState
+        
+        assert can_transition(PositionState.LIVE, PositionState.AT_BREAKEVEN)
+        assert can_transition(PositionState.AT_BREAKEVEN, PositionState.AT_1R)
+        assert can_transition(PositionState.AT_1R, PositionState.TRAILING)
+        assert can_transition(PositionState.LIVE, PositionState.EXITING)
+        
+    def test_regression_transitions_blocked(self):
+        """Regression transitions must still be blocked."""
+        from core.position_state import can_transition, PositionState
+        
+        assert not can_transition(PositionState.AT_BREAKEVEN, PositionState.LIVE)
+        assert not can_transition(PositionState.AT_1R, PositionState.LIVE)
+        assert not can_transition(PositionState.TRAILING, PositionState.LIVE)
+        assert not can_transition(PositionState.CLOSED, PositionState.LIVE)
+
+
+# ============================================================================
+# v-qty-sync-2026-09-11: QUANTITY SYNC TESTS
+# Tests for syncing local quantity to broker truth before re-bracketing.
+# ============================================================================
+
+class TestQuantitySyncInReBracket:
+    """v-qty-sync-2026-09-11: Test qty sync logic in _re_bracket_position.
+    
+    Incident context (ALM):
+      - Local qty: 567
+      - Stop fill reported qty: 75
+      - Expected remaining: 567 - 75 = 492
+      - But broker was actually flat → re_bracket rejected → infinite loop
+    
+    Fix: Sync local qty to broker qty before placing bracket.
+    """
+    
+    def test_qty_sync_code_exists(self):
+        """_re_bracket_position must contain qty desync detection."""
+        src = (Path(__file__).parent.parent / "core" / "engine.py").read_text()
+        
+        marker = "async def _re_bracket_position"
+        idx = src.index(marker)
+        body = src[idx:idx + 3500]
+        
+        assert "qty_desync_detected" in body, (
+            "_re_bracket_position must log qty desync detection"
+        )
+        assert "broker_qty != local_qty" in body, (
+            "_re_bracket_position must compare broker_qty to local_qty"
+        )
+        assert "position.quantity = broker_qty" in body, (
+            "_re_bracket_position must sync position.quantity to broker_qty"
+        )
+        
+    def test_qty_sync_audit_fields(self):
+        """Qty sync must audit local_qty, broker_qty, and delta."""
+        src = (Path(__file__).parent.parent / "core" / "engine.py").read_text()
+        
+        marker = "qty_desync"
+        idx = src.index(marker)
+        body = src[idx:idx + 500]
+        
+        assert "local_qty=" in body, "Must audit local_qty"
+        assert "broker_qty=" in body, "Must audit broker_qty"
+        assert "delta=" in body, "Must audit delta for RCA"
+        
+    def test_qty_sync_commentary_generated(self):
+        """Qty sync must generate user-facing commentary."""
+        src = (Path(__file__).parent.parent / "core" / "engine.py").read_text()
+        
+        marker = "qty_desync_detected"
+        idx = src.index(marker)
+        body = src[idx:idx + 1000]
+        
+        assert "Quantity Desync Detected" in body, (
+            "Must generate commentary for qty desync"
+        )
+        assert "Syncing to broker truth" in body, (
+            "Commentary must explain sync action"
+        )
+
+
+class TestPartialFillQtyValidation:
+    """v-qty-sync-2026-09-11: Test partial fill qty validation."""
+    
+    def test_partial_fill_suspicious_detection(self):
+        """_handle_partial_bracket_fill must detect suspicious qty mismatches."""
+        src = (Path(__file__).parent.parent / "core" / "engine.py").read_text()
+        
+        marker = "async def _handle_partial_bracket_fill"
+        idx = src.index(marker)
+        body = src[idx:idx + 2500]
+        
+        assert "fill_ratio" in body, (
+            "_handle_partial_bracket_fill must calculate fill ratio"
+        )
+        assert "is_suspicious" in body, (
+            "_handle_partial_bracket_fill must flag suspicious fills"
+        )
+        
+    def test_partial_fill_broker_flat_override(self):
+        """When partial fill but broker flat, handle as full fill."""
+        src = (Path(__file__).parent.parent / "core" / "engine.py").read_text()
+        
+        marker = "async def _handle_partial_bracket_fill"
+        idx = src.index(marker)
+        body = src[idx:idx + 2500]
+        
+        assert "partial_fill_was_actually_full" in body, (
+            "Must detect when partial fill was actually full close"
+        )
+        assert "_handle_full_bracket_fill" in body, (
+            "Must call _handle_full_bracket_fill when broker confirms flat"
+        )
+        
+    def test_partial_fill_qty_mismatch_audit(self):
+        """Partial fill with qty mismatch must be audited."""
+        src = (Path(__file__).parent.parent / "core" / "engine.py").read_text()
+        
+        marker = "async def _handle_partial_bracket_fill"
+        idx = src.index(marker)
+        body = src[idx:idx + 2500]
+        
+        assert "partial_fill_qty_mismatch" in body, (
+            "Must audit qty mismatch in partial fill"
+        )
+        assert "calculated_remaining" in body, (
+            "Must include calculated_remaining in audit"
+        )
+
+
+# ============================================================================
+# INCIDENT REPLAY TESTS
+# ============================================================================
+
+class TestTNONIncidentReplay:
+    """Replay TNON incident: Hari manual close → re_bracket → oversold reject.
+    
+    Expected behavior after fix:
+      1. broker_flat_reject_oversold_overbought fires
+      2. broker_flat_handled removes tracking
+      3. FSM transition live→closed succeeds (no illegal_transition)
+    """
+    
+    def test_tnon_scenario_fsm_allows_live_to_closed(self):
+        """TNON scenario: FSM must allow live→closed for broker_flat."""
+        from core.position_state import can_transition, PositionState
+        
+        # This was the failing transition in TNON incident
+        assert can_transition(PositionState.LIVE, PositionState.CLOSED), (
+            "TNON fix: live→closed must be legal for broker_flat_reject_oversold"
+        )
+
+
+class TestALMIncidentReplay:
+    """Replay ALM incident: fill qty 75 vs local remaining 567.
+    
+    Root cause analysis:
+      - Position had 567 shares locally
+      - External fills reduced broker qty without bot awareness
+      - Stop fill reported qty 75 (actual broker remaining)
+      - remaining_qty calculation: 567 - 75 = 492 (wrong!)
+      - re_bracket tried to place for 492 shares → rejected oversold
+      - broker_flat_handled ran, but FSM rejected at_breakeven→closed
+    
+    Expected behavior after fix:
+      1. FSM allows at_breakeven→closed (no illegal_transition)
+      2. _re_bracket_position syncs local qty to broker before placing
+      3. Audit trail includes qty desync data for post-mortem
+    """
+    
+    def test_alm_scenario_fsm_allows_at_breakeven_to_closed(self):
+        """ALM scenario: FSM must allow at_breakeven→closed for broker_flat."""
+        from core.position_state import can_transition, PositionState
+        
+        # This was the failing transition in ALM incident
+        assert can_transition(PositionState.AT_BREAKEVEN, PositionState.CLOSED), (
+            "ALM fix: at_breakeven→closed must be legal for broker_flat"
+        )
+        
+    def test_alm_scenario_qty_sync_implemented(self):
+        """ALM scenario: qty sync must be implemented in re_bracket."""
+        src = (Path(__file__).parent.parent / "core" / "engine.py").read_text()
+        
+        assert "qty_desync" in src, (
+            "ALM fix: qty desync detection must be implemented"
+        )
+        assert "sync_to_broker" in src, (
+            "ALM fix: sync_to_broker action must be implemented"
+        )
+        
+    def test_alm_qty_desync_audit_for_rca(self):
+        """ALM scenario: audit must include delta for post-mortem RCA."""
+        src = (Path(__file__).parent.parent / "core" / "engine.py").read_text()
+        
+        marker = "qty_desync"
+        idx = src.index(marker)
+        body = src[idx:idx + 500]  # Wider search to include full audit call
+        
+        assert "delta=" in body, (
+            "ALM RCA: audit must include delta (local_qty - broker_qty)"
+        )
+
+
+class TestBrokerFlatCloseIntegration:
+    """Integration tests for broker-flat close handling."""
+    
+    def test_handle_broker_flat_detected_transitions_to_closed(self):
+        """_handle_broker_flat_detected must transition to CLOSED."""
+        src = (Path(__file__).parent.parent / "core" / "engine.py").read_text()
+        
+        marker = "async def _handle_broker_flat_detected"
+        idx = src.index(marker)
+        body = src[idx:idx + 3000]
+        
+        assert "PositionState.CLOSED" in body, (
+            "_handle_broker_flat_detected must transition to CLOSED"
+        )
+        assert "try_transition" in body, (
+            "_handle_broker_flat_detected must use try_transition"
+        )
+        
+    def test_broker_flat_handler_clears_managed_flag(self):
+        """_handle_broker_flat_detected must clear managed_by_bot."""
+        src = (Path(__file__).parent.parent / "core" / "engine.py").read_text()
+        
+        marker = "async def _handle_broker_flat_detected"
+        idx = src.index(marker)
+        body = src[idx:idx + 3000]
+        
+        assert "managed_by_bot = False" in body, (
+            "_handle_broker_flat_detected must clear managed_by_bot"
+        )
+        
+    def test_broker_flat_handler_removes_from_tracking(self):
+        """_handle_broker_flat_detected must remove position from tracking."""
+        src = (Path(__file__).parent.parent / "core" / "engine.py").read_text()
+        
+        marker = "async def _handle_broker_flat_detected"
+        idx = src.index(marker)
+        body = src[idx:idx + 3000]
+        
+        assert "self.positions.pop" in body, (
+            "_handle_broker_flat_detected must remove from self.positions"
+        )

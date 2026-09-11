@@ -4328,8 +4328,48 @@ class TradingEngineWithCommentary:
         remaining_qty: int,
         filled_leg: str
     ) -> None:
-        """Handle a partial bracket fill — update qty and re-bracket remaining."""
+        """Handle a partial bracket fill — update qty and re-bracket remaining.
+        
+        v-qty-sync-2026-09-11: Added broker position verification when fill_qty
+        looks suspicious (fill_qty < 10% of local qty or remaining_qty seems
+        inconsistent). The re_bracket call will sync to broker truth, but we
+        also proactively check here to provide better audit trail.
+        """
         symbol = position.symbol
+        local_qty = position.quantity
+        
+        # v-qty-sync-2026-09-11: detect suspicious qty mismatches early
+        # If fill_qty is much smaller than local_qty, there may be untracked fills
+        fill_ratio = fill_qty / local_qty if local_qty > 0 else 0
+        is_suspicious = fill_ratio < 0.1 and fill_qty < 100  # <10% and small absolute
+        
+        if is_suspicious and self.mode == TradingMode.LIVE and self.schwab_client:
+            broker_qty = await self._check_broker_position_qty(symbol)
+            if broker_qty == 0:
+                # Broker is flat — this was actually a full close, not partial
+                logger.warning(
+                    "partial_fill_was_actually_full symbol=%s fill_qty=%d local_qty=%d broker_flat=True",
+                    symbol, fill_qty, local_qty,
+                )
+                self._audit(
+                    "order_monitor", symbol, "partial_fill_override",
+                    "broker_confirmed_flat",
+                    fill_qty=fill_qty,
+                    local_qty=local_qty,
+                )
+                # Handle as full fill since broker confirms flat
+                await self._handle_full_bracket_fill(position, fill_price, filled_leg)
+                return
+            elif broker_qty != remaining_qty:
+                # Broker qty differs from calculated remaining — will be synced in re_bracket
+                self._audit(
+                    "order_monitor", symbol, "partial_fill_qty_mismatch",
+                    "broker_will_sync",
+                    fill_qty=fill_qty,
+                    local_qty=local_qty,
+                    calculated_remaining=remaining_qty,
+                    broker_qty=broker_qty,
+                )
         
         self.commentary.add_commentary(TradingCommentary(
             timestamp=datetime.now(),
@@ -4366,7 +4406,7 @@ class TradingEngineWithCommentary:
             old_bracket_id=old_bracket_id,
         )
         
-        # Re-bracket remaining shares
+        # Re-bracket remaining shares (will sync qty to broker truth if needed)
         await self._re_bracket_position(position)
     
     async def _re_bracket_position(self, position) -> None:
@@ -4375,27 +4415,65 @@ class TradingEngineWithCommentary:
         v-broker-flat-detection-2026-09-10: added broker position verification
         before placing bracket to prevent placing orders for positions that
         no longer exist at the broker.
+        
+        v-qty-sync-2026-09-11: sync local qty to broker truth before placing
+        bracket. If broker shows fewer shares than local, we had untracked
+        fills (partial fills, external closes). Sync to broker qty and
+        re-bracket with correct amount. If broker is flat, clean up.
         """
         symbol = position.symbol
         
-        # v-broker-flat-detection-2026-09-10: verify position still exists at broker
-        # before attempting to place bracket orders. This is a belt-and-suspenders
-        # check in addition to the one in _handle_bracket_rejected.
+        # v-broker-flat-detection-2026-09-10 + v-qty-sync-2026-09-11:
+        # Verify position qty at broker before placing bracket.
+        # If broker_qty != local_qty, sync local to broker truth.
         if self.mode == TradingMode.LIVE and self.schwab_client:
             broker_qty = await self._check_broker_position_qty(symbol)
+            local_qty = position.quantity
+            
             if broker_qty == 0:
                 logger.warning(
                     "re_bracket_aborted_broker_flat symbol=%s local_qty=%d — broker shows flat",
-                    symbol, position.quantity,
+                    symbol, local_qty,
                 )
                 self._audit(
                     "order_monitor", symbol, "re_bracket_aborted",
                     "broker_flat_pre_check",
-                    local_qty=position.quantity,
+                    local_qty=local_qty,
                 )
                 # Handle as external close instead of placing invalid bracket
                 await self._handle_broker_flat_detected(position, "re_bracket_pre_check_flat")
                 return
+            
+            # v-qty-sync-2026-09-11: sync local qty to broker truth
+            if broker_qty != local_qty:
+                logger.warning(
+                    "qty_desync_detected symbol=%s local_qty=%d broker_qty=%d — syncing to broker",
+                    symbol, local_qty, broker_qty,
+                )
+                self._audit(
+                    "order_monitor", symbol, "qty_desync",
+                    "sync_to_broker",
+                    local_qty=local_qty,
+                    broker_qty=broker_qty,
+                    delta=local_qty - broker_qty,
+                )
+                self.commentary.add_commentary(TradingCommentary(
+                    timestamp=datetime.now(),
+                    type=CommentaryType.WARNING,
+                    symbol=symbol,
+                    title=f"⚠️ Quantity Desync Detected",
+                    message=(
+                        f"Local qty {local_qty} ≠ broker qty {broker_qty}. "
+                        f"Syncing to broker truth. Possible untracked fills."
+                    ),
+                    data={
+                        'local_qty': local_qty,
+                        'broker_qty': broker_qty,
+                        'delta': local_qty - broker_qty,
+                    },
+                    importance=9
+                ))
+                position.quantity = broker_qty
         
         try:
             from schwab.orders.common import one_cancels_other, Duration, Session, OrderType
