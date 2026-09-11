@@ -255,7 +255,7 @@ async def get_dashboard():
         template_html = DASHBOARD_HTML_WITH_COMMENTARY  # fallback to import-time copy
 
     html = template_html.replace("</head>", f"{auth_script}</head>", 1)
-    return HTMLResponse(content=html)
+    return HTMLResponse(content=html, media_type="text/html; charset=utf-8")
 
 
 @app.get("/stream")
@@ -552,7 +552,7 @@ async def get_stream_view():
 </html>
 """
     html = html.replace("__APIKEY__", api_json)
-    return HTMLResponse(content=html)
+    return HTMLResponse(content=html, media_type="text/html; charset=utf-8")
 
 @app.post("/api/start")
 async def start_trading():
