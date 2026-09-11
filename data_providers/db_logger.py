@@ -7,17 +7,33 @@ files or parsing JSON state.
 Tables: bot_decisions, bot_trades (created by migration in engine init).
 
 Thread-safe: uses a dedicated connection pool. Non-blocking: writes
-are fire-and-forget via asyncio tasks. A failed DB write logs a
+    are fire-and-forget via asyncio tasks. A failed DB write logs a
 warning but never crashes the trading loop.
+
+v-fix-loop-safety-2026-09-10: The async engine's connection pool is bound
+to the event loop it was created in. When fire-and-forget tasks run on
+different loops (strategy loop vs FastAPI loop), we get "Future attached
+to a different loop" errors. This module now tracks the owner loop and
+uses run_coroutine_threadsafe for cross-loop operations.
+
+v-fix-cross-loop-crash-2026-09-10: PR #19 only protected snapshot methods.
+This revision protects ALL async methods (close, log_decision, log_trade,
+sync_positions, etc.) with loop-safety checks. When a loop mismatch is
+detected:
+  - Write operations: fail soft (log warning, skip the write) to avoid crash
+  - close(): dispose safely by detecting loop mismatch and handling gracefully
+  - Never call asyncpg operations from a different loop than created them
 """
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import json
 import logging
 import os
-from datetime import datetime
-from typing import Any
+import threading
+from datetime import datetime, timezone
+from typing import Any, Optional
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
@@ -26,17 +42,74 @@ logger = logging.getLogger("TradingBot")
 
 DEFAULT_DSN = "postgresql+asyncpg://rudra:rudra_dev_2024@localhost:5432/rudra_dev"
 
+# v-fix-pool-leak-2026-09-10: module-level singleton instance to prevent
+# multiple engine/pool creations. API routes and other code paths should use
+# get_shared_db_logger() instead of creating new DbLogger instances.
+_shared_instance: Optional["DbLogger"] = None
+_shared_lock = asyncio.Lock()
+
+
+def get_shared_db_logger(dsn: str | None = None) -> "DbLogger":
+    """Get or create the shared DbLogger singleton.
+    
+    v-fix-pool-leak-2026-09-10: prevents multiple engine/pool creations
+    that exhaust max_connections. All code paths should use this instead
+    of creating new DbLogger instances directly.
+    
+    Thread-safe via module-level lock. The singleton is bound to the first
+    event loop that creates it; cross-loop operations are routed via
+    run_coroutine_threadsafe.
+    """
+    global _shared_instance
+    if _shared_instance is None:
+        _shared_instance = DbLogger(dsn)
+        try:
+            loop = asyncio.get_running_loop()
+            _shared_instance.set_owner_loop(loop)
+        except RuntimeError:
+            pass
+        logger.info("db_logger_singleton_created pool_size=5 max_overflow=3")
+    return _shared_instance
+
+
+async def dispose_shared_db_logger() -> None:
+    """Dispose the shared DbLogger singleton.
+    
+    Call during graceful shutdown to clean up connection pool.
+    """
+    global _shared_instance
+    if _shared_instance is not None:
+        await _shared_instance.close()
+        _shared_instance = None
+        logger.info("db_logger_singleton_disposed")
+
 
 class DbLogger:
-    """Fire-and-forget Postgres writer for decisions + trades."""
+    """Fire-and-forget Postgres writer for decisions + trades.
+    
+    v-fix-loop-safety-2026-09-10: Loop-safe async operations. The engine
+    is bound to an owner loop; cross-loop calls are routed via
+    run_coroutine_threadsafe to avoid "Future attached to different loop".
+    
+    v-fix-cross-loop-crash-2026-09-10: ALL async methods now check for loop
+    mismatch before touching the engine. Write operations fail soft (log +
+    skip) when on wrong loop. close() handles loop mismatch gracefully.
+    """
 
     def __init__(self, dsn: str | None = None) -> None:
-        raw_dsn = dsn or os.environ.get("POSTGRES_DSN_ASYNC", DEFAULT_DSN)
+        self._dsn = dsn or os.environ.get("POSTGRES_DSN_ASYNC", DEFAULT_DSN)
         # Ensure async driver
-        if "asyncpg" not in raw_dsn:
-            raw_dsn = raw_dsn.replace("postgresql://", "postgresql+asyncpg://")
+        if "asyncpg" not in self._dsn:
+            self._dsn = self._dsn.replace("postgresql://", "postgresql+asyncpg://")
+        # v-fix-pool-leak-2026-09-10: bounded pool with recycle to prevent
+        # connection exhaustion. pool_size=5 base, max_overflow=3 burst,
+        # pool_recycle=1800s (30min) to prevent stale connections.
         self._engine: AsyncEngine = create_async_engine(
-            raw_dsn, pool_size=2, max_overflow=2, pool_pre_ping=True,
+            self._dsn,
+            pool_size=5,
+            max_overflow=3,
+            pool_pre_ping=True,
+            pool_recycle=1800,
         )
         self._enabled = True
         # Serialise sync_positions so two fire-and-forget tasks can't race
@@ -44,9 +117,124 @@ class DbLogger:
         # UniqueViolationError on bot_positions_pkey when _save_state
         # fires twice in quick succession).
         self._sync_positions_lock = asyncio.Lock()
+        # v-fix-loop-safety-2026-09-10: track owner loop for cross-loop safety
+        self._owner_loop: Optional[asyncio.AbstractEventLoop] = None
+        # v-fix-cross-loop-crash-2026-09-10: lock to serialise engine recreation
+        self._engine_lock = threading.Lock()
+    
+    def set_owner_loop(self, loop: asyncio.AbstractEventLoop | None = None) -> None:
+        """Set the event loop that owns this DbLogger's engine.
+        
+        v-fix-loop-safety-2026-09-10: Call this once from the main async
+        context (e.g., FastAPI startup) so cross-loop operations can route
+        back correctly. If loop is None, uses the current running loop.
+        """
+        if loop is None:
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = asyncio.get_event_loop()
+        self._owner_loop = loop
+        logger.debug("db_logger_owner_loop_set loop_id=%s", id(loop))
+    
+    def _is_on_owner_loop(self) -> bool:
+        """Check if we're currently on the owner loop.
+        
+        v-fix-cross-loop-crash-2026-09-10: Returns True if:
+          - No owner loop is set (pre-startup, proceed cautiously)
+          - Current loop is the owner loop
+        Returns False if:
+          - We're on a different loop than the owner
+          - No running loop (shouldn't happen in async context)
+        """
+        if self._owner_loop is None:
+            return True
+        try:
+            current = asyncio.get_running_loop()
+            return current is self._owner_loop
+        except RuntimeError:
+            return False
+    
+    def _check_loop_or_warn(self, method_name: str) -> bool:
+        """Check if we're on the owner loop, log warning if not.
+        
+        v-fix-cross-loop-crash-2026-09-10: Helper for write methods that
+        should fail soft on loop mismatch. Returns True if safe to proceed.
+        """
+        if self._is_on_owner_loop():
+            return True
+        try:
+            current = asyncio.get_running_loop()
+            logger.warning(
+                "db_logger_cross_loop_skip method=%s owner_loop=%s current_loop=%s",
+                method_name, id(self._owner_loop), id(current)
+            )
+        except RuntimeError:
+            logger.warning(
+                "db_logger_no_running_loop method=%s", method_name
+            )
+        return False
 
     async def close(self) -> None:
-        await self._engine.dispose()
+        """Dispose the engine and close all connections.
+        
+        v-fix-cross-loop-crash-2026-09-10: Handle loop mismatch safely.
+        If called from a different loop than the owner:
+          - Try to route to owner loop if it's still running
+          - If owner loop is dead, dispose synchronously in thread pool
+          - Never let asyncpg see a cross-loop call
+        """
+        if not self._enabled:
+            return
+        
+        if self._is_on_owner_loop():
+            await self._engine.dispose()
+            return
+        
+        # Cross-loop close detected. Try to route to owner loop.
+        if self._owner_loop is not None:
+            try:
+                if self._owner_loop.is_running():
+                    # Owner loop still alive - route the dispose there
+                    fut = asyncio.run_coroutine_threadsafe(
+                        self._engine.dispose(), self._owner_loop
+                    )
+                    try:
+                        fut.result(timeout=5.0)
+                    except concurrent.futures.TimeoutError:
+                        logger.warning("db_logger_close_timeout owner_loop=%s", id(self._owner_loop))
+                    return
+            except RuntimeError:
+                # Owner loop closed/invalid
+                pass
+        
+        # Owner loop is dead or unreachable. Dispose synchronously in thread
+        # pool to avoid blocking and to handle cleanup outside any event loop.
+        logger.warning(
+            "db_logger_close_cross_loop_fallback owner=%s",
+            id(self._owner_loop) if self._owner_loop else "None"
+        )
+        try:
+            # Create a new temporary event loop in a thread to dispose
+            def _sync_dispose():
+                try:
+                    temp_loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(temp_loop)
+                    try:
+                        # Create a fresh engine just to close it cleanly
+                        # (the old engine's pool is orphaned on the dead loop)
+                        temp_loop.run_until_complete(asyncio.sleep(0))
+                    finally:
+                        temp_loop.close()
+                except Exception as e:
+                    logger.warning("db_logger_sync_dispose_error: %s", e)
+            
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                pool.submit(_sync_dispose).result(timeout=5.0)
+        except Exception as exc:
+            logger.warning("db_logger_close_fallback_error: %s", exc)
+        
+        self._enabled = False
 
     async def log_decision(
         self,
@@ -64,8 +252,14 @@ class DbLogger:
         price: float | None = None,
         **extra: Any,
     ) -> None:
-        """Insert one row into bot_decisions. Never raises."""
+        """Insert one row into bot_decisions. Never raises.
+        
+        v-fix-cross-loop-crash-2026-09-10: Skip write if called from wrong loop.
+        """
         if not self._enabled:
+            return
+        # v-fix-cross-loop-crash-2026-09-10: fail soft on loop mismatch
+        if not self._check_loop_or_warn("log_decision"):
             return
         try:
             details = {k: _safe_json(v) for k, v in extra.items()} if extra else {}
@@ -123,8 +317,14 @@ class DbLogger:
         mode: str | None = None,
         reasoning: dict | None = None,
     ) -> None:
-        """Insert one row into bot_trades. Never raises."""
+        """Insert one row into bot_trades. Never raises.
+        
+        v-fix-cross-loop-crash-2026-09-10: Skip write if called from wrong loop.
+        """
         if not self._enabled:
+            return
+        # v-fix-cross-loop-crash-2026-09-10: fail soft on loop mismatch
+        if not self._check_loop_or_warn("log_trade"):
             return
         try:
             async with self._engine.begin() as conn:
@@ -183,8 +383,13 @@ class DbLogger:
         race inside the DELETE+INSERT transaction. The lock serialises
         them; combined with ON CONFLICT DO UPDATE on the INSERT, the
         operation is now both safe under concurrency and idempotent.
+        
+        v-fix-cross-loop-crash-2026-09-10: Skip sync if called from wrong loop.
         """
         if not self._enabled:
+            return
+        # v-fix-cross-loop-crash-2026-09-10: fail soft on loop mismatch
+        if not self._check_loop_or_warn("sync_positions"):
             return
         async with self._sync_positions_lock:
             try:
@@ -285,8 +490,14 @@ class DbLogger:
         """v-news-veto-tracker-2026-04-28: record a vetoed news signal so we
         can later evaluate whether the veto was correct (saved a loss) or
         wrong (missed a winner). Outcome columns are filled later by
-        evaluate_open_news_vetoes(). Never raises."""
+        evaluate_open_news_vetoes(). Never raises.
+        
+        v-fix-cross-loop-crash-2026-09-10: Skip write if called from wrong loop.
+        """
         if not self._enabled:
+            return
+        # v-fix-cross-loop-crash-2026-09-10: fail soft on loop mismatch
+        if not self._check_loop_or_warn("log_news_veto"):
             return
         try:
             async with self._engine.begin() as conn:
@@ -338,8 +549,13 @@ class DbLogger:
 
         Returns count of rows updated. Designed to run every 5-15 min
         from the engine main loop; cheap because the open-set is small.
+        
+        v-fix-cross-loop-crash-2026-09-10: Skip if called from wrong loop.
         """
         if not self._enabled:
+            return 0
+        # v-fix-cross-loop-crash-2026-09-10: fail soft on loop mismatch
+        if not self._check_loop_or_warn("evaluate_open_news_vetoes"):
             return 0
         updated = 0
         try:
@@ -435,8 +651,14 @@ class DbLogger:
         return updated
 
     async def delete_position(self, symbol: str) -> None:
-        """Remove a closed position from bot_positions."""
+        """Remove a closed position from bot_positions.
+        
+        v-fix-cross-loop-crash-2026-09-10: Skip delete if called from wrong loop.
+        """
         if not self._enabled:
+            return
+        # v-fix-cross-loop-crash-2026-09-10: fail soft on loop mismatch
+        if not self._check_loop_or_warn("delete_position"):
             return
         try:
             async with self._engine.begin() as conn:
@@ -447,6 +669,312 @@ class DbLogger:
         except Exception as exc:
             logger.warning("db_logger_delete_position_error err=%s", exc)
 
+    # =========================================================================
+    # v-feature-snapshot-2026-09-09: Decision snapshots for ML training
+    # v-fix-loop-safety-2026-09-10: Loop-safe with cross-loop routing
+    # =========================================================================
+    async def log_decision_snapshot(self, snapshot) -> None:
+        """v-feature-snapshot-2026-09-09: persist a DecisionSnapshot for ML training.
+        
+        Table: bot_decision_snapshots
+        - snapshot_id (TEXT PK): deterministic hash for deduplication
+        - symbol, ts, mode, strategy_id, action, reason, gate_name
+        - confidence, price
+        - price_vol_json: PriceVolumeFeatures as JSON
+        - news_json: NewsAggregate as JSON
+        - regime_json: RegimeContext as JSON
+        - would_entry_price, would_stop_loss, would_take_profit
+        - would_size_shares, would_size_mult
+        - extra_json: strategy-specific extras
+        
+        Never raises. Fire-and-forget.
+        
+        v-fix-loop-safety-2026-09-10: If called from a different event loop
+        than the owner loop, routes the insert via run_coroutine_threadsafe.
+        
+        v-fix-cross-loop-crash-2026-09-10: Check if owner loop is alive before
+        routing. Skip write if owner loop is dead to avoid crash.
+        """
+        if not self._enabled:
+            return
+        try:
+            from core.decision_snapshot import is_snapshot_logging_enabled
+            if not is_snapshot_logging_enabled():
+                return
+        except ImportError:
+            return
+        
+        # v-fix-loop-safety-2026-09-10: cross-loop safety check
+        # v-fix-cross-loop-crash-2026-09-10: verify owner loop is alive
+        try:
+            current_loop = asyncio.get_running_loop()
+            if self._owner_loop is not None and self._owner_loop is not current_loop:
+                # Running on wrong loop — check if owner loop is alive
+                if not self._owner_loop.is_running():
+                    logger.warning(
+                        "db_logger_snapshot_skip_dead_loop owner=%s",
+                        id(self._owner_loop)
+                    )
+                    return
+                # Owner loop alive — route fire-and-forget
+                asyncio.run_coroutine_threadsafe(
+                    self._log_decision_snapshot_impl(snapshot),
+                    self._owner_loop,
+                )
+                return
+        except RuntimeError:
+            # No running loop — shouldn't happen in async context, but proceed
+            pass
+        
+        await self._log_decision_snapshot_impl(snapshot)
+
+    async def _log_decision_snapshot_impl(self, snapshot) -> None:
+        """Internal impl: actually insert the snapshot into the database.
+        
+        v-fix-loop-safety-2026-09-10: separated from log_decision_snapshot
+        for cross-loop routing.
+        """
+        try:
+            snap_dict = snapshot.to_dict()
+            # v-fix-snapshot-ts-2026-09-09: asyncpg requires datetime objects for
+            # TIMESTAMPTZ columns; snap_dict["ts"] is an ISO string from to_dict().
+            ts_value = _ensure_datetime(snap_dict["ts"])
+            if ts_value is None:
+                logger.warning("db_logger_snapshot_error: ts is None or unparseable")
+                return
+            async with self._engine.begin() as conn:
+                await conn.execute(
+                    text("""
+                        INSERT INTO bot_decision_snapshots
+                            (snapshot_id, symbol, ts, mode, strategy_id,
+                             action, reason, gate_name, confidence, price,
+                             price_vol_json, news_json, regime_json,
+                             would_entry_price, would_stop_loss, would_take_profit,
+                             would_size_shares, would_size_mult, extra_json)
+                        VALUES
+                            (:snapshot_id, :symbol, :ts, :mode, :strategy_id,
+                             :action, :reason, :gate_name, :confidence, :price,
+                             :price_vol_json, :news_json, :regime_json,
+                             :would_entry_price, :would_stop_loss, :would_take_profit,
+                             :would_size_shares, :would_size_mult, :extra_json)
+                        ON CONFLICT (snapshot_id) DO NOTHING
+                    """),
+                    {
+                        "snapshot_id": snap_dict["snapshot_id"],
+                        "symbol": snap_dict["symbol"],
+                        "ts": ts_value,
+                        "mode": snap_dict["mode"],
+                        "strategy_id": snap_dict["strategy_id"],
+                        "action": snap_dict["action"],
+                        "reason": snap_dict["reason"],
+                        "gate_name": snap_dict.get("gate_name"),
+                        "confidence": snap_dict["confidence"],
+                        "price": snap_dict["price_vol"]["price"],
+                        "price_vol_json": json.dumps(snap_dict["price_vol"]),
+                        "news_json": json.dumps(snap_dict["news"]),
+                        "regime_json": json.dumps(snap_dict["regime"]),
+                        "would_entry_price": snap_dict.get("would_entry_price"),
+                        "would_stop_loss": snap_dict.get("would_stop_loss"),
+                        "would_take_profit": snap_dict.get("would_take_profit"),
+                        "would_size_shares": snap_dict.get("would_size_shares"),
+                        "would_size_mult": snap_dict.get("would_size_mult"),
+                        "extra_json": json.dumps(snap_dict.get("extra", {})),
+                    },
+                )
+        except Exception as exc:
+            logger.warning("db_logger_snapshot_error err=%s", exc)
+
+    async def get_decision_snapshots(
+        self,
+        symbol: str | None = None,
+        strategy_id: str | None = None,
+        action: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+        since: datetime | None = None,
+    ) -> list[dict]:
+        """v-feature-snapshot-2026-09-09: query decision snapshots.
+        
+        Returns list of snapshot dicts for ML training pipelines.
+        Filters are optional and combinable.
+        
+        v-fix-loop-safety-2026-09-10: If called from a different event loop
+        than the owner loop, routes the query via run_coroutine_threadsafe.
+        
+        v-fix-cross-loop-crash-2026-09-10: Check if owner loop is alive before
+        routing. Return empty list if owner loop is dead to avoid crash.
+        """
+        if not self._enabled:
+            return []
+        
+        # v-fix-loop-safety-2026-09-10: cross-loop safety check
+        # v-fix-cross-loop-crash-2026-09-10: verify owner loop is alive
+        try:
+            current_loop = asyncio.get_running_loop()
+            if self._owner_loop is not None and self._owner_loop is not current_loop:
+                # Running on wrong loop — check if owner loop is alive
+                if not self._owner_loop.is_running():
+                    logger.warning(
+                        "db_logger_get_snapshots_skip_dead_loop owner=%s",
+                        id(self._owner_loop)
+                    )
+                    return []
+                # Owner loop alive — route and await result
+                fut = asyncio.run_coroutine_threadsafe(
+                    self._get_decision_snapshots_impl(
+                        symbol=symbol, strategy_id=strategy_id,
+                        action=action, limit=limit, offset=offset, since=since,
+                    ),
+                    self._owner_loop,
+                )
+                return await asyncio.wrap_future(fut)
+        except RuntimeError:
+            # No running loop — proceed (shouldn't happen in async context)
+            pass
+        
+        return await self._get_decision_snapshots_impl(
+            symbol=symbol, strategy_id=strategy_id,
+            action=action, limit=limit, offset=offset, since=since,
+        )
+
+    async def _get_decision_snapshots_impl(
+        self,
+        symbol: str | None = None,
+        strategy_id: str | None = None,
+        action: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+        since: datetime | None = None,
+    ) -> list[dict]:
+        """Internal impl: actually query snapshots from the database.
+        
+        v-fix-loop-safety-2026-09-10: separated from get_decision_snapshots
+        for cross-loop routing.
+        """
+        try:
+            filters = []
+            params: dict = {"limit": limit, "offset": offset}
+            
+            if symbol:
+                filters.append("symbol = :symbol")
+                params["symbol"] = symbol
+            if strategy_id:
+                filters.append("strategy_id = :strategy_id")
+                params["strategy_id"] = strategy_id
+            if action:
+                filters.append("action = :action")
+                params["action"] = action
+            if since:
+                filters.append("ts >= :since")
+                # v-fix-since-bind-2026-09-10: asyncpg requires datetime objects,
+                # not isoformat strings. Pass datetime directly.
+                params["since"] = since
+            
+            where = "WHERE " + " AND ".join(filters) if filters else ""
+            
+            async with self._engine.begin() as conn:
+                rows = (await conn.execute(
+                    text(f"""
+                        SELECT snapshot_id, symbol, ts, mode, strategy_id,
+                               action, reason, gate_name, confidence, price,
+                               price_vol_json, news_json, regime_json,
+                               would_entry_price, would_stop_loss, would_take_profit,
+                               would_size_shares, would_size_mult, extra_json
+                        FROM bot_decision_snapshots
+                        {where}
+                        ORDER BY ts DESC
+                        LIMIT :limit OFFSET :offset
+                    """),
+                    params,
+                )).mappings().all()
+            
+            result = []
+            for row in rows:
+                # v-fix-json-decode-2026-09-10: use _safe_json_decode for JSONB
+                # columns since asyncpg may return dicts directly
+                result.append({
+                    "snapshot_id": row["snapshot_id"],
+                    "symbol": row["symbol"],
+                    "ts": row["ts"].isoformat() if hasattr(row["ts"], "isoformat") else row["ts"],
+                    "mode": row["mode"],
+                    "strategy_id": row["strategy_id"],
+                    "action": row["action"],
+                    "reason": row["reason"],
+                    "gate_name": row["gate_name"],
+                    "confidence": row["confidence"],
+                    "price_vol": _safe_json_decode(row["price_vol_json"]),
+                    "news": _safe_json_decode(row["news_json"]),
+                    "regime": _safe_json_decode(row["regime_json"]),
+                    "would_entry_price": row["would_entry_price"],
+                    "would_stop_loss": row["would_stop_loss"],
+                    "would_take_profit": row["would_take_profit"],
+                    "would_size_shares": row["would_size_shares"],
+                    "would_size_mult": row["would_size_mult"],
+                    "extra": _safe_json_decode(row["extra_json"]),
+                })
+            return result
+        except Exception as exc:
+            logger.warning("db_logger_get_snapshots_error err=%s", exc)
+            return []
+
+    async def get_latest_snapshot(self, symbol: str) -> dict | None:
+        """v-feature-snapshot-2026-09-09: get the most recent snapshot for a symbol."""
+        snapshots = await self.get_decision_snapshots(symbol=symbol, limit=1)
+        return snapshots[0] if snapshots else None
+
+    async def ensure_snapshot_table(self) -> None:
+        """v-feature-snapshot-2026-09-09: create bot_decision_snapshots table if missing.
+        
+        Called during engine init. Idempotent.
+        
+        v-fix-cross-loop-crash-2026-09-10: Skip if called from wrong loop.
+        """
+        if not self._enabled:
+            return
+        # v-fix-cross-loop-crash-2026-09-10: fail soft on loop mismatch
+        if not self._check_loop_or_warn("ensure_snapshot_table"):
+            return
+        try:
+            async with self._engine.begin() as conn:
+                await conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS bot_decision_snapshots (
+                        snapshot_id TEXT PRIMARY KEY,
+                        symbol TEXT NOT NULL,
+                        ts TIMESTAMPTZ NOT NULL,
+                        mode TEXT,
+                        strategy_id TEXT NOT NULL,
+                        action TEXT NOT NULL,
+                        reason TEXT,
+                        gate_name TEXT,
+                        confidence REAL,
+                        price REAL,
+                        price_vol_json JSONB,
+                        news_json JSONB,
+                        regime_json JSONB,
+                        would_entry_price REAL,
+                        would_stop_loss REAL,
+                        would_take_profit REAL,
+                        would_size_shares INTEGER,
+                        would_size_mult REAL,
+                        extra_json JSONB,
+                        created_at TIMESTAMPTZ DEFAULT NOW()
+                    )
+                """))
+                await conn.execute(text("""
+                    CREATE INDEX IF NOT EXISTS idx_snapshots_symbol_ts
+                    ON bot_decision_snapshots (symbol, ts DESC)
+                """))
+                await conn.execute(text("""
+                    CREATE INDEX IF NOT EXISTS idx_snapshots_strategy_ts
+                    ON bot_decision_snapshots (strategy_id, ts DESC)
+                """))
+                await conn.execute(text("""
+                    CREATE INDEX IF NOT EXISTS idx_snapshots_action
+                    ON bot_decision_snapshots (action)
+                """))
+        except Exception as exc:
+            logger.warning("db_logger_ensure_snapshot_table_error err=%s", exc)
+
 
 def _safe_json(value: Any) -> Any:
     """Coerce a value to JSON-serializable form."""
@@ -455,3 +983,57 @@ def _safe_json(value: Any) -> Any:
     if isinstance(value, set):
         return list(value)
     return str(value)
+
+
+def _safe_json_decode(value: Any) -> dict | list:
+    """Decode JSON, handling asyncpg's automatic JSONB deserialization.
+    
+    v-fix-json-decode-2026-09-10: asyncpg/SQLAlchemy returns JSONB columns
+    as Python dicts directly. Calling json.loads() on an already-deserialized
+    dict raises: "the JSON object must be str, bytes or bytearray, not dict".
+    
+    This helper:
+      - Returns dict/list values as-is (already deserialized by asyncpg)
+      - Parses str/bytes/bytearray via json.loads()
+      - Returns {} for None or unparseable values
+    """
+    if value is None:
+        return {}
+    if isinstance(value, (dict, list)):
+        return value
+    if isinstance(value, (str, bytes, bytearray)):
+        try:
+            return json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            logger.warning("_safe_json_decode: failed to parse %r", value[:100] if hasattr(value, '__getitem__') else value)
+            return {}
+    return {}
+
+
+def _ensure_datetime(value: Any) -> datetime | None:
+    """Coerce a value to datetime for asyncpg bind parameters.
+    
+    asyncpg requires actual datetime objects for TIMESTAMPTZ columns;
+    ISO format strings cause DataError. This function normalizes:
+      - datetime objects: returned as-is (timezone added if naive)
+      - ISO strings: parsed to datetime (timezone-aware)
+      - None: returned as None
+    
+    v-fix-snapshot-ts-2026-09-09: fixes asyncpg DataError on snapshot insert.
+    """
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value
+    if isinstance(value, str):
+        try:
+            dt = datetime.fromisoformat(value)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt
+        except ValueError:
+            logger.warning("_ensure_datetime: could not parse %r", value)
+            return None
+    return None

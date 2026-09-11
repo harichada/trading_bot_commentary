@@ -50,20 +50,23 @@ class TestFillCreatesPosition:
         assert "self.pending_orders.pop(order_id, None)" in block
 
     def test_sweep_signal_assignment_hoisted(self):
-        """The sweep path's `signal = order_data['signal']` must appear
-        BEFORE the first reference to `signal.entry_price`."""
+        """The sweep path's signal assignment must appear BEFORE
+        the first reference to `signal.entry_price`.
+        
+        Note: v-guard-missing-signal-2026-09-10 changed the access from
+        order_data['signal'] to order_data.get('signal') to avoid
+        KeyError on close orders without signal metadata."""
         src = ENGINE_PATH.read_text()
         # Look for the v-tag block
         marker = "v-sweep-signal-scope-fix-2026-05-08"
         assert marker in src
         idx = src.index(marker)
-        block = src[idx : idx + 1500]
-        # The fix is "signal = order_data['signal']" appears at the top
-        # of the FILLED branch, before fill_price assignment
-        assign_pos = block.find("signal = order_data['signal']")
+        block = src[idx : idx + 2500]
+        # v-guard-missing-signal-2026-09-10: changed to .get('signal')
+        assign_pos = block.find("signal = order_data.get('signal')")
         fill_price_pos = block.find("fill_price = signal.entry_price")
-        assert assign_pos != -1
-        assert fill_price_pos != -1
+        assert assign_pos != -1, "signal assignment not found"
+        assert fill_price_pos != -1, "fill_price assignment not found"
         assert assign_pos < fill_price_pos, (
             "signal must be assigned before fill_price reads signal.entry_price"
         )
@@ -2506,6 +2509,65 @@ class TestOwnershipSurvivesRestart:
             "restore guard must check side + quantity identity"
         )
 
+    # v-ownership-survives-restart-2026-09-10: additional tests for
+    # _update_and_track_real_positions path which was missing the
+    # saved-state check. This caused bot-opened positions to be demoted
+    # to external on restart (F/ERAS/ONDS/COO incident).
+
+    def test_update_track_also_checks_saved_meta(self):
+        """_update_and_track_real_positions must also check _saved_positions_meta
+        when creating new positions (startup path), not just sync_positions_with_schwab."""
+        src = ENGINE_PATH.read_text()
+        anchor = src.find("async def _update_and_track_real_positions")
+        assert anchor != -1, "_update_and_track_real_positions not found"
+        body = src[anchor: anchor + 12000]  # larger window to cover full function
+        assert "_saved_positions_meta" in body, (
+            "_update_and_track_real_positions must check saved metadata — "
+            "without this, bot-opened positions are demoted to external on restart"
+        )
+        assert "position_ownership_restored" in body or "update_track_restore" in body, (
+            "restore path must emit an audit line for traceability"
+        )
+
+    def test_update_track_restore_has_identity_guards(self):
+        """The restore logic in _update_and_track_real_positions must verify
+        side AND quantity match before restoring ownership."""
+        src = ENGINE_PATH.read_text()
+        anchor = src.find("v-ownership-survives-restart-2026-09-10")
+        assert anchor != -1, "2026-09-10 fix marker not found"
+        window = src[anchor: anchor + 2000]
+        assert "_restore_managed" in window, "restore logic variable missing"
+        assert "'side'" in window or "side" in window
+        assert "'quantity'" in window or "quantity" in window
+
+    def test_long_term_stays_unmanaged_on_restore(self):
+        """is_long_term positions must NOT be auto-flipped to managed_by_bot=True
+        even if the saved state has managed_by_bot=True — LT holds are user-
+        designated hands-off positions (MU, SNAP, HQGE, SPCX)."""
+        src = ENGINE_PATH.read_text()
+        anchor = src.find("v-ownership-survives-restart-2026-09-10")
+        assert anchor != -1
+        window = src[anchor: anchor + 2500]
+        assert "is_long_term" in window, (
+            "restore path must check is_long_term flag — LT holds must stay "
+            "hands-off regardless of managed_by_bot saved state"
+        )
+        assert "_is_lt" in window or "is_long_term" in window
+
+    def test_new_unknown_position_stays_unmanaged(self):
+        """Positions not in saved state must default to unmanaged/external —
+        the safe default for unknown Schwab positions (newly added outside bot)."""
+        src = ENGINE_PATH.read_text()
+        anchor = src.find("v-ownership-survives-restart-2026-09-10")
+        assert anchor != -1
+        window = src[anchor: anchor + 5500]  # larger window for full else block
+        assert "managed_by_bot=False" in window, (
+            "positions without saved state must default to unmanaged"
+        )
+        assert "is_external = True" in window, (
+            "positions without saved state must be marked external"
+        )
+
 
 # ── v-news-socket-timeouts-2026-06-10 ────────────────────────────────
 
@@ -2758,3 +2820,119 @@ class TestEmergencyStopBotOnly:
         block = src[anchor: anchor + 1400]
         assert "_emrg_pnl" in block, (
             "trip must use the circuit-selected _emrg_pnl variable")
+
+
+# ── v-bracket-rejected-audit-fix-2026-09-10 ──────────────────────────
+
+class TestBracketRejectedAuditFix:
+    """2026-09-10 P0: _handle_bracket_rejected passed 'reason' both as
+    a positional arg (4th position) AND as a keyword arg in **details,
+    causing TypeError: _audit() got multiple values for argument 'reason'.
+
+    The _audit signature is:
+        def _audit(self, component: str, symbol, action: str, reason: str, **details)
+
+    Any call that passes reason=... as a keyword will blow up because
+    the 4th positional already fills that slot. The fix renames the
+    keyword to rejection_detail (or similar) to avoid collision.
+    """
+
+    def test_audit_signature_has_reason_as_positional(self):
+        """Verify _audit takes reason as its 4th positional arg."""
+        src = ENGINE_PATH.read_text()
+        sig_match = re.search(
+            r"def _audit\(self,\s*component:\s*str,\s*symbol,\s*action:\s*str,\s*reason:\s*str,",
+            src,
+        )
+        assert sig_match is not None, "_audit signature changed unexpectedly"
+
+    def test_no_audit_call_passes_reason_as_keyword(self):
+        """No _audit call should pass reason=... as a keyword argument,
+        since reason is a required positional parameter."""
+        src = ENGINE_PATH.read_text()
+        bad_calls = re.findall(
+            r"self\._audit\([^)]*,\s*reason\s*=",
+            src,
+            re.DOTALL,
+        )
+        assert bad_calls == [], (
+            f"_audit calls with reason=... keyword found (will cause TypeError): "
+            f"{bad_calls[:3]}"
+        )
+
+    def test_bracket_rejected_uses_rejection_detail(self):
+        """_handle_bracket_rejected must pass rejection info as
+        rejection_detail, not reason."""
+        src = ENGINE_PATH.read_text()
+        anchor = src.find("async def _handle_bracket_rejected")
+        assert anchor != -1, "_handle_bracket_rejected not found"
+        block = src[anchor: anchor + 600]
+        assert "rejection_detail=" in block, (
+            "bracket_rejected should use rejection_detail= for broker message"
+        )
+        assert "reason=" not in block.split("_audit")[1].split(")")[0], (
+            "bracket_rejected _audit call must not have reason= keyword"
+        )
+
+
+# ── v-guard-missing-signal-2026-09-10 ─────────────────────────────────
+
+class TestCloseOrderSignalKeyError:
+    """2026-09-10 hotfix: _check_order_status threw KeyError: 'signal'
+    on FILLED close orders (e.g. day_trade flatten fills on FCX).
+
+    Close orders (from _close_real_position) only carry:
+        {'symbol': ..., 'type': 'CLOSE', 'quantity': ..., 'status': ..., 'placed_time': ...}
+
+    Entry orders carry a 'signal' key with the full signal object.
+    The FILLED handler assumed 'signal' was always present.
+
+    Fix: use order_data.get('signal') and early-exit with cleanup
+    when signal is None.
+    """
+
+    def test_signal_accessed_with_get_in_check_order_status(self):
+        """_check_order_status must use .get('signal') not ['signal']."""
+        src = ENGINE_PATH.read_text()
+        marker = "v-guard-missing-signal-2026-09-10"
+        assert marker in src, "v-tag not found in engine.py"
+        idx = src.index(marker)
+        block = src[idx : idx + 500]
+        assert "signal = order_data.get('signal')" in block, (
+            "signal must be accessed with .get() to avoid KeyError"
+        )
+
+    def test_signal_none_guard_present(self):
+        """When signal is None, the code must early-exit without
+        trying to access signal attributes."""
+        src = ENGINE_PATH.read_text()
+        marker = "v-guard-missing-signal-2026-09-10"
+        idx = src.index(marker)
+        block = src[idx : idx + 1200]
+        assert "if signal is None:" in block, (
+            "must guard against signal being None"
+        )
+        assert "self.pending_orders.pop(order_id, None)" in block, (
+            "must clean up pending_orders when signal is None"
+        )
+        assert "continue" in block, (
+            "must skip the rest of the FILLED handler when signal is None"
+        )
+
+    def test_no_bare_signal_key_access_in_filled_handler(self):
+        """After the fix, no order_data['signal'] (in actual code, not
+        comments) should remain in the FILLED status handler."""
+        src = ENGINE_PATH.read_text()
+        filled_marker = "if status == 'FILLED':"
+        filled_idx = src.index(filled_marker, src.index("async def _check_order_status"))
+        elif_marker = "elif status in ['CANCELED', 'REJECTED', 'EXPIRED']:"
+        elif_idx = src.index(elif_marker, filled_idx)
+        filled_block = src[filled_idx:elif_idx]
+        lines = filled_block.split('\n')
+        code_lines = [l for l in lines if not l.strip().startswith('#')]
+        code_only = '\n'.join(code_lines)
+        bad_accesses = re.findall(r"order_data\['signal'\]", code_only)
+        assert bad_accesses == [], (
+            f"Bare order_data['signal'] still present in FILLED handler code: "
+            f"will cause KeyError on close orders"
+        )

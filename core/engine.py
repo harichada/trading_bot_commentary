@@ -41,7 +41,9 @@ from risk.manager import RiskManagerWithCommentary
 from risk.backtest import PerformanceAnalyzer
 from strategies.builtin import (BreakoutStrategyWithCommentary,
                                 MeanReversionStrategyWithCommentary,
-                                MomentumStrategyWithCommentary)
+                                MomentumStrategyWithCommentary,
+                                DayTradeMomentumStrategy,
+                                ORBContractionRVOLStrategy)
 from strategies.news_strategy import FreeNewsSignalStrategy
 from data_providers.realtime import RealTimeDataProvider, DummyDataProvider
 from data_providers.schwab import SchwabDataProvider
@@ -317,6 +319,39 @@ class TradingEngineWithCommentary:
             self.strategies.append(MomentumStrategyWithCommentary(self.commentary))
         self.strategies.append(FreeNewsSignalStrategy(self.commentary))
         
+        # v-day-trade-momentum-desk-2026-09-10: supervised day-trade momentum
+        # for Yahoo day_gainers/losers/most-active movers. Entry logic is like
+        # a human scalper: RS vs SPY, volume surge, pullback/breakout confirmation.
+        # Market context gates are SIZE-BASED (reduce, don't hard-block) for this
+        # lane. News is OPTIONAL (confirmation/size bump, not a veto).
+        # Enabled by ENABLE_DAY_TRADE_MOMENTUM (default True).
+        if Config().ENABLE_DAY_TRADE_MOMENTUM:
+            self.strategies.append(DayTradeMomentumStrategy(self.commentary))
+            logger.info("day_trade_momentum: strategy enabled")
+        
+        # v-orb-prototype-2026-09-10: ORB (Opening Range Breakout) + volatility
+        # contraction + relative volume (RVOL) prototype strategy.
+        # Hari APPROVED order: #1 ORB+contraction+RVOL (this), then #2 RVOL
+        # continuation, then #3 Gao late-day.
+        #
+        # CRITICAL: This strategy HARD-SKIPS when regime is risk_off (NOT
+        # size-down). Unlike momentum which reduces size, ORB does NOT signal
+        # at all in risk_off — ORB is a directional bet that doesn't make
+        # sense when the market is in panic mode.
+        #
+        # Primary symbols: SPY/QQQ first (Hari instruction).
+        # LIVE entries gated by ORB_LIVE_ENTRIES_ENABLED (default False).
+        if Config().ENABLE_ORB_STRATEGY:
+            self.strategies.append(ORBContractionRVOLStrategy(self.commentary))
+            logger.info("orb_contraction_rvol: strategy enabled (sim_shadow=%s, live=%s)",
+                        Config().ORB_SIM_SHADOW_ENABLED,
+                        Config().ORB_LIVE_ENTRIES_ENABLED)
+        
+        # v-feature-snapshot-2026-09-09: wire engine ref on all strategies
+        # so they can emit DecisionSnapshots via db_logger
+        for strat in self.strategies:
+            strat._engine_ref = self
+        
 	    # Initialize brain and exit manager
         self.brain = TradingBrain()
         # v-brain-session-reset-2026-05-19: pull greed_level/fear_level 60%
@@ -573,6 +608,105 @@ class TradingEngineWithCommentary:
                     position, "thesis_revalidation_broken"
                 )
 
+    async def _check_news_thesis_flip(
+        self, symbol: str, position, current_price: float
+    ) -> bool:
+        """v-newsbus-gates-2026-09-09: check if fresh news has flipped against position.
+        
+        Uses the NewsBus directly (no external API call) to detect when
+        sentiment has reversed against an open news-driven position.
+        
+        Returns True if the position should be flagged for exit (thesis flipped).
+        Returns False otherwise (no flip, non-news trade, or feature disabled).
+        
+        Gates:
+          - ENABLE_NEWS_THESIS_EXIT must be True
+          - Position must be from a news strategy
+          - Fresh news (< NEWS_GATE_MAX_AGE_SEC) must exist
+          - Sentiment must have flipped past NEWS_THESIS_EXIT_SENTIMENT_FLIP
+        """
+        cfg = Config()
+        if not cfg.ENABLE_NEWS_THESIS_EXIT:
+            return False
+        
+        # Only applies to news-driven positions
+        strategy = (getattr(position, 'reasoning', {}) or {}).get('strategy', '')
+        if 'news' not in strategy.lower():
+            return False
+        
+        # Need a NewsBus to check
+        if self._news_bus is None:
+            return False
+        
+        try:
+            # Get aggregate sentiment from fresh news
+            agg = await self._news_bus.get_aggregate_sentiment(
+                symbol,
+                max_age_sec=cfg.NEWS_GATE_MAX_AGE_SEC,
+            )
+            
+            if agg['article_count'] == 0:
+                return False  # No fresh news to evaluate
+            
+            avg_sentiment = agg['avg_sentiment']
+            flip_threshold = cfg.NEWS_THESIS_EXIT_SENTIMENT_FLIP
+            
+            # Detect flip: long needs bearish news, short needs bullish news
+            if position.side == 'long' and avg_sentiment < -flip_threshold:
+                self._audit(
+                    "news_thesis_flip", symbol, "flip_detected",
+                    "bearish_news_on_long",
+                    side=position.side,
+                    avg_sentiment=round(avg_sentiment, 3),
+                    flip_threshold=flip_threshold,
+                    article_count=agg['article_count'],
+                )
+                self.commentary.add_commentary(TradingCommentary(
+                    timestamp=datetime.now(),
+                    type=CommentaryType.WARNING,
+                    symbol=symbol,
+                    title=f"⚠️ News Thesis Flip — {symbol} LONG",
+                    message=(
+                        f"Fresh news sentiment has turned bearish ({avg_sentiment:+.2f}) "
+                        f"against your LONG position.\n"
+                        f"  Articles: {agg['article_count']}\n"
+                        f"  Flip threshold: {-flip_threshold:+.2f}\n"
+                        "Position flagged for early exit."
+                    ),
+                    importance=8,
+                ))
+                return True
+            
+            if position.side == 'short' and avg_sentiment > flip_threshold:
+                self._audit(
+                    "news_thesis_flip", symbol, "flip_detected",
+                    "bullish_news_on_short",
+                    side=position.side,
+                    avg_sentiment=round(avg_sentiment, 3),
+                    flip_threshold=flip_threshold,
+                    article_count=agg['article_count'],
+                )
+                self.commentary.add_commentary(TradingCommentary(
+                    timestamp=datetime.now(),
+                    type=CommentaryType.WARNING,
+                    symbol=symbol,
+                    title=f"⚠️ News Thesis Flip — {symbol} SHORT",
+                    message=(
+                        f"Fresh news sentiment has turned bullish ({avg_sentiment:+.2f}) "
+                        f"against your SHORT position.\n"
+                        f"  Articles: {agg['article_count']}\n"
+                        f"  Flip threshold: {flip_threshold:+.2f}\n"
+                        "Position flagged for early exit."
+                    ),
+                    importance=8,
+                ))
+                return True
+            
+            return False
+        except Exception as exc:
+            logger.debug(f"news_thesis_flip check error for {symbol}: {exc}")
+            return False
+
     def _is_auto_managed(self, position) -> bool:
         """v-managed-by-bot-2026-04-28: per-position auto-management gate.
 
@@ -638,6 +772,60 @@ class TradingEngineWithCommentary:
                 )
             except Exception:
                 pass  # never break trading loop for DB
+
+    def _emit_veto_snapshot(
+        self,
+        signal,
+        strategy_id: str,
+        reason: str,
+        gate_name: str,
+        extra: dict | None = None,
+    ) -> None:
+        """v-feature-snapshot-2026-09-09: emit DecisionSnapshot on engine-level veto.
+        
+        Called when a signal is vetoed by the signal router (ML veto, regime gate,
+        conviction floor, etc.). Fire-and-forget async write.
+        """
+        if self.db_logger is None:
+            return
+        try:
+            from core.decision_snapshot import (
+                DecisionAction, build_snapshot, is_snapshot_logging_enabled
+            )
+            if not is_snapshot_logging_enabled():
+                return
+            
+            # Extract what we can from the signal
+            indicators = {}
+            price = float(getattr(signal, "entry_price", 0) or 0)
+            if hasattr(signal, "reasoning") and signal.reasoning:
+                indicators = signal.reasoning.copy()
+            
+            snapshot = build_snapshot(
+                symbol=signal.symbol,
+                strategy_id=strategy_id,
+                action=DecisionAction.VETO,
+                reason=reason,
+                mode=self.mode.value,
+                gate_name=gate_name,
+                confidence=float(getattr(signal, "confidence", 0) or 0),
+                indicators=indicators,
+                price=price,
+                would_entry_price=float(getattr(signal, "entry_price", 0) or 0),
+                would_stop_loss=float(getattr(signal, "stop_loss", 0) or 0),
+                would_take_profit=float(getattr(signal, "take_profit", 0) or 0),
+                would_size_shares=int(getattr(signal, "position_size", 0) or 0),
+                extra=extra,
+            )
+            
+            try:
+                asyncio.get_event_loop().create_task(
+                    self.db_logger.log_decision_snapshot(snapshot)
+                )
+            except RuntimeError:
+                pass
+        except Exception as exc:
+            logger.debug("veto_snapshot_emit_error: %s", exc)
 
     # Add to rest brain - caution state:
     def reset_brain_state(self):
@@ -768,6 +956,11 @@ class TradingEngineWithCommentary:
                             state_changed_at=pd.get('state_changed_at'),
                             exiting_started_at=pd.get('exiting_started_at'),
                             zombie_reason=pd.get('zombie_reason'),
+                            # v-order-monitor-2026-09-10: restore bracket tracking
+                            bracket_order_id=pd.get('bracket_order_id'),
+                            stop_order_id=pd.get('stop_order_id'),
+                            tp_order_id=pd.get('tp_order_id'),
+                            broker_stop_price=pd.get('broker_stop_price'),
                         )
                         self.simulated_positions[symbol] = pos
                     if sim_data:
@@ -1565,8 +1758,13 @@ class TradingEngineWithCommentary:
             logger.error(f"Price validation error: {e}")
             return True  # Allow order if validation fails
     
-    async def _place_bracket_orders(self, signal, parent_order_id: str):
-        """Place stop loss and take profit orders as OCO"""
+    async def _place_bracket_orders(self, signal, parent_order_id: str) -> Optional[str]:
+        """Place stop loss and take profit orders as OCO.
+        
+        v-order-monitor-2026-09-10: now returns the OCO order ID on success
+        (None on failure) and stores bracket tracking IDs on the Position
+        so the order monitor can poll for fills/cancels/rejects.
+        """
         # v-bracket-diagnostic-2026-05-18: log every attempt so silent
         # failures surface. Before this, an exception or non-2xx
         # response would either get swallowed by the caller's try/except
@@ -1615,6 +1813,21 @@ class TradingEngineWithCommentary:
                 # Extract order ID from response
                 order_id = response.headers.get('Location', '').split('/')[-1]
 
+                # v-order-monitor-2026-09-10: store bracket tracking on position
+                position = self.positions.get(signal.symbol)
+                if position and order_id:
+                    position.bracket_order_id = order_id
+                    position.broker_stop_price = signal.stop_loss
+                    # Child order IDs will be extracted by _refresh_bracket_child_ids
+                    # during the next order monitor cycle
+                    self._audit(
+                        "order_monitor", signal.symbol, "bracket_placed",
+                        "oco_order_stored",
+                        bracket_order_id=order_id,
+                        stop_price=round(signal.stop_loss, 2),
+                        tp_price=round(signal.take_profit, 2),
+                    )
+
                 self.commentary.add_commentary(TradingCommentary(
                     timestamp=datetime.now(),
                     type=CommentaryType.RISK_ASSESSMENT,
@@ -1629,6 +1842,7 @@ class TradingEngineWithCommentary:
                     },
                     importance=7
                 ))
+                return order_id
             else:
                 rejection = self._parse_order_rejection(response)
                 self.commentary.add_commentary(TradingCommentary(
@@ -1640,6 +1854,7 @@ class TradingEngineWithCommentary:
                     data={'details': rejection['details']},
                     importance=7
                 ))
+                return None
 
         except Exception as e:
             logger.error(f"Bracket order error: {e}", exc_info=True)
@@ -1651,6 +1866,7 @@ class TradingEngineWithCommentary:
                 message=f"Could not place stop/target orders: {str(e)}",
                 importance=7
             ))
+            return None
     def _validate_oco_prices(self, symbol: str, stop_price: float, take_profit: float, is_short: bool = False) -> bool:
         """Validate OCO order prices before submission for both long and short positions"""
         try:
@@ -1914,7 +2130,26 @@ class TradingEngineWithCommentary:
                         # at the bottom of this loop swallowed it silently,
                         # so the sweep path's Position-creation never ran.
                         # Hoist the assignment to the top of the branch.
-                        signal = order_data['signal']
+                        #
+                        # v-guard-missing-signal-2026-09-10: close orders
+                        # (e.g. day_trade flatten fills) don't carry a
+                        # 'signal' key — they only have symbol/type/quantity.
+                        # Use .get() to avoid KeyError spam on FILLED closes.
+                        signal = order_data.get('signal')
+                        
+                        if signal is None:
+                            # Close order without signal metadata — just
+                            # clean up the pending order and log success.
+                            symbol = order_data.get('symbol', 'UNKNOWN')
+                            logger.info(
+                                "close_order_filled order_id=%s symbol=%s "
+                                "(no signal metadata, skipping position creation)",
+                                order_id, symbol,
+                            )
+                            self.pending_orders.pop(order_id, None)
+                            self.order_id_to_symbol.pop(order_id, None)
+                            continue
+                        
                         # Get fill price
                         fill_price = signal.entry_price  # Default
                         if 'orderActivityCollection' in order_info:
@@ -1923,7 +2158,7 @@ class TradingEngineWithCommentary:
                                     legs = activity.get('executionLegs', [])
                                     if legs:
                                         fill_price = legs[0].get('price', signal.entry_price)
-                                        expected = order_data['signal'].entry_price
+                                        expected = signal.entry_price
                                         slippage = abs(fill_price - expected) / expected
                                         self.performance_metrics['slippage'].append(slippage)
                         # v-sweep-skip-if-already-managed-2026-05-08: the
@@ -2650,6 +2885,11 @@ class TradingEngineWithCommentary:
                 'state_changed_at': getattr(pos, 'state_changed_at', None),
                 'exiting_started_at': getattr(pos, 'exiting_started_at', None),
                 'zombie_reason': getattr(pos, 'zombie_reason', None),
+                # v-order-monitor-2026-09-10: bracket/OCO order tracking
+                'bracket_order_id': getattr(pos, 'bracket_order_id', None),
+                'stop_order_id': getattr(pos, 'stop_order_id', None),
+                'tp_order_id': getattr(pos, 'tp_order_id', None),
+                'broker_stop_price': getattr(pos, 'broker_stop_price', None),
             }
 
         state = {
@@ -3267,6 +3507,1305 @@ class TradingEngineWithCommentary:
                 raise
             await asyncio.sleep(cadence)
 
+    # ══════════════════════════════════════════════════════════════════════════
+    # v-order-monitor-2026-09-10: Realtime WORKING bracket/OCO order monitoring
+    # ══════════════════════════════════════════════════════════════════════════
+    async def _order_monitor_loop(self) -> None:
+        """Poll WORKING bracket/OCO orders for bot-managed symbols.
+        
+        Responsibilities:
+          1. Detect stop/TP fills → sync Position state, cancel sibling leg
+          2. Detect cancel/reject → re-place missing stop or soft-halt
+          3. Detect partials → update qty, re-bracket remaining
+          4. Trail replace → when software trail moves, replace broker stop
+          
+        Only monitors positions where:
+          - managed_by_bot=True
+          - NOT is_external / is_manually_managed / is_long_term
+          - Has bracket_order_id set (bot placed a bracket)
+          
+        Cadence: every 5 seconds (tunable via Config.ORDER_MONITOR_INTERVAL_SEC)
+        """
+        cadence = getattr(Config(), 'ORDER_MONITOR_INTERVAL_SEC', 5.0)
+        
+        while self.is_running:
+            try:
+                # Skip if no Schwab client
+                if not self.schwab_client or not self.account_hash:
+                    await asyncio.sleep(cadence)
+                    continue
+                
+                # v-bootstrap-oco-2026-09-10: run bootstrap once if not done at startup
+                # This catches the case where startup didn't have Schwab client ready
+                if not getattr(self, '_oco_bootstrap_done', False):
+                    try:
+                        attached = await self._bootstrap_orphan_brackets()
+                        self._oco_bootstrap_done = True
+                        if attached > 0:
+                            logger.info(
+                                "order_monitor_bootstrap_oco: attached %d orphan brackets",
+                                attached,
+                            )
+                    except Exception as exc:
+                        logger.warning(f"order_monitor bootstrap_orphan_brackets failed: {exc}")
+                        self._oco_bootstrap_done = True  # Don't retry on failure
+                
+                # Only monitor LIVE positions that we manage with brackets
+                bot_positions = self._get_bracket_monitored_positions()
+                if not bot_positions:
+                    await asyncio.sleep(cadence)
+                    continue
+                
+                # Fetch WORKING orders from Schwab
+                working_orders = await self._fetch_working_orders()
+                if working_orders is None:
+                    await asyncio.sleep(cadence)
+                    continue
+                
+                # Build lookup: order_id -> order_info
+                orders_by_id = {
+                    str(o.get('orderId')): o 
+                    for o in working_orders 
+                    if o.get('orderId')
+                }
+                
+                # Process each bot-managed position with a bracket
+                for symbol, position in bot_positions:
+                    try:
+                        await self._monitor_position_bracket(
+                            position, orders_by_id, working_orders
+                        )
+                    except Exception as exc:
+                        logger.error(
+                            "order_monitor: error processing %s: %s",
+                            symbol, exc, exc_info=True,
+                        )
+                        
+            except Exception as exc:
+                logger.error(
+                    "order_monitor_loop: unhandled error: %s",
+                    exc, exc_info=True,
+                )
+                # Don't re-raise — let the loop continue after sleep
+                
+            await asyncio.sleep(cadence)
+    
+    def _get_bracket_monitored_positions(self) -> list:
+        """Return (symbol, position) pairs for positions we should monitor.
+        
+        Criteria:
+          - In self.positions (LIVE mode, not simulated)
+          - managed_by_bot=True
+          - NOT is_external / is_manually_managed / is_long_term
+          - Has bracket_order_id (bot placed a bracket for this position)
+        """
+        result = []
+        for symbol, pos in list(self.positions.items()):
+            if pos is None:
+                continue
+            # Skip non-bot-managed
+            if not getattr(pos, 'managed_by_bot', False):
+                continue
+            # Skip external/manual/long-term
+            if getattr(pos, 'is_external', False):
+                continue
+            if getattr(pos, 'is_manually_managed', False):
+                continue
+            if getattr(pos, 'is_long_term', False):
+                continue
+            # Skip if no bracket (software exits only)
+            if not getattr(pos, 'bracket_order_id', None):
+                continue
+            result.append((symbol, pos))
+        return result
+    
+    def _get_positions_missing_brackets(self) -> list:
+        """Return (symbol, position) pairs for positions that SHOULD have brackets but don't.
+        
+        v-bootstrap-oco-2026-09-10: Used by bootstrap logic to find LIVE positions
+        that pass all filters for bracket monitoring EXCEPT they're missing
+        bracket_order_id. These are candidates for attaching orphan WORKING OCOs.
+        
+        Criteria (same as _get_bracket_monitored_positions minus bracket_order_id check):
+          - In self.positions (LIVE mode, not simulated)
+          - managed_by_bot=True
+          - NOT is_external / is_manually_managed / is_long_term
+          - MISSING bracket_order_id (inverse of normal monitor filter)
+        """
+        result = []
+        for symbol, pos in list(self.positions.items()):
+            if pos is None:
+                continue
+            # Skip non-bot-managed
+            if not getattr(pos, 'managed_by_bot', False):
+                continue
+            # Skip external/manual/long-term (Hari's 4 LT holds safe)
+            if getattr(pos, 'is_external', False):
+                continue
+            if getattr(pos, 'is_manually_managed', False):
+                continue
+            if getattr(pos, 'is_long_term', False):
+                continue
+            # Include only if MISSING bracket (inverse of normal filter)
+            if getattr(pos, 'bracket_order_id', None):
+                continue  # Already has bracket, skip
+            result.append((symbol, pos))
+        return result
+    
+    async def _bootstrap_orphan_brackets(self) -> int:
+        """Bootstrap/attach existing WORKING Schwab OCO brackets to positions missing bracket_order_id.
+        
+        v-bootstrap-oco-2026-09-10: Called at engine startup (and optionally once at
+        first order_monitor tick) to reconcile bot-managed LIVE positions that are
+        missing bracket_order_id with any orphan WORKING OCO orders on the account.
+        
+        This handles the case where the bot deployed with open positions that don't
+        have bracket tracking — either from a prior version, a restart, or state loss.
+        Without this, such positions are invisible to _order_monitor_loop until the
+        next _place_bracket_orders call (which may never happen for existing positions).
+        
+        Matching logic:
+          1. Fetch WORKING orders from Schwab (OCO/bracket type)
+          2. Group OCOs by symbol
+          3. For each position missing bracket_order_id:
+             a. Find candidate OCOs for that symbol
+             b. Prefer exact qty match; if no exact, use any match
+             c. If multiple candidates remain with same priority, alert HIGH and skip
+             d. If single candidate, attach it and extract child IDs
+          4. Persist via _save_state()
+        
+        Returns: count of positions successfully attached
+        """
+        if not self.schwab_client or not self.account_hash:
+            return 0
+        
+        positions_missing = self._get_positions_missing_brackets()
+        if not positions_missing:
+            logger.debug("bootstrap_oco: no positions missing brackets")
+            return 0
+        
+        # Fetch WORKING orders from Schwab
+        working_orders = await self._fetch_working_orders()
+        if working_orders is None:
+            logger.warning("bootstrap_oco: failed to fetch working orders")
+            return 0
+        
+        # Filter to OCO orders only and group by symbol
+        ocos_by_symbol: Dict[str, list] = {}
+        for order in working_orders:
+            order_type = order.get('orderStrategyType', '')
+            if order_type != 'OCO':
+                continue
+            
+            # Extract symbol from childOrderStrategies
+            children = order.get('childOrderStrategies', [])
+            for child in children:
+                legs = child.get('orderLegCollection', [])
+                for leg in legs:
+                    sym = leg.get('instrument', {}).get('symbol')
+                    if sym:
+                        if sym not in ocos_by_symbol:
+                            ocos_by_symbol[sym] = []
+                        if order not in ocos_by_symbol[sym]:
+                            ocos_by_symbol[sym].append(order)
+                        break
+        
+        if not ocos_by_symbol:
+            logger.debug("bootstrap_oco: no WORKING OCO orders found")
+            return 0
+        
+        attached_count = 0
+        
+        for symbol, position in positions_missing:
+            candidates = ocos_by_symbol.get(symbol, [])
+            if not candidates:
+                logger.debug("bootstrap_oco: no OCO candidates for %s", symbol)
+                continue
+            
+            # Extract qty and filter by exact match first
+            def get_oco_qty(oco: dict) -> Optional[int]:
+                """Extract quantity from OCO order children."""
+                for child in oco.get('childOrderStrategies', []):
+                    for leg in child.get('orderLegCollection', []):
+                        qty = leg.get('quantity')
+                        if qty is not None:
+                            return int(qty)
+                return None
+            
+            position_qty = int(position.quantity)
+            exact_qty_matches = [o for o in candidates if get_oco_qty(o) == position_qty]
+            
+            if len(exact_qty_matches) == 1:
+                # Single exact match — attach it
+                chosen = exact_qty_matches[0]
+            elif len(exact_qty_matches) > 1:
+                # Multiple exact qty matches — ambiguous, alert HIGH and skip
+                self._audit(
+                    "bootstrap_oco", symbol, "ambiguous_skip",
+                    "multiple_ocos_exact_qty_match",
+                    candidate_count=len(exact_qty_matches),
+                    position_qty=position_qty,
+                )
+                self.commentary.add_commentary(TradingCommentary(
+                    timestamp=datetime.now(),
+                    type=CommentaryType.WARNING,
+                    symbol=symbol,
+                    title=f"⚠️ Multiple OCO Orders Found for {symbol}",
+                    message=f"Found {len(exact_qty_matches)} WORKING OCO orders with qty={position_qty}. "
+                            f"Cannot determine which to attach — manual intervention required.",
+                    importance=9,  # HIGH importance
+                ))
+                continue
+            elif len(candidates) == 1:
+                # Single candidate (even if qty doesn't match) — attach with warning
+                chosen = candidates[0]
+                oco_qty = get_oco_qty(chosen)
+                if oco_qty != position_qty:
+                    self._audit(
+                        "bootstrap_oco", symbol, "attach_qty_mismatch",
+                        "single_oco_qty_differs",
+                        position_qty=position_qty,
+                        oco_qty=oco_qty,
+                    )
+            else:
+                # Multiple candidates, none with exact qty — ambiguous
+                self._audit(
+                    "bootstrap_oco", symbol, "ambiguous_skip",
+                    "multiple_ocos_no_exact_qty",
+                    candidate_count=len(candidates),
+                    position_qty=position_qty,
+                )
+                self.commentary.add_commentary(TradingCommentary(
+                    timestamp=datetime.now(),
+                    type=CommentaryType.WARNING,
+                    symbol=symbol,
+                    title=f"⚠️ Multiple OCO Orders Found for {symbol}",
+                    message=f"Found {len(candidates)} WORKING OCO orders for {symbol} but none "
+                            f"match position qty={position_qty}. Manual intervention required.",
+                    importance=9,
+                ))
+                continue
+            
+            # Attach the chosen OCO
+            order_id = str(chosen.get('orderId', ''))
+            if not order_id:
+                logger.warning("bootstrap_oco: chosen OCO has no orderId for %s", symbol)
+                continue
+            
+            position.bracket_order_id = order_id
+            
+            # Extract child order IDs and broker stop price
+            children = chosen.get('childOrderStrategies', [])
+            for child in children:
+                child_id = str(child.get('orderId', ''))
+                if not child_id:
+                    continue
+                
+                order_type = child.get('orderType', '')
+                stop_price = child.get('stopPrice')
+                
+                if order_type == 'STOP_LIMIT' or stop_price:
+                    position.stop_order_id = child_id
+                    if stop_price:
+                        position.broker_stop_price = float(stop_price)
+                elif order_type == 'LIMIT':
+                    position.tp_order_id = child_id
+            
+            attached_count += 1
+            
+            self._audit(
+                "bootstrap_oco", symbol, "attached",
+                "orphan_oco_attached",
+                bracket_order_id=order_id,
+                stop_order_id=position.stop_order_id,
+                tp_order_id=position.tp_order_id,
+                broker_stop_price=position.broker_stop_price,
+                position_qty=position_qty,
+            )
+            
+            _stop = position.broker_stop_price or 0.0
+            self.commentary.add_commentary(TradingCommentary(
+                timestamp=datetime.now(),
+                type=CommentaryType.INFO,
+                symbol=symbol,
+                title=f"🔗 OCO Bracket Attached for {symbol}",
+                message=f"Found and attached existing WORKING OCO order (stop @ ${_stop:.2f})",
+                importance=6,  # Low-noise
+            ))
+        
+        if attached_count > 0:
+            self._save_state()
+            logger.info(
+                "bootstrap_oco: attached %d orphan brackets to positions",
+                attached_count,
+            )
+        
+        return attached_count
+    
+    async def _fetch_working_orders(self) -> Optional[list]:
+        """Fetch all WORKING orders from Schwab."""
+        try:
+            response = self.schwab_client.get_orders_for_account(
+                self.account_hash,
+                from_entered_datetime=datetime.now() - timedelta(days=7),
+                status=self.schwab_client.Order.Status.WORKING
+            )
+            if response.status_code == 200:
+                return response.json()
+            logger.warning(
+                "order_monitor: fetch_working_orders got status %d",
+                response.status_code,
+            )
+            return None
+        except Exception as exc:
+            logger.error("order_monitor: fetch_working_orders error: %s", exc)
+            return None
+    
+    async def _monitor_position_bracket(
+        self, 
+        position, 
+        orders_by_id: dict,
+        all_working_orders: list
+    ) -> None:
+        """Monitor a single position's bracket orders.
+        
+        Checks:
+          1. Is the bracket still WORKING? If not, why?
+          2. Did stop fill? → close position, cancel TP
+          3. Did TP fill? → close position, cancel stop
+          4. Was either leg canceled/rejected? → re-protect or alert
+          5. Has software trail moved? → replace broker stop
+        """
+        symbol = position.symbol
+        bracket_id = position.bracket_order_id
+        
+        # Try to refresh child order IDs if we don't have them yet
+        if not position.stop_order_id or not position.tp_order_id:
+            await self._refresh_bracket_child_ids(position, orders_by_id, all_working_orders)
+        
+        # Check if parent OCO is still WORKING
+        parent_order = orders_by_id.get(bracket_id)
+        
+        if parent_order:
+            # Parent still WORKING — check child statuses and trail replace
+            await self._check_trail_replace(position, parent_order)
+        else:
+            # Parent not in WORKING list — need to query it directly
+            await self._handle_bracket_not_working(position)
+    
+    async def _refresh_bracket_child_ids(
+        self, 
+        position, 
+        orders_by_id: dict,
+        all_working_orders: list
+    ) -> None:
+        """Extract stop_order_id and tp_order_id from the OCO structure.
+        
+        Schwab OCO orders have childOrderStrategies containing the two legs.
+        """
+        bracket_id = position.bracket_order_id
+        parent_order = orders_by_id.get(bracket_id)
+        
+        if not parent_order:
+            # Try to fetch the order directly
+            try:
+                response = self.schwab_client.get_order(
+                    bracket_id, self.account_hash
+                )
+                if response.status_code == 200:
+                    parent_order = response.json()
+            except Exception:
+                pass
+        
+        if not parent_order:
+            return
+        
+        # Extract child order IDs from OCO structure
+        children = parent_order.get('childOrderStrategies', [])
+        for child in children:
+            child_id = str(child.get('orderId', ''))
+            if not child_id:
+                continue
+                
+            # Determine if this is stop or TP based on order type
+            order_type = child.get('orderType', '')
+            stop_price = child.get('stopPrice')
+            
+            if order_type == 'STOP_LIMIT' or stop_price:
+                position.stop_order_id = child_id
+                if stop_price:
+                    position.broker_stop_price = float(stop_price)
+            elif order_type == 'LIMIT':
+                position.tp_order_id = child_id
+        
+        if position.stop_order_id or position.tp_order_id:
+            self._audit(
+                "order_monitor", position.symbol, "child_ids_extracted",
+                "bracket_structure",
+                bracket_id=bracket_id,
+                stop_order_id=position.stop_order_id,
+                tp_order_id=position.tp_order_id,
+            )
+    
+    async def _check_trail_replace(self, position, parent_order: dict) -> None:
+        """Check if software trailing stop has moved and replace broker stop.
+        
+        When position.trailing_stop moves beyond the broker's stop price,
+        cancel the old OCO and place a new one with updated stop level.
+        """
+        # Only check if trailing is active
+        trail = getattr(position, 'trailing_stop', None)
+        if trail is None:
+            return
+        
+        broker_stop = getattr(position, 'broker_stop_price', None)
+        if broker_stop is None:
+            return
+        
+        # For long positions, trailing_stop should be rising (tighter)
+        # Only replace if the new stop is significantly better
+        if position.side == 'long':
+            should_replace = trail > broker_stop * 1.005  # 0.5% threshold
+        else:
+            should_replace = trail < broker_stop * 0.995
+        
+        if not should_replace:
+            return
+        
+        self._audit(
+            "order_monitor", position.symbol, "trail_replace_needed",
+            "software_trail_moved",
+            broker_stop=round(broker_stop, 4),
+            software_trail=round(trail, 4),
+            side=position.side,
+        )
+        
+        # Cancel existing bracket and place new one
+        await self._replace_bracket_with_new_stop(position, trail)
+    
+    async def _replace_bracket_with_new_stop(
+        self, 
+        position, 
+        new_stop: float
+    ) -> None:
+        """Cancel existing bracket and place new OCO with updated stop.
+        
+        This is the trail-replace mechanism: when software trailing stop
+        tightens, we want the broker protection to match so we don't leave
+        stale far stops that give back gains.
+        """
+        symbol = position.symbol
+        bracket_id = position.bracket_order_id
+        
+        if not bracket_id:
+            return
+        
+        self.commentary.add_commentary(TradingCommentary(
+            timestamp=datetime.now(),
+            type=CommentaryType.RISK_ASSESSMENT,
+            symbol=symbol,
+            title=f"🔄 Replacing Bracket Stop",
+            message=(
+                f"Software trail at ${new_stop:.2f} is tighter than "
+                f"broker stop at ${position.broker_stop_price:.2f}. "
+                f"Updating broker protection to match."
+            ),
+            data={
+                'old_broker_stop': position.broker_stop_price,
+                'new_stop': new_stop,
+            },
+            importance=7
+        ))
+        
+        # Cancel existing bracket
+        try:
+            cancel_response = self.schwab_client.cancel_order(
+                bracket_id, self.account_hash
+            )
+            if cancel_response.status_code not in [200, 201, 202]:
+                logger.warning(
+                    "order_monitor: failed to cancel bracket %s for %s: %d",
+                    bracket_id, symbol, cancel_response.status_code,
+                )
+                return
+        except Exception as exc:
+            logger.error(
+                "order_monitor: error canceling bracket %s for %s: %s",
+                bracket_id, symbol, exc,
+            )
+            return
+        
+        # Clear old bracket IDs
+        from core.models import clear_bracket_ids
+        clear_bracket_ids(position)
+        
+        # Wait briefly for cancellation to process
+        await asyncio.sleep(0.5)
+        
+        # Place new bracket with updated stop
+        try:
+            from schwab.orders.common import one_cancels_other, Duration, Session, OrderType
+            from schwab.orders.equities import equity_sell_limit
+            
+            # Use current take_profit from position
+            tp_price = position.take_profit
+            
+            # Create new TP order
+            take_profit_order = equity_sell_limit(
+                symbol,
+                position.quantity,
+                tp_price
+            ).set_duration(Duration.GOOD_TILL_CANCEL).set_session(Session.NORMAL)
+            
+            # Create new stop order with updated price
+            stop_loss_order = (equity_sell_limit(
+                symbol,
+                position.quantity,
+                new_stop * 0.995  # Limit slightly below stop
+            ).set_order_type(OrderType.STOP_LIMIT)
+            .set_stop_price(new_stop)
+            .set_duration(Duration.GOOD_TILL_CANCEL)
+            .set_session(Session.NORMAL))
+            
+            oco_order = one_cancels_other(take_profit_order, stop_loss_order)
+            
+            response = self.schwab_client.place_order(
+                self.account_hash, oco_order.build()
+            )
+            
+            if response.status_code in [200, 201]:
+                new_order_id = response.headers.get('Location', '').split('/')[-1]
+                position.bracket_order_id = new_order_id
+                position.broker_stop_price = new_stop
+                
+                self._audit(
+                    "order_monitor", symbol, "bracket_replaced",
+                    "trail_stop_updated",
+                    old_bracket_id=bracket_id,
+                    new_bracket_id=new_order_id,
+                    new_stop=round(new_stop, 4),
+                )
+                
+                self.commentary.add_commentary(TradingCommentary(
+                    timestamp=datetime.now(),
+                    type=CommentaryType.RISK_ASSESSMENT,
+                    symbol=symbol,
+                    title=f"✅ Bracket Stop Updated",
+                    message=f"New stop at ${new_stop:.2f} now active at broker.",
+                    data={'new_bracket_id': new_order_id, 'new_stop': new_stop},
+                    importance=7
+                ))
+            else:
+                logger.error(
+                    "order_monitor: failed to place replacement bracket for %s: %d",
+                    symbol, response.status_code,
+                )
+                # Alert loudly — position now has NO broker protection
+                self.commentary.add_commentary(TradingCommentary(
+                    timestamp=datetime.now(),
+                    type=CommentaryType.WARNING,
+                    symbol=symbol,
+                    title=f"🚨 BRACKET REPLACEMENT FAILED",
+                    message=(
+                        f"Canceled old bracket but could not place new one. "
+                        f"Position {symbol} has NO broker-side stop/TP! "
+                        f"Software exits still active. Manual review needed."
+                    ),
+                    importance=10
+                ))
+        except Exception as exc:
+            logger.error(
+                "order_monitor: error placing replacement bracket for %s: %s",
+                symbol, exc, exc_info=True,
+            )
+            self.commentary.add_commentary(TradingCommentary(
+                timestamp=datetime.now(),
+                type=CommentaryType.WARNING,
+                symbol=symbol,
+                title=f"🚨 BRACKET REPLACEMENT ERROR",
+                message=f"Error: {exc}. Position may lack broker protection.",
+                importance=10
+            ))
+    
+    async def _handle_bracket_not_working(self, position) -> None:
+        """Handle case where bracket order is no longer WORKING.
+        
+        Query the order status directly to determine what happened:
+          - FILLED: stop or TP hit → sync position state
+          - CANCELED: need to re-protect or alert
+          - REJECTED: place new protection or soft-halt
+        """
+        symbol = position.symbol
+        bracket_id = position.bracket_order_id
+        
+        if not bracket_id:
+            return
+        
+        # Fetch the bracket order status
+        try:
+            response = self.schwab_client.get_order(bracket_id, self.account_hash)
+            if response.status_code != 200:
+                logger.warning(
+                    "order_monitor: could not fetch bracket %s for %s: %d",
+                    bracket_id, symbol, response.status_code,
+                )
+                return
+            order_info = response.json()
+        except Exception as exc:
+            logger.error(
+                "order_monitor: error fetching bracket %s for %s: %s",
+                bracket_id, symbol, exc,
+            )
+            return
+        
+        status = order_info.get('status', 'UNKNOWN')
+        
+        if status == 'FILLED':
+            await self._handle_bracket_fill(position, order_info)
+        elif status in ['CANCELED', 'EXPIRED']:
+            await self._handle_bracket_canceled(position, order_info, status)
+        elif status == 'REJECTED':
+            await self._handle_bracket_rejected(position, order_info)
+        elif status == 'WORKING':
+            # Still working — probably just not in our filtered list
+            pass
+        else:
+            logger.info(
+                "order_monitor: bracket %s for %s has status %s",
+                bracket_id, symbol, status,
+            )
+    
+    async def _handle_bracket_fill(self, position, order_info: dict) -> None:
+        """Handle a bracket order fill (stop or TP hit).
+        
+        Determine which leg filled, sync Position state (reduce or close),
+        cancel the sibling leg if still open, and emit commentary.
+        """
+        symbol = position.symbol
+        
+        # Determine fill details from order activity
+        fill_price = None
+        fill_qty = 0
+        filled_leg = "unknown"
+        
+        # Check child order statuses
+        children = order_info.get('childOrderStrategies', [])
+        for child in children:
+            child_status = child.get('status', '')
+            child_type = child.get('orderType', '')
+            
+            if child_status == 'FILLED':
+                # This is the leg that filled
+                activities = child.get('orderActivityCollection', [])
+                for activity in activities:
+                    if activity.get('executionType') == 'FILL':
+                        legs = activity.get('executionLegs', [])
+                        if legs:
+                            fill_price = legs[0].get('price')
+                            fill_qty = legs[0].get('quantity', 0)
+                
+                if child_type == 'STOP_LIMIT' or child.get('stopPrice'):
+                    filled_leg = "stop"
+                elif child_type == 'LIMIT':
+                    filled_leg = "take_profit"
+        
+        self._audit(
+            "order_monitor", symbol, "bracket_fill",
+            filled_leg,
+            bracket_id=position.bracket_order_id,
+            fill_price=fill_price,
+            fill_qty=fill_qty,
+            position_qty=position.quantity,
+        )
+        
+        # Handle partial vs full fill
+        remaining_qty = position.quantity - fill_qty if fill_qty else 0
+        
+        if remaining_qty > 0:
+            # Partial fill — update position qty and re-bracket
+            await self._handle_partial_bracket_fill(
+                position, fill_price, fill_qty, remaining_qty, filled_leg
+            )
+        else:
+            # Full fill — close position
+            await self._handle_full_bracket_fill(
+                position, fill_price, filled_leg
+            )
+    
+    async def _handle_full_bracket_fill(
+        self, 
+        position, 
+        fill_price: Optional[float],
+        filled_leg: str
+    ) -> None:
+        """Handle a full bracket fill (position fully closed by broker)."""
+        symbol = position.symbol
+        
+        # Clear bracket tracking
+        from core.models import clear_bracket_ids
+        clear_bracket_ids(position)
+        
+        # Determine exit reason for trade record
+        if filled_leg == "stop":
+            exit_reason = "stop_loss_broker"
+            title = f"🛑 Stop Loss Filled by Broker"
+            message = f"Bracket stop hit at ${fill_price:.2f}. Position closed."
+        elif filled_leg == "take_profit":
+            exit_reason = "take_profit_broker"
+            title = f"🎯 Take Profit Filled by Broker"
+            message = f"Bracket target hit at ${fill_price:.2f}. Position closed."
+        else:
+            exit_reason = "bracket_fill_broker"
+            title = f"📊 Bracket Order Filled"
+            message = f"Bracket order filled at ${fill_price:.2f}."
+        
+        self.commentary.add_commentary(TradingCommentary(
+            timestamp=datetime.now(),
+            type=CommentaryType.DECISION,
+            symbol=symbol,
+            title=title,
+            message=message,
+            data={
+                'fill_price': fill_price,
+                'filled_leg': filled_leg,
+                'entry_price': position.entry_price,
+            },
+            importance=9
+        ))
+        
+        # Calculate P&L
+        if fill_price:
+            if position.side == 'long':
+                pnl = (fill_price - position.entry_price) * position.quantity
+            else:
+                pnl = (position.entry_price - fill_price) * position.quantity
+        else:
+            pnl = position.unrealized_pnl
+        
+        # Record trade
+        trade_record = {
+            'symbol': symbol,
+            'entry_time': position.entry_time.isoformat() if hasattr(position.entry_time, 'isoformat') else str(position.entry_time),
+            'exit_time': datetime.now().isoformat(),
+            'entry_price': position.entry_price,
+            'exit_price': fill_price or position.current_price,
+            'quantity': position.quantity,
+            'side': position.side,
+            'pnl': pnl,
+            'exit_reason': exit_reason,
+            'mode': 'live',
+        }
+        self.trade_history.append(trade_record)
+        
+        # Update risk manager
+        if pnl < 0:
+            self.risk_manager.consecutive_losses += 1
+        else:
+            self.risk_manager.consecutive_losses = 0
+        
+        # Remove position
+        if symbol in self.positions:
+            del self.positions[symbol]
+        
+        # Clean up exit manager tracking
+        if hasattr(self, 'exit_manager'):
+            self.exit_manager.close_position_tracking(symbol)
+        
+        await self._save_state()
+        
+        self._audit(
+            "order_monitor", symbol, "position_closed",
+            exit_reason,
+            fill_price=fill_price,
+            pnl=round(pnl, 2) if pnl else None,
+        )
+    
+    async def _handle_partial_bracket_fill(
+        self,
+        position,
+        fill_price: Optional[float],
+        fill_qty: int,
+        remaining_qty: int,
+        filled_leg: str
+    ) -> None:
+        """Handle a partial bracket fill — update qty and re-bracket remaining.
+        
+        v-qty-sync-2026-09-11: Added broker position verification when fill_qty
+        looks suspicious (fill_qty < 10% of local qty or remaining_qty seems
+        inconsistent). The re_bracket call will sync to broker truth, but we
+        also proactively check here to provide better audit trail.
+        """
+        symbol = position.symbol
+        local_qty = position.quantity
+        
+        # v-qty-sync-2026-09-11: detect suspicious qty mismatches early
+        # If fill_qty is much smaller than local_qty, there may be untracked fills
+        fill_ratio = fill_qty / local_qty if local_qty > 0 else 0
+        is_suspicious = fill_ratio < 0.1 and fill_qty < 100  # <10% and small absolute
+        
+        if is_suspicious and self.mode == TradingMode.LIVE and self.schwab_client:
+            broker_qty = await self._check_broker_position_qty(symbol)
+            if broker_qty == 0:
+                # Broker is flat — this was actually a full close, not partial
+                logger.warning(
+                    "partial_fill_was_actually_full symbol=%s fill_qty=%d local_qty=%d broker_flat=True",
+                    symbol, fill_qty, local_qty,
+                )
+                self._audit(
+                    "order_monitor", symbol, "partial_fill_override",
+                    "broker_confirmed_flat",
+                    fill_qty=fill_qty,
+                    local_qty=local_qty,
+                )
+                # Handle as full fill since broker confirms flat
+                await self._handle_full_bracket_fill(position, fill_price, filled_leg)
+                return
+            elif broker_qty != remaining_qty:
+                # Broker qty differs from calculated remaining — will be synced in re_bracket
+                self._audit(
+                    "order_monitor", symbol, "partial_fill_qty_mismatch",
+                    "broker_will_sync",
+                    fill_qty=fill_qty,
+                    local_qty=local_qty,
+                    calculated_remaining=remaining_qty,
+                    broker_qty=broker_qty,
+                )
+        
+        self.commentary.add_commentary(TradingCommentary(
+            timestamp=datetime.now(),
+            type=CommentaryType.DECISION,
+            symbol=symbol,
+            title=f"📊 Partial Bracket Fill",
+            message=(
+                f"Partial {filled_leg} fill: {fill_qty} shares at "
+                f"${fill_price:.2f}. {remaining_qty} shares remaining."
+            ),
+            data={
+                'fill_price': fill_price,
+                'fill_qty': fill_qty,
+                'remaining_qty': remaining_qty,
+                'filled_leg': filled_leg,
+            },
+            importance=8
+        ))
+        
+        # Update position quantity
+        old_qty = position.quantity
+        position.quantity = remaining_qty
+        
+        # Clear old bracket IDs
+        from core.models import clear_bracket_ids
+        old_bracket_id = position.bracket_order_id
+        clear_bracket_ids(position)
+        
+        self._audit(
+            "order_monitor", symbol, "partial_fill",
+            "qty_reduced",
+            fill_qty=fill_qty,
+            remaining_qty=remaining_qty,
+            old_bracket_id=old_bracket_id,
+        )
+        
+        # Re-bracket remaining shares (will sync qty to broker truth if needed)
+        await self._re_bracket_position(position)
+    
+    async def _re_bracket_position(self, position) -> None:
+        """Place new bracket orders for a position (after partial or recovery).
+        
+        v-broker-flat-detection-2026-09-10: added broker position verification
+        before placing bracket to prevent placing orders for positions that
+        no longer exist at the broker.
+        
+        v-qty-sync-2026-09-11: sync local qty to broker truth before placing
+        bracket. If broker shows fewer shares than local, we had untracked
+        fills (partial fills, external closes). Sync to broker qty and
+        re-bracket with correct amount. If broker is flat, clean up.
+        """
+        symbol = position.symbol
+        
+        # v-broker-flat-detection-2026-09-10 + v-qty-sync-2026-09-11:
+        # Verify position qty at broker before placing bracket.
+        # If broker_qty != local_qty, sync local to broker truth.
+        if self.mode == TradingMode.LIVE and self.schwab_client:
+            broker_qty = await self._check_broker_position_qty(symbol)
+            local_qty = position.quantity
+            
+            if broker_qty == 0:
+                logger.warning(
+                    "re_bracket_aborted_broker_flat symbol=%s local_qty=%d — broker shows flat",
+                    symbol, local_qty,
+                )
+                self._audit(
+                    "order_monitor", symbol, "re_bracket_aborted",
+                    "broker_flat_pre_check",
+                    local_qty=local_qty,
+                )
+                # Handle as external close instead of placing invalid bracket
+                await self._handle_broker_flat_detected(position, "re_bracket_pre_check_flat")
+                return
+            
+            # v-qty-sync-2026-09-11: sync local qty to broker truth
+            if broker_qty != local_qty:
+                logger.warning(
+                    "qty_desync_detected symbol=%s local_qty=%d broker_qty=%d — syncing to broker",
+                    symbol, local_qty, broker_qty,
+                )
+                self._audit(
+                    "order_monitor", symbol, "qty_desync",
+                    "sync_to_broker",
+                    local_qty=local_qty,
+                    broker_qty=broker_qty,
+                    delta=local_qty - broker_qty,
+                )
+                self.commentary.add_commentary(TradingCommentary(
+                    timestamp=datetime.now(),
+                    type=CommentaryType.WARNING,
+                    symbol=symbol,
+                    title=f"⚠️ Quantity Desync Detected",
+                    message=(
+                        f"Local qty {local_qty} ≠ broker qty {broker_qty}. "
+                        f"Syncing to broker truth. Possible untracked fills."
+                    ),
+                    data={
+                        'local_qty': local_qty,
+                        'broker_qty': broker_qty,
+                        'delta': local_qty - broker_qty,
+                    },
+                    importance=9
+                ))
+                position.quantity = broker_qty
+        
+        try:
+            from schwab.orders.common import one_cancels_other, Duration, Session, OrderType
+            from schwab.orders.equities import equity_sell_limit
+            
+            # Use current stop/TP from position (may have been trailed)
+            stop_price = position.trailing_stop or position.stop_loss
+            tp_price = position.take_profit
+            qty = position.quantity
+            
+            if not stop_price or not tp_price or qty <= 0:
+                logger.warning(
+                    "order_monitor: cannot re-bracket %s: stop=%s tp=%s qty=%d",
+                    symbol, stop_price, tp_price, qty,
+                )
+                return
+            
+            take_profit_order = equity_sell_limit(
+                symbol, qty, tp_price
+            ).set_duration(Duration.GOOD_TILL_CANCEL).set_session(Session.NORMAL)
+            
+            stop_loss_order = (equity_sell_limit(
+                symbol, qty, stop_price * 0.995
+            ).set_order_type(OrderType.STOP_LIMIT)
+            .set_stop_price(stop_price)
+            .set_duration(Duration.GOOD_TILL_CANCEL)
+            .set_session(Session.NORMAL))
+            
+            oco_order = one_cancels_other(take_profit_order, stop_loss_order)
+            
+            response = self.schwab_client.place_order(
+                self.account_hash, oco_order.build()
+            )
+            
+            if response.status_code in [200, 201]:
+                new_order_id = response.headers.get('Location', '').split('/')[-1]
+                position.bracket_order_id = new_order_id
+                position.broker_stop_price = stop_price
+                
+                self._audit(
+                    "order_monitor", symbol, "re_bracket",
+                    "new_bracket_placed",
+                    new_bracket_id=new_order_id,
+                    qty=qty,
+                    stop=round(stop_price, 4),
+                    tp=round(tp_price, 4),
+                )
+                
+                self.commentary.add_commentary(TradingCommentary(
+                    timestamp=datetime.now(),
+                    type=CommentaryType.RISK_ASSESSMENT,
+                    symbol=symbol,
+                    title=f"✅ Re-Bracketed Position",
+                    message=(
+                        f"New bracket placed for {qty} shares: "
+                        f"stop ${stop_price:.2f}, target ${tp_price:.2f}"
+                    ),
+                    importance=7
+                ))
+            else:
+                logger.error(
+                    "order_monitor: re-bracket failed for %s: %d",
+                    symbol, response.status_code,
+                )
+                self.commentary.add_commentary(TradingCommentary(
+                    timestamp=datetime.now(),
+                    type=CommentaryType.WARNING,
+                    symbol=symbol,
+                    title=f"⚠️ Re-Bracket Failed",
+                    message="Could not place new bracket. Software exits still active.",
+                    importance=8
+                ))
+        except Exception as exc:
+            logger.error(
+                "order_monitor: re-bracket error for %s: %s",
+                symbol, exc, exc_info=True,
+            )
+    
+    async def _handle_bracket_canceled(
+        self, 
+        position, 
+        order_info: dict,
+        status: str
+    ) -> None:
+        """Handle bracket order cancellation or expiration.
+        
+        Policy: attempt to re-place the bracket. If that fails, alert loudly
+        but do NOT soft-halt new entries (software exits still protect).
+        """
+        symbol = position.symbol
+        
+        self._audit(
+            "order_monitor", symbol, "bracket_canceled",
+            status.lower(),
+            bracket_id=position.bracket_order_id,
+        )
+        
+        self.commentary.add_commentary(TradingCommentary(
+            timestamp=datetime.now(),
+            type=CommentaryType.WARNING,
+            symbol=symbol,
+            title=f"⚠️ Bracket Order {status}",
+            message=(
+                f"Bracket was {status.lower()}. "
+                f"Attempting to re-place broker protection."
+            ),
+            importance=8
+        ))
+        
+        # Clear old bracket and attempt to re-place
+        from core.models import clear_bracket_ids
+        clear_bracket_ids(position)
+        
+        await self._re_bracket_position(position)
+    
+    async def _check_broker_position_qty(self, symbol: str) -> int:
+        """v-broker-flat-detection-2026-09-10: query Schwab for actual position qty.
+        
+        Returns the absolute quantity at the broker for `symbol`, or 0 if
+        the position doesn't exist (broker-flat). This is the authoritative
+        source when handling bracket rejections — if Schwab says we're flat,
+        we must stop trying to manage/re-bracket that position.
+        
+        Returns 0 on any error (fail-safe: if we can't verify, assume flat
+        to prevent infinite re_bracket loops).
+        """
+        if not self.schwab_client or not self.account_id:
+            return 0
+        try:
+            schwab_positions = await self.get_schwab_positions()
+            for pos_data in schwab_positions:
+                if pos_data.get('symbol') == symbol:
+                    return abs(pos_data.get('quantity', 0))
+            return 0  # symbol not in broker positions → flat
+        except Exception as exc:
+            logger.warning(
+                "broker_position_check_error symbol=%s err=%s",
+                symbol, exc,
+            )
+            return 0  # fail-safe: assume flat on error
+
+    async def _handle_broker_flat_detected(
+        self,
+        position,
+        reason: str,
+    ) -> None:
+        """v-broker-flat-detection-2026-09-10: handle external close detection.
+        
+        Called when we discover the broker shows qty=0 for a position we
+        thought was still open. This is the canonical "user closed at Schwab"
+        or "broker stop filled externally" scenario.
+        
+        Actions:
+          1. Clear managed_by_bot → stop all exit management
+          2. Cancel any working exit orders for this symbol
+          3. Mark position as CLOSED (external close)
+          4. Remove from active tracking
+          5. Audit for post-mortem
+        
+        This breaks the infinite re_bracket loop that occurs when:
+          - Bot thinks it has a position (ghost qty in self.positions)
+          - Schwab rejects bracket for oversold/overbought (shares gone)
+          - _handle_bracket_rejected calls _re_bracket_position
+          - New bracket rejected → repeat forever
+        """
+        symbol = position.symbol
+        
+        self._audit(
+            "order_monitor", symbol, "broker_flat_detected",
+            reason,
+            local_qty=position.quantity,
+            managed_by_bot=getattr(position, 'managed_by_bot', False),
+        )
+        
+        # Clear managed_by_bot to stop any other exit paths
+        position.managed_by_bot = False
+        
+        # Cancel any working exit orders for this symbol
+        try:
+            await self._cancel_existing_orders(symbol)
+        except Exception as exc:
+            logger.warning(
+                "broker_flat_cancel_orders_error symbol=%s err=%s",
+                symbol, exc,
+            )
+        
+        # Clear bracket IDs (already rejected/cancelled anyway)
+        from core.models import clear_bracket_ids
+        clear_bracket_ids(position)
+        
+        # Transition to CLOSED state
+        from core.position_state import PositionState, try_transition
+        await try_transition(
+            position,
+            PositionState.CLOSED,
+            f"broker_flat_{reason}",
+            audit_fn=self._audit,
+        )
+        
+        # Remove from active tracking (will be picked up by next sync)
+        self.positions.pop(symbol, None)
+        
+        self.commentary.add_commentary(TradingCommentary(
+            timestamp=datetime.now(),
+            type=CommentaryType.WARNING,
+            symbol=symbol,
+            title=f"🔄 External Close Detected",
+            message=(
+                f"Position {symbol} was closed externally (broker shows flat). "
+                f"Reason: {reason}. Bot will stop managing this position."
+            ),
+            data={'reason': reason},
+            importance=9
+        ))
+        
+        logger.info(
+            "broker_flat_handled symbol=%s reason=%s — position removed from tracking",
+            symbol, reason,
+        )
+
+    def _is_broker_flat_rejection(self, rejection_reason: str) -> bool:
+        """v-broker-flat-detection-2026-09-10: detect oversold/overbought rejection.
+        
+        Returns True if the rejection reason indicates the position is already
+        flat at the broker (the shares are gone, so any sell/cover order is
+        invalid).
+        
+        Known Schwab rejection patterns:
+          - "oversold position" → selling more than owned (long already closed)
+          - "overbought position" → covering more than shorted (short already closed)
+          - variations with "oversold", "overbought", "insufficient shares"
+        """
+        if not rejection_reason:
+            return False
+        reason_lower = rejection_reason.lower()
+        flat_indicators = [
+            'oversold',
+            'overbought',
+            'insufficient shares',
+            'insufficient position',
+            'no position',
+            'position not found',
+        ]
+        return any(indicator in reason_lower for indicator in flat_indicators)
+
+    async def _handle_bracket_rejected(self, position, order_info: dict) -> None:
+        """Handle bracket order rejection.
+        
+        v-broker-flat-detection-2026-09-10: enhanced policy:
+          1. Check if rejection indicates broker-flat (oversold/overbought)
+          2. If so, verify with broker and handle as external close
+          3. Otherwise, attempt to re-place with adjusted prices
+          4. Track re_bracket attempts to prevent infinite loops
+        """
+        symbol = position.symbol
+        rejection_reason = order_info.get('statusDescription', 'Unknown reason')
+        
+        self._audit(
+            "order_monitor", symbol, "bracket_rejected",
+            "broker_rejection",
+            bracket_id=position.bracket_order_id,
+            rejection_detail=rejection_reason,
+        )
+        
+        self.commentary.add_commentary(TradingCommentary(
+            timestamp=datetime.now(),
+            type=CommentaryType.WARNING,
+            symbol=symbol,
+            title=f"🚨 Bracket Order REJECTED",
+            message=(
+                f"Broker rejected bracket: {rejection_reason}. "
+                f"Position has NO broker-side protection! "
+                f"Software exits still active."
+            ),
+            data={'reason': rejection_reason},
+            importance=10
+        ))
+        
+        # Clear the rejected bracket
+        from core.models import clear_bracket_ids
+        clear_bracket_ids(position)
+        
+        # v-broker-flat-detection-2026-09-10: check if this is an oversold/overbought
+        # rejection, which indicates the position is already closed at the broker
+        if self._is_broker_flat_rejection(rejection_reason):
+            logger.info(
+                "bracket_rejected_flat_indicator symbol=%s reason=%s — checking broker position",
+                symbol, rejection_reason,
+            )
+            broker_qty = await self._check_broker_position_qty(symbol)
+            if broker_qty == 0:
+                # Confirmed broker-flat — handle as external close, DO NOT re_bracket
+                await self._handle_broker_flat_detected(position, "reject_oversold_overbought")
+                return
+            else:
+                # Broker still shows position — log the mismatch but proceed
+                logger.warning(
+                    "bracket_rejected_flat_mismatch symbol=%s reason=%s broker_qty=%d — proceeding with re_bracket",
+                    symbol, rejection_reason, broker_qty,
+                )
+        
+        # v-broker-flat-detection-2026-09-10: track re_bracket attempts to prevent
+        # infinite loops even if broker-flat detection fails
+        re_bracket_attempts = getattr(position, '_re_bracket_attempts', 0) + 1
+        position._re_bracket_attempts = re_bracket_attempts
+        
+        MAX_RE_BRACKET_ATTEMPTS = 3
+        if re_bracket_attempts > MAX_RE_BRACKET_ATTEMPTS:
+            self._audit(
+                "order_monitor", symbol, "re_bracket_exhausted",
+                "max_attempts_exceeded",
+                attempts=re_bracket_attempts,
+                rejection_detail=rejection_reason,
+            )
+            self.commentary.add_commentary(TradingCommentary(
+                timestamp=datetime.now(),
+                type=CommentaryType.WARNING,
+                symbol=symbol,
+                title=f"🛑 Re-Bracket Attempts Exhausted",
+                message=(
+                    f"Failed to re-bracket after {MAX_RE_BRACKET_ATTEMPTS} attempts. "
+                    f"Last rejection: {rejection_reason}. "
+                    f"Position has software exits only (no broker stop)."
+                ),
+                importance=10
+            ))
+            return
+        
+        # Attempt to re-place with current prices
+        # (The rejection may have been due to price validation)
+        await self._re_bracket_position(position)
+
     async def _analysis_loop(self) -> None:
         """Phase 2: thin wrapper around the existing master-loop body.
 
@@ -3365,6 +4904,11 @@ class TradingEngineWithCommentary:
 
         sup.register("quote_streamer", self._quote_streamer_loop, TaskPriority.NORMAL)
         sup.register("position_loop",  self._position_loop,        TaskPriority.CRITICAL)
+        # v-order-monitor-2026-09-10: realtime WORKING bracket/OCO monitor.
+        # Polls Schwab for fills/cancels/rejects on bot-managed brackets
+        # and syncs Position state accordingly. CRITICAL priority because
+        # orphaned stops or missed TP fills are risk management failures.
+        sup.register("order_monitor",  self._order_monitor_loop,   TaskPriority.CRITICAL)
         sup.register("analysis_loop",  self._analysis_loop,        TaskPriority.NORMAL)
         # v-market-indices-strip-2026-05-27: regime strip refresh loop.
         # NORMAL priority — purely cosmetic, must never starve trading
@@ -3385,7 +4929,33 @@ class TradingEngineWithCommentary:
         self._screener_loop = ScreenerLoop(self)
         sup.register("screener_loop", self._screener_loop.run, TaskPriority.NORMAL)
 
+        # v-newsbus-2026-09-08: news_loop refreshes the NewsBus from
+        # FreeNewsAggregator on a ~20s cadence. Strategies read from
+        # the bus instead of fetching independently. High-impact items
+        # trigger wake events for the analysis loop.
+        from core.loops.news_loop import NewsLoop
+        from core.news_bus import get_news_bus
+        self._news_bus = get_news_bus(
+            on_high_impact=self._on_news_high_impact,
+        )
+        self._news_loop = NewsLoop(self, bus=self._news_bus)
+        sup.register("news_loop", self._news_loop.run, TaskPriority.NORMAL)
+
         return sup
+
+    def _on_news_high_impact(self, symbol: str, item) -> None:
+        """Callback for high-impact news events from NewsBus.
+        
+        Sets the wake event so the analysis loop can evaluate entry
+        opportunities early instead of waiting for the next cadence tick.
+        """
+        try:
+            logger.info(
+                "news_high_impact_wake symbol=%s headline=%s sentiment=%.3f",
+                symbol, item.headline[:60], item.sentiment_score,
+            )
+        except Exception:
+            pass
 
     def _on_task_crash(self, st, exc) -> None:
         """Surface task crashes on the dashboard. NORMAL — we don't pause
@@ -3913,9 +5483,20 @@ class TradingEngineWithCommentary:
     async def start(self):
         """Start the trading engine with commentary"""
         self.is_running = True
+        # v-bootstrap-oco-2026-09-10: track if orphan bracket bootstrap has run
+        # so we only do it once (at startup or first order_monitor tick)
+        self._oco_bootstrap_done = False
         # v-uptime-2026-06-10: /api/status reads this; it was never set,
         # so the dashboard showed uptime 0:00:00 forever.
         self.start_time = datetime.now()
+
+        # v-feature-snapshot-2026-09-09: ensure snapshot table exists
+        if self.db_logger is not None:
+            try:
+                await self.db_logger.ensure_snapshot_table()
+                logger.info("snapshot_table_ready")
+            except Exception as exc:
+                logger.warning("snapshot_table_create_failed: %s", exc)
 
         # v-startup-schwab-sync-2026-04-30: previously this branch only
         # ran in LIVE mode, so SIM-mode dashboards saw the default
@@ -3956,6 +5537,22 @@ class TradingEngineWithCommentary:
                 except Exception as exc:
                     logger.debug(f"startup schwab_positions_cache seed failed: {exc}")
                 self._save_state()
+                
+                # v-bootstrap-oco-2026-09-10: attach orphan WORKING OCO brackets
+                # to bot-managed positions that are missing bracket_order_id.
+                # This handles positions from prior version/restart that don't
+                # have bracket tracking, making them visible to _order_monitor_loop.
+                try:
+                    attached = await self._bootstrap_orphan_brackets()
+                    self._oco_bootstrap_done = True
+                    if attached > 0:
+                        logger.info(
+                            "startup_bootstrap_oco: attached %d orphan brackets",
+                            attached,
+                        )
+                except Exception as exc:
+                    logger.warning(f"startup bootstrap_orphan_brackets failed: {exc}")
+                    
             except Exception as exc:
                 logger.warning(f"startup live positions sync failed: {exc}")
 
@@ -4388,12 +5985,37 @@ class TradingEngineWithCommentary:
                 # Tradable hours: 30s (frequent screener / signal scans).
                 # Off-hours: 5 min by default (data barely changes; news
                 # arrives episodically). Both knobs are config-tunable.
+                #
+                # v-newsbus-wake-2026-09-08: analysis loop can wake early
+                # on high-impact news alerts. The NewsBus sets the wake
+                # event when a HIGH impact item arrives; we check it with
+                # wait_for so we either wake early or complete the full
+                # cadence sleep. After handling, clear the event so we
+                # don't spin. This is the "event-driven entry wake" from
+                # the P0 spec — 30s backstop with early wake on alerts.
                 cadence = (
                     Config().ANALYSIS_LOOP_RTH_SEC
                     if getattr(self, "_is_tradable_now", True)
                     else Config().ANALYSIS_LOOP_OFF_HOURS_SEC
                 )
-                await asyncio.sleep(cadence)
+                wake_reason = "poll"
+                try:
+                    bus = getattr(self, "_news_bus", None)
+                    if bus is not None:
+                        wake_event = bus.get_wake_event()
+                        try:
+                            await asyncio.wait_for(wake_event.wait(), timeout=cadence)
+                            wake_reason = "news_alert"
+                            bus.clear_wake_event()
+                        except asyncio.TimeoutError:
+                            pass  # Normal cadence completed
+                    else:
+                        await asyncio.sleep(cadence)
+                except Exception as _wake_exc:
+                    logger.debug("analysis_loop wake failed: %s", _wake_exc)
+                    await asyncio.sleep(cadence)
+                
+                self._last_wake_reason = wake_reason
                 
             except Exception as e:
                 self.commentary.add_commentary(TradingCommentary(
@@ -4596,7 +6218,22 @@ class TradingEngineWithCommentary:
                 logger.debug(f"Gap analysis error for {symbol}: {e}")
 
     async def _evaluate_trading_conditions(self) -> Tuple[bool, str]:
-        """Evaluate if we should trade with detailed reasoning"""
+        """Evaluate if we should trade with detailed reasoning.
+        
+        v-econ-calendar-dated-2026-09-09: Blackout check REMOVED from here.
+        Previously, a blackout would return (False, "Major economic news event"),
+        causing the ENTIRE analysis loop to be skipped in LIVE mode. This made
+        the bot appear frozen (no strategy_decision logs, no indicator updates).
+        
+        Now:
+          - Analysis ALWAYS runs (bot keeps thinking during blackout)
+          - Blackout blocks NEW ENTRIES only (soft veto in _process_signal_with_commentary)
+          - LIVE and SIM both behave consistently (blackout respected in both)
+        
+        This matches how a pro desk operates: analysts still evaluate opportunities
+        during news events, they just don't place new orders until the volatility
+        window passes.
+        """
         # In commentary mode, we always "trade" but don't execute real orders
         if self.mode == TradingMode.SIMULATION_WITH_COMMENTARY:
             if self.risk_manager.margin_call:
@@ -4615,8 +6252,38 @@ class TradingEngineWithCommentary:
                 ))
             return True, "Simulation mode - always analyze"
         
-        if self._is_news_blackout():
-            return False, "Major economic news event"
+        # v-econ-calendar-dated-2026-09-09: Blackout no longer blocks analysis.
+        # Check is moved to _process_signal_with_commentary as soft veto.
+        # Log active blackout at INFO level for observability but continue analysis.
+        active_blackout = self._get_active_blackout()
+        if active_blackout:
+            logger.info(
+                "econ_blackout_in_effect event=%s ends=%s remaining_min=%.1f "
+                "— analysis continues, new entries blocked",
+                active_blackout.name,
+                active_blackout.end_time.strftime("%H:%M ET"),
+                active_blackout.remaining_minutes,
+            )
+            self.commentary.add_commentary(TradingCommentary(
+                timestamp=datetime.now(),
+                type=CommentaryType.INFO,
+                symbol=None,
+                title=f"📰 Econ Blackout Active — {active_blackout.name}",
+                message=(
+                    f"Economic event blackout in effect until "
+                    f"{active_blackout.end_time.strftime('%H:%M ET')} "
+                    f"(~{active_blackout.remaining_minutes:.0f}min remaining). "
+                    f"Analysis continues; new entries blocked at signal router."
+                ),
+                data={
+                    'event_name': active_blackout.name,
+                    'event_type': active_blackout.event_type.value,
+                    'end_time': active_blackout.end_time.isoformat(),
+                    'remaining_minutes': active_blackout.remaining_minutes,
+                },
+                importance=7
+            ))
+        
         # For other modes, check actual conditions
         allowed, reason = self.risk_manager.check_trading_allowed()
         
@@ -5064,6 +6731,14 @@ class TradingEngineWithCommentary:
                 ),
                 importance=7,
             ))
+            # v-feature-snapshot-2026-09-09: emit snapshot on regime veto
+            self._emit_veto_snapshot(
+                signal=signal,
+                strategy_id=_ra_strategy,
+                reason="regime_gate_meanrev",
+                gate_name="regime_gate",
+                extra={"tape": _alloc.tape, "er": _alloc.er, "threshold": _alloc.threshold},
+            )
             return  # abort the signal — no order placed
 
         # v-conviction-floor-meanrev-2026-06-17: skip mean-rev signals
@@ -5274,6 +6949,60 @@ class TradingEngineWithCommentary:
                 ))
                 return
 
+        # v-econ-calendar-dated-2026-09-09: Blackout soft veto on NEW ENTRIES.
+        # Analysis continues during blackout (bot keeps thinking/logging), but
+        # we block placing new orders until the high-impact news window passes.
+        # This matches how a pro desk operates: still evaluate opportunities,
+        # just don't enter new positions during wild volatility spikes.
+        #
+        # Unlike the old approach (which skipped the entire analysis loop in
+        # LIVE mode but not SIM), this is consistent across modes and lets the
+        # user see strategy_decision logs during blackout.
+        active_blackout = self._get_active_blackout()
+        if active_blackout:
+            strategy_id = signal.reasoning.get("strategy", "unknown") if signal.reasoning else "unknown"
+            self._audit("econ_blackout", signal.symbol, "skip", "blackout_soft_veto",
+                        event=active_blackout.name,
+                        event_type=active_blackout.event_type.value,
+                        ends=active_blackout.end_time.strftime("%H:%M"),
+                        remaining_min=round(active_blackout.remaining_minutes, 1),
+                        strategy=strategy_id)
+            
+            # v-feature-snapshot-emit-2026-09-09: emit snapshot for blackout veto
+            self._emit_veto_snapshot(
+                signal=signal,
+                strategy_id=strategy_id,
+                reason="blackout_soft_veto",
+                gate_name="econ_blackout",
+                extra={
+                    "event_name": active_blackout.name,
+                    "event_type": active_blackout.event_type.value,
+                    "remaining_min": round(active_blackout.remaining_minutes, 1),
+                },
+            )
+            
+            self.commentary.add_commentary(TradingCommentary(
+                timestamp=datetime.now(),
+                type=CommentaryType.RISK_ASSESSMENT,
+                symbol=signal.symbol,
+                title=f"📰 Econ Blackout — Holding Off Entry",
+                message=(
+                    f"Signal for {signal.symbol} received during economic event "
+                    f"'{active_blackout.name}' (until {active_blackout.end_time.strftime('%H:%M ET')}). "
+                    f"Blocking new entry to avoid volatility spike. "
+                    f"Analysis logged; will re-evaluate after window closes."
+                ),
+                data={
+                    'event_name': active_blackout.name,
+                    'event_type': active_blackout.event_type.value,
+                    'end_time': active_blackout.end_time.isoformat(),
+                    'remaining_minutes': active_blackout.remaining_minutes,
+                    'signal_type': signal.signal_type.value if hasattr(signal, 'signal_type') else 'unknown',
+                },
+                importance=6,
+            ))
+            return
+
         # v-early-session-soft-2026-04-30: soft veto on the first 15 minutes
         # after open. Indicators computed on <15 bars of post-open data are
         # unreliable (ATR is microscopic, volume ratios skewed by opening
@@ -5347,6 +7076,110 @@ class TradingEngineWithCommentary:
                          f"becoming overnight holds (ASTS 5/21 incident). "
                          f"Re-enable after EOD-flatten is implemented."),
                 importance=6,
+            ))
+            return
+
+        # v-pause-live-daytrade-2026-09-10: block NEW LIVE day-trade momentum
+        # entries when DAY_TRADE_LIVE_ENTRIES_ENABLED=False.
+        #
+        # Hari APPROVED product call 2026-09-10: immediately pause new LIVE
+        # day-trade entries while keeping:
+        #   - Sim/commentary analysis running (strategy still generates signals)
+        #   - Hard loss circuits / ENABLE_BOT_ONLY_PNL_CIRCUIT intact
+        #   - Flatten / exits / order_monitor / OCO / bootstrap for EXISTING
+        #     bot day-trades intact
+        #   - LT hands-off forever: MU, SNAP, HQGE, SPCX (is_long_term)
+        #
+        # Does NOT flip autonomous_live. Only blocks new entries via the
+        # day_trade_momentum lane in LIVE mode.
+        _signal_strategy = (signal.reasoning or {}).get("strategy", "")
+        if (_signal_strategy == "day_trade_momentum"
+                and self.mode == TradingMode.LIVE
+                and not Config().DAY_TRADE_LIVE_ENTRIES_ENABLED):
+            self._audit(
+                "daytrade_live_pause", signal.symbol, "skip",
+                "live_entries_disabled",
+                strategy=_signal_strategy,
+                mode=self.mode.value,
+                flag="DAY_TRADE_LIVE_ENTRIES_ENABLED=False",
+                rsi=round(float((signal.reasoning or {}).get("rsi", 0)), 2),
+                entry_pattern=(signal.reasoning or {}).get("entry_pattern"),
+                regime=(signal.reasoning or {}).get("market_context_regime"),
+            )
+            self.commentary.add_commentary(TradingCommentary(
+                timestamp=datetime.now(),
+                type=CommentaryType.RISK_ASSESSMENT,
+                symbol=signal.symbol,
+                title=f"🛑 Day-Trade LIVE Entry Paused",
+                message=(
+                    f"Signal for {signal.symbol} via day_trade_momentum "
+                    f"(pattern: {(signal.reasoning or {}).get('entry_pattern', 'unknown')}) "
+                    f"blocked in LIVE mode. DAY_TRADE_LIVE_ENTRIES_ENABLED=False.\n\n"
+                    f"Stage-A validation required before promotion:\n"
+                    f"  n>=150 trades, >=10 sessions, PF>=1.30, WR>=48%,\n"
+                    f"  exp>=+0.05R, DD<=6%, max losing day<=2R.\n\n"
+                    f"Sim/commentary analysis continues. Existing positions "
+                    f"(exits, OCO, circuits) remain intact."
+                ),
+                data={
+                    'strategy': _signal_strategy,
+                    'entry_pattern': (signal.reasoning or {}).get('entry_pattern'),
+                    'mode': self.mode.value,
+                    'flag': 'DAY_TRADE_LIVE_ENTRIES_ENABLED',
+                    'flag_value': False,
+                },
+                importance=8,
+            ))
+            return
+
+        # v-orb-prototype-2026-09-10: block NEW LIVE ORB entries when
+        # ORB_LIVE_ENTRIES_ENABLED=False.
+        #
+        # Same pattern as day_trade_momentum pause: sim/shadow analysis
+        # continues, only LIVE order placement is blocked.
+        #
+        # Stage-A validation required before promotion:
+        #   n>=150 trades, >=10 sessions, PF>=1.30, WR>=48%,
+        #   exp>=+0.05R, DD<=6%, max losing day<=2R.
+        if (_signal_strategy == "orb_contraction_rvol"
+                and self.mode == TradingMode.LIVE
+                and not Config().ORB_LIVE_ENTRIES_ENABLED):
+            self._audit(
+                "orb_live_pause", signal.symbol, "skip",
+                "live_entries_disabled",
+                strategy=_signal_strategy,
+                mode=self.mode.value,
+                flag="ORB_LIVE_ENTRIES_ENABLED=False",
+                breakout_type=(signal.reasoning or {}).get("breakout_type"),
+                orb_high=round(float((signal.reasoning or {}).get("orb_high", 0)), 2),
+                orb_low=round(float((signal.reasoning or {}).get("orb_low", 0)), 2),
+                contraction_pct=round(float((signal.reasoning or {}).get("contraction_pct", 0)), 3),
+                volume_ratio=round(float((signal.reasoning or {}).get("volume_ratio", 0)), 2),
+                regime=(signal.reasoning or {}).get("market_context_regime"),
+            )
+            self.commentary.add_commentary(TradingCommentary(
+                timestamp=datetime.now(),
+                type=CommentaryType.RISK_ASSESSMENT,
+                symbol=signal.symbol,
+                title=f"🛑 ORB LIVE Entry Paused",
+                message=(
+                    f"Signal for {signal.symbol} via orb_contraction_rvol "
+                    f"(type: {(signal.reasoning or {}).get('breakout_type', 'unknown')}) "
+                    f"blocked in LIVE mode. ORB_LIVE_ENTRIES_ENABLED=False.\n\n"
+                    f"Stage-A validation required before promotion:\n"
+                    f"  n>=150 trades, >=10 sessions, PF>=1.30, WR>=48%,\n"
+                    f"  exp>=+0.05R, DD<=6%, max losing day<=2R.\n\n"
+                    f"Sim/shadow analysis continues. Enable for sim/shadow testing "
+                    f"with ENABLE_ORB_STRATEGY=1 and ORB_SIM_SHADOW_ENABLED=1."
+                ),
+                data={
+                    'strategy': _signal_strategy,
+                    'breakout_type': (signal.reasoning or {}).get('breakout_type'),
+                    'mode': self.mode.value,
+                    'flag': 'ORB_LIVE_ENTRIES_ENABLED',
+                    'flag_value': False,
+                },
+                importance=8,
             ))
             return
 
@@ -5837,6 +7670,14 @@ class TradingEngineWithCommentary:
                 self._audit("ml", signal.symbol, "skip", "ml_veto_high_confidence",
                             ml_signal=ml_signal, ml_conf=round(ml_confidence, 3),
                             threshold=round(ml_veto_threshold, 3))
+                # v-feature-snapshot-2026-09-09: emit snapshot on ML veto
+                self._emit_veto_snapshot(
+                    signal=signal,
+                    strategy_id=signal.reasoning.get("strategy", "unknown") if signal.reasoning else "unknown",
+                    reason="ml_veto_high_confidence",
+                    gate_name="ml_veto",
+                    extra={"ml_signal": ml_signal, "ml_conf": ml_confidence, "threshold": ml_veto_threshold},
+                )
                 return
 
             # v-ml-advisor-2026-04-20: below the veto threshold, ML is an
@@ -6694,6 +8535,20 @@ class TradingEngineWithCommentary:
                         except Exception as exc:
                             logger.debug(f"thesis_revalidate error for {symbol}: {exc}")
 
+                        # --- News thesis flip check (v-newsbus-gates-2026-09-09) ---
+                        # Quick NewsBus-based sentiment flip detection. Fires when
+                        # fresh news sentiment has flipped against the position
+                        # direction (e.g., bullish news on a short position).
+                        # Gated by ENABLE_NEWS_THESIS_EXIT (default False).
+                        try:
+                            if await self._check_news_thesis_flip(symbol, position, current_price):
+                                await self._close_position_with_commentary(
+                                    position, "news_thesis_flip"
+                                )
+                                continue
+                        except Exception as exc:
+                            logger.debug(f"news_thesis_flip error for {symbol}: {exc}")
+
                     # ================================================================
                     # PROFESSIONAL EXIT MANAGER
                     # ================================================================
@@ -6806,6 +8661,59 @@ class TradingEngineWithCommentary:
         if is_external or is_manually_managed:
             # External positions are NEVER auto-managed
             return False, ""
+
+        # ────────────────────────────────────────────────────────────────────
+        # v-day-trade-flatten-hour-2026-09-10: hard EOD flatten for day-trade
+        # momentum positions. When local ET hour >= DAY_TRADE_FLATTEN_HOUR,
+        # force full exit. This prevents overnight gap risk on intraday-only
+        # positions. Uses same confirmation path as other risk exits.
+        # ────────────────────────────────────────────────────────────────────
+        _reasoning = getattr(position, 'reasoning', {}) or {}
+        _is_day_trade = _reasoning.get('is_day_trade', False)
+        if _is_day_trade:
+            try:
+                from zoneinfo import ZoneInfo
+                from core.config import Config as _CfgFlatten
+                _cfg_flatten = _CfgFlatten()
+                _flatten_hour = _reasoning.get('flatten_hour', _cfg_flatten.DAY_TRADE_FLATTEN_HOUR)
+                _et_now = datetime.now(ZoneInfo("America/New_York"))
+                _et_hour = _et_now.hour
+                _et_minute = _et_now.minute
+                if _et_hour >= _flatten_hour:
+                    self._audit(
+                        "day_trade_flatten", position.symbol, "exit",
+                        "flatten_hour_reached",
+                        flatten_hour=_flatten_hour,
+                        et_now=_et_now.strftime("%H:%M"),
+                        et_hour=_et_hour,
+                        strategy=_reasoning.get('strategy', 'day_trade_momentum'),
+                        entry_pattern=_reasoning.get('entry_pattern', 'unknown'),
+                    )
+                    self.commentary.add_commentary(TradingCommentary(
+                        timestamp=datetime.now(),
+                        type=CommentaryType.RISK_ASSESSMENT,
+                        symbol=position.symbol,
+                        title=f"🔔 Day-Trade Flatten Hour",
+                        message=(
+                            f"Day-trade position {position.symbol} must close — "
+                            f"flatten hour {_flatten_hour}:00 ET reached "
+                            f"(current: {_et_now.strftime('%H:%M')} ET). "
+                            f"Avoiding overnight gap risk."
+                        ),
+                        data={
+                            'flatten_hour': _flatten_hour,
+                            'et_now': _et_now.strftime('%H:%M'),
+                            'current_price': current_price,
+                            'unrealized_pnl': getattr(position, 'unrealized_pnl', 0),
+                        },
+                        importance=9
+                    ))
+                    return True, "day_trade_flatten_hour"
+            except Exception as _flatten_exc:
+                logger.warning(
+                    "day_trade_flatten check failed for %s: %s",
+                    position.symbol, _flatten_exc
+                )
 
         # Check if stop loss / take profit are hit based on position side.
         # Both use the same simple price comparison — no indicator logic.
@@ -7319,13 +9227,26 @@ class TradingEngineWithCommentary:
                 logger.debug(f"Could not broadcast trade update: {e}")
     
     async def _get_close_confirmation(self, position, reason: str) -> bool:
-        """Get user confirmation before closing position"""
+        """Get user confirmation before closing position.
+        
+        v-autonomy-profile-2026-09-08: respects autonomy profile settings.
+        - supervised profile: timeout defaults to deny (position stays open)
+        - autonomous_live profile: timeout defaults to execute (close position)
+        
+        The CONFIRMATION_TIMEOUT_ACTION config controls this behavior.
+        """
         # Initialize pending requests dict if it doesn't exist
         if not hasattr(self, 'pending_close_requests'):
             self.pending_close_requests = {}
         # Store pending close request
         close_request_id = f"close_{position.symbol}_{int(time.time())}"
         self.pending_close_requests = getattr(self, 'pending_close_requests', {})
+        
+        # v-autonomy-profile-2026-09-08: read timeout settings from config
+        cfg = Config()
+        timeout = cfg.CONFIRMATION_TIMEOUT_SEC
+        timeout_action = cfg.CONFIRMATION_TIMEOUT_ACTION
+        profile = cfg.TRADING_PROFILE
         
         # Create confirmation request
         self.pending_close_requests[close_request_id] = {
@@ -7339,7 +9260,10 @@ class TradingEngineWithCommentary:
         pnl = position.unrealized_pnl
         roi = (pnl / (position.entry_price * position.quantity)) * 100
         # Log that we're requesting confirmation
-        logger.info(f"Requesting close confirmation for {position.symbol}")
+        logger.info(
+            "close_confirmation_request symbol=%s reason=%s profile=%s timeout_sec=%.0f timeout_action=%s",
+            position.symbol, reason, profile, timeout, timeout_action,
+        )
         # Send confirmation request to UI
         try:
             await self._broadcast_ui({
@@ -7353,15 +9277,26 @@ class TradingEngineWithCommentary:
                     'pnl': pnl,
                     'roi': roi,
                     'reason': reason,
+                    'profile': profile,
+                    'timeout_sec': timeout,
+                    'timeout_action': timeout_action,
                     'message': f"Close {position.symbol} with {'profit' if pnl > 0 else 'loss'} of ${abs(pnl):.2f} ({abs(roi):.1f}%)?"
                 }
             })
         except Exception as e:
             logger.error(f"Error broadcasting close confirmation: {e}")
+            # v-autonomy-profile-2026-09-08: on broadcast failure, follow
+            # the profile's default behavior. autonomous_live should still
+            # execute risk exits (stops) even if UI is unreachable.
+            if timeout_action == 'execute':
+                logger.warning(
+                    "close_confirmation broadcast failed, fail-open executing close for %s",
+                    position.symbol,
+                )
+                return True
             return False
         
         # Wait for user response (with timeout)
-        timeout = 30  # 30 seconds timeout
         start_time = time.time()
         
         while time.time() - start_time < timeout:
@@ -7369,23 +9304,61 @@ class TradingEngineWithCommentary:
                 if self.pending_close_requests[close_request_id]['confirmed'] is not None:
                     confirmed = self.pending_close_requests[close_request_id]['confirmed']
                     del self.pending_close_requests[close_request_id]
+                    logger.info(
+                        "close_confirmation_response symbol=%s confirmed=%s profile=%s",
+                        position.symbol, confirmed, profile,
+                    )
                     return confirmed
             await asyncio.sleep(0.1)
         
-        # Timeout - default to not closing
-        self.commentary.add_commentary(TradingCommentary(
-            timestamp=datetime.now(),
-            type=CommentaryType.WARNING,
-            symbol=position.symbol,
-            title=f"⏱️ Close Confirmation Timeout",
-            message=f"No response received for closing {position.symbol}. Position remains open.",
-            importance=8
-        ))
+        # v-autonomy-profile-2026-09-08: timeout behavior depends on profile
+        should_execute = (timeout_action == 'execute')
+        
+        if should_execute:
+            self.commentary.add_commentary(TradingCommentary(
+                timestamp=datetime.now(),
+                type=CommentaryType.WARNING,
+                symbol=position.symbol,
+                title=f"⏱️ Close Confirmation Timeout — Executing (Fail-Open)",
+                message=(
+                    f"No response received for closing {position.symbol}. "
+                    f"Profile '{profile}' with timeout_action='{timeout_action}' "
+                    f"— executing close to protect against unattended risk."
+                ),
+                data={
+                    'profile': profile,
+                    'timeout_action': timeout_action,
+                    'confirmation_timeout_action': 'execute',
+                },
+                importance=9
+            ))
+            logger.warning(
+                "close_confirmation_timeout symbol=%s profile=%s action=execute reason=%s",
+                position.symbol, profile, reason,
+            )
+        else:
+            self.commentary.add_commentary(TradingCommentary(
+                timestamp=datetime.now(),
+                type=CommentaryType.WARNING,
+                symbol=position.symbol,
+                title=f"⏱️ Close Confirmation Timeout",
+                message=f"No response received for closing {position.symbol}. Position remains open.",
+                data={
+                    'profile': profile,
+                    'timeout_action': timeout_action,
+                    'confirmation_timeout_action': 'deny',
+                },
+                importance=8
+            ))
+            logger.info(
+                "close_confirmation_timeout symbol=%s profile=%s action=deny reason=%s",
+                position.symbol, profile, reason,
+            )
         
         if close_request_id in self.pending_close_requests:
             del self.pending_close_requests[close_request_id]
         
-        return False
+        return should_execute
     def _generate_post_trade_analysis(self, position, exit_reason: str, pnl: float) -> str:
         """Generate insightful post-trade analysis"""
         analysis = []
@@ -7829,23 +9802,80 @@ class TradingEngineWithCommentary:
                             _matching_order_id,
                         )
                     else:
-                        # Truly external — pre-existing or operator-opened.
-                        position = Position(
-                            symbol=symbol,
-                            entry_price=pos_data['average_price'],
-                            current_price=pos_data['current_price'],
-                            quantity=pos_data['quantity'],
-                            side='long' if pos_data['quantity'] > 0 else 'short',
-                            stop_loss=pos_data['average_price'] * (1 - Config().DEFAULT_STOP_LOSS_PCT),
-                            take_profit=pos_data['average_price'] * (1 + Config().DEFAULT_TAKE_PROFIT_PCT),
-                            entry_time=datetime.now() - timedelta(hours=1),
-                            unrealized_pnl=pos_data['total_pnl'],
-                            reasoning={'source': 'existing_position', 'tracked_from': datetime.now().isoformat()},
-                            mode="live",
-                            managed_by_bot=False,
+                        # v-ownership-survives-restart-2026-09-10: check saved
+                        # state before defaulting to external. At startup,
+                        # self.positions is empty so every Schwab position
+                        # lands here. Previously all were tagged external;
+                        # bot-opened positions lost managed_by_bot=True.
+                        # Restore ownership when saved record matches.
+                        _qty_abs = abs(pos_data['quantity'])
+                        _side = 'long' if pos_data['quantity'] > 0 else 'short'
+                        saved = getattr(self, '_saved_positions_meta', {}).get(symbol) or {}
+                        _restore_managed = (
+                            saved.get('managed_by_bot') is True
+                            and saved.get('side') == _side
+                            and abs(float(saved.get('quantity', -1)) - _qty_abs) < 1e-6
                         )
-                        position.is_external = True
-                        position.is_manually_managed = True
+                        # is_long_term positions stay hands-off regardless of
+                        # managed_by_bot flag — they're user-designated LT holds
+                        _is_lt = saved.get('is_long_term', False)
+                        
+                        if _restore_managed and not _is_lt:
+                            # Bot-opened trade — restore as managed
+                            try:
+                                _entry_time = datetime.fromisoformat(saved['entry_time'])
+                            except (KeyError, ValueError):
+                                _entry_time = datetime.now() - timedelta(hours=1)
+                            _tp = saved.get('take_profit')
+                            position = Position(
+                                symbol=symbol,
+                                entry_price=pos_data['average_price'],
+                                current_price=pos_data['current_price'],
+                                quantity=_qty_abs,
+                                side=_side,
+                                stop_loss=saved.get('stop_loss', 0) or 0,
+                                take_profit=float('inf') if _tp is None else _tp,
+                                entry_time=_entry_time,
+                                unrealized_pnl=pos_data['total_pnl'],
+                                reasoning=saved.get('reasoning') or {},
+                                mode="live",
+                                managed_by_bot=True,
+                                is_long_term=False,
+                            )
+                            position.is_external = False
+                            position.is_manually_managed = False
+                            if hasattr(self, '_audit'):
+                                self._audit(
+                                    "position_sync", symbol,
+                                    "position_ownership_restored",
+                                    "saved_state_identity_match_update_track",
+                                    side=_side, quantity=_qty_abs,
+                                    stop=saved.get('stop_loss', 0),
+                                    target=_tp,
+                                )
+                            logger.info(
+                                "update_track_restore: %s %s qty=%d — managed_by_bot=True from saved state",
+                                symbol, _side, _qty_abs,
+                            )
+                        else:
+                            # Truly external or is_long_term — hands off
+                            position = Position(
+                                symbol=symbol,
+                                entry_price=pos_data['average_price'],
+                                current_price=pos_data['current_price'],
+                                quantity=_qty_abs,
+                                side=_side,
+                                stop_loss=pos_data['average_price'] * (1 - Config().DEFAULT_STOP_LOSS_PCT),
+                                take_profit=pos_data['average_price'] * (1 + Config().DEFAULT_TAKE_PROFIT_PCT),
+                                entry_time=datetime.now() - timedelta(hours=1),
+                                unrealized_pnl=pos_data['total_pnl'],
+                                reasoning={'source': 'existing_position', 'tracked_from': datetime.now().isoformat()},
+                                mode="live",
+                                managed_by_bot=False,
+                                is_long_term=_is_lt,  # preserve LT flag from saved state
+                            )
+                            position.is_external = True
+                            position.is_manually_managed = True
                         self.positions[symbol] = position
                     
                     # Initialize exit tracking for existing positions
@@ -7875,20 +9905,33 @@ class TradingEngineWithCommentary:
             logger.error(f"Error updating real positions: {e}")
     
     def _is_news_blackout(self) -> bool:
-        """Check if we're in news blackout period"""
-        now = datetime.now()
+        """Check if we're in news blackout period.
         
-        # Economic calendar blackouts (EST)
-        blackouts = [
-            # (hour, minute, duration_minutes)
-            (8, 30, 15),   # CPI/Jobs
-            (10, 0, 15),   # Consumer confidence
-            (14, 0, 30),   # FOMC
-            (14, 30, 15),  # Powell speaks
-        ]
+        v-econ-calendar-2026-09-09: delegates to EconCalendarProvider.
+        v-econ-calendar-dated-2026-09-09: default changed to DatedEconCalendar
+        which uses real FOMC/CPI dates instead of every-Wednesday patterns.
         
-        for hour, minute, duration in blackouts:
-            event_time = now.replace(hour=hour, minute=minute, second=0)
-            if event_time <= now <= event_time + timedelta(minutes=duration):
-                return True
-        return False
+        Provider selection (in order):
+          1. API provider (if ECON_CALENDAR_API_URL env var is set)
+          2. Config provider (if trading.econ_calendar_events in yaml)
+          3. DatedEconCalendar (default, uses real event dates)
+        
+        To customize blackout windows without code changes, add events
+        to Config.yaml under trading.econ_calendar_events.
+        """
+        from core.econ_calendar import get_econ_calendar
+        return get_econ_calendar().is_blackout()
+    
+    def _get_active_blackout(self):
+        """Get details about the currently active blackout, if any.
+        
+        v-econ-calendar-dated-2026-09-09: Returns ActiveBlackout object with
+        event name, start/end times, and remaining duration for observability.
+        Returns None if no blackout is active.
+        
+        Used by:
+          - _evaluate_trading_conditions: INFO-level logging (analysis continues)
+          - _process_signal_with_commentary: soft veto on new entries
+        """
+        from core.econ_calendar import get_econ_calendar
+        return get_econ_calendar().get_active_event()

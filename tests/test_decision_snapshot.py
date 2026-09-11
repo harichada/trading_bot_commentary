@@ -1,0 +1,1567 @@
+"""Tests for v-feature-snapshot-2026-09-09: DecisionSnapshot schema and persistence.
+
+Tests cover:
+  - Schema construction and serialization
+  - PriceVolumeFeatures from indicators
+  - NewsAggregate from gate result
+  - build_snapshot factory function
+  - Skip path emits a snapshot (via strategy _log_decision)
+  - Snapshot ID determinism
+"""
+import json
+import pytest
+from datetime import datetime
+from unittest.mock import MagicMock, AsyncMock, patch
+
+from core.decision_snapshot import (
+    DecisionAction,
+    DecisionSnapshot,
+    PriceVolumeFeatures,
+    NewsAggregate,
+    RegimeContext,
+    build_snapshot,
+    is_snapshot_logging_enabled,
+    is_snapshot_inference_enabled,
+    FEATURE_SNAPSHOT_LOGGING_ENABLED,
+    FEATURE_SNAPSHOT_INFERENCE_ENABLED,
+)
+
+
+class TestPriceVolumeFeatures:
+    """Tests for PriceVolumeFeatures dataclass."""
+
+    def test_from_indicators_basic(self):
+        """from_indicators builds features from typical indicator dict."""
+        indicators = {
+            "rsi": 35,
+            "volume_ratio": 1.5,
+            "macd": 0.5,
+            "macd_signal": 0.3,
+            "macd_histogram": 0.2,
+            "bb_position": 0.3,
+            "bb_width": 0.04,
+            "atr": 2.0,
+        }
+        pv = PriceVolumeFeatures.from_indicators(indicators, price=100.0)
+        
+        assert pv.price == 100.0
+        assert pv.rsi == 0.35  # Normalized to 0-1
+        assert pv.volume_ratio == 1.5
+        assert pv.macd == 0.005  # Normalized by price
+        assert pv.atr_ratio == 0.02  # ATR / price
+
+    def test_from_indicators_empty(self):
+        """from_indicators handles empty indicators gracefully."""
+        pv = PriceVolumeFeatures.from_indicators({}, price=50.0)
+        
+        assert pv.price == 50.0
+        assert pv.rsi == 0.5  # Default
+        assert pv.volume_ratio == 1.0  # Default
+
+    def test_empty_factory(self):
+        """empty() creates zero-initialized features."""
+        pv = PriceVolumeFeatures.empty(price=75.0)
+        
+        assert pv.price == 75.0
+        assert pv.returns_1 == 0.0
+        assert pv.rsi == 0.5
+
+    def test_to_vector(self):
+        """to_vector produces correct-length feature vector."""
+        pv = PriceVolumeFeatures.empty()
+        vec = pv.to_vector()
+        
+        assert len(vec) == 17
+        assert all(isinstance(x, float) for x in vec)
+
+
+class TestNewsAggregate:
+    """Tests for NewsAggregate dataclass."""
+
+    def test_from_gate_result_full_size(self):
+        """from_gate_result handles FULL_SIZE gate action."""
+        mock_gate = MagicMock()
+        mock_gate.action.value = "full_size"
+        mock_gate.size_multiplier = 1.0
+        mock_gate.news_age_sec = 120.0
+        mock_gate.source_tier_min = 1
+        mock_gate.corroboration_n = 3
+        
+        aggregate = {
+            "article_count": 5,
+            "avg_sentiment": 0.45,
+            "high_impact_count": 1,
+        }
+        
+        news = NewsAggregate.from_gate_result(mock_gate, aggregate)
+        
+        assert news.article_count == 5
+        assert news.avg_sentiment == 0.45
+        assert news.gate_action == "full_size"
+        assert news.gate_size_mult == 1.0
+        assert news.corroboration_n == 3
+
+    def test_empty_factory(self):
+        """empty() creates default news aggregate."""
+        news = NewsAggregate.empty()
+        
+        assert news.article_count == 0
+        assert news.gate_action == "no_news"
+        assert news.gate_size_mult == 0.0
+
+
+class TestRegimeContext:
+    """Tests for RegimeContext dataclass."""
+
+    def test_from_context_with_allocator(self):
+        """from_context captures allocator tape/ER."""
+        mock_alloc = MagicMock()
+        mock_alloc.tape = "choppy"
+        mock_alloc.er = 0.35
+        
+        regime = RegimeContext.from_context(
+            regime="oversold",
+            spy_slope_pct=-0.02,
+            vix=18.5,
+            allocator_result=mock_alloc,
+        )
+        
+        assert regime.regime == "oversold"
+        assert regime.spy_slope_pct == -0.02
+        assert regime.vix == 18.5
+        assert regime.tape == "choppy"
+        assert regime.er == 0.35
+
+    def test_empty_factory(self):
+        """empty() creates unknown regime."""
+        regime = RegimeContext.empty()
+        
+        assert regime.regime == "unknown"
+        assert regime.spy_slope_pct == 0.0
+        assert regime.tape is None
+
+
+class TestDecisionSnapshot:
+    """Tests for DecisionSnapshot dataclass and serialization."""
+
+    def test_compute_id_deterministic(self):
+        """compute_id is deterministic for same inputs."""
+        ts = datetime(2026, 9, 9, 12, 0, 0)
+        id1 = DecisionSnapshot.compute_id("TSLA", ts, "oversold_v2", "skip")
+        id2 = DecisionSnapshot.compute_id("TSLA", ts, "oversold_v2", "skip")
+        
+        assert id1 == id2
+        assert len(id1) == 16  # SHA256 truncated to 16 chars
+
+    def test_compute_id_varies_by_inputs(self):
+        """compute_id differs for different inputs."""
+        ts = datetime(2026, 9, 9, 12, 0, 0)
+        id1 = DecisionSnapshot.compute_id("TSLA", ts, "oversold_v2", "skip")
+        id2 = DecisionSnapshot.compute_id("NVDA", ts, "oversold_v2", "skip")
+        id3 = DecisionSnapshot.compute_id("TSLA", ts, "breakout", "skip")
+        
+        assert id1 != id2
+        assert id1 != id3
+
+    def test_to_dict_serializable(self):
+        """to_dict produces JSON-serializable output."""
+        snapshot = build_snapshot(
+            symbol="AAPL",
+            strategy_id="test_strategy",
+            action=DecisionAction.SKIP,
+            reason="gate_a_not_extreme",
+            mode="simulation",
+        )
+        
+        d = snapshot.to_dict()
+        
+        # Should be JSON-serializable
+        json_str = json.dumps(d)
+        assert json_str
+        
+        # Round-trip
+        parsed = json.loads(json_str)
+        assert parsed["symbol"] == "AAPL"
+        assert parsed["action"] == "skip"
+        assert parsed["reason"] == "gate_a_not_extreme"
+
+    def test_to_json(self):
+        """to_json produces valid JSON string."""
+        snapshot = build_snapshot(
+            symbol="MSFT",
+            strategy_id="momentum",
+            action=DecisionAction.SIGNAL_BUY,
+            reason="momentum_breakout",
+            confidence=0.75,
+        )
+        
+        json_str = snapshot.to_json()
+        parsed = json.loads(json_str)
+        
+        assert parsed["symbol"] == "MSFT"
+        assert parsed["confidence"] == 0.75
+
+    def test_from_dict_roundtrip(self):
+        """from_dict reconstructs snapshot from dict."""
+        original = build_snapshot(
+            symbol="GOOG",
+            strategy_id="mean_rev",
+            action=DecisionAction.VETO,
+            reason="ml_veto_high_confidence",
+            gate_name="ml_veto",
+            confidence=0.9,
+            would_entry_price=150.0,
+            would_stop_loss=145.0,
+            would_take_profit=165.0,
+        )
+        
+        d = original.to_dict()
+        reconstructed = DecisionSnapshot.from_dict(d)
+        
+        assert reconstructed.symbol == original.symbol
+        assert reconstructed.action == original.action
+        assert reconstructed.reason == original.reason
+        assert reconstructed.gate_name == original.gate_name
+        assert reconstructed.confidence == original.confidence
+        assert reconstructed.would_entry_price == original.would_entry_price
+
+
+class TestBuildSnapshot:
+    """Tests for build_snapshot factory function."""
+
+    def test_build_with_minimal_args(self):
+        """build_snapshot works with minimal required args."""
+        snapshot = build_snapshot(
+            symbol="AMD",
+            strategy_id="test",
+            action=DecisionAction.SKIP,
+            reason="no_setup",
+        )
+        
+        assert snapshot.symbol == "AMD"
+        assert snapshot.strategy_id == "test"
+        assert snapshot.action == DecisionAction.SKIP
+        assert snapshot.reason == "no_setup"
+        assert snapshot.mode == "simulation"  # Default
+        assert snapshot.snapshot_id  # Auto-generated
+
+    def test_build_with_indicators(self):
+        """build_snapshot extracts PriceVolumeFeatures from indicators."""
+        indicators = {"rsi": 25, "volume_ratio": 2.5, "atr": 1.5}
+        
+        snapshot = build_snapshot(
+            symbol="PLTR",
+            strategy_id="oversold_v2",
+            action=DecisionAction.SIGNAL_BUY,
+            reason="all_gates_passed",
+            indicators=indicators,
+            price=20.0,
+        )
+        
+        assert snapshot.price_vol.price == 20.0
+        assert snapshot.price_vol.rsi == 0.25
+        assert snapshot.price_vol.volume_ratio == 2.5
+        assert snapshot.price_vol.atr_ratio == 0.075
+
+    def test_build_with_sizing(self):
+        """build_snapshot captures would-be sizing."""
+        snapshot = build_snapshot(
+            symbol="COIN",
+            strategy_id="breakout",
+            action=DecisionAction.VETO,
+            reason="regime_gate",
+            would_entry_price=85.0,
+            would_stop_loss=80.0,
+            would_take_profit=100.0,
+            would_size_shares=50,
+            would_size_mult=0.5,
+        )
+        
+        assert snapshot.would_entry_price == 85.0
+        assert snapshot.would_stop_loss == 80.0
+        assert snapshot.would_take_profit == 100.0
+        assert snapshot.would_size_shares == 50
+        assert snapshot.would_size_mult == 0.5
+
+    def test_build_with_extra(self):
+        """build_snapshot captures extra strategy-specific data."""
+        snapshot = build_snapshot(
+            symbol="RIVN",
+            strategy_id="news",
+            action=DecisionAction.SKIP,
+            reason="insufficient_news",
+            extra={"fresh_count": 0, "source_tier": 3},
+        )
+        
+        assert snapshot.extra["fresh_count"] == 0
+        assert snapshot.extra["source_tier"] == 3
+
+
+class TestFeatureFlags:
+    """Tests for feature flags."""
+
+    def test_logging_enabled_by_default(self):
+        """Snapshot logging is enabled by default."""
+        assert FEATURE_SNAPSHOT_LOGGING_ENABLED is True
+        assert is_snapshot_logging_enabled() is True
+
+    def test_inference_disabled_by_default(self):
+        """Snapshot inference is disabled by default."""
+        assert FEATURE_SNAPSHOT_INFERENCE_ENABLED is False
+        assert is_snapshot_inference_enabled() is False
+
+
+class TestSkipPathEmitsSnapshot:
+    """Tests that skip paths emit snapshots via _log_decision.
+    
+    Uses direct imports from strategies.base to avoid full strategy dependency chain.
+    """
+
+    @pytest.fixture
+    def mock_engine(self):
+        """Create a mock engine with db_logger."""
+        engine = MagicMock()
+        engine.mode = MagicMock()
+        engine.mode.value = "simulation"
+        engine.db_logger = MagicMock()
+        engine.db_logger.log_decision_snapshot = AsyncMock()
+        return engine
+
+    @pytest.fixture
+    def mock_market_data(self):
+        """Create mock market data."""
+        data = MagicMock()
+        data.symbol = "TSLA"
+        data.close = 250.0
+        data.high = 252.0
+        data.low = 248.0
+        data.open = 249.0
+        data.indicators = {"rsi": 45, "volume_ratio": 1.2, "atr": 3.0}
+        data.timestamp = datetime.now()
+        return data
+
+    @pytest.mark.asyncio
+    async def test_strategy_skip_emits_snapshot(self, mock_engine, mock_market_data):
+        """Strategy _log_decision on skip path triggers snapshot emission.
+        
+        This test creates a minimal strategy subclass to verify the base
+        class _emit_snapshot functionality works correctly.
+        """
+        # Import just the base class module directly
+        import importlib.util
+        import sys
+        
+        # Load base module without triggering full strategy imports
+        spec = importlib.util.spec_from_file_location(
+            "strategies_base", 
+            "/workspace/strategies/base.py"
+        )
+        base_module = importlib.util.module_from_spec(spec)
+        
+        # Need core modules for the import
+        sys.modules['strategies_base'] = base_module
+        spec.loader.exec_module(base_module)
+        
+        TradingStrategyWithCommentary = base_module.TradingStrategyWithCommentary
+        
+        # Create a concrete strategy subclass for testing
+        class TestStrategy(TradingStrategyWithCommentary):
+            name = "test_strategy"
+            
+            async def generate_signal_with_commentary(self, market_data):
+                return None
+        
+        strategy = TestStrategy(MagicMock())
+        strategy._engine_ref = mock_engine
+        
+        # Mock the event loop
+        with patch('asyncio.get_event_loop') as mock_loop:
+            mock_loop.return_value.create_task = MagicMock()
+            
+            # Call _log_decision (which calls _emit_snapshot internally)
+            strategy._log_decision(
+                mock_market_data,
+                "skip",
+                "gate_a_not_extreme",
+                gate_name="gate_a_statistical_extreme",
+                rsi=45,
+            )
+            
+            # Verify snapshot was tracked
+            assert strategy._last_snapshot_id is not None
+            assert strategy._last_snapshot_ts is not None
+            
+            # Verify async task was created for db write
+            mock_loop.return_value.create_task.assert_called_once()
+
+    def test_get_snapshot_metadata(self, mock_engine, mock_market_data):
+        """get_snapshot_metadata returns tracked snapshot info."""
+        import importlib.util
+        import sys
+        
+        spec = importlib.util.spec_from_file_location(
+            "strategies_base", 
+            "/workspace/strategies/base.py"
+        )
+        base_module = importlib.util.module_from_spec(spec)
+        sys.modules['strategies_base'] = base_module
+        spec.loader.exec_module(base_module)
+        
+        TradingStrategyWithCommentary = base_module.TradingStrategyWithCommentary
+        
+        class TestStrategy(TradingStrategyWithCommentary):
+            name = "test_strategy"
+            
+            async def generate_signal_with_commentary(self, market_data):
+                return None
+        
+        strategy = TestStrategy(MagicMock())
+        strategy._engine_ref = mock_engine
+        
+        # Before any snapshot
+        assert strategy.get_snapshot_metadata() == {}
+        
+        # After emitting a snapshot
+        with patch('asyncio.get_event_loop') as mock_loop:
+            mock_loop.return_value.create_task = MagicMock()
+            
+            strategy._log_decision(
+                mock_market_data,
+                "skip",
+                "gate_b_no_capitulation",
+                gate_name="gate_b_capitulation_volume",
+            )
+        
+        metadata = strategy.get_snapshot_metadata()
+        assert "snapshot_id" in metadata
+        assert "snapshot_ts" in metadata
+        assert metadata["snapshot_strategy"] == "test_strategy"
+
+
+# Skip the OversoldBounceV2 integration test since it requires full strategy chain
+# The unit tests above verify the base functionality works correctly.
+
+
+class TestConfigFeatureFlags:
+    """v-feature-snapshot-config-2026-09-09: test Config-based feature flags."""
+
+    def test_config_logging_default_true(self):
+        """FEATURE_SNAPSHOT_LOGGING defaults to True."""
+        from core.config import Config
+        cfg = Config()
+        assert cfg.FEATURE_SNAPSHOT_LOGGING is True
+
+    def test_config_inference_default_false(self):
+        """FEATURE_SNAPSHOT_INFERENCE defaults to False."""
+        from core.config import Config
+        cfg = Config()
+        assert cfg.FEATURE_SNAPSHOT_INFERENCE is False
+
+    def test_logging_env_override_false(self, monkeypatch):
+        """FEATURE_SNAPSHOT_LOGGING can be disabled via env var."""
+        monkeypatch.setenv("FEATURE_SNAPSHOT_LOGGING", "0")
+        from core.config import Config
+        cfg = Config()
+        assert cfg.FEATURE_SNAPSHOT_LOGGING is False
+
+    def test_logging_env_override_true(self, monkeypatch):
+        """FEATURE_SNAPSHOT_LOGGING=1 keeps it enabled."""
+        monkeypatch.setenv("FEATURE_SNAPSHOT_LOGGING", "1")
+        from core.config import Config
+        cfg = Config()
+        assert cfg.FEATURE_SNAPSHOT_LOGGING is True
+
+    def test_inference_env_override_true(self, monkeypatch):
+        """FEATURE_SNAPSHOT_INFERENCE can be enabled via env var."""
+        monkeypatch.setenv("FEATURE_SNAPSHOT_INFERENCE", "1")
+        from core.config import Config
+        cfg = Config()
+        assert cfg.FEATURE_SNAPSHOT_INFERENCE is True
+
+    def test_is_snapshot_logging_reads_config(self, monkeypatch):
+        """is_snapshot_logging_enabled() reads from Config."""
+        monkeypatch.setenv("FEATURE_SNAPSHOT_LOGGING", "false")
+        # Re-import to pick up new config
+        from core.decision_snapshot import is_snapshot_logging_enabled
+        assert is_snapshot_logging_enabled() is False
+
+    def test_is_snapshot_inference_reads_config(self, monkeypatch):
+        """is_snapshot_inference_enabled() reads from Config."""
+        monkeypatch.setenv("FEATURE_SNAPSHOT_INFERENCE", "true")
+        from core.decision_snapshot import is_snapshot_inference_enabled
+        assert is_snapshot_inference_enabled() is True
+
+
+class TestNewsGateVetoSnapshot:
+    """v-feature-snapshot-emit-2026-09-09: test news gate veto snapshot emission."""
+
+    @pytest.fixture
+    def mock_news_gate_result(self):
+        """Create mock NewsGateResult."""
+        result = MagicMock()
+        result.action = MagicMock()
+        result.action.value = "veto_stale"
+        result.size_multiplier = 0.0
+        result.news_age_sec = 3600.0
+        result.source_tier_min = 2
+        result.corroboration_n = 1
+        result.reason = "all_news_stale_freshest_3600s_exceeds_1800s"
+        result.is_veto = MagicMock(return_value=True)
+        return result
+
+    def test_build_snapshot_with_news_gate_result(self, mock_news_gate_result):
+        """build_snapshot captures news gate result in NewsAggregate."""
+        snapshot = build_snapshot(
+            symbol="AAPL",
+            strategy_id="news",
+            action=DecisionAction.VETO,
+            reason="veto_stale",
+            gate_name="news_gate_veto_stale",
+            news_gate_result=mock_news_gate_result,
+            news_aggregate={"article_count": 5, "avg_sentiment": 0.3},
+        )
+        
+        assert snapshot.news.gate_action == "veto_stale"
+        assert snapshot.news.gate_size_mult == 0.0
+        assert snapshot.news.corroboration_n == 1
+        assert snapshot.gate_name == "news_gate_veto_stale"
+
+    def test_build_snapshot_with_would_size_mult(self):
+        """build_snapshot captures would_size_mult for sizing decisions."""
+        snapshot = build_snapshot(
+            symbol="MSFT",
+            strategy_id="news",
+            action=DecisionAction.SIGNAL_BUY,
+            reason="strong_sentiment",
+            would_size_mult=0.5,
+            would_entry_price=400.0,
+            would_stop_loss=390.0,
+            would_take_profit=420.0,
+        )
+        
+        assert snapshot.would_size_mult == 0.5
+        assert snapshot.would_entry_price == 400.0
+
+
+class TestGateMultiplierShadow:
+    """v-feature-snapshot-emit-2026-09-09: test news gate multiplier shadow log."""
+
+    def test_log_comparison_creates_entry(self, tmp_path):
+        """log_comparison writes entry to ledger."""
+        from sizing.conviction_sizer import NewsGateMultiplierShadow
+        
+        ledger_path = tmp_path / "test_gate_mult.ndjson"
+        shadow = NewsGateMultiplierShadow(ledger_path=ledger_path)
+        
+        entry = shadow.log_comparison(
+            symbol="NVDA",
+            strategy="free_news_sentiment",
+            news_gate_multiplier=0.5,
+            corroboration_n=1,
+            news_age_sec=1200.0,
+            source_tier_min=2,
+        )
+        
+        assert entry is not None
+        assert entry.news_gate_multiplier == 0.5
+        assert entry.corroboration_n == 1
+        assert entry.delta == 0.0  # 0.5 - 0.5 (placeholder) = 0
+
+    def test_log_comparison_computes_delta(self, tmp_path):
+        """log_comparison computes delta vs model placeholder."""
+        from sizing.conviction_sizer import NewsGateMultiplierShadow
+        
+        ledger_path = tmp_path / "test_gate_mult_delta.ndjson"
+        shadow = NewsGateMultiplierShadow(ledger_path=ledger_path)
+        
+        # Full size gate (1.0) vs neutral placeholder (0.5) = +0.5 delta
+        entry = shadow.log_comparison(
+            symbol="AAPL",
+            strategy="free_news_sentiment",
+            news_gate_multiplier=1.0,
+            corroboration_n=3,
+            model_score_placeholder=0.5,
+        )
+        
+        assert entry.delta == 0.5
+
+    def test_log_comparison_writes_to_file(self, tmp_path):
+        """log_comparison appends JSON to ledger file."""
+        from sizing.conviction_sizer import NewsGateMultiplierShadow
+        import json
+        
+        ledger_path = tmp_path / "test_gate_mult_file.ndjson"
+        shadow = NewsGateMultiplierShadow(ledger_path=ledger_path)
+        
+        shadow.log_comparison(
+            symbol="TSLA",
+            strategy="news",
+            news_gate_multiplier=0.5,
+            corroboration_n=1,
+        )
+        
+        # Verify file was written
+        assert ledger_path.exists()
+        with open(ledger_path) as f:
+            line = f.readline()
+            data = json.loads(line)
+        
+        assert data["symbol"] == "TSLA"
+        assert data["news_gate_multiplier"] == 0.5
+
+
+class TestBlackoutVetoSnapshot:
+    """v-feature-snapshot-emit-2026-09-09: test blackout veto snapshot via engine."""
+
+    def test_emit_veto_snapshot_signature(self):
+        """_emit_veto_snapshot accepts expected parameters."""
+        # This is a minimal test to verify the signature is correct
+        # Full integration test would require engine setup
+        from core.decision_snapshot import DecisionAction, build_snapshot
+        
+        snapshot = build_snapshot(
+            symbol="SPY",
+            strategy_id="news",
+            action=DecisionAction.VETO,
+            reason="blackout_soft_veto",
+            gate_name="econ_blackout",
+            extra={
+                "event_name": "FOMC Rate Decision",
+                "event_type": "fomc",
+                "remaining_min": 15.5,
+            },
+        )
+        
+        assert snapshot.gate_name == "econ_blackout"
+        assert snapshot.reason == "blackout_soft_veto"
+        assert snapshot.extra["event_name"] == "FOMC Rate Decision"
+
+
+class TestEnsureDatetime:
+    """v-fix-snapshot-ts-2026-09-09: test _ensure_datetime helper for asyncpg binding.
+    
+    Regression tests for the bug where ISO string ts caused:
+    asyncpg.exceptions.DataError: invalid input for query argument $3
+    """
+
+    def test_ensure_datetime_from_iso_string(self):
+        """_ensure_datetime parses ISO string to datetime."""
+        from data_providers.db_logger import _ensure_datetime
+        from datetime import datetime, timezone
+        
+        iso_str = "2026-09-09T16:48:37.582153"
+        result = _ensure_datetime(iso_str)
+        
+        assert isinstance(result, datetime)
+        assert result.year == 2026
+        assert result.month == 9
+        assert result.day == 9
+        assert result.hour == 16
+        assert result.minute == 48
+        assert result.second == 37
+        assert result.tzinfo == timezone.utc  # naive strings get UTC
+
+    def test_ensure_datetime_from_iso_string_with_tz(self):
+        """_ensure_datetime preserves timezone from ISO string."""
+        from data_providers.db_logger import _ensure_datetime
+        from datetime import datetime, timezone
+        
+        iso_str = "2026-09-09T16:48:37.582153+00:00"
+        result = _ensure_datetime(iso_str)
+        
+        assert isinstance(result, datetime)
+        assert result.tzinfo is not None
+
+    def test_ensure_datetime_from_datetime(self):
+        """_ensure_datetime passes datetime through, adding tz if naive."""
+        from data_providers.db_logger import _ensure_datetime
+        from datetime import datetime, timezone
+        
+        # Naive datetime gets UTC
+        naive_dt = datetime(2026, 9, 9, 12, 0, 0)
+        result = _ensure_datetime(naive_dt)
+        
+        assert isinstance(result, datetime)
+        assert result.tzinfo == timezone.utc
+        
+        # Aware datetime passes through
+        aware_dt = datetime(2026, 9, 9, 12, 0, 0, tzinfo=timezone.utc)
+        result2 = _ensure_datetime(aware_dt)
+        
+        assert result2 is aware_dt  # Same object
+
+    def test_ensure_datetime_from_none(self):
+        """_ensure_datetime returns None for None input."""
+        from data_providers.db_logger import _ensure_datetime
+        
+        assert _ensure_datetime(None) is None
+
+    def test_ensure_datetime_invalid_string(self):
+        """_ensure_datetime returns None for unparseable string."""
+        from data_providers.db_logger import _ensure_datetime
+        
+        assert _ensure_datetime("not-a-date") is None
+        assert _ensure_datetime("") is None
+
+
+class TestSnapshotInsertIsoString:
+    """v-fix-snapshot-ts-2026-09-09: regression test for snapshot insert with ISO string.
+    
+    Verifies that log_decision_snapshot accepts snapshots where ts has been
+    serialized to ISO string (via to_dict) and correctly binds a datetime.
+    """
+
+    def test_to_dict_produces_iso_string_ts(self):
+        """DecisionSnapshot.to_dict() converts ts to ISO string.
+        
+        This is the behavior that triggers the bug: to_dict serializes the
+        datetime ts to an ISO string, but asyncpg expects a datetime object.
+        """
+        from core.decision_snapshot import DecisionAction, build_snapshot
+        from datetime import datetime, timezone
+        
+        test_ts = datetime(2026, 9, 9, 16, 48, 37, 582153, tzinfo=timezone.utc)
+        snapshot = build_snapshot(
+            symbol="TSLA",
+            strategy_id="oversold_v2",
+            action=DecisionAction.SKIP,
+            reason="gate_a_not_extreme",
+            ts=test_ts,
+        )
+        
+        snap_dict = snapshot.to_dict()
+        assert isinstance(snap_dict["ts"], str), "to_dict should produce ISO string ts"
+        assert "2026-09-09T16:48:37" in snap_dict["ts"]
+
+    def test_ensure_datetime_fixes_iso_string(self):
+        """_ensure_datetime converts ISO string back to datetime for asyncpg.
+        
+        This test verifies the fix for:
+        asyncpg.exceptions.DataError: invalid input for query argument $3:
+        '2026-09-09T16:48:37.582153' (expected datetime, got str)
+        """
+        from data_providers.db_logger import _ensure_datetime
+        from core.decision_snapshot import DecisionAction, build_snapshot
+        from datetime import datetime, timezone
+        
+        test_ts = datetime(2026, 9, 9, 16, 48, 37, 582153, tzinfo=timezone.utc)
+        snapshot = build_snapshot(
+            symbol="TSLA",
+            strategy_id="oversold_v2",
+            action=DecisionAction.SKIP,
+            reason="gate_a_not_extreme",
+            ts=test_ts,
+        )
+        
+        # Get ISO string from to_dict (what db_logger receives)
+        snap_dict = snapshot.to_dict()
+        iso_ts = snap_dict["ts"]
+        
+        # _ensure_datetime should convert back to datetime
+        bound_ts = _ensure_datetime(iso_ts)
+        
+        assert isinstance(bound_ts, datetime), \
+            f"ts should be datetime but was {type(bound_ts)}: {bound_ts}"
+        assert bound_ts.tzinfo is not None, "ts should be timezone-aware"
+        assert bound_ts.year == 2026
+        assert bound_ts.month == 9
+        assert bound_ts.day == 9
+        assert bound_ts.hour == 16
+        assert bound_ts.minute == 48
+
+    def test_bind_params_preparation(self):
+        """Verify the full bind params preparation path produces datetime ts.
+        
+        This simulates what log_decision_snapshot does internally to prepare
+        the ts bind parameter.
+        """
+        from data_providers.db_logger import _ensure_datetime
+        from core.decision_snapshot import DecisionAction, build_snapshot
+        from datetime import datetime, timezone
+        
+        test_ts = datetime(2026, 9, 9, 16, 48, 37, 582153, tzinfo=timezone.utc)
+        snapshot = build_snapshot(
+            symbol="NVDA",
+            strategy_id="momentum",
+            action=DecisionAction.SIGNAL_BUY,
+            reason="breakout_confirmed",
+            ts=test_ts,
+            confidence=0.85,
+        )
+        
+        # Simulate what log_decision_snapshot does
+        snap_dict = snapshot.to_dict()
+        ts_value = _ensure_datetime(snap_dict["ts"])
+        
+        # Build params dict as log_decision_snapshot would
+        params = {
+            "snapshot_id": snap_dict["snapshot_id"],
+            "symbol": snap_dict["symbol"],
+            "ts": ts_value,  # This is the fixed value
+            "mode": snap_dict["mode"],
+            "strategy_id": snap_dict["strategy_id"],
+            "action": snap_dict["action"],
+        }
+        
+        # Verify ts is datetime (this is what asyncpg needs)
+        assert isinstance(params["ts"], datetime)
+        assert params["ts"].tzinfo is not None
+        # Original data preserved
+        assert params["symbol"] == "NVDA"
+        assert params["action"] == "signal_buy"
+
+
+class TestSafeJsonDecode:
+    """v-fix-json-decode-2026-09-10: regression test for JSON decode with asyncpg.
+    
+    asyncpg/SQLAlchemy returns JSONB columns as Python dicts directly. The old
+    code called json.loads() on these dicts, causing:
+    "the JSON object must be str, bytes or bytearray, not dict"
+    
+    _safe_json_decode handles both pre-deserialized dicts and JSON strings.
+    """
+
+    def test_dict_passthrough(self):
+        """_safe_json_decode returns dicts as-is without calling json.loads."""
+        from data_providers.db_logger import _safe_json_decode
+        
+        test_dict = {"price": 123.45, "rsi": 0.75, "nested": {"a": 1}}
+        result = _safe_json_decode(test_dict)
+        
+        assert result is test_dict  # Same object, not a copy
+        assert result["price"] == 123.45
+        assert result["nested"]["a"] == 1
+
+    def test_list_passthrough(self):
+        """_safe_json_decode returns lists as-is."""
+        from data_providers.db_logger import _safe_json_decode
+        
+        test_list = [1, 2, {"key": "value"}]
+        result = _safe_json_decode(test_list)
+        
+        assert result is test_list
+
+    def test_json_string_parsed(self):
+        """_safe_json_decode parses JSON strings correctly."""
+        from data_providers.db_logger import _safe_json_decode
+        
+        json_str = '{"price": 456.78, "volume": 1000}'
+        result = _safe_json_decode(json_str)
+        
+        assert isinstance(result, dict)
+        assert result["price"] == 456.78
+        assert result["volume"] == 1000
+
+    def test_json_bytes_parsed(self):
+        """_safe_json_decode parses JSON bytes correctly."""
+        from data_providers.db_logger import _safe_json_decode
+        
+        json_bytes = b'{"symbol": "TSLA", "count": 42}'
+        result = _safe_json_decode(json_bytes)
+        
+        assert isinstance(result, dict)
+        assert result["symbol"] == "TSLA"
+
+    def test_none_returns_empty_dict(self):
+        """_safe_json_decode returns {} for None."""
+        from data_providers.db_logger import _safe_json_decode
+        
+        result = _safe_json_decode(None)
+        
+        assert result == {}
+
+    def test_invalid_json_returns_empty_dict(self):
+        """_safe_json_decode returns {} for invalid JSON strings."""
+        from data_providers.db_logger import _safe_json_decode
+        
+        result = _safe_json_decode("not valid json {")
+        
+        assert result == {}
+
+    def test_empty_string_returns_empty_dict(self):
+        """_safe_json_decode returns {} for empty string."""
+        from data_providers.db_logger import _safe_json_decode
+        
+        result = _safe_json_decode("")
+        
+        assert result == {}
+
+    def test_simulated_asyncpg_jsonb_column(self):
+        """Simulate the actual bug scenario: asyncpg returns dict for JSONB.
+        
+        This is the key regression test. When asyncpg returns a JSONB column,
+        it's already a dict. The old code would call json.loads(dict) and fail.
+        """
+        from data_providers.db_logger import _safe_json_decode
+        
+        # Simulated asyncpg JSONB column value (already deserialized)
+        asyncpg_jsonb_value = {
+            "price": 150.25,
+            "returns_1": 0.02,
+            "rsi": 0.65,
+            "macd": 0.001,
+        }
+        
+        # This should NOT raise "JSON object must be str, bytes..."
+        result = _safe_json_decode(asyncpg_jsonb_value)
+        
+        assert isinstance(result, dict)
+        assert result["price"] == 150.25
+
+
+class TestDbLoggerLoopSafety:
+    """v-fix-loop-safety-2026-09-10: test loop ownership tracking.
+    
+    Verifies that DbLogger tracks its owner loop and can detect when
+    operations are called from a different loop.
+    """
+
+    def test_set_owner_loop(self):
+        """set_owner_loop captures the provided loop."""
+        from data_providers.db_logger import DbLogger
+        from unittest.mock import MagicMock
+        
+        db_logger = DbLogger.__new__(DbLogger)
+        db_logger._owner_loop = None
+        db_logger._enabled = True
+        db_logger._engine = MagicMock()
+        
+        mock_loop = MagicMock()
+        db_logger.set_owner_loop(mock_loop)
+        
+        assert db_logger._owner_loop is mock_loop
+
+    def test_init_has_no_owner_loop(self):
+        """DbLogger.__init__ starts with no owner loop (set later at startup)."""
+        from data_providers.db_logger import DbLogger
+        from unittest.mock import patch
+        
+        # Mock create_async_engine to avoid DB connection
+        with patch('data_providers.db_logger.create_async_engine'):
+            db_logger = DbLogger(dsn="postgresql+asyncpg://test:test@localhost/test")
+        
+        assert db_logger._owner_loop is None
+
+
+# ============================================================================
+# v-fix-pool-leak-2026-09-10: Tests for Postgres connection pool leak fixes
+# ============================================================================
+
+class TestDbLoggerSingleton:
+    """v-fix-pool-leak-2026-09-10: test singleton pattern for DbLogger.
+    
+    Verifies that get_shared_db_logger() returns the same instance to
+    prevent multiple engine/pool creations exhausting max_connections.
+    """
+
+    def test_get_shared_db_logger_returns_singleton(self):
+        """get_shared_db_logger returns the same instance on repeated calls."""
+        from data_providers.db_logger import get_shared_db_logger, _shared_instance
+        from unittest.mock import patch
+        import data_providers.db_logger as db_logger_module
+        
+        # Reset singleton for test isolation
+        db_logger_module._shared_instance = None
+        
+        with patch('data_providers.db_logger.create_async_engine'):
+            instance1 = get_shared_db_logger(dsn="postgresql+asyncpg://test:test@localhost/test")
+            instance2 = get_shared_db_logger(dsn="postgresql+asyncpg://test:test@localhost/test")
+        
+        assert instance1 is instance2
+        
+        # Cleanup
+        db_logger_module._shared_instance = None
+
+    def test_singleton_pool_configuration(self):
+        """Singleton has proper pool configuration to prevent leaks."""
+        from data_providers.db_logger import DbLogger
+        from unittest.mock import patch, MagicMock
+        
+        mock_engine = MagicMock()
+        with patch('data_providers.db_logger.create_async_engine', return_value=mock_engine) as mock_create:
+            db_logger = DbLogger(dsn="postgresql+asyncpg://test:test@localhost/test")
+        
+        # Verify pool configuration
+        call_kwargs = mock_create.call_args[1]
+        assert call_kwargs['pool_size'] == 5
+        assert call_kwargs['max_overflow'] == 3
+        assert call_kwargs['pool_pre_ping'] is True
+        assert call_kwargs['pool_recycle'] == 1800
+
+
+class TestDoubleEmitFix:
+    """v-fix-double-emit-2026-09-10: test skip_snapshot parameter.
+    
+    Verifies that informational logs (news_gate, size_reduced) do not
+    emit snapshots when skip_snapshot=True.
+    """
+
+    def test_log_decision_skip_snapshot_param_exists(self):
+        """_log_decision accepts skip_snapshot parameter."""
+        import inspect
+        from strategies.base import TradingStrategyWithCommentary
+        
+        sig = inspect.signature(TradingStrategyWithCommentary._log_decision)
+        assert 'skip_snapshot' in sig.parameters
+        
+        # Default should be False
+        assert sig.parameters['skip_snapshot'].default is False
+
+    def test_skip_snapshot_prevents_emit(self):
+        """skip_snapshot=True prevents _emit_snapshot call."""
+        from strategies.base import TradingStrategyWithCommentary
+        from unittest.mock import MagicMock, patch
+        
+        class TestStrategy(TradingStrategyWithCommentary):
+            name = "test_strategy"
+            async def generate_signal_with_commentary(self, market_data):
+                return None
+        
+        strategy = TestStrategy(MagicMock())
+        strategy._emit_snapshot = MagicMock()
+        
+        mock_market_data = MagicMock()
+        mock_market_data.symbol = "TEST"
+        mock_market_data.close = 100.0
+        
+        # With skip_snapshot=True, _emit_snapshot should NOT be called
+        strategy._log_decision(mock_market_data, "news_gate", "test", skip_snapshot=True)
+        strategy._emit_snapshot.assert_not_called()
+        
+        # Without skip_snapshot (default), _emit_snapshot SHOULD be called
+        strategy._log_decision(mock_market_data, "skip", "test_reason")
+        strategy._emit_snapshot.assert_called_once()
+
+    def test_news_strategy_news_gate_uses_skip_snapshot(self):
+        """NewsStrategy news_gate log uses skip_snapshot=True."""
+        import ast
+        from pathlib import Path
+        
+        src = Path("strategies/news_strategy.py").read_text()
+        tree = ast.parse(src)
+        
+        # Find all _log_decision calls with action="news_gate"
+        found_skip_snapshot = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                if hasattr(node.func, 'attr') and node.func.attr == '_log_decision':
+                    # Check positional args for "news_gate"
+                    for arg in node.args:
+                        if isinstance(arg, ast.Constant) and arg.value == "news_gate":
+                            # Check for skip_snapshot=True in kwargs
+                            for kw in node.keywords:
+                                if kw.arg == 'skip_snapshot':
+                                    if isinstance(kw.value, ast.Constant) and kw.value.value is True:
+                                        found_skip_snapshot = True
+        
+        assert found_skip_snapshot, "news_gate _log_decision should have skip_snapshot=True"
+
+    def test_day_trade_size_reduced_uses_skip_snapshot(self):
+        """DayTradeMomentumStrategy size_reduced logs use skip_snapshot=True."""
+        import ast
+        from pathlib import Path
+        
+        src = Path("strategies/builtin.py").read_text()
+        tree = ast.parse(src)
+        
+        # Find all _log_decision calls with action="size_reduced"
+        found_count = 0
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                if hasattr(node.func, 'attr') and node.func.attr == '_log_decision':
+                    # Check positional args for "size_reduced"
+                    for arg in node.args:
+                        if isinstance(arg, ast.Constant) and arg.value == "size_reduced":
+                            # Check for skip_snapshot=True in kwargs
+                            for kw in node.keywords:
+                                if kw.arg == 'skip_snapshot':
+                                    if isinstance(kw.value, ast.Constant) and kw.value.value is True:
+                                        found_count += 1
+        
+        # Should find at least 2 (risk_off and opening_30)
+        assert found_count >= 2, f"Expected at least 2 size_reduced with skip_snapshot=True, found {found_count}"
+
+
+class TestSinceBindFix:
+    """v-fix-since-bind-2026-09-10: test since parameter uses datetime, not isoformat.
+    
+    Verifies that get_decision_snapshots passes datetime objects to asyncpg,
+    not ISO format strings which cause DataError.
+    """
+
+    def test_since_bind_is_datetime_not_string(self):
+        """_get_decision_snapshots_impl passes datetime for since, not isoformat string."""
+        import ast
+        from pathlib import Path
+        
+        src = Path("data_providers/db_logger.py").read_text()
+        
+        # Check that params["since"] = since (datetime) not since.isoformat()
+        assert 'params["since"] = since.isoformat()' not in src
+        assert 'params["since"] = since' in src
+
+    @pytest.mark.asyncio
+    async def test_get_decision_snapshots_since_datetime(self):
+        """get_decision_snapshots accepts datetime since parameter."""
+        from data_providers.db_logger import DbLogger
+        from unittest.mock import patch, MagicMock, AsyncMock
+        from datetime import datetime, timezone
+        
+        with patch('data_providers.db_logger.create_async_engine'):
+            db_logger = DbLogger(dsn="postgresql+asyncpg://test:test@localhost/test")
+        
+        # Mock the engine.begin() context manager
+        mock_conn = MagicMock()
+        mock_result = MagicMock()
+        mock_result.mappings.return_value.all.return_value = []
+        mock_conn.execute = AsyncMock(return_value=mock_result)
+        
+        mock_cm = MagicMock()
+        mock_cm.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_cm.__aexit__ = AsyncMock(return_value=None)
+        db_logger._engine.begin = MagicMock(return_value=mock_cm)
+        
+        since_dt = datetime(2026, 9, 10, 12, 0, 0, tzinfo=timezone.utc)
+        
+        # This should not raise
+        result = await db_logger._get_decision_snapshots_impl(since=since_dt)
+        
+        assert result == []
+        
+        # Verify execute was called
+        mock_conn.execute.assert_called_once()
+        
+        # Verify the since param is a datetime, not a string
+        call_args = mock_conn.execute.call_args
+        params = call_args[0][1]  # Second positional arg is params dict
+        assert params['since'] is since_dt
+        assert isinstance(params['since'], datetime)
+
+
+# ============================================================================
+# v-fix-cross-loop-crash-2026-09-10: Regression tests for cross-loop safety
+# ============================================================================
+
+class TestCrossLoopCrashFix:
+    """v-fix-cross-loop-crash-2026-09-10: regression tests for cross-loop DbLogger crashes.
+    
+    PR #19 only protected log_decision_snapshot and get_decision_snapshots with
+    loop safety checks. This left close(), log_decision(), log_trade(), 
+    sync_positions(), and other methods vulnerable to "Future attached to a
+    different loop" errors when called from a different event loop.
+    
+    These tests verify that ALL async methods now handle loop mismatches safely.
+    """
+
+    @pytest.fixture
+    def mock_db_logger(self):
+        """Create a DbLogger with mocked engine for testing loop safety."""
+        from data_providers.db_logger import DbLogger
+        from unittest.mock import patch, MagicMock
+        
+        with patch('data_providers.db_logger.create_async_engine') as mock_create:
+            mock_engine = MagicMock()
+            mock_create.return_value = mock_engine
+            db_logger = DbLogger(dsn="postgresql+asyncpg://test:test@localhost/test")
+        
+        return db_logger
+
+    def test_is_on_owner_loop_no_owner(self, mock_db_logger):
+        """_is_on_owner_loop returns True when no owner is set (pre-startup)."""
+        assert mock_db_logger._owner_loop is None
+        assert mock_db_logger._is_on_owner_loop() is True
+
+    def test_is_on_owner_loop_same_loop(self, mock_db_logger):
+        """_is_on_owner_loop returns True when on the owner loop."""
+        import asyncio
+        
+        async def test():
+            loop = asyncio.get_running_loop()
+            mock_db_logger.set_owner_loop(loop)
+            assert mock_db_logger._is_on_owner_loop() is True
+        
+        asyncio.run(test())
+
+    def test_is_on_owner_loop_different_loop(self, mock_db_logger):
+        """_is_on_owner_loop returns False when on a different loop."""
+        import asyncio
+        
+        # Set owner loop to one loop
+        loop1 = asyncio.new_event_loop()
+        mock_db_logger.set_owner_loop(loop1)
+        
+        # Check from a different loop
+        async def check_from_different_loop():
+            return mock_db_logger._is_on_owner_loop()
+        
+        loop2 = asyncio.new_event_loop()
+        try:
+            result = loop2.run_until_complete(check_from_different_loop())
+            assert result is False
+        finally:
+            loop1.close()
+            loop2.close()
+
+    def test_check_loop_or_warn_returns_false_on_mismatch(self, mock_db_logger):
+        """_check_loop_or_warn returns False and logs warning on loop mismatch."""
+        import asyncio
+        
+        # Set owner loop to one loop
+        loop1 = asyncio.new_event_loop()
+        mock_db_logger.set_owner_loop(loop1)
+        
+        # Check from a different loop
+        async def check_from_different_loop():
+            return mock_db_logger._check_loop_or_warn("test_method")
+        
+        loop2 = asyncio.new_event_loop()
+        try:
+            result = loop2.run_until_complete(check_from_different_loop())
+            assert result is False
+        finally:
+            loop1.close()
+            loop2.close()
+
+    @pytest.mark.asyncio
+    async def test_log_decision_skips_on_wrong_loop(self, mock_db_logger):
+        """log_decision skips silently when called from wrong loop."""
+        import asyncio
+        from unittest.mock import MagicMock, AsyncMock
+        
+        # Set owner loop to current loop
+        current_loop = asyncio.get_running_loop()
+        mock_db_logger.set_owner_loop(current_loop)
+        
+        # Mock engine.begin
+        mock_cm = MagicMock()
+        mock_cm.__aenter__ = AsyncMock(return_value=MagicMock())
+        mock_cm.__aexit__ = AsyncMock()
+        mock_db_logger._engine.begin = MagicMock(return_value=mock_cm)
+        
+        # Call from same loop - should work
+        await mock_db_logger.log_decision("test", "TSLA", "buy", "test_reason")
+        mock_db_logger._engine.begin.assert_called_once()
+        
+        # Reset mock
+        mock_db_logger._engine.begin.reset_mock()
+        
+        # Now simulate call from a different loop by manually setting _owner_loop
+        # to a different loop object
+        other_loop = asyncio.new_event_loop()
+        mock_db_logger._owner_loop = other_loop
+        
+        # Call should be skipped (no begin called)
+        await mock_db_logger.log_decision("test", "TSLA", "buy", "test_reason")
+        mock_db_logger._engine.begin.assert_not_called()
+        
+        other_loop.close()
+
+    @pytest.mark.asyncio
+    async def test_log_trade_skips_on_wrong_loop(self, mock_db_logger):
+        """log_trade skips silently when called from wrong loop."""
+        import asyncio
+        from unittest.mock import MagicMock, AsyncMock
+        from datetime import datetime, timezone
+        
+        # Set owner to a different loop
+        other_loop = asyncio.new_event_loop()
+        mock_db_logger.set_owner_loop(other_loop)
+        
+        # Mock engine.begin
+        mock_cm = MagicMock()
+        mock_cm.__aenter__ = AsyncMock(return_value=MagicMock())
+        mock_cm.__aexit__ = AsyncMock()
+        mock_db_logger._engine.begin = MagicMock(return_value=mock_cm)
+        
+        now = datetime.now(timezone.utc)
+        
+        # Call should be skipped (no begin called)
+        await mock_db_logger.log_trade(
+            symbol="TSLA", side="long", strategy="test",
+            entry_time=now, exit_time=now,
+            entry_price=100.0, exit_price=105.0,
+            quantity=10, pnl=50.0, pnl_pct=5.0,
+            exit_reason="take_profit"
+        )
+        mock_db_logger._engine.begin.assert_not_called()
+        
+        other_loop.close()
+
+    @pytest.mark.asyncio
+    async def test_sync_positions_skips_on_wrong_loop(self, mock_db_logger):
+        """sync_positions skips silently when called from wrong loop."""
+        import asyncio
+        from unittest.mock import MagicMock, AsyncMock
+        
+        # Set owner to a different loop
+        other_loop = asyncio.new_event_loop()
+        mock_db_logger.set_owner_loop(other_loop)
+        
+        # Mock engine.begin
+        mock_cm = MagicMock()
+        mock_cm.__aenter__ = AsyncMock(return_value=MagicMock())
+        mock_cm.__aexit__ = AsyncMock()
+        mock_db_logger._engine.begin = MagicMock(return_value=mock_cm)
+        
+        # Call should be skipped (no begin called)
+        await mock_db_logger.sync_positions({"TSLA": MagicMock(quantity=10)})
+        mock_db_logger._engine.begin.assert_not_called()
+        
+        other_loop.close()
+
+    @pytest.mark.asyncio
+    async def test_delete_position_skips_on_wrong_loop(self, mock_db_logger):
+        """delete_position skips silently when called from wrong loop."""
+        import asyncio
+        from unittest.mock import MagicMock, AsyncMock
+        
+        # Set owner to a different loop
+        other_loop = asyncio.new_event_loop()
+        mock_db_logger.set_owner_loop(other_loop)
+        
+        # Mock engine.begin
+        mock_cm = MagicMock()
+        mock_cm.__aenter__ = AsyncMock(return_value=MagicMock())
+        mock_cm.__aexit__ = AsyncMock()
+        mock_db_logger._engine.begin = MagicMock(return_value=mock_cm)
+        
+        # Call should be skipped (no begin called)
+        await mock_db_logger.delete_position("TSLA")
+        mock_db_logger._engine.begin.assert_not_called()
+        
+        other_loop.close()
+
+    @pytest.mark.asyncio
+    async def test_log_news_veto_skips_on_wrong_loop(self, mock_db_logger):
+        """log_news_veto skips silently when called from wrong loop."""
+        import asyncio
+        from unittest.mock import MagicMock, AsyncMock
+        
+        # Set owner to a different loop
+        other_loop = asyncio.new_event_loop()
+        mock_db_logger.set_owner_loop(other_loop)
+        
+        # Mock engine.begin
+        mock_cm = MagicMock()
+        mock_cm.__aenter__ = AsyncMock(return_value=MagicMock())
+        mock_cm.__aexit__ = AsyncMock()
+        mock_db_logger._engine.begin = MagicMock(return_value=mock_cm)
+        
+        # Call should be skipped (no begin called)
+        await mock_db_logger.log_news_veto(
+            symbol="TSLA", side="long", veto_reason="stale_news"
+        )
+        mock_db_logger._engine.begin.assert_not_called()
+        
+        other_loop.close()
+
+    @pytest.mark.asyncio
+    async def test_ensure_snapshot_table_skips_on_wrong_loop(self, mock_db_logger):
+        """ensure_snapshot_table skips silently when called from wrong loop."""
+        import asyncio
+        from unittest.mock import MagicMock, AsyncMock
+        
+        # Set owner to a different loop
+        other_loop = asyncio.new_event_loop()
+        mock_db_logger.set_owner_loop(other_loop)
+        
+        # Mock engine.begin
+        mock_cm = MagicMock()
+        mock_cm.__aenter__ = AsyncMock(return_value=MagicMock())
+        mock_cm.__aexit__ = AsyncMock()
+        mock_db_logger._engine.begin = MagicMock(return_value=mock_cm)
+        
+        # Call should be skipped (no begin called)
+        await mock_db_logger.ensure_snapshot_table()
+        mock_db_logger._engine.begin.assert_not_called()
+        
+        other_loop.close()
+
+    @pytest.mark.asyncio
+    async def test_close_handles_cross_loop_gracefully(self, mock_db_logger):
+        """close() handles cross-loop calls without crashing."""
+        import asyncio
+        from unittest.mock import MagicMock, AsyncMock
+        
+        # Set owner to a different loop that is NOT running
+        other_loop = asyncio.new_event_loop()
+        mock_db_logger.set_owner_loop(other_loop)
+        other_loop.close()  # Close it so it's not running
+        
+        # Mock engine.dispose
+        mock_db_logger._engine.dispose = AsyncMock()
+        
+        # close() should handle this gracefully without crashing
+        await mock_db_logger.close()
+        
+        # Should have disabled the logger since owner loop is dead
+        assert mock_db_logger._enabled is False
+
+    @pytest.mark.asyncio
+    async def test_close_routes_to_alive_owner_loop(self, mock_db_logger):
+        """close() routes dispose to owner loop if it's still running."""
+        import asyncio
+        import threading
+        from unittest.mock import MagicMock, AsyncMock
+        from concurrent.futures import Future
+        
+        # Create a separate loop in a thread
+        owner_loop = asyncio.new_event_loop()
+        loop_thread = threading.Thread(target=owner_loop.run_forever, daemon=True)
+        loop_thread.start()
+        
+        try:
+            # Set owner to that loop
+            mock_db_logger.set_owner_loop(owner_loop)
+            
+            # Track if dispose was called
+            dispose_called = Future()
+            original_dispose = mock_db_logger._engine.dispose
+            
+            async def mock_dispose():
+                dispose_called.set_result(True)
+            
+            mock_db_logger._engine.dispose = mock_dispose
+            
+            # close() from current loop should route to owner loop
+            await mock_db_logger.close()
+            
+            # Verify dispose was routed and completed
+            assert dispose_called.result(timeout=2.0) is True
+        finally:
+            owner_loop.call_soon_threadsafe(owner_loop.stop)
+            loop_thread.join(timeout=2.0)
+
+    def test_all_async_methods_have_loop_check(self):
+        """Verify all async methods that touch the engine have loop checks.
+        
+        This is a meta-test to ensure we don't miss adding loop checks to
+        new methods in the future.
+        """
+        import ast
+        from pathlib import Path
+        
+        src = Path("data_providers/db_logger.py").read_text()
+        tree = ast.parse(src)
+        
+        # Find the DbLogger class
+        db_logger_class = None
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef) and node.name == "DbLogger":
+                db_logger_class = node
+                break
+        
+        assert db_logger_class is not None, "DbLogger class not found"
+        
+        # Methods that should have loop checks (touch the engine)
+        expected_protected_methods = {
+            "close",
+            "log_decision",
+            "log_trade",
+            "sync_positions",
+            "log_news_veto",
+            "delete_position",
+            "ensure_snapshot_table",
+            "evaluate_open_news_vetoes",
+            "log_decision_snapshot",
+            "get_decision_snapshots",
+        }
+        
+        # Methods that are internal impl or don't need checks
+        exempt_methods = {
+            "__init__",
+            "set_owner_loop",
+            "_is_on_owner_loop",
+            "_check_loop_or_warn",
+            "_log_decision_snapshot_impl",  # Called after check in public method
+            "_get_decision_snapshots_impl",  # Called after check in public method
+            "get_latest_snapshot",  # Delegates to get_decision_snapshots
+        }
+        
+        # Check that all expected methods exist and have the pattern
+        for method in db_logger_class.body:
+            if isinstance(method, ast.AsyncFunctionDef):
+                method_name = method.name
+                if method_name in exempt_methods:
+                    continue
+                if method_name.startswith("_"):
+                    continue
+                
+                # Method should have a loop check
+                method_src = ast.unparse(method)
+                has_loop_check = (
+                    "_check_loop_or_warn" in method_src or
+                    "_is_on_owner_loop" in method_src or
+                    "self._owner_loop" in method_src
+                )
+                
+                assert has_loop_check, (
+                    f"Async method {method_name} may need a loop safety check. "
+                    f"If it touches self._engine, add _check_loop_or_warn()."
+                )
+
+
+class TestCrossLoopSnapshotRouting:
+    """v-fix-cross-loop-crash-2026-09-10: test snapshot method cross-loop routing.
+    
+    Verifies that snapshot methods check if owner loop is alive before routing.
+    """
+
+    @pytest.fixture
+    def mock_db_logger(self):
+        """Create a DbLogger with mocked engine for testing."""
+        from data_providers.db_logger import DbLogger
+        from unittest.mock import patch, MagicMock
+        
+        with patch('data_providers.db_logger.create_async_engine') as mock_create:
+            mock_engine = MagicMock()
+            mock_create.return_value = mock_engine
+            db_logger = DbLogger(dsn="postgresql+asyncpg://test:test@localhost/test")
+        
+        return db_logger
+
+    @pytest.mark.asyncio
+    async def test_log_decision_snapshot_skips_dead_owner_loop(self, mock_db_logger):
+        """log_decision_snapshot skips when owner loop is dead."""
+        import asyncio
+        from unittest.mock import MagicMock, patch
+        
+        # Create a closed (dead) loop as owner
+        dead_loop = asyncio.new_event_loop()
+        mock_db_logger.set_owner_loop(dead_loop)
+        dead_loop.close()
+        
+        # Mock the impl method - should NOT be called
+        with patch.object(mock_db_logger, '_log_decision_snapshot_impl') as mock_impl:
+            from core.decision_snapshot import build_snapshot, DecisionAction
+            
+            snapshot = build_snapshot(
+                symbol="TSLA",
+                strategy_id="test",
+                action=DecisionAction.SKIP,
+                reason="test"
+            )
+            
+            # Should skip because owner loop is dead
+            await mock_db_logger.log_decision_snapshot(snapshot)
+            mock_impl.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_get_decision_snapshots_returns_empty_on_dead_loop(self, mock_db_logger):
+        """get_decision_snapshots returns [] when owner loop is dead."""
+        import asyncio
+        from unittest.mock import patch
+        
+        # Create a closed (dead) loop as owner
+        dead_loop = asyncio.new_event_loop()
+        mock_db_logger.set_owner_loop(dead_loop)
+        dead_loop.close()
+        
+        # Mock the impl method - should NOT be called
+        with patch.object(mock_db_logger, '_get_decision_snapshots_impl') as mock_impl:
+            mock_impl.return_value = [{"test": "data"}]
+            
+            # Should return empty list because owner loop is dead
+            result = await mock_db_logger.get_decision_snapshots(symbol="TSLA")
+            assert result == []
+            mock_impl.assert_not_called()

@@ -1,6 +1,6 @@
 import logging
-from datetime import datetime
-from typing import Dict, Any, Optional
+from datetime import datetime, timezone
+from typing import Dict, Any, Optional, Tuple
 
 import numpy as np
 
@@ -954,6 +954,16 @@ class MeanReversionStrategyWithCommentary(TradingStrategyWithCommentary):
                             _hyp_stop = market_data.close + _stop_dist_sh
                             _hyp_target = market_data.close - (_rr_ratio_sh * _stop_dist_sh)
                             from datetime import timezone as _tz_sh
+                            # v-shadow-rising-peak-2026-09-11: compute whether
+                            # this entry would pass the rising-peak filter
+                            # (close < SMA50 = downtrend). Log with flag so
+                            # Stage A resolver can optionally filter.
+                            _sma_50_sh = float(indicators.get('sma_50', 0) or 0)
+                            _macd_sh = float(indicators.get('macd', 0) or 0)
+                            _macd_sig_sh = float(indicators.get('macd_signal', 0) or 0)
+                            _in_downtrend_sh = (
+                                _sma_50_sh > 0 and market_data.close < _sma_50_sh
+                            )
                             _shadow_entry = {
                                 'timestamp': datetime.now(_tz_sh.utc).isoformat(),
                                 'symbol': market_data.symbol,
@@ -963,16 +973,18 @@ class MeanReversionStrategyWithCommentary(TradingStrategyWithCommentary):
                                 'rsi': float(rsi),
                                 'bb_upper': float(bb_upper),
                                 'bb_middle': float(bb_middle),
-                                'sma_50': float(indicators.get('sma_50', 0) or 0),
-                                'macd': float(indicators.get('macd', 0) or 0),
-                                'macd_signal': float(indicators.get('macd_signal', 0) or 0),
+                                'sma_50': _sma_50_sh,
+                                'macd': _macd_sh,
+                                'macd_signal': _macd_sig_sh,
                                 'atr': float(_atr_sh),
                                 'hypothetical_stop': float(_hyp_stop),
                                 'hypothetical_target': float(_hyp_target),
                                 'rr_ratio': float(_rr_ratio_sh),
                                 'stop_dist': float(_stop_dist_sh),
+                                'rising_peak_pass': _in_downtrend_sh,
                             }
                             import json as _json_sh
+                            from pathlib import Path as _PathSh
                             # NDJSON append-only (one JSON object per
                             # line). The original read-modify-rewrite
                             # had two failure modes: lost updates when
@@ -981,7 +993,16 @@ class MeanReversionStrategyWithCommentary(TradingStrategyWithCommentary):
                             # and dump (the bot WAS hard-killed today).
                             # O_APPEND writes of < 4 KiB are atomic on
                             # Linux, so concurrent captures can't tear.
-                            _ledger_path = 'shadow_short_log.ndjson'
+                            #
+                            # v-shadow-ledger-path-2026-09-11: use absolute
+                            # path under repo data/ to avoid cwd-relative
+                            # write misses when bot cwd differs from repo.
+                            # Resolver reads both repo-root and data/ for
+                            # backward compat with historical rows.
+                            _repo_root = _PathSh(__file__).resolve().parent.parent
+                            _ledger_dir = _repo_root / "data"
+                            _ledger_dir.mkdir(parents=True, exist_ok=True)
+                            _ledger_path = str(_ledger_dir / "shadow_short_log.ndjson")
                             try:
                                 with open(_ledger_path, 'a') as _f:
                                     _f.write(
@@ -1003,8 +1024,9 @@ class MeanReversionStrategyWithCommentary(TradingStrategyWithCommentary):
                                 bb_upper=round(bb_upper, 2),
                                 hyp_stop=round(_hyp_stop, 2),
                                 hyp_target=round(_hyp_target, 2),
-                                sma_50=round(float(indicators.get('sma_50', 0) or 0), 2),
-                                macd=round(float(indicators.get('macd', 0) or 0), 4),
+                                sma_50=round(_sma_50_sh, 2),
+                                macd=round(_macd_sh, 4),
+                                rising_peak_pass=_in_downtrend_sh,
                             )
                         except Exception as _shadow_exc:
                             logger.debug(
@@ -1303,3 +1325,871 @@ class MomentumStrategyWithCommentary(TradingStrategyWithCommentary):
         self._log_decision(market_data, "skip", "no_setup",
                            macd=round(macd, 4), rsi=round(rsi, 2), adx=round(adx, 2))
         return None
+
+
+def _get_session_id() -> str:
+    """Get current trading session ID (date in ET timezone).
+    
+    v-momentum-stage-a-2026-09-10: session_id groups trades for Stage-A
+    daily rollup. Format: YYYY-MM-DD in America/New_York timezone.
+    """
+    try:
+        from datetime import timezone
+        from zoneinfo import ZoneInfo
+        now_utc = datetime.now(timezone.utc)
+        et = now_utc.astimezone(ZoneInfo("America/New_York"))
+        return et.strftime("%Y-%m-%d")
+    except Exception:
+        return datetime.now().strftime("%Y-%m-%d")
+
+
+class DayTradeMomentumStrategy(TradingStrategyWithCommentary):
+    """Day-trade momentum strategy for intraday movers.
+    
+    v-day-trade-momentum-desk-2026-09-10: supervised day-trade momentum
+    for Yahoo day_gainers/losers/most-active movers.
+    
+    Entry logic (like a human scalper/day trader):
+      1. Relative strength vs SPY (symbol outperforming SPY on the day)
+      2. Volume surge (volume_ratio >= 1.5x)
+      3. Pullback-or-breakout confirmation:
+         - Pullback: RSI 40-60 after move, price near VWAP/EMA support
+         - Breakout: Price above 20-bar high with volume
+      4. Defined ATR stop (1.5-2x ATR, tighter than swing)
+      5. Defined target (2-3x ATR) with trail option
+      6. Time stop: flatten by late_entry / EOD
+    
+    Market context:
+      - risk_off: REDUCE SIZE (0.25x), don't hard-block
+      - opening_30: REDUCE SIZE (0.5x), don't hard-block  
+      - extreme conditions (SPY <= -1.5% AND VIX spike): HARD BLOCK
+    
+    News: OPTIONAL confirmation / size bump, NOT required
+    
+    Stage-A Instrumentation (v-momentum-stage-a-2026-09-10):
+      - session_id: trading date in ET (YYYY-MM-DD)
+      - risk_off: explicit boolean flag
+      - mc_size_mult: market context size multiplier
+      - setup_type: entry_pattern (breakout/pullback/continuation)
+    """
+    
+    name = "day_trade_momentum"
+    
+    async def generate_signal_with_commentary(self, market_data) -> Optional[TradingSignal]:
+        """Generate day-trade momentum signal."""
+        from core.config import Config as _Cfg
+        cfg = _Cfg()
+        
+        if not cfg.ENABLE_DAY_TRADE_MOMENTUM:
+            return None
+        
+        indicators = market_data.indicators or {}
+        symbol = market_data.symbol
+        
+        try:
+            rsi = float(indicators.get('rsi', 50))
+            volume_ratio = float(indicators.get('volume_ratio', 1.0))
+            adx = float(indicators.get('adx', 0))
+            atr = float(indicators.get('atr', market_data.close * 0.02))
+            high_20 = float(indicators.get('high_20', 0))
+            sma_20 = float(indicators.get('sma_20', 0))
+            macd = float(indicators.get('macd', 0))
+            macd_signal = float(indicators.get('macd_signal', 0))
+            
+            if np.isnan(rsi) or np.isnan(volume_ratio) or high_20 <= 0:
+                self._log_decision(market_data, "skip", "invalid_indicators",
+                                   rsi=rsi, volume_ratio=volume_ratio, high_20=high_20)
+                return None
+            
+            # ────────────────────────────────────────────────────────────────
+            # Gate 1: Market Context Check (size-based, not hard-block)
+            # ────────────────────────────────────────────────────────────────
+            _mc_size_mult = 1.0
+            _mc_regime = None
+            _mc_time_of_day = None
+            _mc_spy_change = 0.0
+            _mc_vix_change = 0.0
+            _mc_sector = None
+            _mc_reason = ""
+            
+            try:
+                from core.market_context import read_market_context
+                _mc = read_market_context(symbol)
+                _mc_regime = _mc.regime
+                _mc_time_of_day = _mc.time_of_day
+                _mc_spy_change = _mc.spy_change_pct
+                _mc_vix_change = _mc.vix_change_pct
+                _mc_sector = _mc.sector_etf
+                _mc_reason = _mc.reason
+                
+                # Extreme condition: HARD BLOCK
+                _extreme_spy = cfg.MOMENTUM_EXTREME_BLOCK_SPY_PCT
+                _extreme_vix = cfg.MOMENTUM_EXTREME_BLOCK_VIX_SPIKE
+                if _mc_spy_change <= _extreme_spy and _mc_vix_change >= _extreme_vix:
+                    self._log_decision(
+                        market_data, "skip", "extreme_risk_hard_block",
+                        regime=_mc_regime,
+                        spy_change=round(_mc_spy_change, 2),
+                        vix_change=round(_mc_vix_change, 2),
+                        threshold_spy=_extreme_spy,
+                        threshold_vix=_extreme_vix,
+                    )
+                    self.commentary.add_commentary(TradingCommentary(
+                        timestamp=datetime.now(),
+                        type=CommentaryType.RISK_ASSESSMENT,
+                        symbol=symbol,
+                        title=f"⛔ Day-Trade Momentum BLOCKED — Extreme Risk",
+                        message=(
+                            f"SPY {_mc_spy_change:+.2f}% AND VIX +{_mc_vix_change:.1f}% "
+                            f"exceeds hard-block thresholds ({_extreme_spy}% / +{_extreme_vix}%). "
+                            f"This is a circuit-breaker condition; no new momentum longs."
+                        ),
+                        importance=9,
+                    ))
+                    return None
+                
+                # risk_off: reduce size, don't hard-block
+                if _mc_regime == "risk_off":
+                    _mc_size_mult = cfg.MOMENTUM_RISK_OFF_SIZE_MULT
+                    # v-fix-double-emit-2026-09-10: skip_snapshot=True for informational
+                    # size reduction logs (not decision points, just context)
+                    self._log_decision(
+                        market_data, "size_reduced", "risk_off_not_blocked",
+                        regime=_mc_regime,
+                        size_mult=_mc_size_mult,
+                        spy_change=round(_mc_spy_change, 2),
+                        skip_snapshot=True,
+                    )
+                
+                # opening_30: reduce size, don't hard-block
+                if _mc_time_of_day == "opening_30":
+                    _opening_mult = cfg.MOMENTUM_OPENING_30_SIZE_MULT
+                    _mc_size_mult = min(_mc_size_mult, _opening_mult)
+                    # v-fix-double-emit-2026-09-10: skip_snapshot=True for informational
+                    # size reduction logs (not decision points, just context)
+                    self._log_decision(
+                        market_data, "size_reduced", "opening_30_not_blocked",
+                        time_of_day=_mc_time_of_day,
+                        size_mult=_mc_size_mult,
+                        skip_snapshot=True,
+                    )
+                    
+            except Exception as _mc_exc:
+                logger.debug("day_trade_momentum: market_context failed: %s", _mc_exc)
+            
+            # ────────────────────────────────────────────────────────────────
+            # Gate 2: Relative Strength vs SPY
+            # ────────────────────────────────────────────────────────────────
+            # Symbol must be outperforming SPY on the day
+            _symbol_change = float(indicators.get('day_change_pct', 0))
+            if _symbol_change == 0:
+                # Fallback: estimate from price vs open
+                _bar_open = float(getattr(market_data, 'open', market_data.close) or market_data.close)
+                if _bar_open > 0:
+                    _symbol_change = ((market_data.close - _bar_open) / _bar_open) * 100
+            
+            _rs_vs_spy = _symbol_change - _mc_spy_change
+            _min_rs = cfg.MOMENTUM_MIN_RS_VS_SPY
+            
+            if _rs_vs_spy < _min_rs:
+                self._log_decision(
+                    market_data, "skip", "weak_relative_strength",
+                    symbol_change=round(_symbol_change, 2),
+                    spy_change=round(_mc_spy_change, 2),
+                    rs_vs_spy=round(_rs_vs_spy, 2),
+                    min_rs=_min_rs,
+                )
+                return None
+            
+            # ────────────────────────────────────────────────────────────────
+            # Gate 3: Volume Surge Confirmation
+            # ────────────────────────────────────────────────────────────────
+            _min_vol_ratio = cfg.MOMENTUM_MIN_VOLUME_RATIO
+            if volume_ratio < _min_vol_ratio:
+                self._log_decision(
+                    market_data, "skip", "insufficient_volume",
+                    volume_ratio=round(volume_ratio, 2),
+                    min_vol_ratio=_min_vol_ratio,
+                )
+                return None
+            
+            # ────────────────────────────────────────────────────────────────
+            # Gate 4: Entry Pattern (Pullback or Breakout)
+            # ────────────────────────────────────────────────────────────────
+            _entry_pattern = None
+            _entry_confidence = 0.0
+            
+            # Breakout pattern: price > 20-bar high, ADX > 20
+            if market_data.close > high_20 and adx > 20:
+                _breakout_dist_pct = ((market_data.close - high_20) / high_20) * 100
+                if _breakout_dist_pct < 3.0:  # Not chasing if <3% above
+                    _entry_pattern = "breakout"
+                    _entry_confidence = 0.70 + (adx / 100) * 0.2
+                    
+            # Pullback pattern: RSI 40-60, price near SMA20, MACD bullish
+            if _entry_pattern is None:
+                if (40 <= rsi <= 60 and
+                    sma_20 > 0 and
+                    abs((market_data.close - sma_20) / sma_20) < 0.02 and  # within 2% of SMA20
+                    macd > macd_signal):
+                    _entry_pattern = "pullback"
+                    _entry_confidence = 0.65 + (volume_ratio - 1.0) * 0.1
+            
+            # Continuation pattern: strong momentum (RSI 55-75, price trending)
+            if _entry_pattern is None:
+                if (55 <= rsi <= 75 and
+                    adx > 25 and
+                    macd > macd_signal and
+                    market_data.close > sma_20 if sma_20 > 0 else True):
+                    _entry_pattern = "continuation"
+                    _entry_confidence = 0.60 + (adx / 100) * 0.2
+            
+            if _entry_pattern is None:
+                self._log_decision(
+                    market_data, "skip", "no_entry_pattern",
+                    rsi=round(rsi, 2),
+                    adx=round(adx, 2),
+                    high_20=round(high_20, 2),
+                    close=round(market_data.close, 2),
+                    sma_20=round(sma_20, 2) if sma_20 > 0 else 0,
+                    macd=round(macd, 4),
+                    macd_signal=round(macd_signal, 4),
+                )
+                return None
+            
+            # ────────────────────────────────────────────────────────────────
+            # v-shadow-veto-2026-09-10: Shadow veto for continuation + RSI>=70 + risk_off
+            #
+            # Pattern: continuation pattern into overbought (RSI>=70) during
+            # risk_off regime is the classic failed breakout setup (exhaustion
+            # gap). This is instrumentation for later promotion scoring.
+            #
+            # Shadow mode (log-only): we log the would-be entry with full
+            # instrumentation but return None (don't place the trade). LIVE
+            # Schwab fills will count for scorecard later when promoted to
+            # a hard veto.
+            #
+            # Gated by Config.ENABLE_SHADOW_VETO_CONTINUATION_RISKOFF (default True)
+            # ────────────────────────────────────────────────────────────────
+            _shadow_veto_rsi_threshold = cfg.SHADOW_VETO_RSI_THRESHOLD
+            _shadow_veto_triggered = (
+                cfg.ENABLE_SHADOW_VETO_CONTINUATION_RISKOFF
+                and _entry_pattern == "continuation"
+                and rsi >= _shadow_veto_rsi_threshold
+                and _mc_regime == "risk_off"
+            )
+            
+            if _shadow_veto_triggered:
+                # Log the shadow veto with full instrumentation for later scoring
+                self._log_decision(
+                    market_data, "shadow_veto", "continuation_riskoff_rsi70",
+                    pattern=_entry_pattern,
+                    rsi=round(rsi, 2),
+                    rsi_threshold=_shadow_veto_rsi_threshold,
+                    regime=_mc_regime,
+                    rs_vs_spy=round(_rs_vs_spy, 2),
+                    volume_ratio=round(volume_ratio, 2),
+                    adx=round(adx, 2),
+                    high_20=round(high_20, 2),
+                    close=round(market_data.close, 2),
+                    sma_20=round(sma_20, 2) if sma_20 > 0 else 0,
+                    macd=round(macd, 4),
+                    macd_signal=round(macd_signal, 4),
+                    spy_change=round(_mc_spy_change, 2),
+                    vix_change=round(_mc_vix_change, 2),
+                    session_id=_get_session_id(),
+                )
+                
+                # Log to shadow veto file for later resolution
+                try:
+                    from datetime import timezone as _tz_sv
+                    import json as _json_sv
+                    _shadow_veto_entry = {
+                        'timestamp': datetime.now(_tz_sv.utc).isoformat(),
+                        'symbol': symbol,
+                        'veto_type': 'continuation_riskoff_rsi70',
+                        'entry_pattern': _entry_pattern,
+                        'rsi': float(rsi),
+                        'rsi_threshold': float(_shadow_veto_rsi_threshold),
+                        'regime': _mc_regime,
+                        'signal_close': float(market_data.close),
+                        'rs_vs_spy': float(_rs_vs_spy),
+                        'volume_ratio': float(volume_ratio),
+                        'adx': float(adx),
+                        'high_20': float(high_20),
+                        'sma_20': float(sma_20) if sma_20 > 0 else 0,
+                        'macd': float(macd),
+                        'macd_signal': float(macd_signal),
+                        'spy_change_pct': float(_mc_spy_change),
+                        'vix_change_pct': float(_mc_vix_change),
+                        'session_id': _get_session_id(),
+                        # Include hypothetical stop/target for later outcome tracking
+                        'hypothetical_atr': float(_floored_atr(atr, market_data.close)),
+                        'hypothetical_stop': float(market_data.close - 1.5 * _floored_atr(atr, market_data.close)),
+                        'hypothetical_target': float(market_data.close + 2.0 * 1.5 * _floored_atr(atr, market_data.close)),
+                    }
+                    _shadow_veto_ledger = 'shadow_veto_log.ndjson'
+                    with open(_shadow_veto_ledger, 'a') as _f:
+                        _f.write(_json_sv.dumps(_shadow_veto_entry, default=str) + "\n")
+                except Exception as _sv_io_exc:
+                    logger.warning(
+                        "shadow_veto_log write failed for %s: %s",
+                        symbol, _sv_io_exc,
+                    )
+                
+                # Emit commentary about the shadow veto
+                self.commentary.add_commentary(TradingCommentary(
+                    timestamp=datetime.now(),
+                    type=CommentaryType.RISK_ASSESSMENT,
+                    symbol=symbol,
+                    title=f"👁️ Shadow Veto: {_entry_pattern.upper()} + RSI≥70 + risk_off",
+                    message=(
+                        f"WOULD HAVE entered {symbol} via continuation pattern but:\n"
+                        f"  RSI {rsi:.1f} >= {_shadow_veto_rsi_threshold} (overbought)\n"
+                        f"  Regime: {_mc_regime} (risk off)\n\n"
+                        f"This combination is the classic failed-breakout exhaustion setup.\n"
+                        f"Shadow logged for later scoring; no order placed.\n\n"
+                        f"Signal details: RS vs SPY {_rs_vs_spy:+.2f}%, Vol {volume_ratio:.1f}x"
+                    ),
+                    data={
+                        'veto_type': 'shadow',
+                        'pattern': _entry_pattern,
+                        'rsi': rsi,
+                        'rsi_threshold': _shadow_veto_rsi_threshold,
+                        'regime': _mc_regime,
+                        'rs_vs_spy': _rs_vs_spy,
+                        'volume_ratio': volume_ratio,
+                    },
+                    importance=7,
+                ))
+                
+                # Return None to prevent order placement
+                return None
+            
+            # ────────────────────────────────────────────────────────────────
+            # Calculate Stop/Target (ATR-based, tighter for day-trade)
+            # ────────────────────────────────────────────────────────────────
+            atr = _floored_atr(atr, market_data.close)
+            
+            # Day-trade uses tighter stops than swing (1.5x ATR vs 2.5x)
+            _atr_stop_mult = 1.5
+            _rr_ratio = 2.0  # 2:1 R:R for day trades
+            
+            stop_distance = _atr_stop_mult * atr
+            stop_loss = market_data.close - stop_distance
+            take_profit = market_data.close + (_rr_ratio * stop_distance)
+            
+            # ────────────────────────────────────────────────────────────────
+            # Calculate signal strength and confidence
+            # ────────────────────────────────────────────────────────────────
+            # Strength combines: RS vs SPY, volume surge, ADX
+            _strength = min(0.95, (
+                0.3 +  # base
+                min(0.25, _rs_vs_spy / 5.0) +  # RS contribution (up to +0.25 at 5% RS)
+                min(0.25, (volume_ratio - 1.0) / 2.0) +  # Volume contribution
+                min(0.15, adx / 100)  # ADX contribution
+            ))
+            
+            _confidence = min(0.85, _entry_confidence * (1.0 + _rs_vs_spy / 10.0))
+            
+            # ────────────────────────────────────────────────────────────────
+            # Emit commentary and signal
+            # ────────────────────────────────────────────────────────────────
+            self.commentary.add_commentary(TradingCommentary(
+                timestamp=datetime.now(),
+                type=CommentaryType.OPPORTUNITY,
+                symbol=symbol,
+                title=f"🚀 Day-Trade Momentum: {_entry_pattern.upper()}",
+                message=(
+                    f"Intraday momentum setup detected.\n"
+                    f"  Pattern: {_entry_pattern}\n"
+                    f"  RS vs SPY: {_rs_vs_spy:+.2f}%\n"
+                    f"  Volume: {volume_ratio:.1f}x average\n"
+                    f"  RSI: {rsi:.1f}  ADX: {adx:.1f}\n"
+                    f"  Market: {_mc_regime or 'unknown'} | {_mc_time_of_day or 'unknown'}\n"
+                    f"  Size mult: {_mc_size_mult:.2f}x"
+                ),
+                data={
+                    'pattern': _entry_pattern,
+                    'rs_vs_spy': _rs_vs_spy,
+                    'volume_ratio': volume_ratio,
+                    'rsi': rsi,
+                    'adx': adx,
+                    'market_regime': _mc_regime,
+                    'size_mult': _mc_size_mult,
+                },
+                confidence=_confidence,
+                importance=8,
+            ))
+            
+            self._log_decision(
+                market_data, "signal_buy", f"day_trade_{_entry_pattern}",
+                pattern=_entry_pattern,
+                rs_vs_spy=round(_rs_vs_spy, 2),
+                volume_ratio=round(volume_ratio, 2),
+                rsi=round(rsi, 2),
+                adx=round(adx, 2),
+                regime=_mc_regime,
+                time_of_day=_mc_time_of_day,
+                mc_size_mult=_mc_size_mult,
+                stop=round(stop_loss, 2),
+                target=round(take_profit, 2),
+                atr=round(atr, 3),
+            )
+            
+            # ────────────────────────────────────────────────────────────────
+            # Stage-A Instrumentation: session_id, risk_off flag, setup_type
+            # v-momentum-stage-a-2026-09-10
+            # ────────────────────────────────────────────────────────────────
+            _session_id = _get_session_id()
+            _risk_off = (_mc_regime == "risk_off")
+            
+            return TradingSignal(
+                symbol=symbol,
+                signal_type=SignalType.BUY,
+                strength=_strength,
+                entry_price=market_data.close,
+                stop_loss=stop_loss,
+                take_profit=take_profit,
+                position_size=0,  # Sized by risk manager
+                reasoning={
+                    'strategy': 'day_trade_momentum',
+                    'entry_pattern': _entry_pattern,
+                    'rs_vs_spy': _rs_vs_spy,
+                    'volume_ratio': volume_ratio,
+                    'atr': atr,
+                    'atr_mult': _atr_stop_mult,
+                    'stop_distance': stop_distance,
+                    # Market context for sizing
+                    'market_context_conviction': _mc_size_mult,
+                    'market_context_regime': _mc_regime,
+                    'market_context_sector': _mc_sector,
+                    'market_context_time_of_day': _mc_time_of_day,
+                    # Day-trade specific
+                    'is_day_trade': True,
+                    'day_trade_size_multiplier': cfg.DAY_TRADE_SIZE_MULTIPLIER,
+                    'flatten_hour': cfg.DAY_TRADE_FLATTEN_HOUR,
+                    # Stage-A instrumentation (v-momentum-stage-a-2026-09-10)
+                    'session_id': _session_id,
+                    'risk_off': _risk_off,
+                    'mc_size_mult': _mc_size_mult,
+                    'setup_type': f"momentum_{_entry_pattern}",
+                },
+                confidence=_confidence,
+            )
+            
+        except Exception as e:
+            self._log_decision(market_data, "error", "exception", err=str(e))
+            logger.debug(f"DayTradeMomentumStrategy error for {symbol}: {e}")
+            return None
+
+
+def _get_minutes_since_open(now_utc: Optional[datetime] = None) -> int:
+    """Get minutes since market open (09:30 ET).
+    
+    v-orb-prototype-2026-09-10: helper for ORB time-based gates.
+    Returns negative if before open, positive if after.
+    """
+    from datetime import timezone
+    from zoneinfo import ZoneInfo
+    
+    if now_utc is None:
+        now_utc = datetime.now(timezone.utc)
+    
+    et = now_utc.astimezone(ZoneInfo("America/New_York"))
+    market_open_minutes = 9 * 60 + 30  # 09:30 ET in minutes
+    current_minutes = et.hour * 60 + et.minute
+    return current_minutes - market_open_minutes
+
+
+class ORBContractionRVOLStrategy(TradingStrategyWithCommentary):
+    """ORB (Opening Range Breakout) + volatility contraction + RVOL strategy.
+    
+    v-orb-prototype-2026-09-10: Hari APPROVED prototype #1.
+    
+    The Opening Range Breakout strategy identifies breakouts from the
+    high/low of the first N minutes after market open, filtered by:
+      1. Volatility contraction (squeeze before expansion)
+      2. Relative volume (RVOL) confirmation
+      3. Market context (regime, time-of-day)
+    
+    CRITICAL: This strategy HARD-SKIPS when regime is risk_off.
+    Unlike momentum which reduces size on risk_off, ORB does NOT
+    signal at all — ORB is an opening-range directional bet that
+    doesn't make sense when the market is in panic mode.
+    
+    Primary symbols: SPY/QQQ first (Hari instruction).
+    
+    Stage-A promotion floors (LOCKED — do NOT loosen):
+      n>=150 trades, >=10 sessions, PF>=1.30, WR>=48%, exp>=+0.05R,
+      DD<=6%, max losing day<=2R.
+    """
+    
+    name = "orb_contraction_rvol"
+    
+    def __init__(self, commentary_system):
+        super().__init__(commentary_system)
+        self._opening_range_cache: Dict[str, Dict[str, float]] = {}
+    
+    def _get_opening_range(
+        self, symbol: str, indicators: Dict[str, Any]
+    ) -> Optional[Dict[str, float]]:
+        """Get or compute the opening range for a symbol.
+        
+        Returns {'high': float, 'low': float, 'range': float, 'computed_at': str}
+        or None if range is not yet established.
+        """
+        from core.config import Config as _Cfg
+        cfg = _Cfg()
+        
+        minutes_since_open = _get_minutes_since_open()
+        range_minutes = cfg.ORB_OPENING_RANGE_MINUTES
+        
+        if minutes_since_open < range_minutes:
+            return None
+        
+        session_id = _get_session_id()
+        cache_key = f"{symbol}_{session_id}"
+        
+        if cache_key in self._opening_range_cache:
+            return self._opening_range_cache[cache_key]
+        
+        orb_high = float(indicators.get('orb_high', 0) or indicators.get('high_20', 0))
+        orb_low = float(indicators.get('orb_low', 0) or indicators.get('low_20', 0))
+        
+        if orb_high <= 0 or orb_low <= 0 or orb_high <= orb_low:
+            return None
+        
+        orb_range = orb_high - orb_low
+        
+        result = {
+            'high': orb_high,
+            'low': orb_low,
+            'range': orb_range,
+            'computed_at': datetime.now(timezone.utc).isoformat(),
+        }
+        self._opening_range_cache[cache_key] = result
+        return result
+    
+    def _compute_volatility_contraction(
+        self, indicators: Dict[str, Any], orb_range: float, price: float
+    ) -> Tuple[bool, float]:
+        """Compute volatility contraction status.
+        
+        Returns (is_contracted, contraction_pct) where is_contracted is True
+        if the current range is contracted relative to N-bar ATR.
+        """
+        from core.config import Config as _Cfg
+        cfg = _Cfg()
+        
+        atr = float(indicators.get('atr', 0))
+        if atr <= 0:
+            return False, 0.0
+        
+        atr_as_pct = atr / price if price > 0 else 0
+        range_as_pct = orb_range / price if price > 0 else 0
+        
+        if atr_as_pct <= 0:
+            return False, 0.0
+        
+        contraction_pct = (atr_as_pct - range_as_pct) / atr_as_pct
+        min_contraction = cfg.ORB_MIN_CONTRACTION_PCT
+        
+        return contraction_pct >= min_contraction, contraction_pct
+    
+    async def generate_signal_with_commentary(self, market_data) -> Optional[TradingSignal]:
+        """Generate ORB + contraction + RVOL signal.
+        
+        CRITICAL: HARD-SKIP when regime is risk_off (NOT size-down).
+        """
+        from core.config import Config as _Cfg
+        cfg = _Cfg()
+        
+        if not cfg.ENABLE_ORB_STRATEGY:
+            return None
+        
+        indicators = market_data.indicators or {}
+        symbol = market_data.symbol
+        
+        try:
+            # ────────────────────────────────────────────────────────────────
+            # Gate 0: Symbol eligibility (prefer SPY/QQQ)
+            # ────────────────────────────────────────────────────────────────
+            primary_symbols = cfg.ORB_PRIMARY_SYMBOLS
+            is_primary = symbol.upper() in [s.upper() for s in primary_symbols]
+            
+            # ────────────────────────────────────────────────────────────────
+            # Gate 1: CRITICAL — regime risk_off HARD SKIP (NOT size-down)
+            #
+            # Research+CoS lock: ORB is an opening-range directional bet.
+            # In risk_off conditions (panic selling, VIX spiking), the
+            # opening range is noise — breakouts fail systematically.
+            # Unlike momentum which reduces size, ORB does NOT signal at all.
+            # ────────────────────────────────────────────────────────────────
+            _mc_regime = None
+            _mc_time_of_day = None
+            _mc_spy_change = 0.0
+            _mc_vix_change = 0.0
+            _mc_sector = None
+            _mc_reason = ""
+            
+            try:
+                from core.market_context import read_market_context
+                _mc = read_market_context(symbol)
+                _mc_regime = _mc.regime
+                _mc_time_of_day = _mc.time_of_day
+                _mc_spy_change = _mc.spy_change_pct
+                _mc_vix_change = _mc.vix_change_pct
+                _mc_sector = _mc.sector_etf
+                _mc_reason = _mc.reason
+                
+                # CRITICAL: risk_off => HARD SKIP, NOT size-down
+                if _mc_regime == "risk_off":
+                    self._log_decision(
+                        market_data, "skip", "risk_off_hard_skip",
+                        gate_name="orb_risk_off_lock",
+                        regime=_mc_regime,
+                        spy_change=round(_mc_spy_change, 2),
+                        vix_change=round(_mc_vix_change, 2),
+                        reason_text=_mc_reason,
+                    )
+                    self.commentary.add_commentary(TradingCommentary(
+                        timestamp=datetime.now(),
+                        type=CommentaryType.RISK_ASSESSMENT,
+                        symbol=symbol,
+                        title=f"⛔ ORB SKIPPED — risk_off (HARD SKIP, not size-down)",
+                        message=(
+                            f"ORB strategy DOES NOT SIGNAL in risk_off regime.\n"
+                            f"  Regime: {_mc_regime}\n"
+                            f"  SPY: {_mc_spy_change:+.2f}% | VIX: {_mc_vix_change:+.1f}%\n\n"
+                            f"Research+CoS lock: ORB breakouts fail systematically "
+                            f"in panic conditions. This is a HARD SKIP, not a size "
+                            f"reduction. Wait for regime to clear before ORB signals."
+                        ),
+                        importance=8,
+                    ))
+                    return None
+                    
+            except Exception as _mc_exc:
+                logger.debug("orb_strategy: market_context failed: %s", _mc_exc)
+            
+            # ────────────────────────────────────────────────────────────────
+            # Gate 2: Time-based gates
+            # ────────────────────────────────────────────────────────────────
+            minutes_since_open = _get_minutes_since_open()
+            range_minutes = cfg.ORB_OPENING_RANGE_MINUTES
+            max_entry_minutes = cfg.ORB_MAX_ENTRY_MINUTES_AFTER_OPEN
+            
+            if minutes_since_open < range_minutes:
+                self._log_decision(
+                    market_data, "skip", "orb_not_yet_established",
+                    minutes_since_open=minutes_since_open,
+                    range_minutes=range_minutes,
+                )
+                return None
+            
+            if minutes_since_open > max_entry_minutes:
+                self._log_decision(
+                    market_data, "skip", "orb_entry_window_closed",
+                    minutes_since_open=minutes_since_open,
+                    max_entry_minutes=max_entry_minutes,
+                )
+                return None
+            
+            # ────────────────────────────────────────────────────────────────
+            # Gate 3: Opening Range Data
+            # ────────────────────────────────────────────────────────────────
+            orb = self._get_opening_range(symbol, indicators)
+            if orb is None:
+                self._log_decision(
+                    market_data, "skip", "orb_no_range_data",
+                    symbol=symbol,
+                )
+                return None
+            
+            orb_high = orb['high']
+            orb_low = orb['low']
+            orb_range = orb['range']
+            
+            # ────────────────────────────────────────────────────────────────
+            # Gate 4: Volatility Contraction Check
+            # ────────────────────────────────────────────────────────────────
+            is_contracted, contraction_pct = self._compute_volatility_contraction(
+                indicators, orb_range, market_data.close
+            )
+            
+            if not is_contracted:
+                self._log_decision(
+                    market_data, "skip", "orb_no_contraction",
+                    contraction_pct=round(contraction_pct, 3),
+                    min_contraction=cfg.ORB_MIN_CONTRACTION_PCT,
+                )
+                return None
+            
+            # ────────────────────────────────────────────────────────────────
+            # Gate 5: RVOL (Relative Volume) Check
+            # ────────────────────────────────────────────────────────────────
+            volume_ratio = float(indicators.get('volume_ratio', 1.0))
+            min_rvol = cfg.ORB_MIN_RVOL
+            
+            if volume_ratio < min_rvol:
+                self._log_decision(
+                    market_data, "skip", "orb_insufficient_rvol",
+                    volume_ratio=round(volume_ratio, 2),
+                    min_rvol=min_rvol,
+                )
+                return None
+            
+            # ────────────────────────────────────────────────────────────────
+            # Gate 6: Breakout Detection
+            # ────────────────────────────────────────────────────────────────
+            price = market_data.close
+            breakout_type = None
+            
+            if price > orb_high:
+                breakout_type = "bullish"
+            elif price < orb_low:
+                breakout_type = "bearish"
+            else:
+                self._log_decision(
+                    market_data, "skip", "orb_no_breakout",
+                    price=round(price, 2),
+                    orb_high=round(orb_high, 2),
+                    orb_low=round(orb_low, 2),
+                )
+                return None
+            
+            # ────────────────────────────────────────────────────────────────
+            # Calculate Stop/Target
+            # ────────────────────────────────────────────────────────────────
+            atr = _floored_atr(
+                float(indicators.get('atr', price * 0.02)),
+                price
+            )
+            
+            stop_mult = cfg.ORB_ATR_STOP_MULTIPLIER
+            rr_ratio = cfg.ORB_REWARD_RISK_RATIO
+            
+            stop_distance = stop_mult * atr
+            
+            if breakout_type == "bullish":
+                signal_type = SignalType.BUY
+                stop_loss = max(price - stop_distance, orb_low - (0.5 * atr))
+                take_profit = price + (rr_ratio * stop_distance)
+            else:
+                signal_type = SignalType.SELL
+                stop_loss = min(price + stop_distance, orb_high + (0.5 * atr))
+                take_profit = price - (rr_ratio * stop_distance)
+            
+            # ────────────────────────────────────────────────────────────────
+            # Calculate Confidence and Strength
+            # ────────────────────────────────────────────────────────────────
+            _strength = min(0.90, (
+                0.40 +  # base
+                min(0.20, (volume_ratio - 1.0) / 2.0) +  # RVOL contribution
+                min(0.15, contraction_pct / 0.5) +  # Contraction contribution
+                (0.15 if is_primary else 0.0)  # Primary symbol bonus
+            ))
+            
+            _confidence = min(0.80, (
+                0.50 +
+                min(0.15, (volume_ratio - 1.0) / 3.0) +
+                min(0.10, contraction_pct / 0.4) +
+                (0.05 if is_primary else 0.0)
+            ))
+            
+            # ────────────────────────────────────────────────────────────────
+            # Emit Commentary
+            # ────────────────────────────────────────────────────────────────
+            action_desc = "BREAKOUT" if breakout_type == "bullish" else "BREAKDOWN"
+            self.commentary.add_commentary(TradingCommentary(
+                timestamp=datetime.now(),
+                type=CommentaryType.OPPORTUNITY,
+                symbol=symbol,
+                title=f"📊 ORB {action_desc}: {symbol}",
+                message=(
+                    f"Opening Range {action_desc} detected.\n"
+                    f"  ORB High: ${orb_high:.2f} | ORB Low: ${orb_low:.2f}\n"
+                    f"  Current: ${price:.2f}\n"
+                    f"  Contraction: {contraction_pct*100:.1f}% (min {cfg.ORB_MIN_CONTRACTION_PCT*100:.0f}%)\n"
+                    f"  RVOL: {volume_ratio:.1f}x (min {min_rvol:.1f}x)\n"
+                    f"  Regime: {_mc_regime or 'unknown'} | ToD: {_mc_time_of_day or 'unknown'}\n"
+                    f"  Stop: ${stop_loss:.2f} | Target: ${take_profit:.2f}"
+                ),
+                data={
+                    'breakout_type': breakout_type,
+                    'orb_high': orb_high,
+                    'orb_low': orb_low,
+                    'orb_range': orb_range,
+                    'contraction_pct': contraction_pct,
+                    'volume_ratio': volume_ratio,
+                    'regime': _mc_regime,
+                    'is_primary': is_primary,
+                },
+                confidence=_confidence,
+                importance=8,
+            ))
+            
+            # ────────────────────────────────────────────────────────────────
+            # Log Decision
+            # ────────────────────────────────────────────────────────────────
+            action = "signal_buy" if signal_type == SignalType.BUY else "signal_sell"
+            self._log_decision(
+                market_data, action, f"orb_{breakout_type}_breakout",
+                orb_high=round(orb_high, 2),
+                orb_low=round(orb_low, 2),
+                orb_range=round(orb_range, 3),
+                contraction_pct=round(contraction_pct, 3),
+                volume_ratio=round(volume_ratio, 2),
+                regime=_mc_regime,
+                time_of_day=_mc_time_of_day,
+                is_primary=is_primary,
+                stop=round(stop_loss, 2),
+                target=round(take_profit, 2),
+                atr=round(atr, 3),
+            )
+            
+            # ────────────────────────────────────────────────────────────────
+            # Stage-A Instrumentation
+            # ────────────────────────────────────────────────────────────────
+            _session_id = _get_session_id()
+            
+            return TradingSignal(
+                symbol=symbol,
+                signal_type=signal_type,
+                strength=_strength,
+                entry_price=price,
+                stop_loss=stop_loss,
+                take_profit=take_profit,
+                position_size=0,  # Sized by risk manager
+                reasoning={
+                    'strategy': 'orb_contraction_rvol',
+                    'breakout_type': breakout_type,
+                    'orb_high': orb_high,
+                    'orb_low': orb_low,
+                    'orb_range': orb_range,
+                    'contraction_pct': contraction_pct,
+                    'volume_ratio': volume_ratio,
+                    'atr': atr,
+                    'atr_mult': stop_mult,
+                    'stop_distance': stop_distance,
+                    # Market context
+                    'market_context_regime': _mc_regime,
+                    'market_context_sector': _mc_sector,
+                    'market_context_time_of_day': _mc_time_of_day,
+                    # ORB-specific
+                    'is_orb': True,
+                    'is_primary_symbol': is_primary,
+                    'orb_size_multiplier': cfg.ORB_SIZE_MULTIPLIER,
+                    'flatten_by_hour': cfg.ORB_FLATTEN_BY_HOUR,
+                    # Stage-A instrumentation
+                    'session_id': _session_id,
+                    'setup_type': f"orb_{breakout_type}",
+                },
+                confidence=_confidence,
+            )
+            
+        except Exception as e:
+            self._log_decision(market_data, "error", "exception", err=str(e))
+            logger.debug(f"ORBContractionRVOLStrategy error for {symbol}: {e}")
+            return None

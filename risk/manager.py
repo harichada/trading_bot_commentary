@@ -233,6 +233,71 @@ class RiskManagerWithCommentary:
                 except (TypeError, ValueError):
                     pass  # bad value → skip the multiplier, don't crash
 
+        # v-newsbus-gates-2026-09-09: scale position by the news gate
+        # multiplier (0.5 for single-source, 1.0 for corroborated).
+        # Applied AFTER market_context but BEFORE live_mult.
+        if signal.reasoning:
+            ng_mult = signal.reasoning.get('news_gate_multiplier')
+            ng_action = signal.reasoning.get('news_gate_action')
+            ng_corroboration = signal.reasoning.get('news_gate_corroboration')
+            
+            # v-feature-snapshot-emit-2026-09-09: shadow log gate mult vs model score
+            if ng_mult is not None:
+                try:
+                    from sizing.conviction_sizer import get_gate_mult_shadow
+                    shadow = get_gate_mult_shadow()
+                    shadow.log_comparison(
+                        symbol=signal.symbol,
+                        strategy=strategy_name or 'unknown',
+                        news_gate_multiplier=float(ng_mult),
+                        corroboration_n=int(ng_corroboration or 0),
+                        news_age_sec=signal.reasoning.get('news_age_sec'),
+                        source_tier_min=None,  # Not in reasoning; add if needed
+                        model_score_placeholder=None,  # Future: inference model output
+                    )
+                except Exception as _shadow_exc:
+                    logger.debug("news_gate_mult_shadow: %s", _shadow_exc)
+            
+            if ng_mult is not None and ng_mult != 1.0:
+                try:
+                    ng_mult = float(ng_mult)
+                    if 0.1 <= ng_mult <= 1.0:  # sanity-clamp (never scale UP)
+                        old_size = position_size
+                        position_size = max(1, int(position_size * ng_mult))
+                        logger.info(
+                            "news_gate_multiplier symbol=%s mult=%.2f "
+                            "action=%s corroboration=%s old=%d new=%d",
+                            signal.symbol, ng_mult,
+                            ng_action or '?',
+                            ng_corroboration or '?',
+                            old_size, position_size,
+                        )
+                except (TypeError, ValueError):
+                    pass
+
+        # v-day-trade-momentum-desk-2026-09-10: apply day-trade size multiplier
+        # for positions from the day-trade momentum strategy. This keeps day-
+        # trade positions smaller than swing positions to manage intraday
+        # portfolio heat. Applied AFTER news_gate but BEFORE live_mult.
+        if signal.reasoning:
+            _is_day_trade = signal.reasoning.get('is_day_trade', False)
+            _dt_mult = signal.reasoning.get('day_trade_size_multiplier')
+            if _is_day_trade and _dt_mult is not None:
+                try:
+                    _dt_mult = float(_dt_mult)
+                    if 0.1 <= _dt_mult <= 1.0:
+                        old_size = position_size
+                        position_size = max(1, int(position_size * _dt_mult))
+                        logger.info(
+                            "day_trade_size_multiplier symbol=%s mult=%.2f "
+                            "strategy=%s old=%d new=%d",
+                            signal.symbol, _dt_mult,
+                            strategy_name or 'day_trade_momentum',
+                            old_size, position_size,
+                        )
+                except (TypeError, ValueError):
+                    pass
+
         # v-live-launch-safety-dial-2026-05-23: global live-launch dial,
         # composed AFTER per-strategy multipliers. Final sizing =
         # base * kelly * strategy_mult * live_mult. Default 1.0 (no

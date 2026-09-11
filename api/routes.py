@@ -255,7 +255,7 @@ async def get_dashboard():
         template_html = DASHBOARD_HTML_WITH_COMMENTARY  # fallback to import-time copy
 
     html = template_html.replace("</head>", f"{auth_script}</head>", 1)
-    return HTMLResponse(content=html)
+    return HTMLResponse(content=html, media_type="text/html; charset=utf-8")
 
 
 @app.get("/stream")
@@ -552,7 +552,7 @@ async def get_stream_view():
 </html>
 """
     html = html.replace("__APIKEY__", api_json)
-    return HTMLResponse(content=html)
+    return HTMLResponse(content=html, media_type="text/html; charset=utf-8")
 
 @app.post("/api/start")
 async def start_trading():
@@ -603,6 +603,11 @@ async def start_trading():
         # Engine may run on a background thread/loop; force WS broadcasts
         # back onto the FastAPI loop that owns WebSocket objects.
         trading_engine._ws_broadcast_loop = main_loop
+        
+        # v-fix-loop-safety-2026-09-10: Set db_logger owner loop so cross-loop
+        # snapshot writes/reads route back to this (FastAPI) loop.
+        if hasattr(trading_engine, 'db_logger') and trading_engine.db_logger is not None:
+            trading_engine.db_logger.set_owner_loop(main_loop)
 
         # Background task to process commentary broadcasts
         async def commentary_broadcaster():
@@ -797,6 +802,102 @@ async def get_bot_status():
         "schwab_connected": trading_engine.schwab_client is not None if trading_engine else False,
         "uptime": str(datetime.now() - trading_engine.start_time) if trading_engine and hasattr(trading_engine, 'start_time') else "0:00:00"
     }
+
+
+@app.get("/api/system-stats")
+async def get_system_stats():
+    """Get system observability stats: NewsBus, supervisor, profile.
+    
+    v-newsbus-observability-2026-09-08: exposes metrics for monitoring:
+      - NewsBus item counts, high-impact alerts, refresh status
+      - Supervisor task states and crash counts
+      - Current autonomy profile and confirmation settings
+    """
+    from core.config import Config
+    cfg = Config()
+    
+    result = {
+        "status": "success",
+        "profile": {
+            "name": cfg.TRADING_PROFILE,
+            "confirmation_timeout_sec": cfg.CONFIRMATION_TIMEOUT_SEC,
+            "confirmation_timeout_action": cfg.CONFIRMATION_TIMEOUT_ACTION,
+            "require_close_confirmation": cfg.REQUIRE_CLOSE_CONFIRMATION,
+            "flatten_on_circuit": cfg.FLATTEN_ON_CIRCUIT,
+        },
+        "news_bus": None,
+        "news_loop": None,
+        "supervisor": None,
+        "last_wake_reason": None,
+    }
+    
+    if not trading_engine:
+        return result
+    
+    # NewsBus stats
+    bus = getattr(trading_engine, "_news_bus", None)
+    if bus is not None:
+        stats = bus.get_stats()
+        result["news_bus"] = {
+            "total_items": stats.total_items,
+            "symbols_tracked": stats.symbols_tracked,
+            "high_impact_items": stats.high_impact_items,
+            "refresh_count": stats.refresh_count,
+            "items_evicted": stats.items_evicted,
+            "fetch_errors": stats.fetch_errors,
+            "wake_events_fired": stats.wake_events_fired,
+            "last_refresh": stats.last_refresh.isoformat() if stats.last_refresh else None,
+            # v-newsbus-gates-2026-09-09: gate decision counters
+            "gate_pass": stats.gate_pass,
+            "gate_veto_stale": stats.gate_veto_stale,
+            "gate_veto_low_tier": stats.gate_veto_low_tier,
+            "gate_veto_no_corroboration": stats.gate_veto_no_corroboration,
+            "gate_size_reduced": stats.gate_size_reduced,
+        }
+    
+    # NewsLoop stats
+    news_loop = getattr(trading_engine, "_news_loop", None)
+    if news_loop is not None:
+        result["news_loop"] = news_loop.get_status()
+    
+    # Supervisor stats
+    supervisor = getattr(trading_engine, "_supervisor", None)
+    if supervisor is not None:
+        result["supervisor"] = supervisor.status()
+    
+    # Last wake reason
+    result["last_wake_reason"] = getattr(trading_engine, "_last_wake_reason", None)
+    
+    return result
+
+
+@app.get("/api/news-bus/{symbol}")
+async def get_news_bus_symbol(symbol: str, max_age_sec: float = 14400):
+    """Get NewsBus items for a specific symbol.
+    
+    v-newsbus-observability-2026-09-08: inspect cached news for a symbol.
+    Useful for debugging why a news signal did or didn't fire.
+    """
+    if not trading_engine:
+        return {"status": "error", "message": "Engine not running"}
+    
+    bus = getattr(trading_engine, "_news_bus", None)
+    if bus is None:
+        return {"status": "error", "message": "NewsBus not available"}
+    
+    items = await bus.get_items(symbol.upper(), max_age_sec=max_age_sec)
+    aggregate = await bus.get_aggregate_sentiment(symbol.upper(), max_age_sec=max_age_sec)
+    
+    return {
+        "status": "success",
+        "symbol": symbol.upper(),
+        "as_of": datetime.now().isoformat(),  # v-newsbus-gates-2026-09-09: timestamp for dashboard
+        "item_count": len(items),
+        "aggregate": aggregate,
+        "items": [item.to_dict() for item in items[:20]],  # Limit to 20 for payload size
+        "has_high_impact": bus.has_high_impact(symbol.upper()),
+    }
+
 
 @app.get("/api/account-stats")
 async def get_account_stats():
@@ -1805,6 +1906,9 @@ async def get_trades(date: str = None, symbol: str = None, strategy: str = None,
         with engine.connect() as conn:
             rows = conn.execute(sql, params).mappings().all()
 
+        # v-fix-pool-leak-2026-09-10: dispose engine to release connection pool
+        engine.dispose()
+
         trades = [dict(r) for r in rows]
         # v-json-nan-sanitize-trades-2026-05-05: same NaN/inf scrub as
         # /api/positions/db — Postgres can return non-finite floats
@@ -1884,6 +1988,9 @@ async def get_decisions(date: str = None, symbol: str = None, component: str = N
 
         with engine.connect() as conn:
             rows = conn.execute(sql, params).mappings().all()
+
+        # v-fix-pool-leak-2026-09-10: dispose engine to release connection pool
+        engine.dispose()
 
         decisions = [dict(r) for r in rows]
         import math as _math
@@ -1990,6 +2097,9 @@ async def get_positions_db():
                 FROM bot_positions ORDER BY entry_time
             """)).mappings().all()
 
+        # v-fix-pool-leak-2026-09-10: dispose engine to release connection pool
+        engine.dispose()
+
         positions = [dict(r) for r in rows]
         # v-managed-by-bot-2026-04-28: enrich DB rows with per-position flag from
         # in-memory state so the dashboard checkbox reflects current truth (DB
@@ -2004,6 +2114,269 @@ async def get_positions_db():
 
     except Exception as e:
         logger.error(f"Error querying positions: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+# ============================================================================
+# DECISION SNAPSHOT API — v-feature-snapshot-2026-09-09
+# Exposes decision snapshots for ML training pipelines and tooling.
+# ============================================================================
+
+@app.get("/api/decision-snapshots")
+async def get_decision_snapshots(
+    symbol: str = None,
+    strategy_id: str = None,
+    action: str = None,
+    limit: int = 100,
+    offset: int = 0,
+    since: str = None,
+):
+    """v-feature-snapshot-2026-09-09: query decision snapshots for ML training.
+    
+    Returns machine-readable snapshots capturing what the bot saw at each
+    decision point (signal, skip, veto). These snapshots are the training
+    data for GPU-based policy models.
+    
+    Query params:
+        symbol: Filter by ticker symbol
+        strategy_id: Filter by strategy name
+        action: Filter by action (signal_buy, signal_sell, skip, veto, error)
+        limit: Max results (default 100, max 1000)
+        offset: Pagination offset
+        since: ISO timestamp — only return snapshots after this time
+    
+    Returns:
+        {
+            "status": "success",
+            "count": N,
+            "snapshots": [...]
+        }
+    
+    GPU inference sidecar integration:
+        Poll this endpoint or connect to the WebSocket for real-time snapshots.
+        Each snapshot contains price_vol (17-dim feature vector), news aggregate,
+        and regime context — ready for model input.
+    """
+    import os
+    from datetime import datetime
+    from sqlalchemy.ext.asyncio import create_async_engine
+    from sqlalchemy import text as sa_text
+    
+    limit = min(limit, 1000)
+    
+    # If engine has db_logger, use it
+    if trading_engine is not None and getattr(trading_engine, "db_logger", None) is not None:
+        try:
+            since_dt = datetime.fromisoformat(since) if since else None
+            snapshots = await trading_engine.db_logger.get_decision_snapshots(
+                symbol=symbol,
+                strategy_id=strategy_id,
+                action=action,
+                limit=limit,
+                offset=offset,
+                since=since_dt,
+            )
+            return {"status": "success", "count": len(snapshots), "snapshots": snapshots}
+        except Exception as e:
+            logger.error(f"Error querying snapshots via db_logger: {e}")
+    
+    # Fallback: direct DB query
+    dsn = os.environ.get("POSTGRES_DSN", "postgresql://rudra:rudra_dev_2024@localhost:5432/rudra_dev")
+    if "asyncpg" not in dsn:
+        dsn = dsn.replace("postgresql://", "postgresql+asyncpg://")
+    
+    try:
+        engine = create_async_engine(dsn, pool_size=1, max_overflow=0)
+        
+        filters = []
+        params = {"limit": limit, "offset": offset}
+        
+        if symbol:
+            filters.append("symbol = :symbol")
+            params["symbol"] = symbol.upper()
+        if strategy_id:
+            filters.append("strategy_id = :strategy_id")
+            params["strategy_id"] = strategy_id
+        if action:
+            filters.append("action = :action")
+            params["action"] = action
+        if since:
+            filters.append("ts >= :since")
+            params["since"] = since
+        
+        where = "WHERE " + " AND ".join(filters) if filters else ""
+        
+        async with engine.begin() as conn:
+            rows = (await conn.execute(
+                sa_text(f"""
+                    SELECT snapshot_id, symbol, ts, mode, strategy_id,
+                           action, reason, gate_name, confidence, price,
+                           price_vol_json, news_json, regime_json,
+                           would_entry_price, would_stop_loss, would_take_profit,
+                           would_size_shares, would_size_mult, extra_json
+                    FROM bot_decision_snapshots
+                    {where}
+                    ORDER BY ts DESC
+                    LIMIT :limit OFFSET :offset
+                """),
+                params,
+            )).mappings().all()
+        
+        await engine.dispose()
+        
+        import json
+        snapshots = []
+        for row in rows:
+            snapshots.append({
+                "snapshot_id": row["snapshot_id"],
+                "symbol": row["symbol"],
+                "ts": row["ts"].isoformat() if hasattr(row["ts"], "isoformat") else row["ts"],
+                "mode": row["mode"],
+                "strategy_id": row["strategy_id"],
+                "action": row["action"],
+                "reason": row["reason"],
+                "gate_name": row["gate_name"],
+                "confidence": row["confidence"],
+                "price_vol": json.loads(row["price_vol_json"]) if row["price_vol_json"] else {},
+                "news": json.loads(row["news_json"]) if row["news_json"] else {},
+                "regime": json.loads(row["regime_json"]) if row["regime_json"] else {},
+                "would_entry_price": row["would_entry_price"],
+                "would_stop_loss": row["would_stop_loss"],
+                "would_take_profit": row["would_take_profit"],
+                "would_size_shares": row["would_size_shares"],
+                "would_size_mult": row["would_size_mult"],
+                "extra": json.loads(row["extra_json"]) if row["extra_json"] else {},
+            })
+        
+        return {"status": "success", "count": len(snapshots), "snapshots": snapshots}
+        
+    except Exception as e:
+        logger.error(f"Error querying snapshots: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+@app.get("/api/features/{symbol}")
+async def get_symbol_features(symbol: str):
+    """v-feature-snapshot-2026-09-09: get the latest feature snapshot for a symbol.
+    
+    Returns the most recent DecisionSnapshot for the given symbol, with the
+    full feature vector (price_vol, news, regime) that can be fed directly
+    to a policy model.
+    
+    Returns:
+        {
+            "status": "success",
+            "symbol": "TSLA",
+            "snapshot": {...},
+            "feature_vector": [0.01, -0.02, ...]  // 17-dim price_vol vector
+        }
+    
+    GPU inference sidecar integration:
+        Call this endpoint to get the latest features for a symbol before
+        making an inference decision. The feature_vector is in the same
+        order as MLFeatureExtractor.feature_names.
+    """
+    import os
+    from sqlalchemy.ext.asyncio import create_async_engine
+    from sqlalchemy import text as sa_text
+    
+    symbol = symbol.upper()
+    
+    # If engine has db_logger, use it
+    if trading_engine is not None and getattr(trading_engine, "db_logger", None) is not None:
+        try:
+            snapshot = await trading_engine.db_logger.get_latest_snapshot(symbol)
+            if snapshot:
+                # Extract feature vector from price_vol
+                pv = snapshot.get("price_vol", {})
+                feature_vector = [
+                    pv.get("returns_1", 0), pv.get("returns_5", 0), pv.get("returns_20", 0),
+                    pv.get("price_vs_sma20", 0), pv.get("price_vs_sma50", 0),
+                    pv.get("rsi", 0.5), pv.get("macd", 0), pv.get("macd_signal", 0), pv.get("macd_hist", 0),
+                    pv.get("bb_position", 0.5), pv.get("bb_width", 0),
+                    pv.get("volume_ratio", 1), pv.get("volume_std_ratio", 0), pv.get("volume_trend", 0),
+                    pv.get("atr_ratio", 0), pv.get("high_low_ratio", 0), pv.get("std_dev_ratio", 0),
+                ]
+                return {
+                    "status": "success",
+                    "symbol": symbol,
+                    "snapshot": snapshot,
+                    "feature_vector": feature_vector,
+                }
+            return {"status": "success", "symbol": symbol, "snapshot": None, "feature_vector": None}
+        except Exception as e:
+            logger.error(f"Error getting features via db_logger: {e}")
+    
+    # Fallback: direct DB query
+    dsn = os.environ.get("POSTGRES_DSN", "postgresql://rudra:rudra_dev_2024@localhost:5432/rudra_dev")
+    if "asyncpg" not in dsn:
+        dsn = dsn.replace("postgresql://", "postgresql+asyncpg://")
+    
+    try:
+        engine = create_async_engine(dsn, pool_size=1, max_overflow=0)
+        
+        async with engine.begin() as conn:
+            row = (await conn.execute(
+                sa_text("""
+                    SELECT snapshot_id, symbol, ts, mode, strategy_id,
+                           action, reason, gate_name, confidence, price,
+                           price_vol_json, news_json, regime_json,
+                           would_entry_price, would_stop_loss, would_take_profit,
+                           would_size_shares, would_size_mult, extra_json
+                    FROM bot_decision_snapshots
+                    WHERE symbol = :symbol
+                    ORDER BY ts DESC
+                    LIMIT 1
+                """),
+                {"symbol": symbol},
+            )).mappings().first()
+        
+        await engine.dispose()
+        
+        if not row:
+            return {"status": "success", "symbol": symbol, "snapshot": None, "feature_vector": None}
+        
+        import json
+        pv = json.loads(row["price_vol_json"]) if row["price_vol_json"] else {}
+        feature_vector = [
+            pv.get("returns_1", 0), pv.get("returns_5", 0), pv.get("returns_20", 0),
+            pv.get("price_vs_sma20", 0), pv.get("price_vs_sma50", 0),
+            pv.get("rsi", 0.5), pv.get("macd", 0), pv.get("macd_signal", 0), pv.get("macd_hist", 0),
+            pv.get("bb_position", 0.5), pv.get("bb_width", 0),
+            pv.get("volume_ratio", 1), pv.get("volume_std_ratio", 0), pv.get("volume_trend", 0),
+            pv.get("atr_ratio", 0), pv.get("high_low_ratio", 0), pv.get("std_dev_ratio", 0),
+        ]
+        
+        snapshot = {
+            "snapshot_id": row["snapshot_id"],
+            "symbol": row["symbol"],
+            "ts": row["ts"].isoformat() if hasattr(row["ts"], "isoformat") else row["ts"],
+            "mode": row["mode"],
+            "strategy_id": row["strategy_id"],
+            "action": row["action"],
+            "reason": row["reason"],
+            "gate_name": row["gate_name"],
+            "confidence": row["confidence"],
+            "price_vol": pv,
+            "news": json.loads(row["news_json"]) if row["news_json"] else {},
+            "regime": json.loads(row["regime_json"]) if row["regime_json"] else {},
+            "would_entry_price": row["would_entry_price"],
+            "would_stop_loss": row["would_stop_loss"],
+            "would_take_profit": row["would_take_profit"],
+            "would_size_shares": row["would_size_shares"],
+            "would_size_mult": row["would_size_mult"],
+            "extra": json.loads(row["extra_json"]) if row["extra_json"] else {},
+        }
+        
+        return {
+            "status": "success",
+            "symbol": symbol,
+            "snapshot": snapshot,
+            "feature_vector": feature_vector,
+        }
+        
+    except Exception as e:
+        logger.error(f"Error querying features: {e}")
         return {"status": "error", "message": str(e)}
 
 
@@ -2440,6 +2813,8 @@ async def news_vetoes_report():
                 ORDER BY veto_time DESC
                 LIMIT 50
             """)).mappings().all()
+        # v-fix-pool-leak-2026-09-10: dispose engine to release connection pool
+        eng.dispose()
         # Compute headline metrics
         n_correct = sum(r['n'] for r in summary if r['outcome'] == 'correct_veto')
         n_missed  = sum(r['n'] for r in summary if r['outcome'] == 'missed_winner')

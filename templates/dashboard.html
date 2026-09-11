@@ -1,7 +1,8 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>Trading Bot with Schwab Positions</title>
+    <meta charset="utf-8">
+    <title>Helm — Market Co-Pilot</title>
     <!-- v-ui-theme-tokens-2026-04-29: Inter (UI) + JetBrains Mono (numerics).
          cv02-04/11 OpenType features below give cleaner tabular digits. -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -48,10 +49,10 @@
           --chart-4: oklch(0.8 0.15 90);
           --chart-5: oklch(0.7 0.2 320);
 
-          /* Glow halos (used as box-shadow for KPI cards on hover) */
-          --glow-accent:      0 0 40px -10px oklch(0.65 0.2 200 / 0.55);
-          --glow-success:     0 0 40px -10px oklch(0.72 0.2 155 / 0.55);
-          --glow-destructive: 0 0 40px -10px oklch(0.6 0.22 25 / 0.55);
+          /* Glow halos — subtle, institutional */
+          --glow-accent:      0 0 20px -6px oklch(0.65 0.2 200 / 0.2);
+          --glow-success:     0 0 20px -6px oklch(0.72 0.2 155 / 0.2);
+          --glow-destructive: 0 0 20px -6px oklch(0.6 0.22 25 / 0.2);
 
           /* Shape */
           --radius: 0.75rem;
@@ -142,6 +143,13 @@
           75%  { transform: scale(2);   opacity: 0; }
           100% { transform: scale(2);   opacity: 0; }
         }
+        /* v-connection-state-unify-2026-09-11: stale/offline states for pulse-dot */
+        .pulse-dot.stale::before,
+        .pulse-dot.stale::after { background: var(--warning); }
+        .pulse-dot.stale::before { animation: none; opacity: 0.5; }
+        .pulse-dot.offline::before,
+        .pulse-dot.offline::after { background: var(--muted-fg); }
+        .pulse-dot.offline::before { animation: none; opacity: 0.3; }
 
         /* Ambient gradient blobs — fixed position, behind everything.
            Subtle depth without dominating the design. */
@@ -343,19 +351,22 @@
         table {
             width: 100%;
             border-collapse: collapse;
-            color: #fff;
+            color: var(--fg);
+            table-layout: auto;
         }
         th, td {
             text-align: left;
-            padding: 12px;
-            border-bottom: 1px solid #333;
+            padding: 0.625rem 0.75rem;
+            border-bottom: 1px solid var(--border-soft);
+            white-space: nowrap;
         }
         th {
-            color: #4a9eff;
             font-weight: 600;
-            font-size: 12px;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
+            font-size: 0.6875rem;
+            color: oklch(0.55 0 0);
+        }
+        td {
+            font-size: 0.8125rem;
         }
         td {
             font-size: 14px;
@@ -440,10 +451,8 @@
             margin-bottom: 5px;
         }
         .stat-label {
-            font-size: 12px;
-            color: #999;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
+            font-size: 11px;
+            color: oklch(0.55 0 0);
         }
         /* Modal styles for close confirmation */
         .modal-overlay {
@@ -542,14 +551,14 @@
         }
         /* Ticker tape styles */
         .ticker-tape {
-            background: #0a0a0a;
-            border-bottom: 1px solid #333;
-            padding: 10px 20px;
+            background: oklch(0.06 0.01 270);
+            border-bottom: 1px solid var(--border-soft);
+            padding: 6px 12px;
             overflow-x: auto;
             overflow-y: hidden;
             position: relative;
             scrollbar-width: thin;
-            scrollbar-color: #333 #0a0a0a;
+            scrollbar-color: oklch(0.25 0.01 270) oklch(0.06 0.01 270);
         }
         
         .ticker-tape::-webkit-scrollbar {
@@ -1084,8 +1093,8 @@
             background: linear-gradient(90deg, transparent, oklch(0.65 0.2 200 / 0.5), transparent);
         }
         .app-topbar-inner {
-            padding: 1rem 1.25rem;
-            display: flex; flex-direction: column; gap: 1rem;
+            padding: 0.625rem 1rem;
+            display: flex; flex-direction: column; gap: 0.5rem;
         }
         .app-topbar-row {
             display: flex; flex-wrap: wrap; align-items: center;
@@ -1096,28 +1105,21 @@
         }
         .app-logo-icon {
             position: relative;
-            padding: 0.6rem;
-            border-radius: var(--radius);
-            background: linear-gradient(135deg, oklch(0.65 0.2 200 / 0.2), oklch(0.65 0.2 200 / 0.05));
-            border: 1px solid oklch(0.65 0.2 200 / 0.2);
+            padding: 0.4rem;
+            border-radius: var(--radius-sm);
+            background: linear-gradient(135deg, oklch(0.65 0.2 200 / 0.15), oklch(0.65 0.2 200 / 0.05));
+            border: 1px solid oklch(0.65 0.2 200 / 0.15);
             color: var(--accent);
         }
-        .app-logo-icon::after {
-            content: '';
-            position: absolute; inset: -8px;
-            background: oklch(0.65 0.2 200 / 0.3);
-            filter: blur(20px);
-            border-radius: 9999px;
-            z-index: -1;
-        }
+        .app-logo-icon::after { display: none; }
         .app-logo-title {
-            font-size: 1.25rem; font-weight: 700;
+            font-size: 1rem; font-weight: 700;
             letter-spacing: -0.02em;
             color: var(--fg);
         }
         .app-logo-subtitle {
-            font-size: 0.625rem; font-weight: 600;
-            letter-spacing: 0.15em; text-transform: uppercase;
+            font-size: 0.5625rem; font-weight: 600;
+            letter-spacing: 0.1em; text-transform: uppercase;
             color: var(--muted-fg);
         }
         .app-nav {
@@ -1141,27 +1143,27 @@
             box-shadow: 0 1px 2px oklch(0 0 0 / 0.1);
         }
         .app-toggles {
-            display: flex; align-items: center; gap: 0.25rem;
-            padding: 0.4rem 0.6rem;
-            border-radius: var(--radius);
+            display: flex; align-items: center; gap: 0.15rem;
+            padding: 0.25rem 0.4rem;
+            border-radius: var(--radius-sm);
         }
-        .app-toggles > .divider { width: 1px; height: 1.5rem; background: var(--border-soft); margin: 0 0.25rem; }
+        .app-toggles > .divider { width: 1px; height: 1rem; background: var(--border-soft); margin: 0 0.15rem; }
         .app-toggle {
-            display: flex; align-items: center; gap: 0.5rem;
-            padding: 0.25rem 0.5rem;
+            display: flex; align-items: center; gap: 0.35rem;
+            padding: 0.15rem 0.35rem;
             color: var(--muted-fg);
-            font: 500 0.6875rem var(--font-sans);
+            font: 500 0.625rem var(--font-sans);
         }
-        .app-toggle .lucide { color: var(--muted-fg); }
-        .app-toggle input[type="checkbox"] { transform: scale(0.85); accent-color: var(--accent); cursor: pointer; }
+        .app-toggle .lucide { color: var(--muted-fg); display: none; }
+        .app-toggle input[type="checkbox"] { transform: scale(0.8); accent-color: var(--accent); cursor: pointer; }
         .app-toggle label { cursor: pointer; user-select: none; }
         .app-actions { display: flex; align-items: center; gap: 0.5rem; }
         .btn {
-            display: inline-flex; align-items: center; gap: 0.5rem;
-            height: 2.25rem; padding: 0 0.85rem;
+            display: inline-flex; align-items: center; gap: 0.35rem;
+            height: 1.75rem; padding: 0 0.6rem;
             border-radius: calc(var(--radius) - 2px);
             border: 0; cursor: pointer;
-            font: 600 0.8125rem var(--font-sans);
+            font: 600 0.6875rem var(--font-sans);
             transition: all 0.2s;
         }
         .btn-ghost {
@@ -1171,21 +1173,19 @@
         .btn-ghost:hover { background: var(--secondary); color: var(--fg); }
         .btn-success {
             background: var(--success); color: var(--success-fg);
-            box-shadow: 0 4px 14px -4px oklch(0.72 0.2 155 / 0.3);
         }
         .btn-success:hover { background: oklch(0.72 0.2 155 / 0.9); }
         .btn-destructive {
             background: var(--destructive); color: var(--destructive-fg);
-            box-shadow: 0 4px 14px -4px oklch(0.6 0.22 25 / 0.3);
         }
         .btn-destructive:hover { background: oklch(0.6 0.22 25 / 0.9); }
         .btn-icon {
-            width: 2.25rem; height: 2.25rem; padding: 0;
+            width: 1.75rem; height: 1.75rem; padding: 0;
             display: inline-flex; align-items: center; justify-content: center;
         }
         .app-status-row {
-            display: flex; flex-wrap: wrap; align-items: center; gap: 1rem;
-            padding-top: 1rem; border-top: 1px solid var(--border-soft);
+            display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem;
+            padding-top: 0.5rem; border-top: 1px solid var(--border-soft);
         }
         .status-pill {
             display: inline-flex; align-items: center; gap: 0.4rem;
@@ -1198,6 +1198,451 @@
         .status-pill.live        { color: var(--success);    background: oklch(0.72 0.2 155 / 0.1); border-color: oklch(0.72 0.2 155 / 0.2); }
         .status-pill.ready       { color: var(--chart-4);    background: oklch(0.8 0.15 90 / 0.1);  border-color: oklch(0.8 0.15 90 / 0.2); }
         .status-pill.error       { color: var(--destructive);background: oklch(0.6 0.22 25 / 0.1);  border-color: oklch(0.6 0.22 25 / 0.2); }
+
+        /* Trust strip — persistent connection/data status */
+        .trust-strip {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.25rem 0.5rem;
+            background: oklch(0.06 0.015 270 / 0.9);
+            border-radius: calc(var(--radius) - 2px);
+            font: 600 0.625rem var(--font-sans);
+        }
+        .trust-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.35rem;
+            padding: 0.25rem 0.6rem;
+            border-radius: calc(var(--radius) - 4px);
+            border: 1px solid;
+            transition: all 0.3s ease;
+        }
+        .trust-badge .dot {
+            width: 6px; height: 6px;
+            border-radius: 50%;
+        }
+        .trust-badge.live {
+            color: var(--success);
+            background: oklch(0.72 0.2 155 / 0.12);
+            border-color: oklch(0.72 0.2 155 / 0.3);
+        }
+        .trust-badge.live .dot {
+            background: var(--success);
+            box-shadow: 0 0 6px var(--success);
+            animation: pulse-glow 2s ease-in-out infinite;
+        }
+        .trust-badge.stale {
+            color: var(--warning);
+            background: oklch(0.82 0.16 85 / 0.12);
+            border-color: oklch(0.82 0.16 85 / 0.3);
+        }
+        .trust-badge.stale .dot {
+            background: var(--warning);
+        }
+        .trust-badge.offline {
+            color: var(--destructive);
+            background: oklch(0.6 0.22 25 / 0.12);
+            border-color: oklch(0.6 0.22 25 / 0.3);
+        }
+        .trust-badge.offline .dot {
+            background: var(--destructive);
+        }
+        .trust-asof {
+            color: var(--muted-fg);
+            font: 500 0.625rem var(--font-mono);
+            text-transform: none;
+            letter-spacing: 0;
+        }
+        .trust-divider {
+            width: 1px;
+            height: 1rem;
+            background: var(--border-soft);
+            margin: 0 0.25rem;
+        }
+        .trust-sub {
+            font: 500 0.625rem var(--font-sans);
+            color: var(--muted-fg);
+            padding: 0.2rem 0.4rem;
+            border-radius: calc(var(--radius) - 4px);
+            background: oklch(0.12 0.01 270 / 0.5);
+            transition: all 0.3s;
+        }
+        .trust-sub.connected { color: var(--success); background: oklch(0.72 0.2 155 / 0.1); }
+        .trust-sub.error { color: var(--destructive); background: oklch(0.6 0.22 25 / 0.1); }
+        .trust-badge.offline ~ .trust-sub { opacity: 0.5; }
+
+        /* Live Pulse — elevated commentary/decision stream */
+        .pulse-header {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            margin-bottom: 0.75rem;
+        }
+        .pulse-header h2 {
+            margin: 0;
+            font: 700 1rem var(--font-sans);
+            color: var(--fg);
+        }
+        .pulse-header .pulse-count {
+            font: 600 0.625rem var(--font-mono);
+            color: var(--muted-fg);
+            background: oklch(0.18 0.01 270);
+            padding: 0.2rem 0.5rem;
+            border-radius: calc(var(--radius) - 4px);
+        }
+
+        /* Pulse empty state — calm institutional placeholder */
+        .pulse-empty {
+            display: none;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 3rem 1.5rem;
+            text-align: center;
+            color: var(--muted-fg);
+        }
+        .pulse-empty.visible { display: flex; }
+        .pulse-empty-icon {
+            width: 2.5rem;
+            height: 2.5rem;
+            margin-bottom: 1rem;
+            border-radius: 50%;
+            background: oklch(0.14 0.01 270);
+            position: relative;
+        }
+        .pulse-empty-icon::before {
+            content: '';
+            position: absolute;
+            inset: 0.5rem;
+            border-radius: 50%;
+            border: 2px solid oklch(0.25 0.01 270);
+            border-top-color: var(--muted-fg);
+            animation: pulse-empty-spin 2s linear infinite;
+        }
+        @keyframes pulse-empty-spin {
+            to { transform: rotate(360deg); }
+        }
+        .pulse-empty.offline .pulse-empty-icon::before {
+            animation: none;
+            border-color: oklch(0.25 0.01 270);
+        }
+        .pulse-empty-title {
+            font: 500 0.875rem var(--font-sans);
+            color: oklch(0.65 0 0);
+            margin-bottom: 0.25rem;
+        }
+        .pulse-empty-sub {
+            font: 400 0.75rem var(--font-sans);
+            color: var(--muted-fg);
+        }
+
+        /* Verdict chips: ACT / WAIT / PASS */
+        .verdict-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.25rem;
+            padding: 0.15rem 0.5rem;
+            border-radius: calc(var(--radius) - 4px);
+            font: 700 0.5625rem var(--font-sans);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            border: 1px solid;
+            flex-shrink: 0;
+        }
+        .verdict-chip.act {
+            color: var(--success);
+            background: oklch(0.72 0.2 155 / 0.15);
+            border-color: oklch(0.72 0.2 155 / 0.4);
+        }
+        .verdict-chip.wait {
+            color: var(--warning);
+            background: oklch(0.82 0.16 85 / 0.15);
+            border-color: oklch(0.82 0.16 85 / 0.4);
+        }
+        .verdict-chip.pass {
+            color: var(--muted-fg);
+            background: oklch(0.18 0.01 270);
+            border-color: oklch(0.25 0.01 270);
+        }
+        .verdict-chip.veto {
+            color: var(--destructive);
+            background: oklch(0.6 0.22 25 / 0.15);
+            border-color: oklch(0.6 0.22 25 / 0.4);
+        }
+
+        /* Pulse item elevated styling */
+        .pulse-item {
+            position: relative;
+            cursor: pointer;
+            transition: transform 0.15s ease, box-shadow 0.15s ease;
+        }
+        .pulse-item:hover {
+            transform: translateX(4px);
+            box-shadow: -2px 0 0 var(--accent);
+        }
+        .pulse-item.selected {
+            background: oklch(0.18 0.02 270 / 0.6);
+            box-shadow: -3px 0 0 var(--accent), 0 0 20px -5px oklch(0.65 0.2 200 / 0.3);
+        }
+        .pulse-item .pulse-meta {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            flex-wrap: wrap;
+            margin-bottom: 0.35rem;
+        }
+        .pulse-item .pulse-key-number {
+            font: 700 0.875rem var(--font-mono);
+            color: var(--fg);
+        }
+        .pulse-item .pulse-key-number.positive { color: var(--success); }
+        .pulse-item .pulse-key-number.negative { color: var(--destructive); }
+
+        /* Decision Card Glance Panel — above-the-fold detail view */
+        .glance-panel {
+            position: sticky;
+            top: 0;
+            background: oklch(0.08 0.02 270 / 0.95);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 1rem;
+            margin-bottom: 1rem;
+            display: none;
+            animation: glanceSlide 0.25s ease-out;
+        }
+        @keyframes glanceSlide {
+            from { opacity: 0; transform: translateY(-8px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .glance-panel.visible { display: block; }
+        .glance-header {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 1rem;
+            margin-bottom: 0.75rem;
+        }
+        .glance-header .glance-main {
+            display: flex;
+            flex-direction: column;
+            gap: 0.35rem;
+        }
+        .glance-header .glance-symbol {
+            font: 700 1.25rem var(--font-mono);
+            color: var(--fg);
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        .glance-header .glance-title {
+            font: 500 0.875rem var(--font-sans);
+            color: var(--muted-fg);
+        }
+        .glance-header .glance-close {
+            background: none;
+            border: none;
+            color: var(--muted-fg);
+            cursor: pointer;
+            padding: 0.25rem;
+            border-radius: calc(var(--radius) - 4px);
+            transition: all 0.15s;
+        }
+        .glance-header .glance-close:hover {
+            background: oklch(0.2 0.01 270);
+            color: var(--fg);
+        }
+        .glance-verdict {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            padding: 0.75rem;
+            background: oklch(0.12 0.015 270);
+            border-radius: calc(var(--radius) - 2px);
+            margin-bottom: 0.75rem;
+        }
+        .glance-verdict .verdict-chip {
+            font-size: 0.75rem;
+            padding: 0.25rem 0.75rem;
+        }
+        .glance-verdict .glance-confidence {
+            font: 600 0.8125rem var(--font-mono);
+            color: var(--accent);
+        }
+        .glance-verdict .glance-asof {
+            margin-left: auto;
+            font: 500 0.6875rem var(--font-mono);
+            color: var(--muted-fg);
+        }
+        .glance-thesis {
+            font: 400 0.8125rem var(--font-sans);
+            color: oklch(0.85 0 0);
+            line-height: 1.5;
+            margin-bottom: 0.75rem;
+            white-space: pre-wrap;
+        }
+        .glance-metrics {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+            margin-bottom: 0.75rem;
+        }
+        .glance-metrics .metric {
+            display: flex;
+            flex-direction: column;
+            gap: 0.15rem;
+            padding: 0.5rem 0.75rem;
+            background: oklch(0.14 0.015 270);
+            border-radius: calc(var(--radius) - 4px);
+            min-width: 80px;
+        }
+        .glance-metrics .metric .label {
+            font: 500 0.625rem var(--font-sans);
+            color: var(--muted-fg);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        .glance-metrics .metric .value {
+            font: 600 0.875rem var(--font-mono);
+            color: var(--fg);
+        }
+        .glance-metrics .metric .value.positive { color: var(--success); }
+        .glance-metrics .metric .value.negative { color: var(--destructive); }
+        .glance-risks {
+            padding: 0.5rem 0.75rem;
+            background: oklch(0.6 0.22 25 / 0.08);
+            border: 1px solid oklch(0.6 0.22 25 / 0.2);
+            border-radius: calc(var(--radius) - 4px);
+            font: 400 0.75rem var(--font-sans);
+            color: oklch(0.75 0.15 25);
+        }
+        .glance-risks::before {
+            content: '⚠ ';
+        }
+        .glance-unavailable {
+            font: 500 0.75rem var(--font-sans);
+            color: var(--muted-fg);
+            font-style: italic;
+        }
+
+        /* Portfolio hands-off: long-term unmanaged positions — calm styling */
+        .hands-off-row {
+            position: relative;
+            opacity: 0.85;
+        }
+        .hands-off-row td:first-child::before {
+            content: '';
+            position: absolute;
+            left: 0;
+            top: 0;
+            bottom: 0;
+            width: 2px;
+            background: oklch(0.55 0.08 85);
+            border-radius: 2px 0 0 2px;
+        }
+        .hands-off-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.2rem;
+            padding: 0.1rem 0.35rem;
+            border-radius: calc(var(--radius) - 4px);
+            font: 500 0.5625rem var(--font-sans);
+            color: oklch(0.55 0.08 85);
+            background: oklch(0.16 0.02 85 / 0.4);
+            border: 1px solid oklch(0.55 0.08 85 / 0.2);
+            margin-left: 0.35rem;
+            white-space: nowrap;
+        }
+
+        /* Polish: tighten density, improve co-pilot feel */
+        .commentary-panel {
+            max-width: 540px;
+            padding: 1rem;
+        }
+        .pulse-header {
+            margin-bottom: 0.5rem;
+        }
+        .filter-buttons {
+            margin-bottom: 0.75rem;
+            gap: 0.5rem;
+        }
+        .filter-button {
+            padding: 0.35rem 0.75rem;
+            font-size: 0.6875rem;
+        }
+        #commentary-list .commentary-item {
+            padding: 0.625rem;
+            margin-bottom: 0.375rem;
+        }
+        #commentary-list .commentary-message {
+            font-size: 0.75rem;
+            line-height: 1.4;
+        }
+        #commentary-list .commentary-data {
+            padding: 0.375rem 0.5rem;
+            gap: 0.25rem;
+        }
+        #commentary-list .commentary-data .kv {
+            padding: 0.1rem 0.35rem;
+            font-size: 0.625rem;
+        }
+
+        /* Pulse meta row compact */
+        .pulse-item .pulse-meta {
+            gap: 0.375rem;
+            margin-bottom: 0.25rem;
+        }
+        .pulse-item .pulse-key-number {
+            font-size: 0.75rem;
+        }
+
+        /* Glance panel tighter */
+        .glance-panel {
+            padding: 0.875rem;
+        }
+        .glance-header {
+            margin-bottom: 0.5rem;
+        }
+        .glance-verdict {
+            padding: 0.5rem;
+            margin-bottom: 0.5rem;
+        }
+        .glance-thesis {
+            font-size: 0.75rem;
+            margin-bottom: 0.5rem;
+        }
+        .glance-metrics {
+            gap: 0.375rem;
+            margin-bottom: 0.5rem;
+        }
+        .glance-metrics .metric {
+            padding: 0.375rem 0.5rem;
+            min-width: 70px;
+        }
+        .glance-metrics .metric .label {
+            font-size: 0.5625rem;
+        }
+        .glance-metrics .metric .value {
+            font-size: 0.75rem;
+        }
+
+        /* Mobile responsiveness polish */
+        @media (max-width: 768px) {
+            .commentary-panel {
+                max-width: 100%;
+                border-right: none;
+                border-bottom: 1px solid var(--border);
+            }
+            .trust-strip {
+                flex-wrap: wrap;
+            }
+            .app-status-row {
+                flex-wrap: wrap;
+                gap: 0.5rem;
+            }
+        }
         .uptime-display {
             margin-left: auto;
             font-size: 0.75rem; color: var(--muted-fg);
@@ -1235,10 +1680,10 @@
             display: flex;
             justify-content: center !important;
             align-items: center;
-            gap: 40px;
-            padding: 10px 24px;
-            background: #0a0a0a;
-            border-bottom: 1px solid #1a1a1a;
+            gap: 32px;
+            padding: 6px 16px;
+            background: oklch(0.06 0.01 270);
+            border-bottom: 1px solid var(--border-soft);
             font-family: 'SF Pro Text', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
             font-size: 14px;
             flex-wrap: wrap;
@@ -1337,9 +1782,11 @@
             transition: all 0.4s ease;
             overflow: hidden;
         }
-        .kpi-card:hover { border-color: oklch(0.3 0.02 270 / 0.7); box-shadow: var(--glow-accent); }
-        .kpi-card.success-accent:hover { box-shadow: var(--glow-success); }
-        .kpi-card.warning-accent:hover { box-shadow: var(--glow-destructive); }
+        .kpi-card:hover { border-color: oklch(0.3 0.02 270 / 0.7); box-shadow: 0 0 24px -8px oklch(0.65 0.2 200 / 0.25); }
+        .kpi-card.success-accent:hover { box-shadow: 0 0 24px -8px oklch(0.72 0.2 155 / 0.25); }
+        .kpi-card.warning-accent:hover { box-shadow: 0 0 24px -8px oklch(0.6 0.22 25 / 0.25); }
+        .kpi-card.empty, .chart-card.empty { opacity: 0.7; }
+        .kpi-card.empty:hover, .chart-card.empty:hover { box-shadow: none; transform: none; }
         .kpi-card-head {
             display: flex; align-items: flex-start; justify-content: space-between;
             margin-bottom: 1rem;
@@ -1363,9 +1810,8 @@
         .kpi-trend.up   { background: oklch(0.72 0.2 155 / 0.15); color: var(--success); }
         .kpi-trend.down { background: oklch(0.6 0.22 25 / 0.15);  color: var(--destructive); }
         .kpi-label {
-            font: 500 0.6875rem var(--font-sans);
-            text-transform: uppercase; letter-spacing: 0.15em;
-            color: var(--muted-fg);
+            font: 500 0.75rem var(--font-sans);
+            color: oklch(0.6 0 0);
             margin-bottom: 0.25rem;
         }
         .kpi-value {
@@ -1391,12 +1837,12 @@
            index quotes, to avoid extra API calls.
            ===================================================================== */
         .market-status-strip {
-            display: flex; flex-wrap: wrap; align-items: center; gap: 1.5rem;
-            padding: 0.5rem 1.25rem;
+            display: flex; flex-wrap: wrap; align-items: center; gap: 1rem;
+            padding: 0.35rem 1rem;
             border-bottom: 1px solid var(--border-soft);
-            background: oklch(0.08 0.015 270 / 0.4);
+            background: oklch(0.06 0.01 270 / 0.6);
             font-family: var(--font-sans);
-            font-size: 0.75rem;
+            font-size: 0.6875rem;
         }
         .market-status-strip .session-icon {
             display: inline-flex; align-items: center; gap: 0.5rem;
@@ -1584,17 +2030,16 @@
         .position-badge.badge-simulated { color: var(--chart-4); background: oklch(0.8 0.15 90 / 0.1);   border-color: oklch(0.8 0.15 90 / 0.3); }
 
         /* Modern table styling — overrides existing inline / element styles */
-        #real-positions-table, #simulated-positions-table, #trades-table {
+        #real-positions-table, #simulated-positions-table, #trades-table, #symbol-intel-table {
             width: 100%;
             border-collapse: collapse;
             font: 500 0.8125rem var(--font-sans);
         }
-        #real-positions-table thead th, #simulated-positions-table thead th, #trades-table thead th {
+        #real-positions-table thead th, #simulated-positions-table thead th, #trades-table thead th, #symbol-intel-table thead th {
             text-align: left;
-            padding: 0.625rem 1.25rem;
-            font: 600 0.6875rem var(--font-sans);
-            text-transform: uppercase;
-            letter-spacing: 0.1em;
+            padding: 0.5rem 0.75rem;
+            font: 500 0.6875rem var(--font-sans);
+            color: oklch(0.55 0 0);
             color: var(--muted-fg);
             background: oklch(0.1 0.015 270 / 0.4);
             border: 0;
@@ -2147,8 +2592,8 @@
                     <div class="app-logo">
                         <div class="app-logo-icon" id="app-logo-icon"></div>
                         <div>
-                            <div class="app-logo-title">TradingBot</div>
-                            <div class="app-logo-subtitle">Pro Dashboard</div>
+                            <div class="app-logo-title">Helm</div>
+                            <div class="app-logo-subtitle">Market Co-Pilot</div>
                         </div>
                     </div>
                     <nav class="app-nav glass-subtle" id="app-nav"></nav>
@@ -2200,14 +2645,17 @@
             </div>
 
             <div class="app-status-row">
-                <span style="display:inline-flex;align-items:center;gap:0.5rem">
-                    <span class="pulse-dot"></span>
-                    <span style="font:500 0.75rem var(--font-sans);color:var(--muted-fg)">Bot Active</span>
-                </span>
-                <span style="width:1px;height:1rem;background:var(--border-soft)"></span>
-                <span class="status-pill connected"><span class="lucide-slot" data-icon="shield" data-size="12"></span>Schwab</span>
-                <span class="status-pill live"><span class="lucide-slot" data-icon="wifi" data-size="12"></span>WebSocket</span>
-                <span class="status-pill ready"><span class="lucide-slot" data-icon="cpu" data-size="12"></span>ML Model</span>
+                <!-- Trust strip: single authoritative LIVE / STALE / OFFLINE -->
+                <div class="trust-strip" id="trust-strip">
+                    <span class="trust-badge live" id="trust-badge">
+                        <span class="dot"></span>
+                        <span id="trust-label">LIVE</span>
+                    </span>
+                    <span class="trust-asof" id="trust-asof">as-of —</span>
+                    <span class="trust-divider"></span>
+                    <span class="trust-sub" id="schwab-status" title="Schwab API connection">Schwab</span>
+                    <span class="trust-sub" id="ml-status" title="ML model loaded">ML</span>
+                </div>
                 <span class="uptime-display">
                     <span>Session:</span>
                     <span class="value" id="session-uptime">—</span>
@@ -2267,15 +2715,45 @@
     <!-- Dashboard Tab -->
     <div class="container tab-content active" id="tab-dashboard">
         <div class="commentary-panel">
-            <h2>Live Trading Commentary</h2>
+            <div class="pulse-header">
+                <h2>Live Pulse</h2>
+                <span class="pulse-count" id="pulse-count">0 actions</span>
+            </div>
+
+            <!-- Decision Card Glance Panel -->
+            <div class="glance-panel" id="glance-panel">
+                <div class="glance-header">
+                    <div class="glance-main">
+                        <div class="glance-symbol" id="glance-symbol">—</div>
+                        <div class="glance-title" id="glance-title">Select a decision to view details</div>
+                    </div>
+                    <button class="glance-close" onclick="hideDecisionGlance()" title="Close">
+                        <span class="lucide-slot" data-icon="x" data-size="16"></span>
+                    </button>
+                </div>
+                <div class="glance-verdict">
+                    <span class="verdict-chip" id="glance-verdict-chip">—</span>
+                    <span class="glance-confidence" id="glance-confidence"></span>
+                    <span class="glance-asof" id="glance-asof">—</span>
+                </div>
+                <div class="glance-thesis" id="glance-thesis"></div>
+                <div class="glance-metrics" id="glance-metrics"></div>
+                <div class="glance-risks" id="glance-risks" style="display:none;"></div>
+            </div>
+
             <div class="filter-buttons">
                 <button class="filter-button active" onclick="filterCommentary('all')">All</button>
-                <button class="filter-button" onclick="filterCommentary('decision')">Decisions</button>
-                <button class="filter-button" onclick="filterCommentary('opportunity')">Opportunities</button>
-                <button class="filter-button" onclick="filterCommentary('warning')">Warnings</button>
-                <button class="filter-button" onclick="filterCommentary('technical')">Technical</button>
+                <button class="filter-button" onclick="filterCommentary('act')">ACT</button>
+                <button class="filter-button" onclick="filterCommentary('wait')">WAIT</button>
+                <button class="filter-button" onclick="filterCommentary('pass')">PASS</button>
+                <button class="filter-button" onclick="filterCommentary('warning')">Alerts</button>
             </div>
             <div id="commentary-list"></div>
+            <div class="pulse-empty" id="pulse-empty">
+                <div class="pulse-empty-icon"></div>
+                <div class="pulse-empty-title" id="pulse-empty-title">Scanning for setups</div>
+                <div class="pulse-empty-sub" id="pulse-empty-sub">No actionable opportunities detected</div>
+            </div>
         </div>
         
         <div class="dashboard-panel">
@@ -2325,9 +2803,9 @@
                 <div class="section-title">
                     <span class="accent-bar"></span>
                     <h2>Account Overview</h2>
-                    <span class="live-marker">
-                        <span class="pulse-dot"></span>
-                        Live · Updated just now
+                    <span class="live-marker" id="account-live-marker">
+                        <span class="pulse-dot" id="account-live-dot"></span>
+                        <span id="account-live-text">Live · Updated just now</span>
                     </span>
                 </div>
                 <div class="kpi-grid">
@@ -3378,6 +3856,55 @@
         let wsLastMessageAt = 0;
         let wsHeartbeatTimer = null;
         let wsReconnectAttempt = 0;
+        let wsConnected = false;
+
+        // Trust strip state: LIVE / STALE / OFFLINE
+        // LIVE = WS connected + data received within 10s
+        // STALE = WS connected but no data for 10-45s
+        // OFFLINE = WS disconnected or no data for >45s
+        // v-connection-state-unify-2026-09-11: single source of truth for
+        // trust strip AND Account Overview live-marker
+        let _connectionState = 'offline';
+        function updateTrustStrip() {
+            const badge = document.getElementById('trust-badge');
+            const label = document.getElementById('trust-label');
+            const asof = document.getElementById('trust-asof');
+            const accountDot = document.getElementById('account-live-dot');
+            const accountText = document.getElementById('account-live-text');
+            if (!badge || !label || !asof) return;
+
+            const now = Date.now();
+            const idleMs = wsLastMessageAt > 0 ? now - wsLastMessageAt : Infinity;
+
+            if (!wsConnected || idleMs > 45000) {
+                _connectionState = 'offline';
+                badge.className = 'trust-badge offline';
+                label.textContent = 'OFFLINE';
+                const offlineAsof = wsLastMessageAt > 0
+                    ? `last: ${new Date(wsLastMessageAt).toLocaleTimeString()}`
+                    : 'no data';
+                asof.textContent = offlineAsof;
+                if (accountDot) accountDot.className = 'pulse-dot offline';
+                if (accountText) accountText.textContent = `Offline · ${offlineAsof}`;
+            } else if (idleMs > 10000) {
+                _connectionState = 'stale';
+                badge.className = 'trust-badge stale';
+                label.textContent = 'STALE';
+                const staleAsof = `${Math.round(idleMs / 1000)}s ago`;
+                asof.textContent = staleAsof;
+                if (accountDot) accountDot.className = 'pulse-dot stale';
+                if (accountText) accountText.textContent = `Stale · ${staleAsof}`;
+            } else {
+                _connectionState = 'live';
+                badge.className = 'trust-badge live';
+                label.textContent = 'LIVE';
+                asof.textContent = 'as-of now';
+                if (accountDot) accountDot.className = 'pulse-dot';
+                if (accountText) accountText.textContent = 'Live · Updated just now';
+            }
+            if (typeof updatePulseEmptyState === 'function') updatePulseEmptyState();
+        }
+        setInterval(updateTrustStrip, 1000);
 
         function connectWebSocket() {
             const wsToken = window.TRADING_API_KEY ? `?token=${window.TRADING_API_KEY}` : '';
@@ -3389,6 +3916,8 @@
                 console.log('WebSocket connected');
                 wsLastMessageAt = Date.now();
                 wsReconnectAttempt = 0;
+                wsConnected = true;
+                updateTrustStrip();
                 // Heartbeat watcher: every 20s, check liveness + send ping.
                 if (wsHeartbeatTimer) clearInterval(wsHeartbeatTimer);
                 wsHeartbeatTimer = setInterval(() => {
@@ -3408,6 +3937,7 @@
 
             ws.onmessage = (event) => {
                 wsLastMessageAt = Date.now();
+                updateTrustStrip();
                 let data;
                 try { data = JSON.parse(event.data); }
                 catch (e) { console.warn('WS bad JSON:', e); return; }
@@ -3435,6 +3965,8 @@
 
             ws.onclose = () => {
                 console.log('WebSocket disconnected');
+                wsConnected = false;
+                updateTrustStrip();
                 if (wsHeartbeatTimer) {
                     clearInterval(wsHeartbeatTimer);
                     wsHeartbeatTimer = null;
@@ -3470,7 +4002,20 @@
                 allCommentary = allCommentary.slice(0, 100);
             }
             
-            if (currentFilter === 'all' || commentary.type === currentFilter) {
+            // Check if this item passes the current filter
+            const verdict = _getVerdict(commentary);
+            const verdictFilters = ['act', 'wait', 'pass', 'veto'];
+            let shouldShow = currentFilter === 'all';
+            if (!shouldShow && verdictFilters.includes(currentFilter)) {
+                shouldShow = verdict === currentFilter;
+            } else if (!shouldShow && currentFilter === 'warning') {
+                const t = (commentary.type || '').toLowerCase();
+                shouldShow = t === 'warning' || t === 'error' || verdict === 'veto';
+            } else if (!shouldShow) {
+                shouldShow = commentary.type === currentFilter;
+            }
+
+            if (shouldShow) {
                 const list = document.getElementById('commentary-list');
                 const item = createCommentaryItem(commentary);
                 list.insertBefore(item, list.firstChild);
@@ -3479,6 +4024,7 @@
                     list.removeChild(list.lastChild);
                 }
             }
+            updatePulseCount();
         }
         
         // v-ui-commentary-restyle-2026-04-29: rebuilt to match dashboardUI
@@ -3499,9 +4045,57 @@
             signal_generation: 'zap',
             info:            'check-circle',
         };
+
+        // Verdict mapping: ACT/WAIT/PASS based on commentary type and content
+        // ACT = buy/sell signals, executions, opportunities taken
+        // WAIT = unclear conditions, monitoring, analysis ongoing
+        // PASS = veto, blocked, do-nothing decisions, skips
+        function _getVerdict(commentary) {
+            const t = (commentary.type || '').toLowerCase();
+            const title = (commentary.title || '').toLowerCase();
+            const msg = (commentary.message || '').toLowerCase();
+            const combined = title + ' ' + msg;
+
+            // Explicit vetoes/blocks
+            if (combined.includes('veto') || combined.includes('blocked') ||
+                combined.includes('rejected') || combined.includes('skip') ||
+                combined.includes('no action') || combined.includes('do nothing') ||
+                combined.includes('position limit') || combined.includes('correlation')) {
+                return 'veto';
+            }
+            // Warnings are special PASS
+            if (t === 'warning' || t === 'error') {
+                return 'veto';
+            }
+            // Executions and opportunities = ACT
+            if (t === 'opportunity' || t === 'signal_generation') {
+                return 'act';
+            }
+            if (combined.includes('buy') || combined.includes('sell') ||
+                combined.includes('enter') || combined.includes('exit') ||
+                combined.includes('executed') || combined.includes('opened') ||
+                combined.includes('closed') || combined.includes('triggered')) {
+                return 'act';
+            }
+            // Decisions that aren't actions = might be PASS
+            if (t === 'decision') {
+                if (combined.includes('hold') || combined.includes('wait') ||
+                    combined.includes('unclear') || combined.includes('monitoring')) {
+                    return 'wait';
+                }
+                return 'act';
+            }
+            // Analysis / technical / psychology = WAIT
+            if (t === 'technical' || t === 'market_analysis' ||
+                t === 'risk_assessment' || t === 'psychology' ||
+                t === 'fundamental') {
+                return 'wait';
+            }
+            // Default: info/account = PASS
+            return 'pass';
+        }
+
         // Heuristic: should this kv chip be tinted up/down?
-        // Anything with "pnl", "change", "return" in the key, or anything
-        // that's a number with a leading +/- gets sign-tinted.
         function _kvDirection(key, value) {
             const k = (key || '').toLowerCase();
             const isMoney = k.includes('pnl') || k.includes('change') || k.includes('return') || k.includes('p&l');
@@ -3516,35 +4110,76 @@
                 try { return JSON.stringify(value); } catch { return String(value); }
             }
             if (typeof value === 'number') {
-                // Compact formatting: dollars get 2 decimals, percents 2 decimals,
-                // small ints stay int. Defaults to 2-decimal trim.
                 if (Number.isInteger(value)) return String(value);
                 return value.toFixed(2);
             }
             return String(value);
         }
 
+        // Extract key number from commentary data (price, pnl, confidence, etc.)
+        function _extractKeyNumber(commentary) {
+            const data = commentary.data || {};
+            const keys = ['price', 'pnl', 'p&l', 'return', 'change', 'value', 'qty', 'quantity'];
+            for (const k of keys) {
+                for (const [dk, dv] of Object.entries(data)) {
+                    if (dk.toLowerCase().includes(k) && typeof dv === 'number') {
+                        const sign = dv >= 0 ? '+' : '';
+                        if (dk.toLowerCase().includes('pnl') || dk.toLowerCase().includes('return')) {
+                            return { value: `${sign}$${dv.toFixed(2)}`, positive: dv >= 0 };
+                        }
+                        if (dk.toLowerCase().includes('price')) {
+                            return { value: `$${dv.toFixed(2)}`, positive: null };
+                        }
+                        return { value: dv.toFixed(2), positive: null };
+                    }
+                }
+            }
+            if (commentary.confidence != null) {
+                return { value: `${Math.round(commentary.confidence * 100)}%`, positive: null };
+            }
+            return null;
+        }
+
+        let selectedPulseItem = null;
+
         function createCommentaryItem(commentary) {
             const div = document.createElement('div');
             const t = (commentary.type || 'info').toLowerCase();
-            div.className = `commentary-item commentary-${t}`;
+            const verdict = _getVerdict(commentary);
+            div.className = `commentary-item pulse-item commentary-${t}`;
             div.dataset.type = t;
+            div.dataset.verdict = verdict;
 
             const iconName = _COMMENTARY_TYPE_ICONS[t] || 'check-circle';
             const time = new Date(commentary.timestamp).toLocaleTimeString('en-US', {
                 hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true,
             });
+
+            // Facts-before-story: symbol, verdict chip, key number, as-of before narrative
+            const keyNum = _extractKeyNumber(commentary);
+            const keyNumHtml = keyNum
+                ? `<span class="pulse-key-number ${keyNum.positive === true ? 'positive' : (keyNum.positive === false ? 'negative' : '')}">${keyNum.value}</span>`
+                : '';
+
+            const verdictLabels = { act: 'ACT', wait: 'WAIT', pass: 'PASS', veto: 'VETO' };
+            const verdictChip = `<span class="verdict-chip ${verdict}">${verdictLabels[verdict] || 'INFO'}</span>`;
+
             const symbolPill = commentary.symbol
                 ? `<span class="commentary-symbol-pill" data-chart-symbol="${escapeHtml(commentary.symbol)}" style="cursor:pointer;" title="Click to chart ${escapeHtml(commentary.symbol)}">${escapeHtml(commentary.symbol)}</span>`
                 : '';
 
             let html = `
+                <div class="pulse-meta">
+                    ${symbolPill}
+                    ${verdictChip}
+                    ${keyNumHtml}
+                    <span class="commentary-time">${lucide('clock', 10)}${time}</span>
+                </div>
                 <div class="commentary-header">
                     <div class="commentary-title-row">
                         <span class="commentary-type-badge commentary-${t}">${lucide(iconName, 12)}</span>
-                        <span class="commentary-title">${escapeHtml(commentary.title || '')}${symbolPill}</span>
+                        <span class="commentary-title">${escapeHtml(commentary.title || '')}</span>
                     </div>
-                    <span class="commentary-time">${lucide('clock', 11)}${time}</span>
                 </div>
             `;
             if (commentary.message) {
@@ -3574,7 +4209,158 @@
             }
 
             div.innerHTML = html;
+
+            // Click to select and show glance panel
+            div.addEventListener('click', () => selectPulseItem(div, commentary));
+
             return div;
+        }
+
+        function selectPulseItem(element, commentary) {
+            document.querySelectorAll('.pulse-item.selected').forEach(el => el.classList.remove('selected'));
+            element.classList.add('selected');
+            selectedPulseItem = commentary;
+            showDecisionGlance(commentary);
+        }
+
+        function updatePulseCount() {
+            const countEl = document.getElementById('pulse-count');
+            const emptyEl = document.getElementById('pulse-empty');
+            const listEl = document.getElementById('commentary-list');
+            if (countEl) {
+                const actCount = allCommentary.filter(c => _getVerdict(c) === 'act').length;
+                countEl.textContent = `${actCount} actions`;
+            }
+            if (emptyEl && listEl) {
+                const hasItems = listEl.children.length > 0;
+                emptyEl.classList.toggle('visible', !hasItems);
+            }
+        }
+
+        function updatePulseEmptyState() {
+            const emptyEl = document.getElementById('pulse-empty');
+            const titleEl = document.getElementById('pulse-empty-title');
+            const subEl = document.getElementById('pulse-empty-sub');
+            if (!emptyEl || !titleEl || !subEl) return;
+            // v-connection-state-unify-2026-09-11: use shared _connectionState
+            if (_connectionState !== 'offline') {
+                emptyEl.classList.remove('offline');
+                titleEl.textContent = 'Scanning for setups';
+                subEl.textContent = 'No actionable opportunities detected';
+            } else {
+                emptyEl.classList.add('offline');
+                titleEl.textContent = 'Connection offline';
+                subEl.textContent = 'Waiting to reconnect to data stream';
+            }
+        }
+
+        function showDecisionGlance(commentary) {
+            const panel = document.getElementById('glance-panel');
+            if (!panel) return;
+
+            const verdict = _getVerdict(commentary);
+            const verdictLabels = { act: 'ACT', wait: 'WAIT', pass: 'PASS', veto: 'VETO' };
+
+            // Symbol
+            const symbolEl = document.getElementById('glance-symbol');
+            if (symbolEl) {
+                symbolEl.innerHTML = commentary.symbol
+                    ? `<span data-chart-symbol="${escapeHtml(commentary.symbol)}" style="cursor:pointer;">${escapeHtml(commentary.symbol)}</span>`
+                    : '<span style="color:var(--muted-fg)">No symbol</span>';
+            }
+
+            // Title
+            const titleEl = document.getElementById('glance-title');
+            if (titleEl) titleEl.textContent = commentary.title || 'Decision';
+
+            // Verdict chip
+            const verdictChip = document.getElementById('glance-verdict-chip');
+            if (verdictChip) {
+                verdictChip.className = `verdict-chip ${verdict}`;
+                verdictChip.textContent = verdictLabels[verdict] || 'INFO';
+            }
+
+            // Confidence
+            const confEl = document.getElementById('glance-confidence');
+            if (confEl) {
+                if (commentary.confidence != null) {
+                    confEl.textContent = `${Math.round(commentary.confidence * 100)}% confidence`;
+                    confEl.style.display = '';
+                } else {
+                    confEl.style.display = 'none';
+                }
+            }
+
+            // As-of time
+            const asofEl = document.getElementById('glance-asof');
+            if (asofEl) {
+                const time = new Date(commentary.timestamp).toLocaleTimeString('en-US', {
+                    hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true,
+                });
+                asofEl.textContent = `as-of ${time}`;
+            }
+
+            // Thesis (message)
+            const thesisEl = document.getElementById('glance-thesis');
+            if (thesisEl) {
+                thesisEl.textContent = commentary.message || '';
+            }
+
+            // Metrics from data
+            const metricsEl = document.getElementById('glance-metrics');
+            if (metricsEl) {
+                const data = commentary.data || {};
+                const entries = Object.entries(data);
+                if (entries.length > 0) {
+                    metricsEl.innerHTML = entries.map(([k, v]) => {
+                        const valStr = _formatKvValue(v);
+                        const dir = _kvDirection(k, v);
+                        return `
+                            <div class="metric">
+                                <span class="label">${escapeHtml(k)}</span>
+                                <span class="value ${dir === 'up' ? 'positive' : (dir === 'down' ? 'negative' : '')}">${escapeHtml(valStr)}</span>
+                            </div>
+                        `;
+                    }).join('');
+                    metricsEl.style.display = '';
+                } else {
+                    metricsEl.innerHTML = '<span class="glance-unavailable">No metrics available</span>';
+                    metricsEl.style.display = '';
+                }
+            }
+
+            // Risks (look for risk-related keywords in message or title)
+            const risksEl = document.getElementById('glance-risks');
+            if (risksEl) {
+                const combined = ((commentary.title || '') + ' ' + (commentary.message || '')).toLowerCase();
+                const riskKeywords = ['risk', 'warning', 'caution', 'danger', 'stop', 'limit', 'volatil'];
+                const hasRisk = riskKeywords.some(kw => combined.includes(kw));
+                if (hasRisk && verdict === 'veto') {
+                    risksEl.textContent = commentary.message || 'Risk factor detected';
+                    risksEl.style.display = '';
+                } else {
+                    risksEl.style.display = 'none';
+                }
+            }
+
+            // Show panel
+            panel.classList.add('visible');
+
+            // Render lucide icons in the panel
+            if (typeof lucide === 'function') {
+                panel.querySelectorAll('.lucide-slot').forEach(el => {
+                    const icon = el.dataset.icon;
+                    const size = el.dataset.size || 16;
+                    if (icon) el.innerHTML = lucide(icon, parseInt(size));
+                });
+            }
+        }
+
+        function hideDecisionGlance() {
+            const panel = document.getElementById('glance-panel');
+            if (panel) panel.classList.remove('visible');
+            document.querySelectorAll('.pulse-item.selected').forEach(el => el.classList.remove('selected'));
+            selectedPulseItem = null;
         }
         
         function filterCommentary(filter) {
@@ -3588,13 +4374,27 @@
             const list = document.getElementById('commentary-list');
             list.innerHTML = '';
             
-            const filtered = currentFilter === 'all' 
-                ? allCommentary 
-                : allCommentary.filter(c => c.type === currentFilter);
+            // Support both type and verdict filtering
+            const verdictFilters = ['act', 'wait', 'pass', 'veto'];
+            let filtered;
+            if (currentFilter === 'all') {
+                filtered = allCommentary;
+            } else if (verdictFilters.includes(currentFilter)) {
+                filtered = allCommentary.filter(c => _getVerdict(c) === currentFilter);
+            } else if (currentFilter === 'warning') {
+                // "Alerts" filter = warnings + errors + vetos
+                filtered = allCommentary.filter(c => {
+                    const t = (c.type || '').toLowerCase();
+                    return t === 'warning' || t === 'error' || _getVerdict(c) === 'veto';
+                });
+            } else {
+                filtered = allCommentary.filter(c => c.type === currentFilter);
+            }
             
             filtered.slice(0, 50).forEach(commentary => {
                 list.appendChild(createCommentaryItem(commentary));
             });
+            updatePulseCount();
         }
         
         function updateTradesTable(trades) {
@@ -3837,17 +4637,26 @@
                 }
             }
 
+            // Hands-off symbols: bot must not manage/exit these long-term holds
+            const HANDS_OFF_SYMBOLS = ['MU', 'SNAP', 'SPCX', 'HQGE'];
+
             if (data.real_positions) {
                 const tbody = document.getElementById('real-positions-body');
                 if (data.real_positions.length === 0) {
                     tbody.innerHTML = '<tr><td colspan="10" style="text-align: center; color: #666;">No real positions or Schwab not connected</td></tr>';
                 } else {
-                    tbody.innerHTML = data.real_positions.map(pos => `
-                        <tr data-chart-symbol="${escapeHtml(pos.symbol)}" style="cursor:pointer;">
-                            <td style="font-weight: bold;">
+                    tbody.innerHTML = data.real_positions.map(pos => {
+                        const sym = String(pos.symbol || '').toUpperCase();
+                        const isHandsOff = HANDS_OFF_SYMBOLS.includes(sym);
+                        const handsOffBadge = isHandsOff ? '<span class="hands-off-badge">Hands-Off</span>' : '';
+                        const rowClass = isHandsOff ? 'hands-off-row' : '';
+
+                        return `
+                        <tr data-chart-symbol="${escapeHtml(pos.symbol)}" class="${rowClass}" style="cursor:pointer;">
+                            <td style="font-weight: bold; position: relative;">
                                 <img class="symbol-logo" src="/logos/${escapeHtml(pos.symbol)}"
                                      alt="" onerror="this.style.display='none'">
-                                ${escapeHtml(pos.symbol)}
+                                ${escapeHtml(pos.symbol)}${handsOffBadge}
                             </td>
                             <td>${pos.quantity > 0 ? pos.quantity : Math.abs(pos.quantity)} ${pos.quantity < 0 ? '(short)' : ''}</td>
                             <td>$${pos.entry_price.toFixed(2)}</td>
@@ -3865,26 +4674,25 @@
                             <td>
                                 <input type="checkbox"
                                     class="long-term-checkbox"
-                                    ${pos.is_long_term ? 'checked' : ''}
-                                    onchange="toggleLongTerm('${escapeHtml(pos.symbol)}')"
-                                    title="Mark as long-term hold">
+                                    ${pos.is_long_term || isHandsOff ? 'checked' : ''}
+                                    ${isHandsOff ? 'disabled title="Hands-off position — cannot modify"' : `onchange="toggleLongTerm('${escapeHtml(pos.symbol)}')" title="Mark as long-term hold"`}>
                             </td>
                             <td>
                                 <input type="checkbox"
                                     class="managed-by-bot-checkbox"
-                                    ${pos.managed_by_bot ? 'checked' : ''}
-                                    onchange="toggleManagedByBot('${escapeHtml(pos.symbol)}', this.checked)"
-                                    title="Bot manages this position (stops, trail, breakeven, exits)">
+                                    ${pos.managed_by_bot && !isHandsOff ? 'checked' : ''}
+                                    ${isHandsOff ? 'disabled title="Hands-off position — bot cannot manage"' : `onchange="toggleManagedByBot('${escapeHtml(pos.symbol)}', this.checked)" title="Bot manages this position (stops, trail, breakeven, exits)"`}>
                             </td>
                             <td>
                                 <button class="close-button"
-                                    ${pos.is_long_term ? 'disabled' : ''}
-                                    onclick="requestClosePosition('${escapeHtml(pos.symbol)}', 'real')">
+                                    ${pos.is_long_term || isHandsOff ? 'disabled' : ''}
+                                    onclick="requestClosePosition('${escapeHtml(pos.symbol)}', 'real')"
+                                    ${isHandsOff ? 'title="Hands-off position — cannot close"' : ''}>
                                     Close
                                 </button>
                             </td>
                         </tr>
-                    `).join('');
+                    `;}).join('');
                     // v-row-flash-on-rerender-2026-05-04: rerender just baked
                     // the latest price into every cell, so paintLivePrices
                     // can't detect a change. Flash the row here instead.
@@ -5302,6 +6110,9 @@
 
         // Connect on load
         connectWebSocket();
+        // v-connection-state-unify-2026-09-11: init pulse empty state on load
+        updatePulseCount();
+        updatePulseEmptyState();
         // Load initial sentiment data
         refreshSentiment();
     </script>

@@ -347,6 +347,85 @@ class Config:
     def CONFIRM_THRESHOLD_PERCENT(self):
         return self.manager.get('order_management.confirm_threshold_percent', 5)
 
+    # ──────────────────────────────────────────────────────────────────
+    # v-autonomy-profile-2026-09-08: autonomy profiles for supervised
+    # vs autonomous operation. The 'supervised' profile (default) requires
+    # UI confirmation for exits and times out to deny. The 'autonomous_live'
+    # profile either disables confirmation entirely or uses fail-open
+    # timeout (execute the close if UI doesn't respond).
+    # ──────────────────────────────────────────────────────────────────
+
+    @property
+    def TRADING_PROFILE(self) -> str:
+        """Operating profile: 'supervised' (default) or 'autonomous_live'.
+        
+        Profiles control:
+          - require_close_confirmation behavior
+          - confirmation_timeout_action (deny vs execute)
+          - flatten_on_circuit behavior
+        
+        Set via environment variable TRADING_PROFILE or config file.
+        """
+        env_profile = os.getenv("TRADING_PROFILE")
+        if env_profile:
+            return env_profile.lower()
+        return self.manager.get('profile', 'supervised').lower()
+
+    @property
+    def CONFIRMATION_TIMEOUT_SEC(self) -> float:
+        """Timeout in seconds for close confirmation requests.
+        
+        Default 30s. After this timeout, the action is determined by
+        CONFIRMATION_TIMEOUT_ACTION.
+        """
+        return float(self.manager.get('order_management.confirmation_timeout_sec', 30.0))
+
+    @property
+    def CONFIRMATION_TIMEOUT_ACTION(self) -> str:
+        """Action when close confirmation times out: 'deny' or 'execute'.
+        
+        - 'deny' (default for supervised): block the close, position stays open
+        - 'execute' (autonomous_live): fail-open, execute the close
+        
+        For autonomous operation, 'execute' prevents the scenario where a
+        losing position stays open because the operator wasn't watching.
+        """
+        profile = self.TRADING_PROFILE
+        if profile == 'autonomous_live':
+            default = 'execute'
+        else:
+            default = 'deny'
+        return self.manager.get('order_management.confirmation_timeout_action', default).lower()
+
+    @property
+    def FLATTEN_ON_CIRCUIT(self) -> bool:
+        """Close all positions when the daily-loss circuit trips.
+        
+        Default False for supervised profile (alert only).
+        Recommended True for autonomous_live profile to prevent
+        unattended bleed-out.
+        
+        WARNING: When enabled, the bot will close ALL bot-managed
+        positions when the circuit trips. This is aggressive but
+        prevents catastrophic loss from an unmonitored runaway.
+        """
+        profile = self.TRADING_PROFILE
+        if profile == 'autonomous_live':
+            default = True
+        else:
+            default = False
+        return bool(self.manager.get('trading.flatten_on_circuit', default))
+
+    @property
+    def NEWS_LOOP_SEC(self) -> float:
+        """Cadence of the news_loop that refreshes the NewsBus.
+        
+        Default 20s — fast enough to catch breaking news but not so
+        fast as to hammer free RSS feeds. Adjust based on watchlist
+        size and API rate limits.
+        """
+        return float(self.manager.get('trading.news_loop_sec', 20.0))
+
     @property
     def ML_PREDICTION_ENABLED(self):
         return self.manager.get('trading.ml_prediction_enabled', True)
@@ -539,6 +618,91 @@ class Config:
         Default True — the cost of running verification is one HTTP
         call; the benefit is observability. Set False to silence."""
         return bool(self.manager.get('trading.news_verifier_advisory', True))
+
+    # ── v-newsbus-gates-2026-09-09 ────────────────────────────────────
+    # News thesis gates: deterministic sizing based on freshness,
+    # source tier, and corroboration. See ARCHITECTURE.md §NewsBus.
+
+    @property
+    def NEWS_GATE_MAX_AGE_SEC(self) -> float:
+        """Maximum age in seconds for news to be considered fresh.
+        
+        News older than this vetoes the trade. Default 1800 (30 min).
+        Context: 30-min window is aggressive but appropriate for
+        intraday news plays. For swing trades or EOD entries, consider
+        raising to 3600-7200 (1-2h).
+        """
+        return float(self.manager.get('trading.news_gate_max_age_sec', 1800.0))
+
+    @property
+    def NEWS_GATE_SOURCE_TIER_FLOOR(self) -> int:
+        """Minimum acceptable source tier (1=best, 3=worst).
+        
+        Sources with tier > this are rejected.
+          tier 1: Yahoo Finance (curated, API-backed)
+          tier 2: Google News (aggregated, decent latency)
+          tier 3: MarketWatch scrape (unreliable, may lag)
+        
+        Default 2 — allows tiers 1-2; rejects scrape-only sources.
+        Set to 3 to allow all sources (not recommended for live).
+        """
+        return int(self.manager.get('trading.news_gate_source_tier_floor', 2))
+
+    @property
+    def NEWS_GATE_MIN_CORROBORATION(self) -> int:
+        """Minimum distinct sources for full position size.
+        
+        1 fresh source → 0.5× size (reduced confidence).
+        2+ fresh sources → 1.0× size (corroborated thesis).
+        
+        Default 2. Set to 1 to allow full size on single-source news
+        (increases risk of trading on rumor/error).
+        """
+        return int(self.manager.get('trading.news_gate_min_corroboration', 2))
+
+    @property
+    def NEWS_GATE_SINGLE_SOURCE_MULTIPLIER(self) -> float:
+        """Size multiplier for single-source fresh news.
+        
+        When only one source corroborates the thesis, we reduce
+        position size as a hedge against single-source error.
+        Default 0.5 (half size). Range 0.25-0.75 recommended.
+        """
+        return float(self.manager.get('trading.news_gate_single_source_multiplier', 0.5))
+
+    @property
+    def ENABLE_NEWS_THESIS_EXIT(self) -> bool:
+        """Enable thesis-break exit when news flips against position.
+        
+        v-newsbus-gates-2026-09-09: when enabled, open positions are
+        monitored for news that contradicts the entry thesis. If fresh
+        news sentiment flips direction (bullish→bearish for longs,
+        vice versa), the position is flagged for early exit.
+        
+        Default False — enable after validating on shadow data.
+        """
+        return bool(self.manager.get('trading.enable_news_thesis_exit', False))
+
+    @property
+    def NEWS_THESIS_EXIT_SENTIMENT_FLIP(self) -> float:
+        """Sentiment threshold for thesis-break detection.
+        
+        For a long position entered on sentiment +0.40, a flip is
+        detected when fresh sentiment falls below -NEWS_THESIS_EXIT_SENTIMENT_FLIP.
+        Default 0.15 — relatively tight; catches genuine reversals
+        without exiting on neutral noise.
+        """
+        return float(self.manager.get('trading.news_thesis_exit_sentiment_flip', 0.15))
+
+    # ── ENABLE_NEWS_VERIFIER promotion criteria ──────────────────────
+    # Research-approved floors for enabling the news verifier in live.
+    # See ARCHITECTURE.md §9 for full promotion criteria.
+    #
+    # Stage A: n≥80 verified signals, PF≥1.30
+    # Stage B: n≥200 verified signals, PF≥1.50
+    #
+    # ENABLE_NEWS_VERIFIER remains False by default until Stage B
+    # metrics are met in walk-forward validation.
 
     # ── v-side-classifier-config-2026-05-13 ───────────────────────────
     # Side-classifier subsystem flags. All default OFF so the live
@@ -791,6 +955,15 @@ class Config:
         within ~1s of breach. Lowering helps responsiveness; raising
         saves CPU. Below 0.5s noisy, above 3s defeats the purpose."""
         return float(self.manager.get('trading.position_loop_sec', 1.0))
+
+    @property
+    def ORDER_MONITOR_INTERVAL_SEC(self) -> float:
+        """v-order-monitor-2026-09-10: cadence of the WORKING bracket/OCO
+        order monitor loop. Polls Schwab for fills/cancels/rejects on
+        bot-managed brackets and syncs Position state. 5s default balances
+        responsiveness vs API rate. Lower only if bracket fills frequently
+        lag >5s behind market."""
+        return float(self.manager.get('trading.order_monitor_interval_sec', 5.0))
 
     @property
     def QUOTE_REFRESH_SEC(self) -> float:
@@ -1304,6 +1477,633 @@ class Config:
         0.02 = aggressive. Anything above 0.02 is a professional-trader
         territory where a bad streak can deplete equity fast."""
         return self.manager.get('trading.risk_per_trade_pct', 0.015)
+
+    # ──────────────────────────────────────────────────────────────────
+    # v-day-trade-momentum-desk-2026-09-10: supervised day-trade momentum
+    # for Yahoo day_gainers/losers/most-active movers.
+    #
+    # Operator request: take profitable intraday trades on liquid movers
+    # without sitting frozen behind stacked skip gates. This desk is
+    # separate from the existing mean-rev + news strategies.
+    # ──────────────────────────────────────────────────────────────────
+
+    @property
+    def ENABLE_DAY_TRADE_MOMENTUM(self) -> bool:
+        """Enable the day-trade momentum strategy lane.
+        
+        When True, the DayTradeMomentumStrategy is activated for symbols
+        flagged as 'movers' (Yahoo day_gainers/losers/most-active + watchlist).
+        Entry logic: relative strength vs SPY, volume surge, pullback-or-
+        breakout confirmation, defined ATR stop, trail/time stop.
+        
+        Size is smaller than swing (via DAY_TRADE_SIZE_MULTIPLIER), respects
+        max_positions. Closes supervised unless TRADING_PROFILE=autonomous_live.
+        
+        Default True. Set trading.enable_day_trade_momentum: false to disable.
+        """
+        env_val = os.getenv("ENABLE_DAY_TRADE_MOMENTUM")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.enable_day_trade_momentum', True))
+
+    @property
+    def DAY_TRADE_LIVE_ENTRIES_ENABLED(self) -> bool:
+        """v-pause-live-daytrade-2026-09-10: master switch for LIVE day-trade
+        momentum entries.
+        
+        When False (default), the day-trade momentum strategy generates
+        signals for sim/commentary/shadow analysis but BLOCKS actual LIVE
+        order placement. This is the immediate pause requested by Hari on
+        2026-09-10 product call.
+        
+        MUST KEEP intact (these work regardless of this flag):
+          - Hard loss circuits / ENABLE_BOT_ONLY_PNL_CIRCUIT
+          - Flatten / software exits / order_monitor / OCO / bootstrap
+            for EXISTING bot day-trades
+          - LT hands-off forever: MU, SNAP, HQGE, SPCX (is_long_term flag)
+        
+        The flag does NOT flip autonomous_live. It only blocks NEW live
+        entries via day_trade_momentum lane.
+        
+        Promotion to True requires Stage-A validation:
+          n>=150 trades, >=10 sessions, PF>=1.30, WR>=48%, exp>=+0.05R,
+          DD<=6%, max losing day<=2R.
+        
+        Default False. Set via env DAY_TRADE_LIVE_ENTRIES_ENABLED=1 or
+        trading.day_trade_live_entries_enabled: true in Config.yaml.
+        """
+        env_val = os.getenv("DAY_TRADE_LIVE_ENTRIES_ENABLED")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.day_trade_live_entries_enabled', False))
+
+    @property
+    def ENABLE_MOVER_QUALITY_RELAX(self) -> bool:
+        """Relax quality filters for mover-sourced symbols.
+        
+        When True, symbols from Yahoo day_gainers/day_losers/most_active
+        bypass the SMA50/RS quality filters. They still respect:
+          - Leveraged ETF blocklist (hard block)
+          - MIN_MOVER_PRICE floor ($5 default)
+          - MIN_MOVER_VOLUME floor (500k default)
+          - Spread filter (1% max)
+        
+        Rationale: day-gainers ARE the momentum names; requiring them to
+        also be above SMA50 with positive RS is circular — they're moving
+        BECAUSE something changed today. Quality-for-swing is wrong for
+        intraday momentum.
+        
+        Default True. Set trading.enable_mover_quality_relax: false to
+        apply full quality filters to movers.
+        """
+        env_val = os.getenv("ENABLE_MOVER_QUALITY_RELAX")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.enable_mover_quality_relax', True))
+
+    @property
+    def MIN_MOVER_PRICE(self) -> float:
+        """Minimum price floor for mover-sourced symbols.
+        
+        Even with quality relax, reject sub-$5 names to avoid illiquid
+        penny stocks that appear in Yahoo screeners. The bot's ATR-based
+        sizing breaks down below $5 (1.5×ATR can be 20%+ of price).
+        
+        Default 5.0. Set trading.min_mover_price to adjust.
+        """
+        return float(self.manager.get('trading.min_mover_price', 5.0))
+
+    @property
+    def MIN_MOVER_VOLUME(self) -> int:
+        """Minimum volume floor for mover-sourced symbols.
+        
+        Movers with <500k daily volume are too thin for intraday trades.
+        The bot's typical position ($5-15k notional) needs liquidity to
+        enter/exit without moving the tape.
+        
+        Default 500000. Set trading.min_mover_volume to adjust.
+        """
+        return int(self.manager.get('trading.min_mover_volume', 500000))
+
+    @property
+    def DAY_TRADE_SIZE_MULTIPLIER(self) -> float:
+        """Size multiplier for day-trade momentum entries.
+        
+        Applied on top of Kelly sizing. Day trades have shorter holding
+        periods and more frequent trades; smaller size per trade keeps
+        the portfolio heat manageable.
+        
+        Default 0.5 (half-size vs swing). Set trading.day_trade_size_multiplier
+        to adjust.
+        """
+        return float(self.manager.get('trading.day_trade_size_multiplier', 0.5))
+
+    @property
+    def DAY_TRADE_FLATTEN_HOUR(self) -> int:
+        """Hour (ET) by which day-trade positions should be flattened.
+        
+        Day-trade momentum is intraday by definition. Positions entered
+        via this lane should close by EOD to avoid overnight gap risk.
+        The exit manager will start trailing more aggressively after
+        this hour and force-close by LATE_ENTRY_CUTOFF.
+        
+        Default 15 (3 PM ET). Set trading.day_trade_flatten_hour to adjust.
+        """
+        return int(self.manager.get('trading.day_trade_flatten_hour', 15))
+
+    @property
+    def MOMENTUM_RISK_OFF_SIZE_MULT(self) -> float:
+        """Size multiplier for momentum lane when market context is risk_off.
+        
+        v-market-context-size-not-freeze-2026-09-10: instead of hard-blocking
+        momentum longs on risk_off, reduce size. This lets the desk take
+        high-quality setups even in adverse conditions, just smaller.
+        
+        Default 0.25 (quarter-size). Set trading.momentum_risk_off_size_mult.
+        """
+        return float(self.manager.get('trading.momentum_risk_off_size_mult', 0.25))
+
+    @property
+    def MOMENTUM_OPENING_30_SIZE_MULT(self) -> float:
+        """Size multiplier for momentum lane during opening 30 minutes.
+        
+        Opening 30 is volatile chop. For momentum/breakout, we reduce size
+        rather than blocking entirely — first 30 min breakouts CAN be valid,
+        just riskier.
+        
+        Default 0.5 (half-size). Set trading.momentum_opening_30_size_mult.
+        """
+        return float(self.manager.get('trading.momentum_opening_30_size_mult', 0.5))
+
+    @property
+    def MOMENTUM_EXTREME_BLOCK_SPY_PCT(self) -> float:
+        """SPY down % threshold for hard-blocking momentum longs.
+        
+        When SPY is down MORE than this AND VIX spikes (see below), the
+        desk hard-blocks new longs entirely. This is the circuit breaker
+        for extreme risk-off conditions.
+        
+        Default -1.5 (SPY down 1.5%+). Set trading.momentum_extreme_block_spy_pct.
+        """
+        return float(self.manager.get('trading.momentum_extreme_block_spy_pct', -1.5))
+
+    @property
+    def MOMENTUM_EXTREME_BLOCK_VIX_SPIKE(self) -> float:
+        """VIX spike % threshold for hard-blocking momentum longs.
+        
+        When VIX is UP more than this AND SPY is down past the threshold,
+        hard-block new momentum longs. This catches panic days.
+        
+        Default 15.0 (VIX up 15%+). Set trading.momentum_extreme_block_vix_spike.
+        """
+        return float(self.manager.get('trading.momentum_extreme_block_vix_spike', 15.0))
+
+    @property
+    def MOMENTUM_MIN_RS_VS_SPY(self) -> float:
+        """Minimum relative strength vs SPY for momentum entries.
+        
+        Momentum entries require the symbol to be outperforming SPY on the
+        day. This is the minimum delta (symbol_change_pct - spy_change_pct).
+        
+        Default 0.5 (symbol at least 0.5% above SPY). Set trading.momentum_min_rs_vs_spy.
+        """
+        return float(self.manager.get('trading.momentum_min_rs_vs_spy', 0.5))
+
+    @property
+    def MOMENTUM_MIN_VOLUME_RATIO(self) -> float:
+        """Minimum volume ratio (vs 20-bar avg) for momentum entries.
+        
+        Volume surge confirms institutional interest. Breakouts without
+        volume are more likely to fail.
+        
+        Default 1.5 (50% above average). Set trading.momentum_min_volume_ratio.
+        """
+        return float(self.manager.get('trading.momentum_min_volume_ratio', 1.5))
+
+    @property
+    def MOMENTUM_NEWS_OPTIONAL(self) -> bool:
+        """Whether news is optional for momentum entries.
+        
+        When True (default), the momentum lane does NOT require fresh news
+        articles. News is an optional confirmation that can bump size, not
+        a gate that vetoes entries.
+        
+        This differs from the news strategy which requires fresh articles.
+        Momentum is price-action-driven, not news-driven.
+        
+        Default True. Set trading.momentum_news_optional: false to require news.
+        """
+        return bool(self.manager.get('trading.momentum_news_optional', True))
+
+    # ──────────────────────────────────────────────────────────────────
+    # v-momentum-stage-a-2026-09-10: Stage-A promotion criteria for the
+    # day-trade momentum desk. These are RESEARCH-LOCKED floors — do NOT
+    # relax without walk-forward validation evidence.
+    #
+    # Promote to full capital allocation ONLY when ALL pass:
+    #   n ≥ 150 closed day-trades across ≥ 10 sessions
+    #   PF ≥ 1.30 after fees + slippage
+    #   Win rate ≥ 48% (scratches out of rate but counted in n)
+    #   Expectancy ≥ +0.05 R AND positive small $/day edge
+    #   Max DD ≤ 6% of allocated
+    #   Max losing day ≤ 2.0 R
+    #   Throughput 3-12/session is product report only (not a gate)
+    #
+    # HARD VETO for promotion:
+    #   - Overnight holds without explicit flag
+    #   - Capital scale before Stage A green
+    # ──────────────────────────────────────────────────────────────────
+
+    @property
+    def MOMENTUM_STAGE_A_MIN_TRADES(self) -> int:
+        """Minimum closed day-trades for Stage-A promotion.
+        
+        RESEARCH-LOCKED: n ≥ 150 closed trades required before promoting
+        to full capital. This ensures statistical significance.
+        
+        Default 150. DO NOT LOWER without walk-forward evidence.
+        """
+        return int(self.manager.get('trading.momentum_stage_a_min_trades', 150))
+
+    @property
+    def MOMENTUM_STAGE_A_MIN_SESSIONS(self) -> int:
+        """Minimum trading sessions for Stage-A promotion.
+        
+        RESEARCH-LOCKED: ≥ 10 sessions ensures the strategy has been
+        tested across different market conditions, not just one regime.
+        
+        Default 10. DO NOT LOWER without walk-forward evidence.
+        """
+        return int(self.manager.get('trading.momentum_stage_a_min_sessions', 10))
+
+    @property
+    def MOMENTUM_STAGE_A_MIN_PF(self) -> float:
+        """Minimum Profit Factor for Stage-A promotion.
+        
+        RESEARCH-LOCKED: PF ≥ 1.30 after fees + slippage. A PF below this
+        means the strategy is barely profitable and risky to scale.
+        
+        Default 1.30. DO NOT LOWER without walk-forward evidence.
+        """
+        return float(self.manager.get('trading.momentum_stage_a_min_pf', 1.30))
+
+    @property
+    def MOMENTUM_STAGE_A_MIN_WIN_RATE(self) -> float:
+        """Minimum win rate for Stage-A promotion.
+        
+        RESEARCH-LOCKED: Win rate ≥ 48%. Scratches (breakeven exits) are
+        counted OUT of win rate but IN the trade count n.
+        
+        At 2:1 R:R, 48% win rate gives expectancy ~0.44 R/trade.
+        
+        Default 0.48. DO NOT LOWER without walk-forward evidence.
+        """
+        return float(self.manager.get('trading.momentum_stage_a_min_win_rate', 0.48))
+
+    @property
+    def MOMENTUM_STAGE_A_MIN_EXPECTANCY_R(self) -> float:
+        """Minimum expectancy in R-multiples for Stage-A promotion.
+        
+        RESEARCH-LOCKED: Expectancy ≥ +0.05 R per trade AND positive
+        small $/day edge. This ensures the strategy has edge even after
+        accounting for variance.
+        
+        Default 0.05. DO NOT LOWER without walk-forward evidence.
+        """
+        return float(self.manager.get('trading.momentum_stage_a_min_expectancy_r', 0.05))
+
+    @property
+    def MOMENTUM_STAGE_A_MAX_DD_PCT(self) -> float:
+        """Maximum drawdown % for Stage-A promotion.
+        
+        RESEARCH-LOCKED: Max DD ≤ 6% of allocated capital during the
+        Stage-A evaluation period. Higher DD indicates poor risk management
+        or strategy flaws.
+        
+        Default 0.06 (6%). DO NOT RAISE without walk-forward evidence.
+        """
+        return float(self.manager.get('trading.momentum_stage_a_max_dd_pct', 0.06))
+
+    @property
+    def MOMENTUM_STAGE_A_MAX_LOSING_DAY_R(self) -> float:
+        """Maximum losing day in R-multiples for Stage-A promotion.
+        
+        RESEARCH-LOCKED: Max losing day ≤ 2.0 R. A single day losing more
+        than 2R indicates poor position sizing or lack of circuit breakers.
+        
+        Default 2.0. DO NOT RAISE without walk-forward evidence.
+        """
+        return float(self.manager.get('trading.momentum_stage_a_max_losing_day_r', 2.0))
+
+    @property
+    def MOMENTUM_STAGE_A_THROUGHPUT_MIN(self) -> int:
+        """Minimum trades per session for Stage-A (PRODUCT REPORT ONLY).
+        
+        NOT A PROMOTION GATE — throughput 3-12/session is informational.
+        Too few trades = desk is too selective; too many = overtrading.
+        
+        Default 3. This is for reporting, not gating.
+        """
+        return int(self.manager.get('trading.momentum_stage_a_throughput_min', 3))
+
+    @property
+    def MOMENTUM_STAGE_A_THROUGHPUT_MAX(self) -> int:
+        """Maximum trades per session for Stage-A (PRODUCT REPORT ONLY).
+        
+        NOT A PROMOTION GATE — throughput 3-12/session is informational.
+        
+        Default 12. This is for reporting, not gating.
+        """
+        return int(self.manager.get('trading.momentum_stage_a_throughput_max', 12))
+
+    @property
+    def MOMENTUM_ALLOW_OVERNIGHT_HOLD(self) -> bool:
+        """Allow overnight holds for day-trade momentum positions.
+        
+        HARD VETO FOR PROMOTION: Overnight holds without this flag
+        explicitly set to True will block Stage-A promotion.
+        
+        Default False. Day-trade positions should flatten by EOD.
+        Set True ONLY if you explicitly want swing-style holds.
+        """
+        return bool(self.manager.get('trading.momentum_allow_overnight_hold', False))
+
+    @property
+    def MOMENTUM_STAGE_A_PROMOTED(self) -> bool:
+        """Whether the momentum desk has passed Stage-A promotion.
+        
+        HARD VETO: Capital scale before Stage A green is forbidden.
+        This flag should only be set True AFTER all promotion criteria
+        are met and validated by research.
+        
+        Default False. Flip to True only after Stage-A validation.
+        """
+        return bool(self.manager.get('trading.momentum_stage_a_promoted', False))
+
+    # ──────────────────────────────────────────────────────────────────
+    # v-shadow-veto-2026-09-10: shadow (log-only) veto for risky setups.
+    # Instrumentation for later promotion scoring. LIVE Schwab fills only
+    # count for scorecard later — this is shadow first.
+    # ──────────────────────────────────────────────────────────────────
+
+    @property
+    def ENABLE_SHADOW_VETO_CONTINUATION_RISKOFF(self) -> bool:
+        """v-shadow-veto-2026-09-10: shadow veto for continuation pattern
+        when RSI >= 70 AND risk_off regime.
+        
+        When True, the day-trade momentum strategy logs would-be entries
+        that match the dangerous pattern (continuation + RSI>=70 + risk_off)
+        without placing orders. This is instrumentation for later promotion
+        scoring — LIVE Schwab fills only count for scorecard later.
+        
+        Pattern rationale: continuation into overbought on a risk-off day
+        is the classic failed breakout setup (exhaustion gap). Shadow-first
+        to gather evidence before promoting to a hard veto.
+        
+        Default True. Set trading.enable_shadow_veto_continuation_riskoff: false
+        to disable shadow logging.
+        """
+        env_val = os.getenv("ENABLE_SHADOW_VETO_CONTINUATION_RISKOFF")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.enable_shadow_veto_continuation_riskoff', True))
+
+    @property
+    def SHADOW_VETO_RSI_THRESHOLD(self) -> float:
+        """RSI threshold for shadow veto on continuation + risk_off.
+        
+        Continuation entries with RSI >= this AND risk_off regime get
+        shadow-logged (not placed). 70 is the classic overbought level.
+        
+        Default 70.0. Set trading.shadow_veto_rsi_threshold to adjust.
+        """
+        return float(self.manager.get('trading.shadow_veto_rsi_threshold', 70.0))
+
+    # ──────────────────────────────────────────────────────────────────
+    # v-feature-snapshot-config-2026-09-09: decision snapshot feature flags.
+    # Moved from module constants in core/decision_snapshot.py to Config
+    # for runtime configurability via env vars or Config.yaml.
+    # ──────────────────────────────────────────────────────────────────
+
+    @property
+    def FEATURE_SNAPSHOT_LOGGING(self) -> bool:
+        """Enable snapshot logging for ML training data collection.
+        
+        When True, DecisionSnapshot objects are built and persisted to
+        the bot_decision_snapshots table on every strategy decision.
+        Zero inference cost — just data collection.
+        
+        Default True. Set via env FEATURE_SNAPSHOT_LOGGING=0 or
+        trading.feature_snapshot_logging: false in Config.yaml.
+        """
+        env_val = os.getenv("FEATURE_SNAPSHOT_LOGGING")
+        if env_val is not None:
+            return env_val.lower() not in ("0", "false", "no", "off")
+        return bool(self.manager.get('trading.feature_snapshot_logging', True))
+
+    @property
+    def FEATURE_SNAPSHOT_INFERENCE(self) -> bool:
+        """Enable snapshot-based inference for trade decisions.
+        
+        When True, the bot uses trained models on DecisionSnapshot
+        features to influence sizing or gate decisions. Requires a
+        trained model checkpoint at SNAPSHOT_MODEL_PATH.
+        
+        DANGER: Only enable after sufficient training data and
+        walk-forward validation. Default False — logging is on,
+        inference is off.
+        
+        Set via env FEATURE_SNAPSHOT_INFERENCE=1 or
+        trading.feature_snapshot_inference: true in Config.yaml.
+        """
+        env_val = os.getenv("FEATURE_SNAPSHOT_INFERENCE")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.feature_snapshot_inference', False))
+
+    # ──────────────────────────────────────────────────────────────────
+    # v-orb-prototype-2026-09-10: ORB (Opening Range Breakout) + volatility
+    # contraction + relative volume (RVOL) prototype strategy.
+    #
+    # Hari APPROVED order: #1 ORB+contraction+RVOL → then #2 RVOL continuation
+    # → #3 Gao late-day. This is ONLY #1.
+    #
+    # CRITICAL Research+CoS lock: skip ORB ENTIRELY in risk_off (NOT size-down).
+    # If regime is risk_off, do not signal/enter ORB at all.
+    #
+    # Stage-A promotion floors (LOCKED — do NOT loosen):
+    #   n>=150 trades, >=10 sessions, PF>=1.30, WR>=48%, exp>=+0.05R,
+    #   DD<=6%, max losing day<=2R.
+    # ──────────────────────────────────────────────────────────────────
+
+    @property
+    def ENABLE_ORB_STRATEGY(self) -> bool:
+        """Enable the ORB + contraction + RVOL prototype strategy.
+        
+        v-orb-prototype-2026-09-10: Hari APPROVED product call.
+        
+        When True, the ORBContractionRVOLStrategy is activated and can
+        generate signals for sim/shadow analysis. LIVE order placement
+        is controlled separately by ORB_LIVE_ENTRIES_ENABLED.
+        
+        CRITICAL: This strategy HARD-SKIPS when regime is risk_off.
+        Unlike momentum which reduces size on risk_off, ORB does NOT
+        signal at all — ORB is an opening-range directional bet that
+        doesn't make sense when the market is in panic mode.
+        
+        Default False. Enable via env ENABLE_ORB_STRATEGY=1 or
+        trading.enable_orb_strategy: true in Config.yaml.
+        """
+        env_val = os.getenv("ENABLE_ORB_STRATEGY")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.enable_orb_strategy', False))
+
+    @property
+    def ORB_LIVE_ENTRIES_ENABLED(self) -> bool:
+        """Master switch for LIVE ORB entries.
+        
+        When False (default), the ORB strategy generates signals for
+        sim/shadow analysis but BLOCKS actual LIVE order placement.
+        
+        CRITICAL: Keep default False until Stage-A validation:
+          n>=150 trades, >=10 sessions, PF>=1.30, WR>=48%, exp>=+0.05R,
+          DD<=6%, max losing day<=2R.
+        
+        Default False. Set via env ORB_LIVE_ENTRIES_ENABLED=1 or
+        trading.orb_live_entries_enabled: true in Config.yaml.
+        """
+        env_val = os.getenv("ORB_LIVE_ENTRIES_ENABLED")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.orb_live_entries_enabled', False))
+
+    @property
+    def ORB_SIM_SHADOW_ENABLED(self) -> bool:
+        """Enable ORB strategy for sim/shadow soak testing.
+        
+        When True (default), ORB signals are generated and logged for
+        sim/shadow analysis even when ORB_LIVE_ENTRIES_ENABLED=False.
+        This allows paper testing and collecting performance data
+        before promoting to LIVE.
+        
+        Default True. Set trading.orb_sim_shadow_enabled: false to
+        disable completely (including sim/shadow).
+        """
+        env_val = os.getenv("ORB_SIM_SHADOW_ENABLED")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.orb_sim_shadow_enabled', True))
+
+    @property
+    def ORB_OPENING_RANGE_MINUTES(self) -> int:
+        """Duration of the opening range window in minutes.
+        
+        The opening range is the high/low of the first N minutes after
+        market open (09:30 ET). Classic ORB uses 15 or 30 minutes.
+        
+        Default 15 minutes. Set trading.orb_opening_range_minutes to
+        adjust (common values: 5, 15, 30).
+        """
+        return int(self.manager.get('trading.orb_opening_range_minutes', 15))
+
+    @property
+    def ORB_MIN_CONTRACTION_PCT(self) -> float:
+        """Minimum volatility contraction percentage for ORB entry.
+        
+        ORB works best after a volatility squeeze (contraction) followed
+        by an expansion (breakout). This is the minimum contraction %
+        vs the N-bar ATR before the strategy considers a setup valid.
+        
+        Calculation: (ATR_N - current_range) / ATR_N >= this threshold
+        
+        Default 0.20 (20% contraction). Higher = more selective, fewer
+        signals; lower = more signals, less filtered.
+        """
+        return float(self.manager.get('trading.orb_min_contraction_pct', 0.20))
+
+    @property
+    def ORB_MIN_RVOL(self) -> float:
+        """Minimum relative volume (RVOL) for ORB entry.
+        
+        RVOL = current_volume / average_volume. ORB breakouts need volume
+        confirmation to distinguish real moves from fakeouts.
+        
+        Default 1.2 (20% above average). Set trading.orb_min_rvol to adjust.
+        """
+        return float(self.manager.get('trading.orb_min_rvol', 1.2))
+
+    @property
+    def ORB_PRIMARY_SYMBOLS(self) -> list:
+        """Primary symbols for ORB strategy (SPY/QQQ first per Hari).
+        
+        Hari instruction: prefer SPY/QQQ first as primary symbols.
+        Liquid index ETFs have clean ORB setups with minimal spread/slippage.
+        
+        Default ['SPY', 'QQQ']. Extend via trading.orb_primary_symbols list.
+        """
+        default = ['SPY', 'QQQ']
+        configured = self.manager.get('trading.orb_primary_symbols', None)
+        if configured and isinstance(configured, list):
+            return configured
+        return default
+
+    @property
+    def ORB_ATR_STOP_MULTIPLIER(self) -> float:
+        """ATR multiplier for ORB stop-loss distance.
+        
+        ORB stops are typically tighter than swing trades — the opening
+        range itself provides a natural stop level (entry near the range
+        boundary, stop at the opposite boundary or slightly beyond).
+        
+        Default 1.0 (stop at 1.0x ATR from entry). Set trading.orb_atr_stop_multiplier.
+        """
+        return float(self.manager.get('trading.orb_atr_stop_multiplier', 1.0))
+
+    @property
+    def ORB_REWARD_RISK_RATIO(self) -> float:
+        """Reward:Risk ratio for ORB take-profit.
+        
+        Default 2.0 (2:1 R:R). Tighter than swing trades because ORB is
+        an intraday pattern that plays out quickly.
+        """
+        return float(self.manager.get('trading.orb_reward_risk_ratio', 2.0))
+
+    @property
+    def ORB_MAX_ENTRY_MINUTES_AFTER_OPEN(self) -> int:
+        """Maximum minutes after market open to take ORB entries.
+        
+        ORB is an opening-range strategy — entries taken too late lose
+        the edge (the range has already resolved). This gate prevents
+        chasing late setups.
+        
+        Default 60 (1 hour after open, i.e., by 10:30 ET). Set
+        trading.orb_max_entry_minutes_after_open to adjust.
+        """
+        return int(self.manager.get('trading.orb_max_entry_minutes_after_open', 60))
+
+    @property
+    def ORB_FLATTEN_BY_HOUR(self) -> int:
+        """Hour (ET) by which ORB positions should be flattened.
+        
+        ORB is an intraday pattern. Positions should close by EOD to
+        avoid overnight gap risk. The exit manager will trail more
+        aggressively after this hour.
+        
+        Default 15 (3 PM ET). Set trading.orb_flatten_by_hour to adjust.
+        """
+        return int(self.manager.get('trading.orb_flatten_by_hour', 15))
+
+    @property
+    def ORB_SIZE_MULTIPLIER(self) -> float:
+        """Size multiplier for ORB entries.
+        
+        Applied on top of Kelly sizing. During prototype phase, use
+        smaller size until Stage-A validation completes.
+        
+        Default 0.5 (half-size vs swing). Set trading.orb_size_multiplier.
+        """
+        return float(self.manager.get('trading.orb_size_multiplier', 0.5))
 
 # Initialize configuration
 config = Config()
