@@ -398,11 +398,40 @@ async def handle_full_bracket_fill(
     fill_price: Optional[float],
     filled_leg: str,
 ) -> None:
-    """Handle a full bracket fill (position fully closed by broker)."""
+    """Handle a full bracket fill (position fully closed by broker).
+
+    v-close-position-tracking-2026-09-14: Broker fill is authoritative. When the
+    broker fills a protective stop or TP, we close local state immediately without
+    going through confirmation flow. Any pending confirmation requests for this
+    symbol (from software stop check racing with order_monitor) must be canceled
+    to prevent the timeout handler from reverting state to LIVE after we're flat.
+    """
     from core.commentary import TradingCommentary
     from core.models import CommentaryType, clear_bracket_ids
 
     symbol = position.symbol
+
+    # v-close-position-tracking-2026-09-14: Cancel any pending close confirmation
+    # for this symbol. The software stop check may have started a confirmation flow
+    # before we detected the broker fill. Since broker fill is authoritative, we
+    # cancel the pending request to prevent the timeout from reverting to LIVE.
+    if hasattr(engine, 'pending_close_requests') and engine.pending_close_requests:
+        keys_to_cancel = [
+            k for k in engine.pending_close_requests
+            if k.startswith(f"close_{symbol}_")
+        ]
+        for key in keys_to_cancel:
+            engine.pending_close_requests[key]['confirmed'] = True  # Short-circuit the wait
+            logger.info(
+                "bracket_fill_canceled_pending_confirmation symbol=%s request_id=%s",
+                symbol, key,
+            )
+            engine._audit(
+                "order_monitor", symbol, "pending_confirm_canceled",
+                "broker_fill_authoritative",
+                request_id=key,
+                filled_leg=filled_leg,
+            )
 
     # Clear bracket tracking
     clear_bracket_ids(position)

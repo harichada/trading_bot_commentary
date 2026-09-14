@@ -7779,6 +7779,22 @@ class TradingEngineWithCommentary:
                         importance=7
                     ))
                     return
+
+        # v-close-position-tracking-2026-09-14: After confirmation returns,
+        # re-check if position is still in the container. While we were waiting
+        # for confirmation, handle_full_bracket_fill (broker stop/TP fill) may
+        # have already closed and removed this position. Don't double-close.
+        if position.symbol not in _close_container or \
+           _close_container.get(position.symbol) is not position:
+            logger.info(
+                "close_position: %s already closed by broker fill path during confirmation wait",
+                position.symbol,
+            )
+            self._audit(
+                "position_manager", position.symbol, "close_skipped",
+                "broker_fill_closed_during_confirm",
+            )
+            return
         
         # Get the most current price for accurate P&L calculation.
         # v-close-quote-async-2026-04-30: data_provider.get_quote is a
