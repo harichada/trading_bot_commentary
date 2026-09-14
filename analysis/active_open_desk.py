@@ -21,6 +21,11 @@ PR2 v-proactive-exit-daytrade-2026-09-14: Proactive exit age/R gates.
   - HANDS_OFF via Config.HANDS_OFF_DENYLIST only — never hardcodes symbols.
   - LT/HANDS_OFF unchanged: is_long_term positions skip desk entirely.
 
+v-theme-shock-logger-2026-09-14: added theme matching integration.
+When a theme matches an open position (e.g., ai_compute theme hits NVDA),
+logs WOULD_EXIT / WOULD_TIGHTEN with theme_id reason. HANDS_OFF_DENYLIST
+(MU, HQGE, SPCX) and watch_only symbols only emit alert_only.
+
 Modular boundary:
   - Config flags: ENABLE_ACTIVE_OPEN_DESK (master switch, default True),
     ACTIVE_OPEN_DESK_SHADOW (default True), ACTIVE_OPEN_DESK_INTERVAL_SEC.
@@ -33,17 +38,20 @@ Design integrates with live modular paths (not monolith-only):
   - analysis/exit_managers.py: existing exit logic patterns
   - core/order_monitor/: fill-path bracket monitoring (NOT this desk)
   - core/news_bus.py + news_loop: sentiment source
+  - analysis/theme_shock_logger.py: theme matching for multi-sentiment desk
 
 Inputs:
   - NewsBus: per-symbol sentiment from core/news_bus.py
   - MarketContext: regime + sector + VIX from core/market_context.py
   - Indicators: RSI/MACD/ADX from data_provider via engine
+  - ThemeShockLogger: theme matching for basket/watch_only symbols
 
 Outputs (shadow mode):
   - strategy_decision-style structured logs:
       WOULD_TIGHTEN: reason, symbol, current_stop, suggested_stop
       WOULD_TRAIL: reason, symbol, suggested_trail_stop
       WOULD_EXIT: reason, symbol, suggested_exit_price, age, pnl_r
+      WOULD_EXIT (theme): theme_id, reason, symbol (for theme matches)
 
 Future PR3+: LIVE cancel-replace / market exit actuators behind
 ACTIVE_OPEN_DESK_SHADOW=False.
@@ -132,18 +140,24 @@ class ActiveOpenDesk:
     in parallel via asyncio.gather, evaluating sentiment, regime, and
     technical indicators for proactive exit/tighten recommendations.
 
+    v-theme-shock-logger-2026-09-14: added theme matching integration.
+    When a theme matches an open position (e.g., ai_compute theme hits
+    NVDA), logs WOULD_EXIT / WOULD_TIGHTEN with theme_id reason.
+
     Shadow mode (ACTIVE_OPEN_DESK_SHADOW=True, the default): logs
     structured strategy_decision-style events without executing any
     broker calls. Allows validation of the logic before enabling
     live actuators.
 
     Respects HANDS_OFF_DENYLIST (MU, HQGE, SPCX) — never evaluates
-    these positions.
+    these positions for regular actions, but theme matches on these
+    symbols emit alert_only shadows.
     """
 
     def __init__(self, engine: "TradingEngineWithCommentary") -> None:
         self.engine = engine
         self._last_decisions: Dict[str, DeskDecision] = {}
+        self._theme_logger = None
 
     async def run(self) -> None:
         """Main loop — poll positions at configured interval."""
@@ -251,12 +265,24 @@ class ActiveOpenDesk:
         v-proactive-exit-daytrade-2026-09-14 (PR2): added proactive exit
         evaluation with age-gate and R-override for day trades.
 
+        v-theme-shock-logger-2026-09-14 (PR1.5): added theme matching.
+
         Checks (in priority order):
-          0. Proactive exit: age+R gate, indicator confirmation (FTFT fix)
-          1. Regime: if risk_off and position is long, consider exit/tighten
-          2. Sentiment: if news sentiment turned negative for a long position
-          3. Indicators: RSI overbought (exit) or MACD cross against position
+          0. Theme: if theme matches basket symbol, consider exit/tighten
+          1. Proactive exit: age+R gate, indicator confirmation (FTFT fix)
+          2. Regime: if risk_off and position is long, consider exit/tighten
+          3. Sentiment: if news sentiment turned negative for a long position
+          4. Indicators: RSI overbought (exit) or MACD cross against position
         """
+        # v-theme-shock-logger-2026-09-14: check for theme matches first.
+        # Theme matches take precedence over sentiment/regime/indicators.
+        try:
+            theme_decision = await self._check_theme_match(symbol, position)
+            if theme_decision and theme_decision.action != DeskAction.NO_ACTION:
+                return theme_decision
+        except Exception as exc:
+            logger.debug("active_open_desk: theme check failed for %s: %s", symbol, exc)
+
         try:
             context = self._get_market_context(symbol)
             news_sentiment = await self._get_news_sentiment(symbol)
@@ -388,6 +414,74 @@ class ActiveOpenDesk:
                 return agg.get("avg_sentiment", 0.0)
         except Exception:
             pass
+        return None
+
+    def _get_theme_logger(self):
+        """Get or create the theme shock logger instance."""
+        if self._theme_logger is None:
+            try:
+                from analysis.theme_shock_logger import get_theme_shock_logger
+                self._theme_logger = get_theme_shock_logger(engine=self.engine)
+            except Exception:
+                pass
+        return self._theme_logger
+
+    async def _check_theme_match(
+        self,
+        symbol: str,
+        position: "Position",
+    ) -> Optional[DeskDecision]:
+        """v-theme-shock-logger-2026-09-14: check for theme matches on open position.
+        
+        Returns a DeskDecision if a theme match results in WOULD_EXIT or
+        WOULD_TIGHTEN shadow action. Returns None if no actionable theme match.
+        
+        HANDS_OFF_DENYLIST and watch_only symbols only emit alert_only
+        through the theme shock logger (not via this desk).
+        """
+        theme_logger = self._get_theme_logger()
+        if theme_logger is None or not theme_logger.is_enabled():
+            return None
+
+        try:
+            from core.news_bus import get_news_bus
+            bus = get_news_bus()
+            items = await bus.get_items(symbol, max_age_sec=3600)
+            if not items:
+                return None
+
+            for item in items[:5]:
+                from analysis.theme_shock_logger import ShadowAction
+                event = theme_logger.process_news_item_for_open_position(
+                    item=item,
+                    position_symbol=symbol,
+                    position_side=position.side,
+                    is_managed_by_bot=getattr(position, 'managed_by_bot', True),
+                )
+                if event:
+                    if event.action_shadow == ShadowAction.THESIS_EXIT:
+                        return DeskDecision(
+                            symbol=symbol,
+                            action=DeskAction.WOULD_EXIT,
+                            reason=f"theme_{event.theme_id}_thesis_exit",
+                            current_stop=position.stop_loss,
+                            suggested_exit_price=getattr(position, 'current_price', position.entry_price),
+                            current_price=getattr(position, 'current_price', position.entry_price),
+                        )
+                    elif event.action_shadow == ShadowAction.SIZE_DOWN_OPEN:
+                        current_price = getattr(position, 'current_price', position.entry_price)
+                        return DeskDecision(
+                            symbol=symbol,
+                            action=DeskAction.WOULD_TIGHTEN,
+                            reason=f"theme_{event.theme_id}_size_down",
+                            current_stop=position.stop_loss,
+                            suggested_stop=self._compute_tighter_stop(position, current_price),
+                            current_price=current_price,
+                        )
+
+        except Exception as exc:
+            logger.debug("theme_check_open error symbol=%s: %s", symbol, exc)
+
         return None
 
     async def _get_indicators(self, symbol: str) -> Optional[Dict[str, Any]]:
