@@ -1921,6 +1921,32 @@ class Config:
         """
         return float(self.manager.get('trading.shadow_veto_rsi_threshold', 70.0))
 
+    @property
+    def ENABLE_HARD_VETO_CONTINUATION_RSI70(self) -> bool:
+        """v-hard-veto-rsi70-2026-09-14: hard veto for continuation + RSI>=70
+        in ALL regimes (not just risk_off).
+        
+        RCA 2026-09-14 FTFT LIVE loss: continuation entry RSI 74.31,
+        regime=mixed. The existing shadow veto only fires on risk_off,
+        so mixed overbought continuation still placed LIVE and lost.
+        
+        When True (default): if entry_pattern==continuation AND
+        rsi >= SHADOW_VETO_RSI_THRESHOLD, return None (skip order)
+        regardless of regime. Logs strategy_decision action=hard_veto
+        with reason continuation_overbought_all_regimes.
+        
+        When False: preserves prior behavior (shadow veto risk_off-only
+        path continues to work as before).
+        
+        Default True (safe on-path = entries blocked when pattern matches).
+        Set trading.enable_hard_veto_continuation_rsi70: false or
+        ENABLE_HARD_VETO_CONTINUATION_RSI70=0 to disable.
+        """
+        env_val = os.getenv("ENABLE_HARD_VETO_CONTINUATION_RSI70")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.enable_hard_veto_continuation_rsi70', True))
+
     # ──────────────────────────────────────────────────────────────────
     # v-feature-snapshot-config-2026-09-09: decision snapshot feature flags.
     # Moved from module constants in core/decision_snapshot.py to Config
