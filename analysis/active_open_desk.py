@@ -4,16 +4,22 @@ RCA FTFT 2026-09-14: bot set OCO bracket + hard stop then idled. Hari:
 must continuously monitor ALL managed open trades for sentiment/regime/
 indicators and take proactive action (not fire-and-forget brackets).
 
-PR1 SHADOW ONLY: logs WOULD_TIGHTEN / WOULD_CANCEL_REPLACE / WOULD_EXIT
-with reason + symbol + suggested levels. No broker calls, no order
-mutations, no cancel-replace, no market exit.
+PR1 SHADOW ONLY: logs WOULD_TIGHTEN / WOULD_TRAIL / WOULD_EXIT with
+reason + symbol + suggested levels. No broker calls, no order mutations,
+no cancel-replace, no market exit.
 
 Modular boundary:
-  - Config flags: ENABLE_ACTIVE_OPEN_DESK (master switch, default False),
+  - Config flags: ENABLE_ACTIVE_OPEN_DESK (master switch, default True),
     ACTIVE_OPEN_DESK_SHADOW (default True), ACTIVE_OPEN_DESK_INTERVAL_SEC.
-  - When ENABLE_ACTIVE_OPEN_DESK=False: zero behavior change.
-  - When True + shadow=True: structured logs only, no order mutations.
-  - Respects HANDS_OFF_DENYLIST (MU, HQGE, SPCX) — never evaluates these.
+  - Default True + shadow=True: evidence soak mode, structured logs only.
+  - SAFE OFF-PATH: Set ENABLE_ACTIVE_OPEN_DESK=0/false to disable entirely
+    and preserve today's bracket + hard-stop behavior unchanged.
+  - Respects HANDS_OFF_DENYLIST from Config — never hardcodes symbols.
+
+Design integrates with live modular paths (not monolith-only):
+  - analysis/exit_managers.py: existing exit logic patterns
+  - core/order_monitor/: fill-path bracket monitoring (NOT this desk)
+  - core/news_bus.py + news_loop: sentiment source
 
 Inputs:
   - NewsBus: per-symbol sentiment from core/news_bus.py
@@ -23,7 +29,7 @@ Inputs:
 Outputs (shadow mode):
   - strategy_decision-style structured logs:
       WOULD_TIGHTEN: reason, symbol, current_stop, suggested_stop
-      WOULD_CANCEL_REPLACE: reason, symbol, suggested_stop, suggested_target
+      WOULD_TRAIL: reason, symbol, suggested_trail_stop
       WOULD_EXIT: reason, symbol, suggested_exit_price
 
 Future PR2+: LIVE actuators behind ACTIVE_OPEN_DESK_SHADOW=False.
@@ -47,6 +53,7 @@ logger = logging.getLogger("TradingBot")
 class DeskAction(str, Enum):
     """Action types the Active Open Desk can recommend."""
     WOULD_TIGHTEN = "WOULD_TIGHTEN"
+    WOULD_TRAIL = "WOULD_TRAIL"
     WOULD_CANCEL_REPLACE = "WOULD_CANCEL_REPLACE"
     WOULD_EXIT = "WOULD_EXIT"
     NO_ACTION = "NO_ACTION"

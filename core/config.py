@@ -2218,21 +2218,27 @@ class Config:
     def ENABLE_ACTIVE_OPEN_DESK(self) -> bool:
         """Master switch for the Active Open Desk continuous position monitor.
 
-        v-active-open-desk-2026-09-14: when True, spawns a supervised task
-        that iterates managed_by_bot open positions in parallel, evaluating
+        v-active-open-desk-2026-09-14: when True (default), spawns a supervised
+        task that iterates managed_by_bot open positions in parallel, evaluating
         sentiment, regime, and indicator signals for proactive exit/tighten
         decisions.
 
-        When False (default): zero behavior change — today's bracket +
-        hard-stop path unchanged. The desk task is not started at all.
+        Default True + ACTIVE_OPEN_DESK_SHADOW=True enables evidence collection
+        (shadow logs WOULD_TIGHTEN / WOULD_EXIT without broker calls). This is
+        the recommended soak configuration.
 
-        Default False. Enable via env ENABLE_ACTIVE_OPEN_DESK=1 or
-        trading.enable_active_open_desk: true in Config.yaml.
+        SAFE OFF-PATH: To disable entirely and preserve today's bracket +
+        hard-stop behavior unchanged, set:
+          - env: ENABLE_ACTIVE_OPEN_DESK=0
+          - yaml: trading.enable_active_open_desk: false
+
+        When disabled, the desk task is not started at all — zero behavior
+        change from pre-PR1 baseline.
         """
         env_val = os.getenv("ENABLE_ACTIVE_OPEN_DESK")
         if env_val is not None:
             return env_val.lower() in ("1", "true", "yes", "on")
-        return bool(self.manager.get('trading.enable_active_open_desk', False))
+        return bool(self.manager.get('trading.enable_active_open_desk', True))
 
     @property
     def ACTIVE_OPEN_DESK_SHADOW(self) -> bool:

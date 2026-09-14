@@ -58,10 +58,13 @@ def mock_engine():
 class TestShouldStartDesk:
     """Test the should_start_desk() configuration gate."""
 
-    def test_returns_false_by_default(self, monkeypatch):
-        """Default config: ENABLE_ACTIVE_OPEN_DESK=False → should_start_desk=False."""
+    def test_returns_true_by_default(self, monkeypatch):
+        """Default config: ENABLE_ACTIVE_OPEN_DESK=True → should_start_desk=True.
+        
+        Default True + ACTIVE_OPEN_DESK_SHADOW=True enables evidence soak.
+        """
         monkeypatch.delenv("ENABLE_ACTIVE_OPEN_DESK", raising=False)
-        assert should_start_desk() is False
+        assert should_start_desk() is True
 
     def test_env_1_enables(self, monkeypatch):
         """env ENABLE_ACTIVE_OPEN_DESK=1 → should_start_desk=True."""
@@ -73,9 +76,18 @@ class TestShouldStartDesk:
         monkeypatch.setenv("ENABLE_ACTIVE_OPEN_DESK", "true")
         assert should_start_desk() is True
 
-    def test_env_0_disables(self, monkeypatch):
-        """env ENABLE_ACTIVE_OPEN_DESK=0 → should_start_desk=False."""
+    def test_env_0_disables_safe_off_path(self, monkeypatch):
+        """SAFE OFF-PATH: env ENABLE_ACTIVE_OPEN_DESK=0 → should_start_desk=False.
+        
+        This is the escape hatch to disable entirely and preserve today's
+        bracket + hard-stop behavior unchanged.
+        """
         monkeypatch.setenv("ENABLE_ACTIVE_OPEN_DESK", "0")
+        assert should_start_desk() is False
+
+    def test_env_false_disables_safe_off_path(self, monkeypatch):
+        """SAFE OFF-PATH: env ENABLE_ACTIVE_OPEN_DESK=false → should_start_desk=False."""
+        monkeypatch.setenv("ENABLE_ACTIVE_OPEN_DESK", "false")
         assert should_start_desk() is False
 
 
