@@ -12,7 +12,7 @@ v-theme-shock-logger-2026-09-14: tests covering:
 """
 import asyncio
 import pytest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, AsyncMock, patch
 from dataclasses import dataclass
 
@@ -624,3 +624,411 @@ class TestForwardRetStubs:
         assert event.forward_ret_15m is None
         assert event.forward_ret_60m is None
         assert event.half_move_before_ingest is None
+
+
+class TestNewsBusPublishPath:
+    """v-theme-shock-hotfix-2026-09-14: Test NewsBus publish path integration.
+    
+    RCA: ThemeShock was only invoked on entry path, not subscribed to NewsBus
+    publish. Anthropic headlines from Alpaca produced ZERO shadow_* emits.
+    These tests verify the fix.
+    """
+
+    @pytest.mark.asyncio
+    async def test_publish_triggers_on_publish_callback(self, reset_singleton):
+        """NewsBus.publish should invoke on_publish callback for each new item."""
+        from core.news_bus import NewsBus, ScoredNewsItem, NewsImpactLevel
+        
+        callback_items = []
+        def on_publish(item):
+            callback_items.append(item)
+        
+        bus = NewsBus(on_publish=on_publish)
+        
+        now = datetime.now(timezone.utc)
+        item = ScoredNewsItem(
+            id="test_pub_1",
+            symbol="NVDA",
+            headline="Anthropic CEO warns about AI compute",
+            summary="Test summary",
+            source="Alpaca News",
+            source_tier=1,
+            url="https://test.com/1",
+            published_time=now - timedelta(minutes=5),
+            fetched_at=now,
+            sentiment_score=-0.5,
+            sentiment_confidence=0.5,
+            impact=NewsImpactLevel.MEDIUM,
+        )
+        
+        new_count = await bus.publish([item])
+        
+        assert new_count == 1
+        assert len(callback_items) == 1
+        assert callback_items[0].headline == "Anthropic CEO warns about AI compute"
+
+    @pytest.mark.asyncio
+    async def test_publish_no_callback_for_duplicates(self, reset_singleton):
+        """Duplicate items should not trigger on_publish callback."""
+        from core.news_bus import NewsBus, ScoredNewsItem, NewsImpactLevel
+        
+        callback_count = [0]
+        def on_publish(item):
+            callback_count[0] += 1
+        
+        bus = NewsBus(on_publish=on_publish)
+        
+        now = datetime.now(timezone.utc)
+        item = ScoredNewsItem(
+            id="test_dup_1",
+            symbol="NVDA",
+            headline="Test headline",
+            summary="",
+            source="Test",
+            source_tier=1,
+            url="https://test.com/dup",
+            published_time=now,
+            fetched_at=now,
+            sentiment_score=0.0,
+            sentiment_confidence=0.5,
+            impact=NewsImpactLevel.MEDIUM,
+        )
+        
+        await bus.publish([item])
+        await bus.publish([item])  # Duplicate
+        
+        assert callback_count[0] == 1  # Only first publish
+
+    def test_process_news_item_from_publish_emits_for_basket(
+        self, reset_singleton, sample_scored_item
+    ):
+        """process_news_item_from_publish should emit for all basket symbols."""
+        logger = ThemeShockLogger()
+        
+        events = logger.process_news_item_from_publish(item=sample_scored_item)
+        
+        assert len(events) > 0
+        symbols_logged = {e.symbols_tradable[0] if e.symbols_tradable else None for e in events}
+        assert "NVDA" in symbols_logged or any("NVDA" in e.ticker_basket for e in events)
+
+    def test_process_news_item_from_publish_anthropic_ai_compute(
+        self, reset_singleton
+    ):
+        """Anthropic headline should match ai_compute and emit for NVDA/AMD basket."""
+        from datetime import timezone
+        
+        @dataclass
+        class MockItem:
+            id: str = "anthropic_test"
+            symbol: str = "NVDA"
+            headline: str = "Anthropic CEO Dario Amodei on frontier AI slowdown"
+            summary: str = ""
+            source: str = "Alpaca News"
+            source_tier: int = 1
+            url: str = "https://test.com"
+            published_time: datetime = None
+            fetched_at: datetime = None
+            sentiment_score: float = -0.5
+            sentiment_confidence: float = 0.5
+            
+            def __post_init__(self):
+                if self.published_time is None:
+                    self.published_time = datetime.now(timezone.utc) - timedelta(minutes=10)
+                if self.fetched_at is None:
+                    self.fetched_at = datetime.now(timezone.utc)
+            
+            def age_sec(self) -> float:
+                now = datetime.now(timezone.utc)
+                pub = self.published_time
+                if pub.tzinfo is None:
+                    pub = pub.replace(tzinfo=timezone.utc)
+                return max(0.0, (now - pub).total_seconds())
+        
+        logger = ThemeShockLogger()
+        item = MockItem()
+        
+        events = logger.process_news_item_from_publish(item=item)
+        
+        assert len(events) > 0
+        theme_ids = {e.theme_id for e in events}
+        assert "ai_compute" in theme_ids
+        
+        basket_symbols = set()
+        for e in events:
+            basket_symbols.update(e.ticker_basket)
+        assert "NVDA" in basket_symbols
+        assert "AMD" in basket_symbols
+
+    def test_process_news_item_from_publish_mu_watch_only_alert_only(
+        self, reset_singleton
+    ):
+        """MU (watch_only) should only get alert_only action when it's the logged symbol."""
+        from datetime import timezone
+        
+        @dataclass
+        class MockItem:
+            id: str = "mu_test"
+            symbol: str = "MU"
+            headline: str = "Anthropic news affects AI compute sector"
+            summary: str = ""
+            source: str = "Alpaca News"
+            source_tier: int = 1
+            url: str = "https://test.com"
+            published_time: datetime = None
+            fetched_at: datetime = None
+            sentiment_score: float = -0.5
+            sentiment_confidence: float = 0.5
+            
+            def __post_init__(self):
+                if self.published_time is None:
+                    self.published_time = datetime.now(timezone.utc) - timedelta(minutes=10)
+                if self.fetched_at is None:
+                    self.fetched_at = datetime.now(timezone.utc)
+            
+            def age_sec(self) -> float:
+                now = datetime.now(timezone.utc)
+                pub = self.published_time
+                if pub.tzinfo is None:
+                    pub = pub.replace(tzinfo=timezone.utc)
+                return max(0.0, (now - pub).total_seconds())
+        
+        logger = ThemeShockLogger()
+        logger._dedupe_window_sec = 0  # Disable deduplication for this test
+        item = MockItem()
+        
+        events = logger.process_news_item_from_publish(item=item)
+        
+        # MU is in watch_only for ai_compute theme. When we log an event
+        # specifically for MU, the action should be alert_only.
+        # Find events where the managed_flags indicate this was logged for MU
+        # Note: The events log for ALL basket + watch_only symbols
+        # MU events should have alert_only action
+        mu_logged = False
+        for e in events:
+            if "MU" in e.symbols_watch_only:
+                # This is an ai_compute theme event that has MU in watch_only
+                # Check if we logged specifically for MU (check the headline/symbol combo)
+                # The event ticker_basket contains all symbols including MU
+                if "MU" in e.ticker_basket:
+                    mu_logged = True
+                    # Events logged for tradable symbols will have hard_skip
+                    # Events logged for watch_only symbols (MU) should have alert_only
+                    # Since MU is in HANDS_OFF_DENYLIST, any action for MU should be alert_only
+        
+        assert mu_logged, "Expected MU to be in at least one event's ticker_basket"
+        
+        # Verify that if we call _determine_action_for_symbol for MU, we get alert_only
+        match = ThemeMatch(
+            theme_id="ai_compute",
+            matched_text="anthropic",
+            symbols_tradable=["NVDA", "AMD"],
+            symbols_watch_only=["MU"],
+            actions_shadow=[ShadowAction.HARD_SKIP_ENTRIES, ShadowAction.THESIS_EXIT],
+        )
+        action = logger._determine_action_for_symbol("MU", match, is_managed_open=False)
+        assert action == ShadowAction.ALERT_ONLY
+
+    def test_process_news_item_from_publish_with_open_positions(
+        self, reset_singleton
+    ):
+        """Should process open positions when get_open_positions_fn provided."""
+        from datetime import timezone
+        
+        @dataclass
+        class MockItem:
+            id: str = "open_pos_test"
+            symbol: str = "NVDA"
+            headline: str = "Anthropic CEO warns about frontier AI unique123"
+            summary: str = ""
+            source: str = "Alpaca News"
+            source_tier: int = 1
+            url: str = "https://test.com"
+            published_time: datetime = None
+            fetched_at: datetime = None
+            sentiment_score: float = -0.5
+            sentiment_confidence: float = 0.5
+            
+            def __post_init__(self):
+                if self.published_time is None:
+                    self.published_time = datetime.now(timezone.utc) - timedelta(minutes=10)
+                if self.fetched_at is None:
+                    self.fetched_at = datetime.now(timezone.utc)
+            
+            def age_sec(self) -> float:
+                now = datetime.now(timezone.utc)
+                pub = self.published_time
+                if pub.tzinfo is None:
+                    pub = pub.replace(tzinfo=timezone.utc)
+                return max(0.0, (now - pub).total_seconds())
+        
+        @dataclass
+        class MockPosition:
+            symbol: str
+            side: str
+            managed_by_bot: bool = True
+        
+        def get_open_positions():
+            return {"NVDA": MockPosition(symbol="NVDA", side="long")}
+        
+        logger = ThemeShockLogger()
+        logger._dedupe_window_sec = 0  # Disable deduplication for this test
+        item = MockItem()
+        
+        events = logger.process_news_item_from_publish(
+            item=item,
+            get_open_positions_fn=get_open_positions,
+        )
+        
+        open_pos_events = [e for e in events if e.managed_flags.get("open_position")]
+        assert len(open_pos_events) > 0, f"Expected open_position events, got {[e.managed_flags for e in events]}"
+        assert any(e.action_shadow == ShadowAction.THESIS_EXIT for e in open_pos_events)
+
+    def test_flag_off_no_emit_from_publish(self, monkeypatch, reset_singleton):
+        """When disabled, process_news_item_from_publish returns empty list."""
+        monkeypatch.setenv("ENABLE_THEME_SHOCK_LOGGER", "0")
+        reset_theme_shock_logger()
+        
+        from datetime import timezone
+        
+        @dataclass
+        class MockItem:
+            id: str = "flag_off_test"
+            symbol: str = "NVDA"
+            headline: str = "Anthropic news"
+            summary: str = ""
+            source: str = "Alpaca News"
+            source_tier: int = 1
+            url: str = "https://test.com"
+            published_time: datetime = None
+            fetched_at: datetime = None
+            sentiment_score: float = -0.5
+            sentiment_confidence: float = 0.5
+            
+            def __post_init__(self):
+                if self.published_time is None:
+                    self.published_time = datetime.now(timezone.utc) - timedelta(minutes=10)
+                if self.fetched_at is None:
+                    self.fetched_at = datetime.now(timezone.utc)
+            
+            def age_sec(self) -> float:
+                return 600.0
+        
+        logger = get_theme_shock_logger()
+        item = MockItem()
+        
+        events = logger.process_news_item_from_publish(item=item)
+        
+        assert events == []
+
+
+class TestAgeSecUTCFix:
+    """v-theme-shock-hotfix-2026-09-14: Test age_sec UTC fix.
+    
+    RCA: age_sec used naive datetime.now() vs UTC published_time,
+    producing negative ages (e.g. -6417s) when local time != UTC.
+    """
+
+    def test_age_sec_always_non_negative(self, reset_singleton):
+        """age_sec should never be negative, even with UTC published_time."""
+        from core.news_bus import ScoredNewsItem, NewsImpactLevel
+        from datetime import timezone
+        
+        now_utc = datetime.now(timezone.utc)
+        
+        item = ScoredNewsItem(
+            id="utc_test",
+            symbol="TEST",
+            headline="Test",
+            summary="",
+            source="Test",
+            source_tier=1,
+            url="https://test.com",
+            published_time=now_utc - timedelta(minutes=5),
+            fetched_at=now_utc,
+            sentiment_score=0.0,
+            sentiment_confidence=0.5,
+            impact=NewsImpactLevel.MEDIUM,
+        )
+        
+        age = item.age_sec()
+        assert age >= 0
+        assert 290 < age < 310  # ~5 minutes
+
+    def test_age_sec_future_publish_clamped_to_zero(self, reset_singleton):
+        """Future published_time should be clamped to age_sec=0."""
+        from core.news_bus import ScoredNewsItem, NewsImpactLevel
+        from datetime import timezone
+        
+        now_utc = datetime.now(timezone.utc)
+        future = now_utc + timedelta(hours=2)  # 2 hours in future
+        
+        item = ScoredNewsItem(
+            id="future_test",
+            symbol="TEST",
+            headline="Future headline",
+            summary="",
+            source="Test",
+            source_tier=1,
+            url="https://test.com",
+            published_time=future,
+            fetched_at=now_utc,
+            sentiment_score=0.0,
+            sentiment_confidence=0.5,
+            impact=NewsImpactLevel.MEDIUM,
+        )
+        
+        age = item.age_sec()
+        assert age == 0.0  # Clamped, not negative
+
+    def test_age_sec_naive_published_time_treated_as_utc(self, reset_singleton):
+        """Naive published_time (no tzinfo) should be treated as UTC."""
+        from core.news_bus import ScoredNewsItem, NewsImpactLevel
+        from datetime import timezone
+        
+        now_utc = datetime.now(timezone.utc)
+        naive_utc = now_utc.replace(tzinfo=None) - timedelta(minutes=10)
+        
+        item = ScoredNewsItem(
+            id="naive_test",
+            symbol="TEST",
+            headline="Naive tz test",
+            summary="",
+            source="Test",
+            source_tier=1,
+            url="https://test.com",
+            published_time=naive_utc,  # No tzinfo
+            fetched_at=now_utc,
+            sentiment_score=0.0,
+            sentiment_confidence=0.5,
+            impact=NewsImpactLevel.MEDIUM,
+        )
+        
+        age = item.age_sec()
+        assert age >= 0
+        assert 590 < age < 620  # ~10 minutes
+
+    def test_fetch_age_sec_non_negative(self, reset_singleton):
+        """fetch_age_sec should also be non-negative."""
+        from core.news_bus import ScoredNewsItem, NewsImpactLevel
+        from datetime import timezone
+        
+        now_utc = datetime.now(timezone.utc)
+        
+        item = ScoredNewsItem(
+            id="fetch_age_test",
+            symbol="TEST",
+            headline="Fetch age test",
+            summary="",
+            source="Test",
+            source_tier=1,
+            url="https://test.com",
+            published_time=now_utc - timedelta(minutes=5),
+            fetched_at=now_utc - timedelta(seconds=30),
+            sentiment_score=0.0,
+            sentiment_confidence=0.5,
+            impact=NewsImpactLevel.MEDIUM,
+        )
+        
+        fetch_age = item.fetch_age_sec()
+        assert fetch_age >= 0
+        assert 25 < fetch_age < 35  # ~30 seconds
