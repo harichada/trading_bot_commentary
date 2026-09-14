@@ -26,7 +26,8 @@ themes:
       - "ai slowdown"
       - "frontier ai"
       - "ai safety pause"
-      - "slow the pace"
+      - "slow the pace of ai"
+      - "slow the pace of frontier"
     basket:
       - NVDA
       - AMD
