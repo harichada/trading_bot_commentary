@@ -1,6 +1,8 @@
 # v-theme-shock-logger-2026-09-14: Theme configuration for multi-sentiment desk
 # Owner: Research | See docs/research/2026-09-14-multisenti-stage-a.md
 #
+# Research Stage A cut 2026-09-14 noise cleanup; prefer precision over recall for hard_skip shadows.
+#
 # Schema per theme:
 #   theme_id: string (unique identifier)
 #   match: list[string] (case-insensitive headline/summary substrings to match)
@@ -22,10 +24,9 @@ themes:
       - "pace the frontier"
       - "openai slowdown"
       - "ai slowdown"
-      - "ai scaling"
-      - "ai compute"
-      - "gpu shortage"
-      - "chip shortage ai"
+      - "frontier ai"
+      - "ai safety pause"
+      - "slow the pace"
     basket:
       - NVDA
       - AMD
@@ -47,7 +48,6 @@ themes:
       - "ai regulation"
       - "ai safety"
       - "ai risk"
-      - "tech regulation"
       - "big tech ai"
     basket:
       - MSFT
@@ -88,7 +88,6 @@ themes:
       - "cpi higher"
       - "hot inflation"
       - "yield spike"
-      - "10-year"
       - "treasury yield"
     basket:
       - QQQ
@@ -102,14 +101,17 @@ themes:
   - theme_id: earnings_chip
     description: "Semiconductor earnings / guidance shock"
     match:
-      - "earnings"
-      - "guidance"
-      - "revenue miss"
-      - "revenue beat"
-      - "eps miss"
-      - "eps beat"
-      - "outlook"
-      - "forecast"
+      - "semiconductor earnings"
+      - "chip earnings"
+      - "nvidia earnings"
+      - "amd earnings"
+      - "intel earnings"
+      - "tsmc earnings"
+      - "foundry guidance"
+      - "wafer"
+      - "hbm guidance"
+      - "gpu guidance"
+      - "data center guidance"
     basket:
       - NVDA
       - AMD
