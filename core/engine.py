@@ -28,6 +28,7 @@ from core.position_state import (
 from core.quote_cache import QuoteCache, CachedQuote
 from core.task_supervisor import TaskSupervisor, TaskPriority, SupervisorState
 from core.schwab_stream import SchwabQuoteStream, STREAMING_AVAILABLE
+from core.order_monitor import OrderMonitor
 from core.price_book import PriceBook, PriceObject
 from core.calculations import CalculationEngine, PnLResult
 from analysis.anomaly import AnomalyDetector, DataValidator
@@ -117,6 +118,8 @@ class TradingEngineWithCommentary:
         PriceBook.install(self.price_book)
         self._supervisor: Optional[TaskSupervisor] = None
         self._quote_fetch_sem: Optional[asyncio.Semaphore] = None
+        # v-phase-b-order-monitor-2026-09-14: OrderMonitor instance (composed)
+        self._order_monitor: Optional[OrderMonitor] = None
         # Set by quote_streamer when it observes itself stale > HARD threshold.
         # analysis_loop checks this gate before signalling new entries.
         self._quote_streamer_healthy: bool = True
@@ -3507,1304 +3510,114 @@ class TradingEngineWithCommentary:
                 raise
             await asyncio.sleep(cadence)
 
-    # ══════════════════════════════════════════════════════════════════════════
-    # v-order-monitor-2026-09-10: Realtime WORKING bracket/OCO order monitoring
-    # ══════════════════════════════════════════════════════════════════════════
-    async def _order_monitor_loop(self) -> None:
-        """Poll WORKING bracket/OCO orders for bot-managed symbols.
-        
-        Responsibilities:
-          1. Detect stop/TP fills → sync Position state, cancel sibling leg
-          2. Detect cancel/reject → re-place missing stop or soft-halt
-          3. Detect partials → update qty, re-bracket remaining
-          4. Trail replace → when software trail moves, replace broker stop
-          
-        Only monitors positions where:
-          - managed_by_bot=True
-          - NOT is_external / is_manually_managed / is_long_term
-          - Has bracket_order_id set (bot placed a bracket)
-          
-        Cadence: every 5 seconds (tunable via Config.ORDER_MONITOR_INTERVAL_SEC)
-        """
-        cadence = getattr(Config(), 'ORDER_MONITOR_INTERVAL_SEC', 5.0)
-        
-        while self.is_running:
-            try:
-                # Skip if no Schwab client
-                if not self.schwab_client or not self.account_hash:
-                    await asyncio.sleep(cadence)
-                    continue
-                
-                # v-bootstrap-oco-2026-09-10: run bootstrap once if not done at startup
-                # This catches the case where startup didn't have Schwab client ready
-                if not getattr(self, '_oco_bootstrap_done', False):
-                    try:
-                        attached = await self._bootstrap_orphan_brackets()
-                        self._oco_bootstrap_done = True
-                        if attached > 0:
-                            logger.info(
-                                "order_monitor_bootstrap_oco: attached %d orphan brackets",
-                                attached,
-                            )
-                    except Exception as exc:
-                        logger.warning(f"order_monitor bootstrap_orphan_brackets failed: {exc}")
-                        self._oco_bootstrap_done = True  # Don't retry on failure
-                
-                # Only monitor LIVE positions that we manage with brackets
-                bot_positions = self._get_bracket_monitored_positions()
-                if not bot_positions:
-                    await asyncio.sleep(cadence)
-                    continue
-                
-                # Fetch WORKING orders from Schwab
-                working_orders = await self._fetch_working_orders()
-                if working_orders is None:
-                    await asyncio.sleep(cadence)
-                    continue
-                
-                # Build lookup: order_id -> order_info
-                orders_by_id = {
-                    str(o.get('orderId')): o 
-                    for o in working_orders 
-                    if o.get('orderId')
-                }
-                
-                # Process each bot-managed position with a bracket
-                for symbol, position in bot_positions:
-                    try:
-                        await self._monitor_position_bracket(
-                            position, orders_by_id, working_orders
-                        )
-                    except Exception as exc:
-                        logger.error(
-                            "order_monitor: error processing %s: %s",
-                            symbol, exc, exc_info=True,
-                        )
-                        
-            except Exception as exc:
-                logger.error(
-                    "order_monitor_loop: unhandled error: %s",
-                    exc, exc_info=True,
-                )
-                # Don't re-raise — let the loop continue after sleep
-                
-            await asyncio.sleep(cadence)
-    
-    def _get_bracket_monitored_positions(self) -> list:
-        """Return (symbol, position) pairs for positions we should monitor.
-        
-        Criteria:
-          - In self.positions (LIVE mode, not simulated)
-          - managed_by_bot=True
-          - NOT is_external / is_manually_managed / is_long_term
-          - Has bracket_order_id (bot placed a bracket for this position)
-        """
-        result = []
-        for symbol, pos in list(self.positions.items()):
-            if pos is None:
-                continue
-            # Skip non-bot-managed
-            if not getattr(pos, 'managed_by_bot', False):
-                continue
-            # Skip external/manual/long-term
-            if getattr(pos, 'is_external', False):
-                continue
-            if getattr(pos, 'is_manually_managed', False):
-                continue
-            if getattr(pos, 'is_long_term', False):
-                continue
-            # Skip if no bracket (software exits only)
-            if not getattr(pos, 'bracket_order_id', None):
-                continue
-            result.append((symbol, pos))
-        return result
-    
-    def _get_positions_missing_brackets(self) -> list:
-        """Return (symbol, position) pairs for positions that SHOULD have brackets but don't.
-        
-        v-bootstrap-oco-2026-09-10: Used by bootstrap logic to find LIVE positions
-        that pass all filters for bracket monitoring EXCEPT they're missing
-        bracket_order_id. These are candidates for attaching orphan WORKING OCOs.
-        
-        Criteria (same as _get_bracket_monitored_positions minus bracket_order_id check):
-          - In self.positions (LIVE mode, not simulated)
-          - managed_by_bot=True
-          - NOT is_external / is_manually_managed / is_long_term
-          - MISSING bracket_order_id (inverse of normal monitor filter)
-        """
-        result = []
-        for symbol, pos in list(self.positions.items()):
-            if pos is None:
-                continue
-            # Skip non-bot-managed
-            if not getattr(pos, 'managed_by_bot', False):
-                continue
-            # Skip external/manual/long-term (Hari's 4 LT holds safe)
-            if getattr(pos, 'is_external', False):
-                continue
-            if getattr(pos, 'is_manually_managed', False):
-                continue
-            if getattr(pos, 'is_long_term', False):
-                continue
-            # Include only if MISSING bracket (inverse of normal filter)
-            if getattr(pos, 'bracket_order_id', None):
-                continue  # Already has bracket, skip
-            result.append((symbol, pos))
-        return result
-    
-    async def _bootstrap_orphan_brackets(self) -> int:
-        """Bootstrap/attach existing WORKING Schwab OCO brackets to positions missing bracket_order_id.
-        
-        v-bootstrap-oco-2026-09-10: Called at engine startup (and optionally once at
-        first order_monitor tick) to reconcile bot-managed LIVE positions that are
-        missing bracket_order_id with any orphan WORKING OCO orders on the account.
-        
-        This handles the case where the bot deployed with open positions that don't
-        have bracket tracking — either from a prior version, a restart, or state loss.
-        Without this, such positions are invisible to _order_monitor_loop until the
-        next _place_bracket_orders call (which may never happen for existing positions).
-        
-        Matching logic:
-          1. Fetch WORKING orders from Schwab (OCO/bracket type)
-          2. Group OCOs by symbol
-          3. For each position missing bracket_order_id:
-             a. Find candidate OCOs for that symbol
-             b. Prefer exact qty match; if no exact, use any match
-             c. If multiple candidates remain with same priority, alert HIGH and skip
-             d. If single candidate, attach it and extract child IDs
-          4. Persist via _save_state()
-        
-        Returns: count of positions successfully attached
-        """
-        if not self.schwab_client or not self.account_hash:
-            return 0
-        
-        positions_missing = self._get_positions_missing_brackets()
-        if not positions_missing:
-            logger.debug("bootstrap_oco: no positions missing brackets")
-            return 0
-        
-        # Fetch WORKING orders from Schwab
-        working_orders = await self._fetch_working_orders()
-        if working_orders is None:
-            logger.warning("bootstrap_oco: failed to fetch working orders")
-            return 0
-        
-        # Filter to OCO orders only and group by symbol
-        ocos_by_symbol: Dict[str, list] = {}
-        for order in working_orders:
-            order_type = order.get('orderStrategyType', '')
-            if order_type != 'OCO':
-                continue
-            
-            # Extract symbol from childOrderStrategies
-            children = order.get('childOrderStrategies', [])
-            for child in children:
-                legs = child.get('orderLegCollection', [])
-                for leg in legs:
-                    sym = leg.get('instrument', {}).get('symbol')
-                    if sym:
-                        if sym not in ocos_by_symbol:
-                            ocos_by_symbol[sym] = []
-                        if order not in ocos_by_symbol[sym]:
-                            ocos_by_symbol[sym].append(order)
-                        break
-        
-        if not ocos_by_symbol:
-            logger.debug("bootstrap_oco: no WORKING OCO orders found")
-            return 0
-        
-        attached_count = 0
-        
-        for symbol, position in positions_missing:
-            candidates = ocos_by_symbol.get(symbol, [])
-            if not candidates:
-                logger.debug("bootstrap_oco: no OCO candidates for %s", symbol)
-                continue
-            
-            # Extract qty and filter by exact match first
-            def get_oco_qty(oco: dict) -> Optional[int]:
-                """Extract quantity from OCO order children."""
-                for child in oco.get('childOrderStrategies', []):
-                    for leg in child.get('orderLegCollection', []):
-                        qty = leg.get('quantity')
-                        if qty is not None:
-                            return int(qty)
-                return None
-            
-            position_qty = int(position.quantity)
-            exact_qty_matches = [o for o in candidates if get_oco_qty(o) == position_qty]
-            
-            if len(exact_qty_matches) == 1:
-                # Single exact match — attach it
-                chosen = exact_qty_matches[0]
-            elif len(exact_qty_matches) > 1:
-                # Multiple exact qty matches — ambiguous, alert HIGH and skip
-                self._audit(
-                    "bootstrap_oco", symbol, "ambiguous_skip",
-                    "multiple_ocos_exact_qty_match",
-                    candidate_count=len(exact_qty_matches),
-                    position_qty=position_qty,
-                )
-                self.commentary.add_commentary(TradingCommentary(
-                    timestamp=datetime.now(),
-                    type=CommentaryType.WARNING,
-                    symbol=symbol,
-                    title=f"⚠️ Multiple OCO Orders Found for {symbol}",
-                    message=f"Found {len(exact_qty_matches)} WORKING OCO orders with qty={position_qty}. "
-                            f"Cannot determine which to attach — manual intervention required.",
-                    importance=9,  # HIGH importance
-                ))
-                continue
-            elif len(candidates) == 1:
-                # Single candidate (even if qty doesn't match) — attach with warning
-                chosen = candidates[0]
-                oco_qty = get_oco_qty(chosen)
-                if oco_qty != position_qty:
-                    self._audit(
-                        "bootstrap_oco", symbol, "attach_qty_mismatch",
-                        "single_oco_qty_differs",
-                        position_qty=position_qty,
-                        oco_qty=oco_qty,
-                    )
-            else:
-                # Multiple candidates, none with exact qty — ambiguous
-                self._audit(
-                    "bootstrap_oco", symbol, "ambiguous_skip",
-                    "multiple_ocos_no_exact_qty",
-                    candidate_count=len(candidates),
-                    position_qty=position_qty,
-                )
-                self.commentary.add_commentary(TradingCommentary(
-                    timestamp=datetime.now(),
-                    type=CommentaryType.WARNING,
-                    symbol=symbol,
-                    title=f"⚠️ Multiple OCO Orders Found for {symbol}",
-                    message=f"Found {len(candidates)} WORKING OCO orders for {symbol} but none "
-                            f"match position qty={position_qty}. Manual intervention required.",
-                    importance=9,
-                ))
-                continue
-            
-            # Attach the chosen OCO
-            order_id = str(chosen.get('orderId', ''))
-            if not order_id:
-                logger.warning("bootstrap_oco: chosen OCO has no orderId for %s", symbol)
-                continue
-            
-            position.bracket_order_id = order_id
-            
-            # Extract child order IDs and broker stop price
-            children = chosen.get('childOrderStrategies', [])
-            for child in children:
-                child_id = str(child.get('orderId', ''))
-                if not child_id:
-                    continue
-                
-                order_type = child.get('orderType', '')
-                stop_price = child.get('stopPrice')
-                
-                if order_type == 'STOP_LIMIT' or stop_price:
-                    position.stop_order_id = child_id
-                    if stop_price:
-                        position.broker_stop_price = float(stop_price)
-                elif order_type == 'LIMIT':
-                    position.tp_order_id = child_id
-            
-            attached_count += 1
-            
-            self._audit(
-                "bootstrap_oco", symbol, "attached",
-                "orphan_oco_attached",
-                bracket_order_id=order_id,
-                stop_order_id=position.stop_order_id,
-                tp_order_id=position.tp_order_id,
-                broker_stop_price=position.broker_stop_price,
-                position_qty=position_qty,
-            )
-            
-            _stop = position.broker_stop_price or 0.0
-            self.commentary.add_commentary(TradingCommentary(
-                timestamp=datetime.now(),
-                type=CommentaryType.INFO,
-                symbol=symbol,
-                title=f"🔗 OCO Bracket Attached for {symbol}",
-                message=f"Found and attached existing WORKING OCO order (stop @ ${_stop:.2f})",
-                importance=6,  # Low-noise
-            ))
-        
-        if attached_count > 0:
-            self._save_state()
-            logger.info(
-                "bootstrap_oco: attached %d orphan brackets to positions",
-                attached_count,
-            )
-        
-        return attached_count
-    
-    async def _fetch_working_orders(self) -> Optional[list]:
-        """Fetch all WORKING orders from Schwab."""
-        try:
-            response = self.schwab_client.get_orders_for_account(
-                self.account_hash,
-                from_entered_datetime=datetime.now() - timedelta(days=7),
-                status=self.schwab_client.Order.Status.WORKING
-            )
-            if response.status_code == 200:
-                return response.json()
-            logger.warning(
-                "order_monitor: fetch_working_orders got status %d",
-                response.status_code,
-            )
-            return None
-        except Exception as exc:
-            logger.error("order_monitor: fetch_working_orders error: %s", exc)
-            return None
-    
-    async def _monitor_position_bracket(
-        self, 
-        position, 
-        orders_by_id: dict,
-        all_working_orders: list
-    ) -> None:
-        """Monitor a single position's bracket orders.
-        
-        Checks:
-          1. Is the bracket still WORKING? If not, why?
-          2. Did stop fill? → close position, cancel TP
-          3. Did TP fill? → close position, cancel stop
-          4. Was either leg canceled/rejected? → re-protect or alert
-          5. Has software trail moved? → replace broker stop
-        """
-        symbol = position.symbol
-        bracket_id = position.bracket_order_id
-        
-        # Try to refresh child order IDs if we don't have them yet
-        if not position.stop_order_id or not position.tp_order_id:
-            await self._refresh_bracket_child_ids(position, orders_by_id, all_working_orders)
-        
-        # Check if parent OCO is still WORKING
-        parent_order = orders_by_id.get(bracket_id)
-        
-        if parent_order:
-            # Parent still WORKING — check child statuses and trail replace
-            await self._check_trail_replace(position, parent_order)
-        else:
-            # Parent not in WORKING list — need to query it directly
-            await self._handle_bracket_not_working(position)
-    
-    async def _refresh_bracket_child_ids(
-        self, 
-        position, 
-        orders_by_id: dict,
-        all_working_orders: list
-    ) -> None:
-        """Extract stop_order_id and tp_order_id from the OCO structure.
-        
-        Schwab OCO orders have childOrderStrategies containing the two legs.
-        """
-        bracket_id = position.bracket_order_id
-        parent_order = orders_by_id.get(bracket_id)
-        
-        if not parent_order:
-            # Try to fetch the order directly
-            try:
-                response = self.schwab_client.get_order(
-                    bracket_id, self.account_hash
-                )
-                if response.status_code == 200:
-                    parent_order = response.json()
-            except Exception:
-                pass
-        
-        if not parent_order:
-            return
-        
-        # Extract child order IDs from OCO structure
-        children = parent_order.get('childOrderStrategies', [])
-        for child in children:
-            child_id = str(child.get('orderId', ''))
-            if not child_id:
-                continue
-                
-            # Determine if this is stop or TP based on order type
-            order_type = child.get('orderType', '')
-            stop_price = child.get('stopPrice')
-            
-            if order_type == 'STOP_LIMIT' or stop_price:
-                position.stop_order_id = child_id
-                if stop_price:
-                    position.broker_stop_price = float(stop_price)
-            elif order_type == 'LIMIT':
-                position.tp_order_id = child_id
-        
-        if position.stop_order_id or position.tp_order_id:
-            self._audit(
-                "order_monitor", position.symbol, "child_ids_extracted",
-                "bracket_structure",
-                bracket_id=bracket_id,
-                stop_order_id=position.stop_order_id,
-                tp_order_id=position.tp_order_id,
-            )
-    
-    async def _check_trail_replace(self, position, parent_order: dict) -> None:
-        """Check if software trailing stop has moved and replace broker stop.
-        
-        When position.trailing_stop moves beyond the broker's stop price,
-        cancel the old OCO and place a new one with updated stop level.
-        """
-        # Only check if trailing is active
-        trail = getattr(position, 'trailing_stop', None)
-        if trail is None:
-            return
-        
-        broker_stop = getattr(position, 'broker_stop_price', None)
-        if broker_stop is None:
-            return
-        
-        # For long positions, trailing_stop should be rising (tighter)
-        # Only replace if the new stop is significantly better
-        if position.side == 'long':
-            should_replace = trail > broker_stop * 1.005  # 0.5% threshold
-        else:
-            should_replace = trail < broker_stop * 0.995
-        
-        if not should_replace:
-            return
-        
-        self._audit(
-            "order_monitor", position.symbol, "trail_replace_needed",
-            "software_trail_moved",
-            broker_stop=round(broker_stop, 4),
-            software_trail=round(trail, 4),
-            side=position.side,
-        )
-        
-        # Cancel existing bracket and place new one
-        await self._replace_bracket_with_new_stop(position, trail)
-    
-    async def _replace_bracket_with_new_stop(
-        self, 
-        position, 
-        new_stop: float
-    ) -> None:
-        """Cancel existing bracket and place new OCO with updated stop.
-        
-        This is the trail-replace mechanism: when software trailing stop
-        tightens, we want the broker protection to match so we don't leave
-        stale far stops that give back gains.
-        """
-        symbol = position.symbol
-        bracket_id = position.bracket_order_id
-        
-        if not bracket_id:
-            return
-        
-        self.commentary.add_commentary(TradingCommentary(
-            timestamp=datetime.now(),
-            type=CommentaryType.RISK_ASSESSMENT,
-            symbol=symbol,
-            title=f"🔄 Replacing Bracket Stop",
-            message=(
-                f"Software trail at ${new_stop:.2f} is tighter than "
-                f"broker stop at ${position.broker_stop_price:.2f}. "
-                f"Updating broker protection to match."
-            ),
-            data={
-                'old_broker_stop': position.broker_stop_price,
-                'new_stop': new_stop,
-            },
-            importance=7
-        ))
-        
-        # Cancel existing bracket
-        try:
-            cancel_response = self.schwab_client.cancel_order(
-                bracket_id, self.account_hash
-            )
-            if cancel_response.status_code not in [200, 201, 202]:
-                logger.warning(
-                    "order_monitor: failed to cancel bracket %s for %s: %d",
-                    bracket_id, symbol, cancel_response.status_code,
-                )
-                return
-        except Exception as exc:
-            logger.error(
-                "order_monitor: error canceling bracket %s for %s: %s",
-                bracket_id, symbol, exc,
-            )
-            return
-        
-        # Clear old bracket IDs
-        from core.models import clear_bracket_ids
-        clear_bracket_ids(position)
-        
-        # Wait briefly for cancellation to process
-        await asyncio.sleep(0.5)
-        
-        # Place new bracket with updated stop
-        try:
-            from schwab.orders.common import one_cancels_other, Duration, Session, OrderType
-            from schwab.orders.equities import equity_sell_limit
-            
-            # Use current take_profit from position
-            tp_price = position.take_profit
-            
-            # Create new TP order
-            take_profit_order = equity_sell_limit(
-                symbol,
-                position.quantity,
-                tp_price
-            ).set_duration(Duration.GOOD_TILL_CANCEL).set_session(Session.NORMAL)
-            
-            # Create new stop order with updated price
-            stop_loss_order = (equity_sell_limit(
-                symbol,
-                position.quantity,
-                new_stop * 0.995  # Limit slightly below stop
-            ).set_order_type(OrderType.STOP_LIMIT)
-            .set_stop_price(new_stop)
-            .set_duration(Duration.GOOD_TILL_CANCEL)
-            .set_session(Session.NORMAL))
-            
-            oco_order = one_cancels_other(take_profit_order, stop_loss_order)
-            
-            response = self.schwab_client.place_order(
-                self.account_hash, oco_order.build()
-            )
-            
-            if response.status_code in [200, 201]:
-                new_order_id = response.headers.get('Location', '').split('/')[-1]
-                position.bracket_order_id = new_order_id
-                position.broker_stop_price = new_stop
-                
-                self._audit(
-                    "order_monitor", symbol, "bracket_replaced",
-                    "trail_stop_updated",
-                    old_bracket_id=bracket_id,
-                    new_bracket_id=new_order_id,
-                    new_stop=round(new_stop, 4),
-                )
-                
-                self.commentary.add_commentary(TradingCommentary(
-                    timestamp=datetime.now(),
-                    type=CommentaryType.RISK_ASSESSMENT,
-                    symbol=symbol,
-                    title=f"✅ Bracket Stop Updated",
-                    message=f"New stop at ${new_stop:.2f} now active at broker.",
-                    data={'new_bracket_id': new_order_id, 'new_stop': new_stop},
-                    importance=7
-                ))
-            else:
-                logger.error(
-                    "order_monitor: failed to place replacement bracket for %s: %d",
-                    symbol, response.status_code,
-                )
-                # Alert loudly — position now has NO broker protection
-                self.commentary.add_commentary(TradingCommentary(
-                    timestamp=datetime.now(),
-                    type=CommentaryType.WARNING,
-                    symbol=symbol,
-                    title=f"🚨 BRACKET REPLACEMENT FAILED",
-                    message=(
-                        f"Canceled old bracket but could not place new one. "
-                        f"Position {symbol} has NO broker-side stop/TP! "
-                        f"Software exits still active. Manual review needed."
-                    ),
-                    importance=10
-                ))
-        except Exception as exc:
-            logger.error(
-                "order_monitor: error placing replacement bracket for %s: %s",
-                symbol, exc, exc_info=True,
-            )
-            self.commentary.add_commentary(TradingCommentary(
-                timestamp=datetime.now(),
-                type=CommentaryType.WARNING,
-                symbol=symbol,
-                title=f"🚨 BRACKET REPLACEMENT ERROR",
-                message=f"Error: {exc}. Position may lack broker protection.",
-                importance=10
-            ))
-    
-    async def _handle_bracket_not_working(self, position) -> None:
-        """Handle case where bracket order is no longer WORKING.
-        
-        Query the order status directly to determine what happened:
-          - FILLED: stop or TP hit → sync position state
-          - CANCELED: need to re-protect or alert
-          - REJECTED: place new protection or soft-halt
-        """
-        symbol = position.symbol
-        bracket_id = position.bracket_order_id
-        
-        if not bracket_id:
-            return
-        
-        # Fetch the bracket order status
-        try:
-            response = self.schwab_client.get_order(bracket_id, self.account_hash)
-            if response.status_code != 200:
-                logger.warning(
-                    "order_monitor: could not fetch bracket %s for %s: %d",
-                    bracket_id, symbol, response.status_code,
-                )
-                return
-            order_info = response.json()
-        except Exception as exc:
-            logger.error(
-                "order_monitor: error fetching bracket %s for %s: %s",
-                bracket_id, symbol, exc,
-            )
-            return
-        
-        status = order_info.get('status', 'UNKNOWN')
-        
-        if status == 'FILLED':
-            await self._handle_bracket_fill(position, order_info)
-        elif status in ['CANCELED', 'EXPIRED']:
-            await self._handle_bracket_canceled(position, order_info, status)
-        elif status == 'REJECTED':
-            await self._handle_bracket_rejected(position, order_info)
-        elif status == 'WORKING':
-            # Still working — probably just not in our filtered list
-            pass
-        else:
-            logger.info(
-                "order_monitor: bracket %s for %s has status %s",
-                bracket_id, symbol, status,
-            )
-    
-    async def _handle_bracket_fill(self, position, order_info: dict) -> None:
-        """Handle a bracket order fill (stop or TP hit).
-        
-        Determine which leg filled, sync Position state (reduce or close),
-        cancel the sibling leg if still open, and emit commentary.
-        """
-        symbol = position.symbol
-        
-        # Determine fill details from order activity
-        fill_price = None
-        fill_qty = 0
-        filled_leg = "unknown"
-        
-        # Check child order statuses
-        children = order_info.get('childOrderStrategies', [])
-        for child in children:
-            child_status = child.get('status', '')
-            child_type = child.get('orderType', '')
-            
-            if child_status == 'FILLED':
-                # This is the leg that filled
-                activities = child.get('orderActivityCollection', [])
-                for activity in activities:
-                    if activity.get('executionType') == 'FILL':
-                        legs = activity.get('executionLegs', [])
-                        if legs:
-                            fill_price = legs[0].get('price')
-                            fill_qty = legs[0].get('quantity', 0)
-                
-                if child_type == 'STOP_LIMIT' or child.get('stopPrice'):
-                    filled_leg = "stop"
-                elif child_type == 'LIMIT':
-                    filled_leg = "take_profit"
-        
-        self._audit(
-            "order_monitor", symbol, "bracket_fill",
-            filled_leg,
-            bracket_id=position.bracket_order_id,
-            fill_price=fill_price,
-            fill_qty=fill_qty,
-            position_qty=position.quantity,
-        )
-        
-        # Handle partial vs full fill
-        remaining_qty = position.quantity - fill_qty if fill_qty else 0
-        
-        if remaining_qty > 0:
-            # Partial fill — update position qty and re-bracket
-            await self._handle_partial_bracket_fill(
-                position, fill_price, fill_qty, remaining_qty, filled_leg
-            )
-        else:
-            # Full fill — close position
-            await self._handle_full_bracket_fill(
-                position, fill_price, filled_leg
-            )
-    
-    async def _handle_full_bracket_fill(
-        self, 
-        position, 
-        fill_price: Optional[float],
-        filled_leg: str
-    ) -> None:
-        """Handle a full bracket fill (position fully closed by broker)."""
-        symbol = position.symbol
-        
-        # Clear bracket tracking
-        from core.models import clear_bracket_ids
-        clear_bracket_ids(position)
-        
-        # Determine exit reason for trade record
-        if filled_leg == "stop":
-            exit_reason = "stop_loss_broker"
-            title = f"🛑 Stop Loss Filled by Broker"
-            message = f"Bracket stop hit at ${fill_price:.2f}. Position closed."
-        elif filled_leg == "take_profit":
-            exit_reason = "take_profit_broker"
-            title = f"🎯 Take Profit Filled by Broker"
-            message = f"Bracket target hit at ${fill_price:.2f}. Position closed."
-        else:
-            exit_reason = "bracket_fill_broker"
-            title = f"📊 Bracket Order Filled"
-            message = f"Bracket order filled at ${fill_price:.2f}."
-        
-        self.commentary.add_commentary(TradingCommentary(
-            timestamp=datetime.now(),
-            type=CommentaryType.DECISION,
-            symbol=symbol,
-            title=title,
-            message=message,
-            data={
-                'fill_price': fill_price,
-                'filled_leg': filled_leg,
-                'entry_price': position.entry_price,
-            },
-            importance=9
-        ))
-        
-        # Calculate P&L
-        if fill_price:
-            if position.side == 'long':
-                pnl = (fill_price - position.entry_price) * position.quantity
-            else:
-                pnl = (position.entry_price - fill_price) * position.quantity
-        else:
-            pnl = position.unrealized_pnl
-        
-        # Record trade
-        trade_record = {
-            'symbol': symbol,
-            'entry_time': position.entry_time.isoformat() if hasattr(position.entry_time, 'isoformat') else str(position.entry_time),
-            'exit_time': datetime.now().isoformat(),
-            'entry_price': position.entry_price,
-            'exit_price': fill_price or position.current_price,
-            'quantity': position.quantity,
-            'side': position.side,
-            'pnl': pnl,
-            'exit_reason': exit_reason,
-            'mode': 'live',
-        }
-        self.trade_history.append(trade_record)
-        
-        # Update risk manager
-        if pnl < 0:
-            self.risk_manager.consecutive_losses += 1
-        else:
-            self.risk_manager.consecutive_losses = 0
-        
-        # Remove position
-        if symbol in self.positions:
-            del self.positions[symbol]
-        
-        # Clean up exit manager tracking
-        if hasattr(self, 'exit_manager'):
-            self.exit_manager.close_position_tracking(symbol)
-        
-        await self._save_state()
-        
-        self._audit(
-            "order_monitor", symbol, "position_closed",
-            exit_reason,
-            fill_price=fill_price,
-            pnl=round(pnl, 2) if pnl else None,
-        )
-    
-    async def _handle_partial_bracket_fill(
-        self,
-        position,
-        fill_price: Optional[float],
-        fill_qty: int,
-        remaining_qty: int,
-        filled_leg: str
-    ) -> None:
-        """Handle a partial bracket fill — update qty and re-bracket remaining.
-        
-        v-qty-sync-2026-09-11: Added broker position verification when fill_qty
-        looks suspicious (fill_qty < 10% of local qty or remaining_qty seems
-        inconsistent). The re_bracket call will sync to broker truth, but we
-        also proactively check here to provide better audit trail.
-        """
-        symbol = position.symbol
-        local_qty = position.quantity
-        
-        # v-qty-sync-2026-09-11: detect suspicious qty mismatches early
-        # If fill_qty is much smaller than local_qty, there may be untracked fills
-        fill_ratio = fill_qty / local_qty if local_qty > 0 else 0
-        is_suspicious = fill_ratio < 0.1 and fill_qty < 100  # <10% and small absolute
-        
-        if is_suspicious and self.mode == TradingMode.LIVE and self.schwab_client:
-            broker_qty = await self._check_broker_position_qty(symbol)
-            if broker_qty == 0:
-                # Broker is flat — this was actually a full close, not partial
-                logger.warning(
-                    "partial_fill_was_actually_full symbol=%s fill_qty=%d local_qty=%d broker_flat=True",
-                    symbol, fill_qty, local_qty,
-                )
-                self._audit(
-                    "order_monitor", symbol, "partial_fill_override",
-                    "broker_confirmed_flat",
-                    fill_qty=fill_qty,
-                    local_qty=local_qty,
-                )
-                # Handle as full fill since broker confirms flat
-                await self._handle_full_bracket_fill(position, fill_price, filled_leg)
-                return
-            elif broker_qty != remaining_qty:
-                # Broker qty differs from calculated remaining — will be synced in re_bracket
-                self._audit(
-                    "order_monitor", symbol, "partial_fill_qty_mismatch",
-                    "broker_will_sync",
-                    fill_qty=fill_qty,
-                    local_qty=local_qty,
-                    calculated_remaining=remaining_qty,
-                    broker_qty=broker_qty,
-                )
-        
-        self.commentary.add_commentary(TradingCommentary(
-            timestamp=datetime.now(),
-            type=CommentaryType.DECISION,
-            symbol=symbol,
-            title=f"📊 Partial Bracket Fill",
-            message=(
-                f"Partial {filled_leg} fill: {fill_qty} shares at "
-                f"${fill_price:.2f}. {remaining_qty} shares remaining."
-            ),
-            data={
-                'fill_price': fill_price,
-                'fill_qty': fill_qty,
-                'remaining_qty': remaining_qty,
-                'filled_leg': filled_leg,
-            },
-            importance=8
-        ))
-        
-        # Update position quantity
-        old_qty = position.quantity
-        position.quantity = remaining_qty
-        
-        # Clear old bracket IDs
-        from core.models import clear_bracket_ids
-        old_bracket_id = position.bracket_order_id
-        clear_bracket_ids(position)
-        
-        self._audit(
-            "order_monitor", symbol, "partial_fill",
-            "qty_reduced",
-            fill_qty=fill_qty,
-            remaining_qty=remaining_qty,
-            old_bracket_id=old_bracket_id,
-        )
-        
-        # Re-bracket remaining shares (will sync qty to broker truth if needed)
-        await self._re_bracket_position(position)
-    
-    async def _re_bracket_position(self, position) -> None:
-        """Place new bracket orders for a position (after partial or recovery).
-        
-        v-broker-flat-detection-2026-09-10: added broker position verification
-        before placing bracket to prevent placing orders for positions that
-        no longer exist at the broker.
-        
-        v-qty-sync-2026-09-11: sync local qty to broker truth before placing
-        bracket. If broker shows fewer shares than local, we had untracked
-        fills (partial fills, external closes). Sync to broker qty and
-        re-bracket with correct amount. If broker is flat, clean up.
-        """
-        symbol = position.symbol
-        
-        # v-broker-flat-detection-2026-09-10 + v-qty-sync-2026-09-11:
-        # Verify position qty at broker before placing bracket.
-        # If broker_qty != local_qty, sync local to broker truth.
-        if self.mode == TradingMode.LIVE and self.schwab_client:
-            broker_qty = await self._check_broker_position_qty(symbol)
-            local_qty = position.quantity
-            
-            if broker_qty == 0:
-                logger.warning(
-                    "re_bracket_aborted_broker_flat symbol=%s local_qty=%d — broker shows flat",
-                    symbol, local_qty,
-                )
-                self._audit(
-                    "order_monitor", symbol, "re_bracket_aborted",
-                    "broker_flat_pre_check",
-                    local_qty=local_qty,
-                )
-                # Handle as external close instead of placing invalid bracket
-                await self._handle_broker_flat_detected(position, "re_bracket_pre_check_flat")
-                return
-            
-            # v-qty-sync-2026-09-11: sync local qty to broker truth
-            if broker_qty != local_qty:
-                logger.warning(
-                    "qty_desync_detected symbol=%s local_qty=%d broker_qty=%d — syncing to broker",
-                    symbol, local_qty, broker_qty,
-                )
-                self._audit(
-                    "order_monitor", symbol, "qty_desync",
-                    "sync_to_broker",
-                    local_qty=local_qty,
-                    broker_qty=broker_qty,
-                    delta=local_qty - broker_qty,
-                )
-                self.commentary.add_commentary(TradingCommentary(
-                    timestamp=datetime.now(),
-                    type=CommentaryType.WARNING,
-                    symbol=symbol,
-                    title=f"⚠️ Quantity Desync Detected",
-                    message=(
-                        f"Local qty {local_qty} ≠ broker qty {broker_qty}. "
-                        f"Syncing to broker truth. Possible untracked fills."
-                    ),
-                    data={
-                        'local_qty': local_qty,
-                        'broker_qty': broker_qty,
-                        'delta': local_qty - broker_qty,
-                    },
-                    importance=9
-                ))
-                position.quantity = broker_qty
-        
-        try:
-            from schwab.orders.common import one_cancels_other, Duration, Session, OrderType
-            from schwab.orders.equities import equity_sell_limit
-            
-            # Use current stop/TP from position (may have been trailed)
-            stop_price = position.trailing_stop or position.stop_loss
-            tp_price = position.take_profit
-            qty = position.quantity
-            
-            if not stop_price or not tp_price or qty <= 0:
-                logger.warning(
-                    "order_monitor: cannot re-bracket %s: stop=%s tp=%s qty=%d",
-                    symbol, stop_price, tp_price, qty,
-                )
-                return
-            
-            take_profit_order = equity_sell_limit(
-                symbol, qty, tp_price
-            ).set_duration(Duration.GOOD_TILL_CANCEL).set_session(Session.NORMAL)
-            
-            stop_loss_order = (equity_sell_limit(
-                symbol, qty, stop_price * 0.995
-            ).set_order_type(OrderType.STOP_LIMIT)
-            .set_stop_price(stop_price)
-            .set_duration(Duration.GOOD_TILL_CANCEL)
-            .set_session(Session.NORMAL))
-            
-            oco_order = one_cancels_other(take_profit_order, stop_loss_order)
-            
-            response = self.schwab_client.place_order(
-                self.account_hash, oco_order.build()
-            )
-            
-            if response.status_code in [200, 201]:
-                new_order_id = response.headers.get('Location', '').split('/')[-1]
-                position.bracket_order_id = new_order_id
-                position.broker_stop_price = stop_price
-                
-                self._audit(
-                    "order_monitor", symbol, "re_bracket",
-                    "new_bracket_placed",
-                    new_bracket_id=new_order_id,
-                    qty=qty,
-                    stop=round(stop_price, 4),
-                    tp=round(tp_price, 4),
-                )
-                
-                self.commentary.add_commentary(TradingCommentary(
-                    timestamp=datetime.now(),
-                    type=CommentaryType.RISK_ASSESSMENT,
-                    symbol=symbol,
-                    title=f"✅ Re-Bracketed Position",
-                    message=(
-                        f"New bracket placed for {qty} shares: "
-                        f"stop ${stop_price:.2f}, target ${tp_price:.2f}"
-                    ),
-                    importance=7
-                ))
-            else:
-                logger.error(
-                    "order_monitor: re-bracket failed for %s: %d",
-                    symbol, response.status_code,
-                )
-                self.commentary.add_commentary(TradingCommentary(
-                    timestamp=datetime.now(),
-                    type=CommentaryType.WARNING,
-                    symbol=symbol,
-                    title=f"⚠️ Re-Bracket Failed",
-                    message="Could not place new bracket. Software exits still active.",
-                    importance=8
-                ))
-        except Exception as exc:
-            logger.error(
-                "order_monitor: re-bracket error for %s: %s",
-                symbol, exc, exc_info=True,
-            )
-    
-    async def _handle_bracket_canceled(
-        self, 
-        position, 
-        order_info: dict,
-        status: str
-    ) -> None:
-        """Handle bracket order cancellation or expiration.
-        
-        Policy: attempt to re-place the bracket. If that fails, alert loudly
-        but do NOT soft-halt new entries (software exits still protect).
-        """
-        symbol = position.symbol
-        
-        self._audit(
-            "order_monitor", symbol, "bracket_canceled",
-            status.lower(),
-            bracket_id=position.bracket_order_id,
-        )
-        
-        self.commentary.add_commentary(TradingCommentary(
-            timestamp=datetime.now(),
-            type=CommentaryType.WARNING,
-            symbol=symbol,
-            title=f"⚠️ Bracket Order {status}",
-            message=(
-                f"Bracket was {status.lower()}. "
-                f"Attempting to re-place broker protection."
-            ),
-            importance=8
-        ))
-        
-        # Clear old bracket and attempt to re-place
-        from core.models import clear_bracket_ids
-        clear_bracket_ids(position)
-        
-        await self._re_bracket_position(position)
-    
-    async def _check_broker_position_qty(self, symbol: str) -> int:
-        """v-broker-flat-detection-2026-09-10: query Schwab for actual position qty.
-        
-        Returns the absolute quantity at the broker for `symbol`, or 0 if
-        the position doesn't exist (broker-flat). This is the authoritative
-        source when handling bracket rejections — if Schwab says we're flat,
-        we must stop trying to manage/re-bracket that position.
-        
-        Returns 0 on any error (fail-safe: if we can't verify, assume flat
-        to prevent infinite re_bracket loops).
-        """
-        if not self.schwab_client or not self.account_id:
-            return 0
-        try:
-            schwab_positions = await self.get_schwab_positions()
-            for pos_data in schwab_positions:
-                if pos_data.get('symbol') == symbol:
-                    return abs(pos_data.get('quantity', 0))
-            return 0  # symbol not in broker positions → flat
-        except Exception as exc:
-            logger.warning(
-                "broker_position_check_error symbol=%s err=%s",
-                symbol, exc,
-            )
-            return 0  # fail-safe: assume flat on error
 
-    async def _handle_broker_flat_detected(
-        self,
-        position,
-        reason: str,
+    # ══════════════════════════════════════════════════════════════════════════
+    # v-phase-b-order-monitor-2026-09-14: Thin delegates to core/order_monitor/
+    # Behavior-preserving extraction. See core/order_monitor/ for implementation.
+    # ══════════════════════════════════════════════════════════════════════════
+
+    async def _order_monitor_loop(self) -> None:
+        """Delegate to OrderMonitor.run()."""
+        await self._order_monitor.run()
+
+    def _get_bracket_monitored_positions(self) -> list:
+        """Delegate to OrderMonitor.get_bracket_monitored_positions()."""
+        return self._order_monitor.get_bracket_monitored_positions()
+
+    def _get_positions_missing_brackets(self) -> list:
+        """Delegate to OrderMonitor.get_positions_missing_brackets()."""
+        return self._order_monitor.get_positions_missing_brackets()
+
+    async def _bootstrap_orphan_brackets(self) -> int:
+        """Delegate to OrderMonitor.bootstrap_orphan_brackets()."""
+        return await self._order_monitor.bootstrap_orphan_brackets()
+
+    async def _fetch_working_orders(self):
+        """Delegate to OrderMonitor.fetch_working_orders()."""
+        return await self._order_monitor.fetch_working_orders()
+
+    async def _monitor_position_bracket(
+        self, position, orders_by_id: dict, all_working_orders: list
     ) -> None:
-        """v-broker-flat-detection-2026-09-10: handle external close detection.
-        
-        Called when we discover the broker shows qty=0 for a position we
-        thought was still open. This is the canonical "user closed at Schwab"
-        or "broker stop filled externally" scenario.
-        
-        Actions:
-          1. Clear managed_by_bot → stop all exit management
-          2. Cancel any working exit orders for this symbol
-          3. Mark position as CLOSED (external close)
-          4. Remove from active tracking
-          5. Audit for post-mortem
-        
-        This breaks the infinite re_bracket loop that occurs when:
-          - Bot thinks it has a position (ghost qty in self.positions)
-          - Schwab rejects bracket for oversold/overbought (shares gone)
-          - _handle_bracket_rejected calls _re_bracket_position
-          - New bracket rejected → repeat forever
-        """
-        symbol = position.symbol
-        
-        self._audit(
-            "order_monitor", symbol, "broker_flat_detected",
-            reason,
-            local_qty=position.quantity,
-            managed_by_bot=getattr(position, 'managed_by_bot', False),
+        """Delegate to OrderMonitor._monitor_position_bracket()."""
+        await self._order_monitor._monitor_position_bracket(
+            position, orders_by_id, all_working_orders
         )
-        
-        # Clear managed_by_bot to stop any other exit paths
-        position.managed_by_bot = False
-        
-        # Cancel any working exit orders for this symbol
-        try:
-            await self._cancel_existing_orders(symbol)
-        except Exception as exc:
-            logger.warning(
-                "broker_flat_cancel_orders_error symbol=%s err=%s",
-                symbol, exc,
-            )
-        
-        # Clear bracket IDs (already rejected/cancelled anyway)
-        from core.models import clear_bracket_ids
-        clear_bracket_ids(position)
-        
-        # Transition to CLOSED state
-        from core.position_state import PositionState, try_transition
-        await try_transition(
-            position,
-            PositionState.CLOSED,
-            f"broker_flat_{reason}",
-            audit_fn=self._audit,
+
+    async def _refresh_bracket_child_ids(
+        self, position, orders_by_id: dict, all_working_orders: list
+    ) -> None:
+        """Delegate to brackets.refresh_bracket_child_ids()."""
+        from core.order_monitor.brackets import refresh_bracket_child_ids
+        await refresh_bracket_child_ids(self, position, orders_by_id, all_working_orders)
+
+    async def _check_trail_replace(self, position, parent_order: dict) -> None:
+        """Delegate to brackets.check_trail_replace()."""
+        from core.order_monitor.brackets import check_trail_replace
+        await check_trail_replace(self, position, parent_order)
+
+    async def _replace_bracket_with_new_stop(self, position, new_stop: float) -> None:
+        """Delegate to brackets.replace_bracket_with_new_stop()."""
+        from core.order_monitor.brackets import replace_bracket_with_new_stop
+        await replace_bracket_with_new_stop(self, position, new_stop)
+
+    async def _handle_bracket_not_working(self, position) -> None:
+        """Delegate to brackets.handle_bracket_not_working()."""
+        from core.order_monitor.brackets import handle_bracket_not_working
+        await handle_bracket_not_working(self, position)
+
+    async def _handle_bracket_fill(self, position, order_info: dict) -> None:
+        """Delegate to brackets.handle_bracket_fill()."""
+        from core.order_monitor.brackets import handle_bracket_fill
+        await handle_bracket_fill(self, position, order_info)
+
+    async def _handle_full_bracket_fill(
+        self, position, fill_price, filled_leg: str
+    ) -> None:
+        """Delegate to brackets.handle_full_bracket_fill()."""
+        from core.order_monitor.brackets import handle_full_bracket_fill
+        await handle_full_bracket_fill(self, position, fill_price, filled_leg)
+
+    async def _handle_partial_bracket_fill(
+        self, position, fill_price, fill_qty: int, remaining_qty: int, filled_leg: str
+    ) -> None:
+        """Delegate to brackets.handle_partial_bracket_fill()."""
+        from core.order_monitor.brackets import handle_partial_bracket_fill
+        await handle_partial_bracket_fill(
+            self, position, fill_price, fill_qty, remaining_qty, filled_leg
         )
-        
-        # Remove from active tracking (will be picked up by next sync)
-        self.positions.pop(symbol, None)
-        
-        self.commentary.add_commentary(TradingCommentary(
-            timestamp=datetime.now(),
-            type=CommentaryType.WARNING,
-            symbol=symbol,
-            title=f"🔄 External Close Detected",
-            message=(
-                f"Position {symbol} was closed externally (broker shows flat). "
-                f"Reason: {reason}. Bot will stop managing this position."
-            ),
-            data={'reason': reason},
-            importance=9
-        ))
-        
-        logger.info(
-            "broker_flat_handled symbol=%s reason=%s — position removed from tracking",
-            symbol, reason,
-        )
+
+    async def _re_bracket_position(self, position) -> None:
+        """Delegate to brackets.re_bracket_position()."""
+        from core.order_monitor.brackets import re_bracket_position
+        await re_bracket_position(self, position)
+
+    async def _handle_bracket_canceled(
+        self, position, order_info: dict, status: str
+    ) -> None:
+        """Delegate to brackets.handle_bracket_canceled()."""
+        from core.order_monitor.brackets import handle_bracket_canceled
+        await handle_bracket_canceled(self, position, order_info, status)
+
+    async def _check_broker_position_qty(self, symbol: str) -> int:
+        """Delegate to broker_flat.check_broker_position_qty()."""
+        from core.order_monitor.broker_flat import check_broker_position_qty
+        return await check_broker_position_qty(self, symbol)
+
+    async def _handle_broker_flat_detected(self, position, reason: str) -> None:
+        """Delegate to broker_flat.handle_broker_flat_detected()."""
+        from core.order_monitor.broker_flat import handle_broker_flat_detected
+        await handle_broker_flat_detected(self, position, reason)
 
     def _is_broker_flat_rejection(self, rejection_reason: str) -> bool:
-        """v-broker-flat-detection-2026-09-10: detect oversold/overbought rejection.
-        
-        Returns True if the rejection reason indicates the position is already
-        flat at the broker (the shares are gone, so any sell/cover order is
-        invalid).
-        
-        Known Schwab rejection patterns:
-          - "oversold position" → selling more than owned (long already closed)
-          - "overbought position" → covering more than shorted (short already closed)
-          - variations with "oversold", "overbought", "insufficient shares"
-        """
-        if not rejection_reason:
-            return False
-        reason_lower = rejection_reason.lower()
-        flat_indicators = [
-            'oversold',
-            'overbought',
-            'insufficient shares',
-            'insufficient position',
-            'no position',
-            'position not found',
-        ]
-        return any(indicator in reason_lower for indicator in flat_indicators)
+        """Delegate to broker_flat.is_broker_flat_rejection()."""
+        from core.order_monitor.broker_flat import is_broker_flat_rejection
+        return is_broker_flat_rejection(rejection_reason)
 
     async def _handle_bracket_rejected(self, position, order_info: dict) -> None:
-        """Handle bracket order rejection.
-        
-        v-broker-flat-detection-2026-09-10: enhanced policy:
-          1. Check if rejection indicates broker-flat (oversold/overbought)
-          2. If so, verify with broker and handle as external close
-          3. Otherwise, attempt to re-place with adjusted prices
-          4. Track re_bracket attempts to prevent infinite loops
-        """
-        symbol = position.symbol
-        rejection_reason = order_info.get('statusDescription', 'Unknown reason')
-        
-        self._audit(
-            "order_monitor", symbol, "bracket_rejected",
-            "broker_rejection",
-            bracket_id=position.bracket_order_id,
-            rejection_detail=rejection_reason,
-        )
-        
-        self.commentary.add_commentary(TradingCommentary(
-            timestamp=datetime.now(),
-            type=CommentaryType.WARNING,
-            symbol=symbol,
-            title=f"🚨 Bracket Order REJECTED",
-            message=(
-                f"Broker rejected bracket: {rejection_reason}. "
-                f"Position has NO broker-side protection! "
-                f"Software exits still active."
-            ),
-            data={'reason': rejection_reason},
-            importance=10
-        ))
-        
-        # Clear the rejected bracket
-        from core.models import clear_bracket_ids
-        clear_bracket_ids(position)
-        
-        # v-broker-flat-detection-2026-09-10: check if this is an oversold/overbought
-        # rejection, which indicates the position is already closed at the broker
-        if self._is_broker_flat_rejection(rejection_reason):
-            logger.info(
-                "bracket_rejected_flat_indicator symbol=%s reason=%s — checking broker position",
-                symbol, rejection_reason,
-            )
-            broker_qty = await self._check_broker_position_qty(symbol)
-            if broker_qty == 0:
-                # Confirmed broker-flat — handle as external close, DO NOT re_bracket
-                await self._handle_broker_flat_detected(position, "reject_oversold_overbought")
-                return
-            else:
-                # Broker still shows position — log the mismatch but proceed
-                logger.warning(
-                    "bracket_rejected_flat_mismatch symbol=%s reason=%s broker_qty=%d — proceeding with re_bracket",
-                    symbol, rejection_reason, broker_qty,
-                )
-        
-        # v-broker-flat-detection-2026-09-10: track re_bracket attempts to prevent
-        # infinite loops even if broker-flat detection fails
-        re_bracket_attempts = getattr(position, '_re_bracket_attempts', 0) + 1
-        position._re_bracket_attempts = re_bracket_attempts
-        
-        MAX_RE_BRACKET_ATTEMPTS = 3
-        if re_bracket_attempts > MAX_RE_BRACKET_ATTEMPTS:
-            self._audit(
-                "order_monitor", symbol, "re_bracket_exhausted",
-                "max_attempts_exceeded",
-                attempts=re_bracket_attempts,
-                rejection_detail=rejection_reason,
-            )
-            self.commentary.add_commentary(TradingCommentary(
-                timestamp=datetime.now(),
-                type=CommentaryType.WARNING,
-                symbol=symbol,
-                title=f"🛑 Re-Bracket Attempts Exhausted",
-                message=(
-                    f"Failed to re-bracket after {MAX_RE_BRACKET_ATTEMPTS} attempts. "
-                    f"Last rejection: {rejection_reason}. "
-                    f"Position has software exits only (no broker stop)."
-                ),
-                importance=10
-            ))
-            return
-        
-        # Attempt to re-place with current prices
-        # (The rejection may have been due to price validation)
-        await self._re_bracket_position(position)
+        """Delegate to brackets.handle_bracket_rejected()."""
+        from core.order_monitor.brackets import handle_bracket_rejected
+        await handle_bracket_rejected(self, position, order_info)
 
     async def _analysis_loop(self) -> None:
         """Phase 2: thin wrapper around the existing master-loop body.
@@ -4908,7 +3721,8 @@ class TradingEngineWithCommentary:
         # Polls Schwab for fills/cancels/rejects on bot-managed brackets
         # and syncs Position state accordingly. CRITICAL priority because
         # orphaned stops or missed TP fills are risk management failures.
-        sup.register("order_monitor",  self._order_monitor_loop,   TaskPriority.CRITICAL)
+        # v-phase-b-order-monitor-2026-09-14: delegate to OrderMonitor.run
+        sup.register("order_monitor",  self._order_monitor.run,    TaskPriority.CRITICAL)
         sup.register("analysis_loop",  self._analysis_loop,        TaskPriority.NORMAL)
         # v-market-indices-strip-2026-05-27: regime strip refresh loop.
         # NORMAL priority — purely cosmetic, must never starve trading
@@ -5483,9 +4297,9 @@ class TradingEngineWithCommentary:
     async def start(self):
         """Start the trading engine with commentary"""
         self.is_running = True
-        # v-bootstrap-oco-2026-09-10: track if orphan bracket bootstrap has run
-        # so we only do it once (at startup or first order_monitor tick)
-        self._oco_bootstrap_done = False
+        # v-phase-b-order-monitor-2026-09-14: create OrderMonitor instance
+        # (the _oco_bootstrap_done flag is now on the OrderMonitor)
+        self._order_monitor = OrderMonitor(self)
         # v-uptime-2026-06-10: /api/status reads this; it was never set,
         # so the dashboard showed uptime 0:00:00 forever.
         self.start_time = datetime.now()
@@ -5541,10 +4355,11 @@ class TradingEngineWithCommentary:
                 # v-bootstrap-oco-2026-09-10: attach orphan WORKING OCO brackets
                 # to bot-managed positions that are missing bracket_order_id.
                 # This handles positions from prior version/restart that don't
-                # have bracket tracking, making them visible to _order_monitor_loop.
+                # have bracket tracking, making them visible to order_monitor.run.
+                # v-phase-b-order-monitor-2026-09-14: delegate to OrderMonitor
                 try:
                     attached = await self._bootstrap_orphan_brackets()
-                    self._oco_bootstrap_done = True
+                    self._order_monitor._oco_bootstrap_done = True
                     if attached > 0:
                         logger.info(
                             "startup_bootstrap_oco: attached %d orphan brackets",

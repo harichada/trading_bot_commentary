@@ -348,16 +348,23 @@ def make_rejected_order(order_id: str = "12345", reason: str = "Invalid price") 
 # ORDER MONITOR FILTERING TESTS
 # ============================================================================
 
-def _get_bracket_monitored_positions_logic(positions: dict) -> list:
+def _get_bracket_monitored_positions_logic(positions: dict, denylist: frozenset = None) -> list:
     """Pure logic test of position filtering (no engine import needed).
     
     This replicates the logic of _get_bracket_monitored_positions for testing.
+    v-hands-off-denylist-2026-09-14: added denylist parameter for testing.
     """
+    if denylist is None:
+        from core.config import Config
+        denylist = Config().HANDS_OFF_DENYLIST
     result = []
     for symbol, pos in list(positions.items()):
         if pos is None:
             continue
         if not getattr(pos, 'managed_by_bot', False):
+            continue
+        # v-hands-off-denylist-2026-09-14: skip denylist symbols unconditionally
+        if symbol.upper() in denylist:
             continue
         if getattr(pos, 'is_external', False):
             continue
@@ -417,6 +424,112 @@ class TestGetBracketMonitoredPositions:
         result = _get_bracket_monitored_positions_logic(positions)
         
         assert len(result) == 0
+
+
+# ============================================================================
+# v-hands-off-denylist-2026-09-14: DENYLIST SYMBOL TESTS
+# Verify that HANDS_OFF_DENYLIST symbols are excluded even without is_long_term=True
+# ============================================================================
+
+class TestDenylistSymbolsExcluded:
+    """Test that HANDS_OFF_DENYLIST symbols are excluded from monitoring.
+    
+    v-hands-off-denylist-2026-09-14: A denylist symbol (MU, SNAP, SPCX, HQGE)
+    must NOT appear in either filter result, even if it would otherwise
+    qualify (managed_by_bot=True, NOT is_long_term, with or without bracket).
+    
+    This is a defense-in-depth guard: denylist symbols are protected
+    unconditionally, regardless of whether the flags happen to be set.
+    """
+    
+    def test_denylist_symbol_excluded_from_monitored_positions_with_bracket(self):
+        """MU with bracket and managed_by_bot=True but NOT is_long_term must be excluded."""
+        pos = Position(
+            symbol="MU",
+            entry_price=100.0,
+            quantity=100,
+            side="long",
+            stop_loss=95.0,
+            take_profit=110.0,
+            entry_time=datetime.now(),
+            mode="live",
+            managed_by_bot=True,  # Would normally qualify
+            is_long_term=False,   # NOT marked long-term
+            bracket_order_id="12345",  # Has bracket
+        )
+        
+        positions = {"MU": pos}
+        denylist = frozenset({"MU", "SNAP", "SPCX", "HQGE"})
+        result = _get_bracket_monitored_positions_logic(positions, denylist=denylist)
+        
+        assert len(result) == 0, "MU must be excluded from monitoring even without is_long_term=True"
+    
+    def test_denylist_symbol_excluded_from_missing_brackets(self):
+        """SNAP without bracket but managed_by_bot=True must be excluded from bootstrap."""
+        pos = Position(
+            symbol="SNAP",
+            entry_price=15.0,
+            quantity=500,
+            side="long",
+            stop_loss=14.0,
+            take_profit=18.0,
+            entry_time=datetime.now(),
+            mode="live",
+            managed_by_bot=True,  # Would normally qualify for bootstrap
+            is_long_term=False,   # NOT marked long-term
+            # No bracket_order_id — would normally be in "missing brackets" list
+        )
+        
+        positions = {"SNAP": pos}
+        denylist = frozenset({"MU", "SNAP", "SPCX", "HQGE"})
+        result = _get_positions_missing_brackets_logic(positions, denylist=denylist)
+        
+        assert len(result) == 0, "SNAP must be excluded from bootstrap even without is_long_term=True"
+    
+    def test_non_denylist_symbol_still_included(self):
+        """Non-denylist symbols should still be included when they qualify."""
+        pos = Position(
+            symbol="AAPL",
+            entry_price=150.0,
+            quantity=100,
+            side="long",
+            stop_loss=145.0,
+            take_profit=160.0,
+            entry_time=datetime.now(),
+            mode="live",
+            managed_by_bot=True,
+            is_long_term=False,
+            bracket_order_id="12345",
+        )
+        
+        positions = {"AAPL": pos}
+        denylist = frozenset({"MU", "SNAP", "SPCX", "HQGE"})
+        result = _get_bracket_monitored_positions_logic(positions, denylist=denylist)
+        
+        assert len(result) == 1, "AAPL should still be included (not in denylist)"
+        assert result[0][0] == "AAPL"
+    
+    def test_denylist_case_insensitive(self):
+        """Denylist check should be case-insensitive (symbol.upper() in denylist)."""
+        pos = Position(
+            symbol="mu",  # lowercase
+            entry_price=100.0,
+            quantity=100,
+            side="long",
+            stop_loss=95.0,
+            take_profit=110.0,
+            entry_time=datetime.now(),
+            mode="live",
+            managed_by_bot=True,
+            is_long_term=False,
+            bracket_order_id="12345",
+        )
+        
+        positions = {"mu": pos}
+        denylist = frozenset({"MU", "SNAP", "SPCX", "HQGE"})  # uppercase denylist
+        result = _get_bracket_monitored_positions_logic(positions, denylist=denylist)
+        
+        assert len(result) == 0, "mu (lowercase) must be excluded via case-insensitive match"
 
 
 # ============================================================================
@@ -852,18 +965,25 @@ class TestChildOrderIdExtraction:
 # to positions missing bracket_order_id.
 # ============================================================================
 
-def _get_positions_missing_brackets_logic(positions: dict) -> list:
+def _get_positions_missing_brackets_logic(positions: dict, denylist: frozenset = None) -> list:
     """Pure logic test of position filtering for bootstrap (no engine import needed).
     
     This replicates the logic of _get_positions_missing_brackets for testing.
     Same filters as _get_bracket_monitored_positions EXCEPT the bracket_order_id
     requirement is inverted (we want positions WITHOUT bracket_order_id).
+    v-hands-off-denylist-2026-09-14: added denylist parameter for testing.
     """
+    if denylist is None:
+        from core.config import Config
+        denylist = Config().HANDS_OFF_DENYLIST
     result = []
     for symbol, pos in list(positions.items()):
         if pos is None:
             continue
         if not getattr(pos, 'managed_by_bot', False):
+            continue
+        # v-hands-off-denylist-2026-09-14: skip denylist symbols unconditionally
+        if symbol.upper() in denylist:
             continue
         if getattr(pos, 'is_external', False):
             continue
@@ -1195,12 +1315,11 @@ class TestBrokerFlatRejectionDetection:
     
     def test_oversold_detected_as_broker_flat(self):
         """'oversold position' rejection should be detected as broker-flat."""
-        from core.engine import TradingEngineWithCommentary
+        # v-phase-b-order-monitor-2026-09-14: implementation moved to core/order_monitor/
+        src = (Path(__file__).parent.parent / "core" / "order_monitor" / "broker_flat.py").read_text()
+        assert "is_broker_flat_rejection" in src
         
-        src = (Path(__file__).parent.parent / "core" / "engine.py").read_text()
-        assert "_is_broker_flat_rejection" in src
-        
-        marker = "def _is_broker_flat_rejection"
+        marker = "def is_broker_flat_rejection"
         idx = src.index(marker)
         body = src[idx:idx + 1500]
         
@@ -1210,10 +1329,9 @@ class TestBrokerFlatRejectionDetection:
         
     def test_overbought_detected_as_broker_flat(self):
         """'overbought position' rejection should be detected as broker-flat."""
-        from core.engine import TradingEngineWithCommentary
-        
-        src = (Path(__file__).parent.parent / "core" / "engine.py").read_text()
-        marker = "_is_broker_flat_rejection"
+        # v-phase-b-order-monitor-2026-09-14: implementation moved to core/order_monitor/
+        src = (Path(__file__).parent.parent / "core" / "order_monitor" / "broker_flat.py").read_text()
+        marker = "is_broker_flat_rejection"
         assert marker in src
         
     def test_price_rejection_not_broker_flat(self):
@@ -1232,38 +1350,40 @@ class TestBrokerFlatHandling:
     """v-broker-flat-detection-2026-09-10: Test _handle_broker_flat_detected behavior."""
     
     def test_handler_exists_in_engine(self):
-        """_handle_broker_flat_detected must exist and clear managed_by_bot."""
-        src = (Path(__file__).parent.parent / "core" / "engine.py").read_text()
+        """handle_broker_flat_detected must exist and clear managed_by_bot."""
+        # v-phase-b-order-monitor-2026-09-14: implementation moved to core/order_monitor/
+        src = (Path(__file__).parent.parent / "core" / "order_monitor" / "broker_flat.py").read_text()
         
-        assert "async def _handle_broker_flat_detected" in src
+        assert "async def handle_broker_flat_detected" in src
         
-        marker = "async def _handle_broker_flat_detected"
+        marker = "async def handle_broker_flat_detected"
         idx = src.index(marker)
         body = src[idx:idx + 3000]
         
         assert "managed_by_bot = False" in body, (
-            "_handle_broker_flat_detected must clear managed_by_bot"
+            "handle_broker_flat_detected must clear managed_by_bot"
         )
         assert "_cancel_existing_orders" in body, (
-            "_handle_broker_flat_detected must cancel working orders"
+            "handle_broker_flat_detected must cancel working orders"
         )
-        assert "self.positions.pop" in body, (
-            "_handle_broker_flat_detected must remove position from tracking"
+        assert "engine.positions.pop" in body, (
+            "handle_broker_flat_detected must remove position from tracking"
         )
         
     def test_handler_transitions_to_closed(self):
-        """_handle_broker_flat_detected must transition position to CLOSED state."""
-        src = (Path(__file__).parent.parent / "core" / "engine.py").read_text()
+        """handle_broker_flat_detected must transition position to CLOSED state."""
+        # v-phase-b-order-monitor-2026-09-14: implementation moved to core/order_monitor/
+        src = (Path(__file__).parent.parent / "core" / "order_monitor" / "broker_flat.py").read_text()
         
-        marker = "async def _handle_broker_flat_detected"
+        marker = "async def handle_broker_flat_detected"
         idx = src.index(marker)
         body = src[idx:idx + 3000]
         
         assert "PositionState.CLOSED" in body, (
-            "_handle_broker_flat_detected must transition to CLOSED"
+            "handle_broker_flat_detected must transition to CLOSED"
         )
         assert "try_transition" in body, (
-            "_handle_broker_flat_detected must use try_transition for FSM"
+            "handle_broker_flat_detected must use try_transition for FSM"
         )
 
 
@@ -1271,15 +1391,16 @@ class TestReBracketLoopPrevention:
     """v-broker-flat-detection-2026-09-10: Test infinite re_bracket loop prevention."""
     
     def test_re_bracket_attempts_tracked(self):
-        """_handle_bracket_rejected must track re_bracket attempts."""
-        src = (Path(__file__).parent.parent / "core" / "engine.py").read_text()
+        """handle_bracket_rejected must track re_bracket attempts."""
+        # v-phase-b-order-monitor-2026-09-14: implementation moved to core/order_monitor/
+        src = (Path(__file__).parent.parent / "core" / "order_monitor" / "brackets.py").read_text()
         
-        marker = "async def _handle_bracket_rejected"
+        marker = "async def handle_bracket_rejected"
         idx = src.index(marker)
         body = src[idx:idx + 4000]
         
         assert "_re_bracket_attempts" in body, (
-            "_handle_bracket_rejected must track re_bracket attempts"
+            "handle_bracket_rejected must track re_bracket attempts"
         )
         assert "MAX_RE_BRACKET_ATTEMPTS" in body, (
             "Must have a max attempts constant"
@@ -1287,9 +1408,10 @@ class TestReBracketLoopPrevention:
         
     def test_max_attempts_stops_loop(self):
         """After MAX_RE_BRACKET_ATTEMPTS, no more re_bracket calls."""
-        src = (Path(__file__).parent.parent / "core" / "engine.py").read_text()
+        # v-phase-b-order-monitor-2026-09-14: implementation moved to core/order_monitor/
+        src = (Path(__file__).parent.parent / "core" / "order_monitor" / "brackets.py").read_text()
         
-        marker = "async def _handle_bracket_rejected"
+        marker = "async def handle_bracket_rejected"
         idx = src.index(marker)
         body = src[idx:idx + 4000]
         
@@ -1302,35 +1424,37 @@ class TestReBracketLoopPrevention:
 
 
 class TestReBracketBrokerFlatCheck:
-    """v-broker-flat-detection-2026-09-10: Test _re_bracket_position broker-flat pre-check."""
+    """v-broker-flat-detection-2026-09-10: Test re_bracket_position broker-flat pre-check."""
     
     def test_re_bracket_checks_broker_before_placing(self):
-        """_re_bracket_position must verify position exists at broker before placing."""
-        src = (Path(__file__).parent.parent / "core" / "engine.py").read_text()
+        """re_bracket_position must verify position exists at broker before placing."""
+        # v-phase-b-order-monitor-2026-09-14: implementation moved to core/order_monitor/
+        src = (Path(__file__).parent.parent / "core" / "order_monitor" / "brackets.py").read_text()
         
-        marker = "async def _re_bracket_position"
+        marker = "async def re_bracket_position"
         idx = src.index(marker)
         body = src[idx:idx + 2500]
         
-        assert "_check_broker_position_qty" in body, (
-            "_re_bracket_position must check broker position before placing"
+        assert "check_broker_position_qty" in body, (
+            "re_bracket_position must check broker position before placing"
         )
         assert "broker_flat_pre_check" in body, (
             "Must audit broker-flat detection in pre-check"
         )
         
     def test_check_broker_position_qty_exists(self):
-        """_check_broker_position_qty helper must exist."""
-        src = (Path(__file__).parent.parent / "core" / "engine.py").read_text()
+        """check_broker_position_qty helper must exist."""
+        # v-phase-b-order-monitor-2026-09-14: implementation moved to core/order_monitor/
+        src = (Path(__file__).parent.parent / "core" / "order_monitor" / "broker_flat.py").read_text()
         
-        assert "async def _check_broker_position_qty" in src
+        assert "async def check_broker_position_qty" in src
         
-        marker = "async def _check_broker_position_qty"
+        marker = "async def check_broker_position_qty"
         idx = src.index(marker)
         body = src[idx:idx + 1500]
         
         assert "get_schwab_positions" in body, (
-            "_check_broker_position_qty must query Schwab positions"
+            "check_broker_position_qty must query Schwab positions"
         )
         assert "return 0" in body, (
             "Must return 0 when position not found (fail-safe)"
@@ -1345,27 +1469,28 @@ class TestBrokerFlatScenarios:
         
         Expected: position removed from tracking, no re_bracket attempt.
         """
-        src = (Path(__file__).parent.parent / "core" / "engine.py").read_text()
+        # v-phase-b-order-monitor-2026-09-14: implementation moved to core/order_monitor/
+        src = (Path(__file__).parent.parent / "core" / "order_monitor" / "brackets.py").read_text()
         
-        marker = "async def _handle_bracket_rejected"
+        marker = "async def handle_bracket_rejected"
         idx = src.index(marker)
         body = src[idx:idx + 4500]
         
-        assert "_is_broker_flat_rejection" in body, (
-            "_handle_bracket_rejected must check for broker-flat rejection"
+        assert "is_broker_flat_rejection" in body, (
+            "handle_bracket_rejected must check for broker-flat rejection"
         )
-        assert "_check_broker_position_qty" in body, (
-            "_handle_bracket_rejected must verify with broker"
+        assert "check_broker_position_qty" in body, (
+            "handle_bracket_rejected must verify with broker"
         )
-        assert "_handle_broker_flat_detected" in body, (
-            "_handle_bracket_rejected must call _handle_broker_flat_detected"
+        assert "handle_broker_flat_detected" in body, (
+            "handle_bracket_rejected must call handle_broker_flat_detected"
         )
         
-        call_idx = body.index("_handle_broker_flat_detected")
+        call_idx = body.index("handle_broker_flat_detected")
         return_idx = body.index("return", call_idx)
         
         assert return_idx - call_idx < 200, (
-            "Must return after _handle_broker_flat_detected (no re_bracket)"
+            "Must return after handle_broker_flat_detected (no re_bracket)"
         )
         
     def test_scenario_oversold_reject_broker_still_has_position(self, bot_managed_position):
@@ -1373,17 +1498,18 @@ class TestBrokerFlatScenarios:
         
         Expected: log mismatch, proceed with re_bracket (may be partial fill edge case).
         """
-        src = (Path(__file__).parent.parent / "core" / "engine.py").read_text()
+        # v-phase-b-order-monitor-2026-09-14: implementation moved to core/order_monitor/
+        src = (Path(__file__).parent.parent / "core" / "order_monitor" / "brackets.py").read_text()
         
-        marker = "async def _handle_bracket_rejected"
+        marker = "async def handle_bracket_rejected"
         idx = src.index(marker)
         body = src[idx:idx + 4500]
         
         assert "flat_mismatch" in body, (
             "Must log when rejection says flat but broker has shares"
         )
-        assert "_re_bracket_position" in body, (
-            "Must still call _re_bracket_position when broker confirms shares exist"
+        assert "re_bracket_position" in body, (
+            "Must still call re_bracket_position when broker confirms shares exist"
         )
         
     def test_scenario_price_reject_normal_re_bracket(self, bot_managed_position):
@@ -1406,9 +1532,10 @@ class TestPositionReBracketAttempts:
     
     def test_attempts_counter_incremented(self):
         """_re_bracket_attempts must be incremented on each rejection."""
-        src = (Path(__file__).parent.parent / "core" / "engine.py").read_text()
+        # v-phase-b-order-monitor-2026-09-14: implementation moved to core/order_monitor/
+        src = (Path(__file__).parent.parent / "core" / "order_monitor" / "brackets.py").read_text()
         
-        marker = "async def _handle_bracket_rejected"
+        marker = "async def handle_bracket_rejected"
         idx = src.index(marker)
         body = src[idx:idx + 4000]
         
@@ -1419,9 +1546,10 @@ class TestPositionReBracketAttempts:
         
     def test_attempts_counter_stored_on_position(self):
         """Counter must be stored on position object for persistence across calls."""
-        src = (Path(__file__).parent.parent / "core" / "engine.py").read_text()
+        # v-phase-b-order-monitor-2026-09-14: implementation moved to core/order_monitor/
+        src = (Path(__file__).parent.parent / "core" / "order_monitor" / "brackets.py").read_text()
         
-        marker = "async def _handle_bracket_rejected"
+        marker = "async def handle_bracket_rejected"
         idx = src.index(marker)
         body = src[idx:idx + 4000]
         
@@ -1541,7 +1669,7 @@ class TestFSMBrokerFlatCloseTransitions:
 # ============================================================================
 
 class TestQuantitySyncInReBracket:
-    """v-qty-sync-2026-09-11: Test qty sync logic in _re_bracket_position.
+    """v-qty-sync-2026-09-11: Test qty sync logic in re_bracket_position.
     
     Incident context (ALM):
       - Local qty: 567
@@ -1553,26 +1681,28 @@ class TestQuantitySyncInReBracket:
     """
     
     def test_qty_sync_code_exists(self):
-        """_re_bracket_position must contain qty desync detection."""
-        src = (Path(__file__).parent.parent / "core" / "engine.py").read_text()
+        """re_bracket_position must contain qty desync detection."""
+        # v-phase-b-order-monitor-2026-09-14: implementation moved to core/order_monitor/
+        src = (Path(__file__).parent.parent / "core" / "order_monitor" / "brackets.py").read_text()
         
-        marker = "async def _re_bracket_position"
+        marker = "async def re_bracket_position"
         idx = src.index(marker)
         body = src[idx:idx + 3500]
         
         assert "qty_desync_detected" in body, (
-            "_re_bracket_position must log qty desync detection"
+            "re_bracket_position must log qty desync detection"
         )
         assert "broker_qty != local_qty" in body, (
-            "_re_bracket_position must compare broker_qty to local_qty"
+            "re_bracket_position must compare broker_qty to local_qty"
         )
         assert "position.quantity = broker_qty" in body, (
-            "_re_bracket_position must sync position.quantity to broker_qty"
+            "re_bracket_position must sync position.quantity to broker_qty"
         )
         
     def test_qty_sync_audit_fields(self):
         """Qty sync must audit local_qty, broker_qty, and delta."""
-        src = (Path(__file__).parent.parent / "core" / "engine.py").read_text()
+        # v-phase-b-order-monitor-2026-09-14: implementation moved to core/order_monitor/
+        src = (Path(__file__).parent.parent / "core" / "order_monitor" / "brackets.py").read_text()
         
         marker = "qty_desync"
         idx = src.index(marker)
@@ -1584,7 +1714,8 @@ class TestQuantitySyncInReBracket:
         
     def test_qty_sync_commentary_generated(self):
         """Qty sync must generate user-facing commentary."""
-        src = (Path(__file__).parent.parent / "core" / "engine.py").read_text()
+        # v-phase-b-order-monitor-2026-09-14: implementation moved to core/order_monitor/
+        src = (Path(__file__).parent.parent / "core" / "order_monitor" / "brackets.py").read_text()
         
         marker = "qty_desync_detected"
         idx = src.index(marker)
@@ -1602,40 +1733,43 @@ class TestPartialFillQtyValidation:
     """v-qty-sync-2026-09-11: Test partial fill qty validation."""
     
     def test_partial_fill_suspicious_detection(self):
-        """_handle_partial_bracket_fill must detect suspicious qty mismatches."""
-        src = (Path(__file__).parent.parent / "core" / "engine.py").read_text()
+        """handle_partial_bracket_fill must detect suspicious qty mismatches."""
+        # v-phase-b-order-monitor-2026-09-14: implementation moved to core/order_monitor/
+        src = (Path(__file__).parent.parent / "core" / "order_monitor" / "brackets.py").read_text()
         
-        marker = "async def _handle_partial_bracket_fill"
+        marker = "async def handle_partial_bracket_fill"
         idx = src.index(marker)
         body = src[idx:idx + 2500]
         
         assert "fill_ratio" in body, (
-            "_handle_partial_bracket_fill must calculate fill ratio"
+            "handle_partial_bracket_fill must calculate fill ratio"
         )
         assert "is_suspicious" in body, (
-            "_handle_partial_bracket_fill must flag suspicious fills"
+            "handle_partial_bracket_fill must flag suspicious fills"
         )
         
     def test_partial_fill_broker_flat_override(self):
         """When partial fill but broker flat, handle as full fill."""
-        src = (Path(__file__).parent.parent / "core" / "engine.py").read_text()
+        # v-phase-b-order-monitor-2026-09-14: implementation moved to core/order_monitor/
+        src = (Path(__file__).parent.parent / "core" / "order_monitor" / "brackets.py").read_text()
         
-        marker = "async def _handle_partial_bracket_fill"
+        marker = "async def handle_partial_bracket_fill"
         idx = src.index(marker)
         body = src[idx:idx + 2500]
         
         assert "partial_fill_was_actually_full" in body, (
             "Must detect when partial fill was actually full close"
         )
-        assert "_handle_full_bracket_fill" in body, (
-            "Must call _handle_full_bracket_fill when broker confirms flat"
+        assert "handle_full_bracket_fill" in body, (
+            "Must call handle_full_bracket_fill when broker confirms flat"
         )
         
     def test_partial_fill_qty_mismatch_audit(self):
         """Partial fill with qty mismatch must be audited."""
-        src = (Path(__file__).parent.parent / "core" / "engine.py").read_text()
+        # v-phase-b-order-monitor-2026-09-14: implementation moved to core/order_monitor/
+        src = (Path(__file__).parent.parent / "core" / "order_monitor" / "brackets.py").read_text()
         
-        marker = "async def _handle_partial_bracket_fill"
+        marker = "async def handle_partial_bracket_fill"
         idx = src.index(marker)
         body = src[idx:idx + 2500]
         
@@ -1698,7 +1832,8 @@ class TestALMIncidentReplay:
         
     def test_alm_scenario_qty_sync_implemented(self):
         """ALM scenario: qty sync must be implemented in re_bracket."""
-        src = (Path(__file__).parent.parent / "core" / "engine.py").read_text()
+        # v-phase-b-order-monitor-2026-09-14: implementation moved to core/order_monitor/
+        src = (Path(__file__).parent.parent / "core" / "order_monitor" / "brackets.py").read_text()
         
         assert "qty_desync" in src, (
             "ALM fix: qty desync detection must be implemented"
@@ -1709,7 +1844,8 @@ class TestALMIncidentReplay:
         
     def test_alm_qty_desync_audit_for_rca(self):
         """ALM scenario: audit must include delta for post-mortem RCA."""
-        src = (Path(__file__).parent.parent / "core" / "engine.py").read_text()
+        # v-phase-b-order-monitor-2026-09-14: implementation moved to core/order_monitor/
+        src = (Path(__file__).parent.parent / "core" / "order_monitor" / "brackets.py").read_text()
         
         marker = "qty_desync"
         idx = src.index(marker)
@@ -1724,40 +1860,43 @@ class TestBrokerFlatCloseIntegration:
     """Integration tests for broker-flat close handling."""
     
     def test_handle_broker_flat_detected_transitions_to_closed(self):
-        """_handle_broker_flat_detected must transition to CLOSED."""
-        src = (Path(__file__).parent.parent / "core" / "engine.py").read_text()
+        """handle_broker_flat_detected must transition to CLOSED."""
+        # v-phase-b-order-monitor-2026-09-14: implementation moved to core/order_monitor/
+        src = (Path(__file__).parent.parent / "core" / "order_monitor" / "broker_flat.py").read_text()
         
-        marker = "async def _handle_broker_flat_detected"
+        marker = "async def handle_broker_flat_detected"
         idx = src.index(marker)
         body = src[idx:idx + 3000]
         
         assert "PositionState.CLOSED" in body, (
-            "_handle_broker_flat_detected must transition to CLOSED"
+            "handle_broker_flat_detected must transition to CLOSED"
         )
         assert "try_transition" in body, (
-            "_handle_broker_flat_detected must use try_transition"
+            "handle_broker_flat_detected must use try_transition"
         )
         
     def test_broker_flat_handler_clears_managed_flag(self):
-        """_handle_broker_flat_detected must clear managed_by_bot."""
-        src = (Path(__file__).parent.parent / "core" / "engine.py").read_text()
+        """handle_broker_flat_detected must clear managed_by_bot."""
+        # v-phase-b-order-monitor-2026-09-14: implementation moved to core/order_monitor/
+        src = (Path(__file__).parent.parent / "core" / "order_monitor" / "broker_flat.py").read_text()
         
-        marker = "async def _handle_broker_flat_detected"
+        marker = "async def handle_broker_flat_detected"
         idx = src.index(marker)
         body = src[idx:idx + 3000]
         
         assert "managed_by_bot = False" in body, (
-            "_handle_broker_flat_detected must clear managed_by_bot"
+            "handle_broker_flat_detected must clear managed_by_bot"
         )
         
     def test_broker_flat_handler_removes_from_tracking(self):
-        """_handle_broker_flat_detected must remove position from tracking."""
-        src = (Path(__file__).parent.parent / "core" / "engine.py").read_text()
+        """handle_broker_flat_detected must remove position from tracking."""
+        # v-phase-b-order-monitor-2026-09-14: implementation moved to core/order_monitor/
+        src = (Path(__file__).parent.parent / "core" / "order_monitor" / "broker_flat.py").read_text()
         
-        marker = "async def _handle_broker_flat_detected"
+        marker = "async def handle_broker_flat_detected"
         idx = src.index(marker)
         body = src[idx:idx + 3000]
         
-        assert "self.positions.pop" in body, (
-            "_handle_broker_flat_detected must remove from self.positions"
+        assert "engine.positions.pop" in body, (
+            "handle_broker_flat_detected must remove from engine.positions"
         )
