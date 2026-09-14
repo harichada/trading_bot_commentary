@@ -776,6 +776,122 @@ async def reset_settings():
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
+
+# ============================================================================
+# HANDS-OFF DENYLIST API
+# v-hands-off-denylist-settings-2026-09-14
+# ============================================================================
+
+import re
+_TICKER_PATTERN = re.compile(r'^[A-Z]{1,5}$')
+
+
+def _is_valid_ticker(symbol: str) -> bool:
+    """Validate that a symbol looks like a valid US equity ticker.
+
+    Accepts 1-5 uppercase letters. Rejects numerics, special chars,
+    and overly long strings. This is a quick sanity check, not a
+    comprehensive exchange listing verification.
+    """
+    return bool(_TICKER_PATTERN.match(symbol))
+
+
+@app.get("/api/hands-off-denylist")
+async def get_hands_off_denylist():
+    """Get the current hands-off denylist from Config.
+
+    Returns the effective list of symbols that the bot must never
+    attempt to manage or close. Safe fallback: if config lookup
+    fails, returns the hardcoded defaults (MU, HQGE, SPCX).
+
+    Response:
+        {
+            "status": "success",
+            "symbols": ["HQGE", "MU", "SPCX"],  // sorted
+            "source": "config" | "default_fallback"
+        }
+    """
+    DEFAULT_DENYLIST = ['MU', 'HQGE', 'SPCX']
+    try:
+        from core.config import Config
+        cfg = Config()
+        symbols = list(cfg.HANDS_OFF_DENYLIST)
+        return {
+            "status": "success",
+            "symbols": sorted(symbols),
+            "source": "config"
+        }
+    except Exception as e:
+        logger.warning("hands-off-denylist GET failed, using defaults: %s", e)
+        return {
+            "status": "success",
+            "symbols": sorted(DEFAULT_DENYLIST),
+            "source": "default_fallback"
+        }
+
+
+@app.put("/api/hands-off-denylist")
+async def update_hands_off_denylist(request: dict):
+    """Update the hands-off denylist.
+
+    Normalizes input (uppercase, unique, valid ticker format), persists
+    via config_manager, and returns the saved list. Invalid symbols are
+    silently dropped with a warning in the response.
+
+    Request body:
+        {"symbols": ["MU", "HQGE", "SPCX", "FOO"]}
+
+    Response:
+        {
+            "status": "success",
+            "symbols": ["FOO", "HQGE", "MU", "SPCX"],  // sorted
+            "dropped": ["123", "invalid!"],  // if any were invalid
+            "message": "Saved 4 symbols"
+        }
+
+    Note: No bot restart required — Config.HANDS_OFF_DENYLIST re-reads
+    from config_manager on every access.
+    """
+    from trading_bot_commentary_updated import config_manager
+
+    raw_symbols = request.get('symbols', [])
+    if not isinstance(raw_symbols, list):
+        return {"status": "error", "message": "symbols must be a list"}
+
+    valid = []
+    dropped = []
+    seen = set()
+
+    for item in raw_symbols:
+        if not isinstance(item, str):
+            dropped.append(str(item))
+            continue
+        normalized = item.strip().upper()
+        if not normalized:
+            continue
+        if normalized in seen:
+            continue
+        if not _is_valid_ticker(normalized):
+            dropped.append(item)
+            continue
+        seen.add(normalized)
+        valid.append(normalized)
+
+    config_manager.update('trading.hands_off_denylist', valid)
+
+    result = {
+        "status": "success",
+        "symbols": sorted(valid),
+        "message": f"Saved {len(valid)} symbol{'s' if len(valid) != 1 else ''}"
+    }
+    if dropped:
+        result["dropped"] = dropped
+        result["message"] += f" (dropped {len(dropped)} invalid)"
+
+    logger.info("hands-off-denylist updated: %s", sorted(valid))
+    return result
+
+
 @app.get("/api/market-indices")
 async def get_market_indices():
     """v-market-indices-strip-2026-05-27: regime strip data.

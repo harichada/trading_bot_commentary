@@ -870,6 +870,37 @@
             overflow-y: auto;
         }
 
+        /* Settings Tab Styles (v-hands-off-denylist-settings-2026-09-14) */
+        .settings-panel {
+            flex: 1;
+            padding: 20px;
+            overflow-y: auto;
+        }
+        .settings-panel .card {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            overflow: hidden;
+        }
+        .settings-panel .card > h3 {
+            margin: 0;
+            padding: 1rem 1.25rem;
+            border-bottom: 1px solid var(--border-soft);
+            font: 600 0.95rem var(--font-sans);
+            color: var(--fg);
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        .settings-panel .card > h3::before {
+            content: '';
+            display: inline-block;
+            height: 1.5rem;
+            width: 3px;
+            border-radius: 9999px;
+            background: linear-gradient(to bottom, var(--accent), oklch(0.65 0.2 200 / 0.3));
+        }
+
         .backtest-config {
             display: grid;
             grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
@@ -3321,6 +3352,76 @@
         </div>
     </div>
 
+    <!-- Settings Tab (v-hands-off-denylist-settings-2026-09-14) -->
+    <div class="tab-content" id="tab-settings" style="flex-direction: column;">
+        <div class="settings-panel" style="padding: 20px; max-width: 800px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                <h2 style="margin: 0;">⚙️ Settings</h2>
+            </div>
+
+            <!-- Hands-Off Denylist Card -->
+            <div class="card" id="hands-off-card">
+                <h3>Hands-Off / Permanent Denylist
+                    <span style="font-size: 0.7em; color: #888; font-weight: normal; margin-left: 0.5rem;">
+                        — symbols the bot must never manage or close
+                    </span>
+                </h3>
+                <div style="padding: 1.25rem;">
+                    <p style="color: var(--muted-fg); font-size: 0.85rem; margin: 0 0 1rem 0;">
+                        Positions for these symbols are always locked: Long-Term is force-checked,
+                        Bot-Managed is force-unchecked, and Close is disabled. The bot ignores them
+                        for P&L circuit calculations and exit management.
+                    </p>
+
+                    <!-- Current symbols as chips -->
+                    <div id="hands-off-chips" style="display: flex; flex-wrap: wrap; gap: 0.5rem; min-height: 40px; padding: 0.75rem; background: oklch(0.12 0.01 270); border-radius: var(--radius); margin-bottom: 1rem;">
+                        <span style="color: var(--muted-fg); font-style: italic;">Loading...</span>
+                    </div>
+
+                    <!-- Add symbol input -->
+                    <div style="display: flex; gap: 0.5rem; margin-bottom: 1rem;">
+                        <input type="text" id="hands-off-input"
+                            placeholder="Enter symbol (e.g. FOO)"
+                            style="flex: 1; padding: 0.6rem 0.9rem; background: oklch(0.18 0.01 270);
+                                   border: 1px solid var(--border); border-radius: var(--radius);
+                                   color: var(--fg); font: 500 0.9rem var(--font-mono);"
+                            onkeydown="if(event.key==='Enter'){addHandsOffSymbol();}"
+                            maxlength="5">
+                        <button onclick="addHandsOffSymbol()" class="button button-primary"
+                            style="padding: 0.6rem 1.2rem;">
+                            + Add
+                        </button>
+                    </div>
+
+                    <!-- Save / Status row -->
+                    <div style="display: flex; align-items: center; gap: 1rem;">
+                        <button id="hands-off-save-btn" onclick="saveHandsOffDenylist()" class="button button-primary"
+                            style="padding: 0.6rem 1.5rem; background: var(--accent);">
+                            Save Changes
+                        </button>
+                        <span id="hands-off-status" style="font-size: 0.85rem; color: var(--muted-fg);"></span>
+                    </div>
+
+                    <!-- Pending changes summary -->
+                    <div id="hands-off-pending" style="display: none; margin-top: 1rem; padding: 0.75rem;
+                        background: oklch(0.78 0.16 80 / 0.1); border: 1px solid oklch(0.78 0.16 80 / 0.3);
+                        border-radius: var(--radius); font-size: 0.85rem; color: oklch(0.85 0.12 80);">
+                    </div>
+                </div>
+            </div>
+
+            <!-- Info note -->
+            <div style="margin-top: 1rem; padding: 1rem; background: oklch(0.65 0.2 200 / 0.08);
+                border: 1px solid oklch(0.65 0.2 200 / 0.2); border-radius: var(--radius);
+                font-size: 0.85rem; color: var(--muted-fg);">
+                <strong style="color: var(--fg);">Note:</strong> Changes take effect immediately
+                after save — no bot restart required. The denylist is persisted to
+                <code style="background: oklch(0.18 0.01 270); padding: 0.15rem 0.4rem; border-radius: 4px;">Config.yaml</code>
+                under <code style="background: oklch(0.18 0.01 270); padding: 0.15rem 0.4rem; border-radius: 4px;">trading.hands_off_denylist</code>.
+            </div>
+        </div>
+    </div>
+
     <script>
         // Auth helper: wraps fetch() to include Bearer token when TRADING_API_KEY is set
         function authFetch(url, options = {}) {
@@ -3338,6 +3439,15 @@
         let currentTab = 'dashboard';
         let sentimentData = null;
         let backtestRunning = false;
+
+        // ============== HANDS-OFF DENYLIST STATE ==============
+        // v-hands-off-denylist-settings-2026-09-14: runtime Set of permanent
+        // hands-off symbols. Populated from API on load; used by position
+        // rendering to lock controls. Default fallback if API fails.
+        const DEFAULT_HANDS_OFF = ['MU', 'HQGE', 'SPCX'];
+        let handsOffSymbols = new Set(DEFAULT_HANDS_OFF);
+        let handsOffOriginal = new Set(DEFAULT_HANDS_OFF);  // snapshot for change detection
+        let handsOffPending = new Set(DEFAULT_HANDS_OFF);   // working copy for edits
 
         // ============== TAB NAVIGATION ==============
         function switchTab(tabName) {
@@ -3367,6 +3477,159 @@
                 loadSentimentTab();
             } else if (tabName === 'backtest') {
                 loadBacktestLatest();
+            } else if (tabName === 'settings') {
+                loadHandsOffDenylist();
+            }
+        }
+
+        // ============== HANDS-OFF DENYLIST MANAGEMENT ==============
+        // v-hands-off-denylist-settings-2026-09-14: Settings panel functions
+
+        async function loadHandsOffDenylist() {
+            const status = document.getElementById('hands-off-status');
+            status.textContent = 'Loading...';
+            try {
+                const resp = await authFetch('/api/hands-off-denylist');
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                const data = await resp.json();
+                if (data.status === 'success') {
+                    const symbols = data.symbols || [];
+                    handsOffSymbols = new Set(symbols);
+                    handsOffOriginal = new Set(symbols);
+                    handsOffPending = new Set(symbols);
+                    renderHandsOffChips();
+                    status.textContent = data.source === 'default_fallback'
+                        ? 'Using default list (config read failed)'
+                        : '';
+                } else {
+                    status.textContent = 'Load error: ' + (data.message || 'unknown');
+                }
+            } catch (e) {
+                console.error('Failed to load hands-off denylist:', e);
+                status.textContent = 'Failed to load — using defaults';
+                handsOffPending = new Set(DEFAULT_HANDS_OFF);
+                renderHandsOffChips();
+            }
+        }
+
+        function renderHandsOffChips() {
+            const container = document.getElementById('hands-off-chips');
+            const symbols = Array.from(handsOffPending).sort();
+            if (symbols.length === 0) {
+                container.innerHTML = '<span style="color: var(--muted-fg); font-style: italic;">No symbols — add one below</span>';
+            } else {
+                container.innerHTML = symbols.map(sym => `
+                    <span class="hands-off-chip" style="display: inline-flex; align-items: center; gap: 0.4rem;
+                        padding: 0.35rem 0.6rem; background: oklch(0.22 0.02 270);
+                        border: 1px solid var(--border); border-radius: 4px;
+                        font: 600 0.85rem var(--font-mono); color: var(--fg);">
+                        ${escapeHtml(sym)}
+                        <button onclick="removeHandsOffSymbol('${escapeHtml(sym)}')" title="Remove ${escapeHtml(sym)}"
+                            style="background: none; border: none; cursor: pointer; padding: 0;
+                                   color: var(--muted-fg); font-size: 1rem; line-height: 1;"
+                            onmouseover="this.style.color='#ef5350'"
+                            onmouseout="this.style.color='var(--muted-fg)'">×</button>
+                    </span>
+                `).join('');
+            }
+            updatePendingChanges();
+        }
+
+        function addHandsOffSymbol() {
+            const input = document.getElementById('hands-off-input');
+            const raw = (input.value || '').trim().toUpperCase();
+            if (!raw) return;
+            // Basic validation: 1-5 uppercase letters
+            if (!/^[A-Z]{1,5}$/.test(raw)) {
+                alert(`Invalid symbol: "${raw}". Must be 1-5 letters (e.g., AAPL, TSLA).`);
+                return;
+            }
+            if (handsOffPending.has(raw)) {
+                alert(`${raw} is already in the denylist.`);
+                input.value = '';
+                return;
+            }
+            handsOffPending.add(raw);
+            input.value = '';
+            renderHandsOffChips();
+        }
+
+        function removeHandsOffSymbol(sym) {
+            handsOffPending.delete(sym);
+            renderHandsOffChips();
+        }
+
+        function updatePendingChanges() {
+            const pendingEl = document.getElementById('hands-off-pending');
+            const added = [...handsOffPending].filter(s => !handsOffOriginal.has(s));
+            const removed = [...handsOffOriginal].filter(s => !handsOffPending.has(s));
+
+            if (added.length === 0 && removed.length === 0) {
+                pendingEl.style.display = 'none';
+                return;
+            }
+            const parts = [];
+            if (added.length > 0) parts.push(`<strong>Adding:</strong> ${added.join(', ')}`);
+            if (removed.length > 0) parts.push(`<strong>Removing:</strong> ${removed.join(', ')}`);
+            pendingEl.innerHTML = parts.join(' &nbsp;|&nbsp; ');
+            pendingEl.style.display = 'block';
+        }
+
+        async function saveHandsOffDenylist() {
+            const added = [...handsOffPending].filter(s => !handsOffOriginal.has(s));
+            const removed = [...handsOffOriginal].filter(s => !handsOffPending.has(s));
+
+            if (added.length === 0 && removed.length === 0) {
+                document.getElementById('hands-off-status').textContent = 'No changes to save.';
+                return;
+            }
+
+            // Confirm before save
+            const summary = [];
+            if (added.length > 0) summary.push(`Add: ${added.join(', ')}`);
+            if (removed.length > 0) summary.push(`Remove: ${removed.join(', ')}`);
+            if (!confirm(`Save hands-off denylist changes?\n\n${summary.join('\n')}`)) {
+                return;
+            }
+
+            const status = document.getElementById('hands-off-status');
+            const btn = document.getElementById('hands-off-save-btn');
+            btn.disabled = true;
+            status.textContent = 'Saving...';
+
+            try {
+                const resp = await authFetch('/api/hands-off-denylist', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ symbols: [...handsOffPending] })
+                });
+                const data = await resp.json();
+                if (data.status === 'success') {
+                    const saved = data.symbols || [];
+                    handsOffSymbols = new Set(saved);
+                    handsOffOriginal = new Set(saved);
+                    handsOffPending = new Set(saved);
+                    renderHandsOffChips();
+                    status.textContent = data.message + (data.dropped?.length ? ` (dropped: ${data.dropped.join(', ')})` : '');
+                    status.style.color = '#26a69a';
+                    setTimeout(() => { status.style.color = ''; }, 3000);
+
+                    // Refresh positions to apply new locks immediately
+                    // The next WS dashboard_update will pick up the new Set
+                    // but force a re-render now for instant feedback
+                    if (ws && ws.readyState === WebSocket.OPEN) {
+                        // The dashboard will re-render on next push
+                    }
+                } else {
+                    status.textContent = 'Save failed: ' + (data.message || 'unknown error');
+                    status.style.color = '#ef5350';
+                }
+            } catch (e) {
+                console.error('Failed to save hands-off denylist:', e);
+                status.textContent = 'Save failed — network error';
+                status.style.color = '#ef5350';
+            } finally {
+                btn.disabled = false;
             }
         }
 
@@ -4638,8 +4901,8 @@
             }
 
             // Hands-off symbols: bot must not manage/exit these long-term holds
-            // SNAP removed from permanent hands-off 2026-09-14 — now toggleable in UI
-            const HANDS_OFF_SYMBOLS = ['MU', 'HQGE', 'SPCX'];
+            // v-hands-off-denylist-settings-2026-09-14: uses runtime Set from API
+            // instead of hardcoded array. See handsOffSymbols global.
 
             if (data.real_positions) {
                 const tbody = document.getElementById('real-positions-body');
@@ -4648,7 +4911,7 @@
                 } else {
                     tbody.innerHTML = data.real_positions.map(pos => {
                         const sym = String(pos.symbol || '').toUpperCase();
-                        const isHandsOff = HANDS_OFF_SYMBOLS.includes(sym);
+                        const isHandsOff = handsOffSymbols.has(sym);
                         const handsOffBadge = isHandsOff ? '<span class="hands-off-badge">Hands-Off</span>' : '';
                         const rowClass = isHandsOff ? 'hands-off-row' : '';
 
@@ -4995,6 +5258,7 @@
             { id: 'dashboard',   label: 'Dashboard',         icon: 'bar-chart-3' },
             { id: 'sentiment',   label: 'News & Sentiment',  icon: 'newspaper'   },
             { id: 'backtest',    label: 'Backtesting',       icon: 'activity'    },
+            { id: 'settings',    label: 'Settings',          icon: 'settings'    },
         ];
         function buildAppNav(activeId = 'dashboard') {
             const nav = document.getElementById('app-nav');
@@ -5750,6 +6014,26 @@
             }
         }
         document.addEventListener('DOMContentLoaded', restoreBotStatusOnLoad);
+
+        // v-hands-off-denylist-settings-2026-09-14: load denylist on startup
+        // so position locks are correct from the first dashboard_update.
+        async function initHandsOffDenylist() {
+            try {
+                const resp = await authFetch('/api/hands-off-denylist');
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                const data = await resp.json();
+                if (data.status === 'success') {
+                    const symbols = data.symbols || [];
+                    handsOffSymbols = new Set(symbols);
+                    handsOffOriginal = new Set(symbols);
+                    handsOffPending = new Set(symbols);
+                }
+            } catch (e) {
+                console.warn('Failed to load hands-off denylist, using defaults:', e);
+                // Keep DEFAULT_HANDS_OFF already in the Set
+            }
+        }
+        document.addEventListener('DOMContentLoaded', initHandsOffDenylist);
         
         async function toggleTradingMode() {
             const toggle = document.getElementById('mode-toggle');
