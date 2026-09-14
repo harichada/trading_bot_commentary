@@ -1586,6 +1586,238 @@ from pathlib import Path
 
 
 # ============================================================================
+# v-close-position-tracking-2026-09-14: CLOSE_POSITION_TRACKING TESTS
+# Tests for the P0 hotfix that adds close_position_tracking() to exit managers
+# and ensures broker stop fill path is authoritative (doesn't revert to LIVE).
+# ============================================================================
+
+class TestClosePositionTrackingDynamicExitManager:
+    """v-close-position-tracking-2026-09-14: Test DynamicExitManager.close_position_tracking()."""
+
+    def test_close_position_tracking_removes_from_exit_trackers(self):
+        """close_position_tracking should remove symbol from exit_trackers."""
+        from analysis.exit_managers import DynamicExitManager
+        
+        mock_brain = MagicMock()
+        mock_commentary = MagicMock()
+        manager = DynamicExitManager(mock_brain, mock_commentary)
+        
+        manager.initialize_position_tracking("FTFT", 5.50, 5.00, 6.00)
+        assert "FTFT" in manager.exit_trackers
+        
+        manager.close_position_tracking("FTFT")
+        assert "FTFT" not in manager.exit_trackers
+
+    def test_close_position_tracking_idempotent_noop_if_missing(self):
+        """close_position_tracking should be idempotent: no-op if symbol missing."""
+        from analysis.exit_managers import DynamicExitManager
+        
+        mock_brain = MagicMock()
+        mock_commentary = MagicMock()
+        manager = DynamicExitManager(mock_brain, mock_commentary)
+        
+        manager.close_position_tracking("NONEXISTENT")
+        
+        manager.initialize_position_tracking("FTFT", 5.50, 5.00, 6.00)
+        manager.close_position_tracking("FTFT")
+        manager.close_position_tracking("FTFT")
+        
+        assert "FTFT" not in manager.exit_trackers
+
+    def test_close_position_tracking_does_not_affect_other_symbols(self):
+        """close_position_tracking should only remove the specified symbol."""
+        from analysis.exit_managers import DynamicExitManager
+        
+        mock_brain = MagicMock()
+        mock_commentary = MagicMock()
+        manager = DynamicExitManager(mock_brain, mock_commentary)
+        
+        manager.initialize_position_tracking("FTFT", 5.50, 5.00, 6.00)
+        manager.initialize_position_tracking("AAPL", 150.00, 145.00, 160.00)
+        
+        manager.close_position_tracking("FTFT")
+        
+        assert "FTFT" not in manager.exit_trackers
+        assert "AAPL" in manager.exit_trackers
+
+
+class TestClosePositionTrackingAdvancedExitManager:
+    """v-close-position-tracking-2026-09-14: Test AdvancedExitManager.close_position_tracking()."""
+
+    def test_close_position_tracking_removes_from_position_tracking(self):
+        """close_position_tracking should remove symbol from position_tracking."""
+        from analysis.exit_managers import AdvancedExitManager
+        
+        mock_commentary = MagicMock()
+        manager = AdvancedExitManager(mock_commentary)
+        
+        manager.initialize_trailing_stop("FTFT", 5.50, 5.00, 0.02)
+        assert "FTFT" in manager.position_tracking
+        
+        manager.close_position_tracking("FTFT")
+        assert "FTFT" not in manager.position_tracking
+
+    def test_close_position_tracking_idempotent_noop_if_missing(self):
+        """close_position_tracking should be idempotent: no-op if symbol missing."""
+        from analysis.exit_managers import AdvancedExitManager
+        
+        mock_commentary = MagicMock()
+        manager = AdvancedExitManager(mock_commentary)
+        
+        manager.close_position_tracking("NONEXISTENT")
+        
+        manager.initialize_trailing_stop("FTFT", 5.50, 5.00, 0.02)
+        manager.close_position_tracking("FTFT")
+        manager.close_position_tracking("FTFT")
+        
+        assert "FTFT" not in manager.position_tracking
+
+
+class TestBracketStopFillCancelsConfirmation:
+    """v-close-position-tracking-2026-09-14: Test that bracket stop fill cancels pending confirmation."""
+
+    def test_handle_full_bracket_fill_cancels_pending_confirmation(self):
+        """handle_full_bracket_fill must cancel pending close confirmation requests."""
+        src = (Path(__file__).parent.parent / "core" / "order_monitor" / "brackets.py").read_text()
+        
+        marker = "async def handle_full_bracket_fill"
+        idx = src.index(marker)
+        body = src[idx:idx + 2500]
+        
+        assert "pending_close_requests" in body, (
+            "handle_full_bracket_fill must check for pending_close_requests"
+        )
+        assert "confirmed" in body and "True" in body, (
+            "handle_full_bracket_fill must set confirmed=True to short-circuit confirmation wait"
+        )
+        assert "bracket_fill_canceled_pending_confirmation" in body, (
+            "handle_full_bracket_fill must log when canceling pending confirmation"
+        )
+
+    def test_handle_full_bracket_fill_is_authoritative(self):
+        """Broker fill path must be authoritative: direct close without confirmation."""
+        src = (Path(__file__).parent.parent / "core" / "order_monitor" / "brackets.py").read_text()
+        
+        marker = "async def handle_full_bracket_fill"
+        idx = src.index(marker)
+        body = src[idx:idx + 4000]
+        
+        assert "_get_close_confirmation" not in body, (
+            "handle_full_bracket_fill must NOT use _get_close_confirmation (broker fill is authoritative)"
+        )
+        assert "del engine.positions[symbol]" in body or 'engine.positions' not in body[:500], (
+            "handle_full_bracket_fill must remove position from tracking (or delegate to caller)"
+        )
+
+    def test_handle_full_bracket_fill_calls_close_position_tracking(self):
+        """handle_full_bracket_fill must call exit_manager.close_position_tracking."""
+        src = (Path(__file__).parent.parent / "core" / "order_monitor" / "brackets.py").read_text()
+        
+        marker = "async def handle_full_bracket_fill"
+        idx = src.index(marker)
+        end_marker = "async def handle_partial_bracket_fill"
+        end_idx = src.index(end_marker) if end_marker in src else idx + 5000
+        body = src[idx:end_idx]
+        
+        assert "close_position_tracking" in body, (
+            "handle_full_bracket_fill must call exit_manager.close_position_tracking"
+        )
+
+
+class TestSoftwareStopPathDoesNotDoubleClose:
+    """v-close-position-tracking-2026-09-14: Test software stop path doesn't double-close after broker fill."""
+
+    def test_close_position_rechecks_container_after_confirmation(self):
+        """_close_position_with_commentary must recheck container after confirmation returns."""
+        src = (Path(__file__).parent.parent / "core" / "engine.py").read_text()
+        
+        marker = "async def _close_position_with_commentary"
+        idx = src.index(marker)
+        body = src[idx:idx + 9000]
+        
+        assert "broker_fill_closed_during_confirm" in body, (
+            "_close_position_with_commentary must detect broker fill closing position during confirm"
+        )
+        assert "_close_container.get(position.symbol)" in body or "not in _close_container" in body, (
+            "_close_position_with_commentary must recheck if position still in container"
+        )
+
+    def test_close_position_returns_early_if_already_closed(self):
+        """_close_position_with_commentary must return early if position already closed."""
+        src = (Path(__file__).parent.parent / "core" / "engine.py").read_text()
+        
+        marker = "broker_fill_closed_during_confirm"
+        idx = src.index(marker)
+        body = src[idx:idx + 500]
+        
+        assert "return" in body, (
+            "Must return early when position was closed by broker fill during confirmation"
+        )
+
+
+class TestFTFTIncidentReplay:
+    """v-close-position-tracking-2026-09-14: Replay FTFT incident from 2026-09-14 12:49 ET.
+    
+    Incident flow:
+      1. hard_stop_breached → software stop check starts _close_position_with_commentary
+      2. Confirmation flow starts, waiting for user response
+      3. order_monitor detects bracket stop fill @5.23 qty 432
+      4. handle_full_bracket_fill calls exit_manager.close_position_tracking → AttributeError
+      5. Confirmation times out with deny → state_reverted to live
+      6. Broker already flat → ghost state
+    
+    Expected behavior after fix:
+      1. close_position_tracking exists and clears exit_trackers
+      2. handle_full_bracket_fill cancels pending confirmation
+      3. Software path detects broker already closed, returns early
+      4. No ghost state, no revert to LIVE after broker flat
+    """
+
+    def test_ftft_close_position_tracking_exists(self):
+        """FTFT fix: close_position_tracking must exist on DynamicExitManager."""
+        from analysis.exit_managers import DynamicExitManager
+        
+        mock_brain = MagicMock()
+        mock_commentary = MagicMock()
+        manager = DynamicExitManager(mock_brain, mock_commentary)
+        
+        assert hasattr(manager, 'close_position_tracking'), (
+            "FTFT fix: DynamicExitManager must have close_position_tracking method"
+        )
+        
+        assert callable(manager.close_position_tracking), (
+            "FTFT fix: close_position_tracking must be callable"
+        )
+
+    def test_ftft_bracket_fill_cancels_confirmation(self):
+        """FTFT fix: bracket stop fill must cancel pending close confirmation."""
+        src = (Path(__file__).parent.parent / "core" / "order_monitor" / "brackets.py").read_text()
+        
+        assert "broker_fill_authoritative" in src, (
+            "FTFT fix: must have audit event for broker_fill_authoritative"
+        )
+        assert "pending_confirm_canceled" in src, (
+            "FTFT fix: must have audit event for pending_confirm_canceled"
+        )
+
+    def test_ftft_no_revert_to_live_after_broker_flat(self):
+        """FTFT fix: must not revert to LIVE after broker is flat."""
+        src = (Path(__file__).parent.parent / "core" / "engine.py").read_text()
+        
+        marker = "broker_fill_closed_during_confirm"
+        assert marker in src, (
+            "FTFT fix: must detect broker fill closed position during confirmation"
+        )
+        
+        idx = src.index(marker)
+        nearby = src[idx-500:idx+500]
+        
+        assert "return" in nearby, (
+            "FTFT fix: must return early to prevent ghost state"
+        )
+
+
+# ============================================================================
 # v-broker-flat-close-2026-09-11: FSM BROKER-FLAT CLOSE TRANSITION TESTS
 # Tests for allowing direct CLOSED transitions from managed states when
 # broker confirms position is flat (external close).
