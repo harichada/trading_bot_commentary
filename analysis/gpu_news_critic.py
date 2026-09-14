@@ -69,14 +69,17 @@ class KeywordMatch:
 class CriticCard:
     """Structured scoring card from GPU News Critic.
     
-    Schema aligned with Research Stage A:
+    Schema aligned with Research Stage A (docs/research/2026-09-14-gpu-sense-stage-a.md):
     - theme_probs: probability per theme
     - relevance_by_symbol: relevance score 0-1 per symbol
     - stance: bullish/bearish/mixed/irrelevant
     - contamination_risk: 0-1, multi-story/off-topic contamination
     - confidence: 0-1, model confidence
     - rationale_short: brief explanation
-    - keyword_match: from ThemeShock tagger if available
+    - keyword_match: from ThemeShock tagger (theme_id, matched_text, matched_field)
+    
+    Logged to db_logger.log_strategy_decision with extra_data=to_dict() so
+    Monday rollup can score precision/FP/recall/latency alongside ThemeShock.
     """
     event_id: str
     headline: str
@@ -92,9 +95,17 @@ class CriticCard:
     infer_ms: float = 0.0
     skip_reason: Optional[str] = None
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    news_age_sec: float = 0.0
+    source: str = ""
+    symbol: str = ""
 
     def to_dict(self) -> dict:
-        """Serialize for structured logging."""
+        """Serialize for structured logging.
+        
+        Returns all Stage A fields for Research Monday rollup:
+        theme_probs, relevance_by_symbol, stance, contamination_risk,
+        confidence, rationale_short, keyword_match (with matched_text+matched_field).
+        """
         return {
             "event_id": self.event_id,
             "headline": self.headline[:100] if self.headline else "",
@@ -117,6 +128,9 @@ class CriticCard:
             "infer_ms": self.infer_ms,
             "skip_reason": self.skip_reason,
             "created_at": self.created_at.isoformat(),
+            "news_age_sec": self.news_age_sec,
+            "source": self.source,
+            "symbol": self.symbol,
         }
 
 
@@ -630,6 +644,10 @@ class GPUNewsCritic:
             theme_probs, contam_risk, confidence, keyword_match
         )
 
+        news_age_sec = item.age_sec() if hasattr(item, "age_sec") else 0.0
+        source = getattr(item, "source", "")
+        symbol = getattr(item, "symbol", "UNKNOWN")
+
         card = CriticCard(
             event_id=event_id,
             headline=headline,
@@ -643,6 +661,9 @@ class GPUNewsCritic:
             keyword_match=keyword_match,
             action=action,
             infer_ms=infer_ms,
+            news_age_sec=news_age_sec,
+            source=source,
+            symbol=symbol,
         )
 
         self._emit_shadow_log(card, item)
@@ -675,7 +696,22 @@ class GPUNewsCritic:
         return CriticAction.PASS
 
     def _emit_shadow_log(self, card: CriticCard, item: "ScoredNewsItem") -> None:
-        """Emit structured shadow log for the critic card."""
+        """Emit structured shadow log for the critic card.
+        
+        Logs ALL scored items (not just WOULD_SUPPRESS) to the SAME db_logger
+        path ThemeShock uses, so Monday rollup can score precision/FP/recall/latency.
+        
+        Structured log line includes all Stage A fields:
+        - theme_probs (top theme + prob shown in line, full dict in extra_data)
+        - relevance_by_symbol (in extra_data)
+        - stance
+        - contamination_risk
+        - confidence
+        - rationale_short (as reason)
+        - keyword_match with matched_text + matched_field
+        - infer_ms for latency measurement
+        - news_age_sec for lead-time analysis
+        """
         if not self.is_shadow_mode():
             return
 
@@ -689,18 +725,27 @@ class GPUNewsCritic:
         top_theme = max(card.theme_probs, key=card.theme_probs.get) if card.theme_probs else "none"
         top_prob = card.theme_probs.get(top_theme, 0) if card.theme_probs else 0
 
+        kw_info = ""
+        if card.keyword_match:
+            kw_info = f" kw={card.keyword_match.theme_id}:{card.keyword_match.matched_field}:{card.keyword_match.matched_text[:20]}"
+
         logger.info(
             "gpu_news_critic "
-            "action=%s event_id=%s "
+            "action=%s event_id=%s symbol=%s "
             "theme=%s(%.2f) stance=%s contam=%.2f conf=%.2f "
-            "infer_ms=%.1f headline=%s",
+            "news_age_sec=%.1f infer_ms=%.1f source=%s%s "
+            "headline=%s",
             card.action.value,
             card.event_id,
+            card.symbol,
             top_theme, top_prob,
             card.stance.value,
             card.contamination_risk,
             card.confidence,
+            card.news_age_sec,
             card.infer_ms,
+            card.source,
+            kw_info,
             card.headline[:60],
         )
 
@@ -708,7 +753,7 @@ class GPUNewsCritic:
             try:
                 self._engine.db_logger.log_strategy_decision(
                     strategy="gpu_news_critic",
-                    symbol=getattr(item, "symbol", "UNKNOWN"),
+                    symbol=card.symbol,
                     action=f"shadow_{card.action.value}",
                     reason=card.rationale_short,
                     extra_data=card.to_dict(),

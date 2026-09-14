@@ -221,7 +221,7 @@ class TestCriticCard:
     """Test CriticCard structure and serialization."""
 
     def test_card_to_dict(self, reset_singleton):
-        """CriticCard.to_dict() should produce valid dict."""
+        """CriticCard.to_dict() should produce valid dict with all Stage A fields."""
         card = CriticCard(
             event_id="test123",
             headline="Test headline",
@@ -235,6 +235,9 @@ class TestCriticCard:
             keyword_match=KeywordMatch("ai_compute", "anthropic", "headline"),
             action=CriticAction.PASS,
             infer_ms=50.0,
+            news_age_sec=600.0,
+            source="Alpaca News",
+            symbol="NVDA",
         )
 
         d = card.to_dict()
@@ -244,9 +247,41 @@ class TestCriticCard:
         assert d["relevance_by_symbol"]["NVDA"] == 0.8
         assert d["stance"] == "bearish"
         assert d["contamination_risk"] == 0.2
+        assert d["confidence"] == 0.7
+        assert d["rationale_short"] == "ai_compute theme"
         assert d["action"] == "pass"
         assert d["keyword_match"]["theme_id"] == "ai_compute"
+        assert d["keyword_match"]["matched_text"] == "anthropic"
         assert d["keyword_match"]["matched_field"] == "headline"
+        assert d["infer_ms"] == 50.0
+        assert d["news_age_sec"] == 600.0
+        assert d["source"] == "Alpaca News"
+        assert d["symbol"] == "NVDA"
+
+    def test_card_has_all_stage_a_fields(self, reset_singleton):
+        """CriticCard.to_dict() must include all Stage A fields for Research rollup."""
+        card = CriticCard(
+            event_id="stage_a_test",
+            headline="Test",
+            summary="",
+        )
+        d = card.to_dict()
+        
+        required_fields = [
+            "theme_probs",
+            "relevance_by_symbol",
+            "stance",
+            "contamination_risk",
+            "confidence",
+            "rationale_short",
+            "keyword_match",
+            "infer_ms",
+            "news_age_sec",
+            "source",
+            "symbol",
+        ]
+        for field in required_fields:
+            assert field in d, f"Missing Stage A field: {field}"
 
 
 class TestGPUNewsCritic:
@@ -262,6 +297,16 @@ class TestGPUNewsCritic:
         assert card.theme_probs["ai_compute"] >= 0.5
         assert card.contamination_risk < 0.5
         assert "NVDA" in card.relevance_by_symbol
+
+    def test_score_populates_item_fields(self, reset_singleton, sample_scored_item):
+        """score_news_item should populate news_age_sec, source, symbol from item."""
+        critic = GPUNewsCritic(use_fake=True)
+
+        card = critic.score_news_item(sample_scored_item)
+
+        assert card.news_age_sec > 0, "news_age_sec should be populated from item.age_sec()"
+        assert card.source == sample_scored_item.source
+        assert card.symbol == sample_scored_item.symbol
 
     def test_score_crude_oil_contaminated_suppressed(self, reset_singleton):
         """Crude Oil: headline unrelated + summary contaminated → WOULD_SUPPRESS_HARD_SKIP."""
