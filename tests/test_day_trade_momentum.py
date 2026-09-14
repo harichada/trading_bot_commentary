@@ -1241,7 +1241,12 @@ class TestShadowVetoContinuationRiskoffRsi70:
     
     @pytest.mark.asyncio
     async def test_shadow_veto_does_not_fire_on_risk_on_regime(self):
-        """Shadow veto must NOT fire when regime is NOT risk_off."""
+        """Shadow veto must NOT fire when regime is NOT risk_off.
+        
+        NOTE: This tests the shadow-veto-only path with hard veto DISABLED.
+        When hard veto is enabled (default), risk_on+continuation+RSI>=70
+        WILL be blocked. This test verifies the legacy shadow path.
+        """
         from strategies.builtin import DayTradeMomentumStrategy
         
         strategy = DayTradeMomentumStrategy(MagicMock())
@@ -1284,15 +1289,17 @@ class TestShadowVetoContinuationRiskoffRsi70:
                 mock_cfg_instance.MOMENTUM_MIN_VOLUME_RATIO = 1.5
                 mock_cfg_instance.DAY_TRADE_SIZE_MULTIPLIER = 0.5
                 mock_cfg_instance.DAY_TRADE_FLATTEN_HOUR = 15
+                # Hard veto DISABLED to test shadow-only path
+                mock_cfg_instance.ENABLE_HARD_VETO_CONTINUATION_RSI70 = False
                 mock_cfg_instance.ENABLE_SHADOW_VETO_CONTINUATION_RISKOFF = True
                 mock_cfg_instance.SHADOW_VETO_RSI_THRESHOLD = 70.0
                 mock_cfg.return_value = mock_cfg_instance
                 
                 signal = await strategy.generate_signal_with_commentary(market_data)
         
-        # Signal should be GENERATED because regime is risk_on
+        # Signal should be GENERATED because regime is risk_on (shadow veto only fires on risk_off)
         assert signal is not None, (
-            "Shadow veto should NOT fire when regime is risk_on"
+            "Shadow veto should NOT fire when regime is risk_on (hard veto disabled)"
         )
         assert signal.reasoning['entry_pattern'] == 'continuation'
     
@@ -1355,7 +1362,12 @@ class TestShadowVetoContinuationRiskoffRsi70:
     
     @pytest.mark.asyncio
     async def test_shadow_veto_disabled_when_flag_false(self):
-        """Shadow veto must NOT fire when ENABLE_SHADOW_VETO=False."""
+        """Shadow veto must NOT fire when ENABLE_SHADOW_VETO=False.
+        
+        NOTE: This tests the shadow-veto-only path with hard veto DISABLED.
+        When hard veto is enabled (default), this scenario WILL be blocked.
+        This test verifies the legacy shadow path can be disabled.
+        """
         from strategies.builtin import DayTradeMomentumStrategy
         
         strategy = DayTradeMomentumStrategy(MagicMock())
@@ -1398,16 +1410,18 @@ class TestShadowVetoContinuationRiskoffRsi70:
                 mock_cfg_instance.MOMENTUM_MIN_VOLUME_RATIO = 1.5
                 mock_cfg_instance.DAY_TRADE_SIZE_MULTIPLIER = 0.5
                 mock_cfg_instance.DAY_TRADE_FLATTEN_HOUR = 15
-                # KEY: Shadow veto DISABLED
+                # Hard veto DISABLED to test shadow-only path
+                mock_cfg_instance.ENABLE_HARD_VETO_CONTINUATION_RSI70 = False
+                # Shadow veto also DISABLED
                 mock_cfg_instance.ENABLE_SHADOW_VETO_CONTINUATION_RISKOFF = False
                 mock_cfg_instance.SHADOW_VETO_RSI_THRESHOLD = 70.0
                 mock_cfg.return_value = mock_cfg_instance
                 
                 signal = await strategy.generate_signal_with_commentary(market_data)
         
-        # Signal should be GENERATED because shadow veto is disabled
+        # Signal should be GENERATED because both vetoes are disabled
         assert signal is not None, (
-            "Shadow veto should NOT fire when ENABLE_SHADOW_VETO=False"
+            "Signal should pass when both hard veto and shadow veto are disabled"
         )
 
 
@@ -1474,3 +1488,466 @@ class TestStageAFloorsNotLoosened:
         assert cfg.MOMENTUM_STAGE_A_MAX_LOSING_DAY_R == 2.0, (
             "Stage-A MAX_LOSING_DAY_R must be 2.0 — DO NOT LOOSEN (raise)"
         )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# v-hard-veto-rsi70-2026-09-14: Tests for hard veto continuation + RSI>=70
+# in ALL regimes (promoted from shadow-only risk_off gate).
+#
+# RCA: 2026-09-14 FTFT LIVE loss — continuation RSI 74.31, regime=mixed.
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestHardVetoContinuationRsi70AllRegimes:
+    """Test hard veto for continuation + RSI>=70 in ALL regimes.
+    
+    v-hard-veto-rsi70-2026-09-14: Promotes continuation + RSI>=70 veto from
+    shadow-only (risk_off-gated) to a hard veto in all regimes (including mixed).
+    
+    RCA: 2026-09-14 FTFT LIVE loss — continuation entry RSI 74.31, regime=mixed.
+    """
+    
+    def test_enable_hard_veto_default_true(self):
+        """ENABLE_HARD_VETO_CONTINUATION_RSI70 must default to True.
+        
+        Safe on-path: entries blocked when pattern matches.
+        """
+        from core.config import Config
+        cfg = Config()
+        assert cfg.ENABLE_HARD_VETO_CONTINUATION_RSI70 is True, (
+            "ENABLE_HARD_VETO_CONTINUATION_RSI70 must default to True — "
+            "safe on-path means entries are blocked when pattern matches"
+        )
+    
+    @pytest.mark.asyncio
+    async def test_hard_veto_blocks_mixed_regime_continuation_rsi70(self):
+        """Hard veto must block continuation + RSI>=70 even in MIXED regime.
+        
+        This is the FTFT RCA scenario: continuation + RSI 74.31 + regime=mixed.
+        The old shadow veto only fired on risk_off, so this went through LIVE.
+        """
+        from strategies.builtin import DayTradeMomentumStrategy
+        
+        strategy = DayTradeMomentumStrategy(MagicMock())
+        
+        market_data = MagicMock()
+        market_data.symbol = 'FTFT'  # The RCA symbol
+        market_data.close = 100.0
+        market_data.open = 98.0
+        market_data.timestamp = datetime.now()
+        market_data.indicators = {
+            'rsi': 74.31,  # KEY: RSI >= 70 (the exact FTFT value)
+            'volume_ratio': 2.0,
+            'adx': 30,  # > 25 for continuation
+            'atr': 1.5,
+            'high_20': 95.0,  # Not breakout (close not > high_20)
+            'sma_20': 98.0,  # Close > sma_20 for continuation
+            'macd': 0.5,
+            'macd_signal': 0.3,  # MACD > signal for continuation
+            'day_change_pct': 3.0,
+        }
+        
+        with patch('core.market_context.read_market_context') as mock_mc:
+            mock_mc.return_value = MagicMock(
+                regime='mixed',  # KEY: MIXED regime (the FTFT scenario)
+                time_of_day='midday',
+                spy_change_pct=-0.3,
+                vix_change_pct=3.0,
+                sector_etf='XLK',
+                reason='test',
+            )
+            
+            with patch('core.config.Config') as mock_cfg:
+                mock_cfg_instance = MagicMock()
+                mock_cfg_instance.ENABLE_DAY_TRADE_MOMENTUM = True
+                mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_SPY_PCT = -1.5
+                mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_VIX_SPIKE = 15.0
+                mock_cfg_instance.MOMENTUM_RISK_OFF_SIZE_MULT = 0.25
+                mock_cfg_instance.MOMENTUM_OPENING_30_SIZE_MULT = 0.5
+                mock_cfg_instance.MOMENTUM_MIN_RS_VS_SPY = 0.5
+                mock_cfg_instance.MOMENTUM_MIN_VOLUME_RATIO = 1.5
+                mock_cfg_instance.DAY_TRADE_SIZE_MULTIPLIER = 0.5
+                mock_cfg_instance.DAY_TRADE_FLATTEN_HOUR = 15
+                # Hard veto ENABLED (default)
+                mock_cfg_instance.ENABLE_HARD_VETO_CONTINUATION_RSI70 = True
+                mock_cfg_instance.SHADOW_VETO_RSI_THRESHOLD = 70.0
+                # Shadow veto also enabled (but should not be reached)
+                mock_cfg_instance.ENABLE_SHADOW_VETO_CONTINUATION_RISKOFF = True
+                mock_cfg.return_value = mock_cfg_instance
+                
+                signal = await strategy.generate_signal_with_commentary(market_data)
+        
+        # Signal must be BLOCKED (None) due to hard veto
+        assert signal is None, (
+            "Hard veto must block continuation + RSI>=70 even in MIXED regime — "
+            "this is the FTFT RCA scenario"
+        )
+    
+    @pytest.mark.asyncio
+    async def test_hard_veto_blocks_risk_on_regime_continuation_rsi70(self):
+        """Hard veto must block continuation + RSI>=70 even in RISK_ON regime."""
+        from strategies.builtin import DayTradeMomentumStrategy
+        
+        strategy = DayTradeMomentumStrategy(MagicMock())
+        
+        market_data = MagicMock()
+        market_data.symbol = 'RISKY_ON'
+        market_data.close = 100.0
+        market_data.open = 98.0
+        market_data.timestamp = datetime.now()
+        market_data.indicators = {
+            'rsi': 72.0,  # RSI >= 70
+            'volume_ratio': 2.5,
+            'adx': 35,
+            'atr': 1.5,
+            'high_20': 95.0,  # Not breakout
+            'sma_20': 98.0,  # Continuation pattern
+            'macd': 0.5,
+            'macd_signal': 0.3,
+            'day_change_pct': 4.0,
+        }
+        
+        with patch('core.market_context.read_market_context') as mock_mc:
+            mock_mc.return_value = MagicMock(
+                regime='risk_on',  # KEY: RISK_ON regime
+                time_of_day='midday',
+                spy_change_pct=0.5,
+                vix_change_pct=-2.0,
+                sector_etf='XLK',
+                reason='test',
+            )
+            
+            with patch('core.config.Config') as mock_cfg:
+                mock_cfg_instance = MagicMock()
+                mock_cfg_instance.ENABLE_DAY_TRADE_MOMENTUM = True
+                mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_SPY_PCT = -1.5
+                mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_VIX_SPIKE = 15.0
+                mock_cfg_instance.MOMENTUM_RISK_OFF_SIZE_MULT = 0.25
+                mock_cfg_instance.MOMENTUM_OPENING_30_SIZE_MULT = 0.5
+                mock_cfg_instance.MOMENTUM_MIN_RS_VS_SPY = 0.5
+                mock_cfg_instance.MOMENTUM_MIN_VOLUME_RATIO = 1.5
+                mock_cfg_instance.DAY_TRADE_SIZE_MULTIPLIER = 0.5
+                mock_cfg_instance.DAY_TRADE_FLATTEN_HOUR = 15
+                mock_cfg_instance.ENABLE_HARD_VETO_CONTINUATION_RSI70 = True
+                mock_cfg_instance.SHADOW_VETO_RSI_THRESHOLD = 70.0
+                mock_cfg_instance.ENABLE_SHADOW_VETO_CONTINUATION_RISKOFF = True
+                mock_cfg.return_value = mock_cfg_instance
+                
+                signal = await strategy.generate_signal_with_commentary(market_data)
+        
+        # Signal must be BLOCKED even in risk_on
+        assert signal is None, (
+            "Hard veto must block continuation + RSI>=70 even in risk_on regime"
+        )
+    
+    @pytest.mark.asyncio
+    async def test_hard_veto_off_allows_mixed_continuation_rsi70_to_shadow_path(self):
+        """When hard veto OFF, mixed+continuation+RSI>=70 passes to old path.
+        
+        With ENABLE_HARD_VETO_CONTINUATION_RSI70=False, the old shadow veto
+        path should be reached. Since shadow veto only fires on risk_off,
+        a mixed regime entry should NOT be blocked (generates signal).
+        """
+        from strategies.builtin import DayTradeMomentumStrategy
+        
+        strategy = DayTradeMomentumStrategy(MagicMock())
+        
+        market_data = MagicMock()
+        market_data.symbol = 'FALLTHROUGH'
+        market_data.close = 100.0
+        market_data.open = 98.0
+        market_data.timestamp = datetime.now()
+        market_data.indicators = {
+            'rsi': 72.0,  # RSI >= 70
+            'volume_ratio': 2.0,
+            'adx': 30,
+            'atr': 1.5,
+            'high_20': 95.0,  # Not breakout
+            'sma_20': 98.0,  # Continuation pattern
+            'macd': 0.5,
+            'macd_signal': 0.3,
+            'day_change_pct': 3.0,
+        }
+        
+        with patch('core.market_context.read_market_context') as mock_mc:
+            mock_mc.return_value = MagicMock(
+                regime='mixed',  # MIXED regime
+                time_of_day='midday',
+                spy_change_pct=-0.3,
+                vix_change_pct=3.0,
+                sector_etf='XLK',
+                reason='test',
+            )
+            
+            with patch('core.config.Config') as mock_cfg:
+                mock_cfg_instance = MagicMock()
+                mock_cfg_instance.ENABLE_DAY_TRADE_MOMENTUM = True
+                mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_SPY_PCT = -1.5
+                mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_VIX_SPIKE = 15.0
+                mock_cfg_instance.MOMENTUM_RISK_OFF_SIZE_MULT = 0.25
+                mock_cfg_instance.MOMENTUM_OPENING_30_SIZE_MULT = 0.5
+                mock_cfg_instance.MOMENTUM_MIN_RS_VS_SPY = 0.5
+                mock_cfg_instance.MOMENTUM_MIN_VOLUME_RATIO = 1.5
+                mock_cfg_instance.DAY_TRADE_SIZE_MULTIPLIER = 0.5
+                mock_cfg_instance.DAY_TRADE_FLATTEN_HOUR = 15
+                # KEY: Hard veto DISABLED
+                mock_cfg_instance.ENABLE_HARD_VETO_CONTINUATION_RSI70 = False
+                mock_cfg_instance.SHADOW_VETO_RSI_THRESHOLD = 70.0
+                # Shadow veto enabled (but only fires on risk_off)
+                mock_cfg_instance.ENABLE_SHADOW_VETO_CONTINUATION_RISKOFF = True
+                mock_cfg.return_value = mock_cfg_instance
+                
+                signal = await strategy.generate_signal_with_commentary(market_data)
+        
+        # Signal should be GENERATED because:
+        # 1. Hard veto is OFF
+        # 2. Shadow veto only fires on risk_off, and we're in mixed
+        assert signal is not None, (
+            "When hard veto OFF, mixed+continuation+RSI>=70 should pass through — "
+            "shadow veto only fires on risk_off"
+        )
+        assert signal.reasoning['entry_pattern'] == 'continuation'
+    
+    @pytest.mark.asyncio
+    async def test_hard_veto_off_shadow_veto_still_fires_on_risk_off(self):
+        """When hard veto OFF, shadow veto still fires on risk_off.
+        
+        This verifies backward compatibility: the old shadow veto path
+        continues to work when hard veto is disabled.
+        """
+        from strategies.builtin import DayTradeMomentumStrategy
+        
+        strategy = DayTradeMomentumStrategy(MagicMock())
+        
+        market_data = MagicMock()
+        market_data.symbol = 'SHADOW_PATH'
+        market_data.close = 100.0
+        market_data.open = 98.0
+        market_data.timestamp = datetime.now()
+        market_data.indicators = {
+            'rsi': 72.0,  # RSI >= 70
+            'volume_ratio': 2.0,
+            'adx': 30,
+            'atr': 1.5,
+            'high_20': 95.0,  # Not breakout
+            'sma_20': 98.0,  # Continuation pattern
+            'macd': 0.5,
+            'macd_signal': 0.3,
+            'day_change_pct': 3.0,
+        }
+        
+        with patch('core.market_context.read_market_context') as mock_mc:
+            mock_mc.return_value = MagicMock(
+                regime='risk_off',  # KEY: RISK_OFF regime
+                time_of_day='midday',
+                spy_change_pct=-0.8,
+                vix_change_pct=8.0,
+                sector_etf='XLK',
+                reason='test',
+            )
+            
+            with patch('core.config.Config') as mock_cfg:
+                mock_cfg_instance = MagicMock()
+                mock_cfg_instance.ENABLE_DAY_TRADE_MOMENTUM = True
+                mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_SPY_PCT = -1.5
+                mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_VIX_SPIKE = 15.0
+                mock_cfg_instance.MOMENTUM_RISK_OFF_SIZE_MULT = 0.25
+                mock_cfg_instance.MOMENTUM_OPENING_30_SIZE_MULT = 0.5
+                mock_cfg_instance.MOMENTUM_MIN_RS_VS_SPY = 0.5
+                mock_cfg_instance.MOMENTUM_MIN_VOLUME_RATIO = 1.5
+                mock_cfg_instance.DAY_TRADE_SIZE_MULTIPLIER = 0.5
+                mock_cfg_instance.DAY_TRADE_FLATTEN_HOUR = 15
+                # Hard veto DISABLED
+                mock_cfg_instance.ENABLE_HARD_VETO_CONTINUATION_RSI70 = False
+                mock_cfg_instance.SHADOW_VETO_RSI_THRESHOLD = 70.0
+                # Shadow veto ENABLED
+                mock_cfg_instance.ENABLE_SHADOW_VETO_CONTINUATION_RISKOFF = True
+                mock_cfg.return_value = mock_cfg_instance
+                
+                signal = await strategy.generate_signal_with_commentary(market_data)
+        
+        # Signal should be BLOCKED by shadow veto (risk_off path)
+        assert signal is None, (
+            "When hard veto OFF, shadow veto must still fire on risk_off"
+        )
+    
+    @pytest.mark.asyncio
+    async def test_hard_veto_does_not_block_pullback_pattern(self):
+        """Hard veto must NOT block pullback pattern (only continuation).
+        
+        Pullback pattern has RSI 40-60, so it should never hit the RSI>=70
+        threshold anyway. But we test explicitly to ensure the pattern check
+        is correct.
+        """
+        from strategies.builtin import DayTradeMomentumStrategy
+        
+        strategy = DayTradeMomentumStrategy(MagicMock())
+        
+        market_data = MagicMock()
+        market_data.symbol = 'PULLBACK'
+        market_data.close = 100.0
+        market_data.open = 99.0
+        market_data.timestamp = datetime.now()
+        market_data.indicators = {
+            'rsi': 50.0,  # Pullback range 40-60
+            'volume_ratio': 2.0,
+            'adx': 25,
+            'atr': 1.5,
+            'high_20': 105.0,  # Not breakout
+            'sma_20': 99.5,  # Within 2% of SMA20 for pullback
+            'macd': 0.3,
+            'macd_signal': 0.2,  # MACD bullish
+            'day_change_pct': 2.0,
+        }
+        
+        with patch('core.market_context.read_market_context') as mock_mc:
+            mock_mc.return_value = MagicMock(
+                regime='mixed',
+                time_of_day='midday',
+                spy_change_pct=0.2,
+                vix_change_pct=1.0,
+                sector_etf='XLK',
+                reason='test',
+            )
+            
+            with patch('core.config.Config') as mock_cfg:
+                mock_cfg_instance = MagicMock()
+                mock_cfg_instance.ENABLE_DAY_TRADE_MOMENTUM = True
+                mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_SPY_PCT = -1.5
+                mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_VIX_SPIKE = 15.0
+                mock_cfg_instance.MOMENTUM_RISK_OFF_SIZE_MULT = 0.25
+                mock_cfg_instance.MOMENTUM_OPENING_30_SIZE_MULT = 0.5
+                mock_cfg_instance.MOMENTUM_MIN_RS_VS_SPY = 0.5
+                mock_cfg_instance.MOMENTUM_MIN_VOLUME_RATIO = 1.5
+                mock_cfg_instance.DAY_TRADE_SIZE_MULTIPLIER = 0.5
+                mock_cfg_instance.DAY_TRADE_FLATTEN_HOUR = 15
+                mock_cfg_instance.ENABLE_HARD_VETO_CONTINUATION_RSI70 = True
+                mock_cfg_instance.SHADOW_VETO_RSI_THRESHOLD = 70.0
+                mock_cfg_instance.ENABLE_SHADOW_VETO_CONTINUATION_RISKOFF = True
+                mock_cfg.return_value = mock_cfg_instance
+                
+                signal = await strategy.generate_signal_with_commentary(market_data)
+        
+        # Signal should be GENERATED (pullback pattern not blocked)
+        assert signal is not None, (
+            "Hard veto must NOT block pullback pattern — only continuation"
+        )
+        assert signal.reasoning['entry_pattern'] == 'pullback'
+    
+    @pytest.mark.asyncio
+    async def test_hard_veto_does_not_block_breakout_pattern(self):
+        """Hard veto must NOT block breakout pattern even with high RSI.
+        
+        Breakout pattern can have high RSI but is not the dangerous pattern.
+        """
+        from strategies.builtin import DayTradeMomentumStrategy
+        
+        strategy = DayTradeMomentumStrategy(MagicMock())
+        
+        market_data = MagicMock()
+        market_data.symbol = 'BREAKOUT'
+        market_data.close = 102.0  # Above high_20 = breakout
+        market_data.open = 99.0
+        market_data.timestamp = datetime.now()
+        market_data.indicators = {
+            'rsi': 72.0,  # High RSI >= 70
+            'volume_ratio': 2.5,
+            'adx': 35,
+            'atr': 1.5,
+            'high_20': 100.0,  # Close > high_20 = BREAKOUT
+            'sma_20': 98.0,
+            'macd': 0.5,
+            'macd_signal': 0.3,
+            'day_change_pct': 4.0,
+        }
+        
+        with patch('core.market_context.read_market_context') as mock_mc:
+            mock_mc.return_value = MagicMock(
+                regime='mixed',
+                time_of_day='midday',
+                spy_change_pct=-0.3,
+                vix_change_pct=3.0,
+                sector_etf='XLK',
+                reason='test',
+            )
+            
+            with patch('core.config.Config') as mock_cfg:
+                mock_cfg_instance = MagicMock()
+                mock_cfg_instance.ENABLE_DAY_TRADE_MOMENTUM = True
+                mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_SPY_PCT = -1.5
+                mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_VIX_SPIKE = 15.0
+                mock_cfg_instance.MOMENTUM_RISK_OFF_SIZE_MULT = 0.25
+                mock_cfg_instance.MOMENTUM_OPENING_30_SIZE_MULT = 0.5
+                mock_cfg_instance.MOMENTUM_MIN_RS_VS_SPY = 0.5
+                mock_cfg_instance.MOMENTUM_MIN_VOLUME_RATIO = 1.5
+                mock_cfg_instance.DAY_TRADE_SIZE_MULTIPLIER = 0.5
+                mock_cfg_instance.DAY_TRADE_FLATTEN_HOUR = 15
+                mock_cfg_instance.ENABLE_HARD_VETO_CONTINUATION_RSI70 = True
+                mock_cfg_instance.SHADOW_VETO_RSI_THRESHOLD = 70.0
+                mock_cfg_instance.ENABLE_SHADOW_VETO_CONTINUATION_RISKOFF = True
+                mock_cfg.return_value = mock_cfg_instance
+                
+                signal = await strategy.generate_signal_with_commentary(market_data)
+        
+        # Signal should be GENERATED (breakout pattern not blocked)
+        assert signal is not None, (
+            "Hard veto must NOT block breakout pattern — only continuation"
+        )
+        assert signal.reasoning['entry_pattern'] == 'breakout'
+    
+    @pytest.mark.asyncio
+    async def test_hard_veto_does_not_block_continuation_below_rsi_threshold(self):
+        """Hard veto must NOT block continuation when RSI < threshold."""
+        from strategies.builtin import DayTradeMomentumStrategy
+        
+        strategy = DayTradeMomentumStrategy(MagicMock())
+        
+        market_data = MagicMock()
+        market_data.symbol = 'CONT_LOW_RSI'
+        market_data.close = 100.0
+        market_data.open = 98.0
+        market_data.timestamp = datetime.now()
+        market_data.indicators = {
+            'rsi': 65.0,  # KEY: RSI < 70 (below threshold)
+            'volume_ratio': 2.0,
+            'adx': 30,
+            'atr': 1.5,
+            'high_20': 95.0,  # Not breakout
+            'sma_20': 98.0,  # Continuation pattern
+            'macd': 0.5,
+            'macd_signal': 0.3,
+            'day_change_pct': 3.0,
+        }
+        
+        with patch('core.market_context.read_market_context') as mock_mc:
+            mock_mc.return_value = MagicMock(
+                regime='mixed',
+                time_of_day='midday',
+                spy_change_pct=-0.3,
+                vix_change_pct=3.0,
+                sector_etf='XLK',
+                reason='test',
+            )
+            
+            with patch('core.config.Config') as mock_cfg:
+                mock_cfg_instance = MagicMock()
+                mock_cfg_instance.ENABLE_DAY_TRADE_MOMENTUM = True
+                mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_SPY_PCT = -1.5
+                mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_VIX_SPIKE = 15.0
+                mock_cfg_instance.MOMENTUM_RISK_OFF_SIZE_MULT = 0.25
+                mock_cfg_instance.MOMENTUM_OPENING_30_SIZE_MULT = 0.5
+                mock_cfg_instance.MOMENTUM_MIN_RS_VS_SPY = 0.5
+                mock_cfg_instance.MOMENTUM_MIN_VOLUME_RATIO = 1.5
+                mock_cfg_instance.DAY_TRADE_SIZE_MULTIPLIER = 0.5
+                mock_cfg_instance.DAY_TRADE_FLATTEN_HOUR = 15
+                mock_cfg_instance.ENABLE_HARD_VETO_CONTINUATION_RSI70 = True
+                mock_cfg_instance.SHADOW_VETO_RSI_THRESHOLD = 70.0
+                mock_cfg_instance.ENABLE_SHADOW_VETO_CONTINUATION_RISKOFF = True
+                mock_cfg.return_value = mock_cfg_instance
+                
+                signal = await strategy.generate_signal_with_commentary(market_data)
+        
+        # Signal should be GENERATED (RSI below threshold)
+        assert signal is not None, (
+            "Hard veto must NOT block continuation when RSI < threshold"
+        )
+        assert signal.reasoning['entry_pattern'] == 'continuation'

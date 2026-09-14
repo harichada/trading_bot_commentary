@@ -1558,7 +1558,77 @@ class DayTradeMomentumStrategy(TradingStrategyWithCommentary):
                 return None
             
             # ────────────────────────────────────────────────────────────────
+            # v-hard-veto-rsi70-2026-09-14: Hard veto for continuation + RSI>=70
+            # in ALL regimes (promoted from shadow-only risk_off gate).
+            #
+            # RCA 2026-09-14 FTFT LIVE loss: continuation RSI 74.31, regime=mixed.
+            # Shadow veto only fired on risk_off, so mixed overbought continuation
+            # still placed LIVE and lost. This hard veto blocks ALL regimes.
+            #
+            # Gated by Config.ENABLE_HARD_VETO_CONTINUATION_RSI70 (default True).
+            # ────────────────────────────────────────────────────────────────
+            _shadow_veto_rsi_threshold = cfg.SHADOW_VETO_RSI_THRESHOLD
+            _hard_veto_triggered = (
+                cfg.ENABLE_HARD_VETO_CONTINUATION_RSI70
+                and _entry_pattern == "continuation"
+                and rsi >= _shadow_veto_rsi_threshold
+            )
+            
+            if _hard_veto_triggered:
+                self._log_decision(
+                    market_data, "hard_veto", "continuation_overbought_all_regimes",
+                    pattern=_entry_pattern,
+                    rsi=round(rsi, 2),
+                    rsi_threshold=_shadow_veto_rsi_threshold,
+                    regime=_mc_regime,
+                    rs_vs_spy=round(_rs_vs_spy, 2),
+                    volume_ratio=round(volume_ratio, 2),
+                    adx=round(adx, 2),
+                    high_20=round(high_20, 2),
+                    close=round(market_data.close, 2),
+                    sma_20=round(sma_20, 2) if sma_20 > 0 else 0,
+                    macd=round(macd, 4),
+                    macd_signal=round(macd_signal, 4),
+                    spy_change=round(_mc_spy_change, 2),
+                    vix_change=round(_mc_vix_change, 2),
+                    session_id=_get_session_id(),
+                )
+                
+                self.commentary.add_commentary(TradingCommentary(
+                    timestamp=datetime.now(),
+                    type=CommentaryType.RISK_ASSESSMENT,
+                    symbol=symbol,
+                    title=f"🚫 Hard Veto: CONTINUATION + RSI≥70 (all regimes)",
+                    message=(
+                        f"BLOCKED {symbol} continuation entry:\n"
+                        f"  RSI {rsi:.1f} >= {_shadow_veto_rsi_threshold} (overbought)\n"
+                        f"  Regime: {_mc_regime}\n\n"
+                        f"RCA 2026-09-14 FTFT: continuation into overbought loses\n"
+                        f"regardless of regime (mixed, risk_off, risk_on).\n"
+                        f"Hard veto promoted from shadow-only risk_off gate.\n\n"
+                        f"Signal details: RS vs SPY {_rs_vs_spy:+.2f}%, Vol {volume_ratio:.1f}x"
+                    ),
+                    data={
+                        'veto_type': 'hard',
+                        'pattern': _entry_pattern,
+                        'rsi': rsi,
+                        'rsi_threshold': _shadow_veto_rsi_threshold,
+                        'regime': _mc_regime,
+                        'rs_vs_spy': _rs_vs_spy,
+                        'volume_ratio': volume_ratio,
+                        'rca_ref': 'FTFT 2026-09-14',
+                    },
+                    importance=8,
+                ))
+                
+                return None
+            
+            # ────────────────────────────────────────────────────────────────
             # v-shadow-veto-2026-09-10: Shadow veto for continuation + RSI>=70 + risk_off
+            #
+            # NOTE: With v-hard-veto-rsi70-2026-09-14 enabled (default), this
+            # shadow veto path is only reachable when hard veto is disabled.
+            # Kept for backward compatibility when ENABLE_HARD_VETO_CONTINUATION_RSI70=False.
             #
             # Pattern: continuation pattern into overbought (RSI>=70) during
             # risk_off regime is the classic failed breakout setup (exhaustion
@@ -1571,7 +1641,6 @@ class DayTradeMomentumStrategy(TradingStrategyWithCommentary):
             #
             # Gated by Config.ENABLE_SHADOW_VETO_CONTINUATION_RISKOFF (default True)
             # ────────────────────────────────────────────────────────────────
-            _shadow_veto_rsi_threshold = cfg.SHADOW_VETO_RSI_THRESHOLD
             _shadow_veto_triggered = (
                 cfg.ENABLE_SHADOW_VETO_CONTINUATION_RISKOFF
                 and _entry_pattern == "continuation"
