@@ -521,6 +521,93 @@ class ThemeShockLogger:
         """Reload theme configurations."""
         self._loader.reload()
 
+    def process_news_item_from_publish(
+        self,
+        item: "ScoredNewsItem",
+        get_open_positions_fn: Optional[callable] = None,
+    ) -> List[ThemeEvent]:
+        """Process a news item from NewsBus publish path.
+        
+        v-theme-shock-hotfix-2026-09-14: This is the CRITICAL fix. Previously
+        ThemeShock was only invoked on entry path (process_news_item_for_entry)
+        which only fires when evaluating a specific entry signal. Anthropic
+        headlines from Alpaca went into the bus but ThemeShock was never
+        notified, resulting in ZERO shadow_* emits.
+        
+        Now this method is called from NewsBus.on_publish for EVERY new item.
+        It:
+          1. Tags the item for theme matches
+          2. For each match, emits shadow logs for ALL basket symbols (entry path)
+          3. Checks if any affected symbols have managed open positions and
+             emits shadow logs for those too (open-position path)
+        
+        Args:
+            item: The ScoredNewsItem from NewsBus publish.
+            get_open_positions_fn: Optional callable that returns dict of
+                {symbol: position} for managed_by_bot positions. Used to
+                check if themes hit open positions.
+        
+        Returns:
+            List of ThemeEvents that were logged.
+        """
+        if not self.is_enabled():
+            return []
+
+        matches = self.tag_news_item(item)
+        if not matches:
+            return []
+
+        events = []
+        open_positions = {}
+        if get_open_positions_fn is not None:
+            try:
+                open_positions = get_open_positions_fn()
+            except Exception as exc:
+                logger.debug(
+                    "theme_shock process_from_publish get_open_positions error: %s",
+                    exc,
+                )
+        
+        for match in matches:
+            all_affected = set(match.symbols_tradable + match.symbols_watch_only)
+            
+            for symbol in all_affected:
+                symbol_upper = symbol.upper()
+                
+                is_open_position = (
+                    symbol_upper in open_positions
+                    and getattr(open_positions[symbol_upper], 'managed_by_bot', False)
+                )
+                
+                if is_open_position:
+                    position = open_positions[symbol_upper]
+                    action = self._determine_action_for_symbol(
+                        symbol_upper, match, is_managed_open=True
+                    )
+                    managed_flags = {
+                        "publish_path": True,
+                        "open_position": True,
+                        "managed_by_bot": True,
+                        "position_side": getattr(position, 'side', 'unknown'),
+                    }
+                else:
+                    action = self._determine_action_for_symbol(
+                        symbol_upper, match, is_managed_open=False
+                    )
+                    managed_flags = {"publish_path": True, "entry_gate": True}
+                
+                event = self.log_theme_event(
+                    item=item,
+                    match=match,
+                    action=action,
+                    symbol=symbol_upper,
+                    managed_flags=managed_flags,
+                )
+                if event:
+                    events.append(event)
+        
+        return events
+
 
 _logger_singleton: Optional[ThemeShockLogger] = None
 
