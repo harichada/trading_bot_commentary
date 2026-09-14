@@ -145,25 +145,20 @@ class TestLogStrategyDecision:
         loop = asyncio.new_event_loop()
         mock_db_logger.set_owner_loop(loop)
         
-        captured_coro = None
-        
-        def capture_coro(coro, lp):
-            nonlocal captured_coro
-            captured_coro = coro
-            return MagicMock()
-        
         async def mock_log_decision(**kwargs):
             return kwargs
         
         with patch.object(mock_db_logger, 'log_decision', side_effect=mock_log_decision) as mock_ld:
-            with patch('asyncio.run_coroutine_threadsafe', side_effect=capture_coro):
+            with patch('asyncio.run_coroutine_threadsafe') as mock_schedule:
                 with patch.object(loop, 'is_running', return_value=True):
                     mock_db_logger.log_strategy_decision(
                         strategy="gpu_news_critic",
                         symbol="NVDA",
                         action="shadow_pass",
                         reason="test_reason",
-                        extra_data={"confidence": 0.75, "infer_ms": 50.0},
+                        # v-hotfix: 'confidence' collides with log_decision param,
+                        # use non-colliding keys for this test
+                        extra_data={"theme_probs": {"ai_compute": 0.75}, "infer_ms": 50.0},
                     )
         
         mock_ld.assert_called_once()
@@ -173,7 +168,8 @@ class TestLogStrategyDecision:
         assert call_kwargs['symbol'] == "NVDA"
         assert call_kwargs['action'] == "shadow_pass"
         assert call_kwargs['reason'] == "test_reason"
-        assert call_kwargs['confidence'] == 0.75
+        # Non-colliding keys passed through directly
+        assert call_kwargs['theme_probs'] == {"ai_compute": 0.75}
         assert call_kwargs['infer_ms'] == 50.0
         
         loop.close()
@@ -220,6 +216,151 @@ class TestLogStrategyDecision:
         
         assert "db_logger_strategy_decision_error" in caplog.text
         assert "test error" in caplog.text
+        
+        loop.close()
+
+
+class TestExtraDataCollisionHotfix:
+    """v-hotfix-collision-2026-09-14: Regression tests for extra_data key collision.
+    
+    CriticCard.to_dict() and ThemeEvent.to_dict() include keys like 'action',
+    'symbol', 'confidence' that collide with log_decision's explicit parameters.
+    This caused: "log_decision() got multiple values for keyword argument 'action'"
+    """
+
+    @pytest.fixture
+    def mock_db_logger(self):
+        """Create a DbLogger with mocked engine for testing."""
+        db_logger_module = _load_db_logger_module()
+        DbLogger = db_logger_module.DbLogger
+        
+        with patch.object(db_logger_module, 'create_async_engine') as mock_create:
+            mock_engine = MagicMock()
+            mock_create.return_value = mock_engine
+            db_logger = DbLogger(dsn="postgresql+asyncpg://test:test@localhost/test")
+        
+        return db_logger
+
+    def test_extra_data_with_colliding_keys_no_typeerror(self, mock_db_logger):
+        """log_strategy_decision handles extra_data with colliding keys without TypeError."""
+        loop = asyncio.new_event_loop()
+        mock_db_logger.set_owner_loop(loop)
+        
+        # Simulates CriticCard.to_dict() which includes action, symbol, confidence
+        critic_card_dict = {
+            "event_id": "abc123",
+            "headline": "Test headline",
+            "summary": "Test summary",
+            "theme_probs": {"ai_compute": 0.65, "other": 0.35},
+            "relevance_by_symbol": {"NVDA": 0.8, "AMD": 0.7},
+            "stance": "mixed",
+            "contamination_risk": 0.1,
+            "confidence": 0.75,  # COLLIDES with log_decision param
+            "action": "pass",  # COLLIDES with log_decision param
+            "symbol": "NVDA",  # COLLIDES with log_decision param
+            "reason": "test_reason",  # Would collide if passed
+        }
+        
+        captured_kwargs = {}
+        
+        async def capture_log_decision(**kwargs):
+            captured_kwargs.update(kwargs)
+        
+        with patch.object(mock_db_logger, 'log_decision', side_effect=capture_log_decision):
+            with patch('asyncio.run_coroutine_threadsafe') as mock_schedule:
+                with patch.object(loop, 'is_running', return_value=True):
+                    # This should NOT raise TypeError
+                    mock_db_logger.log_strategy_decision(
+                        strategy="gpu_news_critic",
+                        symbol="NVDA",
+                        action="shadow_pass",
+                        reason="theme=ai_compute(0.65)",
+                        extra_data=critic_card_dict,
+                    )
+        
+        # Verify log_decision was called (via run_coroutine_threadsafe)
+        mock_schedule.assert_called_once()
+        loop.close()
+
+    def test_colliding_keys_preserved_in_card_original(self, mock_db_logger):
+        """Colliding keys are preserved under _card_original for Research."""
+        loop = asyncio.new_event_loop()
+        mock_db_logger.set_owner_loop(loop)
+        
+        critic_card_dict = {
+            "theme_probs": {"ai_compute": 0.65},
+            "relevance_by_symbol": {"NVDA": 0.8},
+            "confidence": 0.75,  # COLLIDES
+            "action": "pass",  # COLLIDES
+            "symbol": "NVDA",  # COLLIDES
+            "infer_ms": 45.2,  # Does not collide
+        }
+        
+        async def capture_log_decision(**kwargs):
+            return kwargs
+        
+        with patch.object(mock_db_logger, 'log_decision', side_effect=capture_log_decision) as mock_ld:
+            with patch('asyncio.run_coroutine_threadsafe') as mock_schedule:
+                with patch.object(loop, 'is_running', return_value=True):
+                    mock_db_logger.log_strategy_decision(
+                        strategy="gpu_news_critic",
+                        symbol="NVDA",
+                        action="shadow_pass",
+                        reason="test",
+                        extra_data=critic_card_dict,
+                    )
+        
+        # Verify log_decision was called
+        mock_ld.assert_called_once()
+        call_kwargs = mock_ld.call_args[1]
+        
+        # Verify explicit params
+        assert call_kwargs['component'] == "gpu_news_critic"
+        assert call_kwargs['symbol'] == "NVDA"
+        assert call_kwargs['action'] == "shadow_pass"
+        
+        # Verify non-colliding keys passed through
+        assert call_kwargs['theme_probs'] == {"ai_compute": 0.65}
+        assert call_kwargs['relevance_by_symbol'] == {"NVDA": 0.8}
+        assert call_kwargs['infer_ms'] == 45.2
+        
+        # Verify colliding keys preserved in _card_original
+        assert '_card_original' in call_kwargs
+        assert call_kwargs['_card_original']['confidence'] == 0.75
+        assert call_kwargs['_card_original']['action'] == "pass"
+        assert call_kwargs['_card_original']['symbol'] == "NVDA"
+        
+        loop.close()
+
+    def test_no_collision_no_card_original(self, mock_db_logger):
+        """When no collisions, _card_original is not added."""
+        loop = asyncio.new_event_loop()
+        mock_db_logger.set_owner_loop(loop)
+        
+        # No colliding keys
+        safe_extra = {
+            "theme_probs": {"ai_compute": 0.65},
+            "infer_ms": 45.2,
+            "event_id": "abc123",
+        }
+        
+        async def capture_log_decision(**kwargs):
+            return kwargs
+        
+        with patch.object(mock_db_logger, 'log_decision', side_effect=capture_log_decision) as mock_ld:
+            with patch('asyncio.run_coroutine_threadsafe') as mock_schedule:
+                with patch.object(loop, 'is_running', return_value=True):
+                    mock_db_logger.log_strategy_decision(
+                        strategy="gpu_news_critic",
+                        symbol="NVDA",
+                        action="shadow_pass",
+                        reason="test",
+                        extra_data=safe_extra,
+                    )
+        
+        call_kwargs = mock_ld.call_args[1]
+        assert '_card_original' not in call_kwargs
+        assert call_kwargs['theme_probs'] == {"ai_compute": 0.65}
         
         loop.close()
 

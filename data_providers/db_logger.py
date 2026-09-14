@@ -978,6 +978,13 @@ class DbLogger:
     # =========================================================================
     # v-fix-log-strategy-decision-2026-09-14: Sync fire-and-forget for strategy logging
     # =========================================================================
+    # Keys in log_decision signature that would collide with extra_data from Stage A cards
+    _LOG_DECISION_RESERVED_KEYS = frozenset({
+        'component', 'symbol', 'action', 'reason', 'mode',
+        'signal_type', 'confidence', 'strength', 'meta_proba',
+        'atr', 'stop_distance', 'price',
+    })
+
     def log_strategy_decision(
         self,
         strategy: str,
@@ -997,7 +1004,13 @@ class DbLogger:
           - symbol=symbol
           - action=action
           - reason=reason
-          - **extra_data passed to details_json
+          - extra_data passed to details_json (with collision handling)
+        
+        v-hotfix-collision-2026-09-14: CriticCard.to_dict() and ThemeEvent.to_dict()
+        include keys like 'action', 'symbol', 'confidence' that collide with
+        log_decision's explicit parameters. We split extra_data:
+          - Non-colliding keys go directly into details_json (flat structure)
+          - Colliding keys go into details_json._card_original (preserved for Research)
         
         Never raises to callers. Fails soft with warning log.
         """
@@ -1019,13 +1032,26 @@ class DbLogger:
                 )
                 return
             
+            # v-hotfix-collision-2026-09-14: split extra_data to avoid kwarg collision
+            safe_extra: dict = {}
+            if extra_data:
+                colliding = {}
+                for k, v in extra_data.items():
+                    if k in self._LOG_DECISION_RESERVED_KEYS:
+                        colliding[k] = v
+                    else:
+                        safe_extra[k] = v
+                # Preserve colliding keys under _card_original for Research
+                if colliding:
+                    safe_extra['_card_original'] = colliding
+            
             asyncio.run_coroutine_threadsafe(
                 self.log_decision(
                     component=strategy,
                     symbol=symbol,
                     action=action,
                     reason=reason,
-                    **(extra_data or {}),
+                    **safe_extra,
                 ),
                 self._owner_loop,
             )
