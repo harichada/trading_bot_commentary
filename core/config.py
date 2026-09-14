@@ -1292,6 +1292,12 @@ class Config:
         """Use BOT-managed P&L (not account-wide Schwab P&L) for the
         daily-loss circuit. Default True.
 
+        Configuration priority:
+          1. Environment variable ENABLE_BOT_ONLY_PNL_CIRCUIT (truthy:
+             1/true/yes/on; falsy: 0/false/no/off, case-insensitive)
+          2. YAML key trading.enable_bot_only_pnl_circuit
+          3. Hardcoded default True
+
         Why this exists: the operator's Schwab account holds external
         positions the bot never opened (HQGE/PINS/COIN as of 2026-06-08).
         When those externals gap down (e.g., PINS -8% overnight), the
@@ -1308,7 +1314,18 @@ class Config:
 
         schwab_daily_pnl remains tracked regardless — the dashboard
         still shows the operator's full-account P&L; only the
-        circuit-decision input changes."""
+        circuit-decision input changes.
+
+        v-env-override-bot-only-pnl-circuit-2026-09-14: env override
+        added to match DAY_TRADE_LIVE_ENTRIES_ENABLED / ENABLE_ORB_STRATEGY
+        pattern. Fixes false trip on 2026-09-14 where .env had flag=1
+        but yaml had flag=false — yaml won, causing account-wide P&L
+        (-$3k from external positions) to fire EMERGENCY STOP while
+        bot-only P&L was $0.
+        """
+        env_val = os.getenv("ENABLE_BOT_ONLY_PNL_CIRCUIT")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
         return bool(self.manager.get('trading.enable_bot_only_pnl_circuit', True))
 
     @property

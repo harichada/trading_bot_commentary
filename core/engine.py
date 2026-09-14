@@ -4696,19 +4696,17 @@ class TradingEngineWithCommentary:
                     
                     # Check if manual close only is enabled
                     if self.manual_close_only:
+                        # v-emrg-pnl-commentary-2026-09-14: use _emrg_pnl
+                        # (the circuit-selected P&L) in the message, not
+                        # schwab_pnl. Fixes false trip RCA where account-
+                        # wide P&L was -$3k but bot-only was $0.
+                        _pnl_label = "bot-only" if _emrg_cfg.ENABLE_BOT_ONLY_PNL_CIRCUIT else "account"
                         self.commentary.add_commentary(TradingCommentary(
                             timestamp=datetime.now(),
                             type=CommentaryType.WARNING,
                             symbol=None,
                             title="🚨 EMERGENCY STOP (Manual Mode)",
-                            # v-emergency-stop-pnl-var-2026-05-11: var was
-                            # renamed schwab_pnl ↑ but f-strings still read
-                            # the old `pnl_to_check`. NameError fired in
-                            # the emergency-stop branch and propagated up
-                            # the trading loop, which silently froze the
-                            # screener/watchlist refresh for the rest of
-                            # the session. Restore the correct var.
-                            message=f"Daily loss of ${abs(schwab_pnl):.2f} exceeded 5% limit (${self.risk_manager.account_balance * 0.05:.2f}). "
+                            message=f"Daily {_pnl_label} loss of ${abs(_emrg_pnl):.2f} exceeded 5% limit (${self.risk_manager.account_balance * 0.05:.2f}). "
                                    f"Manual close only is ON - YOU must close positions manually!",
                             importance=10
                         ))
@@ -4717,13 +4715,17 @@ class TradingEngineWithCommentary:
                         self.is_running = False
                         break
                     else:
+                        # v-emrg-pnl-commentary-2026-09-14: use _emrg_pnl
+                        # (the circuit-selected P&L) in the message, not
+                        # schwab_pnl. Fixes false trip RCA where account-
+                        # wide P&L was -$3k but bot-only was $0.
+                        _pnl_label = "bot-only" if _emrg_cfg.ENABLE_BOT_ONLY_PNL_CIRCUIT else "account"
                         self.commentary.add_commentary(TradingCommentary(
                             timestamp=datetime.now(),
                             type=CommentaryType.WARNING,
                             symbol=None,
                             title="🚨 EMERGENCY STOP",
-                            # v-emergency-stop-pnl-var-2026-05-11: see above.
-                            message=f"Daily loss of ${abs(schwab_pnl):.2f} exceeded 5% limit (${self.risk_manager.account_balance * 0.05:.2f}). Closing all positions.",
+                            message=f"Daily {_pnl_label} loss of ${abs(_emrg_pnl):.2f} exceeded 5% limit (${self.risk_manager.account_balance * 0.05:.2f}). Closing all positions.",
                             importance=10
                         ))
                         
