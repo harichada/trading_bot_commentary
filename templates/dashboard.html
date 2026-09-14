@@ -3419,6 +3419,14 @@
                 <code style="background: oklch(0.18 0.01 270); padding: 0.15rem 0.4rem; border-radius: 4px;">Config.yaml</code>
                 under <code style="background: oklch(0.18 0.01 270); padding: 0.15rem 0.4rem; border-radius: 4px;">trading.hands_off_denylist</code>.
             </div>
+
+            <!-- Hard floor warning -->
+            <div style="margin-top: 0.75rem; padding: 1rem; background: oklch(0.78 0.16 80 / 0.08);
+                border: 1px solid oklch(0.78 0.16 80 / 0.2); border-radius: var(--radius);
+                font-size: 0.85rem; color: oklch(0.85 0.10 80);">
+                <strong>🔒 Permanent symbols:</strong> MU, HQGE, SPCX are protected forever and
+                cannot be removed. SNAP and any other symbols you add can be freely edited.
+            </div>
         </div>
     </div>
 
@@ -3445,6 +3453,8 @@
         // hands-off symbols. Populated from API on load; used by position
         // rendering to lock controls. Default fallback if API fails.
         const DEFAULT_HANDS_OFF = ['MU', 'HQGE', 'SPCX'];
+        // HARD FLOOR: MU, HQGE, SPCX can NEVER be removed — protected forever
+        const PERMANENT_HANDS_OFF = new Set(['MU', 'HQGE', 'SPCX']);
         let handsOffSymbols = new Set(DEFAULT_HANDS_OFF);
         let handsOffOriginal = new Set(DEFAULT_HANDS_OFF);  // snapshot for change detection
         let handsOffPending = new Set(DEFAULT_HANDS_OFF);   // working copy for edits
@@ -3518,19 +3528,30 @@
             if (symbols.length === 0) {
                 container.innerHTML = '<span style="color: var(--muted-fg); font-style: italic;">No symbols — add one below</span>';
             } else {
-                container.innerHTML = symbols.map(sym => `
-                    <span class="hands-off-chip" style="display: inline-flex; align-items: center; gap: 0.4rem;
-                        padding: 0.35rem 0.6rem; background: oklch(0.22 0.02 270);
-                        border: 1px solid var(--border); border-radius: 4px;
-                        font: 600 0.85rem var(--font-mono); color: var(--fg);">
-                        ${escapeHtml(sym)}
-                        <button onclick="removeHandsOffSymbol('${escapeHtml(sym)}')" title="Remove ${escapeHtml(sym)}"
-                            style="background: none; border: none; cursor: pointer; padding: 0;
-                                   color: var(--muted-fg); font-size: 1rem; line-height: 1;"
-                            onmouseover="this.style.color='#ef5350'"
-                            onmouseout="this.style.color='var(--muted-fg)'">×</button>
-                    </span>
-                `).join('');
+                container.innerHTML = symbols.map(sym => {
+                    const isPermanent = PERMANENT_HANDS_OFF.has(sym);
+                    const lockIcon = isPermanent ? '🔒 ' : '';
+                    const removeBtn = isPermanent
+                        ? `<span title="Permanent — cannot remove ${escapeHtml(sym)}"
+                              style="color: var(--muted-fg); opacity: 0.4; font-size: 0.8rem; cursor: not-allowed;">🔒</span>`
+                        : `<button onclick="removeHandsOffSymbol('${escapeHtml(sym)}')" title="Remove ${escapeHtml(sym)}"
+                              style="background: none; border: none; cursor: pointer; padding: 0;
+                                     color: var(--muted-fg); font-size: 1rem; line-height: 1;"
+                              onmouseover="this.style.color='#ef5350'"
+                              onmouseout="this.style.color='var(--muted-fg)'">×</button>`;
+                    const chipStyle = isPermanent
+                        ? 'background: oklch(0.18 0.03 270); border-color: oklch(0.55 0.08 85 / 0.5);'
+                        : 'background: oklch(0.22 0.02 270);';
+                    return `
+                        <span class="hands-off-chip" style="display: inline-flex; align-items: center; gap: 0.4rem;
+                            padding: 0.35rem 0.6rem; ${chipStyle}
+                            border: 1px solid var(--border); border-radius: 4px;
+                            font: 600 0.85rem var(--font-mono); color: var(--fg);">
+                            ${lockIcon}${escapeHtml(sym)}
+                            ${removeBtn}
+                        </span>
+                    `;
+                }).join('');
             }
             updatePendingChanges();
         }
@@ -3555,6 +3576,11 @@
         }
 
         function removeHandsOffSymbol(sym) {
+            // HARD FLOOR: MU, HQGE, SPCX can NEVER be removed
+            if (PERMANENT_HANDS_OFF.has(sym)) {
+                alert(`Cannot remove ${sym} — this is a permanent hands-off symbol that is protected forever.`);
+                return;
+            }
             handsOffPending.delete(sym);
             renderHandsOffChips();
         }
@@ -3578,6 +3604,16 @@
         async function saveHandsOffDenylist() {
             const added = [...handsOffPending].filter(s => !handsOffOriginal.has(s));
             const removed = [...handsOffOriginal].filter(s => !handsOffPending.has(s));
+
+            // HARD FLOOR check: block removal of permanent symbols client-side too
+            const removedPermanent = removed.filter(s => PERMANENT_HANDS_OFF.has(s));
+            if (removedPermanent.length > 0) {
+                alert(`Cannot save: attempting to remove permanent symbols (${removedPermanent.join(', ')}). These are protected forever.`);
+                // Restore permanent symbols to pending set
+                removedPermanent.forEach(s => handsOffPending.add(s));
+                renderHandsOffChips();
+                return;
+            }
 
             if (added.length === 0 && removed.length === 0) {
                 document.getElementById('hands-off-status').textContent = 'No changes to save.';
@@ -3621,8 +3657,14 @@
                         // The dashboard will re-render on next push
                     }
                 } else {
+                    // Handle API error (e.g., tried to remove permanent symbols)
                     status.textContent = 'Save failed: ' + (data.message || 'unknown error');
                     status.style.color = '#ef5350';
+                    // If API says we're missing permanent symbols, restore them
+                    if (data.missing_permanent) {
+                        data.missing_permanent.forEach(s => handsOffPending.add(s));
+                        renderHandsOffChips();
+                    }
                 }
             } catch (e) {
                 console.error('Failed to save hands-off denylist:', e);

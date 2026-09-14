@@ -785,6 +785,11 @@ async def reset_settings():
 import re
 _TICKER_PATTERN = re.compile(r'^[A-Z]{1,5}$')
 
+# HARD FLOOR: these symbols can NEVER be removed from the denylist.
+# They are permanent long-term holds that must remain protected regardless
+# of any UI or API action. SNAP is NOT in this list — it's fully editable.
+PERMANENT_HANDS_OFF = frozenset({'MU', 'HQGE', 'SPCX'})
+
 
 def _is_valid_ticker(symbol: str) -> bool:
     """Validate that a symbol looks like a valid US equity ticker.
@@ -808,6 +813,7 @@ async def get_hands_off_denylist():
         {
             "status": "success",
             "symbols": ["HQGE", "MU", "SPCX"],  // sorted
+            "permanent": ["HQGE", "MU", "SPCX"],  // cannot be removed
             "source": "config" | "default_fallback"
         }
     """
@@ -819,6 +825,7 @@ async def get_hands_off_denylist():
         return {
             "status": "success",
             "symbols": sorted(symbols),
+            "permanent": sorted(PERMANENT_HANDS_OFF),
             "source": "config"
         }
     except Exception as e:
@@ -826,6 +833,7 @@ async def get_hands_off_denylist():
         return {
             "status": "success",
             "symbols": sorted(DEFAULT_DENYLIST),
+            "permanent": sorted(PERMANENT_HANDS_OFF),
             "source": "default_fallback"
         }
 
@@ -838,15 +846,26 @@ async def update_hands_off_denylist(request: dict):
     via config_manager, and returns the saved list. Invalid symbols are
     silently dropped with a warning in the response.
 
+    HARD FLOOR: MU, HQGE, SPCX can NEVER be removed. If the request
+    attempts to remove any of these, the API returns an error and does
+    NOT persist any changes. SNAP is fully editable.
+
     Request body:
         {"symbols": ["MU", "HQGE", "SPCX", "FOO"]}
 
-    Response:
+    Response (success):
         {
             "status": "success",
             "symbols": ["FOO", "HQGE", "MU", "SPCX"],  // sorted
             "dropped": ["123", "invalid!"],  // if any were invalid
             "message": "Saved 4 symbols"
+        }
+
+    Response (error - tried to remove permanent symbol):
+        {
+            "status": "error",
+            "message": "Cannot remove permanent symbols: MU, HQGE, SPCX. These are protected forever.",
+            "missing_permanent": ["MU", "SPCX"]
         }
 
     Note: No bot restart required — Config.HANDS_OFF_DENYLIST re-reads
@@ -877,11 +896,22 @@ async def update_hands_off_denylist(request: dict):
         seen.add(normalized)
         valid.append(normalized)
 
+    # HARD FLOOR: MU, HQGE, SPCX must ALWAYS be present
+    valid_set = set(valid)
+    missing_permanent = PERMANENT_HANDS_OFF - valid_set
+    if missing_permanent:
+        return {
+            "status": "error",
+            "message": f"Cannot remove permanent symbols: {', '.join(sorted(PERMANENT_HANDS_OFF))}. These are protected forever.",
+            "missing_permanent": sorted(missing_permanent)
+        }
+
     config_manager.update('trading.hands_off_denylist', valid)
 
     result = {
         "status": "success",
         "symbols": sorted(valid),
+        "permanent": sorted(PERMANENT_HANDS_OFF),
         "message": f"Saved {len(valid)} symbol{'s' if len(valid) != 1 else ''}"
     }
     if dropped:
