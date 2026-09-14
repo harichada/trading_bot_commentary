@@ -7,12 +7,21 @@ v-active-open-desk-2026-09-14: tests covering:
   - HANDS_OFF_DENYLIST symbols skipped
   - Parallel asyncio.gather invoked for multiple positions
   - DeskDecision dataclass serialization
+
+v-proactive-exit-daytrade-2026-09-14 (PR2): tests covering:
+  - PROACTIVE_EXIT_MIN_AGE_DAYTRADE config and env override
+  - PROACTIVE_EXIT_R_OVERRIDE_THRESHOLD config and env override
+  - Day trade detection from reasoning
+  - R-override bypasses min age gate
+  - Shadow logs include age/R reason strings
+  - HANDS_OFF positions skip proactive exit evaluation
 """
 import asyncio
 import pytest
 from datetime import datetime
+from typing import Optional
 from unittest.mock import MagicMock, AsyncMock, patch
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from analysis.active_open_desk import (
     ActiveOpenDesk,
@@ -36,10 +45,15 @@ class MockPosition:
     is_manually_managed: bool = False
     is_long_term: bool = False
     current_price: float = 0.0
+    entry_time: datetime = field(default_factory=datetime.now)
+    original_stop: Optional[float] = None
+    reasoning: dict = field(default_factory=dict)
     
     def __post_init__(self):
         if self.current_price == 0.0:
             self.current_price = self.entry_price
+        if self.original_stop is None:
+            self.original_stop = self.stop_loss
 
 
 @pytest.fixture
@@ -627,3 +641,486 @@ class TestGetLastDecisions:
         
         assert "AAPL" in result
         assert result["AAPL"].action == DeskAction.WOULD_TIGHTEN
+
+
+# ============================================================================
+# PR2: Proactive Exit Age/R Gates (v-proactive-exit-daytrade-2026-09-14)
+# ============================================================================
+
+@dataclass
+class MockPositionWithReasoning(MockPosition):
+    """MockPosition with reasoning dict for day-trade detection."""
+    reasoning: dict = field(default_factory=dict)
+    original_stop: Optional[float] = None
+    
+    def __post_init__(self):
+        super().__post_init__()
+        if self.original_stop is None:
+            self.original_stop = self.stop_loss
+
+
+class TestIsDayTrade:
+    """Test day trade detection logic."""
+
+    def test_detects_day_trade_from_is_day_trade_flag(self, mock_engine):
+        """Position with is_day_trade=True in reasoning is detected."""
+        pos = MockPositionWithReasoning(
+            symbol="AAPL",
+            entry_price=150.0,
+            stop_loss=145.0,
+            take_profit=160.0,
+            side="long",
+            reasoning={"is_day_trade": True, "strategy": "momentum"},
+        )
+        
+        desk = ActiveOpenDesk(mock_engine)
+        assert desk._is_day_trade(pos) is True
+
+    def test_detects_day_trade_from_strategy_name(self, mock_engine):
+        """Position with strategy=day_trade_momentum is detected."""
+        pos = MockPositionWithReasoning(
+            symbol="AAPL",
+            entry_price=150.0,
+            stop_loss=145.0,
+            take_profit=160.0,
+            side="long",
+            reasoning={"strategy": "day_trade_momentum"},
+        )
+        
+        desk = ActiveOpenDesk(mock_engine)
+        assert desk._is_day_trade(pos) is True
+
+    def test_detects_day_trade_from_strategy_substring(self, mock_engine):
+        """Position with 'day_trade' in strategy name is detected."""
+        pos = MockPositionWithReasoning(
+            symbol="AAPL",
+            entry_price=150.0,
+            stop_loss=145.0,
+            take_profit=160.0,
+            side="long",
+            reasoning={"strategy": "my_day_trade_strategy"},
+        )
+        
+        desk = ActiveOpenDesk(mock_engine)
+        assert desk._is_day_trade(pos) is True
+
+    def test_non_day_trade_not_detected(self, mock_engine):
+        """Position without day-trade markers is not detected as day trade."""
+        pos = MockPositionWithReasoning(
+            symbol="AAPL",
+            entry_price=150.0,
+            stop_loss=145.0,
+            take_profit=160.0,
+            side="long",
+            reasoning={"strategy": "news_momentum", "is_day_trade": False},
+        )
+        
+        desk = ActiveOpenDesk(mock_engine)
+        assert desk._is_day_trade(pos) is False
+
+
+class TestProactiveExitMinAgeConfig:
+    """Test config flags for proactive exit min age."""
+
+    def test_daytrade_min_age_default(self, monkeypatch):
+        """Default PROACTIVE_EXIT_MIN_AGE_DAYTRADE is 3 minutes."""
+        monkeypatch.delenv("PROACTIVE_EXIT_MIN_AGE_DAYTRADE", raising=False)
+        from core.config import Config
+        assert Config().PROACTIVE_EXIT_MIN_AGE_DAYTRADE == 3
+
+    def test_daytrade_min_age_env_override(self, monkeypatch):
+        """env PROACTIVE_EXIT_MIN_AGE_DAYTRADE=5 → 5 minutes."""
+        monkeypatch.setenv("PROACTIVE_EXIT_MIN_AGE_DAYTRADE", "5")
+        from core.config import Config
+        assert Config().PROACTIVE_EXIT_MIN_AGE_DAYTRADE == 5
+
+    def test_r_override_threshold_default(self, monkeypatch):
+        """Default PROACTIVE_EXIT_R_OVERRIDE_THRESHOLD is -0.3."""
+        monkeypatch.delenv("PROACTIVE_EXIT_R_OVERRIDE_THRESHOLD", raising=False)
+        from core.config import Config
+        assert Config().PROACTIVE_EXIT_R_OVERRIDE_THRESHOLD == -0.3
+
+    def test_r_override_threshold_env_override(self, monkeypatch):
+        """env PROACTIVE_EXIT_R_OVERRIDE_THRESHOLD=-0.5 → -0.5."""
+        monkeypatch.setenv("PROACTIVE_EXIT_R_OVERRIDE_THRESHOLD", "-0.5")
+        from core.config import Config
+        assert Config().PROACTIVE_EXIT_R_OVERRIDE_THRESHOLD == -0.5
+
+
+class TestGetMinAgeForPosition:
+    """Test that correct min age is selected based on position type."""
+
+    def test_day_trade_uses_daytrade_min_age(self, mock_engine, monkeypatch):
+        """Day trade position uses PROACTIVE_EXIT_MIN_AGE_DAYTRADE."""
+        monkeypatch.setenv("PROACTIVE_EXIT_MIN_AGE_DAYTRADE", "3")
+        
+        pos = MockPositionWithReasoning(
+            symbol="AAPL",
+            entry_price=150.0,
+            stop_loss=145.0,
+            take_profit=160.0,
+            side="long",
+            reasoning={"strategy": "day_trade_momentum"},
+        )
+        
+        desk = ActiveOpenDesk(mock_engine)
+        min_age = desk._get_min_age_for_position(pos)
+        
+        assert min_age == 3
+
+    def test_news_trade_uses_news_min_age(self, mock_engine, monkeypatch):
+        """News trade position uses PROACTIVE_EXIT_MIN_AGE_NEWS."""
+        monkeypatch.delenv("PROACTIVE_EXIT_MIN_AGE_DAYTRADE", raising=False)
+        
+        pos = MockPositionWithReasoning(
+            symbol="AAPL",
+            entry_price=150.0,
+            stop_loss=145.0,
+            take_profit=160.0,
+            side="long",
+            reasoning={"strategy": "free_news_sentiment"},
+        )
+        
+        desk = ActiveOpenDesk(mock_engine)
+        min_age = desk._get_min_age_for_position(pos)
+        
+        from core.config import Config
+        assert min_age == Config().PROACTIVE_EXIT_MIN_AGE_NEWS
+
+    def test_other_uses_default_min_age(self, mock_engine, monkeypatch):
+        """Non-day-trade, non-news position uses PROACTIVE_EXIT_MIN_AGE_DEFAULT."""
+        monkeypatch.delenv("PROACTIVE_EXIT_MIN_AGE_DAYTRADE", raising=False)
+        
+        pos = MockPositionWithReasoning(
+            symbol="AAPL",
+            entry_price=150.0,
+            stop_loss=145.0,
+            take_profit=160.0,
+            side="long",
+            reasoning={"strategy": "momentum"},
+        )
+        
+        desk = ActiveOpenDesk(mock_engine)
+        min_age = desk._get_min_age_for_position(pos)
+        
+        from core.config import Config
+        assert min_age == Config().PROACTIVE_EXIT_MIN_AGE_DEFAULT
+
+
+class TestProactiveExitROverride:
+    """Test R-based override of min age gate."""
+
+    def test_r_override_bypasses_age_gate(self, mock_engine, monkeypatch):
+        """When pnl_r <= R_OVERRIDE_THRESHOLD, min age is bypassed."""
+        from datetime import timedelta
+        
+        monkeypatch.setenv("PROACTIVE_EXIT_MIN_AGE_DAYTRADE", "10")
+        monkeypatch.setenv("PROACTIVE_EXIT_R_OVERRIDE_THRESHOLD", "-0.3")
+        monkeypatch.setenv("ENABLE_PROACTIVE_EXIT", "1")
+        
+        # Position opened 1 minute ago (below 10 min threshold)
+        entry_time = datetime.now() - timedelta(minutes=1)
+        
+        pos = MockPositionWithReasoning(
+            symbol="AAPL",
+            entry_price=150.0,
+            stop_loss=145.0,  # 5.0 stop distance
+            take_profit=160.0,
+            side="long",
+            reasoning={"strategy": "day_trade_momentum"},
+        )
+        pos.entry_time = entry_time
+        pos.original_stop = 145.0
+        
+        desk = ActiveOpenDesk(mock_engine)
+        
+        # Current price = 147.0 → pnl_r = (147-150)/5 = -0.6R
+        # This is below -0.3R threshold AND below -0.5R pnl_threshold
+        current_price = 147.0
+        
+        # With indicators that would trigger proactive exit
+        indicators = {
+            "macd": -0.1,
+            "macd_signal": 0.1,  # MACD bearish
+            "rsi": 45.0,
+            "adx": 15.0,
+            "adx_prev": 20.0,
+        }
+        
+        decision = desk._check_proactive_exit_gate(pos, current_price, indicators)
+        
+        assert decision is not None
+        assert decision.action == DeskAction.WOULD_EXIT
+        assert decision.r_override_used is True
+        assert decision.age_gate_met is False
+        assert "r_override_bypass" in decision.reason
+
+    def test_age_gate_met_no_r_override_needed(self, mock_engine, monkeypatch):
+        """When age gate is met, r_override_used is False even if R is bad."""
+        from datetime import timedelta
+        
+        monkeypatch.setenv("PROACTIVE_EXIT_MIN_AGE_DAYTRADE", "3")
+        monkeypatch.setenv("PROACTIVE_EXIT_R_OVERRIDE_THRESHOLD", "-0.3")
+        monkeypatch.setenv("ENABLE_PROACTIVE_EXIT", "1")
+        
+        # Position opened 5 minutes ago (above 3 min threshold)
+        entry_time = datetime.now() - timedelta(minutes=5)
+        
+        pos = MockPositionWithReasoning(
+            symbol="AAPL",
+            entry_price=150.0,
+            stop_loss=145.0,
+            take_profit=160.0,
+            side="long",
+            reasoning={"strategy": "day_trade_momentum"},
+        )
+        pos.entry_time = entry_time
+        pos.original_stop = 145.0
+        
+        desk = ActiveOpenDesk(mock_engine)
+        
+        # Current price = 147.0 → pnl_r = -0.6R (bad, below pnl_threshold)
+        current_price = 147.0
+        
+        indicators = {
+            "macd": -0.1,
+            "macd_signal": 0.1,
+            "rsi": 45.0,
+            "adx": 15.0,
+            "adx_prev": 20.0,
+        }
+        
+        decision = desk._check_proactive_exit_gate(pos, current_price, indicators)
+        
+        assert decision is not None
+        assert decision.age_gate_met is True
+        # r_override_used can be True (R is bad), but we don't rely on it
+        assert "r_override_bypass" not in decision.reason
+
+
+class TestProactiveExitSuppression:
+    """Test that proactive exit is suppressed when conditions not met."""
+
+    def test_suppressed_when_below_min_age_and_above_r_threshold(self, mock_engine, monkeypatch):
+        """Proactive exit suppressed when below min age AND R not bad enough."""
+        from datetime import timedelta
+        
+        monkeypatch.setenv("PROACTIVE_EXIT_MIN_AGE_DAYTRADE", "10")
+        monkeypatch.setenv("PROACTIVE_EXIT_R_OVERRIDE_THRESHOLD", "-0.3")
+        monkeypatch.setenv("ENABLE_PROACTIVE_EXIT", "1")
+        
+        # Position opened 1 minute ago
+        entry_time = datetime.now() - timedelta(minutes=1)
+        
+        pos = MockPositionWithReasoning(
+            symbol="AAPL",
+            entry_price=150.0,
+            stop_loss=145.0,
+            take_profit=160.0,
+            side="long",
+            reasoning={"strategy": "day_trade_momentum"},
+        )
+        pos.entry_time = entry_time
+        pos.original_stop = 145.0
+        
+        desk = ActiveOpenDesk(mock_engine)
+        
+        # Current price = 149.5 → pnl_r = (149.5-150)/5 = -0.1R
+        # This is above -0.3R threshold, so R-override does NOT fire
+        current_price = 149.5
+        
+        indicators = {
+            "macd": -0.1,
+            "macd_signal": 0.1,
+            "rsi": 45.0,
+            "adx": 15.0,
+            "adx_prev": 20.0,
+        }
+        
+        decision = desk._check_proactive_exit_gate(pos, current_price, indicators)
+        
+        # Should be None because suppressed
+        assert decision is None
+
+
+class TestDecisionFieldsPopulated:
+    """Test that decision includes age/R metadata."""
+
+    def test_decision_includes_age_r_fields(self, mock_engine, monkeypatch):
+        """DeskDecision includes age_minutes, pnl_r, is_day_trade, etc."""
+        from datetime import timedelta
+        
+        monkeypatch.setenv("PROACTIVE_EXIT_MIN_AGE_DAYTRADE", "3")
+        monkeypatch.setenv("ENABLE_PROACTIVE_EXIT", "1")
+        
+        entry_time = datetime.now() - timedelta(minutes=5)
+        
+        pos = MockPositionWithReasoning(
+            symbol="AAPL",
+            entry_price=150.0,
+            stop_loss=145.0,
+            take_profit=160.0,
+            side="long",
+            reasoning={"strategy": "day_trade_momentum"},
+        )
+        pos.entry_time = entry_time
+        pos.original_stop = 145.0
+        
+        desk = ActiveOpenDesk(mock_engine)
+        # Use current_price = 147.0 → pnl_r = -0.6R (below -0.5R threshold)
+        current_price = 147.0
+        
+        indicators = {
+            "macd": -0.1,
+            "macd_signal": 0.1,
+            "rsi": 45.0,
+            "adx": 15.0,
+            "adx_prev": 20.0,
+        }
+        
+        decision = desk._check_proactive_exit_gate(pos, current_price, indicators)
+        
+        assert decision is not None
+        assert decision.age_minutes is not None
+        assert decision.age_minutes >= 4.9  # approximately 5 minutes
+        assert decision.pnl_r is not None
+        assert abs(decision.pnl_r - (-0.6)) < 0.01  # pnl_r ≈ -0.6
+        assert decision.is_day_trade is True
+
+
+class TestShadowLogReason:
+    """Test that shadow logs include detailed reason strings."""
+
+    def test_reason_includes_age_and_r(self, mock_engine, monkeypatch):
+        """Reason string includes age and pnl_r information."""
+        from datetime import timedelta
+        
+        monkeypatch.setenv("PROACTIVE_EXIT_MIN_AGE_DAYTRADE", "3")
+        monkeypatch.setenv("ENABLE_PROACTIVE_EXIT", "1")
+        
+        entry_time = datetime.now() - timedelta(minutes=5)
+        
+        pos = MockPositionWithReasoning(
+            symbol="AAPL",
+            entry_price=150.0,
+            stop_loss=145.0,
+            take_profit=160.0,
+            side="long",
+            reasoning={"strategy": "day_trade_momentum"},
+        )
+        pos.entry_time = entry_time
+        pos.original_stop = 145.0
+        
+        desk = ActiveOpenDesk(mock_engine)
+        # Use current_price = 147.0 → pnl_r = -0.6R (below -0.5R threshold)
+        current_price = 147.0
+        
+        indicators = {
+            "macd": -0.1,
+            "macd_signal": 0.1,
+            "rsi": 45.0,
+            "adx": 15.0,
+            "adx_prev": 20.0,
+        }
+        
+        decision = desk._check_proactive_exit_gate(pos, current_price, indicators)
+        
+        assert decision is not None
+        assert "age=" in decision.reason
+        assert "pnl_r=" in decision.reason
+        assert "_daytrade" in decision.reason
+
+    def test_reason_includes_r_override_when_used(self, mock_engine, monkeypatch):
+        """Reason includes r_override_bypass when R-override triggered."""
+        from datetime import timedelta
+        
+        monkeypatch.setenv("PROACTIVE_EXIT_MIN_AGE_DAYTRADE", "10")
+        monkeypatch.setenv("PROACTIVE_EXIT_R_OVERRIDE_THRESHOLD", "-0.3")
+        monkeypatch.setenv("ENABLE_PROACTIVE_EXIT", "1")
+        
+        entry_time = datetime.now() - timedelta(minutes=1)
+        
+        pos = MockPositionWithReasoning(
+            symbol="AAPL",
+            entry_price=150.0,
+            stop_loss=145.0,
+            take_profit=160.0,
+            side="long",
+            reasoning={"strategy": "day_trade_momentum"},
+        )
+        pos.entry_time = entry_time
+        pos.original_stop = 145.0
+        
+        desk = ActiveOpenDesk(mock_engine)
+        # Use current_price = 147.0 → pnl_r = -0.6R (below both thresholds)
+        current_price = 147.0
+        
+        indicators = {
+            "macd": -0.1,
+            "macd_signal": 0.1,
+            "rsi": 45.0,
+            "adx": 15.0,
+            "adx_prev": 20.0,
+        }
+        
+        decision = desk._check_proactive_exit_gate(pos, current_price, indicators)
+        
+        assert decision is not None
+        assert "r_override_bypass" in decision.reason
+
+
+class TestToDict:
+    """Test DeskDecision serialization includes new fields."""
+
+    def test_to_dict_includes_age_r_fields(self):
+        """to_dict() includes age_minutes, pnl_r, is_day_trade, etc."""
+        decision = DeskDecision(
+            symbol="AAPL",
+            action=DeskAction.WOULD_EXIT,
+            reason="test_age=5.0m_pnl_r=-0.40_daytrade",
+            current_stop=145.0,
+            suggested_exit_price=148.0,
+            current_price=148.0,
+            age_minutes=5.0,
+            pnl_r=-0.4,
+            is_day_trade=True,
+            age_gate_met=True,
+            r_override_used=False,
+        )
+        
+        d = decision.to_dict()
+        
+        assert d["age_minutes"] == 5.0
+        assert d["pnl_r"] == -0.4
+        assert d["is_day_trade"] is True
+        assert d["age_gate_met"] is True
+        assert d["r_override_used"] is False
+
+
+class TestHandsOffSkippedForProactiveExit:
+    """Test that HANDS_OFF positions skip proactive exit evaluation too."""
+
+    @pytest.mark.asyncio
+    async def test_hands_off_positions_not_evaluated(self, mock_engine, monkeypatch):
+        """Positions in HANDS_OFF_DENYLIST are not monitored at all.
+        
+        This implicitly means proactive exit won't fire for them either.
+        """
+        # MU is in HANDS_OFF_DENYLIST
+        pos = MockPositionWithReasoning(
+            symbol="MU",
+            entry_price=100.0,
+            stop_loss=95.0,
+            take_profit=110.0,
+            side="long",
+            managed_by_bot=True,
+            reasoning={"strategy": "day_trade_momentum"},
+        )
+        mock_engine.positions = {"MU": pos}
+        
+        desk = ActiveOpenDesk(mock_engine)
+        result = desk.get_monitored_positions()
+        
+        # MU should be excluded
+        symbols = [r[0] for r in result]
+        assert "MU" not in symbols

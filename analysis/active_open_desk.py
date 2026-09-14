@@ -8,6 +8,19 @@ PR1 SHADOW ONLY: logs WOULD_TIGHTEN / WOULD_TRAIL / WOULD_EXIT with
 reason + symbol + suggested levels. No broker calls, no order mutations,
 no cancel-replace, no market exit.
 
+PR2 v-proactive-exit-daytrade-2026-09-14: Proactive exit age/R gates.
+  - PROACTIVE_EXIT_MIN_AGE_DAYTRADE: day trades use shorter min-age (3min
+    default vs 15min) because intraday momentum breaks faster than swing.
+  - PROACTIVE_EXIT_R_OVERRIDE_THRESHOLD: when pnl_r <= -0.3R (default),
+    bypass min-age entirely — thesis is likely broken regardless of age.
+  - FTFT fix: held ~20min, proactive_exit suppressed by below_min_age the
+    whole time, then hit hard_stop. Now: day trade would fire at 3min or
+    immediately if R-override triggers.
+  - Shadow decisions include age/R metadata: age_minutes, pnl_r, is_day_trade,
+    age_gate_met, r_override_used.
+  - HANDS_OFF via Config.HANDS_OFF_DENYLIST only — never hardcodes symbols.
+  - LT/HANDS_OFF unchanged: is_long_term positions skip desk entirely.
+
 Modular boundary:
   - Config flags: ENABLE_ACTIVE_OPEN_DESK (master switch, default True),
     ACTIVE_OPEN_DESK_SHADOW (default True), ACTIVE_OPEN_DESK_INTERVAL_SEC.
@@ -30,9 +43,10 @@ Outputs (shadow mode):
   - strategy_decision-style structured logs:
       WOULD_TIGHTEN: reason, symbol, current_stop, suggested_stop
       WOULD_TRAIL: reason, symbol, suggested_trail_stop
-      WOULD_EXIT: reason, symbol, suggested_exit_price
+      WOULD_EXIT: reason, symbol, suggested_exit_price, age, pnl_r
 
-Future PR2+: LIVE actuators behind ACTIVE_OPEN_DESK_SHADOW=False.
+Future PR3+: LIVE cancel-replace / market exit actuators behind
+ACTIVE_OPEN_DESK_SHADOW=False.
 """
 from __future__ import annotations
 
@@ -75,6 +89,12 @@ class DeskDecision:
     rsi: Optional[float] = None
     macd_signal: Optional[str] = None
     timestamp: datetime = None
+    # v-proactive-exit-daytrade-2026-09-14: age/R gate tracking
+    age_minutes: Optional[float] = None
+    pnl_r: Optional[float] = None
+    is_day_trade: bool = False
+    age_gate_met: bool = False
+    r_override_used: bool = False
 
     def __post_init__(self):
         if self.timestamp is None:
@@ -96,6 +116,11 @@ class DeskDecision:
             "rsi": self.rsi,
             "macd_signal": self.macd_signal,
             "timestamp": self.timestamp.isoformat() if self.timestamp else None,
+            "age_minutes": self.age_minutes,
+            "pnl_r": self.pnl_r,
+            "is_day_trade": self.is_day_trade,
+            "age_gate_met": self.age_gate_met,
+            "r_override_used": self.r_override_used,
         }
 
 
@@ -223,7 +248,11 @@ class ActiveOpenDesk:
     ) -> Optional[DeskDecision]:
         """Evaluate a single position for proactive action.
 
-        Checks:
+        v-proactive-exit-daytrade-2026-09-14 (PR2): added proactive exit
+        evaluation with age-gate and R-override for day trades.
+
+        Checks (in priority order):
+          0. Proactive exit: age+R gate, indicator confirmation (FTFT fix)
           1. Regime: if risk_off and position is long, consider exit/tighten
           2. Sentiment: if news sentiment turned negative for a long position
           3. Indicators: RSI overbought (exit) or MACD cross against position
@@ -244,6 +273,22 @@ class ActiveOpenDesk:
         current_stop = position.stop_loss
         side = position.side
 
+        # v-proactive-exit-daytrade-2026-09-14: check proactive exit FIRST
+        # This is the FTFT RCA fix — don't let min-age suppress early losers
+        proactive_decision = self._check_proactive_exit_gate(
+            position, current_price, indicators
+        )
+        if proactive_decision is not None:
+            proactive_decision.regime = context.regime if context else "unknown"
+            proactive_decision.sentiment_score = news_sentiment
+            proactive_decision.rsi = indicators.get("rsi", 50.0) if indicators else 50.0
+            macd = indicators.get("macd", 0.0) if indicators else 0.0
+            macd_sig = indicators.get("macd_signal", 0.0) if indicators else 0.0
+            proactive_decision.macd_signal = (
+                "bullish" if macd > macd_sig else "bearish" if macd < macd_sig else "neutral"
+            )
+            return proactive_decision
+
         regime = context.regime if context else "unknown"
         sentiment_score = news_sentiment
         rsi = indicators.get("rsi", 50.0) if indicators else 50.0
@@ -260,6 +305,11 @@ class ActiveOpenDesk:
         reason = ""
         suggested_stop = None
         suggested_exit_price = None
+
+        # Compute age and R for all decisions (for logging context)
+        age_minutes = (datetime.now() - position.entry_time).total_seconds() / 60.0
+        pnl_r = self._compute_pnl_r(position, current_price)
+        is_day_trade = self._is_day_trade(position)
 
         if side == "long":
             if regime == "risk_off":
@@ -315,6 +365,9 @@ class ActiveOpenDesk:
             sentiment_score=sentiment_score,
             rsi=rsi,
             macd_signal=macd_signal_str,
+            age_minutes=age_minutes,
+            pnl_r=pnl_r,
+            is_day_trade=is_day_trade,
         )
 
     def _get_market_context(self, symbol: str):
@@ -379,12 +432,182 @@ class ActiveOpenDesk:
                 return min(new_stop, current_stop)
             return current_stop
 
+    def _is_day_trade(self, position: "Position") -> bool:
+        """Check if a position is a day trade based on reasoning.
+
+        v-proactive-exit-daytrade-2026-09-14: day trades use shorter min-age
+        for proactive exit since intraday momentum breaks faster than swing theses.
+        """
+        reasoning = getattr(position, 'reasoning', {}) or {}
+        strategy = reasoning.get('strategy', '')
+        is_day_trade_flag = reasoning.get('is_day_trade', False)
+        return (
+            is_day_trade_flag
+            or strategy == 'day_trade_momentum'
+            or 'day_trade' in strategy.lower()
+        )
+
+    def _compute_pnl_r(
+        self,
+        position: "Position",
+        current_price: float,
+    ) -> float:
+        """Compute unrealized P&L in R-multiples.
+
+        Returns negative values when the trade is adverse (losing).
+        """
+        original_stop = position.original_stop or position.stop_loss
+        stop_distance = abs(position.entry_price - original_stop)
+        if stop_distance <= 0:
+            return 0.0
+
+        if position.side == "long":
+            return (current_price - position.entry_price) / stop_distance
+        else:
+            return (position.entry_price - current_price) / stop_distance
+
+    def _get_min_age_for_position(self, position: "Position") -> int:
+        """Get the minimum age (minutes) before proactive exit can fire.
+
+        v-proactive-exit-daytrade-2026-09-14: day trades use shorter min-age
+        (default 3 min) vs swing/news (15-30 min) because intraday momentum
+        breaks faster.
+        """
+        from core.config import Config
+        cfg = Config()
+
+        if self._is_day_trade(position):
+            return cfg.PROACTIVE_EXIT_MIN_AGE_DAYTRADE
+
+        reasoning = getattr(position, 'reasoning', {}) or {}
+        strategy = reasoning.get('strategy', '')
+
+        is_news = 'news' in strategy.lower() or strategy == 'free_news_sentiment'
+        is_meanrev = 'mean_reversion' in strategy.lower()
+
+        if is_news:
+            return cfg.PROACTIVE_EXIT_MIN_AGE_NEWS
+        elif is_meanrev:
+            return cfg.PROACTIVE_EXIT_MIN_AGE_MEANREV
+        else:
+            return cfg.PROACTIVE_EXIT_MIN_AGE_DEFAULT
+
+    def _check_proactive_exit_gate(
+        self,
+        position: "Position",
+        current_price: float,
+        indicators: Optional[Dict[str, Any]],
+    ) -> Optional[DeskDecision]:
+        """Evaluate proactive exit conditions with age-gate and R-override.
+
+        v-proactive-exit-daytrade-2026-09-14 (PR2):
+        RCA FTFT: held ~20min, proactive_exit suppressed by below_min_age (15m)
+        the entire time, then hit hard_stop. Fix:
+          1. Day trades use shorter min-age (3min default vs 15min)
+          2. R-override: if pnl_r <= -0.3R, bypass min-age entirely
+
+        Returns a DeskDecision if proactive exit/tighten should fire, else None.
+        The decision includes age/R metadata for shadow logging.
+        """
+        from core.config import Config
+        cfg = Config()
+
+        if not cfg.ENABLE_PROACTIVE_EXIT:
+            return None
+
+        age_minutes = (datetime.now() - position.entry_time).total_seconds() / 60.0
+        pnl_r = self._compute_pnl_r(position, current_price)
+        is_day_trade = self._is_day_trade(position)
+        min_age = self._get_min_age_for_position(position)
+        r_override_threshold = cfg.PROACTIVE_EXIT_R_OVERRIDE_THRESHOLD
+
+        age_gate_met = age_minutes >= min_age
+        r_override_used = pnl_r <= r_override_threshold
+
+        proactive_allowed = age_gate_met or r_override_used
+
+        if not proactive_allowed:
+            logger.debug(
+                "active_open_desk: proactive_exit suppressed symbol=%s "
+                "age=%.1fm min_age=%dm pnl_r=%.2f r_override=%.2f is_day_trade=%s",
+                position.symbol,
+                age_minutes,
+                min_age,
+                pnl_r,
+                r_override_threshold,
+                is_day_trade,
+            )
+            return None
+
+        if indicators is None:
+            return None
+
+        macd = float(indicators.get("macd", 0) or 0)
+        macd_sig = float(indicators.get("macd_signal", 0) or 0)
+        rsi = float(indicators.get("rsi", 50) or 50)
+        adx = float(indicators.get("adx", 0) or 0)
+        adx_prev = float(indicators.get("adx_prev", adx) or adx)
+
+        reasoning = getattr(position, 'reasoning', {}) or {}
+        strategy = reasoning.get('strategy', '')
+        is_news = 'news' in strategy.lower() or strategy == 'free_news_sentiment'
+
+        pnl_threshold = -0.70 if is_news else -0.50
+        if pnl_r > pnl_threshold:
+            return None
+
+        proactive_reason = None
+        if position.side == "long":
+            if macd < macd_sig:
+                proactive_reason = "macd_flipped_bearish"
+            elif rsi < 50:
+                proactive_reason = "rsi_below_50"
+        else:
+            if macd > macd_sig:
+                proactive_reason = "macd_flipped_bullish"
+            elif rsi > 50:
+                proactive_reason = "rsi_above_50"
+
+        if proactive_reason is None:
+            if adx < 20 and adx < adx_prev:
+                proactive_reason = "adx_collapsing"
+
+        if proactive_reason is None:
+            return None
+
+        reason_detail = (
+            f"{proactive_reason}_age={age_minutes:.1f}m_pnl_r={pnl_r:.2f}"
+        )
+        if r_override_used and not age_gate_met:
+            reason_detail += f"_r_override_bypass"
+        if is_day_trade:
+            reason_detail += "_daytrade"
+
+        return DeskDecision(
+            symbol=position.symbol,
+            action=DeskAction.WOULD_EXIT,
+            reason=reason_detail,
+            current_stop=position.stop_loss,
+            suggested_exit_price=current_price,
+            current_price=current_price,
+            age_minutes=age_minutes,
+            pnl_r=pnl_r,
+            is_day_trade=is_day_trade,
+            age_gate_met=age_gate_met,
+            r_override_used=r_override_used,
+        )
+
     def _log_shadow_decision(self, decision: DeskDecision) -> None:
-        """Log a shadow decision in strategy_decision style."""
+        """Log a shadow decision in strategy_decision style.
+
+        v-proactive-exit-daytrade-2026-09-14: includes age_minutes, pnl_r,
+        is_day_trade, age_gate_met, r_override_used for FTFT RCA observability.
+        """
         logger.info(
             "active_open_desk action=%s symbol=%s reason=%s "
             "current_stop=%.4f suggested_stop=%s suggested_exit=%s "
-            "price=%.4f regime=%s sentiment=%s rsi=%.1f macd=%s",
+            "price=%.4f regime=%s sentiment=%s rsi=%.1f macd=%s "
+            "age=%.1fm pnl_r=%.2f is_day_trade=%s age_gate=%s r_override=%s",
             decision.action.value,
             decision.symbol,
             decision.reason,
@@ -396,6 +619,11 @@ class ActiveOpenDesk:
             f"{decision.sentiment_score:.2f}" if decision.sentiment_score is not None else "N/A",
             decision.rsi or 0,
             decision.macd_signal or "unknown",
+            decision.age_minutes or 0,
+            decision.pnl_r or 0,
+            decision.is_day_trade,
+            decision.age_gate_met,
+            decision.r_override_used,
         )
 
         if self.engine.db_logger:
