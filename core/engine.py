@@ -120,6 +120,8 @@ class TradingEngineWithCommentary:
         self._quote_fetch_sem: Optional[asyncio.Semaphore] = None
         # v-phase-b-order-monitor-2026-09-14: OrderMonitor instance (composed)
         self._order_monitor: Optional[OrderMonitor] = None
+        # v-active-open-desk-2026-09-14: continuous monitor for open trades
+        self._active_open_desk = None
         # Set by quote_streamer when it observes itself stale > HARD threshold.
         # analysis_loop checks this gate before signalling new entries.
         self._quote_streamer_healthy: bool = True
@@ -3754,6 +3756,28 @@ class TradingEngineWithCommentary:
         )
         self._news_loop = NewsLoop(self, bus=self._news_bus)
         sup.register("news_loop", self._news_loop.run, TaskPriority.NORMAL)
+
+        # v-active-open-desk-2026-09-14: continuous monitor for open trades.
+        # RCA FTFT: bot set bracket + hard stop then idled. Hari: must
+        # continuously monitor ALL managed open trades for sentiment/regime/
+        # indicators. When ENABLE_ACTIVE_OPEN_DESK=False (default), the desk
+        # is not started and there is zero behavior change.
+        from analysis.active_open_desk import should_start_desk, ActiveOpenDesk
+        if should_start_desk():
+            self._active_open_desk = ActiveOpenDesk(self)
+            sup.register(
+                "active_open_desk",
+                self._active_open_desk.run,
+                TaskPriority.NORMAL,
+            )
+            logger.info(
+                "active_open_desk registered (shadow=%s, interval=%.1fs)",
+                Config().ACTIVE_OPEN_DESK_SHADOW,
+                Config().ACTIVE_OPEN_DESK_INTERVAL_SEC,
+            )
+        else:
+            self._active_open_desk = None
+            logger.debug("active_open_desk NOT registered (ENABLE_ACTIVE_OPEN_DESK=False)")
 
         return sup
 
