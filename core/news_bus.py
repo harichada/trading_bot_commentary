@@ -15,7 +15,7 @@ import hashlib
 import logging
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Callable, Dict, List, Optional, Set
 
@@ -45,12 +45,34 @@ class ScoredNewsItem:
     impact: NewsImpactLevel = NewsImpactLevel.MEDIUM
 
     def age_sec(self) -> float:
-        """Seconds since publication."""
-        return (datetime.now() - self.published_time).total_seconds()
+        """Seconds since publication (UTC-safe, never negative).
+        
+        v-theme-shock-hotfix-2026-09-14: fixed timezone bug where naive
+        datetime.now() vs UTC published_time produced negative ages.
+        Now uses UTC for both sides; clamps to 0 with diagnostic if
+        published_time is in the future (clock skew / bad source data).
+        """
+        now_utc = datetime.now(timezone.utc)
+        pub_ts = self.published_time
+        if pub_ts.tzinfo is None:
+            pub_ts = pub_ts.replace(tzinfo=timezone.utc)
+        age = (now_utc - pub_ts).total_seconds()
+        if age < 0:
+            logger.debug(
+                "news_bus age_sec negative (%.1fs) for %s, clamping to 0 (clock skew or future publish?)",
+                age, self.headline[:40],
+            )
+            return 0.0
+        return age
 
     def fetch_age_sec(self) -> float:
-        """Seconds since we fetched this item."""
-        return (datetime.now() - self.fetched_at).total_seconds()
+        """Seconds since we fetched this item (UTC-safe)."""
+        now_utc = datetime.now(timezone.utc)
+        fetch_ts = self.fetched_at
+        if fetch_ts.tzinfo is None:
+            fetch_ts = fetch_ts.replace(tzinfo=timezone.utc)
+        age = (now_utc - fetch_ts).total_seconds()
+        return max(0.0, age)
 
     def to_dict(self) -> dict:
         return {
@@ -146,10 +168,22 @@ class NewsBus:
         ttl_sec: float = 14400.0,  # 4 hours
         max_items_per_symbol: int = 50,
         on_high_impact: Optional[Callable[[str, ScoredNewsItem], None]] = None,
+        on_publish: Optional[Callable[[ScoredNewsItem], None]] = None,
     ):
+        """Initialize NewsBus.
+        
+        Args:
+            ttl_sec: Time-to-live for items before eviction.
+            max_items_per_symbol: Max items to keep per symbol.
+            on_high_impact: Callback for high-impact items (symbol, item).
+            on_publish: Callback for ALL newly published items. Used by
+                ThemeShockLogger (v-theme-shock-hotfix-2026-09-14) to
+                evaluate every item for theme matches and emit shadow logs.
+        """
         self._ttl_sec = ttl_sec
         self._max_items_per_symbol = max_items_per_symbol
         self._on_high_impact = on_high_impact
+        self._on_publish = on_publish
         
         self._lock = asyncio.Lock()
         self._items: Dict[str, List[ScoredNewsItem]] = defaultdict(list)
@@ -158,12 +192,18 @@ class NewsBus:
         self._wake_event = asyncio.Event()
 
     async def publish(self, items: List[ScoredNewsItem]) -> int:
-        """Publish scored news items to the bus. Returns count of new items added."""
+        """Publish scored news items to the bus. Returns count of new items added.
+        
+        v-theme-shock-hotfix-2026-09-14: added on_publish callback invocation
+        for EVERY new item so ThemeShockLogger can evaluate all news for
+        theme matches (not just entry-path items).
+        """
         if not items:
             return 0
 
         new_count = 0
         high_impact_new = []
+        new_items = []
 
         async with self._lock:
             for item in items:
@@ -175,6 +215,7 @@ class NewsBus:
 
                 self._items[symbol].append(item)
                 new_count += 1
+                new_items.append(item)
 
                 if item.impact == NewsImpactLevel.HIGH:
                     self._high_impact_events[symbol].append(item)
@@ -188,6 +229,16 @@ class NewsBus:
 
             self._enforce_limits()
             self._evict_stale()
+
+        # v-theme-shock-hotfix-2026-09-14: invoke on_publish for ALL new items
+        # This wires ThemeShockLogger into the publish path so every news item
+        # (RSS + Alpaca) is evaluated for theme matches and shadow logs emitted.
+        if self._on_publish:
+            for item in new_items:
+                try:
+                    self._on_publish(item)
+                except Exception as e:
+                    logger.debug(f"on_publish callback error: {e}")
 
         if high_impact_new:
             self._wake_event.set()
@@ -444,14 +495,24 @@ class NewsBus:
                 self._stats.items_evicted += evicted
 
     def _evict_stale(self) -> None:
-        """Evict items older than TTL (called under lock)."""
-        cutoff = datetime.now() - timedelta(seconds=self._ttl_sec)
+        """Evict items older than TTL (called under lock).
+        
+        v-theme-shock-hotfix-2026-09-14: Use UTC-aware cutoff and handle
+        both timezone-aware and naive datetimes for published_time/fetched_at.
+        """
+        cutoff = datetime.now(timezone.utc) - timedelta(seconds=self._ttl_sec)
+        
+        def is_fresh(ts: datetime) -> bool:
+            """Check if timestamp is fresher than cutoff (handles tz-aware/naive)."""
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            return ts >= cutoff
         
         for symbol in list(self._items.keys()):
             before = len(self._items[symbol])
             self._items[symbol] = [
                 i for i in self._items[symbol]
-                if i.published_time >= cutoff
+                if is_fresh(i.published_time)
             ]
             evicted = before - len(self._items[symbol])
             self._stats.items_evicted += evicted
@@ -462,7 +523,7 @@ class NewsBus:
         for symbol in list(self._high_impact_events.keys()):
             self._high_impact_events[symbol] = [
                 e for e in self._high_impact_events[symbol]
-                if e.fetched_at >= cutoff
+                if is_fresh(e.fetched_at)
             ]
             if not self._high_impact_events[symbol]:
                 del self._high_impact_events[symbol]
@@ -499,16 +560,35 @@ def get_news_bus(
     ttl_sec: float = 14400.0,
     max_items_per_symbol: int = 50,
     on_high_impact: Optional[Callable[[str, ScoredNewsItem], None]] = None,
+    on_publish: Optional[Callable[[ScoredNewsItem], None]] = None,
 ) -> NewsBus:
-    """Get or create the singleton NewsBus instance."""
+    """Get or create the singleton NewsBus instance.
+    
+    v-theme-shock-hotfix-2026-09-14: added on_publish parameter to wire
+    ThemeShockLogger into the publish path for all items.
+    """
     global _bus_singleton
     if _bus_singleton is None:
         _bus_singleton = NewsBus(
             ttl_sec=ttl_sec,
             max_items_per_symbol=max_items_per_symbol,
             on_high_impact=on_high_impact,
+            on_publish=on_publish,
         )
     return _bus_singleton
+
+
+def set_news_bus_on_publish(
+    callback: Optional[Callable[[ScoredNewsItem], None]]
+) -> None:
+    """Set the on_publish callback on the existing NewsBus singleton.
+    
+    v-theme-shock-hotfix-2026-09-14: allows engine to wire ThemeShock
+    after the bus singleton is already created.
+    """
+    global _bus_singleton
+    if _bus_singleton is not None:
+        _bus_singleton._on_publish = callback
 
 
 def reset_news_bus() -> None:

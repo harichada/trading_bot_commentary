@@ -135,7 +135,7 @@ class NewsLoop:
             return []
 
         scored = []
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
 
         for item in raw_items:
             text = f"{item.headline} {getattr(item, 'summary', '')}"
@@ -320,7 +320,7 @@ class AlpacaNewsBusPublisher:
         articles: List[dict],
     ) -> List[ScoredNewsItem]:
         """Convert Alpaca news articles to ScoredNewsItem list."""
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
         scored = []
 
         for article in articles:
@@ -333,11 +333,13 @@ class AlpacaNewsBusPublisher:
 
             ts_str = article.get("created_at") or article.get("updated_at")
             try:
+                # v-theme-shock-hotfix-2026-09-14: preserve UTC timezone info
+                # instead of stripping it. This fixes age_sec() negative values.
                 pub_time = datetime.fromisoformat(
                     ts_str.replace("Z", "+00:00")
-                ).replace(tzinfo=None)
+                )
             except (TypeError, ValueError):
-                pub_time = now
+                pub_time = datetime.now(timezone.utc)
 
             text = f"{headline} {summary}"
             vader_scores = self._analyzer.polarity_scores(text)
