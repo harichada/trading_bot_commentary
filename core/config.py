@@ -2476,6 +2476,83 @@ class Config:
         """
         return self.manager.get('trading.theme_config_path', 'data/themes')
 
+    # ──────────────────────────────────────────────────────────────────
+    # v-gpu-news-critic-2026-09-14: GPU News Critic shadow logger
+    # GPU-accelerated news scoring for theme classification and
+    # contamination detection. See docs/research/2026-09-14-gpu-sense-stage-a.md
+    # ──────────────────────────────────────────────────────────────────
+
+    @property
+    def ENABLE_GPU_NEWS_CRITIC(self) -> bool:
+        """Master switch for the GPU News Critic.
+
+        v-gpu-news-critic-2026-09-14: when True (default), enables GPU-
+        accelerated news scoring using sentence-transformers/all-MiniLM-L6-v2
+        for theme classification and contamination detection.
+
+        Shadow-only behavior: logs WOULD_SUPPRESS_HARD_SKIP when contamination
+        detected or low theme_prob for keyword-matched theme. Does NOT execute
+        broker calls or mutate orders.
+
+        Model: ~22M parameters, ~90MB VRAM, p95 inference <100ms on RTX 3090.
+        Leaves >23GB headroom for existing trading FFN.
+
+        Graceful degradation:
+        - CUDA unavailable: falls back to CPU inference (slower but functional)
+        - Model download fails: returns no-op cards with skip_reason
+        - Inference error: catches exception, logs, returns no-op card
+
+        SAFE OFF-PATH: Set ENABLE_GPU_NEWS_CRITIC=0 to disable entirely.
+        No model loading, no GPU inference, no shadow logs.
+
+        Respects HANDS_OFF_DENYLIST (MU, HQGE, SPCX) — no actions for these.
+        """
+        env_val = os.getenv("ENABLE_GPU_NEWS_CRITIC")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.enable_gpu_news_critic', True))
+
+    @property
+    def GPU_NEWS_CRITIC_SHADOW(self) -> bool:
+        """Shadow mode for the GPU News Critic (log-only, no live actions).
+
+        v-gpu-news-critic-2026-09-14: when True (default) AND ENABLE_GPU_NEWS_CRITIC
+        is True, the critic logs structured events with action=WOULD_SUPPRESS_HARD_SKIP
+        but does NOT actually suppress the hard_skip action.
+
+        When False: critic can gate keyword hard_skip (requires THEME_HARD_SKIP_REQUIRE_GPU).
+
+        Default True (shadow mode = safe). Set via env GPU_NEWS_CRITIC_SHADOW=0
+        or trading.gpu_news_critic_shadow: false to enable live gating (future PR).
+        """
+        env_val = os.getenv("GPU_NEWS_CRITIC_SHADOW")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.gpu_news_critic_shadow', True))
+
+    @property
+    def THEME_HARD_SKIP_REQUIRE_GPU(self) -> bool:
+        """Require GPU critic approval for keyword hard_skip actions.
+
+        v-gpu-news-critic-2026-09-14: when True, keyword ThemeShock hard_skip
+        actions are gated by GPU critic approval. If GPU critic says
+        WOULD_SUPPRESS_HARD_SKIP, the hard_skip is converted to alert_only.
+
+        Default False (Stage A data collection). Do NOT flip to True until
+        Stage A promotion gates are met:
+        - n >= 80 gated decisions
+        - Precision >= 65%
+        - FP rate on contamination set <= 5%
+        - Recall on true positives >= 80%
+
+        SAFE OFF-PATH: Keep False to preserve current keyword-only hard_skip
+        behavior. Set True only after Stage A metrics are green.
+        """
+        env_val = os.getenv("THEME_HARD_SKIP_REQUIRE_GPU")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.theme_hard_skip_require_gpu', False))
+
     @property
     def ENABLE_ALPACA_NEWS_BUS(self) -> bool:
         """Enable Alpaca News publishing to NewsBus.

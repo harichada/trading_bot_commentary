@@ -3795,16 +3795,33 @@ class TradingEngineWithCommentary:
                 "theme_shock_logger enabled (themes=%d)",
                 len(self._theme_shock_logger._loader.themes),
             )
-            # v-theme-shock-hotfix-2026-09-14: wire ThemeShock into NewsBus
-            # publish path so EVERY new item (RSS + Alpaca) is evaluated for
-            # theme matches and emits shadow logs. Previously ThemeShock was
-            # only invoked on entry path, resulting in ZERO emits for Anthropic
-            # headlines when there was no coincident entry signal.
-            from core.news_bus import set_news_bus_on_publish
-            set_news_bus_on_publish(self._on_news_publish_theme_shock)
-            logger.info("theme_shock_logger wired to NewsBus.on_publish")
         else:
             logger.debug("theme_shock_logger NOT enabled (ENABLE_THEME_SHOCK_LOGGER=0)")
+
+        # v-gpu-news-critic-2026-09-14: GPU News Critic for theme classification
+        # and contamination detection. Shadow-only: logs WOULD_SUPPRESS_HARD_SKIP.
+        from analysis.gpu_news_critic import get_gpu_news_critic
+        self._gpu_news_critic = get_gpu_news_critic(engine=self)
+        if self._gpu_news_critic.is_enabled():
+            logger.info(
+                "gpu_news_critic enabled (shadow=%s, model=%s)",
+                self._gpu_news_critic.is_shadow_mode(),
+                "all-MiniLM-L6-v2",
+            )
+        else:
+            logger.debug("gpu_news_critic NOT enabled (ENABLE_GPU_NEWS_CRITIC=0)")
+
+        # Wire combined ThemeShock + GPU Critic into NewsBus publish path.
+        # v-theme-shock-hotfix-2026-09-14: ThemeShock processes first, then
+        # GPU Critic receives the keyword_match from ThemeShock for scoring.
+        if self._theme_shock_logger.is_enabled() or self._gpu_news_critic.is_enabled():
+            from core.news_bus import set_news_bus_on_publish
+            set_news_bus_on_publish(self._on_news_publish_combined)
+            logger.info(
+                "news_bus on_publish wired (theme_shock=%s, gpu_critic=%s)",
+                self._theme_shock_logger.is_enabled(),
+                self._gpu_news_critic.is_enabled(),
+            )
 
         # v-active-open-desk-2026-09-14: continuous monitor for open trades.
         # RCA FTFT: bot set bracket + hard stop then idled. Hari: must
@@ -3844,50 +3861,82 @@ class TradingEngineWithCommentary:
         except Exception:
             pass
 
-    def _on_news_publish_theme_shock(self, item) -> None:
-        """Callback for ALL news items published to NewsBus.
+    def _on_news_publish_combined(self, item) -> None:
+        """Combined callback for ThemeShock + GPU News Critic.
         
-        v-theme-shock-hotfix-2026-09-14: Wires ThemeShockLogger into the
-        NewsBus publish path so EVERY new item (RSS + Alpaca) is evaluated
-        for theme matches and emits Research schema shadow logs.
+        v-gpu-news-critic-2026-09-14: Chains ThemeShock and GPU Critic:
+        1. ThemeShock processes first, returns keyword matches and events
+        2. GPU Critic receives keyword_match from ThemeShock for scoring
+        3. GPU Critic evaluates contamination risk and emits shadow logs
         
-        RCA: Previously ThemeShock was only invoked on entry path, which
-        only fires when a signal evaluation happens to include the symbol.
-        Anthropic headlines on Alpaca would publish to bus but ThemeShock
-        would never see them, resulting in ZERO shadow_* emits.
-        
-        Now every published item triggers theme evaluation for:
-          - Entry gate: shadow_hard_skip for all basket symbols
-          - Open positions: shadow_thesis_exit / shadow_size_down for
-            managed_by_bot positions; alert_only for HANDS_OFF/watch_only
+        This ensures GPU Critic has access to ThemeShock's keyword matches
+        for accurate contamination detection (e.g., matched_field=="summary").
         """
-        if self._theme_shock_logger is None:
-            return
-        if not self._theme_shock_logger.is_enabled():
-            return
+        keyword_match = None
         
-        try:
-            def get_open_positions():
-                result = {}
-                for container in [self.positions, getattr(self, 'simulated_positions', {}) or {}]:
-                    for sym, pos in list(container.items()):
-                        if pos is None:
-                            continue
-                        if getattr(pos, 'managed_by_bot', False):
-                            result[sym] = pos
-                return result
-            
-            events = self._theme_shock_logger.process_news_item_from_publish(
-                item=item,
-                get_open_positions_fn=get_open_positions,
-            )
-            if events:
-                logger.debug(
-                    "theme_shock on_publish emitted %d events for headline=%s",
-                    len(events), item.headline[:50],
+        # Step 1: ThemeShock processing
+        if self._theme_shock_logger is not None and self._theme_shock_logger.is_enabled():
+            try:
+                def get_open_positions():
+                    result = {}
+                    for container in [self.positions, getattr(self, 'simulated_positions', {}) or {}]:
+                        for sym, pos in list(container.items()):
+                            if pos is None:
+                                continue
+                            if getattr(pos, 'managed_by_bot', False):
+                                result[sym] = pos
+                    return result
+                
+                # Get matches for GPU critic
+                matches = self._theme_shock_logger.tag_news_item(item)
+                if matches:
+                    # Use the first match for keyword_match info
+                    first_match = matches[0]
+                    # Determine matched_field (headline vs summary)
+                    headline_lower = item.headline.lower()
+                    summary = getattr(item, "summary", "")
+                    matched_text = first_match.matched_text.lower()
+                    
+                    if matched_text in headline_lower:
+                        matched_field = "headline"
+                    elif summary and matched_text in summary.lower():
+                        matched_field = "summary"
+                    else:
+                        matched_field = "headline"  # default
+                    
+                    from analysis.gpu_news_critic import KeywordMatch
+                    keyword_match = KeywordMatch(
+                        theme_id=first_match.theme_id,
+                        matched_text=first_match.matched_text,
+                        matched_field=matched_field,
+                    )
+                
+                events = self._theme_shock_logger.process_news_item_from_publish(
+                    item=item,
+                    get_open_positions_fn=get_open_positions,
                 )
-        except Exception as exc:
-            logger.debug("theme_shock on_publish error: %s", exc)
+                if events:
+                    logger.debug(
+                        "theme_shock on_publish emitted %d events for headline=%s",
+                        len(events), item.headline[:50],
+                    )
+            except Exception as exc:
+                logger.debug("theme_shock on_publish error: %s", exc)
+        
+        # Step 2: GPU Critic processing
+        if self._gpu_news_critic is not None and self._gpu_news_critic.is_enabled():
+            try:
+                card = self._gpu_news_critic.process_news_item_from_publish(
+                    item=item,
+                    keyword_match=keyword_match,
+                )
+                if card and card.action.value != "pass":
+                    logger.debug(
+                        "gpu_news_critic on_publish action=%s for headline=%s",
+                        card.action.value, item.headline[:50],
+                    )
+            except Exception as exc:
+                logger.debug("gpu_news_critic on_publish error: %s", exc)
 
     def _on_task_crash(self, st, exc) -> None:
         """Surface task crashes on the dashboard. NORMAL — we don't pause
