@@ -2203,6 +2203,85 @@ class Config:
         """
         return float(self.manager.get('trading.orb_size_multiplier', 0.5))
 
+    # ──────────────────────────────────────────────────────────────────
+    # v-active-open-desk-2026-09-14: continuous monitor for open trades.
+    # RCA FTFT 2026-09-14: bot set bracket + hard stop then idled. Hari:
+    # must continuously monitor ALL managed open trades for sentiment/
+    # regime/indicators and take proactive action (not fire-and-forget).
+    #
+    # PR1 SHADOW ONLY: logs WOULD_TIGHTEN / WOULD_CANCEL_REPLACE /
+    # WOULD_EXIT with reason + symbol + suggested levels. No broker
+    # calls, no order mutations.
+    # ──────────────────────────────────────────────────────────────────
+
+    @property
+    def ENABLE_ACTIVE_OPEN_DESK(self) -> bool:
+        """Master switch for the Active Open Desk continuous position monitor.
+
+        v-active-open-desk-2026-09-14: when True (default), spawns a supervised
+        task that iterates managed_by_bot open positions in parallel, evaluating
+        sentiment, regime, and indicator signals for proactive exit/tighten
+        decisions.
+
+        Default True + ACTIVE_OPEN_DESK_SHADOW=True enables evidence collection
+        (shadow logs WOULD_TIGHTEN / WOULD_EXIT without broker calls). This is
+        the recommended soak configuration.
+
+        SAFE OFF-PATH: To disable entirely and preserve today's bracket +
+        hard-stop behavior unchanged, set:
+          - env: ENABLE_ACTIVE_OPEN_DESK=0
+          - yaml: trading.enable_active_open_desk: false
+
+        When disabled, the desk task is not started at all — zero behavior
+        change from pre-PR1 baseline.
+        """
+        env_val = os.getenv("ENABLE_ACTIVE_OPEN_DESK")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.enable_active_open_desk', True))
+
+    @property
+    def ACTIVE_OPEN_DESK_SHADOW(self) -> bool:
+        """Shadow mode for the Active Open Desk (log-only, no order mutations).
+
+        v-active-open-desk-2026-09-14: when True AND ENABLE_ACTIVE_OPEN_DESK
+        is True, the desk logs structured strategy_decision-style events:
+          - WOULD_TIGHTEN: suggests tighter stop level
+          - WOULD_CANCEL_REPLACE: suggests replacing bracket
+          - WOULD_EXIT: suggests immediate exit
+
+        All with reason + symbol + suggested levels. **No broker calls,
+        no cancel-replace, no market exit.**
+
+        When False: desk can execute actual order modifications (PR2+).
+        
+        Default True (shadow mode = safe). Set via env
+        ACTIVE_OPEN_DESK_SHADOW=0 or trading.active_open_desk_shadow: false
+        to enable live actuators (future PR).
+        """
+        env_val = os.getenv("ACTIVE_OPEN_DESK_SHADOW")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.active_open_desk_shadow', True))
+
+    @property
+    def ACTIVE_OPEN_DESK_INTERVAL_SEC(self) -> float:
+        """Interval (seconds) between Active Open Desk evaluation cycles.
+
+        v-active-open-desk-2026-09-14: the desk polls all managed positions
+        on this cadence. Faster than the 30s main loop for quicker reaction.
+
+        Default 5.0 seconds. Set via env ACTIVE_OPEN_DESK_INTERVAL_SEC=10
+        or trading.active_open_desk_interval_sec: 10.0 in Config.yaml.
+        """
+        env_val = os.getenv("ACTIVE_OPEN_DESK_INTERVAL_SEC")
+        if env_val is not None:
+            try:
+                return float(env_val)
+            except ValueError:
+                pass
+        return float(self.manager.get('trading.active_open_desk_interval_sec', 5.0))
+
 # Initialize configuration
 config = Config()
 # ============================================================================
