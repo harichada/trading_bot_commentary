@@ -30,8 +30,13 @@ from analysis.theme_shock_logger import (
 
 
 @pytest.fixture
-def reset_singleton():
-    """Reset the theme shock logger singleton before each test."""
+def reset_singleton(monkeypatch):
+    """Reset the theme shock logger singleton before each test.
+    
+    Also disables persist dedupe by default to prevent cross-test pollution.
+    Tests that specifically test persist dedupe should override this.
+    """
+    monkeypatch.setenv("ENABLE_THEME_SHOCK_PERSIST_DEDUPE", "0")
     reset_theme_shock_logger()
     yield
     reset_theme_shock_logger()
@@ -1432,3 +1437,148 @@ class TestFanoutSymbolOverlap:
         assert "NVDA" in logged_symbols or "AMD" in logged_symbols, (
             "Should emit for NVDA/AMD since they're in both item.symbols and basket"
         )
+
+
+class TestPersistDedupe:
+    """v-themeshock-hygiene-2026-09-14: Test ENABLE_THEME_SHOCK_PERSIST_DEDUPE."""
+
+    def test_config_flag_default_true(self, monkeypatch, reset_singleton):
+        """ENABLE_THEME_SHOCK_PERSIST_DEDUPE default is True."""
+        monkeypatch.delenv("ENABLE_THEME_SHOCK_PERSIST_DEDUPE", raising=False)
+        from core.config import Config
+        assert Config().ENABLE_THEME_SHOCK_PERSIST_DEDUPE is True
+
+    def test_config_flag_env_override_false(self, monkeypatch, reset_singleton):
+        """ENABLE_THEME_SHOCK_PERSIST_DEDUPE=0 disables persist."""
+        monkeypatch.setenv("ENABLE_THEME_SHOCK_PERSIST_DEDUPE", "0")
+        from core.config import Config
+        assert Config().ENABLE_THEME_SHOCK_PERSIST_DEDUPE is False
+
+    def test_dedupe_path_default(self, monkeypatch, reset_singleton):
+        """THEME_SHOCK_DEDUPE_PATH default is /tmp/theme_shock_dedupe.json."""
+        monkeypatch.delenv("THEME_SHOCK_DEDUPE_PATH", raising=False)
+        from core.config import Config
+        assert Config().THEME_SHOCK_DEDUPE_PATH == "/tmp/theme_shock_dedupe.json"
+
+    def test_dedupe_path_env_override(self, monkeypatch, reset_singleton):
+        """THEME_SHOCK_DEDUPE_PATH env override works."""
+        monkeypatch.setenv("THEME_SHOCK_DEDUPE_PATH", "/custom/path/dedupe.json")
+        from core.config import Config
+        assert Config().THEME_SHOCK_DEDUPE_PATH == "/custom/path/dedupe.json"
+
+    def test_persist_dedupe_survives_restart(self, monkeypatch, reset_singleton, tmp_path):
+        """Persist dedupe should prevent re-emit after simulated restart."""
+        dedupe_file = tmp_path / "test_dedupe.json"
+        monkeypatch.setenv("ENABLE_THEME_SHOCK_PERSIST_DEDUPE", "1")
+        monkeypatch.setenv("THEME_SHOCK_DEDUPE_PATH", str(dedupe_file))
+        monkeypatch.setenv("ENABLE_THEME_HARD_SKIP_HEADLINE_ONLY", "0")
+        reset_theme_shock_logger()
+        
+        @dataclass
+        class MockItem:
+            id: str = "persist_test"
+            symbol: str = "NVDA"
+            headline: str = "Anthropic CEO warns about AI compute pace"
+            summary: str = ""
+            source: str = "Test"
+            source_tier: int = 1
+            url: str = "https://test.com"
+            published_time: datetime = None
+            fetched_at: datetime = None
+            sentiment_score: float = 0.0
+            sentiment_confidence: float = 0.5
+            
+            def __post_init__(self):
+                if self.published_time is None:
+                    self.published_time = datetime.now(timezone.utc) - timedelta(minutes=5)
+                if self.fetched_at is None:
+                    self.fetched_at = datetime.now(timezone.utc)
+            
+            def age_sec(self) -> float:
+                return 300.0
+        
+        logger1 = get_theme_shock_logger()
+        item = MockItem()
+        
+        events1 = logger1.process_news_item_from_publish(item=item)
+        assert len(events1) > 0, "First emit should succeed"
+        assert dedupe_file.exists(), "Dedupe file should be created"
+        
+        reset_theme_shock_logger()
+        logger2 = get_theme_shock_logger()
+        
+        events2 = logger2.process_news_item_from_publish(item=item)
+        assert len(events2) == 0, "Second emit after restart should be deduped"
+
+    def test_persist_dedupe_disabled_no_file(self, monkeypatch, reset_singleton, tmp_path):
+        """When disabled, no dedupe file should be created."""
+        dedupe_file = tmp_path / "test_dedupe_disabled.json"
+        monkeypatch.setenv("ENABLE_THEME_SHOCK_PERSIST_DEDUPE", "0")
+        monkeypatch.setenv("THEME_SHOCK_DEDUPE_PATH", str(dedupe_file))
+        monkeypatch.setenv("ENABLE_THEME_HARD_SKIP_HEADLINE_ONLY", "0")
+        reset_theme_shock_logger()
+        
+        @dataclass
+        class MockItem:
+            id: str = "no_persist_test"
+            symbol: str = "NVDA"
+            headline: str = "Anthropic CEO warns about AI pace"
+            summary: str = ""
+            source: str = "Test"
+            source_tier: int = 1
+            url: str = "https://test.com"
+            published_time: datetime = None
+            fetched_at: datetime = None
+            sentiment_score: float = 0.0
+            sentiment_confidence: float = 0.5
+            
+            def __post_init__(self):
+                if self.published_time is None:
+                    self.published_time = datetime.now(timezone.utc) - timedelta(minutes=5)
+                if self.fetched_at is None:
+                    self.fetched_at = datetime.now(timezone.utc)
+            
+            def age_sec(self) -> float:
+                return 300.0
+        
+        logger = get_theme_shock_logger()
+        item = MockItem()
+        
+        events = logger.process_news_item_from_publish(item=item)
+        assert len(events) > 0, "Emit should succeed"
+        assert not dedupe_file.exists(), "No dedupe file when disabled"
+
+    def test_persist_dedupe_graceful_on_corrupt_file(self, monkeypatch, reset_singleton, tmp_path):
+        """Should gracefully handle corrupt dedupe file."""
+        dedupe_file = tmp_path / "corrupt_dedupe.json"
+        dedupe_file.write_text("not valid json {{{")
+        
+        monkeypatch.setenv("ENABLE_THEME_SHOCK_PERSIST_DEDUPE", "1")
+        monkeypatch.setenv("THEME_SHOCK_DEDUPE_PATH", str(dedupe_file))
+        reset_theme_shock_logger()
+        
+        logger = get_theme_shock_logger()
+        assert len(logger._recent_events) == 0, "Should start empty on corrupt file"
+
+    def test_persist_dedupe_cleans_stale_on_load(self, monkeypatch, reset_singleton, tmp_path):
+        """Should clean stale entries beyond 2× dedupe window on load."""
+        import json
+        dedupe_file = tmp_path / "stale_dedupe.json"
+        
+        old_ts = datetime.now(timezone.utc) - timedelta(hours=2)
+        fresh_ts = datetime.now(timezone.utc) - timedelta(minutes=5)
+        
+        data = {
+            "stale:old_event": old_ts.isoformat(),
+            "fresh:new_event": fresh_ts.isoformat(),
+        }
+        dedupe_file.write_text(json.dumps(data))
+        
+        monkeypatch.setenv("ENABLE_THEME_SHOCK_PERSIST_DEDUPE", "1")
+        monkeypatch.setenv("THEME_SHOCK_DEDUPE_PATH", str(dedupe_file))
+        reset_theme_shock_logger()
+        
+        logger = get_theme_shock_logger()
+        
+        assert "stale:old_event" not in logger._recent_events, "Stale entry should be cleaned"
+        assert "fresh:new_event" in logger._recent_events, "Fresh entry should be kept"

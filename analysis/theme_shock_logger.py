@@ -26,6 +26,7 @@ Shadow action values:
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
 import uuid
@@ -293,6 +294,8 @@ class ThemeShockLogger:
         self._tagger = ThemeTagger(self._loader)
         self._recent_events: Dict[str, datetime] = {}
         self._dedupe_window_sec = 900.0
+        self._persist_dedupe_dirty = False
+        self._load_persist_dedupe()
 
     def is_enabled(self) -> bool:
         """Check if theme shock logger is enabled."""
@@ -326,6 +329,93 @@ class ThemeShockLogger:
         from core.config import Config
         return Config().ENABLE_THEME_FANOUT_REQUIRE_SYMBOL_OVERLAP
 
+    def is_persist_dedupe_enabled(self) -> bool:
+        """Check if persist dedupe across restarts is enabled.
+        
+        v-themeshock-hygiene-2026-09-14: when True, persists seen event_ids
+        to disk so republished/backlog items on restart do not re-emit
+        identical shadow events. Fixes burst at ~15:21 ET with news_age_sec
+        in thousands (NewsBus backlog re-emits).
+        
+        Safe off-path: False = in-memory-only deduplication (today's behavior).
+        """
+        from core.config import Config
+        return Config().ENABLE_THEME_SHOCK_PERSIST_DEDUPE
+
+    def _get_persist_dedupe_path(self) -> Path:
+        """Get path for persist dedupe state file."""
+        from core.config import Config
+        return Path(Config().THEME_SHOCK_DEDUPE_PATH)
+
+    def _load_persist_dedupe(self) -> None:
+        """Load persisted dedupe state from disk on init.
+        
+        v-themeshock-hygiene-2026-09-14: loads event_id→timestamp map
+        from JSON file, cleans up stale entries (beyond 2× dedupe window).
+        Silent on errors (graceful degradation to in-memory only).
+        """
+        if not self.is_persist_dedupe_enabled():
+            return
+        
+        path = self._get_persist_dedupe_path()
+        if not path.exists():
+            return
+        
+        try:
+            with open(path, "r") as f:
+                data = json.load(f)
+            
+            now = datetime.now(timezone.utc)
+            cutoff_sec = self._dedupe_window_sec * 2
+            
+            for key, ts_str in data.items():
+                try:
+                    ts = datetime.fromisoformat(ts_str)
+                    if ts.tzinfo is None:
+                        ts = ts.replace(tzinfo=timezone.utc)
+                    age = (now - ts).total_seconds()
+                    if age < cutoff_sec:
+                        self._recent_events[key] = ts
+                except (ValueError, TypeError):
+                    pass
+            
+            logger.debug(
+                "theme_shock persist_dedupe loaded %d events from %s",
+                len(self._recent_events), path,
+            )
+        except Exception as e:
+            logger.debug("theme_shock persist_dedupe load failed: %s", e)
+
+    def _save_persist_dedupe(self) -> None:
+        """Save dedupe state to disk (if enabled and dirty).
+        
+        v-themeshock-hygiene-2026-09-14: writes event_id→timestamp map
+        to JSON file. Called after each new event is logged.
+        Silent on errors (graceful degradation).
+        """
+        if not self.is_persist_dedupe_enabled():
+            return
+        if not self._persist_dedupe_dirty:
+            return
+        
+        path = self._get_persist_dedupe_path()
+        
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            
+            data = {
+                k: v.isoformat() for k, v in self._recent_events.items()
+            }
+            
+            tmp_path = path.with_suffix(".tmp")
+            with open(tmp_path, "w") as f:
+                json.dump(data, f)
+            tmp_path.replace(path)
+            
+            self._persist_dedupe_dirty = False
+        except Exception as e:
+            logger.debug("theme_shock persist_dedupe save failed: %s", e)
+
     def tag_news_item(self, item: "ScoredNewsItem") -> List[ThemeMatch]:
         """Tag a news item with matching themes.
         
@@ -345,7 +435,12 @@ class ThemeShockLogger:
         return hashlib.md5(content.encode()).hexdigest()[:12]
 
     def _should_dedupe(self, event_id: str, theme_id: str) -> bool:
-        """Check if this event was recently logged (deduplication)."""
+        """Check if this event was recently logged (deduplication).
+        
+        v-themeshock-hygiene-2026-09-14: now supports persist dedupe across
+        restarts via ENABLE_THEME_SHOCK_PERSIST_DEDUPE. When enabled, writes
+        to disk after each new event.
+        """
         key = f"{theme_id}:{event_id}"
         now = datetime.now(timezone.utc)
         if key in self._recent_events:
@@ -353,7 +448,9 @@ class ThemeShockLogger:
             if elapsed < self._dedupe_window_sec:
                 return True
         self._recent_events[key] = now
+        self._persist_dedupe_dirty = True
         self._clean_stale_events()
+        self._save_persist_dedupe()
         return False
 
     def _clean_stale_events(self) -> None:

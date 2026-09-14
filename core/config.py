@@ -2467,6 +2467,47 @@ class Config:
         return bool(self.manager.get('trading.enable_theme_fanout_require_symbol_overlap', False))
 
     @property
+    def ENABLE_THEME_SHOCK_PERSIST_DEDUPE(self) -> bool:
+        """Persist dedupe state across process restarts.
+        
+        v-themeshock-hygiene-2026-09-14: when True, persists seen event_ids
+        (theme_id + headline hash) to disk so republished/backlog items on
+        restart do not re-emit identical shadow hard_skip events.
+        
+        RCA: NewsBus backlog re-emits old ThemeShock events on restart,
+        causing burst with news_age_sec in thousands (e.g., ~15:21 ET).
+        
+        Implementation: JSON file at THEME_SHOCK_DEDUPE_PATH, written after
+        each new event, loaded on ThemeShockLogger init. Stale entries
+        (beyond 2× dedupe window) are cleaned on load.
+        
+        Default True: persist dedupe is beneficial for production.
+        SAFE OFF-PATH: Set =0 for in-memory-only dedupe (original behavior).
+        """
+        env_val = os.getenv("ENABLE_THEME_SHOCK_PERSIST_DEDUPE")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.enable_theme_shock_persist_dedupe', True))
+
+    @property
+    def THEME_SHOCK_DEDUPE_PATH(self) -> str:
+        """Path to persist dedupe state file.
+        
+        v-themeshock-hygiene-2026-09-14: JSON file storing event_id→timestamp
+        map for cross-restart deduplication. Parent directories created
+        automatically if missing.
+        
+        Default: /tmp/theme_shock_dedupe.json (ephemeral but survives restart)
+        """
+        env_val = os.getenv("THEME_SHOCK_DEDUPE_PATH")
+        if env_val:
+            return env_val
+        return self.manager.get(
+            'trading.theme_shock_dedupe_path',
+            '/tmp/theme_shock_dedupe.json'
+        )
+
+    @property
     def THEME_CONFIG_PATH(self) -> str:
         """Path to theme configuration directory.
 
