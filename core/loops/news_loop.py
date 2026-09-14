@@ -5,6 +5,11 @@ in the dynamic watchlist on a ~20s cadence, scores them with VADER, and
 publishes to the bus. High-impact items trigger wake events that the
 analysis loop can use for early entry evaluation.
 
+v-theme-shock-logger-2026-09-14: added AlpacaNewsBusPublisher to fetch
+Alpaca news and publish to NewsBus as a tier-1 source. Runs on a separate
+cadence (default 60s) from the main news loop. Reuses ALPACA_API_KEY/SECRET
+from existing news_verifier.py integration.
+
 The news_loop is registered with TaskSupervisor at NORMAL priority.
 Failures are logged and swallowed per-iteration; only structural errors
 surface to the supervisor.
@@ -13,9 +18,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime
+import os
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, List, Optional
 
+import aiohttp
 from nltk.sentiment import SentimentIntensityAnalyzer
 
 from core.config import Config
@@ -31,6 +38,8 @@ if TYPE_CHECKING:
     from core.engine import TradingEngineWithCommentary
 
 logger = logging.getLogger("TradingBot")
+
+ALPACA_NEWS_URL = "https://data.alpaca.markets/v1beta1/news"
 
 
 class NewsLoop:
@@ -172,4 +181,196 @@ class NewsLoop:
                 "fetch_errors": stats.fetch_errors,
                 "wake_events_fired": stats.wake_events_fired,
             },
+        }
+
+
+class AlpacaNewsBusPublisher:
+    """v-theme-shock-logger-2026-09-14: Alpaca news publisher for NewsBus.
+    
+    Fetches news from Alpaca News API and publishes to NewsBus as a
+    tier-1 source. Runs on a separate cadence (default 60s) from the
+    main news loop. Reuses ALPACA_API_KEY/SECRET from .env.
+    
+    This is the Alpaca reuse path required by the spec — NOT a new
+    ingest system. Leverages existing keys and news_verifier patterns.
+    """
+
+    SOURCE_NAME = "Alpaca News"
+    SOURCE_TIER = 1
+
+    def __init__(
+        self,
+        engine: "TradingEngineWithCommentary",
+        bus: Optional[NewsBus] = None,
+        cadence_sec: Optional[float] = None,
+    ) -> None:
+        self.engine = engine
+        self.bus = bus or get_news_bus()
+        self._alpaca_key = os.getenv("ALPACA_API_KEY", "")
+        self._alpaca_secret = os.getenv("ALPACA_SECRET_KEY", "")
+        self._cadence_sec = cadence_sec or Config().ALPACA_NEWS_BUS_INTERVAL_SEC
+        self._analyzer = SentimentIntensityAnalyzer()
+        self._last_run: Optional[datetime] = None
+        self._items_published: int = 0
+
+    def is_enabled(self) -> bool:
+        """Check if Alpaca news bus is enabled and configured."""
+        return (
+            Config().ENABLE_ALPACA_NEWS_BUS
+            and bool(self._alpaca_key)
+            and bool(self._alpaca_secret)
+        )
+
+    async def run(self) -> None:
+        """Main loop: fetch Alpaca news for watchlist on cadence."""
+        if not self.is_enabled():
+            logger.info("alpaca_news_bus: disabled or no API keys, exiting")
+            return
+
+        logger.info(
+            "alpaca_news_bus: started (cadence=%.1fs)",
+            self._cadence_sec,
+        )
+
+        while getattr(self.engine, "is_running", False):
+            try:
+                await self._tick()
+            except Exception as exc:
+                logger.warning("alpaca_news_bus: tick failed: %s", exc, exc_info=True)
+                self.bus.record_fetch_error()
+            await asyncio.sleep(self._cadence_sec)
+
+    async def _tick(self) -> None:
+        """Single fetch cycle for Alpaca news."""
+        watchlist = getattr(self.engine, "dynamic_watchlist", None) or []
+        if not watchlist:
+            return
+
+        start = datetime.now()
+        total_new = 0
+
+        batch_size = 10
+        for i in range(0, len(watchlist), batch_size):
+            batch = watchlist[i:i + batch_size]
+            items = await self._fetch_alpaca_news(batch)
+            if items:
+                new_count = await self.bus.publish(items)
+                total_new += new_count
+
+        self._last_run = datetime.now()
+        self._items_published += total_new
+
+        elapsed_ms = (datetime.now() - start).total_seconds() * 1000
+        if total_new > 0:
+            logger.info(
+                "alpaca_news_bus tick new_items=%d elapsed_ms=%.0f",
+                total_new, elapsed_ms,
+            )
+
+    async def _fetch_alpaca_news(
+        self,
+        symbols: List[str],
+        hours: int = 4,
+    ) -> List[ScoredNewsItem]:
+        """Fetch news from Alpaca for a batch of symbols."""
+        if not symbols:
+            return []
+
+        now_utc = datetime.now(timezone.utc)
+        start = (now_utc - timedelta(hours=hours)).isoformat(
+            timespec="seconds"
+        ).replace("+00:00", "Z")
+
+        params = {
+            "symbols": ",".join(symbols),
+            "start": start,
+            "limit": 50,
+            "sort": "desc",
+            "include_content": "false",
+        }
+        headers = {
+            "APCA-API-KEY-ID": self._alpaca_key,
+            "APCA-API-SECRET-KEY": self._alpaca_secret,
+            "accept": "application/json",
+        }
+
+        try:
+            async with aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=10)
+            ) as sess:
+                async with sess.get(
+                    ALPACA_NEWS_URL, params=params, headers=headers
+                ) as r:
+                    if r.status != 200:
+                        logger.debug(
+                            "alpaca_news_bus: http %d for %s",
+                            r.status, ",".join(symbols)
+                        )
+                        return []
+                    data = await r.json()
+        except Exception as e:
+            logger.debug("alpaca_news_bus: fetch error: %s", e)
+            return []
+
+        articles = data.get("news") or []
+        return self._convert_to_scored_items(articles)
+
+    def _convert_to_scored_items(
+        self,
+        articles: List[dict],
+    ) -> List[ScoredNewsItem]:
+        """Convert Alpaca news articles to ScoredNewsItem list."""
+        now = datetime.now()
+        scored = []
+
+        for article in articles:
+            headline = article.get("headline", "")
+            summary = article.get("summary", "") or ""
+            symbols = article.get("symbols", [])
+
+            if not headline or not symbols:
+                continue
+
+            ts_str = article.get("created_at") or article.get("updated_at")
+            try:
+                pub_time = datetime.fromisoformat(
+                    ts_str.replace("Z", "+00:00")
+                ).replace(tzinfo=None)
+            except (TypeError, ValueError):
+                pub_time = now
+
+            text = f"{headline} {summary}"
+            vader_scores = self._analyzer.polarity_scores(text)
+            sentiment = vader_scores["compound"]
+            confidence = abs(sentiment)
+
+            impact = NewsBus.detect_impact(headline, summary)
+            url = article.get("url", "")
+            article_id = article.get("id") or NewsBus.make_item_id(url or headline)
+
+            for symbol in symbols:
+                scored.append(ScoredNewsItem(
+                    id=f"alpaca_{article_id}_{symbol}",
+                    symbol=symbol.upper(),
+                    headline=headline,
+                    summary=summary[:500],
+                    source=self.SOURCE_NAME,
+                    source_tier=self.SOURCE_TIER,
+                    url=url,
+                    published_time=pub_time,
+                    fetched_at=now,
+                    sentiment_score=sentiment,
+                    sentiment_confidence=confidence,
+                    impact=impact,
+                ))
+
+        return scored
+
+    def get_status(self) -> dict:
+        """Get Alpaca publisher status for observability."""
+        return {
+            "enabled": self.is_enabled(),
+            "last_run": self._last_run.isoformat() if self._last_run else None,
+            "cadence_sec": self._cadence_sec,
+            "items_published": self._items_published,
         }

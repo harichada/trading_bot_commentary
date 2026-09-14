@@ -3749,13 +3749,54 @@ class TradingEngineWithCommentary:
         # FreeNewsAggregator on a ~20s cadence. Strategies read from
         # the bus instead of fetching independently. High-impact items
         # trigger wake events for the analysis loop.
-        from core.loops.news_loop import NewsLoop
+        from core.loops.news_loop import NewsLoop, AlpacaNewsBusPublisher
         from core.news_bus import get_news_bus
         self._news_bus = get_news_bus(
             on_high_impact=self._on_news_high_impact,
         )
         self._news_loop = NewsLoop(self, bus=self._news_bus)
         sup.register("news_loop", self._news_loop.run, TaskPriority.NORMAL)
+
+        # v-theme-shock-logger-2026-09-14: wire fix — set_news_bus on
+        # FreeNewsSignalStrategy so entry gates actually see the bus.
+        # Without this, the strategy's _news_bus stays None and falls
+        # back to direct aggregator fetch (bypassing bus centralization).
+        for strategy in self.strategies:
+            if hasattr(strategy, 'set_news_bus'):
+                strategy.set_news_bus(self._news_bus)
+                logger.debug(
+                    "set_news_bus wired to strategy=%s",
+                    getattr(strategy, 'name', strategy.__class__.__name__),
+                )
+
+        # v-theme-shock-logger-2026-09-14: Alpaca news publisher for NewsBus.
+        # Reuses ALPACA_API_KEY/SECRET from existing news_verifier integration.
+        # Runs on separate cadence (default 60s) from main news loop.
+        self._alpaca_news_bus = AlpacaNewsBusPublisher(self, bus=self._news_bus)
+        if self._alpaca_news_bus.is_enabled():
+            sup.register(
+                "alpaca_news_bus",
+                self._alpaca_news_bus.run,
+                TaskPriority.NORMAL,
+            )
+            logger.info(
+                "alpaca_news_bus registered (cadence=%.1fs)",
+                self._alpaca_news_bus._cadence_sec,
+            )
+        else:
+            logger.debug("alpaca_news_bus NOT registered (disabled or no API keys)")
+
+        # v-theme-shock-logger-2026-09-14: theme shock logger for multi-sentiment
+        # desk. Shadow-only: logs would-hard-skip / would-exit / alert-only.
+        from analysis.theme_shock_logger import get_theme_shock_logger
+        self._theme_shock_logger = get_theme_shock_logger(engine=self)
+        if self._theme_shock_logger.is_enabled():
+            logger.info(
+                "theme_shock_logger enabled (themes=%d)",
+                len(self._theme_shock_logger._loader.themes),
+            )
+        else:
+            logger.debug("theme_shock_logger NOT enabled (ENABLE_THEME_SHOCK_LOGGER=0)")
 
         # v-active-open-desk-2026-09-14: continuous monitor for open trades.
         # RCA FTFT: bot set bracket + hard stop then idled. Hari: must
@@ -5375,6 +5416,12 @@ class TradingEngineWithCommentary:
                         signal = await strategy.generate_signal_with_commentary(market_data)
                         await asyncio.sleep(0)  # yield between strategies
                         if signal:
+                            # v-theme-shock-logger-2026-09-14: check for theme
+                            # matches on entry candidates. Shadow-only: logs
+                            # would-hard-skip but does NOT veto the signal (yet).
+                            # This collects Stage A evidence for promotion.
+                            await self._check_theme_on_entry(signal)
+
                             # Process the signal with full explanation. Pass
                             # market_data through so the classifier shadow
                             # hook can build SymbolFeatures from indicators
@@ -5459,6 +5506,45 @@ class TradingEngineWithCommentary:
                 )
         except Exception as exc:
             logger.debug("meta_shadow_dispatch_error err=%s", exc)
+
+    async def _check_theme_on_entry(self, signal) -> None:
+        """v-theme-shock-logger-2026-09-14: check for theme matches on entry.
+        
+        Shadow-only: logs would-hard-skip / alert-only but does NOT veto
+        the signal. This collects Stage A evidence for promotion to LIVE
+        hard-skip.
+        
+        The theme shock logger checks fresh news in the bus for theme
+        patterns (ai_compute, fed_risk_off, etc.) and logs shadow actions
+        when the candidate symbol is in the affected basket.
+        """
+        if self._theme_shock_logger is None:
+            return
+        if not self._theme_shock_logger.is_enabled():
+            return
+        if self._news_bus is None:
+            return
+
+        try:
+            symbol = signal.symbol.upper()
+            themes = self._theme_shock_logger.get_themes_for_symbol(symbol)
+            if not themes:
+                return
+
+            items = await self._news_bus.get_items(symbol, max_age_sec=3600)
+            if not items:
+                return
+
+            for item in items[:5]:
+                event = self._theme_shock_logger.process_news_item_for_entry(
+                    item=item,
+                    candidate_symbol=symbol,
+                )
+                if event:
+                    pass
+
+        except Exception as exc:
+            logger.debug("theme_check_entry_error symbol=%s err=%s", signal.symbol, exc)
 
     async def _process_signal_with_commentary(self, signal, ml_signal,
                                                 ml_explanation,

@@ -2336,6 +2336,82 @@ class Config:
                 pass
         return float(self.manager.get('trading.active_open_desk_interval_sec', 5.0))
 
+    # ──────────────────────────────────────────────────────────────────
+    # v-theme-shock-logger-2026-09-14: ThemeShock shadow logger
+    # Structured logging for multi-sentiment desk theme matching.
+    # See docs/research/2026-09-14-multisenti-stage-a.md for design.
+    # ──────────────────────────────────────────────────────────────────
+
+    @property
+    def ENABLE_THEME_SHOCK_LOGGER(self) -> bool:
+        """Master switch for the ThemeShock shadow logger.
+
+        v-theme-shock-logger-2026-09-14: when True (default), enables
+        theme-based news classification and shadow action logging for
+        multi-sentiment desk (Fed/earnings/news/CEO-AI shocks).
+
+        Shadow-only behavior: logs would-hard-skip / would-size-down /
+        would-exit / alert-only events WITHOUT executing broker calls
+        or mutating orders. Collects evidence for Stage A promotion.
+
+        SAFE OFF-PATH: Set ENABLE_THEME_SHOCK_LOGGER=0 to disable
+        entirely. No theme matching, no shadow logs.
+
+        Respects HANDS_OFF_DENYLIST (MU, HQGE, SPCX) — theme hits on
+        these symbols only emit alert_only, never action shadows.
+        """
+        env_val = os.getenv("ENABLE_THEME_SHOCK_LOGGER")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.enable_theme_shock_logger', True))
+
+    @property
+    def THEME_CONFIG_PATH(self) -> str:
+        """Path to theme configuration directory.
+
+        v-theme-shock-logger-2026-09-14: directory containing theme
+        YAML/JSON files. Research owns these files; Engine loads them.
+        Default: data/themes/
+        """
+        return self.manager.get('trading.theme_config_path', 'data/themes')
+
+    @property
+    def ENABLE_ALPACA_NEWS_BUS(self) -> bool:
+        """Enable Alpaca News publishing to NewsBus.
+
+        v-theme-shock-logger-2026-09-14: when True AND ALPACA_API_KEY
+        is set, periodically fetch Alpaca news for watchlist symbols
+        and publish to NewsBus as a high-quality source (tier 1).
+
+        This reuses the existing news_verifier.py Alpaca integration
+        but publishes to the bus instead of just verification.
+
+        Default True if ALPACA_API_KEY is available.
+        """
+        if not os.getenv("ALPACA_API_KEY"):
+            return False
+        env_val = os.getenv("ENABLE_ALPACA_NEWS_BUS")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.enable_alpaca_news_bus', True))
+
+    @property
+    def ALPACA_NEWS_BUS_INTERVAL_SEC(self) -> float:
+        """Interval (seconds) between Alpaca news fetches for NewsBus.
+
+        v-theme-shock-logger-2026-09-14: default 60s. Alpaca rate
+        limits are generous but we don't need sub-minute latency
+        for shadow logging.
+        """
+        env_val = os.getenv("ALPACA_NEWS_BUS_INTERVAL_SEC")
+        if env_val is not None:
+            try:
+                return float(env_val)
+            except ValueError:
+                pass
+        return float(self.manager.get('trading.alpaca_news_bus_interval_sec', 60.0))
+
+
 # Initialize configuration
 config = Config()
 # ============================================================================
