@@ -7849,9 +7849,40 @@ class TradingEngineWithCommentary:
             # Position already removed by another path; nothing to do
             logger.info(f"close_position: {position.symbol} not in any container — already closed")
             return
-        # ADD CONFIRMATION HERE
+
+        # v-broker-leg-authority-2026-09-14: If broker's stop/OCO leg is WORKING
+        # or FILLED, skip supervised close confirmation — broker is authoritative.
+        # This prevents FTFT-style race where software stop check starts confirmation,
+        # broker stop fills during wait, confirmation times out → ghost state.
+        _broker_authoritative = False
+        _broker_authority_reason = "not_checked"
+        if self.mode == TradingMode.LIVE and Config().ENABLE_BROKER_LEG_AUTHORITY:
+            try:
+                from core.order_monitor import is_broker_leg_authoritative
+                _broker_authoritative, _broker_authority_reason = await is_broker_leg_authoritative(
+                    self, position
+                )
+                if _broker_authoritative:
+                    logger.info(
+                        "broker_leg_authoritative symbol=%s reason=%s — skipping confirmation",
+                        position.symbol, _broker_authority_reason,
+                    )
+                    self._audit(
+                        "position_manager", position.symbol, "skip_confirmation",
+                        "broker_leg_authoritative",
+                        authority_reason=_broker_authority_reason,
+                        close_reason=reason,
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "broker_leg_authority_check_failed symbol=%s err=%s — proceeding with normal flow",
+                    position.symbol, exc,
+                )
+                _broker_authoritative = False
+                _broker_authority_reason = "check_failed"
+
         # Check if confirmation is needed
-        if self.mode == TradingMode.LIVE and self.require_confirmations:
+        if self.mode == TradingMode.LIVE and self.require_confirmations and not _broker_authoritative:
             # Calculate P&L percentage
             pnl = position.unrealized_pnl
             pnl_percent = abs((pnl / (position.entry_price * position.quantity)) * 100)

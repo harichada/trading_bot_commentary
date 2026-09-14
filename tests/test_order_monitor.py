@@ -1381,7 +1381,7 @@ class TestBrokerFlatHandling:
         
         marker = "async def handle_broker_flat_detected"
         idx = src.index(marker)
-        body = src[idx:idx + 3000]
+        body = src[idx:idx + 6000]
         
         assert "managed_by_bot = False" in body, (
             "handle_broker_flat_detected must clear managed_by_bot"
@@ -1390,7 +1390,7 @@ class TestBrokerFlatHandling:
             "handle_broker_flat_detected must cancel working orders"
         )
         assert "engine.positions.pop" in body, (
-            "handle_broker_flat_detected must remove position from tracking"
+            "handle_broker_flat_detected must remove position from tracking (when ghost_flatten_enabled)"
         )
         
     def test_handler_transitions_to_closed(self):
@@ -1733,7 +1733,7 @@ class TestSoftwareStopPathDoesNotDoubleClose:
         
         marker = "async def _close_position_with_commentary"
         idx = src.index(marker)
-        body = src[idx:idx + 9000]
+        body = src[idx:idx + 12000]
         
         assert "broker_fill_closed_during_confirm" in body, (
             "_close_position_with_commentary must detect broker fill closing position during confirm"
@@ -2144,14 +2144,450 @@ class TestBrokerFlatCloseIntegration:
         )
         
     def test_broker_flat_handler_removes_from_tracking(self):
-        """handle_broker_flat_detected must remove position from tracking."""
+        """handle_broker_flat_detected must remove position from tracking (when ghost_flatten_enabled)."""
         # v-phase-b-order-monitor-2026-09-14: implementation moved to core/order_monitor/
+        # v-broker-leg-authority-2026-09-14: now conditional on ENABLE_GHOST_FLATTEN_AFTER_BROKER_FLAT
         src = (Path(__file__).parent.parent / "core" / "order_monitor" / "broker_flat.py").read_text()
         
         marker = "async def handle_broker_flat_detected"
         idx = src.index(marker)
-        body = src[idx:idx + 3000]
+        body = src[idx:idx + 6000]
         
         assert "engine.positions.pop" in body, (
-            "handle_broker_flat_detected must remove from engine.positions"
+            "handle_broker_flat_detected must remove from engine.positions (when ghost_flatten_enabled)"
+        )
+        assert "ghost_flatten_enabled" in body, (
+            "handle_broker_flat_detected must check ghost_flatten_enabled before removing"
+        )
+
+
+# ============================================================================
+# v-broker-leg-authority-2026-09-14: BROKER-LEG AUTHORITY TESTS
+# Tests for PR3 fix: When OCO/stop leg is WORKING or FILLED at broker,
+# skip supervised close confirm — broker is source of truth.
+# ============================================================================
+
+class TestBrokerLegAuthorityConfig:
+    """v-broker-leg-authority-2026-09-14: Config flag tests."""
+
+    def test_enable_broker_leg_authority_flag_exists(self):
+        """ENABLE_BROKER_LEG_AUTHORITY config flag must exist."""
+        from core.config import Config
+        cfg = Config()
+
+        assert hasattr(cfg, 'ENABLE_BROKER_LEG_AUTHORITY'), (
+            "Config must have ENABLE_BROKER_LEG_AUTHORITY property"
+        )
+
+    def test_enable_broker_leg_authority_default_true(self):
+        """ENABLE_BROKER_LEG_AUTHORITY should default to True for fill-path correctness."""
+        from core.config import Config
+        cfg = Config()
+
+        assert cfg.ENABLE_BROKER_LEG_AUTHORITY is True, (
+            "ENABLE_BROKER_LEG_AUTHORITY must default to True"
+        )
+
+    def test_enable_ghost_flatten_flag_exists(self):
+        """ENABLE_GHOST_FLATTEN_AFTER_BROKER_FLAT config flag must exist."""
+        from core.config import Config
+        cfg = Config()
+
+        assert hasattr(cfg, 'ENABLE_GHOST_FLATTEN_AFTER_BROKER_FLAT'), (
+            "Config must have ENABLE_GHOST_FLATTEN_AFTER_BROKER_FLAT property"
+        )
+
+    def test_enable_ghost_flatten_default_false(self):
+        """ENABLE_GHOST_FLATTEN_AFTER_BROKER_FLAT should default to False (safe)."""
+        from core.config import Config
+        cfg = Config()
+
+        assert cfg.ENABLE_GHOST_FLATTEN_AFTER_BROKER_FLAT is False, (
+            "ENABLE_GHOST_FLATTEN_AFTER_BROKER_FLAT must default to False"
+        )
+
+
+class TestBrokerLegAuthorityHelper:
+    """v-broker-leg-authority-2026-09-14: is_broker_leg_authoritative helper tests."""
+
+    def test_helper_function_exists(self):
+        """is_broker_leg_authoritative must exist in broker_flat module."""
+        src = (Path(__file__).parent.parent / "core" / "order_monitor" / "broker_flat.py").read_text()
+
+        assert "async def is_broker_leg_authoritative" in src, (
+            "is_broker_leg_authoritative helper must exist"
+        )
+
+    def test_helper_returns_tuple(self):
+        """is_broker_leg_authoritative must return (bool, str) tuple."""
+        src = (Path(__file__).parent.parent / "core" / "order_monitor" / "broker_flat.py").read_text()
+
+        marker = "async def is_broker_leg_authoritative"
+        idx = src.index(marker)
+        body = src[idx:idx + 4000]
+
+        assert "-> tuple[bool, str]" in body, (
+            "is_broker_leg_authoritative must return tuple[bool, str]"
+        )
+
+    def test_helper_checks_bracket_order_id(self):
+        """is_broker_leg_authoritative must check bracket_order_id."""
+        src = (Path(__file__).parent.parent / "core" / "order_monitor" / "broker_flat.py").read_text()
+
+        marker = "async def is_broker_leg_authoritative"
+        idx = src.index(marker)
+        body = src[idx:idx + 4000]
+
+        assert "bracket_order_id" in body, (
+            "is_broker_leg_authoritative must check bracket_order_id"
+        )
+        assert "no_bracket" in body, (
+            "Must return 'no_bracket' reason when position has no bracket"
+        )
+
+    def test_helper_detects_working_status(self):
+        """is_broker_leg_authoritative must detect WORKING status as authoritative."""
+        src = (Path(__file__).parent.parent / "core" / "order_monitor" / "broker_flat.py").read_text()
+
+        marker = "async def is_broker_leg_authoritative"
+        idx = src.index(marker)
+        body = src[idx:idx + 4000]
+
+        assert "WORKING" in body, (
+            "Must detect WORKING status"
+        )
+        assert "stop_working" in body or "oco_working" in body, (
+            "Must return appropriate working reason"
+        )
+
+    def test_helper_detects_filled_status(self):
+        """is_broker_leg_authoritative must detect FILLED status as authoritative."""
+        src = (Path(__file__).parent.parent / "core" / "order_monitor" / "broker_flat.py").read_text()
+
+        marker = "async def is_broker_leg_authoritative"
+        idx = src.index(marker)
+        body = src[idx:idx + 4000]
+
+        assert "FILLED" in body, (
+            "Must detect FILLED status"
+        )
+        assert "stop_filled" in body or "oco_filled" in body, (
+            "Must return appropriate filled reason"
+        )
+
+    def test_helper_respects_enable_flag(self):
+        """is_broker_leg_authoritative must respect ENABLE_BROKER_LEG_AUTHORITY flag."""
+        src = (Path(__file__).parent.parent / "core" / "order_monitor" / "broker_flat.py").read_text()
+
+        marker = "async def is_broker_leg_authoritative"
+        idx = src.index(marker)
+        body = src[idx:idx + 4000]
+
+        assert "ENABLE_BROKER_LEG_AUTHORITY" in body, (
+            "Must check ENABLE_BROKER_LEG_AUTHORITY config flag"
+        )
+        assert "feature_disabled" in body, (
+            "Must return 'feature_disabled' when flag is False"
+        )
+
+
+class TestBrokerLegAuthorityIntegration:
+    """v-broker-leg-authority-2026-09-14: Integration with _close_position_with_commentary."""
+
+    def test_close_position_checks_broker_leg_authority(self):
+        """_close_position_with_commentary must check broker leg authority."""
+        src = (Path(__file__).parent.parent / "core" / "engine.py").read_text()
+
+        marker = "async def _close_position_with_commentary"
+        idx = src.index(marker)
+        body = src[idx:idx + 6000]
+
+        assert "is_broker_leg_authoritative" in body, (
+            "_close_position_with_commentary must call is_broker_leg_authoritative"
+        )
+        assert "ENABLE_BROKER_LEG_AUTHORITY" in body, (
+            "_close_position_with_commentary must check ENABLE_BROKER_LEG_AUTHORITY"
+        )
+
+    def test_close_position_skips_confirmation_when_authoritative(self):
+        """_close_position_with_commentary must skip confirmation when broker is authoritative."""
+        src = (Path(__file__).parent.parent / "core" / "engine.py").read_text()
+
+        marker = "async def _close_position_with_commentary"
+        idx = src.index(marker)
+        body = src[idx:idx + 6000]
+
+        assert "broker_leg_authoritative" in body, (
+            "Must have broker_leg_authoritative logic"
+        )
+        assert "_broker_authoritative" in body, (
+            "Must track _broker_authoritative flag"
+        )
+        assert "skipping confirmation" in body.lower() or "skip_confirmation" in body, (
+            "Must skip confirmation when broker is authoritative"
+        )
+
+    def test_close_position_audits_skip_confirmation(self):
+        """_close_position_with_commentary must audit when skipping confirmation."""
+        src = (Path(__file__).parent.parent / "core" / "engine.py").read_text()
+
+        marker = "async def _close_position_with_commentary"
+        idx = src.index(marker)
+        body = src[idx:idx + 6000]
+
+        assert "skip_confirmation" in body and "broker_leg_authoritative" in body, (
+            "Must audit skip_confirmation with broker_leg_authoritative reason"
+        )
+
+
+class TestGhostFlattenBehavior:
+    """v-broker-leg-authority-2026-09-14: Ghost flatten flag behavior tests."""
+
+    def test_handle_broker_flat_respects_ghost_flatten_flag(self):
+        """handle_broker_flat_detected must respect ENABLE_GHOST_FLATTEN_AFTER_BROKER_FLAT."""
+        src = (Path(__file__).parent.parent / "core" / "order_monitor" / "broker_flat.py").read_text()
+
+        marker = "async def handle_broker_flat_detected"
+        idx = src.index(marker)
+        body = src[idx:idx + 6000]
+
+        assert "ENABLE_GHOST_FLATTEN_AFTER_BROKER_FLAT" in body, (
+            "handle_broker_flat_detected must check ENABLE_GHOST_FLATTEN_AFTER_BROKER_FLAT"
+        )
+        assert "ghost_flatten_enabled" in body, (
+            "Must track ghost_flatten_enabled flag"
+        )
+
+    def test_ghost_flatten_disabled_does_not_remove_position(self):
+        """When ghost_flatten_disabled, position should NOT be auto-removed."""
+        src = (Path(__file__).parent.parent / "core" / "order_monitor" / "broker_flat.py").read_text()
+
+        marker = "async def handle_broker_flat_detected"
+        idx = src.index(marker)
+        body = src[idx:idx + 6000]
+
+        assert "ghost_position_shadow_logged" in body, (
+            "Must audit ghost_position_shadow_logged when not auto-removing"
+        )
+        assert "Ghost Position Detected" in body, (
+            "Must generate Ghost Position Detected commentary when disabled"
+        )
+        assert "NOT auto-removed" in body, (
+            "Commentary must indicate position NOT auto-removed"
+        )
+
+    def test_ghost_flatten_enabled_removes_position(self):
+        """When ghost_flatten_enabled, position should be auto-removed."""
+        src = (Path(__file__).parent.parent / "core" / "order_monitor" / "broker_flat.py").read_text()
+
+        marker = "async def handle_broker_flat_detected"
+        idx = src.index(marker)
+        body = src[idx:idx + 6000]
+
+        assert "if ghost_flatten_enabled:" in body, (
+            "Must have conditional branch for ghost_flatten_enabled"
+        )
+        assert "engine.positions.pop" in body, (
+            "Must remove position when ghost_flatten_enabled"
+        )
+        assert "'auto_flattened': True" in body, (
+            "Must indicate auto_flattened in commentary data"
+        )
+
+
+class TestFTFTRaceFixValidation:
+    """v-broker-leg-authority-2026-09-14: Validate FTFT race condition fix.
+
+    FTFT incident flow (2026-09-14 12:49 ET):
+      1. hard_stop_breached → software stop check starts _close_position_with_commentary
+      2. Confirmation flow starts, waiting for user response
+      3. order_monitor detects bracket stop fill @5.23 qty 432
+      4. handle_full_bracket_fill calls exit_manager.close_position_tracking
+      5. Confirmation times out with deny → state_reverted to live
+      6. Broker already flat → ghost state
+
+    Fix validates:
+      - Broker leg authority check prevents confirmation flow when OCO/stop is active
+      - Even if confirmation starts, broker fill path cancels pending confirmation
+      - Ghost state is handled appropriately based on ghost_flatten flag
+    """
+
+    def test_ftft_fix_broker_leg_authority_prevents_race(self):
+        """FTFT fix: broker leg authority check must prevent confirmation race."""
+        src = (Path(__file__).parent.parent / "core" / "engine.py").read_text()
+
+        marker = "async def _close_position_with_commentary"
+        idx = src.index(marker)
+        body = src[idx:idx + 8000]
+
+        assert "is_broker_leg_authoritative" in body, (
+            "FTFT fix: must check broker leg authority before confirmation"
+        )
+        assert "ENABLE_BROKER_LEG_AUTHORITY" in body, (
+            "FTFT fix: must be gated by ENABLE_BROKER_LEG_AUTHORITY flag"
+        )
+        assert "_broker_authoritative" in body, (
+            "FTFT fix: must track _broker_authoritative flag"
+        )
+
+    def test_ftft_fix_confirmation_gated_by_authority(self):
+        """FTFT fix: require_confirmations must be gated by broker authority."""
+        src = (Path(__file__).parent.parent / "core" / "engine.py").read_text()
+
+        marker = "async def _close_position_with_commentary"
+        idx = src.index(marker)
+        body = src[idx:idx + 8000]
+
+        assert "require_confirmations" in body and "_broker_authoritative" in body, (
+            "FTFT fix: confirmation check must reference _broker_authoritative"
+        )
+
+    def test_ftft_fix_handles_check_failure_gracefully(self):
+        """FTFT fix: broker leg authority check failure must not block close."""
+        src = (Path(__file__).parent.parent / "core" / "engine.py").read_text()
+
+        marker = "async def _close_position_with_commentary"
+        idx = src.index(marker)
+        body = src[idx:idx + 6000]
+
+        assert "check_failed" in body or "fetch_error" in body.lower(), (
+            "FTFT fix: must handle check failure gracefully"
+        )
+        assert "proceeding with normal flow" in body.lower() or "_broker_authoritative = False" in body, (
+            "FTFT fix: failed check must fall back to normal flow"
+        )
+
+
+class TestHandsOffDenylistIntegration:
+    """v-broker-leg-authority-2026-09-14: HANDS_OFF integration tests.
+
+    Ensure broker-leg authority respects HANDS_OFF_DENYLIST (MU, HQGE, SPCX).
+    """
+
+    def test_broker_leg_authority_docstring_mentions_hands_off(self):
+        """ENABLE_BROKER_LEG_AUTHORITY docstring must mention HANDS_OFF_DENYLIST."""
+        src = (Path(__file__).parent.parent / "core" / "config.py").read_text()
+
+        marker = "def ENABLE_BROKER_LEG_AUTHORITY"
+        idx = src.index(marker)
+        docstring = src[idx:idx + 1500]
+
+        assert "HANDS_OFF_DENYLIST" in docstring, (
+            "ENABLE_BROKER_LEG_AUTHORITY docstring must mention HANDS_OFF_DENYLIST"
+        )
+
+    def test_close_position_blocks_denylist_before_authority_check(self):
+        """_close_position_with_commentary must block denylist symbols early."""
+        src = (Path(__file__).parent.parent / "core" / "engine.py").read_text()
+
+        marker = "async def _close_position_with_commentary"
+        idx = src.index(marker)
+
+        # Find the denylist check
+        denylist_marker = "HANDS_OFF_DENYLIST"
+        denylist_idx = src.index(denylist_marker, idx)
+
+        # Find the broker_leg_authority check
+        authority_marker = "is_broker_leg_authoritative"
+        authority_idx = src.index(authority_marker, idx) if authority_marker in src[idx:] else idx + 10000
+
+        assert denylist_idx < authority_idx, (
+            "HANDS_OFF_DENYLIST check must come before broker_leg_authority check"
+        )
+
+
+class TestIdempotentClosePositionTracking:
+    """v-broker-leg-authority-2026-09-14: Reinforce idempotent close_position_tracking tests."""
+
+    def test_close_position_tracking_idempotent_multiple_calls(self):
+        """close_position_tracking must be idempotent: multiple calls don't raise."""
+        from analysis.exit_managers import DynamicExitManager, AdvancedExitManager
+        from unittest.mock import MagicMock
+
+        # DynamicExitManager
+        mock_brain = MagicMock()
+        mock_commentary = MagicMock()
+        dynamic_mgr = DynamicExitManager(mock_brain, mock_commentary)
+
+        dynamic_mgr.initialize_position_tracking("FTFT", 5.50, 5.00, 6.00)
+        assert "FTFT" in dynamic_mgr.exit_trackers
+
+        dynamic_mgr.close_position_tracking("FTFT")
+        assert "FTFT" not in dynamic_mgr.exit_trackers
+
+        # Second call should NOT raise
+        dynamic_mgr.close_position_tracking("FTFT")
+        assert "FTFT" not in dynamic_mgr.exit_trackers
+
+        # Third call with different symbol should be no-op
+        dynamic_mgr.close_position_tracking("NONEXISTENT")
+
+        # AdvancedExitManager
+        advanced_mgr = AdvancedExitManager(mock_commentary)
+
+        advanced_mgr.initialize_trailing_stop("FTFT", 5.50, 5.00, 0.02)
+        assert "FTFT" in advanced_mgr.position_tracking
+
+        advanced_mgr.close_position_tracking("FTFT")
+        assert "FTFT" not in advanced_mgr.position_tracking
+
+        # Second call should NOT raise
+        advanced_mgr.close_position_tracking("FTFT")
+        assert "FTFT" not in advanced_mgr.position_tracking
+
+    def test_close_position_tracking_isolated_per_symbol(self):
+        """close_position_tracking must only affect the specified symbol."""
+        from analysis.exit_managers import DynamicExitManager
+        from unittest.mock import MagicMock
+
+        mock_brain = MagicMock()
+        mock_commentary = MagicMock()
+        manager = DynamicExitManager(mock_brain, mock_commentary)
+
+        manager.initialize_position_tracking("FTFT", 5.50, 5.00, 6.00)
+        manager.initialize_position_tracking("AAPL", 150.0, 145.0, 160.0)
+        manager.initialize_position_tracking("TSLA", 200.0, 190.0, 220.0)
+
+        assert "FTFT" in manager.exit_trackers
+        assert "AAPL" in manager.exit_trackers
+        assert "TSLA" in manager.exit_trackers
+
+        manager.close_position_tracking("FTFT")
+
+        assert "FTFT" not in manager.exit_trackers
+        assert "AAPL" in manager.exit_trackers
+        assert "TSLA" in manager.exit_trackers
+
+
+class TestBrokerLegAuthorityFlagOffBehavior:
+    """v-broker-leg-authority-2026-09-14: Test flag-off preserves prior confirm behavior."""
+
+    def test_flag_off_preserves_confirmation_flow(self):
+        """When ENABLE_BROKER_LEG_AUTHORITY=False, confirmation flow should proceed."""
+        src = (Path(__file__).parent.parent / "core" / "engine.py").read_text()
+
+        marker = "async def _close_position_with_commentary"
+        idx = src.index(marker)
+        body = src[idx:idx + 6000]
+
+        assert "ENABLE_BROKER_LEG_AUTHORITY" in body, (
+            "Must check ENABLE_BROKER_LEG_AUTHORITY flag"
+        )
+        assert "_broker_authoritative = False" in body, (
+            "Must set _broker_authoritative = False when flag disabled or check fails"
+        )
+
+    def test_is_broker_leg_authoritative_returns_false_when_disabled(self):
+        """is_broker_leg_authoritative must return (False, 'feature_disabled') when flag off."""
+        src = (Path(__file__).parent.parent / "core" / "order_monitor" / "broker_flat.py").read_text()
+
+        marker = "async def is_broker_leg_authoritative"
+        idx = src.index(marker)
+        body = src[idx:idx + 2000]
+
+        assert "feature_disabled" in body, (
+            "Must return 'feature_disabled' reason when flag is off"
+        )
+        assert 'return (False, "feature_disabled")' in body, (
+            "Must return (False, 'feature_disabled') tuple"
         )

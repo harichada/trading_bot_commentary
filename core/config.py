@@ -1020,6 +1020,54 @@ class Config:
         return float(self.manager.get('trading.order_monitor_interval_sec', 5.0))
 
     @property
+    def ENABLE_BROKER_LEG_AUTHORITY(self) -> bool:
+        """v-broker-leg-authority-2026-09-14: when True (default), broker OCO/stop
+        leg status is authoritative for close decisions.
+
+        If the broker's stop leg is WORKING or already FILLED, the software
+        stop path skips the supervised close confirmation flow — the broker
+        is already protecting the position (or has already closed it).
+
+        This prevents the FTFT-style race where:
+          1. Software stop check starts confirmation flow
+          2. Broker stop fills while waiting for confirmation
+          3. Confirmation times out with deny → state_reverted to live
+          4. Position is now ghost (local says LIVE, broker is flat)
+
+        Default True for fill-path correctness. Set False only to preserve
+        prior confirm-on-all-stops behavior for debugging.
+
+        Respects HANDS_OFF_DENYLIST (MU, HQGE, SPCX) — broker-leg authority
+        never attempts to close or modify HANDS_OFF positions.
+        """
+        env_val = os.getenv("ENABLE_BROKER_LEG_AUTHORITY")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.enable_broker_leg_authority', True))
+
+    @property
+    def ENABLE_GHOST_FLATTEN_AFTER_BROKER_FLAT(self) -> bool:
+        """v-broker-leg-authority-2026-09-14: when True, auto-flatten ghost
+        `live` local state after broker_flat detection.
+
+        When handle_broker_flat_detected runs (broker confirms position is
+        flat but local state still shows LIVE), this flag controls whether
+        to proactively remove the ghost position from local tracking.
+
+        Default False (safe) — ghost positions are logged but not auto-removed.
+        Set True to automatically clean up ghost state after broker confirms flat.
+
+        WARNING: If True, any local/broker desync will result in automatic
+        position removal. Only enable if you trust broker_flat detection.
+
+        Respects HANDS_OFF_DENYLIST (MU, HQGE, SPCX) — never touches these.
+        """
+        env_val = os.getenv("ENABLE_GHOST_FLATTEN_AFTER_BROKER_FLAT")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.enable_ghost_flatten_after_broker_flat', False))
+
+    @property
     def QUOTE_REFRESH_SEC(self) -> float:
         """Cadence of the quote streamer per active symbol. 3s × 10
         symbols = ~3.3 req/s to Schwab. Tighten only if you have
