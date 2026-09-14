@@ -42,6 +42,7 @@ logger = logging.getLogger("TradingBot")
 
 _CUDA_WARNING_LOGGED = False
 _MODEL_ERROR_LOGGED = False
+_DB_PERSIST_ERROR_LOGGED = False
 
 
 class Stance(str, Enum):
@@ -750,6 +751,7 @@ class GPUNewsCritic:
         )
 
         if self._engine and hasattr(self._engine, "db_logger") and self._engine.db_logger:
+            global _DB_PERSIST_ERROR_LOGGED
             try:
                 self._engine.db_logger.log_strategy_decision(
                     strategy="gpu_news_critic",
@@ -758,8 +760,22 @@ class GPUNewsCritic:
                     reason=card.rationale_short,
                     extra_data=card.to_dict(),
                 )
-            except Exception:
-                pass
+            except AttributeError as exc:
+                if not _DB_PERSIST_ERROR_LOGGED:
+                    logger.warning(
+                        "gpu_news_critic db_persist_error symbol=%s err=%s "
+                        "(log_strategy_decision missing? suppressing future warnings)",
+                        card.symbol, exc,
+                    )
+                    _DB_PERSIST_ERROR_LOGGED = True
+            except Exception as exc:
+                if not _DB_PERSIST_ERROR_LOGGED:
+                    logger.warning(
+                        "gpu_news_critic db_persist_error symbol=%s err=%s "
+                        "(suppressing future warnings)",
+                        card.symbol, exc,
+                    )
+                    _DB_PERSIST_ERROR_LOGGED = True
 
     def process_news_item_from_publish(
         self,

@@ -975,6 +975,66 @@ class DbLogger:
         except Exception as exc:
             logger.warning("db_logger_ensure_snapshot_table_error err=%s", exc)
 
+    # =========================================================================
+    # v-fix-log-strategy-decision-2026-09-14: Sync fire-and-forget for strategy logging
+    # =========================================================================
+    def log_strategy_decision(
+        self,
+        strategy: str,
+        symbol: str,
+        action: str,
+        reason: str | None = None,
+        extra_data: dict | None = None,
+    ) -> None:
+        """Sync fire-and-forget entry point for strategy decision logging.
+        
+        v-fix-log-strategy-decision-2026-09-14: gpu_news_critic and theme_shock_logger
+        call this from sync contexts (NewsBus.on_publish path). This method schedules
+        the async log_decision onto the owner loop without blocking.
+        
+        Maps to existing log_decision with:
+          - component=strategy (e.g. 'gpu_news_critic', 'theme_shock_logger')
+          - symbol=symbol
+          - action=action
+          - reason=reason
+          - **extra_data passed to details_json
+        
+        Never raises to callers. Fails soft with warning log.
+        """
+        if not self._enabled:
+            return
+        
+        try:
+            if self._owner_loop is None:
+                logger.warning(
+                    "db_logger_strategy_decision_skip_no_owner_loop strategy=%s symbol=%s",
+                    strategy, symbol
+                )
+                return
+            
+            if not self._owner_loop.is_running():
+                logger.warning(
+                    "db_logger_strategy_decision_skip_dead_loop strategy=%s symbol=%s",
+                    strategy, symbol
+                )
+                return
+            
+            asyncio.run_coroutine_threadsafe(
+                self.log_decision(
+                    component=strategy,
+                    symbol=symbol,
+                    action=action,
+                    reason=reason,
+                    **(extra_data or {}),
+                ),
+                self._owner_loop,
+            )
+        except Exception as exc:
+            logger.warning(
+                "db_logger_strategy_decision_error strategy=%s symbol=%s err=%s",
+                strategy, symbol, exc
+            )
+
 
 def _safe_json(value: Any) -> Any:
     """Coerce a value to JSON-serializable form."""
