@@ -22,41 +22,44 @@
            opt-in. Subsequent commits will progressively use these.
            ===================================================================== */
         :root {
-          /* Surface palette (oklch — perceptually uniform, scales cleanly) */
-          --bg:           oklch(0.08 0.015 270);
+          /* v-superdesign-cockpit-2026-09-14: Surface palette tuned for dark
+             near-black cockpit aesthetic. Background pushed darker (0.06),
+             borders quieter, glows more pronounced but still institutional. */
+          --bg:           oklch(0.06 0.012 270);
           --fg:           oklch(0.98 0 0);
-          --card:         oklch(0.12 0.015 270 / 0.8);
+          --card:         oklch(0.10 0.015 270 / 0.85);
           --card-fg:      oklch(0.98 0 0);
-          --secondary:    oklch(0.16 0.015 270);
-          --muted:        oklch(0.18 0.01 270);
-          --muted-fg:     oklch(0.6 0 0);
-          --border:       oklch(0.22 0.02 270 / 0.5);
-          --border-soft:  oklch(0.22 0.02 270 / 0.3);
+          --secondary:    oklch(0.14 0.015 270);
+          --muted:        oklch(0.16 0.01 270);
+          --muted-fg:     oklch(0.55 0 0);
+          --border:       oklch(0.20 0.018 270 / 0.45);
+          --border-soft:  oklch(0.18 0.015 270 / 0.25);
 
-          /* Brand + state */
-          --accent:       oklch(0.65 0.2 200);   /* electric cyan */
+          /* Brand + state — cyan/amber/green per Superdesign */
+          --accent:       oklch(0.62 0.18 195);   /* quiet cyan */
           --accent-fg:    oklch(0.98 0 0);
-          --success:      oklch(0.72 0.2 155);   /* green */
-          --success-fg:   oklch(0.12 0.05 155);
-          --warning:      oklch(0.82 0.16 85);   /* amber */
-          --destructive:  oklch(0.6 0.22 25);    /* red */
+          --success:      oklch(0.70 0.18 155);   /* muted green */
+          --success-fg:   oklch(0.10 0.05 155);
+          --warning:      oklch(0.78 0.14 85);    /* amber glow */
+          --destructive:  oklch(0.58 0.20 25);    /* red */
           --destructive-fg: oklch(0.98 0 0);
 
           /* Chart palette */
-          --chart-1: oklch(0.65 0.2 200);
-          --chart-2: oklch(0.72 0.2 155);
-          --chart-3: oklch(0.65 0.22 25);
-          --chart-4: oklch(0.8 0.15 90);
-          --chart-5: oklch(0.7 0.2 320);
+          --chart-1: oklch(0.62 0.18 195);
+          --chart-2: oklch(0.70 0.18 155);
+          --chart-3: oklch(0.58 0.20 25);
+          --chart-4: oklch(0.78 0.14 85);
+          --chart-5: oklch(0.65 0.18 320);
 
-          /* Glow halos — subtle, institutional */
-          --glow-accent:      0 0 20px -6px oklch(0.65 0.2 200 / 0.2);
-          --glow-success:     0 0 20px -6px oklch(0.72 0.2 155 / 0.2);
-          --glow-destructive: 0 0 20px -6px oklch(0.6 0.22 25 / 0.2);
+          /* Glow halos — quiet cyan/amber institutional glows */
+          --glow-accent:      0 0 24px -4px oklch(0.62 0.18 195 / 0.25);
+          --glow-success:     0 0 24px -4px oklch(0.70 0.18 155 / 0.25);
+          --glow-destructive: 0 0 24px -4px oklch(0.58 0.20 25 / 0.25);
+          --glow-warning:     0 0 24px -4px oklch(0.78 0.14 85 / 0.25);
 
-          /* Shape */
-          --radius: 0.75rem;
-          --radius-sm: calc(var(--radius) - 4px);
+          /* Shape — slightly tighter for dense cockpit feel */
+          --radius: 0.625rem;
+          --radius-sm: calc(var(--radius) - 3px);
           --radius-lg: calc(var(--radius) + 4px);
 
           /* Typography (loaded via Google Fonts above) */
@@ -64,18 +67,21 @@
           --font-mono: 'JetBrains Mono', ui-monospace, monospace;
         }
 
-        /* Glass-morphism — translucent card with blur backdrop. */
+        /* v-superdesign-cockpit-2026-09-14: Glass panels — translucent cockpit aesthetic.
+           Darker backgrounds, subtle borders with quiet cyan edge glow. */
         .glass {
-          background: oklch(0.15 0.02 270 / 0.6);
-          backdrop-filter: blur(20px) saturate(180%);
-          -webkit-backdrop-filter: blur(20px) saturate(180%);
-          border: 1px solid oklch(0.3 0.02 270 / 0.2);
+          background: oklch(0.09 0.015 270 / 0.75);
+          backdrop-filter: blur(24px) saturate(160%);
+          -webkit-backdrop-filter: blur(24px) saturate(160%);
+          border: 1px solid oklch(0.25 0.02 270 / 0.25);
+          box-shadow: inset 0 1px 0 oklch(0.30 0.02 270 / 0.15),
+                      0 1px 3px oklch(0 0 0 / 0.3);
         }
         .glass-subtle {
-          background: oklch(0.12 0.015 270 / 0.4);
-          backdrop-filter: blur(12px) saturate(150%);
-          -webkit-backdrop-filter: blur(12px) saturate(150%);
-          border: 1px solid oklch(0.25 0.02 270 / 0.15);
+          background: oklch(0.08 0.012 270 / 0.5);
+          backdrop-filter: blur(16px) saturate(140%);
+          -webkit-backdrop-filter: blur(16px) saturate(140%);
+          border: 1px solid oklch(0.22 0.015 270 / 0.18);
         }
 
         /* Glow utilities for KPI cards */
@@ -151,8 +157,8 @@
         .pulse-dot.offline::after { background: var(--muted-fg); }
         .pulse-dot.offline::before { animation: none; opacity: 0.3; }
 
-        /* Ambient gradient blobs — fixed position, behind everything.
-           Subtle depth without dominating the design. */
+        /* v-superdesign-cockpit-2026-09-14: Ambient gradient blobs — fixed position, behind everything.
+           Quiet cyan/amber glows per Superdesign direction. Subtle depth. */
         .ambient-blobs {
           position: fixed; inset: 0;
           pointer-events: none;
@@ -162,15 +168,15 @@
         .ambient-blob {
           position: absolute;
           border-radius: 9999px;
-          filter: blur(120px);
-          opacity: 0.35;
+          filter: blur(140px);
+          opacity: 0.30;
         }
-        .ambient-blob-1 { top: 0;     left: 25%;  width: 600px; height: 600px;
-                          background: oklch(0.65 0.2 200 / 0.05); }
-        .ambient-blob-2 { bottom: 0;  right: 25%; width: 500px; height: 500px;
-                          background: oklch(0.72 0.2 155 / 0.05); filter: blur(100px); }
-        .ambient-blob-3 { top: 50%;   right: 0;   width: 400px; height: 400px;
-                          background: oklch(0.8 0.15 90 / 0.05);  filter: blur(80px); }
+        .ambient-blob-1 { top: -5%;   left: 20%;  width: 500px; height: 500px;
+                          background: oklch(0.62 0.18 195 / 0.08); }
+        .ambient-blob-2 { bottom: 5%; right: 20%; width: 450px; height: 450px;
+                          background: oklch(0.78 0.14 85 / 0.06); filter: blur(120px); }
+        .ambient-blob-3 { top: 40%;   right: -5%; width: 350px; height: 350px;
+                          background: oklch(0.62 0.18 195 / 0.04); filter: blur(100px); }
 
         /* Scrollbar — ultra minimal, matches the dark theme. */
         ::-webkit-scrollbar         { width: 4px; height: 4px; }
@@ -549,38 +555,38 @@
         .long-term-checkbox:checked {
             accent-color: #22c55e;
         }
-        /* Ticker tape styles */
+        /* v-superdesign-cockpit-2026-09-14: Thin ticker tape */
         .ticker-tape {
-            background: oklch(0.06 0.01 270);
+            background: oklch(0.05 0.008 270);
             border-bottom: 1px solid var(--border-soft);
-            padding: 6px 12px;
+            padding: 4px 10px;
             overflow-x: auto;
             overflow-y: hidden;
             position: relative;
             scrollbar-width: thin;
-            scrollbar-color: oklch(0.25 0.01 270) oklch(0.06 0.01 270);
+            scrollbar-color: oklch(0.20 0.01 270) oklch(0.05 0.008 270);
         }
         
         .ticker-tape::-webkit-scrollbar {
-            height: 6px;
+            height: 4px;
         }
         
         .ticker-tape::-webkit-scrollbar-track {
-            background: #0a0a0a;
+            background: oklch(0.05 0.008 270);
         }
         
         .ticker-tape::-webkit-scrollbar-thumb {
-            background: #333;
-            border-radius: 3px;
+            background: oklch(0.20 0.01 270);
+            border-radius: 2px;
         }
         
         .ticker-tape::-webkit-scrollbar-thumb:hover {
-            background: #555;
+            background: oklch(0.30 0.01 270);
         }
 
         .ticker-content {
             display: flex;
-            gap: 30px;
+            gap: 22px;
             align-items: center;
             min-width: 100%;
         }
@@ -588,59 +594,61 @@
         .ticker-item {
             display: flex;
             align-items: center;
-            font-size: 14px;
+            font-size: 11px;
             white-space: nowrap;
-            transition: background 0.3s ease;
-            padding: 5px 10px;
-            border-radius: 4px;
+            transition: background 0.2s ease;
+            padding: 3px 8px;
+            border-radius: 3px;
         }
 
         .ticker-item:hover {
-            background: #1a1a1a;
+            background: oklch(0.12 0.01 270);
         }
 
         .ticker-symbol {
-            font-weight: bold;
-            color: #4a9eff;
-            margin-right: 8px;
+            font-weight: 600;
+            font-family: var(--font-mono);
+            color: var(--accent);
+            margin-right: 6px;
         }
 
-        /* v-logo-cache-2026-04-28: company-logo styling. onerror hides
-           the <img> on 404 so missing logos collapse cleanly. */
+        /* v-logo-cache-2026-04-28: company-logo styling */
         .ticker-logo {
-            width: 16px;
-            height: 16px;
+            width: 14px;
+            height: 14px;
+            border-radius: 2px;
+            margin-right: 5px;
+            vertical-align: middle;
+            background: oklch(0.12 0.01 270);
+        }
+        .symbol-logo {
+            width: 20px;
+            height: 20px;
             border-radius: 3px;
             margin-right: 6px;
             vertical-align: middle;
-            background: #1a1a1a;
-        }
-        .symbol-logo {
-            width: 22px;
-            height: 22px;
-            border-radius: 4px;
-            margin-right: 8px;
-            vertical-align: middle;
-            background: #1a1a1a;
+            background: oklch(0.12 0.01 270);
             object-fit: contain;
         }
 
         .ticker-price {
-            color: #fff;
-            margin-right: 8px;
-            font-family: monospace;
-            min-width: 80px;
+            color: oklch(0.88 0 0);
+            margin-right: 6px;
+            font-family: var(--font-mono);
+            font-size: 10px;
+            min-width: 60px;
         }
 
         .ticker-change {
             font-weight: 600;
-            min-width: 80px;
+            font-size: 10px;
+            min-width: 60px;
         }
 
         .ticker-volatility {
-            color: #ffd700;
-            margin-left: 8px;
-            font-size: 12px;
+            color: var(--warning);
+            margin-left: 6px;
+            font-size: 9px;
         }
 
         /* Price update animation */
@@ -870,35 +878,60 @@
             overflow-y: auto;
         }
 
-        /* Settings Tab Styles (v-hands-off-denylist-settings-2026-09-14) */
+        /* v-superdesign-cockpit-2026-09-14: Settings Tab — hands-off chips and controls */
         .settings-panel {
             flex: 1;
-            padding: 20px;
+            padding: 1.25rem;
             overflow-y: auto;
         }
         .settings-panel .card {
-            background: var(--card);
+            background: oklch(0.09 0.015 270 / 0.7);
+            backdrop-filter: blur(20px) saturate(160%);
+            -webkit-backdrop-filter: blur(20px) saturate(160%);
             border: 1px solid var(--border);
             border-radius: var(--radius);
             overflow: hidden;
+            box-shadow: inset 0 1px 0 oklch(0.25 0.02 270 / 0.12);
         }
         .settings-panel .card > h3 {
             margin: 0;
-            padding: 1rem 1.25rem;
+            padding: 0.75rem 1rem;
             border-bottom: 1px solid var(--border-soft);
-            font: 600 0.95rem var(--font-sans);
+            font: 600 0.8125rem var(--font-sans);
             color: var(--fg);
             display: flex;
             align-items: center;
-            gap: 0.5rem;
+            gap: 0.4rem;
         }
         .settings-panel .card > h3::before {
             content: '';
             display: inline-block;
-            height: 1.5rem;
-            width: 3px;
+            height: 1.125rem;
+            width: 2px;
             border-radius: 9999px;
-            background: linear-gradient(to bottom, var(--accent), oklch(0.65 0.2 200 / 0.3));
+            background: linear-gradient(to bottom, var(--accent), oklch(0.62 0.18 195 / 0.25));
+            box-shadow: 0 0 6px oklch(0.62 0.18 195 / 0.30);
+        }
+        .hands-off-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.35rem;
+            padding: 0.3rem 0.55rem;
+            background: oklch(0.14 0.015 270);
+            border: 1px solid var(--border);
+            border-radius: calc(var(--radius) - 3px);
+            font: 600 0.75rem var(--font-mono);
+            color: var(--fg);
+            transition: all 0.15s;
+        }
+        .hands-off-chip:hover {
+            background: oklch(0.18 0.02 270);
+            border-color: oklch(0.28 0.02 270);
+        }
+        .hands-off-chip.permanent {
+            background: oklch(0.16 0.025 85 / 0.3);
+            border-color: oklch(0.78 0.14 85 / 0.4);
+            box-shadow: 0 0 8px -2px oklch(0.78 0.14 85 / 0.25);
         }
 
         .backtest-config {
@@ -1109,93 +1142,94 @@
         }
 
         /* =====================================================================
-           v-ui-header-2026-04-29: top-bar styling (logo / tabs / controls).
-           Hides legacy .tab-navigation and .dashboard-panel > .header (their
-           markup is replaced by the new top bar below).
+           v-superdesign-cockpit-2026-09-14: Compressed topbar — tight padding,
+           quiet cyan accent line, dense institutional cockpit feel.
            ===================================================================== */
         .app-topbar {
             position: sticky; top: 0; z-index: 50;
             border-bottom: 1px solid var(--border);
         }
         .app-topbar::before {
-            /* Subtle accent line at the very top */
             content: '';
             position: absolute; left: 0; right: 0; top: 0; height: 1px;
-            background: linear-gradient(90deg, transparent, oklch(0.65 0.2 200 / 0.5), transparent);
+            background: linear-gradient(90deg, transparent 5%, oklch(0.62 0.18 195 / 0.6) 50%, transparent 95%);
         }
         .app-topbar-inner {
-            padding: 0.625rem 1rem;
-            display: flex; flex-direction: column; gap: 0.5rem;
+            padding: 0.4rem 0.875rem;
+            display: flex; flex-direction: column; gap: 0.35rem;
         }
         .app-topbar-row {
             display: flex; flex-wrap: wrap; align-items: center;
-            justify-content: space-between; gap: 1rem;
+            justify-content: space-between; gap: 0.75rem;
         }
         .app-logo {
-            display: flex; align-items: center; gap: 0.75rem;
+            display: flex; align-items: center; gap: 0.5rem;
         }
         .app-logo-icon {
             position: relative;
-            padding: 0.4rem;
+            padding: 0.3rem;
             border-radius: var(--radius-sm);
-            background: linear-gradient(135deg, oklch(0.65 0.2 200 / 0.15), oklch(0.65 0.2 200 / 0.05));
-            border: 1px solid oklch(0.65 0.2 200 / 0.15);
+            background: linear-gradient(135deg, oklch(0.62 0.18 195 / 0.18), oklch(0.62 0.18 195 / 0.06));
+            border: 1px solid oklch(0.62 0.18 195 / 0.20);
             color: var(--accent);
+            box-shadow: 0 0 12px -3px oklch(0.62 0.18 195 / 0.20);
         }
         .app-logo-icon::after { display: none; }
         .app-logo-title {
-            font-size: 1rem; font-weight: 700;
+            font-size: 0.9375rem; font-weight: 700;
             letter-spacing: -0.02em;
             color: var(--fg);
         }
         .app-logo-subtitle {
-            font-size: 0.5625rem; font-weight: 600;
-            letter-spacing: 0.1em; text-transform: uppercase;
+            font-size: 0.5rem; font-weight: 600;
+            letter-spacing: 0.12em; text-transform: uppercase;
             color: var(--muted-fg);
         }
         .app-nav {
-            display: flex; align-items: center; gap: 0.25rem;
-            padding: 0.25rem;
+            display: flex; align-items: center; gap: 0.15rem;
+            padding: 0.2rem;
             border-radius: var(--radius);
         }
         .app-nav .nav-btn {
-            display: flex; align-items: center; gap: 0.5rem;
-            padding: 0.5rem 1rem;
+            display: flex; align-items: center; gap: 0.4rem;
+            padding: 0.35rem 0.75rem;
             border: 0; background: transparent; cursor: pointer;
-            border-radius: calc(var(--radius) - 4px);
-            font: 500 0.875rem var(--font-sans);
+            border-radius: calc(var(--radius) - 3px);
+            font: 500 0.75rem var(--font-sans);
             color: var(--muted-fg);
-            transition: all 0.2s;
+            transition: all 0.15s;
         }
         .app-nav .nav-btn:hover { color: var(--fg); background: var(--secondary); }
         .app-nav .nav-btn.active {
-            background: oklch(0.65 0.2 200 / 0.15);
+            background: oklch(0.62 0.18 195 / 0.15);
             color: var(--accent);
-            box-shadow: 0 1px 2px oklch(0 0 0 / 0.1);
+            box-shadow: 0 0 10px -3px oklch(0.62 0.18 195 / 0.25);
         }
         .app-toggles {
-            display: flex; align-items: center; gap: 0.15rem;
-            padding: 0.25rem 0.4rem;
+            display: flex; align-items: center; gap: 0.1rem;
+            padding: 0.15rem 0.3rem;
             border-radius: var(--radius-sm);
         }
-        .app-toggles > .divider { width: 1px; height: 1rem; background: var(--border-soft); margin: 0 0.15rem; }
+        .app-toggles > .divider { width: 1px; height: 0.875rem; background: var(--border-soft); margin: 0 0.1rem; }
         .app-toggle {
-            display: flex; align-items: center; gap: 0.35rem;
-            padding: 0.15rem 0.35rem;
+            display: flex; align-items: center; gap: 0.25rem;
+            padding: 0.1rem 0.25rem;
             color: var(--muted-fg);
-            font: 500 0.625rem var(--font-sans);
+            font: 500 0.5625rem var(--font-sans);
         }
         .app-toggle .lucide { color: var(--muted-fg); display: none; }
-        .app-toggle input[type="checkbox"] { transform: scale(0.8); accent-color: var(--accent); cursor: pointer; }
+        .app-toggle input[type="checkbox"] { transform: scale(0.75); accent-color: var(--accent); cursor: pointer; }
         .app-toggle label { cursor: pointer; user-select: none; }
-        .app-actions { display: flex; align-items: center; gap: 0.5rem; }
+        .app-actions { display: flex; align-items: center; gap: 0.35rem; }
         .btn {
-            display: inline-flex; align-items: center; gap: 0.35rem;
-            height: 1.75rem; padding: 0 0.6rem;
+            display: inline-flex; align-items: center; gap: 0.25rem;
+            height: 1.5rem; padding: 0 0.5rem;
             border-radius: calc(var(--radius) - 2px);
             border: 0; cursor: pointer;
-            font: 600 0.6875rem var(--font-sans);
-            transition: all 0.2s;
+            font: 600 0.5625rem var(--font-sans);
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+            transition: all 0.15s;
         }
         .btn-ghost {
             background: transparent; color: var(--muted-fg);
@@ -1204,123 +1238,138 @@
         .btn-ghost:hover { background: var(--secondary); color: var(--fg); }
         .btn-success {
             background: var(--success); color: var(--success-fg);
+            box-shadow: 0 0 12px -3px oklch(0.70 0.18 155 / 0.35);
         }
-        .btn-success:hover { background: oklch(0.72 0.2 155 / 0.9); }
+        .btn-success:hover { background: oklch(0.70 0.18 155 / 0.9); }
         .btn-destructive {
             background: var(--destructive); color: var(--destructive-fg);
+            box-shadow: 0 0 12px -3px oklch(0.58 0.20 25 / 0.35);
         }
-        .btn-destructive:hover { background: oklch(0.6 0.22 25 / 0.9); }
+        .btn-destructive:hover { background: oklch(0.58 0.20 25 / 0.9); }
         .btn-icon {
-            width: 1.75rem; height: 1.75rem; padding: 0;
+            width: 1.5rem; height: 1.5rem; padding: 0;
             display: inline-flex; align-items: center; justify-content: center;
         }
         .app-status-row {
-            display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem;
-            padding-top: 0.5rem; border-top: 1px solid var(--border-soft);
+            display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem;
+            padding-top: 0.35rem; border-top: 1px solid var(--border-soft);
         }
         .status-pill {
-            display: inline-flex; align-items: center; gap: 0.4rem;
-            padding: 0.25rem 0.6rem;
+            display: inline-flex; align-items: center; gap: 0.3rem;
+            padding: 0.15rem 0.5rem;
             border-radius: 9999px;
-            font: 500 0.625rem var(--font-sans);
+            font: 500 0.5625rem var(--font-sans);
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
             border: 1px solid;
         }
-        .status-pill.connected   { color: var(--accent);     background: oklch(0.65 0.2 200 / 0.1); border-color: oklch(0.65 0.2 200 / 0.2); }
-        .status-pill.live        { color: var(--success);    background: oklch(0.72 0.2 155 / 0.1); border-color: oklch(0.72 0.2 155 / 0.2); }
-        .status-pill.ready       { color: var(--chart-4);    background: oklch(0.8 0.15 90 / 0.1);  border-color: oklch(0.8 0.15 90 / 0.2); }
-        .status-pill.error       { color: var(--destructive);background: oklch(0.6 0.22 25 / 0.1);  border-color: oklch(0.6 0.22 25 / 0.2); }
+        .status-pill.connected   { color: var(--accent);     background: oklch(0.62 0.18 195 / 0.1); border-color: oklch(0.62 0.18 195 / 0.25); }
+        .status-pill.live        { color: var(--success);    background: oklch(0.70 0.18 155 / 0.1); border-color: oklch(0.70 0.18 155 / 0.25); }
+        .status-pill.ready       { color: var(--chart-4);    background: oklch(0.78 0.14 85 / 0.1);  border-color: oklch(0.78 0.14 85 / 0.25); }
+        .status-pill.error       { color: var(--destructive);background: oklch(0.58 0.20 25 / 0.1);  border-color: oklch(0.58 0.20 25 / 0.25); }
 
-        /* Trust strip — persistent connection/data status */
+        /* v-superdesign-cockpit-2026-09-14: Trust strip — LIVE indicator pill.
+           Compact, with quiet cyan/amber glows. */
         .trust-strip {
             display: flex;
             align-items: center;
-            gap: 0.5rem;
-            padding: 0.25rem 0.5rem;
-            background: oklch(0.06 0.015 270 / 0.9);
+            gap: 0.4rem;
+            padding: 0.15rem 0.4rem;
+            background: oklch(0.05 0.012 270 / 0.85);
             border-radius: calc(var(--radius) - 2px);
-            font: 600 0.625rem var(--font-sans);
+            font: 600 0.5625rem var(--font-sans);
         }
         .trust-badge {
             display: inline-flex;
             align-items: center;
-            gap: 0.35rem;
-            padding: 0.25rem 0.6rem;
-            border-radius: calc(var(--radius) - 4px);
+            gap: 0.25rem;
+            padding: 0.15rem 0.45rem;
+            border-radius: calc(var(--radius) - 3px);
             border: 1px solid;
-            transition: all 0.3s ease;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            transition: all 0.25s ease;
         }
         .trust-badge .dot {
-            width: 6px; height: 6px;
+            width: 5px; height: 5px;
             border-radius: 50%;
         }
         .trust-badge.live {
             color: var(--success);
-            background: oklch(0.72 0.2 155 / 0.12);
-            border-color: oklch(0.72 0.2 155 / 0.3);
+            background: oklch(0.70 0.18 155 / 0.12);
+            border-color: oklch(0.70 0.18 155 / 0.35);
+            box-shadow: 0 0 10px -2px oklch(0.70 0.18 155 / 0.30);
         }
         .trust-badge.live .dot {
             background: var(--success);
-            box-shadow: 0 0 6px var(--success);
+            box-shadow: 0 0 6px oklch(0.70 0.18 155 / 0.8);
             animation: pulse-glow 2s ease-in-out infinite;
         }
         .trust-badge.stale {
             color: var(--warning);
-            background: oklch(0.82 0.16 85 / 0.12);
-            border-color: oklch(0.82 0.16 85 / 0.3);
+            background: oklch(0.78 0.14 85 / 0.12);
+            border-color: oklch(0.78 0.14 85 / 0.35);
+            box-shadow: 0 0 10px -2px oklch(0.78 0.14 85 / 0.25);
         }
         .trust-badge.stale .dot {
             background: var(--warning);
         }
         .trust-badge.offline {
             color: var(--destructive);
-            background: oklch(0.6 0.22 25 / 0.12);
-            border-color: oklch(0.6 0.22 25 / 0.3);
+            background: oklch(0.58 0.20 25 / 0.12);
+            border-color: oklch(0.58 0.20 25 / 0.35);
         }
         .trust-badge.offline .dot {
             background: var(--destructive);
         }
         .trust-asof {
             color: var(--muted-fg);
-            font: 500 0.625rem var(--font-mono);
+            font: 500 0.5rem var(--font-mono);
             text-transform: none;
             letter-spacing: 0;
         }
         .trust-divider {
             width: 1px;
-            height: 1rem;
+            height: 0.75rem;
             background: var(--border-soft);
-            margin: 0 0.25rem;
+            margin: 0 0.15rem;
         }
         .trust-sub {
-            font: 500 0.625rem var(--font-sans);
+            font: 500 0.5rem var(--font-sans);
             color: var(--muted-fg);
-            padding: 0.2rem 0.4rem;
+            padding: 0.1rem 0.3rem;
             border-radius: calc(var(--radius) - 4px);
-            background: oklch(0.12 0.01 270 / 0.5);
-            transition: all 0.3s;
+            background: oklch(0.10 0.01 270 / 0.5);
+            transition: all 0.25s;
         }
-        .trust-sub.connected { color: var(--success); background: oklch(0.72 0.2 155 / 0.1); }
-        .trust-sub.error { color: var(--destructive); background: oklch(0.6 0.22 25 / 0.1); }
+        .trust-sub.connected { color: var(--success); background: oklch(0.70 0.18 155 / 0.1); }
+        .trust-sub.error { color: var(--destructive); background: oklch(0.58 0.20 25 / 0.1); }
         .trust-badge.offline ~ .trust-sub { opacity: 0.5; }
 
-        /* Live Pulse — elevated commentary/decision stream */
+        /* v-superdesign-cockpit-2026-09-14: Live Pulse — elevated decision stream.
+           Owns the fold per Superdesign direction. ACT/WAIT/PASS cards prominent. */
         .pulse-header {
             display: flex;
             align-items: center;
-            gap: 0.75rem;
-            margin-bottom: 0.75rem;
+            gap: 0.6rem;
+            margin-bottom: 0.6rem;
+            padding-bottom: 0.5rem;
+            border-bottom: 1px solid var(--border-soft);
         }
         .pulse-header h2 {
             margin: 0;
-            font: 700 1rem var(--font-sans);
+            font: 700 0.875rem var(--font-sans);
             color: var(--fg);
+            letter-spacing: -0.01em;
         }
         .pulse-header .pulse-count {
-            font: 600 0.625rem var(--font-mono);
+            font: 600 0.5rem var(--font-mono);
             color: var(--muted-fg);
-            background: oklch(0.18 0.01 270);
-            padding: 0.2rem 0.5rem;
+            background: oklch(0.14 0.01 270);
+            padding: 0.15rem 0.4rem;
             border-radius: calc(var(--radius) - 4px);
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
         }
 
         /* Pulse empty state — calm institutional placeholder */
@@ -1368,38 +1417,43 @@
             color: var(--muted-fg);
         }
 
-        /* Verdict chips: ACT / WAIT / PASS */
+        /* v-superdesign-cockpit-2026-09-14: Verdict chips — ACT / WAIT / PASS.
+           Prominent, with quiet cyan/amber glows. Own the fold. */
         .verdict-chip {
             display: inline-flex;
             align-items: center;
-            gap: 0.25rem;
-            padding: 0.15rem 0.5rem;
-            border-radius: calc(var(--radius) - 4px);
-            font: 700 0.5625rem var(--font-sans);
+            gap: 0.2rem;
+            padding: 0.2rem 0.6rem;
+            border-radius: calc(var(--radius) - 3px);
+            font: 700 0.625rem var(--font-sans);
             text-transform: uppercase;
-            letter-spacing: 0.05em;
+            letter-spacing: 0.08em;
             border: 1px solid;
             flex-shrink: 0;
+            transition: all 0.2s ease;
         }
         .verdict-chip.act {
             color: var(--success);
-            background: oklch(0.72 0.2 155 / 0.15);
-            border-color: oklch(0.72 0.2 155 / 0.4);
+            background: oklch(0.70 0.18 155 / 0.18);
+            border-color: oklch(0.70 0.18 155 / 0.45);
+            box-shadow: 0 0 12px -2px oklch(0.70 0.18 155 / 0.30);
         }
         .verdict-chip.wait {
             color: var(--warning);
-            background: oklch(0.82 0.16 85 / 0.15);
-            border-color: oklch(0.82 0.16 85 / 0.4);
+            background: oklch(0.78 0.14 85 / 0.18);
+            border-color: oklch(0.78 0.14 85 / 0.45);
+            box-shadow: 0 0 12px -2px oklch(0.78 0.14 85 / 0.25);
         }
         .verdict-chip.pass {
             color: var(--muted-fg);
-            background: oklch(0.18 0.01 270);
-            border-color: oklch(0.25 0.01 270);
+            background: oklch(0.14 0.01 270);
+            border-color: oklch(0.22 0.01 270);
         }
         .verdict-chip.veto {
             color: var(--destructive);
-            background: oklch(0.6 0.22 25 / 0.15);
-            border-color: oklch(0.6 0.22 25 / 0.4);
+            background: oklch(0.58 0.20 25 / 0.18);
+            border-color: oklch(0.58 0.20 25 / 0.45);
+            box-shadow: 0 0 12px -2px oklch(0.58 0.20 25 / 0.25);
         }
 
         /* Pulse item elevated styling */
@@ -1676,67 +1730,67 @@
         }
         .uptime-display {
             margin-left: auto;
-            font-size: 0.75rem; color: var(--muted-fg);
-            display: flex; align-items: center; gap: 0.5rem;
+            font-size: 0.5rem; color: var(--muted-fg);
+            display: flex; align-items: center; gap: 0.35rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
         }
         .uptime-display .value {
             font-family: var(--font-mono);
+            font-size: 0.5625rem;
             color: var(--fg);
         }
 
-        /* Restyled ticker tape with glass + edge fades */
+        /* v-superdesign-cockpit-2026-09-14: Thin ticker tape with glass + edge fades */
         .ticker-tape.modern {
             position: relative;
-            background: oklch(0.08 0.015 270 / 0.5);
-            border-bottom: 1px solid var(--border);
+            background: oklch(0.05 0.008 270 / 0.6);
+            border-bottom: 1px solid var(--border-soft);
             overflow: hidden;
         }
         .ticker-tape.modern::before,
         .ticker-tape.modern::after {
-            content: ''; position: absolute; top: 0; bottom: 0; width: 5rem;
+            content: ''; position: absolute; top: 0; bottom: 0; width: 4rem;
             pointer-events: none; z-index: 10;
         }
-        .ticker-tape.modern::before { left: 0;  background: linear-gradient(to right, var(--bg), transparent); }
-        .ticker-tape.modern::after  { right: 0; background: linear-gradient(to left,  var(--bg), transparent); }
+        .ticker-tape.modern::before { left: 0;  background: linear-gradient(to right, oklch(0.06 0.012 270), transparent); }
+        .ticker-tape.modern::after  { right: 0; background: linear-gradient(to left,  oklch(0.06 0.012 270), transparent); }
 
-        /* v-market-indices-strip-2026-05-27: regime strip above ticker tape.
-           Centered, larger, mono — easy at-a-glance read of
-           S&P/Dow/Nasdaq/Russell/VIX. Restyled 2026-05-28 per operator
-           feedback ("too small, can you center it and make little large"):
-           font 12→16px, gap 28→44px, padding 8/20 → 14/24, justify centered.
-           Stale badge still pinned right via absolute positioning so the
-           centered row stays visually balanced. */
+        /* v-superdesign-cockpit-2026-09-14: Thin indices ticker strip.
+           Compact, mono, quiet — easy at-a-glance read.
+           Per Superdesign: institutional density. */
         .market-indices-strip {
             position: relative;
             display: flex;
             justify-content: center !important;
             align-items: center;
-            gap: 32px;
-            padding: 6px 16px;
-            background: oklch(0.06 0.01 270);
+            gap: 28px;
+            padding: 4px 12px;
+            background: oklch(0.05 0.008 270);
             border-bottom: 1px solid var(--border-soft);
-            font-family: 'SF Pro Text', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-            font-size: 14px;
+            font-family: var(--font-mono);
+            font-size: 11px;
             flex-wrap: wrap;
             width: 100%;
             box-sizing: border-box;
         }
         .mi-item {
-            color: #c8c8c8;
+            color: oklch(0.70 0 0);
             white-space: nowrap;
             display: inline-flex;
             align-items: baseline;
-            gap: 8px;
+            gap: 6px;
         }
         .mi-item .mi-name {
-            color: #9aa4b2;
+            color: oklch(0.50 0 0);
             font-weight: 500;
-            letter-spacing: 0.2px;
-            font-size: 0.95em;
+            letter-spacing: 0.03em;
+            font-size: 0.9em;
+            text-transform: uppercase;
         }
         .mi-item .mi-value {
-            color: #ffffff;
-            font-weight: 700;
+            color: oklch(0.88 0 0);
+            font-weight: 600;
             font-variant-numeric: tabular-nums;
         }
         .mi-change {
@@ -1746,24 +1800,24 @@
             align-items: center;
             gap: 2px;
         }
-        .mi-change.up   { color: #22c55e; }
-        .mi-change.down { color: #ef4444; }
-        .mi-arrow { font-size: 0.85em; }
+        .mi-change.up   { color: var(--success); }
+        .mi-change.down { color: var(--destructive); }
+        .mi-arrow { font-size: 0.8em; }
         .mi-stale {
             position: absolute;
-            right: 16px;
+            right: 12px;
             top: 50%;
             transform: translateY(-50%);
-            padding: 2px 8px;
-            background: #3a2a08;
-            color: #f59e0b;
-            font-size: 10px;
+            padding: 2px 6px;
+            background: oklch(0.20 0.08 85 / 0.3);
+            color: var(--warning);
+            font-size: 9px;
             text-transform: uppercase;
             border-radius: 3px;
-            letter-spacing: 0.5px;
+            letter-spacing: 0.05em;
         }
         @media (max-width: 720px) {
-            .market-indices-strip { gap: 22px; font-size: 14px; padding: 10px 16px; }
+            .market-indices-strip { gap: 16px; font-size: 10px; padding: 4px 10px; }
         }
 
         /* Hide legacy header markup that got replaced */
@@ -1777,85 +1831,91 @@
            visuals when nested in .card-modern.
            ===================================================================== */
         .section-title {
-            display: flex; align-items: center; gap: 0.75rem;
-            margin: 0 0 1rem 0;
+            display: flex; align-items: center; gap: 0.5rem;
+            margin: 0 0 0.75rem 0;
         }
         .section-title .accent-bar {
-            height: 2rem; width: 4px;
+            height: 1.5rem; width: 3px;
             border-radius: 9999px;
-            background: linear-gradient(to bottom, var(--accent), oklch(0.65 0.2 200 / 0.3));
+            background: linear-gradient(to bottom, var(--accent), oklch(0.62 0.18 195 / 0.25));
+            box-shadow: 0 0 8px oklch(0.62 0.18 195 / 0.35);
         }
-        .section-title .accent-bar.success { background: linear-gradient(to bottom, var(--success), oklch(0.72 0.2 155 / 0.3)); }
-        .section-title .accent-bar.warning { background: linear-gradient(to bottom, var(--chart-4), oklch(0.8 0.15 90 / 0.3)); }
+        .section-title .accent-bar.success { background: linear-gradient(to bottom, var(--success), oklch(0.70 0.18 155 / 0.25)); box-shadow: 0 0 8px oklch(0.70 0.18 155 / 0.30); }
+        .section-title .accent-bar.warning { background: linear-gradient(to bottom, var(--chart-4), oklch(0.78 0.14 85 / 0.25)); box-shadow: 0 0 8px oklch(0.78 0.14 85 / 0.30); }
         .section-title h2 {
-            margin: 0; font-size: 1.125rem; font-weight: 600;
-            letter-spacing: -0.02em; color: var(--fg);
+            margin: 0; font-size: 0.9375rem; font-weight: 600;
+            letter-spacing: -0.01em; color: var(--fg);
         }
         .section-title .live-marker {
             margin-left: auto;
-            display: inline-flex; align-items: center; gap: 0.5rem;
-            font-size: 0.75rem; color: var(--muted-fg);
+            display: inline-flex; align-items: center; gap: 0.35rem;
+            font-size: 0.5625rem; color: var(--muted-fg);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
         }
 
         .kpi-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-            gap: 1rem;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 0.75rem;
         }
         .kpi-card {
             position: relative;
-            padding: 1.25rem;
+            padding: 1rem;
             border-radius: var(--radius);
-            background: oklch(0.15 0.02 270 / 0.6);
-            backdrop-filter: blur(20px) saturate(180%);
-            -webkit-backdrop-filter: blur(20px) saturate(180%);
+            background: oklch(0.09 0.015 270 / 0.7);
+            backdrop-filter: blur(20px) saturate(160%);
+            -webkit-backdrop-filter: blur(20px) saturate(160%);
             border: 1px solid var(--border);
-            transition: all 0.4s ease;
+            transition: all 0.3s ease;
             overflow: hidden;
+            box-shadow: inset 0 1px 0 oklch(0.25 0.02 270 / 0.12);
         }
-        .kpi-card:hover { border-color: oklch(0.3 0.02 270 / 0.7); box-shadow: 0 0 24px -8px oklch(0.65 0.2 200 / 0.25); }
-        .kpi-card.success-accent:hover { box-shadow: 0 0 24px -8px oklch(0.72 0.2 155 / 0.25); }
-        .kpi-card.warning-accent:hover { box-shadow: 0 0 24px -8px oklch(0.6 0.22 25 / 0.25); }
-        .kpi-card.empty, .chart-card.empty { opacity: 0.7; }
+        .kpi-card:hover { border-color: oklch(0.28 0.02 270 / 0.6); box-shadow: 0 0 20px -6px oklch(0.62 0.18 195 / 0.25), inset 0 1px 0 oklch(0.25 0.02 270 / 0.12); }
+        .kpi-card.success-accent:hover { box-shadow: 0 0 20px -6px oklch(0.70 0.18 155 / 0.30), inset 0 1px 0 oklch(0.25 0.02 270 / 0.12); }
+        .kpi-card.warning-accent:hover { box-shadow: 0 0 20px -6px oklch(0.58 0.20 25 / 0.30), inset 0 1px 0 oklch(0.25 0.02 270 / 0.12); }
+        .kpi-card.empty, .chart-card.empty { opacity: 0.65; }
         .kpi-card.empty:hover, .chart-card.empty:hover { box-shadow: none; transform: none; }
         .kpi-card-head {
             display: flex; align-items: flex-start; justify-content: space-between;
-            margin-bottom: 1rem;
+            margin-bottom: 0.75rem;
         }
         .kpi-icon-wrap {
-            padding: 0.625rem;
-            border-radius: var(--radius);
-            background: oklch(0.65 0.2 200 / 0.15);
+            padding: 0.5rem;
+            border-radius: var(--radius-sm);
+            background: oklch(0.62 0.18 195 / 0.12);
             color: var(--accent);
-            transition: transform 0.3s;
+            transition: transform 0.25s;
         }
-        .kpi-card:hover .kpi-icon-wrap { transform: scale(1.1); }
-        .kpi-card.success-accent .kpi-icon-wrap { background: oklch(0.72 0.2 155 / 0.15); color: var(--success); }
-        .kpi-card.warning-accent .kpi-icon-wrap { background: oklch(0.6 0.22 25 / 0.15); color: var(--destructive); }
+        .kpi-card:hover .kpi-icon-wrap { transform: scale(1.08); }
+        .kpi-card.success-accent .kpi-icon-wrap { background: oklch(0.70 0.18 155 / 0.12); color: var(--success); }
+        .kpi-card.warning-accent .kpi-icon-wrap { background: oklch(0.58 0.20 25 / 0.12); color: var(--destructive); }
         .kpi-trend {
-            display: inline-flex; align-items: center; gap: 0.25rem;
-            padding: 0.2rem 0.5rem;
+            display: inline-flex; align-items: center; gap: 0.2rem;
+            padding: 0.15rem 0.4rem;
             border-radius: calc(var(--radius) - 4px);
-            font: 500 0.6875rem var(--font-sans);
+            font: 500 0.5625rem var(--font-sans);
         }
-        .kpi-trend.up   { background: oklch(0.72 0.2 155 / 0.15); color: var(--success); }
-        .kpi-trend.down { background: oklch(0.6 0.22 25 / 0.15);  color: var(--destructive); }
+        .kpi-trend.up   { background: oklch(0.70 0.18 155 / 0.15); color: var(--success); }
+        .kpi-trend.down { background: oklch(0.58 0.20 25 / 0.15);  color: var(--destructive); }
         .kpi-label {
-            font: 500 0.75rem var(--font-sans);
-            color: oklch(0.6 0 0);
-            margin-bottom: 0.25rem;
+            font: 500 0.625rem var(--font-sans);
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            color: oklch(0.50 0 0);
+            margin-bottom: 0.2rem;
         }
         .kpi-value {
-            font: 700 1.875rem var(--font-sans);
+            font: 700 1.625rem var(--font-sans);
             font-variant-numeric: tabular-nums;
-            letter-spacing: -0.025em;
+            letter-spacing: -0.02em;
             color: var(--fg);
         }
-        .kpi-value.gradient { background: linear-gradient(135deg, oklch(0.78 0.2 155) 0%, oklch(0.65 0.18 165) 100%); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
+        .kpi-value.gradient { background: linear-gradient(135deg, oklch(0.75 0.18 155) 0%, oklch(0.62 0.16 165) 100%); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
         .kpi-sub {
-            font: 400 0.75rem var(--font-sans);
+            font: 400 0.625rem var(--font-sans);
             color: var(--muted-fg);
-            margin-top: 0.25rem;
+            margin-top: 0.15rem;
         }
 
         /* Hide legacy stats-row when the modern KPI block is present */
@@ -1868,22 +1928,24 @@
            index quotes, to avoid extra API calls.
            ===================================================================== */
         .market-status-strip {
-            display: flex; flex-wrap: wrap; align-items: center; gap: 1rem;
-            padding: 0.35rem 1rem;
+            display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem;
+            padding: 0.25rem 0.875rem;
             border-bottom: 1px solid var(--border-soft);
-            background: oklch(0.06 0.01 270 / 0.6);
+            background: oklch(0.05 0.008 270 / 0.7);
             font-family: var(--font-sans);
-            font-size: 0.6875rem;
+            font-size: 0.5625rem;
         }
         .market-status-strip .session-icon {
-            display: inline-flex; align-items: center; gap: 0.5rem;
+            display: inline-flex; align-items: center; gap: 0.35rem;
             font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
         }
         .market-status-strip .session-icon.open    { color: var(--success); }
         .market-status-strip .session-icon.pre     { color: var(--chart-4); }
         .market-status-strip .session-icon.after   { color: var(--accent); }
         .market-status-strip .session-icon.closed  { color: var(--muted-fg); }
-        .market-status-strip .countdown { color: var(--muted-fg); }
+        .market-status-strip .countdown { color: var(--muted-fg); font-size: 0.5rem; }
         .market-status-strip .countdown .value { color: var(--fg); font-family: var(--font-mono); }
 
         /* =====================================================================
@@ -2008,44 +2070,40 @@
            the existing class names so no markup needs to change.
            ===================================================================== */
 
-        /* Card containers — replaces the old chunky .card style.
-           v-ui-news-trades-row-2026-04-29: relaxed direct-child selector
-           to match nested cards (e.g., inside .row-news-trades). */
+        /* v-superdesign-cockpit-2026-09-14: Card containers — glass cockpit panels */
         .container.tab-content .dashboard-panel .card,
         .container.tab-content .dashboard-panel #sentiment-card {
-            background: oklch(0.15 0.02 270 / 0.6);
-            backdrop-filter: blur(20px) saturate(180%);
-            -webkit-backdrop-filter: blur(20px) saturate(180%);
+            background: oklch(0.09 0.015 270 / 0.7);
+            backdrop-filter: blur(20px) saturate(160%);
+            -webkit-backdrop-filter: blur(20px) saturate(160%);
             border: 1px solid var(--border);
             border-radius: var(--radius);
             padding: 0;
-            margin-bottom: 1.5rem;
+            margin-bottom: 1.25rem;
             overflow: hidden;
-            box-shadow: none;
+            box-shadow: inset 0 1px 0 oklch(0.25 0.02 270 / 0.12);
         }
-        /* Inside row-news-trades, kill the bottom margin so the row
-           controls spacing — otherwise we'd get double gap. */
         .row-news-trades .card { margin-bottom: 0; }
         .container.tab-content .dashboard-panel .card > h3,
         #sentiment-card > div:first-child > h3 {
             margin: 0;
-            padding: 1rem 1.25rem;
+            padding: 0.75rem 1rem;
             border-bottom: 1px solid var(--border-soft);
-            font: 600 0.875rem var(--font-sans);
+            font: 600 0.75rem var(--font-sans);
             color: var(--fg);
-            display: flex; align-items: center; gap: 0.75rem;
+            display: flex; align-items: center; gap: 0.5rem;
         }
-        /* Accent bar before each card title — same visual language as section-title */
         .container.tab-content .dashboard-panel .card > h3::before {
             content: '';
             display: inline-block;
-            height: 1.5rem; width: 3px;
+            height: 1.125rem; width: 2px;
             border-radius: 9999px;
-            background: linear-gradient(to bottom, var(--accent), oklch(0.65 0.2 200 / 0.3));
+            background: linear-gradient(to bottom, var(--accent), oklch(0.62 0.18 195 / 0.25));
+            box-shadow: 0 0 6px oklch(0.62 0.18 195 / 0.30);
         }
-        /* Sim card uses warm accent bar */
         .container.tab-content .dashboard-panel .card:has(.badge-simulated) > h3::before {
-            background: linear-gradient(to bottom, var(--chart-4), oklch(0.8 0.15 90 / 0.3));
+            background: linear-gradient(to bottom, var(--chart-4), oklch(0.78 0.14 85 / 0.25));
+            box-shadow: 0 0 6px oklch(0.78 0.14 85 / 0.30);
         }
 
         /* REAL / SIM badges */
@@ -2132,50 +2190,56 @@
             transform: scale(1.1);
         }
 
-        /* Commentary panel (left sidebar) — modern look */
+        /* v-superdesign-cockpit-2026-09-14: Pulse panel — left sidebar cockpit style.
+           Glass panel with quiet cyan accent. Owns the fold. */
         .commentary-panel {
-            background: oklch(0.1 0.015 270 / 0.95);
-            backdrop-filter: blur(20px) saturate(180%);
-            -webkit-backdrop-filter: blur(20px) saturate(180%);
+            background: oklch(0.07 0.012 270 / 0.92);
+            backdrop-filter: blur(24px) saturate(160%);
+            -webkit-backdrop-filter: blur(24px) saturate(160%);
             border-right: 1px solid var(--border);
-            padding: 1.25rem;
+            padding: 1rem;
+            box-shadow: inset -1px 0 0 oklch(0.62 0.18 195 / 0.08);
         }
         .commentary-panel h2 {
-            margin: 0 0 0.75rem 0;
-            font: 600 1rem var(--font-sans);
+            margin: 0 0 0.5rem 0;
+            font: 600 0.875rem var(--font-sans);
             color: var(--fg);
-            display: flex; align-items: center; gap: 0.6rem;
+            display: flex; align-items: center; gap: 0.5rem;
         }
         .commentary-panel h2::before {
             content: '';
-            display: inline-block; width: 3px; height: 1.25rem;
+            display: inline-block; width: 2px; height: 1rem;
             border-radius: 9999px;
-            background: linear-gradient(to bottom, var(--accent), oklch(0.65 0.2 200 / 0.3));
+            background: linear-gradient(to bottom, var(--accent), oklch(0.62 0.18 195 / 0.25));
+            box-shadow: 0 0 8px oklch(0.62 0.18 195 / 0.4);
         }
 
         .filter-buttons {
             display: flex; flex-wrap: wrap;
-            gap: 0.25rem;
-            padding: 0.25rem;
-            border-radius: var(--radius);
-            background: oklch(0.12 0.015 270 / 0.4);
-            border: 1px solid oklch(0.25 0.02 270 / 0.15);
-            margin-bottom: 1rem;
+            gap: 0.15rem;
+            padding: 0.15rem;
+            border-radius: var(--radius-sm);
+            background: oklch(0.08 0.012 270 / 0.5);
+            border: 1px solid oklch(0.20 0.015 270 / 0.18);
+            margin-bottom: 0.75rem;
         }
         .filter-button {
-            padding: 0.4rem 0.75rem;
-            font: 500 0.75rem var(--font-sans);
+            padding: 0.25rem 0.5rem;
+            font: 500 0.5625rem var(--font-sans);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
             color: var(--muted-fg);
             background: transparent;
             border: 0;
             border-radius: calc(var(--radius) - 4px);
             cursor: pointer;
-            transition: all 0.2s;
+            transition: all 0.15s;
         }
         .filter-button:hover { color: var(--fg); background: var(--secondary); }
         .filter-button.active {
-            background: oklch(0.65 0.2 200 / 0.15);
+            background: oklch(0.62 0.18 195 / 0.18);
             color: var(--accent);
+            box-shadow: 0 0 8px -2px oklch(0.62 0.18 195 / 0.25);
         }
 
         /* Commentary item cards */
@@ -2337,33 +2401,36 @@
            v-ui-charts-2026-04-29: portfolio donut + performance metrics
            ===================================================================== */
 
-        /* Generic chart-card wrapper */
+        /* v-superdesign-cockpit-2026-09-14: Chart card panels — glass cockpit style */
         .chart-card {
             border-radius: var(--radius);
-            background: oklch(0.15 0.02 270 / 0.6);
-            backdrop-filter: blur(20px) saturate(180%);
-            -webkit-backdrop-filter: blur(20px) saturate(180%);
+            background: oklch(0.09 0.015 270 / 0.7);
+            backdrop-filter: blur(20px) saturate(160%);
+            -webkit-backdrop-filter: blur(20px) saturate(160%);
             border: 1px solid var(--border);
             overflow: hidden;
+            box-shadow: inset 0 1px 0 oklch(0.25 0.02 270 / 0.12);
         }
         .chart-card-head {
             display: flex; align-items: center; justify-content: space-between;
-            padding: 1rem 1.25rem;
+            padding: 0.75rem 1rem;
             border-bottom: 1px solid var(--border-soft);
         }
         .chart-card-head h3 {
             margin: 0;
-            display: flex; align-items: center; gap: 0.75rem;
-            font: 600 0.875rem var(--font-sans); color: var(--fg);
+            display: flex; align-items: center; gap: 0.5rem;
+            font: 600 0.75rem var(--font-sans); color: var(--fg);
         }
         .chart-card-head h3::before {
             content: '';
             display: inline-block;
-            height: 1.5rem; width: 3px; border-radius: 9999px;
-            background: linear-gradient(to bottom, var(--accent), oklch(0.65 0.2 200 / 0.3));
+            height: 1.125rem; width: 2px; border-radius: 9999px;
+            background: linear-gradient(to bottom, var(--accent), oklch(0.62 0.18 195 / 0.25));
+            box-shadow: 0 0 6px oklch(0.62 0.18 195 / 0.30);
         }
         .chart-card-head h3.success-bar::before {
-            background: linear-gradient(to bottom, var(--success), oklch(0.72 0.2 155 / 0.3));
+            background: linear-gradient(to bottom, var(--success), oklch(0.70 0.18 155 / 0.25));
+            box-shadow: 0 0 6px oklch(0.70 0.18 155 / 0.30);
         }
 
         /* Row 2: chart placeholder (left) + portfolio donut (right) */
@@ -3526,27 +3593,27 @@
             const container = document.getElementById('hands-off-chips');
             const symbols = Array.from(handsOffPending).sort();
             if (symbols.length === 0) {
-                container.innerHTML = '<span style="color: var(--muted-fg); font-style: italic;">No symbols — add one below</span>';
+                container.innerHTML = '<span style="color: var(--muted-fg); font-style: italic; font-size: 0.75rem;">No symbols — add one below</span>';
             } else {
                 container.innerHTML = symbols.map(sym => {
                     const isPermanent = PERMANENT_HANDS_OFF.has(sym);
-                    const lockIcon = isPermanent ? '🔒 ' : '';
+                    const lockIcon = isPermanent
+                        ? '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="opacity: 0.7;"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>'
+                        : '';
                     const removeBtn = isPermanent
-                        ? `<span title="Permanent — cannot remove ${escapeHtml(sym)}"
-                              style="color: var(--muted-fg); opacity: 0.4; font-size: 0.8rem; cursor: not-allowed;">🔒</span>`
+                        ? `<span title="Hard floor — ${escapeHtml(sym)} cannot be removed" style="opacity: 0.5; cursor: not-allowed; display: flex;">
+                             <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+                           </span>`
                         : `<button onclick="removeHandsOffSymbol('${escapeHtml(sym)}')" title="Remove ${escapeHtml(sym)}"
-                              style="background: none; border: none; cursor: pointer; padding: 0;
-                                     color: var(--muted-fg); font-size: 1rem; line-height: 1;"
-                              onmouseover="this.style.color='#ef5350'"
-                              onmouseout="this.style.color='var(--muted-fg)'">×</button>`;
-                    const chipStyle = isPermanent
-                        ? 'background: oklch(0.18 0.03 270); border-color: oklch(0.55 0.08 85 / 0.5);'
-                        : 'background: oklch(0.22 0.02 270);';
+                              style="background: none; border: none; cursor: pointer; padding: 0; display: flex;
+                                     color: var(--muted-fg); transition: color 0.15s;"
+                              onmouseover="this.style.color='var(--destructive)'"
+                              onmouseout="this.style.color='var(--muted-fg)'">
+                             <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+                           </button>`;
+                    const chipClass = isPermanent ? 'hands-off-chip permanent' : 'hands-off-chip';
                     return `
-                        <span class="hands-off-chip" style="display: inline-flex; align-items: center; gap: 0.4rem;
-                            padding: 0.35rem 0.6rem; ${chipStyle}
-                            border: 1px solid var(--border); border-radius: 4px;
-                            font: 600 0.85rem var(--font-mono); color: var(--fg);">
+                        <span class="${chipClass}">
                             ${lockIcon}${escapeHtml(sym)}
                             ${removeBtn}
                         </span>
