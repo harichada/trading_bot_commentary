@@ -2936,3 +2936,134 @@ class TestCloseOrderSignalKeyError:
             f"Bare order_data['signal'] still present in FILLED handler code: "
             f"will cause KeyError on close orders"
         )
+
+
+# ── v-hands-off-denylist-2026-09-14 ──────────────────────────────────
+
+class TestHandsOffDenylist:
+    """2026-09-11 P0 incident (KiddoKingdom LIVE): bot-only P&L circuit
+    tripped at ~-$14.7k while Schwab day PnL was +$254. Root cause:
+    _compute_bot_daily_pnl only checked managed_by_bot=False but did NOT
+    exclude is_long_term / is_external / is_manually_managed positions.
+    The circuit incorrectly counted lifetime unrealized P&L from HQGE
+    and other external/LT holdings.
+
+    Fix: align _compute_bot_daily_pnl filtering with _get_bracket_monitored_positions
+    (skip is_external, is_manually_managed, is_long_term) and add a hard
+    denylist (MU, SNAP, SPCX, HQGE) as a safety net. The denylist is
+    honoured in both bot P&L computation and emergency stop flatten path."""
+
+    def test_config_has_hands_off_denylist(self):
+        """Config must expose HANDS_OFF_DENYLIST property."""
+        src = CONFIG_PATH.read_text()
+        assert "HANDS_OFF_DENYLIST" in src, (
+            "Config.HANDS_OFF_DENYLIST missing — required for P&L circuit fix"
+        )
+
+    def test_hands_off_denylist_default_symbols(self):
+        """Denylist must include MU, SNAP, SPCX, HQGE by default."""
+        src = CONFIG_PATH.read_text()
+        anchor = src.find("def HANDS_OFF_DENYLIST")
+        assert anchor != -1, "HANDS_OFF_DENYLIST property missing"
+        block = src[anchor:anchor + 800]
+        for sym in ['MU', 'SNAP', 'SPCX', 'HQGE']:
+            assert sym in block, f"{sym} missing from HANDS_OFF_DENYLIST default"
+
+    def test_compute_bot_daily_pnl_excludes_external(self):
+        """_compute_bot_daily_pnl must exclude is_external positions."""
+        src = ENGINE_PATH.read_text()
+        anchor = src.find("def _compute_bot_daily_pnl")
+        assert anchor != -1, "_compute_bot_daily_pnl missing"
+        block = src[anchor:anchor + 2500]
+        assert "is_external" in block, (
+            "_compute_bot_daily_pnl must filter on is_external"
+        )
+
+    def test_compute_bot_daily_pnl_excludes_manually_managed(self):
+        """_compute_bot_daily_pnl must exclude is_manually_managed positions."""
+        src = ENGINE_PATH.read_text()
+        anchor = src.find("def _compute_bot_daily_pnl")
+        assert anchor != -1
+        block = src[anchor:anchor + 2500]
+        assert "is_manually_managed" in block, (
+            "_compute_bot_daily_pnl must filter on is_manually_managed"
+        )
+
+    def test_compute_bot_daily_pnl_excludes_long_term(self):
+        """_compute_bot_daily_pnl must exclude is_long_term positions."""
+        src = ENGINE_PATH.read_text()
+        anchor = src.find("def _compute_bot_daily_pnl")
+        assert anchor != -1
+        block = src[anchor:anchor + 2500]
+        assert "is_long_term" in block, (
+            "_compute_bot_daily_pnl must filter on is_long_term"
+        )
+
+    def test_compute_bot_daily_pnl_uses_denylist(self):
+        """_compute_bot_daily_pnl must skip symbols in HANDS_OFF_DENYLIST."""
+        src = ENGINE_PATH.read_text()
+        anchor = src.find("def _compute_bot_daily_pnl")
+        assert anchor != -1
+        block = src[anchor:anchor + 2500]
+        assert "HANDS_OFF_DENYLIST" in block or "denylist" in block.lower(), (
+            "_compute_bot_daily_pnl must consult the denylist"
+        )
+
+    def test_close_position_protects_long_term(self):
+        """_close_position_with_commentary must block is_long_term positions."""
+        src = ENGINE_PATH.read_text()
+        anchor = src.find("async def _close_position_with_commentary")
+        assert anchor != -1
+        block = src[anchor:anchor + 1200]
+        assert "is_long_term" in block, (
+            "_close_position_with_commentary must block long_term positions"
+        )
+
+    def test_close_position_respects_denylist(self):
+        """_close_position_with_commentary must block denylist symbols."""
+        src = ENGINE_PATH.read_text()
+        anchor = src.find("async def _close_position_with_commentary")
+        assert anchor != -1
+        block = src[anchor:anchor + 1200]
+        assert "denylist" in block.lower() or "HANDS_OFF_DENYLIST" in block, (
+            "_close_position_with_commentary must consult the denylist"
+        )
+
+    def test_compute_bot_daily_pnl_aligns_with_bracket_monitors(self):
+        """Bot-daily P&L filters must align with _get_bracket_monitored_positions
+        filters (the canonical list of bot-managed positions).
+
+        Both must exclude: is_external, is_manually_managed, is_long_term.
+        """
+        src = ENGINE_PATH.read_text()
+        bracket_anchor = src.find("def _get_bracket_monitored_positions")
+        pnl_anchor = src.find("def _compute_bot_daily_pnl")
+        assert bracket_anchor != -1 and pnl_anchor != -1
+
+        bracket_block = src[bracket_anchor:bracket_anchor + 800]
+        pnl_block = src[pnl_anchor:pnl_anchor + 2500]
+
+        for flag in ['is_external', 'is_manually_managed', 'is_long_term']:
+            assert flag in bracket_block, (
+                f"_get_bracket_monitored_positions must check {flag}"
+            )
+            assert flag in pnl_block, (
+                f"_compute_bot_daily_pnl must check {flag} "
+                "(align with bracket_monitored_positions)"
+            )
+
+    def test_denylist_also_filters_realized_trades(self):
+        """Realized trades from denylist symbols must also be excluded
+        from bot_daily_pnl (not just unrealized positions)."""
+        src = ENGINE_PATH.read_text()
+        anchor = src.find("def _compute_bot_daily_pnl")
+        assert anchor != -1
+        block = src[anchor:anchor + 3500]
+        trade_section = block.find("for trade in self.trade_history")
+        unrealized_section = block.find("for symbol, position in self.positions.items()")
+        assert trade_section != -1, "for trade in self.trade_history not found"
+        assert unrealized_section != -1, "for symbol, position in self.positions.items() not found"
+        realized_part = block[trade_section:unrealized_section]
+        assert "denylist" in realized_part.lower() or "trade_symbol" in realized_part, (
+            "Realized trades must also check denylist symbols"
+        )
