@@ -1662,8 +1662,38 @@ class Config:
         high-quality setups even in adverse conditions, just smaller.
         
         Default 0.25 (quarter-size). Set trading.momentum_risk_off_size_mult.
+        
+        NOTE: When DAY_TRADE_HARD_SKIP_RISK_OFF is True (new default),
+        this multiplier is NOT used — the strategy hard-skips instead.
+        This multiplier only applies when DAY_TRADE_HARD_SKIP_RISK_OFF=False.
         """
         return float(self.manager.get('trading.momentum_risk_off_size_mult', 0.25))
+
+    @property
+    def DAY_TRADE_HARD_SKIP_RISK_OFF(self) -> bool:
+        """v-day-trade-hard-skip-risk-off-2026-09-14: hard-skip day_trade_momentum
+        in risk_off regime (same as ORB), instead of size-down.
+        
+        2026-09-14 RCA: strategy logged many `action=size_reduced
+        reason=risk_off_not_blocked size_mult=0.25` then later entered when
+        regime flipped mixed (GLW). Research/CoS: size-down is how weak
+        risk_off path still feeds LIVE; want hard skip like ORB.
+        
+        When True (default): risk_off regime causes day_trade_momentum to
+        return None (no signal, no entry), same as ORB's `risk_off_hard_skip`.
+        The weak signal path that could later enter is eliminated.
+        
+        When False: preserve prior behavior — reduce size to
+        MOMENTUM_RISK_OFF_SIZE_MULT (0.25x) but still generate signal.
+        Use for A/B testing or rollback if hard-skip proves too restrictive.
+        
+        Default True. Set via env DAY_TRADE_HARD_SKIP_RISK_OFF=0 or
+        trading.day_trade_hard_skip_risk_off: false in Config.yaml.
+        """
+        env_val = os.getenv("DAY_TRADE_HARD_SKIP_RISK_OFF")
+        if env_val is not None:
+            return env_val.lower() not in ("0", "false", "no", "off")
+        return bool(self.manager.get('trading.day_trade_hard_skip_risk_off', True))
 
     @property
     def MOMENTUM_OPENING_30_SIZE_MULT(self) -> float:

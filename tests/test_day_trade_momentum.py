@@ -2,16 +2,361 @@
 
 Coverage:
   1. Mover passes quality relax (bypasses SMA50/RS)
-  2. risk_off reduces size, doesn't hard-block
+  2. risk_off reduces size, doesn't hard-block (when DAY_TRADE_HARD_SKIP_RISK_OFF=False)
   3. Momentum signal generates under synthetic bars
   4. Extreme risk (SPY <= -1.5% AND VIX spike) hard-blocks
   5. Day-trade size multiplier applied correctly
+  6. v-day-trade-hard-skip-risk-off-2026-09-14: hard-skip on risk_off (GLW RCA)
 """
 import pytest
 from datetime import datetime
 from unittest.mock import MagicMock, patch, AsyncMock
 
 import numpy as np
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# v-day-trade-hard-skip-risk-off-2026-09-14: Tests for hard-skip on risk_off
+#
+# 2026-09-14 RCA (GLW): strategy logged many `size_reduced
+# reason=risk_off_not_blocked size_mult=0.25` then later entered when
+# regime flipped mixed. Research/CoS: size-down is how weak risk_off
+# path still feeds LIVE; want hard skip like ORB.
+#
+# Default: DAY_TRADE_HARD_SKIP_RISK_OFF=True (hard-skip, same as ORB)
+# Legacy:  DAY_TRADE_HARD_SKIP_RISK_OFF=False (size-reduction, prior behavior)
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestDayTradeHardSkipRiskOff:
+    """Test DAY_TRADE_HARD_SKIP_RISK_OFF behavior.
+    
+    v-day-trade-hard-skip-risk-off-2026-09-14: hard-skip day_trade_momentum
+    in risk_off regime (same as ORB), instead of size-down.
+    
+    When True (default): risk_off regime returns None (HARD SKIP).
+    When False: risk_off regime reduces size to 0.25x but still signals.
+    """
+    
+    def test_config_flag_default_true(self):
+        """DAY_TRADE_HARD_SKIP_RISK_OFF must default to True.
+        
+        GLW RCA 2026-09-14: size-down path fed bad entries when regime
+        flipped. Hard-skip is the new default.
+        """
+        from core.config import Config
+        cfg = Config()
+        assert cfg.DAY_TRADE_HARD_SKIP_RISK_OFF is True, (
+            "DAY_TRADE_HARD_SKIP_RISK_OFF must default to True — "
+            "GLW RCA 2026-09-14: hard-skip instead of size-down"
+        )
+    
+    @pytest.mark.asyncio
+    async def test_risk_off_hard_skip_when_flag_true(self):
+        """risk_off must return None (HARD SKIP) when DAY_TRADE_HARD_SKIP_RISK_OFF=True.
+        
+        This is the new default behavior. Same as ORB's risk_off_hard_skip.
+        """
+        from strategies.builtin import DayTradeMomentumStrategy
+        
+        strategy = DayTradeMomentumStrategy(MagicMock())
+        
+        market_data = MagicMock()
+        market_data.symbol = 'GLW'  # Symbol from RCA
+        market_data.close = 100.0
+        market_data.open = 99.0
+        market_data.timestamp = datetime.now()
+        market_data.indicators = {
+            'rsi': 55,
+            'volume_ratio': 2.0,
+            'adx': 30,
+            'atr': 1.5,
+            'high_20': 99.5,
+            'sma_20': 98.0,
+            'macd': 0.5,
+            'macd_signal': 0.3,
+            'day_change_pct': 3.0,
+        }
+        
+        with patch('core.market_context.read_market_context') as mock_mc:
+            mock_mc.return_value = MagicMock(
+                regime='risk_off',  # KEY: risk_off regime
+                time_of_day='morning',
+                spy_change_pct=-0.8,
+                vix_change_pct=8.0,
+                sector_etf='XLK',
+                reason='risk_off test',
+            )
+            
+            with patch('core.config.Config') as mock_cfg:
+                mock_cfg_instance = MagicMock()
+                mock_cfg_instance.ENABLE_DAY_TRADE_MOMENTUM = True
+                # KEY: DAY_TRADE_HARD_SKIP_RISK_OFF=True (hard-skip)
+                mock_cfg_instance.DAY_TRADE_HARD_SKIP_RISK_OFF = True
+                mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_SPY_PCT = -1.5
+                mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_VIX_SPIKE = 15.0
+                mock_cfg_instance.MOMENTUM_RISK_OFF_SIZE_MULT = 0.25
+                mock_cfg_instance.MOMENTUM_OPENING_30_SIZE_MULT = 0.5
+                mock_cfg_instance.MOMENTUM_MIN_RS_VS_SPY = 0.5
+                mock_cfg_instance.MOMENTUM_MIN_VOLUME_RATIO = 1.5
+                mock_cfg_instance.DAY_TRADE_SIZE_MULTIPLIER = 0.5
+                mock_cfg_instance.DAY_TRADE_FLATTEN_HOUR = 15
+                mock_cfg.return_value = mock_cfg_instance
+                
+                signal = await strategy.generate_signal_with_commentary(market_data)
+        
+        # CRITICAL: Signal MUST be None in risk_off when flag is True (HARD SKIP)
+        assert signal is None, (
+            "day_trade_momentum must return None (HARD SKIP) in risk_off regime "
+            "when DAY_TRADE_HARD_SKIP_RISK_OFF=True. This is the GLW RCA fix: "
+            "the weak 0.25x size-down path was feeding bad entries when regime "
+            "flipped to mixed."
+        )
+    
+    @pytest.mark.asyncio
+    async def test_risk_off_size_reduction_when_flag_false(self):
+        """risk_off must reduce size to 0.25x when DAY_TRADE_HARD_SKIP_RISK_OFF=False.
+        
+        This is the legacy behavior, preserved for rollback or A/B testing.
+        """
+        from strategies.builtin import DayTradeMomentumStrategy
+        
+        strategy = DayTradeMomentumStrategy(MagicMock())
+        
+        market_data = MagicMock()
+        market_data.symbol = 'TEST'
+        market_data.close = 100.0
+        market_data.open = 99.0
+        market_data.timestamp = datetime.now()
+        market_data.indicators = {
+            'rsi': 55,
+            'volume_ratio': 2.0,
+            'adx': 30,
+            'atr': 1.5,
+            'high_20': 99.5,
+            'sma_20': 98.0,
+            'macd': 0.5,
+            'macd_signal': 0.3,
+            'day_change_pct': 3.0,
+        }
+        
+        with patch('core.market_context.read_market_context') as mock_mc:
+            mock_mc.return_value = MagicMock(
+                regime='risk_off',
+                time_of_day='morning',
+                spy_change_pct=-0.8,
+                vix_change_pct=8.0,
+                sector_etf='XLK',
+                reason='test',
+            )
+            
+            with patch('core.config.Config') as mock_cfg:
+                mock_cfg_instance = MagicMock()
+                mock_cfg_instance.ENABLE_DAY_TRADE_MOMENTUM = True
+                # KEY: DAY_TRADE_HARD_SKIP_RISK_OFF=False (legacy size-reduction)
+                mock_cfg_instance.DAY_TRADE_HARD_SKIP_RISK_OFF = False
+                mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_SPY_PCT = -1.5
+                mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_VIX_SPIKE = 15.0
+                mock_cfg_instance.MOMENTUM_RISK_OFF_SIZE_MULT = 0.25
+                mock_cfg_instance.MOMENTUM_OPENING_30_SIZE_MULT = 0.5
+                mock_cfg_instance.MOMENTUM_MIN_RS_VS_SPY = 0.5
+                mock_cfg_instance.MOMENTUM_MIN_VOLUME_RATIO = 1.5
+                mock_cfg_instance.DAY_TRADE_SIZE_MULTIPLIER = 0.5
+                mock_cfg_instance.DAY_TRADE_FLATTEN_HOUR = 15
+                mock_cfg.return_value = mock_cfg_instance
+                
+                signal = await strategy.generate_signal_with_commentary(market_data)
+        
+        # Signal should be generated (not blocked) when hard-skip is OFF
+        assert signal is not None, (
+            "day_trade_momentum must generate signal when "
+            "DAY_TRADE_HARD_SKIP_RISK_OFF=False (legacy behavior)"
+        )
+        # market_context_conviction should be 0.25 (risk_off size multiplier)
+        assert signal.reasoning['market_context_conviction'] == 0.25
+    
+    @pytest.mark.asyncio
+    async def test_non_risk_off_unaffected_by_flag(self):
+        """Non-risk_off regimes unaffected by DAY_TRADE_HARD_SKIP_RISK_OFF flag.
+        
+        risk_on/mixed regimes should generate signals regardless of flag setting.
+        """
+        from strategies.builtin import DayTradeMomentumStrategy
+        
+        strategy = DayTradeMomentumStrategy(MagicMock())
+        
+        market_data = MagicMock()
+        market_data.symbol = 'TEST'
+        market_data.close = 100.0
+        market_data.open = 99.0
+        market_data.timestamp = datetime.now()
+        market_data.indicators = {
+            'rsi': 55,
+            'volume_ratio': 2.0,
+            'adx': 30,
+            'atr': 1.5,
+            'high_20': 99.5,
+            'sma_20': 98.0,
+            'macd': 0.5,
+            'macd_signal': 0.3,
+            'day_change_pct': 3.0,
+        }
+        
+        with patch('core.market_context.read_market_context') as mock_mc:
+            mock_mc.return_value = MagicMock(
+                regime='risk_on',  # NOT risk_off
+                time_of_day='morning',
+                spy_change_pct=0.5,
+                vix_change_pct=-2.0,
+                sector_etf='XLK',
+                reason='test',
+            )
+            
+            with patch('core.config.Config') as mock_cfg:
+                mock_cfg_instance = MagicMock()
+                mock_cfg_instance.ENABLE_DAY_TRADE_MOMENTUM = True
+                # Flag is True but regime is NOT risk_off, so it shouldn't matter
+                mock_cfg_instance.DAY_TRADE_HARD_SKIP_RISK_OFF = True
+                mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_SPY_PCT = -1.5
+                mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_VIX_SPIKE = 15.0
+                mock_cfg_instance.MOMENTUM_RISK_OFF_SIZE_MULT = 0.25
+                mock_cfg_instance.MOMENTUM_OPENING_30_SIZE_MULT = 0.5
+                mock_cfg_instance.MOMENTUM_MIN_RS_VS_SPY = 0.5
+                mock_cfg_instance.MOMENTUM_MIN_VOLUME_RATIO = 1.5
+                mock_cfg_instance.DAY_TRADE_SIZE_MULTIPLIER = 0.5
+                mock_cfg_instance.DAY_TRADE_FLATTEN_HOUR = 15
+                mock_cfg.return_value = mock_cfg_instance
+                
+                signal = await strategy.generate_signal_with_commentary(market_data)
+        
+        # Signal should be generated (risk_on regime)
+        assert signal is not None, (
+            "Non-risk_off regime must not be affected by "
+            "DAY_TRADE_HARD_SKIP_RISK_OFF flag"
+        )
+        assert signal.reasoning['market_context_regime'] == 'risk_on'
+    
+    @pytest.mark.asyncio
+    async def test_mixed_regime_unaffected_by_flag(self):
+        """mixed regime unaffected by DAY_TRADE_HARD_SKIP_RISK_OFF flag."""
+        from strategies.builtin import DayTradeMomentumStrategy
+        
+        strategy = DayTradeMomentumStrategy(MagicMock())
+        
+        market_data = MagicMock()
+        market_data.symbol = 'TEST'
+        market_data.close = 100.0
+        market_data.open = 99.0
+        market_data.timestamp = datetime.now()
+        market_data.indicators = {
+            'rsi': 55,
+            'volume_ratio': 2.0,
+            'adx': 30,
+            'atr': 1.5,
+            'high_20': 99.5,
+            'sma_20': 98.0,
+            'macd': 0.5,
+            'macd_signal': 0.3,
+            'day_change_pct': 3.0,
+        }
+        
+        with patch('core.market_context.read_market_context') as mock_mc:
+            mock_mc.return_value = MagicMock(
+                regime='mixed',  # NOT risk_off
+                time_of_day='midday',
+                spy_change_pct=-0.3,
+                vix_change_pct=2.0,
+                sector_etf='XLK',
+                reason='test',
+            )
+            
+            with patch('core.config.Config') as mock_cfg:
+                mock_cfg_instance = MagicMock()
+                mock_cfg_instance.ENABLE_DAY_TRADE_MOMENTUM = True
+                mock_cfg_instance.DAY_TRADE_HARD_SKIP_RISK_OFF = True
+                mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_SPY_PCT = -1.5
+                mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_VIX_SPIKE = 15.0
+                mock_cfg_instance.MOMENTUM_RISK_OFF_SIZE_MULT = 0.25
+                mock_cfg_instance.MOMENTUM_OPENING_30_SIZE_MULT = 0.5
+                mock_cfg_instance.MOMENTUM_MIN_RS_VS_SPY = 0.5
+                mock_cfg_instance.MOMENTUM_MIN_VOLUME_RATIO = 1.5
+                mock_cfg_instance.DAY_TRADE_SIZE_MULTIPLIER = 0.5
+                mock_cfg_instance.DAY_TRADE_FLATTEN_HOUR = 15
+                mock_cfg.return_value = mock_cfg_instance
+                
+                signal = await strategy.generate_signal_with_commentary(market_data)
+        
+        # Signal should be generated (mixed regime is not risk_off)
+        assert signal is not None
+        assert signal.reasoning['market_context_regime'] == 'mixed'
+    
+    @pytest.mark.asyncio
+    async def test_hard_skip_logs_correct_reason(self):
+        """Hard-skip must log reason as 'risk_off_hard_skip' (like ORB)."""
+        from strategies.builtin import DayTradeMomentumStrategy
+        
+        strategy = DayTradeMomentumStrategy(MagicMock())
+        
+        market_data = MagicMock()
+        market_data.symbol = 'TEST'
+        market_data.close = 100.0
+        market_data.open = 99.0
+        market_data.timestamp = datetime.now()
+        market_data.indicators = {
+            'rsi': 55,
+            'volume_ratio': 2.0,
+            'adx': 30,
+            'atr': 1.5,
+            'high_20': 99.5,
+            'sma_20': 98.0,
+            'macd': 0.5,
+            'macd_signal': 0.3,
+            'day_change_pct': 3.0,
+        }
+        
+        log_calls = []
+        original_log = strategy._log_decision
+        def capture_log(*args, **kwargs):
+            log_calls.append((args, kwargs))
+            return original_log(*args, **kwargs)
+        
+        strategy._log_decision = capture_log
+        
+        with patch('core.market_context.read_market_context') as mock_mc:
+            mock_mc.return_value = MagicMock(
+                regime='risk_off',
+                time_of_day='morning',
+                spy_change_pct=-0.8,
+                vix_change_pct=8.0,
+                sector_etf='XLK',
+                reason='test',
+            )
+            
+            with patch('core.config.Config') as mock_cfg:
+                mock_cfg_instance = MagicMock()
+                mock_cfg_instance.ENABLE_DAY_TRADE_MOMENTUM = True
+                mock_cfg_instance.DAY_TRADE_HARD_SKIP_RISK_OFF = True
+                mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_SPY_PCT = -1.5
+                mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_VIX_SPIKE = 15.0
+                mock_cfg_instance.MOMENTUM_RISK_OFF_SIZE_MULT = 0.25
+                mock_cfg_instance.MOMENTUM_OPENING_30_SIZE_MULT = 0.5
+                mock_cfg_instance.MOMENTUM_MIN_RS_VS_SPY = 0.5
+                mock_cfg_instance.MOMENTUM_MIN_VOLUME_RATIO = 1.5
+                mock_cfg_instance.DAY_TRADE_SIZE_MULTIPLIER = 0.5
+                mock_cfg_instance.DAY_TRADE_FLATTEN_HOUR = 15
+                mock_cfg.return_value = mock_cfg_instance
+                
+                await strategy.generate_signal_with_commentary(market_data)
+        
+        # Find the skip log call
+        skip_calls = [c for c in log_calls if len(c[0]) >= 3 and c[0][1] == "skip"]
+        assert len(skip_calls) >= 1, "Should have logged a skip decision"
+        
+        # Check reason matches ORB style
+        skip_call = skip_calls[0]
+        assert skip_call[0][2] == "risk_off_hard_skip", (
+            f"Skip reason should be 'risk_off_hard_skip' (like ORB), got: {skip_call[0][2]}"
+        )
 
 
 class TestMoverQualityRelax:
@@ -93,11 +438,16 @@ class TestMoverQualityRelax:
 
 
 class TestMarketContextSizeNotFreeze:
-    """Test that risk_off reduces size instead of hard-blocking for momentum."""
+    """Test that risk_off reduces size instead of hard-blocking for momentum.
+    
+    NOTE: These tests require DAY_TRADE_HARD_SKIP_RISK_OFF=False to test
+    the legacy size-reduction behavior. The new default (True) causes
+    hard-skip instead — see TestDayTradeHardSkipRiskOff for those tests.
+    """
     
     @pytest.mark.asyncio
     async def test_risk_off_reduces_size_not_hard_block(self):
-        """risk_off regime reduces size to 0.25x, doesn't veto."""
+        """risk_off regime reduces size to 0.25x when DAY_TRADE_HARD_SKIP_RISK_OFF=False."""
         from strategies.builtin import DayTradeMomentumStrategy
         from core.models import MarketData
         
@@ -136,6 +486,8 @@ class TestMarketContextSizeNotFreeze:
             with patch('core.config.Config') as mock_cfg:
                 mock_cfg_instance = MagicMock()
                 mock_cfg_instance.ENABLE_DAY_TRADE_MOMENTUM = True
+                # KEY: DAY_TRADE_HARD_SKIP_RISK_OFF=False to test legacy behavior
+                mock_cfg_instance.DAY_TRADE_HARD_SKIP_RISK_OFF = False
                 mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_SPY_PCT = -1.5
                 mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_VIX_SPIKE = 15.0
                 mock_cfg_instance.MOMENTUM_RISK_OFF_SIZE_MULT = 0.25
@@ -148,7 +500,7 @@ class TestMarketContextSizeNotFreeze:
                 
                 signal = await strategy.generate_signal_with_commentary(market_data)
         
-        # Signal should be generated (not blocked)
+        # Signal should be generated (not blocked) when hard-skip is OFF
         assert signal is not None
         
         # market_context_conviction should be 0.25 (risk_off multiplier)
@@ -461,16 +813,19 @@ class TestConfigFlags:
 
 
 class TestRiskOffSizeReduction:
-    """Explicit tests for risk_off SIZE REDUCTION (not freeze) behavior.
+    """Explicit tests for risk_off SIZE REDUCTION (legacy) behavior.
     
-    v-market-context-size-not-freeze-2026-09-10: The user requirement is
+    v-market-context-size-not-freeze-2026-09-10: The original requirement was
     that risk_off should REDUCE SIZE, NOT hard-block momentum entries.
-    These tests verify that invariant explicitly.
+    
+    v-day-trade-hard-skip-risk-off-2026-09-14: This behavior is now the
+    LEGACY path — the new default is HARD SKIP. These tests set
+    DAY_TRADE_HARD_SKIP_RISK_OFF=False to test the legacy path.
     """
     
     @pytest.mark.asyncio
     async def test_risk_off_signal_generated_not_none(self):
-        """risk_off must generate a signal (not None), proving no hard-block."""
+        """risk_off must generate a signal when DAY_TRADE_HARD_SKIP_RISK_OFF=False."""
         from strategies.builtin import DayTradeMomentumStrategy
         
         strategy = DayTradeMomentumStrategy(MagicMock())
@@ -505,6 +860,8 @@ class TestRiskOffSizeReduction:
             with patch('core.config.Config') as mock_cfg:
                 mock_cfg_instance = MagicMock()
                 mock_cfg_instance.ENABLE_DAY_TRADE_MOMENTUM = True
+                # KEY: DAY_TRADE_HARD_SKIP_RISK_OFF=False to test legacy behavior
+                mock_cfg_instance.DAY_TRADE_HARD_SKIP_RISK_OFF = False
                 mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_SPY_PCT = -1.5
                 mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_VIX_SPIKE = 15.0
                 mock_cfg_instance.MOMENTUM_RISK_OFF_SIZE_MULT = 0.25
@@ -517,12 +874,15 @@ class TestRiskOffSizeReduction:
                 
                 signal = await strategy.generate_signal_with_commentary(market_data)
         
-        # CRITICAL: Signal must NOT be None under risk_off
-        assert signal is not None, "risk_off must NOT hard-block momentum signals"
+        # Signal should be generated (legacy behavior with flag OFF)
+        assert signal is not None, (
+            "risk_off must NOT hard-block momentum signals when "
+            "DAY_TRADE_HARD_SKIP_RISK_OFF=False (legacy behavior)"
+        )
     
     @pytest.mark.asyncio
     async def test_risk_off_size_mult_is_025(self):
-        """risk_off must apply 0.25x size multiplier."""
+        """risk_off must apply 0.25x size multiplier when DAY_TRADE_HARD_SKIP_RISK_OFF=False."""
         from strategies.builtin import DayTradeMomentumStrategy
         
         strategy = DayTradeMomentumStrategy(MagicMock())
@@ -557,6 +917,8 @@ class TestRiskOffSizeReduction:
             with patch('core.config.Config') as mock_cfg:
                 mock_cfg_instance = MagicMock()
                 mock_cfg_instance.ENABLE_DAY_TRADE_MOMENTUM = True
+                # KEY: DAY_TRADE_HARD_SKIP_RISK_OFF=False to test legacy behavior
+                mock_cfg_instance.DAY_TRADE_HARD_SKIP_RISK_OFF = False
                 mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_SPY_PCT = -1.5
                 mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_VIX_SPIKE = 15.0
                 mock_cfg_instance.MOMENTUM_RISK_OFF_SIZE_MULT = 0.25  # KEY: 0.25x
@@ -630,7 +992,7 @@ class TestRiskOffSizeReduction:
     
     @pytest.mark.asyncio
     async def test_risk_off_plus_opening_30_uses_min(self):
-        """risk_off + opening_30 uses minimum of 0.25x and 0.5x = 0.25x."""
+        """risk_off + opening_30 uses minimum of 0.25x and 0.5x = 0.25x when DAY_TRADE_HARD_SKIP_RISK_OFF=False."""
         from strategies.builtin import DayTradeMomentumStrategy
         
         strategy = DayTradeMomentumStrategy(MagicMock())
@@ -665,6 +1027,8 @@ class TestRiskOffSizeReduction:
             with patch('core.config.Config') as mock_cfg:
                 mock_cfg_instance = MagicMock()
                 mock_cfg_instance.ENABLE_DAY_TRADE_MOMENTUM = True
+                # KEY: DAY_TRADE_HARD_SKIP_RISK_OFF=False to test legacy behavior
+                mock_cfg_instance.DAY_TRADE_HARD_SKIP_RISK_OFF = False
                 mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_SPY_PCT = -1.5
                 mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_VIX_SPIKE = 15.0
                 mock_cfg_instance.MOMENTUM_RISK_OFF_SIZE_MULT = 0.25
