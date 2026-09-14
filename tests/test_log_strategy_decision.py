@@ -258,6 +258,61 @@ class TestThemeShockLoggerErrorHandling:
         pass
 
 
+class TestSafeJsonNestedDicts:
+    """Tests for _safe_json handling nested dicts (theme_probs, relevance_by_symbol)."""
+
+    def test_safe_json_preserves_nested_dicts(self):
+        """_safe_json preserves nested dicts as proper JSON objects."""
+        db_logger_module = _load_db_logger_module()
+        _safe_json = db_logger_module._safe_json
+        
+        theme_probs = {"ai_compute": 0.65, "other": 0.35, "none": 0.0}
+        result = _safe_json(theme_probs)
+        
+        assert isinstance(result, dict)
+        assert result["ai_compute"] == 0.65
+        assert result["other"] == 0.35
+
+    def test_safe_json_preserves_nested_lists(self):
+        """_safe_json preserves nested lists."""
+        db_logger_module = _load_db_logger_module()
+        _safe_json = db_logger_module._safe_json
+        
+        symbols = ["NVDA", "AMD", "AVGO"]
+        result = _safe_json(symbols)
+        
+        assert isinstance(result, list)
+        assert result == ["NVDA", "AMD", "AVGO"]
+
+    def test_safe_json_preserves_full_critic_card(self):
+        """_safe_json preserves full CriticCard structure for Research queries."""
+        db_logger_module = _load_db_logger_module()
+        _safe_json = db_logger_module._safe_json
+        import json
+        
+        card_dict = {
+            "event_id": "abc123",
+            "headline": "Test headline",
+            "theme_probs": {"ai_compute": 0.65, "ai_mega_cap": 0.15, "other": 0.20},
+            "relevance_by_symbol": {"NVDA": 0.8, "AMD": 0.7},
+            "stance": "mixed",
+            "contamination_risk": 0.1,
+            "confidence": 0.75,
+        }
+        
+        result = {k: _safe_json(v) for k, v in card_dict.items()}
+        
+        assert isinstance(result["theme_probs"], dict)
+        assert result["theme_probs"]["ai_compute"] == 0.65
+        assert isinstance(result["relevance_by_symbol"], dict)
+        assert result["relevance_by_symbol"]["NVDA"] == 0.8
+        
+        json_str = json.dumps(result)
+        parsed = json.loads(json_str)
+        assert parsed["theme_probs"]["ai_compute"] == 0.65
+        assert parsed["relevance_by_symbol"]["NVDA"] == 0.8
+
+
 class TestLogStrategyDecisionIntegration:
     """Integration tests: full path from caller to log_decision."""
 

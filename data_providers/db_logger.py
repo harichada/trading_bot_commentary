@@ -1037,11 +1037,22 @@ class DbLogger:
 
 
 def _safe_json(value: Any) -> Any:
-    """Coerce a value to JSON-serializable form."""
+    """Coerce a value to JSON-serializable form.
+    
+    v-fix-log-strategy-decision-2026-09-14: properly handle dicts and lists
+    so that nested structures like theme_probs and relevance_by_symbol are
+    preserved as proper JSON objects in details_json, not string representations.
+    """
     if isinstance(value, (str, int, float, bool, type(None))):
         return value
+    if isinstance(value, dict):
+        return {k: _safe_json(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_safe_json(v) for v in value]
     if isinstance(value, set):
-        return list(value)
+        return [_safe_json(v) for v in value]
+    if isinstance(value, datetime):
+        return value.isoformat()
     return str(value)
 
 
