@@ -4638,7 +4638,8 @@
             }
 
             // Hands-off symbols: bot must not manage/exit these long-term holds
-            const HANDS_OFF_SYMBOLS = ['MU', 'SNAP', 'SPCX', 'HQGE'];
+            // SNAP removed from permanent hands-off 2026-09-14 — now toggleable in UI
+            const HANDS_OFF_SYMBOLS = ['MU', 'HQGE', 'SPCX'];
 
             if (data.real_positions) {
                 const tbody = document.getElementById('real-positions-body');

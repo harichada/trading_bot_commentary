@@ -26,7 +26,7 @@ Outputs:
     <out>/stage_a_summary.json      — aggregate metrics with promotion gates
 
 Hands-off forever exclusions (hard-coded, do NOT trade these):
-    MU, SNAP, SPCX, HQGE
+    MU, HQGE, SPCX
 
 Deduplication:
     Same symbol within 15 minutes → keep the first entry only.
@@ -55,7 +55,7 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 # ─────────────────────────────────────────────────────────────────────────────
 # Constants
 # ─────────────────────────────────────────────────────────────────────────────
-HANDS_OFF_SYMBOLS = frozenset({"MU", "SNAP", "SPCX", "HQGE"})
+HANDS_OFF_SYMBOLS = frozenset({"MU", "HQGE", "SPCX"})
 DEDUPE_WINDOW_MIN = 15
 MAX_HOLD_BARS = 60
 FLATTEN_TIME_ET = time(15, 55)  # 15:55 ET — flatten before close
@@ -196,7 +196,7 @@ def filter_and_dedupe(entries: list[ShadowEntry]) -> list[ShadowEntry]:
     filtered = [e for e in entries if e.symbol not in HANDS_OFF_SYMBOLS]
     excluded = len(entries) - len(filtered)
     if excluded > 0:
-        logger.info("Excluded %d hands-off symbols (MU/SNAP/SPCX/HQGE)", excluded)
+        logger.info("Excluded %d hands-off symbols (MU/HQGE/SPCX)", excluded)
 
     # 2. Sort by timestamp
     filtered.sort(key=lambda e: e.timestamp)

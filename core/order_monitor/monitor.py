@@ -8,7 +8,7 @@ It runs as an async loop registered with the TaskSupervisor and handles:
 
 HANDS_OFF guards are applied at the filtering level before any bracket
 operations:
-  - HANDS_OFF_DENYLIST symbols (MU, SNAP, SPCX, HQGE) — never monitored
+  - HANDS_OFF_DENYLIST symbols (MU, HQGE, SPCX) — never monitored
   - is_external, is_manually_managed, is_long_term flags — skip monitoring
 
 The denylist check is independent of the flags, so a denylist symbol is
@@ -46,7 +46,7 @@ class OrderMonitor:
 
     Only monitors positions where:
       - managed_by_bot=True
-      - NOT in HANDS_OFF_DENYLIST (MU, SNAP, SPCX, HQGE)
+      - NOT in HANDS_OFF_DENYLIST (MU, HQGE, SPCX)
       - NOT is_external / is_manually_managed / is_long_term
       - Has bracket_order_id set (bot placed a bracket)
 
@@ -134,7 +134,7 @@ class OrderMonitor:
         Criteria:
           - In self.positions (LIVE mode, not simulated)
           - managed_by_bot=True
-          - NOT in HANDS_OFF_DENYLIST (MU, SNAP, SPCX, HQGE)
+          - NOT in HANDS_OFF_DENYLIST (MU, HQGE, SPCX)
           - NOT is_external / is_manually_managed / is_long_term
           - Has bracket_order_id (bot placed a bracket for this position)
         """
@@ -172,7 +172,7 @@ class OrderMonitor:
         Criteria (same as get_bracket_monitored_positions minus bracket_order_id check):
           - In self.positions (LIVE mode, not simulated)
           - managed_by_bot=True
-          - NOT in HANDS_OFF_DENYLIST (MU, SNAP, SPCX, HQGE)
+          - NOT in HANDS_OFF_DENYLIST (MU, HQGE, SPCX)
           - NOT is_external / is_manually_managed / is_long_term
           - MISSING bracket_order_id (inverse of normal monitor filter)
         """

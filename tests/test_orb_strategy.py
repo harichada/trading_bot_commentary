@@ -679,7 +679,7 @@ class TestStageAFloorsNotLoosened:
 class TestLTHandsOffSymbols:
     """Test that LT hands-off forever symbols are not affected.
     
-    MU, SNAP, HQGE, SPCX are marked is_long_term=True and should never
+    MU, HQGE, SPCX are marked is_long_term=True and should never
     be touched by new strategies.
     """
     
