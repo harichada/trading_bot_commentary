@@ -1312,6 +1312,28 @@ class Config:
         return bool(self.manager.get('trading.enable_bot_only_pnl_circuit', True))
 
     @property
+    def HANDS_OFF_DENYLIST(self) -> frozenset:
+        """v-hands-off-denylist-2026-09-14: symbols the bot must NEVER
+        count toward bot_daily_pnl or attempt to auto-close.
+
+        Hari's STRICT hands-off portfolio as of 2026-09-11:
+          - MU, SNAP, SPCX, HQGE
+
+        These positions are long-term / external / manually managed
+        and must not trigger or be affected by the bot's daily-loss
+        circuit. The denylist is a hard-coded safety net on top of
+        the is_long_term / is_external / is_manually_managed flags —
+        even if tagging is lost or corrupted, these symbols stay safe.
+
+        Override via config trading.hands_off_denylist (list of strings)
+        to add/remove symbols at runtime."""
+        default = ['MU', 'SNAP', 'SPCX', 'HQGE']
+        custom = self.manager.get('trading.hands_off_denylist', default)
+        if isinstance(custom, str):
+            custom = [s.strip().upper() for s in custom.split(',') if s.strip()]
+        return frozenset(s.upper() for s in custom)
+
+    @property
     def ENABLE_BREAKOUT_LONG(self) -> bool:
         """Enable the breakout-long strategy (20-bar high + volume + trend).
 

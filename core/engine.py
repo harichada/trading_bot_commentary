@@ -8816,23 +8816,39 @@ class TradingEngineWithCommentary:
     
     async def _close_position_with_commentary(self, position, reason: str):
         """Close position with detailed commentary"""
-        # CRITICAL: Never auto-close external/manually managed positions (except for explicit manual_override)
+        # CRITICAL: Never auto-close external/manually managed/long-term/denylist positions
+        # (except for explicit manual_override)
         is_external = getattr(position, 'is_external', False)
         is_manually_managed = getattr(position, 'is_manually_managed', False)
+        is_long_term = getattr(position, 'is_long_term', False)
+        # v-hands-off-denylist-2026-09-14: hard denylist check (MU, SNAP, SPCX, HQGE)
+        denylist = Config().HANDS_OFF_DENYLIST
+        symbol_upper = (position.symbol or '').upper()
+        in_denylist = symbol_upper in denylist
 
-        if (is_external or is_manually_managed) and reason != "manual_override":
-            logger.warning(f"Blocked auto-close of EXTERNAL position {position.symbol}. Reason: {reason}")
+        if (is_external or is_manually_managed or is_long_term or in_denylist) and reason != "manual_override":
+            block_reason = []
+            if is_external:
+                block_reason.append("EXTERNAL")
+            if is_manually_managed:
+                block_reason.append("manually_managed")
+            if is_long_term:
+                block_reason.append("long_term")
+            if in_denylist:
+                block_reason.append(f"DENYLIST({symbol_upper})")
+            reason_str = ", ".join(block_reason)
+            logger.warning(f"Blocked auto-close of {position.symbol} ({reason_str}). Reason: {reason}")
             self.commentary.add_commentary(TradingCommentary(
                 timestamp=datetime.now(),
                 type=CommentaryType.WARNING,
                 symbol=position.symbol,
-                title=f"🚫 External Position Protected",
-                message=f"Cannot auto-close {position.symbol} - this is an EXTERNAL position.\n"
+                title=f"🚫 Position Protected ({reason_str})",
+                message=f"Cannot auto-close {position.symbol} - protected by: {reason_str}.\n"
                        f"Current P&L: ${position.unrealized_pnl:.2f}\n"
                        f"Use Schwab directly or the manual close button.",
                 importance=9
             ))
-            return  # NEVER auto-close external positions
+            return  # NEVER auto-close protected positions
 
         # CRITICAL: Check if manual close only is enabled (except for manual_override)
         if self.auto_close_disabled and reason != "manual_override":
@@ -9401,22 +9417,29 @@ class TradingEngineWithCommentary:
         return compute_position_day_pnl(position, on_outlier=_on_outlier)
 
     def _compute_bot_daily_pnl(self) -> float:
-        """v-bot-only-pnl-circuit-2026-06-08: realized + unrealized
-        P&L of BOT-managed positions only.
+        """v-bot-only-pnl-circuit-2026-06-08 + v-hands-off-denylist-2026-09-14:
+        realized + unrealized P&L of BOT-managed day-trade positions only.
 
         Used by `risk/manager.py:can_trade` when
-        `Config.ENABLE_BOT_ONLY_PNL_CIRCUIT` is True. Excludes
-        external holdings (HQGE/PINS/COIN etc.) so the daily-loss
-        circuit doesn't pause the bot for losses on positions the
-        operator opened outside the bot.
+        `Config.ENABLE_BOT_ONLY_PNL_CIRCUIT` is True. Excludes:
+          - External holdings (is_external=True)
+          - Manually managed positions (is_manually_managed=True)
+          - Long-term positions (is_long_term=True)
+          - Positions without managed_by_bot=True
+          - Symbols in HANDS_OFF_DENYLIST (MU, SNAP, SPCX, HQGE)
+
+        This aligns with `_get_bracket_monitored_positions` and
+        `_is_auto_managed` so the circuit trips ONLY on positions the
+        bot actively manages — never on external/LT holdings.
 
         Components:
           * realized — sum of `pnl` on trade_history entries closed
             today AND flagged managed_by_bot (default True for entries
             the bot created via _execute_real_trade or reconciled via
             _reconcile_external_closes with bot-tagged context).
+            Excludes trades in HANDS_OFF_DENYLIST.
           * unrealized — sum of `unrealized_pnl` on currently-open
-            `self.positions` where `position.managed_by_bot` is True.
+            `self.positions` passing all exclusion filters above.
 
         Robustness: every entry/position is wrapped in a per-item
         try/except. A single malformed record (missing field, bad
@@ -9427,6 +9450,7 @@ class TradingEngineWithCommentary:
         the analysis loop on every cycle.
         """
         today = datetime.now().date()
+        denylist = Config().HANDS_OFF_DENYLIST
 
         realized = 0.0
         try:
@@ -9443,6 +9467,11 @@ class TradingEngineWithCommentary:
                     else:
                         exit_dt = exit_time
                     if exit_dt.date() != today:
+                        continue
+                    # v-hands-off-denylist-2026-09-14: skip trades on
+                    # denylist symbols — never count toward bot P&L
+                    trade_symbol = trade.get('symbol', '').upper()
+                    if trade_symbol in denylist:
                         continue
                     # Default True: trade_history entries that predate
                     # the managed_by_bot field are assumed to be bot
@@ -9461,7 +9490,19 @@ class TradingEngineWithCommentary:
         try:
             for symbol, position in self.positions.items():
                 try:
+                    # v-hands-off-denylist-2026-09-14: hard denylist check first
+                    if symbol.upper() in denylist:
+                        continue
+                    # Require managed_by_bot=True (bot-opened)
                     if not getattr(position, 'managed_by_bot', False):
+                        continue
+                    # v-hands-off-denylist-2026-09-14: exclude external/manual/LT
+                    # (align with _get_bracket_monitored_positions filters)
+                    if getattr(position, 'is_external', False):
+                        continue
+                    if getattr(position, 'is_manually_managed', False):
+                        continue
+                    if getattr(position, 'is_long_term', False):
                         continue
                     unrealized += float(getattr(position, 'unrealized_pnl', 0) or 0)
                 except Exception:
