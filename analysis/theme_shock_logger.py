@@ -42,6 +42,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("TradingBot")
 
+_DB_PERSIST_ERROR_LOGGED = False
+
 
 class ShadowAction(str, Enum):
     """Shadow action types for theme matches."""
@@ -468,6 +470,7 @@ class ThemeShockLogger:
         self._emit_log(event, symbol)
 
         if self._engine and hasattr(self._engine, "db_logger") and self._engine.db_logger:
+            global _DB_PERSIST_ERROR_LOGGED
             try:
                 self._engine.db_logger.log_strategy_decision(
                     strategy="theme_shock_logger",
@@ -476,8 +479,22 @@ class ThemeShockLogger:
                     reason=f"theme_{match.theme_id}",
                     extra_data=event.to_dict(),
                 )
-            except Exception:
-                pass
+            except AttributeError as exc:
+                if not _DB_PERSIST_ERROR_LOGGED:
+                    logger.warning(
+                        "theme_shock_logger db_persist_error symbol=%s err=%s "
+                        "(log_strategy_decision missing? suppressing future warnings)",
+                        symbol, exc,
+                    )
+                    _DB_PERSIST_ERROR_LOGGED = True
+            except Exception as exc:
+                if not _DB_PERSIST_ERROR_LOGGED:
+                    logger.warning(
+                        "theme_shock_logger db_persist_error symbol=%s err=%s "
+                        "(suppressing future warnings)",
+                        symbol, exc,
+                    )
+                    _DB_PERSIST_ERROR_LOGGED = True
 
         return event
 
