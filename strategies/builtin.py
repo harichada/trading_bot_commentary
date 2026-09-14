@@ -1448,18 +1448,62 @@ class DayTradeMomentumStrategy(TradingStrategyWithCommentary):
                     ))
                     return None
                 
-                # risk_off: reduce size, don't hard-block
+                # ────────────────────────────────────────────────────────────────
+                # v-day-trade-hard-skip-risk-off-2026-09-14: risk_off handling
+                #
+                # 2026-09-14 RCA (GLW): strategy logged many `size_reduced
+                # reason=risk_off_not_blocked size_mult=0.25` then later entered
+                # when regime flipped mixed. Research/CoS: size-down is how
+                # the weak risk_off path still feeds LIVE; want hard skip
+                # like ORB's `risk_off_hard_skip`.
+                #
+                # When DAY_TRADE_HARD_SKIP_RISK_OFF=True (default):
+                #   HARD SKIP — return None, no signal, no entry.
+                #
+                # When DAY_TRADE_HARD_SKIP_RISK_OFF=False:
+                #   Legacy behavior — reduce size to 0.25x but still signal.
+                # ────────────────────────────────────────────────────────────────
                 if _mc_regime == "risk_off":
-                    _mc_size_mult = cfg.MOMENTUM_RISK_OFF_SIZE_MULT
-                    # v-fix-double-emit-2026-09-10: skip_snapshot=True for informational
-                    # size reduction logs (not decision points, just context)
-                    self._log_decision(
-                        market_data, "size_reduced", "risk_off_not_blocked",
-                        regime=_mc_regime,
-                        size_mult=_mc_size_mult,
-                        spy_change=round(_mc_spy_change, 2),
-                        skip_snapshot=True,
-                    )
+                    if cfg.DAY_TRADE_HARD_SKIP_RISK_OFF:
+                        # HARD SKIP (same as ORB risk_off_hard_skip)
+                        self._log_decision(
+                            market_data, "skip", "risk_off_hard_skip",
+                            gate_name="day_trade_risk_off_lock",
+                            regime=_mc_regime,
+                            spy_change=round(_mc_spy_change, 2),
+                            vix_change=round(_mc_vix_change, 2),
+                            reason_text=_mc_reason,
+                        )
+                        self.commentary.add_commentary(TradingCommentary(
+                            timestamp=datetime.now(),
+                            type=CommentaryType.RISK_ASSESSMENT,
+                            symbol=symbol,
+                            title=f"⛔ Day-Trade SKIPPED — risk_off (HARD SKIP, not size-down)",
+                            message=(
+                                f"day_trade_momentum DOES NOT SIGNAL in risk_off regime.\n"
+                                f"  Regime: {_mc_regime}\n"
+                                f"  SPY: {_mc_spy_change:+.2f}% | VIX: {_mc_vix_change:+.1f}%\n\n"
+                                f"v-day-trade-hard-skip-risk-off-2026-09-14 (GLW RCA):\n"
+                                f"Research+CoS lock: hard SKIP in risk_off, not size-down.\n"
+                                f"The weak 0.25x path was feeding bad entries when regime\n"
+                                f"flipped to mixed. Set DAY_TRADE_HARD_SKIP_RISK_OFF=0 to\n"
+                                f"restore prior size-reduction behavior."
+                            ),
+                            importance=8,
+                        ))
+                        return None
+                    else:
+                        # Legacy behavior: reduce size, don't hard-block
+                        _mc_size_mult = cfg.MOMENTUM_RISK_OFF_SIZE_MULT
+                        # v-fix-double-emit-2026-09-10: skip_snapshot=True for informational
+                        # size reduction logs (not decision points, just context)
+                        self._log_decision(
+                            market_data, "size_reduced", "risk_off_not_blocked",
+                            regime=_mc_regime,
+                            size_mult=_mc_size_mult,
+                            spy_change=round(_mc_spy_change, 2),
+                            skip_snapshot=True,
+                        )
                 
                 # opening_30: reduce size, don't hard-block
                 if _mc_time_of_day == "opening_30":
