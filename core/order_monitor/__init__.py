@@ -27,5 +27,6 @@ even without is_long_term=True set.
 from __future__ import annotations
 
 from core.order_monitor.monitor import OrderMonitor
+from core.order_monitor.broker_flat import is_broker_leg_authoritative
 
-__all__ = ["OrderMonitor"]
+__all__ = ["OrderMonitor", "is_broker_leg_authoritative"]
