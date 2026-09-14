@@ -3795,6 +3795,14 @@ class TradingEngineWithCommentary:
                 "theme_shock_logger enabled (themes=%d)",
                 len(self._theme_shock_logger._loader.themes),
             )
+            # v-theme-shock-hotfix-2026-09-14: wire ThemeShock into NewsBus
+            # publish path so EVERY new item (RSS + Alpaca) is evaluated for
+            # theme matches and emits shadow logs. Previously ThemeShock was
+            # only invoked on entry path, resulting in ZERO emits for Anthropic
+            # headlines when there was no coincident entry signal.
+            from core.news_bus import set_news_bus_on_publish
+            set_news_bus_on_publish(self._on_news_publish_theme_shock)
+            logger.info("theme_shock_logger wired to NewsBus.on_publish")
         else:
             logger.debug("theme_shock_logger NOT enabled (ENABLE_THEME_SHOCK_LOGGER=0)")
 
@@ -3835,6 +3843,51 @@ class TradingEngineWithCommentary:
             )
         except Exception:
             pass
+
+    def _on_news_publish_theme_shock(self, item) -> None:
+        """Callback for ALL news items published to NewsBus.
+        
+        v-theme-shock-hotfix-2026-09-14: Wires ThemeShockLogger into the
+        NewsBus publish path so EVERY new item (RSS + Alpaca) is evaluated
+        for theme matches and emits Research schema shadow logs.
+        
+        RCA: Previously ThemeShock was only invoked on entry path, which
+        only fires when a signal evaluation happens to include the symbol.
+        Anthropic headlines on Alpaca would publish to bus but ThemeShock
+        would never see them, resulting in ZERO shadow_* emits.
+        
+        Now every published item triggers theme evaluation for:
+          - Entry gate: shadow_hard_skip for all basket symbols
+          - Open positions: shadow_thesis_exit / shadow_size_down for
+            managed_by_bot positions; alert_only for HANDS_OFF/watch_only
+        """
+        if self._theme_shock_logger is None:
+            return
+        if not self._theme_shock_logger.is_enabled():
+            return
+        
+        try:
+            def get_open_positions():
+                result = {}
+                for container in [self.positions, getattr(self, 'simulated_positions', {}) or {}]:
+                    for sym, pos in list(container.items()):
+                        if pos is None:
+                            continue
+                        if getattr(pos, 'managed_by_bot', False):
+                            result[sym] = pos
+                return result
+            
+            events = self._theme_shock_logger.process_news_item_from_publish(
+                item=item,
+                get_open_positions_fn=get_open_positions,
+            )
+            if events:
+                logger.debug(
+                    "theme_shock on_publish emitted %d events for headline=%s",
+                    len(events), item.headline[:50],
+                )
+        except Exception as exc:
+            logger.debug("theme_shock on_publish error: %s", exc)
 
     def _on_task_crash(self, st, exc) -> None:
         """Surface task crashes on the dashboard. NORMAL — we don't pause
