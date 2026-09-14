@@ -1,0 +1,273 @@
+{
+  "metadata": {
+    "description": "Frozen inventory of TradingEngineWithCommentary public façade. Do not remove entries until Phase B extracts are complete and callers migrated.",
+    "baseline_sha": "dfc86beca1cc4aaea1167ec2e3d813df339a61e6",
+    "baseline_date": "2026-09-14",
+    "method_count": 17,
+    "attribute_count": 36,
+    "callers": [
+      "api/routes.py",
+      "core/loops/screener_loop.py",
+      "core/loops/news_loop.py",
+      "strategies/base.py",
+      "strategies/news_strategy.py"
+    ]
+  },
+  "methods": [
+    {
+      "name": "start",
+      "params": [],
+      "is_async": true,
+      "description": "Main entry point to start the trading engine"
+    },
+    {
+      "name": "reset_brain_state",
+      "params": [],
+      "is_async": false,
+      "description": "Reset the trading brain's learned state"
+    },
+    {
+      "name": "close_position_manually",
+      "params": ["symbol", "position_type"],
+      "is_async": true,
+      "description": "Close a position via manual UI action"
+    },
+    {
+      "name": "get_todays_trades",
+      "params": [],
+      "is_async": false,
+      "description": "Get list of trades executed today"
+    },
+    {
+      "name": "get_internal_trades_today",
+      "params": [],
+      "is_async": false,
+      "description": "Get internally tracked trades for today"
+    },
+    {
+      "name": "get_schwab_trades_today",
+      "params": [],
+      "is_async": false,
+      "description": "Get Schwab broker trades for today"
+    },
+    {
+      "name": "get_schwab_positions",
+      "params": [],
+      "is_async": true,
+      "description": "Fetch current positions from Schwab"
+    },
+    {
+      "name": "sync_positions_with_schwab",
+      "params": [],
+      "is_async": true,
+      "description": "Sync internal position state with Schwab"
+    },
+    {
+      "name": "is_market_hours",
+      "params": [],
+      "is_async": false,
+      "description": "Check if currently in trading hours"
+    },
+    {
+      "name": "should_use_limit_order",
+      "params": [],
+      "is_async": false,
+      "description": "Determine if limit orders should be used"
+    },
+    {
+      "name": "auto_close_disabled",
+      "params": [],
+      "is_async": false,
+      "description": "Property: whether auto-close is disabled"
+    }
+  ],
+  "underscore_methods": [
+    {
+      "name": "_audit",
+      "params": ["component", "symbol", "action", "reason"],
+      "is_async": false,
+      "description": "Log audit events for compliance/debugging",
+      "external_callers": ["api/routes.py"]
+    },
+    {
+      "name": "_save_state",
+      "params": [],
+      "is_async": false,
+      "description": "Persist position state to disk",
+      "external_callers": ["api/routes.py"]
+    },
+    {
+      "name": "_get_real_account_info",
+      "params": [],
+      "is_async": true,
+      "description": "Fetch account info from Schwab",
+      "external_callers": ["api/routes.py"]
+    },
+    {
+      "name": "_update_real_positions",
+      "params": [],
+      "is_async": true,
+      "description": "Update position state from broker",
+      "external_callers": ["api/routes.py"]
+    },
+    {
+      "name": "_close_position_with_commentary",
+      "params": ["position", "reason"],
+      "is_async": true,
+      "description": "Close position and generate commentary",
+      "external_callers": ["api/routes.py"]
+    },
+    {
+      "name": "__init__",
+      "params": ["mode", "connection_manager"],
+      "is_async": false,
+      "description": "Constructor"
+    }
+  ],
+  "attributes": [
+    {
+      "name": "mode",
+      "description": "TradingMode enum (LIVE, SIMULATION_WITH_COMMENTARY)"
+    },
+    {
+      "name": "is_running",
+      "description": "Boolean: whether engine loop is active"
+    },
+    {
+      "name": "schwab_client",
+      "description": "Schwab SDK client instance (or None)"
+    },
+    {
+      "name": "positions",
+      "description": "Dict[str, Position]: live tracked positions"
+    },
+    {
+      "name": "simulated_positions",
+      "description": "Dict[str, Position]: paper trading positions"
+    },
+    {
+      "name": "trade_history",
+      "description": "List of completed trade records"
+    },
+    {
+      "name": "commentary",
+      "description": "CommentarySystem instance"
+    },
+    {
+      "name": "data_provider",
+      "description": "RealTimeDataProvider or SchwabDataProvider"
+    },
+    {
+      "name": "price_book",
+      "description": "PriceBook for mark prices"
+    },
+    {
+      "name": "screener",
+      "description": "StockScreener instance"
+    },
+    {
+      "name": "risk_manager",
+      "description": "RiskManagerWithCommentary instance"
+    },
+    {
+      "name": "ml_predictor",
+      "description": "MLPredictorWithCommentary instance"
+    },
+    {
+      "name": "brain",
+      "description": "TradingBrain instance"
+    },
+    {
+      "name": "db_logger",
+      "description": "DBLogger for decision snapshots"
+    },
+    {
+      "name": "performance_analyzer",
+      "description": "PerformanceAnalyzer instance"
+    },
+    {
+      "name": "behavioral_analyzer",
+      "description": "BehavioralAnalyzer instance"
+    },
+    {
+      "name": "alternative_data_integrator",
+      "description": "AlternativeDataIntegrator instance"
+    },
+    {
+      "name": "market_neutral_strategies",
+      "description": "MarketNeutralStrategies instance"
+    },
+    {
+      "name": "portfolio_optimizer",
+      "description": "Portfolio optimization utilities"
+    },
+    {
+      "name": "performance_monitor",
+      "description": "Performance monitoring instance"
+    },
+    {
+      "name": "data_validator",
+      "description": "DataValidator instance"
+    },
+    {
+      "name": "active_strategies",
+      "description": "Dict of strategy enable/disable flags"
+    },
+    {
+      "name": "require_confirmations",
+      "description": "Boolean: require user confirmation for trades"
+    },
+    {
+      "name": "manual_close_only",
+      "description": "Boolean: disable auto exits"
+    },
+    {
+      "name": "pending_close_requests",
+      "description": "Dict of pending close confirmations"
+    },
+    {
+      "name": "start_time",
+      "description": "Datetime when engine started"
+    },
+    {
+      "name": "dynamic_watchlist",
+      "description": "List[str]: current screener watchlist"
+    },
+    {
+      "name": "last_screener_run",
+      "description": "Datetime of last screener refresh"
+    },
+    {
+      "name": "_symbol_intel_hub",
+      "description": "Symbol intelligence aggregator"
+    },
+    {
+      "name": "_ws_broadcast_loop",
+      "description": "asyncio event loop for WS broadcasts"
+    },
+    {
+      "name": "_schwab_positions_cache",
+      "description": "Cached Schwab positions list"
+    },
+    {
+      "name": "_schwab_positions_cache_at",
+      "description": "Timestamp of position cache"
+    },
+    {
+      "name": "_pos_cache_refreshing",
+      "description": "Boolean: position cache refresh in progress"
+    },
+    {
+      "name": "real_positions",
+      "description": "Dict of real broker positions (may be alias)"
+    },
+    {
+      "name": "quote_cache",
+      "description": "QuoteCache for price lookups"
+    },
+    {
+      "name": "_supervisor",
+      "description": "TaskSupervisor managing async loops"
+    }
+  ]
+}
