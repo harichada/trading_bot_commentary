@@ -33,7 +33,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Set
 
 import yaml
 
@@ -82,9 +82,15 @@ class ThemeConfig:
 
 @dataclass
 class ThemeMatch:
-    """A matched theme with affected symbols."""
+    """A matched theme with affected symbols.
+    
+    v-themeshock-hygiene-2026-09-14: added matched_field for Stage A FP reduction.
+    matched_field indicates whether the keyword hit the headline or summary,
+    enabling headline-only hard_skip filtering.
+    """
     theme_id: str
     matched_text: str
+    matched_field: str  # "headline" | "summary"
     symbols_tradable: List[str]
     symbols_watch_only: List[str]
     actions_shadow: List[ShadowAction]
@@ -97,6 +103,9 @@ class ThemeEvent:
     Schema: event_id, theme_id, source, source_published_ts, bus_ingest_ts,
     news_age_sec, symbols_tradable[], symbols_watch_only[], action_shadow,
     managed_flags{}, forward_ret_1/5/15/60m, half_move_before_ingest
+    
+    v-themeshock-hygiene-2026-09-14: added matched_text/matched_field for
+    Stage A FP reduction (Crude Oil → ai_compute via contaminated summary).
     """
     event_id: str
     theme_id: str
@@ -108,6 +117,8 @@ class ThemeEvent:
     symbols_watch_only: List[str]
     action_shadow: ShadowAction
     ticker_basket: List[str]
+    matched_text: str = ""
+    matched_field: str = ""  # "headline" | "summary"
     managed_flags: Dict[str, Any] = field(default_factory=dict)
     forward_ret_1m: Optional[float] = None
     forward_ret_5m: Optional[float] = None
@@ -118,7 +129,11 @@ class ThemeEvent:
     summary: str = ""
 
     def to_dict(self) -> dict:
-        """Serialize for structured logging."""
+        """Serialize for structured logging.
+        
+        v-themeshock-hygiene-2026-09-14: added matched_text/matched_field
+        for Stage A FP analysis (which pattern, in which field).
+        """
         return {
             "event_id": self.event_id,
             "theme_id": self.theme_id,
@@ -133,6 +148,8 @@ class ThemeEvent:
             "symbols_watch_only": self.symbols_watch_only,
             "ticker_basket": self.ticker_basket,
             "action_shadow": self.action_shadow.value,
+            "matched_text": self.matched_text,
+            "matched_field": self.matched_field,
             "managed_flags": self.managed_flags,
             "forward_ret_1m": self.forward_ret_1m,
             "forward_ret_5m": self.forward_ret_5m,
@@ -196,27 +213,66 @@ class ThemeTagger:
     
     Matches headline + summary against theme match patterns (case-insensitive).
     Returns list of ThemeMatch for all matching themes.
+    
+    v-themeshock-hygiene-2026-09-14: now tracks matched_field ("headline"|"summary")
+    to enable headline-only filtering for hard_skip actions (Stage A FP reduction).
     """
 
     def __init__(self, loader: ThemeConfigLoader):
         self._loader = loader
 
-    def tag(self, headline: str, summary: str = "") -> List[ThemeMatch]:
-        """Match headline+summary against themes, return matches."""
-        text = f"{headline} {summary}".lower()
+    def tag(
+        self,
+        headline: str,
+        summary: str = "",
+        headline_only_for_hard_skip: bool = False,
+    ) -> List[ThemeMatch]:
+        """Match headline+summary against themes, return matches.
+        
+        Args:
+            headline: News headline text.
+            summary: News summary text (optional).
+            headline_only_for_hard_skip: When True, for themes with hard_skip_entries
+                action, only match against headline (ignore summary-only hits).
+                This reduces false positives like Crude Oil → ai_compute via
+                contaminated summary containing "anthropic".
+        
+        Returns:
+            List of ThemeMatch with matched_field indicating where the hit was.
+        """
+        headline_lower = headline.lower()
+        summary_lower = summary.lower() if summary else ""
         matches = []
 
         for theme in self._loader.themes:
             for pattern in theme.match:
-                if pattern in text:
-                    matches.append(ThemeMatch(
-                        theme_id=theme.theme_id,
-                        matched_text=pattern,
-                        symbols_tradable=theme.basket[:],
-                        symbols_watch_only=theme.watch_only[:],
-                        actions_shadow=theme.actions_shadow[:],
-                    ))
-                    break
+                matched_field = None
+                
+                if pattern in headline_lower:
+                    matched_field = "headline"
+                elif pattern in summary_lower:
+                    matched_field = "summary"
+                
+                if matched_field is None:
+                    continue
+                
+                has_hard_skip = ShadowAction.HARD_SKIP_ENTRIES in theme.actions_shadow
+                if (
+                    headline_only_for_hard_skip
+                    and has_hard_skip
+                    and matched_field == "summary"
+                ):
+                    continue
+                
+                matches.append(ThemeMatch(
+                    theme_id=theme.theme_id,
+                    matched_text=pattern,
+                    matched_field=matched_field,
+                    symbols_tradable=theme.basket[:],
+                    symbols_watch_only=theme.watch_only[:],
+                    actions_shadow=theme.actions_shadow[:],
+                ))
+                break
 
         return matches
 
@@ -248,11 +304,40 @@ class ThemeShockLogger:
         from core.config import Config
         return Config().HANDS_OFF_DENYLIST
 
+    def is_headline_only_for_hard_skip(self) -> bool:
+        """Check if hard_skip should only match on headline (not summary).
+        
+        v-themeshock-hygiene-2026-09-14: Stage A false-positive reduction.
+        When True (default), hard_skip_entries action only fires if the
+        keyword hits the headline, not summary. Prevents FPs like
+        Crude Oil headline → ai_compute via summary containing "anthropic".
+        """
+        from core.config import Config
+        return Config().ENABLE_THEME_HARD_SKIP_HEADLINE_ONLY
+
+    def is_fanout_require_symbol_overlap(self) -> bool:
+        """Check if fanout should require symbol overlap.
+        
+        v-themeshock-hygiene-2026-09-14: when True, process_news_item_from_publish
+        only emits for symbols in (item.symbols ∩ basket/watch_only).
+        When False (default), emits for ALL basket/watch_only symbols after
+        any keyword match.
+        """
+        from core.config import Config
+        return Config().ENABLE_THEME_FANOUT_REQUIRE_SYMBOL_OVERLAP
+
     def tag_news_item(self, item: "ScoredNewsItem") -> List[ThemeMatch]:
-        """Tag a news item with matching themes."""
+        """Tag a news item with matching themes.
+        
+        v-themeshock-hygiene-2026-09-14: respects ENABLE_THEME_HARD_SKIP_HEADLINE_ONLY.
+        """
         if not self.is_enabled():
             return []
-        return self._tagger.tag(item.headline, getattr(item, "summary", ""))
+        return self._tagger.tag(
+            headline=item.headline,
+            summary=getattr(item, "summary", ""),
+            headline_only_for_hard_skip=self.is_headline_only_for_hard_skip(),
+        )
 
     def _make_event_id(self, theme_id: str, headline: str) -> str:
         """Generate a stable event ID for deduplication."""
@@ -372,6 +457,8 @@ class ThemeShockLogger:
             symbols_watch_only=match.symbols_watch_only,
             ticker_basket=match.symbols_tradable + match.symbols_watch_only,
             action_shadow=action,
+            matched_text=match.matched_text,
+            matched_field=match.matched_field,
             managed_flags=managed_flags or {},
             headline=item.headline,
             summary=getattr(item, "summary", ""),
@@ -395,11 +482,16 @@ class ThemeShockLogger:
         return event
 
     def _emit_log(self, event: ThemeEvent, symbol: str) -> None:
-        """Emit structured log for theme event."""
+        """Emit structured log for theme event.
+        
+        v-themeshock-hygiene-2026-09-14: added matched_text/matched_field
+        for Stage A FP analysis.
+        """
         logger.info(
             "theme_shock_logger "
             "action=%s theme_id=%s symbol=%s "
             "event_id=%s news_age_sec=%.1f source=%s "
+            "matched_text=%s matched_field=%s "
             "basket=%s watch_only=%s "
             "headline=%s",
             event.action_shadow.value,
@@ -408,6 +500,8 @@ class ThemeShockLogger:
             event.event_id,
             event.news_age_sec,
             event.source,
+            event.matched_text,
+            event.matched_field,
             ",".join(event.symbols_tradable),
             ",".join(event.symbols_watch_only),
             event.headline[:60],
@@ -521,6 +615,21 @@ class ThemeShockLogger:
         """Reload theme configurations."""
         self._loader.reload()
 
+    def _get_item_symbols(self, item: "ScoredNewsItem") -> Set[str]:
+        """Extract symbols from a news item.
+        
+        v-themeshock-hygiene-2026-09-14: helper for symbol overlap fanout.
+        Returns set of uppercase symbols from item.symbol and item.symbols.
+        """
+        result: Set[str] = set()
+        if hasattr(item, "symbol") and item.symbol:
+            result.add(item.symbol.upper())
+        if hasattr(item, "symbols") and item.symbols:
+            for s in item.symbols:
+                if s:
+                    result.add(s.upper())
+        return result
+
     def process_news_item_from_publish(
         self,
         item: "ScoredNewsItem",
@@ -537,9 +646,13 @@ class ThemeShockLogger:
         Now this method is called from NewsBus.on_publish for EVERY new item.
         It:
           1. Tags the item for theme matches
-          2. For each match, emits shadow logs for ALL basket symbols (entry path)
+          2. For each match, emits shadow logs for basket symbols (entry path)
           3. Checks if any affected symbols have managed open positions and
              emits shadow logs for those too (open-position path)
+        
+        v-themeshock-hygiene-2026-09-14: ENABLE_THEME_FANOUT_REQUIRE_SYMBOL_OVERLAP
+        controls whether we emit for ALL basket symbols (False, default) or only
+        for symbols that overlap with item.symbols (True).
         
         Args:
             item: The ScoredNewsItem from NewsBus publish.
@@ -568,8 +681,16 @@ class ThemeShockLogger:
                     exc,
                 )
         
+        require_overlap = self.is_fanout_require_symbol_overlap()
+        item_symbols = self._get_item_symbols(item) if require_overlap else set()
+        
         for match in matches:
             all_affected = set(match.symbols_tradable + match.symbols_watch_only)
+            
+            if require_overlap and item_symbols:
+                all_affected = all_affected & item_symbols
+                if not all_affected:
+                    continue
             
             for symbol in all_affected:
                 symbol_upper = symbol.upper()

@@ -2414,6 +2414,59 @@ class Config:
         return bool(self.manager.get('trading.enable_theme_shock_logger', True))
 
     @property
+    def ENABLE_THEME_HARD_SKIP_HEADLINE_ONLY(self) -> bool:
+        """Stage A false-positive reduction: headline-only matching for hard_skip.
+        
+        v-themeshock-hygiene-2026-09-14: when True (default), theme matches
+        for hard_skip_entries action only fire if the keyword hits the
+        headline, NOT summary. This prevents FPs like:
+        
+          Headline: "Crude Oil Jumps 3%; Corning Shares Move Lower"
+          Summary: "...anthropic research suggests AI slowdown..."
+          → FP: ai_compute theme triggers hard_skip for NVDA
+        
+        With headline-only=True, the summary "anthropic" hit is ignored
+        for hard_skip actions. Other actions (size_down, thesis_exit,
+        alert_only) still match headline+summary.
+        
+        CoS greenlight Stage A: reduces noise while collecting evidence.
+        No LIVE actuators; shadow-only logging.
+        
+        SAFE OFF-PATH: Set ENABLE_THEME_HARD_SKIP_HEADLINE_ONLY=0 to
+        restore original headline+summary matching for all actions.
+        """
+        env_val = os.getenv("ENABLE_THEME_HARD_SKIP_HEADLINE_ONLY")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.enable_theme_hard_skip_headline_only', True))
+
+    @property
+    def ENABLE_THEME_FANOUT_REQUIRE_SYMBOL_OVERLAP(self) -> bool:
+        """Fanout symbol overlap: only emit for symbols in news item.
+        
+        v-themeshock-hygiene-2026-09-14: when True, process_news_item_from_publish
+        only emits theme events for symbols that appear in BOTH:
+          1. The theme's basket/watch_only list
+          2. The news item's symbols (item.symbol or item.symbols)
+        
+        Example: An "anthropic" headline for symbols=["AAPL"] would NOT
+        emit hard_skip for NVDA, even though NVDA is in ai_compute basket.
+        
+        When False (default), after a keyword match we emit for ALL symbols
+        in the theme basket/watch_only, regardless of the news item's symbols.
+        This is the original behavior.
+        
+        Stage A: default False to collect baseline data. Enable True only
+        after evidence shows symbol-overlap reduces FPs without missing TPs.
+        
+        SAFE OFF-PATH: Default False preserves original fan-out behavior.
+        """
+        env_val = os.getenv("ENABLE_THEME_FANOUT_REQUIRE_SYMBOL_OVERLAP")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.enable_theme_fanout_require_symbol_overlap', False))
+
+    @property
     def THEME_CONFIG_PATH(self) -> str:
         """Path to theme configuration directory.
 

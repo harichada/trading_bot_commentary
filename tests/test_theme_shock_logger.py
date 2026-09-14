@@ -206,6 +206,7 @@ class TestShadowActionDetermination:
         match = ThemeMatch(
             theme_id="ai_compute",
             matched_text="anthropic",
+            matched_field="headline",
             symbols_tradable=["NVDA", "AMD"],
             symbols_watch_only=["MU"],
             actions_shadow=[
@@ -229,6 +230,7 @@ class TestShadowActionDetermination:
         match = ThemeMatch(
             theme_id="ai_compute",
             matched_text="anthropic",
+            matched_field="headline",
             symbols_tradable=["NVDA", "AMD"],
             symbols_watch_only=["MU"],
             actions_shadow=[
@@ -247,6 +249,7 @@ class TestShadowActionDetermination:
         match = ThemeMatch(
             theme_id="ai_compute",
             matched_text="anthropic",
+            matched_field="headline",
             symbols_tradable=["NVDA", "AMD"],
             symbols_watch_only=["MU"],
             actions_shadow=[
@@ -265,6 +268,7 @@ class TestShadowActionDetermination:
         match = ThemeMatch(
             theme_id="ai_compute",
             matched_text="anthropic",
+            matched_field="headline",
             symbols_tradable=["NVDA", "AMD"],
             symbols_watch_only=["MU"],
             actions_shadow=[
@@ -287,6 +291,7 @@ class TestThemeEventLogging:
         match = ThemeMatch(
             theme_id="ai_compute",
             matched_text="anthropic",
+            matched_field="headline",
             symbols_tradable=["NVDA"],
             symbols_watch_only=["MU"],
             actions_shadow=[ShadowAction.HARD_SKIP_ENTRIES],
@@ -312,6 +317,7 @@ class TestThemeEventLogging:
         match = ThemeMatch(
             theme_id="ai_compute",
             matched_text="anthropic",
+            matched_field="headline",
             symbols_tradable=["NVDA"],
             symbols_watch_only=["MU"],
             actions_shadow=[ShadowAction.HARD_SKIP_ENTRIES],
@@ -341,6 +347,7 @@ class TestThemeEventLogging:
         match = ThemeMatch(
             theme_id="ai_compute",
             matched_text="anthropic",
+            matched_field="headline",
             symbols_tradable=["NVDA"],
             symbols_watch_only=[],
             actions_shadow=[ShadowAction.HARD_SKIP_ENTRIES],
@@ -493,6 +500,7 @@ class TestHandsOffDenylist:
         match = ThemeMatch(
             theme_id="test",
             matched_text="test",
+            matched_field="headline",
             symbols_tradable=["SPCX"],
             symbols_watch_only=[],
             actions_shadow=[ShadowAction.SIZE_DOWN_OPEN],
@@ -607,6 +615,7 @@ class TestForwardRetStubs:
         match = ThemeMatch(
             theme_id="ai_compute",
             matched_text="anthropic",
+            matched_field="headline",
             symbols_tradable=["NVDA"],
             symbols_watch_only=[],
             actions_shadow=[ShadowAction.HARD_SKIP_ENTRIES],
@@ -821,6 +830,7 @@ class TestNewsBusPublishPath:
         match = ThemeMatch(
             theme_id="ai_compute",
             matched_text="anthropic",
+            matched_field="headline",
             symbols_tradable=["NVDA", "AMD"],
             symbols_watch_only=["MU"],
             actions_shadow=[ShadowAction.HARD_SKIP_ENTRIES, ShadowAction.THESIS_EXIT],
@@ -1032,3 +1042,393 @@ class TestAgeSecUTCFix:
         fetch_age = item.fetch_age_sec()
         assert fetch_age >= 0
         assert 25 < fetch_age < 35  # ~30 seconds
+
+
+class TestMatchedFieldTracking:
+    """v-themeshock-hygiene-2026-09-14: Test matched_field in ThemeMatch/ThemeEvent."""
+
+    def test_matched_field_headline(self, reset_singleton):
+        """matched_field='headline' when keyword hits headline."""
+        loader = ThemeConfigLoader()
+        tagger = ThemeTagger(loader)
+        
+        matches = tagger.tag(
+            headline="Anthropic CEO warns about AI compute slowdown",
+            summary="Some unrelated summary text here.",
+        )
+        
+        assert len(matches) >= 1
+        ai_compute = next((m for m in matches if m.theme_id == "ai_compute"), None)
+        assert ai_compute is not None
+        assert ai_compute.matched_field == "headline"
+        assert ai_compute.matched_text == "anthropic"
+
+    def test_matched_field_summary(self, reset_singleton):
+        """matched_field='summary' when keyword hits summary only."""
+        loader = ThemeConfigLoader()
+        tagger = ThemeTagger(loader)
+        
+        matches = tagger.tag(
+            headline="Crude Oil Jumps 3%; Corning Shares Move Lower",
+            summary="Anthropic research suggests AI compute slowdown.",
+            headline_only_for_hard_skip=False,  # Allow summary matches
+        )
+        
+        assert len(matches) >= 1
+        ai_compute = next((m for m in matches if m.theme_id == "ai_compute"), None)
+        assert ai_compute is not None
+        assert ai_compute.matched_field == "summary"
+        assert ai_compute.matched_text == "anthropic"
+
+    def test_event_to_dict_includes_matched_fields(self, reset_singleton, sample_scored_item):
+        """ThemeEvent.to_dict() should include matched_text and matched_field."""
+        logger = ThemeShockLogger()
+        
+        match = ThemeMatch(
+            theme_id="ai_compute",
+            matched_text="anthropic",
+            matched_field="headline",
+            symbols_tradable=["NVDA"],
+            symbols_watch_only=["MU"],
+            actions_shadow=[ShadowAction.HARD_SKIP_ENTRIES],
+        )
+        
+        event = logger.log_theme_event(
+            item=sample_scored_item,
+            match=match,
+            action=ShadowAction.HARD_SKIP_ENTRIES,
+            symbol="NVDA",
+        )
+        
+        d = event.to_dict()
+        assert d["matched_text"] == "anthropic"
+        assert d["matched_field"] == "headline"
+
+
+class TestHeadlineOnlyHardSkip:
+    """v-themeshock-hygiene-2026-09-14: Test ENABLE_THEME_HARD_SKIP_HEADLINE_ONLY."""
+
+    def test_headline_only_true_blocks_summary_only_fp(self, reset_singleton):
+        """When headline_only=True, summary-only 'anthropic' should NOT match hard_skip.
+        
+        RCA reproduction: headline "Crude Oil Jumps" + summary "anthropic..."
+        should NOT trigger ai_compute hard_skip when headline_only=True.
+        """
+        loader = ThemeConfigLoader()
+        tagger = ThemeTagger(loader)
+        
+        matches = tagger.tag(
+            headline="Crude Oil Jumps 3%; Corning Shares Move Lower",
+            summary="Anthropic research suggests AI compute demand may slow.",
+            headline_only_for_hard_skip=True,
+        )
+        
+        ai_compute = next((m for m in matches if m.theme_id == "ai_compute"), None)
+        assert ai_compute is None, (
+            "ai_compute should NOT match when keyword is only in summary "
+            "and headline_only_for_hard_skip=True"
+        )
+
+    def test_headline_only_false_restores_summary_match(self, reset_singleton):
+        """When headline_only=False, summary-only 'anthropic' SHOULD match."""
+        loader = ThemeConfigLoader()
+        tagger = ThemeTagger(loader)
+        
+        matches = tagger.tag(
+            headline="Crude Oil Jumps 3%; Corning Shares Move Lower",
+            summary="Anthropic research suggests AI compute demand may slow.",
+            headline_only_for_hard_skip=False,
+        )
+        
+        ai_compute = next((m for m in matches if m.theme_id == "ai_compute"), None)
+        assert ai_compute is not None, (
+            "ai_compute SHOULD match when keyword is in summary "
+            "and headline_only_for_hard_skip=False"
+        )
+        assert ai_compute.matched_field == "summary"
+
+    def test_headline_only_still_matches_headline_hit(self, reset_singleton):
+        """headline_only=True should still match when keyword IS in headline."""
+        loader = ThemeConfigLoader()
+        tagger = ThemeTagger(loader)
+        
+        matches = tagger.tag(
+            headline="Anthropic CEO Dario Amodei on frontier AI pace",
+            summary="Some other unrelated text.",
+            headline_only_for_hard_skip=True,
+        )
+        
+        ai_compute = next((m for m in matches if m.theme_id == "ai_compute"), None)
+        assert ai_compute is not None
+        assert ai_compute.matched_field == "headline"
+
+    def test_config_flag_default_true(self, monkeypatch, reset_singleton):
+        """ENABLE_THEME_HARD_SKIP_HEADLINE_ONLY default is True."""
+        monkeypatch.delenv("ENABLE_THEME_HARD_SKIP_HEADLINE_ONLY", raising=False)
+        from core.config import Config
+        assert Config().ENABLE_THEME_HARD_SKIP_HEADLINE_ONLY is True
+
+    def test_config_flag_env_override_false(self, monkeypatch, reset_singleton):
+        """ENABLE_THEME_HARD_SKIP_HEADLINE_ONLY=0 disables headline-only."""
+        monkeypatch.setenv("ENABLE_THEME_HARD_SKIP_HEADLINE_ONLY", "0")
+        from core.config import Config
+        assert Config().ENABLE_THEME_HARD_SKIP_HEADLINE_ONLY is False
+
+    def test_logger_respects_flag_true(self, monkeypatch, reset_singleton):
+        """ThemeShockLogger uses headline-only when flag is True."""
+        monkeypatch.setenv("ENABLE_THEME_HARD_SKIP_HEADLINE_ONLY", "1")
+        reset_theme_shock_logger()
+        
+        @dataclass
+        class MockItem:
+            id: str = "fp_test"
+            symbol: str = "NVDA"
+            headline: str = "Crude Oil Jumps 3%; Corning Shares Move Lower"
+            summary: str = "Anthropic AI research suggests compute slowdown."
+            source: str = "Test"
+            source_tier: int = 1
+            url: str = "https://test.com"
+            published_time: datetime = None
+            fetched_at: datetime = None
+            sentiment_score: float = 0.0
+            sentiment_confidence: float = 0.5
+            
+            def __post_init__(self):
+                if self.published_time is None:
+                    self.published_time = datetime.now(timezone.utc) - timedelta(minutes=5)
+                if self.fetched_at is None:
+                    self.fetched_at = datetime.now(timezone.utc)
+            
+            def age_sec(self) -> float:
+                return 300.0
+        
+        logger = get_theme_shock_logger()
+        item = MockItem()
+        
+        matches = logger.tag_news_item(item)
+        ai_compute = next((m for m in matches if m.theme_id == "ai_compute"), None)
+        assert ai_compute is None, "headline-only flag should block summary-only match"
+
+    def test_logger_respects_flag_false(self, monkeypatch, reset_singleton):
+        """ThemeShockLogger matches summary when flag is False."""
+        monkeypatch.setenv("ENABLE_THEME_HARD_SKIP_HEADLINE_ONLY", "0")
+        reset_theme_shock_logger()
+        
+        @dataclass
+        class MockItem:
+            id: str = "fp_test"
+            symbol: str = "NVDA"
+            headline: str = "Crude Oil Jumps 3%; Corning Shares Move Lower"
+            summary: str = "Anthropic AI research suggests compute slowdown."
+            source: str = "Test"
+            source_tier: int = 1
+            url: str = "https://test.com"
+            published_time: datetime = None
+            fetched_at: datetime = None
+            sentiment_score: float = 0.0
+            sentiment_confidence: float = 0.5
+            
+            def __post_init__(self):
+                if self.published_time is None:
+                    self.published_time = datetime.now(timezone.utc) - timedelta(minutes=5)
+                if self.fetched_at is None:
+                    self.fetched_at = datetime.now(timezone.utc)
+            
+            def age_sec(self) -> float:
+                return 300.0
+        
+        logger = get_theme_shock_logger()
+        item = MockItem()
+        
+        matches = logger.tag_news_item(item)
+        ai_compute = next((m for m in matches if m.theme_id == "ai_compute"), None)
+        assert ai_compute is not None, "flag=False should allow summary match"
+        assert ai_compute.matched_field == "summary"
+
+
+class TestFanoutSymbolOverlap:
+    """v-themeshock-hygiene-2026-09-14: Test ENABLE_THEME_FANOUT_REQUIRE_SYMBOL_OVERLAP."""
+
+    def test_config_flag_default_false(self, monkeypatch, reset_singleton):
+        """ENABLE_THEME_FANOUT_REQUIRE_SYMBOL_OVERLAP default is False."""
+        monkeypatch.delenv("ENABLE_THEME_FANOUT_REQUIRE_SYMBOL_OVERLAP", raising=False)
+        from core.config import Config
+        assert Config().ENABLE_THEME_FANOUT_REQUIRE_SYMBOL_OVERLAP is False
+
+    def test_config_flag_env_override_true(self, monkeypatch, reset_singleton):
+        """ENABLE_THEME_FANOUT_REQUIRE_SYMBOL_OVERLAP=1 enables overlap."""
+        monkeypatch.setenv("ENABLE_THEME_FANOUT_REQUIRE_SYMBOL_OVERLAP", "1")
+        from core.config import Config
+        assert Config().ENABLE_THEME_FANOUT_REQUIRE_SYMBOL_OVERLAP is True
+
+    def test_fanout_false_emits_all_basket(self, monkeypatch, reset_singleton):
+        """When fanout_overlap=False, emit for ALL basket symbols."""
+        monkeypatch.setenv("ENABLE_THEME_FANOUT_REQUIRE_SYMBOL_OVERLAP", "0")
+        monkeypatch.setenv("ENABLE_THEME_HARD_SKIP_HEADLINE_ONLY", "0")
+        reset_theme_shock_logger()
+        
+        @dataclass
+        class MockItem:
+            id: str = "fanout_test"
+            symbol: str = "AAPL"  # NOT in ai_compute basket
+            headline: str = "Anthropic AI research update"
+            summary: str = ""
+            source: str = "Test"
+            source_tier: int = 1
+            url: str = "https://test.com"
+            published_time: datetime = None
+            fetched_at: datetime = None
+            sentiment_score: float = 0.0
+            sentiment_confidence: float = 0.5
+            
+            def __post_init__(self):
+                if self.published_time is None:
+                    self.published_time = datetime.now(timezone.utc) - timedelta(minutes=5)
+                if self.fetched_at is None:
+                    self.fetched_at = datetime.now(timezone.utc)
+            
+            def age_sec(self) -> float:
+                return 300.0
+        
+        logger = get_theme_shock_logger()
+        logger._dedupe_window_sec = 0  # Disable deduplication
+        item = MockItem()
+        
+        events = logger.process_news_item_from_publish(item=item)
+        
+        logged_symbols = {e.symbols_tradable[0] if e.symbols_tradable else None for e in events}
+        assert "NVDA" in logged_symbols or any("NVDA" in e.ticker_basket for e in events), (
+            "fanout_overlap=False should emit for NVDA even though item.symbol=AAPL"
+        )
+
+    def test_fanout_true_only_overlapping_symbols(self, monkeypatch, reset_singleton):
+        """When fanout_overlap=True, only emit for symbols in item.symbol."""
+        monkeypatch.setenv("ENABLE_THEME_FANOUT_REQUIRE_SYMBOL_OVERLAP", "1")
+        monkeypatch.setenv("ENABLE_THEME_HARD_SKIP_HEADLINE_ONLY", "0")
+        reset_theme_shock_logger()
+        
+        @dataclass
+        class MockItem:
+            id: str = "fanout_overlap_test"
+            symbol: str = "NVDA"  # IN ai_compute basket
+            headline: str = "Anthropic AI research update"
+            summary: str = ""
+            source: str = "Test"
+            source_tier: int = 1
+            url: str = "https://test.com"
+            published_time: datetime = None
+            fetched_at: datetime = None
+            sentiment_score: float = 0.0
+            sentiment_confidence: float = 0.5
+            
+            def __post_init__(self):
+                if self.published_time is None:
+                    self.published_time = datetime.now(timezone.utc) - timedelta(minutes=5)
+                if self.fetched_at is None:
+                    self.fetched_at = datetime.now(timezone.utc)
+            
+            def age_sec(self) -> float:
+                return 300.0
+        
+        logger = get_theme_shock_logger()
+        logger._dedupe_window_sec = 0  # Disable deduplication
+        item = MockItem()
+        
+        events = logger.process_news_item_from_publish(item=item)
+        
+        assert len(events) > 0, "Should emit for NVDA (in basket AND item.symbol)"
+        
+        for e in events:
+            assert any("NVDA" in e.ticker_basket for _ in [1]) or "NVDA" in e.symbols_tradable, (
+                "Should only emit for NVDA since that's the only overlap"
+            )
+
+    def test_fanout_true_no_overlap_no_emit(self, monkeypatch, reset_singleton):
+        """When fanout_overlap=True and no symbol overlap, emit nothing."""
+        monkeypatch.setenv("ENABLE_THEME_FANOUT_REQUIRE_SYMBOL_OVERLAP", "1")
+        monkeypatch.setenv("ENABLE_THEME_HARD_SKIP_HEADLINE_ONLY", "0")
+        reset_theme_shock_logger()
+        
+        @dataclass
+        class MockItem:
+            id: str = "fanout_no_overlap_test"
+            symbol: str = "AAPL"  # NOT in ai_compute basket
+            headline: str = "Anthropic AI research update"
+            summary: str = ""
+            source: str = "Test"
+            source_tier: int = 1
+            url: str = "https://test.com"
+            published_time: datetime = None
+            fetched_at: datetime = None
+            sentiment_score: float = 0.0
+            sentiment_confidence: float = 0.5
+            
+            def __post_init__(self):
+                if self.published_time is None:
+                    self.published_time = datetime.now(timezone.utc) - timedelta(minutes=5)
+                if self.fetched_at is None:
+                    self.fetched_at = datetime.now(timezone.utc)
+            
+            def age_sec(self) -> float:
+                return 300.0
+        
+        logger = get_theme_shock_logger()
+        logger._dedupe_window_sec = 0  # Disable deduplication
+        item = MockItem()
+        
+        events = logger.process_news_item_from_publish(item=item)
+        
+        assert len(events) == 0, (
+            "fanout_overlap=True should emit NOTHING when item.symbol=AAPL "
+            "has no overlap with ai_compute basket"
+        )
+
+    def test_fanout_true_with_symbols_list(self, monkeypatch, reset_singleton):
+        """When fanout_overlap=True, use item.symbols list if present."""
+        monkeypatch.setenv("ENABLE_THEME_FANOUT_REQUIRE_SYMBOL_OVERLAP", "1")
+        monkeypatch.setenv("ENABLE_THEME_HARD_SKIP_HEADLINE_ONLY", "0")
+        reset_theme_shock_logger()
+        
+        @dataclass
+        class MockItemWithSymbols:
+            id: str = "fanout_symbols_list_test"
+            symbol: str = "AAPL"  # NOT in ai_compute basket
+            symbols: list = None  # Will include NVDA
+            headline: str = "Anthropic AI research update"
+            summary: str = ""
+            source: str = "Test"
+            source_tier: int = 1
+            url: str = "https://test.com"
+            published_time: datetime = None
+            fetched_at: datetime = None
+            sentiment_score: float = 0.0
+            sentiment_confidence: float = 0.5
+            
+            def __post_init__(self):
+                if self.symbols is None:
+                    self.symbols = ["AAPL", "NVDA", "AMD"]  # NVDA and AMD in basket
+                if self.published_time is None:
+                    self.published_time = datetime.now(timezone.utc) - timedelta(minutes=5)
+                if self.fetched_at is None:
+                    self.fetched_at = datetime.now(timezone.utc)
+            
+            def age_sec(self) -> float:
+                return 300.0
+        
+        logger = get_theme_shock_logger()
+        logger._dedupe_window_sec = 0  # Disable deduplication
+        item = MockItemWithSymbols()
+        
+        events = logger.process_news_item_from_publish(item=item)
+        
+        assert len(events) > 0, "Should emit for overlapping symbols"
+        
+        logged_symbols = set()
+        for e in events:
+            for s in e.ticker_basket:
+                if s in ["NVDA", "AMD"]:
+                    logged_symbols.add(s)
+        
+        assert "NVDA" in logged_symbols or "AMD" in logged_symbols, (
+            "Should emit for NVDA/AMD since they're in both item.symbols and basket"
+        )
