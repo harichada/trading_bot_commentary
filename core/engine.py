@@ -7277,21 +7277,46 @@ class TradingEngineWithCommentary:
                         # broken-thesis exit. The time floor only
                         # protects the "soft" proactive triggers.
                         _strategy = (getattr(position, 'reasoning', {}) or {}).get('strategy', '')
+                        _reasoning = getattr(position, 'reasoning', {}) or {}
                         _hold_min = (datetime.now() - position.entry_time).total_seconds() / 60.0
                         _is_news_trade = 'news' in _strategy.lower() or _strategy == 'free_news_sentiment'
                         _is_mean_rev = 'mean_reversion' in _strategy.lower()
+                        # v-proactive-exit-daytrade-2026-09-14: day trades use shorter min-age
+                        _is_day_trade = (
+                            _reasoning.get('is_day_trade', False)
+                            or _strategy == 'day_trade_momentum'
+                            or 'day_trade' in _strategy.lower()
+                        )
                         # Per-strategy minimum age before proactive exit fires.
-                        # News: 30 min — institutional re-rate plays out over
-                        # hours. MeanRev: 10 min — bounces are faster. Other
-                        # (momentum/breakout): 15 min default.
-                        if _is_news_trade:
+                        # Day trade: 3 min — intraday momentum breaks faster.
+                        # News: 30 min — institutional re-rate plays out over hours.
+                        # MeanRev: 10 min — bounces are faster.
+                        # Other (momentum/breakout): 15 min default.
+                        if _is_day_trade:
+                            _min_age = Config().PROACTIVE_EXIT_MIN_AGE_DAYTRADE
+                        elif _is_news_trade:
                             _min_age = Config().PROACTIVE_EXIT_MIN_AGE_NEWS
                         elif _is_mean_rev:
                             _min_age = Config().PROACTIVE_EXIT_MIN_AGE_MEANREV
                         else:
                             _min_age = Config().PROACTIVE_EXIT_MIN_AGE_DEFAULT
 
-                        _proactive_allowed = _hold_min >= _min_age
+                        # v-proactive-exit-r-override-2026-09-14: R-based override
+                        # When pnl is at or below the R-override threshold, bypass
+                        # min-age entirely — thesis is likely broken regardless of age.
+                        _stop_dist = abs(position.entry_price - (position.original_stop or position.stop_loss))
+                        if _stop_dist > 0:
+                            if position.side == 'long':
+                                _pnl_r_for_gate = (current_price - position.entry_price) / _stop_dist
+                            else:
+                                _pnl_r_for_gate = (position.entry_price - current_price) / _stop_dist
+                        else:
+                            _pnl_r_for_gate = 0
+
+                        _r_override_threshold = Config().PROACTIVE_EXIT_R_OVERRIDE_THRESHOLD
+                        _r_override_used = _pnl_r_for_gate <= _r_override_threshold
+                        _age_gate_met = _hold_min >= _min_age
+                        _proactive_allowed = _age_gate_met or _r_override_used
                         # FSM gate: PROACTIVE_EXIT is in ALLOWED_EXITS only
                         # for LIVE and AT_BREAKEVEN. Past 1R / TRAILING the
                         # rule is physically disconnected — the trade is in
@@ -7302,10 +7327,14 @@ class TradingEngineWithCommentary:
                         if Config().ENABLE_PROACTIVE_EXIT and proactive_indicators and _fsm_allows_proactive and not _proactive_allowed:
                             # Suppress and audit so we can measure how often
                             # the time-floor saved us a whipsaw.
+                            # v-proactive-exit-daytrade-2026-09-14: added r_override fields
                             self._audit(
                                 "proactive_exit", symbol, "suppressed", "below_min_age",
                                 hold_min=round(_hold_min, 1),
                                 min_age=_min_age,
+                                pnl_r=round(_pnl_r_for_gate, 3),
+                                r_override_threshold=_r_override_threshold,
+                                is_day_trade=_is_day_trade,
                                 strategy=_strategy or "unknown",
                                 state=_state.value,
                             )
@@ -7330,11 +7359,15 @@ class TradingEngineWithCommentary:
                                     audit_fn=self._audit,
                                 ):
                                     continue
+                                # v-proactive-exit-daytrade-2026-09-14: added r_override fields
                                 self._audit("proactive_exit", symbol, "exit",
                                             proactive_reason,
                                             pnl_r=round(pnl_r, 3),
                                             price=round(current_price, 2),
-                                            entry=round(position.entry_price, 2))
+                                            entry=round(position.entry_price, 2),
+                                            age_min=round(_hold_min, 1),
+                                            is_day_trade=_is_day_trade,
+                                            r_override_used=_r_override_used)
                                 self.commentary.add_commentary(TradingCommentary(
                                     timestamp=datetime.now(),
                                     type=CommentaryType.DECISION,

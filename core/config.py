@@ -900,6 +900,60 @@ class Config:
         return int(self.manager.get('trading.proactive_exit_min_age_default', 15))
 
     @property
+    def PROACTIVE_EXIT_MIN_AGE_DAYTRADE(self) -> int:
+        """v-proactive-exit-daytrade-2026-09-14: min age before proactive_exit
+        fires for day_trade_momentum / managed day-trade positions.
+
+        RCA FTFT 2026-09-14: held ~20min, proactive_exit suppressed by
+        below_min_age (15m default) the entire time, then hit hard_stop.
+        Day trades need shorter min age so we don't ride full stop when
+        losing early — the thesis (intraday momentum) breaks faster than
+        swing/news theses.
+
+        Default 3 minutes. Much shorter than swing/news (15-30) because:
+          - Day trades target fast momentum, not multi-hour re-rates
+          - Early adverse move often means thesis is broken
+          - Hard stop remains floor (this doesn't remove it)
+
+        Set via env PROACTIVE_EXIT_MIN_AGE_DAYTRADE=5 or
+        trading.proactive_exit_min_age_daytrade: 5 in Config.yaml.
+        """
+        env_val = os.getenv("PROACTIVE_EXIT_MIN_AGE_DAYTRADE")
+        if env_val is not None:
+            try:
+                return int(env_val)
+            except ValueError:
+                pass
+        return int(self.manager.get('trading.proactive_exit_min_age_daytrade', 3))
+
+    @property
+    def PROACTIVE_EXIT_R_OVERRIDE_THRESHOLD(self) -> float:
+        """v-proactive-exit-r-override-2026-09-14: when unrealized R is at or
+        below this threshold, bypass min-age gate entirely for proactive exit.
+
+        RCA FTFT 2026-09-14: position reached -0.5R within 5min but min-age
+        (15m) blocked proactive exit. When a trade is already at -0.3R or
+        worse, the thesis is likely broken regardless of age — let proactive
+        exit fire immediately.
+
+        Default -0.3R. More aggressive than the -0.5R proactive_exit trigger
+        threshold in check_proactive_exit because this is just the AGE bypass,
+        not the exit decision itself. The actual exit still requires indicator
+        confirmation (MACD flip, RSI cross, ADX collapse).
+
+        Set via env PROACTIVE_EXIT_R_OVERRIDE_THRESHOLD=-0.5 or
+        trading.proactive_exit_r_override_threshold: -0.5 in Config.yaml.
+        Set to a very negative value (e.g. -999) to effectively disable.
+        """
+        env_val = os.getenv("PROACTIVE_EXIT_R_OVERRIDE_THRESHOLD")
+        if env_val is not None:
+            try:
+                return float(env_val)
+            except ValueError:
+                pass
+        return float(self.manager.get('trading.proactive_exit_r_override_threshold', -0.3))
+
+    @property
     def LIVE_SIZE_MULTIPLIER(self) -> float:
         """Global live-launch safety dial applied after strategy multipliers.
 
