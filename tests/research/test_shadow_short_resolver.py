@@ -3,7 +3,7 @@
 v-shadow-short-resolver-tests-2026-09-11. Unit tests for:
   - R-multiple math (SHORT: positive R = profit)
   - Dedupe logic (same symbol within 15m)
-  - Hands-off exclusions (MU/SNAP/SPCX/HQGE)
+  - Hands-off exclusions (MU/HQGE/SPCX)
   - Barrier resolution (stop/target/timeout/flatten)
 """
 from __future__ import annotations
@@ -225,7 +225,7 @@ class TestDedupe:
 
 
 class TestHandsOffExclusion:
-    """Hands-off forever symbols: MU, SNAP, SPCX, HQGE."""
+    """Hands-off forever symbols: MU, HQGE, SPCX (SNAP removed 2026-09-14)."""
 
     def test_mu_excluded(self):
         from research.shadow_short_resolver import ShadowEntry, filter_and_dedupe
@@ -247,7 +247,8 @@ class TestHandsOffExclusion:
         result = filter_and_dedupe(entries)
         assert len(result) == 0
 
-    def test_snap_excluded(self):
+    def test_snap_not_excluded(self):
+        """SNAP removed from permanent hands-off 2026-09-14 — now tradeable."""
         from research.shadow_short_resolver import ShadowEntry, filter_and_dedupe
 
         entries = [
@@ -265,7 +266,8 @@ class TestHandsOffExclusion:
         ]
 
         result = filter_and_dedupe(entries)
-        assert len(result) == 0
+        # SNAP is no longer in permanent hands-off denylist
+        assert len(result) == 1, "SNAP should NOT be excluded — removed from denylist 2026-09-14"
 
     def test_spcx_excluded(self):
         from research.shadow_short_resolver import ShadowEntry, filter_and_dedupe

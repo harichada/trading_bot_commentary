@@ -434,7 +434,7 @@ class TestGetBracketMonitoredPositions:
 class TestDenylistSymbolsExcluded:
     """Test that HANDS_OFF_DENYLIST symbols are excluded from monitoring.
     
-    v-hands-off-denylist-2026-09-14: A denylist symbol (MU, SNAP, SPCX, HQGE)
+    v-hands-off-denylist-2026-09-14: A denylist symbol (MU, HQGE, SPCX)
     must NOT appear in either filter result, even if it would otherwise
     qualify (managed_by_bot=True, NOT is_long_term, with or without bracket).
     
@@ -459,15 +459,15 @@ class TestDenylistSymbolsExcluded:
         )
         
         positions = {"MU": pos}
-        denylist = frozenset({"MU", "SNAP", "SPCX", "HQGE"})
+        denylist = frozenset({"MU", "HQGE", "SPCX"})
         result = _get_bracket_monitored_positions_logic(positions, denylist=denylist)
         
         assert len(result) == 0, "MU must be excluded from monitoring even without is_long_term=True"
     
     def test_denylist_symbol_excluded_from_missing_brackets(self):
-        """SNAP without bracket but managed_by_bot=True must be excluded from bootstrap."""
+        """SPCX without bracket but managed_by_bot=True must be excluded from bootstrap."""
         pos = Position(
-            symbol="SNAP",
+            symbol="SPCX",
             entry_price=15.0,
             quantity=500,
             side="long",
@@ -480,11 +480,34 @@ class TestDenylistSymbolsExcluded:
             # No bracket_order_id — would normally be in "missing brackets" list
         )
         
-        positions = {"SNAP": pos}
-        denylist = frozenset({"MU", "SNAP", "SPCX", "HQGE"})
+        positions = {"SPCX": pos}
+        denylist = frozenset({"MU", "HQGE", "SPCX"})
         result = _get_positions_missing_brackets_logic(positions, denylist=denylist)
         
-        assert len(result) == 0, "SNAP must be excluded from bootstrap even without is_long_term=True"
+        assert len(result) == 0, "SPCX must be excluded from bootstrap (in denylist)"
+
+    def test_snap_not_in_denylist_can_be_bootstrapped(self):
+        """SNAP removed from permanent denylist 2026-09-14 — now bootstrappable."""
+        pos = Position(
+            symbol="SNAP",
+            entry_price=15.0,
+            quantity=500,
+            side="long",
+            stop_loss=14.0,
+            take_profit=18.0,
+            entry_time=datetime.now(),
+            mode="live",
+            managed_by_bot=True,
+            is_long_term=False,
+            # No bracket_order_id — would normally be in "missing brackets" list
+        )
+        
+        positions = {"SNAP": pos}
+        denylist = frozenset({"MU", "HQGE", "SPCX"})  # SNAP not in denylist
+        result = _get_positions_missing_brackets_logic(positions, denylist=denylist)
+        
+        assert len(result) == 1, "SNAP should be included (removed from denylist 2026-09-14)"
+        assert result[0][0] == "SNAP"
     
     def test_non_denylist_symbol_still_included(self):
         """Non-denylist symbols should still be included when they qualify."""
@@ -503,7 +526,7 @@ class TestDenylistSymbolsExcluded:
         )
         
         positions = {"AAPL": pos}
-        denylist = frozenset({"MU", "SNAP", "SPCX", "HQGE"})
+        denylist = frozenset({"MU", "HQGE", "SPCX"})
         result = _get_bracket_monitored_positions_logic(positions, denylist=denylist)
         
         assert len(result) == 1, "AAPL should still be included (not in denylist)"
@@ -526,7 +549,7 @@ class TestDenylistSymbolsExcluded:
         )
         
         positions = {"mu": pos}
-        denylist = frozenset({"MU", "SNAP", "SPCX", "HQGE"})  # uppercase denylist
+        denylist = frozenset({"MU", "HQGE", "SPCX"})  # uppercase denylist
         result = _get_bracket_monitored_positions_logic(positions, denylist=denylist)
         
         assert len(result) == 0, "mu (lowercase) must be excluded via case-insensitive match"

@@ -5903,7 +5903,7 @@ class TradingEngineWithCommentary:
         #   - Hard loss circuits / ENABLE_BOT_ONLY_PNL_CIRCUIT intact
         #   - Flatten / exits / order_monitor / OCO / bootstrap for EXISTING
         #     bot day-trades intact
-        #   - LT hands-off forever: MU, SNAP, HQGE, SPCX (is_long_term)
+        #   - LT hands-off forever: MU, HQGE, SPCX (is_long_term)
         #
         # Does NOT flip autonomous_live. Only blocks new entries via the
         # day_trade_momentum lane in LIVE mode.
@@ -7636,7 +7636,7 @@ class TradingEngineWithCommentary:
         is_external = getattr(position, 'is_external', False)
         is_manually_managed = getattr(position, 'is_manually_managed', False)
         is_long_term = getattr(position, 'is_long_term', False)
-        # v-hands-off-denylist-2026-09-14: hard denylist check (MU, SNAP, SPCX, HQGE)
+        # v-hands-off-denylist-2026-09-14: hard denylist check (MU, HQGE, SPCX)
         denylist = Config().HANDS_OFF_DENYLIST
         symbol_upper = (position.symbol or '').upper()
         in_denylist = symbol_upper in denylist
@@ -8241,7 +8241,7 @@ class TradingEngineWithCommentary:
           - Manually managed positions (is_manually_managed=True)
           - Long-term positions (is_long_term=True)
           - Positions without managed_by_bot=True
-          - Symbols in HANDS_OFF_DENYLIST (MU, SNAP, SPCX, HQGE)
+          - Symbols in HANDS_OFF_DENYLIST (MU, HQGE, SPCX)
 
         This aligns with `_get_bracket_monitored_positions` and
         `_is_auto_managed` so the circuit trips ONLY on positions the

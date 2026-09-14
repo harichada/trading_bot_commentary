@@ -1316,8 +1316,11 @@ class Config:
         """v-hands-off-denylist-2026-09-14: symbols the bot must NEVER
         count toward bot_daily_pnl or attempt to auto-close.
 
-        Hari's STRICT hands-off portfolio as of 2026-09-11:
-          - MU, SNAP, SPCX, HQGE
+        Hari's STRICT hands-off portfolio as of 2026-09-14:
+          - MU, HQGE, SPCX
+
+        SNAP removed from permanent hands-off on 2026-09-14 — operator
+        can now toggle Long-Term / Bot-Managed / Close on SNAP from :9000 UI.
 
         These positions are long-term / external / manually managed
         and must not trigger or be affected by the bot's daily-loss
@@ -1327,7 +1330,7 @@ class Config:
 
         Override via config trading.hands_off_denylist (list of strings)
         to add/remove symbols at runtime."""
-        default = ['MU', 'SNAP', 'SPCX', 'HQGE']
+        default = ['MU', 'HQGE', 'SPCX']
         custom = self.manager.get('trading.hands_off_denylist', default)
         if isinstance(custom, str):
             custom = [s.strip().upper() for s in custom.split(',') if s.strip()]
@@ -1542,7 +1545,7 @@ class Config:
           - Hard loss circuits / ENABLE_BOT_ONLY_PNL_CIRCUIT
           - Flatten / software exits / order_monitor / OCO / bootstrap
             for EXISTING bot day-trades
-          - LT hands-off forever: MU, SNAP, HQGE, SPCX (is_long_term flag)
+          - LT hands-off forever: MU, HQGE, SPCX (is_long_term flag)
         
         The flag does NOT flip autonomous_live. It only blocks NEW live
         entries via day_trade_momentum lane.

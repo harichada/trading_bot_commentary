@@ -2543,7 +2543,7 @@ class TestOwnershipSurvivesRestart:
     def test_long_term_stays_unmanaged_on_restore(self):
         """is_long_term positions must NOT be auto-flipped to managed_by_bot=True
         even if the saved state has managed_by_bot=True — LT holds are user-
-        designated hands-off positions (MU, SNAP, HQGE, SPCX)."""
+        designated hands-off positions (MU, HQGE, SPCX)."""
         src = ENGINE_PATH.read_text()
         anchor = src.find("v-ownership-survives-restart-2026-09-10")
         assert anchor != -1
@@ -2950,7 +2950,7 @@ class TestHandsOffDenylist:
 
     Fix: align _compute_bot_daily_pnl filtering with _get_bracket_monitored_positions
     (skip is_external, is_manually_managed, is_long_term) and add a hard
-    denylist (MU, SNAP, SPCX, HQGE) as a safety net. The denylist is
+    denylist (MU, HQGE, SPCX) as a safety net. The denylist is
     honoured in both bot P&L computation and emergency stop flatten path."""
 
     def test_config_has_hands_off_denylist(self):
@@ -2961,13 +2961,17 @@ class TestHandsOffDenylist:
         )
 
     def test_hands_off_denylist_default_symbols(self):
-        """Denylist must include MU, SNAP, SPCX, HQGE by default."""
+        """Denylist must include MU, HQGE, SPCX by default (SNAP removed 2026-09-14)."""
         src = CONFIG_PATH.read_text()
         anchor = src.find("def HANDS_OFF_DENYLIST")
         assert anchor != -1, "HANDS_OFF_DENYLIST property missing"
         block = src[anchor:anchor + 800]
-        for sym in ['MU', 'SNAP', 'SPCX', 'HQGE']:
+        for sym in ['MU', 'HQGE', 'SPCX']:
             assert sym in block, f"{sym} missing from HANDS_OFF_DENYLIST default"
+        # SNAP should NOT be in permanent denylist (removed 2026-09-14)
+        assert "'SNAP'" not in block or "SNAP removed" in block, (
+            "SNAP should not be in permanent denylist default — it's now toggleable"
+        )
 
     def test_compute_bot_daily_pnl_excludes_external(self):
         """_compute_bot_daily_pnl must exclude is_external positions."""

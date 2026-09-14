@@ -18,7 +18,7 @@ Architectural notes:
     backward compatibility with the Phase A façade inventory
 
 HANDS_OFF protection (position filtering excludes):
-  - HANDS_OFF_DENYLIST symbols (MU, SNAP, SPCX, HQGE) — checked unconditionally
+  - HANDS_OFF_DENYLIST symbols (MU, HQGE, SPCX) — checked unconditionally
   - is_long_term, is_external, is_manually_managed flags
 
 The denylist check is independent of flags: a denylist symbol is protected
