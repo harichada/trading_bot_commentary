@@ -6,9 +6,13 @@ It runs as an async loop registered with the TaskSupervisor and handles:
   - Orphan bracket bootstrap at startup
   - Dispatching to bracket handlers for fills, cancels, rejects
 
-HANDS_OFF guards (is_external, is_manually_managed, is_long_term) are
-applied at the filtering level before any bracket operations. MU, SNAP,
-SPCX, HQGE are protected by the is_long_term flag.
+HANDS_OFF guards are applied at the filtering level before any bracket
+operations:
+  - HANDS_OFF_DENYLIST symbols (MU, SNAP, SPCX, HQGE) — never monitored
+  - is_external, is_manually_managed, is_long_term flags — skip monitoring
+
+The denylist check is independent of the flags, so a denylist symbol is
+protected even if none of those flags happen to be set.
 """
 from __future__ import annotations
 
@@ -21,6 +25,7 @@ if TYPE_CHECKING:
     from core.engine import TradingEngineWithCommentary
     from core.models import Position
 
+from core.config import Config
 from core.order_monitor.brackets import (
     check_trail_replace,
     handle_bracket_not_working,
@@ -41,6 +46,7 @@ class OrderMonitor:
 
     Only monitors positions where:
       - managed_by_bot=True
+      - NOT in HANDS_OFF_DENYLIST (MU, SNAP, SPCX, HQGE)
       - NOT is_external / is_manually_managed / is_long_term
       - Has bracket_order_id set (bot placed a bracket)
 
@@ -128,15 +134,20 @@ class OrderMonitor:
         Criteria:
           - In self.positions (LIVE mode, not simulated)
           - managed_by_bot=True
+          - NOT in HANDS_OFF_DENYLIST (MU, SNAP, SPCX, HQGE)
           - NOT is_external / is_manually_managed / is_long_term
           - Has bracket_order_id (bot placed a bracket for this position)
         """
+        denylist = Config().HANDS_OFF_DENYLIST
         result = []
         for symbol, pos in list(self.engine.positions.items()):
             if pos is None:
                 continue
             # Skip non-bot-managed
             if not getattr(pos, 'managed_by_bot', False):
+                continue
+            # v-hands-off-denylist-2026-09-14: skip denylist symbols unconditionally
+            if symbol.upper() in denylist:
                 continue
             # Skip external/manual/long-term
             if getattr(pos, 'is_external', False):
@@ -161,15 +172,20 @@ class OrderMonitor:
         Criteria (same as get_bracket_monitored_positions minus bracket_order_id check):
           - In self.positions (LIVE mode, not simulated)
           - managed_by_bot=True
+          - NOT in HANDS_OFF_DENYLIST (MU, SNAP, SPCX, HQGE)
           - NOT is_external / is_manually_managed / is_long_term
           - MISSING bracket_order_id (inverse of normal monitor filter)
         """
+        denylist = Config().HANDS_OFF_DENYLIST
         result = []
         for symbol, pos in list(self.engine.positions.items()):
             if pos is None:
                 continue
             # Skip non-bot-managed
             if not getattr(pos, 'managed_by_bot', False):
+                continue
+            # v-hands-off-denylist-2026-09-14: skip denylist symbols unconditionally
+            if symbol.upper() in denylist:
                 continue
             # Skip external/manual/long-term (Hari's 4 LT holds safe)
             if getattr(pos, 'is_external', False):

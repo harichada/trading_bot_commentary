@@ -348,16 +348,23 @@ def make_rejected_order(order_id: str = "12345", reason: str = "Invalid price") 
 # ORDER MONITOR FILTERING TESTS
 # ============================================================================
 
-def _get_bracket_monitored_positions_logic(positions: dict) -> list:
+def _get_bracket_monitored_positions_logic(positions: dict, denylist: frozenset = None) -> list:
     """Pure logic test of position filtering (no engine import needed).
     
     This replicates the logic of _get_bracket_monitored_positions for testing.
+    v-hands-off-denylist-2026-09-14: added denylist parameter for testing.
     """
+    if denylist is None:
+        from core.config import Config
+        denylist = Config().HANDS_OFF_DENYLIST
     result = []
     for symbol, pos in list(positions.items()):
         if pos is None:
             continue
         if not getattr(pos, 'managed_by_bot', False):
+            continue
+        # v-hands-off-denylist-2026-09-14: skip denylist symbols unconditionally
+        if symbol.upper() in denylist:
             continue
         if getattr(pos, 'is_external', False):
             continue
@@ -417,6 +424,112 @@ class TestGetBracketMonitoredPositions:
         result = _get_bracket_monitored_positions_logic(positions)
         
         assert len(result) == 0
+
+
+# ============================================================================
+# v-hands-off-denylist-2026-09-14: DENYLIST SYMBOL TESTS
+# Verify that HANDS_OFF_DENYLIST symbols are excluded even without is_long_term=True
+# ============================================================================
+
+class TestDenylistSymbolsExcluded:
+    """Test that HANDS_OFF_DENYLIST symbols are excluded from monitoring.
+    
+    v-hands-off-denylist-2026-09-14: A denylist symbol (MU, SNAP, SPCX, HQGE)
+    must NOT appear in either filter result, even if it would otherwise
+    qualify (managed_by_bot=True, NOT is_long_term, with or without bracket).
+    
+    This is a defense-in-depth guard: denylist symbols are protected
+    unconditionally, regardless of whether the flags happen to be set.
+    """
+    
+    def test_denylist_symbol_excluded_from_monitored_positions_with_bracket(self):
+        """MU with bracket and managed_by_bot=True but NOT is_long_term must be excluded."""
+        pos = Position(
+            symbol="MU",
+            entry_price=100.0,
+            quantity=100,
+            side="long",
+            stop_loss=95.0,
+            take_profit=110.0,
+            entry_time=datetime.now(),
+            mode="live",
+            managed_by_bot=True,  # Would normally qualify
+            is_long_term=False,   # NOT marked long-term
+            bracket_order_id="12345",  # Has bracket
+        )
+        
+        positions = {"MU": pos}
+        denylist = frozenset({"MU", "SNAP", "SPCX", "HQGE"})
+        result = _get_bracket_monitored_positions_logic(positions, denylist=denylist)
+        
+        assert len(result) == 0, "MU must be excluded from monitoring even without is_long_term=True"
+    
+    def test_denylist_symbol_excluded_from_missing_brackets(self):
+        """SNAP without bracket but managed_by_bot=True must be excluded from bootstrap."""
+        pos = Position(
+            symbol="SNAP",
+            entry_price=15.0,
+            quantity=500,
+            side="long",
+            stop_loss=14.0,
+            take_profit=18.0,
+            entry_time=datetime.now(),
+            mode="live",
+            managed_by_bot=True,  # Would normally qualify for bootstrap
+            is_long_term=False,   # NOT marked long-term
+            # No bracket_order_id — would normally be in "missing brackets" list
+        )
+        
+        positions = {"SNAP": pos}
+        denylist = frozenset({"MU", "SNAP", "SPCX", "HQGE"})
+        result = _get_positions_missing_brackets_logic(positions, denylist=denylist)
+        
+        assert len(result) == 0, "SNAP must be excluded from bootstrap even without is_long_term=True"
+    
+    def test_non_denylist_symbol_still_included(self):
+        """Non-denylist symbols should still be included when they qualify."""
+        pos = Position(
+            symbol="AAPL",
+            entry_price=150.0,
+            quantity=100,
+            side="long",
+            stop_loss=145.0,
+            take_profit=160.0,
+            entry_time=datetime.now(),
+            mode="live",
+            managed_by_bot=True,
+            is_long_term=False,
+            bracket_order_id="12345",
+        )
+        
+        positions = {"AAPL": pos}
+        denylist = frozenset({"MU", "SNAP", "SPCX", "HQGE"})
+        result = _get_bracket_monitored_positions_logic(positions, denylist=denylist)
+        
+        assert len(result) == 1, "AAPL should still be included (not in denylist)"
+        assert result[0][0] == "AAPL"
+    
+    def test_denylist_case_insensitive(self):
+        """Denylist check should be case-insensitive (symbol.upper() in denylist)."""
+        pos = Position(
+            symbol="mu",  # lowercase
+            entry_price=100.0,
+            quantity=100,
+            side="long",
+            stop_loss=95.0,
+            take_profit=110.0,
+            entry_time=datetime.now(),
+            mode="live",
+            managed_by_bot=True,
+            is_long_term=False,
+            bracket_order_id="12345",
+        )
+        
+        positions = {"mu": pos}
+        denylist = frozenset({"MU", "SNAP", "SPCX", "HQGE"})  # uppercase denylist
+        result = _get_bracket_monitored_positions_logic(positions, denylist=denylist)
+        
+        assert len(result) == 0, "mu (lowercase) must be excluded via case-insensitive match"
 
 
 # ============================================================================
@@ -852,18 +965,25 @@ class TestChildOrderIdExtraction:
 # to positions missing bracket_order_id.
 # ============================================================================
 
-def _get_positions_missing_brackets_logic(positions: dict) -> list:
+def _get_positions_missing_brackets_logic(positions: dict, denylist: frozenset = None) -> list:
     """Pure logic test of position filtering for bootstrap (no engine import needed).
     
     This replicates the logic of _get_positions_missing_brackets for testing.
     Same filters as _get_bracket_monitored_positions EXCEPT the bracket_order_id
     requirement is inverted (we want positions WITHOUT bracket_order_id).
+    v-hands-off-denylist-2026-09-14: added denylist parameter for testing.
     """
+    if denylist is None:
+        from core.config import Config
+        denylist = Config().HANDS_OFF_DENYLIST
     result = []
     for symbol, pos in list(positions.items()):
         if pos is None:
             continue
         if not getattr(pos, 'managed_by_bot', False):
+            continue
+        # v-hands-off-denylist-2026-09-14: skip denylist symbols unconditionally
+        if symbol.upper() in denylist:
             continue
         if getattr(pos, 'is_external', False):
             continue

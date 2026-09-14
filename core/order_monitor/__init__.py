@@ -16,8 +16,13 @@ Architectural notes:
   - All methods that previously lived on the engine are now on OrderMonitor
   - Engine keeps thin delegate methods with same names and signatures for
     backward compatibility with the Phase A façade inventory
-  - HANDS_OFF_DENYLIST, is_long_term, is_external, is_manually_managed guards
-    are preserved exactly as they were
+
+HANDS_OFF protection (position filtering excludes):
+  - HANDS_OFF_DENYLIST symbols (MU, SNAP, SPCX, HQGE) — checked unconditionally
+  - is_long_term, is_external, is_manually_managed flags
+
+The denylist check is independent of flags: a denylist symbol is protected
+even without is_long_term=True set.
 """
 from __future__ import annotations
 
