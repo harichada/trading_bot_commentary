@@ -5957,6 +5957,211 @@ class TradingEngineWithCommentary:
             ))
             return  # abort the signal — no order placed
 
+        # v-meanrev-quality-gate-2026-09-15: block mean-rev entries that
+        # don't meet quality thresholds. Enforces tighter standards than
+        # the strategy's own gates:
+        #   1. RSI must be in oversold quality band (< RSI_QUALITY_MAX)
+        #   2. RSI must not be extremely oversold (> RSI_QUALITY_MIN)
+        #   3. Price must not be too far below VWAP (catching extended moves)
+        # Fail-open on missing indicators. Scope: mean-rev family only.
+        if (Config().ENABLE_MEAN_REV_QUALITY_GATE
+                and _ra_strategy in ("mean_reversion", "oversold_v2")):
+            _qg_rsi = signal.reasoning.get("rsi") if signal.reasoning else None
+            _qg_vwap = None
+            _qg_price = signal.entry_price
+            try:
+                if market_data is not None and hasattr(market_data, "indicators"):
+                    _qg_vwap = market_data.indicators.get("vwap")
+                if _qg_vwap is None and signal.reasoning:
+                    _qg_vwap = signal.reasoning.get("vwap")
+            except Exception:
+                pass
+            try:
+                _qg_rsi = float(_qg_rsi) if _qg_rsi is not None else None
+                _qg_vwap = float(_qg_vwap) if _qg_vwap is not None else None
+            except (TypeError, ValueError):
+                _qg_rsi = None
+                _qg_vwap = None
+
+            _qg_rsi_max = Config().MEAN_REV_RSI_QUALITY_MAX
+            _qg_rsi_min = Config().MEAN_REV_RSI_QUALITY_MIN
+            _qg_vwap_max_pct = Config().MEAN_REV_VWAP_DISTANCE_MAX_PCT
+            _qg_block_reason = None
+            _qg_block_detail = {}
+
+            if _qg_rsi is not None:
+                if _qg_rsi >= _qg_rsi_max:
+                    _qg_block_reason = "rsi_not_oversold"
+                    _qg_block_detail = {
+                        "rsi": round(_qg_rsi, 2),
+                        "threshold": _qg_rsi_max,
+                        "check": "rsi_quality_max",
+                    }
+                elif _qg_rsi <= _qg_rsi_min:
+                    _qg_block_reason = "rsi_extreme_oversold"
+                    _qg_block_detail = {
+                        "rsi": round(_qg_rsi, 2),
+                        "threshold": _qg_rsi_min,
+                        "check": "rsi_quality_min",
+                    }
+
+            if _qg_block_reason is None and _qg_vwap is not None and _qg_vwap > 0:
+                _vwap_dist_pct = ((_qg_vwap - _qg_price) / _qg_vwap) * 100
+                if _vwap_dist_pct > _qg_vwap_max_pct:
+                    _qg_block_reason = "vwap_distance_exceeded"
+                    _qg_block_detail = {
+                        "price": round(_qg_price, 2),
+                        "vwap": round(_qg_vwap, 2),
+                        "distance_pct": round(_vwap_dist_pct, 2),
+                        "threshold_pct": _qg_vwap_max_pct,
+                        "check": "vwap_distance_max",
+                    }
+
+            if _qg_block_reason is not None:
+                self._audit(
+                    "mean_rev_quality_gate", signal.symbol, "blocked",
+                    "mean_rev_quality_blocked",
+                    strategy=_ra_strategy,
+                    reason=_qg_block_reason,
+                    **_qg_block_detail,
+                )
+                self.commentary.add_commentary(TradingCommentary(
+                    timestamp=datetime.now(),
+                    type=CommentaryType.RISK_ASSESSMENT,
+                    symbol=signal.symbol,
+                    title=f"⛔ Mean-Rev Quality Gate — {signal.symbol} blocked",
+                    message=(
+                        f"Signal rejected by quality gate: {_qg_block_reason}. "
+                        f"Details: {_qg_block_detail}. "
+                        f"Quality mean-rev entries require RSI in {_qg_rsi_min}-{_qg_rsi_max} "
+                        f"range and price within {_qg_vwap_max_pct}% of VWAP."
+                    ),
+                    importance=6,
+                ))
+                self._emit_veto_snapshot(
+                    signal=signal,
+                    strategy_id=_ra_strategy,
+                    reason="mean_rev_quality_blocked",
+                    gate_name="mean_rev_quality_gate",
+                    extra={"block_reason": _qg_block_reason, **_qg_block_detail},
+                )
+                return  # abort the signal — no order placed
+
+        # v-meanrev-risk-off-gate-2026-09-15: exclude mean-rev entries during
+        # risk_off regime (primary book). Stage A constraint: Primary book
+        # exclude risk_off; secondary = all regimes. Secondary/shadow book
+        # logs all regimes for comparison.
+        if (Config().MEAN_REV_EXCLUDE_RISK_OFF
+                and _ra_strategy in ("mean_reversion", "mean_reversion_short", "oversold_v2")):
+            _mr_regime = (signal.reasoning or {}).get("market_context_regime")
+            if _mr_regime is None and _alloc is not None:
+                _mr_regime = _alloc.tape
+            if _mr_regime == "risk_off":
+                self._audit(
+                    "mean_rev_regime_gate", signal.symbol, "blocked",
+                    "mean_rev_risk_off_blocked",
+                    strategy=_ra_strategy,
+                    regime=_mr_regime,
+                )
+                self.commentary.add_commentary(TradingCommentary(
+                    timestamp=datetime.now(),
+                    type=CommentaryType.RISK_ASSESSMENT,
+                    symbol=signal.symbol,
+                    title=f"⛔ Mean-Rev Regime Gate — {signal.symbol} blocked",
+                    message=(
+                        f"Signal rejected: regime is risk_off. "
+                        f"Stage A primary book excludes risk_off regime. "
+                        f"Entry will be logged to secondary/shadow book for comparison."
+                    ),
+                    importance=6,
+                ))
+                return  # abort the signal — no order placed
+
+        # v-meanrev-dedupe-2026-09-15: dedupe same-symbol mean-rev entries
+        # within MEAN_REV_DEDUPE_MINUTES window. Stage A constraint: exclude
+        # same symbol <15m. Prevents repeated whipsawing on the same name.
+        if _ra_strategy in ("mean_reversion", "mean_reversion_short", "oversold_v2"):
+            _dedupe_min = Config().MEAN_REV_DEDUPE_MINUTES
+            if not hasattr(self, '_meanrev_last_entry'):
+                self._meanrev_last_entry = {}
+            _last_entry_time = self._meanrev_last_entry.get(signal.symbol)
+            if _last_entry_time is not None:
+                _age_min = (datetime.now() - _last_entry_time).total_seconds() / 60
+                if _age_min < _dedupe_min:
+                    self._audit(
+                        "mean_rev_dedupe_gate", signal.symbol, "blocked",
+                        "mean_rev_dedupe_blocked",
+                        strategy=_ra_strategy,
+                        age_min=round(_age_min, 1),
+                        dedupe_window_min=_dedupe_min,
+                    )
+                    self.commentary.add_commentary(TradingCommentary(
+                        timestamp=datetime.now(),
+                        type=CommentaryType.RISK_ASSESSMENT,
+                        symbol=signal.symbol,
+                        title=f"⛔ Mean-Rev Dedupe — {signal.symbol} blocked",
+                        message=(
+                            f"Signal rejected: same symbol entry {_age_min:.0f} min ago. "
+                            f"Stage A excludes same symbol <{_dedupe_min}m. "
+                            f"Wait {_dedupe_min - _age_min:.0f} more minutes."
+                        ),
+                        importance=5,
+                    ))
+                    return  # abort the signal — no order placed
+            self._meanrev_last_entry[signal.symbol] = datetime.now()
+
+        # v-meanrev-shadow-ledger-2026-09-15: emit shadow ledger entry for
+        # Stage A validation. Fields: setup_type, rsi_14, bb_distance, atr,
+        # stop_dist, rr_ratio, regime, shadow=true, would_be_R.
+        # Stage A scorecard: n≥150 resolved OR ≥10 sessions with ≥1 resolved,
+        # PF≥1.30, WR≥48%, exp≥+0.05R, DD≤6%, max losing day ≤2.0R.
+        if (Config().MEAN_REV_SHADOW_LEDGER_ENABLED
+                and _ra_strategy in ("mean_reversion", "mean_reversion_short", "oversold_v2")):
+            try:
+                _sl_reasoning = signal.reasoning or {}
+                _sl_indicators = {}
+                if market_data is not None and hasattr(market_data, "indicators"):
+                    _sl_indicators = market_data.indicators or {}
+                _sl_rsi = _sl_reasoning.get("rsi") or _sl_indicators.get("rsi")
+                _sl_bb_lower = float(_sl_indicators.get("bb_lower", 0) or 0)
+                _sl_bb_distance = None
+                if _sl_bb_lower > 0 and signal.entry_price > 0:
+                    _sl_bb_distance = ((signal.entry_price - _sl_bb_lower) / _sl_bb_lower) * 100
+                _sl_atr = _sl_reasoning.get("atr") or _sl_indicators.get("atr")
+                _sl_stop_dist = _sl_reasoning.get("stop_dist") or _sl_reasoning.get("stop_distance")
+                _sl_rr_ratio = None
+                if signal.entry_price > 0 and signal.stop_loss > 0 and signal.take_profit > 0:
+                    _sl_risk = abs(signal.entry_price - signal.stop_loss)
+                    _sl_reward = abs(signal.take_profit - signal.entry_price)
+                    if _sl_risk > 0:
+                        _sl_rr_ratio = round(_sl_reward / _sl_risk, 2)
+                _sl_regime = _sl_reasoning.get("market_context_regime")
+                if _sl_regime is None and _alloc is not None:
+                    _sl_regime = _alloc.tape
+                _sl_would_be_R = None
+                if _sl_stop_dist and _sl_stop_dist > 0:
+                    _sl_would_be_R = round((_sl_rr_ratio or 2.0), 2)
+                self._audit(
+                    "mean_rev_shadow_ledger", signal.symbol, "shadow",
+                    "stage_a_entry",
+                    setup_type=f"mean_rev_{signal.signal_type.name.lower()}",
+                    strategy=_ra_strategy,
+                    entry_pattern=_sl_reasoning.get("entry_pattern"),
+                    rsi_14=round(float(_sl_rsi), 2) if _sl_rsi else None,
+                    bb_distance=round(_sl_bb_distance, 2) if _sl_bb_distance else None,
+                    atr=round(float(_sl_atr), 4) if _sl_atr else None,
+                    stop_dist=round(float(_sl_stop_dist), 4) if _sl_stop_dist else None,
+                    rr_ratio=_sl_rr_ratio,
+                    regime=_sl_regime,
+                    shadow=True,
+                    would_be_R=_sl_would_be_R,
+                    entry_price=round(signal.entry_price, 2),
+                    stop_loss=round(signal.stop_loss, 2),
+                    take_profit=round(signal.take_profit, 2),
+                )
+            except Exception as _sl_exc:
+                logger.debug("mean_rev_shadow_ledger error: %s", _sl_exc)
+
         # v-conviction-sizer-shadow-2026-06-11: log the would-be size
         # multiplier for this signal from the confluence of independent
         # confirmations. Pure observation — actual sizing unchanged.
@@ -6933,6 +7138,165 @@ class TradingEngineWithCommentary:
                 importance=7,
             ))
             return
+
+        # v-meanrev-risk-budget-2026-09-15: separate risk budget for mean-rev.
+        # Mean-rev fires on volatility spikes (many stocks oversold at once).
+        # Without a separate cap, mean-rev can consume all MAX_POSITIONS slots,
+        # leaving no room for day-trade momentum when movers appear.
+        #
+        # Stage A constraints:
+        #   - MEAN_REV_RISK_BUDGET_PCT default 0 while LIVE off (shadow only)
+        #   - Hard separate pool from day-trade momentum / ORB / #2 / #3
+        #   - Max simultaneous open hyp shorts ≤3
+        #   - Exclude MU/HQGE/SPCX (+SNAP if hands-off)
+        _budget_strategy = (signal.reasoning or {}).get("strategy", "")
+        if (Config().ENABLE_MEAN_REV_RISK_BUDGET
+                and _budget_strategy in ("mean_reversion", "mean_reversion_short", "oversold_v2")):
+
+            _hands_off = Config().HANDS_OFF_DENYLIST
+            if signal.symbol.upper() in _hands_off:
+                self._audit(
+                    "mean_rev_budget_gate", signal.symbol, "skip",
+                    "mean_rev_hands_off_blocked",
+                    strategy=_budget_strategy,
+                    hands_off_list=list(_hands_off),
+                )
+                self.commentary.add_commentary(TradingCommentary(
+                    timestamp=datetime.now(),
+                    type=CommentaryType.RISK_ASSESSMENT,
+                    symbol=signal.symbol,
+                    title=f"🛑 Mean-Rev HANDS_OFF — {signal.symbol} blocked",
+                    message=(
+                        f"{signal.symbol} is in HANDS_OFF denylist: {', '.join(_hands_off)}. "
+                        f"Mean-rev entries on these symbols are permanently blocked."
+                    ),
+                    importance=8,
+                ))
+                return
+
+            _max_meanrev = Config().MAX_CONCURRENT_MEAN_REV
+            _max_meanrev_shorts = Config().MAX_CONCURRENT_MEAN_REV_SHORTS
+            _max_meanrev_risk_pct = Config().MAX_MEAN_REV_RISK_PCT
+
+            _meanrev_pos_syms = set()
+            _meanrev_short_syms = set()
+            _meanrev_notional = 0.0
+            for _pos in active_pos_objs:
+                if not bool(getattr(_pos, 'managed_by_bot', False)):
+                    continue
+                _pos_qty = int(getattr(_pos, 'quantity', 0) or 0)
+                if _pos_qty == 0:
+                    continue
+                _pos_reasoning = getattr(_pos, 'reasoning', {}) or {}
+                _pos_strategy = _pos_reasoning.get('strategy', '')
+                if _pos_strategy in ("mean_reversion", "mean_reversion_short", "oversold_v2"):
+                    _pos_sym = getattr(_pos, 'symbol', None)
+                    _meanrev_pos_syms.add(_pos_sym)
+                    _pos_price = float(getattr(_pos, 'current_price', 0) or getattr(_pos, 'entry_price', 0) or 0)
+                    _meanrev_notional += abs(_pos_qty) * _pos_price
+                    if _pos_qty < 0 or _pos_strategy == "mean_reversion_short":
+                        _meanrev_short_syms.add(_pos_sym)
+
+            _meanrev_pending_syms = set()
+            _meanrev_pending_short_syms = set()
+            for _pend_info in self.pending_orders.values():
+                if not isinstance(_pend_info, dict):
+                    continue
+                if _pend_info.get('status') != 'PENDING':
+                    continue
+                _pend_reasoning = _pend_info.get('reasoning') or {}
+                _pend_strategy = _pend_reasoning.get('strategy', '')
+                if _pend_strategy in ("mean_reversion", "mean_reversion_short", "oversold_v2"):
+                    _pend_sym = _pend_info.get('symbol')
+                    if _pend_sym:
+                        _meanrev_pending_syms.add(_pend_sym)
+                        if _pend_strategy == "mean_reversion_short":
+                            _meanrev_pending_short_syms.add(_pend_sym)
+
+            _meanrev_count = len(_meanrev_pos_syms | _meanrev_pending_syms)
+            _meanrev_short_count = len(_meanrev_short_syms | _meanrev_pending_short_syms)
+            _already_in_meanrev = signal.symbol in _meanrev_pos_syms
+
+            if _budget_strategy == "mean_reversion_short":
+                if _meanrev_short_count >= _max_meanrev_shorts and signal.symbol not in _meanrev_short_syms:
+                    self._audit(
+                        "mean_rev_budget_gate", signal.symbol, "skip",
+                        "mean_rev_budget_exhausted",
+                        strategy=_budget_strategy,
+                        meanrev_short_count=_meanrev_short_count,
+                        meanrev_short_cap=_max_meanrev_shorts,
+                        meanrev_short_positions=list(_meanrev_short_syms | _meanrev_pending_short_syms),
+                        reason="max_concurrent_shorts_exceeded",
+                    )
+                    self.commentary.add_commentary(TradingCommentary(
+                        timestamp=datetime.now(),
+                        type=CommentaryType.RISK_ASSESSMENT,
+                        symbol=signal.symbol,
+                        title=f"🛑 Mean-Rev SHORT Budget Exhausted — {signal.symbol}",
+                        message=(
+                            f"Already have {_meanrev_short_count} mean-rev SHORT positions "
+                            f"(cap {_max_meanrev_shorts}): {', '.join(_meanrev_short_syms | _meanrev_pending_short_syms)}. "
+                            f"Stage A: max simultaneous open hyp shorts ≤{_max_meanrev_shorts}. "
+                            f"Prior live short clusters ~PF 0.69 — floors stay hard."
+                        ),
+                        importance=7,
+                    ))
+                    return
+
+            if _meanrev_count >= _max_meanrev and not _already_in_meanrev:
+                self._audit(
+                    "mean_rev_budget_gate", signal.symbol, "skip",
+                    "mean_rev_budget_exhausted",
+                    strategy=_budget_strategy,
+                    meanrev_count=_meanrev_count,
+                    meanrev_cap=_max_meanrev,
+                    meanrev_positions=list(_meanrev_pos_syms),
+                    meanrev_pending=list(_meanrev_pending_syms),
+                )
+                self.commentary.add_commentary(TradingCommentary(
+                    timestamp=datetime.now(),
+                    type=CommentaryType.RISK_ASSESSMENT,
+                    symbol=signal.symbol,
+                    title=f"🛑 Mean-Rev Budget Exhausted — {signal.symbol}",
+                    message=(
+                        f"Already have {_meanrev_count} mean-rev positions "
+                        f"(cap {_max_meanrev}): {', '.join(_meanrev_pos_syms | _meanrev_pending_syms)}. "
+                        f"Skipping {signal.symbol} to maintain strategy diversity. "
+                        f"Adjust trading.max_concurrent_mean_rev to change the cap."
+                    ),
+                    importance=7,
+                ))
+                return
+
+            _equity = float(self.risk_manager.account_balance or 0)
+            if _equity > 0 and _max_meanrev_risk_pct > 0:
+                _meanrev_risk_pct = _meanrev_notional / _equity
+                if _meanrev_risk_pct >= _max_meanrev_risk_pct and not _already_in_meanrev:
+                    self._audit(
+                        "mean_rev_budget_gate", signal.symbol, "skip",
+                        "mean_rev_budget_exhausted",
+                        strategy=_budget_strategy,
+                        meanrev_notional=round(_meanrev_notional, 2),
+                        equity=round(_equity, 2),
+                        meanrev_risk_pct=round(_meanrev_risk_pct * 100, 2),
+                        max_risk_pct=round(_max_meanrev_risk_pct * 100, 2),
+                        reason="risk_pct_exceeded",
+                    )
+                    self.commentary.add_commentary(TradingCommentary(
+                        timestamp=datetime.now(),
+                        type=CommentaryType.RISK_ASSESSMENT,
+                        symbol=signal.symbol,
+                        title=f"🛑 Mean-Rev Risk Budget Exceeded — {signal.symbol}",
+                        message=(
+                            f"Mean-rev notional ${_meanrev_notional:,.0f} "
+                            f"is {_meanrev_risk_pct:.1%} of equity (cap {_max_meanrev_risk_pct:.0%}). "
+                            f"Skipping {signal.symbol} to limit mean-rev concentration. "
+                            f"Adjust trading.max_mean_rev_risk_pct to change the cap."
+                        ),
+                        importance=7,
+                    ))
+                    return
+
         for group_name, members in _CORRELATED_GROUPS.items():
             if signal.symbol in members:
                 overlap = active_positions & members
