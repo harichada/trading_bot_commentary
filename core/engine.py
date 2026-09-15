@@ -6161,6 +6161,58 @@ class TradingEngineWithCommentary:
             ))
             return
 
+        # v-pause-live-meanrev-2026-09-15: block NEW LIVE mean-reversion
+        # entries when MEAN_REV_LIVE_ENTRIES_ENABLED=False.
+        #
+        # CoS APPROVED 2026-09-15: immediately pause new LIVE mean-rev
+        # entries after late-chase bleed (CRCL/SLS/FPS). Keeping:
+        #   - Sim/commentary analysis running (strategy still generates signals)
+        #   - Hard loss circuits / ENABLE_BOT_ONLY_PNL_CIRCUIT intact
+        #   - Flatten / exits / order_monitor / OCO / bootstrap for EXISTING
+        #     bot mean-rev positions intact
+        #   - LT hands-off forever: MU, HQGE, SPCX (is_long_term)
+        #
+        # Does NOT flip autonomous_live. Only blocks new entries via the
+        # mean_reversion / mean_reversion_short lane in LIVE mode.
+        if (_signal_strategy in ("mean_reversion", "mean_reversion_short")
+                and self.mode == TradingMode.LIVE
+                and not Config().MEAN_REV_LIVE_ENTRIES_ENABLED):
+            self._audit(
+                "meanrev_live_pause", signal.symbol, "skip",
+                "live_entries_disabled",
+                strategy=_signal_strategy,
+                mode=self.mode.value,
+                flag="MEAN_REV_LIVE_ENTRIES_ENABLED=False",
+                rsi=round(float((signal.reasoning or {}).get("rsi", 0)), 2),
+                entry_pattern=(signal.reasoning or {}).get("entry_pattern"),
+                regime=(signal.reasoning or {}).get("market_context_regime"),
+            )
+            self.commentary.add_commentary(TradingCommentary(
+                timestamp=datetime.now(),
+                type=CommentaryType.RISK_ASSESSMENT,
+                symbol=signal.symbol,
+                title=f"🛑 Mean-Rev LIVE Entry Paused",
+                message=(
+                    f"Signal for {signal.symbol} via {_signal_strategy} "
+                    f"(pattern: {(signal.reasoning or {}).get('entry_pattern', 'unknown')}) "
+                    f"blocked in LIVE mode. MEAN_REV_LIVE_ENTRIES_ENABLED=False.\n\n"
+                    f"Stage-A validation required before promotion:\n"
+                    f"  n>=150 trades, >=10 sessions, PF>=1.30, WR>=48%,\n"
+                    f"  exp>=+0.05R, DD<=6%, max losing day<=2R.\n\n"
+                    f"Sim/commentary analysis continues. Existing positions "
+                    f"(exits, OCO, circuits) remain intact."
+                ),
+                data={
+                    'strategy': _signal_strategy,
+                    'entry_pattern': (signal.reasoning or {}).get('entry_pattern'),
+                    'mode': self.mode.value,
+                    'flag': 'MEAN_REV_LIVE_ENTRIES_ENABLED',
+                    'flag_value': False,
+                },
+                importance=8,
+            ))
+            return
+
         # v-orb-prototype-2026-09-10: block NEW LIVE ORB entries when
         # ORB_LIVE_ENTRIES_ENABLED=False.
         #

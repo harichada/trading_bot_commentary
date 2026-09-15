@@ -1682,6 +1682,37 @@ class Config:
         return bool(self.manager.get('trading.day_trade_live_entries_enabled', False))
 
     @property
+    def MEAN_REV_LIVE_ENTRIES_ENABLED(self) -> bool:
+        """v-pause-live-meanrev-2026-09-15: master switch for LIVE mean-reversion
+        entries.
+        
+        When False (default), the mean_reversion strategy generates signals
+        for sim/commentary/shadow analysis but BLOCKS actual LIVE order
+        placement. Immediate pause requested by CoS on 2026-09-15 after
+        late-chase bleed (CRCL/SLS/FPS).
+        
+        MUST KEEP intact (these work regardless of this flag):
+          - Hard loss circuits / ENABLE_BOT_ONLY_PNL_CIRCUIT
+          - Flatten / software exits / order_monitor / OCO / bootstrap
+            for EXISTING bot mean-rev positions
+          - LT hands-off forever: MU, HQGE, SPCX (is_long_term flag)
+        
+        The flag does NOT flip autonomous_live. It only blocks NEW live
+        entries via mean_reversion lane.
+        
+        Promotion to True requires Stage-A validation:
+          n>=150 trades, >=10 sessions, PF>=1.30, WR>=48%, exp>=+0.05R,
+          DD<=6%, max losing day<=2R.
+        
+        Default False. Set via env MEAN_REV_LIVE_ENTRIES_ENABLED=1 or
+        trading.mean_rev_live_entries_enabled: true in Config.yaml.
+        """
+        env_val = os.getenv("MEAN_REV_LIVE_ENTRIES_ENABLED")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.mean_rev_live_entries_enabled', False))
+
+    @property
     def ENABLE_MOVER_QUALITY_RELAX(self) -> bool:
         """Relax quality filters for mover-sourced symbols.
         

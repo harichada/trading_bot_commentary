@@ -2315,3 +2315,97 @@ class TestHardVetoContinuationRsi70AllRegimes:
             "Hard veto must NOT block continuation when RSI < threshold"
         )
         assert signal.reasoning['entry_pattern'] == 'continuation'
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# v-pause-live-meanrev-2026-09-15: Tests for MEAN_REV_LIVE_ENTRIES_ENABLED flag
+# CoS APPROVED 2026-09-15: immediately pause new LIVE mean-reversion entries
+# after late-chase bleed (CRCL/SLS/FPS). Mirrors DAY_TRADE_LIVE pause tests.
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestMeanRevLiveEntriesDisabled:
+    """Test MEAN_REV_LIVE_ENTRIES_ENABLED flag and LIVE entry blocking.
+    
+    v-pause-live-meanrev-2026-09-15: immediately pause new LIVE mean-rev
+    entries while keeping sim/commentary analysis running and existing
+    positions' exits intact.
+    """
+    
+    def test_mean_rev_live_entries_default_false(self):
+        """MEAN_REV_LIVE_ENTRIES_ENABLED must default to False.
+        
+        This is the immediate pause. DO NOT CHANGE without Stage-A validation.
+        """
+        from core.config import Config
+        cfg = Config()
+        assert cfg.MEAN_REV_LIVE_ENTRIES_ENABLED is False, (
+            "MEAN_REV_LIVE_ENTRIES_ENABLED must default to False — "
+            "Stage-A validation required before enabling LIVE entries"
+        )
+
+
+class TestEngineBlocksLiveMeanRev:
+    """Test that the engine blocks LIVE mean-rev entries when flag is False.
+    
+    These tests verify the engine's signal routing gate, not the strategy.
+    """
+    
+    def test_engine_has_meanrev_live_pause_gate(self):
+        """Engine must have the v-pause-live-meanrev-2026-09-15 gate."""
+        from pathlib import Path
+        src = Path("core/engine.py").read_text()
+        
+        assert "v-pause-live-meanrev-2026-09-15" in src, (
+            "Engine must contain v-pause-live-meanrev-2026-09-15 gate"
+        )
+        assert "MEAN_REV_LIVE_ENTRIES_ENABLED" in src, (
+            "Engine must check MEAN_REV_LIVE_ENTRIES_ENABLED flag"
+        )
+        assert "meanrev_live_pause" in src, (
+            "Engine must audit with component=meanrev_live_pause"
+        )
+    
+    def test_engine_gate_checks_strategy_name(self):
+        """Engine gate must specifically check for mean_reversion strategy."""
+        from pathlib import Path
+        src = Path("core/engine.py").read_text()
+        
+        anchor = src.find("v-pause-live-meanrev-2026-09-15")
+        assert anchor != -1
+        window = src[anchor: anchor + 3000]
+        
+        assert 'mean_reversion' in window, (
+            "Gate must check for mean_reversion strategy"
+        )
+        assert 'mean_reversion_short' in window, (
+            "Gate must also check for mean_reversion_short strategy"
+        )
+    
+    def test_engine_gate_checks_live_mode(self):
+        """Engine gate must only block in LIVE mode, not SIM."""
+        from pathlib import Path
+        src = Path("core/engine.py").read_text()
+        
+        anchor = src.find("v-pause-live-meanrev-2026-09-15")
+        assert anchor != -1
+        window = src[anchor: anchor + 3000]
+        
+        assert 'TradingMode.LIVE' in window, (
+            "Gate must check self.mode == TradingMode.LIVE"
+        )
+    
+    def test_engine_gate_logs_commentary(self):
+        """Engine gate must add commentary when blocking mean-rev entry."""
+        from pathlib import Path
+        src = Path("core/engine.py").read_text()
+        
+        anchor = src.find("v-pause-live-meanrev-2026-09-15")
+        assert anchor != -1
+        window = src[anchor: anchor + 3000]
+        
+        assert "Mean-Rev LIVE Entry Paused" in window, (
+            "Gate must add commentary with descriptive title"
+        )
+        assert "MEAN_REV_LIVE_ENTRIES_ENABLED=False" in window, (
+            "Gate commentary must reference the flag name"
+        )
