@@ -1755,6 +1755,45 @@ class Config:
         return bool(self.manager.get('trading.mean_rev_live_entries_enabled', True))
 
     # ══════════════════════════════════════════════════════════════════════════
+    # v-flatten-hour-entry-gate-2026-09-15: Block new day-trade LIVE entries
+    # at/after the same flatten_hour that would immediately flatten them.
+    # ══════════════════════════════════════════════════════════════════════════
+
+    @property
+    def DAY_TRADE_FLATTEN_HOUR_ENTRY_GATE_ENABLED(self) -> bool:
+        """v-flatten-hour-entry-gate-2026-09-15: block NEW day-trade LIVE
+        entries when current ET hour >= flatten_hour.
+
+        P0 RCA 2026-09-15: BBWI entered LIVE at 15:23:30 ET then exited
+        ~7s later via day_trade_flatten_hour (flatten_hour=15). Entry at
+        or after flatten hour = churn. This gate prevents that churn by
+        rejecting day-trade entries that would be immediately flattened.
+
+        When True (default):
+          - Any signal with is_day_trade=True in reasoning
+          - In LIVE mode
+          - When current ET hour >= flatten_hour (from signal reasoning
+            or DAY_TRADE_FLATTEN_HOUR config)
+          => Entry is BLOCKED with audit reason 'flatten_hour_entry_blocked'
+
+        When False: previous behavior (entries allowed, then flattened).
+
+        MUST KEEP intact (these work regardless of this flag):
+          - Flatten / software exits for EXISTING bot day-trades
+          - Shadow logging continues (entries still shadow-logged)
+          - Other existing gates (DAY_TRADE_LIVE_ENTRIES_ENABLED, etc.)
+
+        Default True. Set via env DAY_TRADE_FLATTEN_HOUR_ENTRY_GATE_ENABLED=0
+        or trading.day_trade_flatten_hour_entry_gate_enabled: false to disable.
+        """
+        env_val = os.getenv("DAY_TRADE_FLATTEN_HOUR_ENTRY_GATE_ENABLED")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get(
+            'trading.day_trade_flatten_hour_entry_gate_enabled', True
+        ))
+
+    # ══════════════════════════════════════════════════════════════════════════
     # v-late-entry-gate-2026-09-15: Late-entry detection to prevent chasing
     # extended moves. Shadow mode logs only; production mode can hard-skip.
     # ══════════════════════════════════════════════════════════════════════════
