@@ -1456,6 +1456,30 @@ class Config:
         return frozenset(s.upper() for s in custom)
 
     @property
+    def ENABLE_MANAGED_BY_BOT_PERSIST(self) -> bool:
+        """v-manage-persist-2026-09-15: restore managed_by_bot=True across
+        Schwab sync/restart for bot-session entries.
+
+        Default True. When enabled, the Schwab sync restores managed_by_bot
+        ownership using these sources (in preference order):
+          1. In-memory prior position if managed_by_bot=True
+          2. _saved_positions_meta / persisted positions file (relaxed qty
+             matching: side match + saved managed_by_bot=True is sufficient)
+          3. Fallback: today's bot_trades where bot opened the symbol and
+             position is still open on Schwab
+
+        NEVER restores managed_by_bot=True for HANDS_OFF_DENYLIST symbols
+        (MU, HQGE, SPCX) — they always remain hands-off.
+
+        SAFE OFF-PATH: Set ENABLE_MANAGED_BY_BOT_PERSIST=0 to disable
+        entirely — reverts to prior brittle exact-qty-match behavior with
+        no bot_trades fallback."""
+        env_val = os.getenv("ENABLE_MANAGED_BY_BOT_PERSIST")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.enable_managed_by_bot_persist', True))
+
+    @property
     def ENABLE_BREAKOUT_LONG(self) -> bool:
         """Enable the breakout-long strategy (20-bar high + volume + trend).
 

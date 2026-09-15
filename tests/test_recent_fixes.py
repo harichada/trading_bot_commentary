@@ -2488,25 +2488,28 @@ class TestOwnershipSurvivesRestart:
         src = ENGINE_PATH.read_text()
         anchor = src.find("Newly discovered position (pre-existing on Schwab")
         assert anchor != -1, "newly-discovered branch anchor missing"
-        window = src[max(0, anchor - 3000): anchor + 3000]
+        window = src[max(0, anchor - 3000): anchor + 6000]
         assert "_saved_positions_meta" in window, (
             "rediscovery must consult saved metadata before defaulting "
             "to external"
         )
-        assert "position_ownership_restored" in window, (
+        assert "position_ownership_restored" in window or "sync_restore" in window, (
             "restoration must emit an audit line"
         )
 
-    def test_restore_guard_requires_identity_match(self):
-        """Ownership restore must verify side AND quantity match the
-        saved record — quantity drift means the operator intervened,
-        and the position must stay external."""
+    def test_restore_guard_requires_side_match(self):
+        """Ownership restore must verify side matches the saved record.
+        
+        v-manage-persist-2026-09-15: RELAXED qty matching. Side match plus
+        saved managed_by_bot=True is now sufficient. Qty drift from partial
+        close no longer disowns remaining position (operator complained about
+        CRCL/SLS/FPS being disowned after restart)."""
         src = ENGINE_PATH.read_text()
         anchor = src.find("position_ownership_restored")
         assert anchor != -1
         window = src[max(0, anchor - 1500): anchor]
-        assert "side" in window and "quantity" in window, (
-            "restore guard must check side + quantity identity"
+        assert "side" in window, (
+            "restore guard must check side match"
         )
 
     # v-ownership-survives-restart-2026-09-10: additional tests for
@@ -2520,7 +2523,7 @@ class TestOwnershipSurvivesRestart:
         src = ENGINE_PATH.read_text()
         anchor = src.find("async def _update_and_track_real_positions")
         assert anchor != -1, "_update_and_track_real_positions not found"
-        body = src[anchor: anchor + 12000]  # larger window to cover full function
+        body = src[anchor: anchor + 15000]
         assert "_saved_positions_meta" in body, (
             "_update_and_track_real_positions must check saved metadata — "
             "without this, bot-opened positions are demoted to external on restart"
@@ -2529,38 +2532,45 @@ class TestOwnershipSurvivesRestart:
             "restore path must emit an audit line for traceability"
         )
 
-    def test_update_track_restore_has_identity_guards(self):
+    def test_update_track_restore_has_side_guard(self):
         """The restore logic in _update_and_track_real_positions must verify
-        side AND quantity match before restoring ownership."""
+        side matches before restoring ownership.
+        
+        v-manage-persist-2026-09-15: quantity check relaxed — side match plus
+        saved managed_by_bot=True is sufficient. See sync_positions_with_schwab."""
         src = ENGINE_PATH.read_text()
-        anchor = src.find("v-ownership-survives-restart-2026-09-10")
-        assert anchor != -1, "2026-09-10 fix marker not found"
-        window = src[anchor: anchor + 2000]
+        anchor = src.find("# v-manage-persist-2026-09-15: enhanced restore logic.")
+        assert anchor != -1, "2026-09-15 fix marker in update_track not found"
+        window = src[anchor: anchor + 5000]
         assert "_restore_managed" in window, "restore logic variable missing"
-        assert "'side'" in window or "side" in window
-        assert "'quantity'" in window or "quantity" in window
+        assert "side" in window, "restore guard must check side"
 
     def test_long_term_stays_unmanaged_on_restore(self):
         """is_long_term positions must NOT be auto-flipped to managed_by_bot=True
         even if the saved state has managed_by_bot=True — LT holds are user-
-        designated hands-off positions (MU, HQGE, SPCX)."""
+        designated hands-off positions (MU, HQGE, SPCX).
+        
+        v-manage-persist-2026-09-15: now handled by HANDS_OFF_DENYLIST check."""
         src = ENGINE_PATH.read_text()
-        anchor = src.find("v-ownership-survives-restart-2026-09-10")
-        assert anchor != -1
-        window = src[anchor: anchor + 2500]
-        assert "is_long_term" in window, (
-            "restore path must check is_long_term flag — LT holds must stay "
-            "hands-off regardless of managed_by_bot saved state"
+        anchor = src.find("# v-manage-persist-2026-09-15: enhanced restore logic.")
+        assert anchor != -1, "2026-09-15 marker not found"
+        window = src[anchor: anchor + 5000]
+        assert "is_long_term" in window or "HANDS_OFF_DENYLIST" in window, (
+            "restore path must check is_long_term or HANDS_OFF_DENYLIST — "
+            "LT/denylist holds must stay hands-off regardless of saved state"
         )
-        assert "_is_lt" in window or "is_long_term" in window
+        assert "_is_lt" in window or "in_denylist" in window
 
     def test_new_unknown_position_stays_unmanaged(self):
         """Positions not in saved state must default to unmanaged/external —
-        the safe default for unknown Schwab positions (newly added outside bot)."""
+        the safe default for unknown Schwab positions (newly added outside bot).
+        
+        v-manage-persist-2026-09-15: logic now in update_track with enhanced
+        persist logic including bot_trades fallback."""
         src = ENGINE_PATH.read_text()
-        anchor = src.find("v-ownership-survives-restart-2026-09-10")
-        assert anchor != -1
-        window = src[anchor: anchor + 5500]  # larger window for full else block
+        anchor = src.find("# v-manage-persist-2026-09-15: enhanced restore logic.")
+        assert anchor != -1, "2026-09-15 marker not found"
+        window = src[anchor: anchor + 8000]
         assert "managed_by_bot=False" in window, (
             "positions without saved state must default to unmanaged"
         )
@@ -3128,4 +3138,141 @@ class TestLateEntryGateAttributeFix:
         block = src[idx : idx + 1500]
         assert "getattr(signal" in block, (
             "Late-entry gate should use getattr for safe attribute access"
+        )
+
+
+# ── v-manage-persist-2026-09-15 ──────────────────────────────────────
+
+class TestManagedByBotPersistence:
+    """v-manage-persist-2026-09-15: restore managed_by_bot across Schwab
+    sync/restart for bot-session entries.
+
+    Core requirements:
+      - HANDS_OFF_DENYLIST (MU, HQGE, SPCX) NEVER gets managed_by_bot=True
+      - CRCL-class bot entries restored after restart/empty positions
+      - External positions stay unmanaged
+      - Relaxed qty matching (side match + saved managed_by_bot=True)
+      - bot_trades fallback when saved meta is stale
+    """
+
+    def test_config_flag_exists(self):
+        """ENABLE_MANAGED_BY_BOT_PERSIST config flag must exist and default True."""
+        src = CONFIG_PATH.read_text()
+        assert "ENABLE_MANAGED_BY_BOT_PERSIST" in src
+        assert "def ENABLE_MANAGED_BY_BOT_PERSIST" in src
+        idx = src.index("def ENABLE_MANAGED_BY_BOT_PERSIST")
+        block = src[idx:idx + 1500]
+        assert "v-manage-persist-2026-09-15" in block
+        assert "True" in block, "Default should be True"
+
+    def test_sync_positions_checks_denylist_first(self):
+        """sync_positions_with_schwab must check HANDS_OFF_DENYLIST before
+        restoring managed_by_bot=True. Denylist symbols must NEVER be
+        auto-managed regardless of saved state or bot_trades."""
+        src = ENGINE_PATH.read_text()
+        anchor = src.find("async def sync_positions_with_schwab")
+        assert anchor != -1
+        block = src[anchor:anchor + 10000]
+        assert "v-manage-persist-2026-09-15" in block
+        assert "HANDS_OFF_DENYLIST" in block, (
+            "sync_positions_with_schwab must check HANDS_OFF_DENYLIST"
+        )
+        assert "in_denylist" in block
+        denylist_idx = block.find("in_denylist")
+        restore_idx = block.find("_restore = True")
+        assert denylist_idx < restore_idx, (
+            "Denylist check must happen before restore decision"
+        )
+
+    def test_sync_positions_relaxed_qty_match(self):
+        """sync_positions_with_schwab should use relaxed qty matching.
+        Policy: side match + saved managed_by_bot=True is sufficient.
+        Qty drift from partial close should NOT disown remaining position."""
+        src = ENGINE_PATH.read_text()
+        anchor = src.find("async def sync_positions_with_schwab")
+        assert anchor != -1
+        block = src[anchor:anchor + 10000]
+        assert "relaxed" in block.lower() or "side match" in block.lower(), (
+            "Comment should document relaxed qty matching policy"
+        )
+        assert "saved.get('side') == side" in block
+        assert "abs(float(saved.get('quantity'" not in block or "_restore_from_saved" in block, (
+            "Relaxed qty matching: side match is sufficient when managed_by_bot=True"
+        )
+
+    def test_sync_positions_bot_trades_fallback(self):
+        """sync_positions_with_schwab must have bot_trades fallback
+        for when saved meta is missing or stale."""
+        src = ENGINE_PATH.read_text()
+        anchor = src.find("async def sync_positions_with_schwab")
+        assert anchor != -1
+        block = src[anchor:anchor + 10000]
+        assert "bot_trades" in block.lower()
+        assert "get_todays_bot_entries" in block, (
+            "Must call db_logger.get_todays_bot_entries for fallback"
+        )
+        assert '_restore_source = "bot_trades"' in block
+
+    def test_sync_positions_audit_logging(self):
+        """sync_positions_with_schwab must audit log restoration source."""
+        src = ENGINE_PATH.read_text()
+        anchor = src.find("async def sync_positions_with_schwab")
+        assert anchor != -1
+        block = src[anchor:anchor + 10000]
+        assert "_audit" in block
+        assert "_restore_source" in block
+        assert '"denylist"' in block, (
+            "Audit log must note when symbol was left external due to denylist"
+        )
+
+    def test_update_track_checks_denylist(self):
+        """update_track discovery path must also check HANDS_OFF_DENYLIST."""
+        src = ENGINE_PATH.read_text()
+        anchor = src.find("# v-manage-persist-2026-09-15: enhanced restore logic")
+        assert anchor != -1, (
+            "update_track must have v-manage-persist marker for restore logic"
+        )
+        block = src[anchor:anchor + 10000]
+        assert "HANDS_OFF_DENYLIST" in block
+        assert "in_denylist" in block
+        assert "denylist_update_track" in block, (
+            "update_track must audit denylist blocks"
+        )
+
+    def test_update_track_bot_trades_fallback(self):
+        """update_track must also have bot_trades fallback."""
+        src = ENGINE_PATH.read_text()
+        anchor = src.find("# v-manage-persist-2026-09-15: enhanced restore logic")
+        assert anchor != -1
+        block = src[anchor:anchor + 5000]
+        assert "get_todays_bot_entries" in block
+        assert "bot_trades_fallback" in block
+
+    def test_denylist_symbols_hardcoded(self):
+        """HANDS_OFF_DENYLIST must include MU, HQGE, SPCX."""
+        src = CONFIG_PATH.read_text()
+        anchor = src.find("def HANDS_OFF_DENYLIST")
+        assert anchor != -1
+        block = src[anchor:anchor + 1200]
+        assert "MU" in block
+        assert "HQGE" in block
+        assert "SPCX" in block
+        assert "default = [" in block, (
+            "Default denylist should be defined"
+        )
+        assert "SNAP" not in block or "removed" in block.lower(), (
+            "SNAP is NOT in permanent denylist (can be toggled)"
+        )
+
+    def test_db_logger_get_todays_bot_entries(self):
+        """DbLogger must have get_todays_bot_entries method for fallback."""
+        from pathlib import Path
+        db_logger_path = REPO_ROOT / "data_providers" / "db_logger.py"
+        src = db_logger_path.read_text()
+        assert "def get_todays_bot_entries" in src
+        assert "v-manage-persist-2026-09-15" in src
+        assert "SELECT symbol, side, entry_time" in src
+        assert "bot_trades" in src
+        assert "mode = 'live'" in src, (
+            "Should only query live-mode entries"
         )
