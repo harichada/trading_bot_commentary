@@ -17,12 +17,25 @@ to a different loop" errors. This module now tracks the owner loop and
 uses run_coroutine_threadsafe for cross-loop operations.
 
 v-fix-cross-loop-crash-2026-09-10: PR #19 only protected snapshot methods.
-This revision protects ALL async methods (close, log_decision, log_trade,
+    This revision protects ALL async methods (close, log_decision, log_trade,
 sync_positions, etc.) with loop-safety checks. When a loop mismatch is
 detected:
   - Write operations: fail soft (log warning, skip the write) to avoid crash
   - close(): dispose safely by detecting loop mismatch and handling gracefully
   - Never call asyncpg operations from a different loop than created them
+
+v-fix-cross-loop-routing-2026-09-15: Cross-loop writes no longer skip!
+  Methods like log_decision, log_trade, sync_positions now ROUTE to the
+  owner loop via run_coroutine_threadsafe (same as log_decision_snapshot).
+  This eliminates silent data loss from the 411+ db_logger_cross_loop_skip
+  warnings observed in 16h KiddoKingdom soak (PID 331467, 045186b).
+  
+  Env flag DB_LOGGER_CROSS_LOOP_ROUTE (default True):
+    - True (default): cross-loop calls route to owner loop (no data loss)
+    - False: legacy skip behavior (for emergency rollback only)
+  
+  Owner loop is now "sticky": set once at init, subsequent set_owner_loop
+  calls from different loops are ignored with a one-time warning.
 """
 from __future__ import annotations
 
@@ -32,6 +45,7 @@ import json
 import logging
 import os
 import threading
+import time
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -39,6 +53,14 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 logger = logging.getLogger("TradingBot")
+
+# v-fix-cross-loop-routing-2026-09-15: Cross-loop routing flag.
+# True (default): cross-loop calls route to owner loop via run_coroutine_threadsafe.
+# False: legacy skip behavior (for emergency rollback only — causes silent data loss).
+DB_LOGGER_CROSS_LOOP_ROUTE = os.environ.get("DB_LOGGER_CROSS_LOOP_ROUTE", "true").lower() in ("true", "1", "yes")
+
+# Rate-limit interval for cross-loop warnings (seconds). Max one warning per method per interval.
+_CROSS_LOOP_WARN_INTERVAL_SEC = 60.0
 
 DEFAULT_DSN = "postgresql+asyncpg://rudra:rudra_dev_2024@localhost:5432/rudra_dev"
 
@@ -121,6 +143,11 @@ class DbLogger:
         self._owner_loop: Optional[asyncio.AbstractEventLoop] = None
         # v-fix-cross-loop-crash-2026-09-10: lock to serialise engine recreation
         self._engine_lock = threading.Lock()
+        # v-fix-cross-loop-routing-2026-09-15: rate-limit cross-loop warnings
+        self._cross_loop_warn_times: dict[str, float] = {}
+        self._cross_loop_warn_lock = threading.Lock()
+        # v-fix-cross-loop-routing-2026-09-15: sticky owner loop flag
+        self._owner_loop_set_once = False
     
     def set_owner_loop(self, loop: asyncio.AbstractEventLoop | None = None) -> None:
         """Set the event loop that owns this DbLogger's engine.
@@ -128,13 +155,33 @@ class DbLogger:
         v-fix-loop-safety-2026-09-10: Call this once from the main async
         context (e.g., FastAPI startup) so cross-loop operations can route
         back correctly. If loop is None, uses the current running loop.
+        
+        v-fix-cross-loop-routing-2026-09-15: Owner loop is now STICKY.
+        Once set, subsequent calls from DIFFERENT loops are ignored with a
+        one-time warning. This prevents news/uvicorn/worker secondary loops
+        from overwriting the canonical main engine loop.
         """
         if loop is None:
             try:
                 loop = asyncio.get_running_loop()
             except RuntimeError:
                 loop = asyncio.get_event_loop()
+        
+        # v-fix-cross-loop-routing-2026-09-15: Sticky owner loop
+        if self._owner_loop_set_once and self._owner_loop is not None:
+            if self._owner_loop is not loop:
+                self._warn_once(
+                    "set_owner_loop_ignored",
+                    "db_logger_set_owner_loop_ignored existing=%s attempted=%s "
+                    "(owner loop is sticky; first caller wins)",
+                    id(self._owner_loop), id(loop)
+                )
+                return
+            # Same loop - no-op, already set
+            return
+        
         self._owner_loop = loop
+        self._owner_loop_set_once = True
         logger.debug("db_logger_owner_loop_set loop_id=%s", id(loop))
     
     def _is_on_owner_loop(self) -> bool:
@@ -155,25 +202,112 @@ class DbLogger:
         except RuntimeError:
             return False
     
+    def _warn_once(self, key: str, msg: str, *args) -> None:
+        """Log a warning at most once per _CROSS_LOOP_WARN_INTERVAL_SEC per key.
+        
+        v-fix-cross-loop-routing-2026-09-15: Rate-limit warnings so logs stay
+        OS-grade clean even under sustained cross-loop traffic.
+        """
+        now = time.monotonic()
+        with self._cross_loop_warn_lock:
+            last = self._cross_loop_warn_times.get(key, 0.0)
+            if now - last < _CROSS_LOOP_WARN_INTERVAL_SEC:
+                return
+            self._cross_loop_warn_times[key] = now
+        logger.warning(msg, *args)
+    
     def _check_loop_or_warn(self, method_name: str) -> bool:
         """Check if we're on the owner loop, log warning if not.
         
         v-fix-cross-loop-crash-2026-09-10: Helper for write methods that
         should fail soft on loop mismatch. Returns True if safe to proceed.
+        
+        v-fix-cross-loop-routing-2026-09-15: Warnings are now rate-limited
+        (max once per 60s per method) to keep logs OS-grade clean.
         """
         if self._is_on_owner_loop():
             return True
         try:
             current = asyncio.get_running_loop()
-            logger.warning(
+            self._warn_once(
+                f"cross_loop_skip_{method_name}",
                 "db_logger_cross_loop_skip method=%s owner_loop=%s current_loop=%s",
                 method_name, id(self._owner_loop), id(current)
             )
         except RuntimeError:
-            logger.warning(
+            self._warn_once(
+                f"no_running_loop_{method_name}",
                 "db_logger_no_running_loop method=%s", method_name
             )
         return False
+    
+    def _route_to_owner_loop(
+        self,
+        method_name: str,
+        coro_factory,
+        *args,
+        **kwargs,
+    ) -> bool:
+        """Route a coroutine to the owner loop if we're on a different loop.
+        
+        v-fix-cross-loop-routing-2026-09-15: Instead of silently skipping
+        cross-loop calls (causing data loss), route them to the owner loop
+        via run_coroutine_threadsafe.
+        
+        Returns True if the call was routed (caller should return early).
+        Returns False if we're on the owner loop (caller should proceed).
+        
+        Args:
+            method_name: Name of the method (for logging)
+            coro_factory: A callable that returns the coroutine to run
+            *args, **kwargs: Arguments to pass to coro_factory
+        """
+        if self._is_on_owner_loop():
+            return False
+        
+        # Cross-loop detected
+        if not DB_LOGGER_CROSS_LOOP_ROUTE:
+            # Legacy skip mode (emergency rollback only)
+            self._warn_once(
+                f"cross_loop_skip_{method_name}",
+                "db_logger_cross_loop_skip method=%s owner_loop=%s (routing disabled)",
+                method_name, id(self._owner_loop)
+            )
+            return True
+        
+        if self._owner_loop is None:
+            self._warn_once(
+                f"cross_loop_no_owner_{method_name}",
+                "db_logger_cross_loop_no_owner method=%s (cannot route)",
+                method_name
+            )
+            return True
+        
+        if not self._owner_loop.is_running():
+            self._warn_once(
+                f"cross_loop_dead_{method_name}",
+                "db_logger_cross_loop_dead_owner method=%s owner_loop=%s",
+                method_name, id(self._owner_loop)
+            )
+            return True
+        
+        # Owner loop alive - route the call
+        try:
+            asyncio.run_coroutine_threadsafe(
+                coro_factory(*args, **kwargs),
+                self._owner_loop,
+            )
+            logger.debug(
+                "db_logger_cross_loop_routed method=%s owner_loop=%s",
+                method_name, id(self._owner_loop)
+            )
+        except Exception as exc:
+            self._warn_once(
+                f"cross_loop_route_error_{method_name}",
+                "db_logger_cross_loop_route_error method=%s err=%s",
+                method_name, exc
+            )
+        return True
 
     async def close(self) -> None:
         """Dispose the engine and close all connections.
@@ -255,12 +389,43 @@ class DbLogger:
         """Insert one row into bot_decisions. Never raises.
         
         v-fix-cross-loop-crash-2026-09-10: Skip write if called from wrong loop.
+        v-fix-cross-loop-routing-2026-09-15: Now ROUTES cross-loop calls to
+        owner loop instead of skipping (no more silent data loss).
         """
         if not self._enabled:
             return
-        # v-fix-cross-loop-crash-2026-09-10: fail soft on loop mismatch
-        if not self._check_loop_or_warn("log_decision"):
+        # v-fix-cross-loop-routing-2026-09-15: route cross-loop calls
+        if self._route_to_owner_loop(
+            "log_decision",
+            self._log_decision_impl,
+            component, symbol, action, reason, mode,
+            signal_type, confidence, strength, meta_proba,
+            atr, stop_distance, price, extra,
+        ):
             return
+        await self._log_decision_impl(
+            component, symbol, action, reason, mode,
+            signal_type, confidence, strength, meta_proba,
+            atr, stop_distance, price, extra,
+        )
+
+    async def _log_decision_impl(
+        self,
+        component: str,
+        symbol: str | None,
+        action: str,
+        reason: str | None,
+        mode: str | None,
+        signal_type: int | None,
+        confidence: float | None,
+        strength: float | None,
+        meta_proba: float | None,
+        atr: float | None,
+        stop_distance: float | None,
+        price: float | None,
+        extra: dict,
+    ) -> None:
+        """Internal impl: actually insert decision into the database."""
         try:
             details = {k: _safe_json(v) for k, v in extra.items()} if extra else {}
             async with self._engine.begin() as conn:
@@ -320,12 +485,52 @@ class DbLogger:
         """Insert one row into bot_trades. Never raises.
         
         v-fix-cross-loop-crash-2026-09-10: Skip write if called from wrong loop.
+        v-fix-cross-loop-routing-2026-09-15: Now ROUTES cross-loop calls to
+        owner loop instead of skipping (no more silent data loss).
         """
         if not self._enabled:
             return
-        # v-fix-cross-loop-crash-2026-09-10: fail soft on loop mismatch
-        if not self._check_loop_or_warn("log_trade"):
+        # v-fix-cross-loop-routing-2026-09-15: route cross-loop calls
+        if self._route_to_owner_loop(
+            "log_trade",
+            self._log_trade_impl,
+            symbol, side, strategy, entry_time, exit_time,
+            entry_price, exit_price, quantity, pnl, pnl_pct,
+            exit_reason, atr_at_entry, stop_loss, take_profit,
+            confidence, meta_proba, kelly_fraction, scaled_out, mode, reasoning,
+        ):
             return
+        await self._log_trade_impl(
+            symbol, side, strategy, entry_time, exit_time,
+            entry_price, exit_price, quantity, pnl, pnl_pct,
+            exit_reason, atr_at_entry, stop_loss, take_profit,
+            confidence, meta_proba, kelly_fraction, scaled_out, mode, reasoning,
+        )
+
+    async def _log_trade_impl(
+        self,
+        symbol: str,
+        side: str,
+        strategy: str | None,
+        entry_time: datetime,
+        exit_time: datetime,
+        entry_price: float,
+        exit_price: float,
+        quantity: int,
+        pnl: float,
+        pnl_pct: float,
+        exit_reason: str,
+        atr_at_entry: float | None,
+        stop_loss: float | None,
+        take_profit: float | None,
+        confidence: float | None,
+        meta_proba: float | None,
+        kelly_fraction: float | None,
+        scaled_out: bool,
+        mode: str | None,
+        reasoning: dict | None,
+    ) -> None:
+        """Internal impl: actually insert trade into the database."""
         try:
             async with self._engine.begin() as conn:
                 await conn.execute(
@@ -385,26 +590,26 @@ class DbLogger:
         operation is now both safe under concurrency and idempotent.
         
         v-fix-cross-loop-crash-2026-09-10: Skip sync if called from wrong loop.
+        v-fix-cross-loop-routing-2026-09-15: Now ROUTES cross-loop calls to
+        owner loop instead of skipping (no more silent data loss).
         """
         if not self._enabled:
             return
-        # v-fix-cross-loop-crash-2026-09-10: fail soft on loop mismatch
-        if not self._check_loop_or_warn("sync_positions"):
+        # v-fix-cross-loop-routing-2026-09-15: route cross-loop calls
+        if self._route_to_owner_loop("sync_positions", self._sync_positions_impl, positions):
             return
+        await self._sync_positions_impl(positions)
+
+    async def _sync_positions_impl(self, positions: dict) -> None:
+        """Internal impl: actually sync positions to the database."""
         async with self._sync_positions_lock:
             try:
-                # Compute the set of symbols we want to keep so we can
-                # delete only those that are no longer open — this avoids
-                # DELETE-all-then-INSERT patterns that briefly empty the
-                # table for any concurrent reader.
                 keep_symbols = [
                     sym for sym, pos in positions.items()
                     if pos is not None and getattr(pos, 'quantity', 0) > 0
                 ]
                 async with self._engine.begin() as conn:
                     if keep_symbols:
-                        # <>ALL(:keep) matches against a pg array param —
-                        # avoids expanding-bindparam complexity of NOT IN.
                         await conn.execute(
                             text("DELETE FROM bot_positions "
                                  "WHERE symbol <> ALL(:keep)"),
@@ -463,10 +668,6 @@ class DbLogger:
                                 "unrealized_pnl": getattr(pos, "unrealized_pnl", 0),
                                 "atr_at_entry": (getattr(pos, "reasoning", {}) or {}).get("atr"),
                                 "confidence": getattr(pos, "confidence", None),
-                                # v-mode-field-2026-04-20: was hardcoded "simulation";
-                                # now reads attribute-based tag set at Position
-                                # construction. Fallback "simulation" is the safe
-                                # default for objects created before the upgrade.
                                 "mode": getattr(pos, "mode", "simulation"),
                             },
                         )
@@ -493,12 +694,41 @@ class DbLogger:
         evaluate_open_news_vetoes(). Never raises.
         
         v-fix-cross-loop-crash-2026-09-10: Skip write if called from wrong loop.
+        v-fix-cross-loop-routing-2026-09-15: Now ROUTES cross-loop calls to
+        owner loop instead of skipping (no more silent data loss).
         """
         if not self._enabled:
             return
-        # v-fix-cross-loop-crash-2026-09-10: fail soft on loop mismatch
-        if not self._check_loop_or_warn("log_news_veto"):
+        # v-fix-cross-loop-routing-2026-09-15: route cross-loop calls
+        if self._route_to_owner_loop(
+            "log_news_veto",
+            self._log_news_veto_impl,
+            symbol, side, veto_reason, veto_source,
+            cached_sentiment, fresh_count, fresh_avg_sentiment,
+            latest_age_min, would_entry_price, would_stop_loss, would_take_profit,
+        ):
             return
+        await self._log_news_veto_impl(
+            symbol, side, veto_reason, veto_source,
+            cached_sentiment, fresh_count, fresh_avg_sentiment,
+            latest_age_min, would_entry_price, would_stop_loss, would_take_profit,
+        )
+
+    async def _log_news_veto_impl(
+        self,
+        symbol: str,
+        side: str,
+        veto_reason: str,
+        veto_source: str | None,
+        cached_sentiment: float | None,
+        fresh_count: int | None,
+        fresh_avg_sentiment: float | None,
+        latest_age_min: float | None,
+        would_entry_price: float | None,
+        would_stop_loss: float | None,
+        would_take_profit: float | None,
+    ) -> None:
+        """Internal impl: actually insert news veto into the database."""
         try:
             async with self._engine.begin() as conn:
                 await conn.execute(
@@ -551,12 +781,28 @@ class DbLogger:
         from the engine main loop; cheap because the open-set is small.
         
         v-fix-cross-loop-crash-2026-09-10: Skip if called from wrong loop.
+        v-fix-cross-loop-routing-2026-09-15: Now ROUTES cross-loop calls to
+        owner loop instead of skipping (no more silent data loss).
+        Note: cross-loop routing returns 0 immediately (fire-and-forget).
         """
         if not self._enabled:
             return 0
-        # v-fix-cross-loop-crash-2026-09-10: fail soft on loop mismatch
-        if not self._check_loop_or_warn("evaluate_open_news_vetoes"):
+        # v-fix-cross-loop-routing-2026-09-15: route cross-loop calls
+        # Note: for methods that return values, cross-loop routing is fire-and-forget
+        if self._route_to_owner_loop(
+            "evaluate_open_news_vetoes",
+            self._evaluate_open_news_vetoes_impl,
+            get_current_price, max_age_hours,
+        ):
             return 0
+        return await self._evaluate_open_news_vetoes_impl(get_current_price, max_age_hours)
+
+    async def _evaluate_open_news_vetoes_impl(
+        self,
+        get_current_price,
+        max_age_hours: int,
+    ) -> int:
+        """Internal impl: actually evaluate open news vetoes."""
         updated = 0
         try:
             async with self._engine.begin() as conn:
@@ -588,9 +834,6 @@ class DbLogger:
                     except Exception:
                         price = None
                     if price is None or price <= 0:
-                        # Time out positions older than max_age_hours that
-                        # we never managed to price — mark neutral so we
-                        # don't loop on them forever.
                         from datetime import datetime as _dt, timedelta as _td
                         if veto_time < _dt.now() - _td(hours=max_age_hours):
                             await conn.execute(
@@ -612,16 +855,12 @@ class DbLogger:
 
                     outcome = None
                     if hit_target and not hit_stop:
-                        outcome = 'missed_winner'    # we should have entered
+                        outcome = 'missed_winner'
                     elif hit_stop and not hit_target:
-                        outcome = 'correct_veto'     # we saved a loss
+                        outcome = 'correct_veto'
                     elif hit_target and hit_stop:
-                        # Both crossed inside the same window — ambiguous,
-                        # call it neutral and inspect manually.
                         outcome = 'neutral_both_crossed'
                     else:
-                        # Still open inside window. Only resolve if past
-                        # max_age_hours; otherwise wait.
                         from datetime import datetime as _dt, timedelta as _td
                         if veto_time < _dt.now() - _td(hours=max_age_hours):
                             outcome = 'neutral_timeout'
@@ -654,12 +893,18 @@ class DbLogger:
         """Remove a closed position from bot_positions.
         
         v-fix-cross-loop-crash-2026-09-10: Skip delete if called from wrong loop.
+        v-fix-cross-loop-routing-2026-09-15: Now ROUTES cross-loop calls to
+        owner loop instead of skipping (no more silent data loss).
         """
         if not self._enabled:
             return
-        # v-fix-cross-loop-crash-2026-09-10: fail soft on loop mismatch
-        if not self._check_loop_or_warn("delete_position"):
+        # v-fix-cross-loop-routing-2026-09-15: route cross-loop calls
+        if self._route_to_owner_loop("delete_position", self._delete_position_impl, symbol):
             return
+        await self._delete_position_impl(symbol)
+
+    async def _delete_position_impl(self, symbol: str) -> None:
+        """Internal impl: actually delete position from the database."""
         try:
             async with self._engine.begin() as conn:
                 await conn.execute(
@@ -928,12 +1173,18 @@ class DbLogger:
         Called during engine init. Idempotent.
         
         v-fix-cross-loop-crash-2026-09-10: Skip if called from wrong loop.
+        v-fix-cross-loop-routing-2026-09-15: Now ROUTES cross-loop calls to
+        owner loop instead of skipping (no more silent data loss).
         """
         if not self._enabled:
             return
-        # v-fix-cross-loop-crash-2026-09-10: fail soft on loop mismatch
-        if not self._check_loop_or_warn("ensure_snapshot_table"):
+        # v-fix-cross-loop-routing-2026-09-15: route cross-loop calls
+        if self._route_to_owner_loop("ensure_snapshot_table", self._ensure_snapshot_table_impl):
             return
+        await self._ensure_snapshot_table_impl()
+
+    async def _ensure_snapshot_table_impl(self) -> None:
+        """Internal impl: actually create snapshot table if missing."""
         try:
             async with self._engine.begin() as conn:
                 await conn.execute(text("""
