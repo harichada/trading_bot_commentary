@@ -6130,14 +6130,14 @@ class TradingEngineWithCommentary:
         _gated_strategies = ("day_trade_momentum", "mean_reversion", "mean_reversion_short", "orb_contraction_rvol")
         if (Config().ENABLE_LATE_ENTRY_GATE
                 and _signal_strategy in _gated_strategies
-                and signal.action == SignalAction.BUY):
+                and getattr(signal, 'signal_type', None) == SignalType.BUY):
             _late_reasons = []
             _reasoning = signal.reasoning or {}
             
             # Heuristic 1: Extension from session open toward session high
             _session_open = float(_reasoning.get("session_open", 0) or 0)
             _session_high = float(_reasoning.get("session_high", 0) or 0)
-            _entry_price = float(signal.price or _reasoning.get("entry_price", 0) or 0)
+            _entry_price = float(getattr(signal, 'entry_price', 0) or _reasoning.get("entry_price", 0) or 0)
             if _session_high > _session_open and _entry_price > 0:
                 _ext_range = _session_high - _session_open
                 _ext_ratio = (_entry_price - _session_open) / _ext_range if _ext_range > 0 else 0

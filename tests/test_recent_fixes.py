@@ -3071,3 +3071,61 @@ class TestHandsOffDenylist:
         assert "denylist" in realized_part.lower() or "trade_symbol" in realized_part, (
             "Realized trades must also check denylist symbols"
         )
+
+
+# ── v-late-entry-gate-attr-fix-2026-09-15 ────────────────────────────
+
+class TestLateEntryGateAttributeFix:
+    """Late-entry gate must use TradingSignal's actual attributes:
+    signal_type (not .action) and entry_price (not .price).
+    
+    Bug #65 merge introduced signal.action and signal.price which
+    do not exist on TradingSignal, causing AttributeError on LIVE
+    entry path — silent drops on ALHC/CMG/CAI."""
+
+    def test_late_entry_gate_uses_signal_type_not_action(self):
+        """Late-entry gate must use signal.signal_type, not signal.action.
+        SignalAction does not exist; TradingSignal has signal_type: SignalType."""
+        src = ENGINE_PATH.read_text()
+        marker = "v-late-entry-gate-2026-09-15"
+        assert marker in src, "late-entry gate marker not found"
+        idx = src.index(marker)
+        block = src[idx : idx + 1500]
+        assert "signal.action" not in block, (
+            "Late-entry gate must NOT use signal.action (TradingSignal has no .action)"
+        )
+        assert "SignalAction" not in block, (
+            "SignalAction does not exist; use SignalType"
+        )
+        assert "signal_type" in block, (
+            "Late-entry gate must use signal.signal_type"
+        )
+        assert "SignalType.BUY" in block, (
+            "Late-entry gate must compare against SignalType.BUY"
+        )
+
+    def test_late_entry_gate_uses_entry_price_not_price(self):
+        """Late-entry gate must use signal.entry_price, not signal.price.
+        TradingSignal has entry_price: float, not .price."""
+        src = ENGINE_PATH.read_text()
+        marker = "v-late-entry-gate-2026-09-15"
+        assert marker in src
+        idx = src.index(marker)
+        block = src[idx : idx + 1500]
+        assert "signal.price" not in block, (
+            "Late-entry gate must NOT use signal.price (TradingSignal has no .price)"
+        )
+        assert "entry_price" in block, (
+            "Late-entry gate must use entry_price (either signal.entry_price or reasoning)"
+        )
+
+    def test_late_entry_gate_uses_getattr_for_safety(self):
+        """Late-entry gate should use getattr for defensive access."""
+        src = ENGINE_PATH.read_text()
+        marker = "v-late-entry-gate-2026-09-15"
+        assert marker in src
+        idx = src.index(marker)
+        block = src[idx : idx + 1500]
+        assert "getattr(signal" in block, (
+            "Late-entry gate should use getattr for safe attribute access"
+        )
