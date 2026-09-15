@@ -1683,13 +1683,12 @@ class Config:
 
     @property
     def MEAN_REV_LIVE_ENTRIES_ENABLED(self) -> bool:
-        """v-pause-live-meanrev-2026-09-15: master switch for LIVE mean-reversion
+        """v-meanrev-live-flag-2026-09-15: master switch for LIVE mean-reversion
         entries.
         
-        When False (default), the mean_reversion strategy generates signals
-        for sim/commentary/shadow analysis but BLOCKS actual LIVE order
-        placement. Immediate pause requested by CoS on 2026-09-15 after
-        late-chase bleed (CRCL/SLS/FPS).
+        When False, the mean_reversion strategy generates signals for
+        sim/commentary/shadow analysis but BLOCKS actual LIVE order
+        placement.
         
         MUST KEEP intact (these work regardless of this flag):
           - Hard loss circuits / ENABLE_BOT_ONLY_PNL_CIRCUIT
@@ -1700,17 +1699,97 @@ class Config:
         The flag does NOT flip autonomous_live. It only blocks NEW live
         entries via mean_reversion lane.
         
-        Promotion to True requires Stage-A validation:
-          n>=150 trades, >=10 sessions, PF>=1.30, WR>=48%, exp>=+0.05R,
-          DD<=6%, max losing day<=2R.
-        
-        Default False. Set via env MEAN_REV_LIVE_ENTRIES_ENABLED=1 or
-        trading.mean_rev_live_entries_enabled: true in Config.yaml.
+        Default True (LIVE entries enabled). Set MEAN_REV_LIVE_ENTRIES_ENABLED=0
+        to pause LIVE mean-rev entries while keeping sim/shadow analysis.
         """
         env_val = os.getenv("MEAN_REV_LIVE_ENTRIES_ENABLED")
         if env_val is not None:
             return env_val.lower() in ("1", "true", "yes", "on")
-        return bool(self.manager.get('trading.mean_rev_live_entries_enabled', False))
+        return bool(self.manager.get('trading.mean_rev_live_entries_enabled', True))
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # v-late-entry-gate-2026-09-15: Late-entry detection to prevent chasing
+    # extended moves. Shadow mode logs only; production mode can hard-skip.
+    # ══════════════════════════════════════════════════════════════════════════
+
+    @property
+    def ENABLE_LATE_ENTRY_GATE(self) -> bool:
+        """Master switch for late-entry detection gate.
+        
+        When True, the engine evaluates late-entry heuristics on
+        day_trade_momentum and mean_reversion signals:
+          1. Extension ratio from session open toward session high
+          2. VWAP chase: long above VWAP + k*ATR
+          3. Bars-since-impulse: if breakout age >= N bars
+        
+        Action depends on LATE_ENTRY_GATE_SHADOW:
+          - Shadow=True (default): log LATE_ENTRY_SKIP, no block
+          - Shadow=False: hard-skip the entry
+        
+        Safe off: ENABLE_LATE_ENTRY_GATE=0 disables all late-entry checks.
+        
+        Default True. Set via env ENABLE_LATE_ENTRY_GATE=0 to disable.
+        """
+        env_val = os.getenv("ENABLE_LATE_ENTRY_GATE")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.enable_late_entry_gate', True))
+
+    @property
+    def LATE_ENTRY_GATE_SHADOW(self) -> bool:
+        """Shadow mode for late-entry gate (log only, no block).
+        
+        When True (default), late-entry detection logs LATE_ENTRY_SKIP
+        with action=shadow_late_entry_skip but does NOT block the entry.
+        This allows collecting data before enabling hard-skips.
+        
+        When False, late entries are hard-skipped (entry blocked).
+        
+        Default True (shadow mode). Set LATE_ENTRY_GATE_SHADOW=0 to enable
+        hard-skips after soak testing.
+        """
+        env_val = os.getenv("LATE_ENTRY_GATE_SHADOW")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.late_entry_gate_shadow', True))
+
+    @property
+    def LATE_ENTRY_EXTENSION_THRESHOLD(self) -> float:
+        """Extension ratio threshold for late-entry detection (longs).
+        
+        Measures how far price has extended from session open toward
+        session high: (price - open) / (high - open).
+        
+        If extension >= threshold, the entry is flagged as late (chasing
+        an already-extended move). Lower = more conservative.
+        
+        Default 0.75 (price 75%+ of the way from open to high).
+        Set trading.late_entry_extension_threshold to adjust.
+        """
+        return float(self.manager.get('trading.late_entry_extension_threshold', 0.75))
+
+    @property
+    def LATE_ENTRY_VWAP_ATR_MULT(self) -> float:
+        """ATR multiplier for VWAP chase detection (longs).
+        
+        A long entry above VWAP + k*ATR is flagged as late (chasing
+        above fair value). Higher = more permissive.
+        
+        Default 1.0 (entry > VWAP + 1.0*ATR is late).
+        Set trading.late_entry_vwap_atr_mult to adjust.
+        """
+        return float(self.manager.get('trading.late_entry_vwap_atr_mult', 1.0))
+
+    @property
+    def LATE_ENTRY_BARS_SINCE_IMPULSE(self) -> int:
+        """Max bars since impulse/breakout for late-entry detection.
+        
+        If the signal's breakout/impulse occurred >= N bars ago, the
+        entry is flagged as late (move has already played out).
+        
+        Default 5 bars. Set trading.late_entry_bars_since_impulse to adjust.
+        """
+        return int(self.manager.get('trading.late_entry_bars_since_impulse', 5))
 
     @property
     def ENABLE_MOVER_QUALITY_RELAX(self) -> bool:

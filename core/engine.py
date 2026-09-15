@@ -4448,13 +4448,18 @@ class TradingEngineWithCommentary:
 
             # Update commentary
             if self.positions:
+                _hands_off_count = len(self.positions) - managed_count
                 self.commentary.add_commentary(TradingCommentary(
                     timestamp=datetime.now(),
                     type=CommentaryType.ACCOUNT_UPDATE,
                     symbol=None,
                     title="📊 Position Sync Complete",
-                    message=f"Synced {len(self.positions)} positions from Schwab: {', '.join(self.positions.keys())}\n"
-                           f"⚠️ All positions marked as MANUALLY MANAGED - bot will not auto-close",
+                    message=(
+                        f"Synced {len(self.positions)} positions from Schwab: "
+                        f"{', '.join(self.positions.keys())}\n"
+                        f"{managed_count} bot-managed, {_hands_off_count} hands-off — "
+                        f"bot will auto-manage only bot-managed"
+                    ),
                     importance=5
                 ))
                 
@@ -6108,6 +6113,89 @@ class TradingEngineWithCommentary:
             ))
             return
 
+        # v-late-entry-gate-2026-09-15: detect late/chasing entries for
+        # day_trade_momentum, mean_reversion, and orb_contraction_rvol.
+        #
+        # Heuristics (all tunable via Config):
+        #   1. Extension ratio: (price - open) / (high - open) >= threshold
+        #   2. VWAP chase: long above VWAP + k*ATR
+        #   3. Bars-since-impulse: breakout age >= N bars
+        #
+        # When ENABLE_LATE_ENTRY_GATE=True (default):
+        #   - Shadow mode (default): log LATE_ENTRY_SKIP, no block
+        #   - Hard mode: block the entry
+        #
+        # Safe off: ENABLE_LATE_ENTRY_GATE=0
+        _signal_strategy = (signal.reasoning or {}).get("strategy", "")
+        _gated_strategies = ("day_trade_momentum", "mean_reversion", "mean_reversion_short", "orb_contraction_rvol")
+        if (Config().ENABLE_LATE_ENTRY_GATE
+                and _signal_strategy in _gated_strategies
+                and signal.action == SignalAction.BUY):
+            _late_reasons = []
+            _reasoning = signal.reasoning or {}
+            
+            # Heuristic 1: Extension from session open toward session high
+            _session_open = float(_reasoning.get("session_open", 0) or 0)
+            _session_high = float(_reasoning.get("session_high", 0) or 0)
+            _entry_price = float(signal.price or _reasoning.get("entry_price", 0) or 0)
+            if _session_high > _session_open and _entry_price > 0:
+                _ext_range = _session_high - _session_open
+                _ext_ratio = (_entry_price - _session_open) / _ext_range if _ext_range > 0 else 0
+                if _ext_ratio >= Config().LATE_ENTRY_EXTENSION_THRESHOLD:
+                    _late_reasons.append(f"extension={_ext_ratio:.2f}>={Config().LATE_ENTRY_EXTENSION_THRESHOLD}")
+            
+            # Heuristic 2: VWAP chase (long above VWAP + k*ATR)
+            _vwap = float(_reasoning.get("vwap", 0) or 0)
+            _atr = float(_reasoning.get("atr", 0) or _reasoning.get("indicators", {}).get("atr", 0) or 0)
+            if _vwap > 0 and _atr > 0 and _entry_price > 0:
+                _vwap_threshold = _vwap + Config().LATE_ENTRY_VWAP_ATR_MULT * _atr
+                if _entry_price > _vwap_threshold:
+                    _late_reasons.append(f"vwap_chase={_entry_price:.2f}>{_vwap_threshold:.2f}")
+            
+            # Heuristic 3: Bars since impulse/breakout
+            _bars_since_impulse = int(_reasoning.get("bars_since_impulse", 0) or _reasoning.get("bars_since_breakout", 0) or 0)
+            if _bars_since_impulse >= Config().LATE_ENTRY_BARS_SINCE_IMPULSE:
+                _late_reasons.append(f"bars_since_impulse={_bars_since_impulse}>={Config().LATE_ENTRY_BARS_SINCE_IMPULSE}")
+            
+            if _late_reasons:
+                _is_shadow = Config().LATE_ENTRY_GATE_SHADOW
+                _action = "shadow_late_entry_skip" if _is_shadow else "hard_late_entry_skip"
+                self._audit(
+                    "late_entry_gate", signal.symbol, "skip" if not _is_shadow else "shadow",
+                    _action,
+                    strategy=_signal_strategy,
+                    mode=self.mode.value,
+                    late_reasons=_late_reasons,
+                    extension_ratio=round(_ext_ratio, 3) if '_ext_ratio' in dir() else None,
+                    vwap=round(_vwap, 2) if _vwap else None,
+                    atr=round(_atr, 2) if _atr else None,
+                    entry_price=round(_entry_price, 2) if _entry_price else None,
+                    bars_since_impulse=_bars_since_impulse,
+                    shadow_mode=_is_shadow,
+                )
+                self.commentary.add_commentary(TradingCommentary(
+                    timestamp=datetime.now(),
+                    type=CommentaryType.RISK_ASSESSMENT,
+                    symbol=signal.symbol,
+                    title=f"⚡ Late Entry {'(Shadow)' if _is_shadow else 'Blocked'} — {signal.symbol}",
+                    message=(
+                        f"Signal for {signal.symbol} via {_signal_strategy} flagged as late entry.\n"
+                        f"Reasons: {', '.join(_late_reasons)}\n\n"
+                        f"{'Shadow mode: entry NOT blocked, logging for analysis.' if _is_shadow else 'Entry blocked.'}\n"
+                        f"Adjust thresholds via LATE_ENTRY_EXTENSION_THRESHOLD, "
+                        f"LATE_ENTRY_VWAP_ATR_MULT, LATE_ENTRY_BARS_SINCE_IMPULSE."
+                    ),
+                    data={
+                        'strategy': _signal_strategy,
+                        'late_reasons': _late_reasons,
+                        'shadow_mode': _is_shadow,
+                        'action': _action,
+                    },
+                    importance=6,
+                ))
+                if not _is_shadow:
+                    return  # Hard skip in non-shadow mode
+
         # v-pause-live-daytrade-2026-09-10: block NEW LIVE day-trade momentum
         # entries when DAY_TRADE_LIVE_ENTRIES_ENABLED=False.
         #
@@ -6121,7 +6209,6 @@ class TradingEngineWithCommentary:
         #
         # Does NOT flip autonomous_live. Only blocks new entries via the
         # day_trade_momentum lane in LIVE mode.
-        _signal_strategy = (signal.reasoning or {}).get("strategy", "")
         if (_signal_strategy == "day_trade_momentum"
                 and self.mode == TradingMode.LIVE
                 and not Config().DAY_TRADE_LIVE_ENTRIES_ENABLED):
