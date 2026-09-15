@@ -1895,6 +1895,8 @@ class Config:
         
         Default True (shadow mode). Set LATE_ENTRY_GATE_SHADOW=0 to enable
         hard-skips after soak testing.
+        
+        See docs/late_entry_promote_checklist.md for promotion criteria.
         """
         env_val = os.getenv("LATE_ENTRY_GATE_SHADOW")
         if env_val is not None:
