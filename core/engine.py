@@ -944,6 +944,8 @@ class TradingEngineWithCommentary:
                             peak_favorable_r=pd.get('peak_favorable_r', 0.0),
                             breakeven_lifted=pd.get('breakeven_lifted', False),
                             managed_by_bot=pd.get('managed_by_bot', True),  # restored sim positions: bot-managed by default
+                            # v-manage-persist-hotfix-2026-09-15: restore managed_source
+                            managed_source=pd.get('managed_source'),
                             last_revalidation_at=pd.get('last_revalidation_at'),
                             # v-fsm-state-migration-2026-04-30: infer the
                             # right FSM state from existing flags. A
@@ -1187,6 +1189,8 @@ class TradingEngineWithCommentary:
                             reasoning=signal.reasoning or {},
                             mode="live",
                             managed_by_bot=True,
+                            # v-manage-persist-hotfix-2026-09-15: bot-opened positions
+                            managed_source='bot',
                         )
                         self.positions[signal.symbol] = position
                         if hasattr(self, 'exit_manager') and self.exit_manager is not None:
@@ -2196,6 +2200,8 @@ class TradingEngineWithCommentary:
                             reasoning=signal.reasoning,
                             mode="live",
                             managed_by_bot=True,  # bot-opened live trade
+                            # v-manage-persist-hotfix-2026-09-15: bot-opened positions
+                            managed_source='bot',
                         )
                         self.positions[signal.symbol] = position
                         
@@ -2841,6 +2847,9 @@ class TradingEngineWithCommentary:
                 'side': pos.side,
                 'entry_time': pos.entry_time.isoformat(),
                 'managed_by_bot': getattr(pos, 'managed_by_bot', False),
+                # v-manage-persist-hotfix-2026-09-15: persist managed_source
+                # so restore logic can distinguish operator toggle from stale sync.
+                'managed_source': getattr(pos, 'managed_source', None),
                 'stop_loss': getattr(pos, 'stop_loss', 0),
                 # inf (external positions' "no target") is not valid
                 # strict JSON — store None and restore as inf.
@@ -2882,6 +2891,8 @@ class TradingEngineWithCommentary:
                 'peak_favorable_r': getattr(pos, 'peak_favorable_r', 0.0),
                 'breakeven_lifted': getattr(pos, 'breakeven_lifted', False),
                 'managed_by_bot': getattr(pos, 'managed_by_bot', True),
+                # v-manage-persist-hotfix-2026-09-15: persist managed_source
+                'managed_source': getattr(pos, 'managed_source', None),
                 'last_revalidation_at': getattr(pos, 'last_revalidation_at', None),
                 # v-position-fsm-2026-04-30 (Phase 1): persist FSM fields
                 # so a restart can recover an in-flight close intent.
@@ -4385,18 +4396,18 @@ class TradingEngineWithCommentary:
 
                     if persist_enabled and not in_denylist:
                         saved = self._saved_positions_meta.get(symbol) or {}
-                        # v-manage-persist-2026-09-15: relaxed qty matching.
-                        # Policy: side match + saved managed_by_bot=True is
-                        # sufficient. Operator partial close (qty drift) no
-                        # longer disowns the remaining position.
-                        #
-                        # OPERATOR TOGGLE RESPECT: if saved meta explicitly
-                        # has managed_by_bot=False, the operator toggled it
-                        # off via /api/toggle-managed-by-bot. Do NOT override
-                        # with bot_trades fallback — respect the operator's
-                        # explicit choice.
+                        # v-manage-persist-hotfix-2026-09-15: FIXED operator toggle detection.
+                        # Bug A fix: managed_by_bot=False could be STALE sync data (positions
+                        # stamped external from earlier bad sync). Only treat as intentional
+                        # operator toggle-off if managed_source='operator' is also present.
+                        # Without managed_source=operator, False is treated as stale and
+                        # bot_trades fallback is allowed.
                         _saved_managed = saved.get('managed_by_bot')
-                        _operator_toggled_off = _saved_managed is False
+                        _saved_source = saved.get('managed_source')
+                        # Operator toggle-off: managed_by_bot=False AND managed_source='operator'
+                        _operator_toggled_off = (
+                            _saved_managed is False and _saved_source == 'operator'
+                        )
                         _restore_from_saved = (
                             _saved_managed is True
                             and saved.get('side') == side
@@ -4409,14 +4420,13 @@ class TradingEngineWithCommentary:
                             # Operator explicitly toggled off — respect it
                             _restore = False
                             _restore_source = None
-                            logger.debug(
-                                "sync_respect_toggle: %s — operator toggled managed_by_bot=False, respecting",
-                                symbol,
+                            logger.info(
+                                "sync_skip_operator_toggle: %s %s qty=%d — operator toggled managed_by_bot=False, respecting",
+                                symbol, side, qty_abs,
                             )
                         else:
-                            # Fallback: check today's bot_trades (only when
-                            # saved meta is missing/stale, not when operator
-                            # explicitly toggled off)
+                            # managed_by_bot=False WITHOUT managed_source=operator is stale data.
+                            # Fallback: check today's bot_trades for evidence of bot ownership.
                             bot_entries = await _get_bot_trades_fallback()
                             bt = bot_entries.get(symbol_upper) or bot_entries.get(symbol)
                             if bt is not None and bt.get('side') == side:
@@ -4447,6 +4457,8 @@ class TradingEngineWithCommentary:
                             entry_time=_entry_time,
                             mode="live",
                             managed_by_bot=True,
+                            # v-manage-persist-hotfix-2026-09-15: restored bot positions
+                            managed_source='bot',
                             reasoning=_saved_meta.get('reasoning') or {},
                         )
                         position.is_external = False
@@ -4460,11 +4472,13 @@ class TradingEngineWithCommentary:
                             target=_tp,
                         )
                         logger.info(
-                            "sync_restore: %s %s qty=%d — managed_by_bot=True from %s",
+                            "sync_restore_success: %s %s qty=%d — managed_by_bot=True from %s",
                             symbol, side, qty_abs, _restore_source,
                         )
                     else:
                         # External or denylist — hands off
+                        # v-manage-persist-hotfix-2026-09-15: set managed_source for observability
+                        _external_source = 'denylist' if in_denylist else 'external'
                         position = Position(
                             symbol=symbol,
                             entry_price=pos_data['average_price'],
@@ -4476,6 +4490,7 @@ class TradingEngineWithCommentary:
                             entry_time=datetime.now() - timedelta(hours=1),
                             mode="live",
                             managed_by_bot=False,
+                            managed_source=_external_source,
                         )
                         position.is_external = True
                         position.is_manually_managed = True
@@ -4487,7 +4502,7 @@ class TradingEngineWithCommentary:
                                 side=side, quantity=qty_abs,
                             )
                             logger.info(
-                                "sync_external: %s %s qty=%d — DENYLIST, hands-off",
+                                "sync_skip_denylist: %s %s qty=%d — DENYLIST, hands-off",
                                 symbol, side, qty_abs,
                             )
                         else:
@@ -4498,7 +4513,7 @@ class TradingEngineWithCommentary:
                                 side=side, quantity=qty_abs,
                             )
                             logger.info(
-                                "sync_external: %s %s qty=%d — no bot record, hands-off",
+                                "sync_skip_no_evidence: %s %s qty=%d — no bot record, left external",
                                 symbol, side, qty_abs,
                             )
                     position.unrealized_pnl = pos_data.get('total_pnl', 0)
@@ -7188,6 +7203,8 @@ class TradingEngineWithCommentary:
                 original_stop=signal.stop_loss,
                 mode="simulation",
                 managed_by_bot=True,  # bot-opened sim trade
+                # v-manage-persist-hotfix-2026-09-15: bot-opened positions
+                managed_source='bot',
             )
             self.simulated_positions[signal.symbol] = position
 
@@ -9132,6 +9149,8 @@ class TradingEngineWithCommentary:
                             }),
                             mode="live",
                             managed_by_bot=True,
+                            # v-manage-persist-hotfix-2026-09-15: bot-opened positions
+                            managed_source='bot',
                         )
                         # NOT external; bot owns it.
                         self.positions[symbol] = position
@@ -9194,12 +9213,14 @@ class TradingEngineWithCommentary:
                         _saved_meta = {}
 
                         if persist_enabled and not in_denylist and not _is_lt:
-                            # v-manage-persist-2026-09-15: relaxed qty match
-                            # OPERATOR TOGGLE RESPECT: if saved meta explicitly
-                            # has managed_by_bot=False, operator toggled it off
-                            # via /api/toggle-managed-by-bot. Do NOT override.
+                            # v-manage-persist-hotfix-2026-09-15: FIXED operator toggle detection.
+                            # Bug A fix: managed_by_bot=False could be STALE sync data. Only treat
+                            # as intentional operator toggle-off if managed_source='operator'.
                             _saved_managed = saved.get('managed_by_bot')
-                            _operator_toggled_off = _saved_managed is False
+                            _saved_source = saved.get('managed_source')
+                            _operator_toggled_off = (
+                                _saved_managed is False and _saved_source == 'operator'
+                            )
                             _restore_from_saved = (
                                 _saved_managed is True
                                 and saved.get('side') == _side
@@ -9212,30 +9233,39 @@ class TradingEngineWithCommentary:
                                 # Operator explicitly toggled off — respect it
                                 _restore_managed = False
                                 _restore_source = None
-                                logger.debug(
-                                    "update_track_respect_toggle: %s — operator toggled managed_by_bot=False, respecting",
-                                    symbol,
+                                logger.info(
+                                    "update_track_skip_operator_toggle: %s %s qty=%d — operator toggled managed_by_bot=False, respecting",
+                                    symbol, _side, _qty_abs,
                                 )
                             else:
-                                # Fallback: check today's bot_trades (only when
-                                # saved meta is missing/stale, not when operator
-                                # explicitly toggled off)
+                                # managed_by_bot=False WITHOUT managed_source=operator is stale data.
+                                # Fallback: check today's bot_trades for evidence of bot ownership.
+                                # v-manage-persist-hotfix-2026-09-15: use run_coroutine_threadsafe
+                                # instead of ThreadPoolExecutor+asyncio.run nest.
                                 if self.db_logger is not None:
                                     try:
                                         import asyncio
-                                        loop = asyncio.get_event_loop()
-                                        if loop.is_running():
-                                            import concurrent.futures
-                                            with concurrent.futures.ThreadPoolExecutor() as pool:
-                                                _future = pool.submit(
-                                                    asyncio.run,
+                                        _owner_loop = getattr(self.db_logger, '_owner_loop', None)
+                                        if _owner_loop is not None and _owner_loop.is_running():
+                                            _fut = asyncio.run_coroutine_threadsafe(
+                                                self.db_logger.get_todays_bot_entries([symbol]),
+                                                _owner_loop,
+                                            )
+                                            bot_entries = _fut.result(timeout=2.0)
+                                        else:
+                                            loop = asyncio.get_event_loop()
+                                            if loop.is_running():
+                                                # Fallback: route via db_logger's internal routing
+                                                # which now properly waits for cross-loop results
+                                                _fut = asyncio.run_coroutine_threadsafe(
+                                                    self.db_logger.get_todays_bot_entries([symbol]),
+                                                    loop,
+                                                )
+                                                bot_entries = _fut.result(timeout=2.0)
+                                            else:
+                                                bot_entries = loop.run_until_complete(
                                                     self.db_logger.get_todays_bot_entries([symbol])
                                                 )
-                                                bot_entries = _future.result(timeout=2.0)
-                                        else:
-                                            bot_entries = loop.run_until_complete(
-                                                self.db_logger.get_todays_bot_entries([symbol])
-                                            )
                                         bt = bot_entries.get(_symbol_upper) or bot_entries.get(symbol)
                                         if bt is not None and bt.get('side') == _side:
                                             _restore_managed = True
@@ -9270,6 +9300,8 @@ class TradingEngineWithCommentary:
                                 mode="live",
                                 managed_by_bot=True,
                                 is_long_term=False,
+                                # v-manage-persist-hotfix-2026-09-15: restored positions
+                                managed_source='bot',
                             )
                             position.is_external = False
                             position.is_manually_managed = False
