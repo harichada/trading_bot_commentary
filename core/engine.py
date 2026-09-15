@@ -6454,6 +6454,69 @@ class TradingEngineWithCommentary:
                     signal.symbol, _gate_exc
                 )
 
+        # ────────────────────────────────────────────────────────────────────
+        # v-daytrade-rsi-entry-gate-2026-09-15: block day-trade LIVE long
+        # entries when RSI <= 50 (the proactive_rsi_below_50 exit threshold).
+        #
+        # P0 RCA 2026-09-15 (ALHC×2): day_trade pullback/continuation entered
+        # LIVE while RSI <= 50, then the open-desk / proactive RSI exit
+        # immediately (or soon) dumped the trade. Entry into a condition
+        # that already triggers exit = churn, anti-profit.
+        #
+        # Gate uses is_day_trade=True from reasoning to cover all day-trade
+        # tagged strategies (momentum, pullback, continuation).
+        # Only blocks BUY signals (longs), matching the RSI < 50 exit logic.
+        # ────────────────────────────────────────────────────────────────────
+        if (_is_day_trade_signal
+                and self.mode == TradingMode.LIVE
+                and signal.signal_type == SignalType.BUY
+                and Config().DAY_TRADE_RSI_ENTRY_GATE_ENABLED):
+            try:
+                _rsi_threshold = Config().DAY_TRADE_RSI_ENTRY_THRESHOLD
+                _signal_rsi = float(_reasoning.get('rsi', 100))
+                if _signal_rsi <= _rsi_threshold:
+                    self._audit(
+                        "daytrade_rsi_entry_gate", signal.symbol, "skip",
+                        "rsi_below_50_entry_blocked",
+                        strategy=_signal_strategy,
+                        mode=self.mode.value,
+                        rsi=round(_signal_rsi, 2),
+                        rsi_threshold=_rsi_threshold,
+                        entry_pattern=_reasoning.get("entry_pattern"),
+                        regime=_reasoning.get("market_context_regime"),
+                    )
+                    self.commentary.add_commentary(TradingCommentary(
+                        timestamp=datetime.now(),
+                        type=CommentaryType.RISK_ASSESSMENT,
+                        symbol=signal.symbol,
+                        title=f"🛑 Day-Trade Entry Blocked — RSI ≤{int(_rsi_threshold)}",
+                        message=(
+                            f"Signal for {signal.symbol} via {_signal_strategy} "
+                            f"blocked in LIVE mode — RSI {_signal_rsi:.1f} "
+                            f"<= threshold {_rsi_threshold}.\n\n"
+                            f"Entry at RSI ≤{int(_rsi_threshold)} would immediately "
+                            f"be vulnerable to proactive_rsi_below_50 exit = churn.\n"
+                            f"Gate: DAY_TRADE_RSI_ENTRY_GATE_ENABLED=True\n"
+                            f"Pattern: {_reasoning.get('entry_pattern', 'unknown')}"
+                        ),
+                        data={
+                            'strategy': _signal_strategy,
+                            'entry_pattern': _reasoning.get('entry_pattern'),
+                            'mode': self.mode.value,
+                            'rsi': _signal_rsi,
+                            'rsi_threshold': _rsi_threshold,
+                            'gate': 'DAY_TRADE_RSI_ENTRY_GATE_ENABLED',
+                            'gate_value': True,
+                        },
+                        importance=8,
+                    ))
+                    return
+            except Exception as _rsi_gate_exc:
+                logger.warning(
+                    "daytrade_rsi_entry_gate check failed for %s: %s",
+                    signal.symbol, _rsi_gate_exc
+                )
+
         # v-pause-live-meanrev-2026-09-15: block NEW LIVE mean-reversion
         # entries when MEAN_REV_LIVE_ENTRIES_ENABLED=False.
         #

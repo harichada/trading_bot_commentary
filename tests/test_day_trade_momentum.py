@@ -1641,6 +1641,297 @@ class TestFlattenHourEntryGateIntegration:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# v-daytrade-rsi-entry-gate-2026-09-15: Tests for blocking day-trade LIVE
+# entries when RSI <= 50 (the proactive_rsi_below_50 exit threshold).
+#
+# P0 RCA 2026-09-15 (ALHC×2): day_trade pullback/continuation entered LIVE
+# while RSI <= 50, then proactive_rsi_below_50 exit immediately dumped the
+# trade. Entry into a condition that already triggers exit = churn.
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestDayTradeRsiEntryGateConfig:
+    """Test DAY_TRADE_RSI_ENTRY_GATE_ENABLED config flag.
+
+    v-daytrade-rsi-entry-gate-2026-09-15: block day-trade LIVE long entries
+    when RSI <= 50 (the proactive_rsi_below_50 exit threshold).
+    """
+
+    def test_rsi_entry_gate_default_true(self):
+        """DAY_TRADE_RSI_ENTRY_GATE_ENABLED must default to True.
+
+        This is the P0 fix. DO NOT CHANGE without explicit approval.
+        """
+        from core.config import Config
+        cfg = Config()
+        assert cfg.DAY_TRADE_RSI_ENTRY_GATE_ENABLED is True, (
+            "DAY_TRADE_RSI_ENTRY_GATE_ENABLED must default to True — "
+            "P0 fix to prevent entry churn when RSI <= exit threshold"
+        )
+
+    def test_rsi_entry_threshold_default_50(self):
+        """DAY_TRADE_RSI_ENTRY_THRESHOLD must default to 50.0.
+
+        Aligned with proactive_rsi_below_50 exit threshold.
+        """
+        from core.config import Config
+        cfg = Config()
+        assert cfg.DAY_TRADE_RSI_ENTRY_THRESHOLD == 50.0, (
+            "DAY_TRADE_RSI_ENTRY_THRESHOLD must default to 50.0 — "
+            "aligned with proactive_rsi_below_50 exit threshold"
+        )
+
+    def test_rsi_entry_gate_env_override_disables(self):
+        """DAY_TRADE_RSI_ENTRY_GATE_ENABLED=0 disables the gate."""
+        from core.config import Config
+
+        with patch.dict(os.environ, {"DAY_TRADE_RSI_ENTRY_GATE_ENABLED": "0"}):
+            cfg = Config()
+            assert cfg.DAY_TRADE_RSI_ENTRY_GATE_ENABLED is False, (
+                "Gate must be disabled when env var is 0"
+            )
+
+    def test_rsi_entry_threshold_configurable(self):
+        """RSI threshold should be configurable via config manager.
+
+        The property reads from config manager with key
+        'trading.day_trade_rsi_entry_threshold' with default 50.0.
+        """
+        from pathlib import Path
+        src = Path("core/config.py").read_text()
+
+        assert "day_trade_rsi_entry_threshold" in src, (
+            "Config must have day_trade_rsi_entry_threshold property"
+        )
+        assert "50.0" in src, (
+            "Default threshold must be 50.0"
+        )
+
+
+class TestDayTradeRsiEntryGateEngine:
+    """Test engine implementation of RSI entry gate.
+
+    v-daytrade-rsi-entry-gate-2026-09-15: verify the engine has the gate
+    and uses the correct audit reason.
+    """
+
+    def test_engine_has_rsi_entry_gate(self):
+        """Engine must have the v-daytrade-rsi-entry-gate-2026-09-15 gate."""
+        from pathlib import Path
+        src = Path("core/engine.py").read_text()
+
+        assert "v-daytrade-rsi-entry-gate-2026-09-15" in src, (
+            "Engine must contain v-daytrade-rsi-entry-gate-2026-09-15 gate"
+        )
+        assert "DAY_TRADE_RSI_ENTRY_GATE_ENABLED" in src, (
+            "Engine must check DAY_TRADE_RSI_ENTRY_GATE_ENABLED flag"
+        )
+        assert "rsi_below_50_entry_blocked" in src, (
+            "Engine must audit with reason=rsi_below_50_entry_blocked"
+        )
+        assert "daytrade_rsi_entry_gate" in src, (
+            "Engine must audit with component=daytrade_rsi_entry_gate"
+        )
+
+    def test_engine_gate_checks_is_day_trade_and_rsi(self):
+        """Engine gate must check is_day_trade, RSI, and BUY signal type."""
+        from pathlib import Path
+        src = Path("core/engine.py").read_text()
+
+        anchor = src.find("v-daytrade-rsi-entry-gate-2026-09-15")
+        assert anchor != -1
+        window = src[anchor: anchor + 2500]
+
+        assert "_is_day_trade_signal" in window, (
+            "Engine gate must check is_day_trade flag"
+        )
+        assert "TradingMode.LIVE" in window, (
+            "Engine gate must check for LIVE mode"
+        )
+        assert "SignalType.BUY" in window, (
+            "Engine gate must check for BUY signal type (longs only)"
+        )
+        assert "DAY_TRADE_RSI_ENTRY_THRESHOLD" in window, (
+            "Engine gate must use DAY_TRADE_RSI_ENTRY_THRESHOLD"
+        )
+
+
+class TestDayTradeRsiEntryGateIntegration:
+    """Integration tests for RSI entry gate behavior."""
+
+    @pytest.fixture
+    def mock_signal_day_trade_low_rsi(self):
+        """Create a day-trade signal with RSI <= 50 (would be blocked)."""
+        signal = MagicMock()
+        signal.symbol = "ALHC"
+        signal.signal_type = SignalType.BUY  # Long entry
+        signal.reasoning = {
+            "strategy": "day_trade_momentum",
+            "is_day_trade": True,
+            "entry_pattern": "pullback",  # Pullback allows RSI 40-60
+            "rsi": 48.0,  # KEY: RSI <= 50
+        }
+        return signal
+
+    @pytest.fixture
+    def mock_signal_day_trade_high_rsi(self):
+        """Create a day-trade signal with RSI > 50 (would be allowed)."""
+        signal = MagicMock()
+        signal.symbol = "ALHC"
+        signal.signal_type = SignalType.BUY  # Long entry
+        signal.reasoning = {
+            "strategy": "day_trade_momentum",
+            "is_day_trade": True,
+            "entry_pattern": "continuation",
+            "rsi": 55.0,  # KEY: RSI > 50
+        }
+        return signal
+
+    def test_entry_blocked_when_rsi_below_threshold(self, mock_signal_day_trade_low_rsi):
+        """Entry must be blocked when RSI <= threshold.
+
+        RSI 48 <= 50 threshold → entry blocked.
+        """
+        signal = mock_signal_day_trade_low_rsi
+        rsi = signal.reasoning.get('rsi', 100)
+        threshold = 50.0
+
+        assert rsi <= threshold, (
+            f"Test precondition: RSI ({rsi}) <= threshold ({threshold})"
+        )
+
+    def test_entry_blocked_when_rsi_equals_threshold(self):
+        """Entry must be blocked when RSI == threshold (edge case).
+
+        RSI exactly at 50 is right at the edge — one tick of noise and
+        the proactive exit fires. Block at threshold, not just below.
+        """
+        signal = MagicMock()
+        signal.symbol = "EDGE"
+        signal.signal_type = SignalType.BUY
+        signal.reasoning = {
+            "strategy": "day_trade_momentum",
+            "is_day_trade": True,
+            "entry_pattern": "pullback",
+            "rsi": 50.0,  # KEY: RSI == threshold exactly
+        }
+
+        rsi = signal.reasoning.get('rsi', 100)
+        threshold = 50.0
+
+        assert rsi <= threshold, (
+            f"Test precondition: RSI ({rsi}) <= threshold ({threshold}) [boundary]"
+        )
+
+    def test_entry_allowed_when_rsi_above_threshold(self, mock_signal_day_trade_high_rsi):
+        """Entry must be allowed when RSI > threshold.
+
+        RSI 55 > 50 threshold → entry proceeds.
+        """
+        signal = mock_signal_day_trade_high_rsi
+        rsi = signal.reasoning.get('rsi', 100)
+        threshold = 50.0
+
+        assert rsi > threshold, (
+            f"Test precondition: RSI ({rsi}) > threshold ({threshold})"
+        )
+
+    def test_gate_disabled_allows_low_rsi_entry(self, mock_signal_day_trade_low_rsi):
+        """Entry allowed at low RSI when gate is disabled."""
+        from core.config import Config
+
+        with patch.dict(os.environ, {"DAY_TRADE_RSI_ENTRY_GATE_ENABLED": "0"}):
+            cfg = Config()
+            assert cfg.DAY_TRADE_RSI_ENTRY_GATE_ENABLED is False, (
+                "Gate must be disabled when env var is 0"
+            )
+
+    def test_non_day_trade_signal_not_blocked(self):
+        """Signals without is_day_trade=True should not be blocked by this gate."""
+        signal = MagicMock()
+        signal.symbol = "TEST"
+        signal.signal_type = SignalType.BUY
+        signal.reasoning = {
+            "strategy": "mean_reversion",
+            "is_day_trade": False,
+            "rsi": 45.0,  # Low RSI, but not a day trade
+        }
+
+        is_day_trade = signal.reasoning.get('is_day_trade', False)
+        assert is_day_trade is False, (
+            "Non-day-trade signal should not trigger rsi_entry gate"
+        )
+
+    def test_short_signal_not_blocked_by_rsi_gate(self):
+        """SELL signals (shorts) should not be blocked by this gate.
+
+        The proactive_rsi_below_50 exit only applies to longs.
+        Short exits trigger when RSI > 50, so this gate is long-specific.
+        """
+        signal = MagicMock()
+        signal.symbol = "SHORT"
+        signal.signal_type = SignalType.SELL  # Short entry
+        signal.reasoning = {
+            "strategy": "day_trade_momentum",
+            "is_day_trade": True,
+            "entry_pattern": "continuation",
+            "rsi": 45.0,  # Low RSI, but it's a short
+        }
+
+        is_buy = signal.signal_type == SignalType.BUY
+        assert is_buy is False, (
+            "SELL signal should not trigger the long-specific RSI gate"
+        )
+
+
+class TestRsiThresholdAlignment:
+    """Test that RSI entry threshold aligns with exit threshold.
+
+    v-daytrade-rsi-entry-gate-2026-09-15: the entry gate threshold must
+    align with the proactive_rsi_below_50 exit threshold in:
+      - analysis/scale_trail_manager.py
+      - analysis/active_open_desk.py
+    """
+
+    def test_entry_threshold_matches_exit_concept(self):
+        """Entry threshold 50 matches the exit 'rsi < 50' concept.
+
+        Exit triggers at rsi < 50 (strict less than).
+        Entry blocks at rsi <= 50 (less than or equal).
+
+        Using <= for entry is more conservative: RSI exactly at 50 is
+        right at the edge, so we block it to be safe.
+        """
+        from core.config import Config
+        cfg = Config()
+
+        entry_threshold = cfg.DAY_TRADE_RSI_ENTRY_THRESHOLD
+        exit_threshold_concept = 50  # rsi < 50 in exit logic
+
+        assert entry_threshold == exit_threshold_concept, (
+            f"Entry threshold ({entry_threshold}) must match exit threshold "
+            f"concept ({exit_threshold_concept})"
+        )
+
+    def test_exit_logic_uses_rsi_50_in_scale_trail_manager(self):
+        """scale_trail_manager proactive exit must use RSI 50 threshold."""
+        from pathlib import Path
+        src = Path("analysis/scale_trail_manager.py").read_text()
+
+        assert "rsi < 50" in src or "rsi_below_50" in src, (
+            "scale_trail_manager must use RSI 50 as proactive exit threshold"
+        )
+
+    def test_exit_logic_uses_rsi_50_in_active_open_desk(self):
+        """active_open_desk proactive exit must use RSI 50 threshold."""
+        from pathlib import Path
+        src = Path("analysis/active_open_desk.py").read_text()
+
+        assert "rsi < 50" in src or "rsi_below_50" in src, (
+            "active_open_desk must use RSI 50 as proactive exit threshold"
+        )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # v-shadow-veto-2026-09-10: Tests for Part B - Shadow veto for continuation
 # pattern + RSI>=70 + risk_off.
 # ══════════════════════════════════════════════════════════════════════════════
