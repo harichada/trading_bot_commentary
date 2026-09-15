@@ -2414,62 +2414,29 @@ class TradingEngineWithCommentary:
             logger.error(f"Position close error: {e}")
             return False
     async def _update_real_positions(self):
-        """Update real positions from account - syncs ALL Schwab positions"""
+        """Update real positions from account - syncs ALL Schwab positions.
+        
+        v-manage-persist-discovery-path-2026-09-15: This function previously
+        created all newly-discovered Schwab positions as external with
+        managed_by_bot=False, bypassing the restore-aware logic in
+        _update_and_track_real_positions. This caused CRCL/FPS/SLS (bot-owned)
+        to lose managed status on mode toggle to LIVE.
+        
+        Fix: delegate position discovery to _update_and_track_real_positions
+        which has the full restore logic (saved_positions_meta, bot_trades
+        fallback, HANDS_OFF_DENYLIST). This function now only handles the
+        removal of positions that no longer exist in Schwab.
+        """
         if not self.schwab_client or self.mode != TradingMode.LIVE:
             return
 
         try:
-            # Get all Schwab positions
+            # Delegate position discovery (add/update) to restore-aware function
+            await self._update_and_track_real_positions()
+            
+            # Get Schwab positions for removal check
             schwab_positions = await self.get_schwab_positions()
-
-            # Create a set of symbols from Schwab
             schwab_symbols = {pos['symbol'] for pos in schwab_positions}
-
-            # Add or update positions from Schwab
-            for pos_data in schwab_positions:
-                symbol = pos_data['symbol']
-
-                if symbol not in self.positions:
-                    # Create new position for externally opened position
-                    # IMPORTANT: External positions have NO automatic stop loss/take profit
-                    # They are flagged as manually managed and the bot won't take actions on them
-                    position = Position(
-                        symbol=symbol,
-                        quantity=abs(pos_data['quantity']),
-                        entry_price=pos_data['average_price'],
-                        current_price=pos_data['current_price'],
-                        stop_loss=0,  # No automatic stop loss for external positions
-                        take_profit=float('inf'),  # No automatic take profit
-                        entry_time=datetime.now(),
-                        side='long' if pos_data['quantity'] > 0 else 'short',
-                        reasoning={'source': 'external', 'strategy': 'manual_entry'},
-                        mode="live",
-                        managed_by_bot=False,  # external/manual → hands off
-                    )
-                    position.unrealized_pnl = pos_data['total_pnl']
-                    position.is_external = True  # Flag as externally created
-                    position.is_manually_managed = True  # Bot won't auto-manage this
-                    self.positions[symbol] = position
-
-                    # Log that we found an external position
-                    self.commentary.add_commentary(TradingCommentary(
-                        timestamp=datetime.now(),
-                        type=CommentaryType.MARKET_ANALYSIS,
-                        symbol=symbol,
-                        title=f"📥 External Position Detected (Manual Mode)",
-                        message=f"Found {abs(pos_data['quantity'])} shares of {symbol} "
-                                f"({'long' if pos_data['quantity'] > 0 else 'short'})\n"
-                                f"Entry: ${pos_data['average_price']:.2f}, "
-                                f"Current: ${pos_data['current_price']:.2f}\n"
-                                f"⚠️ This position is MANUALLY MANAGED - bot will NOT auto-close",
-                        data=pos_data,
-                        importance=7
-                    ))
-                else:
-                    # Update existing position prices only
-                    position = self.positions[symbol]
-                    position.current_price = pos_data['current_price']
-                    position.unrealized_pnl = pos_data['total_pnl']
             
             # Remove positions that no longer exist in Schwab
             positions_to_remove = []
@@ -9088,6 +9055,17 @@ class TradingEngineWithCommentary:
         
         try:
             schwab_positions = await self.get_schwab_positions()
+            
+            # v-manage-persist-discovery-path-2026-09-15: INFO log at discovery start
+            # so VERIFY isn't silent when restore logic runs
+            _discovery_path = "update_and_track_real_positions"
+            _n_schwab = len(schwab_positions)
+            _n_existing = sum(1 for pos in schwab_positions if pos['symbol'] in self.positions)
+            _n_new = _n_schwab - _n_existing
+            logger.info(
+                "position_discovery_begin path=%s n_schwab=%d n_existing=%d n_new=%d",
+                _discovery_path, _n_schwab, _n_existing, _n_new,
+            )
             
             # Update existing tracked positions
             for pos_data in schwab_positions:

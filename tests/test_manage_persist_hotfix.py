@@ -186,21 +186,22 @@ class TestToggleAPIManagedSource:
     """Tests for /api/toggle-managed-by-bot setting managed_source."""
 
     def test_toggle_sets_operator_source(self):
-        """Toggle API sets managed_source='operator' on position."""
-        # Verify the toggle API code sets managed_source='operator'
+        """Toggle API sets managed_source based on toggle direction.
+        
+        v-manage-persist-discovery-path-2026-09-15: Updated to use conditional:
+          - 'operator' when disabling (not new_state) - blocks restore
+          - 'operator_on' when enabling (new_state) - indicates deliberate re-enable
+        """
         with open('/workspace/api/routes.py', 'r') as f:
             content = f.read()
-        
-        # Check that toggle API sets managed_source='operator'
-        assert "pos.managed_source = 'operator'" in content, \
-            "Toggle API should set managed_source='operator'"
         
         # Verify it happens in the toggle-managed-by-bot endpoint
         toggle_section = content[content.find("@app.post(\"/api/toggle-managed-by-bot\")"):]
         toggle_section = toggle_section[:toggle_section.find("@app.post", 1)]
         
-        assert "pos.managed_source = 'operator'" in toggle_section, \
-            "managed_source='operator' should be set in toggle API"
+        # v-manage-persist-discovery-path-2026-09-15: conditional based on direction
+        assert "pos.managed_source = 'operator' if not new_state else 'operator_on'" in toggle_section, \
+            "managed_source should be set conditionally based on toggle direction"
 
 
 class TestSaveStateIncludesManagedSource:
