@@ -502,7 +502,12 @@ async def handle_full_bracket_fill(
     if hasattr(engine, 'exit_manager'):
         engine.exit_manager.close_position_tracking(symbol)
 
-    await engine._save_state()
+    # Save state — sync call; best-effort so I/O hiccup doesn't abort fill handling.
+    # v-fix-await-save-state-2026-09-15: _save_state is sync def, not async.
+    try:
+        engine._save_state()
+    except Exception as exc:
+        logger.warning(f"_save_state failed during bracket fill of {symbol}: {exc}")
 
     engine._audit(
         "order_monitor", symbol, "position_closed",

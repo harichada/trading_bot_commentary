@@ -2591,3 +2591,66 @@ class TestBrokerLegAuthorityFlagOffBehavior:
         assert 'return (False, "feature_disabled")' in body, (
             "Must return (False, 'feature_disabled') tuple"
         )
+
+
+
+class TestSaveStateAwaitFix:
+    """v-fix-await-save-state-2026-09-15: _save_state is sync; must not be awaited."""
+
+    def test_handle_full_bracket_fill_does_not_await_save_state(self):
+        """handle_full_bracket_fill must call _save_state without await."""
+        src = (Path(__file__).parent.parent / "core" / "order_monitor" / "brackets.py").read_text()
+
+        marker = "async def handle_full_bracket_fill"
+        idx = src.index(marker)
+        body = src[idx:idx + 6000]
+
+        assert "await engine._save_state()" not in body, (
+            "MUST NOT await _save_state — it is a sync function that returns None. "
+            "Awaiting None causes TypeError."
+        )
+        assert "engine._save_state()" in body, (
+            "Must call _save_state synchronously"
+        )
+
+    def test_save_state_call_wrapped_in_try_except(self):
+        """_save_state call must be wrapped in try/except to avoid aborting fill handling."""
+        src = (Path(__file__).parent.parent / "core" / "order_monitor" / "brackets.py").read_text()
+
+        marker = "async def handle_full_bracket_fill"
+        idx = src.index(marker)
+        body = src[idx:idx + 6000]
+
+        assert "try:" in body and "engine._save_state()" in body, (
+            "Must have try block for _save_state"
+        )
+        assert "except Exception" in body, (
+            "Must catch Exception around _save_state"
+        )
+        assert "_save_state failed" in body, (
+            "Must log warning on _save_state failure"
+        )
+
+    def test_engine_save_state_is_sync_def(self):
+        """TradingEngineWithCommentary._save_state must be sync (not async)."""
+        src = (Path(__file__).parent.parent / "core" / "engine.py").read_text()
+
+        assert "def _save_state(self):" in src, (
+            "_save_state must be a sync method (def _save_state, not async def)"
+        )
+        assert "async def _save_state" not in src, (
+            "_save_state MUST NOT be async — other callers rely on sync behavior"
+        )
+
+    def test_awaiting_none_would_fail(self):
+        """Regression: awaiting None must raise TypeError."""
+        import asyncio
+
+        async def call_and_await_none():
+            def sync_fn():
+                return None
+            await sync_fn()  # This is the bug pattern
+
+        with pytest.raises(TypeError, match="can't be used in 'await'"):
+            asyncio.get_event_loop().run_until_complete(call_and_await_none())
+
