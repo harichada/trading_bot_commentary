@@ -3107,12 +3107,44 @@ class TestMeanRevRiskBudgetConfig:
             "MAX_CONCURRENT_MEAN_REV must be at least 1"
         )
     
-    def test_max_mean_rev_risk_pct_default(self):
-        """MAX_MEAN_REV_RISK_PCT must default to 0.30 (30%)."""
+    def test_max_mean_rev_risk_pct_default_zero(self):
+        """MAX_MEAN_REV_RISK_PCT must default to 0 (shadow only while LIVE off)."""
         from core.config import Config
         cfg = Config()
-        assert abs(cfg.MAX_MEAN_REV_RISK_PCT - 0.30) < 1e-9, (
-            "MAX_MEAN_REV_RISK_PCT must default to 0.30 (30%)"
+        assert cfg.MAX_MEAN_REV_RISK_PCT == 0.0, (
+            "MAX_MEAN_REV_RISK_PCT must default to 0 (shadow only while LIVE off)"
+        )
+    
+    def test_max_concurrent_mean_rev_shorts_default(self):
+        """MAX_CONCURRENT_MEAN_REV_SHORTS must default to 3 (Stage A constraint)."""
+        from core.config import Config
+        cfg = Config()
+        assert cfg.MAX_CONCURRENT_MEAN_REV_SHORTS == 3, (
+            "MAX_CONCURRENT_MEAN_REV_SHORTS must default to 3"
+        )
+    
+    def test_mean_rev_dedupe_minutes_default(self):
+        """MEAN_REV_DEDUPE_MINUTES must default to 15."""
+        from core.config import Config
+        cfg = Config()
+        assert cfg.MEAN_REV_DEDUPE_MINUTES == 15, (
+            "MEAN_REV_DEDUPE_MINUTES must default to 15"
+        )
+    
+    def test_mean_rev_exclude_risk_off_default_true(self):
+        """MEAN_REV_EXCLUDE_RISK_OFF must default to True."""
+        from core.config import Config
+        cfg = Config()
+        assert cfg.MEAN_REV_EXCLUDE_RISK_OFF is True, (
+            "MEAN_REV_EXCLUDE_RISK_OFF must default to True"
+        )
+    
+    def test_mean_rev_shadow_ledger_enabled_default_true(self):
+        """MEAN_REV_SHADOW_LEDGER_ENABLED must default to True."""
+        from core.config import Config
+        cfg = Config()
+        assert cfg.MEAN_REV_SHADOW_LEDGER_ENABLED is True, (
+            "MEAN_REV_SHADOW_LEDGER_ENABLED must default to True"
         )
 
 
@@ -3253,7 +3285,7 @@ class TestMeanRevRiskBudgetEngine:
         
         anchor = src.find("v-meanrev-risk-budget-2026-09-15")
         assert anchor != -1
-        window = src[anchor: anchor + 5000]
+        window = src[anchor: anchor + 8000]
         
         assert "MAX_CONCURRENT_MEAN_REV" in window, (
             "Risk budget must check MAX_CONCURRENT_MEAN_REV threshold"
@@ -3269,7 +3301,7 @@ class TestMeanRevRiskBudgetEngine:
         
         anchor = src.find("v-meanrev-risk-budget-2026-09-15")
         assert anchor != -1
-        window = src[anchor: anchor + 5000]
+        window = src[anchor: anchor + 8000]
         
         assert "MAX_MEAN_REV_RISK_PCT" in window, (
             "Risk budget must check MAX_MEAN_REV_RISK_PCT threshold"
@@ -3285,7 +3317,7 @@ class TestMeanRevRiskBudgetEngine:
         
         anchor = src.find("v-meanrev-risk-budget-2026-09-15")
         assert anchor != -1
-        window = src[anchor: anchor + 5000]
+        window = src[anchor: anchor + 8000]
         
         assert "mean_rev_budget_exhausted" in window, (
             "Risk budget must audit with reason=mean_rev_budget_exhausted"
@@ -3298,7 +3330,7 @@ class TestMeanRevRiskBudgetEngine:
         
         anchor = src.find("v-meanrev-risk-budget-2026-09-15")
         assert anchor != -1
-        window = src[anchor: anchor + 5000]
+        window = src[anchor: anchor + 8000]
         
         assert "Mean-Rev Budget Exhausted" in window, (
             "Risk budget must add commentary with descriptive title"
@@ -3330,7 +3362,7 @@ class TestMeanRevRiskBudgetEngine:
         
         anchor = src.find("v-meanrev-risk-budget-2026-09-15")
         assert anchor != -1
-        window = src[anchor: anchor + 5000]
+        window = src[anchor: anchor + 8000]
         
         assert "_meanrev_pending_syms" in window, (
             "Risk budget must track pending mean-rev order symbols"
@@ -3338,3 +3370,113 @@ class TestMeanRevRiskBudgetEngine:
         assert "pending_orders" in window, (
             "Risk budget must check pending_orders for mean-rev entries"
         )
+    
+    def test_engine_risk_budget_checks_max_shorts(self):
+        """Engine risk budget must check MAX_CONCURRENT_MEAN_REV_SHORTS."""
+        from pathlib import Path
+        src = Path("core/engine.py").read_text()
+        
+        anchor = src.find("v-meanrev-risk-budget-2026-09-15")
+        assert anchor != -1
+        window = src[anchor: anchor + 8000]
+        
+        assert "MAX_CONCURRENT_MEAN_REV_SHORTS" in window, (
+            "Risk budget must check MAX_CONCURRENT_MEAN_REV_SHORTS"
+        )
+        assert "_meanrev_short_count" in window, (
+            "Risk budget must count mean-rev SHORT positions"
+        )
+        assert "max_concurrent_shorts_exceeded" in window, (
+            "Risk budget must have reason for max shorts exceeded"
+        )
+    
+    def test_engine_risk_budget_checks_hands_off(self):
+        """Engine risk budget must check HANDS_OFF_DENYLIST."""
+        from pathlib import Path
+        src = Path("core/engine.py").read_text()
+        
+        anchor = src.find("v-meanrev-risk-budget-2026-09-15")
+        assert anchor != -1
+        window = src[anchor: anchor + 8000]
+        
+        assert "HANDS_OFF_DENYLIST" in window, (
+            "Risk budget must check HANDS_OFF_DENYLIST"
+        )
+        assert "mean_rev_hands_off_blocked" in window, (
+            "Risk budget must have reason for hands_off blocked"
+        )
+
+
+class TestMeanRevRegimeGateEngine:
+    """Test that the engine has mean-rev regime exclusion logic."""
+    
+    def test_engine_has_risk_off_gate(self):
+        """Engine must have the v-meanrev-risk-off-gate-2026-09-15 gate."""
+        from pathlib import Path
+        src = Path("core/engine.py").read_text()
+        
+        assert "v-meanrev-risk-off-gate-2026-09-15" in src, (
+            "Engine must contain v-meanrev-risk-off-gate-2026-09-15 gate"
+        )
+        assert "MEAN_REV_EXCLUDE_RISK_OFF" in src, (
+            "Engine must check MEAN_REV_EXCLUDE_RISK_OFF flag"
+        )
+        assert "mean_rev_risk_off_blocked" in src, (
+            "Engine must audit with reason=mean_rev_risk_off_blocked"
+        )
+
+
+class TestMeanRevDedupeGateEngine:
+    """Test that the engine has mean-rev dedupe logic."""
+    
+    def test_engine_has_dedupe_gate(self):
+        """Engine must have the v-meanrev-dedupe-2026-09-15 gate."""
+        from pathlib import Path
+        src = Path("core/engine.py").read_text()
+        
+        assert "v-meanrev-dedupe-2026-09-15" in src, (
+            "Engine must contain v-meanrev-dedupe-2026-09-15 gate"
+        )
+        assert "MEAN_REV_DEDUPE_MINUTES" in src, (
+            "Engine must check MEAN_REV_DEDUPE_MINUTES config"
+        )
+        assert "mean_rev_dedupe_blocked" in src, (
+            "Engine must audit with reason=mean_rev_dedupe_blocked"
+        )
+
+
+class TestMeanRevShadowLedgerEngine:
+    """Test that the engine has mean-rev shadow ledger emission."""
+    
+    def test_engine_has_shadow_ledger(self):
+        """Engine must have the v-meanrev-shadow-ledger-2026-09-15 gate."""
+        from pathlib import Path
+        src = Path("core/engine.py").read_text()
+        
+        assert "v-meanrev-shadow-ledger-2026-09-15" in src, (
+            "Engine must contain v-meanrev-shadow-ledger-2026-09-15 gate"
+        )
+        assert "MEAN_REV_SHADOW_LEDGER_ENABLED" in src, (
+            "Engine must check MEAN_REV_SHADOW_LEDGER_ENABLED flag"
+        )
+        assert "mean_rev_shadow_ledger" in src, (
+            "Engine must audit with component=mean_rev_shadow_ledger"
+        )
+    
+    def test_engine_shadow_ledger_emits_stage_a_fields(self):
+        """Engine shadow ledger must emit Stage A fields."""
+        from pathlib import Path
+        src = Path("core/engine.py").read_text()
+        
+        anchor = src.find("v-meanrev-shadow-ledger-2026-09-15")
+        assert anchor != -1
+        window = src[anchor: anchor + 3000]
+        
+        assert "setup_type" in window, "Must emit setup_type"
+        assert "rsi_14" in window, "Must emit rsi_14"
+        assert "bb_distance" in window, "Must emit bb_distance"
+        assert "stop_dist" in window, "Must emit stop_dist"
+        assert "rr_ratio" in window, "Must emit rr_ratio"
+        assert "regime" in window, "Must emit regime"
+        assert "shadow=True" in window, "Must emit shadow=True"
+        assert "would_be_R" in window, "Must emit would_be_R"

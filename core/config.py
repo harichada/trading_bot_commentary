@@ -1507,11 +1507,77 @@ class Config:
         reached (sum of mean-rev position notional / equity >= threshold),
         new mean-rev entries are blocked.
 
-        Default 0.30 (30% of equity). Set trading.max_mean_rev_risk_pct
-        to adjust. This complements MAX_CONCURRENT_MEAN_REV for dollar-based
-        budgeting.
+        Default **0** while LIVE is off — paper/shadow notionals only for
+        Stage A validation. After Stage A green + Hari approval, first LIVE
+        bucket should be ≤1-2% total risk capital, mean-rev share ≤ half
+        of that unless Hari says otherwise.
+
+        Set trading.max_mean_rev_risk_pct to adjust. This complements
+        MAX_CONCURRENT_MEAN_REV for dollar-based budgeting.
         """
-        return float(self.manager.get('trading.max_mean_rev_risk_pct', 0.30))
+        return float(self.manager.get('trading.max_mean_rev_risk_pct', 0.0))
+
+    @property
+    def MAX_CONCURRENT_MEAN_REV_SHORTS(self) -> int:
+        """Maximum simultaneous open hypothetical mean-rev SHORT positions.
+
+        Stage A constraint: max simultaneous open hyp shorts ≤3.
+        This applies to shadow-mode short signals tracked for validation.
+        Prior live short clusters showed ~PF 0.69 — keep this cap tight.
+
+        Default 3. Set trading.max_concurrent_mean_rev_shorts to adjust.
+        """
+        val = int(self.manager.get('trading.max_concurrent_mean_rev_shorts', 3))
+        return max(1, val)
+
+    @property
+    def MEAN_REV_DEDUPE_MINUTES(self) -> int:
+        """Dedupe window for same-symbol mean-rev entries (minutes).
+
+        Stage A constraint: exclude same symbol entries within <15 minutes.
+        Prevents repeated whipsawing on the same name during volatility.
+
+        Default 15. Set trading.mean_rev_dedupe_minutes to adjust.
+        """
+        return int(self.manager.get('trading.mean_rev_dedupe_minutes', 15))
+
+    @property
+    def MEAN_REV_EXCLUDE_RISK_OFF(self) -> bool:
+        """Exclude mean-rev entries during risk_off regime (primary book).
+
+        Stage A constraint: Primary book exclude risk_off; secondary = all regimes.
+        When True (default), mean-rev entries are blocked when market
+        regime is risk_off (broad selloff). Secondary/shadow book logs
+        all regimes for comparison.
+
+        Default True. Set trading.mean_rev_exclude_risk_off: false to disable.
+        """
+        env_val = os.getenv("MEAN_REV_EXCLUDE_RISK_OFF")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.mean_rev_exclude_risk_off', True))
+
+    @property
+    def MEAN_REV_SHADOW_LEDGER_ENABLED(self) -> bool:
+        """Enable shadow ledger emission for Stage A validation.
+
+        When True, mean-rev signals emit shadow fields for Stage A tracking:
+          setup_type, rsi_14, bb_distance, atr, stop_dist, rr_ratio,
+          regime, shadow=true, would_be_R
+
+        These fields feed the Stage A scorecard validation:
+          n≥150 resolved OR ≥10 sessions with ≥1 resolved
+          PF≥1.30 (fees+slip on hyp fills)
+          WR≥48% (scratches |R|<0.05 out of rate, in n)
+          exp≥+0.05R
+          DD≤6% allocated; max losing day ≤2.0R
+
+        Default True. Set trading.mean_rev_shadow_ledger_enabled: false to disable.
+        """
+        env_val = os.getenv("MEAN_REV_SHADOW_LEDGER_ENABLED")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.mean_rev_shadow_ledger_enabled', True))
 
     @property
     def ENABLE_BOT_ONLY_PNL_CIRCUIT(self) -> bool:
