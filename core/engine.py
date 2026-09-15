@@ -738,7 +738,7 @@ class TradingEngineWithCommentary:
             return False
         return True
 
-    def _audit(self, component: str, symbol, action: str, reason: str, **details) -> None:
+    def _audit(self, component: str, symbol, action: str, reason: str, /, **details) -> None:
         """Structured audit log for engine-level decisions.
 
         Format (one line per event, shell-greppable):
@@ -747,7 +747,17 @@ class TradingEngineWithCommentary:
         Every decision gate that accepts, skips, or modifies a trade must
         emit one of these so trading_bot.log is a complete audit trail.
         Also writes to Postgres bot_decisions for SQL queryability.
+
+        v-audit-collision-fix-2026-09-15: Use positional-only parameters (/) to
+        prevent TypeError when callers accidentally pass colliding kwargs like
+        action=. Reserved keys in **details are popped and nested under _extra
+        for observability. Positional params always win over colliding kwargs.
         """
+        _RESERVED_KEYS = ("action", "component", "symbol", "reason", "mode")
+        collisions = {k: details.pop(k) for k in list(details.keys()) if k in _RESERVED_KEYS}
+        if collisions:
+            details["_extra"] = collisions
+
         kv = " ".join(f"{k}={v}" for k, v in details.items())
         logger.info(
             "engine_decision component=%s symbol=%s action=%s reason=%s mode=%s %s",

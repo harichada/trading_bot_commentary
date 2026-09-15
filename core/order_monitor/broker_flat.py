@@ -210,7 +210,7 @@ async def handle_broker_flat_detected(
             "order_monitor", symbol, "ghost_position_shadow_logged",
             reason,
             local_qty=position.quantity,
-            action="alert_only",
+            desk_action="alert_only",
         )
 
 
