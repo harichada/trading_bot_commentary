@@ -15,11 +15,13 @@ import { QuickTrade } from "@/components/trading/quick-trade"
 import { RecentTrades } from "@/components/trading/recent-trades"
 import { LiveCommentary } from "@/components/trading/live-commentary"
 import { CommandPalette } from "@/components/trading/command-palette"
+import { DecisionCardProvider } from "@/components/trading/decision-card"
 
 export default function TradingDashboard() {
   const [activeTab, setActiveTab] = useState("dashboard")
 
   return (
+    <DecisionCardProvider>
     <div className="min-h-screen bg-background flex flex-col">
       <CommandPalette onNavigate={setActiveTab} />
       {/* Atmosphere — one faint accent wash + a quiet terminal grid */}
@@ -102,5 +104,6 @@ export default function TradingDashboard() {
         {/* Right Sidebar - Quick Trade (alternative placement for smaller screens) */}
       </div>
     </div>
+    </DecisionCardProvider>
   )
 }

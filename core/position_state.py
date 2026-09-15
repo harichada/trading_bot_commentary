@@ -140,12 +140,20 @@ ALLOWED_EXITS: dict[PositionState, FrozenSet[ExitRule]] = {
 # Legal transitions. Used by Position.transition_to() to reject illegal
 # moves at runtime (e.g. LIVE → OPENING is impossible; AT_1R → LIVE
 # would un-do a scale-out). Keeps the FSM honest under refactor.
+#
+# v-broker-flat-close-2026-09-11: Allow direct CLOSED transitions from all
+# managed states (LIVE, AT_BREAKEVEN, AT_1R, TRAILING). This handles the case
+# where the broker confirms the position is flat (external close, oversold/
+# overbought rejection confirmed). Without this, broker_flat_handled logs
+# spurious illegal_transition warnings even when the cleanup is correct.
+# The semantic: CLOSED is allowed when broker confirms position is gone;
+# EXITING is for bot-initiated close orders still in flight.
 LEGAL_TRANSITIONS: dict[PositionState, FrozenSet[PositionState]] = {
     PositionState.OPENING:      frozenset({PositionState.LIVE, PositionState.EXITING, PositionState.ZOMBIE}),
-    PositionState.LIVE:         frozenset({PositionState.AT_BREAKEVEN, PositionState.EXITING, PositionState.ZOMBIE}),
-    PositionState.AT_BREAKEVEN: frozenset({PositionState.AT_1R, PositionState.EXITING, PositionState.ZOMBIE}),
-    PositionState.AT_1R:        frozenset({PositionState.TRAILING, PositionState.EXITING, PositionState.ZOMBIE}),
-    PositionState.TRAILING:     frozenset({PositionState.EXITING, PositionState.ZOMBIE}),
+    PositionState.LIVE:         frozenset({PositionState.AT_BREAKEVEN, PositionState.EXITING, PositionState.ZOMBIE, PositionState.CLOSED}),
+    PositionState.AT_BREAKEVEN: frozenset({PositionState.AT_1R, PositionState.EXITING, PositionState.ZOMBIE, PositionState.CLOSED}),
+    PositionState.AT_1R:        frozenset({PositionState.TRAILING, PositionState.EXITING, PositionState.ZOMBIE, PositionState.CLOSED}),
+    PositionState.TRAILING:     frozenset({PositionState.EXITING, PositionState.ZOMBIE, PositionState.CLOSED}),
     PositionState.EXITING:      frozenset({PositionState.CLOSED, PositionState.ZOMBIE}),
     PositionState.CLOSED:       frozenset(),
     PositionState.ZOMBIE:       frozenset({PositionState.CLOSED}),  # operator-resolved → CLOSED

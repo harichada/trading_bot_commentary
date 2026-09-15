@@ -12,11 +12,12 @@ import logging
 import uuid
 from collections import deque
 from dataclasses import dataclass, field, asdict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Deque, Dict, List, Optional
 
 from nltk.sentiment import SentimentIntensityAnalyzer
 
+from core.news_bus import ensure_utc_aware
 from strategies.news_strategy import FreeNewsAggregator
 
 logger = logging.getLogger("TradingBot")
@@ -87,7 +88,8 @@ class NewsSentimentEngine:
     async def _refresh_symbol(self, symbol: str) -> Dict[str, Any]:
         """Fetch news for one symbol, score it, cache, raise alerts."""
         cached = self._cache.get(symbol)
-        if cached and datetime.now() - cached["timestamp"] < self._cache_ttl:
+        now_utc = datetime.now(timezone.utc)
+        if cached and now_utc - ensure_utc_aware(cached["timestamp"]) < self._cache_ttl:
             return cached
 
         try:
@@ -122,7 +124,7 @@ class NewsSentimentEngine:
             "score": avg,
             "article_count": len(items),
             "headlines": headlines,
-            "timestamp": datetime.now(),
+            "timestamp": datetime.now(timezone.utc),
         }
         self._cache[symbol] = result
 

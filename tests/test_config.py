@@ -103,3 +103,183 @@ class TestConfig:
         assert 0 < c.MAX_DAILY_LOSS <= 0.20
         assert c.MAX_POSITIONS >= 1
         assert 0 <= c.RESERVE_CASH_PERCENT <= 1.0
+
+
+class TestEnableBotOnlyPnlCircuitEnvOverride:
+    """v-env-override-bot-only-pnl-circuit-2026-09-14: test that
+    ENABLE_BOT_ONLY_PNL_CIRCUIT honors env override the same way
+    DAY_TRADE_LIVE_ENTRIES_ENABLED / ENABLE_ORB_STRATEGY do.
+
+    Priority order:
+      1. env ENABLE_BOT_ONLY_PNL_CIRCUIT (truthy/falsy)
+      2. yaml trading.enable_bot_only_pnl_circuit
+      3. hardcoded default True
+
+    Fixes false trip on 2026-09-14 where .env had flag=1 but yaml
+    had flag=false — yaml won, causing account-wide P&L to fire
+    EMERGENCY STOP while bot-only P&L was $0.
+    """
+
+    def test_env_1_overrides_yaml_false(self, tmp_path, monkeypatch):
+        """env=1 forces True even when yaml says false."""
+        monkeypatch.setenv("ENABLE_BOT_ONLY_PNL_CIRCUIT", "1")
+        config_path = tmp_path / "test_config.yaml"
+        config_data = {
+            'schwab': {'callback_url': 'https://test', 'token_path': 'test.json'},
+            'trading': {
+                'max_risk_per_trade': 0.02,
+                'min_risk_reward_ratio': 2.0,
+                'max_daily_loss': 0.05,
+                'max_consecutive_losses': 3,
+                'max_positions': 5,
+                'reserve_cash_percent': 0.1,
+                'enable_bot_only_pnl_circuit': False,
+            },
+            'commentary': {'enabled': True, 'detail_level': 'verbose', 'max_history': 50},
+            'technical_analysis': {'timeframes': ['1min'], 'fibonacci_levels': [0.5]},
+        }
+        with open(config_path, 'w') as f:
+            yaml.dump(config_data, f)
+
+        from core.config import ConfigManager, Config
+        mgr = ConfigManager(config_path=str(config_path))
+        c = Config()
+        c.manager = mgr
+        assert c.ENABLE_BOT_ONLY_PNL_CIRCUIT is True, (
+            "env=1 must override yaml=false → True"
+        )
+
+    def test_env_0_overrides_yaml_true(self, tmp_path, monkeypatch):
+        """env=0 forces False even when yaml says true."""
+        monkeypatch.setenv("ENABLE_BOT_ONLY_PNL_CIRCUIT", "0")
+        config_path = tmp_path / "test_config.yaml"
+        config_data = {
+            'schwab': {'callback_url': 'https://test', 'token_path': 'test.json'},
+            'trading': {
+                'max_risk_per_trade': 0.02,
+                'min_risk_reward_ratio': 2.0,
+                'max_daily_loss': 0.05,
+                'max_consecutive_losses': 3,
+                'max_positions': 5,
+                'reserve_cash_percent': 0.1,
+                'enable_bot_only_pnl_circuit': True,
+            },
+            'commentary': {'enabled': True, 'detail_level': 'verbose', 'max_history': 50},
+            'technical_analysis': {'timeframes': ['1min'], 'fibonacci_levels': [0.5]},
+        }
+        with open(config_path, 'w') as f:
+            yaml.dump(config_data, f)
+
+        from core.config import ConfigManager, Config
+        mgr = ConfigManager(config_path=str(config_path))
+        c = Config()
+        c.manager = mgr
+        assert c.ENABLE_BOT_ONLY_PNL_CIRCUIT is False, (
+            "env=0 must override yaml=true → False"
+        )
+
+    def test_env_unset_uses_yaml_false(self, tmp_path, monkeypatch):
+        """When env is unset, yaml value is used (False case)."""
+        monkeypatch.delenv("ENABLE_BOT_ONLY_PNL_CIRCUIT", raising=False)
+        config_path = tmp_path / "test_config.yaml"
+        config_data = {
+            'schwab': {'callback_url': 'https://test', 'token_path': 'test.json'},
+            'trading': {
+                'max_risk_per_trade': 0.02,
+                'min_risk_reward_ratio': 2.0,
+                'max_daily_loss': 0.05,
+                'max_consecutive_losses': 3,
+                'max_positions': 5,
+                'reserve_cash_percent': 0.1,
+                'enable_bot_only_pnl_circuit': False,
+            },
+            'commentary': {'enabled': True, 'detail_level': 'verbose', 'max_history': 50},
+            'technical_analysis': {'timeframes': ['1min'], 'fibonacci_levels': [0.5]},
+        }
+        with open(config_path, 'w') as f:
+            yaml.dump(config_data, f)
+
+        from core.config import ConfigManager, Config
+        mgr = ConfigManager(config_path=str(config_path))
+        c = Config()
+        c.manager = mgr
+        assert c.ENABLE_BOT_ONLY_PNL_CIRCUIT is False, (
+            "env unset must fall back to yaml=false"
+        )
+
+    def test_env_unset_uses_yaml_true(self, tmp_path, monkeypatch):
+        """When env is unset, yaml value is used (True case)."""
+        monkeypatch.delenv("ENABLE_BOT_ONLY_PNL_CIRCUIT", raising=False)
+        config_path = tmp_path / "test_config.yaml"
+        config_data = {
+            'schwab': {'callback_url': 'https://test', 'token_path': 'test.json'},
+            'trading': {
+                'max_risk_per_trade': 0.02,
+                'min_risk_reward_ratio': 2.0,
+                'max_daily_loss': 0.05,
+                'max_consecutive_losses': 3,
+                'max_positions': 5,
+                'reserve_cash_percent': 0.1,
+                'enable_bot_only_pnl_circuit': True,
+            },
+            'commentary': {'enabled': True, 'detail_level': 'verbose', 'max_history': 50},
+            'technical_analysis': {'timeframes': ['1min'], 'fibonacci_levels': [0.5]},
+        }
+        with open(config_path, 'w') as f:
+            yaml.dump(config_data, f)
+
+        from core.config import ConfigManager, Config
+        mgr = ConfigManager(config_path=str(config_path))
+        c = Config()
+        c.manager = mgr
+        assert c.ENABLE_BOT_ONLY_PNL_CIRCUIT is True, (
+            "env unset must fall back to yaml=true"
+        )
+
+    def test_env_unset_yaml_unset_uses_default_true(self, tmp_path, monkeypatch):
+        """When both env and yaml are unset, default True is used."""
+        monkeypatch.delenv("ENABLE_BOT_ONLY_PNL_CIRCUIT", raising=False)
+        config_path = tmp_path / "test_config.yaml"
+        config_data = {
+            'schwab': {'callback_url': 'https://test', 'token_path': 'test.json'},
+            'trading': {
+                'max_risk_per_trade': 0.02,
+                'min_risk_reward_ratio': 2.0,
+                'max_daily_loss': 0.05,
+                'max_consecutive_losses': 3,
+                'max_positions': 5,
+                'reserve_cash_percent': 0.1,
+            },
+            'commentary': {'enabled': True, 'detail_level': 'verbose', 'max_history': 50},
+            'technical_analysis': {'timeframes': ['1min'], 'fibonacci_levels': [0.5]},
+        }
+        with open(config_path, 'w') as f:
+            yaml.dump(config_data, f)
+
+        from core.config import ConfigManager, Config
+        mgr = ConfigManager(config_path=str(config_path))
+        c = Config()
+        c.manager = mgr
+        assert c.ENABLE_BOT_ONLY_PNL_CIRCUIT is True, (
+            "env unset + yaml unset must default to True"
+        )
+
+    def test_env_truthy_variants(self, monkeypatch):
+        """All truthy env values (1/true/yes/on) resolve to True."""
+        from core.config import Config
+        for truthy in ("1", "true", "True", "TRUE", "yes", "Yes", "YES", "on", "On", "ON"):
+            monkeypatch.setenv("ENABLE_BOT_ONLY_PNL_CIRCUIT", truthy)
+            c = Config()
+            assert c.ENABLE_BOT_ONLY_PNL_CIRCUIT is True, (
+                f"env={truthy!r} must resolve to True"
+            )
+
+    def test_env_falsy_variants(self, monkeypatch):
+        """All falsy env values (0/false/no/off) resolve to False."""
+        from core.config import Config
+        for falsy in ("0", "false", "False", "FALSE", "no", "No", "NO", "off", "Off", "OFF"):
+            monkeypatch.setenv("ENABLE_BOT_ONLY_PNL_CIRCUIT", falsy)
+            c = Config()
+            assert c.ENABLE_BOT_ONLY_PNL_CIRCUIT is False, (
+                f"env={falsy!r} must resolve to False"
+            )

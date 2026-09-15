@@ -12,9 +12,11 @@ import {
   Minus,
   Brain,
   Wifi,
-  WifiOff
+  WifiOff,
+  ChevronRight
 } from "lucide-react"
 import { useWsCommentary } from "@/hooks/use-bot-data"
+import { useDecisionCard, isDecisionCommentary } from "@/components/trading/decision-card"
 import type { Commentary } from "@/lib/api"
 
 type CommentaryFilter = "all" | "decisions" | "opportunities" | "warnings" | "technical"
@@ -195,10 +197,21 @@ function CommentaryItem({ item, isFirst }: { item: Commentary; isFirst: boolean 
   const config = getConfig(item.type)
   const Icon = config.icon
   const indicators = parseIndicators(item.data)
+  const { openFromCommentary } = useDecisionCard()
+  const isClickable = isDecisionCommentary(item.type)
+
+  const handleClick = () => {
+    if (isClickable) {
+      openFromCommentary(item)
+    }
+  }
 
   return (
     <article
-      className={`relative flex gap-3 py-3.5 border-b border-border/40 ${isFirst ? "reveal" : ""}`}
+      onClick={handleClick}
+      className={`relative flex gap-3 py-3.5 border-b border-border/40 ${isFirst ? "reveal" : ""} ${
+        isClickable ? "cursor-pointer hover:bg-accent/[0.04] transition-colors group" : ""
+      }`}
     >
       {/* Severity left bar */}
       <span className={`absolute left-0 top-3.5 bottom-3.5 w-0.5 rounded-full ${config.accent}`} />
@@ -209,7 +222,12 @@ function CommentaryItem({ item, isFirst }: { item: Commentary; isFirst: boolean 
         {/* Header row */}
         <div className="flex items-baseline justify-between gap-2">
           <span className="text-[13px] font-medium text-foreground leading-snug">{item.title}</span>
-          <time className="eyebrow font-mono tabular-nums shrink-0">{formatTime(item.timestamp)}</time>
+          <div className="flex items-center gap-1.5 shrink-0">
+            <time className="eyebrow font-mono tabular-nums">{formatTime(item.timestamp)}</time>
+            {isClickable && (
+              <ChevronRight className="h-3 w-3 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity" />
+            )}
+          </div>
         </div>
 
         {/* Tags */}
@@ -220,6 +238,11 @@ function CommentaryItem({ item, isFirst }: { item: Commentary; isFirst: boolean 
           {item.symbol && (
             <span className="eyebrow px-1.5 py-px rounded border border-accent/25 bg-accent/[0.06] text-accent font-mono tabular-nums">
               {item.symbol}
+            </span>
+          )}
+          {isClickable && (
+            <span className="eyebrow px-1.5 py-px rounded border border-accent/40 bg-accent/10 text-accent">
+              TAP FOR DETAIL
             </span>
           )}
         </div>

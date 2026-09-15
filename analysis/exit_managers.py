@@ -95,6 +95,15 @@ class AdvancedExitManager:
 
         return False, 0.0
 
+    def close_position_tracking(self, symbol: str) -> None:
+        """Remove position tracking for a symbol. Idempotent: no-op if missing.
+
+        v-close-position-tracking-2026-09-14: Called by handle_full_bracket_fill
+        to clean up internal tracking dicts when a position is closed.
+        """
+        if symbol in self.position_tracking:
+            del self.position_tracking[symbol]
+
     def time_based_exit(self, position, max_hold_days: int = 5) -> bool:
         """Exit position based on time held"""
         days_held = (datetime.now() - position.entry_time).days
@@ -132,6 +141,16 @@ class DynamicExitManager:
             'scalp_target_hit': False,
             'last_check': datetime.now()
         }
+
+    def close_position_tracking(self, symbol: str) -> None:
+        """Remove position tracking for a symbol. Idempotent: no-op if missing.
+
+        v-close-position-tracking-2026-09-14: Called by handle_full_bracket_fill
+        to clean up internal tracking dicts when a position is closed by broker
+        stop/TP fill. Must be idempotent since multiple paths may try to clean up.
+        """
+        if symbol in self.exit_trackers:
+            del self.exit_trackers[symbol]
 
     async def evaluate_exit(self, position, current_price: float,
                           indicators: Dict[str, float]) -> Tuple[bool, str, float]:
