@@ -3023,6 +3023,9 @@ async def toggle_managed_by_bot(request: dict):
         new_state = not getattr(pos, 'managed_by_bot', False)
 
     pos.managed_by_bot = new_state
+    # v-manage-persist-hotfix-2026-09-15: stamp managed_source='operator' so
+    # restore logic knows this was an explicit user toggle (not stale sync).
+    pos.managed_source = 'operator'
     trading_engine._save_state()
 
     trading_engine.commentary.add_commentary(TradingCommentary(

@@ -1181,11 +1181,44 @@ class DbLogger:
         Returns:
             {symbol: {"side": "long"|"short", "entry_time": datetime,
                       "entry_price": float, "quantity": int, "strategy": str}}
+        
+        v-manage-persist-hotfix-2026-09-15: cross-loop routing now properly
+        waits for the result instead of returning {}. This fixes the bug where
+        bot_trades fallback always returned empty on cross-loop calls.
         """
         if not self._enabled:
             return {}
-        if self._route_to_owner_loop("get_todays_bot_entries", self._get_todays_bot_entries_impl, symbols):
-            return {}
+        
+        # v-manage-persist-hotfix-2026-09-15: proper cross-loop routing for value-returning method
+        # Unlike fire-and-forget writes, this must wait for and return the actual result.
+        if not self._is_on_owner_loop():
+            if self._owner_loop is None:
+                self._warn_once(
+                    "get_todays_bot_entries_no_owner",
+                    "db_logger_get_todays_bot_entries_no_owner (cannot route, returning empty)",
+                )
+                return {}
+            if not self._owner_loop.is_running():
+                self._warn_once(
+                    "get_todays_bot_entries_dead_owner",
+                    "db_logger_get_todays_bot_entries_dead_owner (cannot route, returning empty)",
+                )
+                return {}
+            # Route to owner loop and await result
+            try:
+                fut = asyncio.run_coroutine_threadsafe(
+                    self._get_todays_bot_entries_impl(symbols),
+                    self._owner_loop,
+                )
+                return await asyncio.wrap_future(fut)
+            except Exception as exc:
+                self._warn_once(
+                    "get_todays_bot_entries_route_error",
+                    "db_logger_get_todays_bot_entries_route_error err=%s",
+                    exc,
+                )
+                return {}
+        
         return await self._get_todays_bot_entries_impl(symbols)
 
     async def _get_todays_bot_entries_impl(self, symbols: list[str] | None = None) -> dict[str, dict]:

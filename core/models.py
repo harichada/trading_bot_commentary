@@ -101,6 +101,12 @@ class Position:
     # In LIVE mode this is the primary gate; in SIM mode it's also honored
     # so users can pause management on a single position from the dashboard.
     managed_by_bot: bool = False
+    # v-manage-persist-hotfix-2026-09-15: track WHO set managed_by_bot so we
+    # can distinguish operator toggle-off (intentional) from stale sync data.
+    # Values: 'bot' (bot opened), 'operator' (user toggled via API),
+    #         'external' (discovered external), 'denylist' (hands-off denylist).
+    # None = legacy position without source tracking.
+    managed_source: Optional[str] = None
     # v-thesis-revalidate-2026-04-28: last time the thesis re-validation ran
     # for this position. Tracked separately from entry/management ticks so
     # the re-check can fire on its own cadence (default every 15 min after
