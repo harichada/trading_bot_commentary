@@ -2315,3 +2315,251 @@ class TestHardVetoContinuationRsi70AllRegimes:
             "Hard veto must NOT block continuation when RSI < threshold"
         )
         assert signal.reasoning['entry_pattern'] == 'continuation'
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# v-meanrev-live-flag-2026-09-15: Tests for MEAN_REV_LIVE_ENTRIES_ENABLED flag
+# Modular twin of DAY_TRADE_LIVE_ENTRIES_ENABLED for mean-reversion strategy.
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestMeanRevLiveEntriesFlag:
+    """Test MEAN_REV_LIVE_ENTRIES_ENABLED flag and LIVE entry blocking.
+    
+    v-meanrev-live-flag-2026-09-15: modular switch to pause LIVE mean-rev
+    entries while keeping sim/commentary analysis running and existing
+    positions' exits intact.
+    """
+    
+    def test_mean_rev_live_entries_default_true(self):
+        """MEAN_REV_LIVE_ENTRIES_ENABLED must default to True.
+        
+        LIVE entries enabled by default. Set MEAN_REV_LIVE_ENTRIES_ENABLED=0
+        to pause when needed.
+        """
+        from core.config import Config
+        cfg = Config()
+        assert cfg.MEAN_REV_LIVE_ENTRIES_ENABLED is True, (
+            "MEAN_REV_LIVE_ENTRIES_ENABLED must default to True — "
+            "set env MEAN_REV_LIVE_ENTRIES_ENABLED=0 to pause"
+        )
+
+
+class TestEngineBlocksLiveMeanRev:
+    """Test that the engine blocks LIVE mean-rev entries when flag is False.
+    
+    These tests verify the engine's signal routing gate, not the strategy.
+    """
+    
+    def test_engine_has_meanrev_live_pause_gate(self):
+        """Engine must have the v-pause-live-meanrev-2026-09-15 gate."""
+        from pathlib import Path
+        src = Path("core/engine.py").read_text()
+        
+        assert "v-pause-live-meanrev-2026-09-15" in src, (
+            "Engine must contain v-pause-live-meanrev-2026-09-15 gate"
+        )
+        assert "MEAN_REV_LIVE_ENTRIES_ENABLED" in src, (
+            "Engine must check MEAN_REV_LIVE_ENTRIES_ENABLED flag"
+        )
+        assert "meanrev_live_pause" in src, (
+            "Engine must audit with component=meanrev_live_pause"
+        )
+    
+    def test_engine_gate_checks_strategy_name(self):
+        """Engine gate must specifically check for mean_reversion strategy."""
+        from pathlib import Path
+        src = Path("core/engine.py").read_text()
+        
+        anchor = src.find("v-pause-live-meanrev-2026-09-15")
+        assert anchor != -1
+        window = src[anchor: anchor + 3000]
+        
+        assert 'mean_reversion' in window, (
+            "Gate must check for mean_reversion strategy"
+        )
+        assert 'mean_reversion_short' in window, (
+            "Gate must also check for mean_reversion_short strategy"
+        )
+    
+    def test_engine_gate_checks_live_mode(self):
+        """Engine gate must only block in LIVE mode, not SIM."""
+        from pathlib import Path
+        src = Path("core/engine.py").read_text()
+        
+        anchor = src.find("v-pause-live-meanrev-2026-09-15")
+        assert anchor != -1
+        window = src[anchor: anchor + 3000]
+        
+        assert 'TradingMode.LIVE' in window, (
+            "Gate must check self.mode == TradingMode.LIVE"
+        )
+    
+    def test_engine_gate_logs_commentary(self):
+        """Engine gate must add commentary when blocking mean-rev entry."""
+        from pathlib import Path
+        src = Path("core/engine.py").read_text()
+        
+        anchor = src.find("v-pause-live-meanrev-2026-09-15")
+        assert anchor != -1
+        window = src[anchor: anchor + 3000]
+        
+        assert "Mean-Rev LIVE Entry Paused" in window, (
+            "Gate must add commentary with descriptive title"
+        )
+        assert "MEAN_REV_LIVE_ENTRIES_ENABLED=False" in window, (
+            "Gate commentary must reference the flag name"
+        )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# v-late-entry-gate-2026-09-15: Tests for ENABLE_LATE_ENTRY_GATE shadow mode
+# Detect late/chasing entries before they become losses.
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestLateEntryGateConfig:
+    """Test late-entry gate configuration flags."""
+    
+    def test_enable_late_entry_gate_default_true(self):
+        """ENABLE_LATE_ENTRY_GATE must default to True."""
+        from core.config import Config
+        cfg = Config()
+        assert cfg.ENABLE_LATE_ENTRY_GATE is True, (
+            "ENABLE_LATE_ENTRY_GATE must default to True — "
+            "set ENABLE_LATE_ENTRY_GATE=0 to disable"
+        )
+    
+    def test_late_entry_gate_shadow_default_true(self):
+        """LATE_ENTRY_GATE_SHADOW must default to True (log only, no block)."""
+        from core.config import Config
+        cfg = Config()
+        assert cfg.LATE_ENTRY_GATE_SHADOW is True, (
+            "LATE_ENTRY_GATE_SHADOW must default to True — "
+            "shadow mode logs but does not block"
+        )
+    
+    def test_late_entry_extension_threshold_default(self):
+        """LATE_ENTRY_EXTENSION_THRESHOLD must default to 0.75."""
+        from core.config import Config
+        cfg = Config()
+        assert cfg.LATE_ENTRY_EXTENSION_THRESHOLD == 0.75, (
+            "LATE_ENTRY_EXTENSION_THRESHOLD must default to 0.75"
+        )
+    
+    def test_late_entry_vwap_atr_mult_default(self):
+        """LATE_ENTRY_VWAP_ATR_MULT must default to 1.0."""
+        from core.config import Config
+        cfg = Config()
+        assert cfg.LATE_ENTRY_VWAP_ATR_MULT == 1.0, (
+            "LATE_ENTRY_VWAP_ATR_MULT must default to 1.0"
+        )
+    
+    def test_late_entry_bars_since_impulse_default(self):
+        """LATE_ENTRY_BARS_SINCE_IMPULSE must default to 5."""
+        from core.config import Config
+        cfg = Config()
+        assert cfg.LATE_ENTRY_BARS_SINCE_IMPULSE == 5, (
+            "LATE_ENTRY_BARS_SINCE_IMPULSE must default to 5"
+        )
+
+
+class TestLateEntryGateEngine:
+    """Test that the engine has late-entry gate logic."""
+    
+    def test_engine_has_late_entry_gate(self):
+        """Engine must have the v-late-entry-gate-2026-09-15 gate."""
+        from pathlib import Path
+        src = Path("core/engine.py").read_text()
+        
+        assert "v-late-entry-gate-2026-09-15" in src, (
+            "Engine must contain v-late-entry-gate-2026-09-15 gate"
+        )
+        assert "ENABLE_LATE_ENTRY_GATE" in src, (
+            "Engine must check ENABLE_LATE_ENTRY_GATE flag"
+        )
+        assert "late_entry_gate" in src, (
+            "Engine must audit with component=late_entry_gate"
+        )
+    
+    def test_engine_late_entry_checks_strategies(self):
+        """Engine late-entry gate must check relevant strategies."""
+        from pathlib import Path
+        src = Path("core/engine.py").read_text()
+        
+        anchor = src.find("v-late-entry-gate-2026-09-15")
+        assert anchor != -1
+        window = src[anchor: anchor + 4000]
+        
+        assert "day_trade_momentum" in window, (
+            "Late-entry gate must check day_trade_momentum"
+        )
+        assert "mean_reversion" in window, (
+            "Late-entry gate must check mean_reversion"
+        )
+        assert "orb_contraction_rvol" in window, (
+            "Late-entry gate must check orb_contraction_rvol"
+        )
+    
+    def test_engine_late_entry_has_heuristics(self):
+        """Engine late-entry gate must implement all heuristics."""
+        from pathlib import Path
+        src = Path("core/engine.py").read_text()
+        
+        anchor = src.find("v-late-entry-gate-2026-09-15")
+        assert anchor != -1
+        window = src[anchor: anchor + 4000]
+        
+        # Heuristic 1: Extension ratio
+        assert "extension" in window.lower(), (
+            "Late-entry gate must check extension ratio"
+        )
+        assert "LATE_ENTRY_EXTENSION_THRESHOLD" in window, (
+            "Late-entry gate must use LATE_ENTRY_EXTENSION_THRESHOLD"
+        )
+        
+        # Heuristic 2: VWAP chase
+        assert "vwap" in window.lower(), (
+            "Late-entry gate must check VWAP chase"
+        )
+        assert "LATE_ENTRY_VWAP_ATR_MULT" in window, (
+            "Late-entry gate must use LATE_ENTRY_VWAP_ATR_MULT"
+        )
+        
+        # Heuristic 3: Bars since impulse
+        assert "bars_since_impulse" in window.lower(), (
+            "Late-entry gate must check bars since impulse"
+        )
+        assert "LATE_ENTRY_BARS_SINCE_IMPULSE" in window, (
+            "Late-entry gate must use LATE_ENTRY_BARS_SINCE_IMPULSE"
+        )
+    
+    def test_engine_late_entry_shadow_mode(self):
+        """Engine late-entry gate must support shadow mode."""
+        from pathlib import Path
+        src = Path("core/engine.py").read_text()
+        
+        anchor = src.find("v-late-entry-gate-2026-09-15")
+        assert anchor != -1
+        window = src[anchor: anchor + 4000]
+        
+        assert "LATE_ENTRY_GATE_SHADOW" in window, (
+            "Late-entry gate must check LATE_ENTRY_GATE_SHADOW"
+        )
+        assert "shadow_late_entry_skip" in window, (
+            "Late-entry gate must log shadow_late_entry_skip action"
+        )
+    
+    def test_engine_late_entry_logs_commentary(self):
+        """Engine late-entry gate must add commentary."""
+        from pathlib import Path
+        src = Path("core/engine.py").read_text()
+        
+        anchor = src.find("v-late-entry-gate-2026-09-15")
+        assert anchor != -1
+        window = src[anchor: anchor + 4000]
+        
+        assert "Late Entry" in window, (
+            "Late-entry gate must add commentary with descriptive title"
+        )
+        assert "late_reasons" in window, (
+            "Late-entry gate commentary must include late_reasons"
+        )
