@@ -19,6 +19,7 @@ from core.news_bus import (
     NewsBusStats,
     get_news_bus,
     reset_news_bus,
+    ensure_utc_aware,
 )
 
 
@@ -554,3 +555,251 @@ class TestNewsGate:
         stats = gate_bus.get_stats()
         assert stats.gate_veto_no_corroboration >= 1
         assert stats.gate_veto_low_tier >= 1
+
+
+class TestTimezoneAwareness:
+    """v-newsbus-tz-fix-2026-09-15: Tests for timezone-aware datetime handling.
+    
+    RCA: news gate exception 'can't subtract offset-naive and offset-aware datetimes'
+    caused fail-closed spam when published_time was UTC-aware but comparison used
+    naive datetime.now(). This test class ensures the fix handles all edge cases.
+    """
+    
+    @pytest.fixture
+    def tz_bus(self):
+        """Create a fresh NewsBus for TZ tests."""
+        reset_news_bus()
+        return NewsBus(ttl_sec=86400, max_items_per_symbol=50)
+    
+    @pytest.mark.asyncio
+    async def test_get_items_with_naive_published_time(self, tz_bus):
+        """Test get_items works when published_time is naive."""
+        naive_item = ScoredNewsItem(
+            id="naive1",
+            symbol="TEST",
+            headline="Naive datetime test",
+            summary="",
+            source="Test",
+            source_tier=1,
+            url="http://test.com/naive",
+            published_time=datetime.now() - timedelta(minutes=10),  # naive
+            fetched_at=datetime.now(),  # naive
+            sentiment_score=0.5,
+            sentiment_confidence=0.5,
+            impact=NewsImpactLevel.MEDIUM,
+        )
+        
+        await tz_bus.publish([naive_item])
+        items = await tz_bus.get_items("TEST", max_age_sec=3600)
+        
+        assert len(items) == 1
+        assert items[0].id == "naive1"
+    
+    @pytest.mark.asyncio
+    async def test_get_items_with_aware_published_time(self, tz_bus):
+        """Test get_items works when published_time is UTC-aware."""
+        from datetime import timezone
+        
+        aware_item = ScoredNewsItem(
+            id="aware1",
+            symbol="TEST",
+            headline="Aware datetime test",
+            summary="",
+            source="Test",
+            source_tier=1,
+            url="http://test.com/aware",
+            published_time=datetime.now(timezone.utc) - timedelta(minutes=10),  # aware
+            fetched_at=datetime.now(timezone.utc),  # aware
+            sentiment_score=0.5,
+            sentiment_confidence=0.5,
+            impact=NewsImpactLevel.MEDIUM,
+        )
+        
+        await tz_bus.publish([aware_item])
+        items = await tz_bus.get_items("TEST", max_age_sec=3600)
+        
+        assert len(items) == 1
+        assert items[0].id == "aware1"
+    
+    @pytest.mark.asyncio
+    async def test_get_items_mixed_naive_and_aware(self, tz_bus):
+        """Test get_items works with a mix of naive and aware published_time.
+        
+        This is the exact scenario that caused the original TypeError.
+        """
+        from datetime import timezone
+        
+        naive_item = ScoredNewsItem(
+            id="mixed_naive",
+            symbol="MIX",
+            headline="Naive in mix",
+            summary="",
+            source="Test A",
+            source_tier=1,
+            url="http://test.com/mixnaive",
+            published_time=datetime.now() - timedelta(minutes=5),  # naive
+            fetched_at=datetime.now(),
+            sentiment_score=0.5,
+            sentiment_confidence=0.5,
+            impact=NewsImpactLevel.MEDIUM,
+        )
+        aware_item = ScoredNewsItem(
+            id="mixed_aware",
+            symbol="MIX",
+            headline="Aware in mix",
+            summary="",
+            source="Test B",
+            source_tier=1,
+            url="http://test.com/mixaware",
+            published_time=datetime.now(timezone.utc) - timedelta(minutes=3),  # aware
+            fetched_at=datetime.now(timezone.utc),
+            sentiment_score=0.6,
+            sentiment_confidence=0.6,
+            impact=NewsImpactLevel.MEDIUM,
+        )
+        
+        # This should NOT raise TypeError
+        await tz_bus.publish([naive_item, aware_item])
+        items = await tz_bus.get_items("MIX", max_age_sec=3600)
+        
+        assert len(items) == 2
+    
+    @pytest.mark.asyncio
+    async def test_evaluate_gate_with_aware_published_time(self, tz_bus):
+        """Test evaluate_gate works with UTC-aware published_time.
+        
+        This covers the news gate exception path that was failing.
+        """
+        from datetime import timezone
+        from core.news_bus import NewsGateAction
+        
+        aware_item = ScoredNewsItem(
+            id="gate_aware",
+            symbol="GATE",
+            headline="Gate test with aware time",
+            summary="",
+            source="Yahoo Finance",
+            source_tier=1,
+            url="http://test.com/gateaware",
+            published_time=datetime.now(timezone.utc) - timedelta(minutes=5),
+            fetched_at=datetime.now(timezone.utc),
+            sentiment_score=0.5,
+            sentiment_confidence=0.5,
+            impact=NewsImpactLevel.MEDIUM,
+        )
+        
+        await tz_bus.publish([aware_item])
+        
+        # This should NOT raise TypeError
+        result = await tz_bus.evaluate_gate("GATE", max_age_sec=1800)
+        
+        assert result.action in (NewsGateAction.FULL_SIZE, NewsGateAction.REDUCED_SIZE)
+        assert result.news_age_sec is not None
+        assert result.news_age_sec >= 0  # age_sec should never be negative
+    
+    @pytest.mark.asyncio
+    async def test_age_sec_never_negative_with_aware_time(self, tz_bus):
+        """Test that age_sec() is never negative, even with aware times."""
+        from datetime import timezone
+        
+        item = ScoredNewsItem(
+            id="age_test",
+            symbol="AGE",
+            headline="Age test",
+            summary="",
+            source="Test",
+            source_tier=1,
+            url="http://test.com/age",
+            published_time=datetime.now(timezone.utc) - timedelta(minutes=30),
+            fetched_at=datetime.now(timezone.utc),
+            sentiment_score=0.5,
+            sentiment_confidence=0.5,
+            impact=NewsImpactLevel.MEDIUM,
+        )
+        
+        age = item.age_sec()
+        assert age >= 0
+        assert 1750 < age < 1850  # ~30 minutes in seconds
+    
+    @pytest.mark.asyncio
+    async def test_has_high_impact_with_aware_fetched_at(self, tz_bus):
+        """Test has_high_impact works with aware fetched_at."""
+        from datetime import timezone
+        
+        aware_high_impact = ScoredNewsItem(
+            id="hi_aware",
+            symbol="HI",
+            headline="High impact aware",
+            summary="",
+            source="Yahoo Finance",
+            source_tier=1,
+            url="http://test.com/hiaware",
+            published_time=datetime.now(timezone.utc) - timedelta(minutes=1),
+            fetched_at=datetime.now(timezone.utc),  # aware
+            sentiment_score=0.8,
+            sentiment_confidence=0.8,
+            impact=NewsImpactLevel.HIGH,
+        )
+        
+        await tz_bus.publish([aware_high_impact])
+        
+        # This should NOT raise TypeError
+        assert tz_bus.has_high_impact("HI", since_sec=300)
+
+
+class TestEnsureUtcAware:
+    """Tests for the ensure_utc_aware helper function."""
+    
+    def test_naive_becomes_utc_aware(self):
+        """Test that naive datetime becomes UTC-aware."""
+        from core.news_bus import ensure_utc_aware
+        from datetime import timezone
+        
+        naive_dt = datetime(2026, 9, 15, 12, 0, 0)  # No tzinfo
+        result = ensure_utc_aware(naive_dt)
+        
+        assert result.tzinfo is not None
+        assert result.tzinfo == timezone.utc
+        assert result.year == 2026
+        assert result.hour == 12
+    
+    def test_utc_aware_stays_utc(self):
+        """Test that UTC-aware datetime stays UTC."""
+        from core.news_bus import ensure_utc_aware
+        from datetime import timezone
+        
+        utc_dt = datetime(2026, 9, 15, 12, 0, 0, tzinfo=timezone.utc)
+        result = ensure_utc_aware(utc_dt)
+        
+        assert result.tzinfo == timezone.utc
+        assert result == utc_dt
+    
+    def test_other_tz_converts_to_utc(self):
+        """Test that other timezone-aware datetime converts to UTC."""
+        from core.news_bus import ensure_utc_aware
+        from datetime import timezone
+        
+        # Create a datetime in UTC+5 offset
+        plus5 = timezone(timedelta(hours=5))
+        other_tz_dt = datetime(2026, 9, 15, 17, 0, 0, tzinfo=plus5)  # 17:00 UTC+5 = 12:00 UTC
+        
+        result = ensure_utc_aware(other_tz_dt)
+        
+        assert result.tzinfo == timezone.utc
+        assert result.hour == 12  # Converted to UTC
+    
+    def test_subtraction_works_after_ensure(self):
+        """Test that two ensure_utc_aware'd datetimes can be subtracted."""
+        from core.news_bus import ensure_utc_aware
+        from datetime import timezone
+        
+        naive1 = datetime(2026, 9, 15, 12, 0, 0)
+        aware2 = datetime(2026, 9, 15, 12, 30, 0, tzinfo=timezone.utc)
+        
+        safe1 = ensure_utc_aware(naive1)
+        safe2 = ensure_utc_aware(aware2)
+        
+        # This should NOT raise TypeError
+        diff = (safe2 - safe1).total_seconds()
+        
+        assert diff == 1800  # 30 minutes in seconds

@@ -2,7 +2,7 @@ import asyncio
 import logging
 import hashlib
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Any
 
 import numpy as np
@@ -13,7 +13,7 @@ from nltk.sentiment import SentimentIntensityAnalyzer
 
 from core.models import CommentaryType, SignalType, NewsImpact, TradingSignal, NewsItem, MarketData
 from core.commentary import TradingCommentary
-from core.news_bus import NewsGateAction, NewsGateResult
+from core.news_bus import NewsGateAction, NewsGateResult, ensure_utc_aware
 from strategies.base import TradingStrategyWithCommentary
 from strategies.builtin import _floored_atr
 
@@ -141,8 +141,10 @@ class FreeNewsAggregator:
             news_items = []
             for article in news_data:
                 # Check age
-                pub_time = datetime.fromtimestamp(article.get('providerPublishTime', 0))
-                if (datetime.now() - pub_time).total_seconds() / 3600 > hours:
+                # v-newsbus-tz-fix-2026-09-15: Use UTC-aware comparison
+                pub_time = datetime.fromtimestamp(article.get('providerPublishTime', 0), tz=timezone.utc)
+                now_utc = datetime.now(timezone.utc)
+                if (now_utc - pub_time).total_seconds() / 3600 > hours:
                     continue
 
                 # Create news item
@@ -172,8 +174,10 @@ class FreeNewsAggregator:
 
             for entry in feed.entries[:10]:  # Last 10 entries
                 # Parse time
-                pub_time = datetime(*entry.published_parsed[:6])
-                if (datetime.now() - pub_time).total_seconds() / 3600 > hours:
+                # v-newsbus-tz-fix-2026-09-15: feedparser time_struct is UTC; make aware
+                pub_time = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc)
+                now_utc = datetime.now(timezone.utc)
+                if (now_utc - pub_time).total_seconds() / 3600 > hours:
                     continue
 
                 news_item = NewsItem(
@@ -221,8 +225,10 @@ class FreeNewsAggregator:
                     source = parts[1]
 
                 # Parse time
-                pub_time = datetime(*entry.published_parsed[:6])
-                if (datetime.now() - pub_time).total_seconds() / 3600 > hours:
+                # v-newsbus-tz-fix-2026-09-15: feedparser time_struct is UTC; make aware
+                pub_time = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc)
+                now_utc = datetime.now(timezone.utc)
+                if (now_utc - pub_time).total_seconds() / 3600 > hours:
                     continue
 
                 # Check relevance
@@ -306,10 +312,13 @@ class FreeNewsAggregator:
                                         time_text = time_elem.get_text(strip=True)
                                         pub_time = self._parse_time(time_text)
                                     else:
-                                        pub_time = datetime.now()
+                                        pub_time = datetime.now(timezone.utc)
 
                                     # Check age
-                                    if (datetime.now() - pub_time).total_seconds() / 3600 > hours:
+                                    # v-newsbus-tz-fix-2026-09-15: Use UTC-aware comparison
+                                    now_utc = datetime.now(timezone.utc)
+                                    pub_time_utc = ensure_utc_aware(pub_time)
+                                    if (now_utc - pub_time_utc).total_seconds() / 3600 > hours:
                                         continue
 
                                     # Extract summary
@@ -351,39 +360,45 @@ class FreeNewsAggregator:
         return news_items
 
     def _parse_time(self, time_text: str) -> datetime:
-        """Parse various time formats from MarketWatch"""
+        """Parse various time formats from MarketWatch.
+        
+        v-newsbus-tz-fix-2026-09-15: Returns UTC-aware datetime to prevent
+        TypeError in downstream comparisons.
+        """
         try:
             time_text = time_text.strip()
+            now_utc = datetime.now(timezone.utc)
 
             # Handle relative times
             if 'ago' in time_text:
                 if 'minute' in time_text:
                     minutes = int(re.search(r'(\d+)', time_text).group(1))
-                    return datetime.now() - timedelta(minutes=minutes)
+                    return now_utc - timedelta(minutes=minutes)
                 elif 'hour' in time_text:
                     hours = int(re.search(r'(\d+)', time_text).group(1))
-                    return datetime.now() - timedelta(hours=hours)
+                    return now_utc - timedelta(hours=hours)
                 elif 'day' in time_text:
                     days = int(re.search(r'(\d+)', time_text).group(1))
-                    return datetime.now() - timedelta(days=days)
+                    return now_utc - timedelta(days=days)
 
             # Handle "Today" or "Yesterday"
             if 'today' in time_text.lower():
-                return datetime.now()
+                return now_utc
             elif 'yesterday' in time_text.lower():
-                return datetime.now() - timedelta(days=1)
+                return now_utc - timedelta(days=1)
 
-            # Try parsing absolute dates
+            # Try parsing absolute dates (assume UTC)
             for fmt in ['%b. %d, %Y', '%B %d, %Y', '%m/%d/%Y']:
                 try:
-                    return datetime.strptime(time_text, fmt)
+                    parsed = datetime.strptime(time_text, fmt)
+                    return parsed.replace(tzinfo=timezone.utc)
                 except ValueError:
                     continue
 
         except (ValueError, AttributeError) as e:
             logger.debug(f"Could not parse time text: {e}")
 
-        return datetime.now()  # Default to now
+        return datetime.now(timezone.utc)  # Default to now (UTC)
 
 
 class FreeNewsSignalStrategy(TradingStrategyWithCommentary):
@@ -509,8 +524,12 @@ class FreeNewsSignalStrategy(TradingStrategyWithCommentary):
         if not news_items:
             news_items = await self.aggregator.fetch_news(symbol, 24)
             if news_items:
-                freshest = min(news_items, key=lambda x: getattr(x, 'published_time', datetime.now()))
-                news_age_sec = (datetime.now() - getattr(freshest, 'published_time', datetime.now())).total_seconds()
+                # v-newsbus-tz-fix-2026-09-15: Use UTC-aware fallback for age calc
+                now_utc = datetime.now(timezone.utc)
+                freshest = min(news_items, key=lambda x: getattr(x, 'published_time', now_utc))
+                freshest_pub = getattr(freshest, 'published_time', now_utc)
+                freshest_pub_utc = ensure_utc_aware(freshest_pub)
+                news_age_sec = (now_utc - freshest_pub_utc).total_seconds()
 
         # v-news-verify-2026-04-28: minimum 5 articles (was 3) — primary gate
         # for upstream signal quality. Fresh-news verification later catches

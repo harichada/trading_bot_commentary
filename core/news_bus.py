@@ -22,6 +22,24 @@ from typing import Callable, Dict, List, Optional, Set
 logger = logging.getLogger("TradingBot")
 
 
+def ensure_utc_aware(dt: datetime) -> datetime:
+    """Normalize a datetime to UTC-aware.
+    
+    v-newsbus-tz-fix-2026-09-15: P0 fix for TypeError 'can't subtract 
+    offset-naive and offset-aware datetimes' in news gate path.
+    
+    Rules:
+      - If dt is already aware, convert to UTC
+      - If dt is naive, assume it's UTC and make it aware
+    
+    This ensures all datetime comparisons use the same timezone,
+    preventing the TypeError that was causing fail-closed spam.
+    """
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
 class NewsImpactLevel(str, Enum):
     LOW = "low"
     MEDIUM = "medium"
@@ -263,24 +281,30 @@ class NewsBus:
         max_age_sec: Optional[float] = None,
         min_sentiment: Optional[float] = None,
     ) -> List[ScoredNewsItem]:
-        """Get news items for a symbol, optionally filtered by age and sentiment."""
+        """Get news items for a symbol, optionally filtered by age and sentiment.
+        
+        v-newsbus-tz-fix-2026-09-15: Use UTC-aware datetimes for age comparison
+        to prevent TypeError when published_time is timezone-aware.
+        """
         symbol = symbol.upper()
         max_age = max_age_sec if max_age_sec is not None else self._ttl_sec
 
         async with self._lock:
             items = self._items.get(symbol, [])
-            now = datetime.now()
+            now_utc = datetime.now(timezone.utc)
             
             result = []
             for item in items:
-                age = (now - item.published_time).total_seconds()
+                pub_ts = ensure_utc_aware(item.published_time)
+                age = (now_utc - pub_ts).total_seconds()
                 if age > max_age:
                     continue
                 if min_sentiment is not None and abs(item.sentiment_score) < min_sentiment:
                     continue
                 result.append(item)
 
-            result.sort(key=lambda x: x.published_time, reverse=True)
+            # v-newsbus-tz-fix-2026-09-15: Use ensure_utc_aware for sort to handle mixed tz
+            result.sort(key=lambda x: ensure_utc_aware(x.published_time), reverse=True)
             return result
 
     async def get_freshest(self, symbol: str) -> Optional[ScoredNewsItem]:
@@ -292,23 +316,27 @@ class NewsBus:
         """Check if there's a high-impact item for symbol in the last N seconds.
         
         Synchronous for fast checks in the analysis loop wake logic.
+        
+        v-newsbus-tz-fix-2026-09-15: Use UTC-aware datetime for cutoff.
         """
         symbol = symbol.upper()
-        cutoff = datetime.now() - timedelta(seconds=since_sec)
+        cutoff = datetime.now(timezone.utc) - timedelta(seconds=since_sec)
         
         events = self._high_impact_events.get(symbol, [])
-        return any(e.fetched_at >= cutoff for e in events)
+        return any(ensure_utc_aware(e.fetched_at) >= cutoff for e in events)
 
     def get_symbols_with_high_impact(self, since_sec: float = 300) -> Set[str]:
         """Get all symbols with high-impact news in the last N seconds.
         
         Synchronous for fast wake checks.
+        
+        v-newsbus-tz-fix-2026-09-15: Use UTC-aware datetime for cutoff.
         """
-        cutoff = datetime.now() - timedelta(seconds=since_sec)
+        cutoff = datetime.now(timezone.utc) - timedelta(seconds=since_sec)
         result = set()
         
         for symbol, events in self._high_impact_events.items():
-            if any(e.fetched_at >= cutoff for e in events):
+            if any(ensure_utc_aware(e.fetched_at) >= cutoff for e in events):
                 result.add(symbol)
         
         return result
