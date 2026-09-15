@@ -4276,6 +4276,96 @@ class TradingEngineWithCommentary:
                     sym, exc,
                 )
 
+    async def _ownership_evidence(
+        self,
+        symbol: str,
+        side: str,
+        saved_meta: dict | None = None,
+    ) -> tuple[bool, str | None, dict, list[str]]:
+        """v-evidence-broad-2026-09-15: check ownership evidence sources.
+
+        Checks evidence sources in order of preference:
+          1. saved_meta with managed_by_bot=True and matching side
+          2. bot_trades: today's entry for symbol with matching side
+          3. bot_decisions: today's strategy entry signal (mean_reversion, etc.)
+          4. bot_positions: existing row with managed strategy
+
+        Args:
+            symbol: Position symbol (uppercase)
+            side: Position side ("long" or "short")
+            saved_meta: Pre-loaded saved_positions_meta for this symbol
+
+        Returns:
+            (restore, source, meta, tried_sources)
+            - restore: True if evidence found
+            - source: Evidence source name or None
+            - meta: Metadata dict for position creation
+            - tried_sources: List of sources attempted (for logging)
+        """
+        symbol_upper = symbol.upper()
+        broad_enabled = Config().ENABLE_MANAGED_OWNERSHIP_EVIDENCE_BROAD
+        tried_sources: list[str] = []
+        
+        saved = saved_meta or {}
+        if saved.get('managed_by_bot') is True and saved.get('side') == side:
+            tried_sources.append("saved")
+            return True, "saved", saved, tried_sources
+        tried_sources.append("saved")
+        
+        if self.db_logger is not None:
+            try:
+                bot_entries = await self.db_logger.get_todays_bot_entries([symbol])
+                bt = bot_entries.get(symbol_upper) or bot_entries.get(symbol)
+                if bt is not None and bt.get('side') == side:
+                    tried_sources.append("bot_trades")
+                    entry_t = bt.get('entry_time')
+                    return True, "bot_trades", {
+                        'entry_time': entry_t.isoformat() if isinstance(entry_t, datetime) else str(entry_t or ''),
+                        'stop_loss': 0,
+                        'take_profit': None,
+                        'reasoning': {'source': 'bot_trades_fallback', 'strategy': bt.get('strategy')},
+                    }, tried_sources
+                tried_sources.append("bot_trades")
+            except Exception as exc:
+                logger.debug("ownership_evidence_bot_trades_error: %s", exc)
+                tried_sources.append("bot_trades(err)")
+            
+            if broad_enabled:
+                try:
+                    decision_entries = await self.db_logger.get_todays_bot_decision_entries([symbol])
+                    dec = decision_entries.get(symbol_upper) or decision_entries.get(symbol)
+                    if dec is not None and dec.get('side') == side:
+                        tried_sources.append("bot_decisions")
+                        dec_ts = dec.get('ts')
+                        return True, "bot_decisions", {
+                            'entry_time': dec_ts.isoformat() if isinstance(dec_ts, datetime) else str(dec_ts or ''),
+                            'stop_loss': 0,
+                            'take_profit': None,
+                            'reasoning': {'source': 'bot_decisions_fallback', 'strategy': dec.get('strategy')},
+                        }, tried_sources
+                    tried_sources.append("bot_decisions")
+                except Exception as exc:
+                    logger.debug("ownership_evidence_bot_decisions_error: %s", exc)
+                    tried_sources.append("bot_decisions(err)")
+                
+                try:
+                    pos_row = await self.db_logger.get_managed_bot_position(symbol)
+                    if pos_row is not None and pos_row.get('side') == side:
+                        tried_sources.append("bot_positions")
+                        entry_t = pos_row.get('entry_time')
+                        return True, "bot_positions", {
+                            'entry_time': entry_t.isoformat() if isinstance(entry_t, datetime) else str(entry_t or ''),
+                            'stop_loss': 0,
+                            'take_profit': None,
+                            'reasoning': {'source': 'bot_positions_fallback', 'strategy': pos_row.get('strategy')},
+                        }, tried_sources
+                    tried_sources.append("bot_positions")
+                except Exception as exc:
+                    logger.debug("ownership_evidence_bot_positions_error: %s", exc)
+                    tried_sources.append("bot_positions(err)")
+        
+        return False, None, {}, tried_sources
+
     async def sync_positions_with_schwab(self):
         """Sync internal position tracking with actual Schwab positions.
 
@@ -4298,6 +4388,12 @@ class TradingEngineWithCommentary:
           2. _saved_positions_meta (relaxed: side match + managed_by_bot=True)
           3. Fallback: today's bot_trades where bot opened the symbol
 
+        v-evidence-broad-2026-09-15: broadened ownership evidence via
+        _ownership_evidence() helper. Additional sources (when
+        ENABLE_MANAGED_OWNERSHIP_EVIDENCE_BROAD=True):
+          4. bot_decisions: today's strategy entry signals (mean_reversion etc.)
+          5. bot_positions: open-ledger row with managed strategy
+
         HANDS_OFF_DENYLIST (MU, HQGE, SPCX): NEVER restore managed_by_bot=True.
         Config: ENABLE_MANAGED_BY_BOT_PERSIST (default True) controls this.
         """
@@ -4314,23 +4410,6 @@ class TradingEngineWithCommentary:
             # v-manage-persist-2026-09-15: config and denylist
             persist_enabled = Config().ENABLE_MANAGED_BY_BOT_PERSIST
             denylist = Config().HANDS_OFF_DENYLIST
-
-            # v-manage-persist-2026-09-15: fetch bot_trades fallback once
-            # (only used when saved meta doesn't match)
-            _bot_trades_cache = None
-
-            async def _get_bot_trades_fallback():
-                nonlocal _bot_trades_cache
-                if _bot_trades_cache is None:
-                    if self.db_logger is not None:
-                        try:
-                            _bot_trades_cache = await self.db_logger.get_todays_bot_entries()
-                        except Exception as exc:
-                            logger.debug("bot_trades_fallback_error: %s", exc)
-                            _bot_trades_cache = {}
-                    else:
-                        _bot_trades_cache = {}
-                return _bot_trades_cache
 
             for pos_data in schwab_positions:
                 symbol = pos_data['symbol']
@@ -4361,6 +4440,9 @@ class TradingEngineWithCommentary:
                     _restore_source = None
                     _saved_meta = {}
 
+                    # v-evidence-broad-2026-09-15: track tried sources for skip_no_evidence log
+                    _tried_sources: list[str] = []
+
                     if persist_enabled and not in_denylist:
                         saved = self._saved_positions_meta.get(symbol) or {}
                         # v-manage-persist-hotfix-2026-09-15: FIXED operator toggle detection.
@@ -4375,36 +4457,21 @@ class TradingEngineWithCommentary:
                         _operator_toggled_off = (
                             _saved_managed is False and _saved_source == 'operator'
                         )
-                        _restore_from_saved = (
-                            _saved_managed is True
-                            and saved.get('side') == side
-                        )
-                        if _restore_from_saved:
-                            _restore = True
-                            _restore_source = "saved"
-                            _saved_meta = saved
-                        elif _operator_toggled_off:
+                        if _operator_toggled_off:
                             # Operator explicitly toggled off — respect it
                             _restore = False
                             _restore_source = None
+                            _tried_sources = ["operator_toggle_off"]
                             logger.info(
                                 "sync_skip_operator_toggle: %s %s qty=%d — operator toggled managed_by_bot=False, respecting",
                                 symbol, side, qty_abs,
                             )
                         else:
-                            # managed_by_bot=False WITHOUT managed_source=operator is stale data.
-                            # Fallback: check today's bot_trades for evidence of bot ownership.
-                            bot_entries = await _get_bot_trades_fallback()
-                            bt = bot_entries.get(symbol_upper) or bot_entries.get(symbol)
-                            if bt is not None and bt.get('side') == side:
-                                _restore = True
-                                _restore_source = "bot_trades"
-                                _saved_meta = {
-                                    'entry_time': bt.get('entry_time', datetime.now()).isoformat() if isinstance(bt.get('entry_time'), datetime) else str(bt.get('entry_time', '')),
-                                    'stop_loss': 0,
-                                    'take_profit': None,
-                                    'reasoning': {'source': 'bot_trades_fallback', 'strategy': bt.get('strategy')},
-                                }
+                            # v-evidence-broad-2026-09-15: use unified ownership evidence helper
+                            # Checks: saved → bot_trades → bot_decisions → bot_positions
+                            _restore, _restore_source, _saved_meta, _tried_sources = await self._ownership_evidence(
+                                symbol_upper, side, saved
+                            )
 
                     if _restore:
                         try:
@@ -4478,10 +4545,11 @@ class TradingEngineWithCommentary:
                                 "position_left_external",
                                 "no_bot_record",
                                 side=side, quantity=qty_abs,
+                                tried_sources=_tried_sources,
                             )
                             logger.info(
-                                "sync_skip_no_evidence: %s %s qty=%d — no bot record, left external",
-                                symbol, side, qty_abs,
+                                "sync_skip_no_evidence: %s %s qty=%d tried_sources=%s — no bot record, left external",
+                                symbol, side, qty_abs, ",".join(_tried_sources) if _tried_sources else "none",
                             )
                     position.unrealized_pnl = pos_data.get('total_pnl', 0)
                     self.positions[symbol] = position
@@ -9190,6 +9258,9 @@ class TradingEngineWithCommentary:
                         _restore_source = None
                         _saved_meta = {}
 
+                        # v-evidence-broad-2026-09-15: track tried sources for skip_no_evidence log
+                        _tried_sources: list[str] = []
+
                         if persist_enabled and not in_denylist and not _is_lt:
                             # v-manage-persist-hotfix-2026-09-15: FIXED operator toggle detection.
                             # Bug A fix: managed_by_bot=False could be STALE sync data. Only treat
@@ -9199,64 +9270,21 @@ class TradingEngineWithCommentary:
                             _operator_toggled_off = (
                                 _saved_managed is False and _saved_source == 'operator'
                             )
-                            _restore_from_saved = (
-                                _saved_managed is True
-                                and saved.get('side') == _side
-                            )
-                            if _restore_from_saved:
-                                _restore_managed = True
-                                _restore_source = "saved"
-                                _saved_meta = saved
-                            elif _operator_toggled_off:
+                            if _operator_toggled_off:
                                 # Operator explicitly toggled off — respect it
                                 _restore_managed = False
                                 _restore_source = None
+                                _tried_sources = ["operator_toggle_off"]
                                 logger.info(
                                     "update_track_skip_operator_toggle: %s %s qty=%d — operator toggled managed_by_bot=False, respecting",
                                     symbol, _side, _qty_abs,
                                 )
                             else:
-                                # managed_by_bot=False WITHOUT managed_source=operator is stale data.
-                                # Fallback: check today's bot_trades for evidence of bot ownership.
-                                # v-manage-persist-hotfix-2026-09-15: use run_coroutine_threadsafe
-                                # instead of ThreadPoolExecutor+asyncio.run nest.
-                                if self.db_logger is not None:
-                                    try:
-                                        import asyncio
-                                        _owner_loop = getattr(self.db_logger, '_owner_loop', None)
-                                        if _owner_loop is not None and _owner_loop.is_running():
-                                            _fut = asyncio.run_coroutine_threadsafe(
-                                                self.db_logger.get_todays_bot_entries([symbol]),
-                                                _owner_loop,
-                                            )
-                                            bot_entries = _fut.result(timeout=2.0)
-                                        else:
-                                            loop = asyncio.get_event_loop()
-                                            if loop.is_running():
-                                                # Fallback: route via db_logger's internal routing
-                                                # which now properly waits for cross-loop results
-                                                _fut = asyncio.run_coroutine_threadsafe(
-                                                    self.db_logger.get_todays_bot_entries([symbol]),
-                                                    loop,
-                                                )
-                                                bot_entries = _fut.result(timeout=2.0)
-                                            else:
-                                                bot_entries = loop.run_until_complete(
-                                                    self.db_logger.get_todays_bot_entries([symbol])
-                                                )
-                                        bt = bot_entries.get(_symbol_upper) or bot_entries.get(symbol)
-                                        if bt is not None and bt.get('side') == _side:
-                                            _restore_managed = True
-                                            _restore_source = "bot_trades"
-                                            _entry_t = bt.get('entry_time')
-                                            _saved_meta = {
-                                                'entry_time': _entry_t.isoformat() if isinstance(_entry_t, datetime) else str(_entry_t or ''),
-                                                'stop_loss': 0,
-                                                'take_profit': None,
-                                                'reasoning': {'source': 'bot_trades_fallback', 'strategy': bt.get('strategy')},
-                                            }
-                                    except Exception as exc:
-                                        logger.debug("update_track_bot_trades_fallback_error: %s", exc)
+                                # v-evidence-broad-2026-09-15: use unified ownership evidence helper
+                                # Checks: saved → bot_trades → bot_decisions → bot_positions
+                                _restore_managed, _restore_source, _saved_meta, _tried_sources = await self._ownership_evidence(
+                                    _symbol_upper, _side, saved
+                                )
                         
                         if _restore_managed:
                             try:
@@ -9315,16 +9343,32 @@ class TradingEngineWithCommentary:
                             )
                             position.is_external = True
                             position.is_manually_managed = True
-                            if in_denylist and hasattr(self, '_audit'):
-                                self._audit(
-                                    "position_sync", symbol,
-                                    "position_left_external",
-                                    "denylist_update_track",
-                                    side=_side, quantity=_qty_abs,
-                                )
+                            if in_denylist:
+                                if hasattr(self, '_audit'):
+                                    self._audit(
+                                        "position_sync", symbol,
+                                        "position_left_external",
+                                        "denylist_update_track",
+                                        side=_side, quantity=_qty_abs,
+                                    )
                                 logger.info(
                                     "update_track_external: %s %s qty=%d — DENYLIST, hands-off",
                                     symbol, _side, _qty_abs,
+                                )
+                            elif not _is_lt:
+                                # v-evidence-broad-2026-09-15: log skip_no_evidence for non-denylist
+                                # non-long_term symbols left external after all evidence sources failed
+                                if hasattr(self, '_audit'):
+                                    self._audit(
+                                        "position_sync", symbol,
+                                        "position_left_external",
+                                        "no_bot_record_update_track",
+                                        side=_side, quantity=_qty_abs,
+                                        tried_sources=_tried_sources,
+                                    )
+                                logger.info(
+                                    "update_track_skip_no_evidence: %s %s qty=%d tried_sources=%s — no bot record, left external",
+                                    symbol, _side, _qty_abs, ",".join(_tried_sources) if _tried_sources else "none",
                                 )
                         self.positions[symbol] = position
                     

@@ -1480,6 +1480,29 @@ class Config:
         return bool(self.manager.get('trading.enable_managed_by_bot_persist', True))
 
     @property
+    def ENABLE_MANAGED_OWNERSHIP_EVIDENCE_BROAD(self) -> bool:
+        """v-evidence-broad-2026-09-15: broaden ownership evidence sources
+        for managed_by_bot restore beyond bot_trades.
+
+        Default True. When enabled, ownership evidence is checked in order:
+          1. saved meta managed=True (existing)
+          2. bot_trades open/today entry (existing)
+          3. **bot_decisions** today with strategy entry for symbol
+             (mean_reversion / day_trade_momentum / etc.)
+          4. **bot_positions** row with managed strategy (if open-ledger exists)
+
+        This fixes the gap where mean-rev session entries (which don't write
+        to bot_trades until exit) were left external on first boot without
+        good saved state.
+
+        SAFE OFF-PATH: Set ENABLE_MANAGED_OWNERSHIP_EVIDENCE_BROAD=0 to
+        revert to bot_trades-only fallback (original #68 behavior)."""
+        env_val = os.getenv("ENABLE_MANAGED_OWNERSHIP_EVIDENCE_BROAD")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.enable_managed_ownership_evidence_broad', True))
+
+    @property
     def ENABLE_BREAKOUT_LONG(self) -> bool:
         """Enable the breakout-long strategy (20-bar high + volume + trend).
 

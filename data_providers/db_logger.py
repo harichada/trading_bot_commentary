@@ -1254,6 +1254,139 @@ class DbLogger:
             logger.warning("db_logger_get_todays_bot_entries_error err=%s", exc)
             return {}
 
+    async def get_todays_bot_decision_entries(
+        self, symbols: list[str] | None = None
+    ) -> dict[str, dict]:
+        """v-evidence-broad-2026-09-15: get today's bot_decisions strategy entries.
+
+        Returns a dict mapping symbol -> decision metadata for bot strategy
+        entry decisions from today. Used as an additional evidence source
+        for restoring managed_by_bot=True when bot_trades is empty (e.g.,
+        mean_reversion sessions that don't write to bot_trades until exit).
+
+        Only returns strategy entry signals: action='entry' or 'open_position'
+        with known managed strategies (mean_reversion, day_trade_momentum, etc.).
+
+        Returns:
+            {symbol: {"side": "long"|"short", "ts": datetime, "strategy": str,
+                      "confidence": float|None}}
+        """
+        if not self._enabled:
+            return {}
+        
+        if not self._is_on_owner_loop():
+            if self._owner_loop is None or not self._owner_loop.is_running():
+                return {}
+            try:
+                fut = asyncio.run_coroutine_threadsafe(
+                    self._get_todays_bot_decision_entries_impl(symbols),
+                    self._owner_loop,
+                )
+                return await asyncio.wrap_future(fut)
+            except Exception as exc:
+                logger.debug("get_todays_bot_decision_entries_route_error: %s", exc)
+                return {}
+        
+        return await self._get_todays_bot_decision_entries_impl(symbols)
+
+    async def _get_todays_bot_decision_entries_impl(
+        self, symbols: list[str] | None = None
+    ) -> dict[str, dict]:
+        """Internal impl: query bot_decisions for today's strategy entries."""
+        try:
+            async with self._engine.begin() as conn:
+                query = """
+                    SELECT symbol, ts, signal_type, confidence,
+                           COALESCE(details_json->>'strategy', component) AS strategy
+                    FROM bot_decisions
+                    WHERE DATE(ts) = CURRENT_DATE
+                      AND mode = 'live'
+                      AND action IN ('entry', 'open_position', 'signal_generated')
+                      AND COALESCE(details_json->>'strategy', component) IN (
+                          'mean_reversion', 'day_trade_momentum', 'orb_breakout',
+                          'oversold_bounce', 'pullback_continuation', 'news_strategy'
+                      )
+                """
+                params: dict[str, Any] = {}
+                if symbols:
+                    query += " AND symbol = ANY(:symbols)"
+                    params["symbols"] = [s.upper() for s in symbols]
+                query += " ORDER BY ts DESC"
+                result = await conn.execute(text(query), params)
+                rows = result.mappings().all()
+                entries: dict[str, dict] = {}
+                for row in rows:
+                    sym = row["symbol"].upper()
+                    if sym not in entries:
+                        signal_type = row.get("signal_type") or ""
+                        side = "short" if "short" in signal_type.lower() else "long"
+                        entries[sym] = {
+                            "side": side,
+                            "ts": row["ts"],
+                            "strategy": row["strategy"],
+                            "confidence": float(row["confidence"]) if row["confidence"] else None,
+                        }
+                return entries
+        except Exception as exc:
+            logger.warning("db_logger_get_todays_bot_decision_entries_error err=%s", exc)
+            return {}
+
+    async def get_managed_bot_position(
+        self, symbol: str
+    ) -> dict | None:
+        """v-evidence-broad-2026-09-15: get bot_positions row for a symbol.
+
+        Returns position metadata if a bot_positions row exists with a
+        managed strategy. Used as last-resort evidence source for ownership.
+
+        Returns:
+            {"side": "long"|"short", "entry_time": datetime, "strategy": str}
+            or None if not found.
+        """
+        if not self._enabled:
+            return None
+        
+        if not self._is_on_owner_loop():
+            if self._owner_loop is None or not self._owner_loop.is_running():
+                return None
+            try:
+                fut = asyncio.run_coroutine_threadsafe(
+                    self._get_managed_bot_position_impl(symbol),
+                    self._owner_loop,
+                )
+                return await asyncio.wrap_future(fut)
+            except Exception as exc:
+                logger.debug("get_managed_bot_position_route_error: %s", exc)
+                return None
+        
+        return await self._get_managed_bot_position_impl(symbol)
+
+    async def _get_managed_bot_position_impl(self, symbol: str) -> dict | None:
+        """Internal impl: query bot_positions for a managed position."""
+        try:
+            async with self._engine.begin() as conn:
+                result = await conn.execute(
+                    text("""
+                        SELECT side, entry_time, strategy
+                        FROM bot_positions
+                        WHERE symbol = :symbol
+                          AND strategy IS NOT NULL
+                        LIMIT 1
+                    """),
+                    {"symbol": symbol.upper()},
+                )
+                row = result.mappings().first()
+                if row:
+                    return {
+                        "side": row["side"],
+                        "entry_time": row["entry_time"],
+                        "strategy": row["strategy"],
+                    }
+                return None
+        except Exception as exc:
+            logger.warning("db_logger_get_managed_bot_position_error err=%s", exc)
+            return None
+
     async def ensure_snapshot_table(self) -> None:
         """v-feature-snapshot-2026-09-09: create bot_decision_snapshots table if missing.
         
