@@ -1,10 +1,10 @@
 """Tests for core data models."""
 import pytest
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 from core.models import (
     TradingMode, CommentaryType, SignalType, NewsImpact,
-    TradingSignal, Position, MarketData
+    TradingSignal, Position, MarketData, NewsItem
 )
 
 
@@ -86,3 +86,63 @@ class TestMarketData:
             indicators={'rsi': 65.0, 'macd': 0.5}
         )
         assert md.indicators['rsi'] == 65.0
+
+
+class TestNewsItem:
+    """Tests for NewsItem including timezone-aware age_hours().
+    
+    v-widget-tz-fix-2026-09-15: Ensures age_hours() handles mixed
+    naive/aware datetimes without TypeError.
+    """
+    
+    def test_age_hours_with_utc_aware_timestamp(self):
+        """age_hours should work with UTC-aware published_time."""
+        two_hours_ago = datetime.now(timezone.utc) - timedelta(hours=2)
+        item = NewsItem(
+            id="test-1",
+            symbol="AAPL",
+            headline="Test headline",
+            summary="Test summary",
+            source="Test",
+            url="https://example.com",
+            published_time=two_hours_ago,
+        )
+        age = item.age_hours()
+        assert 1.9 < age < 2.1
+    
+    def test_age_hours_with_naive_timestamp(self):
+        """age_hours should work with naive published_time (assumed UTC)."""
+        two_hours_ago = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=2)
+        item = NewsItem(
+            id="test-2",
+            symbol="TSLA",
+            headline="Test headline",
+            summary="Test summary",
+            source="Test",
+            url="https://example.com",
+            published_time=two_hours_ago,
+        )
+        age = item.age_hours()
+        assert 1.9 < age < 2.1
+    
+    def test_age_hours_no_typeerror_mixed_tz(self):
+        """age_hours must not raise TypeError on offset-aware vs naive comparison.
+        
+        This was the root cause of the widget path bug:
+        'can't subtract offset-naive and offset-aware datetimes'
+        """
+        aware_ts = datetime.now(timezone.utc) - timedelta(hours=1)
+        item = NewsItem(
+            id="test-3",
+            symbol="NVDA",
+            headline="Aware timestamp test",
+            summary="",
+            source="Test",
+            url="",
+            published_time=aware_ts,
+        )
+        try:
+            age = item.age_hours()
+            assert age > 0
+        except TypeError as e:
+            pytest.fail(f"age_hours raised TypeError: {e}")
