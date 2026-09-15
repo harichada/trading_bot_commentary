@@ -3115,6 +3115,20 @@ class TestMeanRevRiskBudgetConfig:
             "MAX_MEAN_REV_RISK_PCT must default to 0 (shadow only while LIVE off)"
         )
     
+    def test_max_mean_rev_risk_pct_research_alias_documented(self):
+        """MAX_MEAN_REV_RISK_PCT docstring must document Research alias."""
+        from pathlib import Path
+        src = Path("core/config.py").read_text()
+        anchor = src.find("def MAX_MEAN_REV_RISK_PCT")
+        assert anchor != -1
+        window = src[anchor: anchor + 1500]
+        assert "MEAN_REV_RISK_BUDGET_PCT" in window, (
+            "MAX_MEAN_REV_RISK_PCT must document Research alias MEAN_REV_RISK_BUDGET_PCT"
+        )
+        assert "same semantics" in window.lower(), (
+            "MAX_MEAN_REV_RISK_PCT must clarify alias has same semantics"
+        )
+    
     def test_max_concurrent_mean_rev_shorts_default(self):
         """MAX_CONCURRENT_MEAN_REV_SHORTS must default to 3 (Stage A constraint)."""
         from core.config import Config

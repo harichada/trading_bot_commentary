@@ -1503,18 +1503,35 @@ class Config:
     def MAX_MEAN_REV_RISK_PCT(self) -> float:
         """Maximum equity percentage allocated to mean-reversion positions.
 
-        When ENABLE_MEAN_REV_RISK_BUDGET is True and this threshold is
-        reached (sum of mean-rev position notional / equity >= threshold),
-        new mean-rev entries are blocked.
+        Research alias: MEAN_REV_RISK_BUDGET_PCT (same semantics).
+        Env alias: MEAN_REV_RISK_BUDGET_PCT also accepted.
 
-        Default **0** while LIVE is off — paper/shadow notionals only for
-        Stage A validation. After Stage A green + Hari approval, first LIVE
-        bucket should be ≤1-2% total risk capital, mean-rev share ≤ half
-        of that unless Hari says otherwise.
+        Budget semantics:
+          - Default **0** = shadow/paper only (no LIVE risk allocation)
+          - When value is 0, the equity-% check is SKIPPED entirely
+          - When value > 0, the check blocks new entries if
+            (mean-rev notional / equity) >= this threshold
 
-        Set trading.max_mean_rev_risk_pct to adjust. This complements
-        MAX_CONCURRENT_MEAN_REV for dollar-based budgeting.
+        After Stage A green + Hari approval, first LIVE bucket should be
+        ≤1-2% total risk capital, mean-rev share ≤ half of that unless
+        Hari says otherwise.
+
+        Set trading.max_mean_rev_risk_pct (or trading.mean_rev_risk_budget_pct)
+        to adjust. This complements MAX_CONCURRENT_MEAN_REV for dollar-based
+        budgeting.
         """
+        env_val = os.getenv("MEAN_REV_RISK_BUDGET_PCT")
+        if env_val is not None:
+            try:
+                return float(env_val)
+            except (TypeError, ValueError):
+                pass
+        yaml_alias = self.manager.get('trading.mean_rev_risk_budget_pct')
+        if yaml_alias is not None:
+            try:
+                return float(yaml_alias)
+            except (TypeError, ValueError):
+                pass
         return float(self.manager.get('trading.max_mean_rev_risk_pct', 0.0))
 
     @property
