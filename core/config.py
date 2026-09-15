@@ -1794,6 +1794,68 @@ class Config:
         ))
 
     # ══════════════════════════════════════════════════════════════════════════
+    # v-daytrade-rsi-entry-gate-2026-09-15: Block day-trade LIVE entries when
+    # RSI is already at/below the proactive exit threshold.
+    # ══════════════════════════════════════════════════════════════════════════
+
+    @property
+    def DAY_TRADE_RSI_ENTRY_GATE_ENABLED(self) -> bool:
+        """v-daytrade-rsi-entry-gate-2026-09-15: block day-trade LIVE entries
+        when RSI <= DAY_TRADE_RSI_ENTRY_THRESHOLD (default 50).
+
+        P0 RCA 2026-09-15 (ALHC×2): day_trade pullback/continuation entered
+        LIVE while RSI <= 50, then proactive_rsi_below_50 exit (or open-desk
+        RSI exit) immediately dumped the trade. Entry into a condition that
+        already triggers exit = churn, anti-profit.
+
+        When True (default):
+          - Any signal with is_day_trade=True in reasoning
+          - In LIVE mode
+          - SignalType.BUY (longs only, matching the RSI < 50 exit logic)
+          - When RSI <= DAY_TRADE_RSI_ENTRY_THRESHOLD
+          => Entry is BLOCKED with audit reason 'rsi_below_50_entry_blocked'
+
+        When False: previous behavior (entries allowed, may immediately exit).
+
+        MUST KEEP intact (these work regardless of this flag):
+          - Proactive exits for EXISTING positions
+          - Shadow logging continues (entries still shadow-logged)
+          - Other existing gates (DAY_TRADE_LIVE_ENTRIES_ENABLED, etc.)
+          - HANDS_OFF (MU, HQGE, SPCX) unchanged
+
+        The threshold is aligned with proactive_rsi_below_50 exit logic in
+        analysis/scale_trail_manager.py and analysis/active_open_desk.py.
+
+        Default True. Set via env DAY_TRADE_RSI_ENTRY_GATE_ENABLED=0
+        or trading.day_trade_rsi_entry_gate_enabled: false to disable.
+        """
+        env_val = os.getenv("DAY_TRADE_RSI_ENTRY_GATE_ENABLED")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get(
+            'trading.day_trade_rsi_entry_gate_enabled', True
+        ))
+
+    @property
+    def DAY_TRADE_RSI_ENTRY_THRESHOLD(self) -> float:
+        """RSI threshold for day-trade entry gate (longs).
+
+        Day-trade long entries with RSI <= this threshold are blocked
+        because they would immediately be vulnerable to the proactive
+        RSI exit (rsi_below_50).
+
+        Aligned with proactive_rsi_below_50 exit threshold in:
+          - analysis/scale_trail_manager.py: `if rsi < 50: return "rsi_below_50"`
+          - analysis/active_open_desk.py: `elif rsi < 50: proactive_reason = "rsi_below_50"`
+
+        Using <= 50 (not < 50) for the entry gate because RSI exactly at
+        50 is right at the edge — one tick of noise and the exit fires.
+
+        Default 50.0. Set trading.day_trade_rsi_entry_threshold to adjust.
+        """
+        return float(self.manager.get('trading.day_trade_rsi_entry_threshold', 50.0))
+
+    # ══════════════════════════════════════════════════════════════════════════
     # v-late-entry-gate-2026-09-15: Late-entry detection to prevent chasing
     # extended moves. Shadow mode logs only; production mode can hard-skip.
     # ══════════════════════════════════════════════════════════════════════════
