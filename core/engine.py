@@ -4389,16 +4389,34 @@ class TradingEngineWithCommentary:
                         # Policy: side match + saved managed_by_bot=True is
                         # sufficient. Operator partial close (qty drift) no
                         # longer disowns the remaining position.
+                        #
+                        # OPERATOR TOGGLE RESPECT: if saved meta explicitly
+                        # has managed_by_bot=False, the operator toggled it
+                        # off via /api/toggle-managed-by-bot. Do NOT override
+                        # with bot_trades fallback — respect the operator's
+                        # explicit choice.
+                        _saved_managed = saved.get('managed_by_bot')
+                        _operator_toggled_off = _saved_managed is False
                         _restore_from_saved = (
-                            saved.get('managed_by_bot') is True
+                            _saved_managed is True
                             and saved.get('side') == side
                         )
                         if _restore_from_saved:
                             _restore = True
                             _restore_source = "saved"
                             _saved_meta = saved
+                        elif _operator_toggled_off:
+                            # Operator explicitly toggled off — respect it
+                            _restore = False
+                            _restore_source = None
+                            logger.debug(
+                                "sync_respect_toggle: %s — operator toggled managed_by_bot=False, respecting",
+                                symbol,
+                            )
                         else:
-                            # Fallback: check today's bot_trades
+                            # Fallback: check today's bot_trades (only when
+                            # saved meta is missing/stale, not when operator
+                            # explicitly toggled off)
                             bot_entries = await _get_bot_trades_fallback()
                             bt = bot_entries.get(symbol_upper) or bot_entries.get(symbol)
                             if bt is not None and bt.get('side') == side:
@@ -9177,16 +9195,31 @@ class TradingEngineWithCommentary:
 
                         if persist_enabled and not in_denylist and not _is_lt:
                             # v-manage-persist-2026-09-15: relaxed qty match
+                            # OPERATOR TOGGLE RESPECT: if saved meta explicitly
+                            # has managed_by_bot=False, operator toggled it off
+                            # via /api/toggle-managed-by-bot. Do NOT override.
+                            _saved_managed = saved.get('managed_by_bot')
+                            _operator_toggled_off = _saved_managed is False
                             _restore_from_saved = (
-                                saved.get('managed_by_bot') is True
+                                _saved_managed is True
                                 and saved.get('side') == _side
                             )
                             if _restore_from_saved:
                                 _restore_managed = True
                                 _restore_source = "saved"
                                 _saved_meta = saved
+                            elif _operator_toggled_off:
+                                # Operator explicitly toggled off — respect it
+                                _restore_managed = False
+                                _restore_source = None
+                                logger.debug(
+                                    "update_track_respect_toggle: %s — operator toggled managed_by_bot=False, respecting",
+                                    symbol,
+                                )
                             else:
-                                # Fallback: check today's bot_trades
+                                # Fallback: check today's bot_trades (only when
+                                # saved meta is missing/stale, not when operator
+                                # explicitly toggled off)
                                 if self.db_logger is not None:
                                     try:
                                         import asyncio

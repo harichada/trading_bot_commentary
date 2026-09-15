@@ -3276,3 +3276,40 @@ class TestManagedByBotPersistence:
         assert "mode = 'live'" in src, (
             "Should only query live-mode entries"
         )
+
+    def test_respects_operator_toggle_off(self):
+        """If operator explicitly toggled managed_by_bot=False via
+        /api/toggle-managed-by-bot, restore must NOT override it.
+        
+        The toggle API is a pure flip. Restore only kicks in on bootstrap/
+        discovery when ownership evidence says bot-owned; it must not
+        overwrite an explicit in-memory False from a recent operator flip."""
+        src = ENGINE_PATH.read_text()
+        anchor = src.find("async def sync_positions_with_schwab")
+        assert anchor != -1
+        block = src[anchor:anchor + 12000]
+        assert "_operator_toggled_off" in block, (
+            "sync_positions_with_schwab must detect operator toggle-off"
+        )
+        assert "_saved_managed is False" in block, (
+            "Must check for explicit False (not just falsy)"
+        )
+        assert "respect" in block.lower(), (
+            "Code must document respecting operator's explicit choice"
+        )
+        assert "bot_trades" in block.lower() and "elif _operator_toggled_off" in block, (
+            "bot_trades fallback must NOT run when operator toggled off"
+        )
+
+    def test_update_track_respects_operator_toggle_off(self):
+        """_update_and_track_real_positions must also respect operator toggle."""
+        src = ENGINE_PATH.read_text()
+        anchor = src.find("# v-manage-persist-2026-09-15: enhanced restore logic.")
+        assert anchor != -1
+        block = src[anchor:anchor + 8000]
+        assert "_operator_toggled_off" in block, (
+            "update_track must detect operator toggle-off"
+        )
+        assert "update_track_respect_toggle" in block, (
+            "Must log when respecting operator toggle"
+        )
