@@ -1,7 +1,9 @@
 from enum import Enum
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, Any, Optional
+
+from core.news_bus import ensure_utc_aware
 
 
 class TradingMode(Enum):
@@ -270,4 +272,6 @@ class NewsItem:
     relevance_score: float = 0.0
 
     def age_hours(self) -> float:
-        return (datetime.now() - self.published_time).total_seconds() / 3600
+        now_utc = datetime.now(timezone.utc)
+        pub_utc = ensure_utc_aware(self.published_time)
+        return (now_utc - pub_utc).total_seconds() / 3600
