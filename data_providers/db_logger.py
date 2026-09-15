@@ -1167,6 +1167,60 @@ class DbLogger:
         snapshots = await self.get_decision_snapshots(symbol=symbol, limit=1)
         return snapshots[0] if snapshots else None
 
+    async def get_todays_bot_entries(self, symbols: list[str] | None = None) -> dict[str, dict]:
+        """v-manage-persist-2026-09-15: get today's bot_trades entries.
+
+        Returns a dict mapping symbol -> trade metadata for bot-opened
+        positions from today. Used as a fallback source of truth for
+        restoring managed_by_bot=True when _saved_positions_meta is
+        stale or missing.
+
+        Only returns entries (entry_time today), not closes. The caller
+        determines which symbols are still open on Schwab and cross-refs.
+
+        Returns:
+            {symbol: {"side": "long"|"short", "entry_time": datetime,
+                      "entry_price": float, "quantity": int, "strategy": str}}
+        """
+        if not self._enabled:
+            return {}
+        if self._route_to_owner_loop("get_todays_bot_entries", self._get_todays_bot_entries_impl, symbols):
+            return {}
+        return await self._get_todays_bot_entries_impl(symbols)
+
+    async def _get_todays_bot_entries_impl(self, symbols: list[str] | None = None) -> dict[str, dict]:
+        """Internal impl: query bot_trades for today's entries."""
+        try:
+            async with self._engine.begin() as conn:
+                query = """
+                    SELECT symbol, side, entry_time, entry_price, quantity, strategy
+                    FROM bot_trades
+                    WHERE DATE(entry_time) = CURRENT_DATE
+                      AND mode = 'live'
+                """
+                params = {}
+                if symbols:
+                    query += " AND symbol = ANY(:symbols)"
+                    params["symbols"] = [s.upper() for s in symbols]
+                query += " ORDER BY entry_time DESC"
+                result = await conn.execute(text(query), params)
+                rows = result.mappings().all()
+                entries = {}
+                for row in rows:
+                    sym = row["symbol"].upper()
+                    if sym not in entries:
+                        entries[sym] = {
+                            "side": row["side"],
+                            "entry_time": row["entry_time"],
+                            "entry_price": float(row["entry_price"]),
+                            "quantity": int(row["quantity"]),
+                            "strategy": row["strategy"],
+                        }
+                return entries
+        except Exception as exc:
+            logger.warning("db_logger_get_todays_bot_entries_error err=%s", exc)
+            return {}
+
     async def ensure_snapshot_table(self) -> None:
         """v-feature-snapshot-2026-09-09: create bot_decision_snapshots table if missing.
         

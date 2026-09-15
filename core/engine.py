@@ -4313,6 +4313,15 @@ class TradingEngineWithCommentary:
         Sync now preserves the per-symbol bot state and only updates the
         fields Schwab is authoritative for (qty, average_price, side,
         current_price, total_pnl).
+
+        v-manage-persist-2026-09-15: enhanced restore logic for managed_by_bot
+        across restart/sync. Sources of truth (in preference order):
+          1. In-memory prior position if managed_by_bot=True
+          2. _saved_positions_meta (relaxed: side match + managed_by_bot=True)
+          3. Fallback: today's bot_trades where bot opened the symbol
+
+        HANDS_OFF_DENYLIST (MU, HQGE, SPCX): NEVER restore managed_by_bot=True.
+        Config: ENABLE_MANAGED_BY_BOT_PERSIST (default True) controls this.
         """
         if not self.schwab_client or self.mode != TradingMode.LIVE:
             return
@@ -4321,13 +4330,33 @@ class TradingEngineWithCommentary:
             schwab_positions = await self.get_schwab_positions()
 
             # Snapshot existing tracked state per symbol before the merge.
-            # We preserve everything except the Schwab-authoritative fields
-            # (qty, entry/avg price, current price, side, unrealized_pnl).
             prior = dict(self.positions)
             schwab_symbols = {pd['symbol'] for pd in schwab_positions}
 
+            # v-manage-persist-2026-09-15: config and denylist
+            persist_enabled = Config().ENABLE_MANAGED_BY_BOT_PERSIST
+            denylist = Config().HANDS_OFF_DENYLIST
+
+            # v-manage-persist-2026-09-15: fetch bot_trades fallback once
+            # (only used when saved meta doesn't match)
+            _bot_trades_cache = None
+
+            async def _get_bot_trades_fallback():
+                nonlocal _bot_trades_cache
+                if _bot_trades_cache is None:
+                    if self.db_logger is not None:
+                        try:
+                            _bot_trades_cache = await self.db_logger.get_todays_bot_entries()
+                        except Exception as exc:
+                            logger.debug("bot_trades_fallback_error: %s", exc)
+                            _bot_trades_cache = {}
+                    else:
+                        _bot_trades_cache = {}
+                return _bot_trades_cache
+
             for pos_data in schwab_positions:
                 symbol = pos_data['symbol']
+                symbol_upper = symbol.upper()
                 qty_signed = pos_data['quantity']
                 side = 'long' if qty_signed > 0 else 'short'
                 qty_abs = abs(qty_signed)
@@ -4344,56 +4373,98 @@ class TradingEngineWithCommentary:
                 else:
                     # Newly discovered position (pre-existing on Schwab,
                     # or opened outside the bot). Default to hands-off —
-                    # UNLESS the saved state proves the bot owned it.
+                    # UNLESS saved state or bot_trades proves bot ownership.
                     #
-                    # v-ownership-survives-restart-2026-06-10: after a
-                    # restart self.positions is empty, so every position
-                    # lands here and used to be demoted to external —
-                    # the bot disowned its own NET trade on 2026-06-10.
-                    # Restore ownership only on strict identity match:
-                    # saved record says managed_by_bot=True AND side
-                    # matches AND quantity matches (drift means the
-                    # operator intervened — stay hands-off).
-                    saved = self._saved_positions_meta.get(symbol) or {}
-                    _restore = (
-                        saved.get('managed_by_bot') is True
-                        and saved.get('side') == side
-                        and abs(float(saved.get('quantity', -1)) - qty_abs) < 1e-6
-                    )
+                    # v-manage-persist-2026-09-15: DENYLIST check first —
+                    # MU/HQGE/SPCX are NEVER auto-managed regardless of
+                    # what saved state or bot_trades says.
+                    in_denylist = symbol_upper in denylist
+                    _restore = False
+                    _restore_source = None
+                    _saved_meta = {}
+
+                    if persist_enabled and not in_denylist:
+                        saved = self._saved_positions_meta.get(symbol) or {}
+                        # v-manage-persist-2026-09-15: relaxed qty matching.
+                        # Policy: side match + saved managed_by_bot=True is
+                        # sufficient. Operator partial close (qty drift) no
+                        # longer disowns the remaining position.
+                        #
+                        # OPERATOR TOGGLE RESPECT: if saved meta explicitly
+                        # has managed_by_bot=False, the operator toggled it
+                        # off via /api/toggle-managed-by-bot. Do NOT override
+                        # with bot_trades fallback — respect the operator's
+                        # explicit choice.
+                        _saved_managed = saved.get('managed_by_bot')
+                        _operator_toggled_off = _saved_managed is False
+                        _restore_from_saved = (
+                            _saved_managed is True
+                            and saved.get('side') == side
+                        )
+                        if _restore_from_saved:
+                            _restore = True
+                            _restore_source = "saved"
+                            _saved_meta = saved
+                        elif _operator_toggled_off:
+                            # Operator explicitly toggled off — respect it
+                            _restore = False
+                            _restore_source = None
+                            logger.debug(
+                                "sync_respect_toggle: %s — operator toggled managed_by_bot=False, respecting",
+                                symbol,
+                            )
+                        else:
+                            # Fallback: check today's bot_trades (only when
+                            # saved meta is missing/stale, not when operator
+                            # explicitly toggled off)
+                            bot_entries = await _get_bot_trades_fallback()
+                            bt = bot_entries.get(symbol_upper) or bot_entries.get(symbol)
+                            if bt is not None and bt.get('side') == side:
+                                _restore = True
+                                _restore_source = "bot_trades"
+                                _saved_meta = {
+                                    'entry_time': bt.get('entry_time', datetime.now()).isoformat() if isinstance(bt.get('entry_time'), datetime) else str(bt.get('entry_time', '')),
+                                    'stop_loss': 0,
+                                    'take_profit': None,
+                                    'reasoning': {'source': 'bot_trades_fallback', 'strategy': bt.get('strategy')},
+                                }
+
                     if _restore:
                         try:
                             _entry_time = datetime.fromisoformat(
-                                saved['entry_time'])
-                        except (KeyError, ValueError):
+                                _saved_meta['entry_time'])
+                        except (KeyError, ValueError, TypeError):
                             _entry_time = datetime.now() - timedelta(hours=1)
-                        _tp = saved.get('take_profit')
+                        _tp = _saved_meta.get('take_profit')
                         position = Position(
                             symbol=symbol,
                             entry_price=pos_data['average_price'],
                             current_price=pos_data['current_price'],
                             quantity=qty_abs,
                             side=side,
-                            stop_loss=saved.get('stop_loss', 0) or 0,
+                            stop_loss=_saved_meta.get('stop_loss', 0) or 0,
                             take_profit=float('inf') if _tp is None else _tp,
                             entry_time=_entry_time,
                             mode="live",
                             managed_by_bot=True,
-                            # v-trade-record-ml-columns-2026-09-02:
-                            # rehydrate reasoning so ML columns survive
-                            # a restart-then-close.
-                            reasoning=saved.get('reasoning') or {},
+                            reasoning=_saved_meta.get('reasoning') or {},
                         )
                         position.is_external = False
                         position.is_manually_managed = False
                         self._audit(
                             "position_sync", symbol,
                             "position_ownership_restored",
-                            "saved_state_identity_match",
+                            _restore_source,
                             side=side, quantity=qty_abs,
-                            stop=saved.get('stop_loss', 0),
+                            stop=_saved_meta.get('stop_loss', 0),
                             target=_tp,
                         )
+                        logger.info(
+                            "sync_restore: %s %s qty=%d — managed_by_bot=True from %s",
+                            symbol, side, qty_abs, _restore_source,
+                        )
                     else:
+                        # External or denylist — hands off
                         position = Position(
                             symbol=symbol,
                             entry_price=pos_data['average_price'],
@@ -4408,23 +4479,34 @@ class TradingEngineWithCommentary:
                         )
                         position.is_external = True
                         position.is_manually_managed = True
+                        if in_denylist:
+                            self._audit(
+                                "position_sync", symbol,
+                                "position_left_external",
+                                "denylist",
+                                side=side, quantity=qty_abs,
+                            )
+                            logger.info(
+                                "sync_external: %s %s qty=%d — DENYLIST, hands-off",
+                                symbol, side, qty_abs,
+                            )
+                        else:
+                            self._audit(
+                                "position_sync", symbol,
+                                "position_left_external",
+                                "no_bot_record",
+                                side=side, quantity=qty_abs,
+                            )
+                            logger.info(
+                                "sync_external: %s %s qty=%d — no bot record, hands-off",
+                                symbol, side, qty_abs,
+                            )
                     position.unrealized_pnl = pos_data.get('total_pnl', 0)
                     self.positions[symbol] = position
 
             # Drop tracked positions that no longer exist on Schwab
-            # (closed externally, or shares all sold). Do NOT touch any
-            # bot-opened position that's mid-flight if the cache is empty
-            # or stale — Schwab's REST view IS authoritative when we got
-            # a non-empty response.
             if schwab_positions:
                 stale = [s for s in self.positions if s not in schwab_symbols]
-                # v-external-close-reconcile-2026-05-07: when a symbol
-                # disappears from Schwab between syncs, the user (or a
-                # broker stop) closed it outside the bot's exit pipeline.
-                # Bot's bot_trades table never sees that close, so the
-                # brain learns from zero real-money outcomes. Reconcile
-                # against Schwab fill history and write the missing trade
-                # rows BEFORE we drop the prior Position state.
                 if stale:
                     try:
                         await self._reconcile_external_closes(stale, prior)
@@ -4446,7 +4528,6 @@ class TradingEngineWithCommentary:
                 len(self.positions) - managed_count,
             )
 
-            # Update commentary
             if self.positions:
                 _hands_off_count = len(self.positions) - managed_count
                 self.commentary.add_commentary(TradingCommentary(
@@ -9091,42 +9172,101 @@ class TradingEngineWithCommentary:
                             _matching_order_id,
                         )
                     else:
-                        # v-ownership-survives-restart-2026-09-10: check saved
-                        # state before defaulting to external. At startup,
-                        # self.positions is empty so every Schwab position
-                        # lands here. Previously all were tagged external;
-                        # bot-opened positions lost managed_by_bot=True.
-                        # Restore ownership when saved record matches.
+                        # v-manage-persist-2026-09-15: enhanced restore logic.
+                        # At startup, self.positions is empty so every Schwab
+                        # position lands here. Restore ownership using:
+                        #   1. _saved_positions_meta (relaxed qty match)
+                        #   2. Fallback: today's bot_trades
+                        # NEVER restore managed_by_bot for HANDS_OFF_DENYLIST.
                         _qty_abs = abs(pos_data['quantity'])
                         _side = 'long' if pos_data['quantity'] > 0 else 'short'
+                        _symbol_upper = symbol.upper()
+                        
+                        persist_enabled = Config().ENABLE_MANAGED_BY_BOT_PERSIST
+                        denylist = Config().HANDS_OFF_DENYLIST
+                        in_denylist = _symbol_upper in denylist
+                        
                         saved = getattr(self, '_saved_positions_meta', {}).get(symbol) or {}
-                        _restore_managed = (
-                            saved.get('managed_by_bot') is True
-                            and saved.get('side') == _side
-                            and abs(float(saved.get('quantity', -1)) - _qty_abs) < 1e-6
-                        )
-                        # is_long_term positions stay hands-off regardless of
-                        # managed_by_bot flag — they're user-designated LT holds
                         _is_lt = saved.get('is_long_term', False)
                         
-                        if _restore_managed and not _is_lt:
-                            # Bot-opened trade — restore as managed
+                        _restore_managed = False
+                        _restore_source = None
+                        _saved_meta = {}
+
+                        if persist_enabled and not in_denylist and not _is_lt:
+                            # v-manage-persist-2026-09-15: relaxed qty match
+                            # OPERATOR TOGGLE RESPECT: if saved meta explicitly
+                            # has managed_by_bot=False, operator toggled it off
+                            # via /api/toggle-managed-by-bot. Do NOT override.
+                            _saved_managed = saved.get('managed_by_bot')
+                            _operator_toggled_off = _saved_managed is False
+                            _restore_from_saved = (
+                                _saved_managed is True
+                                and saved.get('side') == _side
+                            )
+                            if _restore_from_saved:
+                                _restore_managed = True
+                                _restore_source = "saved"
+                                _saved_meta = saved
+                            elif _operator_toggled_off:
+                                # Operator explicitly toggled off — respect it
+                                _restore_managed = False
+                                _restore_source = None
+                                logger.debug(
+                                    "update_track_respect_toggle: %s — operator toggled managed_by_bot=False, respecting",
+                                    symbol,
+                                )
+                            else:
+                                # Fallback: check today's bot_trades (only when
+                                # saved meta is missing/stale, not when operator
+                                # explicitly toggled off)
+                                if self.db_logger is not None:
+                                    try:
+                                        import asyncio
+                                        loop = asyncio.get_event_loop()
+                                        if loop.is_running():
+                                            import concurrent.futures
+                                            with concurrent.futures.ThreadPoolExecutor() as pool:
+                                                _future = pool.submit(
+                                                    asyncio.run,
+                                                    self.db_logger.get_todays_bot_entries([symbol])
+                                                )
+                                                bot_entries = _future.result(timeout=2.0)
+                                        else:
+                                            bot_entries = loop.run_until_complete(
+                                                self.db_logger.get_todays_bot_entries([symbol])
+                                            )
+                                        bt = bot_entries.get(_symbol_upper) or bot_entries.get(symbol)
+                                        if bt is not None and bt.get('side') == _side:
+                                            _restore_managed = True
+                                            _restore_source = "bot_trades"
+                                            _entry_t = bt.get('entry_time')
+                                            _saved_meta = {
+                                                'entry_time': _entry_t.isoformat() if isinstance(_entry_t, datetime) else str(_entry_t or ''),
+                                                'stop_loss': 0,
+                                                'take_profit': None,
+                                                'reasoning': {'source': 'bot_trades_fallback', 'strategy': bt.get('strategy')},
+                                            }
+                                    except Exception as exc:
+                                        logger.debug("update_track_bot_trades_fallback_error: %s", exc)
+                        
+                        if _restore_managed:
                             try:
-                                _entry_time = datetime.fromisoformat(saved['entry_time'])
-                            except (KeyError, ValueError):
+                                _entry_time = datetime.fromisoformat(_saved_meta['entry_time'])
+                            except (KeyError, ValueError, TypeError):
                                 _entry_time = datetime.now() - timedelta(hours=1)
-                            _tp = saved.get('take_profit')
+                            _tp = _saved_meta.get('take_profit')
                             position = Position(
                                 symbol=symbol,
                                 entry_price=pos_data['average_price'],
                                 current_price=pos_data['current_price'],
                                 quantity=_qty_abs,
                                 side=_side,
-                                stop_loss=saved.get('stop_loss', 0) or 0,
+                                stop_loss=_saved_meta.get('stop_loss', 0) or 0,
                                 take_profit=float('inf') if _tp is None else _tp,
                                 entry_time=_entry_time,
                                 unrealized_pnl=pos_data['total_pnl'],
-                                reasoning=saved.get('reasoning') or {},
+                                reasoning=_saved_meta.get('reasoning') or {},
                                 mode="live",
                                 managed_by_bot=True,
                                 is_long_term=False,
@@ -9137,17 +9277,17 @@ class TradingEngineWithCommentary:
                                 self._audit(
                                     "position_sync", symbol,
                                     "position_ownership_restored",
-                                    "saved_state_identity_match_update_track",
+                                    f"{_restore_source}_update_track",
                                     side=_side, quantity=_qty_abs,
-                                    stop=saved.get('stop_loss', 0),
+                                    stop=_saved_meta.get('stop_loss', 0),
                                     target=_tp,
                                 )
                             logger.info(
-                                "update_track_restore: %s %s qty=%d — managed_by_bot=True from saved state",
-                                symbol, _side, _qty_abs,
+                                "update_track_restore: %s %s qty=%d — managed_by_bot=True from %s",
+                                symbol, _side, _qty_abs, _restore_source,
                             )
                         else:
-                            # Truly external or is_long_term — hands off
+                            # External, denylist, or is_long_term — hands off
                             position = Position(
                                 symbol=symbol,
                                 entry_price=pos_data['average_price'],
@@ -9161,10 +9301,21 @@ class TradingEngineWithCommentary:
                                 reasoning={'source': 'existing_position', 'tracked_from': datetime.now().isoformat()},
                                 mode="live",
                                 managed_by_bot=False,
-                                is_long_term=_is_lt,  # preserve LT flag from saved state
+                                is_long_term=_is_lt,
                             )
                             position.is_external = True
                             position.is_manually_managed = True
+                            if in_denylist and hasattr(self, '_audit'):
+                                self._audit(
+                                    "position_sync", symbol,
+                                    "position_left_external",
+                                    "denylist_update_track",
+                                    side=_side, quantity=_qty_abs,
+                                )
+                                logger.info(
+                                    "update_track_external: %s %s qty=%d — DENYLIST, hands-off",
+                                    symbol, _side, _qty_abs,
+                                )
                         self.positions[symbol] = position
                     
                     # Initialize exit tracking for existing positions
