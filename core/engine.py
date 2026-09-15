@@ -6389,6 +6389,71 @@ class TradingEngineWithCommentary:
             ))
             return
 
+        # ────────────────────────────────────────────────────────────────────
+        # v-flatten-hour-entry-gate-2026-09-15: block NEW day-trade LIVE
+        # entries when current ET hour >= flatten_hour that would immediately
+        # flatten them. P0 RCA: BBWI entered at 15:23:30 ET then exited ~7s
+        # later via flatten_hour=15. Entry at/after flatten hour = churn.
+        #
+        # Gate uses is_day_trade=True from reasoning (not strategy name) to
+        # cover all day-trade tagged strategies (momentum, pullback, etc.).
+        # ────────────────────────────────────────────────────────────────────
+        _reasoning = signal.reasoning or {}
+        _is_day_trade_signal = _reasoning.get('is_day_trade', False)
+        if (_is_day_trade_signal
+                and self.mode == TradingMode.LIVE
+                and Config().DAY_TRADE_FLATTEN_HOUR_ENTRY_GATE_ENABLED):
+            try:
+                from zoneinfo import ZoneInfo
+                _flatten_hour = int(_reasoning.get(
+                    'flatten_hour', Config().DAY_TRADE_FLATTEN_HOUR
+                ))
+                _et_now = datetime.now(ZoneInfo("America/New_York"))
+                _et_hour = _et_now.hour
+                if _et_hour >= _flatten_hour:
+                    self._audit(
+                        "daytrade_flatten_hour_gate", signal.symbol, "skip",
+                        "flatten_hour_entry_blocked",
+                        strategy=_signal_strategy,
+                        mode=self.mode.value,
+                        flatten_hour=_flatten_hour,
+                        et_hour=_et_hour,
+                        et_now=_et_now.strftime("%H:%M"),
+                        entry_pattern=_reasoning.get("entry_pattern"),
+                        rsi=round(float(_reasoning.get("rsi", 0)), 2),
+                    )
+                    self.commentary.add_commentary(TradingCommentary(
+                        timestamp=datetime.now(),
+                        type=CommentaryType.RISK_ASSESSMENT,
+                        symbol=signal.symbol,
+                        title=f"🛑 Day-Trade Entry Blocked — Flatten Hour",
+                        message=(
+                            f"Signal for {signal.symbol} via {_signal_strategy} "
+                            f"blocked in LIVE mode — current ET hour ({_et_hour}) "
+                            f">= flatten_hour ({_flatten_hour}).\n\n"
+                            f"Entry at/after flatten hour would immediately "
+                            f"trigger flatten exit = churn.\n"
+                            f"Gate: DAY_TRADE_FLATTEN_HOUR_ENTRY_GATE_ENABLED=True"
+                        ),
+                        data={
+                            'strategy': _signal_strategy,
+                            'entry_pattern': _reasoning.get('entry_pattern'),
+                            'mode': self.mode.value,
+                            'flatten_hour': _flatten_hour,
+                            'et_hour': _et_hour,
+                            'et_now': _et_now.strftime('%H:%M'),
+                            'gate': 'DAY_TRADE_FLATTEN_HOUR_ENTRY_GATE_ENABLED',
+                            'gate_value': True,
+                        },
+                        importance=8,
+                    ))
+                    return
+            except Exception as _gate_exc:
+                logger.warning(
+                    "flatten_hour_entry_gate check failed for %s: %s",
+                    signal.symbol, _gate_exc
+                )
+
         # v-pause-live-meanrev-2026-09-15: block NEW LIVE mean-reversion
         # entries when MEAN_REV_LIVE_ENTRIES_ENABLED=False.
         #

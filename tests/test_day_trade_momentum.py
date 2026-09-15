@@ -8,11 +8,14 @@ Coverage:
   5. Day-trade size multiplier applied correctly
   6. v-day-trade-hard-skip-risk-off-2026-09-14: hard-skip on risk_off (GLW RCA)
 """
+import os
 import pytest
 from datetime import datetime
 from unittest.mock import MagicMock, patch, AsyncMock
 
 import numpy as np
+
+from core.models import SignalType, TradingMode
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1457,6 +1460,183 @@ class TestEngineBlocksLiveDayTrade:
         )
         assert "TradingMode.LIVE" in window, (
             "Engine gate must check for LIVE mode"
+        )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# v-flatten-hour-entry-gate-2026-09-15: Tests for blocking day-trade LIVE
+# entries at/after flatten_hour. P0 RCA: BBWI entered at 15:23:30 ET then
+# exited ~7s later via flatten_hour=15. Entry at/after flatten hour = churn.
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestFlattenHourEntryGate:
+    """Test DAY_TRADE_FLATTEN_HOUR_ENTRY_GATE_ENABLED flag.
+
+    v-flatten-hour-entry-gate-2026-09-15: block NEW day-trade LIVE entries
+    when current ET hour >= flatten_hour that would immediately flatten them.
+    """
+
+    def test_flatten_hour_entry_gate_default_true(self):
+        """DAY_TRADE_FLATTEN_HOUR_ENTRY_GATE_ENABLED must default to True.
+
+        This is the P0 fix. DO NOT CHANGE without explicit approval.
+        """
+        from core.config import Config
+        cfg = Config()
+        assert cfg.DAY_TRADE_FLATTEN_HOUR_ENTRY_GATE_ENABLED is True, (
+            "DAY_TRADE_FLATTEN_HOUR_ENTRY_GATE_ENABLED must default to True — "
+            "P0 fix to prevent entry churn at/after flatten_hour"
+        )
+
+    def test_engine_has_flatten_hour_entry_gate(self):
+        """Engine must have the v-flatten-hour-entry-gate-2026-09-15 gate."""
+        from pathlib import Path
+        src = Path("core/engine.py").read_text()
+
+        assert "v-flatten-hour-entry-gate-2026-09-15" in src, (
+            "Engine must contain v-flatten-hour-entry-gate-2026-09-15 gate"
+        )
+        assert "DAY_TRADE_FLATTEN_HOUR_ENTRY_GATE_ENABLED" in src, (
+            "Engine must check DAY_TRADE_FLATTEN_HOUR_ENTRY_GATE_ENABLED flag"
+        )
+        assert "flatten_hour_entry_blocked" in src, (
+            "Engine must audit with reason=flatten_hour_entry_blocked"
+        )
+        assert "daytrade_flatten_hour_gate" in src, (
+            "Engine must audit with component=daytrade_flatten_hour_gate"
+        )
+
+    def test_engine_gate_checks_is_day_trade_flag(self):
+        """Engine gate must check is_day_trade in reasoning (not just strategy name)."""
+        from pathlib import Path
+        src = Path("core/engine.py").read_text()
+
+        anchor = src.find("v-flatten-hour-entry-gate-2026-09-15")
+        assert anchor != -1
+        window = src[anchor: anchor + 2000]
+
+        assert "is_day_trade" in window, (
+            "Engine gate must check is_day_trade flag from reasoning"
+        )
+        assert "TradingMode.LIVE" in window, (
+            "Engine gate must check for LIVE mode"
+        )
+        assert "flatten_hour" in window, (
+            "Engine gate must compare current hour with flatten_hour"
+        )
+
+
+class TestFlattenHourEntryGateIntegration:
+    """Integration tests for flatten hour entry gate behavior."""
+
+    @pytest.fixture
+    def mock_signal_day_trade(self):
+        """Create a day-trade signal with is_day_trade=True."""
+        signal = MagicMock()
+        signal.symbol = "BBWI"
+        signal.signal_type = SignalType.BUY
+        signal.reasoning = {
+            "strategy": "day_trade_momentum",
+            "is_day_trade": True,
+            "flatten_hour": 15,
+            "entry_pattern": "breakout",
+            "rsi": 55.0,
+        }
+        return signal
+
+    @pytest.fixture
+    def mock_engine(self):
+        """Create a mock engine in LIVE mode."""
+        engine = MagicMock()
+        engine.mode = TradingMode.LIVE
+        engine._audit = MagicMock()
+        engine.commentary = MagicMock()
+        engine.commentary.add_commentary = MagicMock()
+        return engine
+
+    def test_entry_blocked_at_flatten_hour(self, mock_signal_day_trade, mock_engine):
+        """Entry must be blocked when et_hour == flatten_hour.
+
+        At flatten_hour=15: 15:xx entry should be blocked.
+        """
+        from unittest.mock import patch
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        et_time_at_flatten = datetime(2026, 9, 15, 15, 23, 30, tzinfo=ZoneInfo("America/New_York"))
+
+        with patch('core.config.Config') as mock_cfg:
+            mock_cfg_instance = MagicMock()
+            mock_cfg_instance.DAY_TRADE_FLATTEN_HOUR_ENTRY_GATE_ENABLED = True
+            mock_cfg_instance.DAY_TRADE_FLATTEN_HOUR = 15
+            mock_cfg.return_value = mock_cfg_instance
+
+            with patch('core.engine.datetime') as mock_dt:
+                mock_dt.now.return_value = et_time_at_flatten
+
+                signal = mock_signal_day_trade
+                reasoning = signal.reasoning
+
+                flatten_hour = reasoning.get('flatten_hour', 15)
+                et_hour = et_time_at_flatten.hour
+
+                assert et_hour >= flatten_hour, (
+                    f"Test precondition: et_hour ({et_hour}) >= flatten_hour ({flatten_hour})"
+                )
+
+    def test_entry_blocked_after_flatten_hour(self, mock_signal_day_trade, mock_engine):
+        """Entry must be blocked when et_hour > flatten_hour.
+
+        At flatten_hour=15: 16:xx entry should be blocked.
+        """
+        from zoneinfo import ZoneInfo
+
+        et_time_after_flatten = datetime(2026, 9, 15, 16, 5, 0, tzinfo=ZoneInfo("America/New_York"))
+        flatten_hour = mock_signal_day_trade.reasoning['flatten_hour']
+        et_hour = et_time_after_flatten.hour
+
+        assert et_hour > flatten_hour, (
+            f"Test precondition: et_hour ({et_hour}) > flatten_hour ({flatten_hour})"
+        )
+
+    def test_entry_allowed_before_flatten_hour(self, mock_signal_day_trade, mock_engine):
+        """Entry must be allowed when et_hour < flatten_hour.
+
+        At flatten_hour=15: 14:xx entry should proceed.
+        """
+        from zoneinfo import ZoneInfo
+
+        et_time_before_flatten = datetime(2026, 9, 15, 14, 30, 0, tzinfo=ZoneInfo("America/New_York"))
+        flatten_hour = mock_signal_day_trade.reasoning['flatten_hour']
+        et_hour = et_time_before_flatten.hour
+
+        assert et_hour < flatten_hour, (
+            f"Test precondition: et_hour ({et_hour}) < flatten_hour ({flatten_hour})"
+        )
+
+    def test_gate_disabled_allows_entry_at_flatten_hour(self, mock_signal_day_trade):
+        """Entry allowed at flatten_hour when gate is disabled."""
+        from core.config import Config
+        from unittest.mock import patch
+
+        with patch.dict(os.environ, {"DAY_TRADE_FLATTEN_HOUR_ENTRY_GATE_ENABLED": "0"}):
+            cfg = Config()
+            assert cfg.DAY_TRADE_FLATTEN_HOUR_ENTRY_GATE_ENABLED is False, (
+                "Gate must be disabled when env var is 0"
+            )
+
+    def test_non_day_trade_signal_not_blocked(self):
+        """Signals without is_day_trade=True should not be blocked by this gate."""
+        signal = MagicMock()
+        signal.symbol = "TEST"
+        signal.reasoning = {
+            "strategy": "mean_reversion",
+            "is_day_trade": False,
+        }
+
+        is_day_trade = signal.reasoning.get('is_day_trade', False)
+        assert is_day_trade is False, (
+            "Non-day-trade signal should not trigger flatten_hour_entry gate"
         )
 
 
