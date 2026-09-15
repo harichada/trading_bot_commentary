@@ -2523,7 +2523,11 @@ class TestOwnershipSurvivesRestart:
         src = ENGINE_PATH.read_text()
         anchor = src.find("async def _update_and_track_real_positions")
         assert anchor != -1, "_update_and_track_real_positions not found"
-        body = src[anchor: anchor + 15000]
+        # v-manage-persist-discovery-path-2026-09-15: function is large; read to end
+        body_end = src.find("\n    async def ", anchor + 1)
+        if body_end == -1:
+            body_end = src.find("\n    def ", anchor + 1)
+        body = src[anchor:body_end]
         assert "_saved_positions_meta" in body, (
             "_update_and_track_real_positions must check saved metadata — "
             "without this, bot-opened positions are demoted to external on restart"
@@ -3244,7 +3248,8 @@ class TestManagedByBotPersistence:
         src = ENGINE_PATH.read_text()
         anchor = src.find("# v-manage-persist-2026-09-15: enhanced restore logic")
         assert anchor != -1
-        block = src[anchor:anchor + 5000]
+        # v-manage-persist-discovery-path-2026-09-15: function is large; expand window
+        block = src[anchor:anchor + 8000]
         assert "get_todays_bot_entries" in block
         assert "bot_trades_fallback" in block
 
@@ -3310,6 +3315,7 @@ class TestManagedByBotPersistence:
         assert "_operator_toggled_off" in block, (
             "update_track must detect operator toggle-off"
         )
-        assert "update_track_respect_toggle" in block, (
+        # v-manage-persist-discovery-path-2026-09-15: actual log string is update_track_skip_operator_toggle
+        assert "update_track_skip_operator_toggle" in block, (
             "Must log when respecting operator toggle"
         )

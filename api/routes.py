@@ -3023,9 +3023,13 @@ async def toggle_managed_by_bot(request: dict):
         new_state = not getattr(pos, 'managed_by_bot', False)
 
     pos.managed_by_bot = new_state
-    # v-manage-persist-hotfix-2026-09-15: stamp managed_source='operator' so
-    # restore logic knows this was an explicit user toggle (not stale sync).
-    pos.managed_source = 'operator'
+    # v-manage-persist-discovery-path-2026-09-15: stamp managed_source differently
+    # based on toggle direction:
+    #   - 'operator' when disabling: blocks restore logic from auto-remanaging
+    #   - 'operator_on' when enabling: indicates deliberate re-enable, not weird
+    # This prevents "ON remanage looks weird" where turning management back ON
+    # was stamped the same as turning it OFF.
+    pos.managed_source = 'operator' if not new_state else 'operator_on'
     trading_engine._save_state()
 
     trading_engine.commentary.add_commentary(TradingCommentary(
