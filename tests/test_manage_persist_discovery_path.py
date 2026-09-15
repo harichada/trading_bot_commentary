@@ -278,18 +278,29 @@ class TestRestoreLogicCoverage:
         )
 
     def test_bot_trades_fallback_present(self):
-        """_update_and_track_real_positions must have bot_trades fallback."""
+        """_update_and_track_real_positions must have bot_trades fallback via _ownership_evidence."""
         src = ENGINE_PATH.read_text()
         
         anchor = src.find("async def _update_and_track_real_positions")
         assert anchor != -1
-        body = src[anchor:anchor + 15000]
+        body_end = src.find("\n    async def ", anchor + 1)
+        if body_end == -1:
+            body_end = src.find("\n    def ", anchor + 1)
+        body = src[anchor:body_end]
         
-        assert "bot_trades" in body.lower(), (
-            "_update_and_track_real_positions must have bot_trades fallback"
+        # v-evidence-broad-2026-09-15: bot_trades fallback is now delegated to
+        # _ownership_evidence helper which checks: saved → bot_trades → bot_decisions → bot_positions
+        assert "_ownership_evidence" in body, (
+            "_update_and_track_real_positions must call _ownership_evidence which provides bot_trades fallback"
         )
-        assert "_restore_source = \"bot_trades\"" in body, (
-            "_update_and_track_real_positions must set _restore_source for bot_trades path"
+        
+        # Verify _ownership_evidence helper has bot_trades check
+        helper_anchor = src.find("async def _ownership_evidence")
+        assert helper_anchor != -1
+        helper_end = src.find("\n    async def ", helper_anchor + 1)
+        helper_body = src[helper_anchor:helper_end]
+        assert "bot_trades" in helper_body.lower(), (
+            "_ownership_evidence must check bot_trades"
         )
 
     def test_restore_logs_present(self):
