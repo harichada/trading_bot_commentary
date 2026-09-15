@@ -3034,3 +3034,307 @@ class TestLateEntryGateEngine:
         assert "late_reasons" in window, (
             "Late-entry gate commentary must include late_reasons"
         )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# v-meanrev-quality-budget-2026-09-15: Tests for mean-rev quality gate and
+# separate risk budget. Modular product work to prevent mean-rev from consuming
+# the same risk pool as momentum day-trades.
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestMeanRevQualityGateConfig:
+    """Test mean-rev quality gate configuration flags."""
+    
+    def test_enable_mean_rev_quality_gate_default_true(self):
+        """ENABLE_MEAN_REV_QUALITY_GATE must default to True."""
+        from core.config import Config
+        cfg = Config()
+        assert cfg.ENABLE_MEAN_REV_QUALITY_GATE is True, (
+            "ENABLE_MEAN_REV_QUALITY_GATE must default to True — "
+            "set ENABLE_MEAN_REV_QUALITY_GATE=0 to disable"
+        )
+    
+    def test_mean_rev_rsi_quality_max_default(self):
+        """MEAN_REV_RSI_QUALITY_MAX must default to 35.0."""
+        from core.config import Config
+        cfg = Config()
+        assert cfg.MEAN_REV_RSI_QUALITY_MAX == 35.0, (
+            "MEAN_REV_RSI_QUALITY_MAX must default to 35.0"
+        )
+    
+    def test_mean_rev_rsi_quality_min_default(self):
+        """MEAN_REV_RSI_QUALITY_MIN must default to 15.0."""
+        from core.config import Config
+        cfg = Config()
+        assert cfg.MEAN_REV_RSI_QUALITY_MIN == 15.0, (
+            "MEAN_REV_RSI_QUALITY_MIN must default to 15.0"
+        )
+    
+    def test_mean_rev_vwap_distance_max_pct_default(self):
+        """MEAN_REV_VWAP_DISTANCE_MAX_PCT must default to 5.0."""
+        from core.config import Config
+        cfg = Config()
+        assert cfg.MEAN_REV_VWAP_DISTANCE_MAX_PCT == 5.0, (
+            "MEAN_REV_VWAP_DISTANCE_MAX_PCT must default to 5.0"
+        )
+
+
+class TestMeanRevRiskBudgetConfig:
+    """Test mean-rev risk budget configuration flags."""
+    
+    def test_enable_mean_rev_risk_budget_default_true(self):
+        """ENABLE_MEAN_REV_RISK_BUDGET must default to True."""
+        from core.config import Config
+        cfg = Config()
+        assert cfg.ENABLE_MEAN_REV_RISK_BUDGET is True, (
+            "ENABLE_MEAN_REV_RISK_BUDGET must default to True — "
+            "set ENABLE_MEAN_REV_RISK_BUDGET=0 to disable"
+        )
+    
+    def test_max_concurrent_mean_rev_default(self):
+        """MAX_CONCURRENT_MEAN_REV must default to 3."""
+        from core.config import Config
+        cfg = Config()
+        assert cfg.MAX_CONCURRENT_MEAN_REV == 3, (
+            "MAX_CONCURRENT_MEAN_REV must default to 3"
+        )
+    
+    def test_max_concurrent_mean_rev_minimum(self):
+        """MAX_CONCURRENT_MEAN_REV must be at least 1."""
+        from core.config import Config
+        cfg = Config()
+        assert cfg.MAX_CONCURRENT_MEAN_REV >= 1, (
+            "MAX_CONCURRENT_MEAN_REV must be at least 1"
+        )
+    
+    def test_max_mean_rev_risk_pct_default(self):
+        """MAX_MEAN_REV_RISK_PCT must default to 0.30 (30%)."""
+        from core.config import Config
+        cfg = Config()
+        assert abs(cfg.MAX_MEAN_REV_RISK_PCT - 0.30) < 1e-9, (
+            "MAX_MEAN_REV_RISK_PCT must default to 0.30 (30%)"
+        )
+
+
+class TestMeanRevQualityGateEngine:
+    """Test that the engine has mean-rev quality gate logic."""
+    
+    def test_engine_has_quality_gate(self):
+        """Engine must have the v-meanrev-quality-gate-2026-09-15 gate."""
+        from pathlib import Path
+        src = Path("core/engine.py").read_text()
+        
+        assert "v-meanrev-quality-gate-2026-09-15" in src, (
+            "Engine must contain v-meanrev-quality-gate-2026-09-15 gate"
+        )
+        assert "ENABLE_MEAN_REV_QUALITY_GATE" in src, (
+            "Engine must check ENABLE_MEAN_REV_QUALITY_GATE flag"
+        )
+        assert "mean_rev_quality_gate" in src, (
+            "Engine must audit with component=mean_rev_quality_gate"
+        )
+    
+    def test_engine_quality_gate_checks_rsi(self):
+        """Engine quality gate must check RSI thresholds."""
+        from pathlib import Path
+        src = Path("core/engine.py").read_text()
+        
+        anchor = src.find("v-meanrev-quality-gate-2026-09-15")
+        assert anchor != -1
+        window = src[anchor: anchor + 4000]
+        
+        assert "MEAN_REV_RSI_QUALITY_MAX" in window, (
+            "Quality gate must check RSI quality max threshold"
+        )
+        assert "MEAN_REV_RSI_QUALITY_MIN" in window, (
+            "Quality gate must check RSI quality min threshold"
+        )
+        assert "rsi_not_oversold" in window, (
+            "Quality gate must detect RSI not oversold"
+        )
+        assert "rsi_extreme_oversold" in window, (
+            "Quality gate must detect RSI extremely oversold"
+        )
+    
+    def test_engine_quality_gate_checks_vwap(self):
+        """Engine quality gate must check VWAP distance."""
+        from pathlib import Path
+        src = Path("core/engine.py").read_text()
+        
+        anchor = src.find("v-meanrev-quality-gate-2026-09-15")
+        assert anchor != -1
+        window = src[anchor: anchor + 4000]
+        
+        assert "MEAN_REV_VWAP_DISTANCE_MAX_PCT" in window, (
+            "Quality gate must check VWAP distance threshold"
+        )
+        assert "vwap_distance_exceeded" in window, (
+            "Quality gate must detect VWAP distance exceeded"
+        )
+    
+    def test_engine_quality_gate_targets_meanrev_family(self):
+        """Engine quality gate must only target mean-rev family."""
+        from pathlib import Path
+        src = Path("core/engine.py").read_text()
+        
+        anchor = src.find("v-meanrev-quality-gate-2026-09-15")
+        assert anchor != -1
+        window = src[anchor: anchor + 1500]
+        
+        assert '"mean_reversion"' in window or "'mean_reversion'" in window, (
+            "Quality gate must target mean_reversion strategy"
+        )
+        assert '"oversold_v2"' in window or "'oversold_v2'" in window, (
+            "Quality gate must target oversold_v2 strategy"
+        )
+    
+    def test_engine_quality_gate_logs_audit(self):
+        """Engine quality gate must log audit with mean_rev_quality_blocked."""
+        from pathlib import Path
+        src = Path("core/engine.py").read_text()
+        
+        anchor = src.find("v-meanrev-quality-gate-2026-09-15")
+        assert anchor != -1
+        window = src[anchor: anchor + 4000]
+        
+        assert "mean_rev_quality_blocked" in window, (
+            "Quality gate must audit with reason=mean_rev_quality_blocked"
+        )
+    
+    def test_engine_quality_gate_logs_commentary(self):
+        """Engine quality gate must add commentary when blocking."""
+        from pathlib import Path
+        src = Path("core/engine.py").read_text()
+        
+        anchor = src.find("v-meanrev-quality-gate-2026-09-15")
+        assert anchor != -1
+        window = src[anchor: anchor + 4000]
+        
+        assert "Mean-Rev Quality Gate" in window, (
+            "Quality gate must add commentary with descriptive title"
+        )
+    
+    def test_engine_quality_gate_emits_veto_snapshot(self):
+        """Engine quality gate must emit veto snapshot for analysis."""
+        from pathlib import Path
+        src = Path("core/engine.py").read_text()
+        
+        anchor = src.find("v-meanrev-quality-gate-2026-09-15")
+        assert anchor != -1
+        window = src[anchor: anchor + 4000]
+        
+        assert "_emit_veto_snapshot" in window, (
+            "Quality gate must emit veto snapshot"
+        )
+
+
+class TestMeanRevRiskBudgetEngine:
+    """Test that the engine has mean-rev risk budget logic."""
+    
+    def test_engine_has_risk_budget_gate(self):
+        """Engine must have the v-meanrev-risk-budget-2026-09-15 gate."""
+        from pathlib import Path
+        src = Path("core/engine.py").read_text()
+        
+        assert "v-meanrev-risk-budget-2026-09-15" in src, (
+            "Engine must contain v-meanrev-risk-budget-2026-09-15 gate"
+        )
+        assert "ENABLE_MEAN_REV_RISK_BUDGET" in src, (
+            "Engine must check ENABLE_MEAN_REV_RISK_BUDGET flag"
+        )
+        assert "mean_rev_budget_gate" in src, (
+            "Engine must audit with component=mean_rev_budget_gate"
+        )
+    
+    def test_engine_risk_budget_checks_position_count(self):
+        """Engine risk budget must check concurrent position count."""
+        from pathlib import Path
+        src = Path("core/engine.py").read_text()
+        
+        anchor = src.find("v-meanrev-risk-budget-2026-09-15")
+        assert anchor != -1
+        window = src[anchor: anchor + 5000]
+        
+        assert "MAX_CONCURRENT_MEAN_REV" in window, (
+            "Risk budget must check MAX_CONCURRENT_MEAN_REV threshold"
+        )
+        assert "_meanrev_count" in window, (
+            "Risk budget must count mean-rev positions"
+        )
+    
+    def test_engine_risk_budget_checks_equity_pct(self):
+        """Engine risk budget must check equity percentage."""
+        from pathlib import Path
+        src = Path("core/engine.py").read_text()
+        
+        anchor = src.find("v-meanrev-risk-budget-2026-09-15")
+        assert anchor != -1
+        window = src[anchor: anchor + 5000]
+        
+        assert "MAX_MEAN_REV_RISK_PCT" in window, (
+            "Risk budget must check MAX_MEAN_REV_RISK_PCT threshold"
+        )
+        assert "_meanrev_risk_pct" in window, (
+            "Risk budget must calculate mean-rev risk percentage"
+        )
+    
+    def test_engine_risk_budget_logs_exhausted(self):
+        """Engine risk budget must log mean_rev_budget_exhausted."""
+        from pathlib import Path
+        src = Path("core/engine.py").read_text()
+        
+        anchor = src.find("v-meanrev-risk-budget-2026-09-15")
+        assert anchor != -1
+        window = src[anchor: anchor + 5000]
+        
+        assert "mean_rev_budget_exhausted" in window, (
+            "Risk budget must audit with reason=mean_rev_budget_exhausted"
+        )
+    
+    def test_engine_risk_budget_logs_commentary(self):
+        """Engine risk budget must add commentary when budget exhausted."""
+        from pathlib import Path
+        src = Path("core/engine.py").read_text()
+        
+        anchor = src.find("v-meanrev-risk-budget-2026-09-15")
+        assert anchor != -1
+        window = src[anchor: anchor + 5000]
+        
+        assert "Mean-Rev Budget Exhausted" in window, (
+            "Risk budget must add commentary with descriptive title"
+        )
+    
+    def test_engine_risk_budget_targets_meanrev_family(self):
+        """Engine risk budget must only target mean-rev family."""
+        from pathlib import Path
+        src = Path("core/engine.py").read_text()
+        
+        anchor = src.find("v-meanrev-risk-budget-2026-09-15")
+        assert anchor != -1
+        window = src[anchor: anchor + 2000]
+        
+        assert '"mean_reversion"' in window or "'mean_reversion'" in window, (
+            "Risk budget must target mean_reversion strategy"
+        )
+        assert '"mean_reversion_short"' in window or "'mean_reversion_short'" in window, (
+            "Risk budget must target mean_reversion_short strategy"
+        )
+        assert '"oversold_v2"' in window or "'oversold_v2'" in window, (
+            "Risk budget must target oversold_v2 strategy"
+        )
+    
+    def test_engine_risk_budget_counts_pending_orders(self):
+        """Engine risk budget must count pending mean-rev orders."""
+        from pathlib import Path
+        src = Path("core/engine.py").read_text()
+        
+        anchor = src.find("v-meanrev-risk-budget-2026-09-15")
+        assert anchor != -1
+        window = src[anchor: anchor + 5000]
+        
+        assert "_meanrev_pending_syms" in window, (
+            "Risk budget must track pending mean-rev order symbols"
+        )
+        assert "pending_orders" in window, (
+            "Risk budget must check pending_orders for mean-rev entries"
+        )

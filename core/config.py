@@ -1389,6 +1389,130 @@ class Config:
         trading.enable_conviction_floor_meanrev."""
         return float(self.manager.get('trading.conviction_floor_meta', 0.65))
 
+    # ══════════════════════════════════════════════════════════════════════════
+    # v-meanrev-quality-budget-2026-09-15: Modular quality gate + separate risk
+    # budget for mean-reversion entries. Prevents mean-rev from consuming the
+    # same risk pool as momentum day-trades and rejects low-quality signals.
+    # ══════════════════════════════════════════════════════════════════════════
+
+    @property
+    def ENABLE_MEAN_REV_QUALITY_GATE(self) -> bool:
+        """v-meanrev-quality-gate-2026-09-15: quality gate for mean-rev LIVE
+        entries. Rejects low-quality signals that don't meet tighter
+        indicator thresholds.
+
+        When True (default), mean-rev entries must pass ALL quality checks:
+          1. RSI must be in the oversold quality band (RSI < MEAN_REV_RSI_QUALITY_MAX)
+          2. RSI must not be extremely oversold (RSI > MEAN_REV_RSI_QUALITY_MIN)
+             - Extreme oversold (RSI < 20) often signals real trouble, not bounce
+          3. Distance to VWAP must not exceed threshold (catching extended moves)
+
+        Fail-open on missing indicators (indicator data unavailable).
+        Blocked entries audited as 'mean_rev_quality_blocked'.
+
+        Default True. Set via env ENABLE_MEAN_REV_QUALITY_GATE=0 or
+        trading.enable_mean_rev_quality_gate: false to disable.
+        """
+        env_val = os.getenv("ENABLE_MEAN_REV_QUALITY_GATE")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.enable_mean_rev_quality_gate', True))
+
+    @property
+    def MEAN_REV_RSI_QUALITY_MAX(self) -> float:
+        """Maximum RSI for a quality mean-rev long entry.
+
+        Entries with RSI >= this threshold are blocked as not sufficiently
+        oversold. The strategy already has RSI < 30 (oversold_bounce) and
+        RSI 30-55 (uptrend_pullback) paths; this gate ensures the engine
+        enforces a consistent quality standard.
+
+        Default 35.0 (tighter than strategy's 55 for uptrend_pullback).
+        Set trading.mean_rev_rsi_quality_max to adjust.
+        """
+        return float(self.manager.get('trading.mean_rev_rsi_quality_max', 35.0))
+
+    @property
+    def MEAN_REV_RSI_QUALITY_MIN(self) -> float:
+        """Minimum RSI for a quality mean-rev long entry.
+
+        Entries with RSI <= this threshold are blocked as extremely
+        oversold — often indicates real trouble (margin calls, delisting
+        risk, bankruptcy) rather than a bounce setup.
+
+        Default 15.0. Set trading.mean_rev_rsi_quality_min to adjust.
+        """
+        return float(self.manager.get('trading.mean_rev_rsi_quality_min', 15.0))
+
+    @property
+    def MEAN_REV_VWAP_DISTANCE_MAX_PCT(self) -> float:
+        """Maximum distance below VWAP (%) for quality mean-rev entry.
+
+        Entries where price is more than this percentage below VWAP are
+        blocked — chasing extended moves rarely bounces cleanly. A large
+        gap below VWAP indicates sustained selling, not mean-reversion
+        opportunity.
+
+        Default 5.0 (5% below VWAP). Set trading.mean_rev_vwap_distance_max_pct
+        to adjust. Set very high (e.g., 100) to effectively disable.
+        """
+        return float(self.manager.get('trading.mean_rev_vwap_distance_max_pct', 5.0))
+
+    @property
+    def ENABLE_MEAN_REV_RISK_BUDGET(self) -> bool:
+        """v-meanrev-risk-budget-2026-09-15: separate risk budget for
+        mean-reversion entries.
+
+        When True (default), mean-rev entries have their own position
+        cap (MAX_CONCURRENT_MEAN_REV) separate from day-trade momentum.
+        This prevents mean-rev from consuming all available slots when
+        volatility spikes produce many oversold signals simultaneously.
+
+        Blocked entries audited as 'mean_rev_budget_exhausted'.
+
+        Default True. Set via env ENABLE_MEAN_REV_RISK_BUDGET=0 or
+        trading.enable_mean_rev_risk_budget: false to disable.
+        """
+        env_val = os.getenv("ENABLE_MEAN_REV_RISK_BUDGET")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.enable_mean_rev_risk_budget', True))
+
+    @property
+    def MAX_CONCURRENT_MEAN_REV(self) -> int:
+        """Maximum concurrent mean-reversion positions.
+
+        When ENABLE_MEAN_REV_RISK_BUDGET is True, mean-rev entries are
+        blocked when current mean-rev positions (including pending orders)
+        reach this limit. This is SEPARATE from the global MAX_POSITIONS
+        cap which still applies.
+
+        Design rationale:
+          - Mean-rev fires on volatility spikes (many stocks oversold at once)
+          - Global MAX_POSITIONS (10) could be consumed entirely by mean-rev
+          - Day-trade momentum then has no slots when movers appear
+          - Separate budget ensures strategy diversity in the portfolio
+
+        Default 3. Set trading.max_concurrent_mean_rev to adjust.
+        Minimum enforced is 1.
+        """
+        val = int(self.manager.get('trading.max_concurrent_mean_rev', 3))
+        return max(1, val)
+
+    @property
+    def MAX_MEAN_REV_RISK_PCT(self) -> float:
+        """Maximum equity percentage allocated to mean-reversion positions.
+
+        When ENABLE_MEAN_REV_RISK_BUDGET is True and this threshold is
+        reached (sum of mean-rev position notional / equity >= threshold),
+        new mean-rev entries are blocked.
+
+        Default 0.30 (30% of equity). Set trading.max_mean_rev_risk_pct
+        to adjust. This complements MAX_CONCURRENT_MEAN_REV for dollar-based
+        budgeting.
+        """
+        return float(self.manager.get('trading.max_mean_rev_risk_pct', 0.30))
+
     @property
     def ENABLE_BOT_ONLY_PNL_CIRCUIT(self) -> bool:
         """Use BOT-managed P&L (not account-wide Schwab P&L) for the
