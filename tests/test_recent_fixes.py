@@ -3319,3 +3319,173 @@ class TestManagedByBotPersistence:
         assert "update_track_skip_operator_toggle" in block, (
             "Must log when respecting operator toggle"
         )
+
+
+# ── v-fix-config-unbound-2026-09-16 ──────────────────────────────────
+
+class TestNewsGateConfigUnboundFix:
+    """v-fix-config-unbound-2026-09-16: fix for UnboundLocalError in news gate veto.
+
+    Bug observed 2026-09-16 ET on tip 2b49868: news strategy intermittently
+    fail-closed with "local variable 'Config' referenced before assignment".
+    The root cause was that lines 1037-1038 used `Config()` directly, but
+    `Config` was imported LATER in the function at line ~1136. Python treats
+    `Config` as a local variable throughout the function scope when it sees
+    the later import, causing UnboundLocalError when the veto branch
+    executed before the import.
+
+    The fix changes lines 1037-1038 to use `_cfg_gate` which is already
+    instantiated earlier in the try block.
+    """
+
+    def test_veto_branch_uses_cfg_gate_not_config(self):
+        """The news gate veto branch must use _cfg_gate, not Config().
+
+        After the import `from core.config import Config as _CfgGate`,
+        the instantiated `_cfg_gate = _CfgGate()` must be used for
+        ATR_STOP_MULTIPLIER and ATR_REWARD_RISK_RATIO. Direct `Config()`
+        calls cause UnboundLocalError due to later import shadowing.
+        """
+        src = (REPO_ROOT / "strategies" / "news_strategy.py").read_text()
+        anchor = src.find("v-feature-snapshot-emit-2026-09-09: emit snapshot on news gate veto")
+        assert anchor != -1, "Missing veto block anchor marker"
+        
+        # Find the veto block (needs ~1200 chars to capture the full fix)
+        veto_block = src[anchor:anchor + 1200]
+        
+        # The fix marker should be present
+        assert "v-fix-config-unbound-2026-09-16" in veto_block, (
+            "Missing v-fix-config-unbound-2026-09-16 marker in veto block"
+        )
+        
+        # Must use _cfg_gate, not bare Config()
+        assert "_cfg_gate.ATR_STOP_MULTIPLIER" in veto_block, (
+            "Veto branch must use _cfg_gate.ATR_STOP_MULTIPLIER, not Config()"
+        )
+        assert "_cfg_gate.ATR_REWARD_RISK_RATIO" in veto_block, (
+            "Veto branch must use _cfg_gate.ATR_REWARD_RISK_RATIO, not Config()"
+        )
+        
+        # Must NOT have Config().ATR_STOP_MULTIPLIER in the veto block
+        assert "Config().ATR_STOP_MULTIPLIER" not in veto_block, (
+            "Veto branch must NOT use Config() — causes UnboundLocalError"
+        )
+        assert "Config().ATR_REWARD_RISK_RATIO" not in veto_block, (
+            "Veto branch must NOT use Config() — causes UnboundLocalError"
+        )
+
+    def test_except_block_has_cfg_gate_fallback(self):
+        """The except block must handle _cfg_gate being undefined.
+
+        If an exception occurs before `_cfg_gate = _CfgGate()`, the
+        except block's use of `_cfg_gate.NEWS_GATE_SINGLE_SOURCE_MULTIPLIER`
+        would raise NameError. The fix adds a try/except with fallback.
+        """
+        src = (REPO_ROOT / "strategies" / "news_strategy.py").read_text()
+        anchor = src.find("v-newsbus-gates-2026-09-09: fail-closed on gate exception")
+        assert anchor != -1, "Missing fail-closed anchor marker"
+        
+        # Find the except block (needs ~1000 chars to capture the NameError handling)
+        except_block = src[anchor:anchor + 1000]
+        
+        # Must have fallback handling for _cfg_gate
+        assert "v-fix-config-unbound-2026-09-16" in except_block, (
+            "Missing fix marker in except block"
+        )
+        # Must have NameError handling
+        assert "except NameError" in except_block or "NameError" in except_block, (
+            "Except block must handle NameError for undefined _cfg_gate"
+        )
+        # Must have hardcoded fallback value
+        assert "0.5" in except_block, (
+            "Except block must have 0.5 fallback for NEWS_GATE_SINGLE_SOURCE_MULTIPLIER"
+        )
+
+    @pytest.mark.asyncio
+    async def test_news_strategy_veto_no_unbound_error(self):
+        """Integration test: news gate veto must not raise UnboundLocalError.
+
+        Simulates the exact code path that caused the P0 bug:
+        1. NewsStrategy with a NewsBus
+        2. evaluate_gate returns a veto result
+        3. The veto branch executes (computing _stop_dist_veto, etc.)
+        4. Must complete without UnboundLocalError
+        """
+        from unittest.mock import AsyncMock, MagicMock, patch
+        from datetime import datetime, timezone
+        from core.models import MarketData
+        
+        # Create minimal market data that passes early gates
+        market_data = MarketData(
+            symbol="TEST",
+            open=100.0,
+            high=102.0,
+            low=99.0,
+            close=101.0,
+            volume=1000000,
+            timestamp=datetime.now(timezone.utc),
+            timeframe="5m",
+            indicators={
+                "sma_50": 95.0,
+                "sma_20": 98.0,
+                "macd": 0.5,
+                "macd_signal": 0.3,
+                "rsi": 52.0,
+                "atr": 2.0,
+                "volume_ratio": 1.5,
+            },
+        )
+        
+        # Mock NewsBus that returns a veto
+        mock_bus = AsyncMock()
+        mock_veto_result = MagicMock()
+        mock_veto_result.action = MagicMock()
+        mock_veto_result.action.value = "veto_stale"
+        mock_veto_result.is_veto.return_value = True
+        mock_veto_result.size_multiplier = 0.0
+        mock_veto_result.news_age_sec = 3600.0
+        mock_veto_result.source_tier_min = 2
+        mock_veto_result.corroboration_n = 1
+        mock_veto_result.reason = "all_news_stale"
+        mock_bus.evaluate_gate.return_value = mock_veto_result
+        mock_bus.get_items.return_value = []
+        
+        # Mock commentary system
+        mock_commentary = MagicMock()
+        mock_commentary.add_commentary = MagicMock()
+        
+        # Create strategy and set the news bus
+        from strategies.news_strategy import FreeNewsSignalStrategy
+        strategy = FreeNewsSignalStrategy(mock_commentary, news_bus=mock_bus)
+        
+        # Mock the aggregator to return enough news items to pass early gates
+        from core.models import NewsItem, NewsImpact
+        mock_news = [
+            NewsItem(
+                id=f"test{i}",
+                symbol="TEST",
+                headline=f"Positive test headline {i}",
+                summary="Test summary",
+                source="Yahoo Finance",
+                url=f"http://test.com/{i}",
+                published_time=datetime.now(timezone.utc),
+                sentiment_score=0.6,
+                sentiment_confidence=0.6,
+                impact=NewsImpact.MEDIUM,
+                relevance_score=0.8,
+            )
+            for i in range(6)
+        ]
+        
+        with patch.object(strategy.aggregator, "fetch_news", return_value=mock_news):
+            # This should NOT raise UnboundLocalError
+            # Before the fix, line 1037 `Config().ATR_STOP_MULTIPLIER` would fail
+            try:
+                result = await strategy.generate_signal_with_commentary(market_data)
+                # Veto returns None — that's expected
+                assert result is None, "Veto should return None"
+            except UnboundLocalError as e:
+                pytest.fail(
+                    f"UnboundLocalError raised in news gate veto path: {e}. "
+                    "This is the bug v-fix-config-unbound-2026-09-16 should fix."
+                )
