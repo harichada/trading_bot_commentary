@@ -1033,8 +1033,14 @@ class FreeNewsSignalStrategy(TradingStrategyWithCommentary):
                             market_data.indicators.get('atr', market_data.close * 0.02),
                             market_data.close,
                         )
-                        _stop_dist_veto = Config().ATR_STOP_MULTIPLIER * _atr_veto
-                        _rr_veto = Config().ATR_REWARD_RISK_RATIO
+                        # v-fix-config-unbound-2026-09-16: use _cfg_gate (already
+                        # instantiated above) instead of Config() which is bound
+                        # LATER in this function. Using Config() here caused
+                        # UnboundLocalError because Python treats Config as a
+                        # local variable throughout the function scope when it
+                        # sees the `from core.config import Config` at line ~1136.
+                        _stop_dist_veto = _cfg_gate.ATR_STOP_MULTIPLIER * _atr_veto
+                        _rr_veto = _cfg_gate.ATR_REWARD_RISK_RATIO
                         _wb_stop = market_data.close - _stop_dist_veto if signal_type == SignalType.BUY else market_data.close + _stop_dist_veto
                         _wb_target = market_data.close + (_rr_veto * _stop_dist_veto) if signal_type == SignalType.BUY else market_data.close - (_rr_veto * _stop_dist_veto)
                         
@@ -1081,7 +1087,14 @@ class FreeNewsSignalStrategy(TradingStrategyWithCommentary):
                         market_data, "news_gate", "error_fail_closed",
                         err=str(_gate_exc)[:80],
                     )
-                    _news_gate_multiplier = _cfg_gate.NEWS_GATE_SINGLE_SOURCE_MULTIPLIER
+                    # v-fix-config-unbound-2026-09-16: _cfg_gate may not be
+                    # defined if the exception occurred before its assignment.
+                    # Fall back to the hardcoded default (0.5) which matches
+                    # Config.NEWS_GATE_SINGLE_SOURCE_MULTIPLIER.
+                    try:
+                        _news_gate_multiplier = _cfg_gate.NEWS_GATE_SINGLE_SOURCE_MULTIPLIER
+                    except NameError:
+                        _news_gate_multiplier = 0.5
 
             # v-news-verifier-toggle-2026-04-29: gate verifier behind config.
             # When disabled, news_strategy fires on cached sentiment alone
