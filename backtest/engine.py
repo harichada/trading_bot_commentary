@@ -285,6 +285,26 @@ def _default_bars_loader(dsn: str) -> BarsLoader:
     return _load
 
 
+def _file_bars_loader(bars_dir: str) -> BarsLoader:
+    """Wrap a ``FileBarsProvider`` in the ``BarsLoader`` signature.
+    
+    v-file-bars-2026-09-17: alternative bars loader for cloud/BT environments
+    where Postgres is not available. Set BARS_DIR env var to enable.
+    """
+    from pathlib import Path
+    from data_providers.file_bars import FileBarsProvider
+    provider = FileBarsProvider(Path(bars_dir))
+
+    def _load(symbol: str, days: int, frequency: int) -> pd.DataFrame:
+        period_type = "day" if days < 30 else "month"
+        period = days if period_type == "day" else max(1, days // 30)
+        return provider.get_market_data(
+            symbol, period_type=period_type, period=period,
+            frequency_type="minute", frequency=frequency,
+        )
+    return _load
+
+
 def _default_symbols_picker(dsn: str, top_n: int, days: int) -> list[str]:
     from train_ml_model import top_symbols_by_volume
     return top_symbols_by_volume(dsn, top_n, days)
@@ -330,8 +350,20 @@ async def _run_backtest_with_trades(
 
     effective_dsn = dsn or os.environ.get("POSTGRES_DSN", DEFAULT_DSN)
 
+    # v-file-bars-2026-09-17: prefer file-based bars when BARS_DIR is set.
+    # This enables backtest in cloud/CI environments without Postgres.
+    bars_dir = os.environ.get("BARS_DIR")
     if bars_loader is None:
-        bars_loader = _default_bars_loader(effective_dsn)
+        if bars_dir:
+            from pathlib import Path
+            if Path(bars_dir).exists():
+                logger.info("backtest_using_file_bars bars_dir=%s", bars_dir)
+                bars_loader = _file_bars_loader(bars_dir)
+            else:
+                logger.warning("BARS_DIR=%s does not exist, falling back to Postgres", bars_dir)
+                bars_loader = _default_bars_loader(effective_dsn)
+        else:
+            bars_loader = _default_bars_loader(effective_dsn)
 
     if symbols is None:
         symbols = _default_symbols_picker(effective_dsn, top_n, days)
