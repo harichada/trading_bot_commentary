@@ -1909,6 +1909,491 @@ class DayTradeMomentumStrategy(TradingStrategyWithCommentary):
             return None
 
 
+class DayTradeMomentumShortStrategy(TradingStrategyWithCommentary):
+    """Day-trade momentum SHORT strategy for intraday breakdown/weakness.
+
+    v-day-trade-short-2026-09-17: modular short path mirroring the long
+    day-trade momentum logic with inverse filters for shorts.
+
+    Entry logic (weakness/breakdown focus):
+      1. Weak RS vs SPY (symbol UNDERPERFORMING SPY on the day)
+      2. Volume surge (volume_ratio >= 1.5x) — same as longs
+      3. Breakdown/continuation-down pattern:
+         - Breakdown: price < 20-bar low with volume
+         - Continuation-down: RSI 30-50, price trending below SMA20
+         - Rejection: price failed at resistance (near prior high, weak close)
+      4. Direction reader bearish + non-exhausted phase
+      5. Inverse RSI logic: don't short into oversold exhaustion (RSI < 30)
+      6. Defined ATR stop (above entry), target (below entry)
+      7. Time gates: flatten-hour block, late-entry gate (same as longs)
+
+    Market context:
+      - risk_on: HARD BLOCK (don't short into bullish tape)
+      - risk_off/mixed: ALLOW (shorts make sense when market weak)
+
+    SHADOW-FIRST deployment:
+      - DAY_TRADE_SHORT_LIVE_ENTRIES_ENABLED=False (default) blocks LIVE orders
+      - Shadow ledger logs would-be shorts for Stage-A validation
+      - Set to True ONLY after Stage-A soak passes
+
+    Respects HANDS_OFF_DENYLIST (MU, HQGE, SPCX) — never shorts these.
+    """
+
+    name = "day_trade_momentum_short"
+
+    async def generate_signal_with_commentary(self, market_data) -> Optional[TradingSignal]:
+        """Generate day-trade momentum SHORT signal."""
+        from core.config import Config as _Cfg
+        cfg = _Cfg()
+
+        if not cfg.ENABLE_DAY_TRADE_SHORT:
+            return None
+
+        indicators = market_data.indicators or {}
+        symbol = market_data.symbol
+
+        try:
+            # ────────────────────────────────────────────────────────────────
+            # Gate 0: HANDS_OFF_DENYLIST check (MU, HQGE, SPCX)
+            # These symbols are NEVER shorted — permanent hands-off.
+            # ────────────────────────────────────────────────────────────────
+            if symbol.upper() in cfg.HANDS_OFF_DENYLIST:
+                self._log_decision(market_data, "skip", "hands_off_denylist",
+                                   symbol=symbol, reason="permanent_hands_off")
+                return None
+
+            rsi = float(indicators.get('rsi', 50))
+            volume_ratio = float(indicators.get('volume_ratio', 1.0))
+            adx = float(indicators.get('adx', 0))
+            atr = float(indicators.get('atr', market_data.close * 0.02))
+            low_20 = float(indicators.get('low_20', 0))
+            sma_20 = float(indicators.get('sma_20', 0))
+            sma_50 = float(indicators.get('sma_50', 0))
+            macd = float(indicators.get('macd', 0))
+            macd_signal = float(indicators.get('macd_signal', 0))
+            high_20 = float(indicators.get('high_20', 0))
+
+            if np.isnan(rsi) or np.isnan(volume_ratio) or low_20 <= 0:
+                self._log_decision(market_data, "skip", "invalid_indicators_short",
+                                   rsi=rsi, volume_ratio=volume_ratio, low_20=low_20)
+                return None
+
+            # ────────────────────────────────────────────────────────────────
+            # Gate 1: Market Context Check — risk_on HARD BLOCK for shorts
+            # ────────────────────────────────────────────────────────────────
+            _mc_regime = None
+            _mc_time_of_day = None
+            _mc_spy_change = 0.0
+            _mc_vix_change = 0.0
+            _mc_sector = None
+            _mc_reason = ""
+
+            try:
+                from core.market_context import read_market_context
+                _mc = read_market_context(symbol)
+                _mc_regime = _mc.regime
+                _mc_time_of_day = _mc.time_of_day
+                _mc_spy_change = _mc.spy_change_pct
+                _mc_vix_change = _mc.vix_change_pct
+                _mc_sector = _mc.sector_etf
+                _mc_reason = _mc.reason
+
+                # HARD BLOCK: don't short into bullish tape (risk_on)
+                if _mc_regime == "risk_on":
+                    self._log_decision(
+                        market_data, "skip", "risk_on_hard_block_short",
+                        gate_name="day_trade_short_risk_on_lock",
+                        regime=_mc_regime,
+                        spy_change=round(_mc_spy_change, 2),
+                        vix_change=round(_mc_vix_change, 2),
+                        reason_text=_mc_reason,
+                    )
+                    self.commentary.add_commentary(TradingCommentary(
+                        timestamp=datetime.now(),
+                        type=CommentaryType.RISK_ASSESSMENT,
+                        symbol=symbol,
+                        title=f"⛔ Day-Trade SHORT BLOCKED — risk_on",
+                        message=(
+                            f"day_trade_momentum_short does NOT signal in risk_on regime.\n"
+                            f"  Regime: {_mc_regime}\n"
+                            f"  SPY: {_mc_spy_change:+.2f}% | VIX: {_mc_vix_change:+.1f}%\n\n"
+                            f"Shorting into a bullish tape is counter-trend; wait for "
+                            f"regime to turn risk_off or mixed."
+                        ),
+                        importance=8,
+                    ))
+                    return None
+
+            except Exception as _mc_exc:
+                logger.debug("day_trade_short: market_context failed: %s", _mc_exc)
+
+            # ────────────────────────────────────────────────────────────────
+            # Gate 2: Direction Reader — require bearish direction
+            # ────────────────────────────────────────────────────────────────
+            _direction_read = None
+            try:
+                from core.direction_reader import read_direction
+                _direction_read = read_direction(market_data.close, indicators)
+
+                if not _direction_read.allows_short_entry:
+                    self._log_decision(
+                        market_data, "skip", "direction_not_bearish",
+                        direction=_direction_read.direction,
+                        phase=_direction_read.phase,
+                        ema_stack=_direction_read.ema_stack,
+                        reason=_direction_read.reason,
+                    )
+                    return None
+
+                if _direction_read.phase == "exhausted":
+                    self._log_decision(
+                        market_data, "skip", "bearish_exhausted_phase",
+                        direction=_direction_read.direction,
+                        phase=_direction_read.phase,
+                        rsi=round(rsi, 2),
+                        reason="oversold_bounce_risk",
+                    )
+                    return None
+
+            except Exception as _dr_exc:
+                logger.debug("day_trade_short: direction_reader failed: %s", _dr_exc)
+
+            # ────────────────────────────────────────────────────────────────
+            # Gate 3: Weak RS vs SPY — symbol must UNDERPERFORM SPY
+            # ────────────────────────────────────────────────────────────────
+            _symbol_change = float(indicators.get('day_change_pct', 0))
+            if _symbol_change == 0:
+                _bar_open = float(getattr(market_data, 'open', market_data.close) or market_data.close)
+                if _bar_open > 0:
+                    _symbol_change = ((market_data.close - _bar_open) / _bar_open) * 100
+
+            _rs_vs_spy = _symbol_change - _mc_spy_change
+            _min_weak_rs = cfg.DAY_TRADE_SHORT_MIN_WEAK_RS_VS_SPY
+
+            # For shorts: RS must be NEGATIVE (underperforming)
+            if _rs_vs_spy > -_min_weak_rs:
+                self._log_decision(
+                    market_data, "skip", "not_weak_enough_for_short",
+                    symbol_change=round(_symbol_change, 2),
+                    spy_change=round(_mc_spy_change, 2),
+                    rs_vs_spy=round(_rs_vs_spy, 2),
+                    min_weak_rs=_min_weak_rs,
+                    required_rs=f"<= -{_min_weak_rs}",
+                )
+                return None
+
+            # ────────────────────────────────────────────────────────────────
+            # Gate 4: Volume Surge Confirmation (same as longs)
+            # ────────────────────────────────────────────────────────────────
+            _min_vol_ratio = cfg.MOMENTUM_MIN_VOLUME_RATIO
+            if volume_ratio < _min_vol_ratio:
+                self._log_decision(
+                    market_data, "skip", "insufficient_volume_short",
+                    volume_ratio=round(volume_ratio, 2),
+                    min_vol_ratio=_min_vol_ratio,
+                )
+                return None
+
+            # ────────────────────────────────────────────────────────────────
+            # Gate 5: RSI bounds — inverse of long logic
+            # Don't short oversold (bounce risk) or extreme overbought
+            # ────────────────────────────────────────────────────────────────
+            _rsi_floor = cfg.DAY_TRADE_SHORT_RSI_FLOOR
+            _rsi_ceiling = cfg.DAY_TRADE_SHORT_RSI_CEILING
+
+            if rsi <= _rsi_floor:
+                self._log_decision(
+                    market_data, "skip", "rsi_oversold_no_short",
+                    rsi=round(rsi, 2),
+                    rsi_floor=_rsi_floor,
+                    reason="oversold_bounce_risk",
+                )
+                return None
+
+            if rsi >= _rsi_ceiling:
+                self._log_decision(
+                    market_data, "skip", "rsi_extreme_overbought_no_short",
+                    rsi=round(rsi, 2),
+                    rsi_ceiling=_rsi_ceiling,
+                    reason="extreme_strength_not_reversal",
+                )
+                return None
+
+            # ────────────────────────────────────────────────────────────────
+            # Gate 6: Entry Pattern (Breakdown / Continuation-Down / Rejection)
+            # ────────────────────────────────────────────────────────────────
+            _entry_pattern = None
+            _entry_confidence = 0.0
+
+            # Breakdown pattern: price < 20-bar low, ADX > 20
+            if market_data.close < low_20 and adx > 20:
+                _breakdown_dist_pct = ((low_20 - market_data.close) / low_20) * 100
+                if _breakdown_dist_pct < 3.0:
+                    _entry_pattern = "breakdown"
+                    _entry_confidence = 0.70 + (adx / 100) * 0.2
+
+            # Continuation-down pattern: RSI 30-50, price below SMA20, MACD bearish
+            if _entry_pattern is None:
+                if (30 <= rsi <= 50 and
+                    sma_20 > 0 and
+                    market_data.close < sma_20 and
+                    macd < macd_signal):
+                    _entry_pattern = "continuation_down"
+                    _entry_confidence = 0.65 + (volume_ratio - 1.0) * 0.1
+
+            # Rejection pattern: near 20-bar high but failing (weak close)
+            if _entry_pattern is None:
+                if (high_20 > 0 and
+                    abs((market_data.close - high_20) / high_20) < 0.02 and
+                    macd < macd_signal and
+                    adx > 20):
+                    _entry_pattern = "rejection"
+                    _entry_confidence = 0.60 + (adx / 100) * 0.15
+
+            if _entry_pattern is None:
+                self._log_decision(
+                    market_data, "skip", "no_short_entry_pattern",
+                    rsi=round(rsi, 2),
+                    adx=round(adx, 2),
+                    low_20=round(low_20, 2),
+                    close=round(market_data.close, 2),
+                    sma_20=round(sma_20, 2) if sma_20 > 0 else 0,
+                    macd=round(macd, 4),
+                    macd_signal=round(macd_signal, 4),
+                )
+                return None
+
+            # ────────────────────────────────────────────────────────────────
+            # Gate 7: Flatten-hour gate (same as longs)
+            # ────────────────────────────────────────────────────────────────
+            if cfg.DAY_TRADE_FLATTEN_HOUR_ENTRY_GATE_ENABLED:
+                try:
+                    from datetime import timezone
+                    from zoneinfo import ZoneInfo
+                    _now_utc = datetime.now(timezone.utc)
+                    _et = _now_utc.astimezone(ZoneInfo("America/New_York"))
+                    _flatten_hour = cfg.DAY_TRADE_FLATTEN_HOUR
+                    if _et.hour >= _flatten_hour:
+                        self._log_decision(
+                            market_data, "skip", "flatten_hour_entry_gate_short",
+                            et_hour=_et.hour,
+                            flatten_hour=_flatten_hour,
+                        )
+                        return None
+                except Exception as _tz_exc:
+                    logger.debug("day_trade_short: timezone check failed: %s", _tz_exc)
+
+            # ────────────────────────────────────────────────────────────────
+            # Calculate Stop/Target for SHORT (ATR-based)
+            # Stop ABOVE entry, target BELOW entry
+            # ────────────────────────────────────────────────────────────────
+            atr = _floored_atr(atr, market_data.close)
+
+            _atr_stop_mult = 1.5
+            _rr_ratio = 2.0
+
+            stop_distance = _atr_stop_mult * atr
+            stop_loss = market_data.close + stop_distance  # ABOVE for short
+            take_profit = market_data.close - (_rr_ratio * stop_distance)  # BELOW for short
+
+            # ────────────────────────────────────────────────────────────────
+            # Calculate signal strength and confidence
+            # ────────────────────────────────────────────────────────────────
+            _strength = min(0.95, (
+                0.3 +
+                min(0.25, abs(_rs_vs_spy) / 5.0) +
+                min(0.25, (volume_ratio - 1.0) / 2.0) +
+                min(0.15, adx / 100)
+            ))
+
+            _confidence = min(0.85, _entry_confidence * (1.0 + abs(_rs_vs_spy) / 10.0))
+
+            # ────────────────────────────────────────────────────────────────
+            # Shadow logging (when LIVE disabled)
+            # ────────────────────────────────────────────────────────────────
+            _is_shadow = not cfg.DAY_TRADE_SHORT_LIVE_ENTRIES_ENABLED
+            _session_id = _get_session_id()
+
+            if _is_shadow and cfg.ENABLE_DAY_TRADE_SHORT_SHADOW:
+                if _shadow_short_should_log(symbol):
+                    try:
+                        from datetime import timezone as _tz_sh
+                        import json as _json_sh
+                        from pathlib import Path as _Path_sh
+
+                        _shadow_entry = {
+                            'timestamp': datetime.now(_tz_sh.utc).isoformat(),
+                            'symbol': symbol,
+                            'signal_type': 'SHORT',
+                            'strategy': 'day_trade_momentum_short',
+                            'entry_pattern': _entry_pattern,
+                            'signal_close': float(market_data.close),
+                            'rsi': float(rsi),
+                            'rs_vs_spy': float(_rs_vs_spy),
+                            'volume_ratio': float(volume_ratio),
+                            'adx': float(adx),
+                            'low_20': float(low_20),
+                            'high_20': float(high_20),
+                            'sma_20': float(sma_20) if sma_20 > 0 else 0,
+                            'sma_50': float(sma_50) if sma_50 > 0 else 0,
+                            'macd': float(macd),
+                            'macd_signal': float(macd_signal),
+                            'atr': float(atr),
+                            'hypothetical_stop': float(stop_loss),
+                            'hypothetical_target': float(take_profit),
+                            'rr_ratio': float(_rr_ratio),
+                            'stop_dist': float(stop_distance),
+                            'market_context_regime': _mc_regime,
+                            'market_context_spy_change': float(_mc_spy_change),
+                            'market_context_vix_change': float(_mc_vix_change),
+                            'market_context_sector': _mc_sector,
+                            'direction_score': float(_direction_read.direction) if _direction_read else 0,
+                            'direction_phase': _direction_read.phase if _direction_read else 'unknown',
+                            'session_id': _session_id,
+                        }
+
+                        _repo_root = _Path_sh(__file__).resolve().parent.parent
+                        _ledger_dir = _repo_root / "data"
+                        _ledger_dir.mkdir(parents=True, exist_ok=True)
+                        _ledger_path = str(_ledger_dir / "day_trade_short_shadow.ndjson")
+
+                        try:
+                            with open(_ledger_path, 'a') as _f:
+                                _f.write(_json_sh.dumps(_shadow_entry, default=str) + "\n")
+                        except Exception as _shadow_io_exc:
+                            logger.warning(
+                                "day_trade_short_shadow write failed for %s: %s",
+                                symbol, _shadow_io_exc,
+                            )
+
+                        self._log_decision(
+                            market_data, "shadow", "short_shadow_logged",
+                            pattern=_entry_pattern,
+                            rsi=round(rsi, 2),
+                            rs_vs_spy=round(_rs_vs_spy, 2),
+                            volume_ratio=round(volume_ratio, 2),
+                            adx=round(adx, 2),
+                            close=round(market_data.close, 2),
+                            stop=round(stop_loss, 2),
+                            target=round(take_profit, 2),
+                            regime=_mc_regime,
+                            session_id=_session_id,
+                        )
+
+                        self.commentary.add_commentary(TradingCommentary(
+                            timestamp=datetime.now(),
+                            type=CommentaryType.OPPORTUNITY,
+                            symbol=symbol,
+                            title=f"👁️ SHADOW Short: {_entry_pattern.upper()}",
+                            message=(
+                                f"SHADOW short signal (LIVE disabled).\n"
+                                f"  Pattern: {_entry_pattern}\n"
+                                f"  RS vs SPY: {_rs_vs_spy:+.2f}% (weak)\n"
+                                f"  RSI: {rsi:.1f} | Volume: {volume_ratio:.1f}x\n"
+                                f"  Stop: ${stop_loss:.2f} | Target: ${take_profit:.2f}\n\n"
+                                f"Set DAY_TRADE_SHORT_LIVE_ENTRIES_ENABLED=1 after Stage-A soak."
+                            ),
+                            data={
+                                'shadow': True,
+                                'pattern': _entry_pattern,
+                                'rs_vs_spy': _rs_vs_spy,
+                                'rsi': rsi,
+                                'volume_ratio': volume_ratio,
+                                'regime': _mc_regime,
+                            },
+                            confidence=_confidence,
+                            importance=6,
+                        ))
+
+                    except Exception as _shadow_exc:
+                        logger.debug(
+                            "day_trade_short_shadow capture failed for %s: %s",
+                            symbol, _shadow_exc,
+                        )
+
+                return None
+
+            # ────────────────────────────────────────────────────────────────
+            # LIVE path — emit signal for broker execution
+            # ────────────────────────────────────────────────────────────────
+            self.commentary.add_commentary(TradingCommentary(
+                timestamp=datetime.now(),
+                type=CommentaryType.OPPORTUNITY,
+                symbol=symbol,
+                title=f"📉 Day-Trade SHORT: {_entry_pattern.upper()}",
+                message=(
+                    f"Intraday SHORT setup detected.\n"
+                    f"  Pattern: {_entry_pattern}\n"
+                    f"  RS vs SPY: {_rs_vs_spy:+.2f}% (weak)\n"
+                    f"  Volume: {volume_ratio:.1f}x average\n"
+                    f"  RSI: {rsi:.1f}  ADX: {adx:.1f}\n"
+                    f"  Market: {_mc_regime or 'unknown'} | {_mc_time_of_day or 'unknown'}\n"
+                    f"  Stop: ${stop_loss:.2f} (above) | Target: ${take_profit:.2f} (below)"
+                ),
+                data={
+                    'pattern': _entry_pattern,
+                    'rs_vs_spy': _rs_vs_spy,
+                    'volume_ratio': volume_ratio,
+                    'rsi': rsi,
+                    'adx': adx,
+                    'market_regime': _mc_regime,
+                    'stop': stop_loss,
+                    'target': take_profit,
+                },
+                confidence=_confidence,
+                importance=8,
+            ))
+
+            self._log_decision(
+                market_data, "signal_sell", f"day_trade_short_{_entry_pattern}",
+                pattern=_entry_pattern,
+                rs_vs_spy=round(_rs_vs_spy, 2),
+                volume_ratio=round(volume_ratio, 2),
+                rsi=round(rsi, 2),
+                adx=round(adx, 2),
+                regime=_mc_regime,
+                time_of_day=_mc_time_of_day,
+                stop=round(stop_loss, 2),
+                target=round(take_profit, 2),
+                atr=round(atr, 3),
+                session_id=_session_id,
+            )
+
+            return TradingSignal(
+                symbol=symbol,
+                signal_type=SignalType.SELL,
+                strength=_strength,
+                entry_price=market_data.close,
+                stop_loss=stop_loss,
+                take_profit=take_profit,
+                position_size=0,
+                reasoning={
+                    'strategy': 'day_trade_momentum_short',
+                    'entry_pattern': _entry_pattern,
+                    'rs_vs_spy': _rs_vs_spy,
+                    'volume_ratio': volume_ratio,
+                    'atr': atr,
+                    'atr_mult': _atr_stop_mult,
+                    'stop_distance': stop_distance,
+                    'market_context_regime': _mc_regime,
+                    'market_context_sector': _mc_sector,
+                    'market_context_time_of_day': _mc_time_of_day,
+                    'is_day_trade': True,
+                    'is_short': True,
+                    'day_trade_size_multiplier': cfg.DAY_TRADE_SIZE_MULTIPLIER,
+                    'flatten_hour': cfg.DAY_TRADE_FLATTEN_HOUR,
+                    'session_id': _session_id,
+                    'setup_type': f"momentum_short_{_entry_pattern}",
+                },
+                confidence=_confidence,
+            )
+
+        except Exception as e:
+            self._log_decision(market_data, "error", "exception_short", err=str(e))
+            logger.debug(f"DayTradeMomentumShortStrategy error for {symbol}: {e}")
+            return None
+
+
 def _get_minutes_since_open(now_utc: Optional[datetime] = None) -> int:
     """Get minutes since market open (09:30 ET).
     
