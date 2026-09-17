@@ -1351,6 +1351,38 @@ class Config:
         return bool(self.manager.get('trading.enable_mean_rev_short_shadow', False))
 
     @property
+    def ENABLE_MEAN_REV_LONG_SHADOW(self) -> bool:
+        """Log mean-rev LONG signals to shadow_long_log.ndjson for Stage A.
+
+        v-shadow-long-ledger-2026-09-17: live evidence-gathering for the
+        LONG mean-reversion branch. Shadow entries are written alongside
+        normal LONG signals to enable Stage A validation via the long
+        resolver (research/shadow_long_resolver.py).
+
+        When True (default), the mean-rev LONG branch:
+          * computes the full hypothetical signal (stop, target,
+            indicators)
+          * appends the entry to `data/shadow_long_log.ndjson`
+          * proceeds normally (returns the TradingSignal)
+
+        Unlike SHORT shadow mode, LONG shadow runs alongside live
+        signals — it captures data for analysis without blocking trades.
+
+        Default True — required for Stage A soak. Set via env
+        ENABLE_MEAN_REV_LONG_SHADOW=0 or
+        trading.enable_mean_rev_long_shadow: false to disable.
+
+        Resolution: `research/shadow_long_resolver.py` walks the log,
+        compares each entry to subsequent bars, and computes whether
+        the hypothetical OCO bracket would have hit stop or target.
+        Aggregate PF / win-rate / expectancy informs the Stage A
+        promotion decision for mean-rev LONG."""
+        env_val = os.getenv("ENABLE_MEAN_REV_LONG_SHADOW")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.enable_mean_rev_long_shadow', True))
+
+    @property
     def MANUAL_CLOSE_ONLY(self) -> bool:
         """v-live-exit-ladder-2026-06-11. Global pause on the bot's
         dynamic exit management in LIVE mode (breakeven ratchet, ATR

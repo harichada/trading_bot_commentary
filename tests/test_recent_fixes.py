@@ -2451,6 +2451,161 @@ class TestShadowLoggerGating:
         )
 
 
+# ── v-shadow-long-ledger-2026-09-17 ──────────────────────────────────
+
+class TestShadowLongLedger:
+    """v-shadow-long-ledger-2026-09-17: LONG shadow ledger writes to
+    data/shadow_long_log.ndjson for Stage A validation. Mirrors SHORT
+    shadow ledger but runs alongside live signals."""
+
+    def test_shadow_should_log_helper_exists(self):
+        """Shared helper _shadow_should_log must be importable."""
+        from strategies.builtin import _shadow_should_log
+        assert callable(_shadow_should_log)
+
+    def test_shadow_should_log_short_lane(self):
+        """SHORT lane uses its own throttle dict."""
+        from datetime import datetime, timezone
+        from strategies.builtin import _shadow_should_log
+        ts = datetime(2026, 9, 17, 18, 0, tzinfo=timezone.utc)  # 14:00 ET
+        throttle = {}
+        assert _shadow_should_log("NVDA", lane="short", now_utc=ts, _throttle=throttle) is True
+        assert "NVDA" in throttle
+
+    def test_shadow_should_log_long_lane(self):
+        """LONG lane uses its own throttle dict."""
+        from datetime import datetime, timezone
+        from strategies.builtin import _shadow_should_log
+        ts = datetime(2026, 9, 17, 18, 0, tzinfo=timezone.utc)  # 14:00 ET
+        throttle = {}
+        assert _shadow_should_log("NVDA", lane="long", now_utc=ts, _throttle=throttle) is True
+        assert "NVDA" in throttle
+
+    def test_long_lane_independent_of_short(self):
+        """LONG and SHORT lanes have separate throttles."""
+        from datetime import datetime, timezone, timedelta
+        from strategies.builtin import _shadow_should_log
+        ts = datetime(2026, 9, 17, 18, 0, tzinfo=timezone.utc)
+        short_throttle = {}
+        long_throttle = {}
+        # Log NVDA on SHORT lane
+        assert _shadow_should_log("NVDA", lane="short", now_utc=ts, _throttle=short_throttle) is True
+        # Same NVDA on LONG lane should ALSO pass (different throttle)
+        assert _shadow_should_log("NVDA", lane="long", now_utc=ts, _throttle=long_throttle) is True
+        # Both should now be throttled within their lanes
+        ts2 = ts + timedelta(minutes=5)
+        assert _shadow_should_log("NVDA", lane="short", now_utc=ts2, _throttle=short_throttle) is False
+        assert _shadow_should_log("NVDA", lane="long", now_utc=ts2, _throttle=long_throttle) is False
+
+    def test_long_shadow_config_exists(self):
+        """ENABLE_MEAN_REV_LONG_SHADOW config property must exist."""
+        from core.config import Config
+        cfg = Config()
+        assert hasattr(cfg, 'ENABLE_MEAN_REV_LONG_SHADOW')
+        assert cfg.ENABLE_MEAN_REV_LONG_SHADOW is True, (
+            "ENABLE_MEAN_REV_LONG_SHADOW must default to True for Stage A"
+        )
+
+    def test_long_shadow_wired_to_gate(self):
+        """LONG shadow capture must consult _shadow_should_log before logging."""
+        src = (REPO_ROOT / "strategies" / "builtin.py").read_text()
+        anchor = src.find("ENABLE_MEAN_REV_LONG_SHADOW")
+        assert anchor != -1, "ENABLE_MEAN_REV_LONG_SHADOW must be checked in builtin.py"
+        window = src[anchor: anchor + 800]
+        assert '_shadow_should_log(market_data.symbol, lane="long")' in window, (
+            "LONG shadow capture must consult _shadow_should_log with lane='long'"
+        )
+
+    def test_long_shadow_writes_ndjson(self):
+        """LONG shadow capture must write to shadow_long_log.ndjson."""
+        src = (REPO_ROOT / "strategies" / "builtin.py").read_text()
+        assert 'shadow_long_log.ndjson' in src, (
+            "LONG shadow must write to data/shadow_long_log.ndjson"
+        )
+
+    def test_long_shadow_emits_required_fields(self):
+        """LONG shadow entry must include fields needed by shadow_long_resolver."""
+        src = (REPO_ROOT / "strategies" / "builtin.py").read_text()
+        anchor = src.find("_shadow_long_entry = {")
+        assert anchor != -1, "LONG shadow entry dict must exist"
+        window = src[anchor: anchor + 1200]
+        required_fields = [
+            'timestamp', 'symbol', 'signal_type', 'reason',
+            'signal_close', 'rsi', 'bb_lower', 'bb_middle',
+            'sma_50', 'macd', 'macd_signal', 'atr',
+            'hypothetical_stop', 'hypothetical_target',
+            'rr_ratio', 'stop_dist', 'market_context_regime',
+            'falling_knife_pass',
+        ]
+        for fld in required_fields:
+            assert f"'{fld}':" in window, (
+                f"LONG shadow entry must include '{fld}' for resolver"
+            )
+
+
+class TestShadowLongResolverCanReadFixture:
+    """Shadow long resolver must be able to parse a fixture line."""
+
+    def test_resolver_parses_long_entry(self):
+        """Resolver's ShadowEntry.from_dict must parse a typical LONG entry."""
+        from research.shadow_long_resolver import ShadowEntry
+        row = {
+            'timestamp': '2026-09-17T14:00:00+00:00',
+            'symbol': 'AAPL',
+            'signal_type': 'LONG',
+            'reason': 'oversold_bounce',
+            'signal_close': 175.50,
+            'entry_price': 175.50,
+            'rsi': 28.5,
+            'bb_lower': 173.0,
+            'bb_middle': 177.0,
+            'sma_50': 180.0,
+            'macd': -0.5,
+            'macd_signal': -0.3,
+            'atr': 2.5,
+            'hypothetical_stop': 169.25,
+            'hypothetical_target': 188.0,
+            'rr_ratio': 2.0,
+            'stop_dist': 6.25,
+            'market_context_regime': 'neutral',
+            'falling_knife_pass': True,
+        }
+        entry = ShadowEntry.from_dict(row)
+        assert entry.symbol == 'AAPL'
+        assert entry.signal_type == 'LONG'
+        assert entry.signal_close == 175.50
+        assert entry.hypothetical_stop == 169.25
+        assert entry.hypothetical_target == 188.0
+        assert entry.raw.get('falling_knife_pass') is True
+
+    def test_hands_off_symbols_excluded(self):
+        """Hands-off symbols (MU, HQGE, SPCX) must be filtered out."""
+        from research.shadow_long_resolver import ShadowEntry, filter_and_dedupe, HANDS_OFF_SYMBOLS
+        from datetime import datetime, timezone
+
+        base = datetime(2026, 9, 17, 14, 0, tzinfo=timezone.utc)
+        entries = []
+        for i, sym in enumerate(list(HANDS_OFF_SYMBOLS) + ['AAPL']):
+            entries.append(ShadowEntry(
+                timestamp=base,
+                symbol=sym,
+                signal_type='LONG',
+                reason='test',
+                signal_close=100.0,
+                rsi=25, bb_lower=98, bb_middle=102, sma_50=105,
+                macd=-0.5, macd_signal=-0.3, atr=2.0,
+                hypothetical_stop=95, hypothetical_target=110,
+                rr_ratio=2.0, stop_dist=5.0,
+            ))
+
+        result = filter_and_dedupe(entries)
+        symbols = {e.symbol for e in result}
+        assert HANDS_OFF_SYMBOLS.isdisjoint(symbols), (
+            f"Hands-off symbols {HANDS_OFF_SYMBOLS} must be excluded"
+        )
+        assert 'AAPL' in symbols
+
+
 # ── v-ownership-survives-restart-2026-06-10 ──────────────────────────
 
 class TestOwnershipSurvivesRestart:
