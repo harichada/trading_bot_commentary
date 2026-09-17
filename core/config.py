@@ -2181,6 +2181,156 @@ class Config:
         ))
 
     # ══════════════════════════════════════════════════════════════════════════
+    # v-day-trade-short-2026-09-17: Day-trade momentum SHORT strategy config.
+    # Modular short path mirroring long day-trade momentum with inverse logic.
+    # ══════════════════════════════════════════════════════════════════════════
+
+    @property
+    def ENABLE_DAY_TRADE_SHORT(self) -> bool:
+        """Enable the day-trade momentum SHORT strategy lane.
+
+        v-day-trade-short-2026-09-17: modular short path mirroring the long
+        day-trade momentum strategy. Entry logic:
+          1. Weak RS vs SPY (symbol UNDERPERFORMING SPY)
+          2. Volume surge (same as longs)
+          3. Breakdown/continuation-down patterns
+          4. Direction reader bearish + non-exhausted
+          5. Inverse RSI logic (don't short oversold)
+
+        When True, the DayTradeMomentumShortStrategy is activated. LIVE
+        order placement is controlled separately by DAY_TRADE_SHORT_LIVE_ENTRIES_ENABLED.
+
+        SAFE OFF-PATH: Set ENABLE_DAY_TRADE_SHORT=0 to disable entirely
+        (no signals, no shadow logs). Default True for shadow soak.
+
+        Respects HANDS_OFF_DENYLIST (MU, HQGE, SPCX) — never shorts these.
+        """
+        env_val = os.getenv("ENABLE_DAY_TRADE_SHORT")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.enable_day_trade_short', True))
+
+    @property
+    def DAY_TRADE_SHORT_LIVE_ENTRIES_ENABLED(self) -> bool:
+        """v-day-trade-short-2026-09-17: master switch for LIVE day-trade
+        SHORT entries.
+
+        When False (default), the day-trade short strategy generates
+        signals for sim/commentary/shadow analysis but BLOCKS actual LIVE
+        short order placement. This is the SHADOW-FIRST deployment mode
+        requested by operator.
+
+        MUST KEEP intact (these work regardless of this flag):
+          - Hard loss circuits / ENABLE_BOT_ONLY_PNL_CIRCUIT
+          - Flatten / software exits for EXISTING short positions
+          - LT hands-off forever: MU, HQGE, SPCX (HANDS_OFF_DENYLIST)
+
+        The flag does NOT flip autonomous_live. It only blocks NEW live
+        short entries via day_trade_momentum_short lane.
+
+        Promotion to True requires Stage-A validation:
+          n>=150 trades, >=10 sessions, PF>=1.30, WR>=48%, exp>=+0.05R,
+          DD<=6%, max losing day<=2R.
+
+        Default False (SHADOW MODE). Set via env DAY_TRADE_SHORT_LIVE_ENTRIES_ENABLED=1
+        or trading.day_trade_short_live_entries_enabled: true in Config.yaml
+        ONLY after Stage-A soak passes.
+        """
+        env_val = os.getenv("DAY_TRADE_SHORT_LIVE_ENTRIES_ENABLED")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.day_trade_short_live_entries_enabled', False))
+
+    @property
+    def ENABLE_DAY_TRADE_SHORT_SHADOW(self) -> bool:
+        """Enable shadow logging for day-trade SHORT signals.
+
+        v-day-trade-short-2026-09-17: when True (default) AND
+        DAY_TRADE_SHORT_LIVE_ENTRIES_ENABLED is False, the short strategy:
+          * computes the full hypothetical signal (stop, target, indicators)
+          * appends the entry to `data/day_trade_short_shadow.ndjson`
+          * emits strategy_decision log with shadow=True
+          * returns None (no live short order placed)
+
+        This allows collecting shadow data for Stage-A validation before
+        enabling LIVE shorts.
+
+        When True AND DAY_TRADE_SHORT_LIVE_ENTRIES_ENABLED is True:
+          * the live path takes precedence; shadow logging still runs
+            for audit trail but LIVE orders are placed.
+
+        SAFE OFF-PATH: Set ENABLE_DAY_TRADE_SHORT_SHADOW=0 to disable
+        shadow logging entirely (silent skip).
+
+        Default True. Flip in Config.yaml to start shadow accumulation.
+        """
+        env_val = os.getenv("ENABLE_DAY_TRADE_SHORT_SHADOW")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.enable_day_trade_short_shadow', True))
+
+    @property
+    def DAY_TRADE_SHORT_MIN_WEAK_RS_VS_SPY(self) -> float:
+        """Minimum weakness (negative RS) vs SPY for short entry.
+
+        v-day-trade-short-2026-09-17: for shorts, we WANT symbols that are
+        UNDERPERFORMING SPY. The threshold is the minimum negative RS:
+          symbol_change - spy_change <= -threshold
+
+        Example: if SPY is +0.5% and symbol is -1.0%:
+          RS = -1.0 - 0.5 = -1.5%
+          With threshold 0.5, this PASSES (symbol is weak enough).
+
+        Lower values = more permissive (weaker filter).
+        Higher values = stricter (require more pronounced weakness).
+
+        Default 0.5% (symbol must underperform SPY by at least 0.5%).
+        Set trading.day_trade_short_min_weak_rs_vs_spy to adjust.
+        """
+        return float(self.manager.get('trading.day_trade_short_min_weak_rs_vs_spy', 0.5))
+
+    @property
+    def DAY_TRADE_SHORT_RSI_FLOOR(self) -> float:
+        """RSI floor for day-trade short entries (avoid shorting oversold).
+
+        v-day-trade-short-2026-09-17: inverse of the long RSI ceiling.
+        Don't short when RSI is already oversold — the bounce risk is high.
+
+        Shorts with RSI <= this floor are blocked to avoid shorting into
+        exhaustion / capitulation.
+
+        Default 30.0. Set trading.day_trade_short_rsi_floor to adjust.
+        """
+        return float(self.manager.get('trading.day_trade_short_rsi_floor', 30.0))
+
+    @property
+    def DAY_TRADE_SHORT_RSI_CEILING(self) -> float:
+        """RSI ceiling for day-trade short entries.
+
+        v-day-trade-short-2026-09-17: don't short when RSI is extremely
+        overbought (>= ceiling) — counter-intuitive but these are often
+        strength signals, not reversal candidates.
+
+        The sweet spot for momentum shorts is RSI 35-65 (weak but not
+        oversold/overbought extremes).
+
+        Default 85.0 (very permissive — only blocks extreme overbought).
+        Set trading.day_trade_short_rsi_ceiling to adjust.
+        """
+        return float(self.manager.get('trading.day_trade_short_rsi_ceiling', 85.0))
+
+    @property
+    def DAY_TRADE_SHORT_MAX_CONCURRENT(self) -> int:
+        """Maximum concurrent day-trade short positions.
+
+        v-day-trade-short-2026-09-17: separate cap from long positions
+        to control short exposure. During Stage-A soak, keep this low.
+
+        Default 2. Set trading.day_trade_short_max_concurrent to adjust.
+        """
+        return int(self.manager.get('trading.day_trade_short_max_concurrent', 2))
+
+    # ══════════════════════════════════════════════════════════════════════════
     # v-late-entry-gate-2026-09-15: Late-entry detection to prevent chasing
     # extended moves. Shadow mode logs only; production mode can hard-skip.
     # ══════════════════════════════════════════════════════════════════════════

@@ -44,6 +44,7 @@ from strategies.builtin import (BreakoutStrategyWithCommentary,
                                 MeanReversionStrategyWithCommentary,
                                 MomentumStrategyWithCommentary,
                                 DayTradeMomentumStrategy,
+                                DayTradeMomentumShortStrategy,
                                 ORBContractionRVOLStrategy)
 from strategies.news_strategy import FreeNewsSignalStrategy
 from data_providers.realtime import RealTimeDataProvider, DummyDataProvider
@@ -333,7 +334,17 @@ class TradingEngineWithCommentary:
         if Config().ENABLE_DAY_TRADE_MOMENTUM:
             self.strategies.append(DayTradeMomentumStrategy(self.commentary))
             logger.info("day_trade_momentum: strategy enabled")
-        
+
+        # v-day-trade-short-2026-09-17: Day-trade momentum SHORT strategy.
+        # Modular short path mirroring the long day-trade momentum with
+        # inverse logic: weak RS vs SPY, breakdown patterns, direction bearish.
+        # SHADOW-FIRST: LIVE disabled by default (DAY_TRADE_SHORT_LIVE_ENTRIES_ENABLED=0).
+        # Respects HANDS_OFF_DENYLIST (MU, HQGE, SPCX) — never shorts these.
+        if Config().ENABLE_DAY_TRADE_SHORT:
+            self.strategies.append(DayTradeMomentumShortStrategy(self.commentary))
+            logger.info("day_trade_momentum_short: strategy enabled (LIVE=%s)",
+                        Config().DAY_TRADE_SHORT_LIVE_ENTRIES_ENABLED)
+
         # v-orb-prototype-2026-09-10: ORB (Opening Range Breakout) + volatility
         # contraction + relative volume (RVOL) prototype strategy.
         # Hari APPROVED order: #1 ORB+contraction+RVOL (this), then #2 RVOL

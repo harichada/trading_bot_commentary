@@ -5,6 +5,82 @@
 - Verdict strip lists failing gate labels (not count-only) and appends last snapshot reason/gate.
 - Mean-rev / ORB intentionally OFF no longer count as fail (skip) so they don't fake BLOCKED.
 
+---
+
+## 2026-09-17 — Day-Trade Momentum SHORT Strategy (SHADOW-FIRST)
+
+### Problem
+
+The desk can only go LONG. On weak/breakdown days, profitable short setups pass by while the bot sits idle waiting for long entries that won't work in a down-tape. Operator wants a real shorting algorithm, not discretionary freestyle.
+
+### Added
+
+- **DayTradeMomentumShortStrategy** (v-tag `v-day-trade-short-2026-09-17`)
+  - Modular short path mirroring the long day-trade momentum logic with inverse filters.
+  - Entry patterns:
+    - **Breakdown**: price < 20-bar low with volume + ADX > 20
+    - **Continuation-down**: RSI 30-50, price below SMA20, MACD bearish
+    - **Rejection**: near 20-bar high but failing (weak close, MACD bearish)
+  - Gates (inverse of long logic):
+    - Weak RS vs SPY (symbol UNDERPERFORMING by >= 0.5%, configurable)
+    - Direction reader bearish + non-exhausted phase
+    - RSI floor 30 (don't short oversold — bounce risk)
+    - RSI ceiling 85 (optional, blocks extreme overbought)
+    - risk_on regime HARD BLOCK (don't short bullish tape)
+    - Flatten-hour entry gate (same as longs)
+  - ATR-based stop/target: stop ABOVE entry, target BELOW entry (1.5x ATR / 2:1 R:R).
+
+- **SHADOW-FIRST deployment mode**
+  - `DAY_TRADE_SHORT_LIVE_ENTRIES_ENABLED=False` (default) blocks LIVE short orders.
+  - `ENABLE_DAY_TRADE_SHORT_SHADOW=True` (default) logs shadow entries to `data/day_trade_short_shadow.ndjson`.
+  - Signal emitted for sim/commentary/shadow analysis without placing broker short orders.
+  - Flip to LIVE only after Stage-A soak passes (n>=150, PF>=1.30, WR>=48%, etc.).
+
+- **HANDS_OFF_DENYLIST protection**
+  - MU, HQGE, SPCX are NEVER shorted — permanent hands-off regardless of setup quality.
+  - Check runs at Gate 0 before any other processing.
+
+### Config Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `ENABLE_DAY_TRADE_SHORT` | True | Enable short strategy for shadow soak |
+| `DAY_TRADE_SHORT_LIVE_ENTRIES_ENABLED` | False | Master switch for LIVE short orders |
+| `ENABLE_DAY_TRADE_SHORT_SHADOW` | True | Log shadow entries when LIVE disabled |
+| `DAY_TRADE_SHORT_MIN_WEAK_RS_VS_SPY` | 0.5 | Min negative RS required (underperformance) |
+| `DAY_TRADE_SHORT_RSI_FLOOR` | 30 | Don't short when RSI <= floor (oversold) |
+| `DAY_TRADE_SHORT_RSI_CEILING` | 85 | Don't short when RSI >= ceiling |
+| `DAY_TRADE_SHORT_MAX_CONCURRENT` | 2 | Max concurrent short positions |
+
+### Changed
+
+- `core/engine.py` — registers `DayTradeMomentumShortStrategy` when `ENABLE_DAY_TRADE_SHORT=True`.
+- `strategies/builtin.py` — new `DayTradeMomentumShortStrategy` class (~350 lines).
+- `core/config.py` — 8 new config properties for short strategy.
+
+### Tests
+
+- 16 new tests in `tests/test_day_trade_short.py` covering:
+  - Config flag defaults (LIVE=False, SHADOW=True)
+  - HANDS_OFF_DENYLIST protection (MU/HQGE/SPCX never shorted)
+  - risk_on hard-block
+  - RSI floor gate (oversold protection)
+  - Weak RS filter (underperformance required)
+  - Breakdown/continuation-down pattern detection
+  - Shadow logging when LIVE disabled
+  - LIVE signal generation when enabled
+  - Direction reader gates
+
+### Operational notes
+
+- **SHADOW-FIRST**: No LIVE shorts by default. Desk can short on paper during Stage-A soak.
+- **How to enable LIVE later**: Set `DAY_TRADE_SHORT_LIVE_ENTRIES_ENABLED=1` via env or `trading.day_trade_short_live_entries_enabled: true` in Config.yaml after Stage-A validation passes.
+- **Does NOT change**: Long day-trade LIVE default, mean-rev LIVE default, ORB LIVE default. All existing live knobs unchanged.
+- **HANDS_OFF unchanged**: MU, HQGE, SPCX remain permanently hands-off for both longs and shorts.
+- Shadow ledger location: `data/day_trade_short_shadow.ndjson` (same format as `shadow_short_log.ndjson`).
+
+---
+
 Notable changes to the trading bot from project genesis (2025-07-08) to present. Each entry lists the date range, the user-facing impact, and where applicable the v-tag (greppable code anchor) or commit SHA.
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) with added `Verified` (empirical outcomes from backtests/live) and `Operational notes` sections specific to trading-bot concerns.
