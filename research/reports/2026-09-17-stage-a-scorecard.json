@@ -1,8 +1,11 @@
 {
-  "generated_at": "2026-09-17T19:50:00",
+  "generated_at": "2026-09-17T19:56:00",
+  "revision": "r2",
   "type": "Stage A Measurement (not LIVE flip)",
   "owner": "Research via CoS",
   "for": "Hari",
+  "as_of_tip": "360b706",
+  "pr_merged": "#85 (LONG resolver + file_bars)",
   "stage_a_floors": {
     "min_n": 150,
     "min_sessions": 10,
@@ -20,7 +23,8 @@
   "summary": {
     "pass": 0,
     "fail": 1,
-    "incomplete": 4
+    "incomplete": 4,
+    "harness_ready": ["mean_reversion_long"]
   },
   "lanes": {
     "mean_reversion_long": {
@@ -30,7 +34,8 @@
       "setup_type": "oversold_v2",
       "live_status": "OFF",
       "verdict": "INCOMPLETE",
-      "recommendation": "LIVE off",
+      "harness_ready": true,
+      "recommendation": "LIVE off — harness READY, need bars",
       "metrics": {
         "n": null,
         "sessions": null,
@@ -40,11 +45,23 @@
         "max_dd_pct": null,
         "max_losing_day_r": null
       },
-      "notes": "LONG resolver missing. Shadow ledger emits exist but no barrier-resolved sample.",
-      "engine_asks": [
-        "Confirm shadow ledger emits on KiddoKingdom for mean_rev_buy/oversold_v2",
-        "Implement LONG barrier resolver (or extend SHORT resolver with --side=LONG)",
-        "Run resolve, then apply Stage A floors"
+      "notes": "HARNESS READY (PR #85). LONG resolver shipped + file_bars loader. 45 tests passing. No bars in cloud — need export from KiddoKingdom.",
+      "resolver": {
+        "file": "research/shadow_long_resolver.py",
+        "tests_passing": 24,
+        "r_multiple_formula": "(exit - entry) / stop_dist",
+        "stop_hit": "bar_low <= stop",
+        "target_hit": "bar_high >= target"
+      },
+      "bars_loader": {
+        "file": "data_providers/file_bars.py",
+        "env_var": "BARS_DIR",
+        "cli_flag": "--bars-dir"
+      },
+      "run_steps": [
+        "python -m data_providers.file_bars export --dsn $POSTGRES_DSN --symbols <symbols> --out /path/to/bars/ --days 365",
+        "python -m research.shadow_long_resolver --log /path/to/shadow_long_log.ndjson --bars-dir /path/to/bars/ --out /tmp/results/",
+        "cat /tmp/results/stage_a_summary.json | jq '.promotion_book'"
       ]
     },
     "day_trade_momentum_short": {
@@ -151,10 +168,24 @@
     }
   },
   "harness_status": {
+    "shadow_long_resolver": "SHIPPED (research/shadow_long_resolver.py)",
+    "shadow_short_resolver": "SHIPPED (research/shadow_short_resolver.py)",
+    "file_bars_loader": "SHIPPED (data_providers/file_bars.py)",
+    "resolver_tests": "45 passing (24 LONG + 21 SHORT)",
     "backtest_cli": "Created (minimal scaffolding)",
     "stage_a_scorer": "Created",
-    "postgres_minute_bars": "Not available",
+    "postgres_minute_bars": "Not available in cloud",
+    "bars_dir_support": "SHIPPED (BARS_DIR env + --bars-dir CLI)",
     "walk_forward": "Not implemented",
     "out_of_sample": "Not implemented"
+  },
+  "verification": {
+    "pr85_merged": true,
+    "tip_commit": "360b706",
+    "long_resolver_mirrors_short": true,
+    "tests_45_passing": true,
+    "hands_off_hard_coded": ["MU", "HQGE", "SPCX"],
+    "floors_not_softened": true,
+    "live_flags_unchanged": true
   }
 }
