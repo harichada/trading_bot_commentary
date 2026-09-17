@@ -1,9 +1,10 @@
 # Stage A Unified Backtest / Walk-Forward Scorecard
 
 **Owner:** Research via CoS  
-**Date:** 2026-09-17  
+**Date:** 2026-09-17 (r2)  
 **For:** Hari  
-**Type:** Measurement (not a LIVE flip)
+**Type:** Measurement (not a LIVE flip)  
+**As-of tip:** `360b706` (PR #85 merged — LONG resolver + file_bars)
 
 ---
 
@@ -11,17 +12,18 @@
 
 | Lane | Direction | Verdict | LIVE Status | Recommend |
 |------|-----------|---------|-------------|-----------|
-| 1. mean_reversion LONG | LONG | **INCOMPLETE** | OFF | LIVE off — need resolver |
+| 1. mean_reversion LONG | LONG | **INCOMPLETE** | OFF | LIVE off — harness READY, need bars |
 | 2. day_trade_momentum SHORT | SHORT | **INCOMPLETE** | Shadow (#83) | LIVE off — need shadow sample |
 | 3. day_trade_momentum LONG | LONG | **INCOMPLETE** | ON (baseline) | Keep LIVE — pending audit |
 | 4. mean_reversion SHORT | SHORT | **FAIL** | OFF | LIVE off — NO_GO confirmed |
-| 5. ORB | LONG | **INCOMPLETE** | OFF | LIVE off — not wired |
+| 5. ORB | LONG | **INCOMPLETE** | OFF | LIVE off — deferred |
 
 **Bottom line:**
 - **0 lanes PASS** Stage A floors
-- **1 lane FAIL** (mean_reversion SHORT — confirmed NO_GO)
-- **4 lanes INCOMPLETE** (missing resolver/data/implementation)
+- **1 lane FAIL** (mean_reversion SHORT — confirmed NO_GO, 5 floor failures)
+- **4 lanes INCOMPLETE** (missing data/implementation)
 - **day_trade_momentum LONG** is currently LIVE as baseline — cannot audit without resolved sample
+- **Harness now READY** for mean_reversion LONG (PR #85: `shadow_long_resolver.py` + `file_bars.py`)
 
 ---
 
@@ -47,13 +49,13 @@
 
 ### 1. mean_reversion LONG (`oversold_v2`)
 
-**Verdict:** ⚠️ **INCOMPLETE**  
+**Verdict:** ⚠️ **INCOMPLETE** (harness READY)  
 **Current LIVE:** OFF  
 **Recommendation:** LIVE off until scorecard available
 
 | Metric | Value |
 |--------|-------|
-| n_resolved | **unavailable** |
+| n_resolved | **unavailable** (no bars in cloud) |
 | sessions | **unavailable** |
 | PF | **unavailable** |
 | WR | **unavailable** |
@@ -63,15 +65,38 @@
 
 **Why INCOMPLETE:**
 - Shadow ledger emits exist (`MEAN_REV_SHADOW_LEDGER_ENABLED` → `stage_a_entry` / `setup_type=mean_rev_buy`)
-- However: **no LONG barrier resolver** has been run
-- `would_be_R` in ledger is target multiple, **not** barrier-resolved R
-- Unlike SHORT, no `research/shadow_long_resolver.py` exists
+- ✅ **LONG barrier resolver shipped** (`research/shadow_long_resolver.py` in PR #85)
+- ✅ **File-based bars loader shipped** (`data_providers/file_bars.py` in PR #85)
+- ✅ **45 resolver tests passing** (24 LONG + 21 SHORT)
+- ❌ **No bars data in cloud** — need export from KiddoKingdom
 
-**Engine asks:**
-1. Confirm shadow ledger emits on KiddoKingdom for `mean_rev_buy` / `oversold_v2`
-2. Implement LONG barrier resolver (or extend SHORT resolver with `--side=LONG`)
-3. Run resolve, then apply Stage A floors
-4. Until resolved: do not treat any figure as LONG Stage A green/NO_GO
+**LONG resolver verified (mirrors SHORT correctly):**
+| Feature | LONG | SHORT |
+|---------|------|-------|
+| R-multiple | `(exit - entry) / stop_dist` | `(entry - exit) / stop_dist` |
+| Stop hit | `bar_low <= stop` | `bar_high >= stop` |
+| Target hit | `bar_high >= target` | `bar_low <= target` |
+
+**Exact steps to score (KiddoKingdom):**
+```bash
+# 1. Export bars from Postgres to local files
+python -m data_providers.file_bars export \
+    --dsn "$POSTGRES_DSN" \
+    --symbols $(cat /path/to/shadow_long_log.ndjson | jq -r '.symbol' | sort -u | tr '\n' ' ') \
+    --out /path/to/bars/ \
+    --days 365
+
+# 2. Run LONG resolver with file bars
+python -m research.shadow_long_resolver \
+    --log /path/to/shadow_long_log.ndjson \
+    --bars-dir /path/to/bars/ \
+    --out /tmp/shadow_long_results/
+
+# 3. Check stage_a_summary.json for PASS/FAIL
+cat /tmp/shadow_long_results/stage_a_summary.json | jq '.promotion_book'
+```
+
+**Until resolved: do not treat any figure as LONG Stage A green/NO_GO**
 
 ---
 
@@ -210,28 +235,33 @@
 
 | Lane | Gap | Ask |
 |------|-----|-----|
-| mean_reversion LONG | No LONG resolver | Implement `research/shadow_long_resolver.py` or extend SHORT resolver |
+| mean_reversion LONG | ✅ Resolver shipped | **DATA NEEDED:** Export bars from KiddoKingdom, run resolver |
 | day_trade_momentum SHORT | No shadow ledger | Implement momentum SHORT shadow writer + resolver |
 | day_trade_momentum LONG | No resolved sample | Emit `setup_type`, `session_id` tags; backfill from Schwab fills |
 | ORB | Not implemented | Implement `ORBStrategy` class and wire into `load_strategies` |
 
-**Infrastructure gaps:**
-- No `python -m backtest.cli` with Postgres `minute_bars` integration (expected per task brief)
-- No walk-forward or out-of-sample holdout capability — **all metrics in-sample only if/when resolved**
-- This harness (`backtest/cli.py`, `backtest/stage_a_scorer.py`) is minimal scaffolding only
+**Infrastructure status (PR #85 merged):**
+- ✅ `research/shadow_long_resolver.py` — LONG mean-rev barrier resolver (mirrors SHORT)
+- ✅ `research/shadow_short_resolver.py` — SHORT mean-rev barrier resolver
+- ✅ `data_providers/file_bars.py` — file-based bars loader + Postgres export CLI
+- ✅ `BARS_DIR` / `--bars-dir` for cloud backtest environments
+- ✅ 45 resolver tests passing (24 LONG + 21 SHORT)
+- ⚠️ No walk-forward or out-of-sample holdout capability — **all metrics in-sample only if/when resolved**
 
 ---
 
 ## Constraints Respected
 
 - [x] Did NOT flip LIVE flags / ENABLE_MEAN_REV_SHORT / DAY_TRADE_LIVE in config defaults
-- [x] Did NOT soften locked Stage A floors
+- [x] Did NOT soften locked Stage A floors (n≥150, ≥10 sess, PF≥1.30, WR≥48%, exp≥+0.05R, DD≤6%, max_losing_day≤2R)
 - [x] Documented gaps clearly for Engine
-- [x] Hands-off excluded: MU, HQGE, SPCX
-- [x] mean_reversion SHORT confirmed NO_GO (not fabricated)
+- [x] Hands-off excluded: MU, HQGE, SPCX (hard-coded in both resolvers)
+- [x] mean_reversion SHORT confirmed NO_GO (not fabricated — 5 floor failures)
 - [x] INCOMPLETE lanes honestly marked — no fabricated PF/WR
+- [x] LONG resolver verified: mirrors SHORT barriers correctly (see comparison table above)
+- [x] 45 resolver tests passing (PR #85 claim confirmed)
 
 ---
 
-*Scorecard generated by `python3 -m backtest.cli scorecard`*  
-*Harness: `/workspace/backtest/cli.py`, `/workspace/backtest/stage_a_scorer.py`*
+*Scorecard r2 generated 2026-09-17 after PR #85 merge to tip `360b706`*  
+*Harness: `research/shadow_long_resolver.py`, `research/shadow_short_resolver.py`, `data_providers/file_bars.py`*
