@@ -6831,7 +6831,7 @@
             const regime = latestSnap?.regime || {};
             
             const checks = buildChecklistRows(data, latestSnap, pv, extra, news, regime);
-            const verdict = computeVerdict(checks);
+            const verdict = computeVerdict(checks, latestSnap?.reason || '', latestSnap?.gate_name || '');
             const asOf = latestSnap?.ts ? new Date(latestSnap.ts).toLocaleTimeString('en-US', {
                 hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true
             }) : 'No data';
@@ -7072,69 +7072,88 @@
             
             checks.strategyLanes.push({
                 label: 'Mean Reversion',
-                status: meanRevLive ? 'skip' : 'fail',
+                status: 'skip',
                 chip: meanRevLive ? 'SHADOW' : 'OFF',
-                reason: 'Mean-rev currently in shadow/evaluation mode'
+                reason: meanRevLive ? 'Mean-rev shadow/evaluation mode (non-blocking)' : 'Mean-rev LIVE off (intentional, non-blocking)'
             });
             
             const enableOrb = trading.enable_orb_strategy === true;
             checks.strategyLanes.push({
                 label: 'ORB Strategy',
-                status: enableOrb ? 'skip' : 'fail',
+                status: 'skip',
                 chip: enableOrb ? 'SHADOW' : 'OFF',
-                reason: 'ORB currently in shadow/evaluation mode'
+                reason: enableOrb ? 'ORB shadow/evaluation mode (non-blocking)' : 'ORB off (intentional, non-blocking)'
             });
             
             return checks;
         }
 
-        function computeVerdict(checks) {
+        function computeVerdict(checks, snapReason, snapGate) {
             let passCount = 0;
             let failCount = 0;
             let skipCount = 0;
+            const failLabels = [];
             
             for (const section of Object.values(checks)) {
                 for (const row of section) {
                     if (row.status === 'pass') passCount++;
-                    else if (row.status === 'fail') failCount++;
+                    else if (row.status === 'fail') {
+                        failCount++;
+                        if (row.label) failLabels.push(row.label);
+                    }
                     else skipCount++;
                 }
             }
             
-            const hardFails = (checks.hardGates || []).filter(r => r.status === 'fail').length;
+            const hardFails = (checks.hardGates || []).filter(r => r.status === 'fail');
+            const nameFails = (rows) => {
+                const labels = rows.map(r => r.label).filter(Boolean);
+                if (!labels.length) return '';
+                if (labels.length <= 3) return labels.join(', ');
+                return labels.slice(0, 3).join(', ') + ` +${labels.length - 3} more`;
+            };
+            const snapBit = (() => {
+                const bits = [];
+                if (snapGate) bits.push(String(snapGate));
+                if (snapReason) bits.push(String(snapReason));
+                return bits.length ? ` · last: ${bits.join(' / ')}` : '';
+            })();
             
-            if (hardFails > 0) {
+            if (hardFails.length > 0) {
                 return {
                     label: 'BLOCKED',
                     cls: 'veto',
-                    detail: `${hardFails} hard gate(s) failing`
+                    detail: `Hard fail: ${nameFails(hardFails)}${snapBit}`
                 };
             }
             if (failCount > 0) {
+                const named = failLabels.length
+                    ? (failLabels.length <= 3 ? failLabels.join(', ') : failLabels.slice(0, 3).join(', ') + ` +${failLabels.length - 3} more`)
+                    : `${failCount} gate(s)`;
                 return {
                     label: 'BLOCKED',
                     cls: 'wait',
-                    detail: `${failCount} gate(s) failing`
+                    detail: `Failing: ${named}${snapBit}`
                 };
             }
             if (passCount > 0 && skipCount > passCount) {
                 return {
                     label: 'WAITING',
                     cls: 'wait',
-                    detail: `${skipCount} conditions unknown/pending`
+                    detail: `${skipCount} conditions unknown/pending${snapBit}`
                 };
             }
             if (passCount > 0) {
                 return {
                     label: 'WOULD FIRE',
                     cls: 'act',
-                    detail: `${passCount} gates passing, ${skipCount} skipped`
+                    detail: `${passCount} gates passing, ${skipCount} skipped${snapBit}`
                 };
             }
             return {
                 label: 'NO DATA',
                 cls: '',
-                detail: 'No snapshot data available'
+                detail: 'No snapshot data available' + snapBit
             };
         }
 
