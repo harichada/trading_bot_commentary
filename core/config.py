@@ -3413,6 +3413,51 @@ class Config:
         return bool(self.manager.get('trading.theme_hard_skip_require_gpu', False))
 
     @property
+    def GPU_CRITIC_CONTAM_LEXICON_ENABLE(self) -> bool:
+        """Enable lexicon-based contamination detection in GPU News Critic.
+
+        v-book-b-contam-lexicon-2026-09-17: when True, applies expanded
+        contamination triggers (Corning/GLW, oil crisis, commodity wraps)
+        inside _compute_contamination_risk. Bumps contamination_risk to >=0.65
+        on headline/summary text match UNLESS headline also has AI_COMPUTE_TRIGGERS.
+
+        Fixes Book B contam_fp (f59b23116fcb, 9579cf0d1b4f, 2d83a5133335) where
+        MiniLM flat softmax tipped ai_compute on Corning/oil wraps with contam=0.
+
+        Default False (shadow-only, safe off-path). Enable via env
+        GPU_CRITIC_CONTAM_LEXICON_ENABLE=1 or trading.gpu_critic_contam_lexicon_enable: true.
+        """
+        env_val = os.getenv("GPU_CRITIC_CONTAM_LEXICON_ENABLE")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.gpu_critic_contam_lexicon_enable', False))
+
+    @property
+    def GPU_CRITIC_CONTAM_LEXICON(self) -> list:
+        """Lexicon tokens for contamination detection in GPU News Critic.
+
+        v-book-b-contam-lexicon-2026-09-17: list of tokens that trigger
+        contamination_risk bump when found in headline/summary text.
+        Match is case-insensitive on headline/summary text only (NOT symbols_seen).
+
+        Default includes: corning, glw, nyse:glw, motor oil, oil crisis, crude oil,
+        petroleum, opec, wti, brent, and peer tokens (cohr, cien, aaoi) when
+        co-mentioned with glass/optical without AI headline triggers.
+
+        Override via env GPU_CRITIC_CONTAM_LEXICON (comma-separated) or
+        trading.gpu_critic_contam_lexicon (list) in Config.yaml.
+        """
+        env_val = os.getenv("GPU_CRITIC_CONTAM_LEXICON")
+        if env_val is not None:
+            return [t.strip().lower() for t in env_val.split(",") if t.strip()]
+        default_lexicon = [
+            "corning", "glw", "nyse:glw",
+            "motor oil", "oil crisis", "crude oil", "petroleum", "opec", "wti", "brent",
+            "cohr", "cien", "aaoi",
+        ]
+        return self.manager.get('trading.gpu_critic_contam_lexicon', default_lexicon)
+
+    @property
     def ENABLE_ALPACA_NEWS_BUS(self) -> bool:
         """Enable Alpaca News publishing to NewsBus.
 
