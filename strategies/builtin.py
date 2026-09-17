@@ -2209,112 +2209,128 @@ class DayTradeMomentumShortStrategy(TradingStrategyWithCommentary):
             _confidence = min(0.85, _entry_confidence * (1.0 + abs(_rs_vs_spy) / 10.0))
 
             # ────────────────────────────────────────────────────────────────
-            # Shadow logging (when LIVE disabled)
+            # LIVE gate: when LIVE disabled, optionally shadow-log then exit.
+            # CRITICAL: must NOT fall through to LIVE path when LIVE=False.
+            # v-shadow-fallthrough-fix-2026-09-17: restructured to always
+            # return None when LIVE disabled, regardless of SHADOW setting.
             # ────────────────────────────────────────────────────────────────
-            _is_shadow = not cfg.DAY_TRADE_SHORT_LIVE_ENTRIES_ENABLED
             _session_id = _get_session_id()
 
-            if _is_shadow and cfg.ENABLE_DAY_TRADE_SHORT_SHADOW:
-                if _shadow_short_should_log(symbol):
-                    try:
-                        from datetime import timezone as _tz_sh
-                        import json as _json_sh
-                        from pathlib import Path as _Path_sh
-
-                        _shadow_entry = {
-                            'timestamp': datetime.now(_tz_sh.utc).isoformat(),
-                            'symbol': symbol,
-                            'signal_type': 'SHORT',
-                            'strategy': 'day_trade_momentum_short',
-                            'entry_pattern': _entry_pattern,
-                            'signal_close': float(market_data.close),
-                            'rsi': float(rsi),
-                            'rs_vs_spy': float(_rs_vs_spy),
-                            'volume_ratio': float(volume_ratio),
-                            'adx': float(adx),
-                            'low_20': float(low_20),
-                            'high_20': float(high_20),
-                            'sma_20': float(sma_20) if sma_20 > 0 else 0,
-                            'sma_50': float(sma_50) if sma_50 > 0 else 0,
-                            'macd': float(macd),
-                            'macd_signal': float(macd_signal),
-                            'atr': float(atr),
-                            'hypothetical_stop': float(stop_loss),
-                            'hypothetical_target': float(take_profit),
-                            'rr_ratio': float(_rr_ratio),
-                            'stop_dist': float(stop_distance),
-                            'market_context_regime': _mc_regime,
-                            'market_context_spy_change': float(_mc_spy_change),
-                            'market_context_vix_change': float(_mc_vix_change),
-                            'market_context_sector': _mc_sector,
-                            'direction_score': float(_direction_read.direction) if _direction_read else 0,
-                            'direction_phase': _direction_read.phase if _direction_read else 'unknown',
-                            'session_id': _session_id,
-                        }
-
-                        _repo_root = _Path_sh(__file__).resolve().parent.parent
-                        _ledger_dir = _repo_root / "data"
-                        _ledger_dir.mkdir(parents=True, exist_ok=True)
-                        _ledger_path = str(_ledger_dir / "day_trade_short_shadow.ndjson")
-
+            if not cfg.DAY_TRADE_SHORT_LIVE_ENTRIES_ENABLED:
+                # LIVE disabled — optionally shadow-log, then ALWAYS return None
+                if cfg.ENABLE_DAY_TRADE_SHORT_SHADOW:
+                    if _shadow_short_should_log(symbol):
                         try:
-                            with open(_ledger_path, 'a') as _f:
-                                _f.write(_json_sh.dumps(_shadow_entry, default=str) + "\n")
-                        except Exception as _shadow_io_exc:
-                            logger.warning(
-                                "day_trade_short_shadow write failed for %s: %s",
-                                symbol, _shadow_io_exc,
+                            from datetime import timezone as _tz_sh
+                            import json as _json_sh
+                            from pathlib import Path as _Path_sh
+
+                            _shadow_entry = {
+                                'timestamp': datetime.now(_tz_sh.utc).isoformat(),
+                                'symbol': symbol,
+                                'signal_type': 'SHORT',
+                                'strategy': 'day_trade_momentum_short',
+                                'entry_pattern': _entry_pattern,
+                                'signal_close': float(market_data.close),
+                                'rsi': float(rsi),
+                                'rs_vs_spy': float(_rs_vs_spy),
+                                'volume_ratio': float(volume_ratio),
+                                'adx': float(adx),
+                                'low_20': float(low_20),
+                                'high_20': float(high_20),
+                                'sma_20': float(sma_20) if sma_20 > 0 else 0,
+                                'sma_50': float(sma_50) if sma_50 > 0 else 0,
+                                'macd': float(macd),
+                                'macd_signal': float(macd_signal),
+                                'atr': float(atr),
+                                'hypothetical_stop': float(stop_loss),
+                                'hypothetical_target': float(take_profit),
+                                'rr_ratio': float(_rr_ratio),
+                                'stop_dist': float(stop_distance),
+                                'market_context_regime': _mc_regime,
+                                'market_context_spy_change': float(_mc_spy_change),
+                                'market_context_vix_change': float(_mc_vix_change),
+                                'market_context_sector': _mc_sector,
+                                'direction_score': float(_direction_read.direction) if _direction_read else 0,
+                                'direction_phase': _direction_read.phase if _direction_read else 'unknown',
+                                'session_id': _session_id,
+                            }
+
+                            _repo_root = _Path_sh(__file__).resolve().parent.parent
+                            _ledger_dir = _repo_root / "data"
+                            _ledger_dir.mkdir(parents=True, exist_ok=True)
+                            _ledger_path = str(_ledger_dir / "day_trade_short_shadow.ndjson")
+
+                            try:
+                                with open(_ledger_path, 'a') as _f:
+                                    _f.write(_json_sh.dumps(_shadow_entry, default=str) + "\n")
+                            except Exception as _shadow_io_exc:
+                                logger.warning(
+                                    "day_trade_short_shadow write failed for %s: %s",
+                                    symbol, _shadow_io_exc,
+                                )
+
+                            self._log_decision(
+                                market_data, "shadow", "short_shadow_logged",
+                                pattern=_entry_pattern,
+                                rsi=round(rsi, 2),
+                                rs_vs_spy=round(_rs_vs_spy, 2),
+                                volume_ratio=round(volume_ratio, 2),
+                                adx=round(adx, 2),
+                                close=round(market_data.close, 2),
+                                stop=round(stop_loss, 2),
+                                target=round(take_profit, 2),
+                                regime=_mc_regime,
+                                session_id=_session_id,
                             )
 
-                        self._log_decision(
-                            market_data, "shadow", "short_shadow_logged",
-                            pattern=_entry_pattern,
-                            rsi=round(rsi, 2),
-                            rs_vs_spy=round(_rs_vs_spy, 2),
-                            volume_ratio=round(volume_ratio, 2),
-                            adx=round(adx, 2),
-                            close=round(market_data.close, 2),
-                            stop=round(stop_loss, 2),
-                            target=round(take_profit, 2),
-                            regime=_mc_regime,
-                            session_id=_session_id,
-                        )
+                            self.commentary.add_commentary(TradingCommentary(
+                                timestamp=datetime.now(),
+                                type=CommentaryType.OPPORTUNITY,
+                                symbol=symbol,
+                                title=f"👁️ SHADOW Short: {_entry_pattern.upper()}",
+                                message=(
+                                    f"SHADOW short signal (LIVE disabled).\n"
+                                    f"  Pattern: {_entry_pattern}\n"
+                                    f"  RS vs SPY: {_rs_vs_spy:+.2f}% (weak)\n"
+                                    f"  RSI: {rsi:.1f} | Volume: {volume_ratio:.1f}x\n"
+                                    f"  Stop: ${stop_loss:.2f} | Target: ${take_profit:.2f}\n\n"
+                                    f"Set DAY_TRADE_SHORT_LIVE_ENTRIES_ENABLED=1 after Stage-A soak."
+                                ),
+                                data={
+                                    'shadow': True,
+                                    'pattern': _entry_pattern,
+                                    'rs_vs_spy': _rs_vs_spy,
+                                    'rsi': rsi,
+                                    'volume_ratio': volume_ratio,
+                                    'regime': _mc_regime,
+                                },
+                                confidence=_confidence,
+                                importance=6,
+                            ))
 
-                        self.commentary.add_commentary(TradingCommentary(
-                            timestamp=datetime.now(),
-                            type=CommentaryType.OPPORTUNITY,
-                            symbol=symbol,
-                            title=f"👁️ SHADOW Short: {_entry_pattern.upper()}",
-                            message=(
-                                f"SHADOW short signal (LIVE disabled).\n"
-                                f"  Pattern: {_entry_pattern}\n"
-                                f"  RS vs SPY: {_rs_vs_spy:+.2f}% (weak)\n"
-                                f"  RSI: {rsi:.1f} | Volume: {volume_ratio:.1f}x\n"
-                                f"  Stop: ${stop_loss:.2f} | Target: ${take_profit:.2f}\n\n"
-                                f"Set DAY_TRADE_SHORT_LIVE_ENTRIES_ENABLED=1 after Stage-A soak."
-                            ),
-                            data={
-                                'shadow': True,
-                                'pattern': _entry_pattern,
-                                'rs_vs_spy': _rs_vs_spy,
-                                'rsi': rsi,
-                                'volume_ratio': volume_ratio,
-                                'regime': _mc_regime,
-                            },
-                            confidence=_confidence,
-                            importance=6,
-                        ))
+                        except Exception as _shadow_exc:
+                            logger.debug(
+                                "day_trade_short_shadow capture failed for %s: %s",
+                                symbol, _shadow_exc,
+                            )
+                else:
+                    # SHADOW also disabled — silent skip, log decision only
+                    self._log_decision(
+                        market_data, "skip", "live_short_disabled_no_shadow",
+                        pattern=_entry_pattern,
+                        rsi=round(rsi, 2),
+                        rs_vs_spy=round(_rs_vs_spy, 2),
+                        volume_ratio=round(volume_ratio, 2),
+                        reason="DAY_TRADE_SHORT_LIVE_ENTRIES_ENABLED=False, SHADOW=False",
+                    )
 
-                    except Exception as _shadow_exc:
-                        logger.debug(
-                            "day_trade_short_shadow capture failed for %s: %s",
-                            symbol, _shadow_exc,
-                        )
-
+                # CRITICAL: Always return None when LIVE disabled
                 return None
 
             # ────────────────────────────────────────────────────────────────
             # LIVE path — emit signal for broker execution
+            # Only reached when DAY_TRADE_SHORT_LIVE_ENTRIES_ENABLED=True
             # ────────────────────────────────────────────────────────────────
             self.commentary.add_commentary(TradingCommentary(
                 timestamp=datetime.now(),

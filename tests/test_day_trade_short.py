@@ -364,6 +364,98 @@ class TestDayTradeShortWeakRS:
         )
 
 
+class TestDayTradeShortShadowFallthrough:
+    """Test shadow fallthrough bug fix (v-shadow-fallthrough-fix-2026-09-17).
+
+    CRITICAL: When LIVE=False and SHADOW=False, the code must NOT fall
+    through to emit a LIVE TradingSignal(SELL). It must return None.
+    """
+
+    @pytest.mark.asyncio
+    async def test_live_false_shadow_false_returns_none(self):
+        """LIVE=False + SHADOW=False must return None, NOT a TradingSignal.
+
+        This test guards against the shadow fallthrough bug where the code
+        would fall through to the LIVE path when both flags were False.
+        """
+        from strategies.builtin import DayTradeMomentumShortStrategy
+
+        strategy = DayTradeMomentumShortStrategy(MagicMock())
+        strategy._log_decision = MagicMock()
+
+        market_data = MagicMock()
+        market_data.symbol = 'NVDA'
+        market_data.close = 98.0  # Below low_20 = breakdown pattern
+        market_data.open = 105.0
+        market_data.timestamp = datetime.now()
+        market_data.indicators = {
+            'rsi': 40,
+            'volume_ratio': 2.0,
+            'adx': 25,
+            'atr': 1.5,
+            'low_20': 100.0,
+            'high_20': 110.0,
+            'sma_20': 105.0,
+            'sma_50': 108.0,
+            'macd': -0.5,
+            'macd_signal': -0.3,
+            'day_change_pct': -3.0,
+        }
+
+        with patch('core.market_context.read_market_context') as mock_mc:
+            mock_mc.return_value = MagicMock(
+                regime='risk_off',
+                time_of_day='morning',
+                spy_change_pct=0.5,
+                vix_change_pct=5.0,
+                sector_etf='XLK',
+                reason='risk_off test',
+            )
+
+            with patch('core.direction_reader.read_direction') as mock_dr:
+                mock_dr.return_value = MagicMock(
+                    direction=-4.0,
+                    phase='middle',
+                    ema_stack='aligned_down',
+                    allows_short_entry=True,
+                    reason='strong downtrend',
+                )
+
+                with patch('core.config.Config') as mock_cfg:
+                    mock_cfg_instance = MagicMock()
+                    mock_cfg_instance.ENABLE_DAY_TRADE_SHORT = True
+                    mock_cfg_instance.HANDS_OFF_DENYLIST = frozenset({'MU', 'HQGE', 'SPCX'})
+                    # KEY: Both LIVE and SHADOW disabled
+                    mock_cfg_instance.DAY_TRADE_SHORT_LIVE_ENTRIES_ENABLED = False
+                    mock_cfg_instance.ENABLE_DAY_TRADE_SHORT_SHADOW = False
+                    mock_cfg_instance.DAY_TRADE_SHORT_MIN_WEAK_RS_VS_SPY = 0.5
+                    mock_cfg_instance.DAY_TRADE_SHORT_RSI_FLOOR = 30.0
+                    mock_cfg_instance.DAY_TRADE_SHORT_RSI_CEILING = 85.0
+                    mock_cfg_instance.MOMENTUM_MIN_VOLUME_RATIO = 1.5
+                    mock_cfg_instance.DAY_TRADE_FLATTEN_HOUR_ENTRY_GATE_ENABLED = False
+                    mock_cfg_instance.DAY_TRADE_SIZE_MULTIPLIER = 0.5
+                    mock_cfg_instance.DAY_TRADE_FLATTEN_HOUR = 15
+                    mock_cfg.return_value = mock_cfg_instance
+
+                    signal = await strategy.generate_signal_with_commentary(market_data)
+
+        # CRITICAL: Must return None when LIVE=False, even if SHADOW=False
+        assert signal is None, (
+            "CRITICAL BUG: LIVE=False + SHADOW=False must return None, "
+            "but code fell through to LIVE path and returned a TradingSignal. "
+            "This would place actual short orders when operator explicitly "
+            "disabled LIVE shorts."
+        )
+
+        # Verify the skip was logged
+        skip_calls = [c for c in strategy._log_decision.call_args_list
+                      if c[0][1] == 'skip' and 'live_short_disabled' in str(c[0][2])]
+        assert len(skip_calls) > 0, (
+            "When LIVE=False and SHADOW=False, should log skip with reason "
+            "indicating both flags are disabled"
+        )
+
+
 class TestDayTradeShortBreakdownPattern:
     """Test breakdown pattern detection for shorts."""
 
