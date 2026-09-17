@@ -1612,6 +1612,210 @@
             font-style: italic;
         }
 
+        /* v-pre-trade-checklist-2026-09-17: Pre-Trade Checklist panel.
+           Dense cockpit-style checklist showing all entry gates for a symbol.
+           PASS/FAIL/SKIP lights with reasons at a glance. */
+        .checklist-panel {
+            background: oklch(0.08 0.02 270 / 0.95);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 0.875rem;
+            margin-bottom: 1rem;
+        }
+        .checklist-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.75rem;
+            margin-bottom: 0.75rem;
+        }
+        .checklist-header h3 {
+            margin: 0;
+            font: 700 0.875rem var(--font-sans);
+            color: var(--fg);
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        .checklist-symbol-input {
+            flex: 1;
+            max-width: 120px;
+            padding: 0.35rem 0.5rem;
+            background: oklch(0.12 0.015 270);
+            border: 1px solid var(--border);
+            color: var(--fg);
+            border-radius: calc(var(--radius) - 2px);
+            font: 600 0.75rem var(--font-mono);
+            text-transform: uppercase;
+        }
+        .checklist-symbol-input::placeholder {
+            color: var(--muted-fg);
+            text-transform: none;
+        }
+        .checklist-symbol-input:focus {
+            outline: none;
+            border-color: var(--accent);
+            box-shadow: 0 0 0 2px oklch(0.62 0.18 195 / 0.15);
+        }
+        .checklist-verdict-strip {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.5rem 0.75rem;
+            background: oklch(0.10 0.015 270);
+            border-radius: calc(var(--radius) - 2px);
+            margin-bottom: 0.75rem;
+        }
+        .checklist-verdict-strip .verdict-chip {
+            font-size: 0.6875rem;
+            padding: 0.2rem 0.5rem;
+        }
+        .checklist-verdict-strip .verdict-detail {
+            font: 500 0.6875rem var(--font-sans);
+            color: var(--muted-fg);
+        }
+        .checklist-verdict-strip .verdict-asof {
+            margin-left: auto;
+            font: 500 0.5625rem var(--font-mono);
+            color: var(--muted-fg);
+        }
+        .checklist-section {
+            margin-bottom: 0.625rem;
+        }
+        .checklist-section:last-child {
+            margin-bottom: 0;
+        }
+        .checklist-section-title {
+            font: 600 0.5625rem var(--font-sans);
+            color: var(--muted-fg);
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            margin-bottom: 0.375rem;
+            padding-left: 0.25rem;
+        }
+        .checklist-row {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.35rem 0.5rem;
+            background: oklch(0.12 0.015 270 / 0.6);
+            border-radius: calc(var(--radius) - 4px);
+            margin-bottom: 0.25rem;
+        }
+        .checklist-row:last-child {
+            margin-bottom: 0;
+        }
+        .checklist-light {
+            width: 0.5rem;
+            height: 0.5rem;
+            border-radius: 9999px;
+            flex-shrink: 0;
+        }
+        .checklist-light.pass {
+            background: var(--success);
+            box-shadow: 0 0 6px oklch(0.70 0.18 155 / 0.6);
+        }
+        .checklist-light.fail {
+            background: var(--destructive);
+            box-shadow: 0 0 6px oklch(0.58 0.20 25 / 0.6);
+        }
+        .checklist-light.skip {
+            background: var(--warning);
+            box-shadow: 0 0 6px oklch(0.78 0.14 85 / 0.4);
+        }
+        .checklist-light.unknown {
+            background: var(--muted-fg);
+            opacity: 0.5;
+        }
+        .checklist-label {
+            font: 500 0.6875rem var(--font-sans);
+            color: oklch(0.85 0 0);
+            flex: 1;
+            min-width: 0;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .checklist-chip {
+            font: 500 0.5625rem var(--font-mono);
+            padding: 0.15rem 0.4rem;
+            background: oklch(0.16 0.015 270);
+            border: 1px solid var(--border-soft);
+            border-radius: calc(var(--radius) - 4px);
+            color: var(--muted-fg);
+            max-width: 140px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .checklist-chip.pass { color: var(--success); border-color: oklch(0.70 0.18 155 / 0.3); }
+        .checklist-chip.fail { color: var(--destructive); border-color: oklch(0.58 0.20 25 / 0.3); }
+        .checklist-chip.skip { color: var(--warning); border-color: oklch(0.78 0.14 85 / 0.3); }
+        .checklist-empty {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 1.5rem 1rem;
+            text-align: center;
+            color: var(--muted-fg);
+        }
+        .checklist-empty-title {
+            font: 500 0.8125rem var(--font-sans);
+            color: oklch(0.65 0 0);
+            margin-bottom: 0.25rem;
+        }
+        .checklist-empty-sub {
+            font: 400 0.6875rem var(--font-sans);
+            color: var(--muted-fg);
+        }
+        .checklist-loading {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+            padding: 1rem;
+            color: var(--muted-fg);
+            font: 500 0.75rem var(--font-sans);
+        }
+        .checklist-loading::before {
+            content: '';
+            width: 1rem;
+            height: 1rem;
+            border: 2px solid oklch(0.25 0.01 270);
+            border-top-color: var(--accent);
+            border-radius: 9999px;
+            animation: checklist-spin 1s linear infinite;
+        }
+        @keyframes checklist-spin {
+            to { transform: rotate(360deg); }
+        }
+        .checklist-error {
+            padding: 0.75rem;
+            background: oklch(0.58 0.20 25 / 0.08);
+            border: 1px solid oklch(0.58 0.20 25 / 0.2);
+            border-radius: calc(var(--radius) - 2px);
+            font: 400 0.6875rem var(--font-sans);
+            color: oklch(0.75 0.15 25);
+        }
+        .checklist-refresh-btn {
+            background: none;
+            border: 1px solid var(--border);
+            color: var(--muted-fg);
+            padding: 0.25rem 0.5rem;
+            border-radius: calc(var(--radius) - 4px);
+            font: 500 0.625rem var(--font-sans);
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+        .checklist-refresh-btn:hover {
+            background: oklch(0.18 0.015 270);
+            color: var(--fg);
+            border-color: var(--accent);
+        }
+
         /* Portfolio hands-off: long-term unmanaged positions — calm styling */
         .hands-off-row {
             position: relative;
@@ -2837,6 +3041,31 @@
                 <div class="glance-thesis" id="glance-thesis"></div>
                 <div class="glance-metrics" id="glance-metrics"></div>
                 <div class="glance-risks" id="glance-risks" style="display:none;"></div>
+            </div>
+
+            <!-- v-pre-trade-checklist-2026-09-17: Pre-Trade Checklist Panel -->
+            <div class="checklist-panel" id="checklist-panel">
+                <div class="checklist-header">
+                    <h3>
+                        <span class="lucide-slot" data-icon="clipboard-check" data-size="14"></span>
+                        Pre-Trade Checklist
+                    </h3>
+                    <input type="text" 
+                           class="checklist-symbol-input" 
+                           id="checklist-symbol-input" 
+                           placeholder="Symbol..." 
+                           maxlength="5"
+                           onkeyup="if(event.key==='Enter')loadChecklistForSymbol(this.value)">
+                    <button class="checklist-refresh-btn" onclick="refreshChecklist()" title="Refresh">
+                        <span class="lucide-slot" data-icon="refresh-cw" data-size="12"></span>
+                    </button>
+                </div>
+                <div id="checklist-content">
+                    <div class="checklist-empty" id="checklist-empty">
+                        <div class="checklist-empty-title">Enter a symbol</div>
+                        <div class="checklist-empty-sub">View all entry gates and reasons for a specific ticker</div>
+                    </div>
+                </div>
             </div>
 
             <div class="filter-buttons">
@@ -6509,6 +6738,427 @@
         updatePulseEmptyState();
         // Load initial sentiment data
         refreshSentiment();
+
+        // ============== PRE-TRADE CHECKLIST ==============
+        // v-pre-trade-checklist-2026-09-17: Pre-Trade Checklist for entry gates.
+        let _checklistSymbol = '';
+        let _checklistData = null;
+
+        async function loadChecklistForSymbol(symbol) {
+            if (!symbol || typeof symbol !== 'string') {
+                showChecklistEmpty();
+                return;
+            }
+            symbol = symbol.trim().toUpperCase();
+            if (!symbol || symbol.length > 5 || !/^[A-Z]+$/.test(symbol)) {
+                showChecklistEmpty();
+                return;
+            }
+            _checklistSymbol = symbol;
+            document.getElementById('checklist-symbol-input').value = symbol;
+            showChecklistLoading();
+            
+            try {
+                const [snapshotsRes, featuresRes, handsOffRes, settingsRes, decisionsRes] = await Promise.all([
+                    authFetch(`/api/decision-snapshots?symbol=${encodeURIComponent(symbol)}&limit=5`),
+                    authFetch(`/api/features/${encodeURIComponent(symbol)}`),
+                    authFetch('/api/hands-off-denylist'),
+                    authFetch('/api/settings'),
+                    authFetch(`/api/decisions?symbol=${encodeURIComponent(symbol)}&limit=20`)
+                ]);
+                
+                const snapshots = snapshotsRes.ok ? await snapshotsRes.json() : {status:'error'};
+                const features = featuresRes.ok ? await featuresRes.json() : {status:'error'};
+                const handsOff = handsOffRes.ok ? await handsOffRes.json() : {status:'error', symbols:[]};
+                const settings = settingsRes.ok ? await settingsRes.json() : {status:'error', settings:{}};
+                const decisions = decisionsRes.ok ? await decisionsRes.json() : {status:'error', decisions:[]};
+                
+                _checklistData = {
+                    symbol,
+                    snapshots: snapshots.snapshots || [],
+                    features: features.snapshot || null,
+                    featureVector: features.feature_vector || null,
+                    handsOff: handsOff.symbols || [],
+                    permanent: handsOff.permanent || [],
+                    settings: settings.settings || {},
+                    decisions: decisions.decisions || []
+                };
+                
+                renderChecklist(_checklistData);
+            } catch (err) {
+                console.error('Checklist load error:', err);
+                showChecklistError('Failed to load checklist data');
+            }
+        }
+
+        function refreshChecklist() {
+            if (_checklistSymbol) {
+                loadChecklistForSymbol(_checklistSymbol);
+            }
+        }
+
+        function showChecklistEmpty() {
+            const content = document.getElementById('checklist-content');
+            content.innerHTML = `
+                <div class="checklist-empty" id="checklist-empty">
+                    <div class="checklist-empty-title">Enter a symbol</div>
+                    <div class="checklist-empty-sub">View all entry gates and reasons for a specific ticker</div>
+                </div>
+            `;
+        }
+
+        function showChecklistLoading() {
+            const content = document.getElementById('checklist-content');
+            content.innerHTML = `<div class="checklist-loading">Loading checklist...</div>`;
+        }
+
+        function showChecklistError(msg) {
+            const content = document.getElementById('checklist-content');
+            content.innerHTML = `<div class="checklist-error">${escapeHtml(msg)}</div>`;
+        }
+
+        function renderChecklist(data) {
+            const content = document.getElementById('checklist-content');
+            if (!data || !data.symbol) {
+                showChecklistEmpty();
+                return;
+            }
+            
+            const latestSnap = data.snapshots[0] || null;
+            const pv = latestSnap?.price_vol || data.features?.price_vol || {};
+            const extra = latestSnap?.extra || {};
+            const news = latestSnap?.news || {};
+            const regime = latestSnap?.regime || {};
+            
+            const checks = buildChecklistRows(data, latestSnap, pv, extra, news, regime);
+            const verdict = computeVerdict(checks);
+            const asOf = latestSnap?.ts ? new Date(latestSnap.ts).toLocaleTimeString('en-US', {
+                hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true
+            }) : 'No data';
+            
+            let html = `
+                <div class="checklist-verdict-strip">
+                    <span class="verdict-chip ${verdict.cls}">${escapeHtml(verdict.label)}</span>
+                    <span class="verdict-detail">${escapeHtml(verdict.detail)}</span>
+                    <span class="verdict-asof">as-of ${escapeHtml(asOf)}</span>
+                </div>
+            `;
+            
+            const sections = [
+                { title: '1. Hard Allow/Deny', key: 'hardGates' },
+                { title: '2. Setup Quality', key: 'setup' },
+                { title: '3. Entry Gates', key: 'entryGates' },
+                { title: '4. Risk & Sizing', key: 'riskSize' },
+                { title: '5. Strategy Lanes', key: 'strategyLanes' }
+            ];
+            
+            for (const sec of sections) {
+                const rows = checks[sec.key] || [];
+                if (rows.length === 0) continue;
+                html += `<div class="checklist-section">`;
+                html += `<div class="checklist-section-title">${escapeHtml(sec.title)}</div>`;
+                for (const row of rows) {
+                    html += `
+                        <div class="checklist-row">
+                            <div class="checklist-light ${row.status}"></div>
+                            <span class="checklist-label">${escapeHtml(row.label)}</span>
+                            <span class="checklist-chip ${row.status}" title="${escapeHtml(row.reason)}">${escapeHtml(row.chip)}</span>
+                        </div>
+                    `;
+                }
+                html += `</div>`;
+            }
+            
+            content.innerHTML = html;
+            
+            if (typeof lucide === 'function') {
+                document.getElementById('checklist-panel').querySelectorAll('.lucide-slot').forEach(el => {
+                    const icon = el.dataset.icon;
+                    const size = el.dataset.size || 16;
+                    if (icon) el.innerHTML = lucide(icon, parseInt(size));
+                });
+            }
+        }
+
+        function buildChecklistRows(data, snap, pv, extra, news, regime) {
+            const symbol = data.symbol;
+            const handsOff = data.handsOff || [];
+            const permanent = data.permanent || [];
+            const settings = data.settings || {};
+            const decisions = data.decisions || [];
+            const action = snap?.action || '';
+            const reason = snap?.reason || '';
+            const gateName = snap?.gate_name || '';
+            
+            const trading = settings.trading || {};
+            const dayTradeLive = trading.day_trade_live_entries_enabled === true;
+            const meanRevLive = trading.mean_rev_live_entries_enabled !== false;
+            
+            const checks = {
+                hardGates: [],
+                setup: [],
+                entryGates: [],
+                riskSize: [],
+                strategyLanes: []
+            };
+            
+            // 1. Hard Allow/Deny
+            const isHandsOff = handsOff.includes(symbol);
+            const isPermanent = permanent.includes(symbol);
+            checks.hardGates.push({
+                label: 'DAY_TRADE_LIVE',
+                status: dayTradeLive ? 'pass' : 'fail',
+                chip: dayTradeLive ? 'ON' : 'OFF',
+                reason: dayTradeLive ? 'Live entries enabled' : 'Live entries disabled'
+            });
+            checks.hardGates.push({
+                label: 'Hands-Off Denylist',
+                status: isHandsOff ? 'fail' : 'pass',
+                chip: isHandsOff ? (isPermanent ? 'PERMANENT' : 'DENIED') : 'CLEAR',
+                reason: isHandsOff ? `${symbol} is on hands-off list` : 'Symbol not blocked'
+            });
+            
+            const hasThemeShock = news.theme_shock === true || extra.theme_shock === true;
+            const hasHardSkip = reason?.toLowerCase().includes('hard_skip') || 
+                               reason?.toLowerCase().includes('theme_shock') ||
+                               news.hard_skip === true;
+            checks.hardGates.push({
+                label: 'ThemeShock / News Hard-Skip',
+                status: hasThemeShock || hasHardSkip ? 'fail' : 'pass',
+                chip: hasThemeShock ? 'SHOCK' : (hasHardSkip ? 'SKIP' : 'CLEAR'),
+                reason: hasThemeShock ? 'Theme shock detected' : (hasHardSkip ? 'News hard-skip active' : 'No news blocks')
+            });
+            
+            const isRiskOff = regime.regime === 'risk_off' || regime.market_regime === 'risk_off';
+            checks.hardGates.push({
+                label: 'Risk-Off Momentum Skip',
+                status: isRiskOff ? 'fail' : 'pass',
+                chip: isRiskOff ? 'RISK_OFF' : 'NORMAL',
+                reason: isRiskOff ? 'Market in risk-off regime' : 'Normal market regime'
+            });
+            
+            // 2. Setup Quality
+            const pattern = extra.pattern || extra.setup_type || snap?.strategy_id || 'unknown';
+            checks.setup.push({
+                label: 'Day-Trade Pattern',
+                status: pattern !== 'unknown' ? 'pass' : 'skip',
+                chip: pattern.replace(/_/g, ' ').substring(0, 18),
+                reason: `Setup: ${pattern}`
+            });
+            
+            const rsSpy = pv.rs_vs_spy ?? pv.relative_strength ?? extra.rs_spy ?? null;
+            checks.setup.push({
+                label: 'RS vs SPY',
+                status: rsSpy !== null ? (rsSpy > 0 ? 'pass' : 'skip') : 'unknown',
+                chip: rsSpy !== null ? (rsSpy > 0 ? '+' : '') + rsSpy.toFixed(2) : 'N/A',
+                reason: rsSpy !== null ? `Relative strength: ${rsSpy.toFixed(2)}` : 'No RS data'
+            });
+            
+            const volRatio = pv.volume_ratio ?? pv.rvol ?? extra.volume_ratio ?? null;
+            checks.setup.push({
+                label: 'Volume / RVOL',
+                status: volRatio !== null ? (volRatio >= 1.0 ? 'pass' : 'skip') : 'unknown',
+                chip: volRatio !== null ? volRatio.toFixed(2) + 'x' : 'N/A',
+                reason: volRatio !== null ? `RVOL: ${volRatio.toFixed(2)}x` : 'No volume data'
+            });
+            
+            const atrRatio = pv.atr_ratio ?? extra.atr_ratio ?? null;
+            checks.setup.push({
+                label: 'ATR Stop',
+                status: atrRatio !== null ? 'pass' : 'unknown',
+                chip: atrRatio !== null ? atrRatio.toFixed(2) : 'N/A',
+                reason: atrRatio !== null ? `ATR ratio: ${atrRatio.toFixed(2)}` : 'No ATR data'
+            });
+            
+            const sizeMult = snap?.would_size_mult ?? extra.size_mult ?? extra.opening_30_mult ?? null;
+            checks.setup.push({
+                label: 'Opening 30 Size Mult',
+                status: sizeMult !== null ? 'pass' : 'skip',
+                chip: sizeMult !== null ? sizeMult.toFixed(2) + 'x' : 'N/A',
+                reason: sizeMult !== null ? `Size multiplier: ${sizeMult}x` : 'Default sizing'
+            });
+            
+            // 3. Entry Gates
+            const rsi = pv.rsi ?? extra.rsi ?? null;
+            const rsiBlocked = rsi !== null && rsi <= 50;
+            checks.entryGates.push({
+                label: 'RSI <= 50 Block',
+                status: rsiBlocked ? 'fail' : (rsi !== null ? 'pass' : 'unknown'),
+                chip: rsi !== null ? rsi.toFixed(1) : 'N/A',
+                reason: rsiBlocked ? `RSI ${rsi.toFixed(1)} <= 50 blocks entry` : (rsi !== null ? `RSI ${rsi.toFixed(1)} OK` : 'No RSI data')
+            });
+            
+            const rsiHighVeto = rsi !== null && rsi >= 70;
+            checks.entryGates.push({
+                label: 'RSI >= 70 Breakout Veto',
+                status: rsiHighVeto ? 'fail' : (rsi !== null ? 'pass' : 'unknown'),
+                chip: rsiHighVeto ? 'OVERBOUGHT' : (rsi !== null ? 'OK' : 'N/A'),
+                reason: rsiHighVeto ? `RSI ${rsi.toFixed(1)} >= 70 vetoes breakout/continuation` : 'RSI not overbought'
+            });
+            
+            const lateEntry = reason?.toLowerCase().includes('late') || 
+                             gateName?.toLowerCase().includes('late') ||
+                             extra.late_entry === true;
+            checks.entryGates.push({
+                label: 'Late Entry Hard-Skip',
+                status: lateEntry ? 'fail' : 'pass',
+                chip: lateEntry ? 'LATE' : 'ON TIME',
+                reason: lateEntry ? 'Entry too late in move' : 'Entry timing OK'
+            });
+            
+            const flattenHour = trading.day_trade_flatten_hour ?? 15;
+            const now = new Date();
+            const currentHour = now.getHours();
+            const flattenBlock = currentHour >= flattenHour;
+            checks.entryGates.push({
+                label: `Flatten Hour (${flattenHour}:00) Block`,
+                status: flattenBlock ? 'fail' : 'pass',
+                chip: flattenBlock ? 'BLOCKED' : 'OPEN',
+                reason: flattenBlock ? `Current hour ${currentHour} >= flatten hour ${flattenHour}` : `Before flatten hour (${flattenHour}:00)`
+            });
+            
+            // 4. Risk & Sizing
+            const stopLoss = snap?.would_stop_loss ?? extra.stop_loss ?? null;
+            const takeProfit = snap?.would_take_profit ?? extra.take_profit ?? null;
+            checks.riskSize.push({
+                label: 'Stop Loss',
+                status: stopLoss !== null ? 'pass' : 'skip',
+                chip: stopLoss !== null ? '$' + stopLoss.toFixed(2) : 'N/A',
+                reason: stopLoss !== null ? `Stop at $${stopLoss.toFixed(2)}` : 'No stop defined'
+            });
+            checks.riskSize.push({
+                label: 'Take Profit',
+                status: takeProfit !== null ? 'pass' : 'skip',
+                chip: takeProfit !== null ? '$' + takeProfit.toFixed(2) : 'N/A',
+                reason: takeProfit !== null ? `TP at $${takeProfit.toFixed(2)}` : 'No TP defined'
+            });
+            
+            const confidence = snap?.confidence ?? extra.confidence ?? null;
+            checks.riskSize.push({
+                label: 'Confidence',
+                status: confidence !== null ? (confidence >= 0.6 ? 'pass' : 'skip') : 'unknown',
+                chip: confidence !== null ? Math.round(confidence * 100) + '%' : 'N/A',
+                reason: confidence !== null ? `Confidence: ${Math.round(confidence * 100)}%` : 'No confidence score'
+            });
+            
+            const shares = snap?.would_size_shares ?? extra.shares ?? null;
+            checks.riskSize.push({
+                label: 'Position Size',
+                status: shares !== null ? 'pass' : 'skip',
+                chip: shares !== null ? shares + ' shares' : 'N/A',
+                reason: shares !== null ? `Would trade ${shares} shares` : 'Size not computed'
+            });
+            
+            // 5. Strategy Lanes
+            const enableDayTrade = trading.enable_day_trade_momentum !== false;
+            checks.strategyLanes.push({
+                label: 'Day Trade Momentum',
+                status: enableDayTrade && dayTradeLive ? 'pass' : (enableDayTrade ? 'skip' : 'fail'),
+                chip: enableDayTrade ? (dayTradeLive ? 'LIVE' : 'SHADOW') : 'OFF',
+                reason: enableDayTrade ? (dayTradeLive ? 'Live entries enabled' : 'Shadow mode only') : 'Strategy disabled'
+            });
+            
+            const enableNews = trading.enable_news_strategy !== false;
+            checks.strategyLanes.push({
+                label: 'News Strategy',
+                status: enableNews ? 'pass' : 'fail',
+                chip: enableNews ? 'ON' : 'OFF',
+                reason: enableNews ? 'News strategy enabled' : 'News strategy disabled'
+            });
+            
+            checks.strategyLanes.push({
+                label: 'Mean Reversion',
+                status: meanRevLive ? 'skip' : 'fail',
+                chip: meanRevLive ? 'SHADOW' : 'OFF',
+                reason: 'Mean-rev currently in shadow/evaluation mode'
+            });
+            
+            const enableOrb = trading.enable_orb_strategy === true;
+            checks.strategyLanes.push({
+                label: 'ORB Strategy',
+                status: enableOrb ? 'skip' : 'fail',
+                chip: enableOrb ? 'SHADOW' : 'OFF',
+                reason: 'ORB currently in shadow/evaluation mode'
+            });
+            
+            return checks;
+        }
+
+        function computeVerdict(checks) {
+            let passCount = 0;
+            let failCount = 0;
+            let skipCount = 0;
+            
+            for (const section of Object.values(checks)) {
+                for (const row of section) {
+                    if (row.status === 'pass') passCount++;
+                    else if (row.status === 'fail') failCount++;
+                    else skipCount++;
+                }
+            }
+            
+            const hardFails = (checks.hardGates || []).filter(r => r.status === 'fail').length;
+            
+            if (hardFails > 0) {
+                return {
+                    label: 'BLOCKED',
+                    cls: 'veto',
+                    detail: `${hardFails} hard gate(s) failing`
+                };
+            }
+            if (failCount > 0) {
+                return {
+                    label: 'BLOCKED',
+                    cls: 'wait',
+                    detail: `${failCount} gate(s) failing`
+                };
+            }
+            if (passCount > 0 && skipCount > passCount) {
+                return {
+                    label: 'WAITING',
+                    cls: 'wait',
+                    detail: `${skipCount} conditions unknown/pending`
+                };
+            }
+            if (passCount > 0) {
+                return {
+                    label: 'WOULD FIRE',
+                    cls: 'act',
+                    detail: `${passCount} gates passing, ${skipCount} skipped`
+                };
+            }
+            return {
+                label: 'NO DATA',
+                cls: '',
+                detail: 'No snapshot data available'
+            };
+        }
+
+        // Hook into Pulse item clicks to auto-load checklist
+        document.addEventListener('click', function(e) {
+            const pulseItem = e.target.closest('.pulse-item');
+            if (pulseItem) {
+                const symbolEl = pulseItem.querySelector('[data-chart-symbol]');
+                if (symbolEl) {
+                    const sym = symbolEl.getAttribute('data-chart-symbol');
+                    if (sym && sym !== _checklistSymbol) {
+                        loadChecklistForSymbol(sym);
+                    }
+                }
+            }
+        });
+
+        // Initialize checklist lucide icons on load
+        setTimeout(() => {
+            if (typeof lucide === 'function') {
+                document.getElementById('checklist-panel')?.querySelectorAll('.lucide-slot').forEach(el => {
+                    const icon = el.dataset.icon;
+                    const size = el.dataset.size || 16;
+                    if (icon) el.innerHTML = lucide(icon, parseInt(size));
+                });
+            }
+        }, 100);
+        // ============== END PRE-TRADE CHECKLIST ==============
     </script>
 </body>
 </html>
