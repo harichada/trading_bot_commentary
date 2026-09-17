@@ -6979,7 +6979,11 @@
             });
             
             // 3. Entry Gates
-            const rsi = pv.rsi ?? extra.rsi ?? null;
+            // Normalize RSI: API returns 0-1 scale (e.g. 0.68 = RSI 68), decision-snapshot may use 0-100
+            let rsi = pv.rsi ?? extra.rsi ?? null;
+            if (rsi !== null && rsi >= 0 && rsi <= 1.5) {
+                rsi = rsi * 100;
+            }
             const rsiBlocked = rsi !== null && rsi <= 50;
             checks.entryGates.push({
                 label: 'RSI <= 50 Block',
