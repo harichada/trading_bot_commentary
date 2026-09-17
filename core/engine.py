@@ -5307,9 +5307,29 @@ class TradingEngineWithCommentary:
             ))
     
     async def _analyze_premarket_gaps(self):
-        """Analyze pre-market gaps for fade opportunities"""
+        """Analyze pre-market gaps for fade opportunities.
+        
+        v-gap-commentary-time-gate-2026-09-17: Gap Detected commentary is
+        only emitted during the first 30 minutes after market open (09:30-10:00 ET).
+        After 10:00 ET, gap data is still tracked but commentary is suppressed
+        because gap-fade setups are no longer actionable (no fade strategy).
+        """
         if 'gaps' not in self.market_state:
             self.market_state['gaps'] = {}
+        
+        # v-gap-commentary-time-gate-2026-09-17: suppress commentary after 10:00 ET
+        _emit_commentary = True
+        try:
+            from zoneinfo import ZoneInfo
+            now_et = datetime.now(ZoneInfo("America/New_York"))
+            market_open_930 = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
+            gap_commentary_cutoff = now_et.replace(hour=10, minute=0, second=0, microsecond=0)
+            if now_et >= gap_commentary_cutoff:
+                _emit_commentary = False
+            elif now_et < market_open_930:
+                _emit_commentary = True  # Pre-market gaps are always interesting
+        except Exception as _tz_exc:
+            logger.debug("gap analysis: timezone check failed: %s", _tz_exc)
         
         for symbol in self.dynamic_watchlist:
             try:
@@ -5336,14 +5356,16 @@ class TradingEngineWithCommentary:
                         'prev_close': prev_close
                     }
                     
-                    self.commentary.add_commentary(TradingCommentary(
-                        timestamp=datetime.now(),
-                        type=CommentaryType.MARKET_ANALYSIS,
-                        symbol=symbol,
-                        title=f"🌅 Gap Detected: {symbol}",
-                        message=f"{gap_percent:.1f}% gap {self.market_state['gaps'][symbol]['direction']} (Open: ${open_price:.2f}, Prev Close: ${prev_close:.2f})",
-                        importance=7
-                    ))
+                    # Only emit commentary during opening 30 minutes
+                    if _emit_commentary:
+                        self.commentary.add_commentary(TradingCommentary(
+                            timestamp=datetime.now(),
+                            type=CommentaryType.MARKET_ANALYSIS,
+                            symbol=symbol,
+                            title=f"🌅 Gap Detected: {symbol}",
+                            message=f"{gap_percent:.1f}% gap {self.market_state['gaps'][symbol]['direction']} (Open: ${open_price:.2f}, Prev Close: ${prev_close:.2f})",
+                            importance=7
+                        ))
             except Exception as e:
                 logger.debug(f"Gap analysis error for {symbol}: {e}")
 

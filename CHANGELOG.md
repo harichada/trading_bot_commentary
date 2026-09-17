@@ -8,6 +8,65 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) with added `Ver
 
 ---
 
+## 2026-09-17 — Universe Redesign: Pinned Watchlist + Dollar-Volume Demote
+
+### Problem
+
+WATCHLIST_SIZE=20 slots filled by Yahoo movers (~60 pass relaxed filter), but the final 20 was dominated by micro-cap/lottery names (PURR, AEMD, IOVA, NVAX-class) while quality filter rejected profitable liquid names (AMZN, GOOG, AVGO, SHOP, UBER). TSLA/NVDA often missed day-trade entries due to `weak_relative_strength` AND weren't even in the final 20. XE (junk RS winner) got in and lost.
+
+### Added
+
+- **PINNED_WATCHLIST** (v-tag `v-pinned-watchlist-2026-09-17`)
+  - Config: `trading.pinned_watchlist` (list) or env `PINNED_WATCHLIST` (comma-separated).
+  - Default: NVDA, TSLA, META, AMZN, MSFT, GOOGL, AVGO, AMD.
+  - Pinned symbols always reserve slots in `WATCHLIST_SIZE` before Yahoo/Schwab movers fill remaining.
+  - Respects `HANDS_OFF_DENYLIST` — pinned symbols on denylist appear for analysis but never auto-trade.
+  - Enable/disable via `ENABLE_PINNED_WATCHLIST` (default True).
+
+- **MIN_DOLLAR_VOLUME floor** (v-tag `v-dollar-volume-floor-2026-09-17`)
+  - Config: `trading.min_dollar_volume` (default $10M).
+  - Non-pinned movers MUST clear `price × avg_volume > $10M` to occupy a watchlist slot.
+  - Demotes micro-cap junk (PURR $2×1M = $2M) while admitting mid-cap movers with genuine flow.
+  - Movers sorted by dollar-volume descending for slot allocation.
+
+- **RS soften for pinned liquid core** (v-tag `v-pinned-rs-soften-2026-09-17`)
+  - Config: `ENABLE_PINNED_RS_SOFTEN` (default False — conservative).
+  - Config: `PINNED_MIN_RS_VS_SPY` (default 0.25 vs standard 0.5).
+  - When enabled, pinned symbols use softer RS threshold for day-trade momentum entry.
+  - Non-pinned movers always use standard `MOMENTUM_MIN_RS_VS_SPY`.
+
+- **Gap commentary time gate** (v-tag `v-gap-commentary-time-gate-2026-09-17`)
+  - "Gap Detected" commentary only emitted during first 30 minutes (09:30–10:00 ET).
+  - Gap data still tracked internally; just no commentary spam after 10:00 ET.
+
+### Changed
+
+- `core/loops/screener_loop.py::_build_pinned_watchlist()` — new method orchestrates pinned-first, dollar-vol-ranked slot allocation.
+- `strategies/builtin.py::DayTradeMomentumStrategy` — RS threshold selection considers pinned status.
+- `core/engine.py::_analyze_premarket_gaps()` — time-gated commentary.
+
+### Config Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `ENABLE_PINNED_WATCHLIST` | True | Reserve slots for pinned symbols |
+| `PINNED_WATCHLIST` | NVDA,TSLA,META,AMZN,MSFT,GOOGL,AVGO,AMD | Symbols to pin |
+| `MIN_DOLLAR_VOLUME` | 10,000,000 | Dollar-vol floor for non-pinned movers |
+| `ENABLE_PINNED_RS_SOFTEN` | False | Use softer RS for pinned symbols |
+| `PINNED_MIN_RS_VS_SPY` | 0.25 | RS threshold when RS soften enabled |
+
+### Tests
+
+- 20 new tests in `tests/test_pinned_watchlist.py` covering config parsing, watchlist building, dollar-vol demote, and RS threshold selection.
+
+### Operational notes
+
+- All flags have safe off-path defaults. Set `ENABLE_PINNED_WATCHLIST=0` to revert to legacy mover-driven watchlist.
+- `ENABLE_PINNED_RS_SOFTEN` starts False; enable after observing pinned symbols being rejected on `weak_relative_strength` with otherwise valid setups.
+- DAY_TRADE/MEAN_REV/ORB live knobs unchanged. HANDS_OFF unchanged.
+
+---
+
 ## 2026-06-09 — Live verification of close-path + circuit fixes
 
 ### Operational notes
