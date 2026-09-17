@@ -3494,3 +3494,172 @@ class TestMeanRevShadowLedgerEngine:
         assert "regime" in window, "Must emit regime"
         assert "shadow=True" in window, "Must emit shadow=True"
         assert "would_be_R" in window, "Must emit would_be_R"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# v-rsi-high-entry-veto-2026-09-17: Tests for DAY_TRADE_RSI_HIGH_ENTRY_VETO
+# P0 RCA 2026-09-17 (XE): day_trade breakout entered with RSI overbought →
+# immediately vulnerable to exit. Entry into overbought = chasing.
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestDayTradeRsiHighEntryVetoConfig:
+    """Test DAY_TRADE_RSI_HIGH_ENTRY_VETO_ENABLED config flags."""
+
+    def test_rsi_high_entry_veto_default_true(self):
+        """DAY_TRADE_RSI_HIGH_ENTRY_VETO_ENABLED must default to True.
+        
+        P0 RCA 2026-09-17 (XE): entering breakout/continuation at RSI >= 70
+        is chasing overbought, high P(immediate reversal).
+        """
+        from core.config import Config
+        cfg = Config()
+        assert cfg.DAY_TRADE_RSI_HIGH_ENTRY_VETO_ENABLED is True, (
+            "DAY_TRADE_RSI_HIGH_ENTRY_VETO_ENABLED must default to True — "
+            "overbought entries blocked by default"
+        )
+
+    def test_rsi_high_entry_threshold_default_70(self):
+        """DAY_TRADE_RSI_HIGH_ENTRY_THRESHOLD must default to 70.0.
+        
+        Aligned with SHADOW_VETO_RSI_THRESHOLD for consistency.
+        """
+        from core.config import Config
+        cfg = Config()
+        assert cfg.DAY_TRADE_RSI_HIGH_ENTRY_THRESHOLD == 70.0, (
+            "DAY_TRADE_RSI_HIGH_ENTRY_THRESHOLD must default to 70.0 — "
+            "aligned with existing RSI 70 veto logic"
+        )
+
+    def test_rsi_high_entry_veto_env_override_disables(self):
+        """DAY_TRADE_RSI_HIGH_ENTRY_VETO_ENABLED=0 disables the veto."""
+        import os
+        from unittest.mock import patch
+        
+        with patch.dict(os.environ, {"DAY_TRADE_RSI_HIGH_ENTRY_VETO_ENABLED": "0"}):
+            from core.config import Config
+            cfg = Config()
+            assert cfg.DAY_TRADE_RSI_HIGH_ENTRY_VETO_ENABLED is False, (
+                "DAY_TRADE_RSI_HIGH_ENTRY_VETO_ENABLED=0 must disable veto"
+            )
+
+
+class TestDayTradeRsiHighEntryVetoEngine:
+    """Test that the engine has RSI >= 70 entry veto for breakout/continuation."""
+
+    def test_engine_has_rsi_high_entry_veto(self):
+        """Engine must have the v-rsi-high-entry-veto-2026-09-17 gate."""
+        from pathlib import Path
+        src = Path("core/engine.py").read_text()
+        
+        assert "v-rsi-high-entry-veto-2026-09-17" in src, (
+            "Engine must contain v-rsi-high-entry-veto-2026-09-17 gate"
+        )
+        assert "DAY_TRADE_RSI_HIGH_ENTRY_VETO_ENABLED" in src, (
+            "Engine must check DAY_TRADE_RSI_HIGH_ENTRY_VETO_ENABLED flag"
+        )
+        assert "rsi_above_70_entry_blocked" in src, (
+            "Engine must audit with reason=rsi_above_70_entry_blocked"
+        )
+
+    def test_engine_veto_checks_entry_pattern(self):
+        """Engine RSI high veto must check entry_pattern for breakout/continuation."""
+        from pathlib import Path
+        src = Path("core/engine.py").read_text()
+        
+        anchor = src.find("v-rsi-high-entry-veto-2026-09-17")
+        assert anchor != -1
+        window = src[anchor: anchor + 2500]
+        
+        assert "entry_pattern" in window, (
+            "RSI high veto must check entry_pattern"
+        )
+        assert "breakout" in window, (
+            "RSI high veto must mention breakout pattern"
+        )
+        assert "continuation" in window, (
+            "RSI high veto must mention continuation pattern"
+        )
+
+    def test_engine_uses_rsi_high_threshold(self):
+        """Engine RSI high veto must use DAY_TRADE_RSI_HIGH_ENTRY_THRESHOLD."""
+        from pathlib import Path
+        src = Path("core/engine.py").read_text()
+        
+        anchor = src.find("v-rsi-high-entry-veto-2026-09-17")
+        assert anchor != -1
+        window = src[anchor: anchor + 2500]
+        
+        assert "DAY_TRADE_RSI_HIGH_ENTRY_THRESHOLD" in window, (
+            "Engine veto must use DAY_TRADE_RSI_HIGH_ENTRY_THRESHOLD"
+        )
+        assert "_rsi_high_threshold" in window, (
+            "Engine veto must store threshold in local var"
+        )
+
+    def test_engine_veto_scoped_to_daytrade(self):
+        """Engine RSI high veto must scope to is_day_trade signals only."""
+        from pathlib import Path
+        src = Path("core/engine.py").read_text()
+        
+        anchor = src.find("v-rsi-high-entry-veto-2026-09-17")
+        assert anchor != -1
+        window = src[anchor: anchor + 1000]
+        
+        assert "_is_day_trade_signal" in window, (
+            "RSI high veto must check _is_day_trade_signal"
+        )
+        assert "LIVE" in window, (
+            "RSI high veto must scope to LIVE mode"
+        )
+
+    def test_engine_veto_scoped_to_buy_only(self):
+        """Engine RSI high veto must scope to BUY signals (longs) only."""
+        from pathlib import Path
+        src = Path("core/engine.py").read_text()
+        
+        anchor = src.find("v-rsi-high-entry-veto-2026-09-17")
+        assert anchor != -1
+        window = src[anchor: anchor + 1000]
+        
+        assert "SignalType.BUY" in window, (
+            "RSI high veto must check SignalType.BUY"
+        )
+
+
+class TestDayTradeRsiHighEntryVetoAuditAndCommentary:
+    """Test RSI high veto produces correct audit + commentary."""
+
+    def test_engine_veto_has_audit(self):
+        """Engine RSI high veto must have audit trail."""
+        from pathlib import Path
+        src = Path("core/engine.py").read_text()
+        
+        anchor = src.find("v-rsi-high-entry-veto-2026-09-17")
+        assert anchor != -1
+        window = src[anchor: anchor + 2500]
+        
+        assert "daytrade_rsi_high_entry_veto" in window, (
+            "Engine veto must audit with component=daytrade_rsi_high_entry_veto"
+        )
+        assert '"skip"' in window, (
+            "Engine veto audit must have action=skip"
+        )
+
+    def test_engine_veto_has_commentary(self):
+        """Engine RSI high veto must add TradingCommentary."""
+        from pathlib import Path
+        src = Path("core/engine.py").read_text()
+        
+        anchor = src.find("v-rsi-high-entry-veto-2026-09-17")
+        assert anchor != -1
+        window = src[anchor: anchor + 2500]
+        
+        assert "add_commentary" in window, (
+            "Engine veto must add commentary"
+        )
+        assert "Day-Trade Entry Blocked" in window, (
+            "Commentary must mention entry blocked"
+        )
+        assert "chasing" in window and "overbought" in window, (
+            "Commentary must explain chasing overbought risk"
+        )

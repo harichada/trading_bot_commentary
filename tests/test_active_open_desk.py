@@ -1124,3 +1124,220 @@ class TestHandsOffSkippedForProactiveExit:
         # MU should be excluded
         symbols = [r[0] for r in result]
         assert "MU" not in symbols
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# v-open-desk-rsi-exit-2026-09-17: Tests for ENABLE_OPEN_DESK_RSI_EXTREME_EXIT
+# P0 RCA 2026-09-17 (XE): day_trade breakout entered → open-desk spam WOULD_EXIT
+# rsi_extreme but suggest-only → stop fill. Fix: execute real exit for day trades.
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestEnableOpenDeskRsiExtremeExitConfig:
+    """Test ENABLE_OPEN_DESK_RSI_EXTREME_EXIT config flag."""
+
+    def test_default_enabled(self, monkeypatch):
+        """ENABLE_OPEN_DESK_RSI_EXTREME_EXIT must default to True."""
+        monkeypatch.delenv("ENABLE_OPEN_DESK_RSI_EXTREME_EXIT", raising=False)
+        from core.config import Config
+        cfg = Config()
+        assert cfg.ENABLE_OPEN_DESK_RSI_EXTREME_EXIT is True, (
+            "ENABLE_OPEN_DESK_RSI_EXTREME_EXIT must default to True — "
+            "day-trade RSI extreme should execute real exits by default"
+        )
+
+    def test_env_0_disables(self, monkeypatch):
+        """ENABLE_OPEN_DESK_RSI_EXTREME_EXIT=0 disables real exits."""
+        monkeypatch.setenv("ENABLE_OPEN_DESK_RSI_EXTREME_EXIT", "0")
+        from core.config import Config
+        cfg = Config()
+        assert cfg.ENABLE_OPEN_DESK_RSI_EXTREME_EXIT is False
+
+    def test_env_1_enables(self, monkeypatch):
+        """ENABLE_OPEN_DESK_RSI_EXTREME_EXIT=1 enables real exits."""
+        monkeypatch.setenv("ENABLE_OPEN_DESK_RSI_EXTREME_EXIT", "1")
+        from core.config import Config
+        cfg = Config()
+        assert cfg.ENABLE_OPEN_DESK_RSI_EXTREME_EXIT is True
+
+
+@dataclass
+class MockPositionDayTrade:
+    """Mock position with day-trade reasoning for RSI extreme exit tests."""
+    symbol: str
+    entry_price: float
+    stop_loss: float
+    take_profit: float
+    side: str
+    quantity: int = 100
+    managed_by_bot: bool = True
+    is_external: bool = False
+    is_manually_managed: bool = False
+    is_long_term: bool = False
+    current_price: float = 0.0
+    entry_time: datetime = field(default_factory=datetime.now)
+    original_stop: Optional[float] = None
+    reasoning: dict = field(default_factory=lambda: {
+        'strategy': 'day_trade_momentum',
+        'is_day_trade': True,
+        'entry_pattern': 'breakout'
+    })
+    
+    def __post_init__(self):
+        if self.current_price == 0.0:
+            self.current_price = self.entry_price
+        if self.original_stop is None:
+            self.original_stop = self.stop_loss
+
+
+class TestRsiExtremeExitRealExit:
+    """Test that RSI extreme triggers REAL exit for day trades when enabled."""
+
+    @pytest.mark.asyncio
+    async def test_rsi_extreme_executes_real_exit_for_daytrade(self, mock_engine, monkeypatch):
+        """When ENABLE_OPEN_DESK_RSI_EXTREME_EXIT=True AND position is day trade
+        AND rsi_extreme_overbought fires, execute REAL exit (not shadow).
+        
+        P0 RCA 2026-09-17 (XE): day_trade breakout @16.31×334 @09:45 ET →
+        open-desk spam WOULD_EXIT rsi_extreme_overbought_90+ → suggest-only →
+        stop fill. Fix: execute real close for day trades.
+        """
+        monkeypatch.setenv("ENABLE_OPEN_DESK_RSI_EXTREME_EXIT", "1")
+        monkeypatch.setenv("ACTIVE_OPEN_DESK_SHADOW", "1")  # Shadow ON but RSI extreme should still execute
+        
+        pos = MockPositionDayTrade(
+            symbol="XE",
+            entry_price=16.31,
+            stop_loss=15.50,
+            take_profit=18.00,
+            side="long",
+            current_price=15.80,
+        )
+        mock_engine.positions = {"XE": pos}
+        mock_engine._close_position_with_commentary = AsyncMock()
+        
+        desk = ActiveOpenDesk(mock_engine)
+        
+        with patch.object(desk, '_get_market_context') as mock_ctx, \
+             patch.object(desk, '_get_news_sentiment', new_callable=AsyncMock) as mock_news, \
+             patch.object(desk, '_get_indicators', new_callable=AsyncMock) as mock_ind:
+            
+            mock_ctx.return_value = MagicMock(regime="risk_on")
+            mock_news.return_value = 0.0
+            mock_ind.return_value = {"rsi": 92.0, "macd": 0.5, "macd_signal": 0.3}  # RSI >= 80
+            
+            await desk._tick()
+        
+        # MUST call supervised close with rsi_extreme reason
+        mock_engine._close_position_with_commentary.assert_called_once()
+        call_args = mock_engine._close_position_with_commentary.call_args
+        reason = call_args[0][1]
+        assert "rsi_extreme_overbought" in reason, (
+            f"Expected reason to contain 'rsi_extreme_overbought', got '{reason}'"
+        )
+
+    @pytest.mark.asyncio
+    async def test_rsi_extreme_stays_shadow_when_flag_disabled(self, mock_engine, monkeypatch):
+        """When ENABLE_OPEN_DESK_RSI_EXTREME_EXIT=False, rsi_extreme stays shadow-only.
+        
+        SAFE OFF-PATH: setting flag to 0 preserves old suggest-only behavior.
+        """
+        monkeypatch.setenv("ENABLE_OPEN_DESK_RSI_EXTREME_EXIT", "0")
+        monkeypatch.setenv("ACTIVE_OPEN_DESK_SHADOW", "1")
+        
+        pos = MockPositionDayTrade(
+            symbol="XE",
+            entry_price=16.31,
+            stop_loss=15.50,
+            take_profit=18.00,
+            side="long",
+            current_price=15.80,
+        )
+        mock_engine.positions = {"XE": pos}
+        mock_engine._close_position_with_commentary = AsyncMock()
+        
+        desk = ActiveOpenDesk(mock_engine)
+        
+        with patch.object(desk, '_get_market_context') as mock_ctx, \
+             patch.object(desk, '_get_news_sentiment', new_callable=AsyncMock) as mock_news, \
+             patch.object(desk, '_get_indicators', new_callable=AsyncMock) as mock_ind:
+            
+            mock_ctx.return_value = MagicMock(regime="risk_on")
+            mock_news.return_value = 0.0
+            mock_ind.return_value = {"rsi": 92.0, "macd": 0.5, "macd_signal": 0.3}
+            
+            await desk._tick()
+        
+        # Should NOT call supervised close
+        mock_engine._close_position_with_commentary.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_rsi_extreme_only_for_daytrade_positions(self, mock_engine, monkeypatch):
+        """RSI extreme real exit only fires for is_day_trade=True positions.
+        
+        Non-day-trade (swing, news) positions stay shadow-only even with flag ON.
+        """
+        monkeypatch.setenv("ENABLE_OPEN_DESK_RSI_EXTREME_EXIT", "1")
+        monkeypatch.setenv("ACTIVE_OPEN_DESK_SHADOW", "1")
+        
+        # Non-day-trade position (swing strategy)
+        pos = MockPosition(
+            symbol="AAPL",
+            entry_price=150.0,
+            stop_loss=145.0,
+            take_profit=160.0,
+            side="long",
+            current_price=155.0,
+            reasoning={'strategy': 'news_strategy', 'is_day_trade': False},
+        )
+        mock_engine.positions = {"AAPL": pos}
+        mock_engine._close_position_with_commentary = AsyncMock()
+        
+        desk = ActiveOpenDesk(mock_engine)
+        
+        with patch.object(desk, '_get_market_context') as mock_ctx, \
+             patch.object(desk, '_get_news_sentiment', new_callable=AsyncMock) as mock_news, \
+             patch.object(desk, '_get_indicators', new_callable=AsyncMock) as mock_ind:
+            
+            mock_ctx.return_value = MagicMock(regime="risk_on")
+            mock_news.return_value = 0.0
+            mock_ind.return_value = {"rsi": 92.0, "macd": 0.5, "macd_signal": 0.3}
+            
+            await desk._tick()
+        
+        # Non-day-trade should NOT call supervised close (stays shadow)
+        mock_engine._close_position_with_commentary.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_rsi_extreme_oversold_executes_for_short_daytrade(self, mock_engine, monkeypatch):
+        """RSI extreme oversold (<= 20) triggers real exit for SHORT day trades."""
+        monkeypatch.setenv("ENABLE_OPEN_DESK_RSI_EXTREME_EXIT", "1")
+        monkeypatch.setenv("ACTIVE_OPEN_DESK_SHADOW", "1")
+        
+        pos = MockPositionDayTrade(
+            symbol="XE",
+            entry_price=16.31,
+            stop_loss=17.00,
+            take_profit=15.00,
+            side="short",
+            current_price=15.80,
+        )
+        mock_engine.positions = {"XE": pos}
+        mock_engine._close_position_with_commentary = AsyncMock()
+        
+        desk = ActiveOpenDesk(mock_engine)
+        
+        with patch.object(desk, '_get_market_context') as mock_ctx, \
+             patch.object(desk, '_get_news_sentiment', new_callable=AsyncMock) as mock_news, \
+             patch.object(desk, '_get_indicators', new_callable=AsyncMock) as mock_ind:
+            
+            mock_ctx.return_value = MagicMock(regime="risk_off")
+            mock_news.return_value = 0.0
+            mock_ind.return_value = {"rsi": 18.0, "macd": -0.5, "macd_signal": -0.3}  # RSI <= 20
+            
+            await desk._tick()
+        
+        # MUST call supervised close with rsi_extreme_oversold reason
+        mock_engine._close_position_with_commentary.assert_called_once()
+        call_args = mock_engine._close_position_with_commentary.call_args
+        reason = call_args[0][1]
+        assert "rsi_extreme_oversold" in reason

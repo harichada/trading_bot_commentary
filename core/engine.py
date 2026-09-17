@@ -6722,6 +6722,71 @@ class TradingEngineWithCommentary:
                     signal.symbol, _rsi_gate_exc
                 )
 
+        # ────────────────────────────────────────────────────────────────────
+        # v-rsi-high-entry-veto-2026-09-17: block day-trade LIVE long entries
+        # when RSI >= 70 (breakout/continuation patterns).
+        #
+        # P0 RCA 2026-09-17 (XE): day_trade breakout @16.31×334 @09:45 ET
+        # entered with RSI overbought → immediately vulnerable to exit →
+        # spam WOULD_EXIT → stop fill. Entering overbought = chasing.
+        #
+        # Gate uses is_day_trade=True from reasoning to cover day-trade
+        # tagged strategies. Only blocks breakout and continuation patterns
+        # (pullback RSI 40-60 by definition, so not affected).
+        # ────────────────────────────────────────────────────────────────────
+        if (_is_day_trade_signal
+                and self.mode == TradingMode.LIVE
+                and signal.signal_type == SignalType.BUY
+                and Config().DAY_TRADE_RSI_HIGH_ENTRY_VETO_ENABLED):
+            try:
+                _rsi_high_threshold = Config().DAY_TRADE_RSI_HIGH_ENTRY_THRESHOLD
+                _signal_rsi = float(_reasoning.get('rsi', 0))
+                _entry_pattern = _reasoning.get('entry_pattern', '')
+                # Only veto breakout and continuation — pullback has RSI 40-60 by definition
+                if (_entry_pattern in ('breakout', 'continuation')
+                        and _signal_rsi >= _rsi_high_threshold):
+                    self._audit(
+                        "daytrade_rsi_high_entry_veto", signal.symbol, "skip",
+                        "rsi_above_70_entry_blocked",
+                        strategy=_signal_strategy,
+                        mode=self.mode.value,
+                        rsi=round(_signal_rsi, 2),
+                        rsi_threshold=_rsi_high_threshold,
+                        entry_pattern=_entry_pattern,
+                        regime=_reasoning.get("market_context_regime"),
+                    )
+                    self.commentary.add_commentary(TradingCommentary(
+                        timestamp=datetime.now(),
+                        type=CommentaryType.RISK_ASSESSMENT,
+                        symbol=signal.symbol,
+                        title=f"🛑 Day-Trade Entry Blocked — RSI ≥{int(_rsi_high_threshold)}",
+                        message=(
+                            f"Signal for {signal.symbol} via {_signal_strategy} "
+                            f"blocked in LIVE mode — RSI {_signal_rsi:.1f} "
+                            f">= threshold {_rsi_high_threshold}.\n\n"
+                            f"Entry at RSI ≥{int(_rsi_high_threshold)} on {_entry_pattern} "
+                            f"pattern = chasing overbought, high P(immediate reversal).\n"
+                            f"Gate: DAY_TRADE_RSI_HIGH_ENTRY_VETO_ENABLED=True\n"
+                            f"Pattern: {_entry_pattern}"
+                        ),
+                        data={
+                            'strategy': _signal_strategy,
+                            'entry_pattern': _entry_pattern,
+                            'mode': self.mode.value,
+                            'rsi': _signal_rsi,
+                            'rsi_threshold': _rsi_high_threshold,
+                            'gate': 'DAY_TRADE_RSI_HIGH_ENTRY_VETO_ENABLED',
+                            'gate_value': True,
+                        },
+                        importance=8,
+                    ))
+                    return
+            except Exception as _rsi_high_gate_exc:
+                logger.warning(
+                    "daytrade_rsi_high_entry_veto check failed for %s: %s",
+                    signal.symbol, _rsi_high_gate_exc
+                )
+
         # v-pause-live-meanrev-2026-09-15: block NEW LIVE mean-reversion
         # entries when MEAN_REV_LIVE_ENTRIES_ENABLED=False.
         #

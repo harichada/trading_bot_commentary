@@ -198,7 +198,9 @@ class ActiveOpenDesk:
         decisions = await asyncio.gather(*tasks, return_exceptions=True)
 
         from core.config import Config
-        is_shadow = Config().ACTIVE_OPEN_DESK_SHADOW
+        cfg = Config()
+        is_shadow = cfg.ACTIVE_OPEN_DESK_SHADOW
+        enable_rsi_extreme_exit = cfg.ENABLE_OPEN_DESK_RSI_EXTREME_EXIT
 
         for decision in decisions:
             if isinstance(decision, Exception):
@@ -212,6 +214,17 @@ class ActiveOpenDesk:
                 continue
 
             self._last_decisions[decision.symbol] = decision
+
+            # v-open-desk-rsi-exit-2026-09-17: Execute REAL exit for day-trade
+            # RSI extreme conditions, even when shadow mode is ON.
+            # Scope: day trades only. LT/hands-off are never touched (they
+            # don't reach here due to get_monitored_positions filter).
+            if (decision.action == DeskAction.WOULD_EXIT
+                    and decision.is_day_trade
+                    and enable_rsi_extreme_exit
+                    and "rsi_extreme" in decision.reason):
+                await self._execute_rsi_extreme_exit(decision)
+                continue  # Don't shadow-log; already executed real exit
 
             if is_shadow:
                 self._log_shadow_decision(decision)
@@ -731,6 +744,75 @@ class ActiveOpenDesk:
                 )
             except Exception:
                 pass
+
+    async def _execute_rsi_extreme_exit(self, decision: DeskDecision) -> None:
+        """v-open-desk-rsi-exit-2026-09-17: Execute REAL exit for day-trade
+        RSI extreme overbought/oversold conditions.
+
+        P0 RCA 2026-09-17 (XE): day_trade breakout @16.31×334 @09:45 ET →
+        open-desk spam WOULD_EXIT rsi_extreme_overbought_90+ from ~09:51
+        (pnl_r −0.5→−0.9) but suggest-only → stop fill 234@16.05 @09:55 →
+        broker_flat ghost on remaining 100.
+
+        Fix: When ENABLE_OPEN_DESK_RSI_EXTREME_EXIT=True AND position is
+        day trade AND reason contains 'rsi_extreme', execute supervised
+        close immediately instead of shadow logging.
+
+        Scope: day trades ONLY. LT/hands-off positions never reach the desk
+        (filtered by get_monitored_positions).
+        """
+        symbol = decision.symbol
+        reason = f"open_desk_{decision.reason}"
+
+        position = self.engine.positions.get(symbol)
+        if position is None:
+            position = getattr(self.engine, 'simulated_positions', {}).get(symbol)
+
+        if position is None:
+            logger.warning(
+                "active_open_desk: rsi_extreme_exit position not found symbol=%s",
+                symbol,
+            )
+            return
+
+        logger.info(
+            "active_open_desk REAL_EXIT action=%s symbol=%s reason=%s "
+            "price=%.4f rsi=%.1f pnl_r=%.2f is_day_trade=%s",
+            decision.action.value,
+            symbol,
+            reason,
+            decision.current_price or 0,
+            decision.rsi or 0,
+            decision.pnl_r or 0,
+            decision.is_day_trade,
+        )
+
+        if self.engine.db_logger:
+            try:
+                self.engine.db_logger.log_strategy_decision(
+                    strategy="active_open_desk",
+                    symbol=symbol,
+                    action="rsi_extreme_exit",
+                    reason=reason,
+                    extra_data={
+                        **decision.to_dict(),
+                        'exit_type': 'real',
+                        'gate': 'ENABLE_OPEN_DESK_RSI_EXTREME_EXIT',
+                    },
+                )
+            except Exception:
+                pass
+
+        try:
+            await self.engine._close_position_with_commentary(position, reason)
+        except Exception as exc:
+            logger.error(
+                "active_open_desk: rsi_extreme_exit failed symbol=%s reason=%s error=%s",
+                symbol,
+                reason,
+                exc,
+                exc_info=True,
+            )
 
     def get_last_decisions(self) -> Dict[str, DeskDecision]:
         """Return the last decision for each symbol (for testing/observability)."""

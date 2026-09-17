@@ -2063,6 +2063,71 @@ class Config:
         return float(self.manager.get('trading.day_trade_rsi_entry_threshold', 50.0))
 
     # ══════════════════════════════════════════════════════════════════════════
+    # v-rsi-high-entry-veto-2026-09-17: Block day-trade LIVE entries when RSI
+    # is already overbought (>=70). Symmetric to the RSI<=50 gate above.
+    # ══════════════════════════════════════════════════════════════════════════
+
+    @property
+    def DAY_TRADE_RSI_HIGH_ENTRY_VETO_ENABLED(self) -> bool:
+        """v-rsi-high-entry-veto-2026-09-17: block day-trade LIVE BUY entries
+        when RSI >= DAY_TRADE_RSI_HIGH_ENTRY_THRESHOLD (default 70).
+
+        P0 RCA 2026-09-17 (XE): day_trade breakout @16.31×334 @09:45 ET
+        entered with RSI overbought, immediately vulnerable to exit triggers.
+        Entry into overbought = chasing, high P(immediate reversal).
+
+        When True (default):
+          - Any signal with is_day_trade=True in reasoning
+          - In LIVE mode
+          - SignalType.BUY (longs only)
+          - entry_pattern in ('breakout', 'continuation')
+          - When RSI >= DAY_TRADE_RSI_HIGH_ENTRY_THRESHOLD
+          => Entry is BLOCKED with audit reason 'rsi_above_70_entry_blocked'
+
+        When False: previous behavior (entries allowed even if overbought).
+
+        Aligns with existing ENABLE_HARD_VETO_CONTINUATION_RSI70 for
+        continuation patterns, but extends coverage to breakout patterns.
+        Uses SHADOW_VETO_RSI_THRESHOLD (70) as the default threshold to
+        maintain consistency with existing RSI 70 gates.
+
+        MUST KEEP intact (these work regardless of this flag):
+          - Proactive exits for EXISTING positions
+          - Shadow logging continues
+          - Other existing gates (DAY_TRADE_LIVE_ENTRIES_ENABLED, etc.)
+          - HANDS_OFF (MU, HQGE, SPCX) unchanged
+          - DAY_TRADE_RSI_ENTRY_GATE_ENABLED (RSI<=50) unchanged
+          - ENABLE_HARD_VETO_CONTINUATION_RSI70 unchanged
+
+        Default True. Set via env DAY_TRADE_RSI_HIGH_ENTRY_VETO_ENABLED=0
+        or trading.day_trade_rsi_high_entry_veto_enabled: false to disable.
+        """
+        env_val = os.getenv("DAY_TRADE_RSI_HIGH_ENTRY_VETO_ENABLED")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get(
+            'trading.day_trade_rsi_high_entry_veto_enabled', True
+        ))
+
+    @property
+    def DAY_TRADE_RSI_HIGH_ENTRY_THRESHOLD(self) -> float:
+        """RSI threshold for day-trade high entry veto (longs).
+
+        Day-trade long entries with RSI >= this threshold are blocked
+        for breakout and continuation patterns — entering overbought
+        conditions is chasing, with high probability of immediate reversal.
+
+        Aligned with SHADOW_VETO_RSI_THRESHOLD (70.0) to maintain
+        consistency with existing continuation RSI>=70 veto logic.
+
+        Default 70.0. Set trading.day_trade_rsi_high_entry_threshold to adjust.
+        """
+        return float(self.manager.get(
+            'trading.day_trade_rsi_high_entry_threshold',
+            self.SHADOW_VETO_RSI_THRESHOLD  # Default aligned with existing 70
+        ))
+
+    # ══════════════════════════════════════════════════════════════════════════
     # v-late-entry-gate-2026-09-15: Late-entry detection to prevent chasing
     # extended moves. Shadow mode logs only; production mode can hard-skip.
     # ══════════════════════════════════════════════════════════════════════════
@@ -2850,6 +2915,37 @@ class Config:
             except ValueError:
                 pass
         return float(self.manager.get('trading.active_open_desk_interval_sec', 5.0))
+
+    @property
+    def ENABLE_OPEN_DESK_RSI_EXTREME_EXIT(self) -> bool:
+        """v-open-desk-rsi-exit-2026-09-17: execute REAL exit for day-trade
+        RSI extreme overbought/oversold conditions from the Active Open Desk.
+
+        P0 RCA 2026-09-17 (XE): day_trade breakout @16.31×334 @09:45 ET →
+        open-desk spam WOULD_EXIT rsi_extreme_overbought_90+ from ~09:51
+        (pnl_r −0.5→−0.9) but suggest-only → stop fill 234@16.05 @09:55 →
+        broker_flat ghost on remaining 100.
+
+        When True (default): for day-trade positions (is_day_trade=True in
+        reasoning), when Active Open Desk detects rsi_extreme_overbought (RSI
+        >= 90 for longs) or rsi_extreme_oversold (RSI <= 20 for shorts), the
+        desk calls supervised close immediately instead of logging WOULD_EXIT.
+
+        This is scoped to day trades ONLY. LT/hands-off positions are never
+        touched — HANDS_OFF_DENYLIST (MU, HQGE, SPCX) and is_long_term
+        positions skip the desk entirely.
+
+        SAFE OFF-PATH: Set ENABLE_OPEN_DESK_RSI_EXTREME_EXIT=0 to disable
+        real exits and preserve shadow-only WOULD_EXIT logging for RSI
+        extreme conditions. Other open desk shadow actions unchanged.
+
+        Default True. Set via env ENABLE_OPEN_DESK_RSI_EXTREME_EXIT=0 or
+        trading.enable_open_desk_rsi_extreme_exit: false to disable.
+        """
+        env_val = os.getenv("ENABLE_OPEN_DESK_RSI_EXTREME_EXIT")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.enable_open_desk_rsi_extreme_exit', True))
 
     # ──────────────────────────────────────────────────────────────────
     # v-theme-shock-logger-2026-09-14: ThemeShock shadow logger
