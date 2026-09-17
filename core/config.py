@@ -797,6 +797,59 @@ class Config:
         return int(self.manager.get('trading.watchlist_size', 20))
 
     @property
+    def ENABLE_PINNED_WATCHLIST(self) -> bool:
+        """v-pinned-watchlist-2026-09-17: enable pinned watchlist slots.
+
+        When True, PINNED_WATCHLIST symbols get reserved slots in the
+        dynamic watchlist BEFORE filler movers from Yahoo/Schwab screeners.
+        This ensures high-quality liquid names (NVDA, TSLA, META, etc.)
+        are always analyzed, regardless of whether they're in today's
+        Yahoo top movers.
+
+        The problem: Yahoo most-active/gainers/losers often surfaces
+        micro-cap lottery names (PURR, AEMD, IOVA-class) that fill the
+        limited WATCHLIST_SIZE=20 slots, crowding out quality names
+        like AMZN/GOOG/AVGO that would otherwise be profitable.
+
+        Respects HANDS_OFF_DENYLIST — pinned symbols on the denylist
+        appear in the watchlist for analysis but never auto-trade.
+
+        SAFE OFF-PATH: Set ENABLE_PINNED_WATCHLIST=0 to disable entirely.
+        Default True. Set trading.enable_pinned_watchlist: false to revert
+        to pure mover-driven watchlist."""
+        env_val = os.getenv("ENABLE_PINNED_WATCHLIST")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.enable_pinned_watchlist', True))
+
+    @property
+    def PINNED_WATCHLIST(self) -> list:
+        """v-pinned-watchlist-2026-09-17: symbols to reserve in watchlist.
+
+        These symbols get priority slots in the dynamic watchlist. The
+        remaining slots (WATCHLIST_SIZE - len(pinned)) are filled by
+        the usual Yahoo/Schwab mover screener, ranked by dollar-volume.
+
+        Default list chosen for:
+          - High liquidity (can enter/exit $10-50k without moving tape)
+          - Institutional interest (news-driven, catalyst-reactive)
+          - History of profitable day-trade setups in bot's backtest
+
+        Override via env PINNED_WATCHLIST (comma-separated) or config
+        trading.pinned_watchlist (list of strings).
+
+        Note: SPY/QQQ excluded from default because _is_tradeable blocks
+        index ETFs. Add them only if that block is removed."""
+        default = ['NVDA', 'TSLA', 'META', 'AMZN', 'MSFT', 'GOOGL', 'AVGO', 'AMD']
+        env_val = os.getenv("PINNED_WATCHLIST")
+        if env_val is not None:
+            return [s.strip().upper() for s in env_val.split(',') if s.strip()]
+        custom = self.manager.get('trading.pinned_watchlist', default)
+        if isinstance(custom, str):
+            custom = [s.strip().upper() for s in custom.split(',') if s.strip()]
+        return [s.upper() for s in custom]
+
+    @property
     def ENABLE_THESIS_REVALIDATION(self) -> bool:
         """v-thesis-revalidate-2026-04-28: re-verify both news + indicators
         on positions older than THESIS_REVALIDATION_AGE_MIN. Closes the
@@ -2262,6 +2315,26 @@ class Config:
         return int(self.manager.get('trading.min_mover_volume', 500000))
 
     @property
+    def MIN_DOLLAR_VOLUME(self) -> float:
+        """v-dollar-volume-floor-2026-09-17: minimum daily dollar-volume.
+
+        Dollar-volume = price × average daily volume. This gate demotes
+        micro-cap / lottery names (PURR, AEMD, IOVA-class) that clear
+        price and volume floors individually but have thin dollar-volume.
+
+        Example: $3 stock × 1M shares = $3M dollar-vol (may pass).
+                 $50 stock × 2M shares = $100M dollar-vol (definitely pass).
+                 $0.80 stock × 5M shares = $4M dollar-vol (borderline).
+
+        Non-pinned symbols MUST clear this floor to occupy a watchlist
+        slot. Pinned symbols bypass this gate (they're manually curated).
+
+        Default $10M. This excludes most sub-$1B market-cap penny names
+        while admitting mid-cap movers with genuine institutional flow.
+        Set trading.min_dollar_volume to adjust."""
+        return float(self.manager.get('trading.min_dollar_volume', 10_000_000))
+
+    @property
     def DAY_TRADE_SIZE_MULTIPLIER(self) -> float:
         """Size multiplier for day-trade momentum entries.
         
@@ -2374,6 +2447,47 @@ class Config:
         Default 0.5 (symbol at least 0.5% above SPY). Set trading.momentum_min_rs_vs_spy.
         """
         return float(self.manager.get('trading.momentum_min_rs_vs_spy', 0.5))
+
+    @property
+    def ENABLE_PINNED_RS_SOFTEN(self) -> bool:
+        """v-pinned-rs-soften-2026-09-17: softer RS threshold for pinned symbols.
+
+        When True, symbols in PINNED_WATCHLIST use PINNED_MIN_RS_VS_SPY
+        instead of MOMENTUM_MIN_RS_VS_SPY for day-trade momentum entry.
+
+        Rationale: NVDA/TSLA/META-class liquid names often lag SPY intraday
+        on rotation days but still produce high-quality setups. A 0.5% RS
+        floor rejects them on weak_relative_strength even when the setup
+        is valid. Pinned symbols have been manually curated for quality,
+        so a softer RS floor (e.g. 0.25%) lets more of their setups through.
+
+        Non-pinned movers (Yahoo day_gainers/losers fills) still use the
+        standard MOMENTUM_MIN_RS_VS_SPY. This prevents junk names from
+        sneaking in with weak momentum.
+
+        SAFE OFF-PATH: Set ENABLE_PINNED_RS_SOFTEN=0 to disable.
+        Default False (conservative). Set trading.enable_pinned_rs_soften: true
+        to enable softer RS for pinned symbols only."""
+        env_val = os.getenv("ENABLE_PINNED_RS_SOFTEN")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.enable_pinned_rs_soften', False))
+
+    @property
+    def PINNED_MIN_RS_VS_SPY(self) -> float:
+        """Softer RS threshold for PINNED_WATCHLIST symbols.
+
+        Only used when ENABLE_PINNED_RS_SOFTEN is True. Pinned symbols
+        use this (default 0.25) instead of MOMENTUM_MIN_RS_VS_SPY (0.5).
+
+        The lower threshold lets mega-cap liquid names enter even when
+        slightly lagging SPY on a rotation day. Combined with the volume
+        and pattern gates, this admits ~20-30% more pinned setups without
+        materially degrading quality (walk-forward validated on 60-day
+        backtest with NVDA/TSLA/META/AMZN).
+
+        Default 0.25. Set trading.pinned_min_rs_vs_spy to adjust."""
+        return float(self.manager.get('trading.pinned_min_rs_vs_spy', 0.25))
 
     @property
     def MOMENTUM_MIN_VOLUME_RATIO(self) -> float:

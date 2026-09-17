@@ -1533,7 +1533,14 @@ class DayTradeMomentumStrategy(TradingStrategyWithCommentary):
                     _symbol_change = ((market_data.close - _bar_open) / _bar_open) * 100
             
             _rs_vs_spy = _symbol_change - _mc_spy_change
-            _min_rs = cfg.MOMENTUM_MIN_RS_VS_SPY
+            
+            # v-pinned-rs-soften-2026-09-17: use softer RS threshold for pinned
+            # liquid core symbols. Non-pinned movers use standard threshold.
+            _is_pinned = symbol.upper() in set(s.upper() for s in cfg.PINNED_WATCHLIST)
+            if cfg.ENABLE_PINNED_RS_SOFTEN and _is_pinned:
+                _min_rs = cfg.PINNED_MIN_RS_VS_SPY
+            else:
+                _min_rs = cfg.MOMENTUM_MIN_RS_VS_SPY
             
             if _rs_vs_spy < _min_rs:
                 self._log_decision(
@@ -1542,6 +1549,8 @@ class DayTradeMomentumStrategy(TradingStrategyWithCommentary):
                     spy_change=round(_mc_spy_change, 2),
                     rs_vs_spy=round(_rs_vs_spy, 2),
                     min_rs=_min_rs,
+                    is_pinned=_is_pinned,
+                    rs_soften_enabled=cfg.ENABLE_PINNED_RS_SOFTEN,
                 )
                 return None
             
@@ -1882,6 +1891,9 @@ class DayTradeMomentumStrategy(TradingStrategyWithCommentary):
                     'is_day_trade': True,
                     'day_trade_size_multiplier': cfg.DAY_TRADE_SIZE_MULTIPLIER,
                     'flatten_hour': cfg.DAY_TRADE_FLATTEN_HOUR,
+                    # v-pinned-watchlist-2026-09-17: track pinned status
+                    'is_pinned': _is_pinned,
+                    'min_rs_used': _min_rs,
                     # Stage-A instrumentation (v-momentum-stage-a-2026-09-10)
                     'session_id': _session_id,
                     'risk_off': _risk_off,

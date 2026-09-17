@@ -34,13 +34,15 @@ Migrated v-tags (must remain greppable for the inventory test):
   - v-watchlist-stream-2026-05-01: register watchlist symbols as a
     PriceBook interest scope so the ticker tape ticks on every Schwab
     stream update.
+  - v-pinned-watchlist-2026-09-17: reserve slots for pinned liquid core
+    before filler movers. Dollar-volume ranking for non-pinned.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
 from datetime import datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, List, Dict, Any
 
 from core.config import Config
 from core.models import CommentaryType
@@ -92,14 +94,17 @@ class ScreenerLoop:
         await screener.screen_stocks()
         self.engine.last_screener_run = datetime.now()
 
-        # v-watchlist-size-2026-04-29: cap driven centrally by Config.
-        wl_size = Config().WATCHLIST_SIZE
-        screener_symbols = screener.get_watchlist_symbols(limit=wl_size)
-        if not screener_symbols:
+        cfg = Config()
+        wl_size = cfg.WATCHLIST_SIZE
+
+        # v-pinned-watchlist-2026-09-17: build watchlist with pinned
+        # symbols first, then fill remaining slots with dollar-volume
+        # ranked movers.
+        final_watchlist = self._build_pinned_watchlist(screener, cfg, wl_size)
+        if not final_watchlist:
             return
 
-        combined = list(dict.fromkeys(list(screener_symbols) + list(_DEFAULT_ANCHORS)))
-        self.engine.dynamic_watchlist = combined[:wl_size]
+        self.engine.dynamic_watchlist = final_watchlist
 
         # v-watchlist-stream-2026-05-01: register watchlist + ticker
         # tape interest scopes so streamed ticks update prices in both
@@ -128,13 +133,133 @@ class ScreenerLoop:
 
         commentary = getattr(self.engine, "commentary", None)
         if commentary is not None:
+            # Include info about pinned vs mover composition
+            pinned_set = set(cfg.PINNED_WATCHLIST) if cfg.ENABLE_PINNED_WATCHLIST else set()
+            pinned_in_wl = [s for s in final_watchlist if s in pinned_set]
+            movers_in_wl = [s for s in final_watchlist if s not in pinned_set]
+            
+            msg = f"Now tracking: {', '.join(final_watchlist)}"
+            if pinned_in_wl and cfg.ENABLE_PINNED_WATCHLIST:
+                msg += f"\n  Pinned ({len(pinned_in_wl)}): {', '.join(pinned_in_wl)}"
+                msg += f"\n  Movers ({len(movers_in_wl)}): {', '.join(movers_in_wl[:5])}{'...' if len(movers_in_wl) > 5 else ''}"
+            
             commentary.add_commentary(
                 TradingCommentary(
                     timestamp=datetime.now(),
                     type=CommentaryType.MARKET_ANALYSIS,
                     symbol=None,
                     title="📊 Watchlist Updated",
-                    message=f"Now tracking: {', '.join(self.engine.dynamic_watchlist)}",
+                    message=msg,
                     importance=6,
                 )
             )
+
+    def _build_pinned_watchlist(
+        self,
+        screener,
+        cfg: Config,
+        wl_size: int,
+    ) -> List[str]:
+        """v-pinned-watchlist-2026-09-17: build watchlist with pins first.
+
+        1. If ENABLE_PINNED_WATCHLIST, reserve slots for pinned symbols
+        2. Fill remaining slots with dollar-volume ranked movers
+        3. Fallback to old behavior if pinned watchlist disabled
+        """
+        # Get all screener movers with their data for dollar-volume ranking
+        top_movers: List[Dict[str, Any]] = screener.top_movers or []
+        
+        if not cfg.ENABLE_PINNED_WATCHLIST:
+            # Fallback to legacy behavior: screener order + default anchors
+            screener_symbols = screener.get_watchlist_symbols(limit=wl_size)
+            if not screener_symbols:
+                return []
+            combined = list(dict.fromkeys(
+                list(screener_symbols) + list(_DEFAULT_ANCHORS)
+            ))
+            return combined[:wl_size]
+
+        # Build pinned set (uppercase for case-insensitive matching)
+        pinned_list = cfg.PINNED_WATCHLIST
+        pinned_set = set(s.upper() for s in pinned_list)
+        
+        # Index movers by symbol for O(1) lookup
+        mover_by_sym: Dict[str, Dict[str, Any]] = {}
+        for m in top_movers:
+            sym = m.get('symbol', '').upper()
+            if sym and sym not in mover_by_sym:
+                mover_by_sym[sym] = m
+
+        # Step 1: Collect pinned symbols (in config order, preserving priority)
+        final: List[str] = []
+        pinned_included: List[str] = []
+        for sym in pinned_list:
+            sym_upper = sym.upper()
+            if len(final) >= wl_size:
+                break
+            # Pinned symbols get included even if not in today's movers
+            # (they'll be fetched by the analysis loop regardless)
+            if sym_upper not in final:
+                final.append(sym_upper)
+                pinned_included.append(sym_upper)
+
+        # Step 2: Fill remaining slots with dollar-volume ranked movers
+        remaining_slots = wl_size - len(final)
+        if remaining_slots > 0:
+            # Filter and rank non-pinned movers by dollar-volume
+            min_dollar_vol = cfg.MIN_DOLLAR_VOLUME
+            candidates: List[Dict[str, Any]] = []
+            
+            for m in top_movers:
+                sym = m.get('symbol', '').upper()
+                if not sym or sym in pinned_set or sym in final:
+                    continue
+                
+                # Calculate dollar-volume (price × volume)
+                price = float(m.get('last', 0) or m.get('price', 0) or 0)
+                volume = float(m.get('volume', 0) or 0)
+                dollar_vol = price * volume
+                
+                # Apply dollar-volume floor for non-pinned
+                if dollar_vol < min_dollar_vol:
+                    logger.debug(
+                        "screener_loop: demoted %s: dollar_vol $%.1fM < $%.1fM floor",
+                        sym, dollar_vol / 1e6, min_dollar_vol / 1e6,
+                    )
+                    continue
+                
+                candidates.append({
+                    'symbol': sym,
+                    'dollar_vol': dollar_vol,
+                    'mover': m,
+                })
+            
+            # Sort by dollar-volume descending (highest liquidity first)
+            candidates.sort(key=lambda x: x['dollar_vol'], reverse=True)
+            
+            # Fill remaining slots
+            movers_added: List[str] = []
+            for c in candidates[:remaining_slots]:
+                sym = c['symbol']
+                if sym not in final:
+                    final.append(sym)
+                    movers_added.append(sym)
+
+            if movers_added:
+                logger.info(
+                    "screener_loop: filled %d mover slots (by dollar-vol): %s",
+                    len(movers_added),
+                    ", ".join(movers_added[:5]) + ("..." if len(movers_added) > 5 else ""),
+                )
+
+        # Log the composition
+        if final:
+            logger.info(
+                "screener_loop: watchlist built — %d pinned, %d movers, %d total: %s",
+                len(pinned_included),
+                len(final) - len(pinned_included),
+                len(final),
+                ", ".join(final[:10]) + ("..." if len(final) > 10 else ""),
+            )
+
+        return final
