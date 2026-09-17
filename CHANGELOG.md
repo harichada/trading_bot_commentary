@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-09-17 — fix: name failing pretrade checklist gates
+
+- Verdict strip lists failing gate labels (not count-only) and appends last snapshot reason/gate.
+- Mean-rev / ORB intentionally OFF no longer count as fail (skip) so they don't fake BLOCKED.
+
 Notable changes to the trading bot from project genesis (2025-07-08) to present. Each entry lists the date range, the user-facing impact, and where applicable the v-tag (greppable code anchor) or commit SHA.
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) with added `Verified` (empirical outcomes from backtests/live) and `Operational notes` sections specific to trading-bot concerns.
