@@ -5336,14 +5336,36 @@ class TradingEngineWithCommentary:
                         'prev_close': prev_close
                     }
                     
-                    self.commentary.add_commentary(TradingCommentary(
-                        timestamp=datetime.now(),
-                        type=CommentaryType.MARKET_ANALYSIS,
-                        symbol=symbol,
-                        title=f"🌅 Gap Detected: {symbol}",
-                        message=f"{gap_percent:.1f}% gap {self.market_state['gaps'][symbol]['direction']} (Open: ${open_price:.2f}, Prev Close: ${prev_close:.2f})",
-                        importance=7
-                    ))
+                    # v-pinned-watchlist-2026-09-17: gate gap commentary to first
+                    # N minutes of RTH only. After 09:30 + N min, gaps have either
+                    # filled or established as the day's direction — commentary
+                    # becomes noise. GAP_COMMENTARY_RTH_MINUTES=0 disables gating,
+                    # -1 suppresses all gap commentary.
+                    try:
+                        from core.config import Config as _CfgGap
+                        _gap_rth_minutes = _CfgGap().GAP_COMMENTARY_RTH_MINUTES
+                    except Exception:
+                        _gap_rth_minutes = 30
+
+                    _emit_gap_commentary = True
+                    if _gap_rth_minutes < 0:
+                        _emit_gap_commentary = False
+                    elif _gap_rth_minutes > 0:
+                        now = datetime.now()
+                        market_open = now.replace(hour=9, minute=30, second=0, microsecond=0)
+                        gap_cutoff = market_open + timedelta(minutes=_gap_rth_minutes)
+                        if now > gap_cutoff:
+                            _emit_gap_commentary = False
+
+                    if _emit_gap_commentary:
+                        self.commentary.add_commentary(TradingCommentary(
+                            timestamp=datetime.now(),
+                            type=CommentaryType.MARKET_ANALYSIS,
+                            symbol=symbol,
+                            title=f"🌅 Gap Detected: {symbol}",
+                            message=f"{gap_percent:.1f}% gap {self.market_state['gaps'][symbol]['direction']} (Open: ${open_price:.2f}, Prev Close: ${prev_close:.2f})",
+                            importance=7
+                        ))
             except Exception as e:
                 logger.debug(f"Gap analysis error for {symbol}: {e}")
 
