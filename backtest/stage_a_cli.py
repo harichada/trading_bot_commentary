@@ -60,7 +60,7 @@ LANES = {
         'strategy_id': 'momentum',
         'setup_type': 'day_trade_continuation',
         'direction': 'SHORT',
-        'shadow_ledger': None,
+        'shadow_ledger': 'day_trade_short_shadow.ndjson',
     },
     'orb': {
         'strategy_id': 'orb',
@@ -125,7 +125,7 @@ def check_strategy_implemented(lane_id: str) -> bool:
         'mean_reversion_long': True,
         'mean_reversion_short': True,
         'day_trade_momentum_long': True,
-        'day_trade_momentum_short': False,
+        'day_trade_momentum_short': True,
         'orb': False,
     }
     return strategies_implemented.get(lane_id, False)
@@ -274,10 +274,11 @@ def get_historical_metrics(lane_id: str) -> Optional[StageAMetrics]:
             max_losing_day_r=0.0,
             verdict="INCOMPLETE",
             recommendation="LIVE off",
-            notes="Shadow only (#83 shadow per user query). "
-                  "SHORT signal path exists in MomentumStrategyWithCommentary but not enabled for live execution. "
-                  "No resolved sample available. "
-                  "Engine ask: implement momentum SHORT shadow ledger writer, then resolver, then Stage A audit.",
+            notes="Shadow + resolver ready (#83 shadow, v-day-trade-short-resolver-2026-09-17). "
+                  "DayTradeMomentumShortStrategy emits to data/day_trade_short_shadow.ndjson. "
+                  "Resolver: python -m research.day_trade_short_resolver --log data/day_trade_short_shadow.ndjson "
+                  "--bars-dir <path> --out /tmp/day_trade_short_results/. "
+                  "Need shadow sample to accumulate (n>=150 or sessions>=10) before scoring.",
             risk_off_excluded=True
         )
     
