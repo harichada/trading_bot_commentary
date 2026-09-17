@@ -168,8 +168,8 @@ class TestFakeCritic:
         assert stance == Stance.IRRELEVANT
         assert "contamination" in rationale.lower()
 
-    def test_crude_oil_headline_lower_contamination(self, reset_singleton):
-        """Crude oil in headline has lower contamination (not summary-only)."""
+    def test_crude_oil_headline_contamination(self, reset_singleton):
+        """Crude oil in headline triggers high contamination (v-book-b-contam-lexicon)."""
         critic = FakeCritic()
 
         theme_probs, relevance, stance, contam, conf, rationale = critic.score(
@@ -177,7 +177,7 @@ class TestFakeCritic:
             summary="Oil markets saw significant gains today.",
         )
 
-        assert contam < 0.6  # Not as high as summary-only contamination
+        assert contam >= 0.6, f"Crude oil in headline should trigger high contamination, got {contam}"
         assert stance == Stance.IRRELEVANT
 
     def test_unrelated_news_no_theme(self, reset_singleton):
@@ -734,3 +734,211 @@ class TestCrudeOilClassRegression:
         )
         assert card.theme_probs["ai_compute"] >= 0.5
         assert card.contamination_risk < 0.6
+
+
+class TestBookBContamLexicon:
+    """Tests for v-book-b-contam-lexicon-2026-09-17 fix.
+
+    Three FP cases from RCA where MiniLM flat softmax tipped ai_compute
+    on Corning/oil wraps with contamination_risk=0.0:
+    - f59b23116fcb: Why Corning Plunged Today
+    - 9579cf0d1b4f: The Oil Crisis Has Reached Costco's Motor Oil Aisle
+    - 2d83a5133335: Corning Rides on Expanding Partner Base: Will it Boost Prospects?
+
+    When GPU_CRITIC_CONTAM_LEXICON_ENABLE=True, these should have
+    contamination_risk >= 0.6 → WOULD_SUPPRESS_HARD_SKIP.
+    """
+
+    def test_corning_plunged_fp_suppressed_when_lexicon_enabled(
+        self, monkeypatch, reset_singleton
+    ):
+        """f59b23116fcb: 'Why Corning Plunged Today' → contamination ≥0.6 when lexicon ON."""
+        monkeypatch.setenv("GPU_CRITIC_CONTAM_LEXICON_ENABLE", "1")
+        reset_gpu_news_critic()
+
+        critic = FakeCritic()
+        theme_probs, relevance, stance, contam, conf, rationale = critic.score(
+            headline="Why Corning Plunged Today",
+            summary="Corning stock fell sharply on unexpected news.",
+        )
+
+        assert contam >= 0.6, (
+            f"Corning FP must trigger high contamination when lexicon enabled, got {contam}"
+        )
+
+    def test_oil_crisis_motor_oil_fp_suppressed_when_lexicon_enabled(
+        self, monkeypatch, reset_singleton
+    ):
+        """9579cf0d1b4f: 'The Oil Crisis Has Reached Costco's Motor Oil Aisle' → contamination ≥0.6."""
+        monkeypatch.setenv("GPU_CRITIC_CONTAM_LEXICON_ENABLE", "1")
+        reset_gpu_news_critic()
+
+        critic = FakeCritic()
+        theme_probs, relevance, stance, contam, conf, rationale = critic.score(
+            headline="The Oil Crisis Has Reached Costco's Motor Oil Aisle",
+            summary="Motor oil prices have surged due to supply chain issues.",
+        )
+
+        assert contam >= 0.6, (
+            f"Oil crisis FP must trigger high contamination when lexicon enabled, got {contam}"
+        )
+
+    def test_corning_partner_base_fp_suppressed_when_lexicon_enabled(
+        self, monkeypatch, reset_singleton
+    ):
+        """2d83a5133335: 'Corning Rides on Expanding Partner Base' → contamination ≥0.6."""
+        monkeypatch.setenv("GPU_CRITIC_CONTAM_LEXICON_ENABLE", "1")
+        reset_gpu_news_critic()
+
+        critic = FakeCritic()
+        theme_probs, relevance, stance, contam, conf, rationale = critic.score(
+            headline="Corning Rides on Expanding Partner Base: Will it Boost Prospects?",
+            summary="The glass manufacturer continues to expand its partnerships.",
+        )
+
+        assert contam >= 0.6, (
+            f"Corning partner FP must trigger high contamination when lexicon enabled, got {contam}"
+        )
+
+    def test_anthropic_ai_tp_not_suppressed_when_lexicon_enabled(
+        self, monkeypatch, reset_singleton
+    ):
+        """Anthropic TP bf0c664141dc with GLW in symbols_seen MUST NOT be suppressed."""
+        monkeypatch.setenv("GPU_CRITIC_CONTAM_LEXICON_ENABLE", "1")
+        reset_gpu_news_critic()
+
+        critic = FakeCritic()
+        theme_probs, relevance, stance, contam, conf, rationale = critic.score(
+            headline="Anthropic CEO warns AI compute demand surging",
+            summary="The AI company sees unprecedented GPU demand for frontier models.",
+        )
+
+        assert contam < 0.6, (
+            f"Anthropic TP must NOT trigger contamination even with lexicon enabled, got {contam}"
+        )
+        assert theme_probs["ai_compute"] >= 0.5
+
+    def test_glw_with_ai_headline_trigger_not_suppressed(
+        self, monkeypatch, reset_singleton
+    ):
+        """GLW in text BUT headline has AI trigger → NOT suppressed (TP protection)."""
+        monkeypatch.setenv("GPU_CRITIC_CONTAM_LEXICON_ENABLE", "1")
+        reset_gpu_news_critic()
+
+        critic = FakeCritic()
+        theme_probs, relevance, stance, contam, conf, rationale = critic.score(
+            headline="OpenAI data center expansion boosts glass fiber demand",
+            summary="GLW and other optical companies benefit from AI infrastructure buildout.",
+        )
+
+        assert contam < 0.6, (
+            f"GLW with AI headline trigger must NOT be suppressed, got {contam}"
+        )
+
+    def test_fake_critic_always_catches_lexicon_for_ci_honesty(
+        self, monkeypatch, reset_singleton
+    ):
+        """FakeCritic always catches lexicon hits for CI honesty (regardless of config flag)."""
+        monkeypatch.delenv("GPU_CRITIC_CONTAM_LEXICON_ENABLE", raising=False)
+        reset_gpu_news_critic()
+
+        critic = FakeCritic()
+        theme_probs, relevance, stance, contam, conf, rationale = critic.score(
+            headline="Why Corning Plunged Today",
+            summary="Corning stock fell sharply.",
+        )
+
+        assert contam >= 0.6, (
+            f"FakeCritic has lexicon built-in for CI honesty, got {contam}"
+        )
+
+    def test_full_critic_corning_fp_when_enabled(
+        self, monkeypatch, reset_singleton
+    ):
+        """Full GPUNewsCritic with FakeCritic should suppress Corning FP when enabled."""
+        monkeypatch.setenv("GPU_CRITIC_CONTAM_LEXICON_ENABLE", "1")
+        reset_gpu_news_critic()
+
+        @dataclass
+        class CorningItem:
+            id: str = "f59b23116fcb"
+            symbol: str = "GLW"
+            headline: str = "Why Corning Plunged Today"
+            summary: str = "Corning stock fell sharply on unexpected news."
+            source: str = "Zacks"
+            source_tier: int = 2
+            url: str = "https://test.com"
+            published_time: datetime = None
+            fetched_at: datetime = None
+            sentiment_score: float = -0.5
+            sentiment_confidence: float = 0.5
+
+            def __post_init__(self):
+                if self.published_time is None:
+                    self.published_time = datetime.now(timezone.utc) - timedelta(minutes=10)
+                if self.fetched_at is None:
+                    self.fetched_at = datetime.now(timezone.utc)
+
+            def age_sec(self) -> float:
+                return 600.0
+
+        critic = GPUNewsCritic(use_fake=True)
+        item = CorningItem()
+
+        card = critic.score_news_item(item)
+
+        assert card.contamination_risk >= 0.6, (
+            f"Corning FP event must have contamination_risk >= 0.6 when lexicon enabled, "
+            f"got {card.contamination_risk}"
+        )
+        assert card.action == CriticAction.WOULD_SUPPRESS_HARD_SKIP, (
+            f"Corning FP must trigger WOULD_SUPPRESS_HARD_SKIP, got {card.action}"
+        )
+
+    def test_full_critic_anthropic_tp_preserved_when_enabled(
+        self, monkeypatch, reset_singleton
+    ):
+        """Full GPUNewsCritic Anthropic TP must NOT be suppressed when lexicon enabled."""
+        monkeypatch.setenv("GPU_CRITIC_CONTAM_LEXICON_ENABLE", "1")
+        reset_gpu_news_critic()
+
+        @dataclass
+        class AnthropicItem:
+            id: str = "anthropic_tp"
+            symbol: str = "NVDA"
+            headline: str = "Anthropic CEO Dario Amodei warns about frontier AI pace"
+            summary: str = "The AI safety company sees compute constraints ahead."
+            source: str = "Reuters"
+            source_tier: int = 1
+            url: str = "https://test.com"
+            published_time: datetime = None
+            fetched_at: datetime = None
+            sentiment_score: float = -0.5
+            sentiment_confidence: float = 0.5
+
+            def __post_init__(self):
+                if self.published_time is None:
+                    self.published_time = datetime.now(timezone.utc) - timedelta(minutes=10)
+                if self.fetched_at is None:
+                    self.fetched_at = datetime.now(timezone.utc)
+
+            def age_sec(self) -> float:
+                return 600.0
+
+        critic = GPUNewsCritic(use_fake=True)
+        item = AnthropicItem()
+
+        keyword_match = KeywordMatch(
+            theme_id="ai_compute",
+            matched_text="anthropic",
+            matched_field="headline",
+        )
+
+        card = critic.score_news_item(item, keyword_match=keyword_match)
+
+        assert card.action == CriticAction.PASS, (
+            f"Anthropic TP must NOT be suppressed even with lexicon enabled, got {card.action}"
+        )
+        assert card.contamination_risk < 0.6, (
+            f"Anthropic TP must have low contamination_risk, got {card.contamination_risk}"
+        )

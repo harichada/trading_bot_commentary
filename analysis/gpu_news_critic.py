@@ -340,6 +340,20 @@ class GPUNewsCriticModel:
             rationale_short,
         )
 
+    AI_COMPUTE_TRIGGERS = [
+        "anthropic",
+        "amodei",
+        "openai",
+        "frontier ai",
+        "ai slowdown",
+        "gpu demand",
+        "data center",
+        "data-center",
+        "datacenter",
+        "ai compute",
+        "ai infrastructure",
+    ]
+
     def _compute_contamination_risk(
         self,
         headline: str,
@@ -354,6 +368,8 @@ class GPUNewsCriticModel:
         2. Multiple unrelated topics detected (high "other" + specific theme)
         3. Summary significantly longer than headline (aggregation signal)
         4. Keyword matched theme disagrees with model's top theme
+        5. (v-book-b-contam-lexicon-2026-09-17) Lexicon hit on headline/summary
+           for Corning/GLW/oil wraps UNLESS AI_COMPUTE_TRIGGERS also present
         """
         risk = 0.0
 
@@ -390,7 +406,49 @@ class GPUNewsCriticModel:
                 if theme_probs[top_theme] > theme_probs[keyword_match.theme_id] + 0.15:
                     risk += 0.25
 
+        risk = self._apply_contam_lexicon(headline, summary, risk)
+
         return min(1.0, risk)
+
+    def _apply_contam_lexicon(
+        self,
+        headline: str,
+        summary: str,
+        current_risk: float,
+    ) -> float:
+        """Apply lexicon-based contamination detection.
+
+        v-book-b-contam-lexicon-2026-09-17: bumps contamination_risk to >=0.65
+        when lexicon tokens found in headline/summary text UNLESS headline
+        also has AI_COMPUTE_TRIGGERS (keeps TP bf0c664141dc Nasdaq/AI Leaders).
+
+        Matches on headline/summary text only (NOT symbols_seen dump).
+        """
+        from core.config import Config
+        cfg = Config()
+
+        if not cfg.GPU_CRITIC_CONTAM_LEXICON_ENABLE:
+            return current_risk
+
+        lexicon = cfg.GPU_CRITIC_CONTAM_LEXICON
+        if not lexicon:
+            return current_risk
+
+        headline_lower = headline.lower()
+        summary_lower = summary.lower()
+        text_lower = f"{headline_lower} {summary_lower}"
+
+        has_lexicon_hit = any(token.lower() in text_lower for token in lexicon)
+        if not has_lexicon_hit:
+            return current_risk
+
+        headline_has_ai_trigger = any(
+            t in headline_lower for t in self.AI_COMPUTE_TRIGGERS
+        )
+        if headline_has_ai_trigger:
+            return current_risk
+
+        return max(current_risk, 0.65)
 
 
 class FakeCritic:
@@ -403,6 +461,8 @@ class FakeCritic:
     - AI trigger in headline → ai_compute theme, low contamination
     - AI trigger ONLY in summary (not headline) → low theme_prob, high contamination
     - Crude oil/commodities in summary → high contamination
+    - (v-book-b-contam-lexicon-2026-09-17) Lexicon hit on Corning/GLW/oil wraps
+      → high contamination UNLESS headline has AI_COMPUTE_TRIGGERS
     """
 
     CONTAMINATION_TRIGGERS = [
@@ -412,6 +472,16 @@ class FakeCritic:
         "oil prices",
         "wti crude",
         "brent crude",
+        "corning",
+        "glw",
+        "nyse:glw",
+        "motor oil",
+        "oil crisis",
+        "wti",
+        "brent",
+        "cohr",
+        "cien",
+        "aaoi",
     ]
 
     AI_COMPUTE_TRIGGERS = [
@@ -422,6 +492,10 @@ class FakeCritic:
         "ai slowdown",
         "gpu demand",
         "data center",
+        "data-center",
+        "datacenter",
+        "ai compute",
+        "ai infrastructure",
     ]
 
     def score(
@@ -435,12 +509,13 @@ class FakeCritic:
         summary_lower = summary.lower()
         text = f"{headline} {summary}".lower()
 
-        is_contaminated = any(t in text for t in self.CONTAMINATION_TRIGGERS)
-        
         headline_has_ai_trigger = any(t in headline_lower for t in self.AI_COMPUTE_TRIGGERS)
         summary_has_ai_trigger = any(t in summary_lower for t in self.AI_COMPUTE_TRIGGERS)
         is_ai_compute = headline_has_ai_trigger or summary_has_ai_trigger
 
+        has_contam_trigger = any(t in text for t in self.CONTAMINATION_TRIGGERS)
+        is_contaminated = has_contam_trigger and not headline_has_ai_trigger
+        
         summary_has_contam_trigger = any(
             t in summary_lower for t in self.CONTAMINATION_TRIGGERS
         )
@@ -450,7 +525,7 @@ class FakeCritic:
 
         ai_trigger_only_in_summary = summary_has_ai_trigger and not headline_has_ai_trigger
 
-        if headline_has_ai_trigger and not is_contaminated:
+        if headline_has_ai_trigger:
             theme_probs = {
                 "ai_compute": 0.65,
                 "ai_mega_cap": 0.15,
@@ -483,7 +558,7 @@ class FakeCritic:
             rationale = "ai trigger only in summary, headline unrelated; summary-only keyword match with low theme_prob"
 
         elif is_contaminated:
-            contamination_risk = 0.7 if summary_has_contam_trigger and not headline_has_contam_trigger else 0.4
+            contamination_risk = 0.7 if summary_has_contam_trigger and not headline_has_contam_trigger else 0.65
             theme_probs = {
                 "ai_compute": 0.15 if is_ai_compute else 0.05,
                 "ai_mega_cap": 0.05,
@@ -496,7 +571,7 @@ class FakeCritic:
             relevance = {}
             stance = Stance.IRRELEVANT
             confidence = 0.3
-            rationale = f"contamination detected ({contamination_risk:.2f}), crude oil unrelated"
+            rationale = f"contamination detected ({contamination_risk:.2f}), lexicon hit"
 
         else:
             theme_probs = {

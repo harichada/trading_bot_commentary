@@ -1,5 +1,37 @@
 # Changelog
 
+## 2026-09-17 — fix: Book B contamination FP lexicon (v-book-b-contam-lexicon-2026-09-17)
+
+### Problem
+
+Book B Stage A contam_fp = 15% (3/20) FAIL vs floor ≤5%. Three FPs leaked because MiniLM flat softmax tipped `ai_compute` on Corning/oil wraps with `contamination_risk=0.0`:
+- f59b23116fcb: "Why Corning Plunged Today"
+- 9579cf0d1b4f: "The Oil Crisis Has Reached Costco's Motor Oil Aisle"
+- 2d83a5133335: "Corning Rides on Expanding Partner Base: Will it Boost Prospects?"
+
+### Added
+
+- **Config-gated contamination lexicon** in `GPUNewsCriticModel._compute_contamination_risk`:
+  - `GPU_CRITIC_CONTAM_LEXICON_ENABLE` (default False, safe off-path)
+  - `GPU_CRITIC_CONTAM_LEXICON` list: corning, glw, nyse:glw, motor oil, oil crisis, crude oil, petroleum, opec, wti, brent, cohr, cien, aaoi
+  - On headline/summary text hit: `contamination_risk = max(risk, 0.65)` UNLESS headline also has AI_COMPUTE_TRIGGERS (anthropic, openai, gpu demand, data center, ...)
+  - Matches headline/summary text only (NOT symbols_seen dump) to preserve TP bf0c664141dc Nasdaq/AI Leaders
+
+- **FakeCritic lexicon mirror** for CI honesty: same triggers in `FakeCritic.CONTAMINATION_TRIGGERS`
+
+- **8 new unit tests** in `tests/test_gpu_news_critic.py::TestBookBContamLexicon`:
+  - 3 FP eids → contamination_risk ≥ 0.6 + WOULD_SUPPRESS_HARD_SKIP when lexicon enabled
+  - Anthropic/AI headline TPs unchanged
+  - GLW with AI headline trigger not suppressed (TP protection)
+
+### Unchanged
+
+- `THEME_HARD_SKIP_REQUIRE_GPU=False` (not flipped)
+- No LIVE knobs changed
+- HANDS_OFF MU/HQGE/SPCX unchanged
+
+---
+
 ## 2026-09-17 — fix: name failing pretrade checklist gates
 
 - Verdict strip lists failing gate labels (not count-only) and appends last snapshot reason/gate.
