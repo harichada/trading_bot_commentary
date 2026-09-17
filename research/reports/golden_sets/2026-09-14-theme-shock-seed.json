@@ -1,0 +1,2341 @@
+{
+  "as_of": "2026-09-14T16:05:15.089155-04:00",
+  "tip": "f6fb73c",
+  "precision_pr": 56,
+  "book": "A",
+  "stage": "A",
+  "spot_check": {
+    "crude_oil_hard_skip_after_56": false,
+    "last_crude_oil_emit": "2026-09-14T15:36:13-04:00",
+    "anthropic_tp_with_matched_field_headline": true,
+    "note": "No Crude Oil hard_skip after headline-only live; Anthropic emits show matched_text=anthropic matched_field=headline"
+  },
+  "growth": {
+    "target_fp": 20,
+    "target_tp": 20,
+    "fp_count": 20,
+    "tp_count": 20,
+    "fp_shortfall": 0,
+    "tp_shortfall": 0,
+    "shortfall_reason": "Soak 2026-09-17 added 2 Corning-class FP (now 20/~20). GO bar hit (fp≥20). ThemeShock ai_compute oil/corning since cut: 0; kw=ai_compute oil/corning: 0. Hands-off MU/HQGE/SPCX untouched.",
+    "label_criteria": {
+      "FP": "Crude Oil-class contamination: commodity/energy/Corning multi-story headlines that keyword-matched ai_compute wrongly OR critic should suppress / wrong-theme; expected_action=no_hard_skip post-#56",
+      "TP": "Anthropic / AI-compute genuine headline hits (matched_field=headline preferred); expected_action=hard_skip_entries; MU/HQGE/SPCX watch_only only"
+    },
+    "gpu_critic_attach_coverage_pct": 87.5,
+    "fp_attach_pct": 95.0,
+    "tp_attach_pct": 80.0,
+    "tp_matched_field_headline": 7,
+    "hands_off_symbols": [
+      "MU",
+      "HQGE",
+      "SPCX"
+    ],
+    "mined_theme_shock_unique": 32,
+    "mined_critic_unique": 596,
+    "mined_ai_compute_theme_shock": 7,
+    "gpu_critic_full_attach_count": 35,
+    "gpu_critic_any_attach_count": 35,
+    "gpu_critic_reattach_note": "DB reattach 2026-09-15 tip a17bb6b: 23/28 full from rudra_dev.bot_decisions; unmatched left as prior log partial/missing",
+    "soak_pass": {
+      "as_of": "2026-09-17T16:28:48.952254-04:00",
+      "cut": "2026-09-16T16:52:03-04:00",
+      "attached_from_tip": "ad05693",
+      "seed_book_tip": "f6fb73c",
+      "last_attach_tip_prior": "b77e39a",
+      "new_fp_count": 2,
+      "new_fp_event_ids": [
+        "2a69cccc668c",
+        "2d83a5133335"
+      ],
+      "skipped": [
+        "cbfe934f67f5 already in seed"
+      ],
+      "sources": [
+        "KiddoKingdom trading_bot.log[.1-.5]",
+        "/tmp/trading_bot_stdout.log",
+        "rudra_dev.bot_decisions component=gpu_news_critic|theme_shock_logger"
+      ],
+      "theme_shock_oil_corning_ai_compute_since_cut": 0,
+      "kw_ai_compute_oil_corning_since_cut": 0,
+      "hands_off": [
+        "MU",
+        "HQGE",
+        "SPCX"
+      ]
+    },
+    "fp_attach_coverage_pct": 95.0
+  },
+  "false_positives": [
+    {
+      "event_id": "1a1e82cd9500",
+      "theme_id": "ai_compute",
+      "headline": "Crude Oil Jumps 3%; Corning Shares Move Lower",
+      "label": "FP_contamination_summary",
+      "expected_action": "no_hard_skip",
+      "pre_56_action": "hard_skip_entries",
+      "gpu_critic": {
+        "strategy": "gpu_news_critic",
+        "action": "shadow_pass",
+        "theme_probs": {
+          "earnings_chip": 0.15
+        },
+        "contamination_risk": 0.0,
+        "keyword_match": null,
+        "infer_ms": 15.5,
+        "news_age_sec": 13117.0,
+        "stance": "bearish",
+        "confidence": 0.39,
+        "relevance_by_symbol": {},
+        "skip_reason": null,
+        "attached_from_tip": "f6fb73c",
+        "attached_at": "2026-09-14T15:56:10.293736-04:00",
+        "live_event_id": "e498d20084f9",
+        "join_method": "headline",
+        "top_theme": "earnings_chip",
+        "top_theme_prob": 0.15,
+        "symbols_seen": [
+          "CLLS",
+          "ELMT",
+          "GLW",
+          "NVDA",
+          "QCLS",
+          "RUM",
+          "TYRA"
+        ],
+        "n_symbol_emits": 14,
+        "source_log_ts": "2026-09-14 15:48:30,038",
+        "log_file": "/home/nvidia/claude/grok/trading_bot_commentary/trading_bot.log.1",
+        "_partial": {
+          "theme_probs": "log shows top theme only; full dict lives in extra_data but db path broken",
+          "relevance_by_symbol": "not present on log line",
+          "join": "headline (seed event_id absent in live critic emits)"
+        }
+      }
+    },
+    {
+      "event_id": "a58d74c91e16",
+      "theme_id": "ai_compute",
+      "headline": "Corning Stock Slides Monday: What's Happening?",
+      "label": "FP_contamination_corning_cluster",
+      "expected_action": "no_hard_skip",
+      "note": "contamination-class for Book A/B gate; post-#56 headline-only may not ThemeShock-emit",
+      "gpu_critic": {
+        "strategy": "gpu_news_critic",
+        "action": "shadow_pass",
+        "theme_probs": {
+          "none": 0.15701418052988803,
+          "other": 0.1548661986589325,
+          "ai_compute": 0.1307927137950894,
+          "memory_hbm": 0.13596821217124747,
+          "ai_mega_cap": 0.11912784680618209,
+          "fed_risk_off": 0.14422287258116004,
+          "earnings_chip": 0.15800797545750048
+        },
+        "contamination_risk": 0.0,
+        "keyword_match": null,
+        "infer_ms": 7.63525390625,
+        "news_age_sec": 7048.361941,
+        "stance": "irrelevant",
+        "confidence": 0.40250821214834404,
+        "relevance_by_symbol": {
+          "AMD": 0.12640638036600038,
+          "TSM": 0.12640638036600038,
+          "ASML": 0.12640638036600038,
+          "AVGO": 0.12640638036600038,
+          "INTC": 0.12640638036600038,
+          "MRVL": 0.12640638036600038,
+          "NVDA": 0.12640638036600038,
+          "QCOM": 0.12640638036600038
+        },
+        "skip_reason": null,
+        "source": "bot_decisions",
+        "live_event_id": "a58d74c91e16",
+        "top_theme": "earnings_chip",
+        "top_theme_prob": 0.15800797545750048,
+        "symbols_seen": [
+          "GLW"
+        ],
+        "n_symbol_emits": 3,
+        "source_db_ts": "2026-09-14T16:12:11.365752",
+        "db_actions": [
+          "shadow_pass"
+        ],
+        "headline_db": "Corning Stock Slides Monday: What's Happening?",
+        "rationale_short": "theme=earnings_chip(0.16); stance=irrelevant",
+        "db_source_field": "Alpaca News",
+        "full_theme_probs": true,
+        "full_relevance": true,
+        "attached_from_tip": "a17bb6b",
+        "attached_at": "2026-09-15T15:57:35.566093-04:00",
+        "join_method": "event_id"
+      }
+    },
+    {
+      "event_id": "264b81698c24",
+      "theme_id": "ai_compute",
+      "headline": "Corning Stock Is Today’s Worst in the S&P 500. It’s Not Just",
+      "label": "FP_contamination_corning_cluster",
+      "expected_action": "no_hard_skip",
+      "note": "contamination-class for Book A/B gate; post-#56 headline-only may not ThemeShock-emit",
+      "gpu_critic": {
+        "strategy": "gpu_news_critic",
+        "action": "shadow_pass",
+        "theme_probs": {
+          "none": 0.1444217648551949,
+          "other": 0.13622028423270424,
+          "ai_compute": 0.14934652425786038,
+          "memory_hbm": 0.12662220941565125,
+          "ai_mega_cap": 0.14506450982255353,
+          "fed_risk_off": 0.14145210689798607,
+          "earnings_chip": 0.15687260051804963
+        },
+        "contamination_risk": 0.0,
+        "keyword_match": null,
+        "infer_ms": 17.24365234375,
+        "news_age_sec": 28793.238286,
+        "stance": "irrelevant",
+        "confidence": 0.4217537046484062,
+        "relevance_by_symbol": {
+          "AMD": 0.12549808041443972,
+          "TSM": 0.12549808041443972,
+          "ASML": 0.12549808041443972,
+          "AVGO": 0.12549808041443972,
+          "INTC": 0.12549808041443972,
+          "MRVL": 0.12549808041443972,
+          "NVDA": 0.12549808041443972,
+          "QCOM": 0.12549808041443972
+        },
+        "skip_reason": null,
+        "source": "bot_decisions",
+        "live_event_id": "264b81698c24",
+        "top_theme": "earnings_chip",
+        "top_theme_prob": 0.15687260051804963,
+        "symbols_seen": [
+          "S",
+          "GLW",
+          "COHR"
+        ],
+        "n_symbol_emits": 2418,
+        "source_db_ts": "2026-09-14T22:15:53.241825",
+        "db_actions": [
+          "shadow_pass"
+        ],
+        "headline_db": "Corning Stock Is Today’s Worst in the S&P 500. It’s Not Just the AI Selloff.",
+        "rationale_short": "theme=earnings_chip(0.16); stance=irrelevant",
+        "db_source_field": "Yahoo Finance RSS",
+        "full_theme_probs": true,
+        "full_relevance": true,
+        "attached_from_tip": "a17bb6b",
+        "attached_at": "2026-09-15T15:57:35.566093-04:00",
+        "join_method": "event_id"
+      }
+    },
+    {
+      "event_id": "b2cda48bd50b",
+      "theme_id": "ai_compute",
+      "headline": "Corning Tumbles 12% on $2B At-the-Market Equity Offering; Co",
+      "label": "FP_contamination_corning_cluster",
+      "expected_action": "no_hard_skip",
+      "note": "contamination-class for Book A/B gate; post-#56 headline-only may not ThemeShock-emit",
+      "gpu_critic": {
+        "strategy": "gpu_news_critic",
+        "action": "shadow_pass",
+        "theme_probs": {
+          "none": 0.13978019310197054,
+          "other": 0.14114816838345964,
+          "ai_compute": 0.1430006102565046,
+          "memory_hbm": 0.1350179567642887,
+          "ai_mega_cap": 0.13458289586415229,
+          "fed_risk_off": 0.14480005635715706,
+          "earnings_chip": 0.1616701192724672
+        },
+        "contamination_risk": 0.0,
+        "keyword_match": null,
+        "infer_ms": 12.55029296875,
+        "news_age_sec": 28795.763577,
+        "stance": "irrelevant",
+        "confidence": 0.398369029515384,
+        "relevance_by_symbol": {
+          "AMD": 0.12933609541797375,
+          "TSM": 0.12933609541797375,
+          "ASML": 0.12933609541797375,
+          "AVGO": 0.12933609541797375,
+          "INTC": 0.12933609541797375,
+          "MRVL": 0.12933609541797375,
+          "NVDA": 0.12933609541797375,
+          "QCOM": 0.12933609541797375
+        },
+        "skip_reason": null,
+        "source": "bot_decisions",
+        "live_event_id": "b2cda48bd50b",
+        "top_theme": "earnings_chip",
+        "top_theme_prob": 0.1616701192724672,
+        "symbols_seen": [
+          "GLW",
+          "COHR"
+        ],
+        "n_symbol_emits": 1692,
+        "source_db_ts": "2026-09-14T21:49:45.766566",
+        "db_actions": [
+          "shadow_pass"
+        ],
+        "headline_db": "Corning Tumbles 12% on $2B At-the-Market Equity Offering; Coherent Sinks 11%, Lumentum Drops 9%, Fab",
+        "rationale_short": "theme=earnings_chip(0.16); stance=irrelevant",
+        "db_source_field": "Yahoo Finance RSS",
+        "full_theme_probs": true,
+        "full_relevance": true,
+        "attached_from_tip": "a17bb6b",
+        "attached_at": "2026-09-15T15:57:35.566093-04:00",
+        "join_method": "event_id"
+      }
+    },
+    {
+      "event_id": "d93b2ab41bea",
+      "theme_id": "ai_compute",
+      "headline": "Corning: AI-Slowdown Fears, Equity Distribution News Hit Har",
+      "label": "FP_contamination_keyword_risk",
+      "expected_action": "no_hard_skip",
+      "note": "contamination-class for Book A/B gate; post-#56 headline-only may not ThemeShock-emit",
+      "matched_text": "ai slowdown",
+      "matched_field": "headline",
+      "keyword_risk": true,
+      "gpu_critic": {
+        "strategy": "gpu_news_critic",
+        "action": "shadow_pass",
+        "theme_probs": {
+          "none": 0.1433639353541521,
+          "other": 0.1438181879496657,
+          "ai_compute": 0.14997367495810018,
+          "memory_hbm": 0.12280532167619924,
+          "ai_mega_cap": 0.14666725614967663,
+          "fed_risk_off": 0.13649976498667774,
+          "earnings_chip": 0.15687185892552846
+        },
+        "contamination_risk": 0.0,
+        "keyword_match": null,
+        "infer_ms": 7.29443359375,
+        "news_age_sec": 12283.121054,
+        "stance": "bearish",
+        "confidence": 0.433912539825294,
+        "relevance_by_symbol": {
+          "AMD": 0.12549748714042278,
+          "TSM": 0.12549748714042278,
+          "ASML": 0.12549748714042278,
+          "AVGO": 0.12549748714042278,
+          "INTC": 0.12549748714042278,
+          "MRVL": 0.12549748714042278,
+          "NVDA": 0.12549748714042278,
+          "QCOM": 0.12549748714042278
+        },
+        "skip_reason": null,
+        "source": "bot_decisions",
+        "live_event_id": "d93b2ab41bea",
+        "top_theme": "earnings_chip",
+        "top_theme_prob": 0.15687185892552846,
+        "symbols_seen": [
+          "GLW"
+        ],
+        "n_symbol_emits": 2,
+        "source_db_ts": "2026-09-14T16:12:19.122776",
+        "db_actions": [
+          "shadow_pass"
+        ],
+        "headline_db": "Corning: AI-Slowdown Fears, Equity Distribution News Hit Hard, EPS Growth Remains (GLW)",
+        "rationale_short": "theme=earnings_chip(0.16); stance=bearish",
+        "db_source_field": "Seeking Alpha",
+        "full_theme_probs": true,
+        "full_relevance": true,
+        "attached_from_tip": "a17bb6b",
+        "attached_at": "2026-09-15T15:57:35.566093-04:00",
+        "join_method": "event_id"
+      }
+    },
+    {
+      "event_id": "a648d9d63a60",
+      "theme_id": "ai_compute",
+      "headline": "Oracle, Corning, Alphabet, GE Vernova, CrowdStrike, SpaceX,",
+      "label": "FP_contamination_corning_cluster",
+      "expected_action": "no_hard_skip",
+      "note": "contamination-class for Book A/B gate; post-#56 headline-only may not ThemeShock-emit",
+      "gpu_critic": {
+        "strategy": "gpu_news_critic",
+        "action": "shadow_pass",
+        "theme_probs": {
+          "none": 0.15029737318468986,
+          "other": 0.13922679608919622,
+          "ai_compute": 0.13333164747398493,
+          "memory_hbm": 0.13714949375385752,
+          "ai_mega_cap": 0.13811957788416504,
+          "fed_risk_off": 0.14167210417507367,
+          "earnings_chip": 0.16020300743903276
+        },
+        "contamination_risk": 0.0,
+        "keyword_match": null,
+        "infer_ms": 5.972900390625,
+        "news_age_sec": 28778.179327,
+        "stance": "irrelevant",
+        "confidence": 0.4120623531834561,
+        "relevance_by_symbol": {
+          "AMD": 0.12816240595122622,
+          "TSM": 0.12816240595122622,
+          "ASML": 0.12816240595122622,
+          "AVGO": 0.12816240595122622,
+          "INTC": 0.12816240595122622,
+          "MRVL": 0.12816240595122622,
+          "NVDA": 0.12816240595122622,
+          "QCOM": 0.12816240595122622
+        },
+        "skip_reason": null,
+        "source": "bot_decisions",
+        "live_event_id": "a648d9d63a60",
+        "top_theme": "earnings_chip",
+        "top_theme_prob": 0.16020300743903276,
+        "symbols_seen": [
+          "COHR"
+        ],
+        "n_symbol_emits": 876,
+        "source_db_ts": "2026-09-15T00:24:38.183269",
+        "db_actions": [
+          "shadow_pass"
+        ],
+        "headline_db": "Oracle, Corning, Alphabet, GE Vernova, CrowdStrike, SpaceX, and More Stocks That Explain Today’s Mar",
+        "rationale_short": "theme=earnings_chip(0.16); stance=irrelevant",
+        "db_source_field": "Yahoo Finance RSS",
+        "full_theme_probs": true,
+        "full_relevance": true,
+        "attached_from_tip": "a17bb6b",
+        "attached_at": "2026-09-15T15:57:35.566093-04:00",
+        "join_method": "event_id"
+      }
+    },
+    {
+      "event_id": "f59b23116fcb",
+      "theme_id": "ai_compute",
+      "headline": "Why Corning Plunged Today",
+      "label": "FP_contamination_critic_wrong_theme",
+      "expected_action": "no_hard_skip",
+      "note": "contamination-class for Book A/B gate; post-#56 headline-only may not ThemeShock-emit",
+      "gpu_critic": {
+        "strategy": "gpu_news_critic",
+        "action": "shadow_pass",
+        "theme_probs": {
+          "none": 0.14059466984574645,
+          "other": 0.1405928050181133,
+          "ai_compute": 0.16060430533665335,
+          "memory_hbm": 0.13221572463910386,
+          "ai_mega_cap": 0.14629902712974507,
+          "fed_risk_off": 0.13293979382469187,
+          "earnings_chip": 0.14675367420594612
+        },
+        "contamination_risk": 0.0,
+        "keyword_match": null,
+        "infer_ms": 6.32177734375,
+        "news_age_sec": 28775.949017,
+        "stance": "irrelevant",
+        "confidence": 0.40202413115391095,
+        "relevance_by_symbol": {
+          "AMD": 0.12848344426932268,
+          "ARM": 0.12848344426932268,
+          "AVGO": 0.12848344426932268,
+          "NVDA": 0.12848344426932268,
+          "SMCI": 0.12848344426932268
+        },
+        "skip_reason": null,
+        "source": "bot_decisions",
+        "live_event_id": "f59b23116fcb",
+        "top_theme": "ai_compute",
+        "top_theme_prob": 0.16060430533665335,
+        "symbols_seen": [
+          "GLW"
+        ],
+        "n_symbol_emits": 1305,
+        "source_db_ts": "2026-09-14T23:41:19.952959",
+        "db_actions": [
+          "shadow_pass"
+        ],
+        "headline_db": "Why Corning Plunged Today",
+        "rationale_short": "theme=ai_compute(0.16); stance=irrelevant",
+        "db_source_field": "Yahoo Finance RSS",
+        "full_theme_probs": true,
+        "full_relevance": true,
+        "attached_from_tip": "a17bb6b",
+        "attached_at": "2026-09-15T15:57:35.566093-04:00",
+        "join_method": "event_id"
+      }
+    },
+    {
+      "event_id": "fb6e546bb366",
+      "theme_id": "ai_compute",
+      "headline": "Stocks to watch on Monday: GLW, KMB, NVDA & more (SPY:NYSEAR",
+      "label": "FP_contamination_corning_cluster",
+      "expected_action": "no_hard_skip",
+      "note": "contamination-class for Book A/B gate; post-#56 headline-only may not ThemeShock-emit",
+      "gpu_critic": {
+        "strategy": "gpu_news_critic",
+        "action": "shadow_pass",
+        "theme_probs": {
+          "none": 0.1508936768485529,
+          "other": 0.15121592557510574,
+          "ai_compute": 0.13088974176793808,
+          "memory_hbm": 0.1421830645861917,
+          "ai_mega_cap": 0.1379795119593906,
+          "fed_risk_off": 0.13301541390231852,
+          "earnings_chip": 0.15382266536050246
+        },
+        "contamination_risk": 0.0,
+        "keyword_match": null,
+        "infer_ms": 6.93505859375,
+        "news_age_sec": 24928.945965,
+        "stance": "irrelevant",
+        "confidence": 0.3887136677637359,
+        "relevance_by_symbol": {
+          "AMD": 0.12305813228840197,
+          "TSM": 0.12305813228840197,
+          "ASML": 0.12305813228840197,
+          "AVGO": 0.12305813228840197,
+          "INTC": 0.12305813228840197,
+          "MRVL": 0.12305813228840197,
+          "NVDA": 0.12305813228840197,
+          "QCOM": 0.12305813228840197
+        },
+        "skip_reason": null,
+        "source": "bot_decisions",
+        "live_event_id": "fb6e546bb366",
+        "top_theme": "earnings_chip",
+        "top_theme_prob": 0.15382266536050246,
+        "symbols_seen": [
+          "GLW"
+        ],
+        "n_symbol_emits": 132,
+        "source_db_ts": "2026-09-14T16:51:32.953719",
+        "db_actions": [
+          "shadow_pass"
+        ],
+        "headline_db": "Stocks to watch on Monday: GLW, KMB, NVDA & more (SPY:NYSEARCA)",
+        "rationale_short": "theme=earnings_chip(0.15); stance=irrelevant",
+        "db_source_field": "Seeking Alpha",
+        "full_theme_probs": true,
+        "full_relevance": true,
+        "attached_from_tip": "a17bb6b",
+        "attached_at": "2026-09-15T15:57:35.566093-04:00",
+        "join_method": "event_id"
+      }
+    },
+    {
+      "event_id": "b778f28b989e",
+      "theme_id": "ai_compute",
+      "headline": "CrowdStrike, Bank of America, Microsoft, Zscaler and Corning: Why These 5 Stocks Are on Investors' R",
+      "label": "FP_contamination_corning_cluster",
+      "expected_action": "no_hard_skip",
+      "note": "soak delta 2026-09-15; Crude Oil/Corning-class contamination for Book A/B gate; post-#56 headline-only may not ThemeShock-emit; multi-ticker wrap with Corning/GLW",
+      "soak_ts": "2026-09-14T21:14:12.553553",
+      "gpu_critic": {
+        "strategy": "gpu_news_critic",
+        "action": "shadow_pass",
+        "theme_probs": {
+          "none": 0.14895050643945604,
+          "other": 0.14563757299683275,
+          "ai_compute": 0.1376235294565245,
+          "memory_hbm": 0.13409103929205857,
+          "ai_mega_cap": 0.1416170901103557,
+          "fed_risk_off": 0.14148344211098818,
+          "earnings_chip": 0.15059681959378424
+        },
+        "contamination_risk": 0.0,
+        "keyword_match": null,
+        "infer_ms": 9.013916015625,
+        "news_age_sec": 102.552202,
+        "stance": "irrelevant",
+        "confidence": 0.40986661974304767,
+        "relevance_by_symbol": {
+          "AMD": 0.12047745567502739,
+          "TSM": 0.12047745567502739,
+          "ASML": 0.12047745567502739,
+          "AVGO": 0.12047745567502739,
+          "INTC": 0.12047745567502739,
+          "MRVL": 0.12047745567502739,
+          "NVDA": 0.12047745567502739,
+          "QCOM": 0.12047745567502739
+        },
+        "skip_reason": null,
+        "source": "bot_decisions",
+        "live_event_id": "b778f28b989e",
+        "top_theme": "earnings_chip",
+        "top_theme_prob": 0.15059681959378424,
+        "symbols_seen": [
+          "BAC",
+          "CRWD",
+          "GLW",
+          "MSFT",
+          "ZS"
+        ],
+        "n_symbol_emits": 5,
+        "source_db_ts": "2026-09-14T21:14:12.553553",
+        "db_actions": [
+          "shadow_pass"
+        ],
+        "headline_db": "CrowdStrike, Bank of America, Microsoft, Zscaler and Corning: Why These 5 Stocks Are on Investors' R",
+        "rationale_short": "theme=earnings_chip(0.15); stance=irrelevant",
+        "db_source_field": "Alpaca News",
+        "full_theme_probs": true,
+        "full_relevance": true,
+        "attached_from_tip": "a17bb6b",
+        "attached_at": "2026-09-15T16:02:15.300376-04:00",
+        "join_method": "event_id"
+      }
+    },
+    {
+      "event_id": "d3ccbddab95e",
+      "theme_id": "ai_compute",
+      "headline": "CRWD, BAC, MSFT, ZS, GLW: 5 Trending Stocks Today - CrowdStrike Holdings (NASDAQ:CRWD)",
+      "label": "FP_contamination_corning_cluster",
+      "expected_action": "no_hard_skip",
+      "note": "soak delta 2026-09-15; Crude Oil/Corning-class contamination for Book A/B gate; post-#56 headline-only may not ThemeShock-emit; multi-ticker wrap with Corning/GLW",
+      "soak_ts": "2026-09-14T21:45:32.820424",
+      "gpu_critic": {
+        "strategy": "gpu_news_critic",
+        "action": "shadow_pass",
+        "theme_probs": {
+          "none": 0.1431250187247727,
+          "other": 0.14562485682559134,
+          "ai_compute": 0.13259440065493325,
+          "memory_hbm": 0.14419133580715443,
+          "ai_mega_cap": 0.14283001198134673,
+          "fed_risk_off": 0.1356963549600397,
+          "earnings_chip": 0.15593802104616186
+        },
+        "contamination_risk": 0.0,
+        "keyword_match": null,
+        "infer_ms": 13.589599609375,
+        "news_age_sec": 1963.265408,
+        "stance": "bearish",
+        "confidence": 0.3946459028632642,
+        "relevance_by_symbol": {
+          "AMD": 0.1247504168369295,
+          "TSM": 0.1247504168369295,
+          "ASML": 0.1247504168369295,
+          "AVGO": 0.1247504168369295,
+          "INTC": 0.1247504168369295,
+          "MRVL": 0.1247504168369295,
+          "NVDA": 0.1247504168369295,
+          "QCOM": 0.1247504168369295
+        },
+        "skip_reason": null,
+        "source": "bot_decisions",
+        "live_event_id": "d3ccbddab95e",
+        "top_theme": "earnings_chip",
+        "top_theme_prob": 0.15593802104616186,
+        "symbols_seen": [
+          "ZS"
+        ],
+        "n_symbol_emits": 1,
+        "source_db_ts": "2026-09-14T21:45:32.820424",
+        "db_actions": [
+          "shadow_pass"
+        ],
+        "headline_db": "CRWD, BAC, MSFT, ZS, GLW: 5 Trending Stocks Today - CrowdStrike Holdings (NASDAQ:CRWD)",
+        "rationale_short": "theme=earnings_chip(0.16); stance=bearish",
+        "db_source_field": "Benzinga",
+        "full_theme_probs": true,
+        "full_relevance": true,
+        "attached_from_tip": "a17bb6b",
+        "attached_at": "2026-09-15T16:02:15.300376-04:00",
+        "join_method": "event_id"
+      }
+    },
+    {
+      "event_id": "0018d3fc4e63",
+      "theme_id": "ai_compute",
+      "headline": "Corning Stock (GLW) Plunged Over 13% on Monday – Here’s What Spooked Investors",
+      "label": "FP_contamination_corning_cluster",
+      "expected_action": "no_hard_skip",
+      "note": "soak delta 2026-09-15; Crude Oil/Corning-class contamination for Book A/B gate; post-#56 headline-only may not ThemeShock-emit",
+      "soak_ts": "2026-09-14T22:42:34.031029",
+      "gpu_critic": {
+        "strategy": "gpu_news_critic",
+        "action": "shadow_pass",
+        "theme_probs": {
+          "none": 0.14302088685610992,
+          "other": 0.14504491923104343,
+          "ai_compute": 0.132921740148486,
+          "memory_hbm": 0.1354826927474345,
+          "ai_mega_cap": 0.13307973733561568,
+          "fed_risk_off": 0.14613656549637796,
+          "earnings_chip": 0.1643134581849325
+        },
+        "contamination_risk": 0.0,
+        "keyword_match": null,
+        "infer_ms": 6.685791015625,
+        "news_age_sec": 17758.027729,
+        "stance": "bearish",
+        "confidence": 0.3799570539497012,
+        "relevance_by_symbol": {
+          "AMD": 0.13145076654794602,
+          "TSM": 0.13145076654794602,
+          "ASML": 0.13145076654794602,
+          "AVGO": 0.13145076654794602,
+          "INTC": 0.13145076654794602,
+          "MRVL": 0.13145076654794602,
+          "NVDA": 0.13145076654794602,
+          "QCOM": 0.13145076654794602
+        },
+        "skip_reason": null,
+        "source": "bot_decisions",
+        "live_event_id": "0018d3fc4e63",
+        "top_theme": "earnings_chip",
+        "top_theme_prob": 0.1643134581849325,
+        "symbols_seen": [
+          "GLW"
+        ],
+        "n_symbol_emits": 82,
+        "source_db_ts": "2026-09-14T22:42:34.031029",
+        "db_actions": [
+          "shadow_pass"
+        ],
+        "headline_db": "Corning Stock (GLW) Plunged Over 13% on Monday – Here’s What Spooked Investors",
+        "rationale_short": "theme=earnings_chip(0.16); stance=bearish",
+        "db_source_field": "TipRanks",
+        "full_theme_probs": true,
+        "full_relevance": true,
+        "attached_from_tip": "a17bb6b",
+        "attached_at": "2026-09-15T16:02:15.300376-04:00",
+        "join_method": "event_id"
+      }
+    },
+    {
+      "event_id": "2c71ac9099bc",
+      "theme_id": "ai_compute",
+      "headline": "Corning (NYSE:GLW) Stock Plunges 13%: Why GLW Is the S&P 500’s Worst Performer Today",
+      "label": "FP_contamination_corning_cluster",
+      "expected_action": "no_hard_skip",
+      "note": "soak delta 2026-09-15; Crude Oil/Corning-class contamination for Book A/B gate; post-#56 headline-only may not ThemeShock-emit",
+      "soak_ts": "2026-09-14T23:38:15.973657",
+      "gpu_critic": {
+        "strategy": "gpu_news_critic",
+        "action": "shadow_pass",
+        "theme_probs": {
+          "none": 0.14462808306385735,
+          "other": 0.1432571780450684,
+          "ai_compute": 0.13197677911113503,
+          "memory_hbm": 0.13527748736245623,
+          "ai_mega_cap": 0.13289369734001613,
+          "fed_risk_off": 0.14385431240657373,
+          "earnings_chip": 0.1681124626708931
+        },
+        "contamination_risk": 0.0,
+        "keyword_match": null,
+        "infer_ms": 6.92626953125,
+        "news_age_sec": 28785.968724,
+        "stance": "bearish",
+        "confidence": 0.40844062264327735,
+        "relevance_by_symbol": {
+          "AMD": 0.1344899701367145,
+          "TSM": 0.1344899701367145,
+          "ASML": 0.1344899701367145,
+          "AVGO": 0.1344899701367145,
+          "INTC": 0.1344899701367145,
+          "MRVL": 0.1344899701367145,
+          "NVDA": 0.1344899701367145,
+          "QCOM": 0.1344899701367145
+        },
+        "skip_reason": null,
+        "source": "bot_decisions",
+        "live_event_id": "2c71ac9099bc",
+        "top_theme": "earnings_chip",
+        "top_theme_prob": 0.1681124626708931,
+        "symbols_seen": [
+          "GLW"
+        ],
+        "n_symbol_emits": 362,
+        "source_db_ts": "2026-09-14T23:38:15.973657",
+        "db_actions": [
+          "shadow_pass"
+        ],
+        "headline_db": "Corning (NYSE:GLW) Stock Plunges 13%: Why GLW Is the S&P 500’s Worst Performer Today",
+        "rationale_short": "theme=earnings_chip(0.17); stance=bearish",
+        "db_source_field": "Stocks Down Under",
+        "full_theme_probs": true,
+        "full_relevance": true,
+        "attached_from_tip": "a17bb6b",
+        "attached_at": "2026-09-15T16:02:15.300376-04:00",
+        "join_method": "event_id"
+      }
+    },
+    {
+      "event_id": "ed53bfddc6a3",
+      "theme_id": "ai_compute",
+      "headline": "Corning tumbles 14% on $2 billion equity offering (GLW:NYSE)",
+      "label": "FP_contamination_corning_cluster",
+      "expected_action": "no_hard_skip",
+      "note": "soak delta 2026-09-15; Crude Oil/Corning-class contamination for Book A/B gate; post-#56 headline-only may not ThemeShock-emit",
+      "soak_ts": "2026-09-15T00:10:51.425740",
+      "gpu_critic": {
+        "strategy": "gpu_news_critic",
+        "action": "shadow_pass",
+        "theme_probs": {
+          "none": 0.14501153919497717,
+          "other": 0.14436939384123582,
+          "ai_compute": 0.13289504106476874,
+          "memory_hbm": 0.13147422400316466,
+          "ai_mega_cap": 0.13528908866450123,
+          "fed_risk_off": 0.14545643597306696,
+          "earnings_chip": 0.16550427725828543
+        },
+        "contamination_risk": 0.0,
+        "keyword_match": null,
+        "infer_ms": 6.45361328125,
+        "news_age_sec": 27907.421213,
+        "stance": "irrelevant",
+        "confidence": 0.4101411702777786,
+        "relevance_by_symbol": {
+          "AMD": 0.13240342180662834,
+          "TSM": 0.13240342180662834,
+          "ASML": 0.13240342180662834,
+          "AVGO": 0.13240342180662834,
+          "INTC": 0.13240342180662834,
+          "MRVL": 0.13240342180662834,
+          "NVDA": 0.13240342180662834,
+          "QCOM": 0.13240342180662834
+        },
+        "skip_reason": null,
+        "source": "bot_decisions",
+        "live_event_id": "ed53bfddc6a3",
+        "top_theme": "earnings_chip",
+        "top_theme_prob": 0.16550427725828543,
+        "symbols_seen": [
+          "GLW"
+        ],
+        "n_symbol_emits": 86,
+        "source_db_ts": "2026-09-15T00:10:51.425740",
+        "db_actions": [
+          "shadow_pass"
+        ],
+        "headline_db": "Corning tumbles 14% on $2 billion equity offering (GLW:NYSE)",
+        "rationale_short": "theme=earnings_chip(0.17); stance=irrelevant",
+        "db_source_field": "Seeking Alpha",
+        "full_theme_probs": true,
+        "full_relevance": true,
+        "attached_from_tip": "a17bb6b",
+        "attached_at": "2026-09-15T16:02:15.300376-04:00",
+        "join_method": "event_id"
+      }
+    },
+    {
+      "event_id": "adbb86b980bc",
+      "theme_id": "ai_compute",
+      "headline": "S&P 500 Movers | Winners: CRWD, IT, COIN | Losers: GLW, TER, COHR",
+      "label": "FP_contamination_corning_cluster",
+      "expected_action": "no_hard_skip",
+      "note": "soak delta 2026-09-15; Crude Oil/Corning-class contamination for Book A/B gate; post-#56 headline-only may not ThemeShock-emit",
+      "soak_ts": "2026-09-15T03:34:06.430192",
+      "gpu_critic": {
+        "strategy": "gpu_news_critic",
+        "action": "shadow_pass",
+        "theme_probs": {
+          "none": 0.15057548854796313,
+          "other": 0.15100640609507487,
+          "ai_compute": 0.1281462890942191,
+          "memory_hbm": 0.13089229714485257,
+          "ai_mega_cap": 0.14268337895354893,
+          "fed_risk_off": 0.13516078982525334,
+          "earnings_chip": 0.16153535033908806
+        },
+        "contamination_risk": 0.0,
+        "keyword_match": null,
+        "infer_ms": 8.86328125,
+        "news_age_sec": 4855.426082,
+        "stance": "bullish",
+        "confidence": 0.3957338247977064,
+        "relevance_by_symbol": {
+          "AMD": 0.12922828027127045,
+          "TSM": 0.12922828027127045,
+          "ASML": 0.12922828027127045,
+          "AVGO": 0.12922828027127045,
+          "INTC": 0.12922828027127045,
+          "MRVL": 0.12922828027127045,
+          "NVDA": 0.12922828027127045,
+          "QCOM": 0.12922828027127045
+        },
+        "skip_reason": null,
+        "source": "bot_decisions",
+        "live_event_id": "adbb86b980bc",
+        "top_theme": "earnings_chip",
+        "top_theme_prob": 0.16153535033908806,
+        "symbols_seen": [
+          "COHR"
+        ],
+        "n_symbol_emits": 1,
+        "source_db_ts": "2026-09-15T03:34:06.430192",
+        "db_actions": [
+          "shadow_pass"
+        ],
+        "headline_db": "S&P 500 Movers | Winners: CRWD, IT, COIN | Losers: GLW, TER, COHR",
+        "rationale_short": "theme=earnings_chip(0.16); stance=bullish",
+        "db_source_field": "Trefis",
+        "full_theme_probs": true,
+        "full_relevance": true,
+        "attached_from_tip": "a17bb6b",
+        "attached_at": "2026-09-15T16:02:15.300376-04:00",
+        "join_method": "event_id"
+      }
+    },
+    {
+      "event_id": "4a251f197ecb",
+      "theme_id": "ai_compute",
+      "headline": "Why Corning (GLW) Stock Is Trading Lower Today",
+      "label": "FP_contamination_corning_cluster",
+      "expected_action": "no_hard_skip",
+      "note": "soak delta 2026-09-15; Crude Oil/Corning-class contamination for Book A/B gate; post-#56 headline-only may not ThemeShock-emit",
+      "soak_ts": "2026-09-15T03:45:37.164445",
+      "gpu_critic": {
+        "strategy": "gpu_news_critic",
+        "action": "shadow_pass",
+        "theme_probs": {
+          "none": 0.15335625340839681,
+          "other": 0.14740219319227296,
+          "ai_compute": 0.1313384019397758,
+          "memory_hbm": 0.14310715136768926,
+          "ai_mega_cap": 0.1250624014444128,
+          "fed_risk_off": 0.13968624597041668,
+          "earnings_chip": 0.16004735267703563
+        },
+        "contamination_risk": 0.15,
+        "keyword_match": null,
+        "infer_ms": 6.1552734375,
+        "news_age_sec": 19567.160242,
+        "stance": "irrelevant",
+        "confidence": 0.41616602260144964,
+        "relevance_by_symbol": {
+          "AMD": 0.1280378821416285,
+          "TSM": 0.1280378821416285,
+          "ASML": 0.1280378821416285,
+          "AVGO": 0.1280378821416285,
+          "INTC": 0.1280378821416285,
+          "MRVL": 0.1280378821416285,
+          "NVDA": 0.1280378821416285,
+          "QCOM": 0.1280378821416285
+        },
+        "skip_reason": null,
+        "source": "bot_decisions",
+        "live_event_id": "4a251f197ecb",
+        "top_theme": "earnings_chip",
+        "top_theme_prob": 0.16004735267703563,
+        "symbols_seen": [
+          "GLW"
+        ],
+        "n_symbol_emits": 357,
+        "source_db_ts": "2026-09-15T03:45:37.164445",
+        "db_actions": [
+          "shadow_pass"
+        ],
+        "headline_db": "Why Corning (GLW) Stock Is Trading Lower Today",
+        "rationale_short": "theme=earnings_chip(0.16); stance=irrelevant",
+        "db_source_field": "Yahoo Finance RSS",
+        "full_theme_probs": true,
+        "full_relevance": true,
+        "attached_from_tip": "a17bb6b",
+        "attached_at": "2026-09-15T16:02:15.300376-04:00",
+        "join_method": "event_id"
+      }
+    },
+    {
+      "event_id": "93d95014cf1f",
+      "theme_id": "ai_compute",
+      "headline": "Corning (GLW) Dropped, So What Is Behind The Latest Attention?",
+      "label": "FP_contamination_corning_cluster",
+      "expected_action": "no_hard_skip",
+      "note": "soak delta 2026-09-15; Crude Oil/Corning-class contamination for Book A/B gate; post-#56 headline-only may not ThemeShock-emit",
+      "soak_ts": "2026-09-15T03:45:37.173473",
+      "gpu_critic": {
+        "strategy": "gpu_news_critic",
+        "action": "shadow_pass",
+        "theme_probs": {
+          "none": 0.14037156984495924,
+          "other": 0.14270143009217548,
+          "ai_compute": 0.13669847663971343,
+          "memory_hbm": 0.13482411395718832,
+          "ai_mega_cap": 0.13609612480419667,
+          "fed_risk_off": 0.14643959892505432,
+          "earnings_chip": 0.16286868573671254
+        },
+        "contamination_risk": 0.15,
+        "keyword_match": null,
+        "infer_ms": 7.702392578125,
+        "news_age_sec": 23351.168387,
+        "stance": "bearish",
+        "confidence": 0.40341544509652094,
+        "relevance_by_symbol": {
+          "AMD": 0.13029494858937005,
+          "TSM": 0.13029494858937005,
+          "ASML": 0.13029494858937005,
+          "AVGO": 0.13029494858937005,
+          "INTC": 0.13029494858937005,
+          "MRVL": 0.13029494858937005,
+          "NVDA": 0.13029494858937005,
+          "QCOM": 0.13029494858937005
+        },
+        "skip_reason": null,
+        "source": "bot_decisions",
+        "live_event_id": "93d95014cf1f",
+        "top_theme": "earnings_chip",
+        "top_theme_prob": 0.16286868573671254,
+        "symbols_seen": [
+          "GLW"
+        ],
+        "n_symbol_emits": 54,
+        "source_db_ts": "2026-09-15T03:45:37.173473",
+        "db_actions": [
+          "shadow_pass"
+        ],
+        "headline_db": "Corning (GLW) Dropped, So What Is Behind The Latest Attention?",
+        "rationale_short": "theme=earnings_chip(0.16); stance=bearish",
+        "db_source_field": "Yahoo Finance RSS",
+        "full_theme_probs": true,
+        "full_relevance": true,
+        "attached_from_tip": "a17bb6b",
+        "attached_at": "2026-09-15T16:02:15.300376-04:00",
+        "join_method": "event_id"
+      }
+    },
+    {
+      "event_id": "9579cf0d1b4f",
+      "theme_id": "ai_compute",
+      "headline": "The Oil Crisis Has Reached Costco’s Motor Oil Aisle",
+      "label": "FP_contamination_critic_wrong_theme",
+      "expected_action": "no_hard_skip",
+      "note": "soak delta 2026-09-15; Crude Oil/Corning-class contamination for Book A/B gate; post-#56 headline-only may not ThemeShock-emit",
+      "soak_ts": "2026-09-15T13:02:22.676181",
+      "gpu_critic": {
+        "strategy": "gpu_news_critic",
+        "action": "shadow_pass",
+        "theme_probs": {
+          "none": 0.13942549833529164,
+          "other": 0.1392157034823207,
+          "ai_compute": 0.15553225470761348,
+          "memory_hbm": 0.14722036061216273,
+          "ai_mega_cap": 0.13679196489891454,
+          "fed_risk_off": 0.14314581107120192,
+          "earnings_chip": 0.138668406892495
+        },
+        "contamination_risk": 0.0,
+        "keyword_match": null,
+        "infer_ms": 27.436767578125,
+        "news_age_sec": 3956.672008,
+        "stance": "irrelevant",
+        "confidence": 0.3522110315321877,
+        "relevance_by_symbol": {
+          "AMD": 0.12442580376609079,
+          "ARM": 0.12442580376609079,
+          "AVGO": 0.12442580376609079,
+          "NVDA": 0.12442580376609079,
+          "SMCI": 0.12442580376609079
+        },
+        "skip_reason": null,
+        "source": "bot_decisions",
+        "live_event_id": "9579cf0d1b4f",
+        "top_theme": "ai_compute",
+        "top_theme_prob": 0.15553225470761348,
+        "symbols_seen": [
+          "NVDA"
+        ],
+        "n_symbol_emits": 2,
+        "source_db_ts": "2026-09-15T13:02:22.676181",
+        "db_actions": [
+          "shadow_pass"
+        ],
+        "headline_db": "The Oil Crisis Has Reached Costco’s Motor Oil Aisle",
+        "rationale_short": "theme=ai_compute(0.16); stance=irrelevant",
+        "db_source_field": "Yahoo Finance RSS",
+        "full_theme_probs": true,
+        "full_relevance": true,
+        "attached_from_tip": "a17bb6b",
+        "attached_at": "2026-09-15T16:02:15.300376-04:00",
+        "join_method": "event_id"
+      }
+    },
+    {
+      "event_id": "cbfe934f67f5",
+      "theme_id": "ai_compute",
+      "headline": "Lumentum Stock Leads the S&P 500 While Corning Can’t Keep Up",
+      "label": "FP_contamination_corning_cluster",
+      "expected_action": "no_hard_skip",
+      "pre_56_action": null,
+      "note": "soak 2026-09-16; Crude Oil/Corning-class contamination for Book A/B gate; post-#56 headline-only may not ThemeShock-emit",
+      "soak_ts": "2026-09-16T13:55:33.648909",
+      "gpu_critic": {
+        "strategy": "gpu_news_critic",
+        "action": "shadow_pass",
+        "theme_probs": {
+          "none": 0.1449456288793176,
+          "other": 0.1426817886409537,
+          "ai_compute": 0.13556011345832603,
+          "memory_hbm": 0.13326099149381132,
+          "ai_mega_cap": 0.13519625836872845,
+          "fed_risk_off": 0.14718588756179146,
+          "earnings_chip": 0.16116933159707145
+        },
+        "contamination_risk": 0.0,
+        "keyword_match": null,
+        "infer_ms": 12.999267578125,
+        "news_age_sec": 2973.645783,
+        "stance": "irrelevant",
+        "confidence": 0.3972486611837057,
+        "relevance_by_symbol": {
+          "AMD": 0.12893546527765717,
+          "TSM": 0.12893546527765717,
+          "ASML": 0.12893546527765717,
+          "AVGO": 0.12893546527765717,
+          "INTC": 0.12893546527765717,
+          "MRVL": 0.12893546527765717,
+          "NVDA": 0.12893546527765717,
+          "QCOM": 0.12893546527765717
+        },
+        "skip_reason": null,
+        "source": "bot_decisions",
+        "live_event_id": "cbfe934f67f5",
+        "top_theme": "earnings_chip",
+        "top_theme_prob": 0.16116933159707145,
+        "symbols_seen": [
+          "LITE"
+        ],
+        "n_symbol_emits": 1,
+        "source_db_ts": "2026-09-16T13:55:33.648909",
+        "db_actions": [
+          "shadow_pass"
+        ],
+        "headline_db": "Lumentum Stock Leads the S&P 500 While Corning Can’t Keep Up",
+        "rationale_short": "theme=earnings_chip(0.16); stance=irrelevant",
+        "db_source_field": "Yahoo Finance RSS",
+        "full_theme_probs": true,
+        "full_relevance": true,
+        "attached_from_tip": "b77e39a",
+        "attached_at": "2026-09-16T16:52:03.051983-04:00",
+        "join_method": "event_id"
+      }
+    },
+    {
+      "event_id": "2a69cccc668c",
+      "theme_id": "ai_compute",
+      "headline": "CIEN Targets 30% Revenue Growth Through 2029 — Peers COHR, GLW And AAOI Rally After Guidance",
+      "label": "FP_contamination_corning_cluster",
+      "expected_action": "no_hard_skip",
+      "pre_56_action": null,
+      "note": "soak 2026-09-17; Crude Oil/Corning-class contamination for Book A/B gate; Corning/GLW cluster contamination-class; post-#56 headline-only may not ThemeShock-emit",
+      "soak_ts": "2026-09-16T18:48:22.176047",
+      "gpu_critic": {
+        "strategy": "gpu_news_critic",
+        "action": "shadow_pass",
+        "theme_probs": {
+          "none": 0.12897562783593106,
+          "other": 0.12847541146503202,
+          "ai_compute": 0.14991634219573843,
+          "memory_hbm": 0.13279363002078506,
+          "ai_mega_cap": 0.15582124777950668,
+          "fed_risk_off": 0.13640759819824658,
+          "earnings_chip": 0.16761014250476017
+        },
+        "contamination_risk": 0.0,
+        "keyword_match": null,
+        "infer_ms": 264.959228515625,
+        "news_age_sec": 12649.171386,
+        "stance": "bullish",
+        "confidence": 0.41785998834947174,
+        "relevance_by_symbol": {
+          "AMD": 0.13408811400380813,
+          "TSM": 0.13408811400380813,
+          "ASML": 0.13408811400380813,
+          "AVGO": 0.13408811400380813,
+          "INTC": 0.13408811400380813,
+          "MRVL": 0.13408811400380813,
+          "NVDA": 0.13408811400380813,
+          "QCOM": 0.13408811400380813
+        },
+        "skip_reason": null,
+        "source": "bot_decisions",
+        "live_event_id": "2a69cccc668c",
+        "top_theme": "earnings_chip",
+        "top_theme_prob": 0.16761014250476017,
+        "symbols_seen": [
+          "COHR"
+        ],
+        "n_symbol_emits": 2,
+        "source_db_ts": "2026-09-16T18:48:22.176047",
+        "db_actions": [
+          "shadow_pass"
+        ],
+        "headline_db": "CIEN Targets 30% Revenue Growth Through 2029 — Peers COHR, GLW And AAOI Rally After Guidance",
+        "rationale_short": "theme=earnings_chip(0.17); stance=bullish",
+        "db_source_field": "Yahoo Finance",
+        "full_theme_probs": true,
+        "full_relevance": true,
+        "attached_from_tip": "ad05693",
+        "attached_at": "2026-09-17T16:28:48.952254-04:00",
+        "join_method": "event_id"
+      }
+    },
+    {
+      "event_id": "2d83a5133335",
+      "theme_id": "ai_compute",
+      "headline": "Corning Rides on Expanding Partner Base: Will it Boost Prospects?",
+      "label": "FP_contamination_critic_wrong_theme",
+      "expected_action": "no_hard_skip",
+      "pre_56_action": null,
+      "note": "soak 2026-09-17; Crude Oil/Corning-class contamination for Book A/B gate; critic top=ai_compute on oil/commodity/Corning without genuine AI-compute primary; post-#56 headline-only may not ThemeShock-emit",
+      "soak_ts": "2026-09-17T14:47:00.040050",
+      "gpu_critic": {
+        "strategy": "gpu_news_critic",
+        "action": "shadow_pass",
+        "theme_probs": {
+          "none": 0.1331470615250279,
+          "other": 0.12834708585369264,
+          "ai_compute": 0.16164554734498243,
+          "memory_hbm": 0.13265125778162606,
+          "ai_mega_cap": 0.16122925464489538,
+          "fed_risk_off": 0.1331624198364432,
+          "earnings_chip": 0.14981737301333242
+        },
+        "contamination_risk": 0.0,
+        "keyword_match": null,
+        "infer_ms": 14.98974609375,
+        "news_age_sec": 11940.030075,
+        "stance": "bullish",
+        "confidence": 0.38288770655527704,
+        "relevance_by_symbol": {
+          "AMD": 0.12931643787598596,
+          "ARM": 0.12931643787598596,
+          "AVGO": 0.12931643787598596,
+          "NVDA": 0.12931643787598596,
+          "SMCI": 0.12931643787598596
+        },
+        "skip_reason": null,
+        "source": "bot_decisions",
+        "live_event_id": "2d83a5133335",
+        "top_theme": "ai_compute",
+        "top_theme_prob": 0.16164554734498243,
+        "symbols_seen": [
+          "META"
+        ],
+        "n_symbol_emits": 4,
+        "source_db_ts": "2026-09-17T14:47:00.040050",
+        "db_actions": [
+          "shadow_pass"
+        ],
+        "headline_db": "Corning Rides on Expanding Partner Base: Will it Boost Prospects?",
+        "rationale_short": "theme=ai_compute(0.16); stance=bullish",
+        "db_source_field": "Yahoo Finance RSS",
+        "full_theme_probs": true,
+        "full_relevance": true,
+        "attached_from_tip": "ad05693",
+        "attached_at": "2026-09-17T16:28:48.952254-04:00",
+        "join_method": "event_id"
+      }
+    }
+  ],
+  "true_positives": [
+    {
+      "event_id": "b8c83b0fec81",
+      "theme_id": "ai_compute",
+      "headline": "Nvidia, Palantir Pull Back From Anthropic Models Over Fears",
+      "matched_text": "anthropic",
+      "matched_field": "headline",
+      "label": "TP_anthropic",
+      "expected_action": "hard_skip_entries",
+      "gpu_critic": {
+        "strategy": "gpu_news_critic",
+        "action": "shadow_pass",
+        "theme_probs": {
+          "none": 0.14055669686776195,
+          "other": 0.1292459732797504,
+          "ai_compute": 0.1606561421105061,
+          "memory_hbm": 0.12729999268486183,
+          "ai_mega_cap": 0.1669414126819362,
+          "fed_risk_off": 0.13557480297679475,
+          "earnings_chip": 0.13972497939838877
+        },
+        "contamination_risk": 0.0,
+        "keyword_match": {
+          "theme_id": "ai_compute",
+          "matched_text": "anthropic",
+          "matched_field": "headline"
+        },
+        "infer_ms": 6.6279296875,
+        "news_age_sec": 12168.821362,
+        "stance": "irrelevant",
+        "confidence": 0.39245084345072456,
+        "relevance_by_symbol": {
+          "AMZN": 0.13355313014554898,
+          "META": 0.13355313014554898,
+          "MSFT": 0.13355313014554898,
+          "GOOGL": 0.13355313014554898
+        },
+        "skip_reason": null,
+        "source": "bot_decisions",
+        "live_event_id": "22b1cdb37ffc",
+        "top_theme": "ai_mega_cap",
+        "top_theme_prob": 0.1669414126819362,
+        "symbols_seen": [
+          "BAH",
+          "NVDA",
+          "PLTR"
+        ],
+        "n_symbol_emits": 6,
+        "source_db_ts": "2026-09-14T16:11:10.824677",
+        "db_actions": [
+          "shadow_pass"
+        ],
+        "headline_db": "Nvidia, Palantir Pull Back From Anthropic Models Over Fears AI Could Expose Corporate Secrets",
+        "rationale_short": "theme=ai_mega_cap(0.17); stance=irrelevant; kw_match=ai_compute:headline",
+        "db_source_field": "Alpaca News",
+        "full_theme_probs": true,
+        "full_relevance": true,
+        "attached_from_tip": "a17bb6b",
+        "attached_at": "2026-09-15T15:57:35.566093-04:00",
+        "join_method": "live_event_id"
+      }
+    },
+    {
+      "event_id": "3f28a7654682",
+      "theme_id": "ai_compute",
+      "headline": "Anthropic's AI Warning Is 'Noise' in a 'Secular Bull Market:",
+      "matched_text": "anthropic",
+      "matched_field": "headline",
+      "label": "TP_anthropic",
+      "expected_action": "hard_skip_entries",
+      "gpu_critic": {
+        "strategy": "gpu_news_critic",
+        "action": "shadow_pass",
+        "theme_probs": {
+          "ai_mega_cap": 0.17
+        },
+        "contamination_risk": 0.0,
+        "keyword_match": {
+          "theme_id": "ai_compute",
+          "matched_field": "headline",
+          "matched_text": "anthropic"
+        },
+        "infer_ms": 16.5,
+        "news_age_sec": 13381.1,
+        "stance": "irrelevant",
+        "confidence": 0.42,
+        "relevance_by_symbol": {},
+        "skip_reason": null,
+        "attached_from_tip": "f6fb73c",
+        "attached_at": "2026-09-14T15:56:10.293736-04:00",
+        "live_event_id": "1b3e14bd8328",
+        "join_method": "headline",
+        "top_theme": "ai_mega_cap",
+        "top_theme_prob": 0.17,
+        "symbols_seen": [
+          "ADI",
+          "AMD",
+          "INTC",
+          "LRCX",
+          "MRVL",
+          "MU",
+          "NVDA",
+          "ON"
+        ],
+        "n_symbol_emits": 16,
+        "source_log_ts": "2026-09-14 15:48:30,143",
+        "log_file": "/home/nvidia/claude/grok/trading_bot_commentary/trading_bot.log.1",
+        "_partial": {
+          "theme_probs": "log shows top theme only; full dict lives in extra_data but db path broken",
+          "relevance_by_symbol": "not present on log line",
+          "join": "headline (seed event_id absent in live critic emits)"
+        }
+      }
+    },
+    {
+      "event_id": "617de851758c",
+      "theme_id": "ai_compute",
+      "headline": "AI Leaders Say Slow Down. IREN Says Compute Demand May Never",
+      "label": "TP_ai_compute",
+      "expected_action": "hard_skip_entries",
+      "gpu_critic": {
+        "strategy": "gpu_news_critic",
+        "action": "shadow_pass",
+        "theme_probs": {
+          "none": 0.12294914328851529,
+          "other": 0.11866837371600118,
+          "ai_compute": 0.17346804271355387,
+          "memory_hbm": 0.1385526797695059,
+          "ai_mega_cap": 0.16531602963282507,
+          "fed_risk_off": 0.13045787194921457,
+          "earnings_chip": 0.15058785893038412
+        },
+        "contamination_risk": 0.0,
+        "keyword_match": null,
+        "infer_ms": 9.947509765625,
+        "news_age_sec": 3997.027701,
+        "stance": "bearish",
+        "confidence": 0.40293853198595403,
+        "relevance_by_symbol": {
+          "AMD": 0.1387744341708431,
+          "ARM": 0.1387744341708431,
+          "AVGO": 0.1387744341708431,
+          "NVDA": 0.1387744341708431,
+          "SMCI": 0.1387744341708431
+        },
+        "skip_reason": null,
+        "source": "bot_decisions",
+        "live_event_id": "b66b1b892a91",
+        "top_theme": "ai_compute",
+        "top_theme_prob": 0.17346804271355387,
+        "symbols_seen": [
+          "NVDA"
+        ],
+        "n_symbol_emits": 2,
+        "source_db_ts": "2026-09-14T16:11:56.029750",
+        "db_actions": [
+          "shadow_pass"
+        ],
+        "headline_db": "AI Leaders Say Slow Down. IREN Says Compute Demand May Never Be Satisfied. Nvidia Sits in the Middle",
+        "rationale_short": "theme=ai_compute(0.17); stance=bearish",
+        "db_source_field": "Yahoo Finance RSS",
+        "full_theme_probs": true,
+        "full_relevance": true,
+        "attached_from_tip": "a17bb6b",
+        "attached_at": "2026-09-15T15:57:35.566093-04:00",
+        "join_method": "live_event_id"
+      },
+      "theme_shock_log_ts": "2026-09-14 15:18:14,658",
+      "source": "Yahoo Finance RSS"
+    },
+    {
+      "event_id": "63251da54499",
+      "theme_id": "ai_compute",
+      "headline": "AI stocks fall after Amodei, Altman, and Musk back AI slowdo",
+      "label": "TP_ai_compute",
+      "expected_action": "hard_skip_entries",
+      "theme_shock_log_ts": "2026-09-14 15:18:36,109",
+      "source": "Yahoo Finance RSS"
+    },
+    {
+      "event_id": "530c232eb14f",
+      "theme_id": "ai_compute",
+      "headline": "Cybersecurity Stocks Jump As Anthropic CEO’s AI Slowdown Cal",
+      "label": "TP_anthropic",
+      "expected_action": "hard_skip_entries",
+      "matched_text": "anthropic",
+      "matched_field": "headline",
+      "gpu_critic": {
+        "strategy": "gpu_news_critic",
+        "action": "shadow_pass",
+        "theme_probs": {
+          "none": 0.1353602163595409,
+          "other": 0.13185251438792214,
+          "ai_compute": 0.15581262121224207,
+          "memory_hbm": 0.12931509195880017,
+          "ai_mega_cap": 0.1746435245624691,
+          "fed_risk_off": 0.12686145731549678,
+          "earnings_chip": 0.14615457420352881
+        },
+        "contamination_risk": 0.0,
+        "keyword_match": {
+          "theme_id": "ai_compute",
+          "matched_text": "anthropic",
+          "matched_field": "headline"
+        },
+        "infer_ms": 6.886962890625,
+        "news_age_sec": 28796.398706,
+        "stance": "bullish",
+        "confidence": 0.40385836018877774,
+        "relevance_by_symbol": {
+          "AMZN": 0.13971481964997529,
+          "META": 0.13971481964997529,
+          "MSFT": 0.13971481964997529,
+          "GOOGL": 0.13971481964997529
+        },
+        "skip_reason": null,
+        "source": "bot_decisions",
+        "live_event_id": "f2567fdebd5b",
+        "top_theme": "ai_mega_cap",
+        "top_theme_prob": 0.1746435245624691,
+        "symbols_seen": [
+          "CRWD",
+          "PANW"
+        ],
+        "n_symbol_emits": 950,
+        "source_db_ts": "2026-09-14T18:42:06.405510",
+        "db_actions": [
+          "shadow_pass"
+        ],
+        "headline_db": "Cybersecurity Stocks Jump As Anthropic CEO’s AI Slowdown Call Sharpens Focus On Cyber Risks – CRWD, ",
+        "rationale_short": "theme=ai_mega_cap(0.17); stance=bullish; kw_match=ai_compute:headline",
+        "db_source_field": "Yahoo Finance RSS",
+        "full_theme_probs": true,
+        "full_relevance": true,
+        "attached_from_tip": "a17bb6b",
+        "attached_at": "2026-09-15T15:57:35.566093-04:00",
+        "join_method": "live_event_id"
+      },
+      "theme_shock_log_ts": "2026-09-14 15:40:31,001",
+      "source": "Yahoo Finance RSS"
+    },
+    {
+      "event_id": "c41f5d91900b",
+      "theme_id": "ai_compute",
+      "headline": "Cybersecurity stocks rally as AI warnings boost spending bet",
+      "label": "TP_ai_compute",
+      "expected_action": "hard_skip_entries",
+      "gpu_critic": {
+        "strategy": "gpu_news_critic",
+        "action": "shadow_pass",
+        "theme_probs": {
+          "none": 0.13323877468619344,
+          "other": 0.1351955800974814,
+          "ai_compute": 0.15957811221557366,
+          "memory_hbm": 0.13035754253971005,
+          "ai_mega_cap": 0.1591308362773539,
+          "fed_risk_off": 0.1355717941341019,
+          "earnings_chip": 0.14692736004958565
+        },
+        "contamination_risk": 0.0,
+        "keyword_match": null,
+        "infer_ms": 9.894775390625,
+        "news_age_sec": 28791.809719,
+        "stance": "bearish",
+        "confidence": 0.3782097163055217,
+        "relevance_by_symbol": {
+          "AMD": 0.12766248977245895,
+          "ARM": 0.12766248977245895,
+          "AVGO": 0.12766248977245895,
+          "NVDA": 0.12766248977245895,
+          "SMCI": 0.12766248977245895
+        },
+        "skip_reason": null,
+        "source": "bot_decisions",
+        "live_event_id": "60f23e4127a1",
+        "top_theme": "ai_compute",
+        "top_theme_prob": 0.15957811221557366,
+        "symbols_seen": [
+          "CRWD",
+          "ZS"
+        ],
+        "n_symbol_emits": 886,
+        "source_db_ts": "2026-09-14T21:27:51.813119",
+        "db_actions": [
+          "shadow_pass"
+        ],
+        "headline_db": "Cybersecurity stocks rally as AI warnings boost spending bets",
+        "rationale_short": "theme=ai_compute(0.16); stance=bearish",
+        "db_source_field": "Yahoo Finance RSS",
+        "full_theme_probs": true,
+        "full_relevance": true,
+        "attached_from_tip": "a17bb6b",
+        "attached_at": "2026-09-15T15:57:35.566093-04:00",
+        "join_method": "live_event_id"
+      },
+      "theme_shock_log_ts": "2026-09-14 15:18:35,455",
+      "source": "Yahoo Finance RSS"
+    },
+    {
+      "event_id": "3149536209bb",
+      "theme_id": "ai_compute",
+      "headline": "Elon Musk Says Orbital Nvidia Computers Launch Next Year — C",
+      "label": "TP_ai_compute",
+      "expected_action": "hard_skip_entries",
+      "gpu_critic": {
+        "strategy": "gpu_news_critic",
+        "action": "shadow_pass",
+        "theme_probs": {
+          "none": 0.13389363217315592,
+          "other": 0.13185646154132943,
+          "ai_compute": 0.16005652615420443,
+          "memory_hbm": 0.1366156513041048,
+          "ai_mega_cap": 0.1518414068974031,
+          "fed_risk_off": 0.1302568162436579,
+          "earnings_chip": 0.1554795056861444
+        },
+        "contamination_risk": 0.0,
+        "keyword_match": null,
+        "infer_ms": 6.7216796875,
+        "news_age_sec": 9960.798557,
+        "stance": "irrelevant",
+        "confidence": 0.36437279467280914,
+        "relevance_by_symbol": {
+          "AMD": 0.12804522092336354,
+          "ARM": 0.12804522092336354,
+          "AVGO": 0.12804522092336354,
+          "NVDA": 0.12804522092336354,
+          "SMCI": 0.12804522092336354
+        },
+        "skip_reason": null,
+        "source": "bot_decisions",
+        "live_event_id": "a0ab59311c59",
+        "top_theme": "ai_compute",
+        "top_theme_prob": 0.16005652615420443,
+        "symbols_seen": [
+          "NVDA",
+          "SPCX"
+        ],
+        "n_symbol_emits": 4,
+        "source_db_ts": "2026-09-14T16:11:10.802816",
+        "db_actions": [
+          "shadow_pass"
+        ],
+        "headline_db": "Elon Musk Says Orbital Nvidia Computers Launch Next Year — Can SpaceX Actually Pull It Off?",
+        "rationale_short": "theme=ai_compute(0.16); stance=irrelevant",
+        "db_source_field": "Alpaca News",
+        "full_theme_probs": true,
+        "full_relevance": true,
+        "attached_from_tip": "a17bb6b",
+        "attached_at": "2026-09-15T15:57:35.566093-04:00",
+        "join_method": "live_event_id"
+      },
+      "theme_shock_log_ts": "2026-09-14 15:17:17,606",
+      "source": "Alpaca News"
+    },
+    {
+      "event_id": "8ded9b242ec9",
+      "theme_id": "ai_compute",
+      "headline": "Nvidia Stock Drops. It’s Still the Best Chip Bet in an AI Sl",
+      "label": "TP_ai_compute",
+      "expected_action": "hard_skip_entries",
+      "matched_text": "ai slowdown",
+      "matched_field": "headline",
+      "gpu_critic": {
+        "strategy": "gpu_news_critic",
+        "action": "shadow_pass",
+        "theme_probs": {
+          "none": 0.12734201955009694,
+          "other": 0.1257426509885131,
+          "ai_compute": 0.16293840559437478,
+          "memory_hbm": 0.14598299065672832,
+          "ai_mega_cap": 0.15493510090413648,
+          "fed_risk_off": 0.13716764048893157,
+          "earnings_chip": 0.14589119181721882
+        },
+        "contamination_risk": 0.0,
+        "keyword_match": {
+          "theme_id": "ai_compute",
+          "matched_text": "ai slowdown",
+          "matched_field": "headline"
+        },
+        "infer_ms": 10.031005859375,
+        "news_age_sec": 6356.267503,
+        "stance": "bearish",
+        "confidence": 0.40516001955725056,
+        "relevance_by_symbol": {
+          "AMD": 0.13035072447549984,
+          "ARM": 0.13035072447549984,
+          "AVGO": 0.13035072447549984,
+          "NVDA": 0.13035072447549984,
+          "SMCI": 0.13035072447549984
+        },
+        "skip_reason": null,
+        "source": "bot_decisions",
+        "live_event_id": "3cdc294e1262",
+        "top_theme": "ai_compute",
+        "top_theme_prob": 0.16293840559437478,
+        "symbols_seen": [
+          "NVDA"
+        ],
+        "n_symbol_emits": 2,
+        "source_db_ts": "2026-09-14T16:11:56.269874",
+        "db_actions": [
+          "shadow_pass"
+        ],
+        "headline_db": "Nvidia Stock Drops. It’s Still the Best Chip Bet in an AI Slowdown.",
+        "rationale_short": "theme=ai_compute(0.16); stance=bearish; kw_match=ai_compute:headline",
+        "db_source_field": "Yahoo Finance RSS",
+        "full_theme_probs": true,
+        "full_relevance": true,
+        "attached_from_tip": "a17bb6b",
+        "attached_at": "2026-09-15T15:57:35.566093-04:00",
+        "join_method": "live_event_id"
+      },
+      "theme_shock_log_ts": "2026-09-14 15:40:09,879",
+      "source": "Yahoo Finance RSS"
+    },
+    {
+      "event_id": "e57b03994f4a",
+      "theme_id": "ai_compute",
+      "headline": "Palantir, Nvidia, Booz Allen restrict Anthropic and OpenAI m",
+      "label": "TP_anthropic",
+      "expected_action": "hard_skip_entries",
+      "matched_text": "anthropic",
+      "matched_field": "headline",
+      "gpu_critic": {
+        "strategy": "gpu_news_critic",
+        "action": "shadow_pass",
+        "theme_probs": {
+          "none": 0.13155928814943968,
+          "other": 0.12212021568341078,
+          "ai_compute": 0.1696576118647158,
+          "memory_hbm": 0.1320042965595673,
+          "ai_mega_cap": 0.17054613239078154,
+          "fed_risk_off": 0.13256289778867575,
+          "earnings_chip": 0.14154955756340912
+        },
+        "contamination_risk": 0.0,
+        "keyword_match": {
+          "theme_id": "ai_compute",
+          "matched_text": "anthropic",
+          "matched_field": "headline"
+        },
+        "infer_ms": 7.74462890625,
+        "news_age_sec": 9259.886224,
+        "stance": "irrelevant",
+        "confidence": 0.39306295070304687,
+        "relevance_by_symbol": {
+          "AMZN": 0.13643690591262522,
+          "META": 0.13643690591262522,
+          "MSFT": 0.13643690591262522,
+          "GOOGL": 0.13643690591262522
+        },
+        "skip_reason": null,
+        "source": "bot_decisions",
+        "live_event_id": "b83abf9a31a8",
+        "top_theme": "ai_mega_cap",
+        "top_theme_prob": 0.17054613239078154,
+        "symbols_seen": [
+          "PLTR"
+        ],
+        "n_symbol_emits": 2,
+        "source_db_ts": "2026-09-14T16:11:57.134900",
+        "db_actions": [
+          "shadow_pass"
+        ],
+        "headline_db": "Palantir, Nvidia, Booz Allen restrict Anthropic and OpenAI models",
+        "rationale_short": "theme=ai_mega_cap(0.17); stance=irrelevant; kw_match=ai_compute:headline",
+        "db_source_field": "Yahoo Finance RSS",
+        "full_theme_probs": true,
+        "full_relevance": true,
+        "attached_from_tip": "a17bb6b",
+        "attached_at": "2026-09-15T15:57:35.566093-04:00",
+        "join_method": "live_event_id"
+      },
+      "theme_shock_log_ts": "2026-09-14 15:40:09,931",
+      "source": "Yahoo Finance RSS"
+    },
+    {
+      "event_id": "9c807aaf4bc6",
+      "theme_id": "ai_compute",
+      "headline": "Palo Alto and CrowdStrike Gain While AI Names Fall",
+      "label": "TP_ai_compute",
+      "expected_action": "hard_skip_entries",
+      "gpu_critic": {
+        "strategy": "gpu_news_critic",
+        "action": "shadow_pass",
+        "theme_probs": {
+          "none": 0.135439431383647,
+          "other": 0.13525831723442405,
+          "ai_compute": 0.1581127589572321,
+          "memory_hbm": 0.12147634594518965,
+          "ai_mega_cap": 0.16901584484465043,
+          "fed_risk_off": 0.13020964708441504,
+          "earnings_chip": 0.15048765455044175
+        },
+        "contamination_risk": 0.0,
+        "keyword_match": null,
+        "infer_ms": 18.339599609375,
+        "news_age_sec": 28770.541087,
+        "stance": "bearish",
+        "confidence": 0.394103145938551,
+        "relevance_by_symbol": {
+          "AMZN": 0.13521267587572036,
+          "META": 0.13521267587572036,
+          "MSFT": 0.13521267587572036,
+          "GOOGL": 0.13521267587572036
+        },
+        "skip_reason": null,
+        "source": "bot_decisions",
+        "live_event_id": "d65dae648440",
+        "top_theme": "ai_mega_cap",
+        "top_theme_prob": 0.16901584484465043,
+        "symbols_seen": [
+          "CRWD",
+          "PANW"
+        ],
+        "n_symbol_emits": 2580,
+        "source_db_ts": "2026-09-14T20:12:32.544339",
+        "db_actions": [
+          "shadow_pass"
+        ],
+        "headline_db": "Palo Alto and CrowdStrike Gain While AI Names Fall",
+        "rationale_short": "theme=ai_mega_cap(0.17); stance=bearish",
+        "db_source_field": "Yahoo Finance RSS",
+        "full_theme_probs": true,
+        "full_relevance": true,
+        "attached_from_tip": "a17bb6b",
+        "attached_at": "2026-09-15T15:57:35.566093-04:00",
+        "join_method": "live_event_id"
+      },
+      "theme_shock_log_ts": "2026-09-14 15:18:35,455",
+      "source": "Yahoo Finance RSS"
+    },
+    {
+      "event_id": "bf5a64aa772d",
+      "theme_id": "ai_compute",
+      "headline": "Rumble Soars 10% on Report Anthropic Is the $13.7B Compute C",
+      "label": "TP_anthropic",
+      "expected_action": "hard_skip_entries",
+      "matched_text": "anthropic",
+      "matched_field": "headline",
+      "gpu_critic": {
+        "strategy": "gpu_news_critic",
+        "action": "shadow_pass",
+        "theme_probs": {
+          "none": 0.1363844378838703,
+          "other": 0.12574300706475489,
+          "ai_compute": 0.16253700685601224,
+          "memory_hbm": 0.1381255337653174,
+          "ai_mega_cap": 0.1564941978485034,
+          "fed_risk_off": 0.12583865119431395,
+          "earnings_chip": 0.1548771653872278
+        },
+        "contamination_risk": 0.0,
+        "keyword_match": {
+          "theme_id": "ai_compute",
+          "matched_text": "anthropic",
+          "matched_field": "headline"
+        },
+        "infer_ms": 7.550537109375,
+        "news_age_sec": 28758.645721,
+        "stance": "irrelevant",
+        "confidence": 0.38596055573275084,
+        "relevance_by_symbol": {
+          "AMD": 0.1300296054848098,
+          "ARM": 0.1300296054848098,
+          "AVGO": 0.1300296054848098,
+          "NVDA": 0.1300296054848098,
+          "SMCI": 0.1300296054848098
+        },
+        "skip_reason": null,
+        "source": "bot_decisions",
+        "live_event_id": "0bba1a059511",
+        "top_theme": "ai_compute",
+        "top_theme_prob": 0.16253700685601224,
+        "symbols_seen": [
+          "RUM"
+        ],
+        "n_symbol_emits": 264,
+        "source_db_ts": "2026-09-14T17:27:09.648341",
+        "db_actions": [
+          "shadow_pass"
+        ],
+        "headline_db": "Rumble Soars 10% on Report Anthropic Is the $13.7B Compute Customer; CoreWeave and Nebius Drop 9%",
+        "rationale_short": "theme=ai_compute(0.16); stance=irrelevant; kw_match=ai_compute:headline",
+        "db_source_field": "Yahoo Finance RSS",
+        "full_theme_probs": true,
+        "full_relevance": true,
+        "attached_from_tip": "a17bb6b",
+        "attached_at": "2026-09-15T15:57:35.566093-04:00",
+        "join_method": "live_event_id"
+      },
+      "theme_shock_log_ts": "2026-09-14 15:40:31,002",
+      "source": "Yahoo Finance RSS"
+    },
+    {
+      "event_id": "f185cbf1fbf6",
+      "theme_id": "ai_compute",
+      "headline": "Rumble stock jumps 27% on reported $13.7 billion Anthropic d",
+      "label": "TP_anthropic",
+      "expected_action": "hard_skip_entries",
+      "matched_text": "anthropic",
+      "matched_field": "headline",
+      "gpu_critic": {
+        "strategy": "gpu_news_critic",
+        "action": "shadow_pass",
+        "theme_probs": {
+          "none": 0.14837894210199642,
+          "other": 0.13905121642878493,
+          "ai_compute": 0.14591098009401757,
+          "memory_hbm": 0.1372726190202878,
+          "ai_mega_cap": 0.15058538498294816,
+          "fed_risk_off": 0.12993724459497205,
+          "earnings_chip": 0.14886361277699306
+        },
+        "contamination_risk": 0.0,
+        "keyword_match": {
+          "theme_id": "ai_compute",
+          "matched_text": "anthropic",
+          "matched_field": "headline"
+        },
+        "infer_ms": 10.39990234375,
+        "news_age_sec": 28765.495686,
+        "stance": "irrelevant",
+        "confidence": 0.3888532975406074,
+        "relevance_by_symbol": {
+          "AMZN": 0.12046830798635853,
+          "META": 0.12046830798635853,
+          "MSFT": 0.12046830798635853,
+          "GOOGL": 0.12046830798635853
+        },
+        "skip_reason": null,
+        "source": "bot_decisions",
+        "live_event_id": "ae94a489ed22",
+        "top_theme": "ai_mega_cap",
+        "top_theme_prob": 0.15058538498294816,
+        "symbols_seen": [
+          "RUM"
+        ],
+        "n_symbol_emits": 846,
+        "source_db_ts": "2026-09-14T20:39:25.503751",
+        "db_actions": [
+          "shadow_pass"
+        ],
+        "headline_db": "Rumble stock jumps 27% on reported $13.7 billion Anthropic deal",
+        "rationale_short": "theme=ai_mega_cap(0.15); stance=irrelevant; kw_match=ai_compute:headline",
+        "db_source_field": "Yahoo Finance RSS",
+        "full_theme_probs": true,
+        "full_relevance": true,
+        "attached_from_tip": "a17bb6b",
+        "attached_at": "2026-09-15T15:57:35.566093-04:00",
+        "join_method": "live_event_id"
+      },
+      "theme_shock_log_ts": "2026-09-14 15:40:31,002",
+      "source": "Yahoo Finance RSS"
+    },
+    {
+      "event_id": "247faf13ec75",
+      "theme_id": "ai_compute",
+      "headline": "Stock Market Today: Dow Falls, Trump Hits Out At AI Fears; T",
+      "label": "TP_ai_compute",
+      "expected_action": "hard_skip_entries",
+      "gpu_critic": {
+        "strategy": "gpu_news_critic",
+        "action": "shadow_pass",
+        "theme_probs": {
+          "ai_mega_cap": 0.15
+        },
+        "contamination_risk": 0.0,
+        "keyword_match": null,
+        "infer_ms": 6.8,
+        "news_age_sec": 3061.4,
+        "stance": "irrelevant",
+        "confidence": 0.41,
+        "relevance_by_symbol": {},
+        "skip_reason": null,
+        "attached_from_tip": "f6fb73c",
+        "attached_at": "2026-09-14T16:04:30.758823-04:00",
+        "live_event_id": "7737b678a4af",
+        "join_method": "headline",
+        "top_theme": "ai_mega_cap",
+        "top_theme_prob": 0.15,
+        "symbols_seen": [
+          "NVDA"
+        ],
+        "n_symbol_emits": 2,
+        "source_log_ts": "2026-09-14 15:49:14,435",
+        "log_file": "/home/nvidia/claude/grok/trading_bot_commentary/trading_bot.log.1",
+        "_partial": {
+          "theme_probs": "log shows top theme only; full dict lives in extra_data but db path broken",
+          "relevance_by_symbol": "not present on log line",
+          "join": "headline"
+        }
+      },
+      "theme_shock_log_ts": "2026-09-14 15:18:14,660",
+      "source": "Yahoo Finance RSS"
+    },
+    {
+      "event_id": "a53cd1221a3a",
+      "theme_id": "ai_compute",
+      "headline": "Tesla Stock Drops as Musk Adds to the Chorus of AI Concern",
+      "label": "TP_ai_compute",
+      "expected_action": "hard_skip_entries",
+      "gpu_critic": {
+        "strategy": "gpu_news_critic",
+        "action": "shadow_pass",
+        "theme_probs": {
+          "none": 0.13819665987091578,
+          "other": 0.13794518637639047,
+          "ai_compute": 0.16061036304700613,
+          "memory_hbm": 0.12979996855545078,
+          "ai_mega_cap": 0.1632410599897134,
+          "fed_risk_off": 0.12581876230317288,
+          "earnings_chip": 0.14438799985735057
+        },
+        "contamination_risk": 0.15,
+        "keyword_match": null,
+        "infer_ms": 7.33837890625,
+        "news_age_sec": 22316.761347,
+        "stance": "bearish",
+        "confidence": 0.3943125910614842,
+        "relevance_by_symbol": {
+          "AMZN": 0.1305928479917707,
+          "META": 0.1305928479917707,
+          "MSFT": 0.1305928479917707,
+          "GOOGL": 0.1305928479917707
+        },
+        "skip_reason": null,
+        "source": "bot_decisions",
+        "live_event_id": "48400dd34262",
+        "top_theme": "ai_mega_cap",
+        "top_theme_prob": 0.1632410599897134,
+        "symbols_seen": [
+          "TSLA"
+        ],
+        "n_symbol_emits": 3,
+        "source_db_ts": "2026-09-14T16:11:56.971214",
+        "db_actions": [
+          "shadow_pass"
+        ],
+        "headline_db": "Tesla Stock Drops as Musk Adds to the Chorus of AI Concern",
+        "rationale_short": "theme=ai_mega_cap(0.16); stance=bearish",
+        "db_source_field": "Yahoo Finance RSS",
+        "full_theme_probs": true,
+        "full_relevance": true,
+        "attached_from_tip": "a17bb6b",
+        "attached_at": "2026-09-15T15:57:35.566093-04:00",
+        "join_method": "live_event_id"
+      },
+      "theme_shock_log_ts": "2026-09-14 15:18:14,684",
+      "source": "Yahoo Finance RSS"
+    },
+    {
+      "event_id": "bfc8e170b3d0",
+      "theme_id": "ai_compute",
+      "headline": "The next AI boom could be hiding in cybersecurity",
+      "label": "TP_ai_compute",
+      "expected_action": "hard_skip_entries",
+      "gpu_critic": {
+        "strategy": "gpu_news_critic",
+        "action": "shadow_pass",
+        "theme_probs": {
+          "none": 0.12743594284176687,
+          "other": 0.1314826693753382,
+          "ai_compute": 0.17302540199217914,
+          "memory_hbm": 0.12586783324857012,
+          "ai_mega_cap": 0.17786429382959096,
+          "fed_risk_off": 0.12127267691609334,
+          "earnings_chip": 0.14305118179646137
+        },
+        "contamination_risk": 0.0,
+        "keyword_match": null,
+        "infer_ms": 7.694091796875,
+        "news_age_sec": 28788.664569,
+        "stance": "irrelevant",
+        "confidence": 0.3707655497272764,
+        "relevance_by_symbol": {
+          "AMZN": 0.14229143506367278,
+          "META": 0.14229143506367278,
+          "MSFT": 0.14229143506367278,
+          "GOOGL": 0.14229143506367278
+        },
+        "skip_reason": null,
+        "source": "bot_decisions",
+        "live_event_id": "1b4d56f61ef7",
+        "top_theme": "ai_mega_cap",
+        "top_theme_prob": 0.17786429382959096,
+        "symbols_seen": [
+          "CRWD",
+          "PANW"
+        ],
+        "n_symbol_emits": 2286,
+        "source_db_ts": "2026-09-14T20:02:48.672738",
+        "db_actions": [
+          "shadow_pass"
+        ],
+        "headline_db": "The next AI boom could be hiding in cybersecurity",
+        "rationale_short": "theme=ai_mega_cap(0.18); stance=irrelevant",
+        "db_source_field": "Yahoo Finance RSS",
+        "full_theme_probs": true,
+        "full_relevance": true,
+        "attached_from_tip": "a17bb6b",
+        "attached_at": "2026-09-15T15:57:35.566093-04:00",
+        "join_method": "live_event_id"
+      },
+      "theme_shock_log_ts": "2026-09-14 15:18:35,455",
+      "source": "Yahoo Finance RSS"
+    },
+    {
+      "event_id": "8e3bb2b090ef",
+      "theme_id": "ai_compute",
+      "headline": "Why Is Nvidia (NASDAQ:NVDA) Stock Falling Today? NVDA Drops",
+      "label": "TP_ai_compute",
+      "expected_action": "hard_skip_entries",
+      "theme_shock_log_ts": "2026-09-14 15:18:14,663",
+      "source": "stocksdownunder.com"
+    },
+    {
+      "event_id": "c6bc800db135",
+      "theme_id": "ai_compute",
+      "headline": "AI Warning Sends Nvidia, AMD, Micron and Intel Shares Tumbli",
+      "label": "TP_ai_compute",
+      "expected_action": "hard_skip_entries",
+      "note": "critic-observed genuine AI-compute/Anthropic; ThemeShock event_id may differ",
+      "gpu_critic": {
+        "strategy": "gpu_news_critic",
+        "action": "shadow_pass",
+        "theme_probs": {
+          "none": 0.1314625121461011,
+          "other": 0.13045737754969766,
+          "ai_compute": 0.16257292443563368,
+          "memory_hbm": 0.12872031191033134,
+          "ai_mega_cap": 0.16711975984675795,
+          "fed_risk_off": 0.1308423050895991,
+          "earnings_chip": 0.1488248090218792
+        },
+        "contamination_risk": 0.0,
+        "keyword_match": null,
+        "infer_ms": 7.875,
+        "news_age_sec": 3767.0175,
+        "stance": "bearish",
+        "confidence": 0.39726642694524483,
+        "relevance_by_symbol": {
+          "AMZN": 0.13369580787740637,
+          "META": 0.13369580787740637,
+          "MSFT": 0.13369580787740637,
+          "GOOGL": 0.13369580787740637
+        },
+        "skip_reason": null,
+        "source": "bot_decisions",
+        "live_event_id": "c6bc800db135",
+        "top_theme": "ai_mega_cap",
+        "top_theme_prob": 0.16711975984675795,
+        "symbols_seen": [
+          "NVDA"
+        ],
+        "n_symbol_emits": 2,
+        "source_db_ts": "2026-09-14T16:11:56.019701",
+        "db_actions": [
+          "shadow_pass"
+        ],
+        "headline_db": "AI Warning Sends Nvidia, AMD, Micron and Intel Shares Tumbling",
+        "rationale_short": "theme=ai_mega_cap(0.17); stance=bearish",
+        "db_source_field": "Yahoo Finance RSS",
+        "full_theme_probs": true,
+        "full_relevance": true,
+        "attached_from_tip": "a17bb6b",
+        "attached_at": "2026-09-15T15:57:35.566093-04:00",
+        "join_method": "event_id"
+      }
+    },
+    {
+      "event_id": "bf0c664141dc",
+      "theme_id": "ai_compute",
+      "headline": "Nasdaq 100 Slips as AI Leaders Urge a Slowdown, 10-Year Yiel",
+      "label": "TP_ai_compute",
+      "expected_action": "hard_skip_entries",
+      "note": "critic-observed genuine AI-compute/Anthropic; ThemeShock event_id may differ",
+      "gpu_critic": {
+        "strategy": "gpu_news_critic",
+        "action": "shadow_pass",
+        "theme_probs": {
+          "none": 0.13494313160171129,
+          "other": 0.13250028459755747,
+          "ai_compute": 0.15328634862286866,
+          "memory_hbm": 0.14362668961198224,
+          "ai_mega_cap": 0.14466293028107202,
+          "fed_risk_off": 0.14281016472263214,
+          "earnings_chip": 0.14817045056217618
+        },
+        "contamination_risk": 0.0,
+        "keyword_match": null,
+        "infer_ms": 7.695556640625,
+        "news_age_sec": 7530.646416,
+        "stance": "bearish",
+        "confidence": 0.418591385504519,
+        "relevance_by_symbol": {
+          "AMD": 0.12262907889829494,
+          "ARM": 0.12262907889829494,
+          "AVGO": 0.12262907889829494,
+          "NVDA": 0.12262907889829494,
+          "SMCI": 0.12262907889829494
+        },
+        "skip_reason": null,
+        "source": "bot_decisions",
+        "live_event_id": "bf0c664141dc",
+        "top_theme": "ai_compute",
+        "top_theme_prob": 0.15328634862286866,
+        "symbols_seen": [
+          "ALAB",
+          "AMD",
+          "AVGO",
+          "COHR",
+          "CRWD",
+          "DIA",
+          "FDN",
+          "GDX",
+          "GLD",
+          "GLW",
+          "IGV",
+          "IWM",
+          "KIE",
+          "MTSI",
+          "MU",
+          "NVT",
+          "OIH",
+          "OKTA",
+          "PANW",
+          "QQQ",
+          "RBRK",
+          "S",
+          "SAIL",
+          "SITM",
+          "SMH",
+          "SMTC",
+          "TER",
+          "VOO",
+          "XLC",
+          "XLI",
+          "XLK",
+          "XLP",
+          "XLU",
+          "XLV",
+          "XME",
+          "XRT",
+          "ZS"
+        ],
+        "n_symbol_emits": 74,
+        "source_db_ts": "2026-09-14T16:12:11.649982",
+        "db_actions": [
+          "shadow_pass"
+        ],
+        "headline_db": "Nasdaq 100 Slips as AI Leaders Urge a Slowdown, 10-Year Yield Touches 5%: Stock Market Today",
+        "rationale_short": "theme=ai_compute(0.15); stance=bearish",
+        "db_source_field": "Alpaca News",
+        "full_theme_probs": true,
+        "full_relevance": true,
+        "attached_from_tip": "a17bb6b",
+        "attached_at": "2026-09-15T15:57:35.566093-04:00",
+        "join_method": "event_id"
+      }
+    },
+    {
+      "event_id": "73a987a69a2f",
+      "theme_id": "ai_compute",
+      "headline": "Palantir Stock Rises as AI Leaders Hint at Growth Slowdown",
+      "label": "TP_ai_compute",
+      "expected_action": "hard_skip_entries",
+      "note": "critic-observed genuine AI-compute/Anthropic; ThemeShock event_id may differ",
+      "gpu_critic": {
+        "strategy": "gpu_news_critic",
+        "action": "shadow_pass",
+        "theme_probs": {
+          "none": 0.1309089645485766,
+          "other": 0.13708220793404288,
+          "ai_compute": 0.15867798807924896,
+          "memory_hbm": 0.13053668626955342,
+          "ai_mega_cap": 0.16985758136333096,
+          "fed_risk_off": 0.12660132219246845,
+          "earnings_chip": 0.14633524961277874
+        },
+        "contamination_risk": 0.0,
+        "keyword_match": null,
+        "infer_ms": 6.667236328125,
+        "news_age_sec": 3031.669466,
+        "stance": "bullish",
+        "confidence": 0.39593735580951506,
+        "relevance_by_symbol": {
+          "AMZN": 0.13588606509066478,
+          "META": 0.13588606509066478,
+          "MSFT": 0.13588606509066478,
+          "GOOGL": 0.13588606509066478
+        },
+        "skip_reason": null,
+        "source": "bot_decisions",
+        "live_event_id": "73a987a69a2f",
+        "top_theme": "ai_mega_cap",
+        "top_theme_prob": 0.16985758136333096,
+        "symbols_seen": [
+          "PLTR"
+        ],
+        "n_symbol_emits": 3,
+        "source_db_ts": "2026-09-14T16:11:10.672404",
+        "db_actions": [
+          "shadow_pass"
+        ],
+        "headline_db": "Palantir Stock Rises as AI Leaders Hint at Growth Slowdown",
+        "rationale_short": "theme=ai_mega_cap(0.17); stance=bullish",
+        "db_source_field": "Alpaca News",
+        "full_theme_probs": true,
+        "full_relevance": true,
+        "attached_from_tip": "a17bb6b",
+        "attached_at": "2026-09-15T15:57:35.566093-04:00",
+        "join_method": "event_id"
+      }
+    },
+    {
+      "event_id": "d8bbf1cb67d6",
+      "theme_id": "ai_compute",
+      "headline": "Pre-Markets Lower on AI Concerns, Iran War",
+      "label": "TP_ai_compute",
+      "expected_action": "hard_skip_entries",
+      "note": "critic-observed genuine AI-compute/Anthropic; ThemeShock event_id may differ",
+      "gpu_critic": {
+        "strategy": "gpu_news_critic",
+        "action": "shadow_pass",
+        "theme_probs": {
+          "none": 0.14320874146473786,
+          "other": 0.13642731114341783,
+          "ai_compute": 0.16044610291904904,
+          "memory_hbm": 0.12652363849058842,
+          "ai_mega_cap": 0.1617990632933926,
+          "fed_risk_off": 0.1339237800562024,
+          "earnings_chip": 0.1376713626326118
+        },
+        "contamination_risk": 0.0,
+        "keyword_match": null,
+        "infer_ms": 13.159912109375,
+        "news_age_sec": 25063.944062,
+        "stance": "irrelevant",
+        "confidence": 0.4119996900400793,
+        "relevance_by_symbol": {
+          "AMZN": 0.1294392506347141,
+          "META": 0.1294392506347141,
+          "MSFT": 0.1294392506347141,
+          "GOOGL": 0.1294392506347141
+        },
+        "skip_reason": null,
+        "source": "bot_decisions",
+        "live_event_id": "d8bbf1cb67d6",
+        "top_theme": "ai_mega_cap",
+        "top_theme_prob": 0.1617990632933926,
+        "symbols_seen": [
+          "CRWD"
+        ],
+        "n_symbol_emits": 387,
+        "source_db_ts": "2026-09-14T17:22:43.947686",
+        "db_actions": [
+          "shadow_pass"
+        ],
+        "headline_db": "Pre-Markets Lower on AI Concerns, Iran War",
+        "rationale_short": "theme=ai_mega_cap(0.16); stance=irrelevant",
+        "db_source_field": "Yahoo Finance RSS",
+        "full_theme_probs": true,
+        "full_relevance": true,
+        "attached_from_tip": "a17bb6b",
+        "attached_at": "2026-09-15T15:57:35.566093-04:00",
+        "join_method": "event_id"
+      }
+    }
+  ],
+  "gpu_critic_attach": {
+    "attached_at": "2026-09-15T15:57:35.566093-04:00",
+    "attached_from_tip": "a17bb6b",
+    "seed_book_tip": "f6fb73c",
+    "source": "bot_decisions",
+    "db": "rudra_dev.bot_decisions",
+    "component": "gpu_news_critic",
+    "db_gpu_news_critic_rows": 47290,
+    "join_note": "Prefer event_id (seed or prior live_event_id); else exact headline; never fabricate. Unmatched keep prior log partial.",
+    "join_methods": {
+      "event_id": 11,
+      "live_event_id": 12
+    },
+    "matched_full": 23,
+    "left_prior_partial": 3,
+    "left_missing": 2,
+    "attached_row_count": 26,
+    "attached_row_total": 28,
+    "full_attach_coverage_pct": 82.1,
+    "any_attach_coverage_pct": 92.9,
+    "fields": [
+      "theme_probs",
+      "relevance_by_symbol",
+      "contamination_risk",
+      "infer_ms",
+      "keyword_match",
+      "confidence(from details_json->_card_original)"
+    ],
+    "flags": {
+      "ENABLE_GPU_NEWS_CRITIC": true,
+      "GPU_NEWS_CRITIC_SHADOW": true,
+      "THEME_HARD_SKIP_REQUIRE_GPU": false
+    }
+  }
+}
