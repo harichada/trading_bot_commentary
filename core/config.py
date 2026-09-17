@@ -797,6 +797,126 @@ class Config:
         return int(self.manager.get('trading.watchlist_size', 20))
 
     @property
+    def ENABLE_PINNED_WATCHLIST(self) -> bool:
+        """v-pinned-watchlist-2026-09-17: reserve seats for pinned symbols
+        before mover-filler.
+
+        When True (default), symbols in PINNED_WATCHLIST are guaranteed
+        slots in the dynamic watchlist. Remaining slots are filled by
+        screener movers ranked by quality + dollar-volume.
+
+        SAFE OFF-PATH: Set ENABLE_PINNED_WATCHLIST=0 to revert to pure
+        mover-driven watchlist (prior behavior)."""
+        env_val = os.getenv("ENABLE_PINNED_WATCHLIST")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.enable_pinned_watchlist', True))
+
+    @property
+    def PINNED_WATCHLIST(self) -> list:
+        """v-pinned-watchlist-2026-09-17: symbols that always get reserved
+        seats in the dynamic watchlist before mover-filler.
+
+        Default suggestion: NVDA,TSLA,META,AMZN,MSFT,GOOGL,AVGO,AMD,SPY,QQQ
+        These are liquid mega-cap names that the screener's quality filter
+        often rejects (weak RS during rotations) but operators want to
+        always track for day-trade opportunities.
+
+        Configure via:
+          - env PINNED_WATCHLIST="NVDA,TSLA,META,AMZN"
+          - yaml trading.pinned_watchlist: [NVDA, TSLA, META, AMZN]
+
+        NOTE: HANDS_OFF_DENYLIST symbols (MU, HQGE, SPCX) are automatically
+        excluded even if present here — they are never auto-traded/managed."""
+        env_val = os.getenv("PINNED_WATCHLIST")
+        if env_val is not None:
+            return [s.strip().upper() for s in env_val.split(',') if s.strip()]
+        default = ['NVDA', 'TSLA', 'META', 'AMZN', 'MSFT', 'GOOGL', 'AVGO', 'AMD', 'SPY', 'QQQ']
+        custom = self.manager.get('trading.pinned_watchlist', default)
+        if isinstance(custom, str):
+            custom = [s.strip().upper() for s in custom.split(',') if s.strip()]
+        return [s.upper() for s in custom] if custom else default
+
+    @property
+    def MIN_DOLLAR_VOLUME_FLOOR(self) -> float:
+        """v-pinned-watchlist-2026-09-17: minimum dollar-volume (price×volume)
+        for NON-PINNED watchlist slots.
+
+        Demotes/rejects micro lottery names (PURR, AEMD, IOVA, NVAX-class)
+        that dominate Yahoo movers but have thin liquidity for the bot's
+        typical $5-15k position sizes.
+
+        Dollar-volume = last_price × daily_volume. Default $50M means a
+        $10 stock needs 5M shares traded, a $100 stock needs 500k shares.
+        This is stricter than MIN_MOVER_VOLUME (share count only) and
+        ensures actual LIQUIDITY, not just activity.
+
+        Configure via:
+          - env MIN_DOLLAR_VOLUME_FLOOR=50000000
+          - yaml trading.min_dollar_volume_floor: 50000000
+
+        Set to 0 to disable dollar-volume filtering (mover-only behavior)."""
+        env_val = os.getenv("MIN_DOLLAR_VOLUME_FLOOR")
+        if env_val is not None:
+            try:
+                return float(env_val)
+            except ValueError:
+                pass
+        return float(self.manager.get('trading.min_dollar_volume_floor', 50_000_000))
+
+    @property
+    def PINNED_MIN_RS(self) -> float:
+        """v-pinned-watchlist-2026-09-17: relaxed relative-strength threshold
+        for PINNED symbols only.
+
+        The standard quality filter rejects symbols with 10-day return
+        more than 5pp below SPY (RS < -0.05). For pinned liquid megas,
+        this is often too strict during sector rotations — NVDA/GOOG/META
+        can lag SPY by 4-6pp on rotation days while still being tradeable.
+
+        This setting allows a softer RS floor for pinned symbols ONLY.
+        Default -0.10 means pinned names pass if their 10d return is
+        within 10pp of SPY (vs 5pp for non-pinned).
+
+        Configure via:
+          - env PINNED_MIN_RS=-0.10
+          - yaml trading.pinned_min_rs: -0.10
+
+        Set to -0.05 to use the same threshold as non-pinned (no soften).
+        Set to -1.0 to effectively disable RS filter for pinned names."""
+        env_val = os.getenv("PINNED_MIN_RS")
+        if env_val is not None:
+            try:
+                return float(env_val)
+            except ValueError:
+                pass
+        return float(self.manager.get('trading.pinned_min_rs', -0.10))
+
+    @property
+    def GAP_COMMENTARY_RTH_MINUTES(self) -> int:
+        """v-pinned-watchlist-2026-09-17: gate Gap Detected commentary to
+        first N minutes of RTH only.
+
+        Pre-market gap commentary is noise after the first 30 minutes of
+        regular trading hours — gaps have either filled or established as
+        the day's direction. This setting suppresses new gap commentary
+        after market_open + N minutes.
+
+        Default 30. Set to 0 to disable gating (always emit gap commentary).
+        Set to -1 to never emit gap commentary.
+
+        Configure via:
+          - env GAP_COMMENTARY_RTH_MINUTES=30
+          - yaml trading.gap_commentary_rth_minutes: 30"""
+        env_val = os.getenv("GAP_COMMENTARY_RTH_MINUTES")
+        if env_val is not None:
+            try:
+                return int(env_val)
+            except ValueError:
+                pass
+        return int(self.manager.get('trading.gap_commentary_rth_minutes', 30))
+
+    @property
     def ENABLE_THESIS_REVALIDATION(self) -> bool:
         """v-thesis-revalidate-2026-04-28: re-verify both news + indicators
         on positions older than THESIS_REVALIDATION_AGE_MIN. Closes the
