@@ -43,6 +43,10 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--days", type=int, default=DEFAULT_DAYS)
     p.add_argument("--frequency", type=int, default=DEFAULT_FREQUENCY)
     p.add_argument("--dsn", default=os.environ.get("POSTGRES_DSN", DEFAULT_DSN))
+    p.add_argument("--bars-dir", default=None,
+                   help="Directory with {SYMBOL}.parquet or {SYMBOL}.csv files. "
+                        "When set, uses file-based bars instead of Postgres. "
+                        "Also respects BARS_DIR env var.")
     # Output: either a legacy single JSON path or a directory containing both
     # ``report.json`` and ``trades.csv``. Default keeps the old behaviour.
     out = p.add_mutually_exclusive_group()
@@ -85,6 +89,11 @@ def _print_human_report(report: dict[str, Any]) -> None:
 
 
 async def main_async(args: argparse.Namespace) -> int:
+    # v-file-bars-2026-09-17: set BARS_DIR env var if --bars-dir specified.
+    # The engine checks this env var to decide which bars loader to use.
+    if args.bars_dir:
+        os.environ["BARS_DIR"] = args.bars_dir
+        
     report, trades = await _run_backtest_with_trades(
         symbols=args.symbols,
         top_n=args.top_n if not args.symbols else None,
