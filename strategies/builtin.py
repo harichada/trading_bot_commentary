@@ -30,20 +30,37 @@ def _floored_atr(raw_atr: float, price: float) -> float:
 # re-logged every analysis pass. Window starts 10:00 ET, not 09:30 —
 # the 2026-06-10 ledger shows artifacts persisting until ~10:00.
 _SHADOW_LOG_THROTTLE: Dict[str, datetime] = {}
+_SHADOW_LOG_THROTTLE_LONG: Dict[str, datetime] = {}  # v-shadow-long-ledger-2026-09-17
 _SHADOW_THROTTLE_MIN = 30.0  # minutes between entries per symbol
 
 
-def _shadow_short_should_log(
+def _shadow_should_log(
     symbol: str,
+    lane: str = "short",
     now_utc: Optional[datetime] = None,
     _throttle: Optional[Dict[str, datetime]] = None,
 ) -> bool:
-    """True when a shadow SHORT entry for `symbol` is worth recording:
-    weekday, 10:00-16:00 ET, and not logged within the last 30 min.
-    `now_utc`/`_throttle` are injectable for tests."""
+    """True when a shadow entry for `symbol` is worth recording.
+    
+    v-shadow-long-ledger-2026-09-17: generalized from _shadow_short_should_log
+    to support both SHORT and LONG lanes with separate throttle dicts.
+    
+    Gates:
+      - Weekday only (no weekends)
+      - 10:00-16:00 ET (skip warm-up and after-hours)
+      - Same symbol within 30 minutes: skip (throttle)
+    
+    `lane` selects the throttle dict: "short" or "long".
+    `now_utc`/`_throttle` are injectable for tests.
+    """
     from datetime import timezone
     from zoneinfo import ZoneInfo
-    throttle = _SHADOW_LOG_THROTTLE if _throttle is None else _throttle
+    if _throttle is not None:
+        throttle = _throttle
+    elif lane == "long":
+        throttle = _SHADOW_LOG_THROTTLE_LONG
+    else:
+        throttle = _SHADOW_LOG_THROTTLE
     now = now_utc or datetime.now(timezone.utc)
     et = now.astimezone(ZoneInfo("America/New_York"))
     if et.weekday() >= 5:
@@ -56,6 +73,20 @@ def _shadow_short_should_log(
         return False
     throttle[symbol] = now
     return True
+
+
+def _shadow_short_should_log(
+    symbol: str,
+    now_utc: Optional[datetime] = None,
+    _throttle: Optional[Dict[str, datetime]] = None,
+) -> bool:
+    """True when a shadow SHORT entry for `symbol` is worth recording:
+    weekday, 10:00-16:00 ET, and not logged within the last 30 min.
+    `now_utc`/`_throttle` are injectable for tests.
+    
+    v-shadow-long-ledger-2026-09-17: now delegates to _shadow_should_log
+    for shared implementation."""
+    return _shadow_should_log(symbol, lane="short", now_utc=now_utc, _throttle=_throttle)
 
 
 class NewsSignalStrategy(TradingStrategyWithCommentary):
@@ -897,6 +928,64 @@ class MeanReversionStrategyWithCommentary(TradingStrategyWithCommentary):
                                    stop=round(stop_loss, 2), target=round(take_profit, 2),
                                    atr=round(atr, 3), stop_dist=round(stop_distance, 2),
                                    bb_lower_dist_pct=round(_bb_lower_dist_pct, 2))
+
+                # v-shadow-long-ledger-2026-09-17: append to shadow_long_log.ndjson
+                # for Stage A validation via research/shadow_long_resolver.py.
+                # Mirrors SHORT shadow ledger (shadow_short_log.ndjson) but runs
+                # alongside live signals — captures data for analysis.
+                from core.config import Config as _CfgLongShadow
+                if (_CfgLongShadow().ENABLE_MEAN_REV_LONG_SHADOW
+                        and _shadow_should_log(market_data.symbol, lane="long")):
+                    try:
+                        from datetime import timezone as _tz_long
+                        import json as _json_long
+                        from pathlib import Path as _PathLong
+                        _shadow_long_entry = {
+                            'timestamp': datetime.now(_tz_long.utc).isoformat(),
+                            'symbol': market_data.symbol,
+                            'signal_type': 'LONG',
+                            'reason': _entry_pattern,
+                            'signal_close': float(market_data.close),
+                            'entry_price': float(market_data.close),
+                            'rsi': float(rsi),
+                            'bb_lower': float(bb_lower),
+                            'bb_middle': float(bb_middle),
+                            'sma_50': float(sma_50),
+                            'macd': float(macd_val),
+                            'macd_signal': float(macd_signal_val),
+                            'atr': float(atr),
+                            'hypothetical_stop': float(stop_loss),
+                            'hypothetical_target': float(take_profit),
+                            'rr_ratio': float(rr_ratio),
+                            'stop_dist': float(stop_distance),
+                            'market_context_regime': _mc_regime,
+                            'falling_knife_pass': True,
+                        }
+                        _repo_root_long = _PathLong(__file__).resolve().parent.parent
+                        _ledger_dir_long = _repo_root_long / "data"
+                        _ledger_dir_long.mkdir(parents=True, exist_ok=True)
+                        _ledger_path_long = str(_ledger_dir_long / "shadow_long_log.ndjson")
+                        with open(_ledger_path_long, 'a') as _f_long:
+                            _f_long.write(
+                                _json_long.dumps(_shadow_long_entry, default=str) + "\n"
+                            )
+                        self._log_decision(
+                            market_data, "shadow", "long_shadow_logged",
+                            rsi=round(rsi, 2),
+                            close=round(market_data.close, 2),
+                            bb_lower=round(bb_lower, 2),
+                            hyp_stop=round(stop_loss, 2),
+                            hyp_target=round(take_profit, 2),
+                            sma_50=round(sma_50, 2),
+                            macd=round(macd_val, 4),
+                            falling_knife_pass=True,
+                        )
+                    except Exception as _shadow_long_exc:
+                        logger.debug(
+                            "shadow_long_log write failed for %s: %s",
+                            market_data.symbol, _shadow_long_exc,
+                        )
+
                 return TradingSignal(
                     symbol=market_data.symbol,
                     signal_type=SignalType.BUY,
