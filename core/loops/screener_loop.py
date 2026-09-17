@@ -34,13 +34,16 @@ Migrated v-tags (must remain greppable for the inventory test):
   - v-watchlist-stream-2026-05-01: register watchlist symbols as a
     PriceBook interest scope so the ticker tape ticks on every Schwab
     stream update.
+  - v-pinned-watchlist-2026-09-17: reserve seats for pinned symbols
+    before mover-filler. Pinned names (liquid megas) always get slots;
+    remaining slots filled by dollar-volume-ranked movers.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
 from datetime import datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, List, Set
 
 from core.config import Config
 from core.models import CommentaryType
@@ -51,8 +54,6 @@ if TYPE_CHECKING:  # pragma: no cover
 
 logger = logging.getLogger("TradingBot")
 
-_DEFAULT_ANCHORS = ("NVDA", "TSLA", "PLTR")
-
 
 class ScreenerLoop:
     """Runs `screener.screen_stocks()` on its own cadence and propagates
@@ -62,6 +63,10 @@ class ScreenerLoop:
     logged and swallowed so each tick is independent — only structural
     errors (e.g., the engine handle disappearing) would surface to the
     supervisor.
+
+    v-pinned-watchlist-2026-09-17: reserves seats for pinned symbols
+    (liquid megas) before filling remaining slots with movers ranked
+    by dollar-volume. HANDS_OFF symbols are excluded from all slots.
     """
 
     def __init__(
@@ -79,31 +84,92 @@ class ScreenerLoop:
             try:
                 await self._tick()
             except Exception as exc:
-                # Per-iteration guard. The supervisor only needs to see
-                # structural failures, not transient screener errors.
                 logger.warning("screener_loop: tick failed: %s", exc, exc_info=True)
             await asyncio.sleep(self.cadence_sec)
+
+    def _get_hands_off_symbols(self) -> Set[str]:
+        """Get the HANDS_OFF denylist — symbols never auto-traded/managed."""
+        try:
+            return set(Config().HANDS_OFF_DENYLIST)
+        except Exception:
+            return {'MU', 'HQGE', 'SPCX'}
+
+    def _get_pinned_watchlist(self, hands_off: Set[str]) -> List[str]:
+        """Get pinned watchlist with HANDS_OFF symbols excluded.
+
+        v-pinned-watchlist-2026-09-17: pinned symbols always get reserved
+        seats in the dynamic watchlist, but HANDS_OFF symbols are never
+        included even if configured in the pinned list.
+        """
+        cfg = Config()
+        if not cfg.ENABLE_PINNED_WATCHLIST:
+            return []
+        pinned = cfg.PINNED_WATCHLIST
+        return [s for s in pinned if s not in hands_off]
 
     async def _tick(self) -> None:
         screener = getattr(self.engine, "screener", None)
         if screener is None:
-            return  # No screener configured (e.g., test harness)
+            return
 
         await screener.screen_stocks()
         self.engine.last_screener_run = datetime.now()
 
-        # v-watchlist-size-2026-04-29: cap driven centrally by Config.
-        wl_size = Config().WATCHLIST_SIZE
-        screener_symbols = screener.get_watchlist_symbols(limit=wl_size)
-        if not screener_symbols:
-            return
+        cfg = Config()
+        wl_size = cfg.WATCHLIST_SIZE
+        hands_off = self._get_hands_off_symbols()
 
-        combined = list(dict.fromkeys(list(screener_symbols) + list(_DEFAULT_ANCHORS)))
+        # v-pinned-watchlist-2026-09-17: reserve seats for pinned symbols first.
+        pinned = self._get_pinned_watchlist(hands_off)
+        pinned_in_watchlist = pinned[:wl_size]
+
+        # Fill remaining slots with screener movers (excluding pinned + HANDS_OFF).
+        # v-pinned-watchlist-2026-09-17: apply dollar-volume filter to filler slots
+        # to demote micro lottery names.
+        remaining_slots = wl_size - len(pinned_in_watchlist)
+        pinned_set = set(pinned_in_watchlist)
+        min_dollar_volume = cfg.MIN_DOLLAR_VOLUME_FLOOR
+
+        if remaining_slots > 0:
+            movers = screener.get_movers_with_dollar_volume()
+            filler_symbols = []
+            filler_rejected_dv = 0
+
+            for mover in movers:
+                if len(filler_symbols) >= remaining_slots:
+                    break
+                sym = mover.get('symbol')
+                if not sym or sym in pinned_set or sym in hands_off:
+                    continue
+                dv = mover.get('dollar_volume', 0)
+                if min_dollar_volume > 0 and dv < min_dollar_volume:
+                    filler_rejected_dv += 1
+                    continue
+                filler_symbols.append(sym)
+
+            if filler_rejected_dv > 0:
+                logger.debug(
+                    "screener_loop: filler rejected %d movers below $%.1fM dollar-volume",
+                    filler_rejected_dv, min_dollar_volume / 1_000_000,
+                )
+        else:
+            filler_symbols = []
+
+        # Combine: pinned first, then filler movers (preserves order, deduped).
+        combined = list(dict.fromkeys(pinned_in_watchlist + filler_symbols))
         self.engine.dynamic_watchlist = combined[:wl_size]
 
-        # v-watchlist-stream-2026-05-01: register watchlist + ticker
-        # tape interest scopes so streamed ticks update prices in both
-        # tiles without an extra REST round-trip.
+        # Log composition for observability.
+        if pinned_in_watchlist:
+            logger.info(
+                "screener_loop: watchlist pinned=%d filler=%d total=%d pinned_syms=%s",
+                len(pinned_in_watchlist),
+                len(filler_symbols),
+                len(self.engine.dynamic_watchlist),
+                ",".join(pinned_in_watchlist[:5]),
+            )
+
+        # v-watchlist-stream-2026-05-01: register watchlist + ticker tape interest.
         price_book = getattr(self.engine, "price_book", None)
         if price_book is not None:
             try:
@@ -128,13 +194,18 @@ class ScreenerLoop:
 
         commentary = getattr(self.engine, "commentary", None)
         if commentary is not None:
+            pinned_count = len(pinned_in_watchlist)
+            filler_count = len(filler_symbols)
             commentary.add_commentary(
                 TradingCommentary(
                     timestamp=datetime.now(),
                     type=CommentaryType.MARKET_ANALYSIS,
                     symbol=None,
                     title="📊 Watchlist Updated",
-                    message=f"Now tracking: {', '.join(self.engine.dynamic_watchlist)}",
+                    message=(
+                        f"Now tracking: {', '.join(self.engine.dynamic_watchlist)} "
+                        f"(pinned: {pinned_count}, movers: {filler_count})"
+                    ),
                     importance=6,
                 )
             )
