@@ -230,13 +230,92 @@ export DAY_TRADE_SHORT_LIVE_ENTRIES_ENABLED=1
 
 ---
 
+## Historical Sample Generation (BT Sample)
+
+When no live shadow data exists, use the BT sample generator to emit shadow entries from historical bars replay. This creates the INPUT for the resolver.
+
+### Generating Shadow Entries from Historical Bars
+
+**One-liner for Research (file bars):**
+
+```bash
+python -m research.day_trade_short_bt_sample \
+    --bars-dir /path/to/bars/ \
+    --symbols NVDA AAPL TSLA \
+    --out data/day_trade_short_shadow.ndjson \
+    --allow-risk-on
+```
+
+**With Postgres bars:**
+
+```bash
+python -m research.day_trade_short_bt_sample \
+    --dsn postgresql://... \
+    --symbols NVDA AAPL TSLA \
+    --days 90 \
+    --out data/day_trade_short_shadow.ndjson
+```
+
+### BT Sample Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--bars-dir` | - | Directory with {SYMBOL}.parquet or .csv files |
+| `--dsn` | env/default | Postgres connection string |
+| `--symbols` | all in dir | Symbols to process |
+| `--days` | 90 | Days of history (Postgres mode) |
+| `--start-date` | - | Start date filter (YYYY-MM-DD) |
+| `--end-date` | - | End date filter (YYYY-MM-DD) |
+| `--out` | data/day_trade_short_shadow.ndjson | Output path |
+| `--append` | false | Append to existing file |
+| `--min-weak-rs` | 0.5 | Minimum weak RS vs SPY % |
+| `--min-volume-ratio` | 1.5 | Minimum volume ratio |
+| `--rsi-floor` | 30 | RSI floor (no short below) |
+| `--rsi-ceiling` | 80 | RSI ceiling (no short above) |
+| `--allow-risk-on` | false | Allow entries in risk_on regime |
+| `--spy-bars-file` | - | SPY bars for RS computation |
+| `--dry-run` | false | Preview without writing |
+
+### Risk_on Filter
+
+Live strategy HARD BLOCKS entries during risk_on regime (bullish tape). For historical research, you may want to:
+
+1. **Default (risk_on filtered)**: Mimics live behavior exactly.
+2. **--allow-risk-on**: Scores setups regardless of regime for full backtest analysis.
+
+Document which mode was used in your research report.
+
+### Full Historical Workflow
+
+```bash
+# 1. Generate shadow entries from historical bars
+python -m research.day_trade_short_bt_sample \
+    --bars-dir /path/to/bars/ \
+    --symbols NVDA AAPL TSLA AMZN MSFT \
+    --out data/day_trade_short_shadow.ndjson \
+    --allow-risk-on
+
+# 2. Resolve entries against bars
+python -m research.day_trade_short_resolver \
+    --log data/day_trade_short_shadow.ndjson \
+    --bars-dir /path/to/bars/ \
+    --out /tmp/day_trade_short_results/
+
+# 3. Review Stage A summary
+cat /tmp/day_trade_short_results/stage_a_summary.json | jq '.promotion_book'
+```
+
+---
+
 ## Related Files
 
 | File | Purpose |
 |------|---------|
 | `strategies/builtin.py` | DayTradeMomentumShortStrategy class |
 | `core/config.py` | Config flags (ENABLE_DAY_TRADE_SHORT_SHADOW, etc.) |
-| `research/day_trade_short_resolver.py` | This resolver |
+| `research/day_trade_short_bt_sample.py` | Historical shadow entry generator |
+| `research/day_trade_short_resolver.py` | Barrier resolver for shadow entries |
 | `research/shadow_short_resolver.py` | Mean-rev SHORT resolver (similar pattern) |
 | `backtest/stage_a_cli.py` | Stage A CLI integration |
 | `backtest/stage_a_scorer.py` | Stage A floor definitions |
+| `tests/research/test_day_trade_short_bt_sample.py` | BT sample tests |
