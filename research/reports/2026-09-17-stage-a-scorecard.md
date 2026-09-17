@@ -1,10 +1,11 @@
 # Stage A Unified Backtest / Walk-Forward Scorecard
 
 **Owner:** Research via CoS  
-**Date:** 2026-09-17 (r2)  
+**Date:** 2026-09-17 (r3)  
 **For:** Hari  
 **Type:** Measurement (not a LIVE flip)  
-**As-of tip:** `360b706` (PR #85 merged — LONG resolver + file_bars)
+**As-of tip:** `ad05693` (PR #89+#90 merged — BT emit)  
+**See:** `2026-09-17-stage-a-scorecard-r3.md` for full r3 details
 
 ---
 
@@ -12,18 +13,18 @@
 
 | Lane | Direction | Verdict | LIVE Status | Recommend |
 |------|-----------|---------|-------------|-----------|
-| 1. mean_reversion LONG | LONG | **INCOMPLETE** | OFF | LIVE off — harness READY, need bars |
-| 2. day_trade_momentum SHORT | SHORT | **INCOMPLETE** | Shadow (#83) | LIVE off — need shadow sample |
+| 1. mean_reversion LONG | LONG | **FAIL / INCOMPLETE** | OFF | LIVE off — n=9 PF=0.24 WR=33% |
+| 2. day_trade_momentum SHORT | SHORT | **FAIL NO_GO** | Shadow | LIVE off — WR/DD/sim fail hard |
 | 3. day_trade_momentum LONG | LONG | **INCOMPLETE** | ON (baseline) | Keep LIVE — pending audit |
-| 4. mean_reversion SHORT | SHORT | **FAIL** | OFF | LIVE off — NO_GO confirmed |
+| 4. mean_reversion SHORT | SHORT | **FAIL NO_GO** | OFF | LIVE off — prior confirmed |
 | 5. ORB | LONG | **INCOMPLETE** | OFF | LIVE off — deferred |
 
 **Bottom line:**
 - **0 lanes PASS** Stage A floors
-- **1 lane FAIL** (mean_reversion SHORT — confirmed NO_GO, 5 floor failures)
-- **4 lanes INCOMPLETE** (missing data/implementation)
+- **3 lanes FAIL** (mean_reversion SHORT prior NO_GO, mean_reversion LONG FAIL/INCOMPLETE, day_trade_momentum SHORT NO_GO)
+- **2 lanes INCOMPLETE** (day_trade_momentum LONG, ORB)
 - **day_trade_momentum LONG** is currently LIVE as baseline — cannot audit without resolved sample
-- **Harness now READY** for mean_reversion LONG (PR #85: `shadow_long_resolver.py` + `file_bars.py`)
+- **No LIVE promotes** — floors locked
 
 ---
 
@@ -49,83 +50,56 @@
 
 ### 1. mean_reversion LONG (`oversold_v2`)
 
-**Verdict:** ⚠️ **INCOMPLETE** (harness READY)  
+**Verdict:** ❌ **FAIL / INCOMPLETE**  
 **Current LIVE:** OFF  
-**Recommendation:** LIVE off until scorecard available
+**Recommendation:** LIVE off — do not enable MEAN_REV_LIVE
 
-| Metric | Value |
-|--------|-------|
-| n_resolved | **unavailable** (no bars in cloud) |
-| sessions | **unavailable** |
-| PF | **unavailable** |
-| WR | **unavailable** |
-| exp_R | **unavailable** |
-| maxDD | **unavailable** |
-| max_losing_day_R | **unavailable** |
+| Metric | Value | Floor | Status |
+|--------|------:|------:|--------|
+| n | 9 | ≥150 | ❌ FAIL |
+| sessions | 6 | ≥10 | ❌ FAIL |
+| PF | **0.24** | ≥1.30 | ❌ FAIL |
+| WR | **33.3%** | ≥48% | ❌ FAIL |
+| exp_R | **−0.62** | ≥+0.05 | ❌ FAIL |
+| total_R | −5.58 | — | — |
+| maxDD | 7.29R | ≤6% | soft |
+| max_losing_day_R | **2.93** | ≤2.0 | ❌ FAIL |
+| max_simultaneous | 3 | ≤3 | ✅ PASS |
 
-**Why INCOMPLETE:**
-- Shadow ledger emits exist (`MEAN_REV_SHADOW_LEDGER_ENABLED` → `stage_a_entry` / `setup_type=mean_rev_buy`)
-- ✅ **LONG barrier resolver shipped** (`research/shadow_long_resolver.py` in PR #85)
-- ✅ **File-based bars loader shipped** (`data_providers/file_bars.py` in PR #85)
-- ✅ **45 resolver tests passing** (24 LONG + 21 SHORT)
-- ❌ **No bars data in cloud** — need export from KiddoKingdom
+**Source:** `/tmp/shadow_long_results/stage_a_summary.json` (r3 tip `ad05693`)
 
-**LONG resolver verified (mirrors SHORT correctly):**
-| Feature | LONG | SHORT |
-|---------|------|-------|
-| R-multiple | `(exit - entry) / stop_dist` | `(entry - exit) / stop_dist` |
-| Stop hit | `bar_low <= stop` | `bar_high >= stop` |
-| Target hit | `bar_high >= target` | `bar_low <= target` |
+`all_gates_pass`: **false**. BT unknown-regime 6/6 losers (−7.29R); live seed risk_on 3/3 +1.71R.
 
-**Exact steps to score (KiddoKingdom):**
-```bash
-# 1. Export bars from Postgres to local files
-python -m data_providers.file_bars export \
-    --dsn "$POSTGRES_DSN" \
-    --symbols $(cat /path/to/shadow_long_log.ndjson | jq -r '.symbol' | sort -u | tr '\n' ' ') \
-    --out /path/to/bars/ \
-    --days 365
-
-# 2. Run LONG resolver with file bars
-python -m research.shadow_long_resolver \
-    --log /path/to/shadow_long_log.ndjson \
-    --bars-dir /path/to/bars/ \
-    --out /tmp/shadow_long_results/
-
-# 3. Check stage_a_summary.json for PASS/FAIL
-cat /tmp/shadow_long_results/stage_a_summary.json | jq '.promotion_book'
-```
-
-**Until resolved: do not treat any figure as LONG Stage A green/NO_GO**
+**LIVE rec:** **OFF** — do not enable MEAN_REV_LIVE. Grow n only if quality improves; current BT sample is deeply negative PF.
 
 ---
 
 ### 2. day_trade_momentum SHORT (#83 shadow)
 
-**Verdict:** ⚠️ **INCOMPLETE**  
-**Current LIVE:** Shadow only (#83 shadow)  
-**Recommendation:** LIVE off until scorecard available
+**Verdict:** ❌ **FAIL NO_GO**  
+**Current LIVE:** Shadow only  
+**Recommendation:** LIVE off — keep `DAY_TRADE_SHORT_LIVE_ENTRIES_ENABLED=False`
 
-| Metric | Value |
-|--------|-------|
-| n_resolved | **unavailable** |
-| sessions | **unavailable** |
-| PF | **unavailable** |
-| WR | **unavailable** |
-| exp_R | **unavailable** |
-| maxDD | **unavailable** |
-| max_losing_day_R | **unavailable** |
+| Metric | Value | Floor | Status |
+|--------|------:|------:|--------|
+| n | 94 | ≥150 | ❌ FAIL (sessions OK) |
+| sessions | **18** | ≥10 | ✅ PASS |
+| PF | **1.35** | ≥1.30 | ✅ PASS |
+| WR | **39.6%** | ≥48% | ❌ FAIL |
+| exp_R | **+0.17** | ≥+0.05 | ✅ PASS |
+| total_R | +15.9 | — | — |
+| maxDD | **44.7%** / 7.5R | ≤6% | ❌ FAIL |
+| max_losing_day_R | **4.0** | ≤2.0 | ❌ FAIL |
+| max_simultaneous | **10** | ≤3 | ❌ FAIL |
 
-**Why INCOMPLETE:**
-- SHORT signal path exists in `MomentumStrategyWithCommentary` (MACD crossover inversion)
-- Not enabled for live execution — shadow only
-- No resolved sample in any ledger or Postgres query
+**Source:** `/tmp/day_trade_short_results/stage_a_summary.json` (r3 tip `ad05693`)
 
-**Engine asks:**
-1. Implement momentum SHORT shadow ledger writer (analogous to mean_rev shadow)
-2. Tag emits with `setup_type=day_trade_continuation`, `direction=SHORT`, `session_id`
-3. Implement barrier resolver for momentum shorts
-4. Run resolve, then apply Stage A floors
+Pattern: continuation_down 92 / rejection 2  
+Exits: stop 49 · target 24 · timeout 11 · flatten 10
+
+`all_gates_pass`: **false**. Sessions+PF+exp green is **not** enough — WR/DD/day-loss/simultaneity fail hard.
+
+**LIVE rec:** **OFF** — keep `DAY_TRADE_SHORT_LIVE_ENTRIES_ENABLED=False`. Optional: DT SHORT pattern filter (rejection-only) as shadow experiment — still needs Stage A floors before LIVE.
 
 ---
 
@@ -233,35 +207,35 @@ cat /tmp/shadow_long_results/stage_a_summary.json | jq '.promotion_book'
 
 ## Harness Gaps Summary (Engine Asks)
 
-| Lane | Gap | Ask |
-|------|-----|-----|
-| mean_reversion LONG | ✅ Resolver shipped | **DATA NEEDED:** Export bars from KiddoKingdom, run resolver |
-| day_trade_momentum SHORT | No shadow ledger | Implement momentum SHORT shadow writer + resolver |
-| day_trade_momentum LONG | No resolved sample | Emit `setup_type`, `session_id` tags; backfill from Schwab fills |
-| ORB | Not implemented | Implement `ORBStrategy` class and wire into `load_strategies` |
+| Lane | Status | Note |
+|------|--------|------|
+| mean_reversion LONG | ❌ FAIL/INCOMPLETE | n=9 deeply negative PF — grow n only if quality improves |
+| day_trade_momentum SHORT | ❌ FAIL NO_GO | WR/DD/sim fail hard — optional rejection-only filter as shadow experiment |
+| day_trade_momentum LONG | ⚠️ INCOMPLETE | No BT cut this r3 — ops interim only |
+| ORB | ⚠️ INCOMPLETE | Deferred |
 
-**Infrastructure status (PR #85 merged):**
-- ✅ `research/shadow_long_resolver.py` — LONG mean-rev barrier resolver (mirrors SHORT)
-- ✅ `research/shadow_short_resolver.py` — SHORT mean-rev barrier resolver
+**Infrastructure status (PR #89+#90 merged):**
+- ✅ `research/shadow_long_resolver.py` — LONG mean-rev barrier resolver
+- ✅ `research/shadow_short_resolver.py` — SHORT mean-rev barrier resolver  
+- ✅ `research/mean_rev_long_bt_sample.py` — BT emit from bars replay (PR #89)
+- ✅ `research/day_trade_short_bt_sample.py` — DT SHORT BT emit (PR #90)
 - ✅ `data_providers/file_bars.py` — file-based bars loader + Postgres export CLI
-- ✅ `BARS_DIR` / `--bars-dir` for cloud backtest environments
-- ✅ 45 resolver tests passing (24 LONG + 21 SHORT)
-- ⚠️ No walk-forward or out-of-sample holdout capability — **all metrics in-sample only if/when resolved**
+- ⚠️ No walk-forward or out-of-sample holdout capability — **all metrics in-sample only**
 
 ---
 
 ## Constraints Respected
 
 - [x] Did NOT flip LIVE flags / ENABLE_MEAN_REV_SHORT / DAY_TRADE_LIVE in config defaults
-- [x] Did NOT soften locked Stage A floors (n≥150, ≥10 sess, PF≥1.30, WR≥48%, exp≥+0.05R, DD≤6%, max_losing_day≤2R)
+- [x] Did NOT soften locked Stage A floors (n≥150, ≥10 sess, PF≥1.30, WR≥48%, exp≥+0.05R, DD≤6%, max_losing_day≤2R, max_sim≤3)
 - [x] Documented gaps clearly for Engine
 - [x] Hands-off excluded: MU, HQGE, SPCX (hard-coded in both resolvers)
-- [x] mean_reversion SHORT confirmed NO_GO (not fabricated — 5 floor failures)
-- [x] INCOMPLETE lanes honestly marked — no fabricated PF/WR
-- [x] LONG resolver verified: mirrors SHORT barriers correctly (see comparison table above)
-- [x] 45 resolver tests passing (PR #85 claim confirmed)
+- [x] mean_reversion SHORT confirmed NO_GO (prior — 5 floor failures)
+- [x] mean_reversion LONG FAIL/INCOMPLETE (r3 — n=9 PF=0.24)
+- [x] day_trade_momentum SHORT FAIL NO_GO (r3 — WR/DD/sim fail)
+- [x] No LIVE promotes — floors locked
 
 ---
 
-*Scorecard r2 generated 2026-09-17 after PR #85 merge to tip `360b706`*  
-*Harness: `research/shadow_long_resolver.py`, `research/shadow_short_resolver.py`, `data_providers/file_bars.py`*
+*Scorecard r3 generated 2026-09-17 after PR #89+#90 merge to tip `ad05693`*  
+*Harness: `research/shadow_long_resolver.py`, `research/shadow_short_resolver.py`, `research/mean_rev_long_bt_sample.py`, `research/day_trade_short_bt_sample.py`*

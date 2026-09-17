@@ -1,11 +1,12 @@
 {
-  "generated_at": "2026-09-17T19:56:00",
-  "revision": "r2",
+  "generated_at": "2026-09-17T20:30:00",
+  "revision": "r3",
   "type": "Stage A Measurement (not LIVE flip)",
   "owner": "Research via CoS",
   "for": "Hari",
-  "as_of_tip": "360b706",
-  "pr_merged": "#85 (LONG resolver + file_bars)",
+  "as_of_tip": "ad05693",
+  "pr_merged": "#89+#90 (BT emit)",
+  "see_also": "2026-09-17-stage-a-scorecard-r3.md",
   "stage_a_floors": {
     "min_n": 150,
     "min_sessions": 10,
@@ -13,7 +14,8 @@
     "min_wr": 0.48,
     "min_exp_r": 0.05,
     "max_dd_pct": 0.06,
-    "max_losing_day_r": 2.0
+    "max_losing_day_r": 2.0,
+    "max_simultaneous": 3
   },
   "hands_off_symbols": [
     "MU",
@@ -22,9 +24,9 @@
   ],
   "summary": {
     "pass": 0,
-    "fail": 1,
-    "incomplete": 4,
-    "harness_ready": ["mean_reversion_long"]
+    "fail": 3,
+    "incomplete": 2,
+    "live_promote": false
   },
   "lanes": {
     "mean_reversion_long": {
@@ -33,60 +35,61 @@
       "strategy_id": "mean_reversion",
       "setup_type": "oversold_v2",
       "live_status": "OFF",
-      "verdict": "INCOMPLETE",
-      "harness_ready": true,
-      "recommendation": "LIVE off — harness READY, need bars",
+      "verdict": "FAIL_INCOMPLETE",
+      "recommendation": "LIVE off — do not enable MEAN_REV_LIVE",
       "metrics": {
-        "n": null,
-        "sessions": null,
-        "pf": null,
-        "wr": null,
-        "exp_r": null,
-        "max_dd_pct": null,
-        "max_losing_day_r": null
+        "n": 9,
+        "sessions": 6,
+        "pf": 0.24,
+        "wr": 0.333,
+        "exp_r": -0.62,
+        "total_r": -5.58,
+        "max_dd_r": 7.29,
+        "max_losing_day_r": 2.93,
+        "max_simultaneous": 3
       },
-      "notes": "HARNESS READY (PR #85). LONG resolver shipped + file_bars loader. 45 tests passing. No bars in cloud — need export from KiddoKingdom.",
-      "resolver": {
-        "file": "research/shadow_long_resolver.py",
-        "tests_passing": 24,
-        "r_multiple_formula": "(exit - entry) / stop_dist",
-        "stop_hit": "bar_low <= stop",
-        "target_hit": "bar_high >= target"
-      },
-      "bars_loader": {
-        "file": "data_providers/file_bars.py",
-        "env_var": "BARS_DIR",
-        "cli_flag": "--bars-dir"
-      },
-      "run_steps": [
-        "python -m data_providers.file_bars export --dsn $POSTGRES_DSN --symbols <symbols> --out /path/to/bars/ --days 365",
-        "python -m research.shadow_long_resolver --log /path/to/shadow_long_log.ndjson --bars-dir /path/to/bars/ --out /tmp/results/",
-        "cat /tmp/results/stage_a_summary.json | jq '.promotion_book'"
-      ]
+      "floor_failures": [
+        "n=9 < 150",
+        "sessions=6 < 10",
+        "PF=0.24 < 1.30",
+        "WR=33.3% < 48%",
+        "exp_R=-0.62 < +0.05",
+        "max_losing_day=2.93R > 2.0R"
+      ],
+      "all_gates_pass": false,
+      "notes": "BT unknown-regime 6/6 losers (-7.29R); live seed risk_on 3/3 +1.71R. Grow n only if quality improves; current BT sample deeply negative PF.",
+      "source": "/tmp/shadow_long_results/stage_a_summary.json"
     },
     "day_trade_momentum_short": {
       "priority": 2,
       "direction": "SHORT",
       "strategy_id": "momentum",
       "setup_type": "day_trade_continuation",
-      "live_status": "Shadow (#83)",
-      "verdict": "INCOMPLETE",
-      "recommendation": "LIVE off",
+      "live_status": "Shadow",
+      "verdict": "FAIL_NO_GO",
+      "recommendation": "LIVE off — keep DAY_TRADE_SHORT_LIVE_ENTRIES_ENABLED=False",
       "metrics": {
-        "n": null,
-        "sessions": null,
-        "pf": null,
-        "wr": null,
-        "exp_r": null,
-        "max_dd_pct": null,
-        "max_losing_day_r": null
+        "n": 94,
+        "sessions": 18,
+        "pf": 1.35,
+        "wr": 0.396,
+        "exp_r": 0.17,
+        "total_r": 15.9,
+        "max_dd_pct": 0.447,
+        "max_dd_r": 7.5,
+        "max_losing_day_r": 4.0,
+        "max_simultaneous": 10
       },
-      "notes": "SHORT signal path exists but not enabled for live. No resolved sample.",
-      "engine_asks": [
-        "Implement momentum SHORT shadow ledger writer",
-        "Tag emits with setup_type, direction=SHORT, session_id",
-        "Implement barrier resolver for momentum shorts"
-      ]
+      "floor_failures": [
+        "n=94 < 150",
+        "WR=39.6% < 48%",
+        "maxDD=44.7% > 6%",
+        "max_losing_day=4.0R > 2.0R",
+        "max_simultaneous=10 > 3"
+      ],
+      "all_gates_pass": false,
+      "notes": "Sessions+PF+exp green is NOT enough — WR/DD/day-loss/simultaneity fail hard. Pattern: continuation_down 92 / rejection 2. Optional: rejection-only filter as shadow experiment.",
+      "source": "/tmp/day_trade_short_results/stage_a_summary.json"
     },
     "day_trade_momentum_long": {
       "priority": 3,
@@ -105,12 +108,7 @@
         "max_dd_pct": null,
         "max_losing_day_r": null
       },
-      "notes": "Strategy implemented, currently LIVE. No resolved Stage A sample in harness.",
-      "engine_asks": [
-        "Emit setup_type=momentum, session_id, regime tags",
-        "Backfill resolved trades from Schwab fills",
-        "Run Stage A scorer against resolved sample"
-      ]
+      "notes": "No BT cut this r3 — ops interim only, not Stage A PASS."
     },
     "mean_reversion_short": {
       "priority": 4,
@@ -118,7 +116,7 @@
       "strategy_id": "mean_reversion",
       "setup_type": "overbought_fade",
       "live_status": "OFF",
-      "verdict": "FAIL",
+      "verdict": "FAIL_NO_GO",
       "recommendation": "LIVE off",
       "metrics": {
         "n": 88,
@@ -140,7 +138,8 @@
         "exp_R=-0.11 < +0.05",
         "max_losing_day=13.12R > 2.0R"
       ],
-      "notes": "Confirmed NO_GO (2026-09-11 brief). 5 floor failures. Shadow soak only."
+      "all_gates_pass": false,
+      "notes": "Prior confirmed NO_GO (2026-09-11 brief). 5 floor failures. Shadow soak only."
     },
     "orb": {
       "priority": 5,
@@ -149,7 +148,7 @@
       "setup_type": "orb_15",
       "live_status": "OFF",
       "verdict": "INCOMPLETE",
-      "recommendation": "LIVE off",
+      "recommendation": "LIVE off — deferred",
       "metrics": {
         "n": null,
         "sessions": null,
@@ -159,33 +158,21 @@
         "max_dd_pct": null,
         "max_losing_day_r": null
       },
-      "notes": "ORB NOT WIRED - strategy class does not exist in codebase.",
-      "engine_asks": [
-        "Implement ORBStrategy class with setup_type=orb/orb_15/orb_30",
-        "Add OR high/low detection, or_width_atr, contraction filter",
-        "Wire into self.strategies list"
-      ]
+      "notes": "INCOMPLETE deferred."
     }
   },
   "harness_status": {
     "shadow_long_resolver": "SHIPPED (research/shadow_long_resolver.py)",
     "shadow_short_resolver": "SHIPPED (research/shadow_short_resolver.py)",
+    "mean_rev_long_bt_sample": "SHIPPED (research/mean_rev_long_bt_sample.py) PR #89",
+    "day_trade_short_bt_sample": "SHIPPED (research/day_trade_short_bt_sample.py) PR #90",
     "file_bars_loader": "SHIPPED (data_providers/file_bars.py)",
-    "resolver_tests": "45 passing (24 LONG + 21 SHORT)",
-    "backtest_cli": "Created (minimal scaffolding)",
-    "stage_a_scorer": "Created",
-    "postgres_minute_bars": "Not available in cloud",
-    "bars_dir_support": "SHIPPED (BARS_DIR env + --bars-dir CLI)",
     "walk_forward": "Not implemented",
     "out_of_sample": "Not implemented"
   },
-  "verification": {
-    "pr85_merged": true,
-    "tip_commit": "360b706",
-    "long_resolver_mirrors_short": true,
-    "tests_45_passing": true,
-    "hands_off_hard_coded": ["MU", "HQGE", "SPCX"],
-    "floors_not_softened": true,
-    "live_flags_unchanged": true
+  "research_ask": {
+    "live_flips": false,
+    "optional_experiment": "DT SHORT pattern filter (rejection-only) as shadow — still needs Stage A floors before LIVE",
+    "mean_rev_long_growth": "Grow n only if quality improves; current BT sample deeply negative PF"
   }
 }
