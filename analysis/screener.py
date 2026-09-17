@@ -153,19 +153,30 @@ class StockScreener:
             # is True, symbols from Yahoo day_gainers/day_losers/most_active
             # bypass the SMA50/RS filters. They still respect leveraged ETF
             # blocklist, price floor, and volume floor.
+            #
+            # v-pinned-watchlist-2026-09-17: pinned symbols use PINNED_MIN_RS
+            # threshold for softer RS filtering (e.g., -0.10 vs -0.05).
             try:
                 from core.config import Config as _CfgUQ
                 _enabled = _CfgUQ().ENABLE_UNIVERSE_QUALITY_FILTER
                 _mover_relax = _CfgUQ().ENABLE_MOVER_QUALITY_RELAX
+                _pinned_enabled = _CfgUQ().ENABLE_PINNED_WATCHLIST
+                _pinned_list = set(s.upper() for s in _CfgUQ().PINNED_WATCHLIST) if _pinned_enabled else set()
+                _pinned_min_rs = _CfgUQ().PINNED_MIN_RS
             except Exception:
                 _enabled = True
                 _mover_relax = True
+                _pinned_enabled = True
+                _pinned_list = {'NVDA', 'TSLA', 'META', 'AMZN', 'MSFT', 'GOOGL', 'AVGO', 'AMD', 'SPY', 'QQQ'}
+                _pinned_min_rs = -0.10
+
             if _enabled:
                 _candidate_syms = list({m['symbol'] for m in all_movers
                                         if m.get('symbol')})
                 await self._refresh_quality_data(_candidate_syms)
                 self._quality_filter_rejects = {}  # reset per cycle
-                self._mover_quality_relax_passes = {}  # v-mover-quality-relax-2026-09-10
+                self._mover_quality_relax_passes = {}
+                self._pinned_rs_soften_passes = {}  # v-pinned-watchlist-2026-09-17
 
             for mover in all_movers:
                 sym = mover.get('symbol')
@@ -174,13 +185,16 @@ class StockScreener:
                 if not self._is_tradeable(mover):
                     continue
                 
-                # v-mover-quality-relax-2026-09-10: check if this is a mover source
-                # that qualifies for relaxed quality filtering
+                # v-mover-quality-relax-2026-09-10: check if mover source
                 _source = mover.get('source', '')
                 _is_mover_source = _source in (
                     'yahoo_most_active', 'yahoo_day_gainers', 'yahoo_day_losers'
                 )
-                mover['is_mover'] = _is_mover_source  # Tag for downstream use
+                mover['is_mover'] = _is_mover_source
+
+                # v-pinned-watchlist-2026-09-17: check if pinned
+                _is_pinned = sym in _pinned_list
+                mover['is_pinned'] = _is_pinned
                 
                 if _enabled:
                     if _mover_relax and _is_mover_source:
@@ -188,6 +202,11 @@ class StockScreener:
                         if not self._passes_mover_quality_filter(mover):
                             continue
                         self._mover_quality_relax_passes[sym] = True
+                    elif _is_pinned:
+                        # v-pinned-watchlist-2026-09-17: use softer RS for pinned
+                        if not self._passes_quality_filter(sym, min_rs=_pinned_min_rs):
+                            continue
+                        self._pinned_rs_soften_passes[sym] = True
                     else:
                         # Use standard quality filter
                         if not self._passes_quality_filter(sym):
@@ -203,12 +222,20 @@ class StockScreener:
                     ", ".join(f"{k}={v}" for k, v in self._quality_filter_rejects.items()),
                 )
             
-            # v-mover-quality-relax-2026-09-10: log how many movers passed via relaxed filter
+            # v-mover-quality-relax-2026-09-10: log mover relax passes
             if _mover_relax and hasattr(self, '_mover_quality_relax_passes') and self._mover_quality_relax_passes:
                 logger.info(
                     "screener: mover quality relax passed %d movers: %s",
                     len(self._mover_quality_relax_passes),
                     ", ".join(list(self._mover_quality_relax_passes.keys())[:10]),
+                )
+
+            # v-pinned-watchlist-2026-09-17: log pinned RS soften passes
+            if _pinned_enabled and hasattr(self, '_pinned_rs_soften_passes') and self._pinned_rs_soften_passes:
+                logger.info(
+                    "screener: pinned RS soften passed %d symbols: %s",
+                    len(self._pinned_rs_soften_passes),
+                    ", ".join(list(self._pinned_rs_soften_passes.keys())[:10]),
                 )
 
             # Sort by combined score (volatility + volume)
@@ -784,18 +811,33 @@ class StockScreener:
             len(missing), len(self._quality_data_cache),
         )
 
-    def _passes_quality_filter(self, symbol: str) -> bool:
+    def _calculate_dollar_volume(self, mover: Dict[str, Any]) -> float:
+        """v-pinned-watchlist-2026-09-17: calculate dollar-volume (price×volume).
+
+        Dollar-volume is a better liquidity proxy than raw share volume.
+        A $10 stock with 10M shares traded = $100M dollar-volume.
+        A $500 stock with 200k shares traded = $100M dollar-volume.
+        Both have similar liquidity for the bot's position sizes.
+        """
+        price = mover.get('last', 0)
+        volume = mover.get('volume', 0)
+        return float(price * volume)
+
+    def _passes_quality_filter(self, symbol: str, min_rs: float = -0.05) -> bool:
         """v-universe-quality-filter-2026-05-22: three-gate quality check.
 
         1. Leveraged/inverse ETF blocklist — daily-decay instruments
            break mean-rev and breakout logic; exclude entirely.
         2. Trend filter — close > SMA50. Don't fade names making new
            50-day lows (avoids catching falling knives at universe time).
-        3. Relative strength — 5-day return > SPY 5-day return. Filters
-           "everyone's selling this name" candidates.
+        3. Relative strength — 10-day return > SPY 10-day return + min_rs.
 
         Returns True if symbol passes all three. Logs reason via
         self._quality_filter_rejects on any reject.
+
+        v-pinned-watchlist-2026-09-17: min_rs parameter allows configurable
+        RS threshold. Default -0.05 (5pp below SPY). Pinned symbols can
+        use PINNED_MIN_RS (e.g., -0.10) for softer filtering.
 
         Conservative: if data is missing for a symbol, the trend +
         relative-strength gates pass-through (don't block on missing
@@ -809,14 +851,13 @@ class StockScreener:
         sym_df = self._quality_data_cache.get(symbol)
         spy_df = self._quality_data_cache.get('SPY')
 
-        # If no price history, fall through (don't block).
         if sym_df is None or sym_df.empty:
             return True
 
         try:
             closes = sym_df['Close'] if 'Close' in sym_df.columns else None
             if closes is None or len(closes) < 50:
-                return True  # not enough history; pass
+                return True
             last_close = float(closes.iloc[-1])
             sma50 = float(closes.tail(50).mean())
 
@@ -825,39 +866,45 @@ class StockScreener:
                 self._quality_filter_rejects[symbol] = self._quality_filter_rejects.get(symbol, 0) + 1
                 return False
 
-            # Gate 3: relative strength — only blocks CATASTROPHIC
-            # underperformance (3+ percentage points worse than SPY).
-            # Tier-1 names lagging SPY by 1-2pp should still pass —
-            # they're noise, not "everyone's selling this name."
-            # Threshold determined empirically on 5/22 data: MSFT was
-            # 1.7pp under SPY but otherwise healthy → pass. SOXS was
-            # 18pp under → catastrophic → correctly blocked.
-            # v-rs-window-widen-2026-05-26: 5d → 10d window. The 5d
-            # window over-amplifies single-session rotations. Mega-cap
-            # names (NVDA, GOOG, META, MSFT, etc.) showed -4 to -6pp
-            # vs SPY on the 5d window today during a broad-market
-            # rotation, blowing through the -3pp gate. 10d window
-            # smooths single-day moves; threshold loosening below
-            # picks up where window-widening leaves off.
+            # Gate 3: relative strength with configurable min_rs.
             if spy_df is not None and 'Close' in spy_df.columns and len(spy_df) >= 11:
                 spy_closes = spy_df['Close']
                 if len(closes) >= 11:
                     sym_ret = (last_close / float(closes.iloc[-11])) - 1.0
                     spy_ret = (float(spy_closes.iloc[-1]) / float(spy_closes.iloc[-11])) - 1.0
-                    # v-rs-threshold-loosen-2026-05-26: -0.03 → -0.05.
-                    # Today (2026-05-26) NVDA was -5.49pp vs SPY over
-                    # the original 5d window — straight into the reject
-                    # bucket while it appeared in yahoo_most_active. -3pp
-                    # was calibrated 5/22 against MSFT (-1.7pp pass) and
-                    # SOXS (-18pp block); -5pp keeps the SOXS block
-                    # while admitting normal mega-cap pullbacks.
-                    if (sym_ret - spy_ret) < -0.05:
+                    if (sym_ret - spy_ret) < min_rs:
                         self._quality_filter_rejects[symbol] = self._quality_filter_rejects.get(symbol, 0) + 1
                         return False
         except Exception as exc:
             logger.debug("screener: quality eval error for %s: %s", symbol, exc)
-            return True  # don't block on eval error
+            return True
 
+        return True
+
+    def _passes_dollar_volume_filter(self, mover: Dict[str, Any]) -> bool:
+        """v-pinned-watchlist-2026-09-17: filter by dollar-volume floor.
+
+        Non-pinned movers must meet MIN_DOLLAR_VOLUME_FLOOR to avoid
+        micro lottery names (PURR, AEMD, IOVA, NVAX-class) that have
+        thin liquidity despite appearing in Yahoo movers.
+        """
+        try:
+            from core.config import Config as _CfgDV
+            _min_dv = _CfgDV().MIN_DOLLAR_VOLUME_FLOOR
+        except Exception:
+            _min_dv = 50_000_000
+
+        if _min_dv <= 0:
+            return True
+
+        dv = self._calculate_dollar_volume(mover)
+        if dv < _min_dv:
+            symbol = mover.get('symbol', '')
+            logger.debug(
+                "screener: dollar_volume_filter blocked %s: dv=$%.1fM < $%.1fM",
+                symbol, dv / 1_000_000, _min_dv / 1_000_000,
+            )
+            return False
         return True
 
     def _passes_mover_quality_filter(self, mover: Dict[str, Any]) -> bool:
@@ -973,18 +1020,38 @@ class StockScreener:
         return True
 
     def _calculate_mover_score(self, mover: Dict[str, Any]) -> float:
-        """Calculate a score for ranking movers"""
-        # Volatility component (40% weight)
-        volatility_score = min(mover.get('volatility', 0) / 5, 1) * 0.4
+        """Calculate a score for ranking movers.
 
-        # Volume component (30% weight) - normalized by average
+        v-pinned-watchlist-2026-09-17: rebalanced weights to include
+        dollar-volume as primary liquidity signal. Dollar-volume is
+        price×volume and better reflects actual tradeable liquidity.
+
+        Weights:
+          - 30% volatility (intraday range %)
+          - 30% dollar-volume (price × volume / $100M cap)
+          - 20% percent change (today's move)
+          - 20% raw volume (share count / 10M cap)
+        """
+        # Volatility component (30% weight)
+        volatility_score = min(mover.get('volatility', 0) / 5, 1) * 0.30
+
+        # Dollar-volume component (30% weight) - normalized by $100M
+        dollar_volume = self._calculate_dollar_volume(mover)
+        dv_score = min(dollar_volume / 100_000_000, 1) * 0.30
+
+        # Price change component (20% weight)
+        change_score = min(abs(mover.get('percent_change', 0)) / 10, 1) * 0.20
+
+        # Raw volume component (20% weight) - normalized by 10M shares
         volume = mover.get('volume', 0)
-        volume_score = min(volume / 10_000_000, 1) * 0.3
+        volume_score = min(volume / 10_000_000, 1) * 0.20
 
-        # Price change component (30% weight)
-        change_score = min(abs(mover.get('percent_change', 0)) / 10, 1) * 0.3
+        total_score = volatility_score + dv_score + change_score + volume_score
 
-        return volatility_score + volume_score + change_score
+        # Store dollar-volume on mover for downstream use
+        mover['dollar_volume'] = dollar_volume
+
+        return total_score
 
     def get_watchlist_symbols(self, limit: int = 20) -> List[str]:
         """Get current top mover symbols for the watchlist.
@@ -992,5 +1059,16 @@ class StockScreener:
         v-watchlist-size-2026-04-29: previously hardcoded to 5 — too narrow,
         the bot would burn cycles on the same handful of names. Caller now
         passes Config.WATCHLIST_SIZE so the cap is centrally tunable.
+
+        v-pinned-watchlist-2026-09-17: top_movers already sorted by score
+        which now incorporates dollar-volume ranking.
         """
         return [mover['symbol'] for mover in self.top_movers[:limit]]
+
+    def get_movers_with_dollar_volume(self) -> List[Dict[str, Any]]:
+        """v-pinned-watchlist-2026-09-17: return top movers with dollar-volume.
+
+        For downstream use in screener_loop to apply dollar-volume filtering
+        on non-pinned filler slots.
+        """
+        return self.top_movers
