@@ -1,10 +1,279 @@
 # Changelog
 
+## 2026-09-18 — fix: IREN hard_stop race — rebracket guard when exiting (v-rebracket-exiting-guard-2026-09-18)
+
+### Problem
+
+P1 reliability issue observed 2026-09-18 ~14:43 ET on IREN. Race condition during hard_stop close path:
+
+1. `hard_stop_breached` → FSM transitions to EXITING
+2. `_close_real_position` cancels working OCO bracket
+3. Close SELL fills (position is now flat)
+4. `order_monitor` sees `bracket_canceled` → calls `re_bracket_position`
+5. `re_bracket` places NEW OCO while flat → REJECTED by Schwab
+
+On Schwab the new OCO was rejected (never WORKING), but even without rejection, placing protection for a closed trade is incorrect.
+
+### Root Cause
+
+`handle_bracket_canceled` blindly called `re_bracket_position` on any cancel without checking if the cancel was owned by an intentional close path (hard_stop, take_profit, proactive exit).
+
+### Added
+
+- **`REBRACKET_SKIP_IF_FLAT_OR_EXITING`** config flag (default **True**)
+  - Env override: `REBRACKET_SKIP_IF_FLAT_OR_EXITING=0` to disable
+  - YAML: `trading.rebracket_skip_if_flat_or_exiting: false`
+
+- **Exit-in-flight guard** in `handle_bracket_canceled`:
+  - Skips `re_bracket_position` if FSM state is EXITING / CLOSED / ZOMBIE
+  - Skips if local `position.quantity <= 0`
+  - Skips if broker confirms qty == 0 (LIVE mode authoritative check)
+  - Logs audit reason `rebracket_skipped_exit_in_flight` with skip_reason detail
+
+- **12 new tests** in `tests/test_order_monitor.py`:
+  - `TestRebracketExitingGuard`: config flag existence, defaults, env override, code inspection
+  - `TestRebracketExitingGuardFunctional`: async integration tests
+    - `bracket_canceled during hard_stop close → no re_bracket`
+    - `bracket_canceled with qty=0 → no re_bracket`
+    - `genuine orphan cancel with live qty → still re_brackets`
+    - `flag disabled → always re_brackets (legacy behavior)`
+
+### Changed
+
+- `core/order_monitor/brackets.py`: `handle_bracket_canceled` now checks FSM state and qty before re_bracket
+- `core/config.py`: new `REBRACKET_SKIP_IF_FLAT_OR_EXITING` property
+
+### Unchanged
+
+- LIVE entry flags untouched (DAY_TRADE_LIVE, MEAN_REV, ORB, SHORT, PAPER)
+- Genuine orphan bracket cancels (live qty, not exiting) still re-bracket correctly
+- HANDS_OFF_DENYLIST (MU/HQGE/SPCX) unchanged
+
+---
+
+## 2026-09-18 — fix: Correlation guard ignores unmanaged/hands-off positions (v-correlation-ignore-unmanaged-2026-09-18)
+
+### Problem
+
+Day-trade momentum emitted `signal_buy` on QCOM at ~13:09 ET (pullback, rs_vs_spy=1.13, volume_ratio=2.24). Engine received it in live mode, then `correlation_guard` skipped with:
+`correlated_with_semis_and_chip_adjacent existing=['NVDA', 'MU']`
+
+NVDA is an unmanaged/external hold (`managed_by_bot=false`). MU is a permanent hands-off long-term holding. Neither represents active bot risk, but correlation_guard was treating them as blocking positions.
+
+### Added
+
+- **`CORRELATION_IGNORE_UNMANAGED`** config flag (default **True**)
+  - Excludes positions with `managed_by_bot=False` from correlation cluster checks
+  - External/operator-managed holds don't block bot entries into same sector
+  - Override: `CORRELATION_IGNORE_UNMANAGED=0` env var or `trading.correlation_ignore_unmanaged=false` yaml
+
+- **`CORRELATION_IGNORE_HANDS_OFF`** config flag (default **True**)
+  - Excludes HANDS_OFF_DENYLIST symbols (MU, HQGE, SPCX) from correlation cluster checks
+  - Permanent hands-off positions don't block bot entries
+  - Override: `CORRELATION_IGNORE_HANDS_OFF=0` env var or `trading.correlation_ignore_hands_off=false` yaml
+
+- **Correlation filter logic** in `core/engine.py` correlation guard section
+  - Constructs `_correlation_positions` set by filtering `active_positions`
+  - Checks `managed_by_bot` and `HANDS_OFF_DENYLIST` when flags enabled
+  - Uses filtered set for cluster overlap checks
+
+- **10 new tests** in `tests/test_recent_fixes.py::TestCorrelationIgnoreUnmanaged*`
+  - Config flag existence and defaults
+  - Code inspection for filter logic
+  - Functional tests: unmanaged NVDA + hands-off MU does NOT block QCOM
+  - Functional tests: managed AMD STILL blocks QCOM
+  - Flags disabled falls back to legacy all-positions behavior
+
+### Changed
+
+- `core/engine.py`: correlation guard now filters positions before cluster check
+- `core/config.py`: two new config properties with env override support
+
+### Unchanged
+
+- LIVE entry flags untouched (DAY_TRADE_LIVE, MEAN_REV, ORB, SHORT, PAPER)
+- HANDS_OFF_DENYLIST (MU/HQGE/SPCX) still protected for exit/management
+- `feature/trading_bot_v1` and PR #14 untouched
+
+---
+
+## 2026-09-17 — fix: Book B contamination FP lexicon (v-book-b-contam-lexicon-2026-09-17)
+
+### Problem
+
+Book B Stage A contam_fp = 15% (3/20) FAIL vs floor ≤5%. Three FPs leaked because MiniLM flat softmax tipped `ai_compute` on Corning/oil wraps with `contamination_risk=0.0`:
+- f59b23116fcb: "Why Corning Plunged Today"
+- 9579cf0d1b4f: "The Oil Crisis Has Reached Costco's Motor Oil Aisle"
+- 2d83a5133335: "Corning Rides on Expanding Partner Base: Will it Boost Prospects?"
+
+### Added
+
+- **Config-gated contamination lexicon** in `GPUNewsCriticModel._compute_contamination_risk`:
+  - `GPU_CRITIC_CONTAM_LEXICON_ENABLE` (default False, safe off-path)
+  - `GPU_CRITIC_CONTAM_LEXICON` list: corning, glw, nyse:glw, motor oil, oil crisis, crude oil, petroleum, opec, wti, brent, cohr, cien, aaoi
+  - On headline/summary text hit: `contamination_risk = max(risk, 0.65)` UNLESS headline also has AI_COMPUTE_TRIGGERS (anthropic, openai, gpu demand, data center, ...)
+  - Matches headline/summary text only (NOT symbols_seen dump) to preserve TP bf0c664141dc Nasdaq/AI Leaders
+
+- **FakeCritic lexicon mirror** for CI honesty: same triggers in `FakeCritic.CONTAMINATION_TRIGGERS`
+
+- **8 new unit tests** in `tests/test_gpu_news_critic.py::TestBookBContamLexicon`:
+  - 3 FP eids → contamination_risk ≥ 0.6 + WOULD_SUPPRESS_HARD_SKIP when lexicon enabled
+  - Anthropic/AI headline TPs unchanged
+  - GLW with AI headline trigger not suppressed (TP protection)
+
+### Unchanged
+
+- `THEME_HARD_SKIP_REQUIRE_GPU=False` (not flipped)
+- No LIVE knobs changed
+- HANDS_OFF MU/HQGE/SPCX unchanged
+
+---
+
+## 2026-09-17 — fix: name failing pretrade checklist gates
+
+- Verdict strip lists failing gate labels (not count-only) and appends last snapshot reason/gate.
+- Mean-rev / ORB intentionally OFF no longer count as fail (skip) so they don't fake BLOCKED.
+
+---
+
+## 2026-09-17 — Day-Trade Momentum SHORT Strategy (SHADOW-FIRST)
+
+### Problem
+
+The desk can only go LONG. On weak/breakdown days, profitable short setups pass by while the bot sits idle waiting for long entries that won't work in a down-tape. Operator wants a real shorting algorithm, not discretionary freestyle.
+
+### Added
+
+- **DayTradeMomentumShortStrategy** (v-tag `v-day-trade-short-2026-09-17`)
+  - Modular short path mirroring the long day-trade momentum logic with inverse filters.
+  - Entry patterns:
+    - **Breakdown**: price < 20-bar low with volume + ADX > 20
+    - **Continuation-down**: RSI 30-50, price below SMA20, MACD bearish
+    - **Rejection**: near 20-bar high but failing (weak close, MACD bearish)
+  - Gates (inverse of long logic):
+    - Weak RS vs SPY (symbol UNDERPERFORMING by >= 0.5%, configurable)
+    - Direction reader bearish + non-exhausted phase
+    - RSI floor 30 (don't short oversold — bounce risk)
+    - RSI ceiling 85 (optional, blocks extreme overbought)
+    - risk_on regime HARD BLOCK (don't short bullish tape)
+    - Flatten-hour entry gate (same as longs)
+  - ATR-based stop/target: stop ABOVE entry, target BELOW entry (1.5x ATR / 2:1 R:R).
+
+- **SHADOW-FIRST deployment mode**
+  - `DAY_TRADE_SHORT_LIVE_ENTRIES_ENABLED=False` (default) blocks LIVE short orders.
+  - `ENABLE_DAY_TRADE_SHORT_SHADOW=True` (default) logs shadow entries to `data/day_trade_short_shadow.ndjson`.
+  - Signal emitted for sim/commentary/shadow analysis without placing broker short orders.
+  - Flip to LIVE only after Stage-A soak passes (n>=150, PF>=1.30, WR>=48%, etc.).
+
+- **HANDS_OFF_DENYLIST protection**
+  - MU, HQGE, SPCX are NEVER shorted — permanent hands-off regardless of setup quality.
+  - Check runs at Gate 0 before any other processing.
+
+### Config Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `ENABLE_DAY_TRADE_SHORT` | True | Enable short strategy for shadow soak |
+| `DAY_TRADE_SHORT_LIVE_ENTRIES_ENABLED` | False | Master switch for LIVE short orders |
+| `ENABLE_DAY_TRADE_SHORT_SHADOW` | True | Log shadow entries when LIVE disabled |
+| `DAY_TRADE_SHORT_MIN_WEAK_RS_VS_SPY` | 0.5 | Min negative RS required (underperformance) |
+| `DAY_TRADE_SHORT_RSI_FLOOR` | 30 | Don't short when RSI <= floor (oversold) |
+| `DAY_TRADE_SHORT_RSI_CEILING` | 85 | Don't short when RSI >= ceiling |
+| `DAY_TRADE_SHORT_MAX_CONCURRENT` | 2 | Max concurrent short positions |
+
+### Changed
+
+- `core/engine.py` — registers `DayTradeMomentumShortStrategy` when `ENABLE_DAY_TRADE_SHORT=True`.
+- `strategies/builtin.py` — new `DayTradeMomentumShortStrategy` class (~350 lines).
+- `core/config.py` — 8 new config properties for short strategy.
+
+### Tests
+
+- 16 new tests in `tests/test_day_trade_short.py` covering:
+  - Config flag defaults (LIVE=False, SHADOW=True)
+  - HANDS_OFF_DENYLIST protection (MU/HQGE/SPCX never shorted)
+  - risk_on hard-block
+  - RSI floor gate (oversold protection)
+  - Weak RS filter (underperformance required)
+  - Breakdown/continuation-down pattern detection
+  - Shadow logging when LIVE disabled
+  - LIVE signal generation when enabled
+  - Direction reader gates
+
+### Operational notes
+
+- **SHADOW-FIRST**: No LIVE shorts by default. Desk can short on paper during Stage-A soak.
+- **How to enable LIVE later**: Set `DAY_TRADE_SHORT_LIVE_ENTRIES_ENABLED=1` via env or `trading.day_trade_short_live_entries_enabled: true` in Config.yaml after Stage-A validation passes.
+- **Does NOT change**: Long day-trade LIVE default, mean-rev LIVE default, ORB LIVE default. All existing live knobs unchanged.
+- **HANDS_OFF unchanged**: MU, HQGE, SPCX remain permanently hands-off for both longs and shorts.
+- Shadow ledger location: `data/day_trade_short_shadow.ndjson` (same format as `shadow_short_log.ndjson`).
+
+---
+
 Notable changes to the trading bot from project genesis (2025-07-08) to present. Each entry lists the date range, the user-facing impact, and where applicable the v-tag (greppable code anchor) or commit SHA.
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) with added `Verified` (empirical outcomes from backtests/live) and `Operational notes` sections specific to trading-bot concerns.
 
 **194 commits over 11 months.** Project paused 2025-09 through 2025-12 inclusive, resumed full-time 2026-01.
+
+---
+
+## 2026-09-17 — Universe Redesign: Pinned Watchlist + Dollar-Volume Demote
+
+### Problem
+
+WATCHLIST_SIZE=20 slots filled by Yahoo movers (~60 pass relaxed filter), but the final 20 was dominated by micro-cap/lottery names (PURR, AEMD, IOVA, NVAX-class) while quality filter rejected profitable liquid names (AMZN, GOOG, AVGO, SHOP, UBER). TSLA/NVDA often missed day-trade entries due to `weak_relative_strength` AND weren't even in the final 20. XE (junk RS winner) got in and lost.
+
+### Added
+
+- **PINNED_WATCHLIST** (v-tag `v-pinned-watchlist-2026-09-17`)
+  - Config: `trading.pinned_watchlist` (list) or env `PINNED_WATCHLIST` (comma-separated).
+  - Default: NVDA, TSLA, META, AMZN, MSFT, GOOGL, AVGO, AMD.
+  - Pinned symbols always reserve slots in `WATCHLIST_SIZE` before Yahoo/Schwab movers fill remaining.
+  - Respects `HANDS_OFF_DENYLIST` — pinned symbols on denylist appear for analysis but never auto-trade.
+  - Enable/disable via `ENABLE_PINNED_WATCHLIST` (default True).
+
+- **MIN_DOLLAR_VOLUME floor** (v-tag `v-dollar-volume-floor-2026-09-17`)
+  - Config: `trading.min_dollar_volume` (default $10M).
+  - Non-pinned movers MUST clear `price × avg_volume > $10M` to occupy a watchlist slot.
+  - Demotes micro-cap junk (PURR $2×1M = $2M) while admitting mid-cap movers with genuine flow.
+  - Movers sorted by dollar-volume descending for slot allocation.
+
+- **RS soften for pinned liquid core** (v-tag `v-pinned-rs-soften-2026-09-17`)
+  - Config: `ENABLE_PINNED_RS_SOFTEN` (default False — conservative).
+  - Config: `PINNED_MIN_RS_VS_SPY` (default 0.25 vs standard 0.5).
+  - When enabled, pinned symbols use softer RS threshold for day-trade momentum entry.
+  - Non-pinned movers always use standard `MOMENTUM_MIN_RS_VS_SPY`.
+
+- **Gap commentary time gate** (v-tag `v-gap-commentary-time-gate-2026-09-17`)
+  - "Gap Detected" commentary only emitted during first 30 minutes (09:30–10:00 ET).
+  - Gap data still tracked internally; just no commentary spam after 10:00 ET.
+
+### Changed
+
+- `core/loops/screener_loop.py::_build_pinned_watchlist()` — new method orchestrates pinned-first, dollar-vol-ranked slot allocation.
+- `strategies/builtin.py::DayTradeMomentumStrategy` — RS threshold selection considers pinned status.
+- `core/engine.py::_analyze_premarket_gaps()` — time-gated commentary.
+
+### Config Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `ENABLE_PINNED_WATCHLIST` | True | Reserve slots for pinned symbols |
+| `PINNED_WATCHLIST` | NVDA,TSLA,META,AMZN,MSFT,GOOGL,AVGO,AMD | Symbols to pin |
+| `MIN_DOLLAR_VOLUME` | 10,000,000 | Dollar-vol floor for non-pinned movers |
+| `ENABLE_PINNED_RS_SOFTEN` | False | Use softer RS for pinned symbols |
+| `PINNED_MIN_RS_VS_SPY` | 0.25 | RS threshold when RS soften enabled |
+
+### Tests
+
+- 20 new tests in `tests/test_pinned_watchlist.py` covering config parsing, watchlist building, dollar-vol demote, and RS threshold selection.
+
+### Operational notes
+
+- All flags have safe off-path defaults. Set `ENABLE_PINNED_WATCHLIST=0` to revert to legacy mover-driven watchlist.
+- `ENABLE_PINNED_RS_SOFTEN` starts False; enable after observing pinned symbols being rejected on `weak_relative_strength` with otherwise valid setups.
+- DAY_TRADE/MEAN_REV/ORB live knobs unchanged. HANDS_OFF unchanged.
 
 ---
 

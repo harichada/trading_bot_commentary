@@ -1,7 +1,8 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>Trading Bot with Schwab Positions</title>
+    <meta charset="utf-8">
+    <title>Helm — Market Co-Pilot</title>
     <!-- v-ui-theme-tokens-2026-04-29: Inter (UI) + JetBrains Mono (numerics).
          cv02-04/11 OpenType features below give cleaner tabular digits. -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -21,41 +22,44 @@
            opt-in. Subsequent commits will progressively use these.
            ===================================================================== */
         :root {
-          /* Surface palette (oklch — perceptually uniform, scales cleanly) */
-          --bg:           oklch(0.08 0.015 270);
+          /* v-superdesign-cockpit-2026-09-14: Surface palette tuned for dark
+             near-black cockpit aesthetic. Background pushed darker (0.06),
+             borders quieter, glows more pronounced but still institutional. */
+          --bg:           oklch(0.06 0.012 270);
           --fg:           oklch(0.98 0 0);
-          --card:         oklch(0.12 0.015 270 / 0.8);
+          --card:         oklch(0.10 0.015 270 / 0.85);
           --card-fg:      oklch(0.98 0 0);
-          --secondary:    oklch(0.16 0.015 270);
-          --muted:        oklch(0.18 0.01 270);
-          --muted-fg:     oklch(0.6 0 0);
-          --border:       oklch(0.22 0.02 270 / 0.5);
-          --border-soft:  oklch(0.22 0.02 270 / 0.3);
+          --secondary:    oklch(0.14 0.015 270);
+          --muted:        oklch(0.16 0.01 270);
+          --muted-fg:     oklch(0.55 0 0);
+          --border:       oklch(0.20 0.018 270 / 0.45);
+          --border-soft:  oklch(0.18 0.015 270 / 0.25);
 
-          /* Brand + state */
-          --accent:       oklch(0.65 0.2 200);   /* electric cyan */
+          /* Brand + state — cyan/amber/green per Superdesign */
+          --accent:       oklch(0.62 0.18 195);   /* quiet cyan */
           --accent-fg:    oklch(0.98 0 0);
-          --success:      oklch(0.72 0.2 155);   /* green */
-          --success-fg:   oklch(0.12 0.05 155);
-          --warning:      oklch(0.82 0.16 85);   /* amber */
-          --destructive:  oklch(0.6 0.22 25);    /* red */
+          --success:      oklch(0.70 0.18 155);   /* muted green */
+          --success-fg:   oklch(0.10 0.05 155);
+          --warning:      oklch(0.78 0.14 85);    /* amber glow */
+          --destructive:  oklch(0.58 0.20 25);    /* red */
           --destructive-fg: oklch(0.98 0 0);
 
           /* Chart palette */
-          --chart-1: oklch(0.65 0.2 200);
-          --chart-2: oklch(0.72 0.2 155);
-          --chart-3: oklch(0.65 0.22 25);
-          --chart-4: oklch(0.8 0.15 90);
-          --chart-5: oklch(0.7 0.2 320);
+          --chart-1: oklch(0.62 0.18 195);
+          --chart-2: oklch(0.70 0.18 155);
+          --chart-3: oklch(0.58 0.20 25);
+          --chart-4: oklch(0.78 0.14 85);
+          --chart-5: oklch(0.65 0.18 320);
 
-          /* Glow halos (used as box-shadow for KPI cards on hover) */
-          --glow-accent:      0 0 40px -10px oklch(0.65 0.2 200 / 0.55);
-          --glow-success:     0 0 40px -10px oklch(0.72 0.2 155 / 0.55);
-          --glow-destructive: 0 0 40px -10px oklch(0.6 0.22 25 / 0.55);
+          /* Glow halos — quiet cyan/amber institutional glows */
+          --glow-accent:      0 0 24px -4px oklch(0.62 0.18 195 / 0.25);
+          --glow-success:     0 0 24px -4px oklch(0.70 0.18 155 / 0.25);
+          --glow-destructive: 0 0 24px -4px oklch(0.58 0.20 25 / 0.25);
+          --glow-warning:     0 0 24px -4px oklch(0.78 0.14 85 / 0.25);
 
-          /* Shape */
-          --radius: 0.75rem;
-          --radius-sm: calc(var(--radius) - 4px);
+          /* Shape — slightly tighter for dense cockpit feel */
+          --radius: 0.625rem;
+          --radius-sm: calc(var(--radius) - 3px);
           --radius-lg: calc(var(--radius) + 4px);
 
           /* Typography (loaded via Google Fonts above) */
@@ -63,18 +67,21 @@
           --font-mono: 'JetBrains Mono', ui-monospace, monospace;
         }
 
-        /* Glass-morphism — translucent card with blur backdrop. */
+        /* v-superdesign-cockpit-2026-09-14: Glass panels — translucent cockpit aesthetic.
+           Darker backgrounds, subtle borders with quiet cyan edge glow. */
         .glass {
-          background: oklch(0.15 0.02 270 / 0.6);
-          backdrop-filter: blur(20px) saturate(180%);
-          -webkit-backdrop-filter: blur(20px) saturate(180%);
-          border: 1px solid oklch(0.3 0.02 270 / 0.2);
+          background: oklch(0.09 0.015 270 / 0.75);
+          backdrop-filter: blur(24px) saturate(160%);
+          -webkit-backdrop-filter: blur(24px) saturate(160%);
+          border: 1px solid oklch(0.25 0.02 270 / 0.25);
+          box-shadow: inset 0 1px 0 oklch(0.30 0.02 270 / 0.15),
+                      0 1px 3px oklch(0 0 0 / 0.3);
         }
         .glass-subtle {
-          background: oklch(0.12 0.015 270 / 0.4);
-          backdrop-filter: blur(12px) saturate(150%);
-          -webkit-backdrop-filter: blur(12px) saturate(150%);
-          border: 1px solid oklch(0.25 0.02 270 / 0.15);
+          background: oklch(0.08 0.012 270 / 0.5);
+          backdrop-filter: blur(16px) saturate(140%);
+          -webkit-backdrop-filter: blur(16px) saturate(140%);
+          border: 1px solid oklch(0.22 0.015 270 / 0.18);
         }
 
         /* Glow utilities for KPI cards */
@@ -142,9 +149,16 @@
           75%  { transform: scale(2);   opacity: 0; }
           100% { transform: scale(2);   opacity: 0; }
         }
+        /* v-connection-state-unify-2026-09-11: stale/offline states for pulse-dot */
+        .pulse-dot.stale::before,
+        .pulse-dot.stale::after { background: var(--warning); }
+        .pulse-dot.stale::before { animation: none; opacity: 0.5; }
+        .pulse-dot.offline::before,
+        .pulse-dot.offline::after { background: var(--muted-fg); }
+        .pulse-dot.offline::before { animation: none; opacity: 0.3; }
 
-        /* Ambient gradient blobs — fixed position, behind everything.
-           Subtle depth without dominating the design. */
+        /* v-superdesign-cockpit-2026-09-14: Ambient gradient blobs — fixed position, behind everything.
+           Quiet cyan/amber glows per Superdesign direction. Subtle depth. */
         .ambient-blobs {
           position: fixed; inset: 0;
           pointer-events: none;
@@ -154,15 +168,15 @@
         .ambient-blob {
           position: absolute;
           border-radius: 9999px;
-          filter: blur(120px);
-          opacity: 0.35;
+          filter: blur(140px);
+          opacity: 0.30;
         }
-        .ambient-blob-1 { top: 0;     left: 25%;  width: 600px; height: 600px;
-                          background: oklch(0.65 0.2 200 / 0.05); }
-        .ambient-blob-2 { bottom: 0;  right: 25%; width: 500px; height: 500px;
-                          background: oklch(0.72 0.2 155 / 0.05); filter: blur(100px); }
-        .ambient-blob-3 { top: 50%;   right: 0;   width: 400px; height: 400px;
-                          background: oklch(0.8 0.15 90 / 0.05);  filter: blur(80px); }
+        .ambient-blob-1 { top: -5%;   left: 20%;  width: 500px; height: 500px;
+                          background: oklch(0.62 0.18 195 / 0.08); }
+        .ambient-blob-2 { bottom: 5%; right: 20%; width: 450px; height: 450px;
+                          background: oklch(0.78 0.14 85 / 0.06); filter: blur(120px); }
+        .ambient-blob-3 { top: 40%;   right: -5%; width: 350px; height: 350px;
+                          background: oklch(0.62 0.18 195 / 0.04); filter: blur(100px); }
 
         /* Scrollbar — ultra minimal, matches the dark theme. */
         ::-webkit-scrollbar         { width: 4px; height: 4px; }
@@ -343,19 +357,22 @@
         table {
             width: 100%;
             border-collapse: collapse;
-            color: #fff;
+            color: var(--fg);
+            table-layout: auto;
         }
         th, td {
             text-align: left;
-            padding: 12px;
-            border-bottom: 1px solid #333;
+            padding: 0.625rem 0.75rem;
+            border-bottom: 1px solid var(--border-soft);
+            white-space: nowrap;
         }
         th {
-            color: #4a9eff;
             font-weight: 600;
-            font-size: 12px;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
+            font-size: 0.6875rem;
+            color: oklch(0.55 0 0);
+        }
+        td {
+            font-size: 0.8125rem;
         }
         td {
             font-size: 14px;
@@ -440,10 +457,8 @@
             margin-bottom: 5px;
         }
         .stat-label {
-            font-size: 12px;
-            color: #999;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
+            font-size: 11px;
+            color: oklch(0.55 0 0);
         }
         /* Modal styles for close confirmation */
         .modal-overlay {
@@ -540,38 +555,38 @@
         .long-term-checkbox:checked {
             accent-color: #22c55e;
         }
-        /* Ticker tape styles */
+        /* v-superdesign-cockpit-2026-09-14: Thin ticker tape */
         .ticker-tape {
-            background: #0a0a0a;
-            border-bottom: 1px solid #333;
-            padding: 10px 20px;
+            background: oklch(0.05 0.008 270);
+            border-bottom: 1px solid var(--border-soft);
+            padding: 4px 10px;
             overflow-x: auto;
             overflow-y: hidden;
             position: relative;
             scrollbar-width: thin;
-            scrollbar-color: #333 #0a0a0a;
+            scrollbar-color: oklch(0.20 0.01 270) oklch(0.05 0.008 270);
         }
         
         .ticker-tape::-webkit-scrollbar {
-            height: 6px;
+            height: 4px;
         }
         
         .ticker-tape::-webkit-scrollbar-track {
-            background: #0a0a0a;
+            background: oklch(0.05 0.008 270);
         }
         
         .ticker-tape::-webkit-scrollbar-thumb {
-            background: #333;
-            border-radius: 3px;
+            background: oklch(0.20 0.01 270);
+            border-radius: 2px;
         }
         
         .ticker-tape::-webkit-scrollbar-thumb:hover {
-            background: #555;
+            background: oklch(0.30 0.01 270);
         }
 
         .ticker-content {
             display: flex;
-            gap: 30px;
+            gap: 22px;
             align-items: center;
             min-width: 100%;
         }
@@ -579,59 +594,61 @@
         .ticker-item {
             display: flex;
             align-items: center;
-            font-size: 14px;
+            font-size: 11px;
             white-space: nowrap;
-            transition: background 0.3s ease;
-            padding: 5px 10px;
-            border-radius: 4px;
+            transition: background 0.2s ease;
+            padding: 3px 8px;
+            border-radius: 3px;
         }
 
         .ticker-item:hover {
-            background: #1a1a1a;
+            background: oklch(0.12 0.01 270);
         }
 
         .ticker-symbol {
-            font-weight: bold;
-            color: #4a9eff;
-            margin-right: 8px;
+            font-weight: 600;
+            font-family: var(--font-mono);
+            color: var(--accent);
+            margin-right: 6px;
         }
 
-        /* v-logo-cache-2026-04-28: company-logo styling. onerror hides
-           the <img> on 404 so missing logos collapse cleanly. */
+        /* v-logo-cache-2026-04-28: company-logo styling */
         .ticker-logo {
-            width: 16px;
-            height: 16px;
+            width: 14px;
+            height: 14px;
+            border-radius: 2px;
+            margin-right: 5px;
+            vertical-align: middle;
+            background: oklch(0.12 0.01 270);
+        }
+        .symbol-logo {
+            width: 20px;
+            height: 20px;
             border-radius: 3px;
             margin-right: 6px;
             vertical-align: middle;
-            background: #1a1a1a;
-        }
-        .symbol-logo {
-            width: 22px;
-            height: 22px;
-            border-radius: 4px;
-            margin-right: 8px;
-            vertical-align: middle;
-            background: #1a1a1a;
+            background: oklch(0.12 0.01 270);
             object-fit: contain;
         }
 
         .ticker-price {
-            color: #fff;
-            margin-right: 8px;
-            font-family: monospace;
-            min-width: 80px;
+            color: oklch(0.88 0 0);
+            margin-right: 6px;
+            font-family: var(--font-mono);
+            font-size: 10px;
+            min-width: 60px;
         }
 
         .ticker-change {
             font-weight: 600;
-            min-width: 80px;
+            font-size: 10px;
+            min-width: 60px;
         }
 
         .ticker-volatility {
-            color: #ffd700;
-            margin-left: 8px;
-            font-size: 12px;
+            color: var(--warning);
+            margin-left: 6px;
+            font-size: 9px;
         }
 
         /* Price update animation */
@@ -861,6 +878,62 @@
             overflow-y: auto;
         }
 
+        /* v-superdesign-cockpit-2026-09-14: Settings Tab — hands-off chips and controls */
+        .settings-panel {
+            flex: 1;
+            padding: 1.25rem;
+            overflow-y: auto;
+        }
+        .settings-panel .card {
+            background: oklch(0.09 0.015 270 / 0.7);
+            backdrop-filter: blur(20px) saturate(160%);
+            -webkit-backdrop-filter: blur(20px) saturate(160%);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            overflow: hidden;
+            box-shadow: inset 0 1px 0 oklch(0.25 0.02 270 / 0.12);
+        }
+        .settings-panel .card > h3 {
+            margin: 0;
+            padding: 0.75rem 1rem;
+            border-bottom: 1px solid var(--border-soft);
+            font: 600 0.8125rem var(--font-sans);
+            color: var(--fg);
+            display: flex;
+            align-items: center;
+            gap: 0.4rem;
+        }
+        .settings-panel .card > h3::before {
+            content: '';
+            display: inline-block;
+            height: 1.125rem;
+            width: 2px;
+            border-radius: 9999px;
+            background: linear-gradient(to bottom, var(--accent), oklch(0.62 0.18 195 / 0.25));
+            box-shadow: 0 0 6px oklch(0.62 0.18 195 / 0.30);
+        }
+        .hands-off-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.35rem;
+            padding: 0.3rem 0.55rem;
+            background: oklch(0.14 0.015 270);
+            border: 1px solid var(--border);
+            border-radius: calc(var(--radius) - 3px);
+            font: 600 0.75rem var(--font-mono);
+            color: var(--fg);
+            transition: all 0.15s;
+        }
+        .hands-off-chip:hover {
+            background: oklch(0.18 0.02 270);
+            border-color: oklch(0.28 0.02 270);
+        }
+        .hands-off-chip.permanent {
+            background: oklch(0.16 0.025 85 / 0.3);
+            border-color: oklch(0.78 0.14 85 / 0.4);
+            box-shadow: 0 0 8px -2px oklch(0.78 0.14 85 / 0.25);
+        }
+
         .backtest-config {
             display: grid;
             grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
@@ -1069,100 +1142,94 @@
         }
 
         /* =====================================================================
-           v-ui-header-2026-04-29: top-bar styling (logo / tabs / controls).
-           Hides legacy .tab-navigation and .dashboard-panel > .header (their
-           markup is replaced by the new top bar below).
+           v-superdesign-cockpit-2026-09-14: Compressed topbar — tight padding,
+           quiet cyan accent line, dense institutional cockpit feel.
            ===================================================================== */
         .app-topbar {
             position: sticky; top: 0; z-index: 50;
             border-bottom: 1px solid var(--border);
         }
         .app-topbar::before {
-            /* Subtle accent line at the very top */
             content: '';
             position: absolute; left: 0; right: 0; top: 0; height: 1px;
-            background: linear-gradient(90deg, transparent, oklch(0.65 0.2 200 / 0.5), transparent);
+            background: linear-gradient(90deg, transparent 5%, oklch(0.62 0.18 195 / 0.6) 50%, transparent 95%);
         }
         .app-topbar-inner {
-            padding: 1rem 1.25rem;
-            display: flex; flex-direction: column; gap: 1rem;
+            padding: 0.4rem 0.875rem;
+            display: flex; flex-direction: column; gap: 0.35rem;
         }
         .app-topbar-row {
             display: flex; flex-wrap: wrap; align-items: center;
-            justify-content: space-between; gap: 1rem;
+            justify-content: space-between; gap: 0.75rem;
         }
         .app-logo {
-            display: flex; align-items: center; gap: 0.75rem;
+            display: flex; align-items: center; gap: 0.5rem;
         }
         .app-logo-icon {
             position: relative;
-            padding: 0.6rem;
-            border-radius: var(--radius);
-            background: linear-gradient(135deg, oklch(0.65 0.2 200 / 0.2), oklch(0.65 0.2 200 / 0.05));
-            border: 1px solid oklch(0.65 0.2 200 / 0.2);
+            padding: 0.3rem;
+            border-radius: var(--radius-sm);
+            background: linear-gradient(135deg, oklch(0.62 0.18 195 / 0.18), oklch(0.62 0.18 195 / 0.06));
+            border: 1px solid oklch(0.62 0.18 195 / 0.20);
             color: var(--accent);
+            box-shadow: 0 0 12px -3px oklch(0.62 0.18 195 / 0.20);
         }
-        .app-logo-icon::after {
-            content: '';
-            position: absolute; inset: -8px;
-            background: oklch(0.65 0.2 200 / 0.3);
-            filter: blur(20px);
-            border-radius: 9999px;
-            z-index: -1;
-        }
+        .app-logo-icon::after { display: none; }
         .app-logo-title {
-            font-size: 1.25rem; font-weight: 700;
+            font-size: 0.9375rem; font-weight: 700;
             letter-spacing: -0.02em;
             color: var(--fg);
         }
         .app-logo-subtitle {
-            font-size: 0.625rem; font-weight: 600;
-            letter-spacing: 0.15em; text-transform: uppercase;
+            font-size: 0.5rem; font-weight: 600;
+            letter-spacing: 0.12em; text-transform: uppercase;
             color: var(--muted-fg);
         }
         .app-nav {
-            display: flex; align-items: center; gap: 0.25rem;
-            padding: 0.25rem;
+            display: flex; align-items: center; gap: 0.15rem;
+            padding: 0.2rem;
             border-radius: var(--radius);
         }
         .app-nav .nav-btn {
-            display: flex; align-items: center; gap: 0.5rem;
-            padding: 0.5rem 1rem;
+            display: flex; align-items: center; gap: 0.4rem;
+            padding: 0.35rem 0.75rem;
             border: 0; background: transparent; cursor: pointer;
-            border-radius: calc(var(--radius) - 4px);
-            font: 500 0.875rem var(--font-sans);
+            border-radius: calc(var(--radius) - 3px);
+            font: 500 0.75rem var(--font-sans);
             color: var(--muted-fg);
-            transition: all 0.2s;
+            transition: all 0.15s;
         }
         .app-nav .nav-btn:hover { color: var(--fg); background: var(--secondary); }
         .app-nav .nav-btn.active {
-            background: oklch(0.65 0.2 200 / 0.15);
+            background: oklch(0.62 0.18 195 / 0.15);
             color: var(--accent);
-            box-shadow: 0 1px 2px oklch(0 0 0 / 0.1);
+            box-shadow: 0 0 10px -3px oklch(0.62 0.18 195 / 0.25);
         }
         .app-toggles {
-            display: flex; align-items: center; gap: 0.25rem;
-            padding: 0.4rem 0.6rem;
-            border-radius: var(--radius);
+            display: flex; align-items: center; gap: 0.1rem;
+            padding: 0.15rem 0.3rem;
+            border-radius: var(--radius-sm);
         }
-        .app-toggles > .divider { width: 1px; height: 1.5rem; background: var(--border-soft); margin: 0 0.25rem; }
+        .app-toggles > .divider { width: 1px; height: 0.875rem; background: var(--border-soft); margin: 0 0.1rem; }
         .app-toggle {
-            display: flex; align-items: center; gap: 0.5rem;
-            padding: 0.25rem 0.5rem;
+            display: flex; align-items: center; gap: 0.25rem;
+            padding: 0.1rem 0.25rem;
             color: var(--muted-fg);
-            font: 500 0.6875rem var(--font-sans);
+            font: 500 0.5625rem var(--font-sans);
         }
-        .app-toggle .lucide { color: var(--muted-fg); }
-        .app-toggle input[type="checkbox"] { transform: scale(0.85); accent-color: var(--accent); cursor: pointer; }
+        .app-toggle .lucide { color: var(--muted-fg); display: none; }
+        .app-toggle input[type="checkbox"] { transform: scale(0.75); accent-color: var(--accent); cursor: pointer; }
         .app-toggle label { cursor: pointer; user-select: none; }
-        .app-actions { display: flex; align-items: center; gap: 0.5rem; }
+        .app-actions { display: flex; align-items: center; gap: 0.35rem; }
         .btn {
-            display: inline-flex; align-items: center; gap: 0.5rem;
-            height: 2.25rem; padding: 0 0.85rem;
+            display: inline-flex; align-items: center; gap: 0.25rem;
+            height: 1.5rem; padding: 0 0.5rem;
             border-radius: calc(var(--radius) - 2px);
             border: 0; cursor: pointer;
-            font: 600 0.8125rem var(--font-sans);
-            transition: all 0.2s;
+            font: 600 0.5625rem var(--font-sans);
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+            transition: all 0.15s;
         }
         .btn-ghost {
             background: transparent; color: var(--muted-fg);
@@ -1171,96 +1238,763 @@
         .btn-ghost:hover { background: var(--secondary); color: var(--fg); }
         .btn-success {
             background: var(--success); color: var(--success-fg);
-            box-shadow: 0 4px 14px -4px oklch(0.72 0.2 155 / 0.3);
+            box-shadow: 0 0 12px -3px oklch(0.70 0.18 155 / 0.35);
         }
-        .btn-success:hover { background: oklch(0.72 0.2 155 / 0.9); }
+        .btn-success:hover { background: oklch(0.70 0.18 155 / 0.9); }
         .btn-destructive {
             background: var(--destructive); color: var(--destructive-fg);
-            box-shadow: 0 4px 14px -4px oklch(0.6 0.22 25 / 0.3);
+            box-shadow: 0 0 12px -3px oklch(0.58 0.20 25 / 0.35);
         }
-        .btn-destructive:hover { background: oklch(0.6 0.22 25 / 0.9); }
+        .btn-destructive:hover { background: oklch(0.58 0.20 25 / 0.9); }
         .btn-icon {
-            width: 2.25rem; height: 2.25rem; padding: 0;
+            width: 1.5rem; height: 1.5rem; padding: 0;
             display: inline-flex; align-items: center; justify-content: center;
         }
         .app-status-row {
-            display: flex; flex-wrap: wrap; align-items: center; gap: 1rem;
-            padding-top: 1rem; border-top: 1px solid var(--border-soft);
+            display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem;
+            padding-top: 0.35rem; border-top: 1px solid var(--border-soft);
         }
         .status-pill {
-            display: inline-flex; align-items: center; gap: 0.4rem;
-            padding: 0.25rem 0.6rem;
+            display: inline-flex; align-items: center; gap: 0.3rem;
+            padding: 0.15rem 0.5rem;
             border-radius: 9999px;
-            font: 500 0.625rem var(--font-sans);
+            font: 500 0.5625rem var(--font-sans);
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
             border: 1px solid;
         }
-        .status-pill.connected   { color: var(--accent);     background: oklch(0.65 0.2 200 / 0.1); border-color: oklch(0.65 0.2 200 / 0.2); }
-        .status-pill.live        { color: var(--success);    background: oklch(0.72 0.2 155 / 0.1); border-color: oklch(0.72 0.2 155 / 0.2); }
-        .status-pill.ready       { color: var(--chart-4);    background: oklch(0.8 0.15 90 / 0.1);  border-color: oklch(0.8 0.15 90 / 0.2); }
-        .status-pill.error       { color: var(--destructive);background: oklch(0.6 0.22 25 / 0.1);  border-color: oklch(0.6 0.22 25 / 0.2); }
+        .status-pill.connected   { color: var(--accent);     background: oklch(0.62 0.18 195 / 0.1); border-color: oklch(0.62 0.18 195 / 0.25); }
+        .status-pill.live        { color: var(--success);    background: oklch(0.70 0.18 155 / 0.1); border-color: oklch(0.70 0.18 155 / 0.25); }
+        .status-pill.ready       { color: var(--chart-4);    background: oklch(0.78 0.14 85 / 0.1);  border-color: oklch(0.78 0.14 85 / 0.25); }
+        .status-pill.error       { color: var(--destructive);background: oklch(0.58 0.20 25 / 0.1);  border-color: oklch(0.58 0.20 25 / 0.25); }
+
+        /* v-superdesign-cockpit-2026-09-14: Trust strip — LIVE indicator pill.
+           Compact, with quiet cyan/amber glows. */
+        .trust-strip {
+            display: flex;
+            align-items: center;
+            gap: 0.4rem;
+            padding: 0.15rem 0.4rem;
+            background: oklch(0.05 0.012 270 / 0.85);
+            border-radius: calc(var(--radius) - 2px);
+            font: 600 0.5625rem var(--font-sans);
+        }
+        .trust-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.25rem;
+            padding: 0.15rem 0.45rem;
+            border-radius: calc(var(--radius) - 3px);
+            border: 1px solid;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            transition: all 0.25s ease;
+        }
+        .trust-badge .dot {
+            width: 5px; height: 5px;
+            border-radius: 50%;
+        }
+        .trust-badge.live {
+            color: var(--success);
+            background: oklch(0.70 0.18 155 / 0.12);
+            border-color: oklch(0.70 0.18 155 / 0.35);
+            box-shadow: 0 0 10px -2px oklch(0.70 0.18 155 / 0.30);
+        }
+        .trust-badge.live .dot {
+            background: var(--success);
+            box-shadow: 0 0 6px oklch(0.70 0.18 155 / 0.8);
+            animation: pulse-glow 2s ease-in-out infinite;
+        }
+        .trust-badge.stale {
+            color: var(--warning);
+            background: oklch(0.78 0.14 85 / 0.12);
+            border-color: oklch(0.78 0.14 85 / 0.35);
+            box-shadow: 0 0 10px -2px oklch(0.78 0.14 85 / 0.25);
+        }
+        .trust-badge.stale .dot {
+            background: var(--warning);
+        }
+        .trust-badge.offline {
+            color: var(--destructive);
+            background: oklch(0.58 0.20 25 / 0.12);
+            border-color: oklch(0.58 0.20 25 / 0.35);
+        }
+        .trust-badge.offline .dot {
+            background: var(--destructive);
+        }
+        .trust-asof {
+            color: var(--muted-fg);
+            font: 500 0.5rem var(--font-mono);
+            text-transform: none;
+            letter-spacing: 0;
+        }
+        .trust-divider {
+            width: 1px;
+            height: 0.75rem;
+            background: var(--border-soft);
+            margin: 0 0.15rem;
+        }
+        .trust-sub {
+            font: 500 0.5rem var(--font-sans);
+            color: var(--muted-fg);
+            padding: 0.1rem 0.3rem;
+            border-radius: calc(var(--radius) - 4px);
+            background: oklch(0.10 0.01 270 / 0.5);
+            transition: all 0.25s;
+        }
+        .trust-sub.connected { color: var(--success); background: oklch(0.70 0.18 155 / 0.1); }
+        .trust-sub.error { color: var(--destructive); background: oklch(0.58 0.20 25 / 0.1); }
+        .trust-badge.offline ~ .trust-sub { opacity: 0.5; }
+
+        /* v-superdesign-cockpit-2026-09-14: Live Pulse — elevated decision stream.
+           Owns the fold per Superdesign direction. ACT/WAIT/PASS cards prominent. */
+        .pulse-header {
+            display: flex;
+            align-items: center;
+            gap: 0.6rem;
+            margin-bottom: 0.6rem;
+            padding-bottom: 0.5rem;
+            border-bottom: 1px solid var(--border-soft);
+        }
+        .pulse-header h2 {
+            margin: 0;
+            font: 700 0.875rem var(--font-sans);
+            color: var(--fg);
+            letter-spacing: -0.01em;
+        }
+        .pulse-header .pulse-count {
+            font: 600 0.5rem var(--font-mono);
+            color: var(--muted-fg);
+            background: oklch(0.14 0.01 270);
+            padding: 0.15rem 0.4rem;
+            border-radius: calc(var(--radius) - 4px);
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+        }
+
+        /* Pulse empty state — calm institutional placeholder */
+        .pulse-empty {
+            display: none;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 3rem 1.5rem;
+            text-align: center;
+            color: var(--muted-fg);
+        }
+        .pulse-empty.visible { display: flex; }
+        .pulse-empty-icon {
+            width: 2.5rem;
+            height: 2.5rem;
+            margin-bottom: 1rem;
+            border-radius: 50%;
+            background: oklch(0.14 0.01 270);
+            position: relative;
+        }
+        .pulse-empty-icon::before {
+            content: '';
+            position: absolute;
+            inset: 0.5rem;
+            border-radius: 50%;
+            border: 2px solid oklch(0.25 0.01 270);
+            border-top-color: var(--muted-fg);
+            animation: pulse-empty-spin 2s linear infinite;
+        }
+        @keyframes pulse-empty-spin {
+            to { transform: rotate(360deg); }
+        }
+        .pulse-empty.offline .pulse-empty-icon::before {
+            animation: none;
+            border-color: oklch(0.25 0.01 270);
+        }
+        .pulse-empty-title {
+            font: 500 0.875rem var(--font-sans);
+            color: oklch(0.65 0 0);
+            margin-bottom: 0.25rem;
+        }
+        .pulse-empty-sub {
+            font: 400 0.75rem var(--font-sans);
+            color: var(--muted-fg);
+        }
+
+        /* v-superdesign-cockpit-2026-09-14: Verdict chips — ACT / WAIT / PASS.
+           Prominent, with quiet cyan/amber glows. Own the fold. */
+        .verdict-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.2rem;
+            padding: 0.2rem 0.6rem;
+            border-radius: calc(var(--radius) - 3px);
+            font: 700 0.625rem var(--font-sans);
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            border: 1px solid;
+            flex-shrink: 0;
+            transition: all 0.2s ease;
+        }
+        .verdict-chip.act {
+            color: var(--success);
+            background: oklch(0.70 0.18 155 / 0.18);
+            border-color: oklch(0.70 0.18 155 / 0.45);
+            box-shadow: 0 0 12px -2px oklch(0.70 0.18 155 / 0.30);
+        }
+        .verdict-chip.wait {
+            color: var(--warning);
+            background: oklch(0.78 0.14 85 / 0.18);
+            border-color: oklch(0.78 0.14 85 / 0.45);
+            box-shadow: 0 0 12px -2px oklch(0.78 0.14 85 / 0.25);
+        }
+        .verdict-chip.pass {
+            color: var(--muted-fg);
+            background: oklch(0.14 0.01 270);
+            border-color: oklch(0.22 0.01 270);
+        }
+        .verdict-chip.veto {
+            color: var(--destructive);
+            background: oklch(0.58 0.20 25 / 0.18);
+            border-color: oklch(0.58 0.20 25 / 0.45);
+            box-shadow: 0 0 12px -2px oklch(0.58 0.20 25 / 0.25);
+        }
+
+        /* Pulse item elevated styling */
+        .pulse-item {
+            position: relative;
+            cursor: pointer;
+            transition: transform 0.15s ease, box-shadow 0.15s ease;
+        }
+        .pulse-item:hover {
+            transform: translateX(4px);
+            box-shadow: -2px 0 0 var(--accent);
+        }
+        .pulse-item.selected {
+            background: oklch(0.18 0.02 270 / 0.6);
+            box-shadow: -3px 0 0 var(--accent), 0 0 20px -5px oklch(0.65 0.2 200 / 0.3);
+        }
+        .pulse-item .pulse-meta {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            flex-wrap: wrap;
+            margin-bottom: 0.35rem;
+        }
+        .pulse-item .pulse-key-number {
+            font: 700 0.875rem var(--font-mono);
+            color: var(--fg);
+        }
+        .pulse-item .pulse-key-number.positive { color: var(--success); }
+        .pulse-item .pulse-key-number.negative { color: var(--destructive); }
+
+        /* Decision Card Glance Panel — above-the-fold detail view */
+        .glance-panel {
+            position: sticky;
+            top: 0;
+            background: oklch(0.08 0.02 270 / 0.95);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 1rem;
+            margin-bottom: 1rem;
+            display: none;
+            animation: glanceSlide 0.25s ease-out;
+        }
+        @keyframes glanceSlide {
+            from { opacity: 0; transform: translateY(-8px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .glance-panel.visible { display: block; }
+        .glance-header {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 1rem;
+            margin-bottom: 0.75rem;
+        }
+        .glance-header .glance-main {
+            display: flex;
+            flex-direction: column;
+            gap: 0.35rem;
+        }
+        .glance-header .glance-symbol {
+            font: 700 1.25rem var(--font-mono);
+            color: var(--fg);
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        .glance-header .glance-title {
+            font: 500 0.875rem var(--font-sans);
+            color: var(--muted-fg);
+        }
+        .glance-header .glance-close {
+            background: none;
+            border: none;
+            color: var(--muted-fg);
+            cursor: pointer;
+            padding: 0.25rem;
+            border-radius: calc(var(--radius) - 4px);
+            transition: all 0.15s;
+        }
+        .glance-header .glance-close:hover {
+            background: oklch(0.2 0.01 270);
+            color: var(--fg);
+        }
+        .glance-verdict {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            padding: 0.75rem;
+            background: oklch(0.12 0.015 270);
+            border-radius: calc(var(--radius) - 2px);
+            margin-bottom: 0.75rem;
+        }
+        .glance-verdict .verdict-chip {
+            font-size: 0.75rem;
+            padding: 0.25rem 0.75rem;
+        }
+        .glance-verdict .glance-confidence {
+            font: 600 0.8125rem var(--font-mono);
+            color: var(--accent);
+        }
+        .glance-verdict .glance-asof {
+            margin-left: auto;
+            font: 500 0.6875rem var(--font-mono);
+            color: var(--muted-fg);
+        }
+        .glance-thesis {
+            font: 400 0.8125rem var(--font-sans);
+            color: oklch(0.85 0 0);
+            line-height: 1.5;
+            margin-bottom: 0.75rem;
+            white-space: pre-wrap;
+        }
+        .glance-metrics {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+            margin-bottom: 0.75rem;
+        }
+        .glance-metrics .metric {
+            display: flex;
+            flex-direction: column;
+            gap: 0.15rem;
+            padding: 0.5rem 0.75rem;
+            background: oklch(0.14 0.015 270);
+            border-radius: calc(var(--radius) - 4px);
+            min-width: 80px;
+        }
+        .glance-metrics .metric .label {
+            font: 500 0.625rem var(--font-sans);
+            color: var(--muted-fg);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        .glance-metrics .metric .value {
+            font: 600 0.875rem var(--font-mono);
+            color: var(--fg);
+        }
+        .glance-metrics .metric .value.positive { color: var(--success); }
+        .glance-metrics .metric .value.negative { color: var(--destructive); }
+        .glance-risks {
+            padding: 0.5rem 0.75rem;
+            background: oklch(0.6 0.22 25 / 0.08);
+            border: 1px solid oklch(0.6 0.22 25 / 0.2);
+            border-radius: calc(var(--radius) - 4px);
+            font: 400 0.75rem var(--font-sans);
+            color: oklch(0.75 0.15 25);
+        }
+        .glance-risks::before {
+            content: '⚠ ';
+        }
+        .glance-unavailable {
+            font: 500 0.75rem var(--font-sans);
+            color: var(--muted-fg);
+            font-style: italic;
+        }
+
+        /* v-pre-trade-checklist-2026-09-17: Pre-Trade Checklist panel.
+           Dense cockpit-style checklist showing all entry gates for a symbol.
+           PASS/FAIL/SKIP lights with reasons at a glance. */
+        .checklist-panel {
+            background: oklch(0.08 0.02 270 / 0.95);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 0.875rem;
+            margin-bottom: 1rem;
+        }
+        .checklist-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.75rem;
+            margin-bottom: 0.75rem;
+        }
+        .checklist-header h3 {
+            margin: 0;
+            font: 700 0.875rem var(--font-sans);
+            color: var(--fg);
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        .checklist-symbol-input {
+            flex: 1;
+            max-width: 120px;
+            padding: 0.35rem 0.5rem;
+            background: oklch(0.12 0.015 270);
+            border: 1px solid var(--border);
+            color: var(--fg);
+            border-radius: calc(var(--radius) - 2px);
+            font: 600 0.75rem var(--font-mono);
+            text-transform: uppercase;
+        }
+        .checklist-symbol-input::placeholder {
+            color: var(--muted-fg);
+            text-transform: none;
+        }
+        .checklist-symbol-input:focus {
+            outline: none;
+            border-color: var(--accent);
+            box-shadow: 0 0 0 2px oklch(0.62 0.18 195 / 0.15);
+        }
+        .checklist-verdict-strip {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.5rem 0.75rem;
+            background: oklch(0.10 0.015 270);
+            border-radius: calc(var(--radius) - 2px);
+            margin-bottom: 0.75rem;
+        }
+        .checklist-verdict-strip .verdict-chip {
+            font-size: 0.6875rem;
+            padding: 0.2rem 0.5rem;
+        }
+        .checklist-verdict-strip .verdict-detail {
+            font: 500 0.6875rem var(--font-sans);
+            color: var(--muted-fg);
+        }
+        .checklist-verdict-strip .verdict-asof {
+            margin-left: auto;
+            font: 500 0.5625rem var(--font-mono);
+            color: var(--muted-fg);
+        }
+        .checklist-section {
+            margin-bottom: 0.625rem;
+        }
+        .checklist-section:last-child {
+            margin-bottom: 0;
+        }
+        .checklist-section-title {
+            font: 600 0.5625rem var(--font-sans);
+            color: var(--muted-fg);
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            margin-bottom: 0.375rem;
+            padding-left: 0.25rem;
+        }
+        .checklist-row {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.35rem 0.5rem;
+            background: oklch(0.12 0.015 270 / 0.6);
+            border-radius: calc(var(--radius) - 4px);
+            margin-bottom: 0.25rem;
+        }
+        .checklist-row:last-child {
+            margin-bottom: 0;
+        }
+        .checklist-light {
+            width: 0.5rem;
+            height: 0.5rem;
+            border-radius: 9999px;
+            flex-shrink: 0;
+        }
+        .checklist-light.pass {
+            background: var(--success);
+            box-shadow: 0 0 6px oklch(0.70 0.18 155 / 0.6);
+        }
+        .checklist-light.fail {
+            background: var(--destructive);
+            box-shadow: 0 0 6px oklch(0.58 0.20 25 / 0.6);
+        }
+        .checklist-light.skip {
+            background: var(--warning);
+            box-shadow: 0 0 6px oklch(0.78 0.14 85 / 0.4);
+        }
+        .checklist-light.unknown {
+            background: var(--muted-fg);
+            opacity: 0.5;
+        }
+        .checklist-label {
+            font: 500 0.6875rem var(--font-sans);
+            color: oklch(0.85 0 0);
+            flex: 1;
+            min-width: 0;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .checklist-chip {
+            font: 500 0.5625rem var(--font-mono);
+            padding: 0.15rem 0.4rem;
+            background: oklch(0.16 0.015 270);
+            border: 1px solid var(--border-soft);
+            border-radius: calc(var(--radius) - 4px);
+            color: var(--muted-fg);
+            max-width: 140px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .checklist-chip.pass { color: var(--success); border-color: oklch(0.70 0.18 155 / 0.3); }
+        .checklist-chip.fail { color: var(--destructive); border-color: oklch(0.58 0.20 25 / 0.3); }
+        .checklist-chip.skip { color: var(--warning); border-color: oklch(0.78 0.14 85 / 0.3); }
+        .checklist-empty {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 1.5rem 1rem;
+            text-align: center;
+            color: var(--muted-fg);
+        }
+        .checklist-empty-title {
+            font: 500 0.8125rem var(--font-sans);
+            color: oklch(0.65 0 0);
+            margin-bottom: 0.25rem;
+        }
+        .checklist-empty-sub {
+            font: 400 0.6875rem var(--font-sans);
+            color: var(--muted-fg);
+        }
+        .checklist-loading {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+            padding: 1rem;
+            color: var(--muted-fg);
+            font: 500 0.75rem var(--font-sans);
+        }
+        .checklist-loading::before {
+            content: '';
+            width: 1rem;
+            height: 1rem;
+            border: 2px solid oklch(0.25 0.01 270);
+            border-top-color: var(--accent);
+            border-radius: 9999px;
+            animation: checklist-spin 1s linear infinite;
+        }
+        @keyframes checklist-spin {
+            to { transform: rotate(360deg); }
+        }
+        .checklist-error {
+            padding: 0.75rem;
+            background: oklch(0.58 0.20 25 / 0.08);
+            border: 1px solid oklch(0.58 0.20 25 / 0.2);
+            border-radius: calc(var(--radius) - 2px);
+            font: 400 0.6875rem var(--font-sans);
+            color: oklch(0.75 0.15 25);
+        }
+        .checklist-refresh-btn {
+            background: none;
+            border: 1px solid var(--border);
+            color: var(--muted-fg);
+            padding: 0.25rem 0.5rem;
+            border-radius: calc(var(--radius) - 4px);
+            font: 500 0.625rem var(--font-sans);
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+        .checklist-refresh-btn:hover {
+            background: oklch(0.18 0.015 270);
+            color: var(--fg);
+            border-color: var(--accent);
+        }
+
+        /* Portfolio hands-off: long-term unmanaged positions — calm styling */
+        .hands-off-row {
+            position: relative;
+            opacity: 0.85;
+        }
+        .hands-off-row td:first-child::before {
+            content: '';
+            position: absolute;
+            left: 0;
+            top: 0;
+            bottom: 0;
+            width: 2px;
+            background: oklch(0.55 0.08 85);
+            border-radius: 2px 0 0 2px;
+        }
+        .hands-off-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.2rem;
+            padding: 0.1rem 0.35rem;
+            border-radius: calc(var(--radius) - 4px);
+            font: 500 0.5625rem var(--font-sans);
+            color: oklch(0.55 0.08 85);
+            background: oklch(0.16 0.02 85 / 0.4);
+            border: 1px solid oklch(0.55 0.08 85 / 0.2);
+            margin-left: 0.35rem;
+            white-space: nowrap;
+        }
+
+        /* Polish: tighten density, improve co-pilot feel */
+        .commentary-panel {
+            max-width: 540px;
+            padding: 1rem;
+        }
+        .pulse-header {
+            margin-bottom: 0.5rem;
+        }
+        .filter-buttons {
+            margin-bottom: 0.75rem;
+            gap: 0.5rem;
+        }
+        .filter-button {
+            padding: 0.35rem 0.75rem;
+            font-size: 0.6875rem;
+        }
+        #commentary-list .commentary-item {
+            padding: 0.625rem;
+            margin-bottom: 0.375rem;
+        }
+        #commentary-list .commentary-message {
+            font-size: 0.75rem;
+            line-height: 1.4;
+        }
+        #commentary-list .commentary-data {
+            padding: 0.375rem 0.5rem;
+            gap: 0.25rem;
+        }
+        #commentary-list .commentary-data .kv {
+            padding: 0.1rem 0.35rem;
+            font-size: 0.625rem;
+        }
+
+        /* Pulse meta row compact */
+        .pulse-item .pulse-meta {
+            gap: 0.375rem;
+            margin-bottom: 0.25rem;
+        }
+        .pulse-item .pulse-key-number {
+            font-size: 0.75rem;
+        }
+
+        /* Glance panel tighter */
+        .glance-panel {
+            padding: 0.875rem;
+        }
+        .glance-header {
+            margin-bottom: 0.5rem;
+        }
+        .glance-verdict {
+            padding: 0.5rem;
+            margin-bottom: 0.5rem;
+        }
+        .glance-thesis {
+            font-size: 0.75rem;
+            margin-bottom: 0.5rem;
+        }
+        .glance-metrics {
+            gap: 0.375rem;
+            margin-bottom: 0.5rem;
+        }
+        .glance-metrics .metric {
+            padding: 0.375rem 0.5rem;
+            min-width: 70px;
+        }
+        .glance-metrics .metric .label {
+            font-size: 0.5625rem;
+        }
+        .glance-metrics .metric .value {
+            font-size: 0.75rem;
+        }
+
+        /* Mobile responsiveness polish */
+        @media (max-width: 768px) {
+            .commentary-panel {
+                max-width: 100%;
+                border-right: none;
+                border-bottom: 1px solid var(--border);
+            }
+            .trust-strip {
+                flex-wrap: wrap;
+            }
+            .app-status-row {
+                flex-wrap: wrap;
+                gap: 0.5rem;
+            }
+        }
         .uptime-display {
             margin-left: auto;
-            font-size: 0.75rem; color: var(--muted-fg);
-            display: flex; align-items: center; gap: 0.5rem;
+            font-size: 0.5rem; color: var(--muted-fg);
+            display: flex; align-items: center; gap: 0.35rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
         }
         .uptime-display .value {
             font-family: var(--font-mono);
+            font-size: 0.5625rem;
             color: var(--fg);
         }
 
-        /* Restyled ticker tape with glass + edge fades */
+        /* v-superdesign-cockpit-2026-09-14: Thin ticker tape with glass + edge fades */
         .ticker-tape.modern {
             position: relative;
-            background: oklch(0.08 0.015 270 / 0.5);
-            border-bottom: 1px solid var(--border);
+            background: oklch(0.05 0.008 270 / 0.6);
+            border-bottom: 1px solid var(--border-soft);
             overflow: hidden;
         }
         .ticker-tape.modern::before,
         .ticker-tape.modern::after {
-            content: ''; position: absolute; top: 0; bottom: 0; width: 5rem;
+            content: ''; position: absolute; top: 0; bottom: 0; width: 4rem;
             pointer-events: none; z-index: 10;
         }
-        .ticker-tape.modern::before { left: 0;  background: linear-gradient(to right, var(--bg), transparent); }
-        .ticker-tape.modern::after  { right: 0; background: linear-gradient(to left,  var(--bg), transparent); }
+        .ticker-tape.modern::before { left: 0;  background: linear-gradient(to right, oklch(0.06 0.012 270), transparent); }
+        .ticker-tape.modern::after  { right: 0; background: linear-gradient(to left,  oklch(0.06 0.012 270), transparent); }
 
-        /* v-market-indices-strip-2026-05-27: regime strip above ticker tape.
-           Centered, larger, mono — easy at-a-glance read of
-           S&P/Dow/Nasdaq/Russell/VIX. Restyled 2026-05-28 per operator
-           feedback ("too small, can you center it and make little large"):
-           font 12→16px, gap 28→44px, padding 8/20 → 14/24, justify centered.
-           Stale badge still pinned right via absolute positioning so the
-           centered row stays visually balanced. */
+        /* v-superdesign-cockpit-2026-09-14: Thin indices ticker strip.
+           Compact, mono, quiet — easy at-a-glance read.
+           Per Superdesign: institutional density. */
         .market-indices-strip {
             position: relative;
             display: flex;
             justify-content: center !important;
             align-items: center;
-            gap: 40px;
-            padding: 10px 24px;
-            background: #0a0a0a;
-            border-bottom: 1px solid #1a1a1a;
-            font-family: 'SF Pro Text', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-            font-size: 14px;
+            gap: 28px;
+            padding: 4px 12px;
+            background: oklch(0.05 0.008 270);
+            border-bottom: 1px solid var(--border-soft);
+            font-family: var(--font-mono);
+            font-size: 11px;
             flex-wrap: wrap;
             width: 100%;
             box-sizing: border-box;
         }
         .mi-item {
-            color: #c8c8c8;
+            color: oklch(0.70 0 0);
             white-space: nowrap;
             display: inline-flex;
             align-items: baseline;
-            gap: 8px;
+            gap: 6px;
         }
         .mi-item .mi-name {
-            color: #9aa4b2;
+            color: oklch(0.50 0 0);
             font-weight: 500;
-            letter-spacing: 0.2px;
-            font-size: 0.95em;
+            letter-spacing: 0.03em;
+            font-size: 0.9em;
+            text-transform: uppercase;
         }
         .mi-item .mi-value {
-            color: #ffffff;
-            font-weight: 700;
+            color: oklch(0.88 0 0);
+            font-weight: 600;
             font-variant-numeric: tabular-nums;
         }
         .mi-change {
@@ -1270,24 +2004,24 @@
             align-items: center;
             gap: 2px;
         }
-        .mi-change.up   { color: #22c55e; }
-        .mi-change.down { color: #ef4444; }
-        .mi-arrow { font-size: 0.85em; }
+        .mi-change.up   { color: var(--success); }
+        .mi-change.down { color: var(--destructive); }
+        .mi-arrow { font-size: 0.8em; }
         .mi-stale {
             position: absolute;
-            right: 16px;
+            right: 12px;
             top: 50%;
             transform: translateY(-50%);
-            padding: 2px 8px;
-            background: #3a2a08;
-            color: #f59e0b;
-            font-size: 10px;
+            padding: 2px 6px;
+            background: oklch(0.20 0.08 85 / 0.3);
+            color: var(--warning);
+            font-size: 9px;
             text-transform: uppercase;
             border-radius: 3px;
-            letter-spacing: 0.5px;
+            letter-spacing: 0.05em;
         }
         @media (max-width: 720px) {
-            .market-indices-strip { gap: 22px; font-size: 14px; padding: 10px 16px; }
+            .market-indices-strip { gap: 16px; font-size: 10px; padding: 4px 10px; }
         }
 
         /* Hide legacy header markup that got replaced */
@@ -1301,84 +2035,91 @@
            visuals when nested in .card-modern.
            ===================================================================== */
         .section-title {
-            display: flex; align-items: center; gap: 0.75rem;
-            margin: 0 0 1rem 0;
+            display: flex; align-items: center; gap: 0.5rem;
+            margin: 0 0 0.75rem 0;
         }
         .section-title .accent-bar {
-            height: 2rem; width: 4px;
+            height: 1.5rem; width: 3px;
             border-radius: 9999px;
-            background: linear-gradient(to bottom, var(--accent), oklch(0.65 0.2 200 / 0.3));
+            background: linear-gradient(to bottom, var(--accent), oklch(0.62 0.18 195 / 0.25));
+            box-shadow: 0 0 8px oklch(0.62 0.18 195 / 0.35);
         }
-        .section-title .accent-bar.success { background: linear-gradient(to bottom, var(--success), oklch(0.72 0.2 155 / 0.3)); }
-        .section-title .accent-bar.warning { background: linear-gradient(to bottom, var(--chart-4), oklch(0.8 0.15 90 / 0.3)); }
+        .section-title .accent-bar.success { background: linear-gradient(to bottom, var(--success), oklch(0.70 0.18 155 / 0.25)); box-shadow: 0 0 8px oklch(0.70 0.18 155 / 0.30); }
+        .section-title .accent-bar.warning { background: linear-gradient(to bottom, var(--chart-4), oklch(0.78 0.14 85 / 0.25)); box-shadow: 0 0 8px oklch(0.78 0.14 85 / 0.30); }
         .section-title h2 {
-            margin: 0; font-size: 1.125rem; font-weight: 600;
-            letter-spacing: -0.02em; color: var(--fg);
+            margin: 0; font-size: 0.9375rem; font-weight: 600;
+            letter-spacing: -0.01em; color: var(--fg);
         }
         .section-title .live-marker {
             margin-left: auto;
-            display: inline-flex; align-items: center; gap: 0.5rem;
-            font-size: 0.75rem; color: var(--muted-fg);
+            display: inline-flex; align-items: center; gap: 0.35rem;
+            font-size: 0.5625rem; color: var(--muted-fg);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
         }
 
         .kpi-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-            gap: 1rem;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 0.75rem;
         }
         .kpi-card {
             position: relative;
-            padding: 1.25rem;
+            padding: 1rem;
             border-radius: var(--radius);
-            background: oklch(0.15 0.02 270 / 0.6);
-            backdrop-filter: blur(20px) saturate(180%);
-            -webkit-backdrop-filter: blur(20px) saturate(180%);
+            background: oklch(0.09 0.015 270 / 0.7);
+            backdrop-filter: blur(20px) saturate(160%);
+            -webkit-backdrop-filter: blur(20px) saturate(160%);
             border: 1px solid var(--border);
-            transition: all 0.4s ease;
+            transition: all 0.3s ease;
             overflow: hidden;
+            box-shadow: inset 0 1px 0 oklch(0.25 0.02 270 / 0.12);
         }
-        .kpi-card:hover { border-color: oklch(0.3 0.02 270 / 0.7); box-shadow: var(--glow-accent); }
-        .kpi-card.success-accent:hover { box-shadow: var(--glow-success); }
-        .kpi-card.warning-accent:hover { box-shadow: var(--glow-destructive); }
+        .kpi-card:hover { border-color: oklch(0.28 0.02 270 / 0.6); box-shadow: 0 0 20px -6px oklch(0.62 0.18 195 / 0.25), inset 0 1px 0 oklch(0.25 0.02 270 / 0.12); }
+        .kpi-card.success-accent:hover { box-shadow: 0 0 20px -6px oklch(0.70 0.18 155 / 0.30), inset 0 1px 0 oklch(0.25 0.02 270 / 0.12); }
+        .kpi-card.warning-accent:hover { box-shadow: 0 0 20px -6px oklch(0.58 0.20 25 / 0.30), inset 0 1px 0 oklch(0.25 0.02 270 / 0.12); }
+        .kpi-card.empty, .chart-card.empty { opacity: 0.65; }
+        .kpi-card.empty:hover, .chart-card.empty:hover { box-shadow: none; transform: none; }
         .kpi-card-head {
             display: flex; align-items: flex-start; justify-content: space-between;
-            margin-bottom: 1rem;
+            margin-bottom: 0.75rem;
         }
         .kpi-icon-wrap {
-            padding: 0.625rem;
-            border-radius: var(--radius);
-            background: oklch(0.65 0.2 200 / 0.15);
+            padding: 0.5rem;
+            border-radius: var(--radius-sm);
+            background: oklch(0.62 0.18 195 / 0.12);
             color: var(--accent);
-            transition: transform 0.3s;
+            transition: transform 0.25s;
         }
-        .kpi-card:hover .kpi-icon-wrap { transform: scale(1.1); }
-        .kpi-card.success-accent .kpi-icon-wrap { background: oklch(0.72 0.2 155 / 0.15); color: var(--success); }
-        .kpi-card.warning-accent .kpi-icon-wrap { background: oklch(0.6 0.22 25 / 0.15); color: var(--destructive); }
+        .kpi-card:hover .kpi-icon-wrap { transform: scale(1.08); }
+        .kpi-card.success-accent .kpi-icon-wrap { background: oklch(0.70 0.18 155 / 0.12); color: var(--success); }
+        .kpi-card.warning-accent .kpi-icon-wrap { background: oklch(0.58 0.20 25 / 0.12); color: var(--destructive); }
         .kpi-trend {
-            display: inline-flex; align-items: center; gap: 0.25rem;
-            padding: 0.2rem 0.5rem;
+            display: inline-flex; align-items: center; gap: 0.2rem;
+            padding: 0.15rem 0.4rem;
             border-radius: calc(var(--radius) - 4px);
-            font: 500 0.6875rem var(--font-sans);
+            font: 500 0.5625rem var(--font-sans);
         }
-        .kpi-trend.up   { background: oklch(0.72 0.2 155 / 0.15); color: var(--success); }
-        .kpi-trend.down { background: oklch(0.6 0.22 25 / 0.15);  color: var(--destructive); }
+        .kpi-trend.up   { background: oklch(0.70 0.18 155 / 0.15); color: var(--success); }
+        .kpi-trend.down { background: oklch(0.58 0.20 25 / 0.15);  color: var(--destructive); }
         .kpi-label {
-            font: 500 0.6875rem var(--font-sans);
-            text-transform: uppercase; letter-spacing: 0.15em;
-            color: var(--muted-fg);
-            margin-bottom: 0.25rem;
+            font: 500 0.625rem var(--font-sans);
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            color: oklch(0.50 0 0);
+            margin-bottom: 0.2rem;
         }
         .kpi-value {
-            font: 700 1.875rem var(--font-sans);
+            font: 700 1.625rem var(--font-sans);
             font-variant-numeric: tabular-nums;
-            letter-spacing: -0.025em;
+            letter-spacing: -0.02em;
             color: var(--fg);
         }
-        .kpi-value.gradient { background: linear-gradient(135deg, oklch(0.78 0.2 155) 0%, oklch(0.65 0.18 165) 100%); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
+        .kpi-value.gradient { background: linear-gradient(135deg, oklch(0.75 0.18 155) 0%, oklch(0.62 0.16 165) 100%); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
         .kpi-sub {
-            font: 400 0.75rem var(--font-sans);
+            font: 400 0.625rem var(--font-sans);
             color: var(--muted-fg);
-            margin-top: 0.25rem;
+            margin-top: 0.15rem;
         }
 
         /* Hide legacy stats-row when the modern KPI block is present */
@@ -1391,22 +2132,24 @@
            index quotes, to avoid extra API calls.
            ===================================================================== */
         .market-status-strip {
-            display: flex; flex-wrap: wrap; align-items: center; gap: 1.5rem;
-            padding: 0.5rem 1.25rem;
+            display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem;
+            padding: 0.25rem 0.875rem;
             border-bottom: 1px solid var(--border-soft);
-            background: oklch(0.08 0.015 270 / 0.4);
+            background: oklch(0.05 0.008 270 / 0.7);
             font-family: var(--font-sans);
-            font-size: 0.75rem;
+            font-size: 0.5625rem;
         }
         .market-status-strip .session-icon {
-            display: inline-flex; align-items: center; gap: 0.5rem;
+            display: inline-flex; align-items: center; gap: 0.35rem;
             font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
         }
         .market-status-strip .session-icon.open    { color: var(--success); }
         .market-status-strip .session-icon.pre     { color: var(--chart-4); }
         .market-status-strip .session-icon.after   { color: var(--accent); }
         .market-status-strip .session-icon.closed  { color: var(--muted-fg); }
-        .market-status-strip .countdown { color: var(--muted-fg); }
+        .market-status-strip .countdown { color: var(--muted-fg); font-size: 0.5rem; }
         .market-status-strip .countdown .value { color: var(--fg); font-family: var(--font-mono); }
 
         /* =====================================================================
@@ -1531,44 +2274,40 @@
            the existing class names so no markup needs to change.
            ===================================================================== */
 
-        /* Card containers — replaces the old chunky .card style.
-           v-ui-news-trades-row-2026-04-29: relaxed direct-child selector
-           to match nested cards (e.g., inside .row-news-trades). */
+        /* v-superdesign-cockpit-2026-09-14: Card containers — glass cockpit panels */
         .container.tab-content .dashboard-panel .card,
         .container.tab-content .dashboard-panel #sentiment-card {
-            background: oklch(0.15 0.02 270 / 0.6);
-            backdrop-filter: blur(20px) saturate(180%);
-            -webkit-backdrop-filter: blur(20px) saturate(180%);
+            background: oklch(0.09 0.015 270 / 0.7);
+            backdrop-filter: blur(20px) saturate(160%);
+            -webkit-backdrop-filter: blur(20px) saturate(160%);
             border: 1px solid var(--border);
             border-radius: var(--radius);
             padding: 0;
-            margin-bottom: 1.5rem;
+            margin-bottom: 1.25rem;
             overflow: hidden;
-            box-shadow: none;
+            box-shadow: inset 0 1px 0 oklch(0.25 0.02 270 / 0.12);
         }
-        /* Inside row-news-trades, kill the bottom margin so the row
-           controls spacing — otherwise we'd get double gap. */
         .row-news-trades .card { margin-bottom: 0; }
         .container.tab-content .dashboard-panel .card > h3,
         #sentiment-card > div:first-child > h3 {
             margin: 0;
-            padding: 1rem 1.25rem;
+            padding: 0.75rem 1rem;
             border-bottom: 1px solid var(--border-soft);
-            font: 600 0.875rem var(--font-sans);
+            font: 600 0.75rem var(--font-sans);
             color: var(--fg);
-            display: flex; align-items: center; gap: 0.75rem;
+            display: flex; align-items: center; gap: 0.5rem;
         }
-        /* Accent bar before each card title — same visual language as section-title */
         .container.tab-content .dashboard-panel .card > h3::before {
             content: '';
             display: inline-block;
-            height: 1.5rem; width: 3px;
+            height: 1.125rem; width: 2px;
             border-radius: 9999px;
-            background: linear-gradient(to bottom, var(--accent), oklch(0.65 0.2 200 / 0.3));
+            background: linear-gradient(to bottom, var(--accent), oklch(0.62 0.18 195 / 0.25));
+            box-shadow: 0 0 6px oklch(0.62 0.18 195 / 0.30);
         }
-        /* Sim card uses warm accent bar */
         .container.tab-content .dashboard-panel .card:has(.badge-simulated) > h3::before {
-            background: linear-gradient(to bottom, var(--chart-4), oklch(0.8 0.15 90 / 0.3));
+            background: linear-gradient(to bottom, var(--chart-4), oklch(0.78 0.14 85 / 0.25));
+            box-shadow: 0 0 6px oklch(0.78 0.14 85 / 0.30);
         }
 
         /* REAL / SIM badges */
@@ -1584,17 +2323,16 @@
         .position-badge.badge-simulated { color: var(--chart-4); background: oklch(0.8 0.15 90 / 0.1);   border-color: oklch(0.8 0.15 90 / 0.3); }
 
         /* Modern table styling — overrides existing inline / element styles */
-        #real-positions-table, #simulated-positions-table, #trades-table {
+        #real-positions-table, #simulated-positions-table, #trades-table, #symbol-intel-table {
             width: 100%;
             border-collapse: collapse;
             font: 500 0.8125rem var(--font-sans);
         }
-        #real-positions-table thead th, #simulated-positions-table thead th, #trades-table thead th {
+        #real-positions-table thead th, #simulated-positions-table thead th, #trades-table thead th, #symbol-intel-table thead th {
             text-align: left;
-            padding: 0.625rem 1.25rem;
-            font: 600 0.6875rem var(--font-sans);
-            text-transform: uppercase;
-            letter-spacing: 0.1em;
+            padding: 0.5rem 0.75rem;
+            font: 500 0.6875rem var(--font-sans);
+            color: oklch(0.55 0 0);
             color: var(--muted-fg);
             background: oklch(0.1 0.015 270 / 0.4);
             border: 0;
@@ -1656,50 +2394,56 @@
             transform: scale(1.1);
         }
 
-        /* Commentary panel (left sidebar) — modern look */
+        /* v-superdesign-cockpit-2026-09-14: Pulse panel — left sidebar cockpit style.
+           Glass panel with quiet cyan accent. Owns the fold. */
         .commentary-panel {
-            background: oklch(0.1 0.015 270 / 0.95);
-            backdrop-filter: blur(20px) saturate(180%);
-            -webkit-backdrop-filter: blur(20px) saturate(180%);
+            background: oklch(0.07 0.012 270 / 0.92);
+            backdrop-filter: blur(24px) saturate(160%);
+            -webkit-backdrop-filter: blur(24px) saturate(160%);
             border-right: 1px solid var(--border);
-            padding: 1.25rem;
+            padding: 1rem;
+            box-shadow: inset -1px 0 0 oklch(0.62 0.18 195 / 0.08);
         }
         .commentary-panel h2 {
-            margin: 0 0 0.75rem 0;
-            font: 600 1rem var(--font-sans);
+            margin: 0 0 0.5rem 0;
+            font: 600 0.875rem var(--font-sans);
             color: var(--fg);
-            display: flex; align-items: center; gap: 0.6rem;
+            display: flex; align-items: center; gap: 0.5rem;
         }
         .commentary-panel h2::before {
             content: '';
-            display: inline-block; width: 3px; height: 1.25rem;
+            display: inline-block; width: 2px; height: 1rem;
             border-radius: 9999px;
-            background: linear-gradient(to bottom, var(--accent), oklch(0.65 0.2 200 / 0.3));
+            background: linear-gradient(to bottom, var(--accent), oklch(0.62 0.18 195 / 0.25));
+            box-shadow: 0 0 8px oklch(0.62 0.18 195 / 0.4);
         }
 
         .filter-buttons {
             display: flex; flex-wrap: wrap;
-            gap: 0.25rem;
-            padding: 0.25rem;
-            border-radius: var(--radius);
-            background: oklch(0.12 0.015 270 / 0.4);
-            border: 1px solid oklch(0.25 0.02 270 / 0.15);
-            margin-bottom: 1rem;
+            gap: 0.15rem;
+            padding: 0.15rem;
+            border-radius: var(--radius-sm);
+            background: oklch(0.08 0.012 270 / 0.5);
+            border: 1px solid oklch(0.20 0.015 270 / 0.18);
+            margin-bottom: 0.75rem;
         }
         .filter-button {
-            padding: 0.4rem 0.75rem;
-            font: 500 0.75rem var(--font-sans);
+            padding: 0.25rem 0.5rem;
+            font: 500 0.5625rem var(--font-sans);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
             color: var(--muted-fg);
             background: transparent;
             border: 0;
             border-radius: calc(var(--radius) - 4px);
             cursor: pointer;
-            transition: all 0.2s;
+            transition: all 0.15s;
         }
         .filter-button:hover { color: var(--fg); background: var(--secondary); }
         .filter-button.active {
-            background: oklch(0.65 0.2 200 / 0.15);
+            background: oklch(0.62 0.18 195 / 0.18);
             color: var(--accent);
+            box-shadow: 0 0 8px -2px oklch(0.62 0.18 195 / 0.25);
         }
 
         /* Commentary item cards */
@@ -1861,33 +2605,36 @@
            v-ui-charts-2026-04-29: portfolio donut + performance metrics
            ===================================================================== */
 
-        /* Generic chart-card wrapper */
+        /* v-superdesign-cockpit-2026-09-14: Chart card panels — glass cockpit style */
         .chart-card {
             border-radius: var(--radius);
-            background: oklch(0.15 0.02 270 / 0.6);
-            backdrop-filter: blur(20px) saturate(180%);
-            -webkit-backdrop-filter: blur(20px) saturate(180%);
+            background: oklch(0.09 0.015 270 / 0.7);
+            backdrop-filter: blur(20px) saturate(160%);
+            -webkit-backdrop-filter: blur(20px) saturate(160%);
             border: 1px solid var(--border);
             overflow: hidden;
+            box-shadow: inset 0 1px 0 oklch(0.25 0.02 270 / 0.12);
         }
         .chart-card-head {
             display: flex; align-items: center; justify-content: space-between;
-            padding: 1rem 1.25rem;
+            padding: 0.75rem 1rem;
             border-bottom: 1px solid var(--border-soft);
         }
         .chart-card-head h3 {
             margin: 0;
-            display: flex; align-items: center; gap: 0.75rem;
-            font: 600 0.875rem var(--font-sans); color: var(--fg);
+            display: flex; align-items: center; gap: 0.5rem;
+            font: 600 0.75rem var(--font-sans); color: var(--fg);
         }
         .chart-card-head h3::before {
             content: '';
             display: inline-block;
-            height: 1.5rem; width: 3px; border-radius: 9999px;
-            background: linear-gradient(to bottom, var(--accent), oklch(0.65 0.2 200 / 0.3));
+            height: 1.125rem; width: 2px; border-radius: 9999px;
+            background: linear-gradient(to bottom, var(--accent), oklch(0.62 0.18 195 / 0.25));
+            box-shadow: 0 0 6px oklch(0.62 0.18 195 / 0.30);
         }
         .chart-card-head h3.success-bar::before {
-            background: linear-gradient(to bottom, var(--success), oklch(0.72 0.2 155 / 0.3));
+            background: linear-gradient(to bottom, var(--success), oklch(0.70 0.18 155 / 0.25));
+            box-shadow: 0 0 6px oklch(0.70 0.18 155 / 0.30);
         }
 
         /* Row 2: chart placeholder (left) + portfolio donut (right) */
@@ -2147,8 +2894,8 @@
                     <div class="app-logo">
                         <div class="app-logo-icon" id="app-logo-icon"></div>
                         <div>
-                            <div class="app-logo-title">TradingBot</div>
-                            <div class="app-logo-subtitle">Pro Dashboard</div>
+                            <div class="app-logo-title">Helm</div>
+                            <div class="app-logo-subtitle">Market Co-Pilot</div>
                         </div>
                     </div>
                     <nav class="app-nav glass-subtle" id="app-nav"></nav>
@@ -2200,14 +2947,17 @@
             </div>
 
             <div class="app-status-row">
-                <span style="display:inline-flex;align-items:center;gap:0.5rem">
-                    <span class="pulse-dot"></span>
-                    <span style="font:500 0.75rem var(--font-sans);color:var(--muted-fg)">Bot Active</span>
-                </span>
-                <span style="width:1px;height:1rem;background:var(--border-soft)"></span>
-                <span class="status-pill connected"><span class="lucide-slot" data-icon="shield" data-size="12"></span>Schwab</span>
-                <span class="status-pill live"><span class="lucide-slot" data-icon="wifi" data-size="12"></span>WebSocket</span>
-                <span class="status-pill ready"><span class="lucide-slot" data-icon="cpu" data-size="12"></span>ML Model</span>
+                <!-- Trust strip: single authoritative LIVE / STALE / OFFLINE -->
+                <div class="trust-strip" id="trust-strip">
+                    <span class="trust-badge live" id="trust-badge">
+                        <span class="dot"></span>
+                        <span id="trust-label">LIVE</span>
+                    </span>
+                    <span class="trust-asof" id="trust-asof">as-of —</span>
+                    <span class="trust-divider"></span>
+                    <span class="trust-sub" id="schwab-status" title="Schwab API connection">Schwab</span>
+                    <span class="trust-sub" id="ml-status" title="ML model loaded">ML</span>
+                </div>
                 <span class="uptime-display">
                     <span>Session:</span>
                     <span class="value" id="session-uptime">—</span>
@@ -2267,15 +3017,70 @@
     <!-- Dashboard Tab -->
     <div class="container tab-content active" id="tab-dashboard">
         <div class="commentary-panel">
-            <h2>Live Trading Commentary</h2>
+            <div class="pulse-header">
+                <h2>Live Pulse</h2>
+                <span class="pulse-count" id="pulse-count">0 actions</span>
+            </div>
+
+            <!-- Decision Card Glance Panel -->
+            <div class="glance-panel" id="glance-panel">
+                <div class="glance-header">
+                    <div class="glance-main">
+                        <div class="glance-symbol" id="glance-symbol">—</div>
+                        <div class="glance-title" id="glance-title">Select a decision to view details</div>
+                    </div>
+                    <button class="glance-close" onclick="hideDecisionGlance()" title="Close">
+                        <span class="lucide-slot" data-icon="x" data-size="16"></span>
+                    </button>
+                </div>
+                <div class="glance-verdict">
+                    <span class="verdict-chip" id="glance-verdict-chip">—</span>
+                    <span class="glance-confidence" id="glance-confidence"></span>
+                    <span class="glance-asof" id="glance-asof">—</span>
+                </div>
+                <div class="glance-thesis" id="glance-thesis"></div>
+                <div class="glance-metrics" id="glance-metrics"></div>
+                <div class="glance-risks" id="glance-risks" style="display:none;"></div>
+            </div>
+
+            <!-- v-pre-trade-checklist-2026-09-17: Pre-Trade Checklist Panel -->
+            <div class="checklist-panel" id="checklist-panel">
+                <div class="checklist-header">
+                    <h3>
+                        <span class="lucide-slot" data-icon="clipboard-check" data-size="14"></span>
+                        Pre-Trade Checklist
+                    </h3>
+                    <input type="text" 
+                           class="checklist-symbol-input" 
+                           id="checklist-symbol-input" 
+                           placeholder="Symbol..." 
+                           maxlength="5"
+                           onkeyup="if(event.key==='Enter')loadChecklistForSymbol(this.value)">
+                    <button class="checklist-refresh-btn" onclick="refreshChecklist()" title="Refresh">
+                        <span class="lucide-slot" data-icon="refresh-cw" data-size="12"></span>
+                    </button>
+                </div>
+                <div id="checklist-content">
+                    <div class="checklist-empty" id="checklist-empty">
+                        <div class="checklist-empty-title">Enter a symbol</div>
+                        <div class="checklist-empty-sub">View all entry gates and reasons for a specific ticker</div>
+                    </div>
+                </div>
+            </div>
+
             <div class="filter-buttons">
                 <button class="filter-button active" onclick="filterCommentary('all')">All</button>
-                <button class="filter-button" onclick="filterCommentary('decision')">Decisions</button>
-                <button class="filter-button" onclick="filterCommentary('opportunity')">Opportunities</button>
-                <button class="filter-button" onclick="filterCommentary('warning')">Warnings</button>
-                <button class="filter-button" onclick="filterCommentary('technical')">Technical</button>
+                <button class="filter-button" onclick="filterCommentary('act')">ACT</button>
+                <button class="filter-button" onclick="filterCommentary('wait')">WAIT</button>
+                <button class="filter-button" onclick="filterCommentary('pass')">PASS</button>
+                <button class="filter-button" onclick="filterCommentary('warning')">Alerts</button>
             </div>
             <div id="commentary-list"></div>
+            <div class="pulse-empty" id="pulse-empty">
+                <div class="pulse-empty-icon"></div>
+                <div class="pulse-empty-title" id="pulse-empty-title">Scanning for setups</div>
+                <div class="pulse-empty-sub" id="pulse-empty-sub">No actionable opportunities detected</div>
+            </div>
         </div>
         
         <div class="dashboard-panel">
@@ -2325,9 +3130,9 @@
                 <div class="section-title">
                     <span class="accent-bar"></span>
                     <h2>Account Overview</h2>
-                    <span class="live-marker">
-                        <span class="pulse-dot"></span>
-                        Live · Updated just now
+                    <span class="live-marker" id="account-live-marker">
+                        <span class="pulse-dot" id="account-live-dot"></span>
+                        <span id="account-live-text">Live · Updated just now</span>
                     </span>
                 </div>
                 <div class="kpi-grid">
@@ -2843,6 +3648,84 @@
         </div>
     </div>
 
+    <!-- Settings Tab (v-hands-off-denylist-settings-2026-09-14) -->
+    <div class="tab-content" id="tab-settings" style="flex-direction: column;">
+        <div class="settings-panel" style="padding: 20px; max-width: 800px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                <h2 style="margin: 0;">⚙️ Settings</h2>
+            </div>
+
+            <!-- Hands-Off Denylist Card -->
+            <div class="card" id="hands-off-card">
+                <h3>Hands-Off / Permanent Denylist
+                    <span style="font-size: 0.7em; color: #888; font-weight: normal; margin-left: 0.5rem;">
+                        — symbols the bot must never manage or close
+                    </span>
+                </h3>
+                <div style="padding: 1.25rem;">
+                    <p style="color: var(--muted-fg); font-size: 0.85rem; margin: 0 0 1rem 0;">
+                        Positions for these symbols are always locked: Long-Term is force-checked,
+                        Bot-Managed is force-unchecked, and Close is disabled. The bot ignores them
+                        for P&L circuit calculations and exit management.
+                    </p>
+
+                    <!-- Current symbols as chips -->
+                    <div id="hands-off-chips" style="display: flex; flex-wrap: wrap; gap: 0.5rem; min-height: 40px; padding: 0.75rem; background: oklch(0.12 0.01 270); border-radius: var(--radius); margin-bottom: 1rem;">
+                        <span style="color: var(--muted-fg); font-style: italic;">Loading...</span>
+                    </div>
+
+                    <!-- Add symbol input -->
+                    <div style="display: flex; gap: 0.5rem; margin-bottom: 1rem;">
+                        <input type="text" id="hands-off-input"
+                            placeholder="Enter symbol (e.g. FOO)"
+                            style="flex: 1; padding: 0.6rem 0.9rem; background: oklch(0.18 0.01 270);
+                                   border: 1px solid var(--border); border-radius: var(--radius);
+                                   color: var(--fg); font: 500 0.9rem var(--font-mono);"
+                            onkeydown="if(event.key==='Enter'){addHandsOffSymbol();}"
+                            maxlength="5">
+                        <button onclick="addHandsOffSymbol()" class="button button-primary"
+                            style="padding: 0.6rem 1.2rem;">
+                            + Add
+                        </button>
+                    </div>
+
+                    <!-- Save / Status row -->
+                    <div style="display: flex; align-items: center; gap: 1rem;">
+                        <button id="hands-off-save-btn" onclick="saveHandsOffDenylist()" class="button button-primary"
+                            style="padding: 0.6rem 1.5rem; background: var(--accent);">
+                            Save Changes
+                        </button>
+                        <span id="hands-off-status" style="font-size: 0.85rem; color: var(--muted-fg);"></span>
+                    </div>
+
+                    <!-- Pending changes summary -->
+                    <div id="hands-off-pending" style="display: none; margin-top: 1rem; padding: 0.75rem;
+                        background: oklch(0.78 0.16 80 / 0.1); border: 1px solid oklch(0.78 0.16 80 / 0.3);
+                        border-radius: var(--radius); font-size: 0.85rem; color: oklch(0.85 0.12 80);">
+                    </div>
+                </div>
+            </div>
+
+            <!-- Info note -->
+            <div style="margin-top: 1rem; padding: 1rem; background: oklch(0.65 0.2 200 / 0.08);
+                border: 1px solid oklch(0.65 0.2 200 / 0.2); border-radius: var(--radius);
+                font-size: 0.85rem; color: var(--muted-fg);">
+                <strong style="color: var(--fg);">Note:</strong> Changes take effect immediately
+                after save — no bot restart required. The denylist is persisted to
+                <code style="background: oklch(0.18 0.01 270); padding: 0.15rem 0.4rem; border-radius: 4px;">Config.yaml</code>
+                under <code style="background: oklch(0.18 0.01 270); padding: 0.15rem 0.4rem; border-radius: 4px;">trading.hands_off_denylist</code>.
+            </div>
+
+            <!-- Hard floor warning -->
+            <div style="margin-top: 0.75rem; padding: 1rem; background: oklch(0.78 0.16 80 / 0.08);
+                border: 1px solid oklch(0.78 0.16 80 / 0.2); border-radius: var(--radius);
+                font-size: 0.85rem; color: oklch(0.85 0.10 80);">
+                <strong>🔒 Permanent symbols:</strong> MU, HQGE, SPCX are protected forever and
+                cannot be removed. SNAP and any other symbols you add can be freely edited.
+            </div>
+        </div>
+    </div>
+
     <script>
         // Auth helper: wraps fetch() to include Bearer token when TRADING_API_KEY is set
         function authFetch(url, options = {}) {
@@ -2860,6 +3743,17 @@
         let currentTab = 'dashboard';
         let sentimentData = null;
         let backtestRunning = false;
+
+        // ============== HANDS-OFF DENYLIST STATE ==============
+        // v-hands-off-denylist-settings-2026-09-14: runtime Set of permanent
+        // hands-off symbols. Populated from API on load; used by position
+        // rendering to lock controls. Default fallback if API fails.
+        const DEFAULT_HANDS_OFF = ['MU', 'HQGE', 'SPCX'];
+        // HARD FLOOR: MU, HQGE, SPCX can NEVER be removed — protected forever
+        const PERMANENT_HANDS_OFF = new Set(['MU', 'HQGE', 'SPCX']);
+        let handsOffSymbols = new Set(DEFAULT_HANDS_OFF);
+        let handsOffOriginal = new Set(DEFAULT_HANDS_OFF);  // snapshot for change detection
+        let handsOffPending = new Set(DEFAULT_HANDS_OFF);   // working copy for edits
 
         // ============== TAB NAVIGATION ==============
         function switchTab(tabName) {
@@ -2889,6 +3783,191 @@
                 loadSentimentTab();
             } else if (tabName === 'backtest') {
                 loadBacktestLatest();
+            } else if (tabName === 'settings') {
+                loadHandsOffDenylist();
+            }
+        }
+
+        // ============== HANDS-OFF DENYLIST MANAGEMENT ==============
+        // v-hands-off-denylist-settings-2026-09-14: Settings panel functions
+
+        async function loadHandsOffDenylist() {
+            const status = document.getElementById('hands-off-status');
+            status.textContent = 'Loading...';
+            try {
+                const resp = await authFetch('/api/hands-off-denylist');
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                const data = await resp.json();
+                if (data.status === 'success') {
+                    const symbols = data.symbols || [];
+                    handsOffSymbols = new Set(symbols);
+                    handsOffOriginal = new Set(symbols);
+                    handsOffPending = new Set(symbols);
+                    renderHandsOffChips();
+                    status.textContent = data.source === 'default_fallback'
+                        ? 'Using default list (config read failed)'
+                        : '';
+                } else {
+                    status.textContent = 'Load error: ' + (data.message || 'unknown');
+                }
+            } catch (e) {
+                console.error('Failed to load hands-off denylist:', e);
+                status.textContent = 'Failed to load — using defaults';
+                handsOffPending = new Set(DEFAULT_HANDS_OFF);
+                renderHandsOffChips();
+            }
+        }
+
+        function renderHandsOffChips() {
+            const container = document.getElementById('hands-off-chips');
+            const symbols = Array.from(handsOffPending).sort();
+            if (symbols.length === 0) {
+                container.innerHTML = '<span style="color: var(--muted-fg); font-style: italic; font-size: 0.75rem;">No symbols — add one below</span>';
+            } else {
+                container.innerHTML = symbols.map(sym => {
+                    const isPermanent = PERMANENT_HANDS_OFF.has(sym);
+                    const lockIcon = isPermanent
+                        ? '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="opacity: 0.7;"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>'
+                        : '';
+                    const removeBtn = isPermanent
+                        ? `<span title="Hard floor — ${escapeHtml(sym)} cannot be removed" style="opacity: 0.5; cursor: not-allowed; display: flex;">
+                             <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+                           </span>`
+                        : `<button onclick="removeHandsOffSymbol('${escapeHtml(sym)}')" title="Remove ${escapeHtml(sym)}"
+                              style="background: none; border: none; cursor: pointer; padding: 0; display: flex;
+                                     color: var(--muted-fg); transition: color 0.15s;"
+                              onmouseover="this.style.color='var(--destructive)'"
+                              onmouseout="this.style.color='var(--muted-fg)'">
+                             <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+                           </button>`;
+                    const chipClass = isPermanent ? 'hands-off-chip permanent' : 'hands-off-chip';
+                    return `
+                        <span class="${chipClass}">
+                            ${lockIcon}${escapeHtml(sym)}
+                            ${removeBtn}
+                        </span>
+                    `;
+                }).join('');
+            }
+            updatePendingChanges();
+        }
+
+        function addHandsOffSymbol() {
+            const input = document.getElementById('hands-off-input');
+            const raw = (input.value || '').trim().toUpperCase();
+            if (!raw) return;
+            // Basic validation: 1-5 uppercase letters
+            if (!/^[A-Z]{1,5}$/.test(raw)) {
+                alert(`Invalid symbol: "${raw}". Must be 1-5 letters (e.g., AAPL, TSLA).`);
+                return;
+            }
+            if (handsOffPending.has(raw)) {
+                alert(`${raw} is already in the denylist.`);
+                input.value = '';
+                return;
+            }
+            handsOffPending.add(raw);
+            input.value = '';
+            renderHandsOffChips();
+        }
+
+        function removeHandsOffSymbol(sym) {
+            // HARD FLOOR: MU, HQGE, SPCX can NEVER be removed
+            if (PERMANENT_HANDS_OFF.has(sym)) {
+                alert(`Cannot remove ${sym} — this is a permanent hands-off symbol that is protected forever.`);
+                return;
+            }
+            handsOffPending.delete(sym);
+            renderHandsOffChips();
+        }
+
+        function updatePendingChanges() {
+            const pendingEl = document.getElementById('hands-off-pending');
+            const added = [...handsOffPending].filter(s => !handsOffOriginal.has(s));
+            const removed = [...handsOffOriginal].filter(s => !handsOffPending.has(s));
+
+            if (added.length === 0 && removed.length === 0) {
+                pendingEl.style.display = 'none';
+                return;
+            }
+            const parts = [];
+            if (added.length > 0) parts.push(`<strong>Adding:</strong> ${added.join(', ')}`);
+            if (removed.length > 0) parts.push(`<strong>Removing:</strong> ${removed.join(', ')}`);
+            pendingEl.innerHTML = parts.join(' &nbsp;|&nbsp; ');
+            pendingEl.style.display = 'block';
+        }
+
+        async function saveHandsOffDenylist() {
+            const added = [...handsOffPending].filter(s => !handsOffOriginal.has(s));
+            const removed = [...handsOffOriginal].filter(s => !handsOffPending.has(s));
+
+            // HARD FLOOR check: block removal of permanent symbols client-side too
+            const removedPermanent = removed.filter(s => PERMANENT_HANDS_OFF.has(s));
+            if (removedPermanent.length > 0) {
+                alert(`Cannot save: attempting to remove permanent symbols (${removedPermanent.join(', ')}). These are protected forever.`);
+                // Restore permanent symbols to pending set
+                removedPermanent.forEach(s => handsOffPending.add(s));
+                renderHandsOffChips();
+                return;
+            }
+
+            if (added.length === 0 && removed.length === 0) {
+                document.getElementById('hands-off-status').textContent = 'No changes to save.';
+                return;
+            }
+
+            // Confirm before save
+            const summary = [];
+            if (added.length > 0) summary.push(`Add: ${added.join(', ')}`);
+            if (removed.length > 0) summary.push(`Remove: ${removed.join(', ')}`);
+            if (!confirm(`Save hands-off denylist changes?\n\n${summary.join('\n')}`)) {
+                return;
+            }
+
+            const status = document.getElementById('hands-off-status');
+            const btn = document.getElementById('hands-off-save-btn');
+            btn.disabled = true;
+            status.textContent = 'Saving...';
+
+            try {
+                const resp = await authFetch('/api/hands-off-denylist', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ symbols: [...handsOffPending] })
+                });
+                const data = await resp.json();
+                if (data.status === 'success') {
+                    const saved = data.symbols || [];
+                    handsOffSymbols = new Set(saved);
+                    handsOffOriginal = new Set(saved);
+                    handsOffPending = new Set(saved);
+                    renderHandsOffChips();
+                    status.textContent = data.message + (data.dropped?.length ? ` (dropped: ${data.dropped.join(', ')})` : '');
+                    status.style.color = '#26a69a';
+                    setTimeout(() => { status.style.color = ''; }, 3000);
+
+                    // Refresh positions to apply new locks immediately
+                    // The next WS dashboard_update will pick up the new Set
+                    // but force a re-render now for instant feedback
+                    if (ws && ws.readyState === WebSocket.OPEN) {
+                        // The dashboard will re-render on next push
+                    }
+                } else {
+                    // Handle API error (e.g., tried to remove permanent symbols)
+                    status.textContent = 'Save failed: ' + (data.message || 'unknown error');
+                    status.style.color = '#ef5350';
+                    // If API says we're missing permanent symbols, restore them
+                    if (data.missing_permanent) {
+                        data.missing_permanent.forEach(s => handsOffPending.add(s));
+                        renderHandsOffChips();
+                    }
+                }
+            } catch (e) {
+                console.error('Failed to save hands-off denylist:', e);
+                status.textContent = 'Save failed — network error';
+                status.style.color = '#ef5350';
+            } finally {
+                btn.disabled = false;
             }
         }
 
@@ -3378,6 +4457,55 @@
         let wsLastMessageAt = 0;
         let wsHeartbeatTimer = null;
         let wsReconnectAttempt = 0;
+        let wsConnected = false;
+
+        // Trust strip state: LIVE / STALE / OFFLINE
+        // LIVE = WS connected + data received within 10s
+        // STALE = WS connected but no data for 10-45s
+        // OFFLINE = WS disconnected or no data for >45s
+        // v-connection-state-unify-2026-09-11: single source of truth for
+        // trust strip AND Account Overview live-marker
+        let _connectionState = 'offline';
+        function updateTrustStrip() {
+            const badge = document.getElementById('trust-badge');
+            const label = document.getElementById('trust-label');
+            const asof = document.getElementById('trust-asof');
+            const accountDot = document.getElementById('account-live-dot');
+            const accountText = document.getElementById('account-live-text');
+            if (!badge || !label || !asof) return;
+
+            const now = Date.now();
+            const idleMs = wsLastMessageAt > 0 ? now - wsLastMessageAt : Infinity;
+
+            if (!wsConnected || idleMs > 45000) {
+                _connectionState = 'offline';
+                badge.className = 'trust-badge offline';
+                label.textContent = 'OFFLINE';
+                const offlineAsof = wsLastMessageAt > 0
+                    ? `last: ${new Date(wsLastMessageAt).toLocaleTimeString()}`
+                    : 'no data';
+                asof.textContent = offlineAsof;
+                if (accountDot) accountDot.className = 'pulse-dot offline';
+                if (accountText) accountText.textContent = `Offline · ${offlineAsof}`;
+            } else if (idleMs > 10000) {
+                _connectionState = 'stale';
+                badge.className = 'trust-badge stale';
+                label.textContent = 'STALE';
+                const staleAsof = `${Math.round(idleMs / 1000)}s ago`;
+                asof.textContent = staleAsof;
+                if (accountDot) accountDot.className = 'pulse-dot stale';
+                if (accountText) accountText.textContent = `Stale · ${staleAsof}`;
+            } else {
+                _connectionState = 'live';
+                badge.className = 'trust-badge live';
+                label.textContent = 'LIVE';
+                asof.textContent = 'as-of now';
+                if (accountDot) accountDot.className = 'pulse-dot';
+                if (accountText) accountText.textContent = 'Live · Updated just now';
+            }
+            if (typeof updatePulseEmptyState === 'function') updatePulseEmptyState();
+        }
+        setInterval(updateTrustStrip, 1000);
 
         function connectWebSocket() {
             const wsToken = window.TRADING_API_KEY ? `?token=${window.TRADING_API_KEY}` : '';
@@ -3389,6 +4517,8 @@
                 console.log('WebSocket connected');
                 wsLastMessageAt = Date.now();
                 wsReconnectAttempt = 0;
+                wsConnected = true;
+                updateTrustStrip();
                 // Heartbeat watcher: every 20s, check liveness + send ping.
                 if (wsHeartbeatTimer) clearInterval(wsHeartbeatTimer);
                 wsHeartbeatTimer = setInterval(() => {
@@ -3408,6 +4538,7 @@
 
             ws.onmessage = (event) => {
                 wsLastMessageAt = Date.now();
+                updateTrustStrip();
                 let data;
                 try { data = JSON.parse(event.data); }
                 catch (e) { console.warn('WS bad JSON:', e); return; }
@@ -3435,6 +4566,8 @@
 
             ws.onclose = () => {
                 console.log('WebSocket disconnected');
+                wsConnected = false;
+                updateTrustStrip();
                 if (wsHeartbeatTimer) {
                     clearInterval(wsHeartbeatTimer);
                     wsHeartbeatTimer = null;
@@ -3470,7 +4603,20 @@
                 allCommentary = allCommentary.slice(0, 100);
             }
             
-            if (currentFilter === 'all' || commentary.type === currentFilter) {
+            // Check if this item passes the current filter
+            const verdict = _getVerdict(commentary);
+            const verdictFilters = ['act', 'wait', 'pass', 'veto'];
+            let shouldShow = currentFilter === 'all';
+            if (!shouldShow && verdictFilters.includes(currentFilter)) {
+                shouldShow = verdict === currentFilter;
+            } else if (!shouldShow && currentFilter === 'warning') {
+                const t = (commentary.type || '').toLowerCase();
+                shouldShow = t === 'warning' || t === 'error' || verdict === 'veto';
+            } else if (!shouldShow) {
+                shouldShow = commentary.type === currentFilter;
+            }
+
+            if (shouldShow) {
                 const list = document.getElementById('commentary-list');
                 const item = createCommentaryItem(commentary);
                 list.insertBefore(item, list.firstChild);
@@ -3479,6 +4625,7 @@
                     list.removeChild(list.lastChild);
                 }
             }
+            updatePulseCount();
         }
         
         // v-ui-commentary-restyle-2026-04-29: rebuilt to match dashboardUI
@@ -3499,9 +4646,57 @@
             signal_generation: 'zap',
             info:            'check-circle',
         };
+
+        // Verdict mapping: ACT/WAIT/PASS based on commentary type and content
+        // ACT = buy/sell signals, executions, opportunities taken
+        // WAIT = unclear conditions, monitoring, analysis ongoing
+        // PASS = veto, blocked, do-nothing decisions, skips
+        function _getVerdict(commentary) {
+            const t = (commentary.type || '').toLowerCase();
+            const title = (commentary.title || '').toLowerCase();
+            const msg = (commentary.message || '').toLowerCase();
+            const combined = title + ' ' + msg;
+
+            // Explicit vetoes/blocks
+            if (combined.includes('veto') || combined.includes('blocked') ||
+                combined.includes('rejected') || combined.includes('skip') ||
+                combined.includes('no action') || combined.includes('do nothing') ||
+                combined.includes('position limit') || combined.includes('correlation')) {
+                return 'veto';
+            }
+            // Warnings are special PASS
+            if (t === 'warning' || t === 'error') {
+                return 'veto';
+            }
+            // Executions and opportunities = ACT
+            if (t === 'opportunity' || t === 'signal_generation') {
+                return 'act';
+            }
+            if (combined.includes('buy') || combined.includes('sell') ||
+                combined.includes('enter') || combined.includes('exit') ||
+                combined.includes('executed') || combined.includes('opened') ||
+                combined.includes('closed') || combined.includes('triggered')) {
+                return 'act';
+            }
+            // Decisions that aren't actions = might be PASS
+            if (t === 'decision') {
+                if (combined.includes('hold') || combined.includes('wait') ||
+                    combined.includes('unclear') || combined.includes('monitoring')) {
+                    return 'wait';
+                }
+                return 'act';
+            }
+            // Analysis / technical / psychology = WAIT
+            if (t === 'technical' || t === 'market_analysis' ||
+                t === 'risk_assessment' || t === 'psychology' ||
+                t === 'fundamental') {
+                return 'wait';
+            }
+            // Default: info/account = PASS
+            return 'pass';
+        }
+
         // Heuristic: should this kv chip be tinted up/down?
-        // Anything with "pnl", "change", "return" in the key, or anything
-        // that's a number with a leading +/- gets sign-tinted.
         function _kvDirection(key, value) {
             const k = (key || '').toLowerCase();
             const isMoney = k.includes('pnl') || k.includes('change') || k.includes('return') || k.includes('p&l');
@@ -3516,35 +4711,76 @@
                 try { return JSON.stringify(value); } catch { return String(value); }
             }
             if (typeof value === 'number') {
-                // Compact formatting: dollars get 2 decimals, percents 2 decimals,
-                // small ints stay int. Defaults to 2-decimal trim.
                 if (Number.isInteger(value)) return String(value);
                 return value.toFixed(2);
             }
             return String(value);
         }
 
+        // Extract key number from commentary data (price, pnl, confidence, etc.)
+        function _extractKeyNumber(commentary) {
+            const data = commentary.data || {};
+            const keys = ['price', 'pnl', 'p&l', 'return', 'change', 'value', 'qty', 'quantity'];
+            for (const k of keys) {
+                for (const [dk, dv] of Object.entries(data)) {
+                    if (dk.toLowerCase().includes(k) && typeof dv === 'number') {
+                        const sign = dv >= 0 ? '+' : '';
+                        if (dk.toLowerCase().includes('pnl') || dk.toLowerCase().includes('return')) {
+                            return { value: `${sign}$${dv.toFixed(2)}`, positive: dv >= 0 };
+                        }
+                        if (dk.toLowerCase().includes('price')) {
+                            return { value: `$${dv.toFixed(2)}`, positive: null };
+                        }
+                        return { value: dv.toFixed(2), positive: null };
+                    }
+                }
+            }
+            if (commentary.confidence != null) {
+                return { value: `${Math.round(commentary.confidence * 100)}%`, positive: null };
+            }
+            return null;
+        }
+
+        let selectedPulseItem = null;
+
         function createCommentaryItem(commentary) {
             const div = document.createElement('div');
             const t = (commentary.type || 'info').toLowerCase();
-            div.className = `commentary-item commentary-${t}`;
+            const verdict = _getVerdict(commentary);
+            div.className = `commentary-item pulse-item commentary-${t}`;
             div.dataset.type = t;
+            div.dataset.verdict = verdict;
 
             const iconName = _COMMENTARY_TYPE_ICONS[t] || 'check-circle';
             const time = new Date(commentary.timestamp).toLocaleTimeString('en-US', {
                 hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true,
             });
+
+            // Facts-before-story: symbol, verdict chip, key number, as-of before narrative
+            const keyNum = _extractKeyNumber(commentary);
+            const keyNumHtml = keyNum
+                ? `<span class="pulse-key-number ${keyNum.positive === true ? 'positive' : (keyNum.positive === false ? 'negative' : '')}">${keyNum.value}</span>`
+                : '';
+
+            const verdictLabels = { act: 'ACT', wait: 'WAIT', pass: 'PASS', veto: 'VETO' };
+            const verdictChip = `<span class="verdict-chip ${verdict}">${verdictLabels[verdict] || 'INFO'}</span>`;
+
             const symbolPill = commentary.symbol
                 ? `<span class="commentary-symbol-pill" data-chart-symbol="${escapeHtml(commentary.symbol)}" style="cursor:pointer;" title="Click to chart ${escapeHtml(commentary.symbol)}">${escapeHtml(commentary.symbol)}</span>`
                 : '';
 
             let html = `
+                <div class="pulse-meta">
+                    ${symbolPill}
+                    ${verdictChip}
+                    ${keyNumHtml}
+                    <span class="commentary-time">${lucide('clock', 10)}${time}</span>
+                </div>
                 <div class="commentary-header">
                     <div class="commentary-title-row">
                         <span class="commentary-type-badge commentary-${t}">${lucide(iconName, 12)}</span>
-                        <span class="commentary-title">${escapeHtml(commentary.title || '')}${symbolPill}</span>
+                        <span class="commentary-title">${escapeHtml(commentary.title || '')}</span>
                     </div>
-                    <span class="commentary-time">${lucide('clock', 11)}${time}</span>
                 </div>
             `;
             if (commentary.message) {
@@ -3574,7 +4810,158 @@
             }
 
             div.innerHTML = html;
+
+            // Click to select and show glance panel
+            div.addEventListener('click', () => selectPulseItem(div, commentary));
+
             return div;
+        }
+
+        function selectPulseItem(element, commentary) {
+            document.querySelectorAll('.pulse-item.selected').forEach(el => el.classList.remove('selected'));
+            element.classList.add('selected');
+            selectedPulseItem = commentary;
+            showDecisionGlance(commentary);
+        }
+
+        function updatePulseCount() {
+            const countEl = document.getElementById('pulse-count');
+            const emptyEl = document.getElementById('pulse-empty');
+            const listEl = document.getElementById('commentary-list');
+            if (countEl) {
+                const actCount = allCommentary.filter(c => _getVerdict(c) === 'act').length;
+                countEl.textContent = `${actCount} actions`;
+            }
+            if (emptyEl && listEl) {
+                const hasItems = listEl.children.length > 0;
+                emptyEl.classList.toggle('visible', !hasItems);
+            }
+        }
+
+        function updatePulseEmptyState() {
+            const emptyEl = document.getElementById('pulse-empty');
+            const titleEl = document.getElementById('pulse-empty-title');
+            const subEl = document.getElementById('pulse-empty-sub');
+            if (!emptyEl || !titleEl || !subEl) return;
+            // v-connection-state-unify-2026-09-11: use shared _connectionState
+            if (_connectionState !== 'offline') {
+                emptyEl.classList.remove('offline');
+                titleEl.textContent = 'Scanning for setups';
+                subEl.textContent = 'No actionable opportunities detected';
+            } else {
+                emptyEl.classList.add('offline');
+                titleEl.textContent = 'Connection offline';
+                subEl.textContent = 'Waiting to reconnect to data stream';
+            }
+        }
+
+        function showDecisionGlance(commentary) {
+            const panel = document.getElementById('glance-panel');
+            if (!panel) return;
+
+            const verdict = _getVerdict(commentary);
+            const verdictLabels = { act: 'ACT', wait: 'WAIT', pass: 'PASS', veto: 'VETO' };
+
+            // Symbol
+            const symbolEl = document.getElementById('glance-symbol');
+            if (symbolEl) {
+                symbolEl.innerHTML = commentary.symbol
+                    ? `<span data-chart-symbol="${escapeHtml(commentary.symbol)}" style="cursor:pointer;">${escapeHtml(commentary.symbol)}</span>`
+                    : '<span style="color:var(--muted-fg)">No symbol</span>';
+            }
+
+            // Title
+            const titleEl = document.getElementById('glance-title');
+            if (titleEl) titleEl.textContent = commentary.title || 'Decision';
+
+            // Verdict chip
+            const verdictChip = document.getElementById('glance-verdict-chip');
+            if (verdictChip) {
+                verdictChip.className = `verdict-chip ${verdict}`;
+                verdictChip.textContent = verdictLabels[verdict] || 'INFO';
+            }
+
+            // Confidence
+            const confEl = document.getElementById('glance-confidence');
+            if (confEl) {
+                if (commentary.confidence != null) {
+                    confEl.textContent = `${Math.round(commentary.confidence * 100)}% confidence`;
+                    confEl.style.display = '';
+                } else {
+                    confEl.style.display = 'none';
+                }
+            }
+
+            // As-of time
+            const asofEl = document.getElementById('glance-asof');
+            if (asofEl) {
+                const time = new Date(commentary.timestamp).toLocaleTimeString('en-US', {
+                    hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true,
+                });
+                asofEl.textContent = `as-of ${time}`;
+            }
+
+            // Thesis (message)
+            const thesisEl = document.getElementById('glance-thesis');
+            if (thesisEl) {
+                thesisEl.textContent = commentary.message || '';
+            }
+
+            // Metrics from data
+            const metricsEl = document.getElementById('glance-metrics');
+            if (metricsEl) {
+                const data = commentary.data || {};
+                const entries = Object.entries(data);
+                if (entries.length > 0) {
+                    metricsEl.innerHTML = entries.map(([k, v]) => {
+                        const valStr = _formatKvValue(v);
+                        const dir = _kvDirection(k, v);
+                        return `
+                            <div class="metric">
+                                <span class="label">${escapeHtml(k)}</span>
+                                <span class="value ${dir === 'up' ? 'positive' : (dir === 'down' ? 'negative' : '')}">${escapeHtml(valStr)}</span>
+                            </div>
+                        `;
+                    }).join('');
+                    metricsEl.style.display = '';
+                } else {
+                    metricsEl.innerHTML = '<span class="glance-unavailable">No metrics available</span>';
+                    metricsEl.style.display = '';
+                }
+            }
+
+            // Risks (look for risk-related keywords in message or title)
+            const risksEl = document.getElementById('glance-risks');
+            if (risksEl) {
+                const combined = ((commentary.title || '') + ' ' + (commentary.message || '')).toLowerCase();
+                const riskKeywords = ['risk', 'warning', 'caution', 'danger', 'stop', 'limit', 'volatil'];
+                const hasRisk = riskKeywords.some(kw => combined.includes(kw));
+                if (hasRisk && verdict === 'veto') {
+                    risksEl.textContent = commentary.message || 'Risk factor detected';
+                    risksEl.style.display = '';
+                } else {
+                    risksEl.style.display = 'none';
+                }
+            }
+
+            // Show panel
+            panel.classList.add('visible');
+
+            // Render lucide icons in the panel
+            if (typeof lucide === 'function') {
+                panel.querySelectorAll('.lucide-slot').forEach(el => {
+                    const icon = el.dataset.icon;
+                    const size = el.dataset.size || 16;
+                    if (icon) el.innerHTML = lucide(icon, parseInt(size));
+                });
+            }
+        }
+
+        function hideDecisionGlance() {
+            const panel = document.getElementById('glance-panel');
+            if (panel) panel.classList.remove('visible');
+            document.querySelectorAll('.pulse-item.selected').forEach(el => el.classList.remove('selected'));
+            selectedPulseItem = null;
         }
         
         function filterCommentary(filter) {
@@ -3588,13 +4975,27 @@
             const list = document.getElementById('commentary-list');
             list.innerHTML = '';
             
-            const filtered = currentFilter === 'all' 
-                ? allCommentary 
-                : allCommentary.filter(c => c.type === currentFilter);
+            // Support both type and verdict filtering
+            const verdictFilters = ['act', 'wait', 'pass', 'veto'];
+            let filtered;
+            if (currentFilter === 'all') {
+                filtered = allCommentary;
+            } else if (verdictFilters.includes(currentFilter)) {
+                filtered = allCommentary.filter(c => _getVerdict(c) === currentFilter);
+            } else if (currentFilter === 'warning') {
+                // "Alerts" filter = warnings + errors + vetos
+                filtered = allCommentary.filter(c => {
+                    const t = (c.type || '').toLowerCase();
+                    return t === 'warning' || t === 'error' || _getVerdict(c) === 'veto';
+                });
+            } else {
+                filtered = allCommentary.filter(c => c.type === currentFilter);
+            }
             
             filtered.slice(0, 50).forEach(commentary => {
                 list.appendChild(createCommentaryItem(commentary));
             });
+            updatePulseCount();
         }
         
         function updateTradesTable(trades) {
@@ -3837,17 +5238,27 @@
                 }
             }
 
+            // Hands-off symbols: bot must not manage/exit these long-term holds
+            // v-hands-off-denylist-settings-2026-09-14: uses runtime Set from API
+            // instead of hardcoded array. See handsOffSymbols global.
+
             if (data.real_positions) {
                 const tbody = document.getElementById('real-positions-body');
                 if (data.real_positions.length === 0) {
                     tbody.innerHTML = '<tr><td colspan="10" style="text-align: center; color: #666;">No real positions or Schwab not connected</td></tr>';
                 } else {
-                    tbody.innerHTML = data.real_positions.map(pos => `
-                        <tr data-chart-symbol="${escapeHtml(pos.symbol)}" style="cursor:pointer;">
-                            <td style="font-weight: bold;">
+                    tbody.innerHTML = data.real_positions.map(pos => {
+                        const sym = String(pos.symbol || '').toUpperCase();
+                        const isHandsOff = handsOffSymbols.has(sym);
+                        const handsOffBadge = isHandsOff ? '<span class="hands-off-badge">Hands-Off</span>' : '';
+                        const rowClass = isHandsOff ? 'hands-off-row' : '';
+
+                        return `
+                        <tr data-chart-symbol="${escapeHtml(pos.symbol)}" class="${rowClass}" style="cursor:pointer;">
+                            <td style="font-weight: bold; position: relative;">
                                 <img class="symbol-logo" src="/logos/${escapeHtml(pos.symbol)}"
                                      alt="" onerror="this.style.display='none'">
-                                ${escapeHtml(pos.symbol)}
+                                ${escapeHtml(pos.symbol)}${handsOffBadge}
                             </td>
                             <td>${pos.quantity > 0 ? pos.quantity : Math.abs(pos.quantity)} ${pos.quantity < 0 ? '(short)' : ''}</td>
                             <td>$${pos.entry_price.toFixed(2)}</td>
@@ -3865,26 +5276,25 @@
                             <td>
                                 <input type="checkbox"
                                     class="long-term-checkbox"
-                                    ${pos.is_long_term ? 'checked' : ''}
-                                    onchange="toggleLongTerm('${escapeHtml(pos.symbol)}')"
-                                    title="Mark as long-term hold">
+                                    ${pos.is_long_term || isHandsOff ? 'checked' : ''}
+                                    ${isHandsOff ? 'disabled title="Hands-off position — cannot modify"' : `onchange="toggleLongTerm('${escapeHtml(pos.symbol)}')" title="Mark as long-term hold"`}>
                             </td>
                             <td>
                                 <input type="checkbox"
                                     class="managed-by-bot-checkbox"
-                                    ${pos.managed_by_bot ? 'checked' : ''}
-                                    onchange="toggleManagedByBot('${escapeHtml(pos.symbol)}', this.checked)"
-                                    title="Bot manages this position (stops, trail, breakeven, exits)">
+                                    ${pos.managed_by_bot && !isHandsOff ? 'checked' : ''}
+                                    ${isHandsOff ? 'disabled title="Hands-off position — bot cannot manage"' : `onchange="toggleManagedByBot('${escapeHtml(pos.symbol)}', this.checked)" title="Bot manages this position (stops, trail, breakeven, exits)"`}>
                             </td>
                             <td>
                                 <button class="close-button"
-                                    ${pos.is_long_term ? 'disabled' : ''}
-                                    onclick="requestClosePosition('${escapeHtml(pos.symbol)}', 'real')">
+                                    ${pos.is_long_term || isHandsOff ? 'disabled' : ''}
+                                    onclick="requestClosePosition('${escapeHtml(pos.symbol)}', 'real')"
+                                    ${isHandsOff ? 'title="Hands-off position — cannot close"' : ''}>
                                     Close
                                 </button>
                             </td>
                         </tr>
-                    `).join('');
+                    `;}).join('');
                     // v-row-flash-on-rerender-2026-05-04: rerender just baked
                     // the latest price into every cell, so paintLivePrices
                     // can't detect a change. Flash the row here instead.
@@ -4186,6 +5596,7 @@
             { id: 'dashboard',   label: 'Dashboard',         icon: 'bar-chart-3' },
             { id: 'sentiment',   label: 'News & Sentiment',  icon: 'newspaper'   },
             { id: 'backtest',    label: 'Backtesting',       icon: 'activity'    },
+            { id: 'settings',    label: 'Settings',          icon: 'settings'    },
         ];
         function buildAppNav(activeId = 'dashboard') {
             const nav = document.getElementById('app-nav');
@@ -4941,6 +6352,26 @@
             }
         }
         document.addEventListener('DOMContentLoaded', restoreBotStatusOnLoad);
+
+        // v-hands-off-denylist-settings-2026-09-14: load denylist on startup
+        // so position locks are correct from the first dashboard_update.
+        async function initHandsOffDenylist() {
+            try {
+                const resp = await authFetch('/api/hands-off-denylist');
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                const data = await resp.json();
+                if (data.status === 'success') {
+                    const symbols = data.symbols || [];
+                    handsOffSymbols = new Set(symbols);
+                    handsOffOriginal = new Set(symbols);
+                    handsOffPending = new Set(symbols);
+                }
+            } catch (e) {
+                console.warn('Failed to load hands-off denylist, using defaults:', e);
+                // Keep DEFAULT_HANDS_OFF already in the Set
+            }
+        }
+        document.addEventListener('DOMContentLoaded', initHandsOffDenylist);
         
         async function toggleTradingMode() {
             const toggle = document.getElementById('mode-toggle');
@@ -5302,8 +6733,455 @@
 
         // Connect on load
         connectWebSocket();
+        // v-connection-state-unify-2026-09-11: init pulse empty state on load
+        updatePulseCount();
+        updatePulseEmptyState();
         // Load initial sentiment data
         refreshSentiment();
+
+        // ============== PRE-TRADE CHECKLIST ==============
+        // v-pre-trade-checklist-2026-09-17: Pre-Trade Checklist for entry gates.
+        let _checklistSymbol = '';
+        let _checklistData = null;
+
+        async function loadChecklistForSymbol(symbol) {
+            if (!symbol || typeof symbol !== 'string') {
+                showChecklistEmpty();
+                return;
+            }
+            symbol = symbol.trim().toUpperCase();
+            if (!symbol || symbol.length > 5 || !/^[A-Z]+$/.test(symbol)) {
+                showChecklistEmpty();
+                return;
+            }
+            _checklistSymbol = symbol;
+            document.getElementById('checklist-symbol-input').value = symbol;
+            showChecklistLoading();
+            
+            try {
+                const [snapshotsRes, featuresRes, handsOffRes, settingsRes, decisionsRes] = await Promise.all([
+                    authFetch(`/api/decision-snapshots?symbol=${encodeURIComponent(symbol)}&limit=5`),
+                    authFetch(`/api/features/${encodeURIComponent(symbol)}`),
+                    authFetch('/api/hands-off-denylist'),
+                    authFetch('/api/settings'),
+                    authFetch(`/api/decisions?symbol=${encodeURIComponent(symbol)}&limit=20`)
+                ]);
+                
+                const snapshots = snapshotsRes.ok ? await snapshotsRes.json() : {status:'error'};
+                const features = featuresRes.ok ? await featuresRes.json() : {status:'error'};
+                const handsOff = handsOffRes.ok ? await handsOffRes.json() : {status:'error', symbols:[]};
+                const settings = settingsRes.ok ? await settingsRes.json() : {status:'error', settings:{}};
+                const decisions = decisionsRes.ok ? await decisionsRes.json() : {status:'error', decisions:[]};
+                
+                _checklistData = {
+                    symbol,
+                    snapshots: snapshots.snapshots || [],
+                    features: features.snapshot || null,
+                    featureVector: features.feature_vector || null,
+                    handsOff: handsOff.symbols || [],
+                    permanent: handsOff.permanent || [],
+                    settings: settings.settings || {},
+                    decisions: decisions.decisions || []
+                };
+                
+                renderChecklist(_checklistData);
+            } catch (err) {
+                console.error('Checklist load error:', err);
+                showChecklistError('Failed to load checklist data');
+            }
+        }
+
+        function refreshChecklist() {
+            if (_checklistSymbol) {
+                loadChecklistForSymbol(_checklistSymbol);
+            }
+        }
+
+        function showChecklistEmpty() {
+            const content = document.getElementById('checklist-content');
+            content.innerHTML = `
+                <div class="checklist-empty" id="checklist-empty">
+                    <div class="checklist-empty-title">Enter a symbol</div>
+                    <div class="checklist-empty-sub">View all entry gates and reasons for a specific ticker</div>
+                </div>
+            `;
+        }
+
+        function showChecklistLoading() {
+            const content = document.getElementById('checklist-content');
+            content.innerHTML = `<div class="checklist-loading">Loading checklist...</div>`;
+        }
+
+        function showChecklistError(msg) {
+            const content = document.getElementById('checklist-content');
+            content.innerHTML = `<div class="checklist-error">${escapeHtml(msg)}</div>`;
+        }
+
+        function renderChecklist(data) {
+            const content = document.getElementById('checklist-content');
+            if (!data || !data.symbol) {
+                showChecklistEmpty();
+                return;
+            }
+            
+            const latestSnap = data.snapshots[0] || null;
+            const pv = latestSnap?.price_vol || data.features?.price_vol || {};
+            const extra = latestSnap?.extra || {};
+            const news = latestSnap?.news || {};
+            const regime = latestSnap?.regime || {};
+            
+            const checks = buildChecklistRows(data, latestSnap, pv, extra, news, regime);
+            const verdict = computeVerdict(checks, latestSnap?.reason || '', latestSnap?.gate_name || '');
+            const asOf = latestSnap?.ts ? new Date(latestSnap.ts).toLocaleTimeString('en-US', {
+                hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true
+            }) : 'No data';
+            
+            let html = `
+                <div class="checklist-verdict-strip">
+                    <span class="verdict-chip ${verdict.cls}">${escapeHtml(verdict.label)}</span>
+                    <span class="verdict-detail">${escapeHtml(verdict.detail)}</span>
+                    <span class="verdict-asof">as-of ${escapeHtml(asOf)}</span>
+                </div>
+            `;
+            
+            const sections = [
+                { title: '1. Hard Allow/Deny', key: 'hardGates' },
+                { title: '2. Setup Quality', key: 'setup' },
+                { title: '3. Entry Gates', key: 'entryGates' },
+                { title: '4. Risk & Sizing', key: 'riskSize' },
+                { title: '5. Strategy Lanes', key: 'strategyLanes' }
+            ];
+            
+            for (const sec of sections) {
+                const rows = checks[sec.key] || [];
+                if (rows.length === 0) continue;
+                html += `<div class="checklist-section">`;
+                html += `<div class="checklist-section-title">${escapeHtml(sec.title)}</div>`;
+                for (const row of rows) {
+                    html += `
+                        <div class="checklist-row">
+                            <div class="checklist-light ${row.status}"></div>
+                            <span class="checklist-label">${escapeHtml(row.label)}</span>
+                            <span class="checklist-chip ${row.status}" title="${escapeHtml(row.reason)}">${escapeHtml(row.chip)}</span>
+                        </div>
+                    `;
+                }
+                html += `</div>`;
+            }
+            
+            content.innerHTML = html;
+            
+            if (typeof lucide === 'function') {
+                document.getElementById('checklist-panel').querySelectorAll('.lucide-slot').forEach(el => {
+                    const icon = el.dataset.icon;
+                    const size = el.dataset.size || 16;
+                    if (icon) el.innerHTML = lucide(icon, parseInt(size));
+                });
+            }
+        }
+
+        function buildChecklistRows(data, snap, pv, extra, news, regime) {
+            const symbol = data.symbol;
+            const handsOff = data.handsOff || [];
+            const permanent = data.permanent || [];
+            const settings = data.settings || {};
+            const decisions = data.decisions || [];
+            const action = snap?.action || '';
+            const reason = snap?.reason || '';
+            const gateName = snap?.gate_name || '';
+            
+            const trading = settings.trading || {};
+            const dayTradeLive = trading.day_trade_live_entries_enabled === true;
+            const meanRevLive = trading.mean_rev_live_entries_enabled !== false;
+            
+            const checks = {
+                hardGates: [],
+                setup: [],
+                entryGates: [],
+                riskSize: [],
+                strategyLanes: []
+            };
+            
+            // 1. Hard Allow/Deny
+            const isHandsOff = handsOff.includes(symbol);
+            const isPermanent = permanent.includes(symbol);
+            checks.hardGates.push({
+                label: 'DAY_TRADE_LIVE',
+                status: dayTradeLive ? 'pass' : 'fail',
+                chip: dayTradeLive ? 'ON' : 'OFF',
+                reason: dayTradeLive ? 'Live entries enabled' : 'Live entries disabled'
+            });
+            checks.hardGates.push({
+                label: 'Hands-Off Denylist',
+                status: isHandsOff ? 'fail' : 'pass',
+                chip: isHandsOff ? (isPermanent ? 'PERMANENT' : 'DENIED') : 'CLEAR',
+                reason: isHandsOff ? `${symbol} is on hands-off list` : 'Symbol not blocked'
+            });
+            
+            const hasThemeShock = news.theme_shock === true || extra.theme_shock === true;
+            const hasHardSkip = reason?.toLowerCase().includes('hard_skip') || 
+                               reason?.toLowerCase().includes('theme_shock') ||
+                               news.hard_skip === true;
+            checks.hardGates.push({
+                label: 'ThemeShock / News Hard-Skip',
+                status: hasThemeShock || hasHardSkip ? 'fail' : 'pass',
+                chip: hasThemeShock ? 'SHOCK' : (hasHardSkip ? 'SKIP' : 'CLEAR'),
+                reason: hasThemeShock ? 'Theme shock detected' : (hasHardSkip ? 'News hard-skip active' : 'No news blocks')
+            });
+            
+            const isRiskOff = regime.regime === 'risk_off' || regime.market_regime === 'risk_off';
+            checks.hardGates.push({
+                label: 'Risk-Off Momentum Skip',
+                status: isRiskOff ? 'fail' : 'pass',
+                chip: isRiskOff ? 'RISK_OFF' : 'NORMAL',
+                reason: isRiskOff ? 'Market in risk-off regime' : 'Normal market regime'
+            });
+            
+            // 2. Setup Quality
+            const pattern = extra.pattern || extra.setup_type || snap?.strategy_id || 'unknown';
+            checks.setup.push({
+                label: 'Day-Trade Pattern',
+                status: pattern !== 'unknown' ? 'pass' : 'skip',
+                chip: pattern.replace(/_/g, ' ').substring(0, 18),
+                reason: `Setup: ${pattern}`
+            });
+            
+            const rsSpy = pv.rs_vs_spy ?? pv.relative_strength ?? extra.rs_spy ?? null;
+            checks.setup.push({
+                label: 'RS vs SPY',
+                status: rsSpy !== null ? (rsSpy > 0 ? 'pass' : 'skip') : 'unknown',
+                chip: rsSpy !== null ? (rsSpy > 0 ? '+' : '') + rsSpy.toFixed(2) : 'N/A',
+                reason: rsSpy !== null ? `Relative strength: ${rsSpy.toFixed(2)}` : 'No RS data'
+            });
+            
+            const volRatio = pv.volume_ratio ?? pv.rvol ?? extra.volume_ratio ?? null;
+            checks.setup.push({
+                label: 'Volume / RVOL',
+                status: volRatio !== null ? (volRatio >= 1.0 ? 'pass' : 'skip') : 'unknown',
+                chip: volRatio !== null ? volRatio.toFixed(2) + 'x' : 'N/A',
+                reason: volRatio !== null ? `RVOL: ${volRatio.toFixed(2)}x` : 'No volume data'
+            });
+            
+            const atrRatio = pv.atr_ratio ?? extra.atr_ratio ?? null;
+            checks.setup.push({
+                label: 'ATR Stop',
+                status: atrRatio !== null ? 'pass' : 'unknown',
+                chip: atrRatio !== null ? atrRatio.toFixed(2) : 'N/A',
+                reason: atrRatio !== null ? `ATR ratio: ${atrRatio.toFixed(2)}` : 'No ATR data'
+            });
+            
+            const sizeMult = snap?.would_size_mult ?? extra.size_mult ?? extra.opening_30_mult ?? null;
+            checks.setup.push({
+                label: 'Opening 30 Size Mult',
+                status: sizeMult !== null ? 'pass' : 'skip',
+                chip: sizeMult !== null ? sizeMult.toFixed(2) + 'x' : 'N/A',
+                reason: sizeMult !== null ? `Size multiplier: ${sizeMult}x` : 'Default sizing'
+            });
+            
+            // 3. Entry Gates
+            // Normalize RSI: API returns 0-1 scale (e.g. 0.68 = RSI 68), decision-snapshot may use 0-100
+            let rsi = pv.rsi ?? extra.rsi ?? null;
+            if (rsi !== null && rsi >= 0 && rsi <= 1.5) {
+                rsi = rsi * 100;
+            }
+            const rsiBlocked = rsi !== null && rsi <= 50;
+            checks.entryGates.push({
+                label: 'RSI <= 50 Block',
+                status: rsiBlocked ? 'fail' : (rsi !== null ? 'pass' : 'unknown'),
+                chip: rsi !== null ? rsi.toFixed(1) : 'N/A',
+                reason: rsiBlocked ? `RSI ${rsi.toFixed(1)} <= 50 blocks entry` : (rsi !== null ? `RSI ${rsi.toFixed(1)} OK` : 'No RSI data')
+            });
+            
+            const rsiHighVeto = rsi !== null && rsi >= 70;
+            checks.entryGates.push({
+                label: 'RSI >= 70 Breakout Veto',
+                status: rsiHighVeto ? 'fail' : (rsi !== null ? 'pass' : 'unknown'),
+                chip: rsiHighVeto ? 'OVERBOUGHT' : (rsi !== null ? 'OK' : 'N/A'),
+                reason: rsiHighVeto ? `RSI ${rsi.toFixed(1)} >= 70 vetoes breakout/continuation` : 'RSI not overbought'
+            });
+            
+            const lateEntry = reason?.toLowerCase().includes('late') || 
+                             gateName?.toLowerCase().includes('late') ||
+                             extra.late_entry === true;
+            checks.entryGates.push({
+                label: 'Late Entry Hard-Skip',
+                status: lateEntry ? 'fail' : 'pass',
+                chip: lateEntry ? 'LATE' : 'ON TIME',
+                reason: lateEntry ? 'Entry too late in move' : 'Entry timing OK'
+            });
+            
+            const flattenHour = trading.day_trade_flatten_hour ?? 15;
+            const now = new Date();
+            const currentHour = now.getHours();
+            const flattenBlock = currentHour >= flattenHour;
+            checks.entryGates.push({
+                label: `Flatten Hour (${flattenHour}:00) Block`,
+                status: flattenBlock ? 'fail' : 'pass',
+                chip: flattenBlock ? 'BLOCKED' : 'OPEN',
+                reason: flattenBlock ? `Current hour ${currentHour} >= flatten hour ${flattenHour}` : `Before flatten hour (${flattenHour}:00)`
+            });
+            
+            // 4. Risk & Sizing
+            const stopLoss = snap?.would_stop_loss ?? extra.stop_loss ?? null;
+            const takeProfit = snap?.would_take_profit ?? extra.take_profit ?? null;
+            checks.riskSize.push({
+                label: 'Stop Loss',
+                status: stopLoss !== null ? 'pass' : 'skip',
+                chip: stopLoss !== null ? '$' + stopLoss.toFixed(2) : 'N/A',
+                reason: stopLoss !== null ? `Stop at $${stopLoss.toFixed(2)}` : 'No stop defined'
+            });
+            checks.riskSize.push({
+                label: 'Take Profit',
+                status: takeProfit !== null ? 'pass' : 'skip',
+                chip: takeProfit !== null ? '$' + takeProfit.toFixed(2) : 'N/A',
+                reason: takeProfit !== null ? `TP at $${takeProfit.toFixed(2)}` : 'No TP defined'
+            });
+            
+            const confidence = snap?.confidence ?? extra.confidence ?? null;
+            checks.riskSize.push({
+                label: 'Confidence',
+                status: confidence !== null ? (confidence >= 0.6 ? 'pass' : 'skip') : 'unknown',
+                chip: confidence !== null ? Math.round(confidence * 100) + '%' : 'N/A',
+                reason: confidence !== null ? `Confidence: ${Math.round(confidence * 100)}%` : 'No confidence score'
+            });
+            
+            const shares = snap?.would_size_shares ?? extra.shares ?? null;
+            checks.riskSize.push({
+                label: 'Position Size',
+                status: shares !== null ? 'pass' : 'skip',
+                chip: shares !== null ? shares + ' shares' : 'N/A',
+                reason: shares !== null ? `Would trade ${shares} shares` : 'Size not computed'
+            });
+            
+            // 5. Strategy Lanes
+            const enableDayTrade = trading.enable_day_trade_momentum !== false;
+            checks.strategyLanes.push({
+                label: 'Day Trade Momentum',
+                status: enableDayTrade && dayTradeLive ? 'pass' : (enableDayTrade ? 'skip' : 'fail'),
+                chip: enableDayTrade ? (dayTradeLive ? 'LIVE' : 'SHADOW') : 'OFF',
+                reason: enableDayTrade ? (dayTradeLive ? 'Live entries enabled' : 'Shadow mode only') : 'Strategy disabled'
+            });
+            
+            const enableNews = trading.enable_news_strategy !== false;
+            checks.strategyLanes.push({
+                label: 'News Strategy',
+                status: enableNews ? 'pass' : 'fail',
+                chip: enableNews ? 'ON' : 'OFF',
+                reason: enableNews ? 'News strategy enabled' : 'News strategy disabled'
+            });
+            
+            checks.strategyLanes.push({
+                label: 'Mean Reversion',
+                status: 'skip',
+                chip: meanRevLive ? 'SHADOW' : 'OFF',
+                reason: meanRevLive ? 'Mean-rev shadow/evaluation mode (non-blocking)' : 'Mean-rev LIVE off (intentional, non-blocking)'
+            });
+            
+            const enableOrb = trading.enable_orb_strategy === true;
+            checks.strategyLanes.push({
+                label: 'ORB Strategy',
+                status: 'skip',
+                chip: enableOrb ? 'SHADOW' : 'OFF',
+                reason: enableOrb ? 'ORB shadow/evaluation mode (non-blocking)' : 'ORB off (intentional, non-blocking)'
+            });
+            
+            return checks;
+        }
+
+        function computeVerdict(checks, snapReason, snapGate) {
+            let passCount = 0;
+            let failCount = 0;
+            let skipCount = 0;
+            const failLabels = [];
+            
+            for (const section of Object.values(checks)) {
+                for (const row of section) {
+                    if (row.status === 'pass') passCount++;
+                    else if (row.status === 'fail') {
+                        failCount++;
+                        if (row.label) failLabels.push(row.label);
+                    }
+                    else skipCount++;
+                }
+            }
+            
+            const hardFails = (checks.hardGates || []).filter(r => r.status === 'fail');
+            const nameFails = (rows) => {
+                const labels = rows.map(r => r.label).filter(Boolean);
+                if (!labels.length) return '';
+                if (labels.length <= 3) return labels.join(', ');
+                return labels.slice(0, 3).join(', ') + ` +${labels.length - 3} more`;
+            };
+            const snapBit = (() => {
+                const bits = [];
+                if (snapGate) bits.push(String(snapGate));
+                if (snapReason) bits.push(String(snapReason));
+                return bits.length ? ` · last: ${bits.join(' / ')}` : '';
+            })();
+            
+            if (hardFails.length > 0) {
+                return {
+                    label: 'BLOCKED',
+                    cls: 'veto',
+                    detail: `Hard fail: ${nameFails(hardFails)}${snapBit}`
+                };
+            }
+            if (failCount > 0) {
+                const named = failLabels.length
+                    ? (failLabels.length <= 3 ? failLabels.join(', ') : failLabels.slice(0, 3).join(', ') + ` +${failLabels.length - 3} more`)
+                    : `${failCount} gate(s)`;
+                return {
+                    label: 'BLOCKED',
+                    cls: 'wait',
+                    detail: `Failing: ${named}${snapBit}`
+                };
+            }
+            if (passCount > 0 && skipCount > passCount) {
+                return {
+                    label: 'WAITING',
+                    cls: 'wait',
+                    detail: `${skipCount} conditions unknown/pending${snapBit}`
+                };
+            }
+            if (passCount > 0) {
+                return {
+                    label: 'WOULD FIRE',
+                    cls: 'act',
+                    detail: `${passCount} gates passing, ${skipCount} skipped${snapBit}`
+                };
+            }
+            return {
+                label: 'NO DATA',
+                cls: '',
+                detail: 'No snapshot data available' + snapBit
+            };
+        }
+
+        // Hook into Pulse item clicks to auto-load checklist
+        document.addEventListener('click', function(e) {
+            const pulseItem = e.target.closest('.pulse-item');
+            if (pulseItem) {
+                const symbolEl = pulseItem.querySelector('[data-chart-symbol]');
+                if (symbolEl) {
+                    const sym = symbolEl.getAttribute('data-chart-symbol');
+                    if (sym && sym !== _checklistSymbol) {
+                        loadChecklistForSymbol(sym);
+                    }
+                }
+            }
+        });
+
+        // Initialize checklist lucide icons on load
+        setTimeout(() => {
+            if (typeof lucide === 'function') {
+                document.getElementById('checklist-panel')?.querySelectorAll('.lucide-slot').forEach(el => {
+                    const icon = el.dataset.icon;
+                    const size = el.dataset.size || 16;
+                    if (icon) el.innerHTML = lucide(icon, parseInt(size));
+                });
+            }
+        }, 100);
+        // ============== END PRE-TRADE CHECKLIST ==============
     </script>
 </body>
 </html>

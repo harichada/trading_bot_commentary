@@ -1,0 +1,148 @@
+{
+  "as_of": "2026-09-17T16:32:41-04:00",
+  "book": "B",
+  "stage": "A",
+  "seed": "/workspace/briefs/golden_sets/2026-09-14-theme-shock-seed.json",
+  "policy_brief": "/workspace/briefs/2026-09-14-gpu-sense-stage-a.md",
+  "seed_tip": "f6fb73c",
+  "seed_as_of": "2026-09-14T16:05:15.089155-04:00",
+  "book_b_decision_rule": {
+    "text": "Book B hard_skip IFF (1) keyword ThemeShock candidate (golden-set row = Book A keyword path) AND (2) gpu_critic nest present (never fabricated) AND (3) critic does NOT suppress. Suppress if ANY: action in shadow_would_suppress/would_suppress*; contamination_risk>=0.6; matched_field=summary with top_theme not in AI_ALIGN; OR top_theme not in AI_ALIGN (proxy for Stage A theme_prob[theme]\u2265\u03c4 confirm \u2014 \u03c4 unset in brief). AI_ALIGN={ai_compute, ai_mega_cap, memory_hbm}. Missing critic \u2192 no_attach (counts against recall; excluded from Book B hard_skip numerators).",
+    "ai_align_themes": [
+      "ai_compute",
+      "ai_mega_cap",
+      "memory_hbm"
+    ],
+    "contam_threshold": 0.6,
+    "suppress_actions": [
+      "shadow_would_suppress",
+      "would_suppress_hard_skip",
+      "would_suppress",
+      "shadow_would_suppress_hard_skip"
+    ],
+    "book_a": "keyword ThemeShock baseline via expected_action on labels",
+    "note": "Live critic actions on seed are all shadow_pass (0\u00d7 would_suppress); gate therefore hinges on top_theme AI_ALIGN + contam/summary filters per Stage A brief \u00a71."
+  },
+  "counts": {
+    "n_fp": 20,
+    "n_tp": 20,
+    "n_labeled": 40,
+    "n_sessions": null,
+    "attach_any": 38,
+    "attach_any_pct": 95.0,
+    "attach_full": 35,
+    "attach_full_pct": 87.5,
+    "fp_attach_any": 20,
+    "tp_attach_any": 18,
+    "fp_attach_full": 19,
+    "tp_attach_full": 16,
+    "n_book_b_hard_skip": 21,
+    "n_book_b_hard_skip_fp": 3,
+    "n_book_b_hard_skip_tp": 18
+  },
+  "metrics": {
+    "precision": 0.857143,
+    "contamination_fp_rate": 0.15,
+    "anthropic_recall": 0.9,
+    "anthropic_headline_subset_recall": 1.0,
+    "p95_infer_ms": 19.7042,
+    "p50_infer_ms": 7.7235,
+    "sessions": null
+  },
+  "gates": {
+    "n_labeled": {
+      "floor": ">=80 labeled OR >=10 sessions",
+      "n_labeled": 40,
+      "n_sessions": null,
+      "status": "INCOMPLETE"
+    },
+    "precision": {
+      "floor": 0.65,
+      "value": 0.857143,
+      "status": "PASS",
+      "n_book_b_hard_skip": 21,
+      "n_tp_among_hard_skip": 18
+    },
+    "contamination_fp_rate": {
+      "floor": 0.05,
+      "op": "<=",
+      "value": 0.15,
+      "status": "FAIL",
+      "n_fp_still_hard_skip": 3,
+      "n_fp": 20,
+      "fp_still_hard_skip_event_ids": [
+        "f59b23116fcb",
+        "9579cf0d1b4f",
+        "2d83a5133335"
+      ]
+    },
+    "anthropic_recall": {
+      "floor": 0.8,
+      "value": 0.9,
+      "status": "PASS",
+      "definition": "TPs in Anthropic/ai_compute golden set retaining Book B hard_skip (denom=all n_tp)",
+      "n_retained": 18,
+      "n_tp": 20,
+      "anthropic_headline_subset_recall": 1.0,
+      "anthropic_headline_subset_n": 6,
+      "anthropic_headline_subset_retained": 6,
+      "tp_no_attach_event_ids": [
+        "63251da54499",
+        "8e3bb2b090ef"
+      ]
+    },
+    "p95_infer_ms": {
+      "floor": "<800",
+      "value": 19.7042,
+      "p50": 7.7235,
+      "n_infer": 38,
+      "status": "PASS"
+    }
+  },
+  "overall_gate_status": "INCOMPLETE",
+  "live_hard_skip_rec": "NO",
+  "promote": false,
+  "fp_still_hard_skip": [
+    {
+      "event_id": "f59b23116fcb",
+      "top_theme": "ai_compute",
+      "top_theme_prob": 0.16060430533665335,
+      "headline": "Why Corning Plunged Today",
+      "label": "FP_contamination_critic_wrong_theme"
+    },
+    {
+      "event_id": "9579cf0d1b4f",
+      "top_theme": "ai_compute",
+      "top_theme_prob": 0.15553225470761348,
+      "headline": "The Oil Crisis Has Reached Costco\u2019s Motor Oil Aisle",
+      "label": "FP_contamination_critic_wrong_theme"
+    },
+    {
+      "event_id": "2d83a5133335",
+      "top_theme": "ai_compute",
+      "top_theme_prob": 0.16164554734498243,
+      "headline": "Corning Rides on Expanding Partner Base: Will it Boost Prospects?",
+      "label": "FP_contamination_critic_wrong_theme"
+    }
+  ],
+  "tp_missed": [
+    {
+      "event_id": "63251da54499",
+      "book_b": "no_attach",
+      "reasons": [
+        "missing_gpu_critic"
+      ],
+      "headline": "AI stocks fall after Amodei, Altman, and Musk back AI slowdo",
+      "label": "TP_ai_compute"
+    },
+    {
+      "event_id": "8e3bb2b090ef",
+      "book_b": "no_attach",
+      "reasons": [
+        "missing_gpu_critic"
+      ],
+      "headline": "Why Is Nvidia (NASDAQ:NVDA) Stock Falling Today? NVDA Drops",
+      "label": "TP_ai_compute"
+    }
+  ]
+}

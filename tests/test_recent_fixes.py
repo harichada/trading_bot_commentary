@@ -50,20 +50,23 @@ class TestFillCreatesPosition:
         assert "self.pending_orders.pop(order_id, None)" in block
 
     def test_sweep_signal_assignment_hoisted(self):
-        """The sweep path's `signal = order_data['signal']` must appear
-        BEFORE the first reference to `signal.entry_price`."""
+        """The sweep path's signal assignment must appear BEFORE
+        the first reference to `signal.entry_price`.
+        
+        Note: v-guard-missing-signal-2026-09-10 changed the access from
+        order_data['signal'] to order_data.get('signal') to avoid
+        KeyError on close orders without signal metadata."""
         src = ENGINE_PATH.read_text()
         # Look for the v-tag block
         marker = "v-sweep-signal-scope-fix-2026-05-08"
         assert marker in src
         idx = src.index(marker)
-        block = src[idx : idx + 1500]
-        # The fix is "signal = order_data['signal']" appears at the top
-        # of the FILLED branch, before fill_price assignment
-        assign_pos = block.find("signal = order_data['signal']")
+        block = src[idx : idx + 2500]
+        # v-guard-missing-signal-2026-09-10: changed to .get('signal')
+        assign_pos = block.find("signal = order_data.get('signal')")
         fill_price_pos = block.find("fill_price = signal.entry_price")
-        assert assign_pos != -1
-        assert fill_price_pos != -1
+        assert assign_pos != -1, "signal assignment not found"
+        assert fill_price_pos != -1, "fill_price assignment not found"
         assert assign_pos < fill_price_pos, (
             "signal must be assigned before fill_price reads signal.entry_price"
         )
@@ -2448,6 +2451,161 @@ class TestShadowLoggerGating:
         )
 
 
+# ── v-shadow-long-ledger-2026-09-17 ──────────────────────────────────
+
+class TestShadowLongLedger:
+    """v-shadow-long-ledger-2026-09-17: LONG shadow ledger writes to
+    data/shadow_long_log.ndjson for Stage A validation. Mirrors SHORT
+    shadow ledger but runs alongside live signals."""
+
+    def test_shadow_should_log_helper_exists(self):
+        """Shared helper _shadow_should_log must be importable."""
+        from strategies.builtin import _shadow_should_log
+        assert callable(_shadow_should_log)
+
+    def test_shadow_should_log_short_lane(self):
+        """SHORT lane uses its own throttle dict."""
+        from datetime import datetime, timezone
+        from strategies.builtin import _shadow_should_log
+        ts = datetime(2026, 9, 17, 18, 0, tzinfo=timezone.utc)  # 14:00 ET
+        throttle = {}
+        assert _shadow_should_log("NVDA", lane="short", now_utc=ts, _throttle=throttle) is True
+        assert "NVDA" in throttle
+
+    def test_shadow_should_log_long_lane(self):
+        """LONG lane uses its own throttle dict."""
+        from datetime import datetime, timezone
+        from strategies.builtin import _shadow_should_log
+        ts = datetime(2026, 9, 17, 18, 0, tzinfo=timezone.utc)  # 14:00 ET
+        throttle = {}
+        assert _shadow_should_log("NVDA", lane="long", now_utc=ts, _throttle=throttle) is True
+        assert "NVDA" in throttle
+
+    def test_long_lane_independent_of_short(self):
+        """LONG and SHORT lanes have separate throttles."""
+        from datetime import datetime, timezone, timedelta
+        from strategies.builtin import _shadow_should_log
+        ts = datetime(2026, 9, 17, 18, 0, tzinfo=timezone.utc)
+        short_throttle = {}
+        long_throttle = {}
+        # Log NVDA on SHORT lane
+        assert _shadow_should_log("NVDA", lane="short", now_utc=ts, _throttle=short_throttle) is True
+        # Same NVDA on LONG lane should ALSO pass (different throttle)
+        assert _shadow_should_log("NVDA", lane="long", now_utc=ts, _throttle=long_throttle) is True
+        # Both should now be throttled within their lanes
+        ts2 = ts + timedelta(minutes=5)
+        assert _shadow_should_log("NVDA", lane="short", now_utc=ts2, _throttle=short_throttle) is False
+        assert _shadow_should_log("NVDA", lane="long", now_utc=ts2, _throttle=long_throttle) is False
+
+    def test_long_shadow_config_exists(self):
+        """ENABLE_MEAN_REV_LONG_SHADOW config property must exist."""
+        from core.config import Config
+        cfg = Config()
+        assert hasattr(cfg, 'ENABLE_MEAN_REV_LONG_SHADOW')
+        assert cfg.ENABLE_MEAN_REV_LONG_SHADOW is True, (
+            "ENABLE_MEAN_REV_LONG_SHADOW must default to True for Stage A"
+        )
+
+    def test_long_shadow_wired_to_gate(self):
+        """LONG shadow capture must consult _shadow_should_log before logging."""
+        src = (REPO_ROOT / "strategies" / "builtin.py").read_text()
+        anchor = src.find("ENABLE_MEAN_REV_LONG_SHADOW")
+        assert anchor != -1, "ENABLE_MEAN_REV_LONG_SHADOW must be checked in builtin.py"
+        window = src[anchor: anchor + 800]
+        assert '_shadow_should_log(market_data.symbol, lane="long")' in window, (
+            "LONG shadow capture must consult _shadow_should_log with lane='long'"
+        )
+
+    def test_long_shadow_writes_ndjson(self):
+        """LONG shadow capture must write to shadow_long_log.ndjson."""
+        src = (REPO_ROOT / "strategies" / "builtin.py").read_text()
+        assert 'shadow_long_log.ndjson' in src, (
+            "LONG shadow must write to data/shadow_long_log.ndjson"
+        )
+
+    def test_long_shadow_emits_required_fields(self):
+        """LONG shadow entry must include fields needed by shadow_long_resolver."""
+        src = (REPO_ROOT / "strategies" / "builtin.py").read_text()
+        anchor = src.find("_shadow_long_entry = {")
+        assert anchor != -1, "LONG shadow entry dict must exist"
+        window = src[anchor: anchor + 1200]
+        required_fields = [
+            'timestamp', 'symbol', 'signal_type', 'reason',
+            'signal_close', 'rsi', 'bb_lower', 'bb_middle',
+            'sma_50', 'macd', 'macd_signal', 'atr',
+            'hypothetical_stop', 'hypothetical_target',
+            'rr_ratio', 'stop_dist', 'market_context_regime',
+            'falling_knife_pass',
+        ]
+        for fld in required_fields:
+            assert f"'{fld}':" in window, (
+                f"LONG shadow entry must include '{fld}' for resolver"
+            )
+
+
+class TestShadowLongResolverCanReadFixture:
+    """Shadow long resolver must be able to parse a fixture line."""
+
+    def test_resolver_parses_long_entry(self):
+        """Resolver's ShadowEntry.from_dict must parse a typical LONG entry."""
+        from research.shadow_long_resolver import ShadowEntry
+        row = {
+            'timestamp': '2026-09-17T14:00:00+00:00',
+            'symbol': 'AAPL',
+            'signal_type': 'LONG',
+            'reason': 'oversold_bounce',
+            'signal_close': 175.50,
+            'entry_price': 175.50,
+            'rsi': 28.5,
+            'bb_lower': 173.0,
+            'bb_middle': 177.0,
+            'sma_50': 180.0,
+            'macd': -0.5,
+            'macd_signal': -0.3,
+            'atr': 2.5,
+            'hypothetical_stop': 169.25,
+            'hypothetical_target': 188.0,
+            'rr_ratio': 2.0,
+            'stop_dist': 6.25,
+            'market_context_regime': 'neutral',
+            'falling_knife_pass': True,
+        }
+        entry = ShadowEntry.from_dict(row)
+        assert entry.symbol == 'AAPL'
+        assert entry.signal_type == 'LONG'
+        assert entry.signal_close == 175.50
+        assert entry.hypothetical_stop == 169.25
+        assert entry.hypothetical_target == 188.0
+        assert entry.raw.get('falling_knife_pass') is True
+
+    def test_hands_off_symbols_excluded(self):
+        """Hands-off symbols (MU, HQGE, SPCX) must be filtered out."""
+        from research.shadow_long_resolver import ShadowEntry, filter_and_dedupe, HANDS_OFF_SYMBOLS
+        from datetime import datetime, timezone
+
+        base = datetime(2026, 9, 17, 14, 0, tzinfo=timezone.utc)
+        entries = []
+        for i, sym in enumerate(list(HANDS_OFF_SYMBOLS) + ['AAPL']):
+            entries.append(ShadowEntry(
+                timestamp=base,
+                symbol=sym,
+                signal_type='LONG',
+                reason='test',
+                signal_close=100.0,
+                rsi=25, bb_lower=98, bb_middle=102, sma_50=105,
+                macd=-0.5, macd_signal=-0.3, atr=2.0,
+                hypothetical_stop=95, hypothetical_target=110,
+                rr_ratio=2.0, stop_dist=5.0,
+            ))
+
+        result = filter_and_dedupe(entries)
+        symbols = {e.symbol for e in result}
+        assert HANDS_OFF_SYMBOLS.isdisjoint(symbols), (
+            f"Hands-off symbols {HANDS_OFF_SYMBOLS} must be excluded"
+        )
+        assert 'AAPL' in symbols
+
+
 # ── v-ownership-survives-restart-2026-06-10 ──────────────────────────
 
 class TestOwnershipSurvivesRestart:
@@ -2485,25 +2643,98 @@ class TestOwnershipSurvivesRestart:
         src = ENGINE_PATH.read_text()
         anchor = src.find("Newly discovered position (pre-existing on Schwab")
         assert anchor != -1, "newly-discovered branch anchor missing"
-        window = src[max(0, anchor - 3000): anchor + 3000]
+        window = src[max(0, anchor - 3000): anchor + 6000]
         assert "_saved_positions_meta" in window, (
             "rediscovery must consult saved metadata before defaulting "
             "to external"
         )
-        assert "position_ownership_restored" in window, (
+        assert "position_ownership_restored" in window or "sync_restore" in window, (
             "restoration must emit an audit line"
         )
 
-    def test_restore_guard_requires_identity_match(self):
-        """Ownership restore must verify side AND quantity match the
-        saved record — quantity drift means the operator intervened,
-        and the position must stay external."""
+    def test_restore_guard_requires_side_match(self):
+        """Ownership restore must verify side matches the saved record.
+        
+        v-manage-persist-2026-09-15: RELAXED qty matching. Side match plus
+        saved managed_by_bot=True is now sufficient. Qty drift from partial
+        close no longer disowns remaining position (operator complained about
+        CRCL/SLS/FPS being disowned after restart)."""
         src = ENGINE_PATH.read_text()
         anchor = src.find("position_ownership_restored")
         assert anchor != -1
         window = src[max(0, anchor - 1500): anchor]
-        assert "side" in window and "quantity" in window, (
-            "restore guard must check side + quantity identity"
+        assert "side" in window, (
+            "restore guard must check side match"
+        )
+
+    # v-ownership-survives-restart-2026-09-10: additional tests for
+    # _update_and_track_real_positions path which was missing the
+    # saved-state check. This caused bot-opened positions to be demoted
+    # to external on restart (F/ERAS/ONDS/COO incident).
+
+    def test_update_track_also_checks_saved_meta(self):
+        """_update_and_track_real_positions must also check _saved_positions_meta
+        when creating new positions (startup path), not just sync_positions_with_schwab."""
+        src = ENGINE_PATH.read_text()
+        anchor = src.find("async def _update_and_track_real_positions")
+        assert anchor != -1, "_update_and_track_real_positions not found"
+        # v-manage-persist-discovery-path-2026-09-15: function is large; read to end
+        body_end = src.find("\n    async def ", anchor + 1)
+        if body_end == -1:
+            body_end = src.find("\n    def ", anchor + 1)
+        body = src[anchor:body_end]
+        assert "_saved_positions_meta" in body, (
+            "_update_and_track_real_positions must check saved metadata — "
+            "without this, bot-opened positions are demoted to external on restart"
+        )
+        assert "position_ownership_restored" in body or "update_track_restore" in body, (
+            "restore path must emit an audit line for traceability"
+        )
+
+    def test_update_track_restore_has_side_guard(self):
+        """The restore logic in _update_and_track_real_positions must verify
+        side matches before restoring ownership.
+        
+        v-manage-persist-2026-09-15: quantity check relaxed — side match plus
+        saved managed_by_bot=True is sufficient. See sync_positions_with_schwab."""
+        src = ENGINE_PATH.read_text()
+        anchor = src.find("# v-manage-persist-2026-09-15: enhanced restore logic.")
+        assert anchor != -1, "2026-09-15 fix marker in update_track not found"
+        window = src[anchor: anchor + 5000]
+        assert "_restore_managed" in window, "restore logic variable missing"
+        assert "side" in window, "restore guard must check side"
+
+    def test_long_term_stays_unmanaged_on_restore(self):
+        """is_long_term positions must NOT be auto-flipped to managed_by_bot=True
+        even if the saved state has managed_by_bot=True — LT holds are user-
+        designated hands-off positions (MU, HQGE, SPCX).
+        
+        v-manage-persist-2026-09-15: now handled by HANDS_OFF_DENYLIST check."""
+        src = ENGINE_PATH.read_text()
+        anchor = src.find("# v-manage-persist-2026-09-15: enhanced restore logic.")
+        assert anchor != -1, "2026-09-15 marker not found"
+        window = src[anchor: anchor + 5000]
+        assert "is_long_term" in window or "HANDS_OFF_DENYLIST" in window, (
+            "restore path must check is_long_term or HANDS_OFF_DENYLIST — "
+            "LT/denylist holds must stay hands-off regardless of saved state"
+        )
+        assert "_is_lt" in window or "in_denylist" in window
+
+    def test_new_unknown_position_stays_unmanaged(self):
+        """Positions not in saved state must default to unmanaged/external —
+        the safe default for unknown Schwab positions (newly added outside bot).
+        
+        v-manage-persist-2026-09-15: logic now in update_track with enhanced
+        persist logic including bot_trades fallback."""
+        src = ENGINE_PATH.read_text()
+        anchor = src.find("# v-manage-persist-2026-09-15: enhanced restore logic.")
+        assert anchor != -1, "2026-09-15 marker not found"
+        window = src[anchor: anchor + 8000]
+        assert "managed_by_bot=False" in window, (
+            "positions without saved state must default to unmanaged"
+        )
+        assert "is_external = True" in window, (
+            "positions without saved state must be marked external"
         )
 
 
@@ -2758,3 +2989,878 @@ class TestEmergencyStopBotOnly:
         block = src[anchor: anchor + 1400]
         assert "_emrg_pnl" in block, (
             "trip must use the circuit-selected _emrg_pnl variable")
+
+
+# ── v-bracket-rejected-audit-fix-2026-09-10 ──────────────────────────
+
+class TestBracketRejectedAuditFix:
+    """2026-09-10 P0: _handle_bracket_rejected passed 'reason' both as
+    a positional arg (4th position) AND as a keyword arg in **details,
+    causing TypeError: _audit() got multiple values for argument 'reason'.
+
+    The _audit signature is:
+        def _audit(self, component: str, symbol, action: str, reason: str, **details)
+
+    Any call that passes reason=... as a keyword will blow up because
+    the 4th positional already fills that slot. The fix renames the
+    keyword to rejection_detail (or similar) to avoid collision.
+    """
+
+    def test_audit_signature_has_reason_as_positional(self):
+        """Verify _audit takes reason as its 4th positional arg."""
+        src = ENGINE_PATH.read_text()
+        sig_match = re.search(
+            r"def _audit\(self,\s*component:\s*str,\s*symbol,\s*action:\s*str,\s*reason:\s*str,",
+            src,
+        )
+        assert sig_match is not None, "_audit signature changed unexpectedly"
+
+    def test_no_audit_call_passes_reason_as_keyword(self):
+        """No _audit call should pass reason=... as a keyword argument,
+        since reason is a required positional parameter."""
+        src = ENGINE_PATH.read_text()
+        bad_calls = re.findall(
+            r"self\._audit\([^)]*,\s*reason\s*=",
+            src,
+            re.DOTALL,
+        )
+        assert bad_calls == [], (
+            f"_audit calls with reason=... keyword found (will cause TypeError): "
+            f"{bad_calls[:3]}"
+        )
+
+    def test_bracket_rejected_uses_rejection_detail(self):
+        """_handle_bracket_rejected must pass rejection info as
+        rejection_detail, not reason."""
+        src = ENGINE_PATH.read_text()
+        anchor = src.find("async def _handle_bracket_rejected")
+        assert anchor != -1, "_handle_bracket_rejected not found"
+        block = src[anchor: anchor + 600]
+        assert "rejection_detail=" in block, (
+            "bracket_rejected should use rejection_detail= for broker message"
+        )
+        assert "reason=" not in block.split("_audit")[1].split(")")[0], (
+            "bracket_rejected _audit call must not have reason= keyword"
+        )
+
+
+# ── v-guard-missing-signal-2026-09-10 ─────────────────────────────────
+
+class TestCloseOrderSignalKeyError:
+    """2026-09-10 hotfix: _check_order_status threw KeyError: 'signal'
+    on FILLED close orders (e.g. day_trade flatten fills on FCX).
+
+    Close orders (from _close_real_position) only carry:
+        {'symbol': ..., 'type': 'CLOSE', 'quantity': ..., 'status': ..., 'placed_time': ...}
+
+    Entry orders carry a 'signal' key with the full signal object.
+    The FILLED handler assumed 'signal' was always present.
+
+    Fix: use order_data.get('signal') and early-exit with cleanup
+    when signal is None.
+    """
+
+    def test_signal_accessed_with_get_in_check_order_status(self):
+        """_check_order_status must use .get('signal') not ['signal']."""
+        src = ENGINE_PATH.read_text()
+        marker = "v-guard-missing-signal-2026-09-10"
+        assert marker in src, "v-tag not found in engine.py"
+        idx = src.index(marker)
+        block = src[idx : idx + 500]
+        assert "signal = order_data.get('signal')" in block, (
+            "signal must be accessed with .get() to avoid KeyError"
+        )
+
+    def test_signal_none_guard_present(self):
+        """When signal is None, the code must early-exit without
+        trying to access signal attributes."""
+        src = ENGINE_PATH.read_text()
+        marker = "v-guard-missing-signal-2026-09-10"
+        idx = src.index(marker)
+        block = src[idx : idx + 1200]
+        assert "if signal is None:" in block, (
+            "must guard against signal being None"
+        )
+        assert "self.pending_orders.pop(order_id, None)" in block, (
+            "must clean up pending_orders when signal is None"
+        )
+        assert "continue" in block, (
+            "must skip the rest of the FILLED handler when signal is None"
+        )
+
+    def test_no_bare_signal_key_access_in_filled_handler(self):
+        """After the fix, no order_data['signal'] (in actual code, not
+        comments) should remain in the FILLED status handler."""
+        src = ENGINE_PATH.read_text()
+        filled_marker = "if status == 'FILLED':"
+        filled_idx = src.index(filled_marker, src.index("async def _check_order_status"))
+        elif_marker = "elif status in ['CANCELED', 'REJECTED', 'EXPIRED']:"
+        elif_idx = src.index(elif_marker, filled_idx)
+        filled_block = src[filled_idx:elif_idx]
+        lines = filled_block.split('\n')
+        code_lines = [l for l in lines if not l.strip().startswith('#')]
+        code_only = '\n'.join(code_lines)
+        bad_accesses = re.findall(r"order_data\['signal'\]", code_only)
+        assert bad_accesses == [], (
+            f"Bare order_data['signal'] still present in FILLED handler code: "
+            f"will cause KeyError on close orders"
+        )
+
+
+# ── v-hands-off-denylist-2026-09-14 ──────────────────────────────────
+
+class TestHandsOffDenylist:
+    """2026-09-11 P0 incident (KiddoKingdom LIVE): bot-only P&L circuit
+    tripped at ~-$14.7k while Schwab day PnL was +$254. Root cause:
+    _compute_bot_daily_pnl only checked managed_by_bot=False but did NOT
+    exclude is_long_term / is_external / is_manually_managed positions.
+    The circuit incorrectly counted lifetime unrealized P&L from HQGE
+    and other external/LT holdings.
+
+    Fix: align _compute_bot_daily_pnl filtering with _get_bracket_monitored_positions
+    (skip is_external, is_manually_managed, is_long_term) and add a hard
+    denylist (MU, HQGE, SPCX) as a safety net. The denylist is
+    honoured in both bot P&L computation and emergency stop flatten path."""
+
+    def test_config_has_hands_off_denylist(self):
+        """Config must expose HANDS_OFF_DENYLIST property."""
+        src = CONFIG_PATH.read_text()
+        assert "HANDS_OFF_DENYLIST" in src, (
+            "Config.HANDS_OFF_DENYLIST missing — required for P&L circuit fix"
+        )
+
+    def test_hands_off_denylist_default_symbols(self):
+        """Denylist must include MU, HQGE, SPCX by default (SNAP removed 2026-09-14)."""
+        src = CONFIG_PATH.read_text()
+        anchor = src.find("def HANDS_OFF_DENYLIST")
+        assert anchor != -1, "HANDS_OFF_DENYLIST property missing"
+        block = src[anchor:anchor + 800]
+        for sym in ['MU', 'HQGE', 'SPCX']:
+            assert sym in block, f"{sym} missing from HANDS_OFF_DENYLIST default"
+        # SNAP should NOT be in permanent denylist (removed 2026-09-14)
+        assert "'SNAP'" not in block or "SNAP removed" in block, (
+            "SNAP should not be in permanent denylist default — it's now toggleable"
+        )
+
+    def test_compute_bot_daily_pnl_excludes_external(self):
+        """_compute_bot_daily_pnl must exclude is_external positions."""
+        src = ENGINE_PATH.read_text()
+        anchor = src.find("def _compute_bot_daily_pnl")
+        assert anchor != -1, "_compute_bot_daily_pnl missing"
+        block = src[anchor:anchor + 2500]
+        assert "is_external" in block, (
+            "_compute_bot_daily_pnl must filter on is_external"
+        )
+
+    def test_compute_bot_daily_pnl_excludes_manually_managed(self):
+        """_compute_bot_daily_pnl must exclude is_manually_managed positions."""
+        src = ENGINE_PATH.read_text()
+        anchor = src.find("def _compute_bot_daily_pnl")
+        assert anchor != -1
+        block = src[anchor:anchor + 2500]
+        assert "is_manually_managed" in block, (
+            "_compute_bot_daily_pnl must filter on is_manually_managed"
+        )
+
+    def test_compute_bot_daily_pnl_excludes_long_term(self):
+        """_compute_bot_daily_pnl must exclude is_long_term positions."""
+        src = ENGINE_PATH.read_text()
+        anchor = src.find("def _compute_bot_daily_pnl")
+        assert anchor != -1
+        block = src[anchor:anchor + 2500]
+        assert "is_long_term" in block, (
+            "_compute_bot_daily_pnl must filter on is_long_term"
+        )
+
+    def test_compute_bot_daily_pnl_uses_denylist(self):
+        """_compute_bot_daily_pnl must skip symbols in HANDS_OFF_DENYLIST."""
+        src = ENGINE_PATH.read_text()
+        anchor = src.find("def _compute_bot_daily_pnl")
+        assert anchor != -1
+        block = src[anchor:anchor + 2500]
+        assert "HANDS_OFF_DENYLIST" in block or "denylist" in block.lower(), (
+            "_compute_bot_daily_pnl must consult the denylist"
+        )
+
+    def test_close_position_protects_long_term(self):
+        """_close_position_with_commentary must block is_long_term positions."""
+        src = ENGINE_PATH.read_text()
+        anchor = src.find("async def _close_position_with_commentary")
+        assert anchor != -1
+        block = src[anchor:anchor + 1200]
+        assert "is_long_term" in block, (
+            "_close_position_with_commentary must block long_term positions"
+        )
+
+    def test_close_position_respects_denylist(self):
+        """_close_position_with_commentary must block denylist symbols."""
+        src = ENGINE_PATH.read_text()
+        anchor = src.find("async def _close_position_with_commentary")
+        assert anchor != -1
+        block = src[anchor:anchor + 1200]
+        assert "denylist" in block.lower() or "HANDS_OFF_DENYLIST" in block, (
+            "_close_position_with_commentary must consult the denylist"
+        )
+
+    def test_compute_bot_daily_pnl_aligns_with_bracket_monitors(self):
+        """Bot-daily P&L filters must align with _get_bracket_monitored_positions
+        filters (the canonical list of bot-managed positions).
+
+        Both must exclude: is_external, is_manually_managed, is_long_term.
+        """
+        src = ENGINE_PATH.read_text()
+        bracket_anchor = src.find("def _get_bracket_monitored_positions")
+        pnl_anchor = src.find("def _compute_bot_daily_pnl")
+        assert bracket_anchor != -1 and pnl_anchor != -1
+
+        bracket_block = src[bracket_anchor:bracket_anchor + 800]
+        pnl_block = src[pnl_anchor:pnl_anchor + 2500]
+
+        for flag in ['is_external', 'is_manually_managed', 'is_long_term']:
+            assert flag in bracket_block, (
+                f"_get_bracket_monitored_positions must check {flag}"
+            )
+            assert flag in pnl_block, (
+                f"_compute_bot_daily_pnl must check {flag} "
+                "(align with bracket_monitored_positions)"
+            )
+
+    def test_denylist_also_filters_realized_trades(self):
+        """Realized trades from denylist symbols must also be excluded
+        from bot_daily_pnl (not just unrealized positions)."""
+        src = ENGINE_PATH.read_text()
+        anchor = src.find("def _compute_bot_daily_pnl")
+        assert anchor != -1
+        block = src[anchor:anchor + 3500]
+        trade_section = block.find("for trade in self.trade_history")
+        unrealized_section = block.find("for symbol, position in self.positions.items()")
+        assert trade_section != -1, "for trade in self.trade_history not found"
+        assert unrealized_section != -1, "for symbol, position in self.positions.items() not found"
+        realized_part = block[trade_section:unrealized_section]
+        assert "denylist" in realized_part.lower() or "trade_symbol" in realized_part, (
+            "Realized trades must also check denylist symbols"
+        )
+
+
+# ── v-late-entry-gate-attr-fix-2026-09-15 ────────────────────────────
+
+class TestLateEntryGateAttributeFix:
+    """Late-entry gate must use TradingSignal's actual attributes:
+    signal_type (not .action) and entry_price (not .price).
+    
+    Bug #65 merge introduced signal.action and signal.price which
+    do not exist on TradingSignal, causing AttributeError on LIVE
+    entry path — silent drops on ALHC/CMG/CAI."""
+
+    def test_late_entry_gate_uses_signal_type_not_action(self):
+        """Late-entry gate must use signal.signal_type, not signal.action.
+        SignalAction does not exist; TradingSignal has signal_type: SignalType."""
+        src = ENGINE_PATH.read_text()
+        marker = "v-late-entry-gate-2026-09-15"
+        assert marker in src, "late-entry gate marker not found"
+        idx = src.index(marker)
+        block = src[idx : idx + 1500]
+        assert "signal.action" not in block, (
+            "Late-entry gate must NOT use signal.action (TradingSignal has no .action)"
+        )
+        assert "SignalAction" not in block, (
+            "SignalAction does not exist; use SignalType"
+        )
+        assert "signal_type" in block, (
+            "Late-entry gate must use signal.signal_type"
+        )
+        assert "SignalType.BUY" in block, (
+            "Late-entry gate must compare against SignalType.BUY"
+        )
+
+    def test_late_entry_gate_uses_entry_price_not_price(self):
+        """Late-entry gate must use signal.entry_price, not signal.price.
+        TradingSignal has entry_price: float, not .price."""
+        src = ENGINE_PATH.read_text()
+        marker = "v-late-entry-gate-2026-09-15"
+        assert marker in src
+        idx = src.index(marker)
+        block = src[idx : idx + 1500]
+        assert "signal.price" not in block, (
+            "Late-entry gate must NOT use signal.price (TradingSignal has no .price)"
+        )
+        assert "entry_price" in block, (
+            "Late-entry gate must use entry_price (either signal.entry_price or reasoning)"
+        )
+
+    def test_late_entry_gate_uses_getattr_for_safety(self):
+        """Late-entry gate should use getattr for defensive access."""
+        src = ENGINE_PATH.read_text()
+        marker = "v-late-entry-gate-2026-09-15"
+        assert marker in src
+        idx = src.index(marker)
+        block = src[idx : idx + 1500]
+        assert "getattr(signal" in block, (
+            "Late-entry gate should use getattr for safe attribute access"
+        )
+
+
+# ── v-manage-persist-2026-09-15 ──────────────────────────────────────
+
+class TestManagedByBotPersistence:
+    """v-manage-persist-2026-09-15: restore managed_by_bot across Schwab
+    sync/restart for bot-session entries.
+
+    Core requirements:
+      - HANDS_OFF_DENYLIST (MU, HQGE, SPCX) NEVER gets managed_by_bot=True
+      - CRCL-class bot entries restored after restart/empty positions
+      - External positions stay unmanaged
+      - Relaxed qty matching (side match + saved managed_by_bot=True)
+      - bot_trades fallback when saved meta is stale
+    """
+
+    def test_config_flag_exists(self):
+        """ENABLE_MANAGED_BY_BOT_PERSIST config flag must exist and default True."""
+        src = CONFIG_PATH.read_text()
+        assert "ENABLE_MANAGED_BY_BOT_PERSIST" in src
+        assert "def ENABLE_MANAGED_BY_BOT_PERSIST" in src
+        idx = src.index("def ENABLE_MANAGED_BY_BOT_PERSIST")
+        block = src[idx:idx + 1500]
+        assert "v-manage-persist-2026-09-15" in block
+        assert "True" in block, "Default should be True"
+
+    def test_sync_positions_checks_denylist_first(self):
+        """sync_positions_with_schwab must check HANDS_OFF_DENYLIST before
+        restoring managed_by_bot=True. Denylist symbols must NEVER be
+        auto-managed regardless of saved state or bot_trades."""
+        src = ENGINE_PATH.read_text()
+        anchor = src.find("async def sync_positions_with_schwab")
+        assert anchor != -1
+        block = src[anchor:anchor + 10000]
+        assert "v-manage-persist-2026-09-15" in block
+        assert "HANDS_OFF_DENYLIST" in block, (
+            "sync_positions_with_schwab must check HANDS_OFF_DENYLIST"
+        )
+        assert "in_denylist" in block
+        denylist_idx = block.find("in_denylist")
+        restore_idx = block.find("_restore = True")
+        assert denylist_idx < restore_idx, (
+            "Denylist check must happen before restore decision"
+        )
+
+    def test_sync_positions_relaxed_qty_match(self):
+        """sync_positions_with_schwab should use relaxed qty matching.
+        Policy: side match + saved managed_by_bot=True is sufficient.
+        Qty drift from partial close should NOT disown remaining position."""
+        src = ENGINE_PATH.read_text()
+        anchor = src.find("async def sync_positions_with_schwab")
+        assert anchor != -1
+        block = src[anchor:anchor + 10000]
+        assert "relaxed" in block.lower() or "side match" in block.lower(), (
+            "Comment should document relaxed qty matching policy"
+        )
+        assert "saved.get('side') == side" in block
+        assert "abs(float(saved.get('quantity'" not in block or "_restore_from_saved" in block, (
+            "Relaxed qty matching: side match is sufficient when managed_by_bot=True"
+        )
+
+    def test_sync_positions_bot_trades_fallback(self):
+        """sync_positions_with_schwab must have bot_trades fallback
+        for when saved meta is missing or stale."""
+        src = ENGINE_PATH.read_text()
+        anchor = src.find("async def sync_positions_with_schwab")
+        assert anchor != -1
+        block = src[anchor:anchor + 10000]
+        assert "bot_trades" in block.lower()
+        assert "get_todays_bot_entries" in block, (
+            "Must call db_logger.get_todays_bot_entries for fallback"
+        )
+        assert '_restore_source = "bot_trades"' in block
+
+    def test_sync_positions_audit_logging(self):
+        """sync_positions_with_schwab must audit log restoration source."""
+        src = ENGINE_PATH.read_text()
+        anchor = src.find("async def sync_positions_with_schwab")
+        assert anchor != -1
+        block = src[anchor:anchor + 10000]
+        assert "_audit" in block
+        assert "_restore_source" in block
+        assert '"denylist"' in block, (
+            "Audit log must note when symbol was left external due to denylist"
+        )
+
+    def test_update_track_checks_denylist(self):
+        """update_track discovery path must also check HANDS_OFF_DENYLIST."""
+        src = ENGINE_PATH.read_text()
+        anchor = src.find("# v-manage-persist-2026-09-15: enhanced restore logic")
+        assert anchor != -1, (
+            "update_track must have v-manage-persist marker for restore logic"
+        )
+        block = src[anchor:anchor + 10000]
+        assert "HANDS_OFF_DENYLIST" in block
+        assert "in_denylist" in block
+        assert "denylist_update_track" in block, (
+            "update_track must audit denylist blocks"
+        )
+
+    def test_update_track_bot_trades_fallback(self):
+        """update_track must also have bot_trades fallback."""
+        src = ENGINE_PATH.read_text()
+        anchor = src.find("# v-manage-persist-2026-09-15: enhanced restore logic")
+        assert anchor != -1
+        # v-manage-persist-discovery-path-2026-09-15: function is large; expand window
+        block = src[anchor:anchor + 8000]
+        assert "get_todays_bot_entries" in block
+        assert "bot_trades_fallback" in block
+
+    def test_denylist_symbols_hardcoded(self):
+        """HANDS_OFF_DENYLIST must include MU, HQGE, SPCX."""
+        src = CONFIG_PATH.read_text()
+        anchor = src.find("def HANDS_OFF_DENYLIST")
+        assert anchor != -1
+        block = src[anchor:anchor + 1200]
+        assert "MU" in block
+        assert "HQGE" in block
+        assert "SPCX" in block
+        assert "default = [" in block, (
+            "Default denylist should be defined"
+        )
+        assert "SNAP" not in block or "removed" in block.lower(), (
+            "SNAP is NOT in permanent denylist (can be toggled)"
+        )
+
+    def test_db_logger_get_todays_bot_entries(self):
+        """DbLogger must have get_todays_bot_entries method for fallback."""
+        from pathlib import Path
+        db_logger_path = REPO_ROOT / "data_providers" / "db_logger.py"
+        src = db_logger_path.read_text()
+        assert "def get_todays_bot_entries" in src
+        assert "v-manage-persist-2026-09-15" in src
+        assert "SELECT symbol, side, entry_time" in src
+        assert "bot_trades" in src
+        assert "mode = 'live'" in src, (
+            "Should only query live-mode entries"
+        )
+
+    def test_respects_operator_toggle_off(self):
+        """If operator explicitly toggled managed_by_bot=False via
+        /api/toggle-managed-by-bot, restore must NOT override it.
+        
+        The toggle API is a pure flip. Restore only kicks in on bootstrap/
+        discovery when ownership evidence says bot-owned; it must not
+        overwrite an explicit in-memory False from a recent operator flip."""
+        src = ENGINE_PATH.read_text()
+        anchor = src.find("async def sync_positions_with_schwab")
+        assert anchor != -1
+        block = src[anchor:anchor + 12000]
+        assert "_operator_toggled_off" in block, (
+            "sync_positions_with_schwab must detect operator toggle-off"
+        )
+        assert "_saved_managed is False" in block, (
+            "Must check for explicit False (not just falsy)"
+        )
+        assert "respect" in block.lower(), (
+            "Code must document respecting operator's explicit choice"
+        )
+        assert "bot_trades" in block.lower() and "elif _operator_toggled_off" in block, (
+            "bot_trades fallback must NOT run when operator toggled off"
+        )
+
+    def test_update_track_respects_operator_toggle_off(self):
+        """_update_and_track_real_positions must also respect operator toggle."""
+        src = ENGINE_PATH.read_text()
+        anchor = src.find("# v-manage-persist-2026-09-15: enhanced restore logic.")
+        assert anchor != -1
+        block = src[anchor:anchor + 8000]
+        assert "_operator_toggled_off" in block, (
+            "update_track must detect operator toggle-off"
+        )
+        # v-manage-persist-discovery-path-2026-09-15: actual log string is update_track_skip_operator_toggle
+        assert "update_track_skip_operator_toggle" in block, (
+            "Must log when respecting operator toggle"
+        )
+
+
+# ── v-fix-config-unbound-2026-09-16 ──────────────────────────────────
+
+class TestNewsGateConfigUnboundFix:
+    """v-fix-config-unbound-2026-09-16: fix for UnboundLocalError in news gate veto.
+
+    Bug observed 2026-09-16 ET on tip 2b49868: news strategy intermittently
+    fail-closed with "local variable 'Config' referenced before assignment".
+    The root cause was that lines 1037-1038 used `Config()` directly, but
+    `Config` was imported LATER in the function at line ~1136. Python treats
+    `Config` as a local variable throughout the function scope when it sees
+    the later import, causing UnboundLocalError when the veto branch
+    executed before the import.
+
+    The fix changes lines 1037-1038 to use `_cfg_gate` which is already
+    instantiated earlier in the try block.
+    """
+
+    def test_veto_branch_uses_cfg_gate_not_config(self):
+        """The news gate veto branch must use _cfg_gate, not Config().
+
+        After the import `from core.config import Config as _CfgGate`,
+        the instantiated `_cfg_gate = _CfgGate()` must be used for
+        ATR_STOP_MULTIPLIER and ATR_REWARD_RISK_RATIO. Direct `Config()`
+        calls cause UnboundLocalError due to later import shadowing.
+        """
+        src = (REPO_ROOT / "strategies" / "news_strategy.py").read_text()
+        anchor = src.find("v-feature-snapshot-emit-2026-09-09: emit snapshot on news gate veto")
+        assert anchor != -1, "Missing veto block anchor marker"
+        
+        # Find the veto block (needs ~1200 chars to capture the full fix)
+        veto_block = src[anchor:anchor + 1200]
+        
+        # The fix marker should be present
+        assert "v-fix-config-unbound-2026-09-16" in veto_block, (
+            "Missing v-fix-config-unbound-2026-09-16 marker in veto block"
+        )
+        
+        # Must use _cfg_gate, not bare Config()
+        assert "_cfg_gate.ATR_STOP_MULTIPLIER" in veto_block, (
+            "Veto branch must use _cfg_gate.ATR_STOP_MULTIPLIER, not Config()"
+        )
+        assert "_cfg_gate.ATR_REWARD_RISK_RATIO" in veto_block, (
+            "Veto branch must use _cfg_gate.ATR_REWARD_RISK_RATIO, not Config()"
+        )
+        
+        # Must NOT have Config().ATR_STOP_MULTIPLIER in the veto block
+        assert "Config().ATR_STOP_MULTIPLIER" not in veto_block, (
+            "Veto branch must NOT use Config() — causes UnboundLocalError"
+        )
+        assert "Config().ATR_REWARD_RISK_RATIO" not in veto_block, (
+            "Veto branch must NOT use Config() — causes UnboundLocalError"
+        )
+
+    def test_except_block_has_cfg_gate_fallback(self):
+        """The except block must handle _cfg_gate being undefined.
+
+        If an exception occurs before `_cfg_gate = _CfgGate()`, the
+        except block's use of `_cfg_gate.NEWS_GATE_SINGLE_SOURCE_MULTIPLIER`
+        would raise NameError. The fix adds a try/except with fallback.
+        """
+        src = (REPO_ROOT / "strategies" / "news_strategy.py").read_text()
+        anchor = src.find("v-newsbus-gates-2026-09-09: fail-closed on gate exception")
+        assert anchor != -1, "Missing fail-closed anchor marker"
+        
+        # Find the except block (needs ~1000 chars to capture the NameError handling)
+        except_block = src[anchor:anchor + 1000]
+        
+        # Must have fallback handling for _cfg_gate
+        assert "v-fix-config-unbound-2026-09-16" in except_block, (
+            "Missing fix marker in except block"
+        )
+        # Must have NameError handling
+        assert "except NameError" in except_block or "NameError" in except_block, (
+            "Except block must handle NameError for undefined _cfg_gate"
+        )
+        # Must have hardcoded fallback value
+        assert "0.5" in except_block, (
+            "Except block must have 0.5 fallback for NEWS_GATE_SINGLE_SOURCE_MULTIPLIER"
+        )
+
+    @pytest.mark.asyncio
+    async def test_news_strategy_veto_no_unbound_error(self):
+        """Integration test: news gate veto must not raise UnboundLocalError.
+
+        Simulates the exact code path that caused the P0 bug:
+        1. NewsStrategy with a NewsBus
+        2. evaluate_gate returns a veto result
+        3. The veto branch executes (computing _stop_dist_veto, etc.)
+        4. Must complete without UnboundLocalError
+        """
+        from unittest.mock import AsyncMock, MagicMock, patch
+        from datetime import datetime, timezone
+        from core.models import MarketData
+        
+        # Create minimal market data that passes early gates
+        market_data = MarketData(
+            symbol="TEST",
+            open=100.0,
+            high=102.0,
+            low=99.0,
+            close=101.0,
+            volume=1000000,
+            timestamp=datetime.now(timezone.utc),
+            timeframe="5m",
+            indicators={
+                "sma_50": 95.0,
+                "sma_20": 98.0,
+                "macd": 0.5,
+                "macd_signal": 0.3,
+                "rsi": 52.0,
+                "atr": 2.0,
+                "volume_ratio": 1.5,
+            },
+        )
+        
+        # Mock NewsBus that returns a veto
+        mock_bus = AsyncMock()
+        mock_veto_result = MagicMock()
+        mock_veto_result.action = MagicMock()
+        mock_veto_result.action.value = "veto_stale"
+        mock_veto_result.is_veto.return_value = True
+        mock_veto_result.size_multiplier = 0.0
+        mock_veto_result.news_age_sec = 3600.0
+        mock_veto_result.source_tier_min = 2
+        mock_veto_result.corroboration_n = 1
+        mock_veto_result.reason = "all_news_stale"
+        mock_bus.evaluate_gate.return_value = mock_veto_result
+        mock_bus.get_items.return_value = []
+        
+        # Mock commentary system
+        mock_commentary = MagicMock()
+        mock_commentary.add_commentary = MagicMock()
+        
+        # Create strategy and set the news bus
+        from strategies.news_strategy import FreeNewsSignalStrategy
+        strategy = FreeNewsSignalStrategy(mock_commentary, news_bus=mock_bus)
+        
+        # Mock the aggregator to return enough news items to pass early gates
+        from core.models import NewsItem, NewsImpact
+        mock_news = [
+            NewsItem(
+                id=f"test{i}",
+                symbol="TEST",
+                headline=f"Positive test headline {i}",
+                summary="Test summary",
+                source="Yahoo Finance",
+                url=f"http://test.com/{i}",
+                published_time=datetime.now(timezone.utc),
+                sentiment_score=0.6,
+                sentiment_confidence=0.6,
+                impact=NewsImpact.MEDIUM,
+                relevance_score=0.8,
+            )
+            for i in range(6)
+        ]
+        
+        with patch.object(strategy.aggregator, "fetch_news", return_value=mock_news):
+            # This should NOT raise UnboundLocalError
+            # Before the fix, line 1037 `Config().ATR_STOP_MULTIPLIER` would fail
+            try:
+                result = await strategy.generate_signal_with_commentary(market_data)
+                # Veto returns None — that's expected
+                assert result is None, "Veto should return None"
+            except UnboundLocalError as e:
+                pytest.fail(
+                    f"UnboundLocalError raised in news gate veto path: {e}. "
+                    "This is the bug v-fix-config-unbound-2026-09-16 should fix."
+                )
+
+
+# ── v-correlation-ignore-unmanaged-2026-09-18 ────────────────────────
+
+class TestCorrelationIgnoreUnmanaged:
+    """Correlation guard must exclude unmanaged/external positions and
+    hands-off denylist symbols from cluster checks when configured.
+
+    Problem: 2026-09-18 QCOM day-trade momentum was blocked because NVDA
+    (unmanaged external hold) and MU (hands-off permanent) were in the
+    semis_and_chip_adjacent group. External/hands-off positions don't
+    represent active bot risk.
+
+    Fix: add CORRELATION_IGNORE_UNMANAGED and CORRELATION_IGNORE_HANDS_OFF
+    config flags (default True) that filter active_positions before the
+    cluster check."""
+
+    def test_config_flags_exist(self):
+        """Config must have CORRELATION_IGNORE_UNMANAGED and CORRELATION_IGNORE_HANDS_OFF."""
+        from core.config import Config
+        cfg = Config()
+        assert hasattr(cfg, "CORRELATION_IGNORE_UNMANAGED")
+        assert hasattr(cfg, "CORRELATION_IGNORE_HANDS_OFF")
+
+    def test_config_flags_default_true(self):
+        """Both flags should default to True (ignore unmanaged+hands-off)."""
+        from core.config import Config
+        cfg = Config()
+        assert cfg.CORRELATION_IGNORE_UNMANAGED is True
+        assert cfg.CORRELATION_IGNORE_HANDS_OFF is True
+
+    def test_engine_has_correlation_filter_logic(self):
+        """Engine must filter positions for correlation based on the flags."""
+        src = ENGINE_PATH.read_text()
+        assert "v-correlation-ignore-unmanaged-2026-09-18" in src
+
+    def test_correlation_filter_checks_managed_by_bot(self):
+        """Correlation filter must check managed_by_bot attribute."""
+        src = ENGINE_PATH.read_text()
+        idx = src.index("v-correlation-ignore-unmanaged-2026-09-18")
+        block = src[idx:idx + 3000]
+        assert "managed_by_bot" in block, (
+            "Correlation filter must check managed_by_bot to exclude external"
+        )
+
+    def test_correlation_filter_checks_hands_off_denylist(self):
+        """Correlation filter must check HANDS_OFF_DENYLIST."""
+        src = ENGINE_PATH.read_text()
+        idx = src.index("v-correlation-ignore-unmanaged-2026-09-18")
+        block = src[idx:idx + 3000]
+        assert "HANDS_OFF_DENYLIST" in block or "_hands_off_denylist" in block, (
+            "Correlation filter must check hands-off denylist"
+        )
+
+    def test_correlation_uses_filtered_set(self):
+        """Correlation overlap must use the filtered _correlation_positions set."""
+        src = ENGINE_PATH.read_text()
+        idx = src.index("for group_name, members in _CORRELATED_GROUPS")
+        block = src[idx:idx + 500]
+        assert "_correlation_positions & members" in block, (
+            "Correlation overlap must use _correlation_positions, not active_positions"
+        )
+
+
+class TestCorrelationIgnoreUnmanagedBehavior:
+    """Functional tests verifying correlation filtering behavior.
+
+    These tests verify the filter logic unit (not full engine integration)
+    by simulating the filtering behavior implemented in the correlation guard."""
+
+    def test_unmanaged_nvda_does_not_block_qcom(self):
+        """NVDA with managed_by_bot=False should NOT block QCOM entry.
+
+        Scenario from 2026-09-18: NVDA is an external/unmanaged hold,
+        MU is permanent hands-off. QCOM day-trade momentum should enter."""
+        from core.config import Config
+        cfg = Config()
+        hands_off_denylist = cfg.HANDS_OFF_DENYLIST
+
+        # Simulate position dict
+        class MockPosition:
+            def __init__(self, symbol, managed_by_bot):
+                self.symbol = symbol
+                self.managed_by_bot = managed_by_bot
+
+        positions = {
+            "NVDA": MockPosition("NVDA", False),  # unmanaged external
+            "MU": MockPosition("MU", False),      # hands-off denylist
+        }
+
+        # Apply the filter logic (same as engine.py)
+        _corr_ignore_unmanaged = True
+        _corr_ignore_hands_off = True
+        _hands_off = hands_off_denylist if _corr_ignore_hands_off else frozenset()
+
+        correlation_positions = set()
+        for sym, pos in positions.items():
+            if _corr_ignore_hands_off and sym.upper() in _hands_off:
+                continue
+            if _corr_ignore_unmanaged and not getattr(pos, 'managed_by_bot', False):
+                continue
+            correlation_positions.add(sym)
+
+        # Neither NVDA nor MU should be in correlation_positions
+        assert "NVDA" not in correlation_positions, "Unmanaged NVDA should be excluded"
+        assert "MU" not in correlation_positions, "Hands-off MU should be excluded"
+
+        # Verify QCOM entry would NOT be blocked
+        semis_group = {"NVDA", "AMD", "INTC", "MU", "AVGO", "QCOM"}
+        overlap = correlation_positions & semis_group
+        assert len(overlap) == 0, "No blocking overlap should exist"
+
+    def test_managed_amd_still_blocks_qcom(self):
+        """AMD with managed_by_bot=True SHOULD block QCOM entry.
+
+        Bot-managed positions represent active risk that should still
+        trigger the correlation guard."""
+        from core.config import Config
+        cfg = Config()
+        hands_off_denylist = cfg.HANDS_OFF_DENYLIST
+
+        class MockPosition:
+            def __init__(self, symbol, managed_by_bot):
+                self.symbol = symbol
+                self.managed_by_bot = managed_by_bot
+
+        positions = {
+            "AMD": MockPosition("AMD", True),   # bot-managed active position
+            "NVDA": MockPosition("NVDA", False),  # unmanaged external
+        }
+
+        _corr_ignore_unmanaged = True
+        _corr_ignore_hands_off = True
+        _hands_off = hands_off_denylist if _corr_ignore_hands_off else frozenset()
+
+        correlation_positions = set()
+        for sym, pos in positions.items():
+            if _corr_ignore_hands_off and sym.upper() in _hands_off:
+                continue
+            if _corr_ignore_unmanaged and not getattr(pos, 'managed_by_bot', False):
+                continue
+            correlation_positions.add(sym)
+
+        # AMD should be in correlation_positions (managed=True)
+        assert "AMD" in correlation_positions, "Managed AMD should be included"
+        # NVDA should NOT be in (unmanaged)
+        assert "NVDA" not in correlation_positions, "Unmanaged NVDA should be excluded"
+
+        # QCOM entry would be blocked by AMD
+        semis_group = {"NVDA", "AMD", "INTC", "MU", "AVGO", "QCOM"}
+        overlap = correlation_positions & semis_group
+        assert "AMD" in overlap, "AMD should block QCOM via correlation"
+
+    def test_flags_disabled_uses_all_positions(self):
+        """When flags are False, all positions count for correlation."""
+        class MockPosition:
+            def __init__(self, symbol, managed_by_bot):
+                self.symbol = symbol
+                self.managed_by_bot = managed_by_bot
+
+        positions = {
+            "NVDA": MockPosition("NVDA", False),  # unmanaged
+            "AMD": MockPosition("AMD", True),     # managed
+        }
+
+        # Both flags disabled
+        _corr_ignore_unmanaged = False
+        _corr_ignore_hands_off = False
+
+        if _corr_ignore_unmanaged or _corr_ignore_hands_off:
+            correlation_positions = set()
+            for sym, pos in positions.items():
+                if _corr_ignore_hands_off and sym.upper() in frozenset():
+                    continue
+                if _corr_ignore_unmanaged and not getattr(pos, 'managed_by_bot', False):
+                    continue
+                correlation_positions.add(sym)
+        else:
+            correlation_positions = set(positions.keys())
+
+        # Both NVDA and AMD should be counted
+        assert "NVDA" in correlation_positions, "NVDA should be counted when flags off"
+        assert "AMD" in correlation_positions, "AMD should be counted when flags off"
+
+    def test_hands_off_denylist_symbols_excluded(self):
+        """MU, HQGE, SPCX (hands-off denylist) should be excluded when flag on."""
+        from core.config import Config
+        cfg = Config()
+        hands_off_denylist = cfg.HANDS_OFF_DENYLIST
+
+        assert "MU" in hands_off_denylist
+        assert "HQGE" in hands_off_denylist
+        assert "SPCX" in hands_off_denylist
+
+        class MockPosition:
+            def __init__(self, symbol, managed_by_bot):
+                self.symbol = symbol
+                self.managed_by_bot = managed_by_bot
+
+        positions = {
+            "MU": MockPosition("MU", True),    # Even with managed=True, denylist wins
+            "HQGE": MockPosition("HQGE", True),
+            "AMD": MockPosition("AMD", True),  # Not in denylist
+        }
+
+        _corr_ignore_unmanaged = True
+        _corr_ignore_hands_off = True
+        _hands_off = hands_off_denylist
+
+        correlation_positions = set()
+        for sym, pos in positions.items():
+            if _corr_ignore_hands_off and sym.upper() in _hands_off:
+                continue
+            if _corr_ignore_unmanaged and not getattr(pos, 'managed_by_bot', False):
+                continue
+            correlation_positions.add(sym)
+
+        assert "MU" not in correlation_positions, "MU (denylist) should be excluded"
+        assert "HQGE" not in correlation_positions, "HQGE (denylist) should be excluded"
+        assert "AMD" in correlation_positions, "AMD (not denylist, managed) should be included"

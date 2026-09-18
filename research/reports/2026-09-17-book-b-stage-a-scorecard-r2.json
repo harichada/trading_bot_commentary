@@ -1,0 +1,228 @@
+{
+  "as_of": "2026-09-17T16:46:49-04:00",
+  "book": "B",
+  "stage": "A",
+  "scorecard_rev": "r2",
+  "counterfactual": {
+    "name": "GPU_CRITIC_CONTAM_LEXICON_ENABLE=ON",
+    "note": "Lexicon-ON counterfactual applied on stored critic cards (live critic not re-inferred). If lexicon would set contam>=0.65 on headline|summary|seed text fields (NOT symbols_seen), treat as suppress even if stored gpu_critic.contamination_risk was 0.",
+    "pr": 93,
+    "tip_user": "38117b9",
+    "tip_local_lexicon_commit": "f648b0a",
+    "lexicon_tokens": [
+      "corning",
+      "glw",
+      "nyse:glw",
+      "motor oil",
+      "oil crisis",
+      "crude oil",
+      "petroleum",
+      "opec",
+      "wti",
+      "brent",
+      "cohr",
+      "cien",
+      "aaoi"
+    ],
+    "ai_compute_triggers": [
+      "anthropic",
+      "amodei",
+      "openai",
+      "frontier ai",
+      "ai slowdown",
+      "gpu demand",
+      "data center",
+      "data-center",
+      "datacenter",
+      "ai compute",
+      "ai infrastructure"
+    ],
+    "bump_to": 0.65,
+    "ai_headline_exception": true
+  },
+  "seed": "/workspace/briefs/golden_sets/2026-09-14-theme-shock-seed.json",
+  "policy_brief": "/workspace/briefs/2026-09-14-gpu-sense-stage-a.md",
+  "prior_scorecard": "/workspace/briefs/2026-09-17-book-b-stage-a-scorecard.json",
+  "rca": "/workspace/briefs/2026-09-17-book-b-contam-rca.md",
+  "seed_tip": "f6fb73c",
+  "seed_as_of": "2026-09-14T16:05:15.089155-04:00",
+  "book_b_decision_rule": {
+    "text": "Book B hard_skip IFF (1) keyword ThemeShock candidate (golden-set row = Book A keyword path) AND (2) gpu_critic nest present (never fabricated) AND (3) critic does NOT suppress. Suppress if ANY: action in shadow_would_suppress/would_suppress*; contamination_risk>=0.6; matched_field=summary with top_theme not in AI_ALIGN; OR top_theme not in AI_ALIGN (proxy for Stage A theme_prob[theme]≥τ confirm — τ unset in brief). AI_ALIGN={ai_compute, ai_mega_cap, memory_hbm}. Missing critic → no_attach (counts against recall; excluded from Book B hard_skip numerators).",
+    "ai_align_themes": [
+      "ai_compute",
+      "ai_mega_cap",
+      "memory_hbm"
+    ],
+    "contam_threshold": 0.6,
+    "suppress_actions": [
+      "shadow_would_suppress",
+      "would_suppress_hard_skip",
+      "would_suppress",
+      "shadow_would_suppress_hard_skip"
+    ],
+    "book_a": "keyword ThemeShock baseline via expected_action on labels",
+    "note": "Live critic actions on seed are all shadow_pass (0× would_suppress); gate therefore hinges on top_theme AI_ALIGN + contam/summary filters per Stage A brief §1.",
+    "lexicon_counterfactual": "When GPU_CRITIC_CONTAM_LEXICON_ENABLE counterfactual ON: if any lexicon token in headline|summary|matched_text (case-insensitive substring) AND headline lacks AI_COMPUTE_TRIGGERS, effective contamination_risk = max(stored, 0.65) → suppress via contam>=0.6 gate."
+  },
+  "counts": {
+    "n_fp": 20,
+    "n_tp": 20,
+    "n_labeled": 40,
+    "n_sessions": null,
+    "attach_any": 38,
+    "attach_any_pct": 95.0,
+    "attach_full": 35,
+    "attach_full_pct": 87.5,
+    "fp_attach_any": 20,
+    "tp_attach_any": 18,
+    "fp_attach_full": 19,
+    "tp_attach_full": 16,
+    "n_book_b_hard_skip": 18,
+    "n_book_b_hard_skip_fp": 0,
+    "n_book_b_hard_skip_tp": 18,
+    "n_lexicon_suppress_fp": 20,
+    "n_lexicon_suppress_tp": 0
+  },
+  "metrics": {
+    "precision": 1.0,
+    "contamination_fp_rate": 0.0,
+    "anthropic_recall": 0.9,
+    "anthropic_headline_subset_recall": 1.0,
+    "p95_infer_ms": 19.704174804687486,
+    "p50_infer_ms": 7.7235107421875,
+    "sessions": null
+  },
+  "before_after": {
+    "contam_fp_rate": {
+      "before": 0.15,
+      "after": 0.0
+    },
+    "precision": {
+      "before": 0.857143,
+      "after": 1.0
+    },
+    "anthropic_recall": {
+      "before": 0.9,
+      "after": 0.9
+    },
+    "n_book_b_hard_skip": {
+      "before": 21,
+      "after": 18
+    },
+    "fp_still_hard_skip": {
+      "before": [
+        "f59b23116fcb",
+        "9579cf0d1b4f",
+        "2d83a5133335"
+      ],
+      "after": []
+    }
+  },
+  "gates": {
+    "n_labeled": {
+      "floor": ">=80 labeled OR >=10 sessions",
+      "n_labeled": 40,
+      "n_sessions": null,
+      "status": "INCOMPLETE"
+    },
+    "precision": {
+      "floor": 0.65,
+      "value": 1.0,
+      "status": "PASS",
+      "n_book_b_hard_skip": 18,
+      "n_tp_among_hard_skip": 18
+    },
+    "contamination_fp_rate": {
+      "floor": 0.05,
+      "op": "<=",
+      "value": 0.0,
+      "status": "PASS",
+      "n_fp_still_hard_skip": 0,
+      "n_fp": 20,
+      "fp_still_hard_skip_event_ids": [],
+      "prior_leaks_lexicon_killed": [
+        {
+          "event_id": "f59b23116fcb",
+          "lexicon_hits": [
+            "corning"
+          ],
+          "stored_contam": 0.0,
+          "effective_contam": 0.65,
+          "decision": "suppress",
+          "headline": "Why Corning Plunged Today"
+        },
+        {
+          "event_id": "9579cf0d1b4f",
+          "lexicon_hits": [
+            "motor oil",
+            "oil crisis"
+          ],
+          "stored_contam": 0.0,
+          "effective_contam": 0.65,
+          "decision": "suppress",
+          "headline": "The Oil Crisis Has Reached Costco's Motor Oil Aisle"
+        },
+        {
+          "event_id": "2d83a5133335",
+          "lexicon_hits": [
+            "corning"
+          ],
+          "stored_contam": 0.0,
+          "effective_contam": 0.65,
+          "decision": "suppress",
+          "headline": "Corning Rides on Expanding Partner Base: Will it Boost Prospects?"
+        }
+      ]
+    },
+    "anthropic_recall": {
+      "floor": 0.8,
+      "value": 0.9,
+      "status": "PASS",
+      "definition": "TPs in Anthropic/ai_compute golden set retaining Book B hard_skip (denom=all n_tp)",
+      "n_retained": 18,
+      "n_tp": 20,
+      "anthropic_headline_subset_recall": 1.0,
+      "anthropic_headline_subset_n": 6,
+      "anthropic_headline_subset_retained": 6,
+      "tp_no_attach_event_ids": [
+        "63251da54499",
+        "8e3bb2b090ef"
+      ],
+      "tp_lexicon_collateral_event_ids": []
+    },
+    "p95_infer_ms": {
+      "floor": "<800",
+      "value": 19.704174804687486,
+      "p50": 7.7235107421875,
+      "n_infer": 38,
+      "status": "PASS",
+      "note": "unchanged stored infer_ms (no live re-infer)"
+    }
+  },
+  "overall_gate_status": "INCOMPLETE",
+  "live_hard_skip_rec": "NO",
+  "promote": false,
+  "theme_hard_skip_require_gpu": false,
+  "fp_still_hard_skip": [],
+  "tp_missed": [
+    {
+      "event_id": "63251da54499",
+      "book_b": "no_attach",
+      "reasons": [
+        "missing_gpu_critic"
+      ],
+      "headline": "AI stocks fall after Amodei, Altman, and Musk back AI slowdo",
+      "label": "TP_ai_compute"
+    },
+    {
+      "event_id": "8e3bb2b090ef",
+      "book_b": "no_attach",
+      "reasons": [
+        "missing_gpu_critic"
+      ],
+      "headline": "Why Is Nvidia (NASDAQ:NVDA) Stock Falling Today? NVDA Drops",
+      "label": "TP_ai_compute"
+    }
+  ],
+  "cos_line": "Book B Stage A r2 (lexicon-ON CF tip 38117b9/#93): n=40 INCOMPLETE; precision=100.0% PASS; contam_fp=15.0%→0.0% PASS (0/20; prior leaks f59b/9579/2d83 lexicon-killed); anthropic/ai_recall=90.0% PASS; p95_infer=19.7ms PASS; LIVE hard_skip=NO; HOLD THEME_HARD_SKIP_REQUIRE_GPU."
+}

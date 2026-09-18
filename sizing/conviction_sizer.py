@@ -145,3 +145,115 @@ class ConvictionSizerShadow:
         except Exception as exc:
             logger.debug("conviction_sizer shadow error: %s", exc)
             return None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# v-feature-snapshot-emit-2026-09-09: news gate multiplier shadow comparison
+# ─────────────────────────────────────────────────────────────────────────────
+GATE_MULT_SHADOW_LEDGER = "news_gate_multiplier_shadow.ndjson"
+
+
+@dataclass(frozen=True)
+class GateMultiplierShadowEntry:
+    """Shadow entry comparing news gate multiplier vs placeholder model score."""
+    timestamp: str
+    symbol: str
+    strategy: str
+    news_gate_multiplier: float
+    corroboration_n: int
+    news_age_sec: Optional[float]
+    source_tier_min: Optional[int]
+    model_score_placeholder: float  # Placeholder for future inference model
+    delta: float  # gate_mult - model_score (for measuring gate vs model divergence)
+
+
+class NewsGateMultiplierShadow:
+    """v-feature-snapshot-emit-2026-09-09: shadow log comparing news gate
+    multiplier vs a future model score.
+    
+    This enables offline analysis of whether the deterministic news gate
+    (corroboration + freshness + source tier) agrees with what a trained
+    model would produce. When inference is enabled, this comparison helps
+    identify miscalibration between gates and learned signals.
+    
+    No trade effect — pure observability for gate/model alignment research.
+    """
+
+    def __init__(self, ledger_path: Path | str = GATE_MULT_SHADOW_LEDGER) -> None:
+        self._ledger_path = Path(ledger_path)
+
+    def log_comparison(
+        self,
+        symbol: str,
+        strategy: str,
+        news_gate_multiplier: float,
+        corroboration_n: int,
+        news_age_sec: Optional[float] = None,
+        source_tier_min: Optional[int] = None,
+        model_score_placeholder: Optional[float] = None,
+    ) -> Optional[GateMultiplierShadowEntry]:
+        """Log a comparison between news gate multiplier and model score.
+        
+        Args:
+            symbol: Ticker symbol.
+            strategy: Strategy name (e.g., 'free_news_sentiment').
+            news_gate_multiplier: Deterministic gate output (0.0, 0.5, or 1.0).
+            corroboration_n: Number of distinct sources.
+            news_age_sec: Age of freshest news.
+            source_tier_min: Best source tier (1=primary).
+            model_score_placeholder: Future model inference output (0-1).
+                Default 0.5 (neutral) until inference is enabled.
+        
+        Returns:
+            GateMultiplierShadowEntry if logged successfully, None on error.
+        """
+        if model_score_placeholder is None:
+            model_score_placeholder = 0.5  # Neutral placeholder
+        
+        delta = news_gate_multiplier - model_score_placeholder
+        
+        entry = GateMultiplierShadowEntry(
+            timestamp=datetime.now(timezone.utc).isoformat(),
+            symbol=symbol,
+            strategy=strategy,
+            news_gate_multiplier=news_gate_multiplier,
+            corroboration_n=corroboration_n,
+            news_age_sec=news_age_sec,
+            source_tier_min=source_tier_min,
+            model_score_placeholder=model_score_placeholder,
+            delta=round(delta, 4),
+        )
+        
+        try:
+            entry_dict = {
+                "timestamp": entry.timestamp,
+                "symbol": entry.symbol,
+                "strategy": entry.strategy,
+                "news_gate_multiplier": entry.news_gate_multiplier,
+                "corroboration_n": entry.corroboration_n,
+                "news_age_sec": entry.news_age_sec,
+                "source_tier_min": entry.source_tier_min,
+                "model_score_placeholder": entry.model_score_placeholder,
+                "delta": entry.delta,
+            }
+            with open(self._ledger_path, "a") as f:
+                f.write(json.dumps(entry_dict) + "\n")
+            return entry
+        except OSError as exc:
+            logger.warning("news_gate_mult_shadow: ledger write failed: %s", exc)
+            return None
+        except Exception as exc:
+            logger.debug("news_gate_mult_shadow error: %s", exc)
+            return None
+
+
+# Singleton for easy access from risk manager
+_gate_mult_shadow: Optional[NewsGateMultiplierShadow] = None
+
+
+def get_gate_mult_shadow() -> NewsGateMultiplierShadow:
+    """Get or create the singleton NewsGateMultiplierShadow."""
+    global _gate_mult_shadow
+    if _gate_mult_shadow is None:
+        _gate_mult_shadow = NewsGateMultiplierShadow()
+    return _gate_mult_shadow

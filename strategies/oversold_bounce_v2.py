@@ -189,6 +189,7 @@ class OversoldBounceV2Strategy(TradingStrategyWithCommentary):
             if not (rsi < 30 and close < bb_lower):
                 self._log_decision(
                     market_data, "skip", "gate_a_not_extreme",
+                    gate_name="gate_a_statistical_extreme",
                     rsi=round(rsi, 2), close=close, bb_lower=bb_lower,
                 )
                 return None
@@ -198,6 +199,7 @@ class OversoldBounceV2Strategy(TradingStrategyWithCommentary):
             if not (volume_ratio > 2.0):
                 self._log_decision(
                     market_data, "skip", "gate_b_no_capitulation",
+                    gate_name="gate_b_capitulation_volume",
                     volume_ratio=round(volume_ratio, 2),
                 )
                 return None
@@ -212,6 +214,7 @@ class OversoldBounceV2Strategy(TradingStrategyWithCommentary):
             if not bar_has_capitulation_structure(open_, high, low, close, prev_low):
                 self._log_decision(
                     market_data, "skip", "gate_c_no_capitulation_structure",
+                    gate_name="gate_c_bar_structure",
                     open=open_, high=high, low=low, close=close,
                     prev_low=prev_low,
                 )
@@ -221,7 +224,9 @@ class OversoldBounceV2Strategy(TradingStrategyWithCommentary):
             atr = float(indicators.get("atr", 0))
             if atr <= 0:
                 self._log_decision(
-                    market_data, "skip", "gate_d_invalid_atr", atr=atr,
+                    market_data, "skip", "gate_d_invalid_atr",
+                    gate_name="gate_d_support_level",
+                    atr=atr,
                 )
                 return None
             lows_50 = indicators.get("lows_50") or []
@@ -229,6 +234,7 @@ class OversoldBounceV2Strategy(TradingStrategyWithCommentary):
             if nearest_swing is None:
                 self._log_decision(
                     market_data, "skip", "gate_d_no_nearby_support",
+                    gate_name="gate_d_support_level",
                     atr=round(atr, 3), lows_seen=len(lows_50),
                 )
                 return None
@@ -253,6 +259,7 @@ class OversoldBounceV2Strategy(TradingStrategyWithCommentary):
             if regime_factor == 0.0:
                 self._log_decision(
                     market_data, "skip", "gate_e_strong_down_market",
+                    gate_name="gate_e_market_regime",
                     spy_slope_pct=round(slope, 3),
                 )
                 return None
@@ -272,6 +279,7 @@ class OversoldBounceV2Strategy(TradingStrategyWithCommentary):
                     if news_fresh_count > 0 and news_avg_sent < -0.3:
                         self._log_decision(
                             market_data, "skip", "gate_f_adverse_news",
+                            gate_name="gate_f_news_check",
                             fresh_count=news_fresh_count,
                             avg_sent=round(news_avg_sent, 3),
                         )
@@ -326,8 +334,26 @@ class OversoldBounceV2Strategy(TradingStrategyWithCommentary):
                 reasoning=reasoning,
             )
 
+            # v-feature-snapshot-2026-09-09: build regime context for snapshot
+            regime_ctx = None
+            try:
+                from core.decision_snapshot import RegimeContext
+                regime_ctx = RegimeContext.from_context(
+                    regime="oversold",
+                    spy_slope_pct=slope,
+                    vix=None,
+                    allocator_result=None,
+                )
+            except ImportError:
+                pass
+
             self._log_decision(
                 market_data, "signal_buy", "oversold_bounce_v2_pass",
+                confidence=0.65,
+                would_entry_price=close,
+                would_stop_loss=stop_loss,
+                would_take_profit=take_profit,
+                regime_context=regime_ctx,
                 rsi=round(rsi, 2),
                 volume_ratio=round(volume_ratio, 2),
                 atr=round(atr, 4),
@@ -342,7 +368,11 @@ class OversoldBounceV2Strategy(TradingStrategyWithCommentary):
             return signal
 
         except Exception as exc:
-            self._log_decision(market_data, "error", "exception", err=str(exc))
+            self._log_decision(
+                market_data, "error", "exception",
+                gate_name="error_handler",
+                err=str(exc),
+            )
             logger.debug(
                 "oversold_bounce_v2 error for %s: %s",
                 getattr(market_data, "symbol", "?"), exc,

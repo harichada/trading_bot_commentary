@@ -28,6 +28,7 @@ from core.position_state import (
 from core.quote_cache import QuoteCache, CachedQuote
 from core.task_supervisor import TaskSupervisor, TaskPriority, SupervisorState
 from core.schwab_stream import SchwabQuoteStream, STREAMING_AVAILABLE
+from core.order_monitor import OrderMonitor
 from core.price_book import PriceBook, PriceObject
 from core.calculations import CalculationEngine, PnLResult
 from analysis.anomaly import AnomalyDetector, DataValidator
@@ -41,7 +42,10 @@ from risk.manager import RiskManagerWithCommentary
 from risk.backtest import PerformanceAnalyzer
 from strategies.builtin import (BreakoutStrategyWithCommentary,
                                 MeanReversionStrategyWithCommentary,
-                                MomentumStrategyWithCommentary)
+                                MomentumStrategyWithCommentary,
+                                DayTradeMomentumStrategy,
+                                DayTradeMomentumShortStrategy,
+                                ORBContractionRVOLStrategy)
 from strategies.news_strategy import FreeNewsSignalStrategy
 from data_providers.realtime import RealTimeDataProvider, DummyDataProvider
 from data_providers.schwab import SchwabDataProvider
@@ -115,6 +119,10 @@ class TradingEngineWithCommentary:
         PriceBook.install(self.price_book)
         self._supervisor: Optional[TaskSupervisor] = None
         self._quote_fetch_sem: Optional[asyncio.Semaphore] = None
+        # v-phase-b-order-monitor-2026-09-14: OrderMonitor instance (composed)
+        self._order_monitor: Optional[OrderMonitor] = None
+        # v-active-open-desk-2026-09-14: continuous monitor for open trades
+        self._active_open_desk = None
         # Set by quote_streamer when it observes itself stale > HARD threshold.
         # analysis_loop checks this gate before signalling new entries.
         self._quote_streamer_healthy: bool = True
@@ -316,6 +324,49 @@ class TradingEngineWithCommentary:
         if os.environ.get("ENABLE_MOMENTUM", "0") == "1":
             self.strategies.append(MomentumStrategyWithCommentary(self.commentary))
         self.strategies.append(FreeNewsSignalStrategy(self.commentary))
+        
+        # v-day-trade-momentum-desk-2026-09-10: supervised day-trade momentum
+        # for Yahoo day_gainers/losers/most-active movers. Entry logic is like
+        # a human scalper: RS vs SPY, volume surge, pullback/breakout confirmation.
+        # Market context gates are SIZE-BASED (reduce, don't hard-block) for this
+        # lane. News is OPTIONAL (confirmation/size bump, not a veto).
+        # Enabled by ENABLE_DAY_TRADE_MOMENTUM (default True).
+        if Config().ENABLE_DAY_TRADE_MOMENTUM:
+            self.strategies.append(DayTradeMomentumStrategy(self.commentary))
+            logger.info("day_trade_momentum: strategy enabled")
+
+        # v-day-trade-short-2026-09-17: Day-trade momentum SHORT strategy.
+        # Modular short path mirroring the long day-trade momentum with
+        # inverse logic: weak RS vs SPY, breakdown patterns, direction bearish.
+        # SHADOW-FIRST: LIVE disabled by default (DAY_TRADE_SHORT_LIVE_ENTRIES_ENABLED=0).
+        # Respects HANDS_OFF_DENYLIST (MU, HQGE, SPCX) — never shorts these.
+        if Config().ENABLE_DAY_TRADE_SHORT:
+            self.strategies.append(DayTradeMomentumShortStrategy(self.commentary))
+            logger.info("day_trade_momentum_short: strategy enabled (LIVE=%s)",
+                        Config().DAY_TRADE_SHORT_LIVE_ENTRIES_ENABLED)
+
+        # v-orb-prototype-2026-09-10: ORB (Opening Range Breakout) + volatility
+        # contraction + relative volume (RVOL) prototype strategy.
+        # Hari APPROVED order: #1 ORB+contraction+RVOL (this), then #2 RVOL
+        # continuation, then #3 Gao late-day.
+        #
+        # CRITICAL: This strategy HARD-SKIPS when regime is risk_off (NOT
+        # size-down). Unlike momentum which reduces size, ORB does NOT signal
+        # at all in risk_off — ORB is a directional bet that doesn't make
+        # sense when the market is in panic mode.
+        #
+        # Primary symbols: SPY/QQQ first (Hari instruction).
+        # LIVE entries gated by ORB_LIVE_ENTRIES_ENABLED (default False).
+        if Config().ENABLE_ORB_STRATEGY:
+            self.strategies.append(ORBContractionRVOLStrategy(self.commentary))
+            logger.info("orb_contraction_rvol: strategy enabled (sim_shadow=%s, live=%s)",
+                        Config().ORB_SIM_SHADOW_ENABLED,
+                        Config().ORB_LIVE_ENTRIES_ENABLED)
+        
+        # v-feature-snapshot-2026-09-09: wire engine ref on all strategies
+        # so they can emit DecisionSnapshots via db_logger
+        for strat in self.strategies:
+            strat._engine_ref = self
         
 	    # Initialize brain and exit manager
         self.brain = TradingBrain()
@@ -573,6 +624,105 @@ class TradingEngineWithCommentary:
                     position, "thesis_revalidation_broken"
                 )
 
+    async def _check_news_thesis_flip(
+        self, symbol: str, position, current_price: float
+    ) -> bool:
+        """v-newsbus-gates-2026-09-09: check if fresh news has flipped against position.
+        
+        Uses the NewsBus directly (no external API call) to detect when
+        sentiment has reversed against an open news-driven position.
+        
+        Returns True if the position should be flagged for exit (thesis flipped).
+        Returns False otherwise (no flip, non-news trade, or feature disabled).
+        
+        Gates:
+          - ENABLE_NEWS_THESIS_EXIT must be True
+          - Position must be from a news strategy
+          - Fresh news (< NEWS_GATE_MAX_AGE_SEC) must exist
+          - Sentiment must have flipped past NEWS_THESIS_EXIT_SENTIMENT_FLIP
+        """
+        cfg = Config()
+        if not cfg.ENABLE_NEWS_THESIS_EXIT:
+            return False
+        
+        # Only applies to news-driven positions
+        strategy = (getattr(position, 'reasoning', {}) or {}).get('strategy', '')
+        if 'news' not in strategy.lower():
+            return False
+        
+        # Need a NewsBus to check
+        if self._news_bus is None:
+            return False
+        
+        try:
+            # Get aggregate sentiment from fresh news
+            agg = await self._news_bus.get_aggregate_sentiment(
+                symbol,
+                max_age_sec=cfg.NEWS_GATE_MAX_AGE_SEC,
+            )
+            
+            if agg['article_count'] == 0:
+                return False  # No fresh news to evaluate
+            
+            avg_sentiment = agg['avg_sentiment']
+            flip_threshold = cfg.NEWS_THESIS_EXIT_SENTIMENT_FLIP
+            
+            # Detect flip: long needs bearish news, short needs bullish news
+            if position.side == 'long' and avg_sentiment < -flip_threshold:
+                self._audit(
+                    "news_thesis_flip", symbol, "flip_detected",
+                    "bearish_news_on_long",
+                    side=position.side,
+                    avg_sentiment=round(avg_sentiment, 3),
+                    flip_threshold=flip_threshold,
+                    article_count=agg['article_count'],
+                )
+                self.commentary.add_commentary(TradingCommentary(
+                    timestamp=datetime.now(),
+                    type=CommentaryType.WARNING,
+                    symbol=symbol,
+                    title=f"⚠️ News Thesis Flip — {symbol} LONG",
+                    message=(
+                        f"Fresh news sentiment has turned bearish ({avg_sentiment:+.2f}) "
+                        f"against your LONG position.\n"
+                        f"  Articles: {agg['article_count']}\n"
+                        f"  Flip threshold: {-flip_threshold:+.2f}\n"
+                        "Position flagged for early exit."
+                    ),
+                    importance=8,
+                ))
+                return True
+            
+            if position.side == 'short' and avg_sentiment > flip_threshold:
+                self._audit(
+                    "news_thesis_flip", symbol, "flip_detected",
+                    "bullish_news_on_short",
+                    side=position.side,
+                    avg_sentiment=round(avg_sentiment, 3),
+                    flip_threshold=flip_threshold,
+                    article_count=agg['article_count'],
+                )
+                self.commentary.add_commentary(TradingCommentary(
+                    timestamp=datetime.now(),
+                    type=CommentaryType.WARNING,
+                    symbol=symbol,
+                    title=f"⚠️ News Thesis Flip — {symbol} SHORT",
+                    message=(
+                        f"Fresh news sentiment has turned bullish ({avg_sentiment:+.2f}) "
+                        f"against your SHORT position.\n"
+                        f"  Articles: {agg['article_count']}\n"
+                        f"  Flip threshold: {flip_threshold:+.2f}\n"
+                        "Position flagged for early exit."
+                    ),
+                    importance=8,
+                ))
+                return True
+            
+            return False
+        except Exception as exc:
+            logger.debug(f"news_thesis_flip check error for {symbol}: {exc}")
+            return False
+
     def _is_auto_managed(self, position) -> bool:
         """v-managed-by-bot-2026-04-28: per-position auto-management gate.
 
@@ -599,7 +749,7 @@ class TradingEngineWithCommentary:
             return False
         return True
 
-    def _audit(self, component: str, symbol, action: str, reason: str, **details) -> None:
+    def _audit(self, component: str, symbol, action: str, reason: str, /, **details) -> None:
         """Structured audit log for engine-level decisions.
 
         Format (one line per event, shell-greppable):
@@ -608,7 +758,17 @@ class TradingEngineWithCommentary:
         Every decision gate that accepts, skips, or modifies a trade must
         emit one of these so trading_bot.log is a complete audit trail.
         Also writes to Postgres bot_decisions for SQL queryability.
+
+        v-audit-collision-fix-2026-09-15: Use positional-only parameters (/) to
+        prevent TypeError when callers accidentally pass colliding kwargs like
+        action=. Reserved keys in **details are popped and nested under _extra
+        for observability. Positional params always win over colliding kwargs.
         """
+        _RESERVED_KEYS = ("action", "component", "symbol", "reason", "mode")
+        collisions = {k: details.pop(k) for k in list(details.keys()) if k in _RESERVED_KEYS}
+        if collisions:
+            details["_extra"] = collisions
+
         kv = " ".join(f"{k}={v}" for k, v in details.items())
         logger.info(
             "engine_decision component=%s symbol=%s action=%s reason=%s mode=%s %s",
@@ -638,6 +798,60 @@ class TradingEngineWithCommentary:
                 )
             except Exception:
                 pass  # never break trading loop for DB
+
+    def _emit_veto_snapshot(
+        self,
+        signal,
+        strategy_id: str,
+        reason: str,
+        gate_name: str,
+        extra: dict | None = None,
+    ) -> None:
+        """v-feature-snapshot-2026-09-09: emit DecisionSnapshot on engine-level veto.
+        
+        Called when a signal is vetoed by the signal router (ML veto, regime gate,
+        conviction floor, etc.). Fire-and-forget async write.
+        """
+        if self.db_logger is None:
+            return
+        try:
+            from core.decision_snapshot import (
+                DecisionAction, build_snapshot, is_snapshot_logging_enabled
+            )
+            if not is_snapshot_logging_enabled():
+                return
+            
+            # Extract what we can from the signal
+            indicators = {}
+            price = float(getattr(signal, "entry_price", 0) or 0)
+            if hasattr(signal, "reasoning") and signal.reasoning:
+                indicators = signal.reasoning.copy()
+            
+            snapshot = build_snapshot(
+                symbol=signal.symbol,
+                strategy_id=strategy_id,
+                action=DecisionAction.VETO,
+                reason=reason,
+                mode=self.mode.value,
+                gate_name=gate_name,
+                confidence=float(getattr(signal, "confidence", 0) or 0),
+                indicators=indicators,
+                price=price,
+                would_entry_price=float(getattr(signal, "entry_price", 0) or 0),
+                would_stop_loss=float(getattr(signal, "stop_loss", 0) or 0),
+                would_take_profit=float(getattr(signal, "take_profit", 0) or 0),
+                would_size_shares=int(getattr(signal, "position_size", 0) or 0),
+                extra=extra,
+            )
+            
+            try:
+                asyncio.get_event_loop().create_task(
+                    self.db_logger.log_decision_snapshot(snapshot)
+                )
+            except RuntimeError:
+                pass
+        except Exception as exc:
+            logger.debug("veto_snapshot_emit_error: %s", exc)
 
     # Add to rest brain - caution state:
     def reset_brain_state(self):
@@ -751,6 +965,8 @@ class TradingEngineWithCommentary:
                             peak_favorable_r=pd.get('peak_favorable_r', 0.0),
                             breakeven_lifted=pd.get('breakeven_lifted', False),
                             managed_by_bot=pd.get('managed_by_bot', True),  # restored sim positions: bot-managed by default
+                            # v-manage-persist-hotfix-2026-09-15: restore managed_source
+                            managed_source=pd.get('managed_source'),
                             last_revalidation_at=pd.get('last_revalidation_at'),
                             # v-fsm-state-migration-2026-04-30: infer the
                             # right FSM state from existing flags. A
@@ -768,6 +984,11 @@ class TradingEngineWithCommentary:
                             state_changed_at=pd.get('state_changed_at'),
                             exiting_started_at=pd.get('exiting_started_at'),
                             zombie_reason=pd.get('zombie_reason'),
+                            # v-order-monitor-2026-09-10: restore bracket tracking
+                            bracket_order_id=pd.get('bracket_order_id'),
+                            stop_order_id=pd.get('stop_order_id'),
+                            tp_order_id=pd.get('tp_order_id'),
+                            broker_stop_price=pd.get('broker_stop_price'),
                         )
                         self.simulated_positions[symbol] = pos
                     if sim_data:
@@ -989,6 +1210,8 @@ class TradingEngineWithCommentary:
                             reasoning=signal.reasoning or {},
                             mode="live",
                             managed_by_bot=True,
+                            # v-manage-persist-hotfix-2026-09-15: bot-opened positions
+                            managed_source='bot',
                         )
                         self.positions[signal.symbol] = position
                         if hasattr(self, 'exit_manager') and self.exit_manager is not None:
@@ -1565,8 +1788,13 @@ class TradingEngineWithCommentary:
             logger.error(f"Price validation error: {e}")
             return True  # Allow order if validation fails
     
-    async def _place_bracket_orders(self, signal, parent_order_id: str):
-        """Place stop loss and take profit orders as OCO"""
+    async def _place_bracket_orders(self, signal, parent_order_id: str) -> Optional[str]:
+        """Place stop loss and take profit orders as OCO.
+        
+        v-order-monitor-2026-09-10: now returns the OCO order ID on success
+        (None on failure) and stores bracket tracking IDs on the Position
+        so the order monitor can poll for fills/cancels/rejects.
+        """
         # v-bracket-diagnostic-2026-05-18: log every attempt so silent
         # failures surface. Before this, an exception or non-2xx
         # response would either get swallowed by the caller's try/except
@@ -1615,6 +1843,21 @@ class TradingEngineWithCommentary:
                 # Extract order ID from response
                 order_id = response.headers.get('Location', '').split('/')[-1]
 
+                # v-order-monitor-2026-09-10: store bracket tracking on position
+                position = self.positions.get(signal.symbol)
+                if position and order_id:
+                    position.bracket_order_id = order_id
+                    position.broker_stop_price = signal.stop_loss
+                    # Child order IDs will be extracted by _refresh_bracket_child_ids
+                    # during the next order monitor cycle
+                    self._audit(
+                        "order_monitor", signal.symbol, "bracket_placed",
+                        "oco_order_stored",
+                        bracket_order_id=order_id,
+                        stop_price=round(signal.stop_loss, 2),
+                        tp_price=round(signal.take_profit, 2),
+                    )
+
                 self.commentary.add_commentary(TradingCommentary(
                     timestamp=datetime.now(),
                     type=CommentaryType.RISK_ASSESSMENT,
@@ -1629,6 +1872,7 @@ class TradingEngineWithCommentary:
                     },
                     importance=7
                 ))
+                return order_id
             else:
                 rejection = self._parse_order_rejection(response)
                 self.commentary.add_commentary(TradingCommentary(
@@ -1640,6 +1884,7 @@ class TradingEngineWithCommentary:
                     data={'details': rejection['details']},
                     importance=7
                 ))
+                return None
 
         except Exception as e:
             logger.error(f"Bracket order error: {e}", exc_info=True)
@@ -1651,6 +1896,7 @@ class TradingEngineWithCommentary:
                 message=f"Could not place stop/target orders: {str(e)}",
                 importance=7
             ))
+            return None
     def _validate_oco_prices(self, symbol: str, stop_price: float, take_profit: float, is_short: bool = False) -> bool:
         """Validate OCO order prices before submission for both long and short positions"""
         try:
@@ -1914,7 +2160,26 @@ class TradingEngineWithCommentary:
                         # at the bottom of this loop swallowed it silently,
                         # so the sweep path's Position-creation never ran.
                         # Hoist the assignment to the top of the branch.
-                        signal = order_data['signal']
+                        #
+                        # v-guard-missing-signal-2026-09-10: close orders
+                        # (e.g. day_trade flatten fills) don't carry a
+                        # 'signal' key — they only have symbol/type/quantity.
+                        # Use .get() to avoid KeyError spam on FILLED closes.
+                        signal = order_data.get('signal')
+                        
+                        if signal is None:
+                            # Close order without signal metadata — just
+                            # clean up the pending order and log success.
+                            symbol = order_data.get('symbol', 'UNKNOWN')
+                            logger.info(
+                                "close_order_filled order_id=%s symbol=%s "
+                                "(no signal metadata, skipping position creation)",
+                                order_id, symbol,
+                            )
+                            self.pending_orders.pop(order_id, None)
+                            self.order_id_to_symbol.pop(order_id, None)
+                            continue
+                        
                         # Get fill price
                         fill_price = signal.entry_price  # Default
                         if 'orderActivityCollection' in order_info:
@@ -1923,7 +2188,7 @@ class TradingEngineWithCommentary:
                                     legs = activity.get('executionLegs', [])
                                     if legs:
                                         fill_price = legs[0].get('price', signal.entry_price)
-                                        expected = order_data['signal'].entry_price
+                                        expected = signal.entry_price
                                         slippage = abs(fill_price - expected) / expected
                                         self.performance_metrics['slippage'].append(slippage)
                         # v-sweep-skip-if-already-managed-2026-05-08: the
@@ -1956,6 +2221,8 @@ class TradingEngineWithCommentary:
                             reasoning=signal.reasoning,
                             mode="live",
                             managed_by_bot=True,  # bot-opened live trade
+                            # v-manage-persist-hotfix-2026-09-15: bot-opened positions
+                            managed_source='bot',
                         )
                         self.positions[signal.symbol] = position
                         
@@ -2168,62 +2435,29 @@ class TradingEngineWithCommentary:
             logger.error(f"Position close error: {e}")
             return False
     async def _update_real_positions(self):
-        """Update real positions from account - syncs ALL Schwab positions"""
+        """Update real positions from account - syncs ALL Schwab positions.
+        
+        v-manage-persist-discovery-path-2026-09-15: This function previously
+        created all newly-discovered Schwab positions as external with
+        managed_by_bot=False, bypassing the restore-aware logic in
+        _update_and_track_real_positions. This caused CRCL/FPS/SLS (bot-owned)
+        to lose managed status on mode toggle to LIVE.
+        
+        Fix: delegate position discovery to _update_and_track_real_positions
+        which has the full restore logic (saved_positions_meta, bot_trades
+        fallback, HANDS_OFF_DENYLIST). This function now only handles the
+        removal of positions that no longer exist in Schwab.
+        """
         if not self.schwab_client or self.mode != TradingMode.LIVE:
             return
 
         try:
-            # Get all Schwab positions
+            # Delegate position discovery (add/update) to restore-aware function
+            await self._update_and_track_real_positions()
+            
+            # Get Schwab positions for removal check
             schwab_positions = await self.get_schwab_positions()
-
-            # Create a set of symbols from Schwab
             schwab_symbols = {pos['symbol'] for pos in schwab_positions}
-
-            # Add or update positions from Schwab
-            for pos_data in schwab_positions:
-                symbol = pos_data['symbol']
-
-                if symbol not in self.positions:
-                    # Create new position for externally opened position
-                    # IMPORTANT: External positions have NO automatic stop loss/take profit
-                    # They are flagged as manually managed and the bot won't take actions on them
-                    position = Position(
-                        symbol=symbol,
-                        quantity=abs(pos_data['quantity']),
-                        entry_price=pos_data['average_price'],
-                        current_price=pos_data['current_price'],
-                        stop_loss=0,  # No automatic stop loss for external positions
-                        take_profit=float('inf'),  # No automatic take profit
-                        entry_time=datetime.now(),
-                        side='long' if pos_data['quantity'] > 0 else 'short',
-                        reasoning={'source': 'external', 'strategy': 'manual_entry'},
-                        mode="live",
-                        managed_by_bot=False,  # external/manual → hands off
-                    )
-                    position.unrealized_pnl = pos_data['total_pnl']
-                    position.is_external = True  # Flag as externally created
-                    position.is_manually_managed = True  # Bot won't auto-manage this
-                    self.positions[symbol] = position
-
-                    # Log that we found an external position
-                    self.commentary.add_commentary(TradingCommentary(
-                        timestamp=datetime.now(),
-                        type=CommentaryType.MARKET_ANALYSIS,
-                        symbol=symbol,
-                        title=f"📥 External Position Detected (Manual Mode)",
-                        message=f"Found {abs(pos_data['quantity'])} shares of {symbol} "
-                                f"({'long' if pos_data['quantity'] > 0 else 'short'})\n"
-                                f"Entry: ${pos_data['average_price']:.2f}, "
-                                f"Current: ${pos_data['current_price']:.2f}\n"
-                                f"⚠️ This position is MANUALLY MANAGED - bot will NOT auto-close",
-                        data=pos_data,
-                        importance=7
-                    ))
-                else:
-                    # Update existing position prices only
-                    position = self.positions[symbol]
-                    position.current_price = pos_data['current_price']
-                    position.unrealized_pnl = pos_data['total_pnl']
             
             # Remove positions that no longer exist in Schwab
             positions_to_remove = []
@@ -2601,6 +2835,9 @@ class TradingEngineWithCommentary:
                 'side': pos.side,
                 'entry_time': pos.entry_time.isoformat(),
                 'managed_by_bot': getattr(pos, 'managed_by_bot', False),
+                # v-manage-persist-hotfix-2026-09-15: persist managed_source
+                # so restore logic can distinguish operator toggle from stale sync.
+                'managed_source': getattr(pos, 'managed_source', None),
                 'stop_loss': getattr(pos, 'stop_loss', 0),
                 # inf (external positions' "no target") is not valid
                 # strict JSON — store None and restore as inf.
@@ -2642,6 +2879,8 @@ class TradingEngineWithCommentary:
                 'peak_favorable_r': getattr(pos, 'peak_favorable_r', 0.0),
                 'breakeven_lifted': getattr(pos, 'breakeven_lifted', False),
                 'managed_by_bot': getattr(pos, 'managed_by_bot', True),
+                # v-manage-persist-hotfix-2026-09-15: persist managed_source
+                'managed_source': getattr(pos, 'managed_source', None),
                 'last_revalidation_at': getattr(pos, 'last_revalidation_at', None),
                 # v-position-fsm-2026-04-30 (Phase 1): persist FSM fields
                 # so a restart can recover an in-flight close intent.
@@ -2650,6 +2889,11 @@ class TradingEngineWithCommentary:
                 'state_changed_at': getattr(pos, 'state_changed_at', None),
                 'exiting_started_at': getattr(pos, 'exiting_started_at', None),
                 'zombie_reason': getattr(pos, 'zombie_reason', None),
+                # v-order-monitor-2026-09-10: bracket/OCO order tracking
+                'bracket_order_id': getattr(pos, 'bracket_order_id', None),
+                'stop_order_id': getattr(pos, 'stop_order_id', None),
+                'tp_order_id': getattr(pos, 'tp_order_id', None),
+                'broker_stop_price': getattr(pos, 'broker_stop_price', None),
             }
 
         state = {
@@ -3267,6 +3511,115 @@ class TradingEngineWithCommentary:
                 raise
             await asyncio.sleep(cadence)
 
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # v-phase-b-order-monitor-2026-09-14: Thin delegates to core/order_monitor/
+    # Behavior-preserving extraction. See core/order_monitor/ for implementation.
+    # ══════════════════════════════════════════════════════════════════════════
+
+    async def _order_monitor_loop(self) -> None:
+        """Delegate to OrderMonitor.run()."""
+        await self._order_monitor.run()
+
+    def _get_bracket_monitored_positions(self) -> list:
+        """Delegate to OrderMonitor.get_bracket_monitored_positions()."""
+        return self._order_monitor.get_bracket_monitored_positions()
+
+    def _get_positions_missing_brackets(self) -> list:
+        """Delegate to OrderMonitor.get_positions_missing_brackets()."""
+        return self._order_monitor.get_positions_missing_brackets()
+
+    async def _bootstrap_orphan_brackets(self) -> int:
+        """Delegate to OrderMonitor.bootstrap_orphan_brackets()."""
+        return await self._order_monitor.bootstrap_orphan_brackets()
+
+    async def _fetch_working_orders(self):
+        """Delegate to OrderMonitor.fetch_working_orders()."""
+        return await self._order_monitor.fetch_working_orders()
+
+    async def _monitor_position_bracket(
+        self, position, orders_by_id: dict, all_working_orders: list
+    ) -> None:
+        """Delegate to OrderMonitor._monitor_position_bracket()."""
+        await self._order_monitor._monitor_position_bracket(
+            position, orders_by_id, all_working_orders
+        )
+
+    async def _refresh_bracket_child_ids(
+        self, position, orders_by_id: dict, all_working_orders: list
+    ) -> None:
+        """Delegate to brackets.refresh_bracket_child_ids()."""
+        from core.order_monitor.brackets import refresh_bracket_child_ids
+        await refresh_bracket_child_ids(self, position, orders_by_id, all_working_orders)
+
+    async def _check_trail_replace(self, position, parent_order: dict) -> None:
+        """Delegate to brackets.check_trail_replace()."""
+        from core.order_monitor.brackets import check_trail_replace
+        await check_trail_replace(self, position, parent_order)
+
+    async def _replace_bracket_with_new_stop(self, position, new_stop: float) -> None:
+        """Delegate to brackets.replace_bracket_with_new_stop()."""
+        from core.order_monitor.brackets import replace_bracket_with_new_stop
+        await replace_bracket_with_new_stop(self, position, new_stop)
+
+    async def _handle_bracket_not_working(self, position) -> None:
+        """Delegate to brackets.handle_bracket_not_working()."""
+        from core.order_monitor.brackets import handle_bracket_not_working
+        await handle_bracket_not_working(self, position)
+
+    async def _handle_bracket_fill(self, position, order_info: dict) -> None:
+        """Delegate to brackets.handle_bracket_fill()."""
+        from core.order_monitor.brackets import handle_bracket_fill
+        await handle_bracket_fill(self, position, order_info)
+
+    async def _handle_full_bracket_fill(
+        self, position, fill_price, filled_leg: str
+    ) -> None:
+        """Delegate to brackets.handle_full_bracket_fill()."""
+        from core.order_monitor.brackets import handle_full_bracket_fill
+        await handle_full_bracket_fill(self, position, fill_price, filled_leg)
+
+    async def _handle_partial_bracket_fill(
+        self, position, fill_price, fill_qty: int, remaining_qty: int, filled_leg: str
+    ) -> None:
+        """Delegate to brackets.handle_partial_bracket_fill()."""
+        from core.order_monitor.brackets import handle_partial_bracket_fill
+        await handle_partial_bracket_fill(
+            self, position, fill_price, fill_qty, remaining_qty, filled_leg
+        )
+
+    async def _re_bracket_position(self, position) -> None:
+        """Delegate to brackets.re_bracket_position()."""
+        from core.order_monitor.brackets import re_bracket_position
+        await re_bracket_position(self, position)
+
+    async def _handle_bracket_canceled(
+        self, position, order_info: dict, status: str
+    ) -> None:
+        """Delegate to brackets.handle_bracket_canceled()."""
+        from core.order_monitor.brackets import handle_bracket_canceled
+        await handle_bracket_canceled(self, position, order_info, status)
+
+    async def _check_broker_position_qty(self, symbol: str) -> int:
+        """Delegate to broker_flat.check_broker_position_qty()."""
+        from core.order_monitor.broker_flat import check_broker_position_qty
+        return await check_broker_position_qty(self, symbol)
+
+    async def _handle_broker_flat_detected(self, position, reason: str) -> None:
+        """Delegate to broker_flat.handle_broker_flat_detected()."""
+        from core.order_monitor.broker_flat import handle_broker_flat_detected
+        await handle_broker_flat_detected(self, position, reason)
+
+    def _is_broker_flat_rejection(self, rejection_reason: str) -> bool:
+        """Delegate to broker_flat.is_broker_flat_rejection()."""
+        from core.order_monitor.broker_flat import is_broker_flat_rejection
+        return is_broker_flat_rejection(rejection_reason)
+
+    async def _handle_bracket_rejected(self, position, order_info: dict) -> None:
+        """Delegate to brackets.handle_bracket_rejected()."""
+        from core.order_monitor.brackets import handle_bracket_rejected
+        await handle_bracket_rejected(self, position, order_info)
+
     async def _analysis_loop(self) -> None:
         """Phase 2: thin wrapper around the existing master-loop body.
 
@@ -3365,6 +3718,12 @@ class TradingEngineWithCommentary:
 
         sup.register("quote_streamer", self._quote_streamer_loop, TaskPriority.NORMAL)
         sup.register("position_loop",  self._position_loop,        TaskPriority.CRITICAL)
+        # v-order-monitor-2026-09-10: realtime WORKING bracket/OCO monitor.
+        # Polls Schwab for fills/cancels/rejects on bot-managed brackets
+        # and syncs Position state accordingly. CRITICAL priority because
+        # orphaned stops or missed TP fills are risk management failures.
+        # v-phase-b-order-monitor-2026-09-14: delegate to OrderMonitor.run
+        sup.register("order_monitor",  self._order_monitor.run,    TaskPriority.CRITICAL)
         sup.register("analysis_loop",  self._analysis_loop,        TaskPriority.NORMAL)
         # v-market-indices-strip-2026-05-27: regime strip refresh loop.
         # NORMAL priority — purely cosmetic, must never starve trading
@@ -3385,7 +3744,198 @@ class TradingEngineWithCommentary:
         self._screener_loop = ScreenerLoop(self)
         sup.register("screener_loop", self._screener_loop.run, TaskPriority.NORMAL)
 
+        # v-newsbus-2026-09-08: news_loop refreshes the NewsBus from
+        # FreeNewsAggregator on a ~20s cadence. Strategies read from
+        # the bus instead of fetching independently. High-impact items
+        # trigger wake events for the analysis loop.
+        from core.loops.news_loop import NewsLoop, AlpacaNewsBusPublisher
+        from core.news_bus import get_news_bus
+        self._news_bus = get_news_bus(
+            on_high_impact=self._on_news_high_impact,
+        )
+        self._news_loop = NewsLoop(self, bus=self._news_bus)
+        sup.register("news_loop", self._news_loop.run, TaskPriority.NORMAL)
+
+        # v-theme-shock-logger-2026-09-14: wire fix — set_news_bus on
+        # FreeNewsSignalStrategy so entry gates actually see the bus.
+        # Without this, the strategy's _news_bus stays None and falls
+        # back to direct aggregator fetch (bypassing bus centralization).
+        for strategy in self.strategies:
+            if hasattr(strategy, 'set_news_bus'):
+                strategy.set_news_bus(self._news_bus)
+                logger.debug(
+                    "set_news_bus wired to strategy=%s",
+                    getattr(strategy, 'name', strategy.__class__.__name__),
+                )
+
+        # v-theme-shock-logger-2026-09-14: Alpaca news publisher for NewsBus.
+        # Reuses ALPACA_API_KEY/SECRET from existing news_verifier integration.
+        # Runs on separate cadence (default 60s) from main news loop.
+        self._alpaca_news_bus = AlpacaNewsBusPublisher(self, bus=self._news_bus)
+        if self._alpaca_news_bus.is_enabled():
+            sup.register(
+                "alpaca_news_bus",
+                self._alpaca_news_bus.run,
+                TaskPriority.NORMAL,
+            )
+            logger.info(
+                "alpaca_news_bus registered (cadence=%.1fs)",
+                self._alpaca_news_bus._cadence_sec,
+            )
+        else:
+            logger.debug("alpaca_news_bus NOT registered (disabled or no API keys)")
+
+        # v-theme-shock-logger-2026-09-14: theme shock logger for multi-sentiment
+        # desk. Shadow-only: logs would-hard-skip / would-exit / alert-only.
+        from analysis.theme_shock_logger import get_theme_shock_logger
+        self._theme_shock_logger = get_theme_shock_logger(engine=self)
+        if self._theme_shock_logger.is_enabled():
+            logger.info(
+                "theme_shock_logger enabled (themes=%d)",
+                len(self._theme_shock_logger._loader.themes),
+            )
+        else:
+            logger.debug("theme_shock_logger NOT enabled (ENABLE_THEME_SHOCK_LOGGER=0)")
+
+        # v-gpu-news-critic-2026-09-14: GPU News Critic for theme classification
+        # and contamination detection. Shadow-only: logs WOULD_SUPPRESS_HARD_SKIP.
+        from analysis.gpu_news_critic import get_gpu_news_critic
+        self._gpu_news_critic = get_gpu_news_critic(engine=self)
+        if self._gpu_news_critic.is_enabled():
+            logger.info(
+                "gpu_news_critic enabled (shadow=%s, model=%s)",
+                self._gpu_news_critic.is_shadow_mode(),
+                "all-MiniLM-L6-v2",
+            )
+        else:
+            logger.debug("gpu_news_critic NOT enabled (ENABLE_GPU_NEWS_CRITIC=0)")
+
+        # Wire combined ThemeShock + GPU Critic into NewsBus publish path.
+        # v-theme-shock-hotfix-2026-09-14: ThemeShock processes first, then
+        # GPU Critic receives the keyword_match from ThemeShock for scoring.
+        if self._theme_shock_logger.is_enabled() or self._gpu_news_critic.is_enabled():
+            from core.news_bus import set_news_bus_on_publish
+            set_news_bus_on_publish(self._on_news_publish_combined)
+            logger.info(
+                "news_bus on_publish wired (theme_shock=%s, gpu_critic=%s)",
+                self._theme_shock_logger.is_enabled(),
+                self._gpu_news_critic.is_enabled(),
+            )
+
+        # v-active-open-desk-2026-09-14: continuous monitor for open trades.
+        # RCA FTFT: bot set bracket + hard stop then idled. Hari: must
+        # continuously monitor ALL managed open trades for sentiment/regime/
+        # indicators. When ENABLE_ACTIVE_OPEN_DESK=False (default), the desk
+        # is not started and there is zero behavior change.
+        from analysis.active_open_desk import should_start_desk, ActiveOpenDesk
+        if should_start_desk():
+            self._active_open_desk = ActiveOpenDesk(self)
+            sup.register(
+                "active_open_desk",
+                self._active_open_desk.run,
+                TaskPriority.NORMAL,
+            )
+            logger.info(
+                "active_open_desk registered (shadow=%s, interval=%.1fs)",
+                Config().ACTIVE_OPEN_DESK_SHADOW,
+                Config().ACTIVE_OPEN_DESK_INTERVAL_SEC,
+            )
+        else:
+            self._active_open_desk = None
+            logger.debug("active_open_desk NOT registered (ENABLE_ACTIVE_OPEN_DESK=False)")
+
         return sup
+
+    def _on_news_high_impact(self, symbol: str, item) -> None:
+        """Callback for high-impact news events from NewsBus.
+        
+        Sets the wake event so the analysis loop can evaluate entry
+        opportunities early instead of waiting for the next cadence tick.
+        """
+        try:
+            logger.info(
+                "news_high_impact_wake symbol=%s headline=%s sentiment=%.3f",
+                symbol, item.headline[:60], item.sentiment_score,
+            )
+        except Exception:
+            pass
+
+    def _on_news_publish_combined(self, item) -> None:
+        """Combined callback for ThemeShock + GPU News Critic.
+        
+        v-gpu-news-critic-2026-09-14: Chains ThemeShock and GPU Critic:
+        1. ThemeShock processes first, returns keyword matches and events
+        2. GPU Critic receives keyword_match from ThemeShock for scoring
+        3. GPU Critic evaluates contamination risk and emits shadow logs
+        
+        This ensures GPU Critic has access to ThemeShock's keyword matches
+        for accurate contamination detection (e.g., matched_field=="summary").
+        """
+        keyword_match = None
+        
+        # Step 1: ThemeShock processing
+        if self._theme_shock_logger is not None and self._theme_shock_logger.is_enabled():
+            try:
+                def get_open_positions():
+                    result = {}
+                    for container in [self.positions, getattr(self, 'simulated_positions', {}) or {}]:
+                        for sym, pos in list(container.items()):
+                            if pos is None:
+                                continue
+                            if getattr(pos, 'managed_by_bot', False):
+                                result[sym] = pos
+                    return result
+                
+                # Get matches for GPU critic
+                matches = self._theme_shock_logger.tag_news_item(item)
+                if matches:
+                    # Use the first match for keyword_match info
+                    first_match = matches[0]
+                    # Determine matched_field (headline vs summary)
+                    headline_lower = item.headline.lower()
+                    summary = getattr(item, "summary", "")
+                    matched_text = first_match.matched_text.lower()
+                    
+                    if matched_text in headline_lower:
+                        matched_field = "headline"
+                    elif summary and matched_text in summary.lower():
+                        matched_field = "summary"
+                    else:
+                        matched_field = "headline"  # default
+                    
+                    from analysis.gpu_news_critic import KeywordMatch
+                    keyword_match = KeywordMatch(
+                        theme_id=first_match.theme_id,
+                        matched_text=first_match.matched_text,
+                        matched_field=matched_field,
+                    )
+                
+                events = self._theme_shock_logger.process_news_item_from_publish(
+                    item=item,
+                    get_open_positions_fn=get_open_positions,
+                )
+                if events:
+                    logger.debug(
+                        "theme_shock on_publish emitted %d events for headline=%s",
+                        len(events), item.headline[:50],
+                    )
+            except Exception as exc:
+                logger.debug("theme_shock on_publish error: %s", exc)
+        
+        # Step 2: GPU Critic processing
+        if self._gpu_news_critic is not None and self._gpu_news_critic.is_enabled():
+            try:
+                card = self._gpu_news_critic.process_news_item_from_publish(
+                    item=item,
+                    keyword_match=keyword_match,
+                )
+                if card and card.action.value != "pass":
+                    logger.debug(
+                        "gpu_news_critic on_publish action=%s for headline=%s",
+                        card.action.value, item.headline[:50],
+                    )
+            except Exception as exc:
+                logger.debug("gpu_news_critic on_publish error: %s", exc)
 
     def _on_task_crash(self, st, exc) -> None:
         """Surface task crashes on the dashboard. NORMAL — we don't pause
@@ -3747,6 +4297,96 @@ class TradingEngineWithCommentary:
                     sym, exc,
                 )
 
+    async def _ownership_evidence(
+        self,
+        symbol: str,
+        side: str,
+        saved_meta: dict | None = None,
+    ) -> tuple[bool, str | None, dict, list[str]]:
+        """v-evidence-broad-2026-09-15: check ownership evidence sources.
+
+        Checks evidence sources in order of preference:
+          1. saved_meta with managed_by_bot=True and matching side
+          2. bot_trades: today's entry for symbol with matching side
+          3. bot_decisions: today's strategy entry signal (mean_reversion, etc.)
+          4. bot_positions: existing row with managed strategy
+
+        Args:
+            symbol: Position symbol (uppercase)
+            side: Position side ("long" or "short")
+            saved_meta: Pre-loaded saved_positions_meta for this symbol
+
+        Returns:
+            (restore, source, meta, tried_sources)
+            - restore: True if evidence found
+            - source: Evidence source name or None
+            - meta: Metadata dict for position creation
+            - tried_sources: List of sources attempted (for logging)
+        """
+        symbol_upper = symbol.upper()
+        broad_enabled = Config().ENABLE_MANAGED_OWNERSHIP_EVIDENCE_BROAD
+        tried_sources: list[str] = []
+        
+        saved = saved_meta or {}
+        if saved.get('managed_by_bot') is True and saved.get('side') == side:
+            tried_sources.append("saved")
+            return True, "saved", saved, tried_sources
+        tried_sources.append("saved")
+        
+        if self.db_logger is not None:
+            try:
+                bot_entries = await self.db_logger.get_todays_bot_entries([symbol])
+                bt = bot_entries.get(symbol_upper) or bot_entries.get(symbol)
+                if bt is not None and bt.get('side') == side:
+                    tried_sources.append("bot_trades")
+                    entry_t = bt.get('entry_time')
+                    return True, "bot_trades", {
+                        'entry_time': entry_t.isoformat() if isinstance(entry_t, datetime) else str(entry_t or ''),
+                        'stop_loss': 0,
+                        'take_profit': None,
+                        'reasoning': {'source': 'bot_trades_fallback', 'strategy': bt.get('strategy')},
+                    }, tried_sources
+                tried_sources.append("bot_trades")
+            except Exception as exc:
+                logger.debug("ownership_evidence_bot_trades_error: %s", exc)
+                tried_sources.append("bot_trades(err)")
+            
+            if broad_enabled:
+                try:
+                    decision_entries = await self.db_logger.get_todays_bot_decision_entries([symbol])
+                    dec = decision_entries.get(symbol_upper) or decision_entries.get(symbol)
+                    if dec is not None and dec.get('side') == side:
+                        tried_sources.append("bot_decisions")
+                        dec_ts = dec.get('ts')
+                        return True, "bot_decisions", {
+                            'entry_time': dec_ts.isoformat() if isinstance(dec_ts, datetime) else str(dec_ts or ''),
+                            'stop_loss': 0,
+                            'take_profit': None,
+                            'reasoning': {'source': 'bot_decisions_fallback', 'strategy': dec.get('strategy')},
+                        }, tried_sources
+                    tried_sources.append("bot_decisions")
+                except Exception as exc:
+                    logger.debug("ownership_evidence_bot_decisions_error: %s", exc)
+                    tried_sources.append("bot_decisions(err)")
+                
+                try:
+                    pos_row = await self.db_logger.get_managed_bot_position(symbol)
+                    if pos_row is not None and pos_row.get('side') == side:
+                        tried_sources.append("bot_positions")
+                        entry_t = pos_row.get('entry_time')
+                        return True, "bot_positions", {
+                            'entry_time': entry_t.isoformat() if isinstance(entry_t, datetime) else str(entry_t or ''),
+                            'stop_loss': 0,
+                            'take_profit': None,
+                            'reasoning': {'source': 'bot_positions_fallback', 'strategy': pos_row.get('strategy')},
+                        }, tried_sources
+                    tried_sources.append("bot_positions")
+                except Exception as exc:
+                    logger.debug("ownership_evidence_bot_positions_error: %s", exc)
+                    tried_sources.append("bot_positions(err)")
+        
+        return False, None, {}, tried_sources
+
     async def sync_positions_with_schwab(self):
         """Sync internal position tracking with actual Schwab positions.
 
@@ -3762,6 +4402,21 @@ class TradingEngineWithCommentary:
         Sync now preserves the per-symbol bot state and only updates the
         fields Schwab is authoritative for (qty, average_price, side,
         current_price, total_pnl).
+
+        v-manage-persist-2026-09-15: enhanced restore logic for managed_by_bot
+        across restart/sync. Sources of truth (in preference order):
+          1. In-memory prior position if managed_by_bot=True
+          2. _saved_positions_meta (relaxed: side match + managed_by_bot=True)
+          3. Fallback: today's bot_trades where bot opened the symbol
+
+        v-evidence-broad-2026-09-15: broadened ownership evidence via
+        _ownership_evidence() helper. Additional sources (when
+        ENABLE_MANAGED_OWNERSHIP_EVIDENCE_BROAD=True):
+          4. bot_decisions: today's strategy entry signals (mean_reversion etc.)
+          5. bot_positions: open-ledger row with managed strategy
+
+        HANDS_OFF_DENYLIST (MU, HQGE, SPCX): NEVER restore managed_by_bot=True.
+        Config: ENABLE_MANAGED_BY_BOT_PERSIST (default True) controls this.
         """
         if not self.schwab_client or self.mode != TradingMode.LIVE:
             return
@@ -3770,13 +4425,16 @@ class TradingEngineWithCommentary:
             schwab_positions = await self.get_schwab_positions()
 
             # Snapshot existing tracked state per symbol before the merge.
-            # We preserve everything except the Schwab-authoritative fields
-            # (qty, entry/avg price, current price, side, unrealized_pnl).
             prior = dict(self.positions)
             schwab_symbols = {pd['symbol'] for pd in schwab_positions}
 
+            # v-manage-persist-2026-09-15: config and denylist
+            persist_enabled = Config().ENABLE_MANAGED_BY_BOT_PERSIST
+            denylist = Config().HANDS_OFF_DENYLIST
+
             for pos_data in schwab_positions:
                 symbol = pos_data['symbol']
+                symbol_upper = symbol.upper()
                 qty_signed = pos_data['quantity']
                 side = 'long' if qty_signed > 0 else 'short'
                 qty_abs = abs(qty_signed)
@@ -3793,56 +4451,89 @@ class TradingEngineWithCommentary:
                 else:
                     # Newly discovered position (pre-existing on Schwab,
                     # or opened outside the bot). Default to hands-off —
-                    # UNLESS the saved state proves the bot owned it.
+                    # UNLESS saved state or bot_trades proves bot ownership.
                     #
-                    # v-ownership-survives-restart-2026-06-10: after a
-                    # restart self.positions is empty, so every position
-                    # lands here and used to be demoted to external —
-                    # the bot disowned its own NET trade on 2026-06-10.
-                    # Restore ownership only on strict identity match:
-                    # saved record says managed_by_bot=True AND side
-                    # matches AND quantity matches (drift means the
-                    # operator intervened — stay hands-off).
-                    saved = self._saved_positions_meta.get(symbol) or {}
-                    _restore = (
-                        saved.get('managed_by_bot') is True
-                        and saved.get('side') == side
-                        and abs(float(saved.get('quantity', -1)) - qty_abs) < 1e-6
-                    )
+                    # v-manage-persist-2026-09-15: DENYLIST check first —
+                    # MU/HQGE/SPCX are NEVER auto-managed regardless of
+                    # what saved state or bot_trades says.
+                    in_denylist = symbol_upper in denylist
+                    _restore = False
+                    _restore_source = None
+                    _saved_meta = {}
+
+                    # v-evidence-broad-2026-09-15: track tried sources for skip_no_evidence log
+                    _tried_sources: list[str] = []
+
+                    if persist_enabled and not in_denylist:
+                        saved = self._saved_positions_meta.get(symbol) or {}
+                        # v-manage-persist-hotfix-2026-09-15: FIXED operator toggle detection.
+                        # Bug A fix: managed_by_bot=False could be STALE sync data (positions
+                        # stamped external from earlier bad sync). Only treat as intentional
+                        # operator toggle-off if managed_source='operator' is also present.
+                        # Without managed_source=operator, False is treated as stale and
+                        # bot_trades fallback is allowed.
+                        _saved_managed = saved.get('managed_by_bot')
+                        _saved_source = saved.get('managed_source')
+                        # Operator toggle-off: managed_by_bot=False AND managed_source='operator'
+                        _operator_toggled_off = (
+                            _saved_managed is False and _saved_source == 'operator'
+                        )
+                        if _operator_toggled_off:
+                            # Operator explicitly toggled off — respect it
+                            _restore = False
+                            _restore_source = None
+                            _tried_sources = ["operator_toggle_off"]
+                            logger.info(
+                                "sync_skip_operator_toggle: %s %s qty=%d — operator toggled managed_by_bot=False, respecting",
+                                symbol, side, qty_abs,
+                            )
+                        else:
+                            # v-evidence-broad-2026-09-15: use unified ownership evidence helper
+                            # Checks: saved → bot_trades → bot_decisions → bot_positions
+                            _restore, _restore_source, _saved_meta, _tried_sources = await self._ownership_evidence(
+                                symbol_upper, side, saved
+                            )
+
                     if _restore:
                         try:
                             _entry_time = datetime.fromisoformat(
-                                saved['entry_time'])
-                        except (KeyError, ValueError):
+                                _saved_meta['entry_time'])
+                        except (KeyError, ValueError, TypeError):
                             _entry_time = datetime.now() - timedelta(hours=1)
-                        _tp = saved.get('take_profit')
+                        _tp = _saved_meta.get('take_profit')
                         position = Position(
                             symbol=symbol,
                             entry_price=pos_data['average_price'],
                             current_price=pos_data['current_price'],
                             quantity=qty_abs,
                             side=side,
-                            stop_loss=saved.get('stop_loss', 0) or 0,
+                            stop_loss=_saved_meta.get('stop_loss', 0) or 0,
                             take_profit=float('inf') if _tp is None else _tp,
                             entry_time=_entry_time,
                             mode="live",
                             managed_by_bot=True,
-                            # v-trade-record-ml-columns-2026-09-02:
-                            # rehydrate reasoning so ML columns survive
-                            # a restart-then-close.
-                            reasoning=saved.get('reasoning') or {},
+                            # v-manage-persist-hotfix-2026-09-15: restored bot positions
+                            managed_source='bot',
+                            reasoning=_saved_meta.get('reasoning') or {},
                         )
                         position.is_external = False
                         position.is_manually_managed = False
                         self._audit(
                             "position_sync", symbol,
                             "position_ownership_restored",
-                            "saved_state_identity_match",
+                            _restore_source,
                             side=side, quantity=qty_abs,
-                            stop=saved.get('stop_loss', 0),
+                            stop=_saved_meta.get('stop_loss', 0),
                             target=_tp,
                         )
+                        logger.info(
+                            "sync_restore_success: %s %s qty=%d — managed_by_bot=True from %s",
+                            symbol, side, qty_abs, _restore_source,
+                        )
                     else:
+                        # External or denylist — hands off
+                        # v-manage-persist-hotfix-2026-09-15: set managed_source for observability
+                        _external_source = 'denylist' if in_denylist else 'external'
                         position = Position(
                             symbol=symbol,
                             entry_price=pos_data['average_price'],
@@ -3854,26 +4545,39 @@ class TradingEngineWithCommentary:
                             entry_time=datetime.now() - timedelta(hours=1),
                             mode="live",
                             managed_by_bot=False,
+                            managed_source=_external_source,
                         )
                         position.is_external = True
                         position.is_manually_managed = True
+                        if in_denylist:
+                            self._audit(
+                                "position_sync", symbol,
+                                "position_left_external",
+                                "denylist",
+                                side=side, quantity=qty_abs,
+                            )
+                            logger.info(
+                                "sync_skip_denylist: %s %s qty=%d — DENYLIST, hands-off",
+                                symbol, side, qty_abs,
+                            )
+                        else:
+                            self._audit(
+                                "position_sync", symbol,
+                                "position_left_external",
+                                "no_bot_record",
+                                side=side, quantity=qty_abs,
+                                tried_sources=_tried_sources,
+                            )
+                            logger.info(
+                                "sync_skip_no_evidence: %s %s qty=%d tried_sources=%s — no bot record, left external",
+                                symbol, side, qty_abs, ",".join(_tried_sources) if _tried_sources else "none",
+                            )
                     position.unrealized_pnl = pos_data.get('total_pnl', 0)
                     self.positions[symbol] = position
 
             # Drop tracked positions that no longer exist on Schwab
-            # (closed externally, or shares all sold). Do NOT touch any
-            # bot-opened position that's mid-flight if the cache is empty
-            # or stale — Schwab's REST view IS authoritative when we got
-            # a non-empty response.
             if schwab_positions:
                 stale = [s for s in self.positions if s not in schwab_symbols]
-                # v-external-close-reconcile-2026-05-07: when a symbol
-                # disappears from Schwab between syncs, the user (or a
-                # broker stop) closed it outside the bot's exit pipeline.
-                # Bot's bot_trades table never sees that close, so the
-                # brain learns from zero real-money outcomes. Reconcile
-                # against Schwab fill history and write the missing trade
-                # rows BEFORE we drop the prior Position state.
                 if stale:
                     try:
                         await self._reconcile_external_closes(stale, prior)
@@ -3895,15 +4599,19 @@ class TradingEngineWithCommentary:
                 len(self.positions) - managed_count,
             )
 
-            # Update commentary
             if self.positions:
+                _hands_off_count = len(self.positions) - managed_count
                 self.commentary.add_commentary(TradingCommentary(
                     timestamp=datetime.now(),
                     type=CommentaryType.ACCOUNT_UPDATE,
                     symbol=None,
                     title="📊 Position Sync Complete",
-                    message=f"Synced {len(self.positions)} positions from Schwab: {', '.join(self.positions.keys())}\n"
-                           f"⚠️ All positions marked as MANUALLY MANAGED - bot will not auto-close",
+                    message=(
+                        f"Synced {len(self.positions)} positions from Schwab: "
+                        f"{', '.join(self.positions.keys())}\n"
+                        f"{managed_count} bot-managed, {_hands_off_count} hands-off — "
+                        f"bot will auto-manage only bot-managed"
+                    ),
                     importance=5
                 ))
                 
@@ -3913,9 +4621,20 @@ class TradingEngineWithCommentary:
     async def start(self):
         """Start the trading engine with commentary"""
         self.is_running = True
+        # v-phase-b-order-monitor-2026-09-14: create OrderMonitor instance
+        # (the _oco_bootstrap_done flag is now on the OrderMonitor)
+        self._order_monitor = OrderMonitor(self)
         # v-uptime-2026-06-10: /api/status reads this; it was never set,
         # so the dashboard showed uptime 0:00:00 forever.
         self.start_time = datetime.now()
+
+        # v-feature-snapshot-2026-09-09: ensure snapshot table exists
+        if self.db_logger is not None:
+            try:
+                await self.db_logger.ensure_snapshot_table()
+                logger.info("snapshot_table_ready")
+            except Exception as exc:
+                logger.warning("snapshot_table_create_failed: %s", exc)
 
         # v-startup-schwab-sync-2026-04-30: previously this branch only
         # ran in LIVE mode, so SIM-mode dashboards saw the default
@@ -3956,6 +4675,23 @@ class TradingEngineWithCommentary:
                 except Exception as exc:
                     logger.debug(f"startup schwab_positions_cache seed failed: {exc}")
                 self._save_state()
+                
+                # v-bootstrap-oco-2026-09-10: attach orphan WORKING OCO brackets
+                # to bot-managed positions that are missing bracket_order_id.
+                # This handles positions from prior version/restart that don't
+                # have bracket tracking, making them visible to order_monitor.run.
+                # v-phase-b-order-monitor-2026-09-14: delegate to OrderMonitor
+                try:
+                    attached = await self._bootstrap_orphan_brackets()
+                    self._order_monitor._oco_bootstrap_done = True
+                    if attached > 0:
+                        logger.info(
+                            "startup_bootstrap_oco: attached %d orphan brackets",
+                            attached,
+                        )
+                except Exception as exc:
+                    logger.warning(f"startup bootstrap_orphan_brackets failed: {exc}")
+                    
             except Exception as exc:
                 logger.warning(f"startup live positions sync failed: {exc}")
 
@@ -4284,19 +5020,17 @@ class TradingEngineWithCommentary:
                     
                     # Check if manual close only is enabled
                     if self.manual_close_only:
+                        # v-emrg-pnl-commentary-2026-09-14: use _emrg_pnl
+                        # (the circuit-selected P&L) in the message, not
+                        # schwab_pnl. Fixes false trip RCA where account-
+                        # wide P&L was -$3k but bot-only was $0.
+                        _pnl_label = "bot-only" if _emrg_cfg.ENABLE_BOT_ONLY_PNL_CIRCUIT else "account"
                         self.commentary.add_commentary(TradingCommentary(
                             timestamp=datetime.now(),
                             type=CommentaryType.WARNING,
                             symbol=None,
                             title="🚨 EMERGENCY STOP (Manual Mode)",
-                            # v-emergency-stop-pnl-var-2026-05-11: var was
-                            # renamed schwab_pnl ↑ but f-strings still read
-                            # the old `pnl_to_check`. NameError fired in
-                            # the emergency-stop branch and propagated up
-                            # the trading loop, which silently froze the
-                            # screener/watchlist refresh for the rest of
-                            # the session. Restore the correct var.
-                            message=f"Daily loss of ${abs(schwab_pnl):.2f} exceeded 5% limit (${self.risk_manager.account_balance * 0.05:.2f}). "
+                            message=f"Daily {_pnl_label} loss of ${abs(_emrg_pnl):.2f} exceeded 5% limit (${self.risk_manager.account_balance * 0.05:.2f}). "
                                    f"Manual close only is ON - YOU must close positions manually!",
                             importance=10
                         ))
@@ -4305,13 +5039,17 @@ class TradingEngineWithCommentary:
                         self.is_running = False
                         break
                     else:
+                        # v-emrg-pnl-commentary-2026-09-14: use _emrg_pnl
+                        # (the circuit-selected P&L) in the message, not
+                        # schwab_pnl. Fixes false trip RCA where account-
+                        # wide P&L was -$3k but bot-only was $0.
+                        _pnl_label = "bot-only" if _emrg_cfg.ENABLE_BOT_ONLY_PNL_CIRCUIT else "account"
                         self.commentary.add_commentary(TradingCommentary(
                             timestamp=datetime.now(),
                             type=CommentaryType.WARNING,
                             symbol=None,
                             title="🚨 EMERGENCY STOP",
-                            # v-emergency-stop-pnl-var-2026-05-11: see above.
-                            message=f"Daily loss of ${abs(schwab_pnl):.2f} exceeded 5% limit (${self.risk_manager.account_balance * 0.05:.2f}). Closing all positions.",
+                            message=f"Daily {_pnl_label} loss of ${abs(_emrg_pnl):.2f} exceeded 5% limit (${self.risk_manager.account_balance * 0.05:.2f}). Closing all positions.",
                             importance=10
                         ))
                         
@@ -4388,12 +5126,37 @@ class TradingEngineWithCommentary:
                 # Tradable hours: 30s (frequent screener / signal scans).
                 # Off-hours: 5 min by default (data barely changes; news
                 # arrives episodically). Both knobs are config-tunable.
+                #
+                # v-newsbus-wake-2026-09-08: analysis loop can wake early
+                # on high-impact news alerts. The NewsBus sets the wake
+                # event when a HIGH impact item arrives; we check it with
+                # wait_for so we either wake early or complete the full
+                # cadence sleep. After handling, clear the event so we
+                # don't spin. This is the "event-driven entry wake" from
+                # the P0 spec — 30s backstop with early wake on alerts.
                 cadence = (
                     Config().ANALYSIS_LOOP_RTH_SEC
                     if getattr(self, "_is_tradable_now", True)
                     else Config().ANALYSIS_LOOP_OFF_HOURS_SEC
                 )
-                await asyncio.sleep(cadence)
+                wake_reason = "poll"
+                try:
+                    bus = getattr(self, "_news_bus", None)
+                    if bus is not None:
+                        wake_event = bus.get_wake_event()
+                        try:
+                            await asyncio.wait_for(wake_event.wait(), timeout=cadence)
+                            wake_reason = "news_alert"
+                            bus.clear_wake_event()
+                        except asyncio.TimeoutError:
+                            pass  # Normal cadence completed
+                    else:
+                        await asyncio.sleep(cadence)
+                except Exception as _wake_exc:
+                    logger.debug("analysis_loop wake failed: %s", _wake_exc)
+                    await asyncio.sleep(cadence)
+                
+                self._last_wake_reason = wake_reason
                 
             except Exception as e:
                 self.commentary.add_commentary(TradingCommentary(
@@ -4555,9 +5318,29 @@ class TradingEngineWithCommentary:
             ))
     
     async def _analyze_premarket_gaps(self):
-        """Analyze pre-market gaps for fade opportunities"""
+        """Analyze pre-market gaps for fade opportunities.
+        
+        v-gap-commentary-time-gate-2026-09-17: Gap Detected commentary is
+        only emitted during the first 30 minutes after market open (09:30-10:00 ET).
+        After 10:00 ET, gap data is still tracked but commentary is suppressed
+        because gap-fade setups are no longer actionable (no fade strategy).
+        """
         if 'gaps' not in self.market_state:
             self.market_state['gaps'] = {}
+        
+        # v-gap-commentary-time-gate-2026-09-17: suppress commentary after 10:00 ET
+        _emit_commentary = True
+        try:
+            from zoneinfo import ZoneInfo
+            now_et = datetime.now(ZoneInfo("America/New_York"))
+            market_open_930 = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
+            gap_commentary_cutoff = now_et.replace(hour=10, minute=0, second=0, microsecond=0)
+            if now_et >= gap_commentary_cutoff:
+                _emit_commentary = False
+            elif now_et < market_open_930:
+                _emit_commentary = True  # Pre-market gaps are always interesting
+        except Exception as _tz_exc:
+            logger.debug("gap analysis: timezone check failed: %s", _tz_exc)
         
         for symbol in self.dynamic_watchlist:
             try:
@@ -4584,19 +5367,36 @@ class TradingEngineWithCommentary:
                         'prev_close': prev_close
                     }
                     
-                    self.commentary.add_commentary(TradingCommentary(
-                        timestamp=datetime.now(),
-                        type=CommentaryType.MARKET_ANALYSIS,
-                        symbol=symbol,
-                        title=f"🌅 Gap Detected: {symbol}",
-                        message=f"{gap_percent:.1f}% gap {self.market_state['gaps'][symbol]['direction']} (Open: ${open_price:.2f}, Prev Close: ${prev_close:.2f})",
-                        importance=7
-                    ))
+                    # Only emit commentary during opening 30 minutes
+                    if _emit_commentary:
+                        self.commentary.add_commentary(TradingCommentary(
+                            timestamp=datetime.now(),
+                            type=CommentaryType.MARKET_ANALYSIS,
+                            symbol=symbol,
+                            title=f"🌅 Gap Detected: {symbol}",
+                            message=f"{gap_percent:.1f}% gap {self.market_state['gaps'][symbol]['direction']} (Open: ${open_price:.2f}, Prev Close: ${prev_close:.2f})",
+                            importance=7
+                        ))
             except Exception as e:
                 logger.debug(f"Gap analysis error for {symbol}: {e}")
 
     async def _evaluate_trading_conditions(self) -> Tuple[bool, str]:
-        """Evaluate if we should trade with detailed reasoning"""
+        """Evaluate if we should trade with detailed reasoning.
+        
+        v-econ-calendar-dated-2026-09-09: Blackout check REMOVED from here.
+        Previously, a blackout would return (False, "Major economic news event"),
+        causing the ENTIRE analysis loop to be skipped in LIVE mode. This made
+        the bot appear frozen (no strategy_decision logs, no indicator updates).
+        
+        Now:
+          - Analysis ALWAYS runs (bot keeps thinking during blackout)
+          - Blackout blocks NEW ENTRIES only (soft veto in _process_signal_with_commentary)
+          - LIVE and SIM both behave consistently (blackout respected in both)
+        
+        This matches how a pro desk operates: analysts still evaluate opportunities
+        during news events, they just don't place new orders until the volatility
+        window passes.
+        """
         # In commentary mode, we always "trade" but don't execute real orders
         if self.mode == TradingMode.SIMULATION_WITH_COMMENTARY:
             if self.risk_manager.margin_call:
@@ -4615,8 +5415,38 @@ class TradingEngineWithCommentary:
                 ))
             return True, "Simulation mode - always analyze"
         
-        if self._is_news_blackout():
-            return False, "Major economic news event"
+        # v-econ-calendar-dated-2026-09-09: Blackout no longer blocks analysis.
+        # Check is moved to _process_signal_with_commentary as soft veto.
+        # Log active blackout at INFO level for observability but continue analysis.
+        active_blackout = self._get_active_blackout()
+        if active_blackout:
+            logger.info(
+                "econ_blackout_in_effect event=%s ends=%s remaining_min=%.1f "
+                "— analysis continues, new entries blocked",
+                active_blackout.name,
+                active_blackout.end_time.strftime("%H:%M ET"),
+                active_blackout.remaining_minutes,
+            )
+            self.commentary.add_commentary(TradingCommentary(
+                timestamp=datetime.now(),
+                type=CommentaryType.INFO,
+                symbol=None,
+                title=f"📰 Econ Blackout Active — {active_blackout.name}",
+                message=(
+                    f"Economic event blackout in effect until "
+                    f"{active_blackout.end_time.strftime('%H:%M ET')} "
+                    f"(~{active_blackout.remaining_minutes:.0f}min remaining). "
+                    f"Analysis continues; new entries blocked at signal router."
+                ),
+                data={
+                    'event_name': active_blackout.name,
+                    'event_type': active_blackout.event_type.value,
+                    'end_time': active_blackout.end_time.isoformat(),
+                    'remaining_minutes': active_blackout.remaining_minutes,
+                },
+                importance=7
+            ))
+        
         # For other modes, check actual conditions
         allowed, reason = self.risk_manager.check_trading_allowed()
         
@@ -4867,6 +5697,12 @@ class TradingEngineWithCommentary:
                         signal = await strategy.generate_signal_with_commentary(market_data)
                         await asyncio.sleep(0)  # yield between strategies
                         if signal:
+                            # v-theme-shock-logger-2026-09-14: check for theme
+                            # matches on entry candidates. Shadow-only: logs
+                            # would-hard-skip but does NOT veto the signal (yet).
+                            # This collects Stage A evidence for promotion.
+                            await self._check_theme_on_entry(signal)
+
                             # Process the signal with full explanation. Pass
                             # market_data through so the classifier shadow
                             # hook can build SymbolFeatures from indicators
@@ -4951,6 +5787,45 @@ class TradingEngineWithCommentary:
                 )
         except Exception as exc:
             logger.debug("meta_shadow_dispatch_error err=%s", exc)
+
+    async def _check_theme_on_entry(self, signal) -> None:
+        """v-theme-shock-logger-2026-09-14: check for theme matches on entry.
+        
+        Shadow-only: logs would-hard-skip / alert-only but does NOT veto
+        the signal. This collects Stage A evidence for promotion to LIVE
+        hard-skip.
+        
+        The theme shock logger checks fresh news in the bus for theme
+        patterns (ai_compute, fed_risk_off, etc.) and logs shadow actions
+        when the candidate symbol is in the affected basket.
+        """
+        if self._theme_shock_logger is None:
+            return
+        if not self._theme_shock_logger.is_enabled():
+            return
+        if self._news_bus is None:
+            return
+
+        try:
+            symbol = signal.symbol.upper()
+            themes = self._theme_shock_logger.get_themes_for_symbol(symbol)
+            if not themes:
+                return
+
+            items = await self._news_bus.get_items(symbol, max_age_sec=3600)
+            if not items:
+                return
+
+            for item in items[:5]:
+                event = self._theme_shock_logger.process_news_item_for_entry(
+                    item=item,
+                    candidate_symbol=symbol,
+                )
+                if event:
+                    pass
+
+        except Exception as exc:
+            logger.debug("theme_check_entry_error symbol=%s err=%s", signal.symbol, exc)
 
     async def _process_signal_with_commentary(self, signal, ml_signal,
                                                 ml_explanation,
@@ -5064,6 +5939,14 @@ class TradingEngineWithCommentary:
                 ),
                 importance=7,
             ))
+            # v-feature-snapshot-2026-09-09: emit snapshot on regime veto
+            self._emit_veto_snapshot(
+                signal=signal,
+                strategy_id=_ra_strategy,
+                reason="regime_gate_meanrev",
+                gate_name="regime_gate",
+                extra={"tape": _alloc.tape, "er": _alloc.er, "threshold": _alloc.threshold},
+            )
             return  # abort the signal — no order placed
 
         # v-conviction-floor-meanrev-2026-06-17: skip mean-rev signals
@@ -5106,6 +5989,211 @@ class TradingEngineWithCommentary:
                 importance=6,
             ))
             return  # abort the signal — no order placed
+
+        # v-meanrev-quality-gate-2026-09-15: block mean-rev entries that
+        # don't meet quality thresholds. Enforces tighter standards than
+        # the strategy's own gates:
+        #   1. RSI must be in oversold quality band (< RSI_QUALITY_MAX)
+        #   2. RSI must not be extremely oversold (> RSI_QUALITY_MIN)
+        #   3. Price must not be too far below VWAP (catching extended moves)
+        # Fail-open on missing indicators. Scope: mean-rev family only.
+        if (Config().ENABLE_MEAN_REV_QUALITY_GATE
+                and _ra_strategy in ("mean_reversion", "oversold_v2")):
+            _qg_rsi = signal.reasoning.get("rsi") if signal.reasoning else None
+            _qg_vwap = None
+            _qg_price = signal.entry_price
+            try:
+                if market_data is not None and hasattr(market_data, "indicators"):
+                    _qg_vwap = market_data.indicators.get("vwap")
+                if _qg_vwap is None and signal.reasoning:
+                    _qg_vwap = signal.reasoning.get("vwap")
+            except Exception:
+                pass
+            try:
+                _qg_rsi = float(_qg_rsi) if _qg_rsi is not None else None
+                _qg_vwap = float(_qg_vwap) if _qg_vwap is not None else None
+            except (TypeError, ValueError):
+                _qg_rsi = None
+                _qg_vwap = None
+
+            _qg_rsi_max = Config().MEAN_REV_RSI_QUALITY_MAX
+            _qg_rsi_min = Config().MEAN_REV_RSI_QUALITY_MIN
+            _qg_vwap_max_pct = Config().MEAN_REV_VWAP_DISTANCE_MAX_PCT
+            _qg_block_reason = None
+            _qg_block_detail = {}
+
+            if _qg_rsi is not None:
+                if _qg_rsi >= _qg_rsi_max:
+                    _qg_block_reason = "rsi_not_oversold"
+                    _qg_block_detail = {
+                        "rsi": round(_qg_rsi, 2),
+                        "threshold": _qg_rsi_max,
+                        "check": "rsi_quality_max",
+                    }
+                elif _qg_rsi <= _qg_rsi_min:
+                    _qg_block_reason = "rsi_extreme_oversold"
+                    _qg_block_detail = {
+                        "rsi": round(_qg_rsi, 2),
+                        "threshold": _qg_rsi_min,
+                        "check": "rsi_quality_min",
+                    }
+
+            if _qg_block_reason is None and _qg_vwap is not None and _qg_vwap > 0:
+                _vwap_dist_pct = ((_qg_vwap - _qg_price) / _qg_vwap) * 100
+                if _vwap_dist_pct > _qg_vwap_max_pct:
+                    _qg_block_reason = "vwap_distance_exceeded"
+                    _qg_block_detail = {
+                        "price": round(_qg_price, 2),
+                        "vwap": round(_qg_vwap, 2),
+                        "distance_pct": round(_vwap_dist_pct, 2),
+                        "threshold_pct": _qg_vwap_max_pct,
+                        "check": "vwap_distance_max",
+                    }
+
+            if _qg_block_reason is not None:
+                self._audit(
+                    "mean_rev_quality_gate", signal.symbol, "blocked",
+                    "mean_rev_quality_blocked",
+                    strategy=_ra_strategy,
+                    reason=_qg_block_reason,
+                    **_qg_block_detail,
+                )
+                self.commentary.add_commentary(TradingCommentary(
+                    timestamp=datetime.now(),
+                    type=CommentaryType.RISK_ASSESSMENT,
+                    symbol=signal.symbol,
+                    title=f"⛔ Mean-Rev Quality Gate — {signal.symbol} blocked",
+                    message=(
+                        f"Signal rejected by quality gate: {_qg_block_reason}. "
+                        f"Details: {_qg_block_detail}. "
+                        f"Quality mean-rev entries require RSI in {_qg_rsi_min}-{_qg_rsi_max} "
+                        f"range and price within {_qg_vwap_max_pct}% of VWAP."
+                    ),
+                    importance=6,
+                ))
+                self._emit_veto_snapshot(
+                    signal=signal,
+                    strategy_id=_ra_strategy,
+                    reason="mean_rev_quality_blocked",
+                    gate_name="mean_rev_quality_gate",
+                    extra={"block_reason": _qg_block_reason, **_qg_block_detail},
+                )
+                return  # abort the signal — no order placed
+
+        # v-meanrev-risk-off-gate-2026-09-15: exclude mean-rev entries during
+        # risk_off regime (primary book). Stage A constraint: Primary book
+        # exclude risk_off; secondary = all regimes. Secondary/shadow book
+        # logs all regimes for comparison.
+        if (Config().MEAN_REV_EXCLUDE_RISK_OFF
+                and _ra_strategy in ("mean_reversion", "mean_reversion_short", "oversold_v2")):
+            _mr_regime = (signal.reasoning or {}).get("market_context_regime")
+            if _mr_regime is None and _alloc is not None:
+                _mr_regime = _alloc.tape
+            if _mr_regime == "risk_off":
+                self._audit(
+                    "mean_rev_regime_gate", signal.symbol, "blocked",
+                    "mean_rev_risk_off_blocked",
+                    strategy=_ra_strategy,
+                    regime=_mr_regime,
+                )
+                self.commentary.add_commentary(TradingCommentary(
+                    timestamp=datetime.now(),
+                    type=CommentaryType.RISK_ASSESSMENT,
+                    symbol=signal.symbol,
+                    title=f"⛔ Mean-Rev Regime Gate — {signal.symbol} blocked",
+                    message=(
+                        f"Signal rejected: regime is risk_off. "
+                        f"Stage A primary book excludes risk_off regime. "
+                        f"Entry will be logged to secondary/shadow book for comparison."
+                    ),
+                    importance=6,
+                ))
+                return  # abort the signal — no order placed
+
+        # v-meanrev-dedupe-2026-09-15: dedupe same-symbol mean-rev entries
+        # within MEAN_REV_DEDUPE_MINUTES window. Stage A constraint: exclude
+        # same symbol <15m. Prevents repeated whipsawing on the same name.
+        if _ra_strategy in ("mean_reversion", "mean_reversion_short", "oversold_v2"):
+            _dedupe_min = Config().MEAN_REV_DEDUPE_MINUTES
+            if not hasattr(self, '_meanrev_last_entry'):
+                self._meanrev_last_entry = {}
+            _last_entry_time = self._meanrev_last_entry.get(signal.symbol)
+            if _last_entry_time is not None:
+                _age_min = (datetime.now() - _last_entry_time).total_seconds() / 60
+                if _age_min < _dedupe_min:
+                    self._audit(
+                        "mean_rev_dedupe_gate", signal.symbol, "blocked",
+                        "mean_rev_dedupe_blocked",
+                        strategy=_ra_strategy,
+                        age_min=round(_age_min, 1),
+                        dedupe_window_min=_dedupe_min,
+                    )
+                    self.commentary.add_commentary(TradingCommentary(
+                        timestamp=datetime.now(),
+                        type=CommentaryType.RISK_ASSESSMENT,
+                        symbol=signal.symbol,
+                        title=f"⛔ Mean-Rev Dedupe — {signal.symbol} blocked",
+                        message=(
+                            f"Signal rejected: same symbol entry {_age_min:.0f} min ago. "
+                            f"Stage A excludes same symbol <{_dedupe_min}m. "
+                            f"Wait {_dedupe_min - _age_min:.0f} more minutes."
+                        ),
+                        importance=5,
+                    ))
+                    return  # abort the signal — no order placed
+            self._meanrev_last_entry[signal.symbol] = datetime.now()
+
+        # v-meanrev-shadow-ledger-2026-09-15: emit shadow ledger entry for
+        # Stage A validation. Fields: setup_type, rsi_14, bb_distance, atr,
+        # stop_dist, rr_ratio, regime, shadow=true, would_be_R.
+        # Stage A scorecard: n≥150 resolved OR ≥10 sessions with ≥1 resolved,
+        # PF≥1.30, WR≥48%, exp≥+0.05R, DD≤6%, max losing day ≤2.0R.
+        if (Config().MEAN_REV_SHADOW_LEDGER_ENABLED
+                and _ra_strategy in ("mean_reversion", "mean_reversion_short", "oversold_v2")):
+            try:
+                _sl_reasoning = signal.reasoning or {}
+                _sl_indicators = {}
+                if market_data is not None and hasattr(market_data, "indicators"):
+                    _sl_indicators = market_data.indicators or {}
+                _sl_rsi = _sl_reasoning.get("rsi") or _sl_indicators.get("rsi")
+                _sl_bb_lower = float(_sl_indicators.get("bb_lower", 0) or 0)
+                _sl_bb_distance = None
+                if _sl_bb_lower > 0 and signal.entry_price > 0:
+                    _sl_bb_distance = ((signal.entry_price - _sl_bb_lower) / _sl_bb_lower) * 100
+                _sl_atr = _sl_reasoning.get("atr") or _sl_indicators.get("atr")
+                _sl_stop_dist = _sl_reasoning.get("stop_dist") or _sl_reasoning.get("stop_distance")
+                _sl_rr_ratio = None
+                if signal.entry_price > 0 and signal.stop_loss > 0 and signal.take_profit > 0:
+                    _sl_risk = abs(signal.entry_price - signal.stop_loss)
+                    _sl_reward = abs(signal.take_profit - signal.entry_price)
+                    if _sl_risk > 0:
+                        _sl_rr_ratio = round(_sl_reward / _sl_risk, 2)
+                _sl_regime = _sl_reasoning.get("market_context_regime")
+                if _sl_regime is None and _alloc is not None:
+                    _sl_regime = _alloc.tape
+                _sl_would_be_R = None
+                if _sl_stop_dist and _sl_stop_dist > 0:
+                    _sl_would_be_R = round((_sl_rr_ratio or 2.0), 2)
+                self._audit(
+                    "mean_rev_shadow_ledger", signal.symbol, "shadow",
+                    "stage_a_entry",
+                    setup_type=f"mean_rev_{signal.signal_type.name.lower()}",
+                    strategy=_ra_strategy,
+                    entry_pattern=_sl_reasoning.get("entry_pattern"),
+                    rsi_14=round(float(_sl_rsi), 2) if _sl_rsi else None,
+                    bb_distance=round(_sl_bb_distance, 2) if _sl_bb_distance else None,
+                    atr=round(float(_sl_atr), 4) if _sl_atr else None,
+                    stop_dist=round(float(_sl_stop_dist), 4) if _sl_stop_dist else None,
+                    rr_ratio=_sl_rr_ratio,
+                    regime=_sl_regime,
+                    shadow=True,
+                    would_be_R=_sl_would_be_R,
+                    entry_price=round(signal.entry_price, 2),
+                    stop_loss=round(signal.stop_loss, 2),
+                    take_profit=round(signal.take_profit, 2),
+                )
+            except Exception as _sl_exc:
+                logger.debug("mean_rev_shadow_ledger error: %s", _sl_exc)
 
         # v-conviction-sizer-shadow-2026-06-11: log the would-be size
         # multiplier for this signal from the confluence of independent
@@ -5274,6 +6362,60 @@ class TradingEngineWithCommentary:
                 ))
                 return
 
+        # v-econ-calendar-dated-2026-09-09: Blackout soft veto on NEW ENTRIES.
+        # Analysis continues during blackout (bot keeps thinking/logging), but
+        # we block placing new orders until the high-impact news window passes.
+        # This matches how a pro desk operates: still evaluate opportunities,
+        # just don't enter new positions during wild volatility spikes.
+        #
+        # Unlike the old approach (which skipped the entire analysis loop in
+        # LIVE mode but not SIM), this is consistent across modes and lets the
+        # user see strategy_decision logs during blackout.
+        active_blackout = self._get_active_blackout()
+        if active_blackout:
+            strategy_id = signal.reasoning.get("strategy", "unknown") if signal.reasoning else "unknown"
+            self._audit("econ_blackout", signal.symbol, "skip", "blackout_soft_veto",
+                        event=active_blackout.name,
+                        event_type=active_blackout.event_type.value,
+                        ends=active_blackout.end_time.strftime("%H:%M"),
+                        remaining_min=round(active_blackout.remaining_minutes, 1),
+                        strategy=strategy_id)
+            
+            # v-feature-snapshot-emit-2026-09-09: emit snapshot for blackout veto
+            self._emit_veto_snapshot(
+                signal=signal,
+                strategy_id=strategy_id,
+                reason="blackout_soft_veto",
+                gate_name="econ_blackout",
+                extra={
+                    "event_name": active_blackout.name,
+                    "event_type": active_blackout.event_type.value,
+                    "remaining_min": round(active_blackout.remaining_minutes, 1),
+                },
+            )
+            
+            self.commentary.add_commentary(TradingCommentary(
+                timestamp=datetime.now(),
+                type=CommentaryType.RISK_ASSESSMENT,
+                symbol=signal.symbol,
+                title=f"📰 Econ Blackout — Holding Off Entry",
+                message=(
+                    f"Signal for {signal.symbol} received during economic event "
+                    f"'{active_blackout.name}' (until {active_blackout.end_time.strftime('%H:%M ET')}). "
+                    f"Blocking new entry to avoid volatility spike. "
+                    f"Analysis logged; will re-evaluate after window closes."
+                ),
+                data={
+                    'event_name': active_blackout.name,
+                    'event_type': active_blackout.event_type.value,
+                    'end_time': active_blackout.end_time.isoformat(),
+                    'remaining_minutes': active_blackout.remaining_minutes,
+                    'signal_type': signal.signal_type.value if hasattr(signal, 'signal_type') else 'unknown',
+                },
+                importance=6,
+            ))
+            return
+
         # v-early-session-soft-2026-04-30: soft veto on the first 15 minutes
         # after open. Indicators computed on <15 bars of post-open data are
         # unreliable (ATR is microscopic, volume ratios skewed by opening
@@ -5347,6 +6489,437 @@ class TradingEngineWithCommentary:
                          f"becoming overnight holds (ASTS 5/21 incident). "
                          f"Re-enable after EOD-flatten is implemented."),
                 importance=6,
+            ))
+            return
+
+        # v-late-entry-gate-2026-09-15: detect late/chasing entries for
+        # day_trade_momentum, mean_reversion, and orb_contraction_rvol.
+        #
+        # Heuristics (all tunable via Config):
+        #   1. Extension ratio: (price - open) / (high - open) >= threshold
+        #   2. VWAP chase: long above VWAP + k*ATR
+        #   3. Bars-since-impulse: breakout age >= N bars
+        #
+        # When ENABLE_LATE_ENTRY_GATE=True (default):
+        #   - Shadow mode (default): log LATE_ENTRY_SKIP, no block
+        #   - Hard mode: block the entry
+        #
+        # Safe off: ENABLE_LATE_ENTRY_GATE=0
+        _signal_strategy = (signal.reasoning or {}).get("strategy", "")
+        _gated_strategies = ("day_trade_momentum", "mean_reversion", "mean_reversion_short", "orb_contraction_rvol")
+        if (Config().ENABLE_LATE_ENTRY_GATE
+                and _signal_strategy in _gated_strategies
+                and getattr(signal, 'signal_type', None) == SignalType.BUY):
+            _late_reasons = []
+            _reasoning = signal.reasoning or {}
+            
+            # Heuristic 1: Extension from session open toward session high
+            _session_open = float(_reasoning.get("session_open", 0) or 0)
+            _session_high = float(_reasoning.get("session_high", 0) or 0)
+            _entry_price = float(getattr(signal, 'entry_price', 0) or _reasoning.get("entry_price", 0) or 0)
+            if _session_high > _session_open and _entry_price > 0:
+                _ext_range = _session_high - _session_open
+                _ext_ratio = (_entry_price - _session_open) / _ext_range if _ext_range > 0 else 0
+                if _ext_ratio >= Config().LATE_ENTRY_EXTENSION_THRESHOLD:
+                    _late_reasons.append(f"extension={_ext_ratio:.2f}>={Config().LATE_ENTRY_EXTENSION_THRESHOLD}")
+            
+            # Heuristic 2: VWAP chase (long above VWAP + k*ATR)
+            _vwap = float(_reasoning.get("vwap", 0) or 0)
+            _atr = float(_reasoning.get("atr", 0) or _reasoning.get("indicators", {}).get("atr", 0) or 0)
+            if _vwap > 0 and _atr > 0 and _entry_price > 0:
+                _vwap_threshold = _vwap + Config().LATE_ENTRY_VWAP_ATR_MULT * _atr
+                if _entry_price > _vwap_threshold:
+                    _late_reasons.append(f"vwap_chase={_entry_price:.2f}>{_vwap_threshold:.2f}")
+            
+            # Heuristic 3: Bars since impulse/breakout
+            _bars_since_impulse = int(_reasoning.get("bars_since_impulse", 0) or _reasoning.get("bars_since_breakout", 0) or 0)
+            if _bars_since_impulse >= Config().LATE_ENTRY_BARS_SINCE_IMPULSE:
+                _late_reasons.append(f"bars_since_impulse={_bars_since_impulse}>={Config().LATE_ENTRY_BARS_SINCE_IMPULSE}")
+            
+            if _late_reasons:
+                _is_shadow = Config().LATE_ENTRY_GATE_SHADOW
+                _action = "shadow_late_entry_skip" if _is_shadow else "hard_late_entry_skip"
+                self._audit(
+                    "late_entry_gate", signal.symbol, "skip" if not _is_shadow else "shadow",
+                    _action,
+                    strategy=_signal_strategy,
+                    mode=self.mode.value,
+                    late_reasons=_late_reasons,
+                    extension_ratio=round(_ext_ratio, 3) if '_ext_ratio' in dir() else None,
+                    vwap=round(_vwap, 2) if _vwap else None,
+                    atr=round(_atr, 2) if _atr else None,
+                    entry_price=round(_entry_price, 2) if _entry_price else None,
+                    bars_since_impulse=_bars_since_impulse,
+                    shadow_mode=_is_shadow,
+                )
+                self.commentary.add_commentary(TradingCommentary(
+                    timestamp=datetime.now(),
+                    type=CommentaryType.RISK_ASSESSMENT,
+                    symbol=signal.symbol,
+                    title=f"⚡ Late Entry {'(Shadow)' if _is_shadow else 'Blocked'} — {signal.symbol}",
+                    message=(
+                        f"Signal for {signal.symbol} via {_signal_strategy} flagged as late entry.\n"
+                        f"Reasons: {', '.join(_late_reasons)}\n\n"
+                        f"{'Shadow mode: entry NOT blocked, logging for analysis.' if _is_shadow else 'Entry blocked.'}\n"
+                        f"Adjust thresholds via LATE_ENTRY_EXTENSION_THRESHOLD, "
+                        f"LATE_ENTRY_VWAP_ATR_MULT, LATE_ENTRY_BARS_SINCE_IMPULSE."
+                    ),
+                    data={
+                        'strategy': _signal_strategy,
+                        'late_reasons': _late_reasons,
+                        'shadow_mode': _is_shadow,
+                        'action': _action,
+                    },
+                    importance=6,
+                ))
+                if not _is_shadow:
+                    return  # Hard skip in non-shadow mode
+
+        # v-pause-live-daytrade-2026-09-10: block NEW LIVE day-trade momentum
+        # entries when DAY_TRADE_LIVE_ENTRIES_ENABLED=False.
+        #
+        # Hari APPROVED product call 2026-09-10: immediately pause new LIVE
+        # day-trade entries while keeping:
+        #   - Sim/commentary analysis running (strategy still generates signals)
+        #   - Hard loss circuits / ENABLE_BOT_ONLY_PNL_CIRCUIT intact
+        #   - Flatten / exits / order_monitor / OCO / bootstrap for EXISTING
+        #     bot day-trades intact
+        #   - LT hands-off forever: MU, HQGE, SPCX (is_long_term)
+        #
+        # Does NOT flip autonomous_live. Only blocks new entries via the
+        # day_trade_momentum lane in LIVE mode.
+        if (_signal_strategy == "day_trade_momentum"
+                and self.mode == TradingMode.LIVE
+                and not Config().DAY_TRADE_LIVE_ENTRIES_ENABLED):
+            self._audit(
+                "daytrade_live_pause", signal.symbol, "skip",
+                "live_entries_disabled",
+                strategy=_signal_strategy,
+                mode=self.mode.value,
+                flag="DAY_TRADE_LIVE_ENTRIES_ENABLED=False",
+                rsi=round(float((signal.reasoning or {}).get("rsi", 0)), 2),
+                entry_pattern=(signal.reasoning or {}).get("entry_pattern"),
+                regime=(signal.reasoning or {}).get("market_context_regime"),
+            )
+            self.commentary.add_commentary(TradingCommentary(
+                timestamp=datetime.now(),
+                type=CommentaryType.RISK_ASSESSMENT,
+                symbol=signal.symbol,
+                title=f"🛑 Day-Trade LIVE Entry Paused",
+                message=(
+                    f"Signal for {signal.symbol} via day_trade_momentum "
+                    f"(pattern: {(signal.reasoning or {}).get('entry_pattern', 'unknown')}) "
+                    f"blocked in LIVE mode. DAY_TRADE_LIVE_ENTRIES_ENABLED=False.\n\n"
+                    f"Stage-A validation required before promotion:\n"
+                    f"  n>=150 trades, >=10 sessions, PF>=1.30, WR>=48%,\n"
+                    f"  exp>=+0.05R, DD<=6%, max losing day<=2R.\n\n"
+                    f"Sim/commentary analysis continues. Existing positions "
+                    f"(exits, OCO, circuits) remain intact."
+                ),
+                data={
+                    'strategy': _signal_strategy,
+                    'entry_pattern': (signal.reasoning or {}).get('entry_pattern'),
+                    'mode': self.mode.value,
+                    'flag': 'DAY_TRADE_LIVE_ENTRIES_ENABLED',
+                    'flag_value': False,
+                },
+                importance=8,
+            ))
+            return
+
+        # ────────────────────────────────────────────────────────────────────
+        # v-flatten-hour-entry-gate-2026-09-15: block NEW day-trade LIVE
+        # entries when current ET hour >= flatten_hour that would immediately
+        # flatten them. P0 RCA: BBWI entered at 15:23:30 ET then exited ~7s
+        # later via flatten_hour=15. Entry at/after flatten hour = churn.
+        #
+        # Gate uses is_day_trade=True from reasoning (not strategy name) to
+        # cover all day-trade tagged strategies (momentum, pullback, etc.).
+        # ────────────────────────────────────────────────────────────────────
+        _reasoning = signal.reasoning or {}
+        _is_day_trade_signal = _reasoning.get('is_day_trade', False)
+        if (_is_day_trade_signal
+                and self.mode == TradingMode.LIVE
+                and Config().DAY_TRADE_FLATTEN_HOUR_ENTRY_GATE_ENABLED):
+            try:
+                from zoneinfo import ZoneInfo
+                _flatten_hour = int(_reasoning.get(
+                    'flatten_hour', Config().DAY_TRADE_FLATTEN_HOUR
+                ))
+                _et_now = datetime.now(ZoneInfo("America/New_York"))
+                _et_hour = _et_now.hour
+                if _et_hour >= _flatten_hour:
+                    self._audit(
+                        "daytrade_flatten_hour_gate", signal.symbol, "skip",
+                        "flatten_hour_entry_blocked",
+                        strategy=_signal_strategy,
+                        mode=self.mode.value,
+                        flatten_hour=_flatten_hour,
+                        et_hour=_et_hour,
+                        et_now=_et_now.strftime("%H:%M"),
+                        entry_pattern=_reasoning.get("entry_pattern"),
+                        rsi=round(float(_reasoning.get("rsi", 0)), 2),
+                    )
+                    self.commentary.add_commentary(TradingCommentary(
+                        timestamp=datetime.now(),
+                        type=CommentaryType.RISK_ASSESSMENT,
+                        symbol=signal.symbol,
+                        title=f"🛑 Day-Trade Entry Blocked — Flatten Hour",
+                        message=(
+                            f"Signal for {signal.symbol} via {_signal_strategy} "
+                            f"blocked in LIVE mode — current ET hour ({_et_hour}) "
+                            f">= flatten_hour ({_flatten_hour}).\n\n"
+                            f"Entry at/after flatten hour would immediately "
+                            f"trigger flatten exit = churn.\n"
+                            f"Gate: DAY_TRADE_FLATTEN_HOUR_ENTRY_GATE_ENABLED=True"
+                        ),
+                        data={
+                            'strategy': _signal_strategy,
+                            'entry_pattern': _reasoning.get('entry_pattern'),
+                            'mode': self.mode.value,
+                            'flatten_hour': _flatten_hour,
+                            'et_hour': _et_hour,
+                            'et_now': _et_now.strftime('%H:%M'),
+                            'gate': 'DAY_TRADE_FLATTEN_HOUR_ENTRY_GATE_ENABLED',
+                            'gate_value': True,
+                        },
+                        importance=8,
+                    ))
+                    return
+            except Exception as _gate_exc:
+                logger.warning(
+                    "flatten_hour_entry_gate check failed for %s: %s",
+                    signal.symbol, _gate_exc
+                )
+
+        # ────────────────────────────────────────────────────────────────────
+        # v-daytrade-rsi-entry-gate-2026-09-15: block day-trade LIVE long
+        # entries when RSI <= 50 (the proactive_rsi_below_50 exit threshold).
+        #
+        # P0 RCA 2026-09-15 (ALHC×2): day_trade pullback/continuation entered
+        # LIVE while RSI <= 50, then the open-desk / proactive RSI exit
+        # immediately (or soon) dumped the trade. Entry into a condition
+        # that already triggers exit = churn, anti-profit.
+        #
+        # Gate uses is_day_trade=True from reasoning to cover all day-trade
+        # tagged strategies (momentum, pullback, continuation).
+        # Only blocks BUY signals (longs), matching the RSI < 50 exit logic.
+        # ────────────────────────────────────────────────────────────────────
+        if (_is_day_trade_signal
+                and self.mode == TradingMode.LIVE
+                and signal.signal_type == SignalType.BUY
+                and Config().DAY_TRADE_RSI_ENTRY_GATE_ENABLED):
+            try:
+                _rsi_threshold = Config().DAY_TRADE_RSI_ENTRY_THRESHOLD
+                _signal_rsi = float(_reasoning.get('rsi', 100))
+                if _signal_rsi <= _rsi_threshold:
+                    self._audit(
+                        "daytrade_rsi_entry_gate", signal.symbol, "skip",
+                        "rsi_below_50_entry_blocked",
+                        strategy=_signal_strategy,
+                        mode=self.mode.value,
+                        rsi=round(_signal_rsi, 2),
+                        rsi_threshold=_rsi_threshold,
+                        entry_pattern=_reasoning.get("entry_pattern"),
+                        regime=_reasoning.get("market_context_regime"),
+                    )
+                    self.commentary.add_commentary(TradingCommentary(
+                        timestamp=datetime.now(),
+                        type=CommentaryType.RISK_ASSESSMENT,
+                        symbol=signal.symbol,
+                        title=f"🛑 Day-Trade Entry Blocked — RSI ≤{int(_rsi_threshold)}",
+                        message=(
+                            f"Signal for {signal.symbol} via {_signal_strategy} "
+                            f"blocked in LIVE mode — RSI {_signal_rsi:.1f} "
+                            f"<= threshold {_rsi_threshold}.\n\n"
+                            f"Entry at RSI ≤{int(_rsi_threshold)} would immediately "
+                            f"be vulnerable to proactive_rsi_below_50 exit = churn.\n"
+                            f"Gate: DAY_TRADE_RSI_ENTRY_GATE_ENABLED=True\n"
+                            f"Pattern: {_reasoning.get('entry_pattern', 'unknown')}"
+                        ),
+                        data={
+                            'strategy': _signal_strategy,
+                            'entry_pattern': _reasoning.get('entry_pattern'),
+                            'mode': self.mode.value,
+                            'rsi': _signal_rsi,
+                            'rsi_threshold': _rsi_threshold,
+                            'gate': 'DAY_TRADE_RSI_ENTRY_GATE_ENABLED',
+                            'gate_value': True,
+                        },
+                        importance=8,
+                    ))
+                    return
+            except Exception as _rsi_gate_exc:
+                logger.warning(
+                    "daytrade_rsi_entry_gate check failed for %s: %s",
+                    signal.symbol, _rsi_gate_exc
+                )
+
+        # ────────────────────────────────────────────────────────────────────
+        # v-rsi-high-entry-veto-2026-09-17: block day-trade LIVE long entries
+        # when RSI >= 70 (breakout/continuation patterns).
+        #
+        # P0 RCA 2026-09-17 (XE): day_trade breakout @16.31×334 @09:45 ET
+        # entered with RSI overbought → immediately vulnerable to exit →
+        # spam WOULD_EXIT → stop fill. Entering overbought = chasing.
+        #
+        # Gate uses is_day_trade=True from reasoning to cover day-trade
+        # tagged strategies. Only blocks breakout and continuation patterns
+        # (pullback RSI 40-60 by definition, so not affected).
+        # ────────────────────────────────────────────────────────────────────
+        if (_is_day_trade_signal
+                and self.mode == TradingMode.LIVE
+                and signal.signal_type == SignalType.BUY
+                and Config().DAY_TRADE_RSI_HIGH_ENTRY_VETO_ENABLED):
+            try:
+                _rsi_high_threshold = Config().DAY_TRADE_RSI_HIGH_ENTRY_THRESHOLD
+                _signal_rsi = float(_reasoning.get('rsi', 0))
+                _entry_pattern = _reasoning.get('entry_pattern', '')
+                # Only veto breakout and continuation — pullback has RSI 40-60 by definition
+                if (_entry_pattern in ('breakout', 'continuation')
+                        and _signal_rsi >= _rsi_high_threshold):
+                    self._audit(
+                        "daytrade_rsi_high_entry_veto", signal.symbol, "skip",
+                        "rsi_above_70_entry_blocked",
+                        strategy=_signal_strategy,
+                        mode=self.mode.value,
+                        rsi=round(_signal_rsi, 2),
+                        rsi_threshold=_rsi_high_threshold,
+                        entry_pattern=_entry_pattern,
+                        regime=_reasoning.get("market_context_regime"),
+                    )
+                    self.commentary.add_commentary(TradingCommentary(
+                        timestamp=datetime.now(),
+                        type=CommentaryType.RISK_ASSESSMENT,
+                        symbol=signal.symbol,
+                        title=f"🛑 Day-Trade Entry Blocked — RSI ≥{int(_rsi_high_threshold)}",
+                        message=(
+                            f"Signal for {signal.symbol} via {_signal_strategy} "
+                            f"blocked in LIVE mode — RSI {_signal_rsi:.1f} "
+                            f">= threshold {_rsi_high_threshold}.\n\n"
+                            f"Entry at RSI ≥{int(_rsi_high_threshold)} on {_entry_pattern} "
+                            f"pattern = chasing overbought, high P(immediate reversal).\n"
+                            f"Gate: DAY_TRADE_RSI_HIGH_ENTRY_VETO_ENABLED=True\n"
+                            f"Pattern: {_entry_pattern}"
+                        ),
+                        data={
+                            'strategy': _signal_strategy,
+                            'entry_pattern': _entry_pattern,
+                            'mode': self.mode.value,
+                            'rsi': _signal_rsi,
+                            'rsi_threshold': _rsi_high_threshold,
+                            'gate': 'DAY_TRADE_RSI_HIGH_ENTRY_VETO_ENABLED',
+                            'gate_value': True,
+                        },
+                        importance=8,
+                    ))
+                    return
+            except Exception as _rsi_high_gate_exc:
+                logger.warning(
+                    "daytrade_rsi_high_entry_veto check failed for %s: %s",
+                    signal.symbol, _rsi_high_gate_exc
+                )
+
+        # v-pause-live-meanrev-2026-09-15: block NEW LIVE mean-reversion
+        # entries when MEAN_REV_LIVE_ENTRIES_ENABLED=False.
+        #
+        # CoS APPROVED 2026-09-15: immediately pause new LIVE mean-rev
+        # entries after late-chase bleed (CRCL/SLS/FPS). Keeping:
+        #   - Sim/commentary analysis running (strategy still generates signals)
+        #   - Hard loss circuits / ENABLE_BOT_ONLY_PNL_CIRCUIT intact
+        #   - Flatten / exits / order_monitor / OCO / bootstrap for EXISTING
+        #     bot mean-rev positions intact
+        #   - LT hands-off forever: MU, HQGE, SPCX (is_long_term)
+        #
+        # Does NOT flip autonomous_live. Only blocks new entries via the
+        # mean_reversion / mean_reversion_short lane in LIVE mode.
+        if (_signal_strategy in ("mean_reversion", "mean_reversion_short")
+                and self.mode == TradingMode.LIVE
+                and not Config().MEAN_REV_LIVE_ENTRIES_ENABLED):
+            self._audit(
+                "meanrev_live_pause", signal.symbol, "skip",
+                "live_entries_disabled",
+                strategy=_signal_strategy,
+                mode=self.mode.value,
+                flag="MEAN_REV_LIVE_ENTRIES_ENABLED=False",
+                rsi=round(float((signal.reasoning or {}).get("rsi", 0)), 2),
+                entry_pattern=(signal.reasoning or {}).get("entry_pattern"),
+                regime=(signal.reasoning or {}).get("market_context_regime"),
+            )
+            self.commentary.add_commentary(TradingCommentary(
+                timestamp=datetime.now(),
+                type=CommentaryType.RISK_ASSESSMENT,
+                symbol=signal.symbol,
+                title=f"🛑 Mean-Rev LIVE Entry Paused",
+                message=(
+                    f"Signal for {signal.symbol} via {_signal_strategy} "
+                    f"(pattern: {(signal.reasoning or {}).get('entry_pattern', 'unknown')}) "
+                    f"blocked in LIVE mode. MEAN_REV_LIVE_ENTRIES_ENABLED=False.\n\n"
+                    f"Stage-A validation required before promotion:\n"
+                    f"  n>=150 trades, >=10 sessions, PF>=1.30, WR>=48%,\n"
+                    f"  exp>=+0.05R, DD<=6%, max losing day<=2R.\n\n"
+                    f"Sim/commentary analysis continues. Existing positions "
+                    f"(exits, OCO, circuits) remain intact."
+                ),
+                data={
+                    'strategy': _signal_strategy,
+                    'entry_pattern': (signal.reasoning or {}).get('entry_pattern'),
+                    'mode': self.mode.value,
+                    'flag': 'MEAN_REV_LIVE_ENTRIES_ENABLED',
+                    'flag_value': False,
+                },
+                importance=8,
+            ))
+            return
+
+        # v-orb-prototype-2026-09-10: block NEW LIVE ORB entries when
+        # ORB_LIVE_ENTRIES_ENABLED=False.
+        #
+        # Same pattern as day_trade_momentum pause: sim/shadow analysis
+        # continues, only LIVE order placement is blocked.
+        #
+        # Stage-A validation required before promotion:
+        #   n>=150 trades, >=10 sessions, PF>=1.30, WR>=48%,
+        #   exp>=+0.05R, DD<=6%, max losing day<=2R.
+        if (_signal_strategy == "orb_contraction_rvol"
+                and self.mode == TradingMode.LIVE
+                and not Config().ORB_LIVE_ENTRIES_ENABLED):
+            self._audit(
+                "orb_live_pause", signal.symbol, "skip",
+                "live_entries_disabled",
+                strategy=_signal_strategy,
+                mode=self.mode.value,
+                flag="ORB_LIVE_ENTRIES_ENABLED=False",
+                breakout_type=(signal.reasoning or {}).get("breakout_type"),
+                orb_high=round(float((signal.reasoning or {}).get("orb_high", 0)), 2),
+                orb_low=round(float((signal.reasoning or {}).get("orb_low", 0)), 2),
+                contraction_pct=round(float((signal.reasoning or {}).get("contraction_pct", 0)), 3),
+                volume_ratio=round(float((signal.reasoning or {}).get("volume_ratio", 0)), 2),
+                regime=(signal.reasoning or {}).get("market_context_regime"),
+            )
+            self.commentary.add_commentary(TradingCommentary(
+                timestamp=datetime.now(),
+                type=CommentaryType.RISK_ASSESSMENT,
+                symbol=signal.symbol,
+                title=f"🛑 ORB LIVE Entry Paused",
+                message=(
+                    f"Signal for {signal.symbol} via orb_contraction_rvol "
+                    f"(type: {(signal.reasoning or {}).get('breakout_type', 'unknown')}) "
+                    f"blocked in LIVE mode. ORB_LIVE_ENTRIES_ENABLED=False.\n\n"
+                    f"Stage-A validation required before promotion:\n"
+                    f"  n>=150 trades, >=10 sessions, PF>=1.30, WR>=48%,\n"
+                    f"  exp>=+0.05R, DD<=6%, max losing day<=2R.\n\n"
+                    f"Sim/shadow analysis continues. Enable for sim/shadow testing "
+                    f"with ENABLE_ORB_STRATEGY=1 and ORB_SIM_SHADOW_ENABLED=1."
+                ),
+                data={
+                    'strategy': _signal_strategy,
+                    'breakout_type': (signal.reasoning or {}).get('breakout_type'),
+                    'mode': self.mode.value,
+                    'flag': 'ORB_LIVE_ENTRIES_ENABLED',
+                    'flag_value': False,
+                },
+                importance=8,
             ))
             return
 
@@ -5616,6 +7189,30 @@ class TradingEngineWithCommentary:
             active_positions = set(self.simulated_positions.keys())
             active_pos_objs = self.simulated_positions.values()
 
+        # v-correlation-ignore-unmanaged-2026-09-18: filter out positions that
+        # should NOT block correlation checks for NEW entries:
+        # 1. Unmanaged/external positions (managed_by_bot=False) when CORRELATION_IGNORE_UNMANAGED=True
+        # 2. Hands-off denylist positions (MU/HQGE/SPCX) when CORRELATION_IGNORE_HANDS_OFF=True
+        # This allows day-trade entries into correlated sectors when the existing
+        # holdings are external (operator-managed) or permanent hands-off.
+        _corr_ignore_unmanaged = Config().CORRELATION_IGNORE_UNMANAGED
+        _corr_ignore_hands_off = Config().CORRELATION_IGNORE_HANDS_OFF
+        _hands_off_denylist = Config().HANDS_OFF_DENYLIST if _corr_ignore_hands_off else frozenset()
+        _correlation_positions = set()
+        if _corr_ignore_unmanaged or _corr_ignore_hands_off:
+            _pos_dict = self.positions if self.mode == TradingMode.LIVE else self.simulated_positions
+            for _sym in active_positions:
+                _pos = _pos_dict.get(_sym)
+                if _pos is None:
+                    continue
+                if _corr_ignore_hands_off and _sym.upper() in _hands_off_denylist:
+                    continue
+                if _corr_ignore_unmanaged and not getattr(_pos, 'managed_by_bot', False):
+                    continue
+                _correlation_positions.add(_sym)
+        else:
+            _correlation_positions = active_positions
+
         # v-max-positions-gate-2026-05-06: hard cap on concurrent
         # bot-managed trades. Counts only positions where the bot is
         # actively managing exits (managed_by_bot=True) — pre-existing
@@ -5663,9 +7260,170 @@ class TradingEngineWithCommentary:
                 importance=7,
             ))
             return
+
+        # v-meanrev-risk-budget-2026-09-15: separate risk budget for mean-rev.
+        # Mean-rev fires on volatility spikes (many stocks oversold at once).
+        # Without a separate cap, mean-rev can consume all MAX_POSITIONS slots,
+        # leaving no room for day-trade momentum when movers appear.
+        #
+        # Stage A constraints:
+        #   - MEAN_REV_RISK_BUDGET_PCT default 0 while LIVE off (shadow only)
+        #   - Hard separate pool from day-trade momentum / ORB / #2 / #3
+        #   - Max simultaneous open hyp shorts ≤3
+        #   - Exclude MU/HQGE/SPCX (+SNAP if hands-off)
+        _budget_strategy = (signal.reasoning or {}).get("strategy", "")
+        if (Config().ENABLE_MEAN_REV_RISK_BUDGET
+                and _budget_strategy in ("mean_reversion", "mean_reversion_short", "oversold_v2")):
+
+            _hands_off = Config().HANDS_OFF_DENYLIST
+            if signal.symbol.upper() in _hands_off:
+                self._audit(
+                    "mean_rev_budget_gate", signal.symbol, "skip",
+                    "mean_rev_hands_off_blocked",
+                    strategy=_budget_strategy,
+                    hands_off_list=list(_hands_off),
+                )
+                self.commentary.add_commentary(TradingCommentary(
+                    timestamp=datetime.now(),
+                    type=CommentaryType.RISK_ASSESSMENT,
+                    symbol=signal.symbol,
+                    title=f"🛑 Mean-Rev HANDS_OFF — {signal.symbol} blocked",
+                    message=(
+                        f"{signal.symbol} is in HANDS_OFF denylist: {', '.join(_hands_off)}. "
+                        f"Mean-rev entries on these symbols are permanently blocked."
+                    ),
+                    importance=8,
+                ))
+                return
+
+            _max_meanrev = Config().MAX_CONCURRENT_MEAN_REV
+            _max_meanrev_shorts = Config().MAX_CONCURRENT_MEAN_REV_SHORTS
+            _max_meanrev_risk_pct = Config().MAX_MEAN_REV_RISK_PCT
+
+            _meanrev_pos_syms = set()
+            _meanrev_short_syms = set()
+            _meanrev_notional = 0.0
+            for _pos in active_pos_objs:
+                if not bool(getattr(_pos, 'managed_by_bot', False)):
+                    continue
+                _pos_qty = int(getattr(_pos, 'quantity', 0) or 0)
+                if _pos_qty == 0:
+                    continue
+                _pos_reasoning = getattr(_pos, 'reasoning', {}) or {}
+                _pos_strategy = _pos_reasoning.get('strategy', '')
+                if _pos_strategy in ("mean_reversion", "mean_reversion_short", "oversold_v2"):
+                    _pos_sym = getattr(_pos, 'symbol', None)
+                    _meanrev_pos_syms.add(_pos_sym)
+                    _pos_price = float(getattr(_pos, 'current_price', 0) or getattr(_pos, 'entry_price', 0) or 0)
+                    _meanrev_notional += abs(_pos_qty) * _pos_price
+                    if _pos_qty < 0 or _pos_strategy == "mean_reversion_short":
+                        _meanrev_short_syms.add(_pos_sym)
+
+            _meanrev_pending_syms = set()
+            _meanrev_pending_short_syms = set()
+            for _pend_info in self.pending_orders.values():
+                if not isinstance(_pend_info, dict):
+                    continue
+                if _pend_info.get('status') != 'PENDING':
+                    continue
+                _pend_reasoning = _pend_info.get('reasoning') or {}
+                _pend_strategy = _pend_reasoning.get('strategy', '')
+                if _pend_strategy in ("mean_reversion", "mean_reversion_short", "oversold_v2"):
+                    _pend_sym = _pend_info.get('symbol')
+                    if _pend_sym:
+                        _meanrev_pending_syms.add(_pend_sym)
+                        if _pend_strategy == "mean_reversion_short":
+                            _meanrev_pending_short_syms.add(_pend_sym)
+
+            _meanrev_count = len(_meanrev_pos_syms | _meanrev_pending_syms)
+            _meanrev_short_count = len(_meanrev_short_syms | _meanrev_pending_short_syms)
+            _already_in_meanrev = signal.symbol in _meanrev_pos_syms
+
+            if _budget_strategy == "mean_reversion_short":
+                if _meanrev_short_count >= _max_meanrev_shorts and signal.symbol not in _meanrev_short_syms:
+                    self._audit(
+                        "mean_rev_budget_gate", signal.symbol, "skip",
+                        "mean_rev_budget_exhausted",
+                        strategy=_budget_strategy,
+                        meanrev_short_count=_meanrev_short_count,
+                        meanrev_short_cap=_max_meanrev_shorts,
+                        meanrev_short_positions=list(_meanrev_short_syms | _meanrev_pending_short_syms),
+                        reason="max_concurrent_shorts_exceeded",
+                    )
+                    self.commentary.add_commentary(TradingCommentary(
+                        timestamp=datetime.now(),
+                        type=CommentaryType.RISK_ASSESSMENT,
+                        symbol=signal.symbol,
+                        title=f"🛑 Mean-Rev SHORT Budget Exhausted — {signal.symbol}",
+                        message=(
+                            f"Already have {_meanrev_short_count} mean-rev SHORT positions "
+                            f"(cap {_max_meanrev_shorts}): {', '.join(_meanrev_short_syms | _meanrev_pending_short_syms)}. "
+                            f"Stage A: max simultaneous open hyp shorts ≤{_max_meanrev_shorts}. "
+                            f"Prior live short clusters ~PF 0.69 — floors stay hard."
+                        ),
+                        importance=7,
+                    ))
+                    return
+
+            if _meanrev_count >= _max_meanrev and not _already_in_meanrev:
+                self._audit(
+                    "mean_rev_budget_gate", signal.symbol, "skip",
+                    "mean_rev_budget_exhausted",
+                    strategy=_budget_strategy,
+                    meanrev_count=_meanrev_count,
+                    meanrev_cap=_max_meanrev,
+                    meanrev_positions=list(_meanrev_pos_syms),
+                    meanrev_pending=list(_meanrev_pending_syms),
+                )
+                self.commentary.add_commentary(TradingCommentary(
+                    timestamp=datetime.now(),
+                    type=CommentaryType.RISK_ASSESSMENT,
+                    symbol=signal.symbol,
+                    title=f"🛑 Mean-Rev Budget Exhausted — {signal.symbol}",
+                    message=(
+                        f"Already have {_meanrev_count} mean-rev positions "
+                        f"(cap {_max_meanrev}): {', '.join(_meanrev_pos_syms | _meanrev_pending_syms)}. "
+                        f"Skipping {signal.symbol} to maintain strategy diversity. "
+                        f"Adjust trading.max_concurrent_mean_rev to change the cap."
+                    ),
+                    importance=7,
+                ))
+                return
+
+            _equity = float(self.risk_manager.account_balance or 0)
+            if _equity > 0 and _max_meanrev_risk_pct > 0:
+                _meanrev_risk_pct = _meanrev_notional / _equity
+                if _meanrev_risk_pct >= _max_meanrev_risk_pct and not _already_in_meanrev:
+                    self._audit(
+                        "mean_rev_budget_gate", signal.symbol, "skip",
+                        "mean_rev_budget_exhausted",
+                        strategy=_budget_strategy,
+                        meanrev_notional=round(_meanrev_notional, 2),
+                        equity=round(_equity, 2),
+                        meanrev_risk_pct=round(_meanrev_risk_pct * 100, 2),
+                        max_risk_pct=round(_max_meanrev_risk_pct * 100, 2),
+                        reason="risk_pct_exceeded",
+                    )
+                    self.commentary.add_commentary(TradingCommentary(
+                        timestamp=datetime.now(),
+                        type=CommentaryType.RISK_ASSESSMENT,
+                        symbol=signal.symbol,
+                        title=f"🛑 Mean-Rev Risk Budget Exceeded — {signal.symbol}",
+                        message=(
+                            f"Mean-rev notional ${_meanrev_notional:,.0f} "
+                            f"is {_meanrev_risk_pct:.1%} of equity (cap {_max_meanrev_risk_pct:.0%}). "
+                            f"Skipping {signal.symbol} to limit mean-rev concentration. "
+                            f"Adjust trading.max_mean_rev_risk_pct to change the cap."
+                        ),
+                        importance=7,
+                    ))
+                    return
+
         for group_name, members in _CORRELATED_GROUPS.items():
             if signal.symbol in members:
-                overlap = active_positions & members
+                # v-correlation-ignore-unmanaged-2026-09-18: use filtered set that
+                # excludes unmanaged/external and hands-off positions when configured.
+                overlap = _correlation_positions & members
                 if overlap:
                     self._audit("correlation_guard", signal.symbol, "skip",
                                 f"correlated_with_{group_name}",
@@ -5837,6 +7595,14 @@ class TradingEngineWithCommentary:
                 self._audit("ml", signal.symbol, "skip", "ml_veto_high_confidence",
                             ml_signal=ml_signal, ml_conf=round(ml_confidence, 3),
                             threshold=round(ml_veto_threshold, 3))
+                # v-feature-snapshot-2026-09-09: emit snapshot on ML veto
+                self._emit_veto_snapshot(
+                    signal=signal,
+                    strategy_id=signal.reasoning.get("strategy", "unknown") if signal.reasoning else "unknown",
+                    reason="ml_veto_high_confidence",
+                    gate_name="ml_veto",
+                    extra={"ml_signal": ml_signal, "ml_conf": ml_confidence, "threshold": ml_veto_threshold},
+                )
                 return
 
             # v-ml-advisor-2026-04-20: below the veto threshold, ML is an
@@ -6098,6 +7864,8 @@ class TradingEngineWithCommentary:
                 original_stop=signal.stop_loss,
                 mode="simulation",
                 managed_by_bot=True,  # bot-opened sim trade
+                # v-manage-persist-hotfix-2026-09-15: bot-opened positions
+                managed_source='bot',
             )
             self.simulated_positions[signal.symbol] = position
 
@@ -6595,21 +8363,46 @@ class TradingEngineWithCommentary:
                         # broken-thesis exit. The time floor only
                         # protects the "soft" proactive triggers.
                         _strategy = (getattr(position, 'reasoning', {}) or {}).get('strategy', '')
+                        _reasoning = getattr(position, 'reasoning', {}) or {}
                         _hold_min = (datetime.now() - position.entry_time).total_seconds() / 60.0
                         _is_news_trade = 'news' in _strategy.lower() or _strategy == 'free_news_sentiment'
                         _is_mean_rev = 'mean_reversion' in _strategy.lower()
+                        # v-proactive-exit-daytrade-2026-09-14: day trades use shorter min-age
+                        _is_day_trade = (
+                            _reasoning.get('is_day_trade', False)
+                            or _strategy == 'day_trade_momentum'
+                            or 'day_trade' in _strategy.lower()
+                        )
                         # Per-strategy minimum age before proactive exit fires.
-                        # News: 30 min — institutional re-rate plays out over
-                        # hours. MeanRev: 10 min — bounces are faster. Other
-                        # (momentum/breakout): 15 min default.
-                        if _is_news_trade:
+                        # Day trade: 3 min — intraday momentum breaks faster.
+                        # News: 30 min — institutional re-rate plays out over hours.
+                        # MeanRev: 10 min — bounces are faster.
+                        # Other (momentum/breakout): 15 min default.
+                        if _is_day_trade:
+                            _min_age = Config().PROACTIVE_EXIT_MIN_AGE_DAYTRADE
+                        elif _is_news_trade:
                             _min_age = Config().PROACTIVE_EXIT_MIN_AGE_NEWS
                         elif _is_mean_rev:
                             _min_age = Config().PROACTIVE_EXIT_MIN_AGE_MEANREV
                         else:
                             _min_age = Config().PROACTIVE_EXIT_MIN_AGE_DEFAULT
 
-                        _proactive_allowed = _hold_min >= _min_age
+                        # v-proactive-exit-r-override-2026-09-14: R-based override
+                        # When pnl is at or below the R-override threshold, bypass
+                        # min-age entirely — thesis is likely broken regardless of age.
+                        _stop_dist = abs(position.entry_price - (position.original_stop or position.stop_loss))
+                        if _stop_dist > 0:
+                            if position.side == 'long':
+                                _pnl_r_for_gate = (current_price - position.entry_price) / _stop_dist
+                            else:
+                                _pnl_r_for_gate = (position.entry_price - current_price) / _stop_dist
+                        else:
+                            _pnl_r_for_gate = 0
+
+                        _r_override_threshold = Config().PROACTIVE_EXIT_R_OVERRIDE_THRESHOLD
+                        _r_override_used = _pnl_r_for_gate <= _r_override_threshold
+                        _age_gate_met = _hold_min >= _min_age
+                        _proactive_allowed = _age_gate_met or _r_override_used
                         # FSM gate: PROACTIVE_EXIT is in ALLOWED_EXITS only
                         # for LIVE and AT_BREAKEVEN. Past 1R / TRAILING the
                         # rule is physically disconnected — the trade is in
@@ -6620,10 +8413,14 @@ class TradingEngineWithCommentary:
                         if Config().ENABLE_PROACTIVE_EXIT and proactive_indicators and _fsm_allows_proactive and not _proactive_allowed:
                             # Suppress and audit so we can measure how often
                             # the time-floor saved us a whipsaw.
+                            # v-proactive-exit-daytrade-2026-09-14: added r_override fields
                             self._audit(
                                 "proactive_exit", symbol, "suppressed", "below_min_age",
                                 hold_min=round(_hold_min, 1),
                                 min_age=_min_age,
+                                pnl_r=round(_pnl_r_for_gate, 3),
+                                r_override_threshold=_r_override_threshold,
+                                is_day_trade=_is_day_trade,
                                 strategy=_strategy or "unknown",
                                 state=_state.value,
                             )
@@ -6648,11 +8445,15 @@ class TradingEngineWithCommentary:
                                     audit_fn=self._audit,
                                 ):
                                     continue
+                                # v-proactive-exit-daytrade-2026-09-14: added r_override fields
                                 self._audit("proactive_exit", symbol, "exit",
                                             proactive_reason,
                                             pnl_r=round(pnl_r, 3),
                                             price=round(current_price, 2),
-                                            entry=round(position.entry_price, 2))
+                                            entry=round(position.entry_price, 2),
+                                            age_min=round(_hold_min, 1),
+                                            is_day_trade=_is_day_trade,
+                                            r_override_used=_r_override_used)
                                 self.commentary.add_commentary(TradingCommentary(
                                     timestamp=datetime.now(),
                                     type=CommentaryType.DECISION,
@@ -6693,6 +8494,20 @@ class TradingEngineWithCommentary:
                             )
                         except Exception as exc:
                             logger.debug(f"thesis_revalidate error for {symbol}: {exc}")
+
+                        # --- News thesis flip check (v-newsbus-gates-2026-09-09) ---
+                        # Quick NewsBus-based sentiment flip detection. Fires when
+                        # fresh news sentiment has flipped against the position
+                        # direction (e.g., bullish news on a short position).
+                        # Gated by ENABLE_NEWS_THESIS_EXIT (default False).
+                        try:
+                            if await self._check_news_thesis_flip(symbol, position, current_price):
+                                await self._close_position_with_commentary(
+                                    position, "news_thesis_flip"
+                                )
+                                continue
+                        except Exception as exc:
+                            logger.debug(f"news_thesis_flip error for {symbol}: {exc}")
 
                     # ================================================================
                     # PROFESSIONAL EXIT MANAGER
@@ -6807,6 +8622,59 @@ class TradingEngineWithCommentary:
             # External positions are NEVER auto-managed
             return False, ""
 
+        # ────────────────────────────────────────────────────────────────────
+        # v-day-trade-flatten-hour-2026-09-10: hard EOD flatten for day-trade
+        # momentum positions. When local ET hour >= DAY_TRADE_FLATTEN_HOUR,
+        # force full exit. This prevents overnight gap risk on intraday-only
+        # positions. Uses same confirmation path as other risk exits.
+        # ────────────────────────────────────────────────────────────────────
+        _reasoning = getattr(position, 'reasoning', {}) or {}
+        _is_day_trade = _reasoning.get('is_day_trade', False)
+        if _is_day_trade:
+            try:
+                from zoneinfo import ZoneInfo
+                from core.config import Config as _CfgFlatten
+                _cfg_flatten = _CfgFlatten()
+                _flatten_hour = _reasoning.get('flatten_hour', _cfg_flatten.DAY_TRADE_FLATTEN_HOUR)
+                _et_now = datetime.now(ZoneInfo("America/New_York"))
+                _et_hour = _et_now.hour
+                _et_minute = _et_now.minute
+                if _et_hour >= _flatten_hour:
+                    self._audit(
+                        "day_trade_flatten", position.symbol, "exit",
+                        "flatten_hour_reached",
+                        flatten_hour=_flatten_hour,
+                        et_now=_et_now.strftime("%H:%M"),
+                        et_hour=_et_hour,
+                        strategy=_reasoning.get('strategy', 'day_trade_momentum'),
+                        entry_pattern=_reasoning.get('entry_pattern', 'unknown'),
+                    )
+                    self.commentary.add_commentary(TradingCommentary(
+                        timestamp=datetime.now(),
+                        type=CommentaryType.RISK_ASSESSMENT,
+                        symbol=position.symbol,
+                        title=f"🔔 Day-Trade Flatten Hour",
+                        message=(
+                            f"Day-trade position {position.symbol} must close — "
+                            f"flatten hour {_flatten_hour}:00 ET reached "
+                            f"(current: {_et_now.strftime('%H:%M')} ET). "
+                            f"Avoiding overnight gap risk."
+                        ),
+                        data={
+                            'flatten_hour': _flatten_hour,
+                            'et_now': _et_now.strftime('%H:%M'),
+                            'current_price': current_price,
+                            'unrealized_pnl': getattr(position, 'unrealized_pnl', 0),
+                        },
+                        importance=9
+                    ))
+                    return True, "day_trade_flatten_hour"
+            except Exception as _flatten_exc:
+                logger.warning(
+                    "day_trade_flatten check failed for %s: %s",
+                    position.symbol, _flatten_exc
+                )
+
         # Check if stop loss / take profit are hit based on position side.
         # Both use the same simple price comparison — no indicator logic.
         # The dynamic exit manager below still runs for softer/partial exits
@@ -6908,23 +8776,39 @@ class TradingEngineWithCommentary:
     
     async def _close_position_with_commentary(self, position, reason: str):
         """Close position with detailed commentary"""
-        # CRITICAL: Never auto-close external/manually managed positions (except for explicit manual_override)
+        # CRITICAL: Never auto-close external/manually managed/long-term/denylist positions
+        # (except for explicit manual_override)
         is_external = getattr(position, 'is_external', False)
         is_manually_managed = getattr(position, 'is_manually_managed', False)
+        is_long_term = getattr(position, 'is_long_term', False)
+        # v-hands-off-denylist-2026-09-14: hard denylist check (MU, HQGE, SPCX)
+        denylist = Config().HANDS_OFF_DENYLIST
+        symbol_upper = (position.symbol or '').upper()
+        in_denylist = symbol_upper in denylist
 
-        if (is_external or is_manually_managed) and reason != "manual_override":
-            logger.warning(f"Blocked auto-close of EXTERNAL position {position.symbol}. Reason: {reason}")
+        if (is_external or is_manually_managed or is_long_term or in_denylist) and reason != "manual_override":
+            block_reason = []
+            if is_external:
+                block_reason.append("EXTERNAL")
+            if is_manually_managed:
+                block_reason.append("manually_managed")
+            if is_long_term:
+                block_reason.append("long_term")
+            if in_denylist:
+                block_reason.append(f"DENYLIST({symbol_upper})")
+            reason_str = ", ".join(block_reason)
+            logger.warning(f"Blocked auto-close of {position.symbol} ({reason_str}). Reason: {reason}")
             self.commentary.add_commentary(TradingCommentary(
                 timestamp=datetime.now(),
                 type=CommentaryType.WARNING,
                 symbol=position.symbol,
-                title=f"🚫 External Position Protected",
-                message=f"Cannot auto-close {position.symbol} - this is an EXTERNAL position.\n"
+                title=f"🚫 Position Protected ({reason_str})",
+                message=f"Cannot auto-close {position.symbol} - protected by: {reason_str}.\n"
                        f"Current P&L: ${position.unrealized_pnl:.2f}\n"
                        f"Use Schwab directly or the manual close button.",
                 importance=9
             ))
-            return  # NEVER auto-close external positions
+            return  # NEVER auto-close protected positions
 
         # CRITICAL: Check if manual close only is enabled (except for manual_override)
         if self.auto_close_disabled and reason != "manual_override":
@@ -6965,9 +8849,40 @@ class TradingEngineWithCommentary:
             # Position already removed by another path; nothing to do
             logger.info(f"close_position: {position.symbol} not in any container — already closed")
             return
-        # ADD CONFIRMATION HERE
+
+        # v-broker-leg-authority-2026-09-14: If broker's stop/OCO leg is WORKING
+        # or FILLED, skip supervised close confirmation — broker is authoritative.
+        # This prevents FTFT-style race where software stop check starts confirmation,
+        # broker stop fills during wait, confirmation times out → ghost state.
+        _broker_authoritative = False
+        _broker_authority_reason = "not_checked"
+        if self.mode == TradingMode.LIVE and Config().ENABLE_BROKER_LEG_AUTHORITY:
+            try:
+                from core.order_monitor import is_broker_leg_authoritative
+                _broker_authoritative, _broker_authority_reason = await is_broker_leg_authoritative(
+                    self, position
+                )
+                if _broker_authoritative:
+                    logger.info(
+                        "broker_leg_authoritative symbol=%s reason=%s — skipping confirmation",
+                        position.symbol, _broker_authority_reason,
+                    )
+                    self._audit(
+                        "position_manager", position.symbol, "skip_confirmation",
+                        "broker_leg_authoritative",
+                        authority_reason=_broker_authority_reason,
+                        close_reason=reason,
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "broker_leg_authority_check_failed symbol=%s err=%s — proceeding with normal flow",
+                    position.symbol, exc,
+                )
+                _broker_authoritative = False
+                _broker_authority_reason = "check_failed"
+
         # Check if confirmation is needed
-        if self.mode == TradingMode.LIVE and self.require_confirmations:
+        if self.mode == TradingMode.LIVE and self.require_confirmations and not _broker_authoritative:
             # Calculate P&L percentage
             pnl = position.unrealized_pnl
             pnl_percent = abs((pnl / (position.entry_price * position.quantity)) * 100)
@@ -7038,6 +8953,22 @@ class TradingEngineWithCommentary:
                         importance=7
                     ))
                     return
+
+        # v-close-position-tracking-2026-09-14: After confirmation returns,
+        # re-check if position is still in the container. While we were waiting
+        # for confirmation, handle_full_bracket_fill (broker stop/TP fill) may
+        # have already closed and removed this position. Don't double-close.
+        if position.symbol not in _close_container or \
+           _close_container.get(position.symbol) is not position:
+            logger.info(
+                "close_position: %s already closed by broker fill path during confirmation wait",
+                position.symbol,
+            )
+            self._audit(
+                "position_manager", position.symbol, "close_skipped",
+                "broker_fill_closed_during_confirm",
+            )
+            return
         
         # Get the most current price for accurate P&L calculation.
         # v-close-quote-async-2026-04-30: data_provider.get_quote is a
@@ -7319,13 +9250,26 @@ class TradingEngineWithCommentary:
                 logger.debug(f"Could not broadcast trade update: {e}")
     
     async def _get_close_confirmation(self, position, reason: str) -> bool:
-        """Get user confirmation before closing position"""
+        """Get user confirmation before closing position.
+        
+        v-autonomy-profile-2026-09-08: respects autonomy profile settings.
+        - supervised profile: timeout defaults to deny (position stays open)
+        - autonomous_live profile: timeout defaults to execute (close position)
+        
+        The CONFIRMATION_TIMEOUT_ACTION config controls this behavior.
+        """
         # Initialize pending requests dict if it doesn't exist
         if not hasattr(self, 'pending_close_requests'):
             self.pending_close_requests = {}
         # Store pending close request
         close_request_id = f"close_{position.symbol}_{int(time.time())}"
         self.pending_close_requests = getattr(self, 'pending_close_requests', {})
+        
+        # v-autonomy-profile-2026-09-08: read timeout settings from config
+        cfg = Config()
+        timeout = cfg.CONFIRMATION_TIMEOUT_SEC
+        timeout_action = cfg.CONFIRMATION_TIMEOUT_ACTION
+        profile = cfg.TRADING_PROFILE
         
         # Create confirmation request
         self.pending_close_requests[close_request_id] = {
@@ -7339,7 +9283,10 @@ class TradingEngineWithCommentary:
         pnl = position.unrealized_pnl
         roi = (pnl / (position.entry_price * position.quantity)) * 100
         # Log that we're requesting confirmation
-        logger.info(f"Requesting close confirmation for {position.symbol}")
+        logger.info(
+            "close_confirmation_request symbol=%s reason=%s profile=%s timeout_sec=%.0f timeout_action=%s",
+            position.symbol, reason, profile, timeout, timeout_action,
+        )
         # Send confirmation request to UI
         try:
             await self._broadcast_ui({
@@ -7353,15 +9300,26 @@ class TradingEngineWithCommentary:
                     'pnl': pnl,
                     'roi': roi,
                     'reason': reason,
+                    'profile': profile,
+                    'timeout_sec': timeout,
+                    'timeout_action': timeout_action,
                     'message': f"Close {position.symbol} with {'profit' if pnl > 0 else 'loss'} of ${abs(pnl):.2f} ({abs(roi):.1f}%)?"
                 }
             })
         except Exception as e:
             logger.error(f"Error broadcasting close confirmation: {e}")
+            # v-autonomy-profile-2026-09-08: on broadcast failure, follow
+            # the profile's default behavior. autonomous_live should still
+            # execute risk exits (stops) even if UI is unreachable.
+            if timeout_action == 'execute':
+                logger.warning(
+                    "close_confirmation broadcast failed, fail-open executing close for %s",
+                    position.symbol,
+                )
+                return True
             return False
         
         # Wait for user response (with timeout)
-        timeout = 30  # 30 seconds timeout
         start_time = time.time()
         
         while time.time() - start_time < timeout:
@@ -7369,23 +9327,61 @@ class TradingEngineWithCommentary:
                 if self.pending_close_requests[close_request_id]['confirmed'] is not None:
                     confirmed = self.pending_close_requests[close_request_id]['confirmed']
                     del self.pending_close_requests[close_request_id]
+                    logger.info(
+                        "close_confirmation_response symbol=%s confirmed=%s profile=%s",
+                        position.symbol, confirmed, profile,
+                    )
                     return confirmed
             await asyncio.sleep(0.1)
         
-        # Timeout - default to not closing
-        self.commentary.add_commentary(TradingCommentary(
-            timestamp=datetime.now(),
-            type=CommentaryType.WARNING,
-            symbol=position.symbol,
-            title=f"⏱️ Close Confirmation Timeout",
-            message=f"No response received for closing {position.symbol}. Position remains open.",
-            importance=8
-        ))
+        # v-autonomy-profile-2026-09-08: timeout behavior depends on profile
+        should_execute = (timeout_action == 'execute')
+        
+        if should_execute:
+            self.commentary.add_commentary(TradingCommentary(
+                timestamp=datetime.now(),
+                type=CommentaryType.WARNING,
+                symbol=position.symbol,
+                title=f"⏱️ Close Confirmation Timeout — Executing (Fail-Open)",
+                message=(
+                    f"No response received for closing {position.symbol}. "
+                    f"Profile '{profile}' with timeout_action='{timeout_action}' "
+                    f"— executing close to protect against unattended risk."
+                ),
+                data={
+                    'profile': profile,
+                    'timeout_action': timeout_action,
+                    'confirmation_timeout_action': 'execute',
+                },
+                importance=9
+            ))
+            logger.warning(
+                "close_confirmation_timeout symbol=%s profile=%s action=execute reason=%s",
+                position.symbol, profile, reason,
+            )
+        else:
+            self.commentary.add_commentary(TradingCommentary(
+                timestamp=datetime.now(),
+                type=CommentaryType.WARNING,
+                symbol=position.symbol,
+                title=f"⏱️ Close Confirmation Timeout",
+                message=f"No response received for closing {position.symbol}. Position remains open.",
+                data={
+                    'profile': profile,
+                    'timeout_action': timeout_action,
+                    'confirmation_timeout_action': 'deny',
+                },
+                importance=8
+            ))
+            logger.info(
+                "close_confirmation_timeout symbol=%s profile=%s action=deny reason=%s",
+                position.symbol, profile, reason,
+            )
         
         if close_request_id in self.pending_close_requests:
             del self.pending_close_requests[close_request_id]
         
-        return False
+        return should_execute
     def _generate_post_trade_analysis(self, position, exit_reason: str, pnl: float) -> str:
         """Generate insightful post-trade analysis"""
         analysis = []
@@ -7428,22 +9424,29 @@ class TradingEngineWithCommentary:
         return compute_position_day_pnl(position, on_outlier=_on_outlier)
 
     def _compute_bot_daily_pnl(self) -> float:
-        """v-bot-only-pnl-circuit-2026-06-08: realized + unrealized
-        P&L of BOT-managed positions only.
+        """v-bot-only-pnl-circuit-2026-06-08 + v-hands-off-denylist-2026-09-14:
+        realized + unrealized P&L of BOT-managed day-trade positions only.
 
         Used by `risk/manager.py:can_trade` when
-        `Config.ENABLE_BOT_ONLY_PNL_CIRCUIT` is True. Excludes
-        external holdings (HQGE/PINS/COIN etc.) so the daily-loss
-        circuit doesn't pause the bot for losses on positions the
-        operator opened outside the bot.
+        `Config.ENABLE_BOT_ONLY_PNL_CIRCUIT` is True. Excludes:
+          - External holdings (is_external=True)
+          - Manually managed positions (is_manually_managed=True)
+          - Long-term positions (is_long_term=True)
+          - Positions without managed_by_bot=True
+          - Symbols in HANDS_OFF_DENYLIST (MU, HQGE, SPCX)
+
+        This aligns with `_get_bracket_monitored_positions` and
+        `_is_auto_managed` so the circuit trips ONLY on positions the
+        bot actively manages — never on external/LT holdings.
 
         Components:
           * realized — sum of `pnl` on trade_history entries closed
             today AND flagged managed_by_bot (default True for entries
             the bot created via _execute_real_trade or reconciled via
             _reconcile_external_closes with bot-tagged context).
+            Excludes trades in HANDS_OFF_DENYLIST.
           * unrealized — sum of `unrealized_pnl` on currently-open
-            `self.positions` where `position.managed_by_bot` is True.
+            `self.positions` passing all exclusion filters above.
 
         Robustness: every entry/position is wrapped in a per-item
         try/except. A single malformed record (missing field, bad
@@ -7454,6 +9457,7 @@ class TradingEngineWithCommentary:
         the analysis loop on every cycle.
         """
         today = datetime.now().date()
+        denylist = Config().HANDS_OFF_DENYLIST
 
         realized = 0.0
         try:
@@ -7470,6 +9474,11 @@ class TradingEngineWithCommentary:
                     else:
                         exit_dt = exit_time
                     if exit_dt.date() != today:
+                        continue
+                    # v-hands-off-denylist-2026-09-14: skip trades on
+                    # denylist symbols — never count toward bot P&L
+                    trade_symbol = trade.get('symbol', '').upper()
+                    if trade_symbol in denylist:
                         continue
                     # Default True: trade_history entries that predate
                     # the managed_by_bot field are assumed to be bot
@@ -7488,7 +9497,19 @@ class TradingEngineWithCommentary:
         try:
             for symbol, position in self.positions.items():
                 try:
+                    # v-hands-off-denylist-2026-09-14: hard denylist check first
+                    if symbol.upper() in denylist:
+                        continue
+                    # Require managed_by_bot=True (bot-opened)
                     if not getattr(position, 'managed_by_bot', False):
+                        continue
+                    # v-hands-off-denylist-2026-09-14: exclude external/manual/LT
+                    # (align with _get_bracket_monitored_positions filters)
+                    if getattr(position, 'is_external', False):
+                        continue
+                    if getattr(position, 'is_manually_managed', False):
+                        continue
+                    if getattr(position, 'is_long_term', False):
                         continue
                     unrealized += float(getattr(position, 'unrealized_pnl', 0) or 0)
                 except Exception:
@@ -7729,6 +9750,17 @@ class TradingEngineWithCommentary:
         try:
             schwab_positions = await self.get_schwab_positions()
             
+            # v-manage-persist-discovery-path-2026-09-15: INFO log at discovery start
+            # so VERIFY isn't silent when restore logic runs
+            _discovery_path = "update_and_track_real_positions"
+            _n_schwab = len(schwab_positions)
+            _n_existing = sum(1 for pos in schwab_positions if pos['symbol'] in self.positions)
+            _n_new = _n_schwab - _n_existing
+            logger.info(
+                "position_discovery_begin path=%s n_schwab=%d n_existing=%d n_new=%d",
+                _discovery_path, _n_schwab, _n_existing, _n_new,
+            )
+            
             # Update existing tracked positions
             for pos_data in schwab_positions:
                 symbol = pos_data['symbol']
@@ -7789,6 +9821,8 @@ class TradingEngineWithCommentary:
                             }),
                             mode="live",
                             managed_by_bot=True,
+                            # v-manage-persist-hotfix-2026-09-15: bot-opened positions
+                            managed_source='bot',
                         )
                         # NOT external; bot owns it.
                         self.positions[symbol] = position
@@ -7829,23 +9863,139 @@ class TradingEngineWithCommentary:
                             _matching_order_id,
                         )
                     else:
-                        # Truly external — pre-existing or operator-opened.
-                        position = Position(
-                            symbol=symbol,
-                            entry_price=pos_data['average_price'],
-                            current_price=pos_data['current_price'],
-                            quantity=pos_data['quantity'],
-                            side='long' if pos_data['quantity'] > 0 else 'short',
-                            stop_loss=pos_data['average_price'] * (1 - Config().DEFAULT_STOP_LOSS_PCT),
-                            take_profit=pos_data['average_price'] * (1 + Config().DEFAULT_TAKE_PROFIT_PCT),
-                            entry_time=datetime.now() - timedelta(hours=1),
-                            unrealized_pnl=pos_data['total_pnl'],
-                            reasoning={'source': 'existing_position', 'tracked_from': datetime.now().isoformat()},
-                            mode="live",
-                            managed_by_bot=False,
-                        )
-                        position.is_external = True
-                        position.is_manually_managed = True
+                        # v-manage-persist-2026-09-15: enhanced restore logic.
+                        # At startup, self.positions is empty so every Schwab
+                        # position lands here. Restore ownership using:
+                        #   1. _saved_positions_meta (relaxed qty match)
+                        #   2. Fallback: today's bot_trades
+                        # NEVER restore managed_by_bot for HANDS_OFF_DENYLIST.
+                        _qty_abs = abs(pos_data['quantity'])
+                        _side = 'long' if pos_data['quantity'] > 0 else 'short'
+                        _symbol_upper = symbol.upper()
+                        
+                        persist_enabled = Config().ENABLE_MANAGED_BY_BOT_PERSIST
+                        denylist = Config().HANDS_OFF_DENYLIST
+                        in_denylist = _symbol_upper in denylist
+                        
+                        saved = getattr(self, '_saved_positions_meta', {}).get(symbol) or {}
+                        _is_lt = saved.get('is_long_term', False)
+                        
+                        _restore_managed = False
+                        _restore_source = None
+                        _saved_meta = {}
+
+                        # v-evidence-broad-2026-09-15: track tried sources for skip_no_evidence log
+                        _tried_sources: list[str] = []
+
+                        if persist_enabled and not in_denylist and not _is_lt:
+                            # v-manage-persist-hotfix-2026-09-15: FIXED operator toggle detection.
+                            # Bug A fix: managed_by_bot=False could be STALE sync data. Only treat
+                            # as intentional operator toggle-off if managed_source='operator'.
+                            _saved_managed = saved.get('managed_by_bot')
+                            _saved_source = saved.get('managed_source')
+                            _operator_toggled_off = (
+                                _saved_managed is False and _saved_source == 'operator'
+                            )
+                            if _operator_toggled_off:
+                                # Operator explicitly toggled off — respect it
+                                _restore_managed = False
+                                _restore_source = None
+                                _tried_sources = ["operator_toggle_off"]
+                                logger.info(
+                                    "update_track_skip_operator_toggle: %s %s qty=%d — operator toggled managed_by_bot=False, respecting",
+                                    symbol, _side, _qty_abs,
+                                )
+                            else:
+                                # v-evidence-broad-2026-09-15: use unified ownership evidence helper
+                                # Checks: saved → bot_trades → bot_decisions → bot_positions
+                                _restore_managed, _restore_source, _saved_meta, _tried_sources = await self._ownership_evidence(
+                                    _symbol_upper, _side, saved
+                                )
+                        
+                        if _restore_managed:
+                            try:
+                                _entry_time = datetime.fromisoformat(_saved_meta['entry_time'])
+                            except (KeyError, ValueError, TypeError):
+                                _entry_time = datetime.now() - timedelta(hours=1)
+                            _tp = _saved_meta.get('take_profit')
+                            position = Position(
+                                symbol=symbol,
+                                entry_price=pos_data['average_price'],
+                                current_price=pos_data['current_price'],
+                                quantity=_qty_abs,
+                                side=_side,
+                                stop_loss=_saved_meta.get('stop_loss', 0) or 0,
+                                take_profit=float('inf') if _tp is None else _tp,
+                                entry_time=_entry_time,
+                                unrealized_pnl=pos_data['total_pnl'],
+                                reasoning=_saved_meta.get('reasoning') or {},
+                                mode="live",
+                                managed_by_bot=True,
+                                is_long_term=False,
+                                # v-manage-persist-hotfix-2026-09-15: restored positions
+                                managed_source='bot',
+                            )
+                            position.is_external = False
+                            position.is_manually_managed = False
+                            if hasattr(self, '_audit'):
+                                self._audit(
+                                    "position_sync", symbol,
+                                    "position_ownership_restored",
+                                    f"{_restore_source}_update_track",
+                                    side=_side, quantity=_qty_abs,
+                                    stop=_saved_meta.get('stop_loss', 0),
+                                    target=_tp,
+                                )
+                            logger.info(
+                                "update_track_restore: %s %s qty=%d — managed_by_bot=True from %s",
+                                symbol, _side, _qty_abs, _restore_source,
+                            )
+                        else:
+                            # External, denylist, or is_long_term — hands off
+                            position = Position(
+                                symbol=symbol,
+                                entry_price=pos_data['average_price'],
+                                current_price=pos_data['current_price'],
+                                quantity=_qty_abs,
+                                side=_side,
+                                stop_loss=pos_data['average_price'] * (1 - Config().DEFAULT_STOP_LOSS_PCT),
+                                take_profit=pos_data['average_price'] * (1 + Config().DEFAULT_TAKE_PROFIT_PCT),
+                                entry_time=datetime.now() - timedelta(hours=1),
+                                unrealized_pnl=pos_data['total_pnl'],
+                                reasoning={'source': 'existing_position', 'tracked_from': datetime.now().isoformat()},
+                                mode="live",
+                                managed_by_bot=False,
+                                is_long_term=_is_lt,
+                            )
+                            position.is_external = True
+                            position.is_manually_managed = True
+                            if in_denylist:
+                                if hasattr(self, '_audit'):
+                                    self._audit(
+                                        "position_sync", symbol,
+                                        "position_left_external",
+                                        "denylist_update_track",
+                                        side=_side, quantity=_qty_abs,
+                                    )
+                                logger.info(
+                                    "update_track_external: %s %s qty=%d — DENYLIST, hands-off",
+                                    symbol, _side, _qty_abs,
+                                )
+                            elif not _is_lt:
+                                # v-evidence-broad-2026-09-15: log skip_no_evidence for non-denylist
+                                # non-long_term symbols left external after all evidence sources failed
+                                if hasattr(self, '_audit'):
+                                    self._audit(
+                                        "position_sync", symbol,
+                                        "position_left_external",
+                                        "no_bot_record_update_track",
+                                        side=_side, quantity=_qty_abs,
+                                        tried_sources=_tried_sources,
+                                    )
+                                logger.info(
+                                    "update_track_skip_no_evidence: %s %s qty=%d tried_sources=%s — no bot record, left external",
+                                    symbol, _side, _qty_abs, ",".join(_tried_sources) if _tried_sources else "none",
+                                )
                         self.positions[symbol] = position
                     
                     # Initialize exit tracking for existing positions
@@ -7875,20 +10025,33 @@ class TradingEngineWithCommentary:
             logger.error(f"Error updating real positions: {e}")
     
     def _is_news_blackout(self) -> bool:
-        """Check if we're in news blackout period"""
-        now = datetime.now()
+        """Check if we're in news blackout period.
         
-        # Economic calendar blackouts (EST)
-        blackouts = [
-            # (hour, minute, duration_minutes)
-            (8, 30, 15),   # CPI/Jobs
-            (10, 0, 15),   # Consumer confidence
-            (14, 0, 30),   # FOMC
-            (14, 30, 15),  # Powell speaks
-        ]
+        v-econ-calendar-2026-09-09: delegates to EconCalendarProvider.
+        v-econ-calendar-dated-2026-09-09: default changed to DatedEconCalendar
+        which uses real FOMC/CPI dates instead of every-Wednesday patterns.
         
-        for hour, minute, duration in blackouts:
-            event_time = now.replace(hour=hour, minute=minute, second=0)
-            if event_time <= now <= event_time + timedelta(minutes=duration):
-                return True
-        return False
+        Provider selection (in order):
+          1. API provider (if ECON_CALENDAR_API_URL env var is set)
+          2. Config provider (if trading.econ_calendar_events in yaml)
+          3. DatedEconCalendar (default, uses real event dates)
+        
+        To customize blackout windows without code changes, add events
+        to Config.yaml under trading.econ_calendar_events.
+        """
+        from core.econ_calendar import get_econ_calendar
+        return get_econ_calendar().is_blackout()
+    
+    def _get_active_blackout(self):
+        """Get details about the currently active blackout, if any.
+        
+        v-econ-calendar-dated-2026-09-09: Returns ActiveBlackout object with
+        event name, start/end times, and remaining duration for observability.
+        Returns None if no blackout is active.
+        
+        Used by:
+          - _evaluate_trading_conditions: INFO-level logging (analysis continues)
+          - _process_signal_with_commentary: soft veto on new entries
+        """
+        from core.econ_calendar import get_econ_calendar
+        return get_econ_calendar().get_active_event()

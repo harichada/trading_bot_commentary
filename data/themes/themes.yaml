@@ -1,0 +1,129 @@
+# v-theme-shock-logger-2026-09-14: Theme configuration for multi-sentiment desk
+# Owner: Research | See docs/research/2026-09-14-multisenti-stage-a.md
+#
+# Research Stage A cut 2026-09-14 noise cleanup; prefer precision over recall for hard_skip shadows.
+#
+# Schema per theme:
+#   theme_id: string (unique identifier)
+#   match: list[string] (case-insensitive headline/summary substrings to match)
+#   basket: list[string] (tradable symbols affected by this theme)
+#   watch_only: list[string] (alert-only symbols, NEVER auto-action)
+#   actions_shadow: list[string] (shadow action types to log on match)
+#     - hard_skip_entries: would block new entries on basket symbols
+#     - size_down_open: would reduce size on open positions
+#     - thesis_exit: would exit managed open positions
+#     - alert_only: only log alert, no shadow action (for watch_only)
+
+themes:
+
+  - theme_id: ai_compute
+    description: "AI compute infrastructure slowdown / concern"
+    match:
+      - "anthropic"
+      - "amodei"
+      - "pace the frontier"
+      - "openai slowdown"
+      - "ai slowdown"
+      - "frontier ai"
+      - "ai safety pause"
+      - "slow the pace of ai"
+      - "slow the pace of frontier"
+    basket:
+      - NVDA
+      - AMD
+      - AVGO
+      - SMCI
+      - ARM
+    watch_only:
+      - MU
+    actions_shadow:
+      - hard_skip_entries
+      - size_down_open
+      - thesis_exit
+
+  - theme_id: ai_mega_cap
+    description: "Mega-cap tech AI exposure concern"
+    match:
+      - "openai"
+      - "chatgpt"
+      - "ai regulation"
+      - "ai safety"
+      - "ai risk"
+      - "big tech ai"
+    basket:
+      - MSFT
+      - AMZN
+      - GOOGL
+      - META
+    watch_only: []
+    actions_shadow:
+      - hard_skip_entries
+      - size_down_open
+
+  - theme_id: memory_hbm
+    description: "Memory / HBM demand concern"
+    match:
+      - "memory demand"
+      - "hbm"
+      - "high bandwidth memory"
+      - "memory oversupply"
+      - "dram"
+      - "nand"
+      - "memory pricing"
+    basket: []
+    watch_only:
+      - MU
+    actions_shadow:
+      - alert_only
+
+  - theme_id: fed_risk_off
+    description: "Fed hawkish / macro risk-off event"
+    match:
+      - "fomc"
+      - "fed rate"
+      - "rate hike"
+      - "rate decision"
+      - "powell"
+      - "hawkish"
+      - "inflation surprise"
+      - "cpi higher"
+      - "hot inflation"
+      - "yield spike"
+      - "treasury yield"
+    basket:
+      - QQQ
+      - SPY
+      - IWM
+    watch_only: []
+    actions_shadow:
+      - hard_skip_entries
+      - size_down_open
+
+  - theme_id: earnings_chip
+    description: "Semiconductor earnings / guidance shock"
+    match:
+      - "semiconductor earnings"
+      - "chip earnings"
+      - "nvidia earnings"
+      - "amd earnings"
+      - "intel earnings"
+      - "tsmc earnings"
+      - "foundry guidance"
+      - "wafer"
+      - "hbm guidance"
+      - "gpu guidance"
+      - "data center guidance"
+    basket:
+      - NVDA
+      - AMD
+      - INTC
+      - TSM
+      - ASML
+      - AVGO
+      - QCOM
+      - MRVL
+    watch_only:
+      - MU
+    actions_shadow:
+      - hard_skip_entries
+      - thesis_exit
