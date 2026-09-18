@@ -7189,6 +7189,30 @@ class TradingEngineWithCommentary:
             active_positions = set(self.simulated_positions.keys())
             active_pos_objs = self.simulated_positions.values()
 
+        # v-correlation-ignore-unmanaged-2026-09-18: filter out positions that
+        # should NOT block correlation checks for NEW entries:
+        # 1. Unmanaged/external positions (managed_by_bot=False) when CORRELATION_IGNORE_UNMANAGED=True
+        # 2. Hands-off denylist positions (MU/HQGE/SPCX) when CORRELATION_IGNORE_HANDS_OFF=True
+        # This allows day-trade entries into correlated sectors when the existing
+        # holdings are external (operator-managed) or permanent hands-off.
+        _corr_ignore_unmanaged = Config().CORRELATION_IGNORE_UNMANAGED
+        _corr_ignore_hands_off = Config().CORRELATION_IGNORE_HANDS_OFF
+        _hands_off_denylist = Config().HANDS_OFF_DENYLIST if _corr_ignore_hands_off else frozenset()
+        _correlation_positions = set()
+        if _corr_ignore_unmanaged or _corr_ignore_hands_off:
+            _pos_dict = self.positions if self.mode == TradingMode.LIVE else self.simulated_positions
+            for _sym in active_positions:
+                _pos = _pos_dict.get(_sym)
+                if _pos is None:
+                    continue
+                if _corr_ignore_hands_off and _sym.upper() in _hands_off_denylist:
+                    continue
+                if _corr_ignore_unmanaged and not getattr(_pos, 'managed_by_bot', False):
+                    continue
+                _correlation_positions.add(_sym)
+        else:
+            _correlation_positions = active_positions
+
         # v-max-positions-gate-2026-05-06: hard cap on concurrent
         # bot-managed trades. Counts only positions where the bot is
         # actively managing exits (managed_by_bot=True) — pre-existing
@@ -7397,7 +7421,9 @@ class TradingEngineWithCommentary:
 
         for group_name, members in _CORRELATED_GROUPS.items():
             if signal.symbol in members:
-                overlap = active_positions & members
+                # v-correlation-ignore-unmanaged-2026-09-18: use filtered set that
+                # excludes unmanaged/external and hands-off positions when configured.
+                overlap = _correlation_positions & members
                 if overlap:
                     self._audit("correlation_guard", signal.symbol, "skip",
                                 f"correlated_with_{group_name}",

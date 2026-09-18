@@ -1748,6 +1748,52 @@ class Config:
         return frozenset(s.upper() for s in custom)
 
     @property
+    def CORRELATION_IGNORE_UNMANAGED(self) -> bool:
+        """v-correlation-ignore-unmanaged-2026-09-18: exclude unmanaged
+        positions (managed_by_bot=False) from correlation cluster checks.
+
+        Problem: on 2026-09-18 QCOM day-trade momentum signal was blocked
+        by correlation_guard because NVDA (an external/unmanaged hold with
+        managed_by_bot=False) was already in the semis_and_chip_adjacent
+        group. But external holds don't represent active bot risk — they're
+        held by the human operator and shouldn't block bot entries.
+
+        When True (default): correlation guard ignores positions where
+        managed_by_bot=False when determining cluster overlap.
+
+        When False: legacy behavior — all positions count for correlation.
+
+        Override via env CORRELATION_IGNORE_UNMANAGED=0 or yaml
+        trading.correlation_ignore_unmanaged=false."""
+        env_val = os.getenv("CORRELATION_IGNORE_UNMANAGED")
+        if env_val is not None:
+            return env_val.lower() not in ("0", "false", "no", "off")
+        return bool(self.manager.get('trading.correlation_ignore_unmanaged', True))
+
+    @property
+    def CORRELATION_IGNORE_HANDS_OFF(self) -> bool:
+        """v-correlation-ignore-hands-off-2026-09-18: exclude HANDS_OFF_DENYLIST
+        positions (MU, HQGE, SPCX) from correlation cluster checks.
+
+        Problem: on 2026-09-18 QCOM day-trade momentum signal was blocked
+        by correlation_guard because MU (a permanent hands-off long-term
+        hold) was in the semis_and_chip_adjacent group. Hands-off positions
+        are never managed by the bot and shouldn't block new bot entries
+        into the same sector.
+
+        When True (default): correlation guard ignores positions whose
+        symbol is in HANDS_OFF_DENYLIST when determining cluster overlap.
+
+        When False: legacy behavior — all positions count for correlation.
+
+        Override via env CORRELATION_IGNORE_HANDS_OFF=0 or yaml
+        trading.correlation_ignore_hands_off=false."""
+        env_val = os.getenv("CORRELATION_IGNORE_HANDS_OFF")
+        if env_val is not None:
+            return env_val.lower() not in ("0", "false", "no", "off")
+        return bool(self.manager.get('trading.correlation_ignore_hands_off', True))
+
+    @property
     def ENABLE_MANAGED_BY_BOT_PERSIST(self) -> bool:
         """v-manage-persist-2026-09-15: restore managed_by_bot=True across
         Schwab sync/restart for bot-session entries.
