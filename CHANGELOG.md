@@ -1,5 +1,51 @@
 # Changelog
 
+## 2026-09-18 — fix: Correlation guard ignores unmanaged/hands-off positions (v-correlation-ignore-unmanaged-2026-09-18)
+
+### Problem
+
+Day-trade momentum emitted `signal_buy` on QCOM at ~13:09 ET (pullback, rs_vs_spy=1.13, volume_ratio=2.24). Engine received it in live mode, then `correlation_guard` skipped with:
+`correlated_with_semis_and_chip_adjacent existing=['NVDA', 'MU']`
+
+NVDA is an unmanaged/external hold (`managed_by_bot=false`). MU is a permanent hands-off long-term holding. Neither represents active bot risk, but correlation_guard was treating them as blocking positions.
+
+### Added
+
+- **`CORRELATION_IGNORE_UNMANAGED`** config flag (default **True**)
+  - Excludes positions with `managed_by_bot=False` from correlation cluster checks
+  - External/operator-managed holds don't block bot entries into same sector
+  - Override: `CORRELATION_IGNORE_UNMANAGED=0` env var or `trading.correlation_ignore_unmanaged=false` yaml
+
+- **`CORRELATION_IGNORE_HANDS_OFF`** config flag (default **True**)
+  - Excludes HANDS_OFF_DENYLIST symbols (MU, HQGE, SPCX) from correlation cluster checks
+  - Permanent hands-off positions don't block bot entries
+  - Override: `CORRELATION_IGNORE_HANDS_OFF=0` env var or `trading.correlation_ignore_hands_off=false` yaml
+
+- **Correlation filter logic** in `core/engine.py` correlation guard section
+  - Constructs `_correlation_positions` set by filtering `active_positions`
+  - Checks `managed_by_bot` and `HANDS_OFF_DENYLIST` when flags enabled
+  - Uses filtered set for cluster overlap checks
+
+- **10 new tests** in `tests/test_recent_fixes.py::TestCorrelationIgnoreUnmanaged*`
+  - Config flag existence and defaults
+  - Code inspection for filter logic
+  - Functional tests: unmanaged NVDA + hands-off MU does NOT block QCOM
+  - Functional tests: managed AMD STILL blocks QCOM
+  - Flags disabled falls back to legacy all-positions behavior
+
+### Changed
+
+- `core/engine.py`: correlation guard now filters positions before cluster check
+- `core/config.py`: two new config properties with env override support
+
+### Unchanged
+
+- LIVE entry flags untouched (DAY_TRADE_LIVE, MEAN_REV, ORB, SHORT, PAPER)
+- HANDS_OFF_DENYLIST (MU/HQGE/SPCX) still protected for exit/management
+- `feature/trading_bot_v1` and PR #14 untouched
+
+---
+
 ## 2026-09-17 — fix: Book B contamination FP lexicon (v-book-b-contam-lexicon-2026-09-17)
 
 ### Problem

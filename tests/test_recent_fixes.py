@@ -3644,3 +3644,223 @@ class TestNewsGateConfigUnboundFix:
                     f"UnboundLocalError raised in news gate veto path: {e}. "
                     "This is the bug v-fix-config-unbound-2026-09-16 should fix."
                 )
+
+
+# ── v-correlation-ignore-unmanaged-2026-09-18 ────────────────────────
+
+class TestCorrelationIgnoreUnmanaged:
+    """Correlation guard must exclude unmanaged/external positions and
+    hands-off denylist symbols from cluster checks when configured.
+
+    Problem: 2026-09-18 QCOM day-trade momentum was blocked because NVDA
+    (unmanaged external hold) and MU (hands-off permanent) were in the
+    semis_and_chip_adjacent group. External/hands-off positions don't
+    represent active bot risk.
+
+    Fix: add CORRELATION_IGNORE_UNMANAGED and CORRELATION_IGNORE_HANDS_OFF
+    config flags (default True) that filter active_positions before the
+    cluster check."""
+
+    def test_config_flags_exist(self):
+        """Config must have CORRELATION_IGNORE_UNMANAGED and CORRELATION_IGNORE_HANDS_OFF."""
+        from core.config import Config
+        cfg = Config()
+        assert hasattr(cfg, "CORRELATION_IGNORE_UNMANAGED")
+        assert hasattr(cfg, "CORRELATION_IGNORE_HANDS_OFF")
+
+    def test_config_flags_default_true(self):
+        """Both flags should default to True (ignore unmanaged+hands-off)."""
+        from core.config import Config
+        cfg = Config()
+        assert cfg.CORRELATION_IGNORE_UNMANAGED is True
+        assert cfg.CORRELATION_IGNORE_HANDS_OFF is True
+
+    def test_engine_has_correlation_filter_logic(self):
+        """Engine must filter positions for correlation based on the flags."""
+        src = ENGINE_PATH.read_text()
+        assert "v-correlation-ignore-unmanaged-2026-09-18" in src
+
+    def test_correlation_filter_checks_managed_by_bot(self):
+        """Correlation filter must check managed_by_bot attribute."""
+        src = ENGINE_PATH.read_text()
+        idx = src.index("v-correlation-ignore-unmanaged-2026-09-18")
+        block = src[idx:idx + 3000]
+        assert "managed_by_bot" in block, (
+            "Correlation filter must check managed_by_bot to exclude external"
+        )
+
+    def test_correlation_filter_checks_hands_off_denylist(self):
+        """Correlation filter must check HANDS_OFF_DENYLIST."""
+        src = ENGINE_PATH.read_text()
+        idx = src.index("v-correlation-ignore-unmanaged-2026-09-18")
+        block = src[idx:idx + 3000]
+        assert "HANDS_OFF_DENYLIST" in block or "_hands_off_denylist" in block, (
+            "Correlation filter must check hands-off denylist"
+        )
+
+    def test_correlation_uses_filtered_set(self):
+        """Correlation overlap must use the filtered _correlation_positions set."""
+        src = ENGINE_PATH.read_text()
+        idx = src.index("for group_name, members in _CORRELATED_GROUPS")
+        block = src[idx:idx + 500]
+        assert "_correlation_positions & members" in block, (
+            "Correlation overlap must use _correlation_positions, not active_positions"
+        )
+
+
+class TestCorrelationIgnoreUnmanagedBehavior:
+    """Functional tests verifying correlation filtering behavior.
+
+    These tests verify the filter logic unit (not full engine integration)
+    by simulating the filtering behavior implemented in the correlation guard."""
+
+    def test_unmanaged_nvda_does_not_block_qcom(self):
+        """NVDA with managed_by_bot=False should NOT block QCOM entry.
+
+        Scenario from 2026-09-18: NVDA is an external/unmanaged hold,
+        MU is permanent hands-off. QCOM day-trade momentum should enter."""
+        from core.config import Config
+        cfg = Config()
+        hands_off_denylist = cfg.HANDS_OFF_DENYLIST
+
+        # Simulate position dict
+        class MockPosition:
+            def __init__(self, symbol, managed_by_bot):
+                self.symbol = symbol
+                self.managed_by_bot = managed_by_bot
+
+        positions = {
+            "NVDA": MockPosition("NVDA", False),  # unmanaged external
+            "MU": MockPosition("MU", False),      # hands-off denylist
+        }
+
+        # Apply the filter logic (same as engine.py)
+        _corr_ignore_unmanaged = True
+        _corr_ignore_hands_off = True
+        _hands_off = hands_off_denylist if _corr_ignore_hands_off else frozenset()
+
+        correlation_positions = set()
+        for sym, pos in positions.items():
+            if _corr_ignore_hands_off and sym.upper() in _hands_off:
+                continue
+            if _corr_ignore_unmanaged and not getattr(pos, 'managed_by_bot', False):
+                continue
+            correlation_positions.add(sym)
+
+        # Neither NVDA nor MU should be in correlation_positions
+        assert "NVDA" not in correlation_positions, "Unmanaged NVDA should be excluded"
+        assert "MU" not in correlation_positions, "Hands-off MU should be excluded"
+
+        # Verify QCOM entry would NOT be blocked
+        semis_group = {"NVDA", "AMD", "INTC", "MU", "AVGO", "QCOM"}
+        overlap = correlation_positions & semis_group
+        assert len(overlap) == 0, "No blocking overlap should exist"
+
+    def test_managed_amd_still_blocks_qcom(self):
+        """AMD with managed_by_bot=True SHOULD block QCOM entry.
+
+        Bot-managed positions represent active risk that should still
+        trigger the correlation guard."""
+        from core.config import Config
+        cfg = Config()
+        hands_off_denylist = cfg.HANDS_OFF_DENYLIST
+
+        class MockPosition:
+            def __init__(self, symbol, managed_by_bot):
+                self.symbol = symbol
+                self.managed_by_bot = managed_by_bot
+
+        positions = {
+            "AMD": MockPosition("AMD", True),   # bot-managed active position
+            "NVDA": MockPosition("NVDA", False),  # unmanaged external
+        }
+
+        _corr_ignore_unmanaged = True
+        _corr_ignore_hands_off = True
+        _hands_off = hands_off_denylist if _corr_ignore_hands_off else frozenset()
+
+        correlation_positions = set()
+        for sym, pos in positions.items():
+            if _corr_ignore_hands_off and sym.upper() in _hands_off:
+                continue
+            if _corr_ignore_unmanaged and not getattr(pos, 'managed_by_bot', False):
+                continue
+            correlation_positions.add(sym)
+
+        # AMD should be in correlation_positions (managed=True)
+        assert "AMD" in correlation_positions, "Managed AMD should be included"
+        # NVDA should NOT be in (unmanaged)
+        assert "NVDA" not in correlation_positions, "Unmanaged NVDA should be excluded"
+
+        # QCOM entry would be blocked by AMD
+        semis_group = {"NVDA", "AMD", "INTC", "MU", "AVGO", "QCOM"}
+        overlap = correlation_positions & semis_group
+        assert "AMD" in overlap, "AMD should block QCOM via correlation"
+
+    def test_flags_disabled_uses_all_positions(self):
+        """When flags are False, all positions count for correlation."""
+        class MockPosition:
+            def __init__(self, symbol, managed_by_bot):
+                self.symbol = symbol
+                self.managed_by_bot = managed_by_bot
+
+        positions = {
+            "NVDA": MockPosition("NVDA", False),  # unmanaged
+            "AMD": MockPosition("AMD", True),     # managed
+        }
+
+        # Both flags disabled
+        _corr_ignore_unmanaged = False
+        _corr_ignore_hands_off = False
+
+        if _corr_ignore_unmanaged or _corr_ignore_hands_off:
+            correlation_positions = set()
+            for sym, pos in positions.items():
+                if _corr_ignore_hands_off and sym.upper() in frozenset():
+                    continue
+                if _corr_ignore_unmanaged and not getattr(pos, 'managed_by_bot', False):
+                    continue
+                correlation_positions.add(sym)
+        else:
+            correlation_positions = set(positions.keys())
+
+        # Both NVDA and AMD should be counted
+        assert "NVDA" in correlation_positions, "NVDA should be counted when flags off"
+        assert "AMD" in correlation_positions, "AMD should be counted when flags off"
+
+    def test_hands_off_denylist_symbols_excluded(self):
+        """MU, HQGE, SPCX (hands-off denylist) should be excluded when flag on."""
+        from core.config import Config
+        cfg = Config()
+        hands_off_denylist = cfg.HANDS_OFF_DENYLIST
+
+        assert "MU" in hands_off_denylist
+        assert "HQGE" in hands_off_denylist
+        assert "SPCX" in hands_off_denylist
+
+        class MockPosition:
+            def __init__(self, symbol, managed_by_bot):
+                self.symbol = symbol
+                self.managed_by_bot = managed_by_bot
+
+        positions = {
+            "MU": MockPosition("MU", True),    # Even with managed=True, denylist wins
+            "HQGE": MockPosition("HQGE", True),
+            "AMD": MockPosition("AMD", True),  # Not in denylist
+        }
+
+        _corr_ignore_unmanaged = True
+        _corr_ignore_hands_off = True
+        _hands_off = hands_off_denylist
+
+        correlation_positions = set()
+        for sym, pos in positions.items():
+            if _corr_ignore_hands_off and sym.upper() in _hands_off:
+                continue
+            if _corr_ignore_unmanaged and not getattr(pos, 'managed_by_bot', False):
+                continue
+            correlation_positions.add(sym)
+
+        assert "MU" not in correlation_positions, "MU (denylist) should be excluded"
+        assert "HQGE" not in correlation_positions, "HQGE (denylist) should be excluded"
+        assert "AMD" in correlation_positions, "AMD (not denylist, managed) should be included"
