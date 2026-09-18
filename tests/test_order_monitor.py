@@ -2654,3 +2654,314 @@ class TestSaveStateAwaitFix:
         with pytest.raises(TypeError, match="can't be used in 'await'"):
             asyncio.get_event_loop().run_until_complete(call_and_await_none())
 
+
+# ============================================================================
+# v-rebracket-exiting-guard-2026-09-18: IREN hard_stop race fix tests
+# ============================================================================
+
+class TestRebracketExitingGuard:
+    """v-rebracket-exiting-guard-2026-09-18: Tests for re_bracket skip when exit in flight.
+    
+    The race condition:
+      1. hard_stop_breached → FSM transitions to EXITING
+      2. _close_real_position cancels working OCO bracket
+      3. Close SELL fills (position is now flat)
+      4. order_monitor sees bracket_canceled → would call re_bracket
+      5. re_bracket places NEW OCO while flat → REJECTED on Schwab
+    
+    Fix: handle_bracket_canceled checks FSM state/qty before re_bracket.
+    """
+
+    def test_config_flag_exists_and_defaults_true(self):
+        """REBRACKET_SKIP_IF_FLAT_OR_EXITING must exist and default True."""
+        from core.config import Config
+        config = Config()
+        assert hasattr(config, 'REBRACKET_SKIP_IF_FLAT_OR_EXITING'), (
+            "Config must have REBRACKET_SKIP_IF_FLAT_OR_EXITING property"
+        )
+        assert config.REBRACKET_SKIP_IF_FLAT_OR_EXITING is True, (
+            "REBRACKET_SKIP_IF_FLAT_OR_EXITING must default to True for safety"
+        )
+
+    def test_config_flag_env_override(self):
+        """REBRACKET_SKIP_IF_FLAT_OR_EXITING must support env var override."""
+        import os
+        from core.config import Config
+        
+        # Test disable via env var
+        os.environ['REBRACKET_SKIP_IF_FLAT_OR_EXITING'] = '0'
+        try:
+            config = Config()
+            assert config.REBRACKET_SKIP_IF_FLAT_OR_EXITING is False, (
+                "REBRACKET_SKIP_IF_FLAT_OR_EXITING=0 must disable the flag"
+            )
+        finally:
+            os.environ.pop('REBRACKET_SKIP_IF_FLAT_OR_EXITING', None)
+
+    def test_handle_bracket_canceled_checks_fsm_state(self):
+        """handle_bracket_canceled must check FSM state before re_bracket."""
+        src = (Path(__file__).parent.parent / "core" / "order_monitor" / "brackets.py").read_text()
+        
+        marker = "async def handle_bracket_canceled"
+        idx = src.index(marker)
+        body = src[idx:idx + 4000]
+        
+        assert "PositionState.EXITING" in body, (
+            "Must check for EXITING state"
+        )
+        assert "PositionState.CLOSED" in body, (
+            "Must check for CLOSED state"
+        )
+        assert "PositionState.ZOMBIE" in body, (
+            "Must check for ZOMBIE state"
+        )
+        assert "rebracket_skipped_exit_in_flight" in body, (
+            "Must audit with rebracket_skipped_exit_in_flight reason"
+        )
+
+    def test_handle_bracket_canceled_checks_local_qty(self):
+        """handle_bracket_canceled must check local qty == 0 before re_bracket."""
+        src = (Path(__file__).parent.parent / "core" / "order_monitor" / "brackets.py").read_text()
+        
+        marker = "async def handle_bracket_canceled"
+        idx = src.index(marker)
+        body = src[idx:idx + 4000]
+        
+        assert "position.quantity <= 0" in body or "position.quantity == 0" in body, (
+            "Must check if local qty is zero"
+        )
+        assert "local_qty_zero" in body, (
+            "Must use 'local_qty_zero' as skip reason"
+        )
+
+    def test_handle_bracket_canceled_checks_broker_qty(self):
+        """handle_bracket_canceled must check broker qty in LIVE mode."""
+        src = (Path(__file__).parent.parent / "core" / "order_monitor" / "brackets.py").read_text()
+        
+        marker = "async def handle_bracket_canceled"
+        idx = src.index(marker)
+        body = src[idx:idx + 4000]
+        
+        assert "check_broker_position_qty" in body, (
+            "Must call check_broker_position_qty in LIVE mode"
+        )
+        assert "broker_confirmed_flat" in body, (
+            "Must use 'broker_confirmed_flat' as skip reason"
+        )
+
+    def test_handle_bracket_canceled_still_rebrackets_orphan_cancel(self):
+        """Genuine orphan cancel with live qty must still call re_bracket."""
+        src = (Path(__file__).parent.parent / "core" / "order_monitor" / "brackets.py").read_text()
+        
+        marker = "async def handle_bracket_canceled"
+        idx = src.index(marker)
+        # Use larger slice to capture full function
+        body = src[idx:idx + 6000]
+        
+        assert "re_bracket_position(engine, position)" in body, (
+            "Must still call re_bracket_position for genuine orphan cancels"
+        )
+        assert "Genuine orphan cancel" in body or "proceed with re-bracket" in body, (
+            "Must have comment indicating orphan cancel path"
+        )
+
+    def test_marker_tag_present(self):
+        """v-rebracket-exiting-guard-2026-09-18 marker must be in brackets.py."""
+        src = (Path(__file__).parent.parent / "core" / "order_monitor" / "brackets.py").read_text()
+        assert "v-rebracket-exiting-guard-2026-09-18" in src, (
+            "Must have v-rebracket-exiting-guard-2026-09-18 marker for traceability"
+        )
+
+    def test_marker_tag_in_config(self):
+        """v-rebracket-exiting-guard-2026-09-18 marker must be in config.py."""
+        src = (Path(__file__).parent.parent / "core" / "config.py").read_text()
+        assert "v-rebracket-exiting-guard-2026-09-18" in src, (
+            "Must have v-rebracket-exiting-guard-2026-09-18 marker in config"
+        )
+
+
+class TestRebracketExitingGuardFunctional:
+    """Functional tests: handle_bracket_canceled skip/proceed scenarios."""
+
+    @pytest.mark.asyncio
+    async def test_bracket_canceled_during_hard_stop_no_rebracket(self):
+        """bracket_canceled while FSM=EXITING must NOT call re_bracket."""
+        from core.order_monitor.brackets import handle_bracket_canceled
+        from core.models import Position
+        from core.position_state import PositionState
+        from unittest.mock import AsyncMock, MagicMock, patch
+        
+        # Create position in EXITING state (hard_stop path)
+        position = Position(
+            symbol="IREN",
+            entry_price=10.0,
+            quantity=100,
+            side="long",
+            stop_loss=9.0,
+            take_profit=12.0,
+            entry_time=datetime.now(),
+            mode="live",
+            managed_by_bot=True,
+            bracket_order_id="12345",
+        )
+        position.state = PositionState.EXITING.value
+        position.state_reason = "hard_stop_breached"
+        
+        # Mock engine
+        mock_engine = MagicMock()
+        mock_engine._audit = MagicMock()
+        mock_engine.commentary = MagicMock()
+        mock_engine.commentary.add_commentary = MagicMock()
+        
+        order_info = {"status": "CANCELED", "orderId": "12345"}
+        
+        # Patch re_bracket_position to track if called
+        with patch("core.order_monitor.brackets.re_bracket_position", new_callable=AsyncMock) as mock_rebracket:
+            with patch("core.config.Config") as mock_config_cls:
+                mock_config = MagicMock()
+                mock_config.REBRACKET_SKIP_IF_FLAT_OR_EXITING = True
+                mock_config_cls.return_value = mock_config
+                
+                await handle_bracket_canceled(mock_engine, position, order_info, "CANCELED")
+                
+                # re_bracket_position should NOT be called
+                mock_rebracket.assert_not_called()
+                
+                # Audit should show skip reason
+                audit_calls = mock_engine._audit.call_args_list
+                skip_call = [c for c in audit_calls if "rebracket_skipped_exit_in_flight" in str(c)]
+                assert len(skip_call) > 0, "Must audit rebracket_skipped_exit_in_flight"
+
+    @pytest.mark.asyncio
+    async def test_bracket_canceled_qty_zero_no_rebracket(self):
+        """bracket_canceled with qty=0 must NOT call re_bracket."""
+        from core.order_monitor.brackets import handle_bracket_canceled
+        from core.models import Position
+        from core.position_state import PositionState
+        from unittest.mock import AsyncMock, MagicMock, patch
+        
+        # Create position with qty=0 (already flat)
+        position = Position(
+            symbol="IREN",
+            entry_price=10.0,
+            quantity=0,  # Already flat
+            side="long",
+            stop_loss=9.0,
+            take_profit=12.0,
+            entry_time=datetime.now(),
+            mode="live",
+            managed_by_bot=True,
+            bracket_order_id="12345",
+        )
+        position.state = PositionState.LIVE.value  # FSM says live but qty=0
+        
+        # Mock engine
+        mock_engine = MagicMock()
+        mock_engine._audit = MagicMock()
+        mock_engine.commentary = MagicMock()
+        mock_engine.commentary.add_commentary = MagicMock()
+        
+        order_info = {"status": "CANCELED", "orderId": "12345"}
+        
+        with patch("core.order_monitor.brackets.re_bracket_position", new_callable=AsyncMock) as mock_rebracket:
+            with patch("core.config.Config") as mock_config_cls:
+                mock_config = MagicMock()
+                mock_config.REBRACKET_SKIP_IF_FLAT_OR_EXITING = True
+                mock_config_cls.return_value = mock_config
+                
+                await handle_bracket_canceled(mock_engine, position, order_info, "CANCELED")
+                
+                # re_bracket_position should NOT be called
+                mock_rebracket.assert_not_called()
+                
+                # Audit should show local_qty_zero
+                audit_calls = mock_engine._audit.call_args_list
+                skip_call = [c for c in audit_calls if "local_qty_zero" in str(c)]
+                assert len(skip_call) > 0, "Must audit local_qty_zero skip reason"
+
+    @pytest.mark.asyncio
+    async def test_genuine_orphan_cancel_still_rebrackets(self):
+        """Genuine orphan cancel (live qty, LIVE state) must call re_bracket."""
+        from core.order_monitor.brackets import handle_bracket_canceled
+        from core.models import Position
+        from core.position_state import PositionState
+        from unittest.mock import AsyncMock, MagicMock, patch
+        
+        # Create position with live qty and LIVE state (genuine orphan)
+        position = Position(
+            symbol="IREN",
+            entry_price=10.0,
+            quantity=100,  # Live qty
+            side="long",
+            stop_loss=9.0,
+            take_profit=12.0,
+            entry_time=datetime.now(),
+            mode="sim",  # Sim mode to skip broker check
+            managed_by_bot=True,
+            bracket_order_id="12345",
+        )
+        position.state = PositionState.LIVE.value  # Not exiting
+        
+        # Mock engine
+        mock_engine = MagicMock()
+        mock_engine._audit = MagicMock()
+        mock_engine.commentary = MagicMock()
+        mock_engine.commentary.add_commentary = MagicMock()
+        mock_engine.mode = "sim"  # Skip broker check
+        
+        order_info = {"status": "CANCELED", "orderId": "12345"}
+        
+        with patch("core.order_monitor.brackets.re_bracket_position", new_callable=AsyncMock) as mock_rebracket:
+            with patch("core.config.Config") as mock_config_cls:
+                mock_config = MagicMock()
+                mock_config.REBRACKET_SKIP_IF_FLAT_OR_EXITING = True
+                mock_config_cls.return_value = mock_config
+                
+                await handle_bracket_canceled(mock_engine, position, order_info, "CANCELED")
+                
+                # re_bracket_position SHOULD be called for orphan cancel
+                mock_rebracket.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_flag_disabled_always_rebrackets(self):
+        """When REBRACKET_SKIP_IF_FLAT_OR_EXITING=False, always re_bracket."""
+        from core.order_monitor.brackets import handle_bracket_canceled
+        from core.models import Position
+        from core.position_state import PositionState
+        from unittest.mock import AsyncMock, MagicMock, patch
+        
+        # Create position in EXITING state (would normally skip)
+        position = Position(
+            symbol="IREN",
+            entry_price=10.0,
+            quantity=100,
+            side="long",
+            stop_loss=9.0,
+            take_profit=12.0,
+            entry_time=datetime.now(),
+            mode="sim",
+            managed_by_bot=True,
+            bracket_order_id="12345",
+        )
+        position.state = PositionState.EXITING.value
+        
+        # Mock engine
+        mock_engine = MagicMock()
+        mock_engine._audit = MagicMock()
+        mock_engine.commentary = MagicMock()
+        mock_engine.commentary.add_commentary = MagicMock()
+        mock_engine.mode = "sim"
+        
+        order_info = {"status": "CANCELED", "orderId": "12345"}
+        
+        with patch("core.order_monitor.brackets.re_bracket_position", new_callable=AsyncMock) as mock_rebracket:
+            with patch("core.config.Config") as mock_config_cls:
+                mock_config = MagicMock()
+                mock_config.REBRACKET_SKIP_IF_FLAT_OR_EXITING = False  # Flag disabled
+                mock_config_cls.return_value = mock_config
+                
+                await handle_bracket_canceled(mock_engine, position, order_info, "CANCELED")
+                
+                # re_bracket_position SHOULD be called when flag disabled
+                mock_rebracket.assert_called_once()
+

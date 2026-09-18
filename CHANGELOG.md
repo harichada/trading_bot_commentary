@@ -1,5 +1,56 @@
 # Changelog
 
+## 2026-09-18 — fix: IREN hard_stop race — rebracket guard when exiting (v-rebracket-exiting-guard-2026-09-18)
+
+### Problem
+
+P1 reliability issue observed 2026-09-18 ~14:43 ET on IREN. Race condition during hard_stop close path:
+
+1. `hard_stop_breached` → FSM transitions to EXITING
+2. `_close_real_position` cancels working OCO bracket
+3. Close SELL fills (position is now flat)
+4. `order_monitor` sees `bracket_canceled` → calls `re_bracket_position`
+5. `re_bracket` places NEW OCO while flat → REJECTED by Schwab
+
+On Schwab the new OCO was rejected (never WORKING), but even without rejection, placing protection for a closed trade is incorrect.
+
+### Root Cause
+
+`handle_bracket_canceled` blindly called `re_bracket_position` on any cancel without checking if the cancel was owned by an intentional close path (hard_stop, take_profit, proactive exit).
+
+### Added
+
+- **`REBRACKET_SKIP_IF_FLAT_OR_EXITING`** config flag (default **True**)
+  - Env override: `REBRACKET_SKIP_IF_FLAT_OR_EXITING=0` to disable
+  - YAML: `trading.rebracket_skip_if_flat_or_exiting: false`
+
+- **Exit-in-flight guard** in `handle_bracket_canceled`:
+  - Skips `re_bracket_position` if FSM state is EXITING / CLOSED / ZOMBIE
+  - Skips if local `position.quantity <= 0`
+  - Skips if broker confirms qty == 0 (LIVE mode authoritative check)
+  - Logs audit reason `rebracket_skipped_exit_in_flight` with skip_reason detail
+
+- **12 new tests** in `tests/test_order_monitor.py`:
+  - `TestRebracketExitingGuard`: config flag existence, defaults, env override, code inspection
+  - `TestRebracketExitingGuardFunctional`: async integration tests
+    - `bracket_canceled during hard_stop close → no re_bracket`
+    - `bracket_canceled with qty=0 → no re_bracket`
+    - `genuine orphan cancel with live qty → still re_brackets`
+    - `flag disabled → always re_brackets (legacy behavior)`
+
+### Changed
+
+- `core/order_monitor/brackets.py`: `handle_bracket_canceled` now checks FSM state and qty before re_bracket
+- `core/config.py`: new `REBRACKET_SKIP_IF_FLAT_OR_EXITING` property
+
+### Unchanged
+
+- LIVE entry flags untouched (DAY_TRADE_LIVE, MEAN_REV, ORB, SHORT, PAPER)
+- Genuine orphan bracket cancels (live qty, not exiting) still re-bracket correctly
+- HANDS_OFF_DENYLIST (MU/HQGE/SPCX) unchanged
+
+---
+
 ## 2026-09-18 — fix: Correlation guard ignores unmanaged/hands-off positions (v-correlation-ignore-unmanaged-2026-09-18)
 
 ### Problem

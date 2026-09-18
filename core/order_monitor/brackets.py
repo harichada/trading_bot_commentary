@@ -617,20 +617,93 @@ async def handle_bracket_canceled(
 ) -> None:
     """Handle bracket order cancellation or expiration.
 
-    Policy: attempt to re-place the bracket. If that fails, alert loudly
-    but do NOT soft-halt new entries (software exits still protect).
+    v-rebracket-exiting-guard-2026-09-18: enhanced policy with exit-in-flight guard.
+
+    The race condition this guards against:
+      1. hard_stop_breached → FSM transitions to EXITING
+      2. _close_real_position cancels working OCO bracket
+      3. Close SELL fills (position is now flat)
+      4. order_monitor sees bracket_canceled → would call re_bracket
+      5. re_bracket places NEW OCO while flat → REJECTED on Schwab
+
+    When REBRACKET_SKIP_IF_FLAT_OR_EXITING is True (default), we skip
+    re_bracket if:
+      - Position FSM state is EXITING / CLOSED / ZOMBIE (intentional close owns cancel)
+      - Position quantity == 0 (already flat locally)
+      - Broker confirms qty == 0 (authoritative flat check in LIVE mode)
+
+    For genuine orphan cancels (no exit in flight, live qty > 0), we still
+    re-bracket to restore broker protection.
     """
     from core.commentary import TradingCommentary
-    from core.models import CommentaryType, clear_bracket_ids
+    from core.config import Config
+    from core.models import CommentaryType, TradingMode, clear_bracket_ids
+    from core.position_state import PositionState
 
     symbol = position.symbol
+    bracket_id = position.bracket_order_id
 
     engine._audit(
         "order_monitor", symbol, "bracket_canceled",
         status.lower(),
-        bracket_id=position.bracket_order_id,
+        bracket_id=bracket_id,
     )
 
+    # v-rebracket-exiting-guard-2026-09-18: check if we should skip re_bracket
+    config = Config()
+    if config.REBRACKET_SKIP_IF_FLAT_OR_EXITING:
+        skip_reason = None
+        skip_detail = {}
+
+        # Guard 1: FSM state is exiting/closed/zombie (intentional close path owns cancel)
+        try:
+            fsm_state = PositionState(position.state)
+        except (ValueError, TypeError):
+            fsm_state = None
+
+        if fsm_state in (PositionState.EXITING, PositionState.CLOSED, PositionState.ZOMBIE):
+            skip_reason = "fsm_state_terminal"
+            skip_detail = {"fsm_state": position.state}
+
+        # Guard 2: Local quantity is 0 (already flat)
+        if not skip_reason and position.quantity <= 0:
+            skip_reason = "local_qty_zero"
+            skip_detail = {"local_qty": position.quantity}
+
+        # Guard 3: Broker confirms flat (authoritative check in LIVE mode)
+        if not skip_reason and engine.mode == TradingMode.LIVE and engine.schwab_client:
+            broker_qty = await check_broker_position_qty(engine, symbol)
+            if broker_qty == 0:
+                skip_reason = "broker_confirmed_flat"
+                skip_detail = {"broker_qty": 0, "local_qty": position.quantity}
+
+        if skip_reason:
+            engine._audit(
+                "order_monitor", symbol, "rebracket_skipped_exit_in_flight",
+                skip_reason,
+                bracket_id=bracket_id,
+                cancel_status=status.lower(),
+                **skip_detail,
+            )
+
+            engine.commentary.add_commentary(TradingCommentary(
+                timestamp=datetime.now(),
+                type=CommentaryType.INFO,
+                symbol=symbol,
+                title=f"ℹ️ Bracket Cancel Skipped Re-Bracket",
+                message=(
+                    f"Bracket was {status.lower()} but re-bracket skipped: {skip_reason}. "
+                    f"This is expected during intentional close paths (hard_stop, TP, proactive exit)."
+                ),
+                data={"skip_reason": skip_reason, **skip_detail},
+                importance=6,  # Low noise — this is correct behavior
+            ))
+
+            # Still clear bracket IDs to prevent stale tracking
+            clear_bracket_ids(position)
+            return
+
+    # Genuine orphan cancel — proceed with re-bracket
     engine.commentary.add_commentary(TradingCommentary(
         timestamp=datetime.now(),
         type=CommentaryType.WARNING,
