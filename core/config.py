@@ -1073,6 +1073,33 @@ class Config:
         return float(self.manager.get('trading.order_monitor_interval_sec', 5.0))
 
     @property
+    def REBRACKET_SKIP_IF_FLAT_OR_EXITING(self) -> bool:
+        """v-rebracket-exiting-guard-2026-09-18: when True (default), suppress
+        re_bracket_position calls when the position is already in an exit path.
+
+        The race condition: hard_stop_breached transitions FSM to EXITING, then
+        _close_real_position cancels the OCO bracket. order_monitor sees the
+        bracket as CANCELED and calls re_bracket_position — placing a NEW OCO
+        while the position is flat or exiting. On Schwab this was REJECTED;
+        even without rejection it's wrong to place protection for a closed trade.
+
+        When True, handle_bracket_canceled skips re_bracket if ANY of:
+          - Position FSM state is EXITING / CLOSED / ZOMBIE
+          - Position quantity == 0 (already flat)
+          - Broker confirms qty == 0 (authoritative flat check)
+
+        Audit reason is logged as 'rebracket_skipped_exit_in_flight' so the
+        decision trail is clear.
+
+        Default True. Set False only to restore prior always-re-bracket behavior
+        for debugging bracket-cancel scenarios.
+        """
+        env_val = os.getenv("REBRACKET_SKIP_IF_FLAT_OR_EXITING")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.rebracket_skip_if_flat_or_exiting', True))
+
+    @property
     def ENABLE_BROKER_LEG_AUTHORITY(self) -> bool:
         """v-broker-leg-authority-2026-09-14: when True (default), broker OCO/stop
         leg status is authoritative for close decisions.
