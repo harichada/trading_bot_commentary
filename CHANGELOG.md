@@ -1,5 +1,87 @@
 # Changelog
 
+## 2026-09-21 — fix: Day-trade RS premarket mismatch + off_hours hard-skip (v-same-basis-rs-2026-09-21, v-daytrade-offhours-skip-2026-09-21)
+
+### Problem
+
+P1 reliability issue observed 2026-09-21 pre-market/morning. Two related bugs in day-trade momentum:
+
+**Bug 1: RS basis mismatch**
+- LIVE day-trade longs almost all skipped `weak_relative_strength` pre-open
+- Example: symbol_change ~0 to ±0.1% while spy_change ~+0.6% → rs_vs_spy ~-0.6%
+- Symbols like META/TSLA/NVDA logged many `signal_buy` with high rs_vs_spy earlier same morning
+- As SPY day% rose, those flipped to weak_RS skips despite price barely moving
+
+**Bug 2: off_hours signal noise**
+- Strategy generated `signal_buy` logs with `time_of_day=off_hours` during premarket
+- Engine's market_hours gate blocks LIVE orders, but signals still created noise with corrupt data
+
+### Root Cause Analysis
+
+**RS mismatch**: RS calculation compared mismatched bases:
+- SPY day% used `netPercentChange` from Schwab (day vs prior close via MarketIndicesCache)
+- Symbol day% used `(bar_close - bar_open) / bar_open` which is **bar % change**, not **day % change**
+
+When SPY moved +0.6% from yesterday's close but a symbol's current 5-min bar only moved +0.1%, the RS calculation showed -0.5% (weak RS) — false skip.
+
+**off_hours signals**: Strategy generated signals during off_hours (premarket 4-9:30 ET) when indicator data is unreliable. While engine gate blocked LIVE orders, the signals created false RS skip logs and noisy data.
+
+### Added
+
+- **`ENABLE_SAME_BASIS_RS`** config flag (default **True**)
+  - When True: RS uses symbol's `netPercentChange` from Schwab (same basis as SPY)
+  - When False: legacy bar-based estimate `(close - open) / open`
+  - Override: `ENABLE_SAME_BASIS_RS=0` env or `trading.enable_same_basis_rs=false`
+
+- **`DAY_TRADE_HARD_SKIP_OFF_HOURS`** config flag (default **True**)
+  - When True: day_trade_momentum returns None during `time_of_day=off_hours`
+  - When False: legacy (signals generated, engine gate still blocks LIVE)
+  - Override: `DAY_TRADE_HARD_SKIP_OFF_HOURS=0` env or yaml
+
+- **`get_symbol_day_change_pct()`** helper in `core/market_context.py`
+  - Fetches symbol day % from Schwab `netPercentChange` (same source as SPY)
+  - 30-second module-level cache to avoid excessive Schwab calls
+  - Falls back to bar-based estimate if Schwab unavailable
+  - Returns `(day_change_pct, source)` where source is one of:
+    `schwab_quote`, `cache`, `bar_estimate`, `unavailable`
+
+- **weak_relative_strength log** now includes `rs_source` and `same_basis_enabled` fields
+  for audit trail showing which RS method was used
+
+- **Tests** in `tests/test_day_trade_momentum.py`:
+  - `TestSameBasisRS`: config flag default, helper function, strategy integration
+  - `TestDayTradeOffHoursHardSkip`: off_hours hard-skip for long and short
+
+- **Tests** in `tests/core/test_market_context.py`:
+  - `TestGetSymbolDayChangePct`: schwab_quote source, bar_estimate fallback, caching
+
+### Changed
+
+- `strategies/builtin.py`:
+  - `DayTradeMomentumStrategy.generate_signal_with_commentary`: same-basis RS + off_hours skip
+  - `DayTradeMomentumShortStrategy.generate_signal_with_commentary`: same-basis RS + off_hours skip
+
+- `data_providers/schwab.py`:
+  - `get_quote()` now returns `netPercentChange` field for same-basis RS
+
+- `core/config.py`:
+  - Added `ENABLE_SAME_BASIS_RS` property
+  - Added `DAY_TRADE_HARD_SKIP_OFF_HOURS` property
+
+### Unchanged
+
+- LIVE entry flags untouched (DAY_TRADE_LIVE, MEAN_REV, ORB, SHORT)
+- HANDS_OFF_DENYLIST (MU/HQGE/SPCX) unchanged
+- `feature/trading_bot_v1` and PR #14 untouched
+
+### Residual Risks
+
+- **opening_30 window**: Still allows reduced-size signals during first 30 min (existing behavior)
+- **Same-basis cache TTL**: 30-second cache means brief lag in symbol day% updates
+- **Schwab API failure**: Falls back to bar-estimate if Schwab quote fails (logged as `fallback_bar` source)
+
+---
+
 ## 2026-09-18 — fix: IREN hard_stop race — rebracket guard when exiting (v-rebracket-exiting-guard-2026-09-18)
 
 ### Problem

@@ -2745,6 +2745,57 @@ class Config:
         return float(self.manager.get('trading.pinned_min_rs_vs_spy', 0.25))
 
     @property
+    def ENABLE_SAME_BASIS_RS(self) -> bool:
+        """v-same-basis-rs-2026-09-21: use same-basis RS calculation.
+
+        When True (default), RS calculation uses symbol's netPercentChange
+        from Schwab quotes — the same source as SPY uses via MarketIndicesCache.
+        This ensures apples-to-apples comparison: both are day % change vs
+        prior close.
+
+        Prior bug: symbol used (bar_close - bar_open) / bar_open which is
+        current bar % change, NOT day % change. SPY used netPercentChange
+        (day vs prior close). This mismatch caused false weak_relative_strength
+        skips in premarket when SPY had already moved +0.6% from prior close
+        but the symbol's current bar was flat.
+
+        When False: preserve legacy behavior (bar-based estimate). Use for
+        A/B testing or rollback.
+
+        SAFE OFF-PATH: Set ENABLE_SAME_BASIS_RS=0 to disable.
+        Default True. Set trading.enable_same_basis_rs: false to disable."""
+        env_val = os.getenv("ENABLE_SAME_BASIS_RS")
+        if env_val is not None:
+            return env_val.lower() not in ("0", "false", "no", "off")
+        return bool(self.manager.get('trading.enable_same_basis_rs', True))
+
+    @property
+    def DAY_TRADE_HARD_SKIP_OFF_HOURS(self) -> bool:
+        """v-daytrade-offhours-skip-2026-09-21: hard-skip day_trade_momentum
+        and day_trade_momentum_short signals during off_hours.
+
+        2026-09-21 RCA: during premarket/off_hours, the strategy was still
+        generating signal_buy logs with time_of_day=off_hours. While the
+        engine's market_hours gate blocks actual LIVE orders during off_hours,
+        the signals themselves created noise (false weak_RS skips logged,
+        RS drift as SPY moves pre-market, etc.).
+
+        When True (default): day_trade_momentum returns None (no signal)
+        if time_of_day == 'off_hours'. Shadow logging still works during
+        RTH. This eliminates noisy pre-market signals with corrupt data.
+
+        When False: preserve prior behavior — signals generated during
+        off_hours (engine gate still blocks LIVE orders). Use for debugging
+        or if pre-market shadow data is desired.
+
+        SAFE OFF-PATH: Set DAY_TRADE_HARD_SKIP_OFF_HOURS=0 to disable.
+        Default True. Set trading.day_trade_hard_skip_off_hours: false."""
+        env_val = os.getenv("DAY_TRADE_HARD_SKIP_OFF_HOURS")
+        if env_val is not None:
+            return env_val.lower() not in ("0", "false", "no", "off")
+        return bool(self.manager.get('trading.day_trade_hard_skip_off_hours', True))
+
+    @property
     def MOMENTUM_MIN_VOLUME_RATIO(self) -> float:
         """Minimum volume ratio (vs 20-bar avg) for momentum entries.
         

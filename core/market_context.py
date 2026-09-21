@@ -434,3 +434,96 @@ def read_market_context(symbol: str) -> MarketContext:
         conviction_multiplier=round(conviction, 2),
         reason=reason,
     )
+
+
+# ────────────────────────────────────────────────────────────────────
+# Same-basis symbol day change helper
+# ────────────────────────────────────────────────────────────────────
+#
+# v-same-basis-rs-2026-09-21: provides symbol day % change using the
+# same Schwab source (netPercentChange) as SPY uses via MarketIndicesCache.
+# This ensures RS calculation compares apples to apples:
+#   RS = symbol_day_change - SPY_day_change
+#
+# Prior bug: symbol used (close - bar_open) / bar_open which is bar %
+# change, not day % change. SPY used netPercentChange (day vs prior close).
+# This mismatch caused false `weak_relative_strength` skips in premarket
+# when SPY had already moved +0.6% from prior close but the symbol's
+# current bar was flat.
+
+# Module-level cache for symbol day change to avoid excessive Schwab calls.
+# Format: {symbol: (day_change_pct, fetched_at_utc)}
+_SYMBOL_DAY_CHANGE_CACHE: dict = {}
+_SYMBOL_DAY_CHANGE_CACHE_TTL_SEC: float = 30.0
+
+
+def get_symbol_day_change_pct(
+    symbol: str,
+    bar_open: float = 0.0,
+    bar_close: float = 0.0,
+    schwab_provider=None,
+) -> tuple[float, str]:
+    """Return the symbol's day % change (vs prior close), same basis as SPY.
+
+    v-same-basis-rs-2026-09-21: this helper fetches symbol day change from
+    Schwab quotes (netPercentChange), the same source MarketIndicesCache
+    uses for SPY. This enables true apples-to-apples RS comparison.
+
+    Fallback order:
+      1. Schwab quote netPercentChange (same-basis, authoritative)
+      2. Cached value if within TTL
+      3. Bar-based estimate: (bar_close - bar_open) / bar_open (legacy)
+
+    Args:
+        symbol: Stock symbol to look up
+        bar_open: Current bar's open price (for legacy fallback)
+        bar_close: Current bar's close price (for legacy fallback)
+        schwab_provider: Optional SchwabDataProvider instance for direct fetch.
+            If None, falls back to cached values or bar-based estimate.
+
+    Returns:
+        (day_change_pct, source) where source is one of:
+          - "schwab_quote": from Schwab netPercentChange (same basis as SPY)
+          - "cache": from module cache
+          - "bar_estimate": legacy fallback (close - open) / open
+          - "unavailable": no data available (returns 0.0)
+    """
+    import logging
+    _logger = logging.getLogger("TradingBot")
+    now_utc = datetime.now(timezone.utc)
+
+    # Check module cache first
+    cached = _SYMBOL_DAY_CHANGE_CACHE.get(symbol)
+    if cached is not None:
+        cached_pct, cached_at = cached
+        age_sec = (now_utc - cached_at).total_seconds()
+        if age_sec < _SYMBOL_DAY_CHANGE_CACHE_TTL_SEC:
+            return (cached_pct, "cache")
+
+    # Try fetching from Schwab provider if available
+    if schwab_provider is not None:
+        try:
+            quote = schwab_provider.get_quote(symbol)
+            if quote and 'netPercentChange' in quote:
+                net_pct = float(quote.get('netPercentChange', 0.0) or 0.0)
+                # Cache the result
+                _SYMBOL_DAY_CHANGE_CACHE[symbol] = (net_pct, now_utc)
+                return (net_pct, "schwab_quote")
+        except Exception as exc:
+            _logger.debug(
+                "get_symbol_day_change_pct: Schwab fetch failed for %s: %s",
+                symbol, exc
+            )
+
+    # Fall back to bar-based estimate (legacy behavior)
+    if bar_open > 0 and bar_close > 0:
+        bar_pct = ((bar_close - bar_open) / bar_open) * 100
+        return (bar_pct, "bar_estimate")
+
+    return (0.0, "unavailable")
+
+
+def clear_symbol_day_change_cache() -> None:
+    """Clear the symbol day change cache (for tests)."""
+    global _SYMBOL_DAY_CHANGE_CACHE
+    _SYMBOL_DAY_CHANGE_CACHE = {}

@@ -3663,3 +3663,299 @@ class TestDayTradeRsiHighEntryVetoAuditAndCommentary:
         assert "chasing" in window and "overbought" in window, (
             "Commentary must explain chasing overbought risk"
         )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# v-same-basis-rs-2026-09-21: Tests for same-basis RS calculation
+#
+# 2026-09-21 RCA: RS compared mismatched bases — SPY from Schwab
+# netPercentChange (day vs prior close), symbol from bar change
+# (close - bar_open) / bar_open. This caused false weak_relative_strength
+# skips in premarket when SPY had already moved +0.6% but the symbol's
+# current bar was flat.
+#
+# Fix: use get_symbol_day_change_pct() to fetch same-basis symbol day
+# change from Schwab netPercentChange.
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestSameBasisRS:
+    """Test ENABLE_SAME_BASIS_RS behavior.
+    
+    v-same-basis-rs-2026-09-21: ensure RS calculation uses same-basis
+    symbol day % change (from Schwab netPercentChange) as SPY.
+    """
+    
+    def test_config_flag_default_true(self):
+        """ENABLE_SAME_BASIS_RS must default to True.
+        
+        2026-09-21 RCA: mismatched RS basis caused false weak_RS skips.
+        Same-basis is the new default.
+        """
+        from core.config import Config
+        cfg = Config()
+        assert cfg.ENABLE_SAME_BASIS_RS is True, (
+            "ENABLE_SAME_BASIS_RS must default to True — "
+            "2026-09-21 RCA: same-basis RS prevents premarket false skips"
+        )
+
+    def test_helper_returns_schwab_source_when_available(self):
+        """get_symbol_day_change_pct should return schwab_quote source when Schwab data available."""
+        from core.market_context import get_symbol_day_change_pct, clear_symbol_day_change_cache
+        
+        clear_symbol_day_change_cache()
+        
+        mock_provider = MagicMock()
+        mock_provider.get_quote.return_value = {'netPercentChange': 2.5, 'last': 100.0}
+        
+        pct, source = get_symbol_day_change_pct(
+            symbol='NVDA',
+            bar_open=100.0,
+            bar_close=100.5,
+            schwab_provider=mock_provider,
+        )
+        
+        assert source == "schwab_quote", "Should use schwab_quote source"
+        assert abs(pct - 2.5) < 0.01, "Should return Schwab netPercentChange value"
+
+    def test_helper_falls_back_to_bar_estimate(self):
+        """get_symbol_day_change_pct should fall back to bar estimate when no provider."""
+        from core.market_context import get_symbol_day_change_pct, clear_symbol_day_change_cache
+        
+        clear_symbol_day_change_cache()
+        
+        pct, source = get_symbol_day_change_pct(
+            symbol='NVDA',
+            bar_open=100.0,
+            bar_close=101.0,
+            schwab_provider=None,
+        )
+        
+        assert source == "bar_estimate", "Should use bar_estimate when no provider"
+        assert abs(pct - 1.0) < 0.01, "Should compute (101-100)/100*100 = 1.0%"
+
+    def test_helper_caches_result(self):
+        """get_symbol_day_change_pct should cache results within TTL."""
+        from core.market_context import get_symbol_day_change_pct, clear_symbol_day_change_cache
+        
+        clear_symbol_day_change_cache()
+        
+        mock_provider = MagicMock()
+        mock_provider.get_quote.return_value = {'netPercentChange': 3.0, 'last': 100.0}
+        
+        # First call
+        pct1, source1 = get_symbol_day_change_pct(
+            symbol='TSLA',
+            bar_open=100.0,
+            bar_close=100.5,
+            schwab_provider=mock_provider,
+        )
+        
+        # Second call (should use cache)
+        pct2, source2 = get_symbol_day_change_pct(
+            symbol='TSLA',
+            bar_open=100.0,
+            bar_close=101.0,
+            schwab_provider=mock_provider,
+        )
+        
+        assert source1 == "schwab_quote"
+        assert source2 == "cache", "Second call should use cache"
+        assert pct1 == pct2, "Cached value should match original"
+        assert mock_provider.get_quote.call_count == 1, "Should only call Schwab once"
+
+    def test_strategy_uses_same_basis_helper(self):
+        """Strategy RS calculation must use get_symbol_day_change_pct when ENABLE_SAME_BASIS_RS=True."""
+        from pathlib import Path
+        src = Path("strategies/builtin.py").read_text()
+        
+        anchor = src.find("v-same-basis-rs-2026-09-21")
+        assert anchor != -1, "Strategy must have v-same-basis-rs-2026-09-21 marker"
+        
+        window = src[anchor: anchor + 2000]
+        assert "get_symbol_day_change_pct" in window, (
+            "Strategy must call get_symbol_day_change_pct for same-basis RS"
+        )
+        assert "ENABLE_SAME_BASIS_RS" in window, (
+            "Strategy must check ENABLE_SAME_BASIS_RS config flag"
+        )
+
+    def test_weak_rs_log_includes_source(self):
+        """weak_relative_strength log must include rs_source field."""
+        from pathlib import Path
+        src = Path("strategies/builtin.py").read_text()
+        
+        anchor = src.find('"weak_relative_strength"')
+        assert anchor != -1
+        window = src[anchor: anchor + 800]
+        
+        assert "rs_source=" in window, (
+            "weak_relative_strength log must include rs_source"
+        )
+        assert "same_basis_enabled=" in window, (
+            "weak_relative_strength log must include same_basis_enabled"
+        )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# v-daytrade-offhours-skip-2026-09-21: Tests for off_hours hard-skip
+#
+# 2026-09-21 RCA: strategy generated signal_buy logs with time_of_day=off_hours
+# during premarket. While engine gate blocks LIVE orders, these signals
+# created noise with corrupt premarket data.
+#
+# Fix: hard-skip day_trade_momentum signals during off_hours.
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestDayTradeOffHoursHardSkip:
+    """Test DAY_TRADE_HARD_SKIP_OFF_HOURS behavior.
+    
+    v-daytrade-offhours-skip-2026-09-21: hard-skip day_trade_momentum
+    and day_trade_momentum_short signals during off_hours.
+    """
+    
+    def test_config_flag_default_true(self):
+        """DAY_TRADE_HARD_SKIP_OFF_HOURS must default to True.
+        
+        2026-09-21 RCA: premarket signals had corrupt RS data.
+        Hard-skip is the new default.
+        """
+        from core.config import Config
+        cfg = Config()
+        assert cfg.DAY_TRADE_HARD_SKIP_OFF_HOURS is True, (
+            "DAY_TRADE_HARD_SKIP_OFF_HOURS must default to True — "
+            "2026-09-21 RCA: off_hours signals have corrupt premarket data"
+        )
+
+    @pytest.mark.asyncio
+    async def test_off_hours_hard_skip_long(self):
+        """off_hours must return None (HARD SKIP) for day_trade_momentum long."""
+        from strategies.builtin import DayTradeMomentumStrategy
+        
+        strategy = DayTradeMomentumStrategy(MagicMock())
+        
+        market_data = MagicMock()
+        market_data.symbol = 'NVDA'
+        market_data.close = 100.0
+        market_data.open = 99.0
+        market_data.timestamp = datetime.now()
+        market_data.indicators = {
+            'rsi': 55,
+            'volume_ratio': 2.0,
+            'adx': 30,
+            'atr': 1.5,
+            'high_20': 99.5,
+            'sma_20': 98.0,
+            'macd': 0.5,
+            'macd_signal': 0.3,
+            'day_change_pct': 3.0,
+        }
+        
+        with patch('core.market_context.read_market_context') as mock_mc:
+            mock_mc.return_value = MagicMock(
+                regime='risk_on',
+                time_of_day='off_hours',  # KEY: off_hours
+                spy_change_pct=0.5,
+                vix_change_pct=-2.0,
+                sector_etf='XLK',
+                reason='premarket test',
+            )
+            
+            with patch('core.config.Config') as mock_cfg:
+                mock_cfg_instance = MagicMock()
+                mock_cfg_instance.ENABLE_DAY_TRADE_MOMENTUM = True
+                mock_cfg_instance.DAY_TRADE_HARD_SKIP_OFF_HOURS = True
+                mock_cfg_instance.DAY_TRADE_HARD_SKIP_RISK_OFF = True
+                mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_SPY_PCT = -1.5
+                mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_VIX_SPIKE = 15.0
+                mock_cfg_instance.ENABLE_SAME_BASIS_RS = False
+                mock_cfg.return_value = mock_cfg_instance
+                
+                signal = await strategy.generate_signal_with_commentary(market_data)
+        
+        assert signal is None, (
+            "day_trade_momentum long must return None (HARD SKIP) during off_hours"
+        )
+
+    @pytest.mark.asyncio
+    async def test_off_hours_hard_skip_short(self):
+        """off_hours must return None (HARD SKIP) for day_trade_momentum short."""
+        from strategies.builtin import DayTradeMomentumShortStrategy
+        
+        strategy = DayTradeMomentumShortStrategy(MagicMock())
+        
+        market_data = MagicMock()
+        market_data.symbol = 'NVDA'
+        market_data.close = 100.0
+        market_data.open = 101.0
+        market_data.timestamp = datetime.now()
+        market_data.indicators = {
+            'rsi': 45,
+            'volume_ratio': 2.0,
+            'adx': 30,
+            'atr': 1.5,
+            'low_20': 100.5,
+            'high_20': 102.0,
+            'sma_20': 101.0,
+            'sma_50': 100.5,
+            'macd': -0.5,
+            'macd_signal': -0.3,
+            'day_change_pct': -3.0,
+        }
+        
+        with patch('core.market_context.read_market_context') as mock_mc:
+            mock_mc.return_value = MagicMock(
+                regime='risk_off',  # Not risk_on (allows shorts)
+                time_of_day='off_hours',  # KEY: off_hours
+                spy_change_pct=-0.5,
+                vix_change_pct=5.0,
+                sector_etf='XLK',
+                reason='premarket test',
+            )
+            
+            with patch('core.config.Config') as mock_cfg:
+                mock_cfg_instance = MagicMock()
+                mock_cfg_instance.ENABLE_DAY_TRADE_SHORT = True
+                mock_cfg_instance.DAY_TRADE_HARD_SKIP_OFF_HOURS = True
+                mock_cfg_instance.ENABLE_SAME_BASIS_RS = False
+                mock_cfg_instance.HANDS_OFF_DENYLIST = []
+                mock_cfg.return_value = mock_cfg_instance
+                
+                signal = await strategy.generate_signal_with_commentary(market_data)
+        
+        assert signal is None, (
+            "day_trade_momentum short must return None (HARD SKIP) during off_hours"
+        )
+
+    def test_strategy_has_off_hours_gate(self):
+        """Strategy must have off_hours hard-skip gate with proper marker."""
+        from pathlib import Path
+        src = Path("strategies/builtin.py").read_text()
+        
+        anchor = src.find("v-daytrade-offhours-skip-2026-09-21")
+        assert anchor != -1, "Strategy must have v-daytrade-offhours-skip-2026-09-21 marker"
+        
+        window = src[anchor: anchor + 1500]
+        assert "off_hours_hard_skip" in window, (
+            "Strategy must have off_hours_hard_skip decision"
+        )
+        assert "DAY_TRADE_HARD_SKIP_OFF_HOURS" in window, (
+            "Strategy must check DAY_TRADE_HARD_SKIP_OFF_HOURS flag"
+        )
+
+    def test_off_hours_skip_log_includes_gate_name(self):
+        """off_hours skip log must include gate_name for audit."""
+        from pathlib import Path
+        src = Path("strategies/builtin.py").read_text()
+        
+        anchor = src.find("off_hours_hard_skip")
+        assert anchor != -1
+        window = src[anchor: anchor + 500]
+        
+        assert "gate_name=" in window, (
+            "off_hours skip log must include gate_name"
+        )
+        assert "day_trade" in window and "off_hours" in window, (
+            "off_hours skip gate_name must include day_trade and off_hours"
+        )
