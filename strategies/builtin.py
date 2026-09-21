@@ -1606,6 +1606,32 @@ class DayTradeMomentumStrategy(TradingStrategyWithCommentary):
                         size_mult=_mc_size_mult,
                         skip_snapshot=True,
                     )
+
+                # ────────────────────────────────────────────────────────────────
+                # v-daytrade-offhours-skip-2026-09-21: hard-skip during off_hours
+                #
+                # 2026-09-21 RCA: during premarket/off_hours, the strategy was
+                # generating signal_buy logs with time_of_day=off_hours. While
+                # the engine's market_hours gate blocks LIVE orders, these
+                # signals created noise (RS calculated with corrupt premarket
+                # data, SPY already moved but symbols hadn't updated, etc.).
+                #
+                # When DAY_TRADE_HARD_SKIP_OFF_HOURS=True (default):
+                #   HARD SKIP — return None, no signal during off_hours.
+                #   Shadow logging only works during RTH (via normal gates).
+                #
+                # When DAY_TRADE_HARD_SKIP_OFF_HOURS=False:
+                #   Legacy — generate signals (engine gate still blocks LIVE).
+                # ────────────────────────────────────────────────────────────────
+                if _mc_time_of_day == "off_hours" and cfg.DAY_TRADE_HARD_SKIP_OFF_HOURS:
+                    self._log_decision(
+                        market_data, "skip", "off_hours_hard_skip",
+                        gate_name="day_trade_off_hours_lock",
+                        time_of_day=_mc_time_of_day,
+                        regime=_mc_regime,
+                        spy_change=round(_mc_spy_change, 2),
+                    )
+                    return None
                     
             except Exception as _mc_exc:
                 logger.debug("day_trade_momentum: market_context failed: %s", _mc_exc)
@@ -1614,11 +1640,38 @@ class DayTradeMomentumStrategy(TradingStrategyWithCommentary):
             # Gate 2: Relative Strength vs SPY
             # ────────────────────────────────────────────────────────────────
             # Symbol must be outperforming SPY on the day
-            _symbol_change = float(indicators.get('day_change_pct', 0))
-            if _symbol_change == 0:
-                # Fallback: estimate from price vs open
-                _bar_open = float(getattr(market_data, 'open', market_data.close) or market_data.close)
-                if _bar_open > 0:
+            #
+            # v-same-basis-rs-2026-09-21: use get_symbol_day_change_pct() to
+            # ensure symbol day % change uses the same basis as SPY (day vs
+            # prior close from Schwab netPercentChange). Prior bug: symbol
+            # used (bar_close - bar_open) / bar_open which is bar % change,
+            # not day % change. This mismatch caused false weak_RS skips.
+            #
+            # Fallback path (ENABLE_SAME_BASIS_RS=False) uses legacy bar-based
+            # estimate for rollback testing.
+            # ────────────────────────────────────────────────────────────────
+            _bar_open = float(getattr(market_data, 'open', market_data.close) or market_data.close)
+            _rs_source = "legacy_bar"
+            
+            if cfg.ENABLE_SAME_BASIS_RS:
+                try:
+                    from core.market_context import get_symbol_day_change_pct
+                    _symbol_change, _rs_source = get_symbol_day_change_pct(
+                        symbol=symbol,
+                        bar_open=_bar_open,
+                        bar_close=market_data.close,
+                        schwab_provider=getattr(self, '_schwab_provider', None),
+                    )
+                except Exception as _rs_exc:
+                    logger.debug("day_trade_momentum: same-basis RS failed for %s: %s", symbol, _rs_exc)
+                    _symbol_change = float(indicators.get('day_change_pct', 0))
+                    if _symbol_change == 0 and _bar_open > 0:
+                        _symbol_change = ((market_data.close - _bar_open) / _bar_open) * 100
+                    _rs_source = "fallback_bar"
+            else:
+                # Legacy: bar-based estimate
+                _symbol_change = float(indicators.get('day_change_pct', 0))
+                if _symbol_change == 0 and _bar_open > 0:
                     _symbol_change = ((market_data.close - _bar_open) / _bar_open) * 100
             
             _rs_vs_spy = _symbol_change - _mc_spy_change
@@ -1640,6 +1693,8 @@ class DayTradeMomentumStrategy(TradingStrategyWithCommentary):
                     min_rs=_min_rs,
                     is_pinned=_is_pinned,
                     rs_soften_enabled=cfg.ENABLE_PINNED_RS_SOFTEN,
+                    rs_source=_rs_source,
+                    same_basis_enabled=cfg.ENABLE_SAME_BASIS_RS,
                 )
                 return None
             
@@ -2113,6 +2168,20 @@ class DayTradeMomentumShortStrategy(TradingStrategyWithCommentary):
                     ))
                     return None
 
+                # ────────────────────────────────────────────────────────────────
+                # v-daytrade-offhours-skip-2026-09-21: hard-skip during off_hours
+                # Same logic as day_trade_momentum long — no signals in off_hours.
+                # ────────────────────────────────────────────────────────────────
+                if _mc_time_of_day == "off_hours" and cfg.DAY_TRADE_HARD_SKIP_OFF_HOURS:
+                    self._log_decision(
+                        market_data, "skip", "off_hours_hard_skip_short",
+                        gate_name="day_trade_short_off_hours_lock",
+                        time_of_day=_mc_time_of_day,
+                        regime=_mc_regime,
+                        spy_change=round(_mc_spy_change, 2),
+                    )
+                    return None
+
             except Exception as _mc_exc:
                 logger.debug("day_trade_short: market_context failed: %s", _mc_exc)
 
@@ -2149,11 +2218,32 @@ class DayTradeMomentumShortStrategy(TradingStrategyWithCommentary):
 
             # ────────────────────────────────────────────────────────────────
             # Gate 3: Weak RS vs SPY — symbol must UNDERPERFORM SPY
+            #
+            # v-same-basis-rs-2026-09-21: use get_symbol_day_change_pct() for
+            # same-basis RS calculation (same as day_trade_momentum long).
             # ────────────────────────────────────────────────────────────────
-            _symbol_change = float(indicators.get('day_change_pct', 0))
-            if _symbol_change == 0:
-                _bar_open = float(getattr(market_data, 'open', market_data.close) or market_data.close)
-                if _bar_open > 0:
+            _bar_open = float(getattr(market_data, 'open', market_data.close) or market_data.close)
+            _rs_source = "legacy_bar"
+            
+            if cfg.ENABLE_SAME_BASIS_RS:
+                try:
+                    from core.market_context import get_symbol_day_change_pct
+                    _symbol_change, _rs_source = get_symbol_day_change_pct(
+                        symbol=symbol,
+                        bar_open=_bar_open,
+                        bar_close=market_data.close,
+                        schwab_provider=getattr(self, '_schwab_provider', None),
+                    )
+                except Exception as _rs_exc:
+                    logger.debug("day_trade_short: same-basis RS failed for %s: %s", symbol, _rs_exc)
+                    _symbol_change = float(indicators.get('day_change_pct', 0))
+                    if _symbol_change == 0 and _bar_open > 0:
+                        _symbol_change = ((market_data.close - _bar_open) / _bar_open) * 100
+                    _rs_source = "fallback_bar"
+            else:
+                # Legacy: bar-based estimate
+                _symbol_change = float(indicators.get('day_change_pct', 0))
+                if _symbol_change == 0 and _bar_open > 0:
                     _symbol_change = ((market_data.close - _bar_open) / _bar_open) * 100
 
             _rs_vs_spy = _symbol_change - _mc_spy_change
@@ -2168,6 +2258,8 @@ class DayTradeMomentumShortStrategy(TradingStrategyWithCommentary):
                     rs_vs_spy=round(_rs_vs_spy, 2),
                     min_weak_rs=_min_weak_rs,
                     required_rs=f"<= -{_min_weak_rs}",
+                    rs_source=_rs_source,
+                    same_basis_enabled=cfg.ENABLE_SAME_BASIS_RS,
                 )
                 return None
 

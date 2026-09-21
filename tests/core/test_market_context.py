@@ -360,3 +360,142 @@ class TestRobustness:
         ctx = read_market_context("NVDA")
         assert ctx.regime == "unknown"
         assert ctx.conviction_multiplier == 1.0  # fail-open neutral
+
+
+# ────────────────────────────────────────────────────────────────────
+# v-same-basis-rs-2026-09-21: get_symbol_day_change_pct helper tests
+# ────────────────────────────────────────────────────────────────────
+
+class TestGetSymbolDayChangePct:
+    """Tests for get_symbol_day_change_pct same-basis RS helper.
+    
+    v-same-basis-rs-2026-09-21: this helper fetches symbol day % change
+    from Schwab quotes (netPercentChange), ensuring same-basis comparison
+    with SPY for RS calculation.
+    """
+
+    def setup_method(self):
+        """Clear cache before each test."""
+        from core.market_context import clear_symbol_day_change_cache
+        clear_symbol_day_change_cache()
+
+    def test_returns_schwab_quote_when_available(self):
+        """Should return Schwab netPercentChange with 'schwab_quote' source."""
+        from unittest.mock import MagicMock
+        from core.market_context import get_symbol_day_change_pct
+        
+        mock_provider = MagicMock()
+        mock_provider.get_quote.return_value = {
+            'netPercentChange': 2.5,
+            'last': 150.0
+        }
+        
+        pct, source = get_symbol_day_change_pct(
+            symbol='NVDA',
+            bar_open=100.0,
+            bar_close=100.5,
+            schwab_provider=mock_provider,
+        )
+        
+        assert source == "schwab_quote"
+        assert abs(pct - 2.5) < 0.01
+        mock_provider.get_quote.assert_called_once_with('NVDA')
+
+    def test_returns_bar_estimate_without_provider(self):
+        """Should fall back to bar estimate when no provider available."""
+        from core.market_context import get_symbol_day_change_pct
+        
+        pct, source = get_symbol_day_change_pct(
+            symbol='NVDA',
+            bar_open=100.0,
+            bar_close=102.0,
+            schwab_provider=None,
+        )
+        
+        assert source == "bar_estimate"
+        assert abs(pct - 2.0) < 0.01  # (102-100)/100 * 100 = 2.0%
+
+    def test_returns_unavailable_with_no_data(self):
+        """Should return 0.0 with 'unavailable' source when no data."""
+        from core.market_context import get_symbol_day_change_pct
+        
+        pct, source = get_symbol_day_change_pct(
+            symbol='NVDA',
+            bar_open=0.0,
+            bar_close=0.0,
+            schwab_provider=None,
+        )
+        
+        assert source == "unavailable"
+        assert pct == 0.0
+
+    def test_caches_schwab_result(self):
+        """Should cache Schwab result and return 'cache' on second call."""
+        from unittest.mock import MagicMock
+        from core.market_context import get_symbol_day_change_pct
+        
+        mock_provider = MagicMock()
+        mock_provider.get_quote.return_value = {
+            'netPercentChange': 3.0,
+            'last': 150.0
+        }
+        
+        # First call
+        pct1, source1 = get_symbol_day_change_pct(
+            symbol='TSLA',
+            bar_open=100.0,
+            bar_close=100.5,
+            schwab_provider=mock_provider,
+        )
+        
+        # Second call (should use cache)
+        pct2, source2 = get_symbol_day_change_pct(
+            symbol='TSLA',
+            bar_open=100.0,
+            bar_close=105.0,  # Different bar close
+            schwab_provider=mock_provider,
+        )
+        
+        assert source1 == "schwab_quote"
+        assert source2 == "cache"
+        assert pct1 == pct2  # Same cached value
+        assert mock_provider.get_quote.call_count == 1
+
+    def test_fallback_on_provider_exception(self):
+        """Should fall back to bar estimate if provider raises exception."""
+        from unittest.mock import MagicMock
+        from core.market_context import get_symbol_day_change_pct
+        
+        mock_provider = MagicMock()
+        mock_provider.get_quote.side_effect = RuntimeError("Network error")
+        
+        pct, source = get_symbol_day_change_pct(
+            symbol='META',
+            bar_open=100.0,
+            bar_close=101.5,
+            schwab_provider=mock_provider,
+        )
+        
+        assert source == "bar_estimate"
+        assert abs(pct - 1.5) < 0.01
+
+    def test_handles_missing_net_percent_change(self):
+        """Should fall back if Schwab quote lacks netPercentChange."""
+        from unittest.mock import MagicMock
+        from core.market_context import get_symbol_day_change_pct
+        
+        mock_provider = MagicMock()
+        mock_provider.get_quote.return_value = {
+            'last': 150.0,
+            # Missing netPercentChange
+        }
+        
+        pct, source = get_symbol_day_change_pct(
+            symbol='AMZN',
+            bar_open=100.0,
+            bar_close=103.0,
+            schwab_provider=mock_provider,
+        )
+        
+        assert source == "bar_estimate"
+        assert abs(pct - 3.0) < 0.01
