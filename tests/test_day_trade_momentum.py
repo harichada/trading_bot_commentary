@@ -166,6 +166,14 @@ class TestDayTradeHardSkipRiskOff:
                 mock_cfg_instance.MOMENTUM_MIN_VOLUME_RATIO = 1.5
                 mock_cfg_instance.DAY_TRADE_SIZE_MULTIPLIER = 0.5
                 mock_cfg_instance.DAY_TRADE_FLATTEN_HOUR = 15
+                mock_cfg_instance.DAY_TRADE_HARD_SKIP_OFF_HOURS = True
+                mock_cfg_instance.ENABLE_SAME_BASIS_RS = False
+                mock_cfg_instance.ENABLE_HARD_VETO_BREAKOUT_RSI70 = False
+                mock_cfg_instance.ENABLE_HARD_VETO_CONTINUATION_RSI70 = False
+                mock_cfg_instance.SHADOW_VETO_RSI_THRESHOLD = 70.0
+                mock_cfg_instance.ENABLE_SHADOW_VETO_CONTINUATION_RISKOFF = False
+                mock_cfg_instance.HANDS_OFF_DENYLIST = []
+                mock_cfg_instance.PINNED_DAY_TRADE_WATCHLIST = []
                 mock_cfg.return_value = mock_cfg_instance
                 
                 signal = await strategy.generate_signal_with_commentary(market_data)
@@ -2018,7 +2026,12 @@ class TestShadowVetoContinuationRiskoffRsi70:
     
     @pytest.mark.asyncio
     async def test_shadow_veto_does_not_fire_on_breakout_pattern(self):
-        """Shadow veto must NOT fire for breakout pattern (only continuation)."""
+        """Shadow veto must NOT fire for breakout pattern (only continuation).
+        
+        NOTE: With v-rsi-breakout-veto-2026-09-21, breakout can also be
+        hard-vetoed. This test sets ENABLE_HARD_VETO_BREAKOUT_RSI70=False
+        to verify the legacy shadow veto path only fires on continuation.
+        """
         from strategies.builtin import DayTradeMomentumStrategy
         
         strategy = DayTradeMomentumStrategy(MagicMock())
@@ -2063,14 +2076,23 @@ class TestShadowVetoContinuationRiskoffRsi70:
                 mock_cfg_instance.DAY_TRADE_FLATTEN_HOUR = 15
                 mock_cfg_instance.ENABLE_SHADOW_VETO_CONTINUATION_RISKOFF = True
                 mock_cfg_instance.SHADOW_VETO_RSI_THRESHOLD = 70.0
+                # v-rsi-breakout-veto-2026-09-21: disable breakout veto for this test
+                mock_cfg_instance.ENABLE_HARD_VETO_BREAKOUT_RSI70 = False
+                mock_cfg_instance.ENABLE_HARD_VETO_CONTINUATION_RSI70 = False
+                mock_cfg_instance.DAY_TRADE_HARD_SKIP_RISK_OFF = False  # Allow risk_off for this test
+                mock_cfg_instance.DAY_TRADE_HARD_SKIP_OFF_HOURS = True
+                mock_cfg_instance.ENABLE_SAME_BASIS_RS = False
+                mock_cfg_instance.HANDS_OFF_DENYLIST = []
+                mock_cfg_instance.PINNED_DAY_TRADE_WATCHLIST = []
                 mock_cfg.return_value = mock_cfg_instance
                 
                 signal = await strategy.generate_signal_with_commentary(market_data)
         
         # Signal should be GENERATED (not None) because pattern is BREAKOUT
+        # and breakout hard veto is disabled
         assert signal is not None, (
             "Shadow veto should NOT fire for breakout pattern "
-            "(only continuation is vetoed)"
+            "(only continuation is vetoed by shadow veto)"
         )
         assert signal.reasoning['entry_pattern'] == 'breakout'
     
@@ -2185,6 +2207,13 @@ class TestShadowVetoContinuationRiskoffRsi70:
                 mock_cfg_instance.DAY_TRADE_FLATTEN_HOUR = 15
                 mock_cfg_instance.ENABLE_SHADOW_VETO_CONTINUATION_RISKOFF = True
                 mock_cfg_instance.SHADOW_VETO_RSI_THRESHOLD = 70.0
+                mock_cfg_instance.DAY_TRADE_HARD_SKIP_RISK_OFF = False  # Allow risk_off for shadow veto test
+                mock_cfg_instance.DAY_TRADE_HARD_SKIP_OFF_HOURS = True
+                mock_cfg_instance.ENABLE_SAME_BASIS_RS = False
+                mock_cfg_instance.ENABLE_HARD_VETO_BREAKOUT_RSI70 = False
+                mock_cfg_instance.ENABLE_HARD_VETO_CONTINUATION_RSI70 = False
+                mock_cfg_instance.HANDS_OFF_DENYLIST = []
+                mock_cfg_instance.PINNED_DAY_TRADE_WATCHLIST = []
                 mock_cfg.return_value = mock_cfg_instance
                 
                 signal = await strategy.generate_signal_with_commentary(market_data)
@@ -2250,6 +2279,12 @@ class TestShadowVetoContinuationRiskoffRsi70:
                 # Shadow veto also DISABLED
                 mock_cfg_instance.ENABLE_SHADOW_VETO_CONTINUATION_RISKOFF = False
                 mock_cfg_instance.SHADOW_VETO_RSI_THRESHOLD = 70.0
+                mock_cfg_instance.DAY_TRADE_HARD_SKIP_RISK_OFF = False  # Allow risk_off for test
+                mock_cfg_instance.DAY_TRADE_HARD_SKIP_OFF_HOURS = True
+                mock_cfg_instance.ENABLE_SAME_BASIS_RS = False
+                mock_cfg_instance.ENABLE_HARD_VETO_BREAKOUT_RSI70 = False
+                mock_cfg_instance.HANDS_OFF_DENYLIST = []
+                mock_cfg_instance.PINNED_DAY_TRADE_WATCHLIST = []
                 mock_cfg.return_value = mock_cfg_instance
                 
                 signal = await strategy.generate_signal_with_commentary(market_data)
@@ -2669,10 +2704,14 @@ class TestHardVetoContinuationRsi70AllRegimes:
         assert signal.reasoning['entry_pattern'] == 'pullback'
     
     @pytest.mark.asyncio
-    async def test_hard_veto_does_not_block_breakout_pattern(self):
-        """Hard veto must NOT block breakout pattern even with high RSI.
+    async def test_breakout_blocked_by_hard_veto_when_rsi_high(self):
+        """v-rsi-breakout-veto-2026-09-21: breakout + RSI>=70 IS blocked.
         
-        Breakout pattern can have high RSI but is not the dangerous pattern.
+        UPDATED: Prior to v-rsi-breakout-veto-2026-09-21, breakout was
+        NOT blocked. Now with ENABLE_HARD_VETO_BREAKOUT_RSI70=True (default),
+        breakout + RSI>=70 is blocked same as continuation.
+        
+        RCA 2026-09-21 META: breakout RSI 86.09 → scratch churn.
         """
         from strategies.builtin import DayTradeMomentumStrategy
         
@@ -2717,17 +2756,19 @@ class TestHardVetoContinuationRsi70AllRegimes:
                 mock_cfg_instance.DAY_TRADE_SIZE_MULTIPLIER = 0.5
                 mock_cfg_instance.DAY_TRADE_FLATTEN_HOUR = 15
                 mock_cfg_instance.ENABLE_HARD_VETO_CONTINUATION_RSI70 = True
+                # v-rsi-breakout-veto-2026-09-21: breakout veto now ENABLED
+                mock_cfg_instance.ENABLE_HARD_VETO_BREAKOUT_RSI70 = True
                 mock_cfg_instance.SHADOW_VETO_RSI_THRESHOLD = 70.0
                 mock_cfg_instance.ENABLE_SHADOW_VETO_CONTINUATION_RISKOFF = True
                 mock_cfg.return_value = mock_cfg_instance
                 
                 signal = await strategy.generate_signal_with_commentary(market_data)
         
-        # Signal should be GENERATED (breakout pattern not blocked)
-        assert signal is not None, (
-            "Hard veto must NOT block breakout pattern — only continuation"
+        # v-rsi-breakout-veto-2026-09-21: Signal should be BLOCKED
+        assert signal is None, (
+            "Breakout + RSI>=70 must NOW be blocked with "
+            "ENABLE_HARD_VETO_BREAKOUT_RSI70=True (v-rsi-breakout-veto-2026-09-21)"
         )
-        assert signal.reasoning['entry_pattern'] == 'breakout'
     
     @pytest.mark.asyncio
     async def test_hard_veto_does_not_block_continuation_below_rsi_threshold(self):
@@ -3958,4 +3999,375 @@ class TestDayTradeOffHoursHardSkip:
         )
         assert "day_trade" in window and "off_hours" in window, (
             "off_hours skip gate_name must include day_trade and off_hours"
+        )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# v-rsi-breakout-veto-2026-09-21: Tests for RSI in reasoning + breakout hard veto
+# P0 RCA 2026-09-21 (META): day_trade breakout RSI 86.09 filled → immediately
+# closed by open_desk_rsi_extreme_overbought (scratch churn).
+# Root cause: engine veto did reasoning.get('rsi', 0) but RSI was missing →
+# defaulted to 0 → never blocked. Strategy hard veto only covered continuation.
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestDayTradeMomentumRsiInReasoning:
+    """Test that day_trade_momentum signals include RSI in reasoning dict.
+
+    v-rsi-breakout-veto-2026-09-21: RSI must be in reasoning so engine
+    DAY_TRADE_RSI_HIGH_ENTRY_VETO can read it. Before this fix, reasoning
+    did not include 'rsi' key → engine defaulted to 0 → veto never fired.
+    """
+
+    @pytest.mark.asyncio
+    async def test_long_signal_reasoning_includes_rsi(self):
+        """Long signal reasoning must include 'rsi' key.
+
+        RCA 2026-09-21 META: engine veto did _reasoning.get('rsi', 0)
+        but RSI was not in reasoning → always 0 → never blocked.
+        """
+        from strategies.builtin import DayTradeMomentumStrategy
+
+        strategy = DayTradeMomentumStrategy(MagicMock())
+
+        market_data = MagicMock()
+        market_data.symbol = 'TEST_RSI'
+        market_data.close = 100.0
+        market_data.open = 98.0
+        market_data.timestamp = datetime.now()
+        market_data.indicators = {
+            'rsi': 55.0,  # Not overbought — should emit signal
+            'volume_ratio': 2.0,
+            'adx': 30,
+            'atr': 1.5,
+            'high_20': 99.0,  # close > high_20 = breakout
+            'sma_20': 98.0,
+            'macd': 0.5,
+            'macd_signal': 0.3,
+            'day_change_pct': 3.0,
+        }
+
+        with patch('core.market_context.read_market_context') as mock_mc:
+            mock_mc.return_value = MagicMock(
+                regime='risk_on',
+                time_of_day='midday',
+                spy_change_pct=0.5,
+                vix_change_pct=-2.0,
+                sector_etf='XLK',
+                reason='test',
+            )
+
+            with patch('core.config.Config') as mock_cfg:
+                mock_cfg_instance = MagicMock()
+                mock_cfg_instance.ENABLE_DAY_TRADE_MOMENTUM = True
+                mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_SPY_PCT = -1.5
+                mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_VIX_SPIKE = 15.0
+                mock_cfg_instance.MOMENTUM_RISK_OFF_SIZE_MULT = 0.25
+                mock_cfg_instance.MOMENTUM_OPENING_30_SIZE_MULT = 0.5
+                mock_cfg_instance.MOMENTUM_MIN_RS_VS_SPY = 0.5
+                mock_cfg_instance.MOMENTUM_MIN_VOLUME_RATIO = 1.5
+                mock_cfg_instance.DAY_TRADE_SIZE_MULTIPLIER = 0.5
+                mock_cfg_instance.DAY_TRADE_FLATTEN_HOUR = 15
+                mock_cfg_instance.DAY_TRADE_HARD_SKIP_OFF_HOURS = True
+                mock_cfg_instance.ENABLE_SAME_BASIS_RS = False
+                mock_cfg_instance.ENABLE_HARD_VETO_CONTINUATION_RSI70 = True
+                mock_cfg_instance.ENABLE_HARD_VETO_BREAKOUT_RSI70 = False  # Off so signal emits
+                mock_cfg_instance.SHADOW_VETO_RSI_THRESHOLD = 70.0
+                mock_cfg_instance.ENABLE_SHADOW_VETO_CONTINUATION_RISKOFF = False
+                mock_cfg_instance.HANDS_OFF_DENYLIST = []
+                mock_cfg_instance.PINNED_DAY_TRADE_WATCHLIST = []
+                mock_cfg.return_value = mock_cfg_instance
+
+                signal = await strategy.generate_signal_with_commentary(market_data)
+
+        assert signal is not None, "Signal should be emitted when RSI < 70"
+        assert 'rsi' in signal.reasoning, (
+            "Long signal reasoning must include 'rsi' key — "
+            "required for engine DAY_TRADE_RSI_HIGH_ENTRY_VETO"
+        )
+        assert signal.reasoning['rsi'] == 55.0, (
+            f"RSI in reasoning must match indicator value (got {signal.reasoning.get('rsi')})"
+        )
+
+    def test_short_signal_source_includes_rsi_in_reasoning(self):
+        """Short signal TradingSignal.reasoning must include 'rsi' key.
+
+        Same fix as long: RSI must be in reasoning for engine veto.
+        Check source code since the short strategy has complex mocking needs.
+        """
+        from pathlib import Path
+        src = Path("strategies/builtin.py").read_text()
+        
+        # Find the short signal TradingSignal creation
+        anchor = src.find("'strategy': 'day_trade_momentum_short'")
+        assert anchor != -1, "Must have day_trade_momentum_short signal"
+        
+        # Look at surrounding context (the reasoning dict)
+        window_start = src.rfind("reasoning={", 0, anchor)
+        window_end = src.find("}", anchor)
+        window = src[window_start:window_end + 1]
+        
+        assert "'rsi': rsi" in window, (
+            "Short signal reasoning must include 'rsi': rsi — "
+            "required for engine veto (v-rsi-breakout-veto-2026-09-21)"
+        )
+
+
+class TestHardVetoBreakoutRSI70Config:
+    """Test ENABLE_HARD_VETO_BREAKOUT_RSI70 config flag.
+
+    v-rsi-breakout-veto-2026-09-21: modular flag to hard-veto breakout
+    entries when RSI >= 70 (overbought). Default True for safety.
+    """
+
+    def test_enable_hard_veto_breakout_default_true(self):
+        """ENABLE_HARD_VETO_BREAKOUT_RSI70 must default to True.
+
+        Safe on-path: breakout entries blocked when RSI overbought.
+        RCA 2026-09-21 META: breakout RSI 86 → scratch churn.
+        """
+        from core.config import Config
+        cfg = Config()
+        assert cfg.ENABLE_HARD_VETO_BREAKOUT_RSI70 is True, (
+            "ENABLE_HARD_VETO_BREAKOUT_RSI70 must default to True — "
+            "overbought breakout entries blocked by default"
+        )
+
+    def test_enable_hard_veto_breakout_env_override_disables(self):
+        """ENABLE_HARD_VETO_BREAKOUT_RSI70=0 disables the veto."""
+        import os
+        from unittest.mock import patch
+
+        with patch.dict(os.environ, {"ENABLE_HARD_VETO_BREAKOUT_RSI70": "0"}):
+            from core.config import Config
+            cfg = Config()
+            assert cfg.ENABLE_HARD_VETO_BREAKOUT_RSI70 is False, (
+                "ENABLE_HARD_VETO_BREAKOUT_RSI70=0 must disable veto"
+            )
+
+
+class TestHardVetoBreakoutRSI70Strategy:
+    """Test strategy-level hard veto for breakout + RSI>=70.
+
+    v-rsi-breakout-veto-2026-09-21: blocks breakout entries when RSI
+    is overbought (>= 70) regardless of regime. Complements the
+    existing continuation hard veto.
+    """
+
+    @pytest.mark.asyncio
+    async def test_hard_veto_blocks_breakout_rsi70(self):
+        """Hard veto must block breakout + RSI>=70 in ALL regimes.
+
+        This is the META RCA scenario: breakout RSI 86.09 → scratch churn.
+        """
+        from strategies.builtin import DayTradeMomentumStrategy
+
+        strategy = DayTradeMomentumStrategy(MagicMock())
+
+        market_data = MagicMock()
+        market_data.symbol = 'META'  # The RCA symbol
+        market_data.close = 100.0
+        market_data.open = 96.0
+        market_data.timestamp = datetime.now()
+        market_data.indicators = {
+            'rsi': 86.09,  # KEY: RSI >= 70 (the exact META value)
+            'volume_ratio': 2.0,
+            'adx': 30,
+            'atr': 1.5,
+            'high_20': 99.0,  # close > high_20 = BREAKOUT pattern
+            'sma_20': 95.0,
+            'macd': 0.5,
+            'macd_signal': 0.3,
+            'day_change_pct': 4.0,
+        }
+
+        with patch('core.market_context.read_market_context') as mock_mc:
+            mock_mc.return_value = MagicMock(
+                regime='risk_on',  # Even risk_on should be blocked
+                time_of_day='midday',
+                spy_change_pct=0.5,
+                vix_change_pct=-2.0,
+                sector_etf='XLK',
+                reason='test',
+            )
+
+            with patch('core.config.Config') as mock_cfg:
+                mock_cfg_instance = MagicMock()
+                mock_cfg_instance.ENABLE_DAY_TRADE_MOMENTUM = True
+                mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_SPY_PCT = -1.5
+                mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_VIX_SPIKE = 15.0
+                mock_cfg_instance.MOMENTUM_RISK_OFF_SIZE_MULT = 0.25
+                mock_cfg_instance.MOMENTUM_OPENING_30_SIZE_MULT = 0.5
+                mock_cfg_instance.MOMENTUM_MIN_RS_VS_SPY = 0.5
+                mock_cfg_instance.MOMENTUM_MIN_VOLUME_RATIO = 1.5
+                mock_cfg_instance.DAY_TRADE_SIZE_MULTIPLIER = 0.5
+                mock_cfg_instance.DAY_TRADE_FLATTEN_HOUR = 15
+                mock_cfg_instance.DAY_TRADE_HARD_SKIP_OFF_HOURS = True
+                mock_cfg_instance.ENABLE_SAME_BASIS_RS = False
+                # Hard veto for BREAKOUT ENABLED
+                mock_cfg_instance.ENABLE_HARD_VETO_BREAKOUT_RSI70 = True
+                mock_cfg_instance.ENABLE_HARD_VETO_CONTINUATION_RSI70 = True
+                mock_cfg_instance.SHADOW_VETO_RSI_THRESHOLD = 70.0
+                mock_cfg_instance.ENABLE_SHADOW_VETO_CONTINUATION_RISKOFF = False
+                mock_cfg_instance.HANDS_OFF_DENYLIST = []
+                mock_cfg_instance.PINNED_DAY_TRADE_WATCHLIST = []
+                mock_cfg.return_value = mock_cfg_instance
+
+                signal = await strategy.generate_signal_with_commentary(market_data)
+
+        assert signal is None, (
+            "Hard veto must block breakout + RSI>=70 — "
+            "this is the META 2026-09-21 RCA scenario"
+        )
+
+    @pytest.mark.asyncio
+    async def test_hard_veto_breakout_off_allows_signal(self):
+        """When ENABLE_HARD_VETO_BREAKOUT_RSI70=False, breakout passes through.
+
+        Legacy behavior: engine veto (DAY_TRADE_RSI_HIGH_ENTRY_VETO) must
+        catch it instead — but now RSI is in reasoning so it can.
+        """
+        from strategies.builtin import DayTradeMomentumStrategy
+
+        strategy = DayTradeMomentumStrategy(MagicMock())
+
+        market_data = MagicMock()
+        market_data.symbol = 'LEGACY_TEST'
+        market_data.close = 100.0
+        market_data.open = 96.0
+        market_data.timestamp = datetime.now()
+        market_data.indicators = {
+            'rsi': 75.0,  # RSI >= 70 (overbought)
+            'volume_ratio': 2.0,
+            'adx': 30,
+            'atr': 1.5,
+            'high_20': 99.0,  # close > high_20 = BREAKOUT pattern
+            'sma_20': 95.0,
+            'macd': 0.5,
+            'macd_signal': 0.3,
+            'day_change_pct': 4.0,
+        }
+
+        with patch('core.market_context.read_market_context') as mock_mc:
+            mock_mc.return_value = MagicMock(
+                regime='risk_on',
+                time_of_day='midday',
+                spy_change_pct=0.5,
+                vix_change_pct=-2.0,
+                sector_etf='XLK',
+                reason='test',
+            )
+
+            with patch('core.config.Config') as mock_cfg:
+                mock_cfg_instance = MagicMock()
+                mock_cfg_instance.ENABLE_DAY_TRADE_MOMENTUM = True
+                mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_SPY_PCT = -1.5
+                mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_VIX_SPIKE = 15.0
+                mock_cfg_instance.MOMENTUM_RISK_OFF_SIZE_MULT = 0.25
+                mock_cfg_instance.MOMENTUM_OPENING_30_SIZE_MULT = 0.5
+                mock_cfg_instance.MOMENTUM_MIN_RS_VS_SPY = 0.5
+                mock_cfg_instance.MOMENTUM_MIN_VOLUME_RATIO = 1.5
+                mock_cfg_instance.DAY_TRADE_SIZE_MULTIPLIER = 0.5
+                mock_cfg_instance.DAY_TRADE_FLATTEN_HOUR = 15
+                mock_cfg_instance.DAY_TRADE_HARD_SKIP_OFF_HOURS = True
+                mock_cfg_instance.ENABLE_SAME_BASIS_RS = False
+                # KEY: Hard veto for BREAKOUT DISABLED
+                mock_cfg_instance.ENABLE_HARD_VETO_BREAKOUT_RSI70 = False
+                mock_cfg_instance.ENABLE_HARD_VETO_CONTINUATION_RSI70 = True
+                mock_cfg_instance.SHADOW_VETO_RSI_THRESHOLD = 70.0
+                mock_cfg_instance.ENABLE_SHADOW_VETO_CONTINUATION_RISKOFF = False
+                mock_cfg_instance.HANDS_OFF_DENYLIST = []
+                mock_cfg_instance.PINNED_DAY_TRADE_WATCHLIST = []
+                mock_cfg.return_value = mock_cfg_instance
+
+                signal = await strategy.generate_signal_with_commentary(market_data)
+
+        # Signal should be GENERATED because hard veto is off
+        assert signal is not None, (
+            "With ENABLE_HARD_VETO_BREAKOUT_RSI70=False, breakout signal "
+            "must pass through (engine veto catches it downstream)"
+        )
+        # RSI must be in reasoning so engine veto can see it
+        assert 'rsi' in signal.reasoning, (
+            "RSI must be in reasoning so engine veto can read it"
+        )
+        assert signal.reasoning['rsi'] == 75.0
+
+    @pytest.mark.asyncio
+    async def test_breakout_rsi_below_70_emits_signal(self):
+        """Breakout with RSI < 70 should NOT be vetoed."""
+        from strategies.builtin import DayTradeMomentumStrategy
+
+        strategy = DayTradeMomentumStrategy(MagicMock())
+
+        market_data = MagicMock()
+        market_data.symbol = 'HEALTHY_BREAKOUT'
+        market_data.close = 100.0
+        market_data.open = 96.0
+        market_data.timestamp = datetime.now()
+        market_data.indicators = {
+            'rsi': 65.0,  # KEY: RSI < 70 (NOT overbought)
+            'volume_ratio': 2.0,
+            'adx': 30,
+            'atr': 1.5,
+            'high_20': 99.0,  # close > high_20 = BREAKOUT pattern
+            'sma_20': 95.0,
+            'macd': 0.5,
+            'macd_signal': 0.3,
+            'day_change_pct': 4.0,
+        }
+
+        with patch('core.market_context.read_market_context') as mock_mc:
+            mock_mc.return_value = MagicMock(
+                regime='risk_on',
+                time_of_day='midday',
+                spy_change_pct=0.5,
+                vix_change_pct=-2.0,
+                sector_etf='XLK',
+                reason='test',
+            )
+
+            with patch('core.config.Config') as mock_cfg:
+                mock_cfg_instance = MagicMock()
+                mock_cfg_instance.ENABLE_DAY_TRADE_MOMENTUM = True
+                mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_SPY_PCT = -1.5
+                mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_VIX_SPIKE = 15.0
+                mock_cfg_instance.MOMENTUM_RISK_OFF_SIZE_MULT = 0.25
+                mock_cfg_instance.MOMENTUM_OPENING_30_SIZE_MULT = 0.5
+                mock_cfg_instance.MOMENTUM_MIN_RS_VS_SPY = 0.5
+                mock_cfg_instance.MOMENTUM_MIN_VOLUME_RATIO = 1.5
+                mock_cfg_instance.DAY_TRADE_SIZE_MULTIPLIER = 0.5
+                mock_cfg_instance.DAY_TRADE_FLATTEN_HOUR = 15
+                mock_cfg_instance.DAY_TRADE_HARD_SKIP_OFF_HOURS = True
+                mock_cfg_instance.ENABLE_SAME_BASIS_RS = False
+                # Hard veto enabled but should not fire (RSI < 70)
+                mock_cfg_instance.ENABLE_HARD_VETO_BREAKOUT_RSI70 = True
+                mock_cfg_instance.ENABLE_HARD_VETO_CONTINUATION_RSI70 = True
+                mock_cfg_instance.SHADOW_VETO_RSI_THRESHOLD = 70.0
+                mock_cfg_instance.ENABLE_SHADOW_VETO_CONTINUATION_RISKOFF = False
+                mock_cfg_instance.HANDS_OFF_DENYLIST = []
+                mock_cfg_instance.PINNED_DAY_TRADE_WATCHLIST = []
+                mock_cfg.return_value = mock_cfg_instance
+
+                signal = await strategy.generate_signal_with_commentary(market_data)
+
+        assert signal is not None, (
+            "Breakout with RSI < 70 should NOT be vetoed"
+        )
+        assert signal.reasoning.get('entry_pattern') == 'breakout'
+        assert signal.reasoning.get('rsi') == 65.0
+
+    def test_strategy_has_breakout_hard_veto_marker(self):
+        """Strategy must have v-rsi-breakout-veto-2026-09-21 marker."""
+        from pathlib import Path
+        src = Path("strategies/builtin.py").read_text()
+
+        assert "v-rsi-breakout-veto-2026-09-21" in src, (
+            "Strategy must have v-rsi-breakout-veto-2026-09-21 marker"
+        )
+        assert "breakout_overbought_all_regimes" in src, (
+            "Strategy must have breakout_overbought_all_regimes veto reason"
+        )
+        assert "ENABLE_HARD_VETO_BREAKOUT_RSI70" in src, (
+            "Strategy must check ENABLE_HARD_VETO_BREAKOUT_RSI70 flag"
         )

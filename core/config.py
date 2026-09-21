@@ -3031,6 +3031,33 @@ class Config:
             return env_val.lower() in ("1", "true", "yes", "on")
         return bool(self.manager.get('trading.enable_hard_veto_continuation_rsi70', True))
 
+    @property
+    def ENABLE_HARD_VETO_BREAKOUT_RSI70(self) -> bool:
+        """v-rsi-breakout-veto-2026-09-21: hard veto for breakout + RSI>=70
+        in ALL regimes.
+        
+        RCA 2026-09-21 META LIVE churn: breakout entry RSI 86.09 filled
+        then immediately closed by open_desk_rsi_extreme_overbought.
+        Entering overbought breakout = chasing exhaustion gap.
+        
+        When True (default): if entry_pattern==breakout AND
+        rsi >= SHADOW_VETO_RSI_THRESHOLD, return None (skip order)
+        regardless of regime. Logs strategy_decision action=hard_veto
+        with reason breakout_overbought_all_regimes.
+        
+        When False: legacy (engine veto must catch it via
+        DAY_TRADE_RSI_HIGH_ENTRY_VETO_ENABLED, but that requires
+        reasoning to include 'rsi' key — fixed in same commit).
+        
+        Default True (safe on-path = entries blocked when pattern matches).
+        Set trading.enable_hard_veto_breakout_rsi70: false or
+        ENABLE_HARD_VETO_BREAKOUT_RSI70=0 to disable.
+        """
+        env_val = os.getenv("ENABLE_HARD_VETO_BREAKOUT_RSI70")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.enable_hard_veto_breakout_rsi70', True))
+
     # ──────────────────────────────────────────────────────────────────
     # v-feature-snapshot-config-2026-09-09: decision snapshot feature flags.
     # Moved from module constants in core/decision_snapshot.py to Config

@@ -1819,6 +1819,72 @@ class DayTradeMomentumStrategy(TradingStrategyWithCommentary):
                 ))
                 
                 return None
+
+            # ────────────────────────────────────────────────────────────────
+            # v-rsi-breakout-veto-2026-09-21: Hard veto for breakout + RSI>=70
+            # in ALL regimes.
+            #
+            # RCA 2026-09-21 META LIVE churn: breakout entry RSI 86.09 filled
+            # then immediately closed by open_desk_rsi_extreme_overbought.
+            # Entering breakout at overbought RSI = chasing exhaustion gap,
+            # high P(immediate reversal/scratch churn).
+            #
+            # Gated by Config.ENABLE_HARD_VETO_BREAKOUT_RSI70 (default True).
+            # ────────────────────────────────────────────────────────────────
+            _hard_veto_breakout_triggered = (
+                cfg.ENABLE_HARD_VETO_BREAKOUT_RSI70
+                and _entry_pattern == "breakout"
+                and rsi >= _shadow_veto_rsi_threshold
+            )
+            
+            if _hard_veto_breakout_triggered:
+                self._log_decision(
+                    market_data, "hard_veto", "breakout_overbought_all_regimes",
+                    pattern=_entry_pattern,
+                    rsi=round(rsi, 2),
+                    rsi_threshold=_shadow_veto_rsi_threshold,
+                    regime=_mc_regime,
+                    rs_vs_spy=round(_rs_vs_spy, 2),
+                    volume_ratio=round(volume_ratio, 2),
+                    adx=round(adx, 2),
+                    high_20=round(high_20, 2),
+                    close=round(market_data.close, 2),
+                    sma_20=round(sma_20, 2) if sma_20 > 0 else 0,
+                    macd=round(macd, 4),
+                    macd_signal=round(macd_signal, 4),
+                    spy_change=round(_mc_spy_change, 2),
+                    vix_change=round(_mc_vix_change, 2),
+                    session_id=_get_session_id(),
+                )
+                
+                self.commentary.add_commentary(TradingCommentary(
+                    timestamp=datetime.now(),
+                    type=CommentaryType.RISK_ASSESSMENT,
+                    symbol=symbol,
+                    title=f"🚫 Hard Veto: BREAKOUT + RSI≥70 (all regimes)",
+                    message=(
+                        f"BLOCKED {symbol} breakout entry:\n"
+                        f"  RSI {rsi:.1f} >= {_shadow_veto_rsi_threshold} (overbought)\n"
+                        f"  Regime: {_mc_regime}\n\n"
+                        f"RCA 2026-09-21 META: breakout into overbought RSI 86.09\n"
+                        f"filled → immediate close by open_desk_rsi_extreme.\n"
+                        f"Breakout at RSI>=70 = chasing, high P(scratch churn).\n\n"
+                        f"Signal details: RS vs SPY {_rs_vs_spy:+.2f}%, Vol {volume_ratio:.1f}x"
+                    ),
+                    data={
+                        'veto_type': 'hard',
+                        'pattern': _entry_pattern,
+                        'rsi': rsi,
+                        'rsi_threshold': _shadow_veto_rsi_threshold,
+                        'regime': _mc_regime,
+                        'rs_vs_spy': _rs_vs_spy,
+                        'volume_ratio': volume_ratio,
+                        'rca_ref': 'META 2026-09-21',
+                    },
+                    importance=8,
+                ))
+                
+                return None
             
             # ────────────────────────────────────────────────────────────────
             # v-shadow-veto-2026-09-10: Shadow veto for continuation + RSI>=70 + risk_off
@@ -2021,6 +2087,8 @@ class DayTradeMomentumStrategy(TradingStrategyWithCommentary):
                 reasoning={
                     'strategy': 'day_trade_momentum',
                     'entry_pattern': _entry_pattern,
+                    # v-rsi-breakout-veto-2026-09-21: include RSI for engine veto
+                    'rsi': rsi,
                     'rs_vs_spy': _rs_vs_spy,
                     'volume_ratio': volume_ratio,
                     'atr': atr,
@@ -2567,6 +2635,8 @@ class DayTradeMomentumShortStrategy(TradingStrategyWithCommentary):
                 reasoning={
                     'strategy': 'day_trade_momentum_short',
                     'entry_pattern': _entry_pattern,
+                    # v-rsi-breakout-veto-2026-09-21: include RSI for engine veto
+                    'rsi': rsi,
                     'rs_vs_spy': _rs_vs_spy,
                     'volume_ratio': volume_ratio,
                     'atr': atr,
