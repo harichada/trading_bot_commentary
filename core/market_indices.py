@@ -97,6 +97,7 @@ class MarketIndicesCache:
         self._snapshot: Dict[str, IndexQuote] = {}
         self.last_updated: Optional[datetime] = None
         self.last_error: Optional[str] = None
+        self._schwab_client = None
 
     @classmethod
     def instance(cls) -> "MarketIndicesCache":
@@ -120,6 +121,7 @@ class MarketIndicesCache:
         ``last_updated`` (via the absence of an update). A single bad
         response should not blank the entire strip.
         """
+        self._schwab_client = schwab_client
         symbols = list(_DISPLAY_NAMES.keys())
         try:
             response = schwab_client.get_quotes(symbols)
@@ -228,3 +230,42 @@ class MarketIndicesCache:
         we expose this lookup separately.
         """
         return self._snapshot.get(symbol)
+
+    def fetch_symbol_day_change(self, symbol: str) -> Optional[float]:
+        """Fetch netPercentChange for any symbol via Schwab API.
+
+        v-fix-schwab-provider-rs-2026-09-21: enables same-basis RS for
+        symbols not in the dashboard cache. Called by get_symbol_day_change_pct
+        when no explicit schwab_provider is passed.
+
+        Returns netPercentChange (day % vs prior close) or None on failure.
+        Callers should fall back to bar_estimate when None is returned.
+        """
+        if self._schwab_client is None:
+            return None
+
+        try:
+            response = self._schwab_client.get_quote(symbol)
+            if getattr(response, "status_code", None) != 200:
+                logger.debug(
+                    "fetch_symbol_day_change: non-200 for %s: %s",
+                    symbol, getattr(response, "status_code", "unknown"),
+                )
+                return None
+            data = response.json()
+            sym_data = data.get(symbol, {})
+            quote = sym_data.get("quote", {})
+            if not quote:
+                return None
+            net_pct = quote.get(
+                "netPercentChange",
+                quote.get("netPercentChangeInDouble"),
+            )
+            if net_pct is None:
+                return None
+            return float(net_pct)
+        except Exception as exc:
+            logger.debug(
+                "fetch_symbol_day_change: error for %s: %s", symbol, exc,
+            )
+            return None

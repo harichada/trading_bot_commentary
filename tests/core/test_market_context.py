@@ -499,3 +499,172 @@ class TestGetSymbolDayChangePct:
         
         assert source == "bar_estimate"
         assert abs(pct - 3.0) < 0.01
+
+
+# ────────────────────────────────────────────────────────────────────
+# v-fix-schwab-provider-rs-2026-09-21: auto-resolve tests
+# ────────────────────────────────────────────────────────────────────
+
+class TestGetSymbolDayChangePctAutoResolve:
+    """Tests for auto-resolve via MarketIndicesCache when schwab_provider=None.
+    
+    v-fix-schwab-provider-rs-2026-09-21: fixes bug where strategies never set
+    _schwab_provider, causing all RS calculations to fall through to bar_estimate.
+    Now when schwab_provider=None, get_symbol_day_change_pct auto-resolves via
+    MarketIndicesCache.instance().fetch_symbol_day_change().
+    """
+
+    def setup_method(self):
+        """Clear cache and reset singleton before each test."""
+        from core.market_context import clear_symbol_day_change_cache
+        from core.market_indices import MarketIndicesCache
+        clear_symbol_day_change_cache()
+        MarketIndicesCache.reset_for_tests()
+
+    def test_auto_resolve_returns_schwab_quote(self, monkeypatch):
+        """When schwab_provider=None, should auto-resolve via MarketIndicesCache."""
+        from unittest.mock import MagicMock
+        from core.market_context import get_symbol_day_change_pct
+        import core.market_indices as mi
+        
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            'META': {
+                'quote': {
+                    'lastPrice': 550.0,
+                    'netPercentChange': 4.25,
+                }
+            }
+        }
+        mock_client.get_quote.return_value = mock_response
+        
+        cache = mi.MarketIndicesCache.instance()
+        cache._schwab_client = mock_client
+        
+        pct, source = get_symbol_day_change_pct(
+            symbol='META',
+            bar_open=100.0,
+            bar_close=100.5,
+            schwab_provider=None,
+        )
+        
+        assert source == "schwab_quote"
+        assert abs(pct - 4.25) < 0.01
+        mock_client.get_quote.assert_called_once_with('META')
+
+    def test_auto_resolve_falls_back_to_bar_estimate(self, monkeypatch):
+        """When auto-resolve fails, should fall back to bar_estimate."""
+        from core.market_context import get_symbol_day_change_pct
+        import core.market_indices as mi
+        
+        cache = mi.MarketIndicesCache.instance()
+        cache._schwab_client = None
+        
+        pct, source = get_symbol_day_change_pct(
+            symbol='NVDA',
+            bar_open=100.0,
+            bar_close=105.0,
+            schwab_provider=None,
+        )
+        
+        assert source == "bar_estimate"
+        assert abs(pct - 5.0) < 0.01
+
+    def test_auto_resolve_caches_result(self, monkeypatch):
+        """Auto-resolved values should be cached."""
+        from unittest.mock import MagicMock
+        from core.market_context import get_symbol_day_change_pct
+        import core.market_indices as mi
+        
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            'AAPL': {
+                'quote': {
+                    'lastPrice': 220.0,
+                    'netPercentChange': 1.75,
+                }
+            }
+        }
+        mock_client.get_quote.return_value = mock_response
+        
+        cache = mi.MarketIndicesCache.instance()
+        cache._schwab_client = mock_client
+        
+        pct1, source1 = get_symbol_day_change_pct(
+            symbol='AAPL',
+            bar_open=100.0,
+            bar_close=100.5,
+            schwab_provider=None,
+        )
+        
+        pct2, source2 = get_symbol_day_change_pct(
+            symbol='AAPL',
+            bar_open=100.0,
+            bar_close=110.0,
+            schwab_provider=None,
+        )
+        
+        assert source1 == "schwab_quote"
+        assert source2 == "cache"
+        assert pct1 == pct2
+        assert mock_client.get_quote.call_count == 1
+
+    def test_auto_resolve_handles_api_error(self, monkeypatch):
+        """When API returns error, should fall back to bar_estimate."""
+        from unittest.mock import MagicMock
+        from core.market_context import get_symbol_day_change_pct
+        import core.market_indices as mi
+        
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_response.status_code = 500
+        mock_client.get_quote.return_value = mock_response
+        
+        cache = mi.MarketIndicesCache.instance()
+        cache._schwab_client = mock_client
+        
+        pct, source = get_symbol_day_change_pct(
+            symbol='TSLA',
+            bar_open=200.0,
+            bar_close=210.0,
+            schwab_provider=None,
+        )
+        
+        assert source == "bar_estimate"
+        assert abs(pct - 5.0) < 0.01
+
+    def test_explicit_provider_takes_precedence(self, monkeypatch):
+        """Explicit schwab_provider should take precedence over auto-resolve."""
+        from unittest.mock import MagicMock
+        from core.market_context import get_symbol_day_change_pct
+        import core.market_indices as mi
+        
+        auto_mock_client = MagicMock()
+        auto_mock_response = MagicMock()
+        auto_mock_response.status_code = 200
+        auto_mock_response.json.return_value = {
+            'GOOG': {'quote': {'netPercentChange': 1.0}}
+        }
+        auto_mock_client.get_quote.return_value = auto_mock_response
+        
+        cache = mi.MarketIndicesCache.instance()
+        cache._schwab_client = auto_mock_client
+        
+        explicit_provider = MagicMock()
+        explicit_provider.get_quote.return_value = {'netPercentChange': 3.5}
+        
+        pct, source = get_symbol_day_change_pct(
+            symbol='GOOG',
+            bar_open=100.0,
+            bar_close=100.5,
+            schwab_provider=explicit_provider,
+        )
+        
+        assert source == "schwab_quote"
+        assert abs(pct - 3.5) < 0.01
+        explicit_provider.get_quote.assert_called_once_with('GOOG')
+        auto_mock_client.get_quote.assert_not_called()
