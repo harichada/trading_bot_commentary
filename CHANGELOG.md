@@ -1,5 +1,72 @@
 # Changelog
 
+## 2026-09-21 — fix: Day-trade RSI missing from reasoning + breakout hard veto (v-rsi-breakout-veto-2026-09-21)
+
+### Problem
+
+P0 LIVE churn incident observed 2026-09-21 on META. Day-trade breakout entry at RSI 86.09 filled, then ~4s later closed by `open_desk_rsi_extreme_overbought` (scratch churn). Same class as XE RCA 2026-09-17.
+
+The engine's `DAY_TRADE_RSI_HIGH_ENTRY_VETO_ENABLED=True` gate did NOT fire despite being enabled.
+
+### Root Cause Analysis
+
+**Missing RSI in reasoning**: Engine veto does `_reasoning.get('rsi', 0)` but `DayTradeMomentumStrategy.TradingSignal.reasoning` did NOT include the `'rsi'` key. Missing RSI defaulted to 0, so the veto condition `_signal_rsi >= 70` was never true.
+
+**Breakout pattern not covered**: Strategy-level hard veto (`ENABLE_HARD_VETO_CONTINUATION_RSI70`) only checked `_entry_pattern == "continuation"`, NOT `"breakout"`. So breakout@RSI86 bypassed both strategy veto AND engine veto.
+
+### Added
+
+- **`'rsi': rsi`** in `TradingSignal.reasoning` for both:
+  - `DayTradeMomentumStrategy` (long)
+  - `DayTradeMomentumShortStrategy` (short)
+  
+  Now engine veto can read the actual RSI value instead of defaulting to 0.
+
+- **`ENABLE_HARD_VETO_BREAKOUT_RSI70`** config flag (default **True**)
+  - When True: if entry_pattern==breakout AND rsi >= 70, return None (skip order)
+  - When False: legacy (engine veto must catch it — now possible since RSI in reasoning)
+  - Override: `ENABLE_HARD_VETO_BREAKOUT_RSI70=0` env or `trading.enable_hard_veto_breakout_rsi70: false`
+
+- **Hard veto block** for breakout + RSI>=70 in ALL regimes
+  - Logs strategy_decision action=hard_veto with reason `breakout_overbought_all_regimes`
+  - Commentary: "🚫 Hard Veto: BREAKOUT + RSI≥70 (all regimes)"
+  - Modular: separate flag from continuation veto for fine-grained control
+
+- **Tests** in `tests/test_day_trade_momentum.py`:
+  - `TestDayTradeMomentumRsiInReasoning`: verifies RSI key in long/short reasoning
+  - `TestHardVetoBreakoutRSI70Config`: config flag defaults and env override
+  - `TestHardVetoBreakoutRSI70Strategy`: breakout+RSI>=70 blocked, flag off = legacy, RSI<70 passes
+
+### Changed
+
+- `strategies/builtin.py`:
+  - `DayTradeMomentumStrategy.generate_signal_with_commentary`: added RSI to reasoning + breakout hard veto
+  - `DayTradeMomentumShortStrategy.generate_signal_with_commentary`: added RSI to reasoning
+
+- `core/config.py`:
+  - Added `ENABLE_HARD_VETO_BREAKOUT_RSI70` property
+
+### Unchanged
+
+- LIVE entry flags untouched (DAY_TRADE_LIVE still paused per CoS)
+- Mean-rev/ORB/short LIVE flags unchanged
+- HANDS_OFF_DENYLIST (MU/HQGE/SPCX) unchanged
+- `feature/trading_bot_v1` and PR #14 untouched
+- Engine `DAY_TRADE_RSI_HIGH_ENTRY_VETO_ENABLED` logic unchanged (now works correctly since RSI present)
+- Existing `ENABLE_HARD_VETO_CONTINUATION_RSI70` unchanged
+
+### Flags Summary
+
+| Flag | Default | Effect |
+|------|---------|--------|
+| `ENABLE_HARD_VETO_BREAKOUT_RSI70` | True | Strategy blocks breakout+RSI>=70 |
+| `ENABLE_HARD_VETO_CONTINUATION_RSI70` | True | Strategy blocks continuation+RSI>=70 |
+| `DAY_TRADE_RSI_HIGH_ENTRY_VETO_ENABLED` | True | Engine blocks breakout/continuation+RSI>=70 |
+
+With all defaults, both strategy AND engine block overbought day-trade entries (defense in depth).
+
+---
+
 ## 2026-09-21 — fix: Day-trade RS premarket mismatch + off_hours hard-skip (v-same-basis-rs-2026-09-21, v-daytrade-offhours-skip-2026-09-21)
 
 ### Problem
