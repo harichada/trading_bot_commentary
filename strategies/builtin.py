@@ -2171,7 +2171,7 @@ class DayTradeMomentumShortStrategy(TradingStrategyWithCommentary):
             # ────────────────────────────────────────────────────────────────
             if symbol.upper() in cfg.HANDS_OFF_DENYLIST:
                 self._log_decision(market_data, "skip", "hands_off_denylist",
-                                   symbol=symbol, reason="permanent_hands_off")
+                                   symbol=symbol, detail_reason="permanent_hands_off")
                 return None
 
             rsi = float(indicators.get('rsi', 50))
@@ -2267,7 +2267,7 @@ class DayTradeMomentumShortStrategy(TradingStrategyWithCommentary):
                         direction=_direction_read.direction,
                         phase=_direction_read.phase,
                         ema_stack=_direction_read.ema_stack,
-                        reason=_direction_read.reason,
+                        detail_reason=_direction_read.reason,
                     )
                     return None
 
@@ -2277,7 +2277,7 @@ class DayTradeMomentumShortStrategy(TradingStrategyWithCommentary):
                         direction=_direction_read.direction,
                         phase=_direction_read.phase,
                         rsi=round(rsi, 2),
-                        reason="oversold_bounce_risk",
+                        detail_reason="oversold_bounce_risk",
                     )
                     return None
 
@@ -2355,7 +2355,7 @@ class DayTradeMomentumShortStrategy(TradingStrategyWithCommentary):
                     market_data, "skip", "rsi_oversold_no_short",
                     rsi=round(rsi, 2),
                     rsi_floor=_rsi_floor,
-                    reason="oversold_bounce_risk",
+                    detail_reason="oversold_bounce_risk",
                 )
                 return None
 
@@ -2364,7 +2364,7 @@ class DayTradeMomentumShortStrategy(TradingStrategyWithCommentary):
                     market_data, "skip", "rsi_extreme_overbought_no_short",
                     rsi=round(rsi, 2),
                     rsi_ceiling=_rsi_ceiling,
-                    reason="extreme_strength_not_reversal",
+                    detail_reason="extreme_strength_not_reversal",
                 )
                 return None
 
@@ -2571,7 +2571,7 @@ class DayTradeMomentumShortStrategy(TradingStrategyWithCommentary):
                         rsi=round(rsi, 2),
                         rs_vs_spy=round(_rs_vs_spy, 2),
                         volume_ratio=round(volume_ratio, 2),
-                        reason="DAY_TRADE_SHORT_LIVE_ENTRIES_ENABLED=False, SHADOW=False",
+                        detail_reason="DAY_TRADE_SHORT_LIVE_ENTRIES_ENABLED=False, SHADOW=False",
                     )
 
                 # CRITICAL: Always return None when LIVE disabled
