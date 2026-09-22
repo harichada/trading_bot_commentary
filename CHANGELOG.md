@@ -1,5 +1,53 @@
 # Changelog
 
+## 2026-09-22 — fix: _log_decision reason= kwarg collision (v-log-decision-collision-fix-2026-09-22)
+
+### Problem
+
+P0 ops stall ~10:20 ET on 2026-09-22: strategy scan halted with no `strategy_decision` emitted during RTH. Error in `day_trade_momentum_short`:
+
+```
+_log_decision() got multiple values for argument 'reason'
+```
+
+Manifested on SCHW during RSI floor gate check.
+
+### Root Cause Analysis
+
+`DayTradeMomentumShortStrategy` passed `reason=` as a kwarg to `_log_decision()` at 6 call sites, but `reason` is already the 3rd positional argument in `_log_decision(self, market_data, action, reason, ...)`. Python raises `TypeError` when the same argument is provided both positionally and by keyword.
+
+Same class of bug as the `_audit()` collision fixed 2026-09-15.
+
+### Fixed
+
+- **Collision hardening in `_log_decision`** (`strategies/base.py`):
+  - Added `_LOG_DECISION_RESERVED_KEYS` frozenset listing all explicit parameters
+  - **details kwargs are scanned; colliding keys are popped and nested under `_extra`
+  - Matches the `_audit()` pattern in `core/engine.py`
+  - Defense-in-depth: even if someone adds `reason=` again, hardening prevents crash
+
+- **Renamed 6 call sites** in `DayTradeMomentumShortStrategy` (`strategies/builtin.py`):
+  - `reason=` → `detail_reason=` at:
+    - `hands_off_denylist` gate
+    - `direction_not_bearish` gate
+    - `bearish_exhausted_phase` gate
+    - `rsi_oversold_no_short` gate (the SCHW crash site)
+    - `rsi_extreme_overbought_no_short` gate
+    - `live_short_disabled_no_shadow` gate
+
+- **Tests** in `tests/test_log_decision_collision_fix.py`:
+  - `TestLogDecisionCollisionFix`: hardening prevents TypeError, collisions preserved in `_extra`
+  - `TestDayTradeMomentumShortCallSiteFix`: call sites use `detail_reason=`
+  - `TestSCHWScenarioRegression`: exact SCHW scenario regression test
+
+### Unchanged
+
+- LIVE entry flags untouched
+- HANDS_OFF_DENYLIST (MU/HQGE/SPCX) unchanged
+- No position flattening
+
+---
+
 ## 2026-09-21 — fix: Day-trade RSI missing from reasoning + breakout hard veto (v-rsi-breakout-veto-2026-09-21)
 
 ### Problem
