@@ -466,7 +466,15 @@ class RiskManagerWithCommentary:
         except Exception as _ex:
             logger.debug("consec_loss runtime-reset check failed: %s", _ex)
 
-        if self.consecutive_losses >= Config().MAX_CONSECUTIVE_LOSSES:
-            return False, "Max consecutive losses reached"
+        # v-consec-loss-soft-veto-2026-09-22: consecutive-loss check moved to
+        # _process_signal_with_commentary as a SOFT ENTRY VETO (same pattern as
+        # economic blackout). When CONSECUTIVE_LOSS_SOFT_ENTRY_VETO is True
+        # (default), analysis continues and only NEW entries are blocked. The
+        # operator no longer needs to manually reset consecutive_losses in
+        # trading_state.json to unfreeze strategy scans. Setting the flag to
+        # False restores the legacy hard-block behavior where analysis stops.
+        if not Config().CONSECUTIVE_LOSS_SOFT_ENTRY_VETO:
+            if self.consecutive_losses >= Config().MAX_CONSECUTIVE_LOSSES:
+                return False, "Max consecutive losses reached"
 
         return True, "Trading allowed"
