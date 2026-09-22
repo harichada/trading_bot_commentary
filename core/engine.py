@@ -6416,6 +6416,58 @@ class TradingEngineWithCommentary:
             ))
             return
 
+        # v-consec-loss-soft-veto-2026-09-22: Soft veto on NEW ENTRIES when
+        # consecutive losses reach MAX_CONSECUTIVE_LOSSES. Analysis continues
+        # during the loss streak (bot keeps thinking/logging), but we block
+        # placing new orders until the counter resets (next winning trade or
+        # daily rollover). This matches the economic blackout pattern and
+        # prevents the operator from having to manually reset consecutive_losses
+        # in trading_state.json to unfreeze strategy scans.
+        #
+        # Only applies when CONSECUTIVE_LOSS_SOFT_ENTRY_VETO is True (default).
+        # Setting it to False restores the legacy hard-block in check_trading_allowed.
+        if Config().CONSECUTIVE_LOSS_SOFT_ENTRY_VETO:
+            _consec_losses = self.risk_manager.consecutive_losses
+            _max_consec = Config().MAX_CONSECUTIVE_LOSSES
+            if _consec_losses >= _max_consec:
+                strategy_id = signal.reasoning.get("strategy", "unknown") if signal.reasoning else "unknown"
+                self._audit("consecutive_loss_gate", signal.symbol, "skip", "consec_loss_soft_veto",
+                            consecutive_losses=_consec_losses,
+                            max_consecutive_losses=_max_consec,
+                            strategy=strategy_id)
+                
+                # v-feature-snapshot-emit-2026-09-09: emit snapshot for consecutive loss veto
+                self._emit_veto_snapshot(
+                    signal=signal,
+                    strategy_id=strategy_id,
+                    reason="consec_loss_soft_veto",
+                    gate_name="consecutive_loss_gate",
+                    extra={
+                        "consecutive_losses": _consec_losses,
+                        "max_consecutive_losses": _max_consec,
+                    },
+                )
+                
+                self.commentary.add_commentary(TradingCommentary(
+                    timestamp=datetime.now(),
+                    type=CommentaryType.RISK_ASSESSMENT,
+                    symbol=signal.symbol,
+                    title=f"🔴 Consecutive Losses — Holding Off Entry",
+                    message=(
+                        f"Signal for {signal.symbol} blocked due to consecutive loss limit "
+                        f"({_consec_losses} losses >= {_max_consec} max). "
+                        f"Analysis continues; entries paused until next winning trade or daily reset. "
+                        f"Exits/position management unchanged."
+                    ),
+                    data={
+                        'consecutive_losses': _consec_losses,
+                        'max_consecutive_losses': _max_consec,
+                        'signal_type': signal.signal_type.value if hasattr(signal, 'signal_type') else 'unknown',
+                    },
+                    importance=7,
+                ))
+                return
+
         # v-early-session-soft-2026-04-30: soft veto on the first 15 minutes
         # after open. Indicators computed on <15 bars of post-open data are
         # unreliable (ATR is microscopic, volume ratios skewed by opening

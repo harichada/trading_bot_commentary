@@ -1,5 +1,76 @@
 # Changelog
 
+## 2026-09-22 — fix: Consecutive-loss soft entry veto (v-consec-loss-soft-veto-2026-09-22)
+
+### Problem
+
+P0 ops incident 2026-09-22: When `consecutive_losses` hit `MAX_CONSECUTIVE_LOSSES` (e.g. 3), `check_trading_allowed()` returned `False` and `_analysis_loop_body` skipped the entire `_analyze_markets_with_commentary` call. No `strategy_decision` logs emitted during RTH despite position management/PnL/stream running normally. CoS had to manually reset `consecutive_losses` in `trading_state.json` to unfreeze strategy scans.
+
+### Root Cause
+
+`check_trading_allowed()` in `risk/manager.py` performed a hard block when `consecutive_losses >= MAX_CONSECUTIVE_LOSSES`. This was the analysis-level gate, not just an entry gate. When triggered, the entire analysis pipeline was skipped — same class of bug as the original economic blackout issue (v-econ-calendar-dated-2026-09-09).
+
+### Fix
+
+Consecutive-loss is now a **soft ENTRY veto only**, matching the economic blackout pattern:
+
+- **Analysis / strategy scan / decision logging continues** even when `consecutive_losses >= MAX_CONSECUTIVE_LOSSES`
+- **New LIVE entries blocked** when threshold reached (soft veto at signal router)
+- **Exits / flatten / position management / circuits unchanged**
+- Clear audit log when entry skipped: `consecutive_loss_gate action=skip reason=consec_loss_soft_veto`
+- Decision snapshot emitted for veto tracking
+
+### Added
+
+- **`CONSECUTIVE_LOSS_SOFT_ENTRY_VETO`** config flag (default **True**)
+  - When True: Analysis continues; entries blocked at `_process_signal_with_commentary`
+  - When False: Legacy hard-block in `check_trading_allowed` (analysis stops)
+  - Override: `CONSECUTIVE_LOSS_SOFT_ENTRY_VETO=0` env or `trading.consecutive_loss_soft_entry_veto: false`
+
+- **Soft veto gate** in `_process_signal_with_commentary` (after blackout, before early_session)
+  - Audit: `consecutive_loss_gate action=skip reason=consec_loss_soft_veto consecutive_losses=N max=M`
+  - Commentary: "🔴 Consecutive Losses — Holding Off Entry" with clear explanation
+  - Snapshot: `reason=consec_loss_soft_veto gate_name=consecutive_loss_gate`
+
+- **Tests** in `tests/test_consec_loss_soft_veto.py`:
+  - `TestConsecLossSoftVetoConfig`: config flag defaults, key path, v-tag
+  - `TestRiskManagerCheckTradingAllowed`: conditional check on flag, message preserved
+  - `TestEngineSoftVetoGate`: audit call, snapshot, commentary, gate ordering
+  - `TestAnalysisContinuesDuringConsecLoss`: analysis path not blocked
+  - `TestExitsUnchanged`: position loop and daily circuit unaffected
+  - `TestFlagOffRestoresHardBlock`: legacy behavior restored when flag=False
+  - `TestRegressionScenario`: original P0 scenario regression test
+
+### Changed
+
+- `risk/manager.py`:
+  - `check_trading_allowed()`: consecutive_losses check gated on `CONSECUTIVE_LOSS_SOFT_ENTRY_VETO`
+
+- `core/config.py`:
+  - Added `CONSECUTIVE_LOSS_SOFT_ENTRY_VETO` property (default True)
+
+- `core/engine.py`:
+  - Added soft veto block in `_process_signal_with_commentary` for consecutive losses
+
+### Unchanged
+
+- LIVE entry flags untouched
+- HANDS_OFF_DENYLIST (MU/HQGE/SPCX) unchanged
+- No position flattening
+- Daily loss circuit breaker unchanged
+- Position management loop unchanged
+
+### Flags Summary
+
+| Flag | Default | Effect |
+|------|---------|--------|
+| `CONSECUTIVE_LOSS_SOFT_ENTRY_VETO` | True | Analysis continues; entries blocked at signal router |
+| `MAX_CONSECUTIVE_LOSSES` | 3 | Threshold for veto (env or yaml override) |
+
+With default (True), bot keeps thinking during losing streak. Operator no longer needs manual state reset.
+
+---
+
 ## 2026-09-21 — fix: Day-trade RSI missing from reasoning + breakout hard veto (v-rsi-breakout-veto-2026-09-21)
 
 ### Problem
