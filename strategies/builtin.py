@@ -1753,6 +1753,191 @@ class DayTradeMomentumStrategy(TradingStrategyWithCommentary):
                     macd_signal=round(macd_signal, 4),
                 )
                 return None
+
+            # ────────────────────────────────────────────────────────────────
+            # v-open30-cont-index-confirm-2026-09-24: Index confirm gate for
+            # opening_30 continuation longs.
+            #
+            # Research brief 2026-09-24: Wed-Thu DT LIVE longs bled because
+            # opening_30 continuation bought single-name strength into a
+            # mixed/choppy tape with SPY still day-red.
+            #
+            # Predicate: Skip continuation longs when time_of_day==opening_30
+            # UNLESS: SPY change vs prior close ≥ 0 AND SPY last ≥ session VWAP
+            #
+            # Scope: continuation pattern + opening_30 ONLY. Does NOT touch:
+            #   - pullback / breakout patterns
+            #   - post-opening_30 windows
+            #   - RSI≥70 veto (unchanged, runs after this gate)
+            #
+            # Modes:
+            #   DT_OPEN30_CONT_INDEX_CONFIRM=True, LIVE_ENFORCE=False:
+            #     Shadow mode — log would_skip but ALLOW the trade.
+            #   DT_OPEN30_CONT_INDEX_CONFIRM=True, LIVE_ENFORCE=True:
+            #     Live mode — actually BLOCK the entry.
+            # ────────────────────────────────────────────────────────────────
+            _index_confirm_applies = (
+                cfg.DT_OPEN30_CONT_INDEX_CONFIRM
+                and _entry_pattern == "continuation"
+                and _mc_time_of_day == "opening_30"
+            )
+
+            if _index_confirm_applies:
+                try:
+                    from core.market_context import get_spy_index_context
+                    _spy_ctx = get_spy_index_context(
+                        schwab_provider=getattr(self, '_schwab_provider', None)
+                    )
+
+                    _index_confirm_passes = _spy_ctx.passes_index_confirm
+                    _would_skip = not _index_confirm_passes
+
+                    _index_confirm_fields = {
+                        'would_skip': _would_skip,
+                        'spy_chg_vs_prior_close': _spy_ctx.spy_change_vs_prior_close,
+                        'spy_last': _spy_ctx.spy_last,
+                        'spy_vwap': _spy_ctx.spy_session_vwap,
+                        'spy_vs_vwap': _spy_ctx.spy_vs_vwap,
+                        'spy_is_day_green': _spy_ctx.is_day_green,
+                        'spy_is_above_vwap': _spy_ctx.is_above_vwap,
+                        'symbol': symbol,
+                        'pattern': _entry_pattern,
+                        'time_of_day': _mc_time_of_day,
+                        'rsi': round(rsi, 2),
+                        'regime': _mc_regime,
+                        'entry_price': round(market_data.close, 2),
+                        'rs_vs_spy': round(_rs_vs_spy, 2),
+                        'volume_ratio': round(volume_ratio, 2),
+                        'session_id': _get_session_id(),
+                    }
+
+                    if _would_skip:
+                        if cfg.DT_OPEN30_CONT_INDEX_CONFIRM_LIVE_ENFORCE:
+                            # LIVE ENFORCEMENT: actually block the entry
+                            self._log_decision(
+                                market_data, "skip", "open30_cont_index_confirm_fail",
+                                gate_name="dt_open30_cont_index_confirm",
+                                live_enforce=True,
+                                **_index_confirm_fields,
+                            )
+
+                            _vwap_str = f"${_spy_ctx.spy_session_vwap:.2f}" if _spy_ctx.spy_session_vwap else "N/A"
+                            _vs_vwap_str = f"{_spy_ctx.spy_vs_vwap:+.2f}" if _spy_ctx.spy_vs_vwap else "N/A"
+
+                            self.commentary.add_commentary(TradingCommentary(
+                                timestamp=datetime.now(),
+                                type=CommentaryType.RISK_ASSESSMENT,
+                                symbol=symbol,
+                                title=f"🛑 Index Confirm BLOCKED — opening_30 continuation",
+                                message=(
+                                    f"BLOCKED {symbol} continuation in opening_30:\n"
+                                    f"  SPY vs prior close: {_spy_ctx.spy_change_vs_prior_close:+.2f}% "
+                                    f"({'day-green ✓' if _spy_ctx.is_day_green else 'day-RED ✗'})\n"
+                                    f"  SPY last: ${_spy_ctx.spy_last:.2f}\n"
+                                    f"  SPY VWAP: {_vwap_str}\n"
+                                    f"  SPY vs VWAP: {_vs_vwap_str} "
+                                    f"({'above VWAP ✓' if _spy_ctx.is_above_vwap else 'below VWAP ✗'})\n\n"
+                                    f"Predicate: SPY day-green AND SPY ≥ VWAP required.\n"
+                                    f"v-open30-cont-index-confirm-2026-09-24 (Research brief)"
+                                ),
+                                data=_index_confirm_fields,
+                                importance=8,
+                            ))
+
+                            return None
+                        else:
+                            # SHADOW MODE: log would_skip but ALLOW the trade
+                            self._log_decision(
+                                market_data, "shadow", "shadow_open30_cont_index_confirm",
+                                gate_name="dt_open30_cont_index_confirm",
+                                live_enforce=False,
+                                **_index_confirm_fields,
+                            )
+
+                            # Write to ndjson for Research counterfactual PF analysis
+                            try:
+                                from datetime import timezone as _tz_idx
+                                import json as _json_idx
+                                from pathlib import Path as _Path_idx
+
+                                _shadow_idx_entry = {
+                                    'timestamp': datetime.now(_tz_idx.utc).isoformat(),
+                                    'symbol': symbol,
+                                    'strategy': 'day_trade_momentum',
+                                    'pattern': _entry_pattern,
+                                    'time_of_day': _mc_time_of_day,
+                                    'would_skip': True,
+                                    'live_enforce': False,
+                                    # SPY index context fields
+                                    'spy_chg_vs_prior_close': _spy_ctx.spy_change_vs_prior_close,
+                                    'spy_last': _spy_ctx.spy_last,
+                                    'spy_vwap': _spy_ctx.spy_session_vwap,
+                                    'spy_vs_vwap': _spy_ctx.spy_vs_vwap,
+                                    'spy_is_day_green': _spy_ctx.is_day_green,
+                                    'spy_is_above_vwap': _spy_ctx.is_above_vwap,
+                                    # Signal fields for outcome tracking
+                                    'entry_price': float(market_data.close),
+                                    'rsi': float(rsi),
+                                    'regime': _mc_regime,
+                                    'rs_vs_spy': float(_rs_vs_spy),
+                                    'volume_ratio': float(volume_ratio),
+                                    'adx': float(adx),
+                                    'atr': float(atr),
+                                    'session_id': _get_session_id(),
+                                }
+
+                                _repo_root_idx = _Path_idx(__file__).resolve().parent.parent
+                                _ledger_dir_idx = _repo_root_idx / "data"
+                                _ledger_dir_idx.mkdir(parents=True, exist_ok=True)
+                                _ledger_path_idx = str(_ledger_dir_idx / "shadow_open30_cont_index_confirm.ndjson")
+
+                                with open(_ledger_path_idx, 'a') as _f_idx:
+                                    _f_idx.write(_json_idx.dumps(_shadow_idx_entry, default=str) + "\n")
+
+                            except Exception as _shadow_idx_exc:
+                                logger.warning(
+                                    "shadow_open30_cont_index_confirm write failed for %s: %s",
+                                    symbol, _shadow_idx_exc,
+                                )
+
+                            _vwap_str_sh = f"${_spy_ctx.spy_session_vwap:.2f}" if _spy_ctx.spy_session_vwap else "N/A"
+                            _vs_vwap_str_sh = f"{_spy_ctx.spy_vs_vwap:+.2f}" if _spy_ctx.spy_vs_vwap else "N/A"
+
+                            self.commentary.add_commentary(TradingCommentary(
+                                timestamp=datetime.now(),
+                                type=CommentaryType.RISK_ASSESSMENT,
+                                symbol=symbol,
+                                title=f"👁️ Shadow: opening_30 cont would skip (index confirm FAIL)",
+                                message=(
+                                    f"WOULD HAVE skipped {symbol} continuation in opening_30:\n"
+                                    f"  SPY vs prior close: {_spy_ctx.spy_change_vs_prior_close:+.2f}% "
+                                    f"({'day-green ✓' if _spy_ctx.is_day_green else 'day-RED ✗'})\n"
+                                    f"  SPY last: ${_spy_ctx.spy_last:.2f}\n"
+                                    f"  SPY VWAP: {_vwap_str_sh}\n"
+                                    f"  SPY vs VWAP: {_vs_vwap_str_sh} "
+                                    f"({'above VWAP ✓' if _spy_ctx.is_above_vwap else 'below VWAP ✗'})\n\n"
+                                    f"SHADOW MODE: entry ALLOWED for counterfactual PF.\n"
+                                    f"Set DT_OPEN30_CONT_INDEX_CONFIRM_LIVE_ENFORCE=1 to block."
+                                ),
+                                data=_index_confirm_fields,
+                                importance=6,
+                            ))
+                            # Continue to signal generation (shadow = don't block)
+
+                    else:
+                        # Predicate PASSES — log for audit but proceed normally
+                        self._log_decision(
+                            market_data, "pass", "open30_cont_index_confirm_pass",
+                            gate_name="dt_open30_cont_index_confirm",
+                            **_index_confirm_fields,
+                        )
+
+                except Exception as _index_exc:
+                    logger.debug(
+                        "day_trade_momentum: index_confirm check failed: %s",
+                        _index_exc
+                    )
+                    # Fail-open: if we can't check, don't block
             
             # ────────────────────────────────────────────────────────────────
             # v-hard-veto-rsi70-2026-09-14: Hard veto for continuation + RSI>=70

@@ -4371,3 +4371,557 @@ class TestHardVetoBreakoutRSI70Strategy:
         assert "ENABLE_HARD_VETO_BREAKOUT_RSI70" in src, (
             "Strategy must check ENABLE_HARD_VETO_BREAKOUT_RSI70 flag"
         )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# v-open30-cont-index-confirm-2026-09-24: Tests for DT_OPEN30_CONT_INDEX_CONFIRM
+#
+# Research brief 2026-09-24: Skip day_trade_momentum CONTINUATION longs when
+# time_of_day==opening_30 unless SPY change vs prior close ≥ 0 AND SPY last
+# >= session VWAP.
+#
+# Tests:
+#   1. Config flags default OFF
+#   2. Flag OFF → no change (signal passes through)
+#   3. Shadow ON + fail predicate → would_skip logged, entry still allowed
+#   4. Live_enforce ON + fail predicate → entry blocked
+#   5. Live_enforce ON + pass predicate → entry allowed
+#   6. Pullback / non-opening_30 / non-continuation → never gated
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestDTOpen30ContIndexConfirmConfig:
+    """Test DT_OPEN30_CONT_INDEX_CONFIRM config flag defaults."""
+
+    def test_config_flag_default_false(self):
+        """DT_OPEN30_CONT_INDEX_CONFIRM must default to False."""
+        from core.config import Config
+        cfg = Config()
+        assert cfg.DT_OPEN30_CONT_INDEX_CONFIRM is False, (
+            "DT_OPEN30_CONT_INDEX_CONFIRM must default to False — "
+            "shadow/observe first, then promote to live enforcement"
+        )
+
+    def test_live_enforce_flag_default_false(self):
+        """DT_OPEN30_CONT_INDEX_CONFIRM_LIVE_ENFORCE must default to False."""
+        from core.config import Config
+        cfg = Config()
+        assert cfg.DT_OPEN30_CONT_INDEX_CONFIRM_LIVE_ENFORCE is False, (
+            "DT_OPEN30_CONT_INDEX_CONFIRM_LIVE_ENFORCE must default to False — "
+            "shadow mode by default, no live blocking"
+        )
+
+
+class TestDTOpen30ContIndexConfirmFlagOff:
+    """Test behavior when DT_OPEN30_CONT_INDEX_CONFIRM=False (flag OFF)."""
+
+    @pytest.mark.asyncio
+    async def test_flag_off_continuation_opening30_passes_through(self):
+        """With flag OFF, continuation in opening_30 with SPY red passes through.
+
+        This is the safe off-path: identical behavior to today when flag is OFF.
+        """
+        from strategies.builtin import DayTradeMomentumStrategy
+
+        strategy = DayTradeMomentumStrategy(MagicMock())
+
+        market_data = MagicMock()
+        market_data.symbol = 'CRWV'  # Symbol from Research brief
+        market_data.close = 89.11
+        market_data.open = 87.0
+        market_data.timestamp = datetime.now()
+        market_data.indicators = {
+            'rsi': 64.5,  # RSI from Research brief (55-75 for continuation)
+            'volume_ratio': 2.0,
+            'adx': 30,  # ADX > 25 for continuation
+            'atr': 1.5,
+            'high_20': 95.0,  # close NOT > high_20 (ensures not breakout)
+            'sma_20': 85.0,  # close > sma_20 (continuation)
+            'macd': 0.5,
+            'macd_signal': 0.3,
+            'day_change_pct': 3.0,
+        }
+
+        with patch('core.market_context.read_market_context') as mock_mc:
+            mock_mc.return_value = MagicMock(
+                regime='mixed',
+                time_of_day='opening_30',  # KEY: opening_30
+                spy_change_pct=-0.5,  # KEY: SPY day-red (would fail predicate)
+                vix_change_pct=2.0,
+                sector_etf='XLK',
+                reason='test',
+            )
+
+            with patch('core.config.Config') as mock_cfg:
+                mock_cfg_instance = MagicMock()
+                mock_cfg_instance.ENABLE_DAY_TRADE_MOMENTUM = True
+                # KEY: Flag OFF — no index confirm check
+                mock_cfg_instance.DT_OPEN30_CONT_INDEX_CONFIRM = False
+                mock_cfg_instance.DT_OPEN30_CONT_INDEX_CONFIRM_LIVE_ENFORCE = False
+                mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_SPY_PCT = -1.5
+                mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_VIX_SPIKE = 15.0
+                mock_cfg_instance.DAY_TRADE_HARD_SKIP_RISK_OFF = True
+                mock_cfg_instance.MOMENTUM_RISK_OFF_SIZE_MULT = 0.25
+                mock_cfg_instance.MOMENTUM_OPENING_30_SIZE_MULT = 0.5
+                mock_cfg_instance.MOMENTUM_MIN_RS_VS_SPY = 0.5
+                mock_cfg_instance.MOMENTUM_MIN_VOLUME_RATIO = 1.5
+                mock_cfg_instance.DAY_TRADE_SIZE_MULTIPLIER = 0.5
+                mock_cfg_instance.DAY_TRADE_FLATTEN_HOUR = 15
+                mock_cfg_instance.DAY_TRADE_HARD_SKIP_OFF_HOURS = True
+                mock_cfg_instance.ENABLE_SAME_BASIS_RS = False
+                mock_cfg_instance.ENABLE_HARD_VETO_BREAKOUT_RSI70 = False
+                mock_cfg_instance.ENABLE_HARD_VETO_CONTINUATION_RSI70 = False
+                mock_cfg_instance.SHADOW_VETO_RSI_THRESHOLD = 70.0
+                mock_cfg_instance.ENABLE_SHADOW_VETO_CONTINUATION_RISKOFF = False
+                mock_cfg_instance.HANDS_OFF_DENYLIST = []
+                mock_cfg_instance.PINNED_DAY_TRADE_WATCHLIST = []
+                mock_cfg.return_value = mock_cfg_instance
+
+                signal = await strategy.generate_signal_with_commentary(market_data)
+
+        # Signal MUST pass through when flag is OFF (identical to today's behavior)
+        assert signal is not None, (
+            "With DT_OPEN30_CONT_INDEX_CONFIRM=False, continuation in opening_30 "
+            "with SPY red must pass through (safe off-path, identical to today)"
+        )
+        assert signal.reasoning.get('entry_pattern') == 'continuation'
+
+
+class TestDTOpen30ContIndexConfirmShadowMode:
+    """Test shadow mode: DT_OPEN30_CONT_INDEX_CONFIRM=True, LIVE_ENFORCE=False."""
+
+    @pytest.mark.asyncio
+    async def test_shadow_spy_red_logs_would_skip_allows_entry(self):
+        """Shadow mode: SPY red logs would_skip but ALLOWS entry.
+
+        This is the shadow observation mode for counterfactual PF analysis.
+        """
+        from strategies.builtin import DayTradeMomentumStrategy
+
+        strategy = DayTradeMomentumStrategy(MagicMock())
+
+        market_data = MagicMock()
+        market_data.symbol = 'CRCL'  # Symbol from Research brief
+        market_data.close = 93.21
+        market_data.open = 91.0
+        market_data.timestamp = datetime.now()
+        market_data.indicators = {
+            'rsi': 63.35,  # RSI from Research brief (55-75 for continuation)
+            'volume_ratio': 2.0,
+            'adx': 30,
+            'atr': 1.5,
+            'high_20': 98.0,  # close NOT > high_20 (ensures not breakout)
+            'sma_20': 90.0,
+            'macd': 0.5,
+            'macd_signal': 0.3,
+            'day_change_pct': 2.5,
+        }
+
+        with patch('core.market_context.read_market_context') as mock_mc:
+            mock_mc.return_value = MagicMock(
+                regime='mixed',
+                time_of_day='opening_30',
+                spy_change_pct=-0.49,  # KEY: SPY day-red (-0.49% from brief)
+                vix_change_pct=2.0,
+                sector_etf='XLK',
+                reason='test',
+            )
+
+            # Mock the SPY index context (imported inside the function)
+            with patch('core.market_context.get_spy_index_context') as mock_spy_ctx:
+                mock_spy_ctx.return_value = MagicMock(
+                    spy_change_vs_prior_close=-0.49,  # Day-red
+                    spy_last=764.0,
+                    spy_session_vwap=765.0,  # Below VWAP
+                    spy_vs_vwap=-1.0,
+                    is_day_green=False,  # KEY: fails predicate
+                    is_above_vwap=False,
+                    passes_index_confirm=False,  # KEY: fails predicate
+                )
+
+                with patch('core.config.Config') as mock_cfg:
+                    mock_cfg_instance = MagicMock()
+                    mock_cfg_instance.ENABLE_DAY_TRADE_MOMENTUM = True
+                    # KEY: Shadow mode enabled, LIVE_ENFORCE=False
+                    mock_cfg_instance.DT_OPEN30_CONT_INDEX_CONFIRM = True
+                    mock_cfg_instance.DT_OPEN30_CONT_INDEX_CONFIRM_LIVE_ENFORCE = False
+                    mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_SPY_PCT = -1.5
+                    mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_VIX_SPIKE = 15.0
+                    mock_cfg_instance.DAY_TRADE_HARD_SKIP_RISK_OFF = True
+                    mock_cfg_instance.MOMENTUM_RISK_OFF_SIZE_MULT = 0.25
+                    mock_cfg_instance.MOMENTUM_OPENING_30_SIZE_MULT = 0.5
+                    mock_cfg_instance.MOMENTUM_MIN_RS_VS_SPY = 0.5
+                    mock_cfg_instance.MOMENTUM_MIN_VOLUME_RATIO = 1.5
+                    mock_cfg_instance.DAY_TRADE_SIZE_MULTIPLIER = 0.5
+                    mock_cfg_instance.DAY_TRADE_FLATTEN_HOUR = 15
+                    mock_cfg_instance.DAY_TRADE_HARD_SKIP_OFF_HOURS = True
+                    mock_cfg_instance.ENABLE_SAME_BASIS_RS = False
+                    mock_cfg_instance.ENABLE_HARD_VETO_BREAKOUT_RSI70 = False
+                    mock_cfg_instance.ENABLE_HARD_VETO_CONTINUATION_RSI70 = False
+                    mock_cfg_instance.SHADOW_VETO_RSI_THRESHOLD = 70.0
+                    mock_cfg_instance.ENABLE_SHADOW_VETO_CONTINUATION_RISKOFF = False
+                    mock_cfg_instance.HANDS_OFF_DENYLIST = []
+                    mock_cfg_instance.PINNED_DAY_TRADE_WATCHLIST = []
+                    mock_cfg.return_value = mock_cfg_instance
+
+                    signal = await strategy.generate_signal_with_commentary(market_data)
+
+        # Shadow mode: entry MUST be allowed (for counterfactual PF)
+        assert signal is not None, (
+            "Shadow mode (LIVE_ENFORCE=False): entry must be ALLOWED "
+            "even when SPY red, for counterfactual PF analysis"
+        )
+        assert signal.reasoning.get('entry_pattern') == 'continuation'
+
+
+class TestDTOpen30ContIndexConfirmLiveEnforce:
+    """Test live enforcement: DT_OPEN30_CONT_INDEX_CONFIRM=True, LIVE_ENFORCE=True."""
+
+    @pytest.mark.asyncio
+    async def test_live_enforce_spy_red_blocks_entry(self):
+        """Live enforcement: SPY red BLOCKS entry.
+
+        This is the live enforcement mode that actually blocks trades.
+        """
+        from strategies.builtin import DayTradeMomentumStrategy
+
+        strategy = DayTradeMomentumStrategy(MagicMock())
+
+        market_data = MagicMock()
+        market_data.symbol = 'NBIS'  # Symbol from Research brief
+        market_data.close = 237.90
+        market_data.open = 230.0
+        market_data.timestamp = datetime.now()
+        market_data.indicators = {
+            'rsi': 68.91,  # RSI from Research brief (55-75 for continuation)
+            'volume_ratio': 2.5,
+            'adx': 32,
+            'atr': 4.0,
+            'high_20': 245.0,  # close NOT > high_20 (ensures not breakout)
+            'sma_20': 225.0,
+            'macd': 1.5,
+            'macd_signal': 1.0,
+            'day_change_pct': 3.5,
+        }
+
+        with patch('core.market_context.read_market_context') as mock_mc:
+            mock_mc.return_value = MagicMock(
+                regime='mixed',
+                time_of_day='opening_30',
+                spy_change_pct=-0.49,  # SPY day-red
+                vix_change_pct=2.0,
+                sector_etf='XLK',
+                reason='test',
+            )
+
+            with patch('core.market_context.get_spy_index_context') as mock_spy_ctx:
+                mock_spy_ctx.return_value = MagicMock(
+                    spy_change_vs_prior_close=-0.49,
+                    spy_last=764.0,
+                    spy_session_vwap=765.0,
+                    spy_vs_vwap=-1.0,
+                    is_day_green=False,  # KEY: fails predicate
+                    is_above_vwap=False,
+                    passes_index_confirm=False,
+                )
+
+                with patch('core.config.Config') as mock_cfg:
+                    mock_cfg_instance = MagicMock()
+                    mock_cfg_instance.ENABLE_DAY_TRADE_MOMENTUM = True
+                    # KEY: Live enforcement enabled
+                    mock_cfg_instance.DT_OPEN30_CONT_INDEX_CONFIRM = True
+                    mock_cfg_instance.DT_OPEN30_CONT_INDEX_CONFIRM_LIVE_ENFORCE = True
+                    mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_SPY_PCT = -1.5
+                    mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_VIX_SPIKE = 15.0
+                    mock_cfg_instance.DAY_TRADE_HARD_SKIP_RISK_OFF = True
+                    mock_cfg_instance.MOMENTUM_RISK_OFF_SIZE_MULT = 0.25
+                    mock_cfg_instance.MOMENTUM_OPENING_30_SIZE_MULT = 0.5
+                    mock_cfg_instance.MOMENTUM_MIN_RS_VS_SPY = 0.5
+                    mock_cfg_instance.MOMENTUM_MIN_VOLUME_RATIO = 1.5
+                    mock_cfg_instance.DAY_TRADE_SIZE_MULTIPLIER = 0.5
+                    mock_cfg_instance.DAY_TRADE_FLATTEN_HOUR = 15
+                    mock_cfg_instance.DAY_TRADE_HARD_SKIP_OFF_HOURS = True
+                    mock_cfg_instance.ENABLE_SAME_BASIS_RS = False
+                    mock_cfg_instance.ENABLE_HARD_VETO_BREAKOUT_RSI70 = False
+                    mock_cfg_instance.ENABLE_HARD_VETO_CONTINUATION_RSI70 = False
+                    mock_cfg_instance.SHADOW_VETO_RSI_THRESHOLD = 70.0
+                    mock_cfg_instance.ENABLE_SHADOW_VETO_CONTINUATION_RISKOFF = False
+                    mock_cfg_instance.HANDS_OFF_DENYLIST = []
+                    mock_cfg_instance.PINNED_DAY_TRADE_WATCHLIST = []
+                    mock_cfg.return_value = mock_cfg_instance
+
+                    signal = await strategy.generate_signal_with_commentary(market_data)
+
+        # Live enforcement: entry MUST be blocked
+        assert signal is None, (
+            "Live enforcement (LIVE_ENFORCE=True): entry must be BLOCKED "
+            "when SPY day-red (index confirm predicate fails)"
+        )
+
+    @pytest.mark.asyncio
+    async def test_live_enforce_spy_green_above_vwap_allows_entry(self):
+        """Live enforcement: SPY green + above VWAP ALLOWS entry.
+
+        When the predicate passes, entry should proceed normally.
+        """
+        from strategies.builtin import DayTradeMomentumStrategy
+
+        strategy = DayTradeMomentumStrategy(MagicMock())
+
+        market_data = MagicMock()
+        market_data.symbol = 'TSLA'  # Symbol from Research brief (winner)
+        market_data.close = 380.48
+        market_data.open = 375.0
+        market_data.timestamp = datetime.now()
+        market_data.indicators = {
+            'rsi': 64.0,  # RSI from Research brief (55-75 for continuation)
+            'volume_ratio': 2.0,
+            'adx': 30,
+            'atr': 5.0,
+            'high_20': 390.0,  # close NOT > high_20 (ensures not breakout)
+            'sma_20': 370.0,
+            'macd': 2.0,
+            'macd_signal': 1.5,
+            'day_change_pct': 1.5,
+        }
+
+        with patch('core.market_context.read_market_context') as mock_mc:
+            mock_mc.return_value = MagicMock(
+                regime='mixed',
+                time_of_day='opening_30',
+                spy_change_pct=0.3,  # KEY: SPY day-green
+                vix_change_pct=-1.0,
+                sector_etf='XLY',
+                reason='test',
+            )
+
+            with patch('core.market_context.get_spy_index_context') as mock_spy_ctx:
+                mock_spy_ctx.return_value = MagicMock(
+                    spy_change_vs_prior_close=0.3,  # Day-green
+                    spy_last=775.0,
+                    spy_session_vwap=773.0,  # Above VWAP
+                    spy_vs_vwap=2.0,
+                    is_day_green=True,  # KEY: passes predicate
+                    is_above_vwap=True,
+                    passes_index_confirm=True,  # KEY: passes predicate
+                )
+
+                with patch('core.config.Config') as mock_cfg:
+                    mock_cfg_instance = MagicMock()
+                    mock_cfg_instance.ENABLE_DAY_TRADE_MOMENTUM = True
+                    # Live enforcement enabled but predicate passes
+                    mock_cfg_instance.DT_OPEN30_CONT_INDEX_CONFIRM = True
+                    mock_cfg_instance.DT_OPEN30_CONT_INDEX_CONFIRM_LIVE_ENFORCE = True
+                    mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_SPY_PCT = -1.5
+                    mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_VIX_SPIKE = 15.0
+                    mock_cfg_instance.DAY_TRADE_HARD_SKIP_RISK_OFF = True
+                    mock_cfg_instance.MOMENTUM_RISK_OFF_SIZE_MULT = 0.25
+                    mock_cfg_instance.MOMENTUM_OPENING_30_SIZE_MULT = 0.5
+                    mock_cfg_instance.MOMENTUM_MIN_RS_VS_SPY = 0.5
+                    mock_cfg_instance.MOMENTUM_MIN_VOLUME_RATIO = 1.5
+                    mock_cfg_instance.DAY_TRADE_SIZE_MULTIPLIER = 0.5
+                    mock_cfg_instance.DAY_TRADE_FLATTEN_HOUR = 15
+                    mock_cfg_instance.DAY_TRADE_HARD_SKIP_OFF_HOURS = True
+                    mock_cfg_instance.ENABLE_SAME_BASIS_RS = False
+                    mock_cfg_instance.ENABLE_HARD_VETO_BREAKOUT_RSI70 = False
+                    mock_cfg_instance.ENABLE_HARD_VETO_CONTINUATION_RSI70 = False
+                    mock_cfg_instance.SHADOW_VETO_RSI_THRESHOLD = 70.0
+                    mock_cfg_instance.ENABLE_SHADOW_VETO_CONTINUATION_RISKOFF = False
+                    mock_cfg_instance.HANDS_OFF_DENYLIST = []
+                    mock_cfg_instance.PINNED_DAY_TRADE_WATCHLIST = []
+                    mock_cfg.return_value = mock_cfg_instance
+
+                    signal = await strategy.generate_signal_with_commentary(market_data)
+
+        # Predicate passes: entry MUST be allowed
+        assert signal is not None, (
+            "When SPY day-green AND above VWAP, continuation must be ALLOWED "
+            "(predicate passes)"
+        )
+        assert signal.reasoning.get('entry_pattern') == 'continuation'
+
+
+class TestDTOpen30ContIndexConfirmScopeLimit:
+    """Test scope limits: gate only applies to continuation in opening_30."""
+
+    @pytest.mark.asyncio
+    async def test_pullback_pattern_not_gated(self):
+        """Pullback pattern should NOT be gated even with SPY red."""
+        from strategies.builtin import DayTradeMomentumStrategy
+
+        strategy = DayTradeMomentumStrategy(MagicMock())
+
+        market_data = MagicMock()
+        market_data.symbol = 'RKLB'  # Symbol from Research brief (pullback)
+        market_data.close = 73.07
+        market_data.open = 72.0
+        market_data.timestamp = datetime.now()
+        market_data.indicators = {
+            'rsi': 50,  # KEY: RSI 40-60 for pullback
+            'volume_ratio': 2.0,
+            'adx': 25,
+            'atr': 1.0,
+            'high_20': 74.0,
+            'sma_20': 73.0,  # Close near SMA20 for pullback
+            'macd': 0.3,
+            'macd_signal': 0.2,
+            'day_change_pct': 1.5,
+        }
+
+        with patch('core.market_context.read_market_context') as mock_mc:
+            mock_mc.return_value = MagicMock(
+                regime='mixed',
+                time_of_day='opening_30',
+                spy_change_pct=-0.8,  # KEY: SPY day-red
+                vix_change_pct=3.0,
+                sector_etf='XLI',
+                reason='test',
+            )
+
+            with patch('core.config.Config') as mock_cfg:
+                mock_cfg_instance = MagicMock()
+                mock_cfg_instance.ENABLE_DAY_TRADE_MOMENTUM = True
+                # Gate enabled with live enforcement
+                mock_cfg_instance.DT_OPEN30_CONT_INDEX_CONFIRM = True
+                mock_cfg_instance.DT_OPEN30_CONT_INDEX_CONFIRM_LIVE_ENFORCE = True
+                mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_SPY_PCT = -1.5
+                mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_VIX_SPIKE = 15.0
+                mock_cfg_instance.DAY_TRADE_HARD_SKIP_RISK_OFF = True
+                mock_cfg_instance.MOMENTUM_RISK_OFF_SIZE_MULT = 0.25
+                mock_cfg_instance.MOMENTUM_OPENING_30_SIZE_MULT = 0.5
+                mock_cfg_instance.MOMENTUM_MIN_RS_VS_SPY = 0.5
+                mock_cfg_instance.MOMENTUM_MIN_VOLUME_RATIO = 1.5
+                mock_cfg_instance.DAY_TRADE_SIZE_MULTIPLIER = 0.5
+                mock_cfg_instance.DAY_TRADE_FLATTEN_HOUR = 15
+                mock_cfg_instance.DAY_TRADE_HARD_SKIP_OFF_HOURS = True
+                mock_cfg_instance.ENABLE_SAME_BASIS_RS = False
+                mock_cfg_instance.ENABLE_HARD_VETO_BREAKOUT_RSI70 = False
+                mock_cfg_instance.ENABLE_HARD_VETO_CONTINUATION_RSI70 = False
+                mock_cfg_instance.SHADOW_VETO_RSI_THRESHOLD = 70.0
+                mock_cfg_instance.ENABLE_SHADOW_VETO_CONTINUATION_RISKOFF = False
+                mock_cfg_instance.HANDS_OFF_DENYLIST = []
+                mock_cfg_instance.PINNED_DAY_TRADE_WATCHLIST = []
+                mock_cfg.return_value = mock_cfg_instance
+
+                signal = await strategy.generate_signal_with_commentary(market_data)
+
+        # Pullback pattern: NOT gated by index confirm
+        assert signal is not None, (
+            "Pullback pattern must NOT be gated by index confirm — "
+            "gate only applies to continuation"
+        )
+        assert signal.reasoning.get('entry_pattern') == 'pullback'
+
+    @pytest.mark.asyncio
+    async def test_continuation_morning_not_gated(self):
+        """Continuation in 'morning' (post-opening_30) should NOT be gated."""
+        from strategies.builtin import DayTradeMomentumStrategy
+
+        strategy = DayTradeMomentumStrategy(MagicMock())
+
+        market_data = MagicMock()
+        market_data.symbol = 'META'  # Symbol from Research brief (morning)
+        market_data.close = 754.41
+        market_data.open = 745.0
+        market_data.timestamp = datetime.now()
+        market_data.indicators = {
+            'rsi': 66.0,  # RSI for continuation (55-75)
+            'volume_ratio': 2.0,
+            'adx': 30,
+            'atr': 8.0,
+            'high_20': 760.0,  # close NOT > high_20 (ensures not breakout)
+            'sma_20': 740.0,
+            'macd': 3.0,
+            'macd_signal': 2.5,
+            'day_change_pct': 1.3,
+        }
+
+        with patch('core.market_context.read_market_context') as mock_mc:
+            mock_mc.return_value = MagicMock(
+                regime='mixed',
+                time_of_day='morning',  # KEY: NOT opening_30
+                spy_change_pct=-0.5,  # SPY day-red
+                vix_change_pct=2.0,
+                sector_etf='XLC',
+                reason='test',
+            )
+
+            with patch('core.config.Config') as mock_cfg:
+                mock_cfg_instance = MagicMock()
+                mock_cfg_instance.ENABLE_DAY_TRADE_MOMENTUM = True
+                # Gate enabled with live enforcement
+                mock_cfg_instance.DT_OPEN30_CONT_INDEX_CONFIRM = True
+                mock_cfg_instance.DT_OPEN30_CONT_INDEX_CONFIRM_LIVE_ENFORCE = True
+                mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_SPY_PCT = -1.5
+                mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_VIX_SPIKE = 15.0
+                mock_cfg_instance.DAY_TRADE_HARD_SKIP_RISK_OFF = True
+                mock_cfg_instance.MOMENTUM_RISK_OFF_SIZE_MULT = 0.25
+                mock_cfg_instance.MOMENTUM_OPENING_30_SIZE_MULT = 0.5
+                mock_cfg_instance.MOMENTUM_MIN_RS_VS_SPY = 0.5
+                mock_cfg_instance.MOMENTUM_MIN_VOLUME_RATIO = 1.5
+                mock_cfg_instance.DAY_TRADE_SIZE_MULTIPLIER = 0.5
+                mock_cfg_instance.DAY_TRADE_FLATTEN_HOUR = 15
+                mock_cfg_instance.DAY_TRADE_HARD_SKIP_OFF_HOURS = True
+                mock_cfg_instance.ENABLE_SAME_BASIS_RS = False
+                mock_cfg_instance.ENABLE_HARD_VETO_BREAKOUT_RSI70 = False
+                mock_cfg_instance.ENABLE_HARD_VETO_CONTINUATION_RSI70 = False
+                mock_cfg_instance.SHADOW_VETO_RSI_THRESHOLD = 70.0
+                mock_cfg_instance.ENABLE_SHADOW_VETO_CONTINUATION_RISKOFF = False
+                mock_cfg_instance.HANDS_OFF_DENYLIST = []
+                mock_cfg_instance.PINNED_DAY_TRADE_WATCHLIST = []
+                mock_cfg.return_value = mock_cfg_instance
+
+                signal = await strategy.generate_signal_with_commentary(market_data)
+
+        # Continuation in 'morning': NOT gated by index confirm
+        assert signal is not None, (
+            "Continuation in 'morning' (post-opening_30) must NOT be gated — "
+            "gate only applies to opening_30 time window"
+        )
+        assert signal.reasoning.get('entry_pattern') == 'continuation'
+
+
+class TestDTOpen30ContIndexConfirmMarkers:
+    """Test that code has proper markers and structure."""
+
+    def test_strategy_has_open30_cont_index_confirm_marker(self):
+        """Strategy must have v-open30-cont-index-confirm-2026-09-24 marker."""
+        from pathlib import Path
+        src = Path("strategies/builtin.py").read_text()
+
+        assert "v-open30-cont-index-confirm-2026-09-24" in src, (
+            "Strategy must have v-open30-cont-index-confirm-2026-09-24 marker"
+        )
+        assert "open30_cont_index_confirm_fail" in src, (
+            "Strategy must have open30_cont_index_confirm_fail reason code"
+        )
+        assert "DT_OPEN30_CONT_INDEX_CONFIRM" in src, (
+            "Strategy must check DT_OPEN30_CONT_INDEX_CONFIRM flag"
+        )
+
+    def test_config_has_open30_cont_index_confirm_flags(self):
+        """Config must have the DT_OPEN30_CONT_INDEX_CONFIRM flags."""
+        from pathlib import Path
+        src = Path("core/config.py").read_text()
+
+        assert "DT_OPEN30_CONT_INDEX_CONFIRM" in src, (
+            "Config must have DT_OPEN30_CONT_INDEX_CONFIRM property"
+        )
+        assert "DT_OPEN30_CONT_INDEX_CONFIRM_LIVE_ENFORCE" in src, (
+            "Config must have DT_OPEN30_CONT_INDEX_CONFIRM_LIVE_ENFORCE property"
+        )
+
+    def test_market_context_has_spy_index_context(self):
+        """market_context must have SpyIndexContext and get_spy_index_context."""
+        from pathlib import Path
+        src = Path("core/market_context.py").read_text()
+
+        assert "SpyIndexContext" in src, (
+            "market_context must have SpyIndexContext dataclass"
+        )
+        assert "get_spy_index_context" in src, (
+            "market_context must have get_spy_index_context function"
+        )
+        assert "passes_index_confirm" in src, (
+            "SpyIndexContext must have passes_index_confirm property"
+        )
