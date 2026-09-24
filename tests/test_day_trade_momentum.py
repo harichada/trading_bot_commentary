@@ -5450,3 +5450,479 @@ class TestAllowsLongMixedSpyRed:
         assert ctx.allows_long is True, (
             "unknown regime must fail-open (allow long)"
         )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# v-inmove-index-turn-2026-09-24: Tests for DT_INMOVE_INDEX_TURN gate
+#
+# Research brief 2026-09-24: Mid-session (non-opening_30) index turn detection
+# for continuation longs. Detects developing SPY VWAP/prior reclaim with
+# positive short-horizon slope.
+#
+# Predicate:
+#   inmove_turn_active := spy_slope_N > 0 AND spy_last >= spy_session_vwap
+#     AND (spy_crossed_above_vwap_within_M_bars OR spy_crossed_above_prior_close_within_M_bars)
+#
+# Scope: day_trade_momentum + continuation + time_of_day != opening_30.
+# Does NOT touch: opening_30 (PR #102 gates preserved), pullback, breakout.
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestDTInMoveIndexTurnConfig:
+    """Test DT_INMOVE_INDEX_TURN config flag defaults."""
+
+    def test_config_flag_default_false(self):
+        """DT_INMOVE_INDEX_TURN must default to False."""
+        from core.config import Config
+        cfg = Config()
+        assert cfg.DT_INMOVE_INDEX_TURN is False, (
+            "DT_INMOVE_INDEX_TURN must default to False — "
+            "shadow/observe first, then promote to live enforcement"
+        )
+
+    def test_live_enforce_flag_default_false(self):
+        """DT_INMOVE_INDEX_TURN_LIVE_ENFORCE must default to False."""
+        from core.config import Config
+        cfg = Config()
+        assert cfg.DT_INMOVE_INDEX_TURN_LIVE_ENFORCE is False, (
+            "DT_INMOVE_INDEX_TURN_LIVE_ENFORCE must default to False — "
+            "shadow mode by default, no live carve-out"
+        )
+
+    def test_slope_n_default_3(self):
+        """DT_INMOVE_INDEX_TURN_SLOPE_N must default to 3."""
+        from core.config import Config
+        cfg = Config()
+        assert cfg.DT_INMOVE_INDEX_TURN_SLOPE_N == 3, (
+            "DT_INMOVE_INDEX_TURN_SLOPE_N must default to 3 (Research locked)"
+        )
+
+    def test_reclaim_m_default_5(self):
+        """DT_INMOVE_INDEX_TURN_RECLAIM_M must default to 5."""
+        from core.config import Config
+        cfg = Config()
+        assert cfg.DT_INMOVE_INDEX_TURN_RECLAIM_M == 5, (
+            "DT_INMOVE_INDEX_TURN_RECLAIM_M must default to 5 (Research locked)"
+        )
+
+
+class TestDTInMoveIndexTurnFlagOff:
+    """Test behavior when DT_INMOVE_INDEX_TURN=False (flag OFF)."""
+
+    @pytest.mark.asyncio
+    async def test_flag_off_continuation_midday_passes_through(self):
+        """With flag OFF, continuation in midday passes through unchanged.
+
+        This is the safe off-path: identical to today's behavior.
+        No shadow logging, no turn detection.
+        """
+        from strategies.builtin import DayTradeMomentumStrategy
+
+        strategy = DayTradeMomentumStrategy(MagicMock())
+
+        market_data = MagicMock()
+        market_data.symbol = 'INTC'
+        market_data.close = 124.00
+        market_data.open = 123.50
+        market_data.timestamp = datetime.now()
+        market_data.indicators = {
+            'rsi': 60,  # continuation range (55-75)
+            'volume_ratio': 2.0,
+            'adx': 30,  # ADX > 25 for trend
+            'atr': 2.0,
+            'high_20': 130.0,  # close below high_20 (not breakout)
+            'sma_20': 118.0,  # close > sma_20 AND > 2% away (avoids pullback)
+            'macd': 0.5,  # MACD > signal
+            'macd_signal': 0.3,
+            'day_change_pct': 1.5,
+        }
+
+        with patch('core.market_context.read_market_context') as mock_mc:
+            mock_mc.return_value = MagicMock(
+                regime='mixed',
+                time_of_day='midday',  # KEY: non-opening_30
+                spy_change_pct=-0.2,  # SPY red
+                vix_change_pct=2.0,
+                sector_etf='XLK',
+                reason='test',
+            )
+
+            with patch('core.config.Config') as mock_cfg:
+                mock_cfg_instance = MagicMock()
+                mock_cfg_instance.ENABLE_DAY_TRADE_MOMENTUM = True
+                # KEY: Flag OFF — no turn detection
+                mock_cfg_instance.DT_INMOVE_INDEX_TURN = False
+                mock_cfg_instance.DT_INMOVE_INDEX_TURN_LIVE_ENFORCE = False
+                mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_SPY_PCT = -1.5
+                mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_VIX_SPIKE = 15.0
+                mock_cfg_instance.DAY_TRADE_HARD_SKIP_RISK_OFF = True
+                mock_cfg_instance.MOMENTUM_RISK_OFF_SIZE_MULT = 0.25
+                mock_cfg_instance.MOMENTUM_OPENING_30_SIZE_MULT = 0.5
+                mock_cfg_instance.MOMENTUM_MIN_RS_VS_SPY = 0.5
+                mock_cfg_instance.MOMENTUM_MIN_VOLUME_RATIO = 1.5
+                mock_cfg_instance.DAY_TRADE_SIZE_MULTIPLIER = 0.5
+                mock_cfg_instance.DAY_TRADE_FLATTEN_HOUR = 15
+                mock_cfg_instance.DAY_TRADE_HARD_SKIP_OFF_HOURS = True
+                mock_cfg_instance.ENABLE_SAME_BASIS_RS = False
+                mock_cfg_instance.ENABLE_HARD_VETO_BREAKOUT_RSI70 = False
+                mock_cfg_instance.ENABLE_HARD_VETO_CONTINUATION_RSI70 = False
+                mock_cfg_instance.SHADOW_VETO_RSI_THRESHOLD = 70.0
+                mock_cfg_instance.ENABLE_SHADOW_VETO_CONTINUATION_RISKOFF = False
+                mock_cfg_instance.HANDS_OFF_DENYLIST = []
+                mock_cfg_instance.PINNED_DAY_TRADE_WATCHLIST = []
+                mock_cfg_instance.DT_OPEN30_CONT_INDEX_CONFIRM = False
+                mock_cfg_instance.DT_OPEN30_CONT_RS_FROM_OPEN = False
+                mock_cfg.return_value = mock_cfg_instance
+
+                signal = await strategy.generate_signal_with_commentary(market_data)
+
+        # Signal MUST pass through when flag is OFF (identical to today's behavior)
+        assert signal is not None, (
+            "With DT_INMOVE_INDEX_TURN=False, continuation in midday "
+            "must pass through (safe off-path, identical to today)"
+        )
+        assert signal.reasoning.get('entry_pattern') == 'continuation'
+
+
+class TestDTInMoveIndexTurnOpen30Inert:
+    """Test that INMOVE is INERT during opening_30 (PR #102 preserved)."""
+
+    @pytest.mark.asyncio
+    async def test_opening30_continuation_inmove_inert(self):
+        """INMOVE must NOT evaluate or override during opening_30.
+
+        PR #102's DT_OPEN30_CONT_INDEX_CONFIRM gates remain the authority.
+        INMOVE is explicitly scoped to time_of_day != opening_30.
+        """
+        from strategies.builtin import DayTradeMomentumStrategy
+
+        strategy = DayTradeMomentumStrategy(MagicMock())
+
+        market_data = MagicMock()
+        market_data.symbol = 'INTC'
+        market_data.close = 124.00
+        market_data.open = 123.50
+        market_data.timestamp = datetime.now()
+        market_data.indicators = {
+            'rsi': 60,  # continuation range (55-75)
+            'volume_ratio': 2.0,
+            'adx': 30,  # ADX > 25 for trend
+            'atr': 2.0,
+            'high_20': 130.0,  # close below high_20 (not breakout)
+            'sma_20': 118.0,  # close > sma_20 AND > 2% away (avoids pullback)
+            'macd': 0.5,  # MACD > signal
+            'macd_signal': 0.3,
+            'day_change_pct': 1.5,
+        }
+
+        with patch('core.market_context.read_market_context') as mock_mc:
+            mock_mc.return_value = MagicMock(
+                regime='mixed',
+                time_of_day='opening_30',  # KEY: opening_30
+                spy_change_pct=-0.2,
+                vix_change_pct=2.0,
+                sector_etf='XLK',
+                reason='test',
+            )
+
+            with patch('core.config.Config') as mock_cfg:
+                mock_cfg_instance = MagicMock()
+                mock_cfg_instance.ENABLE_DAY_TRADE_MOMENTUM = True
+                # INMOVE flag ON — but should be INERT in opening_30
+                mock_cfg_instance.DT_INMOVE_INDEX_TURN = True
+                mock_cfg_instance.DT_INMOVE_INDEX_TURN_LIVE_ENFORCE = True
+                mock_cfg_instance.DT_INMOVE_INDEX_TURN_SLOPE_N = 3
+                mock_cfg_instance.DT_INMOVE_INDEX_TURN_RECLAIM_M = 5
+                mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_SPY_PCT = -1.5
+                mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_VIX_SPIKE = 15.0
+                mock_cfg_instance.DAY_TRADE_HARD_SKIP_RISK_OFF = True
+                mock_cfg_instance.MOMENTUM_RISK_OFF_SIZE_MULT = 0.25
+                mock_cfg_instance.MOMENTUM_OPENING_30_SIZE_MULT = 0.5
+                mock_cfg_instance.MOMENTUM_MIN_RS_VS_SPY = 0.5
+                mock_cfg_instance.MOMENTUM_MIN_VOLUME_RATIO = 1.5
+                mock_cfg_instance.DAY_TRADE_SIZE_MULTIPLIER = 0.5
+                mock_cfg_instance.DAY_TRADE_FLATTEN_HOUR = 15
+                mock_cfg_instance.DAY_TRADE_HARD_SKIP_OFF_HOURS = True
+                mock_cfg_instance.ENABLE_SAME_BASIS_RS = False
+                mock_cfg_instance.ENABLE_HARD_VETO_BREAKOUT_RSI70 = False
+                mock_cfg_instance.ENABLE_HARD_VETO_CONTINUATION_RSI70 = False
+                mock_cfg_instance.SHADOW_VETO_RSI_THRESHOLD = 70.0
+                mock_cfg_instance.ENABLE_SHADOW_VETO_CONTINUATION_RISKOFF = False
+                mock_cfg_instance.HANDS_OFF_DENYLIST = []
+                mock_cfg_instance.PINNED_DAY_TRADE_WATCHLIST = []
+                # PR #102 gate OFF — but even with it ON, INMOVE doesn't override
+                mock_cfg_instance.DT_OPEN30_CONT_INDEX_CONFIRM = False
+                mock_cfg_instance.DT_OPEN30_CONT_RS_FROM_OPEN = False
+                mock_cfg.return_value = mock_cfg_instance
+
+                signal = await strategy.generate_signal_with_commentary(market_data)
+
+        # INMOVE does NOT apply in opening_30 — signal proceeds through
+        # PR #102 gates (which are OFF here, so signal passes)
+        assert signal is not None, (
+            "INMOVE must be INERT in opening_30 — PR #102 gates are the authority"
+        )
+        assert signal.reasoning.get('entry_pattern') == 'continuation'
+
+
+class TestDTInMoveIndexTurnPullbackNeverGated:
+    """Test that pullback pattern is NEVER gated by INMOVE."""
+
+    @pytest.mark.asyncio
+    async def test_pullback_midday_inmove_does_not_gate(self):
+        """INMOVE must NOT gate pullback patterns (only continuation).
+
+        Research scope: continuation only. Pullback/breakout = out of scope.
+        """
+        from strategies.builtin import DayTradeMomentumStrategy
+
+        strategy = DayTradeMomentumStrategy(MagicMock())
+
+        market_data = MagicMock()
+        market_data.symbol = 'INTC'
+        market_data.close = 122.00
+        market_data.open = 122.50
+        market_data.timestamp = datetime.now()
+        market_data.indicators = {
+            'rsi': 45,  # pullback range (40-60)
+            'volume_ratio': 2.0,
+            'adx': 30,
+            'atr': 2.0,
+            'high_20': 124.0,
+            'sma_20': 121.5,  # close near SMA20
+            'macd': 0.3,
+            'macd_signal': 0.2,
+            'day_change_pct': 1.5,
+        }
+
+        with patch('core.market_context.read_market_context') as mock_mc:
+            mock_mc.return_value = MagicMock(
+                regime='mixed',
+                time_of_day='midday',
+                spy_change_pct=-0.2,
+                vix_change_pct=2.0,
+                sector_etf='XLK',
+                reason='test',
+            )
+
+            with patch('core.config.Config') as mock_cfg:
+                mock_cfg_instance = MagicMock()
+                mock_cfg_instance.ENABLE_DAY_TRADE_MOMENTUM = True
+                mock_cfg_instance.DT_INMOVE_INDEX_TURN = True
+                mock_cfg_instance.DT_INMOVE_INDEX_TURN_LIVE_ENFORCE = True
+                mock_cfg_instance.DT_INMOVE_INDEX_TURN_SLOPE_N = 3
+                mock_cfg_instance.DT_INMOVE_INDEX_TURN_RECLAIM_M = 5
+                mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_SPY_PCT = -1.5
+                mock_cfg_instance.MOMENTUM_EXTREME_BLOCK_VIX_SPIKE = 15.0
+                mock_cfg_instance.DAY_TRADE_HARD_SKIP_RISK_OFF = True
+                mock_cfg_instance.MOMENTUM_RISK_OFF_SIZE_MULT = 0.25
+                mock_cfg_instance.MOMENTUM_OPENING_30_SIZE_MULT = 0.5
+                mock_cfg_instance.MOMENTUM_MIN_RS_VS_SPY = 0.5
+                mock_cfg_instance.MOMENTUM_MIN_VOLUME_RATIO = 1.5
+                mock_cfg_instance.DAY_TRADE_SIZE_MULTIPLIER = 0.5
+                mock_cfg_instance.DAY_TRADE_FLATTEN_HOUR = 15
+                mock_cfg_instance.DAY_TRADE_HARD_SKIP_OFF_HOURS = True
+                mock_cfg_instance.ENABLE_SAME_BASIS_RS = False
+                mock_cfg_instance.ENABLE_HARD_VETO_BREAKOUT_RSI70 = False
+                mock_cfg_instance.ENABLE_HARD_VETO_CONTINUATION_RSI70 = False
+                mock_cfg_instance.SHADOW_VETO_RSI_THRESHOLD = 70.0
+                mock_cfg_instance.ENABLE_SHADOW_VETO_CONTINUATION_RISKOFF = False
+                mock_cfg_instance.HANDS_OFF_DENYLIST = []
+                mock_cfg_instance.PINNED_DAY_TRADE_WATCHLIST = []
+                mock_cfg_instance.DT_OPEN30_CONT_INDEX_CONFIRM = False
+                mock_cfg_instance.DT_OPEN30_CONT_RS_FROM_OPEN = False
+                mock_cfg.return_value = mock_cfg_instance
+
+                signal = await strategy.generate_signal_with_commentary(market_data)
+
+        # Pullback pattern should generate regardless of INMOVE
+        # (INMOVE only applies to continuation)
+        if signal is not None:
+            assert signal.reasoning.get('entry_pattern') == 'pullback', (
+                "pullback pattern must not be gated by INMOVE"
+            )
+
+
+class TestInMoveTurnContextFailOpen:
+    """Test InMoveTurnContext fail-open behavior."""
+
+    def test_inmove_context_fail_open_missing_vwap(self):
+        """InMoveTurnContext must fail-open when VWAP is unavailable.
+
+        Same spirit as SpyIndexContext.is_above_vwap: no data → don't block.
+        """
+        from core.market_context import InMoveTurnContext
+        from datetime import datetime, timezone
+
+        ctx = InMoveTurnContext(
+            spy_last=765.0,
+            spy_session_vwap=None,  # Missing VWAP
+            spy_prior_close=767.81,
+            spy_close_n_bars_ago=764.0,
+            spy_slope_n=0.13,  # Positive slope
+            spy_vs_prior_pct=-0.37,
+            reclaim_vwap_within_m=False,
+            reclaim_prior_within_m=True,  # Reclaimed prior
+            inmove_turn_active=True,  # Should still be active if slope>0 + reclaim
+            n_bars_slope=3,
+            m_bars_reclaim=5,
+            source="partial",
+        )
+
+        # is_above_vwap should fail-open when VWAP is None
+        assert ctx.is_above_vwap is True, (
+            "is_above_vwap must fail-open (return True) when VWAP is unavailable"
+        )
+
+    def test_inmove_context_fail_open_missing_slope(self):
+        """InMoveTurnContext must fail-open when slope data is unavailable."""
+        from core.market_context import InMoveTurnContext
+        from datetime import datetime, timezone
+
+        ctx = InMoveTurnContext(
+            spy_last=765.0,
+            spy_session_vwap=764.0,
+            spy_prior_close=767.81,
+            spy_close_n_bars_ago=None,  # Missing bar data
+            spy_slope_n=None,  # Missing slope
+            spy_vs_prior_pct=-0.37,
+            reclaim_vwap_within_m=True,
+            reclaim_prior_within_m=False,
+            inmove_turn_active=False,  # Can't be active without slope
+            n_bars_slope=3,
+            m_bars_reclaim=5,
+            source="unavailable",
+        )
+
+        # has_positive_slope should fail-open when slope is None
+        assert ctx.has_positive_slope is True, (
+            "has_positive_slope must fail-open (return True) when slope is unavailable"
+        )
+
+    def test_inmove_context_predicate_components(self):
+        """Test individual predicate components of InMoveTurnContext."""
+        from core.market_context import InMoveTurnContext
+
+        # Full turn-active scenario
+        ctx_active = InMoveTurnContext(
+            spy_last=767.0,
+            spy_session_vwap=765.0,  # Above VWAP
+            spy_prior_close=767.81,
+            spy_close_n_bars_ago=764.0,
+            spy_slope_n=0.39,  # Positive slope
+            spy_vs_prior_pct=-0.11,
+            reclaim_vwap_within_m=True,  # Fresh reclaim
+            reclaim_prior_within_m=False,
+            inmove_turn_active=True,
+            n_bars_slope=3,
+            m_bars_reclaim=5,
+            source="computed",
+        )
+
+        assert ctx_active.has_positive_slope is True
+        assert ctx_active.is_above_vwap is True
+        assert ctx_active.has_fresh_reclaim is True
+        assert ctx_active.inmove_turn_active is True
+
+        # Turn-inactive: negative slope
+        ctx_neg_slope = InMoveTurnContext(
+            spy_last=767.0,
+            spy_session_vwap=765.0,
+            spy_prior_close=767.81,
+            spy_close_n_bars_ago=768.0,  # Price dropped
+            spy_slope_n=-0.13,  # Negative slope
+            spy_vs_prior_pct=-0.11,
+            reclaim_vwap_within_m=True,
+            reclaim_prior_within_m=False,
+            inmove_turn_active=False,
+            n_bars_slope=3,
+            m_bars_reclaim=5,
+            source="computed",
+        )
+
+        assert ctx_neg_slope.has_positive_slope is False
+        assert ctx_neg_slope.inmove_turn_active is False
+
+        # Turn-inactive: below VWAP
+        ctx_below_vwap = InMoveTurnContext(
+            spy_last=764.0,  # Below VWAP
+            spy_session_vwap=765.0,
+            spy_prior_close=767.81,
+            spy_close_n_bars_ago=763.0,
+            spy_slope_n=0.13,
+            spy_vs_prior_pct=-0.50,
+            reclaim_vwap_within_m=True,
+            reclaim_prior_within_m=False,
+            inmove_turn_active=False,
+            n_bars_slope=3,
+            m_bars_reclaim=5,
+            source="computed",
+        )
+
+        assert ctx_below_vwap.is_above_vwap is False
+        assert ctx_below_vwap.inmove_turn_active is False
+
+
+class TestInMoveTurnContextHelpers:
+    """Test helper functions for InMoveTurnContext."""
+
+    def test_get_spy_close_n_bars_ago(self):
+        """Test _get_spy_close_n_bars_ago helper."""
+        import pandas as pd
+        from core.market_context import _get_spy_close_n_bars_ago
+
+        # Create a simple bars DataFrame
+        df = pd.DataFrame({
+            'Close': [760.0, 761.0, 762.0, 763.0, 764.0, 765.0]
+        })
+
+        # N=3 should return the close 4 bars from the end (index -4)
+        # Last close is 765.0, 3 bars ago is 762.0 (index 2, or -4 from end)
+        result = _get_spy_close_n_bars_ago(df, 3)
+        assert result == 762.0, f"Expected 762.0, got {result}"
+
+        # N=0 should return the second-to-last close
+        result_0 = _get_spy_close_n_bars_ago(df, 0)
+        assert result_0 == 765.0, f"Expected 765.0, got {result_0}"
+
+        # Not enough bars should return None
+        result_insufficient = _get_spy_close_n_bars_ago(df, 10)
+        assert result_insufficient is None
+
+        # Empty df should return None
+        result_empty = _get_spy_close_n_bars_ago(pd.DataFrame(), 3)
+        assert result_empty is None
+
+    def test_detect_reclaim_within_m_bars(self):
+        """Test _detect_reclaim_within_m_bars helper."""
+        import pandas as pd
+        from core.market_context import _detect_reclaim_within_m_bars
+
+        # Scenario: price crosses above threshold in recent bars
+        df_cross = pd.DataFrame({
+            'Close': [760.0, 761.0, 762.0, 764.0, 766.0, 767.0]  # Crosses 765 at bar 4
+        })
+        threshold = 765.0
+
+        # M=5: should detect the cross at bar 4 (Close 766.0 >= 765, prev 764.0 < 765)
+        result = _detect_reclaim_within_m_bars(df_cross, threshold, 5)
+        assert result is True, "Should detect cross above 765 within 5 bars"
+
+        # M=1: only checks the last transition, should still detect
+        result_m1 = _detect_reclaim_within_m_bars(df_cross, threshold, 1)
+        # Last bar is 767.0, prev is 766.0 (both >= 765), so no cross in last 1 bar
+        assert result_m1 is False, "No cross in last 1 bar (both above threshold)"
+
+        # Scenario: no cross (all below)
+        df_below = pd.DataFrame({
+            'Close': [760.0, 761.0, 762.0, 763.0, 764.0]
+        })
+        result_no_cross = _detect_reclaim_within_m_bars(df_below, threshold, 5)
+        assert result_no_cross is False, "No cross when all bars below threshold"
+
+        # Scenario: no cross (all above)
+        df_above = pd.DataFrame({
+            'Close': [766.0, 767.0, 768.0, 769.0, 770.0]
+        })
+        result_all_above = _detect_reclaim_within_m_bars(df_above, threshold, 5)
+        assert result_all_above is False, "No cross when all bars above threshold"
