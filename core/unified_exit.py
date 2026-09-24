@@ -1,6 +1,6 @@
-"""Unified exit manager for day-trade positions — shadow logging first.
+"""Unified exit manager for day-trade positions — SHADOW LOGGING ONLY.
 
-v-unified-exit-2026-09-24. PR3 of the pro-trader rebuild. Implements
+v-unified-exit-2026-09-24-r2. PR3 of the pro-trader rebuild. Implements
 the unified exit policy from the blueprint:
 
   1. Structure-based initial stop (not indicator-based)
@@ -8,23 +8,22 @@ the unified exit policy from the blueprint:
   3. Trail the remainder (ATR or swing low)
   4. Time stop N minutes before flatten
 
-Shadow mode (default):
-  DT_UNIFIED_EXIT=1             → shadow logging enabled
-  DT_UNIFIED_EXIT_LIVE_ENFORCE=0 → no live order changes
-
-Enforce mode (opt-in only after shadow validation):
-  DT_UNIFIED_EXIT_LIVE_ENFORCE=1 → replaces proactive_macd/rsi/desk exits
-                                   for day_trade_momentum only
+SHADOW-ONLY MODE:
+  DT_UNIFIED_EXIT=1 → shadow logging enabled, NO live enforcement
+  
+  Live enforce has been removed entirely. This module only logs what
+  the unified policy WOULD do. The shadow log can be analyzed offline
+  to validate the policy before any live integration is considered.
 
 Hard stops and circuits are NEVER bypassed by this module.
-Hands-off forever: MU, HQGE, SPCX.
+Uses Config().HANDS_OFF_DENYLIST for hands-off symbols.
 """
 from __future__ import annotations
 
 import json
 import logging
-import os
-from dataclasses import dataclass, asdict
+import time
+from dataclasses import dataclass, asdict, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Any, TYPE_CHECKING
@@ -34,15 +33,39 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("TradingBot")
 
-HANDS_OFF_SYMBOLS = frozenset({"MU", "HQGE", "SPCX"})
 ATR_STOP_MULT = 1.5
 RR_RATIO = 2.0
 SCALE_AT_R = 1.0
 TRAIL_ATR_MULT = 1.5
 TIME_STOP_MINUTES_BEFORE_FLATTEN = 15
-DEFAULT_FLATTEN_HOUR = 15
 
-SHADOW_LOG_PATH = Path("data/shadow_unified_exit.ndjson")
+
+def _get_repo_root() -> Path:
+    """Get repository root for absolute data paths."""
+    return Path(__file__).resolve().parent.parent
+
+
+def _get_shadow_log_path() -> Path:
+    """Return absolute path for shadow log file."""
+    return _get_repo_root() / "data" / "shadow_unified_exit.ndjson"
+
+
+def _get_hands_off_denylist() -> frozenset:
+    """Get hands-off symbols from Config, with fallback."""
+    try:
+        from core.config import Config
+        return Config().HANDS_OFF_DENYLIST
+    except Exception:
+        return frozenset({"MU", "HQGE", "SPCX"})
+
+
+def _get_flatten_hour() -> int:
+    """Get flatten hour from Config, with fallback."""
+    try:
+        from core.config import Config
+        return Config().DAY_TRADE_FLATTEN_HOUR
+    except Exception:
+        return 15
 
 
 @dataclass
@@ -59,71 +82,91 @@ class UnifiedExitAction:
     recommended_stop: Optional[float] = None
     recommended_action_qty: Optional[int] = None
     live_action_taken: str = "none"  # What the live system actually did
-    live_enforce: bool = False
     scaled_out: bool = False
     trailing_active: bool = False
+    entry_time: Optional[str] = None  # For position keying
 
 
 class UnifiedExitManager:
-    """Computes unified exit policy for day-trade positions.
+    """Computes unified exit policy for day-trade positions — SHADOW ONLY.
     
     Call evaluate_position() on each position manager tick. Returns what
-    the unified policy WOULD do. With enforce=False (default), the return
-    value is shadow-logged only. With enforce=True, the caller should use
-    the returned action to override proactive indicator exits.
+    the unified policy WOULD do. Shadow-logged only — NO live enforcement.
     
     Hard stops and flatten-hour are NOT managed here — they remain in the
     engine's core loop and fire regardless of this policy.
+    
+    Position state is keyed by (symbol, entry_time) to correctly handle
+    re-entries in the same symbol on the same day.
     """
+    
+    _last_warning_time: float = 0.0
+    _WARNING_INTERVAL: float = 60.0  # Rate limit warnings to 1/minute
     
     def __init__(
         self,
         shadow_log_path: Optional[Path] = None,
         enabled: bool = True,
-        live_enforce: bool = False,
         time_stop_minutes: int = TIME_STOP_MINUTES_BEFORE_FLATTEN,
-        flatten_hour: int = DEFAULT_FLATTEN_HOUR,
+        flatten_hour: Optional[int] = None,
     ):
-        self.shadow_log_path = shadow_log_path or SHADOW_LOG_PATH
+        self.shadow_log_path = shadow_log_path or _get_shadow_log_path()
         self.enabled = enabled
-        self.live_enforce = live_enforce
         self.time_stop_minutes = time_stop_minutes
-        self.flatten_hour = flatten_hour
+        self.flatten_hour = flatten_hour if flatten_hour is not None else _get_flatten_hour()
         
-        self._position_state: dict[str, dict[str, Any]] = {}
+        self._position_state: dict[tuple[str, str], dict[str, Any]] = {}
+        self._last_logged_action: dict[tuple[str, str], str] = {}
         
         self.shadow_log_path.parent.mkdir(parents=True, exist_ok=True)
     
     @classmethod
-    def from_env(cls) -> "UnifiedExitManager":
-        """Create manager from environment variables.
-        
-        DT_UNIFIED_EXIT=1           → shadow logging enabled
-        DT_UNIFIED_EXIT_LIVE_ENFORCE=1 → live enforce mode
-        """
-        enabled = os.getenv("DT_UNIFIED_EXIT", "0").lower() in ("1", "true", "yes")
-        live_enforce = os.getenv("DT_UNIFIED_EXIT_LIVE_ENFORCE", "0").lower() in ("1", "true", "yes")
+    def from_config(cls) -> "UnifiedExitManager":
+        """Create manager from Config (env + YAML merged)."""
+        try:
+            from core.config import Config
+            cfg = Config()
+            enabled = cfg.DT_UNIFIED_EXIT
+            flatten_hour = cfg.DAY_TRADE_FLATTEN_HOUR
+        except Exception:
+            enabled = False
+            flatten_hour = 15
         
         return cls(
             enabled=enabled,
-            live_enforce=live_enforce,
+            flatten_hour=flatten_hour,
         )
     
-    def _get_position_state(self, symbol: str) -> dict[str, Any]:
+    @classmethod
+    def from_env(cls) -> "UnifiedExitManager":
+        """DEPRECATED: Use from_config() instead. Kept for test compatibility."""
+        return cls.from_config()
+    
+    def _get_position_key(self, symbol: str, entry_time: Optional[datetime]) -> tuple[str, str]:
+        """Get the key for position state tracking."""
+        symbol_upper = symbol.upper()
+        entry_str = entry_time.isoformat() if entry_time else "unknown"
+        return (symbol_upper, entry_str)
+    
+    def _get_position_state(self, symbol: str, entry_time: Optional[datetime] = None) -> dict[str, Any]:
         """Get or initialize position tracking state."""
-        if symbol not in self._position_state:
-            self._position_state[symbol] = {
+        key = self._get_position_key(symbol, entry_time)
+        if key not in self._position_state:
+            self._position_state[key] = {
                 "scaled_out": False,
                 "trailing_active": False,
                 "highest_price": None,
                 "breakeven_stop_set": False,
             }
-        return self._position_state[symbol]
+        return self._position_state[key]
     
-    def _reset_position_state(self, symbol: str) -> None:
+    def _reset_position_state(self, symbol: str, entry_time: Optional[datetime] = None) -> None:
         """Reset state when position is closed."""
-        if symbol in self._position_state:
-            del self._position_state[symbol]
+        key = self._get_position_key(symbol, entry_time)
+        if key in self._position_state:
+            del self._position_state[key]
+        if key in self._last_logged_action:
+            del self._last_logged_action[key]
     
     def _is_time_stop_window(self, now_et_hour: int, now_et_minute: int) -> bool:
         """Check if we're in the time-stop window (N min before flatten)."""
@@ -131,6 +174,13 @@ class UnifiedExitManager:
         current_minutes = now_et_hour * 60 + now_et_minute
         cutoff_minutes = flatten_time_minutes - self.time_stop_minutes
         return current_minutes >= cutoff_minutes
+    
+    def _warn_rate_limited(self, msg: str, *args) -> None:
+        """Log a warning at most once per minute."""
+        now = time.time()
+        if now - self._last_warning_time >= self._WARNING_INTERVAL:
+            logger.warning(msg, *args)
+            self._last_warning_time = now
     
     def evaluate_position(
         self,
@@ -146,7 +196,7 @@ class UnifiedExitManager:
         Args:
             position: The Position to evaluate
             current_price: Current market price
-            atr: Current ATR value
+            atr: Current ATR value (pass current_atr from engine, NOT proactive_indicators)
             now_et_hour: Current hour in ET (0-23)
             now_et_minute: Current minute in ET (0-59)
             live_exit_reason: If the live system is about to exit, what reason
@@ -160,7 +210,8 @@ class UnifiedExitManager:
         
         symbol = position.symbol.upper()
         
-        if symbol in HANDS_OFF_SYMBOLS:
+        hands_off = _get_hands_off_denylist()
+        if symbol in hands_off:
             return None
         
         reasoning = getattr(position, "reasoning", {}) or {}
@@ -174,7 +225,8 @@ class UnifiedExitManager:
         if position.side != "long":
             return None
         
-        state = self._get_position_state(symbol)
+        entry_time = getattr(position, "entry_time", None)
+        state = self._get_position_state(symbol, entry_time)
         
         entry_price = position.entry_price
         original_stop = getattr(position, "original_stop", None) or position.stop_loss
@@ -231,6 +283,8 @@ class UnifiedExitManager:
                 reason = "atr_trail_ratchet"
                 recommended_stop = trail_stop
         
+        entry_time_str = entry_time.isoformat() if entry_time else None
+        
         result = UnifiedExitAction(
             symbol=symbol,
             timestamp=datetime.now(timezone.utc).isoformat(),
@@ -243,72 +297,72 @@ class UnifiedExitManager:
             recommended_stop=round(recommended_stop, 4) if recommended_stop else None,
             recommended_action_qty=recommended_action_qty,
             live_action_taken=live_exit_reason or "none",
-            live_enforce=self.live_enforce,
             scaled_out=state["scaled_out"],
             trailing_active=state["trailing_active"],
+            entry_time=entry_time_str,
         )
         
-        self._log_shadow(result)
+        self._log_shadow_if_changed(result, entry_time)
         
         return result
     
-    def _log_shadow(self, action: UnifiedExitAction) -> None:
-        """Append action to shadow NDJSON log."""
+    def _log_shadow_if_changed(self, action: UnifiedExitAction, entry_time: Optional[datetime]) -> None:
+        """Append action to shadow NDJSON log only if action changed from last tick."""
+        key = self._get_position_key(action.symbol, entry_time)
+        current_action_key = f"{action.action}:{action.reason}"
+        
+        if self._last_logged_action.get(key) == current_action_key:
+            return
+        
+        self._last_logged_action[key] = current_action_key
+        
         try:
             with open(self.shadow_log_path, "a") as f:
                 f.write(json.dumps(asdict(action), default=str) + "\n")
         except Exception as exc:
-            logger.warning("unified_exit_shadow_log_failed: %s", exc)
+            self._warn_rate_limited("unified_exit_shadow_log_failed: %s", exc)
+    
+    def _log_shadow(self, action: UnifiedExitAction) -> None:
+        """DEPRECATED: Use _log_shadow_if_changed. Kept for test compatibility."""
+        try:
+            with open(self.shadow_log_path, "a") as f:
+                f.write(json.dumps(asdict(action), default=str) + "\n")
+        except Exception as exc:
+            self._warn_rate_limited("unified_exit_shadow_log_failed: %s", exc)
     
     def should_override_proactive_exit(
         self,
         action: UnifiedExitAction,
         live_exit_reason: str,
     ) -> bool:
-        """Determine if we should override a proactive indicator exit.
+        """SHADOW-ONLY: Always returns False.
         
-        Only applies when:
-          - live_enforce=True
-          - The live exit is a proactive indicator exit (macd/rsi/desk)
-          - The unified policy says "hold" (within thesis)
-        
-        Hard stops, target hits, and flatten-hour are NEVER overridden.
+        Live enforcement has been removed entirely from this module.
+        This method exists only for API compatibility and logging.
+        The caller should NOT use this to skip exits — it's shadow-only.
         """
-        if not self.live_enforce:
-            return False
-        
-        proactive_indicators = {
-            "proactive_macd_flipped_bearish",
-            "proactive_macd_flipped_bullish",
-            "proactive_rsi_below_50",
-            "proactive_rsi_above_50",
-            "proactive_adx_collapsing",
-        }
-        
-        if not any(ind in live_exit_reason.lower() for ind in {"macd", "rsi", "adx"}):
-            return False
-        
-        override_actions = {"hold", "trail_stop", "scale_partial", "move_stop_breakeven"}
-        if action.action in override_actions:
-            logger.info(
-                "unified_exit_override symbol=%s live_exit=%s unified_action=%s",
-                action.symbol, live_exit_reason, action.action
-            )
-            return True
-        
         return False
     
-    def close_position(self, symbol: str) -> None:
+    def close_position(self, symbol: str, entry_time: Optional[datetime] = None) -> None:
         """Call when a position is closed to reset tracking state."""
-        self._reset_position_state(symbol)
+        self._reset_position_state(symbol, entry_time)
 
 
 def get_unified_exit_manager() -> UnifiedExitManager:
     """Get or create the global unified exit manager instance."""
     global _unified_exit_manager
     if "_unified_exit_manager" not in globals() or _unified_exit_manager is None:
-        _unified_exit_manager = UnifiedExitManager.from_env()
+        _unified_exit_manager = UnifiedExitManager.from_config()
     return _unified_exit_manager
 
 
+def reset_unified_exit_manager() -> None:
+    """Reset the global manager instance (for testing)."""
+    global _unified_exit_manager
+    _unified_exit_manager = None
+
+
 _unified_exit_manager: Optional[UnifiedExitManager] = None
+
+
+HANDS_OFF_SYMBOLS = _get_hands_off_denylist()

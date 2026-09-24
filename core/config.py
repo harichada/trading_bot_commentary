@@ -950,23 +950,17 @@ class Config:
 
     @property
     def DT_UNIFIED_EXIT_LIVE_ENFORCE(self) -> bool:
-        """v-unified-exit-2026-09-24: enable live enforcement of the unified
-        exit manager. When True AND DT_UNIFIED_EXIT is True, the unified
-        policy will override proactive indicator exits (MACD/RSI/desk) for
-        day_trade_momentum positions.
+        """DEPRECATED: Live enforcement has been removed entirely.
         
-        IMPORTANT: Hard stops, target hits, and flatten-hour are NEVER overridden.
-        Those always fire from the core engine loop regardless of this flag.
+        v-unified-exit-2026-09-24-r2: The unified exit manager is now
+        shadow-only. This property always returns False. Setting the
+        environment variable or config has no effect.
         
-        Default False. Only set to True after the shadow log confirms the
-        unified policy outperforms the current proactive exits.
-        
-        Set DT_UNIFIED_EXIT_LIVE_ENFORCE=1 or
-        trading.dt_unified_exit_live_enforce: true to enable."""
-        env_val = os.getenv("DT_UNIFIED_EXIT_LIVE_ENFORCE")
-        if env_val is not None:
-            return env_val.lower() in ("1", "true", "yes", "on")
-        return bool(self.manager.get('trading.dt_unified_exit_live_enforce', False))
+        The shadow log (data/shadow_unified_exit.ndjson) can be analyzed
+        offline to validate the policy before any live integration is
+        considered in a future PR.
+        """
+        return False
 
     @property
     def PROACTIVE_EXIT_MIN_AGE_NEWS(self) -> int:

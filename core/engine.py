@@ -8460,19 +8460,19 @@ class TradingEngineWithCommentary:
                         _fsm_allows_proactive = is_exit_rule_allowed(_state, ExitRule.PROACTIVE_EXIT)
                         
                         # ────────────────────────────────────────────────────────────────
-                        # v-unified-exit-2026-09-24: Evaluate unified exit manager
-                        # for day-trade positions. Shadow-logs what the unified policy
-                        # would do. With enforce=True, overrides proactive indicator exits.
+                        # v-unified-exit-2026-09-24-r2: Evaluate unified exit manager
+                        # for day-trade positions. SHADOW-ONLY — logs what the unified
+                        # policy would do but NEVER overrides live exits.
+                        # Uses current_atr from market data, not proactive_indicators.
                         # ────────────────────────────────────────────────────────────────
-                        _unified_exit_action = None
                         if _is_day_trade and Config().DT_UNIFIED_EXIT:
                             try:
                                 from zoneinfo import ZoneInfo
                                 _et_tz = ZoneInfo("America/New_York")
                                 _et_now_unified = datetime.now(_et_tz)
-                                _atr_for_unified = proactive_indicators.get("atr", 0) if proactive_indicators else 0
+                                _atr_for_unified = current_atr if current_atr else 0
                                 _unified_mgr = get_unified_exit_manager()
-                                _unified_exit_action = _unified_mgr.evaluate_position(
+                                _unified_mgr.evaluate_position(
                                     position=position,
                                     current_price=current_price,
                                     atr=_atr_for_unified,
@@ -8506,71 +8506,46 @@ class TradingEngineWithCommentary:
                                 position, current_price, proactive_indicators,
                             )
                             if proactive_reason is not None:
-                                # ────────────────────────────────────────────────────────
-                                # v-unified-exit-2026-09-24: Check if unified exit manager
-                                # wants to override this proactive indicator exit. Only
-                                # applies when DT_UNIFIED_EXIT_LIVE_ENFORCE=True.
-                                # ────────────────────────────────────────────────────────
-                                _unified_override = False
-                                if _is_day_trade and _unified_exit_action is not None:
-                                    _unified_mgr = get_unified_exit_manager()
-                                    if _unified_mgr.should_override_proactive_exit(
-                                        _unified_exit_action, f"proactive_{proactive_reason}"
-                                    ):
-                                        _unified_override = True
-                                        self._audit(
-                                            "unified_exit", symbol, "override_proactive",
-                                            proactive_reason,
-                                            unified_action=_unified_exit_action.action,
-                                            unified_reason=_unified_exit_action.reason,
-                                            r_so_far=_unified_exit_action.r_so_far,
-                                            live_enforce=True,
-                                        )
-                                
-                                if _unified_override:
-                                    # Skip the proactive exit — unified policy says hold
-                                    pass
+                                # R-multiple at fire time
+                                stop_dist = abs(position.entry_price - (position.original_stop or position.stop_loss))
+                                if position.side == 'long':
+                                    pnl_r = (current_price - position.entry_price) / stop_dist if stop_dist > 0 else 0
                                 else:
-                                    # R-multiple at fire time
-                                    stop_dist = abs(position.entry_price - (position.original_stop or position.stop_loss))
-                                    if position.side == 'long':
-                                        pnl_r = (current_price - position.entry_price) / stop_dist if stop_dist > 0 else 0
-                                    else:
-                                        pnl_r = (position.entry_price - current_price) / stop_dist if stop_dist > 0 else 0
-                                    # Atomic intent-to-close. If another rule
-                                    # already grabbed EXITING, this returns False
-                                    # and we skip the duplicate close.
-                                    if not await try_transition(
-                                        position, PositionState.EXITING,
-                                        f"proactive_{proactive_reason}",
-                                        audit_fn=self._audit,
-                                    ):
-                                        continue
-                                    # v-proactive-exit-daytrade-2026-09-14: added r_override fields
-                                    self._audit("proactive_exit", symbol, "exit",
-                                                proactive_reason,
-                                                pnl_r=round(pnl_r, 3),
-                                                price=round(current_price, 2),
-                                                entry=round(position.entry_price, 2),
-                                                age_min=round(_hold_min, 1),
-                                                is_day_trade=_is_day_trade,
-                                                r_override_used=_r_override_used)
-                                    self.commentary.add_commentary(TradingCommentary(
-                                        timestamp=datetime.now(),
-                                        type=CommentaryType.DECISION,
-                                        symbol=symbol,
-                                        title=f"🚪 Proactive Exit — Thesis Broken",
-                                        message=(
-                                            f"At {pnl_r:+.2f}R, indicators turned against the "
-                                            f"position ({proactive_reason}). Exiting at "
-                                            f"${current_price:.2f} instead of riding to full stop."
-                                        ),
-                                        importance=9,
-                                    ))
-                                    await self._close_position_with_commentary(
-                                        position, f"proactive_{proactive_reason}"
-                                    )
+                                    pnl_r = (position.entry_price - current_price) / stop_dist if stop_dist > 0 else 0
+                                # Atomic intent-to-close. If another rule
+                                # already grabbed EXITING, this returns False
+                                # and we skip the duplicate close.
+                                if not await try_transition(
+                                    position, PositionState.EXITING,
+                                    f"proactive_{proactive_reason}",
+                                    audit_fn=self._audit,
+                                ):
                                     continue
+                                # v-proactive-exit-daytrade-2026-09-14: added r_override fields
+                                self._audit("proactive_exit", symbol, "exit",
+                                            proactive_reason,
+                                            pnl_r=round(pnl_r, 3),
+                                            price=round(current_price, 2),
+                                            entry=round(position.entry_price, 2),
+                                            age_min=round(_hold_min, 1),
+                                            is_day_trade=_is_day_trade,
+                                            r_override_used=_r_override_used)
+                                self.commentary.add_commentary(TradingCommentary(
+                                    timestamp=datetime.now(),
+                                    type=CommentaryType.DECISION,
+                                    symbol=symbol,
+                                    title=f"🚪 Proactive Exit — Thesis Broken",
+                                    message=(
+                                        f"At {pnl_r:+.2f}R, indicators turned against the "
+                                        f"position ({proactive_reason}). Exiting at "
+                                        f"${current_price:.2f} instead of riding to full stop."
+                                    ),
+                                    importance=9,
+                                ))
+                                await self._close_position_with_commentary(
+                                    position, f"proactive_{proactive_reason}"
+                                )
+                                continue
 
                         # --- Thesis re-validation (shadow-mode by default) ---
                         # v-thesis-revalidate-2026-04-28: catches the "trade
