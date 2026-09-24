@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Exit Counterfactual Research Harness — replays day-trade entries under different exit policies.
 
-v-exit-counterfactual-2026-09-24. Uses minute_bars (Stage A backtest infrastructure) to replay
+v-exit-counterfactual-2026-09-24-r2. Uses minute_bars (Stage A backtest infrastructure) to replay
 historical managed day-trade entries under multiple exit policies:
 
   (a) actual     — the exit that occurred in the live ledger
@@ -11,6 +11,7 @@ historical managed day-trade entries under multiple exit policies:
                    - scale 50% at +1R, move stop to breakeven
                    - trail remainder (ATR or swing low)
                    - time stop N minutes before flatten
+                   - models MACD/RSI early exits from bar indicators
   (d) pro_no_early — policy (c) WITHOUT early MACD/RSI/desk exits
 
 Outputs:
@@ -36,12 +37,18 @@ import os
 import sys
 from collections import defaultdict
 from dataclasses import dataclass, field, asdict
-from datetime import datetime, timedelta, timezone, date, time
+from datetime import datetime, timedelta, date, time as dt_time
 from pathlib import Path
 from typing import Any, Callable, Optional
 
 import pandas as pd
 import numpy as np
+
+try:
+    import ta
+    HAS_TA = True
+except ImportError:
+    HAS_TA = False
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
@@ -50,12 +57,53 @@ logger = logging.getLogger("exit_counterfactual")
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
 HANDS_OFF_SYMBOLS = frozenset({"MU", "HQGE", "SPCX"})
-MAX_HOLD_BARS = 120  # 120 × 1-min = 2 hours max hold for replay
 FLATTEN_HOUR = 15  # 3 PM ET
 FLATTEN_MINUTE = 0
+MARKET_OPEN_HOUR = 9
+MARKET_OPEN_MINUTE = 30
+MARKET_CLOSE_HOUR = 16
 ATR_STOP_MULT = 1.5
 RR_RATIO = 2.0
 DEFAULT_SLIPPAGE_PCT = 0.0005
+DEFAULT_DSN = "postgresql://rudra:rudra_dev_2024@localhost:5432/rudra_dev"
+
+try:
+    from zoneinfo import ZoneInfo
+    ET = ZoneInfo("America/New_York")
+except ImportError:
+    import pytz
+    ET = pytz.timezone("America/New_York")
+
+
+def _to_et(ts: datetime) -> datetime:
+    """Convert timestamp to ET. Naive timestamps are assumed to be ET."""
+    if ts.tzinfo is None:
+        if hasattr(ET, 'localize'):
+            return ET.localize(ts)
+        return ts.replace(tzinfo=ET)
+    return ts.astimezone(ET)
+
+
+def _is_market_hours(ts: datetime) -> bool:
+    """Check if timestamp is within RTH (09:30-16:00 ET)."""
+    ts_et = _to_et(ts)
+    market_open = ts_et.replace(hour=MARKET_OPEN_HOUR, minute=MARKET_OPEN_MINUTE, second=0, microsecond=0)
+    market_close = ts_et.replace(hour=MARKET_CLOSE_HOUR, minute=0, second=0, microsecond=0)
+    return market_open <= ts_et <= market_close
+
+
+def _is_flatten_time(ts: datetime) -> bool:
+    """Check if timestamp is at or past flatten time (15:00 ET)."""
+    ts_et = _to_et(ts)
+    return ts_et.hour >= FLATTEN_HOUR
+
+
+def _is_time_stop(ts: datetime, minutes_before_flatten: int = 15) -> bool:
+    """Check if we should exit due to time stop (N min before flatten)."""
+    ts_et = _to_et(ts)
+    flatten_time = ts_et.replace(hour=FLATTEN_HOUR, minute=FLATTEN_MINUTE, second=0, microsecond=0)
+    cutoff = flatten_time - timedelta(minutes=minutes_before_flatten)
+    return ts_et >= cutoff
 
 
 @dataclass
@@ -79,6 +127,7 @@ class DayTradeEntry:
     regime: str
     time_of_day: str
     session_id: str
+    side: str = "long"
     raw: dict = field(default_factory=dict)
 
     @classmethod
@@ -99,6 +148,8 @@ class DayTradeEntry:
             return None
         try:
             entry_time = datetime.fromisoformat(entry_time_str.replace("Z", "+00:00"))
+            if entry_time.tzinfo is not None:
+                entry_time = entry_time.replace(tzinfo=None)
         except (ValueError, TypeError):
             return None
         
@@ -107,6 +158,8 @@ class DayTradeEntry:
         if exit_time_str:
             try:
                 exit_time = datetime.fromisoformat(exit_time_str.replace("Z", "+00:00"))
+                if exit_time.tzinfo is not None:
+                    exit_time = exit_time.replace(tzinfo=None)
             except (ValueError, TypeError):
                 pass
         
@@ -114,7 +167,7 @@ class DayTradeEntry:
         exit_price = float(d.get("exit_price", 0)) if d.get("exit_price") else None
         quantity = int(d.get("quantity", 1))
         pnl = float(d.get("pnl", 0))
-        exit_reason = str(d.get("exit_reason", "unknown"))
+        exit_reason = str(d.get("exit_reason") or d.get("reason") or "unknown")
         
         stop_loss = float(reasoning.get("stop_loss", reasoning.get("stop", 0)))
         take_profit = float(reasoning.get("take_profit", reasoning.get("target", 0)))
@@ -124,15 +177,28 @@ class DayTradeEntry:
         if rsi is not None:
             rsi = float(rsi)
         
+        side = str(reasoning.get("side", d.get("side", "long"))).lower()
+        if side not in ("long", "short"):
+            side = "long"
+        
         if stop_distance == 0 and entry_price > 0 and atr > 0:
             stop_distance = ATR_STOP_MULT * atr
         elif stop_distance == 0 and stop_loss > 0:
             stop_distance = abs(entry_price - stop_loss)
         
+        if stop_distance <= 0:
+            return None
+        
         if stop_loss == 0 and entry_price > 0 and stop_distance > 0:
-            stop_loss = entry_price - stop_distance
+            if side == "long":
+                stop_loss = entry_price - stop_distance
+            else:
+                stop_loss = entry_price + stop_distance
         if take_profit == 0 and entry_price > 0 and stop_distance > 0:
-            take_profit = entry_price + (RR_RATIO * stop_distance)
+            if side == "long":
+                take_profit = entry_price + (RR_RATIO * stop_distance)
+            else:
+                take_profit = entry_price - (RR_RATIO * stop_distance)
         
         entry_pattern = str(reasoning.get("entry_pattern", reasoning.get("pattern", "unknown")))
         regime = str(reasoning.get("regime", reasoning.get("market_context_regime", "unknown")))
@@ -160,6 +226,7 @@ class DayTradeEntry:
             regime=regime,
             time_of_day=time_of_day,
             session_id=session_id,
+            side=side,
             raw=d,
         )
 
@@ -178,6 +245,7 @@ class ReplayResult:
     return_pct: float
     hold_bars: int
     policy: str
+    side: str = "long"
     scaled_out_at: Optional[float] = None
     partial_r: float = 0.0
     remaining_r: float = 0.0
@@ -193,11 +261,10 @@ class PolicyMetrics:
     n_losses: int
     n_scratches: int
     win_rate: float
-    profit_factor: float
+    profit_factor: Optional[float]
     total_r: float
     expectancy_r: float
     max_dd_r: float
-    max_dd_pct: float
     max_losing_day_r: float
     avg_hold_bars: float
     by_exit_reason: dict[str, int]
@@ -205,14 +272,16 @@ class PolicyMetrics:
 
 
 def load_trading_state(path: Path) -> list[dict]:
-    """Load trade_history from trading_state.json."""
+    """Load trade_history from trading_state.json or plain list."""
     if not path.exists():
-        logger.warning("trading_state.json not found at %s", path)
+        logger.warning("Ledger not found at %s", path)
         return []
     
     with open(path) as f:
         data = json.load(f)
     
+    if isinstance(data, list):
+        return data
     return data.get("trade_history", [])
 
 
@@ -221,12 +290,19 @@ def extract_day_trade_entries(
     start_date: Optional[date] = None,
     end_date: Optional[date] = None,
 ) -> list[DayTradeEntry]:
-    """Extract day-trade entries from trade history."""
+    """Extract day-trade entries from trade history with deduplication."""
     entries = []
+    seen: set[tuple[str, datetime]] = set()
+    
     for raw in raw_history:
         entry = DayTradeEntry.from_trade_history(raw)
         if entry is None:
             continue
+        
+        key = (entry.symbol, entry.entry_time)
+        if key in seen:
+            continue
+        seen.add(key)
         
         entry_date = entry.entry_time.date() if hasattr(entry.entry_time, "date") else None
         if entry_date:
@@ -237,7 +313,7 @@ def extract_day_trade_entries(
         
         entries.append(entry)
     
-    logger.info("Extracted %d day-trade entries", len(entries))
+    logger.info("Extracted %d day-trade entries (after dedup, stop_dist>0 filter)", len(entries))
     return entries
 
 
@@ -246,7 +322,7 @@ def make_postgres_bars_loader(dsn: str) -> Callable[[str, datetime, int], pd.Dat
     from data_providers.postgres import PostgresDataProvider
     provider = PostgresDataProvider(dsn)
 
-    def _load(symbol: str, start: datetime, lookforward_minutes: int = 300) -> pd.DataFrame:
+    def _load(symbol: str, start: datetime, lookforward_minutes: int = 400) -> pd.DataFrame:
         """Load minute bars for symbol starting at `start`."""
         end = start + timedelta(minutes=lookforward_minutes + 60)
         try:
@@ -261,9 +337,10 @@ def make_postgres_bars_loader(dsn: str) -> Callable[[str, datetime, int], pd.Dat
             if df.empty:
                 return df
             df = df[df.index > start]
+            df = df[df.index.map(_is_market_hours)]
             return df
         except Exception as exc:
-            logger.debug("Bars load failed for %s: %s", symbol, exc)
+            logger.warning("Bars load failed for %s: %s", symbol, exc)
             return pd.DataFrame()
 
     return _load
@@ -271,7 +348,7 @@ def make_postgres_bars_loader(dsn: str) -> Callable[[str, datetime, int], pd.Dat
 
 def make_file_bars_loader(bars_dir: Path) -> Callable[[str, datetime, int], pd.DataFrame]:
     """Return a bars loader using local parquet/CSV files."""
-    def _load(symbol: str, start: datetime, lookforward_minutes: int = 300) -> pd.DataFrame:
+    def _load(symbol: str, start: datetime, lookforward_minutes: int = 400) -> pd.DataFrame:
         """Load minute bars from local file."""
         parquet_path = bars_dir / f"{symbol.upper()}.parquet"
         csv_path = bars_dir / f"{symbol.upper()}.csv"
@@ -283,6 +360,7 @@ def make_file_bars_loader(bars_dir: Path) -> Callable[[str, datetime, int], pd.D
             elif csv_path.exists():
                 df = pd.read_csv(csv_path)
             else:
+                logger.warning("No bars file for %s in %s", symbol, bars_dir)
                 return df
                 
             if "ts" in df.columns:
@@ -298,49 +376,86 @@ def make_file_bars_loader(bars_dir: Path) -> Callable[[str, datetime, int], pd.D
             if not df.empty:
                 end = start + timedelta(minutes=lookforward_minutes)
                 df = df[(df.index > start) & (df.index <= end)]
+                df = df[df.index.map(_is_market_hours)]
             
             return df
         except Exception as exc:
-            logger.debug("File bars load failed for %s: %s", symbol, exc)
+            logger.warning("File bars load failed for %s: %s", symbol, exc)
             return pd.DataFrame()
 
     return _load
 
 
-def _is_flatten_time(ts: datetime) -> bool:
-    """Check if timestamp is at or past flatten time (15:00 ET)."""
-    try:
-        from zoneinfo import ZoneInfo
-        et = ZoneInfo("America/New_York")
-        ts_et = ts.astimezone(et) if ts.tzinfo else ts.replace(tzinfo=timezone.utc).astimezone(et)
-        return ts_et.hour >= FLATTEN_HOUR
-    except Exception:
-        hour_utc = ts.hour if ts.tzinfo is None else ts.utctimetuple().tm_hour
-        return hour_utc >= 19
+def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
+    """Compute MACD, RSI indicators for early exit detection."""
+    if not HAS_TA or len(df) < 14:
+        df["macd"] = 0.0
+        df["macd_signal"] = 0.0
+        df["rsi"] = 50.0
+        return df
+    
+    close = df["Close"]
+    macd_obj = ta.trend.MACD(close, window_slow=26, window_fast=12, window_sign=9)
+    df["macd"] = macd_obj.macd()
+    df["macd_signal"] = macd_obj.macd_signal()
+    df["rsi"] = ta.momentum.rsi(close, window=14)
+    df["rsi"] = df["rsi"].fillna(50.0)
+    df["macd"] = df["macd"].fillna(0.0)
+    df["macd_signal"] = df["macd_signal"].fillna(0.0)
+    return df
 
 
-def _is_time_stop(ts: datetime, minutes_before_flatten: int = 15) -> bool:
-    """Check if we should exit due to time stop (N min before flatten)."""
-    try:
-        from zoneinfo import ZoneInfo
-        et = ZoneInfo("America/New_York")
-        ts_et = ts.astimezone(et) if ts.tzinfo else ts.replace(tzinfo=timezone.utc).astimezone(et)
-        flatten_time = ts_et.replace(hour=FLATTEN_HOUR, minute=FLATTEN_MINUTE, second=0)
-        cutoff = flatten_time - timedelta(minutes=minutes_before_flatten)
-        return ts_et >= cutoff
-    except Exception:
-        return False
+def _check_early_exit_triggers(
+    bar: pd.Series,
+    prev_bar: Optional[pd.Series],
+    side: str,
+) -> Optional[str]:
+    """Check if MACD/RSI early exit would trigger on this bar.
+    
+    Models the live proactive exits:
+      - proactive_macd_flipped_bearish (long) / bullish (short)
+      - proactive_rsi_below_50 (long) / above_50 (short)
+    """
+    macd = bar.get("macd", 0)
+    macd_signal = bar.get("macd_signal", 0)
+    rsi = bar.get("rsi", 50)
+    
+    if prev_bar is not None:
+        prev_macd = prev_bar.get("macd", 0)
+        prev_macd_signal = prev_bar.get("macd_signal", 0)
+    else:
+        prev_macd = macd
+        prev_macd_signal = macd_signal
+    
+    if side == "long":
+        if macd < macd_signal and prev_macd >= prev_macd_signal:
+            return "proactive_macd_flipped_bearish"
+        if rsi < 50:
+            return "proactive_rsi_below_50"
+    else:  # short
+        if macd > macd_signal and prev_macd <= prev_macd_signal:
+            return "proactive_macd_flipped_bullish"
+        if rsi > 50:
+            return "proactive_rsi_above_50"
+    
+    return None
 
 
 def replay_policy_actual(entry: DayTradeEntry) -> ReplayResult:
     """Policy (a): Return the actual exit from the ledger."""
     r_multiple = 0.0
     if entry.stop_distance > 0 and entry.exit_price is not None:
-        r_multiple = (entry.exit_price - entry.entry_price) / entry.stop_distance
+        if entry.side == "long":
+            r_multiple = (entry.exit_price - entry.entry_price) / entry.stop_distance
+        else:
+            r_multiple = (entry.entry_price - entry.exit_price) / entry.stop_distance
     
     return_pct = 0.0
     if entry.entry_price > 0 and entry.exit_price is not None:
-        return_pct = (entry.exit_price - entry.entry_price) / entry.entry_price * 100
+        if entry.side == "long":
+            return_pct = (entry.exit_price - entry.entry_price) / entry.entry_price * 100
+        else:
+            return_pct = (entry.entry_price - entry.exit_price) / entry.entry_price * 100
     
     hold_bars = 0
     if entry.entry_time and entry.exit_time:
@@ -358,16 +473,15 @@ def replay_policy_actual(entry: DayTradeEntry) -> ReplayResult:
         return_pct=return_pct,
         hold_bars=hold_bars,
         policy="actual",
+        side=entry.side,
     )
 
 
 def replay_policy_hold_pure(
     entry: DayTradeEntry,
-    bars_loader: Callable[[str, datetime, int], pd.DataFrame],
+    df: pd.DataFrame,
 ) -> ReplayResult:
     """Policy (b): Pure hold to SL / TP / flatten — no early exits."""
-    df = bars_loader(entry.symbol, entry.entry_time, lookforward_minutes=400)
-    
     if df.empty:
         return ReplayResult(
             symbol=entry.symbol,
@@ -381,17 +495,19 @@ def replay_policy_hold_pure(
             return_pct=0.0,
             hold_bars=0,
             policy="hold_pure",
+            side=entry.side,
         )
     
-    stop = entry.stop_loss if entry.stop_loss > 0 else entry.entry_price - entry.stop_distance
-    target = entry.take_profit if entry.take_profit > 0 else entry.entry_price + (RR_RATIO * entry.stop_distance)
+    stop = entry.stop_loss
+    target = entry.take_profit
+    side = entry.side
     
     exit_time = None
     exit_price = None
-    exit_reason = "timeout"
+    exit_reason = "flatten"
     hold_bars = 0
     
-    for i in range(min(len(df), MAX_HOLD_BARS)):
+    for i in range(len(df)):
         bar = df.iloc[i]
         bar_ts = df.index[i]
         hold_bars = i + 1
@@ -405,12 +521,17 @@ def replay_policy_hold_pure(
         bar_high = float(bar["High"])
         bar_low = float(bar["Low"])
         
-        stop_hit = bar_low <= stop
-        target_hit = bar_high >= target
+        if side == "long":
+            stop_hit = bar_low <= stop
+            target_hit = bar_high >= target
+        else:
+            stop_hit = bar_high >= stop
+            target_hit = bar_low <= target
         
         if stop_hit and target_hit:
             exit_time = bar_ts
-            if bar["Close"] > bar["Open"]:
+            if (side == "long" and bar["Close"] > bar["Open"]) or \
+               (side == "short" and bar["Close"] < bar["Open"]):
                 exit_price = target
                 exit_reason = "target"
             else:
@@ -428,21 +549,25 @@ def replay_policy_hold_pure(
             exit_reason = "target"
             break
     
-    if exit_price is None:
-        if len(df) > 0:
-            last_bar = df.iloc[min(len(df) - 1, MAX_HOLD_BARS - 1)]
-            exit_time = df.index[min(len(df) - 1, MAX_HOLD_BARS - 1)]
-            exit_price = float(last_bar["Close"])
-        else:
-            exit_price = entry.entry_price
+    if exit_price is None and len(df) > 0:
+        last_bar = df.iloc[-1]
+        exit_time = df.index[-1]
+        exit_price = float(last_bar["Close"])
+        exit_reason = "flatten"
     
     r_multiple = 0.0
     if entry.stop_distance > 0 and exit_price is not None:
-        r_multiple = (exit_price - entry.entry_price) / entry.stop_distance
+        if side == "long":
+            r_multiple = (exit_price - entry.entry_price) / entry.stop_distance
+        else:
+            r_multiple = (entry.entry_price - exit_price) / entry.stop_distance
     
     return_pct = 0.0
     if entry.entry_price > 0 and exit_price is not None:
-        return_pct = (exit_price - entry.entry_price) / entry.entry_price * 100
+        if side == "long":
+            return_pct = (exit_price - entry.entry_price) / entry.entry_price * 100
+        else:
+            return_pct = (entry.entry_price - exit_price) / entry.entry_price * 100
     
     return ReplayResult(
         symbol=entry.symbol,
@@ -456,12 +581,13 @@ def replay_policy_hold_pure(
         return_pct=return_pct,
         hold_bars=hold_bars,
         policy="hold_pure",
+        side=side,
     )
 
 
 def replay_policy_pro(
     entry: DayTradeEntry,
-    bars_loader: Callable[[str, datetime, int], pd.DataFrame],
+    df: pd.DataFrame,
     minutes_before_flatten: int = 15,
     trail_atr_mult: float = 1.5,
     disable_early_exits: bool = False,
@@ -472,13 +598,13 @@ def replay_policy_pro(
     - Scale 50% at +1R, move stop to breakeven
     - Trail remainder by ATR
     - Time stop N minutes before flatten
+    - Models MACD/RSI early exits from bar indicators (unless disable_early_exits=True)
     
-    If disable_early_exits=True, this becomes policy (d) — ignores early exits.
+    If disable_early_exits=True, this becomes policy (d) — skips early indicator exits.
     """
-    df = bars_loader(entry.symbol, entry.entry_time, lookforward_minutes=400)
+    policy_name = "pro_no_early" if disable_early_exits else "pro_policy"
     
     if df.empty:
-        policy_name = "pro_no_early" if disable_early_exits else "pro_policy"
         return ReplayResult(
             symbol=entry.symbol,
             entry_time=entry.entry_time,
@@ -491,36 +617,44 @@ def replay_policy_pro(
             return_pct=0.0,
             hold_bars=0,
             policy=policy_name,
+            side=entry.side,
         )
     
-    stop = entry.stop_loss if entry.stop_loss > 0 else entry.entry_price - entry.stop_distance
-    target = entry.take_profit if entry.take_profit > 0 else entry.entry_price + (RR_RATIO * entry.stop_distance)
+    df_with_ind = _compute_indicators(df.copy())
+    
+    stop = entry.stop_loss
+    target = entry.take_profit
     stop_distance = entry.stop_distance
     atr = entry.atr if entry.atr > 0 else stop_distance / ATR_STOP_MULT
+    side = entry.side
     
     current_stop = stop
     scaled_out = False
     scaled_out_at = None
     partial_r = 0.0
     trailing_active = False
-    highest_price = entry.entry_price
+    highest_price = entry.entry_price if side == "long" else entry.entry_price
+    lowest_price = entry.entry_price if side == "short" else entry.entry_price
     
     exit_time = None
     exit_price = None
-    exit_reason = "timeout"
+    exit_reason = "flatten"
     hold_bars = 0
     
-    policy_name = "pro_no_early" if disable_early_exits else "pro_policy"
+    prev_bar = None
     
-    for i in range(min(len(df), MAX_HOLD_BARS)):
-        bar = df.iloc[i]
-        bar_ts = df.index[i]
+    for i in range(len(df_with_ind)):
+        bar = df_with_ind.iloc[i]
+        bar_ts = df_with_ind.index[i]
         hold_bars = i + 1
         bar_high = float(bar["High"])
         bar_low = float(bar["Low"])
         bar_close = float(bar["Close"])
         
-        highest_price = max(highest_price, bar_high)
+        if side == "long":
+            highest_price = max(highest_price, bar_high)
+        else:
+            lowest_price = min(lowest_price, bar_low)
         
         if _is_time_stop(bar_ts, minutes_before_flatten):
             exit_time = bar_ts
@@ -534,51 +668,88 @@ def replay_policy_pro(
             exit_reason = "flatten"
             break
         
-        if bar_low <= current_stop:
+        if side == "long":
+            stop_hit = bar_low <= current_stop
+            target_hit = bar_high >= target
+        else:
+            stop_hit = bar_high >= current_stop
+            target_hit = bar_low <= target
+        
+        if stop_hit:
             exit_time = bar_ts
             exit_price = current_stop
             exit_reason = "stop" if not trailing_active else "trailing_stop"
             break
         
-        if bar_high >= target:
+        if target_hit:
             exit_time = bar_ts
             exit_price = target
             exit_reason = "target"
             break
         
-        current_r = (bar_close - entry.entry_price) / stop_distance if stop_distance > 0 else 0
+        if not disable_early_exits:
+            early_exit_reason = _check_early_exit_triggers(bar, prev_bar, side)
+            if early_exit_reason is not None:
+                if side == "long":
+                    current_r = (bar_close - entry.entry_price) / stop_distance
+                else:
+                    current_r = (entry.entry_price - bar_close) / stop_distance
+                if current_r <= -0.5:
+                    exit_time = bar_ts
+                    exit_price = bar_close
+                    exit_reason = early_exit_reason
+                    break
+        
+        if side == "long":
+            current_r = (bar_close - entry.entry_price) / stop_distance
+        else:
+            current_r = (entry.entry_price - bar_close) / stop_distance
         
         if not scaled_out and current_r >= 1.0:
             scaled_out = True
-            scaled_out_at = bar_close
+            if side == "long":
+                scaled_out_at = entry.entry_price + stop_distance
+            else:
+                scaled_out_at = entry.entry_price - stop_distance
             partial_r = 0.5 * 1.0
             current_stop = entry.entry_price
             trailing_active = True
         
-        if trailing_active and bar_close > entry.entry_price:
-            trail_stop = bar_close - (trail_atr_mult * atr)
-            if trail_stop > current_stop:
-                current_stop = trail_stop
+        if trailing_active:
+            if side == "long" and bar_close > entry.entry_price:
+                trail_stop = bar_close - (trail_atr_mult * atr)
+                if trail_stop > current_stop:
+                    current_stop = trail_stop
+            elif side == "short" and bar_close < entry.entry_price:
+                trail_stop = bar_close + (trail_atr_mult * atr)
+                if trail_stop < current_stop:
+                    current_stop = trail_stop
+        
+        prev_bar = bar
     
-    if exit_price is None:
-        if len(df) > 0:
-            last_bar = df.iloc[min(len(df) - 1, MAX_HOLD_BARS - 1)]
-            exit_time = df.index[min(len(df) - 1, MAX_HOLD_BARS - 1)]
-            exit_price = float(last_bar["Close"])
-        else:
-            exit_price = entry.entry_price
+    if exit_price is None and len(df_with_ind) > 0:
+        last_bar = df_with_ind.iloc[-1]
+        exit_time = df_with_ind.index[-1]
+        exit_price = float(last_bar["Close"])
+        exit_reason = "flatten"
     
     remaining_r = 0.0
-    if stop_distance > 0:
-        remaining_r = (exit_price - entry.entry_price) / stop_distance
+    if stop_distance > 0 and exit_price is not None:
+        if side == "long":
+            remaining_r = (exit_price - entry.entry_price) / stop_distance
+        else:
+            remaining_r = (entry.entry_price - exit_price) / stop_distance
         if scaled_out:
             remaining_r = remaining_r * 0.5
     
     total_r = partial_r + remaining_r
     
     return_pct = 0.0
-    if entry.entry_price > 0:
-        return_pct = (exit_price - entry.entry_price) / entry.entry_price * 100
+    if entry.entry_price > 0 and exit_price is not None:
+        if side == "long":
+            return_pct = (exit_price - entry.entry_price) / entry.entry_price * 100
+        else:
+            return_pct = (entry.entry_price - exit_price) / entry.entry_price * 100
     
     return ReplayResult(
         symbol=entry.symbol,
@@ -592,6 +763,7 @@ def replay_policy_pro(
         return_pct=return_pct,
         hold_bars=hold_bars,
         policy=policy_name,
+        side=side,
         scaled_out_at=scaled_out_at,
         partial_r=partial_r,
         remaining_r=remaining_r,
@@ -601,45 +773,54 @@ def replay_policy_pro(
 def run_counterfactual_replay(
     entries: list[DayTradeEntry],
     bars_loader: Callable[[str, datetime, int], pd.DataFrame],
-) -> dict[str, list[ReplayResult]]:
-    """Replay all entries under all four policies."""
+) -> tuple[dict[str, list[ReplayResult]], int]:
+    """Replay all entries under all four policies.
+    
+    Returns: (results_dict, n_no_bars)
+    
+    Only includes trades where bars were successfully loaded.
+    """
     results: dict[str, list[ReplayResult]] = {
         "actual": [],
         "hold_pure": [],
         "pro_policy": [],
         "pro_no_early": [],
     }
+    n_no_bars = 0
     
     for i, entry in enumerate(entries):
         if (i + 1) % 10 == 0 or i == len(entries) - 1:
             logger.info("Replaying %d/%d: %s", i + 1, len(entries), entry.symbol)
         
+        df = bars_loader(entry.symbol, entry.entry_time, lookforward_minutes=400)
+        
+        if df.empty:
+            n_no_bars += 1
+            continue
+        
         results["actual"].append(replay_policy_actual(entry))
-        results["hold_pure"].append(replay_policy_hold_pure(entry, bars_loader))
-        results["pro_policy"].append(replay_policy_pro(entry, bars_loader, disable_early_exits=False))
-        results["pro_no_early"].append(replay_policy_pro(entry, bars_loader, disable_early_exits=True))
+        results["hold_pure"].append(replay_policy_hold_pure(entry, df))
+        results["pro_policy"].append(replay_policy_pro(entry, df, disable_early_exits=False))
+        results["pro_no_early"].append(replay_policy_pro(entry, df, disable_early_exits=True))
     
-    return results
+    return results, n_no_bars
 
 
 def compute_policy_metrics(results: list[ReplayResult], entries: list[DayTradeEntry]) -> PolicyMetrics:
     """Compute aggregate metrics for a policy's results."""
-    valid = [r for r in results if r.exit_reason != "no_bars"]
-    
-    if not valid:
+    if not results:
         return PolicyMetrics(
-            policy=results[0].policy if results else "unknown",
+            policy="unknown",
             n_trades=0,
             n_sessions=0,
             n_wins=0,
             n_losses=0,
             n_scratches=0,
             win_rate=0.0,
-            profit_factor=0.0,
+            profit_factor=None,
             total_r=0.0,
             expectancy_r=0.0,
             max_dd_r=0.0,
-            max_dd_pct=0.0,
             max_losing_day_r=0.0,
             avg_hold_bars=0.0,
             by_exit_reason={},
@@ -647,15 +828,15 @@ def compute_policy_metrics(results: list[ReplayResult], entries: list[DayTradeEn
         )
     
     sessions = set()
-    for r in valid:
+    for r in results:
         if r.entry_time:
             sessions.add(r.entry_time.date())
     
-    wins = [r for r in valid if r.r_multiple > 0.05]
-    losses = [r for r in valid if r.r_multiple < -0.05]
-    scratches = [r for r in valid if -0.05 <= r.r_multiple <= 0.05]
+    wins = [r for r in results if r.r_multiple > 0.05]
+    losses = [r for r in results if r.r_multiple < -0.05]
+    scratches = [r for r in results if -0.05 <= r.r_multiple <= 0.05]
     
-    n_trades = len(valid)
+    n_trades = len(results)
     n_wins = len(wins)
     n_losses = len(losses)
     
@@ -664,15 +845,20 @@ def compute_policy_metrics(results: list[ReplayResult], entries: list[DayTradeEn
     
     gross_profit = sum(r.r_multiple for r in wins)
     gross_loss = abs(sum(r.r_multiple for r in losses))
-    profit_factor = gross_profit / gross_loss if gross_loss > 0 else (float("inf") if gross_profit > 0 else 0.0)
+    if gross_loss > 0:
+        profit_factor = round(gross_profit / gross_loss, 3)
+    elif gross_profit > 0:
+        profit_factor = None
+    else:
+        profit_factor = 0.0
     
-    total_r = sum(r.r_multiple for r in valid)
+    total_r = sum(r.r_multiple for r in results)
     expectancy_r = total_r / n_trades if n_trades > 0 else 0.0
     
     peak_r = 0.0
     max_dd_r = 0.0
     cumulative_r = 0.0
-    sorted_results = sorted(valid, key=lambda x: x.entry_time or datetime.min)
+    sorted_results = sorted(results, key=lambda x: x.entry_time or datetime.min)
     for r in sorted_results:
         cumulative_r += r.r_multiple
         if cumulative_r > peak_r:
@@ -681,23 +867,21 @@ def compute_policy_metrics(results: list[ReplayResult], entries: list[DayTradeEn
         if dd > max_dd_r:
             max_dd_r = dd
     
-    max_dd_pct = max_dd_r / peak_r if peak_r > 0 else 0.0
-    
     daily_r: dict[date, float] = defaultdict(float)
-    for r in valid:
+    for r in results:
         if r.entry_time:
             daily_r[r.entry_time.date()] += r.r_multiple
     max_losing_day_r = abs(min(daily_r.values())) if daily_r else 0.0
     
-    avg_hold = sum(r.hold_bars for r in valid) / n_trades if n_trades > 0 else 0.0
+    avg_hold = sum(r.hold_bars for r in results) / n_trades if n_trades > 0 else 0.0
     
     by_exit_reason: dict[str, int] = defaultdict(int)
-    for r in valid:
+    for r in results:
         by_exit_reason[r.exit_reason] += 1
     
     entry_patterns = {(e.symbol, e.entry_time): e.entry_pattern for e in entries}
     by_pattern: dict[str, dict[str, Any]] = defaultdict(lambda: {"n": 0, "total_r": 0.0, "wins": 0, "losses": 0})
-    for r in valid:
+    for r in results:
         pattern = entry_patterns.get((r.symbol, r.entry_time), "unknown")
         by_pattern[pattern]["n"] += 1
         by_pattern[pattern]["total_r"] += r.r_multiple
@@ -715,18 +899,17 @@ def compute_policy_metrics(results: list[ReplayResult], entries: list[DayTradeEn
         by_pattern[pattern]["total_r"] = round(by_pattern[pattern]["total_r"], 3)
     
     return PolicyMetrics(
-        policy=valid[0].policy if valid else "unknown",
+        policy=results[0].policy if results else "unknown",
         n_trades=n_trades,
         n_sessions=len(sessions),
         n_wins=n_wins,
         n_losses=n_losses,
         n_scratches=len(scratches),
         win_rate=round(win_rate, 4),
-        profit_factor=round(profit_factor, 3) if profit_factor != float("inf") else None,
+        profit_factor=profit_factor,
         total_r=round(total_r, 3),
         expectancy_r=round(expectancy_r, 4),
         max_dd_r=round(max_dd_r, 3),
-        max_dd_pct=round(max_dd_pct, 4),
         max_losing_day_r=round(max_losing_day_r, 3),
         avg_hold_bars=round(avg_hold, 1),
         by_exit_reason=dict(by_exit_reason),
@@ -738,13 +921,16 @@ def write_markdown_report(
     metrics: dict[str, PolicyMetrics],
     results: dict[str, list[ReplayResult]],
     entries: list[DayTradeEntry],
+    n_no_bars: int,
     output_path: Path,
 ) -> None:
     """Write human-readable markdown report."""
+    n_with_bars = metrics["actual"].n_trades if metrics["actual"].n_trades > 0 else 0
+    
     lines = [
         "# Exit Counterfactual Analysis",
         f"**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M')}",
-        f"**Sample:** {len(entries)} day-trade entries",
+        f"**Sample:** {n_with_bars} day-trade entries with bars ({n_no_bars} skipped — no bars)",
         "",
         "## Executive Summary",
         "",
@@ -754,8 +940,8 @@ def write_markdown_report(
         "|--------|-------------|",
         "| actual | What actually happened in live trading |",
         "| hold_pure | Pure hold to SL/TP/flatten — no early exits |",
-        "| pro_policy | Unified pro: scale 50% at +1R → BE → trail → time stop |",
-        "| pro_no_early | Pro policy but ignoring MACD/RSI/desk early exits |",
+        "| pro_policy | Unified pro: scale 50% at +1R → BE → trail → time stop (with MACD/RSI exits) |",
+        "| pro_no_early | Pro policy WITHOUT MACD/RSI/desk early exits |",
         "",
         "---",
         "",
@@ -791,8 +977,8 @@ def write_markdown_report(
             f"- **Win Rate:** {m.win_rate*100:.1f}%",
             f"- **Expectancy:** {m.expectancy_r:+.4f}R per trade",
             f"- **Total R:** {m.total_r:+.2f}R",
-            f"- **Profit Factor:** {m.profit_factor:.2f}" if m.profit_factor else "- **Profit Factor:** ∞",
-            f"- **Max Drawdown:** {m.max_dd_r:.2f}R ({m.max_dd_pct*100:.1f}%)",
+            f"- **Profit Factor:** {m.profit_factor:.2f}" if m.profit_factor is not None else "- **Profit Factor:** ∞",
+            f"- **Max Drawdown:** {m.max_dd_r:.2f}R",
             f"- **Max Losing Day:** {m.max_losing_day_r:.2f}R",
             f"- **Avg Hold:** {m.avg_hold_bars:.1f} bars",
             "",
@@ -821,7 +1007,9 @@ def write_markdown_report(
     lines.extend([
         "---",
         "",
-        "## Key Findings",
+        "## Key Findings (same-sample comparison)",
+        "",
+        f"**n = {metrics['actual'].n_trades}** trades with bars (excluding {n_no_bars} no-bars)",
         "",
         f"**Actual vs Hold Pure ΔexpR:** {(metrics['hold_pure'].expectancy_r - metrics['actual'].expectancy_r):+.4f}R",
         f"**Actual vs Pro Policy ΔexpR:** {(metrics['pro_policy'].expectancy_r - metrics['actual'].expectancy_r):+.4f}R",
@@ -842,12 +1030,15 @@ def write_json_report(
     metrics: dict[str, PolicyMetrics],
     results: dict[str, list[ReplayResult]],
     entries: list[DayTradeEntry],
+    n_no_bars: int,
     output_path: Path,
 ) -> None:
     """Write machine-readable JSON report."""
+    from datetime import timezone as tz
     output = {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "sample_size": len(entries),
+        "generated_at": datetime.now(tz.utc).isoformat(),
+        "sample_size": metrics["actual"].n_trades,
+        "n_no_bars": n_no_bars,
         "policies": {},
         "comparison": {},
     }
@@ -874,6 +1065,7 @@ def write_json_report(
                 "exit_reason": r.exit_reason,
                 "r_multiple": round(r.r_multiple, 4),
                 "hold_bars": r.hold_bars,
+                "side": r.side,
             }
             for r in policy_results
         ]
@@ -894,12 +1086,12 @@ def main(argv: list[str] | None = None) -> int:
         "--ledger", "-l",
         type=Path,
         default=REPO_ROOT / "trading_state.json",
-        help="Path to trading_state.json (default: repo root)",
+        help="Path to trading_state.json or plain list JSON (default: repo root)",
     )
     parser.add_argument(
         "--dsn",
         default=None,
-        help="Postgres DSN for minute bars (default: POSTGRES_DSN env var)",
+        help=f"Postgres DSN for minute bars (default: POSTGRES_DSN env, then {DEFAULT_DSN})",
     )
     parser.add_argument(
         "--bars-dir",
@@ -950,7 +1142,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.dry_run:
         print(f"\nDry run: {len(entries)} entries would be replayed.")
         for e in entries[:10]:
-            print(f"  {e.entry_time} {e.symbol} @ {e.entry_price:.2f} [{e.entry_pattern}] exit={e.exit_reason}")
+            print(f"  {e.entry_time} {e.symbol} @ {e.entry_price:.2f} [{e.entry_pattern}] exit={e.exit_reason} side={e.side}")
         if len(entries) > 10:
             print(f"  ... and {len(entries) - 10} more")
         return 0
@@ -959,22 +1151,15 @@ def main(argv: list[str] | None = None) -> int:
         logger.info("Using file-based bars loader from: %s", args.bars_dir)
         bars_loader = make_file_bars_loader(args.bars_dir)
     else:
-        dsn = args.dsn or os.environ.get("POSTGRES_DSN")
-        if not dsn:
-            logger.warning("No bars source available (no --bars-dir, no POSTGRES_DSN). "
-                          "Using actual-only mode (no counterfactual replay).")
-            results = {
-                "actual": [replay_policy_actual(e) for e in entries],
-                "hold_pure": [replay_policy_actual(e) for e in entries],
-                "pro_policy": [replay_policy_actual(e) for e in entries],
-                "pro_no_early": [replay_policy_actual(e) for e in entries],
-            }
-        else:
-            bars_loader = make_postgres_bars_loader(dsn)
-            results = run_counterfactual_replay(entries, bars_loader)
+        dsn = args.dsn or os.environ.get("POSTGRES_DSN") or DEFAULT_DSN
+        logger.info("Using Postgres bars loader with DSN: %s", dsn[:30] + "...")
+        bars_loader = make_postgres_bars_loader(dsn)
     
-    if 'results' not in locals():
-        results = run_counterfactual_replay(entries, bars_loader)
+    results, n_no_bars = run_counterfactual_replay(entries, bars_loader)
+    
+    if not results["actual"]:
+        logger.error("No trades with bars data found")
+        return 1
     
     metrics = {
         policy: compute_policy_metrics(policy_results, entries)
@@ -987,17 +1172,18 @@ def main(argv: list[str] | None = None) -> int:
     md_path = args.out / f"exit_counterfactual_{date_str}.md"
     json_path = args.out / f"exit_counterfactual_{date_str}.json"
     
-    write_markdown_report(metrics, results, entries, md_path)
-    write_json_report(metrics, results, entries, json_path)
+    write_markdown_report(metrics, results, entries, n_no_bars, md_path)
+    write_json_report(metrics, results, entries, n_no_bars, json_path)
     
     print("\n" + "=" * 70)
     print("EXIT COUNTERFACTUAL SUMMARY")
     print("=" * 70)
+    print(f"\nSample: {metrics['actual'].n_trades} trades with bars ({n_no_bars} skipped — no bars)")
     print(f"\n{'Policy':<15} {'n':>5} {'WR':>7} {'expR':>8} {'TotalR':>8} {'PF':>6}")
     print("-" * 50)
     for policy in ["actual", "hold_pure", "pro_policy", "pro_no_early"]:
         m = metrics[policy]
-        pf_str = f"{m.profit_factor:.2f}" if m.profit_factor else "∞"
+        pf_str = f"{m.profit_factor:.2f}" if m.profit_factor is not None else "∞"
         print(f"{policy:<15} {m.n_trades:>5} {m.win_rate*100:>6.1f}% {m.expectancy_r:>+7.3f} {m.total_r:>+7.2f}R {pf_str:>6}")
     print("=" * 70)
     
