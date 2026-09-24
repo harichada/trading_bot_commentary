@@ -2041,22 +2041,51 @@ async def get_trades(date: str = None, symbol: str = None, strategy: str = None,
             params["strat"] = strategy
 
         where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
-        # v-ledger-integrity-2026-09-24: include new ledger integrity columns
-        sql = sa_text(f"""
-            SELECT id, symbol, side, strategy, entry_time::text, exit_time::text,
-                   entry_price, exit_price, quantity, pnl,
-                   ROUND(pnl_pct::numeric, 2) AS pnl_pct, exit_reason,
-                   atr_at_entry, stop_loss, take_profit, confidence,
-                   meta_proba, kelly_fraction, scaled_out, mode,
-                   ROUND(pnl_r::numeric, 4) AS pnl_r,
-                   setup_type, source, hold_time_seconds,
-                   ROUND(initial_stop::numeric, 4) AS initial_stop,
-                   ROUND(initial_tp::numeric, 4) AS initial_tp,
-                   ROUND(initial_risk_per_share::numeric, 6) AS initial_risk_per_share,
-                   is_hands_off, is_external
-            FROM bot_trades {where}
-            ORDER BY exit_time DESC LIMIT :lim
-        """)
+        # v-ledger-integrity-2026-09-24 (engine review): conditionally include
+        # new ledger integrity columns only when flag is on AND columns exist.
+        from core.config import Config
+        ledger_integrity_on = Config().LEDGER_INTEGRITY
+        
+        ledger_cols_exist = False
+        if ledger_integrity_on:
+            try:
+                with engine.connect() as check_conn:
+                    check_result = check_conn.execute(sa_text("""
+                        SELECT column_name FROM information_schema.columns
+                        WHERE table_name = 'bot_trades' AND column_name = 'pnl_r'
+                    """))
+                    ledger_cols_exist = check_result.fetchone() is not None
+            except Exception:
+                ledger_cols_exist = False
+        
+        if ledger_integrity_on and ledger_cols_exist:
+            # Include ledger integrity columns
+            sql = sa_text(f"""
+                SELECT id, symbol, side, strategy, entry_time::text, exit_time::text,
+                       entry_price, exit_price, quantity, pnl,
+                       ROUND(pnl_pct::numeric, 2) AS pnl_pct, exit_reason,
+                       atr_at_entry, stop_loss, take_profit, confidence,
+                       meta_proba, kelly_fraction, scaled_out, mode,
+                       ROUND(pnl_r::numeric, 4) AS pnl_r,
+                       setup_type, source, hold_time_seconds,
+                       ROUND(initial_stop::numeric, 4) AS initial_stop,
+                       ROUND(initial_tp::numeric, 4) AS initial_tp,
+                       ROUND(initial_risk_per_share::numeric, 6) AS initial_risk_per_share,
+                       is_hands_off, is_external, exit_reason_raw
+                FROM bot_trades {where}
+                ORDER BY exit_time DESC LIMIT :lim
+            """)
+        else:
+            # Legacy columns only (pre-ledger-integrity)
+            sql = sa_text(f"""
+                SELECT id, symbol, side, strategy, entry_time::text, exit_time::text,
+                       entry_price, exit_price, quantity, pnl,
+                       ROUND(pnl_pct::numeric, 2) AS pnl_pct, exit_reason,
+                       atr_at_entry, stop_loss, take_profit, confidence,
+                       meta_proba, kelly_fraction, scaled_out, mode
+                FROM bot_trades {where}
+                ORDER BY exit_time DESC LIMIT :lim
+            """)
 
         with engine.connect() as conn:
             rows = conn.execute(sql, params).mappings().all()
@@ -2186,22 +2215,42 @@ def _dedupe_trades_with_broker_fills(db_trades: list, broker_fills: list, hands_
 
     Returns combined list with is_orphan=True for broker-only fills.
     Prioritizes db_trades when both sources have the same trade.
+    
+    v-ledger-integrity-2026-09-24 (engine review): normalize dedupe timestamps
+    to aware ET before the minute key so naive local/naive UTC/Z rows don't
+    duplicate and double-count the summary P&L.
     """
-    from datetime import datetime
+    from datetime import datetime, timezone
+    from zoneinfo import ZoneInfo
+    
+    et_tz = ZoneInfo("America/New_York")
+    
+    def _normalize_to_et_key(ts) -> str:
+        """Normalize any timestamp to aware ET minute key for deduplication."""
+        if not ts:
+            return ""
+        try:
+            if isinstance(ts, str):
+                # Handle various ISO formats: 'Z', '+00:00', naive
+                ts_str = ts.replace('Z', '+00:00')
+                dt = datetime.fromisoformat(ts_str)
+            else:
+                dt = ts
+            # If naive, assume UTC (DB stores in UTC typically)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            # Convert to ET for consistent comparison
+            dt_et = dt.astimezone(et_tz)
+            return dt_et.strftime("%Y-%m-%d %H:%M")
+        except Exception:
+            return str(ts)[:16] if ts else ""
 
-    # Index db_trades by (symbol, exit_time_rounded_to_minute)
+    # Index db_trades by (symbol, exit_time_rounded_to_minute_in_ET)
     db_index = {}
     for t in db_trades:
         sym = (t.get("symbol") or "").upper()
         exit_ts = t.get("exit_time") or ""
-        try:
-            if isinstance(exit_ts, str):
-                exit_dt = datetime.fromisoformat(exit_ts.replace('Z', '+00:00'))
-            else:
-                exit_dt = exit_ts
-            key = (sym, exit_dt.strftime("%Y-%m-%d %H:%M") if exit_dt else "")
-        except Exception:
-            key = (sym, str(exit_ts)[:16])
+        key = (sym, _normalize_to_et_key(exit_ts))
         db_index[key] = t
 
     # Add broker fills that aren't already in db_trades
@@ -2209,14 +2258,7 @@ def _dedupe_trades_with_broker_fills(db_trades: list, broker_fills: list, hands_
     for bf in broker_fills:
         sym = (bf.get("symbol") or "").upper()
         exit_ts = bf.get("exit_time") or ""
-        try:
-            if isinstance(exit_ts, str):
-                exit_dt = datetime.fromisoformat(exit_ts.replace('Z', '+00:00'))
-            else:
-                exit_dt = exit_ts
-            key = (sym, exit_dt.strftime("%Y-%m-%d %H:%M") if exit_dt else "")
-        except Exception:
-            key = (sym, str(exit_ts)[:16])
+        key = (sym, _normalize_to_et_key(exit_ts))
 
         if key not in db_index:
             # This is an orphan broker fill
@@ -2315,43 +2357,103 @@ async def get_activity(date: str = None, strategy: str = None):
 
         where = "WHERE " + " AND ".join(conditions)
 
+        # v-ledger-integrity-2026-09-24 (engine review): conditionally include
+        # ledger integrity columns (pnl_r, source, is_external, initial_risk_per_share)
+        # for proper R computation and classification
+        ledger_integrity_on = Config().LEDGER_INTEGRITY
+        
+        ledger_cols_exist = False
+        if ledger_integrity_on:
+            try:
+                with engine.connect() as check_conn:
+                    check_result = check_conn.execute(sa_text("""
+                        SELECT column_name FROM information_schema.columns
+                        WHERE table_name = 'bot_trades' AND column_name = 'pnl_r'
+                    """))
+                    ledger_cols_exist = check_result.fetchone() is not None
+            except Exception:
+                ledger_cols_exist = False
+
         # Join with bot_decision_snapshots for reasoning
         # Match on symbol + strategy + entry_time window (within 5 min)
-        sql = sa_text(f"""
-            WITH trades AS (
-                SELECT id, symbol, side, strategy, entry_time, exit_time,
-                       entry_price, exit_price, quantity, pnl,
-                       ROUND(pnl_pct::numeric, 2) AS pnl_pct, exit_reason,
-                       atr_at_entry, stop_loss, take_profit, confidence,
-                       meta_proba, kelly_fraction, scaled_out, mode,
-                       reasoning_json
-                FROM bot_trades
-                {where}
-            )
-            SELECT t.*,
-                   s.price_vol_json,
-                   s.news_json,
-                   s.regime_json,
-                   s.extra_json AS snapshot_extra_json,
-                   s.reason AS snapshot_reason,
-                   s.gate_name AS snapshot_gate_name,
-                   s.would_entry_price,
-                   s.would_stop_loss AS snapshot_stop_loss,
-                   s.would_take_profit AS snapshot_take_profit
-            FROM trades t
-            LEFT JOIN LATERAL (
-                SELECT *
-                FROM bot_decision_snapshots
-                WHERE symbol = t.symbol
-                  AND strategy_id = t.strategy
-                  AND action IN ('signal_buy', 'signal_sell')
-                  AND ts BETWEEN t.entry_time - INTERVAL '5 minutes'
-                             AND t.entry_time + INTERVAL '5 minutes'
-                ORDER BY ABS(EXTRACT(EPOCH FROM (ts - t.entry_time)))
-                LIMIT 1
-            ) s ON TRUE
-            ORDER BY t.exit_time DESC
-        """)
+        if ledger_integrity_on and ledger_cols_exist:
+            # Include ledger integrity columns
+            sql = sa_text(f"""
+                WITH trades AS (
+                    SELECT id, symbol, side, strategy, entry_time, exit_time,
+                           entry_price, exit_price, quantity, pnl,
+                           ROUND(pnl_pct::numeric, 2) AS pnl_pct, exit_reason,
+                           atr_at_entry, stop_loss, take_profit, confidence,
+                           meta_proba, kelly_fraction, scaled_out, mode,
+                           reasoning_json,
+                           ROUND(pnl_r::numeric, 4) AS pnl_r,
+                           source, is_hands_off, is_external,
+                           ROUND(initial_risk_per_share::numeric, 6) AS initial_risk_per_share,
+                           ROUND(initial_stop::numeric, 4) AS initial_stop
+                    FROM bot_trades
+                    {where}
+                )
+                SELECT t.*,
+                       s.price_vol_json,
+                       s.news_json,
+                       s.regime_json,
+                       s.extra_json AS snapshot_extra_json,
+                       s.reason AS snapshot_reason,
+                       s.gate_name AS snapshot_gate_name,
+                       s.would_entry_price,
+                       s.would_stop_loss AS snapshot_stop_loss,
+                       s.would_take_profit AS snapshot_take_profit
+                FROM trades t
+                LEFT JOIN LATERAL (
+                    SELECT *
+                    FROM bot_decision_snapshots
+                    WHERE symbol = t.symbol
+                      AND strategy_id = t.strategy
+                      AND action IN ('signal_buy', 'signal_sell')
+                      AND ts BETWEEN t.entry_time - INTERVAL '5 minutes'
+                                 AND t.entry_time + INTERVAL '5 minutes'
+                    ORDER BY ABS(EXTRACT(EPOCH FROM (ts - t.entry_time)))
+                    LIMIT 1
+                ) s ON TRUE
+                ORDER BY t.exit_time DESC
+            """)
+        else:
+            # Legacy query without ledger integrity columns
+            sql = sa_text(f"""
+                WITH trades AS (
+                    SELECT id, symbol, side, strategy, entry_time, exit_time,
+                           entry_price, exit_price, quantity, pnl,
+                           ROUND(pnl_pct::numeric, 2) AS pnl_pct, exit_reason,
+                           atr_at_entry, stop_loss, take_profit, confidence,
+                           meta_proba, kelly_fraction, scaled_out, mode,
+                           reasoning_json
+                    FROM bot_trades
+                    {where}
+                )
+                SELECT t.*,
+                       s.price_vol_json,
+                       s.news_json,
+                       s.regime_json,
+                       s.extra_json AS snapshot_extra_json,
+                       s.reason AS snapshot_reason,
+                       s.gate_name AS snapshot_gate_name,
+                       s.would_entry_price,
+                       s.would_stop_loss AS snapshot_stop_loss,
+                       s.would_take_profit AS snapshot_take_profit
+                FROM trades t
+                LEFT JOIN LATERAL (
+                    SELECT *
+                    FROM bot_decision_snapshots
+                    WHERE symbol = t.symbol
+                      AND strategy_id = t.strategy
+                      AND action IN ('signal_buy', 'signal_sell')
+                      AND ts BETWEEN t.entry_time - INTERVAL '5 minutes'
+                                 AND t.entry_time + INTERVAL '5 minutes'
+                    ORDER BY ABS(EXTRACT(EPOCH FROM (ts - t.entry_time)))
+                    LIMIT 1
+                ) s ON TRUE
+                ORDER BY t.exit_time DESC
+            """)
 
         with engine.connect() as conn:
             rows = conn.execute(sql, params).mappings().all()
@@ -2379,8 +2481,30 @@ async def get_activity(date: str = None, strategy: str = None):
             except (TypeError, ValueError):
                 return default
 
-        def _calc_r(pnl, entry_price, stop_loss, quantity):
-            """Calculate R-multiple. Returns None if R is undefined (SL==entry)."""
+        def _calc_r(pnl, entry_price, stop_loss, quantity, pnl_r_from_db=None, initial_risk_per_share=None):
+            """Calculate R-multiple.
+            
+            v-ledger-integrity-2026-09-24 (engine review): prefer pnl_r from DB
+            (which uses initial_risk_per_share) over calculating from current stop_loss
+            which breaks after breakeven adjustments.
+            
+            Priority:
+              1. pnl_r from DB (ledger integrity) - already computed correctly
+              2. Compute from initial_risk_per_share if available
+              3. Fallback to stop_loss calculation (legacy, breaks after BE)
+            """
+            # Priority 1: Use pnl_r from DB if available
+            if pnl_r_from_db is not None:
+                return pnl_r_from_db
+            
+            # Priority 2: Use initial_risk_per_share if available
+            if initial_risk_per_share is not None and initial_risk_per_share > 0.0001:
+                if quantity is not None and quantity > 0:
+                    total_risk = initial_risk_per_share * quantity
+                    if total_risk > 0.01:
+                        return pnl / total_risk
+            
+            # Priority 3: Legacy fallback using stop_loss (may be inaccurate after BE)
             if stop_loss is None or entry_price is None or quantity is None:
                 return None
             risk_per_share = abs(entry_price - stop_loss)
@@ -2485,8 +2609,25 @@ async def get_activity(date: str = None, strategy: str = None):
                 continue
 
             # Process normal DB trade
-            is_hands_off = symbol in hands_off_denylist
-            is_external = row.get("mode") == "external" or not row.get("strategy")
+            # v-ledger-integrity-2026-09-24 (engine review): use source/is_external
+            # columns for classification when available
+            if row.get("is_hands_off") is not None:
+                # Ledger integrity columns available
+                is_hands_off = bool(row.get("is_hands_off"))
+            else:
+                # Legacy: check denylist
+                is_hands_off = symbol in hands_off_denylist
+            
+            if row.get("is_external") is not None:
+                # Ledger integrity columns available
+                is_external = bool(row.get("is_external"))
+            elif row.get("source") is not None:
+                # Use source column: external if source is 'external'
+                is_external = row.get("source") == "external"
+            else:
+                # Legacy fallback
+                is_external = row.get("mode") == "external" or not row.get("strategy")
+            
             reasoning_json = row.get("reasoning_json")
 
             pnl = _safe_float(row.get("pnl"), 0.0)
@@ -2495,7 +2636,11 @@ async def get_activity(date: str = None, strategy: str = None):
             take_profit = _safe_float(row.get("take_profit"))
             quantity = int(row.get("quantity") or 0)
 
-            r_multiple = _calc_r(pnl, entry_price, stop_loss, quantity)
+            # v-ledger-integrity-2026-09-24 (engine review): use pnl_r from DB
+            # (computed with initial_risk_per_share) instead of current stop_loss
+            pnl_r_from_db = row.get("pnl_r")  # May be None if columns don't exist
+            initial_risk_per_share = row.get("initial_risk_per_share")
+            r_multiple = _calc_r(pnl, entry_price, stop_loss, quantity, pnl_r_from_db, initial_risk_per_share)
 
             # Parse reasoning JSON for decision context
             reasoning = {}

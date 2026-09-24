@@ -217,11 +217,19 @@ class TestNormalizeExitReason:
         from core.ledger_integrity import normalize_exit_reason
         
         assert normalize_exit_reason("external_close") == "external_close"
-        assert normalize_exit_reason("external") == "external_close"
+        # "external" alone is kept as-is since it's already a valid reason
+        assert normalize_exit_reason("external") == "external"
+        assert normalize_exit_reason("external_close_manual") == "external_close"
 
 
 class TestBuildBrokerOrphanEntry:
-    """Tests for broker orphan entry creation."""
+    """Tests for broker orphan entry creation.
+    
+    v-ledger-integrity-2026-09-24 (engine review): updated tests for:
+      - is_external derived from prior position metadata
+      - original_stop used for R computation
+      - No -1R default for losses (use None if unknown)
+    """
 
     def test_basic_orphan(self):
         """Basic broker orphan entry creation."""
@@ -235,15 +243,75 @@ class TestBuildBrokerOrphanEntry:
             quantity=100,
             entry_time=datetime.now() - timedelta(minutes=30),
             exit_time=datetime.now(),
-            exit_reason="external_reconcile",
+            exit_reason="external_close",
         )
         
         assert entry.symbol == "CRCL"
         assert entry.source == "broker_orphan"
         assert entry.pnl == -100.0  # (9-10) * 100
-        assert entry.pnl_r == -1.0  # Convention for orphan stops
+        # v-ledger-integrity (engine review): no -1R default, unknown risk = None
+        assert entry.pnl_r is None
         assert entry.setup_type == "unknown"
         assert entry.is_hands_off is False
+
+    def test_orphan_with_original_stop(self):
+        """v-ledger-integrity (engine review): original_stop used for accurate R."""
+        from core.ledger_integrity import build_broker_orphan_entry
+        
+        entry = build_broker_orphan_entry(
+            symbol="CRCL",
+            side="long",
+            entry_price=10.0,
+            exit_price=9.0,
+            quantity=100,
+            entry_time=datetime.now() - timedelta(minutes=30),
+            exit_time=datetime.now(),
+            exit_reason="external_close",
+            original_stop=9.5,  # 0.5 risk per share
+        )
+        
+        assert entry.pnl == -100.0
+        assert entry.initial_stop == 9.5
+        assert entry.initial_risk_per_share == 0.5
+        assert entry.pnl_r == -2.0  # -1.0 / 0.5 = -2R
+
+    def test_orphan_external_position(self):
+        """v-ledger-integrity (engine review): external positions from prior metadata."""
+        from core.ledger_integrity import build_broker_orphan_entry
+        
+        entry = build_broker_orphan_entry(
+            symbol="SNAP",
+            side="long",
+            entry_price=50.0,
+            exit_price=52.0,
+            quantity=100,
+            entry_time=datetime.now() - timedelta(days=30),
+            exit_time=datetime.now(),
+            exit_reason="external_close",
+            managed_by_bot=False,  # External position
+        )
+        
+        assert entry.source == "external"
+        assert entry.is_external is True
+
+    def test_orphan_long_term_position(self):
+        """v-ledger-integrity (engine review): long-term positions marked external."""
+        from core.ledger_integrity import build_broker_orphan_entry
+        
+        entry = build_broker_orphan_entry(
+            symbol="AAPL",
+            side="long",
+            entry_price=150.0,
+            exit_price=160.0,
+            quantity=50,
+            entry_time=datetime.now() - timedelta(days=90),
+            exit_time=datetime.now(),
+            exit_reason="external_close",
+            is_long_term=True,  # Long-term SNAP-type position
+        )
+        
+        assert entry.source == "external"
+        assert entry.is_external is True
 
     def test_hands_off_symbol(self):
         """Hands-off symbols are flagged."""
@@ -406,6 +474,7 @@ class TestIsBotManagedTrade:
             pnl_pct=5.0,
             pnl_r=2.0,
             exit_reason="take_profit",
+            exit_reason_raw="take_profit",
             setup_type="continuation",
             source="bot",
             hold_time_seconds=3600,
@@ -444,6 +513,7 @@ class TestIsBotManagedTrade:
             pnl_pct=6.25,
             pnl_r=None,
             exit_reason="external_close",
+            exit_reason_raw="external_close",
             setup_type="unknown",
             source="external",
             hold_time_seconds=86400,
@@ -482,6 +552,7 @@ class TestIsBotManagedTrade:
             pnl_pct=4.0,
             pnl_r=None,
             exit_reason="external_close",
+            exit_reason_raw="external_close",
             setup_type="unknown",
             source="external",
             hold_time_seconds=0,
@@ -519,7 +590,8 @@ class TestIsBotManagedTrade:
             pnl=-100.0,
             pnl_pct=-10.0,
             pnl_r=-1.0,
-            exit_reason="external_reconcile",
+            exit_reason="external_close",
+            exit_reason_raw="external_close",
             setup_type="unknown",
             source="broker_orphan",
             hold_time_seconds=300,
@@ -573,6 +645,7 @@ class TestComputeTradeStats:
                 pnl_pct=pnl/10,
                 pnl_r=pnl_r,
                 exit_reason="test",
+                exit_reason_raw="test",
                 setup_type="unknown",
                 source="bot",
                 hold_time_seconds=100,
@@ -631,6 +704,7 @@ class TestComputeTradeStats:
                 pnl_pct=12.5,
                 pnl_r=5.0,
                 exit_reason="take_profit",
+                exit_reason_raw="take_profit",
                 setup_type="unknown",
                 source="external",
                 hold_time_seconds=86400,
@@ -668,8 +742,11 @@ class TestConfigFlag:
         value = cfg.LEDGER_INTEGRITY
         assert isinstance(value, bool)
 
-    def test_default_on(self):
-        """LEDGER_INTEGRITY defaults to True (safe for read-mostly)."""
+    def test_default_off(self):
+        """v-ledger-integrity (engine review): LEDGER_INTEGRITY defaults to False.
+        
+        Requires migration script (scripts/migrate_ledger_integrity.py) before enabling.
+        """
         import os
         from core.config import Config
         
@@ -677,8 +754,8 @@ class TestConfigFlag:
         old_val = os.environ.pop("LEDGER_INTEGRITY", None)
         try:
             cfg = Config()
-            # Default should be True per the docstring
-            assert cfg.LEDGER_INTEGRITY is True
+            # Default should be False (requires migration)
+            assert cfg.LEDGER_INTEGRITY is False
         finally:
             if old_val is not None:
                 os.environ["LEDGER_INTEGRITY"] = old_val
@@ -846,3 +923,221 @@ class TestApiTradesEndpoint:
         assert "initial_stop" in routes_src
         assert "is_hands_off" in routes_src
         assert "is_external" in routes_src
+
+
+class TestEngineReviewFixes:
+    """v-ledger-integrity-2026-09-24: tests for engine review fixes."""
+
+    def test_exit_reason_raw_preserved(self):
+        """Engine review fix #6: raw exit reason is preserved."""
+        from core.ledger_integrity import build_trade_ledger_entry
+        from dataclasses import dataclass
+        
+        @dataclass
+        class MockPos:
+            symbol: str = "TSLA"
+            side: str = "long"
+            entry_price: float = 200.0
+            quantity: int = 10
+            stop_loss: float = 195.0
+            take_profit: float = 210.0
+            entry_time: datetime = None
+            reasoning: dict = None
+            managed_by_bot: bool = True
+            
+            def __post_init__(self):
+                if self.entry_time is None:
+                    self.entry_time = datetime.now() - timedelta(hours=1)
+                if self.reasoning is None:
+                    self.reasoning = {"strategy": "test", "atr": 3.0}
+        
+        entry = build_trade_ledger_entry(
+            position=MockPos(),
+            exit_price=190.0,
+            exit_time=datetime.now(),
+            exit_reason="trailing_stop_atr_hit",
+            pnl=-100.0,
+            pnl_pct=-5.0,
+        )
+        
+        # Raw exit reason should be preserved
+        assert entry.exit_reason_raw == "trailing_stop_atr_hit"
+
+    def test_trailing_stop_atr_not_collapsed(self):
+        """Engine review fix #6: trailing_stop_atr not collapsed to stop_loss."""
+        from core.ledger_integrity import normalize_exit_reason
+        
+        # trailing_stop_atr should stay distinct
+        assert normalize_exit_reason("trailing_stop_atr") == "trailing_stop_atr"
+        assert normalize_exit_reason("trailing_stop_atr_hit") == "trailing_stop_atr"
+        assert normalize_exit_reason("trailing_atr_stop") == "trailing_stop_atr"
+        
+        # Regular stop_loss should still work
+        assert normalize_exit_reason("stop_loss_hit") == "stop_loss"
+
+    def test_external_close_preserved(self):
+        """Engine review fix #7: external_close not renamed to external_reconcile."""
+        from core.ledger_integrity import normalize_exit_reason
+        
+        # external_close should stay as external_close
+        assert normalize_exit_reason("external_close") == "external_close"
+
+    def test_migration_script_exists(self):
+        """Engine review fix #2: standalone migration script exists."""
+        from pathlib import Path
+        
+        script_path = REPO_ROOT / "scripts" / "migrate_ledger_integrity.py"
+        assert script_path.exists()
+        
+        content = script_path.read_text()
+        assert "SAVEPOINT" in content  # Uses SAVEPOINT per column
+        assert "lock_timeout" in content  # Uses lock_timeout
+        assert "statement_timeout" in content  # Uses statement_timeout
+
+    def test_db_logger_has_exit_reason_raw(self):
+        """log_trade_v2 accepts exit_reason_raw parameter."""
+        from data_providers.db_logger import DbLogger
+        import inspect
+        
+        sig = inspect.signature(DbLogger.log_trade_v2)
+        params = list(sig.parameters.keys())
+        
+        assert "exit_reason_raw" in params
+
+    def test_no_default_minus_one_r_for_losses(self):
+        """Engine review fix #3: no -1R default for losses with unknown risk."""
+        from core.ledger_integrity import build_broker_orphan_entry
+        
+        # Orphan with no stop/ATR should have None R, not -1R
+        entry = build_broker_orphan_entry(
+            symbol="TEST",
+            side="long",
+            entry_price=100.0,
+            exit_price=95.0,  # Loss
+            quantity=100,
+            entry_time=datetime.now() - timedelta(hours=1),
+            exit_time=datetime.now(),
+            exit_reason="external_close",
+            original_stop=None,  # No stop
+            atr=None,  # No ATR
+        )
+        
+        assert entry.pnl < 0  # It's a loss
+        assert entry.pnl_r is None  # R is unknown, not -1R
+
+    def test_orphan_uses_original_stop_for_r(self):
+        """Engine review fix #3: orphan R uses original_stop when available."""
+        from core.ledger_integrity import build_broker_orphan_entry
+        
+        entry = build_broker_orphan_entry(
+            symbol="TEST",
+            side="long",
+            entry_price=100.0,
+            exit_price=95.0,
+            quantity=100,
+            entry_time=datetime.now() - timedelta(hours=1),
+            exit_time=datetime.now(),
+            exit_reason="external_close",
+            original_stop=97.0,  # 3.0 risk per share
+        )
+        
+        # PnL = (95-100)*100 = -500
+        # Risk = 100-97 = 3.0 per share, 300 total
+        # R = -500/300 = -1.67
+        assert entry.initial_stop == 97.0
+        assert entry.initial_risk_per_share == 3.0
+        expected_r = round(-5.0 / 3.0, 4)
+        assert entry.pnl_r == expected_r
+
+    def test_orphan_derives_is_external_from_prior_position(self):
+        """Engine review fix #3: is_external derived from prior position metadata."""
+        from core.ledger_integrity import build_broker_orphan_entry
+        
+        # Bot-managed position that got orphaned should be broker_orphan, not external
+        entry_managed = build_broker_orphan_entry(
+            symbol="TEST",
+            side="long",
+            entry_price=100.0,
+            exit_price=110.0,
+            quantity=100,
+            entry_time=datetime.now() - timedelta(hours=1),
+            exit_time=datetime.now(),
+            managed_by_bot=True,
+        )
+        assert entry_managed.source == "broker_orphan"
+        assert entry_managed.is_external is False
+        
+        # Unmanaged position should be external
+        entry_unmanaged = build_broker_orphan_entry(
+            symbol="TEST",
+            side="long",
+            entry_price=100.0,
+            exit_price=110.0,
+            quantity=100,
+            entry_time=datetime.now() - timedelta(hours=1),
+            exit_time=datetime.now(),
+            managed_by_bot=False,
+        )
+        assert entry_unmanaged.source == "external"
+        assert entry_unmanaged.is_external is True
+
+
+class TestTimestampDeduplication:
+    """Tests for timestamp normalization in deduplication."""
+
+    def test_dedupe_normalizes_to_et(self):
+        """Timestamps are normalized to ET for deduplication."""
+        from api.routes import _dedupe_trades_with_broker_fills
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        
+        et_tz = ZoneInfo("America/New_York")
+        utc_tz = ZoneInfo("UTC")
+        
+        # Same moment in time expressed differently
+        utc_time = datetime(2026, 9, 24, 14, 30, 0, tzinfo=utc_tz)  # 10:30 ET
+        et_time = datetime(2026, 9, 24, 10, 30, 0, tzinfo=et_tz)   # 10:30 ET
+        naive_time = datetime(2026, 9, 24, 14, 30, 0)              # Assumed UTC, 10:30 ET
+        
+        # DB trade with UTC timestamp
+        db_trades = [{
+            "symbol": "TEST",
+            "exit_time": utc_time.isoformat(),
+            "pnl": 100.0,
+        }]
+        
+        # Broker fill with ET timestamp - should be recognized as same trade
+        broker_fills = [{
+            "symbol": "TEST",
+            "exit_time": et_time.isoformat(),
+            "pnl": 100.0,
+        }]
+        
+        result = _dedupe_trades_with_broker_fills(db_trades, broker_fills, frozenset())
+        
+        # Should only have 1 trade (not duplicated)
+        assert len(result) == 1
+        
+    def test_dedupe_handles_z_suffix(self):
+        """Timestamps with Z suffix are handled correctly."""
+        from api.routes import _dedupe_trades_with_broker_fills
+        from datetime import datetime
+        
+        # DB trade with Z suffix
+        db_trades = [{
+            "symbol": "TEST",
+            "exit_time": "2026-09-24T14:30:00Z",
+            "pnl": 100.0,
+        }]
+        
+        # Broker fill with +00:00 suffix - same time
+        broker_fills = [{
+            "symbol": "TEST",
+            "exit_time": "2026-09-24T14:30:00+00:00",
+            "pnl": 100.0,
+        }]
+        
+        result = _dedupe_trades_with_broker_fills(db_trades, broker_fills, frozenset())
+        
+        # Should only have 1 trade (not duplicated)
+        assert len(result) == 1

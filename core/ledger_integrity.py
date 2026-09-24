@@ -32,8 +32,8 @@ Setup Types:
   - 'orb': opening range breakout
   - 'unknown': pattern not recorded
 
-Config flag: LEDGER_INTEGRITY (default True)
-Safe off-path: set LEDGER_INTEGRITY=0 to preserve pre-PR1 behavior.
+Config flag: LEDGER_INTEGRITY (default False - requires migration)
+Enable: set LEDGER_INTEGRITY=1 after running scripts/migrate_ledger_integrity.py
 """
 from __future__ import annotations
 
@@ -48,6 +48,7 @@ logger = logging.getLogger("TradingBot")
 EXIT_REASONS = frozenset({
     "take_profit",
     "stop_loss", 
+    "trailing_stop_atr",  # v-ledger-integrity: keep separate from stop_loss
     "proactive_macd",
     "proactive_rsi",
     "open_desk",
@@ -97,7 +98,8 @@ class TradeLedgerEntry:
     pnl: float
     pnl_pct: float
     pnl_r: Optional[float]  # P&L in R-multiples
-    exit_reason: str
+    exit_reason: str  # Normalized exit reason
+    exit_reason_raw: Optional[str]  # v-ledger-integrity: preserve raw exit reason
     setup_type: str
     source: str  # 'bot', 'broker_orphan', 'external'
     hold_time_seconds: int
@@ -131,6 +133,7 @@ class TradeLedgerEntry:
             "pnl_pct": self.pnl_pct,
             "pnl_r": self.pnl_r,
             "exit_reason": self.exit_reason,
+            "exit_reason_raw": self.exit_reason_raw,
             "setup_type": self.setup_type,
             "source": self.source,
             "hold_time_seconds": self.hold_time_seconds,
@@ -290,15 +293,22 @@ def normalize_exit_reason(raw_reason: Optional[str]) -> str:
     """Normalize exit reason to standard vocabulary.
     
     Maps various exit reason strings to canonical forms.
+    
+    v-ledger-integrity (engine review fix #6): don't collapse trailing_stop_atr
+    to stop_loss. Keep it as a distinct exit reason.
     """
     if not raw_reason:
         return "unknown"
     
     reason = str(raw_reason).lower().strip()
     
-    # Direct matches
+    # Direct matches - return as-is if already a standard reason
     if reason in EXIT_REASONS:
         return reason
+    
+    # v-ledger-integrity (engine review fix #6): keep trailing_stop_atr distinct
+    if "trailing" in reason and ("stop" in reason or "atr" in reason):
+        return "trailing_stop_atr"
     
     # Mappings
     if "take_profit" in reason or "tp" in reason or "target" in reason:
@@ -315,7 +325,7 @@ def normalize_exit_reason(raw_reason: Optional[str]) -> str:
         return "open_desk"
     if "flatten" in reason or "day_trade_flatten" in reason:
         return "flatten_hour"
-    if "external" in reason:
+    if "external" in reason and "close" in reason:
         return "external_close"
     if "time" in reason and ("decay" in reason or "stop" in reason):
         return "time_stop"
@@ -326,6 +336,7 @@ def normalize_exit_reason(raw_reason: Optional[str]) -> str:
     if "reconcile" in reason:
         return "external_reconcile"
     
+    # Return the original if no mapping found
     return reason
 
 
@@ -500,6 +511,7 @@ def build_trade_ledger_entry(
         pnl_pct=pnl_pct,
         pnl_r=pnl_r,
         exit_reason=normalized_reason,
+        exit_reason_raw=exit_reason,  # v-ledger-integrity: preserve raw exit reason
         setup_type=setup_type,
         source=source,
         hold_time_seconds=hold_time,
@@ -534,16 +546,26 @@ def build_broker_orphan_entry(
     quantity: int,
     entry_time: datetime,
     exit_time: datetime,
-    exit_reason: str = "external_reconcile",
+    exit_reason: str = "external_close",
     hands_off_denylist: Optional[frozenset] = None,
     strategy: Optional[str] = None,
     atr: Optional[float] = None,
+    original_stop: Optional[float] = None,
+    original_tp: Optional[float] = None,
+    managed_by_bot: Optional[bool] = None,
+    is_long_term: bool = False,
+    prior_is_external: bool = False,
 ) -> TradeLedgerEntry:
     """Build a TradeLedgerEntry for a broker orphan fill.
     
     Broker orphans are fills that happened at the broker (stop/TP hit,
     manual close) but weren't recorded through the normal bot exit path.
     These are discovered during position reconciliation.
+    
+    v-ledger-integrity-2026-09-24 (engine review fix):
+      - Derive is_external from prior position metadata (managed_by_bot, is_long_term, prior_is_external)
+      - Use original_stop when available for accurate R computation
+      - Never default losses to -1R; use None if risk is unknown
     
     Args:
         symbol: Stock symbol
@@ -553,13 +575,18 @@ def build_broker_orphan_entry(
         quantity: Shares filled
         entry_time: Entry timestamp (from prior position or estimate)
         exit_time: Fill timestamp from broker
-        exit_reason: Why the fill happened (default 'external_reconcile')
+        exit_reason: Why the fill happened (default 'external_close')
         hands_off_denylist: Set of hands-off symbols
         strategy: Strategy that opened the position (if known)
         atr: ATR at entry for R computation
+        original_stop: Original stop from prior position (for accurate R)
+        original_tp: Original take-profit from prior position
+        managed_by_bot: Whether the prior position was managed by the bot
+        is_long_term: Whether this was a long-term position (outside bot stats)
+        prior_is_external: Whether the prior position was already marked external
     
     Returns:
-        TradeLedgerEntry with source='broker_orphan'
+        TradeLedgerEntry with source='broker_orphan' or 'external'
     """
     if hands_off_denylist is None:
         hands_off_denylist = frozenset({"MU", "HQGE", "SPCX"})
@@ -572,24 +599,37 @@ def build_broker_orphan_entry(
     pnl = pnl_per_share * quantity
     pnl_pct = (pnl_per_share / entry_price * 100) if entry_price > 0 else 0
     
-    # Compute R with ATR fallback (no initial_stop available for orphans)
+    # v-ledger-integrity (engine review): use original_stop when available
     pnl_r, initial_risk = compute_r_multiple(
         side=side,
         entry_price=entry_price,
         exit_price=exit_price,
-        initial_stop=None,
+        initial_stop=original_stop,
         stop_loss=None,
         atr=atr,
     )
-    
-    # For broker orphans where we hit what looks like a stop, assume R=-1
-    # This is a convention since we don't have the exact stop level
-    normalized_reason = normalize_exit_reason(exit_reason)
-    if pnl_r is None and pnl < 0:
-        pnl_r = -1.0  # Convention for stop hit without known stop level
+    # v-ledger-integrity (engine review): NEVER default losses to -1R.
+    # If we can't compute R, leave it as None (unknown).
+    # The -1R convention was wrong because we don't know the actual risk.
     
     hold_time = compute_hold_time_seconds(entry_time, exit_time)
     is_hands_off = symbol.upper() in hands_off_denylist
+    
+    # v-ledger-integrity (engine review): derive is_external from prior position metadata.
+    # A position is external/not counted in bot stats if:
+    #   - Prior position was already external
+    #   - Prior position was a long-term position (SNAP-type)
+    #   - Prior position was NOT managed by the bot (and managed_by_bot is explicitly False)
+    #   - Symbol is in the hands-off denylist
+    is_external = (
+        prior_is_external
+        or is_long_term
+        or (managed_by_bot is False)
+    )
+    
+    # Determine source: if it was a bot-managed position, source is broker_orphan.
+    # If it was external/unmanaged, source is external.
+    source = "external" if is_external else "broker_orphan"
     
     return TradeLedgerEntry(
         symbol=symbol,
@@ -603,12 +643,13 @@ def build_broker_orphan_entry(
         pnl=pnl,
         pnl_pct=pnl_pct,
         pnl_r=pnl_r,
-        exit_reason=normalized_reason,
-        setup_type="unknown",  # No reasoning for orphans
-        source="broker_orphan",
+        exit_reason=exit_reason,  # Keep raw exit reason (engine review fix #6, #7)
+        exit_reason_raw=exit_reason,  # v-ledger-integrity: both are raw for orphans
+        setup_type="unknown",
+        source=source,
         hold_time_seconds=hold_time,
-        initial_stop=None,
-        initial_tp=None,
+        initial_stop=original_stop,
+        initial_tp=original_tp,
         initial_risk_per_share=initial_risk,
         atr_at_entry=atr,
         stop_loss=None,
@@ -617,13 +658,16 @@ def build_broker_orphan_entry(
         meta_proba=None,
         kelly_fraction=None,
         scaled_out=False,
-        mode="live",  # Broker orphans are always live
+        mode="live",
         is_hands_off=is_hands_off,
-        is_external=False,  # Not external, just orphaned from bot tracking
+        is_external=is_external,
         reasoning={
-            "source": "broker_orphan",
+            "source": source,
             "reconcile_reason": exit_reason,
             "atr": atr,
+            "original_stop": original_stop,
+            "managed_by_bot": managed_by_bot,
+            "is_long_term": is_long_term,
         },
     )
 

@@ -1472,7 +1472,17 @@ class DbLogger:
         await self._ensure_ledger_integrity_columns_impl()
 
     async def _ensure_ledger_integrity_columns_impl(self) -> None:
-        """Internal impl: add ledger integrity columns to bot_trades."""
+        """Internal impl: add ledger integrity columns to bot_trades.
+        
+        v-ledger-integrity-2026-09-24 (engine review fix):
+          - Uses SAVEPOINT per column so one failure doesn't roll back all
+          - Uses lock_timeout (3s) and statement_timeout (30s)
+          - Skips index creation (use scripts/migrate_ledger_integrity.py for CONCURRENTLY)
+          - Idempotent: ADD COLUMN IF NOT EXISTS
+        
+        For production, run scripts/migrate_ledger_integrity.py in a quiet window
+        which creates indexes with CONCURRENTLY.
+        """
         columns_to_add = [
             ("initial_stop", "REAL"),
             ("initial_tp", "REAL"),
@@ -1483,30 +1493,39 @@ class DbLogger:
             ("source", "TEXT DEFAULT 'bot'"),
             ("is_hands_off", "BOOLEAN DEFAULT FALSE"),
             ("is_external", "BOOLEAN DEFAULT FALSE"),
+            ("exit_reason_raw", "TEXT"),  # v-ledger-integrity: keep raw exit reason
         ]
+        added = 0
+        skipped = 0
+        failed = 0
         try:
             async with self._engine.begin() as conn:
+                await conn.execute(text("SET LOCAL lock_timeout = '3s'"))
+                await conn.execute(text("SET LOCAL statement_timeout = '30s'"))
+                
                 for col_name, col_type in columns_to_add:
+                    savepoint = f"sp_{col_name}"
                     try:
+                        await conn.execute(text(f"SAVEPOINT {savepoint}"))
                         await conn.execute(text(f"""
                             ALTER TABLE bot_trades
                             ADD COLUMN IF NOT EXISTS {col_name} {col_type}
                         """))
+                        await conn.execute(text(f"RELEASE SAVEPOINT {savepoint}"))
+                        added += 1
                     except Exception as e:
-                        if "already exists" not in str(e).lower():
+                        await conn.execute(text(f"ROLLBACK TO SAVEPOINT {savepoint}"))
+                        if "already exists" in str(e).lower():
+                            skipped += 1
+                        else:
+                            failed += 1
                             logger.debug("ledger_integrity_column_add col=%s err=%s", col_name, e)
                 
-                # Add indexes for common queries
-                await conn.execute(text("""
-                    CREATE INDEX IF NOT EXISTS idx_bot_trades_source
-                    ON bot_trades (source)
-                """))
-                await conn.execute(text("""
-                    CREATE INDEX IF NOT EXISTS idx_bot_trades_setup_type
-                    ON bot_trades (setup_type)
-                """))
-                
-                logger.info("ledger_integrity_columns_ensured")
+                logger.info(
+                    "ledger_integrity_columns_ensured added=%d skipped=%d failed=%d "
+                    "(run scripts/migrate_ledger_integrity.py for indexes)",
+                    added, skipped, failed
+                )
         except Exception as exc:
             logger.warning("db_logger_ensure_ledger_integrity_columns_error err=%s", exc)
 
@@ -1533,6 +1552,7 @@ class DbLogger:
         initial_risk_per_share: float | None = None,
         is_hands_off: bool = False,
         is_external: bool = False,
+        exit_reason_raw: str | None = None,  # v-ledger-integrity: raw exit reason
         # Existing fields
         atr_at_entry: float | None = None,
         stop_loss: float | None = None,
@@ -1553,6 +1573,7 @@ class DbLogger:
           - hold_time_seconds: duration held
           - initial_stop/tp/risk: immutable entry values
           - is_hands_off/is_external: exclusion flags
+          - exit_reason_raw: original exit reason before normalization
         
         Falls back to log_trade if ledger integrity columns don't exist.
         """
@@ -1565,7 +1586,7 @@ class DbLogger:
             entry_price, exit_price, quantity, pnl, pnl_pct,
             exit_reason, pnl_r, setup_type, source, hold_time_seconds,
             initial_stop, initial_tp, initial_risk_per_share,
-            is_hands_off, is_external, atr_at_entry, stop_loss, take_profit,
+            is_hands_off, is_external, exit_reason_raw, atr_at_entry, stop_loss, take_profit,
             confidence, meta_proba, kelly_fraction, scaled_out, mode, reasoning,
         ):
             return
@@ -1574,7 +1595,7 @@ class DbLogger:
             entry_price, exit_price, quantity, pnl, pnl_pct,
             exit_reason, pnl_r, setup_type, source, hold_time_seconds,
             initial_stop, initial_tp, initial_risk_per_share,
-            is_hands_off, is_external, atr_at_entry, stop_loss, take_profit,
+            is_hands_off, is_external, exit_reason_raw, atr_at_entry, stop_loss, take_profit,
             confidence, meta_proba, kelly_fraction, scaled_out, mode, reasoning,
         )
 
@@ -1600,6 +1621,7 @@ class DbLogger:
         initial_risk_per_share: float | None,
         is_hands_off: bool,
         is_external: bool,
+        exit_reason_raw: str | None,
         atr_at_entry: float | None,
         stop_loss: float | None,
         take_profit: float | None,
@@ -1623,7 +1645,7 @@ class DbLogger:
                              mode, reasoning_json,
                              pnl_r, setup_type, source, hold_time_seconds,
                              initial_stop, initial_tp, initial_risk_per_share,
-                             is_hands_off, is_external)
+                             is_hands_off, is_external, exit_reason_raw)
                         VALUES
                             (:symbol, :side, :strategy, :entry_time, :exit_time,
                              :entry_price, :exit_price, :quantity, :pnl, :pnl_pct,
@@ -1632,7 +1654,7 @@ class DbLogger:
                              :mode, :reasoning_json,
                              :pnl_r, :setup_type, :source, :hold_time_seconds,
                              :initial_stop, :initial_tp, :initial_risk_per_share,
-                             :is_hands_off, :is_external)
+                             :is_hands_off, :is_external, :exit_reason_raw)
                     """),
                     {
                         "symbol": symbol,
@@ -1664,6 +1686,7 @@ class DbLogger:
                         "initial_risk_per_share": initial_risk_per_share,
                         "is_hands_off": is_hands_off,
                         "is_external": is_external,
+                        "exit_reason_raw": exit_reason_raw,
                     },
                 )
         except Exception as exc:

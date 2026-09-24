@@ -4244,6 +4244,7 @@ class TradingEngineWithCommentary:
                 )
 
                 # v-ledger-integrity-2026-09-24: use log_trade_v2 for broker orphans
+                # Engine review: derive is_external from prior position metadata
                 if Config().LEDGER_INTEGRITY:
                     from core.ledger_integrity import build_broker_orphan_entry
                     entry = build_broker_orphan_entry(
@@ -4254,10 +4255,16 @@ class TradingEngineWithCommentary:
                         quantity=int(quantity),
                         entry_time=entry_time,
                         exit_time=exit_time,
-                        exit_reason="external_reconcile",
+                        exit_reason="external_close",  # engine review: keep external_close, not external_reconcile
                         hands_off_denylist=Config().HANDS_OFF_DENYLIST,
                         strategy=strategy,
                         atr=reasoning.get("atr") if isinstance(reasoning, dict) else None,
+                        # Engine review: pass prior position metadata for accurate classification
+                        original_stop=getattr(prior_pos, "original_stop", None) or getattr(prior_pos, "initial_stop", None),
+                        original_tp=getattr(prior_pos, "take_profit", None),
+                        managed_by_bot=getattr(prior_pos, "managed_by_bot", None),
+                        is_long_term=getattr(prior_pos, "is_long_term", False),
+                        prior_is_external=getattr(prior_pos, "is_external", False),
                     )
                     await self.db_logger.log_trade_v2(**entry.to_db_params())
                 else:
@@ -4697,12 +4704,19 @@ class TradingEngineWithCommentary:
                 logger.warning("snapshot_table_create_failed: %s", exc)
 
         # v-ledger-integrity-2026-09-24: ensure ledger integrity columns exist
+        # Engine review: run OFF critical path as fire-and-forget background task.
+        # For production: run scripts/migrate_ledger_integrity.py in a quiet window.
         if self.db_logger is not None and Config().LEDGER_INTEGRITY:
-            try:
-                await self.db_logger.ensure_ledger_integrity_columns()
-                logger.info("ledger_integrity_columns_ready")
-            except Exception as exc:
-                logger.warning("ledger_integrity_columns_create_failed: %s", exc)
+            async def _bg_ensure_ledger_columns():
+                try:
+                    await self.db_logger.ensure_ledger_integrity_columns()
+                    logger.info("ledger_integrity_columns_ready")
+                except Exception as exc:
+                    logger.warning(
+                        "ledger_integrity_columns_create_failed: %s "
+                        "(run scripts/migrate_ledger_integrity.py manually)", exc
+                    )
+            asyncio.create_task(_bg_ensure_ledger_columns())
 
         # v-startup-schwab-sync-2026-04-30: previously this branch only
         # ran in LIVE mode, so SIM-mode dashboards saw the default
@@ -9280,28 +9294,41 @@ class TradingEngineWithCommentary:
                         else (position.entry_price - exit_price) / position.entry_price * 100)
             try:
                 # v-ledger-integrity-2026-09-24: use log_trade_v2 for R-tracking
+                # Engine review fix: fallback to legacy log_trade if build_trade_ledger_entry raises
+                use_legacy = False
                 if Config().LEDGER_INTEGRITY:
-                    from core.ledger_integrity import (
-                        build_trade_ledger_entry,
-                        normalize_exit_reason,
-                    )
-                    entry = build_trade_ledger_entry(
-                        position=position,
-                        exit_price=exit_price,
-                        exit_time=datetime.now(),
-                        exit_reason=reason,
-                        pnl=pnl,
-                        pnl_pct=round(pnl_pct, 4),
-                        mode=self.mode.value,
-                        source="bot",
-                        hands_off_denylist=Config().HANDS_OFF_DENYLIST,
-                    )
-                    asyncio.get_event_loop().create_task(
-                        self.db_logger.log_trade_v2(
-                            **entry.to_db_params()
+                    try:
+                        from core.ledger_integrity import (
+                            build_trade_ledger_entry,
+                            normalize_exit_reason,
                         )
-                    )
+                        entry = build_trade_ledger_entry(
+                            position=position,
+                            exit_price=exit_price,
+                            exit_time=datetime.now(),
+                            exit_reason=reason,
+                            pnl=pnl,
+                            pnl_pct=round(pnl_pct, 4),
+                            mode=self.mode.value,
+                            source="bot",
+                            hands_off_denylist=Config().HANDS_OFF_DENYLIST,
+                        )
+                        asyncio.get_event_loop().create_task(
+                            self.db_logger.log_trade_v2(
+                                **entry.to_db_params()
+                            )
+                        )
+                    except Exception as ledger_exc:
+                        # Fallback to legacy log_trade so trade row is never lost
+                        logger.warning(
+                            "build_trade_ledger_entry failed for %s, falling back to legacy: %s",
+                            position.symbol, ledger_exc,
+                        )
+                        use_legacy = True
                 else:
+                    use_legacy = True
+                
+                if use_legacy:
                     asyncio.get_event_loop().create_task(
                         self.db_logger.log_trade(
                             symbol=position.symbol,

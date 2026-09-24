@@ -1854,7 +1854,7 @@ class Config:
         """v-ledger-integrity-2026-09-24 (PR1): comprehensive trade ledger
         integrity for accurate R-multiple computation and statistics.
 
-        When True (default):
+        When True:
           1. Broker-orphan fills (broker stops/TPs that fired outside bot
              management) are reconciled into bot_trades with source=broker_orphan
           2. TRUE initial stop/TP/risk are stored at entry as immutable fields
@@ -1865,18 +1865,17 @@ class Config:
           4. HANDS_OFF_DENYLIST symbols (MU, HQGE, SPCX) and external/unmanaged
              positions are labeled and excluded from bot statistics
 
-        The feature is read-mostly and safe to enable. When off, existing
-        behavior is preserved: stop_loss may equal entry (R undefined),
+        DEFAULT OFF: This feature requires migration (see scripts/migrate_ledger_integrity.py).
+        When off, existing behavior is preserved: stop_loss may equal entry (R undefined),
         broker orphans may be lost, and initial risk is not tracked.
 
-        SAFE OFF-PATH: Set LEDGER_INTEGRITY=0 to disable entirely and
-        preserve pre-PR1 behavior.
+        ENABLE: Set LEDGER_INTEGRITY=1 after running the migration script.
 
         Override via env LEDGER_INTEGRITY or yaml trading.ledger_integrity."""
         env_val = os.getenv("LEDGER_INTEGRITY")
         if env_val is not None:
             return env_val.lower() in ("1", "true", "yes", "on")
-        return bool(self.manager.get('trading.ledger_integrity', True))
+        return bool(self.manager.get('trading.ledger_integrity', False))
 
     @property
     def ENABLE_MANAGED_BY_BOT_PERSIST(self) -> bool:
