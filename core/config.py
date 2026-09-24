@@ -2875,6 +2875,76 @@ class Config:
             'trading.dt_open30_cont_index_confirm_live_enforce', False
         ))
 
+    # ══════════════════════════════════════════════════════════════════════════
+    # v-open30-cont-rs-from-open-2026-09-24: RTH-open RS floor gate for
+    # opening_30 continuation longs. Kiddo Alpaca tape reconstruction RCA.
+    #
+    # Prior-close RS can mask intraday deterioration:
+    #   Symbol +3% vs prior close, +1% vs today's open
+    #   SPY +2% vs today's open
+    #   → Prior-close RS shows +1.5% (outperforming)
+    #   → RTH-open RS shows -1.0% (actually underperforming today)
+    #
+    # This gate applies the SAME MOMENTUM_MIN_RS_VS_SPY threshold but
+    # using RTH-open as the baseline instead of prior close.
+    #
+    # Scope: continuation + opening_30 only. Stacks AFTER index confirm.
+    # ══════════════════════════════════════════════════════════════════════════
+
+    @property
+    def DT_OPEN30_CONT_RS_FROM_OPEN(self) -> bool:
+        """v-open30-cont-rs-from-open-2026-09-24: enable RTH-open RS floor gate
+        for opening_30 continuation longs.
+
+        When True, after the index confirm gate passes, the day_trade_momentum
+        strategy also checks RTH-open RS:
+          - Calculate: (sym_last/sym_rth_open - 1) - (spy_last/spy_rth_open - 1)
+          - Require: rs_from_open >= MOMENTUM_MIN_RS_VS_SPY
+
+        This catches intraday deterioration that prior-close RS misses.
+
+        When the predicate FAILS:
+          - If DT_OPEN30_CONT_RS_FROM_OPEN_LIVE_ENFORCE=False (default):
+            Shadow mode — log would_skip but allow the trade.
+          - If DT_OPEN30_CONT_RS_FROM_OPEN_LIVE_ENFORCE=True:
+            Live enforcement — actually skip/block the entry.
+
+        SCOPE LIMITS: same as DT_OPEN30_CONT_INDEX_CONFIRM (continuation +
+        opening_30 only). Does NOT replace prior-close RS gate (both run).
+
+        SAFE OFF-PATH: Set DT_OPEN30_CONT_RS_FROM_OPEN=0 to disable.
+        Default False (OFF). Set via env DT_OPEN30_CONT_RS_FROM_OPEN=1
+        or trading.dt_open30_cont_rs_from_open: true in Config.yaml."""
+        env_val = os.getenv("DT_OPEN30_CONT_RS_FROM_OPEN")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.dt_open30_cont_rs_from_open', False))
+
+    @property
+    def DT_OPEN30_CONT_RS_FROM_OPEN_LIVE_ENFORCE(self) -> bool:
+        """v-open30-cont-rs-from-open-2026-09-24: live enforcement for
+        the RTH-open RS floor gate.
+
+        When True AND DT_OPEN30_CONT_RS_FROM_OPEN=True:
+          - If rs_from_open < MOMENTUM_MIN_RS_VS_SPY:
+            The entry is BLOCKED with reason 'open30_cont_rs_from_open_fail'.
+
+        When False (default) AND DT_OPEN30_CONT_RS_FROM_OPEN=True:
+          - Shadow mode: log would_skip but ALLOW the trade.
+
+        Requires DT_OPEN30_CONT_RS_FROM_OPEN=True to have any effect.
+
+        SAFE OFF-PATH: keep False (default) until Research confirms
+        shadow metrics pass Stage-A floors.
+        Default False. Set via env DT_OPEN30_CONT_RS_FROM_OPEN_LIVE_ENFORCE=1
+        or trading.dt_open30_cont_rs_from_open_live_enforce: true."""
+        env_val = os.getenv("DT_OPEN30_CONT_RS_FROM_OPEN_LIVE_ENFORCE")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get(
+            'trading.dt_open30_cont_rs_from_open_live_enforce', False
+        ))
+
     @property
     def MOMENTUM_MIN_VOLUME_RATIO(self) -> float:
         """Minimum volume ratio (vs 20-bar avg) for momentum entries.

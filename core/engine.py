@@ -7175,6 +7175,11 @@ class TradingEngineWithCommentary:
             "ai_software": {"PLTR", "SNOW", "AI", "PATH", "ASAN"},
             "social_media": {"META", "PINS", "SNAP", "GOOGL", "GOOG"},
             "streaming_media": {"NFLX", "DIS", "ROKU", "SPOT"},
+            # v-ai-infra-crypto-rail-2026-09-24: AI infrastructure + crypto rails
+            # cluster. These trade together on AI hype cycles and crypto moves.
+            # CRCL (Circle/USDC fintech), CRWV (Cerebras AI chips), NBIS (Nebius AI).
+            # Cap: 1 concurrent per cluster (tight correlation).
+            "ai_infra_crypto_rail": {"CRCL", "CRWV", "NBIS"},
         }
         # v-correlation-mode-isolated-2026-05-05: only consider positions
         # in the SAME trading mode as the incoming signal. Previously this

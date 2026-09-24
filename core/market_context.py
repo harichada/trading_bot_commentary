@@ -178,11 +178,19 @@ class MarketContext:
         """Convenience gate — strategies that want a binary
         permit/deny check can use this instead of reading regime
         directly. Allows long when regime is risk_on OR mixed
-        with mild SPY positive; blocks risk_off."""
+        with mild SPY positive; blocks risk_off.
+
+        v-allows-long-mixed-spy-red-2026-09-24: match docstring —
+        mixed regime + SPY day-red (spy_change_pct < 0) → skip.
+        Prior implementation allowed ALL mixed, missing the
+        "with mild SPY positive" clause in the docstring.
+        """
         if self.regime == "risk_off":
             return False
         if self.regime == "unknown":
             return True  # fail-open when we have no read
+        if self.regime == "mixed" and self.spy_change_pct < 0:
+            return False  # mixed + SPY day-red → skip
         return True
 
     @property
@@ -551,6 +559,7 @@ class SpyIndexContext:
     spy_session_vwap: Optional[float]  # Session VWAP (None if unavailable)
     spy_vs_vwap: Optional[float]       # spy_last - spy_session_vwap (None if VWAP unavailable)
     source: str                        # "cache" | "fresh" | "unavailable"
+    spy_rth_open: Optional[float] = None  # v-open30-cont-rs-from-open-2026-09-24: RTH open
     ts: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     @property
@@ -569,6 +578,18 @@ class SpyIndexContext:
     def passes_index_confirm(self) -> bool:
         """Index confirm predicate passes: SPY day-green AND above VWAP."""
         return self.is_day_green and self.is_above_vwap
+
+    @property
+    def spy_change_from_open(self) -> Optional[float]:
+        """v-open30-cont-rs-from-open-2026-09-24: SPY % change from RTH open.
+        
+        Returns: (spy_last / spy_rth_open - 1) * 100, or None if unavailable.
+        """
+        if self.spy_rth_open is None or self.spy_rth_open <= 0:
+            return None
+        if self.spy_last <= 0:
+            return None
+        return ((self.spy_last / self.spy_rth_open) - 1.0) * 100.0
 
 
 # Module-level cache for SPY session VWAP to avoid repeated bar fetches.
@@ -612,6 +633,9 @@ def get_spy_index_context(schwab_provider=None) -> SpyIndexContext:
       - SPY change vs prior close ≥ 0 (day-green)
       - SPY last ≥ session VWAP
 
+    v-open30-cont-rs-from-open-2026-09-24: also provides spy_rth_open for
+    the RTH-open RS floor gate.
+
     Uses MarketIndicesCache for change_pct and last price. Calculates
     session VWAP from SPY minute bars (cached with 60s TTL).
 
@@ -628,6 +652,7 @@ def get_spy_index_context(schwab_provider=None) -> SpyIndexContext:
     spy_change_pct = 0.0
     spy_last = 0.0
     spy_vwap: Optional[float] = None
+    spy_rth_open: Optional[float] = None
     source = "unavailable"
 
     # Get SPY change_pct and last from MarketIndicesCache
@@ -641,6 +666,15 @@ def get_spy_index_context(schwab_provider=None) -> SpyIndexContext:
             source = "cache"
     except Exception as exc:
         _logger.debug("get_spy_index_context: MarketIndicesCache failed: %s", exc)
+
+    # v-open30-cont-rs-from-open-2026-09-24: fetch SPY RTH open from Schwab quote
+    if schwab_provider is not None:
+        try:
+            spy_schwab_quote = schwab_provider.get_quote("SPY")
+            if spy_schwab_quote and spy_schwab_quote.get('open', 0) > 0:
+                spy_rth_open = float(spy_schwab_quote['open'])
+        except Exception as exc:
+            _logger.debug("get_spy_index_context: SPY RTH open fetch failed: %s", exc)
 
     # Get or calculate SPY session VWAP (cached)
     global _SPY_VWAP_CACHE
@@ -687,6 +721,7 @@ def get_spy_index_context(schwab_provider=None) -> SpyIndexContext:
         spy_session_vwap=round(spy_vwap, 2) if spy_vwap is not None else None,
         spy_vs_vwap=round(spy_vs_vwap, 4) if spy_vs_vwap is not None else None,
         source=source,
+        spy_rth_open=round(spy_rth_open, 2) if spy_rth_open is not None else None,
     )
 
 
@@ -694,3 +729,108 @@ def clear_spy_vwap_cache() -> None:
     """Clear the SPY VWAP cache (for tests)."""
     global _SPY_VWAP_CACHE
     _SPY_VWAP_CACHE = {}
+
+
+# ────────────────────────────────────────────────────────────────────
+# v-open30-cont-rs-from-open-2026-09-24: RTH-open RS floor gate helpers.
+#
+# Research RCA 2026-09-24 Kiddo Alpaca tape reconstruction:
+# Prior-close RS can mask same-day deterioration. A symbol +3% vs
+# prior close but only +1% vs today's RTH open while SPY is +2%
+# from open is actually UNDERPERFORMING intraday.
+#
+# This helper computes RS using RTH open as the baseline:
+#   rs_from_open = (sym_last/sym_rth_open - 1) - (spy_last/spy_rth_open - 1)
+# ────────────────────────────────────────────────────────────────────
+
+@dataclass(frozen=True)
+class RsFromOpenContext:
+    """RTH-open relative strength context for the RS floor gate."""
+    symbol: str
+    sym_last: float
+    sym_rth_open: Optional[float]
+    sym_change_from_open: Optional[float]  # % change from RTH open
+    spy_last: float
+    spy_rth_open: Optional[float]
+    spy_change_from_open: Optional[float]  # % change from RTH open
+    rs_from_open: Optional[float]          # sym_change - spy_change
+    rs_prior_close: float                  # Existing RS vs prior close (for comparison)
+    source: str                            # "schwab" | "partial" | "unavailable"
+    ts: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+
+    @property
+    def has_rs_from_open(self) -> bool:
+        """True if RTH-open RS is available for evaluation."""
+        return self.rs_from_open is not None
+
+
+def get_rs_from_open_context(
+    symbol: str,
+    sym_last: float,
+    rs_prior_close: float,
+    spy_ctx: SpyIndexContext,
+    schwab_provider=None,
+) -> RsFromOpenContext:
+    """Get RTH-open relative strength context for the RS floor gate.
+
+    v-open30-cont-rs-from-open-2026-09-24: computes RS using RTH open prices
+    instead of prior close. This catches intraday deterioration that
+    prior-close RS misses.
+
+    Formula:
+        sym_change_from_open = (sym_last / sym_rth_open - 1) * 100
+        spy_change_from_open = (spy_last / spy_rth_open - 1) * 100
+        rs_from_open = sym_change_from_open - spy_change_from_open
+
+    Fail-open: returns rs_from_open=None if RTH open prices are unavailable.
+    Caller should skip the gate check when rs_from_open is None.
+    """
+    import logging
+    _logger = logging.getLogger("TradingBot")
+
+    sym_rth_open: Optional[float] = None
+    sym_change_from_open: Optional[float] = None
+    spy_change_from_open: Optional[float] = None
+    rs_from_open: Optional[float] = None
+    source = "unavailable"
+
+    # Get symbol's RTH open from Schwab quote
+    if schwab_provider is not None:
+        try:
+            sym_quote = schwab_provider.get_quote(symbol)
+            if sym_quote and sym_quote.get('open', 0) > 0:
+                sym_rth_open = float(sym_quote['open'])
+                source = "schwab"
+        except Exception as exc:
+            _logger.debug(
+                "get_rs_from_open_context: symbol RTH open fetch failed for %s: %s",
+                symbol, exc
+            )
+
+    # Calculate symbol % change from RTH open
+    if sym_rth_open is not None and sym_rth_open > 0 and sym_last > 0:
+        sym_change_from_open = ((sym_last / sym_rth_open) - 1.0) * 100.0
+
+    # Get SPY % change from RTH open (from SpyIndexContext)
+    spy_change_from_open = spy_ctx.spy_change_from_open
+    spy_rth_open = spy_ctx.spy_rth_open
+    spy_last = spy_ctx.spy_last
+
+    # Calculate RS from open if both changes are available
+    if sym_change_from_open is not None and spy_change_from_open is not None:
+        rs_from_open = sym_change_from_open - spy_change_from_open
+    elif sym_change_from_open is not None:
+        source = "partial"
+
+    return RsFromOpenContext(
+        symbol=symbol,
+        sym_last=round(sym_last, 2),
+        sym_rth_open=round(sym_rth_open, 2) if sym_rth_open is not None else None,
+        sym_change_from_open=round(sym_change_from_open, 4) if sym_change_from_open is not None else None,
+        spy_last=round(spy_last, 2),
+        spy_rth_open=round(spy_rth_open, 2) if spy_rth_open is not None else None,
+        spy_change_from_open=round(spy_change_from_open, 4) if spy_change_from_open is not None else None,
+        rs_from_open=round(rs_from_open, 4) if rs_from_open is not None else None,
+        rs_prior_close=round(rs_prior_close, 4),
+        source=source,
+    )

@@ -104,6 +104,26 @@ class TestDayTradeHardSkipRiskOff:
                 mock_cfg_instance.MOMENTUM_MIN_VOLUME_RATIO = 1.5
                 mock_cfg_instance.DAY_TRADE_SIZE_MULTIPLIER = 0.5
                 mock_cfg_instance.DAY_TRADE_FLATTEN_HOUR = 15
+
+                mock_cfg_instance.DAY_TRADE_HARD_SKIP_OFF_HOURS = True
+
+                mock_cfg_instance.ENABLE_SAME_BASIS_RS = False
+
+                mock_cfg_instance.ENABLE_HARD_VETO_BREAKOUT_RSI70 = False
+
+                mock_cfg_instance.ENABLE_HARD_VETO_CONTINUATION_RSI70 = False
+
+                mock_cfg_instance.SHADOW_VETO_RSI_THRESHOLD = 70.0
+
+                mock_cfg_instance.ENABLE_SHADOW_VETO_CONTINUATION_RISKOFF = False
+
+                mock_cfg_instance.HANDS_OFF_DENYLIST = []
+
+                mock_cfg_instance.PINNED_DAY_TRADE_WATCHLIST = []
+
+                mock_cfg_instance.DT_OPEN30_CONT_INDEX_CONFIRM = False
+
+                mock_cfg_instance.DT_OPEN30_CONT_RS_FROM_OPEN = False
                 mock_cfg.return_value = mock_cfg_instance
                 
                 signal = await strategy.generate_signal_with_commentary(market_data)
@@ -236,6 +256,26 @@ class TestDayTradeHardSkipRiskOff:
                 mock_cfg_instance.MOMENTUM_MIN_VOLUME_RATIO = 1.5
                 mock_cfg_instance.DAY_TRADE_SIZE_MULTIPLIER = 0.5
                 mock_cfg_instance.DAY_TRADE_FLATTEN_HOUR = 15
+
+                mock_cfg_instance.DAY_TRADE_HARD_SKIP_OFF_HOURS = True
+
+                mock_cfg_instance.ENABLE_SAME_BASIS_RS = False
+
+                mock_cfg_instance.ENABLE_HARD_VETO_BREAKOUT_RSI70 = False
+
+                mock_cfg_instance.ENABLE_HARD_VETO_CONTINUATION_RSI70 = False
+
+                mock_cfg_instance.SHADOW_VETO_RSI_THRESHOLD = 70.0
+
+                mock_cfg_instance.ENABLE_SHADOW_VETO_CONTINUATION_RISKOFF = False
+
+                mock_cfg_instance.HANDS_OFF_DENYLIST = []
+
+                mock_cfg_instance.PINNED_DAY_TRADE_WATCHLIST = []
+
+                mock_cfg_instance.DT_OPEN30_CONT_INDEX_CONFIRM = False
+
+                mock_cfg_instance.DT_OPEN30_CONT_RS_FROM_OPEN = False
                 mock_cfg.return_value = mock_cfg_instance
                 
                 signal = await strategy.generate_signal_with_commentary(market_data)
@@ -293,6 +333,26 @@ class TestDayTradeHardSkipRiskOff:
                 mock_cfg_instance.MOMENTUM_MIN_VOLUME_RATIO = 1.5
                 mock_cfg_instance.DAY_TRADE_SIZE_MULTIPLIER = 0.5
                 mock_cfg_instance.DAY_TRADE_FLATTEN_HOUR = 15
+
+                mock_cfg_instance.DAY_TRADE_HARD_SKIP_OFF_HOURS = True
+
+                mock_cfg_instance.ENABLE_SAME_BASIS_RS = False
+
+                mock_cfg_instance.ENABLE_HARD_VETO_BREAKOUT_RSI70 = False
+
+                mock_cfg_instance.ENABLE_HARD_VETO_CONTINUATION_RSI70 = False
+
+                mock_cfg_instance.SHADOW_VETO_RSI_THRESHOLD = 70.0
+
+                mock_cfg_instance.ENABLE_SHADOW_VETO_CONTINUATION_RISKOFF = False
+
+                mock_cfg_instance.HANDS_OFF_DENYLIST = []
+
+                mock_cfg_instance.PINNED_DAY_TRADE_WATCHLIST = []
+
+                mock_cfg_instance.DT_OPEN30_CONT_INDEX_CONFIRM = False
+
+                mock_cfg_instance.DT_OPEN30_CONT_RS_FROM_OPEN = False
                 mock_cfg.return_value = mock_cfg_instance
                 
                 signal = await strategy.generate_signal_with_commentary(market_data)
@@ -355,6 +415,26 @@ class TestDayTradeHardSkipRiskOff:
                 mock_cfg_instance.MOMENTUM_MIN_VOLUME_RATIO = 1.5
                 mock_cfg_instance.DAY_TRADE_SIZE_MULTIPLIER = 0.5
                 mock_cfg_instance.DAY_TRADE_FLATTEN_HOUR = 15
+
+                mock_cfg_instance.DAY_TRADE_HARD_SKIP_OFF_HOURS = True
+
+                mock_cfg_instance.ENABLE_SAME_BASIS_RS = False
+
+                mock_cfg_instance.ENABLE_HARD_VETO_BREAKOUT_RSI70 = False
+
+                mock_cfg_instance.ENABLE_HARD_VETO_CONTINUATION_RSI70 = False
+
+                mock_cfg_instance.SHADOW_VETO_RSI_THRESHOLD = 70.0
+
+                mock_cfg_instance.ENABLE_SHADOW_VETO_CONTINUATION_RISKOFF = False
+
+                mock_cfg_instance.HANDS_OFF_DENYLIST = []
+
+                mock_cfg_instance.PINNED_DAY_TRADE_WATCHLIST = []
+
+                mock_cfg_instance.DT_OPEN30_CONT_INDEX_CONFIRM = False
+
+                mock_cfg_instance.DT_OPEN30_CONT_RS_FROM_OPEN = False
                 mock_cfg.return_value = mock_cfg_instance
                 
                 await strategy.generate_signal_with_commentary(market_data)
@@ -507,6 +587,26 @@ class TestMarketContextSizeNotFreeze:
                 mock_cfg_instance.MOMENTUM_MIN_VOLUME_RATIO = 1.5
                 mock_cfg_instance.DAY_TRADE_SIZE_MULTIPLIER = 0.5
                 mock_cfg_instance.DAY_TRADE_FLATTEN_HOUR = 15
+
+                mock_cfg_instance.DAY_TRADE_HARD_SKIP_OFF_HOURS = True
+
+                mock_cfg_instance.ENABLE_SAME_BASIS_RS = False
+
+                mock_cfg_instance.ENABLE_HARD_VETO_BREAKOUT_RSI70 = False
+
+                mock_cfg_instance.ENABLE_HARD_VETO_CONTINUATION_RSI70 = False
+
+                mock_cfg_instance.SHADOW_VETO_RSI_THRESHOLD = 70.0
+
+                mock_cfg_instance.ENABLE_SHADOW_VETO_CONTINUATION_RISKOFF = False
+
+                mock_cfg_instance.HANDS_OFF_DENYLIST = []
+
+                mock_cfg_instance.PINNED_DAY_TRADE_WATCHLIST = []
+
+                mock_cfg_instance.DT_OPEN30_CONT_INDEX_CONFIRM = False
+
+                mock_cfg_instance.DT_OPEN30_CONT_RS_FROM_OPEN = False
                 mock_cfg.return_value = mock_cfg_instance
                 
                 signal = await strategy.generate_signal_with_commentary(market_data)
@@ -618,6 +718,26 @@ class TestMomentumSignalGeneration:
                 mock_cfg_instance.MOMENTUM_MIN_VOLUME_RATIO = 1.5
                 mock_cfg_instance.DAY_TRADE_SIZE_MULTIPLIER = 0.5
                 mock_cfg_instance.DAY_TRADE_FLATTEN_HOUR = 15
+
+                mock_cfg_instance.DAY_TRADE_HARD_SKIP_OFF_HOURS = True
+
+                mock_cfg_instance.ENABLE_SAME_BASIS_RS = False
+
+                mock_cfg_instance.ENABLE_HARD_VETO_BREAKOUT_RSI70 = False
+
+                mock_cfg_instance.ENABLE_HARD_VETO_CONTINUATION_RSI70 = False
+
+                mock_cfg_instance.SHADOW_VETO_RSI_THRESHOLD = 70.0
+
+                mock_cfg_instance.ENABLE_SHADOW_VETO_CONTINUATION_RISKOFF = False
+
+                mock_cfg_instance.HANDS_OFF_DENYLIST = []
+
+                mock_cfg_instance.PINNED_DAY_TRADE_WATCHLIST = []
+
+                mock_cfg_instance.DT_OPEN30_CONT_INDEX_CONFIRM = False
+
+                mock_cfg_instance.DT_OPEN30_CONT_RS_FROM_OPEN = False
                 mock_cfg.return_value = mock_cfg_instance
                 
                 signal = await strategy.generate_signal_with_commentary(market_data)
@@ -672,6 +792,26 @@ class TestMomentumSignalGeneration:
                 mock_cfg_instance.MOMENTUM_MIN_VOLUME_RATIO = 1.5
                 mock_cfg_instance.DAY_TRADE_SIZE_MULTIPLIER = 0.5
                 mock_cfg_instance.DAY_TRADE_FLATTEN_HOUR = 15
+
+                mock_cfg_instance.DAY_TRADE_HARD_SKIP_OFF_HOURS = True
+
+                mock_cfg_instance.ENABLE_SAME_BASIS_RS = False
+
+                mock_cfg_instance.ENABLE_HARD_VETO_BREAKOUT_RSI70 = False
+
+                mock_cfg_instance.ENABLE_HARD_VETO_CONTINUATION_RSI70 = False
+
+                mock_cfg_instance.SHADOW_VETO_RSI_THRESHOLD = 70.0
+
+                mock_cfg_instance.ENABLE_SHADOW_VETO_CONTINUATION_RISKOFF = False
+
+                mock_cfg_instance.HANDS_OFF_DENYLIST = []
+
+                mock_cfg_instance.PINNED_DAY_TRADE_WATCHLIST = []
+
+                mock_cfg_instance.DT_OPEN30_CONT_INDEX_CONFIRM = False
+
+                mock_cfg_instance.DT_OPEN30_CONT_RS_FROM_OPEN = False
                 mock_cfg.return_value = mock_cfg_instance
                 
                 signal = await strategy.generate_signal_with_commentary(market_data)
@@ -778,6 +918,26 @@ class TestDayTradeSizeMultiplier:
                 mock_cfg_instance.MOMENTUM_MIN_VOLUME_RATIO = 1.5
                 mock_cfg_instance.DAY_TRADE_SIZE_MULTIPLIER = 0.5
                 mock_cfg_instance.DAY_TRADE_FLATTEN_HOUR = 15
+
+                mock_cfg_instance.DAY_TRADE_HARD_SKIP_OFF_HOURS = True
+
+                mock_cfg_instance.ENABLE_SAME_BASIS_RS = False
+
+                mock_cfg_instance.ENABLE_HARD_VETO_BREAKOUT_RSI70 = False
+
+                mock_cfg_instance.ENABLE_HARD_VETO_CONTINUATION_RSI70 = False
+
+                mock_cfg_instance.SHADOW_VETO_RSI_THRESHOLD = 70.0
+
+                mock_cfg_instance.ENABLE_SHADOW_VETO_CONTINUATION_RISKOFF = False
+
+                mock_cfg_instance.HANDS_OFF_DENYLIST = []
+
+                mock_cfg_instance.PINNED_DAY_TRADE_WATCHLIST = []
+
+                mock_cfg_instance.DT_OPEN30_CONT_INDEX_CONFIRM = False
+
+                mock_cfg_instance.DT_OPEN30_CONT_RS_FROM_OPEN = False
                 mock_cfg.return_value = mock_cfg_instance
                 
                 signal = await strategy.generate_signal_with_commentary(market_data)
@@ -881,6 +1041,26 @@ class TestRiskOffSizeReduction:
                 mock_cfg_instance.MOMENTUM_MIN_VOLUME_RATIO = 1.5
                 mock_cfg_instance.DAY_TRADE_SIZE_MULTIPLIER = 0.5
                 mock_cfg_instance.DAY_TRADE_FLATTEN_HOUR = 15
+
+                mock_cfg_instance.DAY_TRADE_HARD_SKIP_OFF_HOURS = True
+
+                mock_cfg_instance.ENABLE_SAME_BASIS_RS = False
+
+                mock_cfg_instance.ENABLE_HARD_VETO_BREAKOUT_RSI70 = False
+
+                mock_cfg_instance.ENABLE_HARD_VETO_CONTINUATION_RSI70 = False
+
+                mock_cfg_instance.SHADOW_VETO_RSI_THRESHOLD = 70.0
+
+                mock_cfg_instance.ENABLE_SHADOW_VETO_CONTINUATION_RISKOFF = False
+
+                mock_cfg_instance.HANDS_OFF_DENYLIST = []
+
+                mock_cfg_instance.PINNED_DAY_TRADE_WATCHLIST = []
+
+                mock_cfg_instance.DT_OPEN30_CONT_INDEX_CONFIRM = False
+
+                mock_cfg_instance.DT_OPEN30_CONT_RS_FROM_OPEN = False
                 mock_cfg.return_value = mock_cfg_instance
                 
                 signal = await strategy.generate_signal_with_commentary(market_data)
@@ -938,6 +1118,26 @@ class TestRiskOffSizeReduction:
                 mock_cfg_instance.MOMENTUM_MIN_VOLUME_RATIO = 1.5
                 mock_cfg_instance.DAY_TRADE_SIZE_MULTIPLIER = 0.5
                 mock_cfg_instance.DAY_TRADE_FLATTEN_HOUR = 15
+
+                mock_cfg_instance.DAY_TRADE_HARD_SKIP_OFF_HOURS = True
+
+                mock_cfg_instance.ENABLE_SAME_BASIS_RS = False
+
+                mock_cfg_instance.ENABLE_HARD_VETO_BREAKOUT_RSI70 = False
+
+                mock_cfg_instance.ENABLE_HARD_VETO_CONTINUATION_RSI70 = False
+
+                mock_cfg_instance.SHADOW_VETO_RSI_THRESHOLD = 70.0
+
+                mock_cfg_instance.ENABLE_SHADOW_VETO_CONTINUATION_RISKOFF = False
+
+                mock_cfg_instance.HANDS_OFF_DENYLIST = []
+
+                mock_cfg_instance.PINNED_DAY_TRADE_WATCHLIST = []
+
+                mock_cfg_instance.DT_OPEN30_CONT_INDEX_CONFIRM = False
+
+                mock_cfg_instance.DT_OPEN30_CONT_RS_FROM_OPEN = False
                 mock_cfg.return_value = mock_cfg_instance
                 
                 signal = await strategy.generate_signal_with_commentary(market_data)
@@ -992,6 +1192,26 @@ class TestRiskOffSizeReduction:
                 mock_cfg_instance.MOMENTUM_MIN_VOLUME_RATIO = 1.5
                 mock_cfg_instance.DAY_TRADE_SIZE_MULTIPLIER = 0.5
                 mock_cfg_instance.DAY_TRADE_FLATTEN_HOUR = 15
+
+                mock_cfg_instance.DAY_TRADE_HARD_SKIP_OFF_HOURS = True
+
+                mock_cfg_instance.ENABLE_SAME_BASIS_RS = False
+
+                mock_cfg_instance.ENABLE_HARD_VETO_BREAKOUT_RSI70 = False
+
+                mock_cfg_instance.ENABLE_HARD_VETO_CONTINUATION_RSI70 = False
+
+                mock_cfg_instance.SHADOW_VETO_RSI_THRESHOLD = 70.0
+
+                mock_cfg_instance.ENABLE_SHADOW_VETO_CONTINUATION_RISKOFF = False
+
+                mock_cfg_instance.HANDS_OFF_DENYLIST = []
+
+                mock_cfg_instance.PINNED_DAY_TRADE_WATCHLIST = []
+
+                mock_cfg_instance.DT_OPEN30_CONT_INDEX_CONFIRM = False
+
+                mock_cfg_instance.DT_OPEN30_CONT_RS_FROM_OPEN = False
                 mock_cfg.return_value = mock_cfg_instance
                 
                 signal = await strategy.generate_signal_with_commentary(market_data)
@@ -1048,6 +1268,26 @@ class TestRiskOffSizeReduction:
                 mock_cfg_instance.MOMENTUM_MIN_VOLUME_RATIO = 1.5
                 mock_cfg_instance.DAY_TRADE_SIZE_MULTIPLIER = 0.5
                 mock_cfg_instance.DAY_TRADE_FLATTEN_HOUR = 15
+
+                mock_cfg_instance.DAY_TRADE_HARD_SKIP_OFF_HOURS = True
+
+                mock_cfg_instance.ENABLE_SAME_BASIS_RS = False
+
+                mock_cfg_instance.ENABLE_HARD_VETO_BREAKOUT_RSI70 = False
+
+                mock_cfg_instance.ENABLE_HARD_VETO_CONTINUATION_RSI70 = False
+
+                mock_cfg_instance.SHADOW_VETO_RSI_THRESHOLD = 70.0
+
+                mock_cfg_instance.ENABLE_SHADOW_VETO_CONTINUATION_RISKOFF = False
+
+                mock_cfg_instance.HANDS_OFF_DENYLIST = []
+
+                mock_cfg_instance.PINNED_DAY_TRADE_WATCHLIST = []
+
+                mock_cfg_instance.DT_OPEN30_CONT_INDEX_CONFIRM = False
+
+                mock_cfg_instance.DT_OPEN30_CONT_RS_FROM_OPEN = False
                 mock_cfg.return_value = mock_cfg_instance
                 
                 signal = await strategy.generate_signal_with_commentary(market_data)
@@ -1113,6 +1353,26 @@ class TestStageAInstrumentation:
                 mock_cfg_instance.MOMENTUM_MIN_VOLUME_RATIO = 1.5
                 mock_cfg_instance.DAY_TRADE_SIZE_MULTIPLIER = 0.5
                 mock_cfg_instance.DAY_TRADE_FLATTEN_HOUR = 15
+
+                mock_cfg_instance.DAY_TRADE_HARD_SKIP_OFF_HOURS = True
+
+                mock_cfg_instance.ENABLE_SAME_BASIS_RS = False
+
+                mock_cfg_instance.ENABLE_HARD_VETO_BREAKOUT_RSI70 = False
+
+                mock_cfg_instance.ENABLE_HARD_VETO_CONTINUATION_RSI70 = False
+
+                mock_cfg_instance.SHADOW_VETO_RSI_THRESHOLD = 70.0
+
+                mock_cfg_instance.ENABLE_SHADOW_VETO_CONTINUATION_RISKOFF = False
+
+                mock_cfg_instance.HANDS_OFF_DENYLIST = []
+
+                mock_cfg_instance.PINNED_DAY_TRADE_WATCHLIST = []
+
+                mock_cfg_instance.DT_OPEN30_CONT_INDEX_CONFIRM = False
+
+                mock_cfg_instance.DT_OPEN30_CONT_RS_FROM_OPEN = False
                 mock_cfg.return_value = mock_cfg_instance
                 
                 signal = await strategy.generate_signal_with_commentary(market_data)
@@ -1170,6 +1430,27 @@ class TestStageAInstrumentation:
                 mock_cfg_instance.MOMENTUM_MIN_VOLUME_RATIO = 1.5
                 mock_cfg_instance.DAY_TRADE_SIZE_MULTIPLIER = 0.5
                 mock_cfg_instance.DAY_TRADE_FLATTEN_HOUR = 15
+
+                mock_cfg_instance.DAY_TRADE_HARD_SKIP_OFF_HOURS = True
+
+                mock_cfg_instance.ENABLE_SAME_BASIS_RS = False
+
+                mock_cfg_instance.ENABLE_HARD_VETO_BREAKOUT_RSI70 = False
+
+                mock_cfg_instance.ENABLE_HARD_VETO_CONTINUATION_RSI70 = False
+
+                mock_cfg_instance.SHADOW_VETO_RSI_THRESHOLD = 70.0
+
+                mock_cfg_instance.ENABLE_SHADOW_VETO_CONTINUATION_RISKOFF = False
+
+                mock_cfg_instance.HANDS_OFF_DENYLIST = []
+
+                mock_cfg_instance.PINNED_DAY_TRADE_WATCHLIST = []
+
+                mock_cfg_instance.DT_OPEN30_CONT_INDEX_CONFIRM = False
+
+                mock_cfg_instance.DT_OPEN30_CONT_RS_FROM_OPEN = False
+                mock_cfg_instance.DAY_TRADE_HARD_SKIP_RISK_OFF = False  # KEY: need False to test reasoning
                 mock_cfg.return_value = mock_cfg_instance
                 
                 signal = await strategy.generate_signal_with_commentary(market_data)
@@ -1223,6 +1504,26 @@ class TestStageAInstrumentation:
                 mock_cfg_instance.MOMENTUM_MIN_VOLUME_RATIO = 1.5
                 mock_cfg_instance.DAY_TRADE_SIZE_MULTIPLIER = 0.5
                 mock_cfg_instance.DAY_TRADE_FLATTEN_HOUR = 15
+
+                mock_cfg_instance.DAY_TRADE_HARD_SKIP_OFF_HOURS = True
+
+                mock_cfg_instance.ENABLE_SAME_BASIS_RS = False
+
+                mock_cfg_instance.ENABLE_HARD_VETO_BREAKOUT_RSI70 = False
+
+                mock_cfg_instance.ENABLE_HARD_VETO_CONTINUATION_RSI70 = False
+
+                mock_cfg_instance.SHADOW_VETO_RSI_THRESHOLD = 70.0
+
+                mock_cfg_instance.ENABLE_SHADOW_VETO_CONTINUATION_RISKOFF = False
+
+                mock_cfg_instance.HANDS_OFF_DENYLIST = []
+
+                mock_cfg_instance.PINNED_DAY_TRADE_WATCHLIST = []
+
+                mock_cfg_instance.DT_OPEN30_CONT_INDEX_CONFIRM = False
+
+                mock_cfg_instance.DT_OPEN30_CONT_RS_FROM_OPEN = False
                 mock_cfg.return_value = mock_cfg_instance
                 
                 signal = await strategy.generate_signal_with_commentary(market_data)
@@ -1577,6 +1878,26 @@ class TestFlattenHourEntryGateIntegration:
             mock_cfg_instance = MagicMock()
             mock_cfg_instance.DAY_TRADE_FLATTEN_HOUR_ENTRY_GATE_ENABLED = True
             mock_cfg_instance.DAY_TRADE_FLATTEN_HOUR = 15
+
+            mock_cfg_instance.DAY_TRADE_HARD_SKIP_OFF_HOURS = True
+
+            mock_cfg_instance.ENABLE_SAME_BASIS_RS = False
+
+            mock_cfg_instance.ENABLE_HARD_VETO_BREAKOUT_RSI70 = False
+
+            mock_cfg_instance.ENABLE_HARD_VETO_CONTINUATION_RSI70 = False
+
+            mock_cfg_instance.SHADOW_VETO_RSI_THRESHOLD = 70.0
+
+            mock_cfg_instance.ENABLE_SHADOW_VETO_CONTINUATION_RISKOFF = False
+
+            mock_cfg_instance.HANDS_OFF_DENYLIST = []
+
+            mock_cfg_instance.PINNED_DAY_TRADE_WATCHLIST = []
+
+            mock_cfg_instance.DT_OPEN30_CONT_INDEX_CONFIRM = False
+
+            mock_cfg_instance.DT_OPEN30_CONT_RS_FROM_OPEN = False
             mock_cfg.return_value = mock_cfg_instance
 
             with patch('core.engine.datetime') as mock_dt:
@@ -4924,4 +5245,208 @@ class TestDTOpen30ContIndexConfirmMarkers:
         )
         assert "passes_index_confirm" in src, (
             "SpyIndexContext must have passes_index_confirm property"
+        )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# v-open30-cont-rs-from-open-2026-09-24: RTH-open RS floor gate tests
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestDTOpen30ContRsFromOpenConfig:
+    """Config tests for DT_OPEN30_CONT_RS_FROM_OPEN gate."""
+
+    def test_config_flag_default_false(self):
+        """DT_OPEN30_CONT_RS_FROM_OPEN must default to False."""
+        from core.config import Config
+        cfg = Config()
+        assert cfg.DT_OPEN30_CONT_RS_FROM_OPEN is False
+
+    def test_live_enforce_flag_default_false(self):
+        """DT_OPEN30_CONT_RS_FROM_OPEN_LIVE_ENFORCE must default to False."""
+        from core.config import Config
+        cfg = Config()
+        assert cfg.DT_OPEN30_CONT_RS_FROM_OPEN_LIVE_ENFORCE is False
+
+
+class TestDTOpen30ContRsFromOpenMarkers:
+    """Marker tests for RS from open gate implementation."""
+
+    def test_strategy_has_rs_from_open_gate(self):
+        """Strategy must have rs_from_open gate code."""
+        from pathlib import Path
+        src = Path("strategies/builtin.py").read_text()
+
+        assert "DT_OPEN30_CONT_RS_FROM_OPEN" in src, (
+            "Strategy must check DT_OPEN30_CONT_RS_FROM_OPEN flag"
+        )
+        assert "rs_from_open" in src, (
+            "Strategy must reference rs_from_open calculation"
+        )
+
+    def test_config_has_rs_from_open_flags(self):
+        """Config must have the DT_OPEN30_CONT_RS_FROM_OPEN flags."""
+        from pathlib import Path
+        src = Path("core/config.py").read_text()
+
+        assert "DT_OPEN30_CONT_RS_FROM_OPEN" in src, (
+            "Config must have DT_OPEN30_CONT_RS_FROM_OPEN property"
+        )
+        assert "DT_OPEN30_CONT_RS_FROM_OPEN_LIVE_ENFORCE" in src, (
+            "Config must have DT_OPEN30_CONT_RS_FROM_OPEN_LIVE_ENFORCE property"
+        )
+
+    def test_market_context_has_rs_from_open_context(self):
+        """market_context must have RsFromOpenContext and get_rs_from_open_context."""
+        from pathlib import Path
+        src = Path("core/market_context.py").read_text()
+
+        assert "RsFromOpenContext" in src, (
+            "market_context must have RsFromOpenContext dataclass"
+        )
+        assert "get_rs_from_open_context" in src, (
+            "market_context must have get_rs_from_open_context function"
+        )
+        assert "spy_rth_open" in src, (
+            "SpyIndexContext must have spy_rth_open for RTH-open RS"
+        )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# v-ai-infra-crypto-rail-2026-09-24: Correlation group tests
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestAiInfraCryptoRailCorrelationGroup:
+    """Tests for ai_infra_crypto_rail correlation group."""
+
+    def test_engine_has_ai_infra_crypto_rail_group(self):
+        """Engine must have ai_infra_crypto_rail correlation group."""
+        from pathlib import Path
+        src = Path("core/engine.py").read_text()
+
+        assert "ai_infra_crypto_rail" in src, (
+            "Engine must have ai_infra_crypto_rail correlation group"
+        )
+        assert "CRCL" in src, (
+            "ai_infra_crypto_rail must include CRCL (Circle)"
+        )
+        assert "CRWV" in src, (
+            "ai_infra_crypto_rail must include CRWV (Cerebras)"
+        )
+        assert "NBIS" in src, (
+            "ai_infra_crypto_rail must include NBIS (Nebius)"
+        )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# v-allows-long-mixed-spy-red-2026-09-24: Mixed + SPY red → skip tests
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestAllowsLongMixedSpyRed:
+    """Tests for allows_long matching docstring (mixed + SPY red → skip)."""
+
+    def test_allows_long_risk_on_true(self):
+        """risk_on regime allows long."""
+        from core.market_context import MarketContext
+        from datetime import datetime, timezone
+
+        ctx = MarketContext(
+            symbol='TEST',
+            spy_direction='bullish',
+            spy_change_pct=0.5,
+            sector_etf='XLK',
+            sector_strength_pct=0.8,
+            vix_level=15.0,
+            vix_change_pct=-2.0,
+            regime='risk_on',
+            time_of_day='morning',
+            conviction_multiplier=1.0,
+            reason='test',
+        )
+        assert ctx.allows_long is True
+
+    def test_allows_long_risk_off_false(self):
+        """risk_off regime blocks long."""
+        from core.market_context import MarketContext
+        from datetime import datetime, timezone
+
+        ctx = MarketContext(
+            symbol='TEST',
+            spy_direction='bearish',
+            spy_change_pct=-1.5,
+            sector_etf='XLK',
+            sector_strength_pct=-1.0,
+            vix_level=25.0,
+            vix_change_pct=10.0,
+            regime='risk_off',
+            time_of_day='morning',
+            conviction_multiplier=0.5,
+            reason='test',
+        )
+        assert ctx.allows_long is False
+
+    def test_allows_long_mixed_spy_green_true(self):
+        """mixed regime + SPY day-green allows long."""
+        from core.market_context import MarketContext
+        from datetime import datetime, timezone
+
+        ctx = MarketContext(
+            symbol='TEST',
+            spy_direction='neutral',
+            spy_change_pct=0.1,  # SPY green
+            sector_etf='XLK',
+            sector_strength_pct=0.2,
+            vix_level=18.0,
+            vix_change_pct=3.0,
+            regime='mixed',
+            time_of_day='morning',
+            conviction_multiplier=0.7,
+            reason='test',
+        )
+        assert ctx.allows_long is True, (
+            "mixed + SPY green should allow long (matches docstring)"
+        )
+
+    def test_allows_long_mixed_spy_red_false(self):
+        """mixed regime + SPY day-red blocks long (v-allows-long-mixed-spy-red-2026-09-24)."""
+        from core.market_context import MarketContext
+        from datetime import datetime, timezone
+
+        ctx = MarketContext(
+            symbol='TEST',
+            spy_direction='neutral',
+            spy_change_pct=-0.2,  # SPY red (negative)
+            sector_etf='XLK',
+            sector_strength_pct=0.2,
+            vix_level=18.0,
+            vix_change_pct=3.0,
+            regime='mixed',
+            time_of_day='morning',
+            conviction_multiplier=0.7,
+            reason='test',
+        )
+        assert ctx.allows_long is False, (
+            "mixed + SPY day-red must block long per docstring: "
+            "'Allows long when regime is risk_on OR mixed with mild SPY positive'"
+        )
+
+    def test_allows_long_unknown_true(self):
+        """unknown regime allows long (fail-open)."""
+        from core.market_context import MarketContext
+        from datetime import datetime, timezone
+
+        ctx = MarketContext(
+            symbol='TEST',
+            spy_direction='neutral',
+            spy_change_pct=0.0,
+            sector_etf='',
+            sector_strength_pct=0.0,
+            vix_level=0.0,
+            vix_change_pct=0.0,
+            regime='unknown',
+            time_of_day='morning',
+            conviction_multiplier=1.0,
+            reason='no data',
+        )
+        assert ctx.allows_long is True, (
+            "unknown regime must fail-open (allow long)"
         )
