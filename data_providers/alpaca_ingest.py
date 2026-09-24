@@ -323,12 +323,24 @@ class IngestJob:
         start: datetime,
         end: datetime,
         window_days: int = 30,
+        sym_hash: str | None = None,
     ) -> dict[str, Any]:
         """Backfill Alpaca bars for `symbols` over [start, end).
 
         Splits the full range into `window_days`-sized windows and iterates
         (symbol_batch x window) pairs for fine-grained checkpointing and
         visible per-unit progress logging.
+
+        Args:
+            symbols: List of symbols to ingest.
+            start: Start of the time window (tz-aware).
+            end: End of the time window (tz-aware).
+            window_days: Days per checkpointed unit (default 30).
+            sym_hash: Short hash of the symbol list (from symbol_list_hash).
+                If provided, included in checkpoint keys so changed universes
+                don't incorrectly skip work. If None, uses legacy keys without
+                hash (for backward compatibility, but old keys are just ignored
+                when sym_hash is provided).
         """
         if start.tzinfo is None or end.tzinfo is None:
             raise ValueError("start and end must be tz-aware datetimes")
@@ -355,7 +367,10 @@ class IngestJob:
                 for batch_idx, batch in enumerate(batches):
                     for win_idx, (win_start, win_end) in enumerate(windows):
                         unit_idx += 1
-                        key = f"{batch_idx}:{win_start.date()}:{win_end.date()}"
+                        if sym_hash:
+                            key = f"{sym_hash}:{batch_idx}:{win_start.date()}:{win_end.date()}"
+                        else:
+                            key = f"{batch_idx}:{win_start.date()}:{win_end.date()}"
                         if checkpoint.has(key):
                             stats["units_skipped"] += 1
                             continue
