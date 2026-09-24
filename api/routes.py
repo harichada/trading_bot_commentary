@@ -232,7 +232,9 @@ async def get_dashboard():
     # This is NOT safe for internet-facing deployments. For multi-user or remote access,
     # replace with a proper login flow (e.g. session cookie from POST /api/login).
     api_key = os.getenv("TRADING_API_KEY", "")
-    auth_script = f'<script>window.TRADING_API_KEY={json.dumps(api_key)};</script>'
+    # v-activity-page-2026-09-24: inject feature flag so nav can conditionally show Activity link
+    activity_enabled = Config().UI_ACTIVITY_PAGE
+    auth_script = f'<script>window.TRADING_API_KEY={json.dumps(api_key)};window.UI_ACTIVITY_PAGE={json.dumps(activity_enabled)};</script>'
 
     # v-dashboard-hotreload-2026-05-28: re-read dashboard.html from
     # disk on every request instead of using the cached
@@ -2098,6 +2100,146 @@ async def get_trades(date: str = None, symbol: str = None, strategy: str = None,
 # Trade-by-trade activity log with expanded decision reasoning.
 # ============================================================================
 
+
+def _get_broker_fills_for_date(target_date: str, et_tz) -> list:
+    """Modular broker fills source: fetch today's fills from trading_engine.
+
+    Returns list of dicts with keys: symbol, side, entry_time, exit_time,
+    entry_price, exit_price, quantity, pnl, exit_reason, source='broker'.
+
+    Falls back gracefully to empty list if engine unavailable or API errors.
+    This allows the Activity page to show orphan broker fills that never
+    made it to bot_trades (e.g., CRCL/NBIS on 2026-09-24).
+    """
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    if trading_engine is None:
+        return []
+
+    try:
+        # Use engine's cached Schwab fills (5s cache, avoids hammering API)
+        schwab_trades = trading_engine.get_todays_trades()
+        if not schwab_trades:
+            return []
+
+        # Parse target date
+        target_dt = datetime.strptime(target_date, "%Y-%m-%d").date()
+
+        fills = []
+        for t in schwab_trades:
+            # Filter to target date
+            exit_time_str = t.get("exit_time") or t.get("entry_time") or ""
+            try:
+                if isinstance(exit_time_str, str) and exit_time_str:
+                    exit_dt = datetime.fromisoformat(exit_time_str.replace('Z', '+00:00'))
+                elif hasattr(exit_time_str, 'date'):
+                    exit_dt = exit_time_str
+                else:
+                    continue
+                if exit_dt.tzinfo is None:
+                    exit_dt = exit_dt.replace(tzinfo=ZoneInfo("UTC"))
+                exit_date_et = exit_dt.astimezone(et_tz).date()
+                if exit_date_et != target_dt:
+                    continue
+            except Exception:
+                continue
+
+            # Normalize to common format
+            symbol = (t.get("symbol") or "").upper()
+            if not symbol:
+                continue
+
+            instruction = (t.get("instruction") or "").upper()
+            side = "short" if "SELL_SHORT" in instruction else "long"
+
+            fills.append({
+                "symbol": symbol,
+                "side": side,
+                "entry_time": t.get("entry_time"),
+                "exit_time": t.get("exit_time") or t.get("entry_time"),
+                "entry_price": t.get("entry_price") or t.get("price"),
+                "exit_price": t.get("exit_price") or t.get("price"),
+                "quantity": t.get("quantity") or t.get("filled_quantity") or 0,
+                "pnl": t.get("pnl") or 0,
+                "exit_reason": t.get("reason") or "broker_fill",
+                "source": "broker",
+                "status": t.get("status"),
+            })
+
+        return fills
+
+    except Exception as exc:
+        logger.debug("broker_fills_fetch_error: %s", exc)
+        return []
+
+
+def _dedupe_trades_with_broker_fills(db_trades: list, broker_fills: list, hands_off_denylist: frozenset) -> list:
+    """Union bot_trades rows with broker fills, deduped by symbol+exit_time.
+
+    Returns combined list with is_orphan=True for broker-only fills.
+    Prioritizes db_trades when both sources have the same trade.
+    """
+    from datetime import datetime
+
+    # Index db_trades by (symbol, exit_time_rounded_to_minute)
+    db_index = {}
+    for t in db_trades:
+        sym = (t.get("symbol") or "").upper()
+        exit_ts = t.get("exit_time") or ""
+        try:
+            if isinstance(exit_ts, str):
+                exit_dt = datetime.fromisoformat(exit_ts.replace('Z', '+00:00'))
+            else:
+                exit_dt = exit_ts
+            key = (sym, exit_dt.strftime("%Y-%m-%d %H:%M") if exit_dt else "")
+        except Exception:
+            key = (sym, str(exit_ts)[:16])
+        db_index[key] = t
+
+    # Add broker fills that aren't already in db_trades
+    orphan_fills = []
+    for bf in broker_fills:
+        sym = (bf.get("symbol") or "").upper()
+        exit_ts = bf.get("exit_time") or ""
+        try:
+            if isinstance(exit_ts, str):
+                exit_dt = datetime.fromisoformat(exit_ts.replace('Z', '+00:00'))
+            else:
+                exit_dt = exit_ts
+            key = (sym, exit_dt.strftime("%Y-%m-%d %H:%M") if exit_dt else "")
+        except Exception:
+            key = (sym, str(exit_ts)[:16])
+
+        if key not in db_index:
+            # This is an orphan broker fill
+            is_hands_off = sym in hands_off_denylist
+            orphan_fills.append({
+                "id": f"broker_{sym}_{key[1]}",
+                "symbol": sym,
+                "side": bf.get("side", "long"),
+                "strategy": None,
+                "entry_time": str(bf.get("entry_time") or ""),
+                "exit_time": str(bf.get("exit_time") or ""),
+                "entry_price": bf.get("entry_price"),
+                "exit_price": bf.get("exit_price"),
+                "quantity": bf.get("quantity", 0),
+                "pnl": bf.get("pnl", 0),
+                "exit_reason": bf.get("exit_reason", "broker_fill"),
+                "stop_loss": None,
+                "take_profit": None,
+                "confidence": None,
+                "meta_proba": None,
+                "is_hands_off": is_hands_off,
+                "is_external": False,
+                "is_orphan": True,
+                "source": "broker",
+                "reasoning_json": None,
+            })
+
+    return db_trades + orphan_fills
+
+
 @app.get("/api/activity")
 async def get_activity(date: str = None, strategy: str = None):
     """v-activity-page-2026-09-24: trade activity with decision reasoning.
@@ -2108,6 +2250,14 @@ async def get_activity(date: str = None, strategy: str = None):
       - Exit reason (take_profit, stop_loss, proactive_*, flatten_hour, etc.)
       - Decision reasoning from bot_decision_snapshots
       - Hands-off / external / orphan flags
+
+    Data sources (UNION, deduped):
+      1. bot_trades table (DB) - primary source for bot-managed trades
+      2. Broker fills (Schwab API via trading_engine) - catches orphans
+
+    Orphan fills: broker fills that have no matching bot_trades row appear
+    with is_orphan=true and 'reasoning unavailable'. This handles cases like
+    CRCL/NBIS on 2026-09-24 where broker fills exist but bot_trades is empty.
 
     Query params:
         date: Filter by exit date (YYYY-MM-DD), defaults to today
@@ -2201,6 +2351,13 @@ async def get_activity(date: str = None, strategy: str = None):
 
         engine.dispose()
 
+        # Convert DB rows to list of dicts
+        db_trades_raw = [dict(r) for r in rows]
+
+        # Fetch broker fills and union with DB trades (deduped)
+        broker_fills = _get_broker_fills_for_date(date, et_tz)
+        combined_raw = _dedupe_trades_with_broker_fills(db_trades_raw, broker_fills, hands_off_denylist)
+
         import json
 
         def _scrub(v):
@@ -2275,9 +2432,53 @@ async def get_activity(date: str = None, strategy: str = None):
         bot_losers = 0
         bot_count = 0
 
-        for row in rows:
-            symbol = row["symbol"]
-            is_hands_off = symbol.upper() in hands_off_denylist
+        for row in combined_raw:
+            symbol = (row.get("symbol") or "").upper()
+            
+            # Check if this is an orphan broker fill (already processed)
+            if row.get("source") == "broker" and row.get("is_orphan"):
+                # Already formatted orphan fill from _dedupe_trades_with_broker_fills
+                pnl = _safe_float(row.get("pnl"), 0.0)
+                entry_price = _safe_float(row.get("entry_price"))
+                
+                trade = {
+                    "id": row["id"],
+                    "symbol": symbol,
+                    "side": row.get("side", "long"),
+                    "strategy": "unknown",
+                    "entry_time": str(row.get("entry_time") or ""),
+                    "entry_time_et": _format_time_et(row.get("entry_time")),
+                    "exit_time": str(row.get("exit_time") or ""),
+                    "exit_time_et": _format_time_et(row.get("exit_time")),
+                    "entry_price": _scrub(entry_price),
+                    "exit_price": _scrub(_safe_float(row.get("exit_price"))),
+                    "quantity": int(row.get("quantity") or 0),
+                    "stop_loss": None,
+                    "take_profit": None,
+                    "pnl": round(pnl, 2),
+                    "pnl_pct": None,
+                    "r_multiple": None,
+                    "exit_reason": row.get("exit_reason", "broker_fill"),
+                    "hold_time_min": _calc_hold_time(row.get("entry_time"), row.get("exit_time")),
+                    "confidence": None,
+                    "meta_proba": None,
+                    "is_hands_off": row.get("is_hands_off", False),
+                    "is_external": False,
+                    "is_orphan": True,
+                    "reasoning": {},
+                }
+                trades.append(trade)
+                
+                # Update totals
+                total_pnl += pnl
+                if pnl > 0:
+                    winners += 1
+                elif pnl < 0:
+                    losers += 1
+                continue
+
+            # Process normal DB trade
+            is_hands_off = symbol in hands_off_denylist
             is_external = row.get("mode") == "external" or not row.get("strategy")
             reasoning_json = row.get("reasoning_json")
 

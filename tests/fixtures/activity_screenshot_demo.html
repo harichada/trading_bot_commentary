@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Activity Page - FIXTURE DATA Demo</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <style>
+        :root {
+          --bg:           oklch(0.06 0.012 270);
+          --fg:           oklch(0.98 0 0);
+          --card:         oklch(0.10 0.015 270 / 0.85);
+          --card-fg:      oklch(0.98 0 0);
+          --secondary:    oklch(0.14 0.015 270);
+          --muted:        oklch(0.16 0.01 270);
+          --muted-fg:     oklch(0.55 0 0);
+          --border:       oklch(0.20 0.018 270 / 0.45);
+          --border-soft:  oklch(0.18 0.015 270 / 0.25);
+          --accent:       oklch(0.62 0.18 195);
+          --accent-fg:    oklch(0.98 0 0);
+          --success:      oklch(0.70 0.18 155);
+          --success-fg:   oklch(0.10 0.05 155);
+          --warning:      oklch(0.78 0.14 85);
+          --destructive:  oklch(0.58 0.20 25);
+          --destructive-fg: oklch(0.98 0 0);
+          --radius: 0.625rem;
+          --radius-sm: calc(var(--radius) - 3px);
+          --radius-lg: calc(var(--radius) + 4px);
+          --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+          --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: var(--font-sans);
+            background: var(--bg);
+            color: var(--fg);
+            -webkit-font-smoothing: antialiased;
+            min-height: 100vh;
+        }
+        .ambient-blobs { position: fixed; inset: 0; pointer-events: none; overflow: hidden; z-index: -1; }
+        .ambient-blob { position: absolute; border-radius: 9999px; filter: blur(140px); opacity: 0.30; }
+        .ambient-blob-1 { top: -5%; left: 20%; width: 500px; height: 500px; background: oklch(0.62 0.18 195 / 0.08); }
+        .ambient-blob-2 { bottom: 5%; right: 20%; width: 450px; height: 450px; background: oklch(0.78 0.14 85 / 0.06); filter: blur(120px); }
+        .glass {
+          background: oklch(0.09 0.015 270 / 0.75);
+          backdrop-filter: blur(24px) saturate(160%);
+          border: 1px solid oklch(0.25 0.02 270 / 0.25);
+          box-shadow: inset 0 1px 0 oklch(0.30 0.02 270 / 0.15), 0 1px 3px oklch(0 0 0 / 0.3);
+        }
+        .tabular-nums { font-variant-numeric: tabular-nums; }
+        .font-mono { font-family: var(--font-mono); }
+        .container { max-width: 1600px; margin: 0 auto; padding: 20px; }
+        .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; padding: 16px 20px; border-radius: var(--radius); }
+        .header h1 { font-size: 1.5rem; font-weight: 700; color: var(--fg); }
+        .header a { color: var(--accent); text-decoration: none; font-size: 0.875rem; }
+        .fixture-banner { background: oklch(0.78 0.14 85 / 0.2); border: 1px solid var(--warning); padding: 12px 16px; border-radius: var(--radius); margin-bottom: 20px; text-align: center; font-weight: 600; color: var(--warning); }
+        .filters { display: flex; gap: 12px; align-items: center; margin-bottom: 20px; padding: 12px 16px; border-radius: var(--radius); }
+        .filters label { font-size: 0.75rem; color: var(--muted-fg); text-transform: uppercase; letter-spacing: 0.05em; }
+        .filters input[type="date"], .filters select {
+            background: oklch(0.12 0.01 270); border: 1px solid var(--border); color: var(--fg);
+            padding: 8px 12px; border-radius: var(--radius-sm); font-family: var(--font-mono); font-size: 0.875rem;
+        }
+        .summary-strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 20px; }
+        .summary-card { padding: 16px; border-radius: var(--radius); text-align: center; }
+        .summary-card.bot-stats { border-left: 3px solid var(--accent); }
+        .summary-value { font-size: 1.5rem; font-weight: 700; font-family: var(--font-mono); margin-bottom: 4px; }
+        .summary-label { font-size: 0.6875rem; color: var(--muted-fg); text-transform: uppercase; letter-spacing: 0.05em; }
+        .positive { color: var(--success); }
+        .negative { color: var(--destructive); }
+        .neutral { color: var(--muted-fg); }
+        .trades-table-container { border-radius: var(--radius); overflow: hidden; }
+        table { width: 100%; border-collapse: collapse; }
+        th { text-align: left; padding: 12px 10px; font-weight: 600; font-size: 0.6875rem; color: var(--muted-fg); text-transform: uppercase; letter-spacing: 0.05em; background: oklch(0.08 0.01 270); border-bottom: 1px solid var(--border); white-space: nowrap; }
+        td { padding: 10px; font-size: 0.8125rem; border-bottom: 1px solid var(--border-soft); white-space: nowrap; }
+        tr:hover td { background: oklch(0.11 0.015 270 / 0.5); }
+        .symbol-cell { font-weight: 600; font-family: var(--font-mono); }
+        .side-long { color: var(--success); }
+        .side-short { color: var(--destructive); }
+        .badge { display: inline-block; padding: 2px 6px; border-radius: 3px; font-size: 0.625rem; font-weight: 600; text-transform: uppercase; margin-left: 6px; }
+        .badge-hands-off { background: oklch(0.78 0.14 85 / 0.2); color: var(--warning); }
+        .badge-external { background: oklch(0.55 0 0 / 0.2); color: var(--muted-fg); }
+        .badge-orphan { background: oklch(0.58 0.20 25 / 0.2); color: var(--destructive); }
+        .exit-reason { font-size: 0.75rem; padding: 2px 6px; border-radius: 3px; background: oklch(0.15 0.01 270); }
+        .exit-reason.take_profit { background: oklch(0.70 0.18 155 / 0.15); color: var(--success); }
+        .exit-reason.stop_loss { background: oklch(0.58 0.20 25 / 0.15); color: var(--destructive); }
+        .exit-reason.proactive { background: oklch(0.78 0.14 85 / 0.15); color: var(--warning); }
+        tr.expandable { cursor: pointer; }
+        tr.expandable td:first-child::before { content: '+'; display: inline-block; width: 16px; color: var(--accent); font-weight: 600; }
+        tr.expandable.expanded td:first-child::before { content: '-'; }
+        .reasoning-row { display: none; }
+        .reasoning-row.visible { display: table-row; }
+        .reasoning-row td { background: oklch(0.07 0.01 270); padding: 16px 20px; }
+        .reasoning-content { font-size: 0.8125rem; line-height: 1.6; color: oklch(0.85 0 0); }
+        .reasoning-content h4 { font-size: 0.75rem; color: var(--accent); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 8px; }
+        .reasoning-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 16px; margin-top: 12px; }
+        .reasoning-item { padding: 10px 12px; background: oklch(0.10 0.015 270); border-radius: var(--radius-sm); border: 1px solid var(--border-soft); }
+        .reasoning-item label { display: block; font-size: 0.625rem; color: var(--muted-fg); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px; }
+        .reasoning-item span { font-family: var(--font-mono); font-size: 0.8125rem; }
+        .reasoning-narrative { margin-top: 16px; padding: 12px 16px; background: oklch(0.08 0.01 270); border-radius: var(--radius-sm); border-left: 3px solid var(--accent); font-size: 0.8125rem; line-height: 1.6; }
+    </style>
+</head>
+<body>
+    <div class="ambient-blobs">
+        <div class="ambient-blob ambient-blob-1"></div>
+        <div class="ambient-blob ambient-blob-2"></div>
+    </div>
+    <div class="container">
+        <header class="header glass">
+            <h1>Activity Log</h1>
+            <a href="/">Back to Dashboard</a>
+        </header>
+
+        <div class="fixture-banner">FIXTURE DATA - Not live trading data - For demonstration purposes</div>
+
+        <div class="filters glass">
+            <label>Date</label>
+            <input type="date" value="2026-09-24" />
+            <label>Strategy</label>
+            <select><option value="">All Strategies</option></select>
+        </div>
+
+        <div class="summary-strip">
+            <div class="summary-card glass bot-stats">
+                <div class="summary-value">8</div>
+                <div class="summary-label">Bot Trades</div>
+            </div>
+            <div class="summary-card glass bot-stats">
+                <div class="summary-value positive">62.5%</div>
+                <div class="summary-label">Bot Win Rate</div>
+            </div>
+            <div class="summary-card glass bot-stats">
+                <div class="summary-value positive">+$485.00</div>
+                <div class="summary-label">Bot P&L</div>
+            </div>
+            <div class="summary-card glass bot-stats">
+                <div class="summary-value positive">+3.25R</div>
+                <div class="summary-label">Bot Total R</div>
+            </div>
+            <div class="summary-card glass">
+                <div class="summary-value">10</div>
+                <div class="summary-label">All Trades</div>
+            </div>
+            <div class="summary-card glass">
+                <div class="summary-value positive">+$342.50</div>
+                <div class="summary-label">All P&L</div>
+            </div>
+        </div>
+
+        <div class="trades-table-container glass">
+            <table>
+                <thead>
+                    <tr>
+                        <th></th><th>Symbol</th><th>Side</th><th>Strategy</th><th>Entry (ET)</th><th>Entry $</th><th>Exit (ET)</th><th>Exit $</th><th>Qty</th><th>SL / TP</th><th>Exit Reason</th><th>Hold</th><th>P&L</th><th>R</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <!-- CRCL - Orphan row -->
+                    <tr class="expandable">
+                        <td></td>
+                        <td class="symbol-cell">CRCL<span class="badge badge-orphan">Orphan</span></td>
+                        <td class="side-long">LONG</td>
+                        <td>day_trade_momentum</td>
+                        <td class="font-mono tabular-nums">09:42:00</td>
+                        <td class="font-mono tabular-nums">$8.45</td>
+                        <td class="font-mono tabular-nums">11:18:00</td>
+                        <td class="font-mono tabular-nums">$8.92</td>
+                        <td class="font-mono tabular-nums">200</td>
+                        <td class="font-mono tabular-nums" style="font-size:0.7rem">$8.15 / $9.20</td>
+                        <td><span class="exit-reason proactive">proactive_rsi</span></td>
+                        <td>1h 36m</td>
+                        <td class="font-mono tabular-nums positive">+$94.00</td>
+                        <td class="font-mono tabular-nums positive">+1.57R</td>
+                    </tr>
+                    <tr class="reasoning-row">
+                        <td colspan="14">
+                            <div class="reasoning-content">
+                                <h4>Why This Trade</h4>
+                                <div class="reasoning-narrative"><em>Reasoning unavailable - broker fill without matching decision snapshot</em></div>
+                            </div>
+                        </td>
+                    </tr>
+
+                    <!-- CRWV - Full reasoning, expanded -->
+                    <tr class="expandable expanded">
+                        <td></td>
+                        <td class="symbol-cell">CRWV</td>
+                        <td class="side-long">LONG</td>
+                        <td>day_trade_momentum</td>
+                        <td class="font-mono tabular-nums">09:55:00</td>
+                        <td class="font-mono tabular-nums">$42.15</td>
+                        <td class="font-mono tabular-nums">12:45:00</td>
+                        <td class="font-mono tabular-nums">$44.80</td>
+                        <td class="font-mono tabular-nums">50</td>
+                        <td class="font-mono tabular-nums" style="font-size:0.7rem">$41.00 / $46.50</td>
+                        <td><span class="exit-reason take_profit">take_profit</span></td>
+                        <td>2h 50m</td>
+                        <td class="font-mono tabular-nums positive">+$132.50</td>
+                        <td class="font-mono tabular-nums positive">+2.30R</td>
+                    </tr>
+                    <tr class="reasoning-row visible">
+                        <td colspan="14">
+                            <div class="reasoning-content">
+                                <h4>Why This Trade</h4>
+                                <div class="reasoning-narrative">
+                                    <strong>Setup:</strong> momentum_breakout. Market regime was <strong>trending</strong> (SPY slope +0.18%). RS vs SPY: <strong>+3.2%</strong> (vs_open). RSI: <strong>62</strong>. Volume ratio: <strong>2.1x</strong>. Signal-strength score: <strong>0.78</strong> (heuristic, not probability). Gates passed: rs_gate, volume_gate, regime_gate. Day trade with flatten hour 15:00 ET. <strong>Exit:</strong> Target reached at +2.3R.
+                                </div>
+                                <div class="reasoning-grid">
+                                    <div class="reasoning-item"><label>Setup Type</label><span>momentum_breakout</span></div>
+                                    <div class="reasoning-item"><label>Regime</label><span>trending</span></div>
+                                    <div class="reasoning-item"><label>RS vs SPY</label><span>+3.2%</span></div>
+                                    <div class="reasoning-item"><label>RSI</label><span>62</span></div>
+                                    <div class="reasoning-item"><label>Volume Ratio</label><span>2.1x</span></div>
+                                    <div class="reasoning-item"><label>Signal Score</label><span>0.78</span></div>
+                                    <div class="reasoning-item"><label>Confidence</label><span>78%</span></div>
+                                    <div class="reasoning-item"><label>Meta Proba</label><span>71%</span></div>
+                                </div>
+                            </div>
+                        </td>
+                    </tr>
+
+                    <!-- NBIS - Stop loss -->
+                    <tr class="expandable">
+                        <td></td>
+                        <td class="symbol-cell">NBIS</td>
+                        <td class="side-long">LONG</td>
+                        <td>day_trade_momentum</td>
+                        <td class="font-mono tabular-nums">10:08:00</td>
+                        <td class="font-mono tabular-nums">$15.20</td>
+                        <td class="font-mono tabular-nums">11:35:00</td>
+                        <td class="font-mono tabular-nums">$14.65</td>
+                        <td class="font-mono tabular-nums">150</td>
+                        <td class="font-mono tabular-nums" style="font-size:0.7rem">$14.80 / $16.50</td>
+                        <td><span class="exit-reason stop_loss">stop_loss</span></td>
+                        <td>1h 27m</td>
+                        <td class="font-mono tabular-nums negative">-$82.50</td>
+                        <td class="font-mono tabular-nums negative">-1.38R</td>
+                    </tr>
+                    <tr class="reasoning-row"><td colspan="14"><div class="reasoning-content"><h4>Why This Trade</h4><div class="reasoning-narrative"><strong>Setup:</strong> momentum_pullback. Choppy regime (SPY slope -0.08%). Shadow gates: in_move_turn. <strong>Exit:</strong> Stop loss hit after reversal.</div></div></td></tr>
+
+                    <!-- GOOGL - Mean reversion -->
+                    <tr class="expandable">
+                        <td></td>
+                        <td class="symbol-cell">GOOGL</td>
+                        <td class="side-long">LONG</td>
+                        <td>mean_reversion</td>
+                        <td class="font-mono tabular-nums">10:22:00</td>
+                        <td class="font-mono tabular-nums">$158.45</td>
+                        <td class="font-mono tabular-nums">13:55:00</td>
+                        <td class="font-mono tabular-nums">$160.20</td>
+                        <td class="font-mono tabular-nums">30</td>
+                        <td class="font-mono tabular-nums" style="font-size:0.7rem">$156.50 / $163.00</td>
+                        <td><span class="exit-reason proactive">proactive_macd</span></td>
+                        <td>3h 33m</td>
+                        <td class="font-mono tabular-nums positive">+$52.50</td>
+                        <td class="font-mono tabular-nums positive">+0.90R</td>
+                    </tr>
+                    <tr class="reasoning-row"><td colspan="14"><div class="reasoning-content"><h4>Why This Trade</h4><div class="reasoning-narrative"><strong>Setup:</strong> oversold_bounce. RSI: 32. <strong>Exit:</strong> MACD crossed below signal, exiting proactively.</div></div></td></tr>
+
+                    <!-- INTC #1 -->
+                    <tr class="expandable">
+                        <td></td>
+                        <td class="symbol-cell">INTC</td>
+                        <td class="side-long">LONG</td>
+                        <td>day_trade_momentum</td>
+                        <td class="font-mono tabular-nums">10:35:00</td>
+                        <td class="font-mono tabular-nums">$22.80</td>
+                        <td class="font-mono tabular-nums">12:10:00</td>
+                        <td class="font-mono tabular-nums">$23.45</td>
+                        <td class="font-mono tabular-nums">200</td>
+                        <td class="font-mono tabular-nums" style="font-size:0.7rem">$22.30 / $24.00</td>
+                        <td><span class="exit-reason take_profit">take_profit</span></td>
+                        <td>1h 35m</td>
+                        <td class="font-mono tabular-nums positive">+$130.00</td>
+                        <td class="font-mono tabular-nums positive">+1.30R</td>
+                    </tr>
+                    <tr class="reasoning-row"><td colspan="14"><div class="reasoning-content"><h4>Why This Trade</h4><div class="reasoning-narrative"><strong>Setup:</strong> momentum_continuation. RS vs SPY: +2.5%. <strong>Exit:</strong> Target reached.</div></div></td></tr>
+
+                    <!-- INTC #2 -->
+                    <tr class="expandable">
+                        <td></td>
+                        <td class="symbol-cell">INTC</td>
+                        <td class="side-long">LONG</td>
+                        <td>day_trade_momentum</td>
+                        <td class="font-mono tabular-nums">13:20:00</td>
+                        <td class="font-mono tabular-nums">$23.10</td>
+                        <td class="font-mono tabular-nums">15:00:00</td>
+                        <td class="font-mono tabular-nums">$22.85</td>
+                        <td class="font-mono tabular-nums">150</td>
+                        <td class="font-mono tabular-nums" style="font-size:0.7rem">$22.70 / $23.80</td>
+                        <td><span class="exit-reason">flatten_hour</span></td>
+                        <td>1h 40m</td>
+                        <td class="font-mono tabular-nums negative">-$37.50</td>
+                        <td class="font-mono tabular-nums negative">-0.63R</td>
+                    </tr>
+                    <tr class="reasoning-row"><td colspan="14"><div class="reasoning-content"><h4>Why This Trade</h4><div class="reasoning-narrative"><strong>Setup:</strong> momentum_breakout. Shadow gates: open30_index_confirm. <strong>Exit:</strong> Flatten hour reached (3PM ET), closing day trade.</div></div></td></tr>
+
+                    <!-- ONDS -->
+                    <tr class="expandable">
+                        <td></td>
+                        <td class="symbol-cell">ONDS</td>
+                        <td class="side-long">LONG</td>
+                        <td>day_trade_momentum</td>
+                        <td class="font-mono tabular-nums">11:45:00</td>
+                        <td class="font-mono tabular-nums">$3.85</td>
+                        <td class="font-mono tabular-nums">14:30:00</td>
+                        <td class="font-mono tabular-nums">$4.22</td>
+                        <td class="font-mono tabular-nums">500</td>
+                        <td class="font-mono tabular-nums" style="font-size:0.7rem">$3.65 / $4.50</td>
+                        <td><span class="exit-reason proactive">proactive_rsi</span></td>
+                        <td>2h 45m</td>
+                        <td class="font-mono tabular-nums positive">+$185.00</td>
+                        <td class="font-mono tabular-nums positive">+1.85R</td>
+                    </tr>
+                    <tr class="reasoning-row"><td colspan="14"><div class="reasoning-content"><h4>Why This Trade</h4><div class="reasoning-narrative"><strong>Setup:</strong> momentum_breakout. Volume ratio: 3.2x. <strong>Exit:</strong> RSI reached 88, taking profit proactively.</div></div></td></tr>
+
+                    <!-- MRNA -->
+                    <tr class="expandable">
+                        <td></td>
+                        <td class="symbol-cell">MRNA</td>
+                        <td class="side-long">LONG</td>
+                        <td>mean_reversion</td>
+                        <td class="font-mono tabular-nums">12:15:00</td>
+                        <td class="font-mono tabular-nums">$68.20</td>
+                        <td class="font-mono tabular-nums">15:45:00</td>
+                        <td class="font-mono tabular-nums">$67.50</td>
+                        <td class="font-mono tabular-nums">40</td>
+                        <td class="font-mono tabular-nums" style="font-size:0.7rem">$67.00 / $71.00</td>
+                        <td><span class="exit-reason stop_loss">stop_loss</span></td>
+                        <td>3h 30m</td>
+                        <td class="font-mono tabular-nums negative">-$28.00</td>
+                        <td class="font-mono tabular-nums negative">-0.58R</td>
+                    </tr>
+                    <tr class="reasoning-row"><td colspan="14"><div class="reasoning-content"><h4>Why This Trade</h4><div class="reasoning-narrative"><strong>Setup:</strong> oversold_bounce. Shadow gates: volume_gate. <strong>Exit:</strong> Stop loss triggered on continued weakness.</div></div></td></tr>
+
+                    <!-- MU - Hands-off -->
+                    <tr class="expandable">
+                        <td></td>
+                        <td class="symbol-cell">MU<span class="badge badge-hands-off">Hands-Off</span></td>
+                        <td class="side-long">LONG</td>
+                        <td>unknown</td>
+                        <td class="font-mono tabular-nums">10:00:00</td>
+                        <td class="font-mono tabular-nums">$92.50</td>
+                        <td class="font-mono tabular-nums">15:30:00</td>
+                        <td class="font-mono tabular-nums">$91.80</td>
+                        <td class="font-mono tabular-nums">100</td>
+                        <td class="font-mono tabular-nums" style="font-size:0.7rem">- / -</td>
+                        <td><span class="exit-reason">external</span></td>
+                        <td>5h 30m</td>
+                        <td class="font-mono tabular-nums negative">-$70.00</td>
+                        <td class="font-mono tabular-nums neutral">n/a</td>
+                    </tr>
+                    <tr class="reasoning-row"><td colspan="14"><div class="reasoning-content"><h4>Why This Trade</h4><div class="reasoning-narrative"><em>MU is in HANDS_OFF_DENYLIST - excluded from bot stats</em></div></div></td></tr>
+
+                    <!-- META - External -->
+                    <tr class="expandable">
+                        <td></td>
+                        <td class="symbol-cell">META<span class="badge badge-external">External</span></td>
+                        <td class="side-short">SHORT</td>
+                        <td>unknown</td>
+                        <td class="font-mono tabular-nums">09:30:00</td>
+                        <td class="font-mono tabular-nums">$512.00</td>
+                        <td class="font-mono tabular-nums">14:00:00</td>
+                        <td class="font-mono tabular-nums">$509.50</td>
+                        <td class="font-mono tabular-nums">10</td>
+                        <td class="font-mono tabular-nums" style="font-size:0.7rem">- / -</td>
+                        <td><span class="exit-reason">external</span></td>
+                        <td>4h 30m</td>
+                        <td class="font-mono tabular-nums positive">+$25.00</td>
+                        <td class="font-mono tabular-nums neutral">n/a</td>
+                    </tr>
+                    <tr class="reasoning-row"><td colspan="14"><div class="reasoning-content"><h4>Why This Trade</h4><div class="reasoning-narrative"><em>External/manual trade - excluded from bot stats</em></div></div></td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+    <script>
+        document.querySelectorAll('tr.expandable').forEach(row => {
+            row.addEventListener('click', () => {
+                const reasoningRow = row.nextElementSibling;
+                row.classList.toggle('expanded');
+                reasoningRow.classList.toggle('visible');
+            });
+        });
+    </script>
+</body>
+</html>

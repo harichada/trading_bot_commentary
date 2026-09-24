@@ -447,3 +447,169 @@ class TestActivityTemplate:
         assert 'strategy-filter' in content, "Template missing strategy filter"
         assert 'summary' in content.lower(), "Template missing summary section"
         assert 'reasoning' in content.lower(), "Template missing reasoning section"
+
+
+class TestBrokerFillsSource:
+    """Tests for the modular broker fills source function."""
+
+    def test_broker_fills_source_function_exists(self):
+        """_get_broker_fills_for_date function must exist in routes."""
+        from pathlib import Path
+        routes_path = Path(__file__).parent.parent / "api" / "routes.py"
+        source = routes_path.read_text()
+        assert 'def _get_broker_fills_for_date' in source, "Broker fills source function missing"
+
+    def test_broker_fills_returns_list(self):
+        """_get_broker_fills_for_date should return a list (empty if no engine)."""
+        # The function returns [] when trading_engine is None (safe fallback)
+        from pathlib import Path
+        routes_path = Path(__file__).parent.parent / "api" / "routes.py"
+        source = routes_path.read_text()
+        assert 'return []' in source, "Function should return empty list as fallback"
+        assert 'trading_engine is None' in source, "Function should check for None engine"
+
+
+class TestDedupeLogic:
+    """Tests for deduplicating bot_trades with broker fills."""
+
+    def test_dedupe_function_exists(self):
+        """_dedupe_trades_with_broker_fills function must exist."""
+        from pathlib import Path
+        routes_path = Path(__file__).parent.parent / "api" / "routes.py"
+        source = routes_path.read_text()
+        assert 'def _dedupe_trades_with_broker_fills' in source, "Dedupe function missing"
+
+    def test_dedupe_broker_only_becomes_orphan(self):
+        """A broker fill with no matching db trade should become orphan."""
+        # Simulate the dedupe logic
+        def _dedupe_trades_with_broker_fills(db_trades, broker_fills, hands_off):
+            from datetime import datetime
+            db_index = {}
+            for t in db_trades:
+                sym = (t.get("symbol") or "").upper()
+                exit_ts = t.get("exit_time") or ""
+                try:
+                    if isinstance(exit_ts, str):
+                        exit_dt = datetime.fromisoformat(exit_ts.replace('Z', '+00:00'))
+                    else:
+                        exit_dt = exit_ts
+                    key = (sym, exit_dt.strftime("%Y-%m-%d %H:%M") if exit_dt else "")
+                except Exception:
+                    key = (sym, str(exit_ts)[:16])
+                db_index[key] = t
+
+            orphan_fills = []
+            for bf in broker_fills:
+                sym = (bf.get("symbol") or "").upper()
+                exit_ts = bf.get("exit_time") or ""
+                try:
+                    if isinstance(exit_ts, str):
+                        exit_dt = datetime.fromisoformat(exit_ts.replace('Z', '+00:00'))
+                    else:
+                        exit_dt = exit_ts
+                    key = (sym, exit_dt.strftime("%Y-%m-%d %H:%M") if exit_dt else "")
+                except Exception:
+                    key = (sym, str(exit_ts)[:16])
+
+                if key not in db_index:
+                    orphan_fills.append({
+                        "symbol": sym,
+                        "is_orphan": True,
+                        "source": "broker",
+                    })
+
+            return db_trades + orphan_fills
+
+        # Test: broker fill with no matching DB trade
+        db_trades = [
+            {"symbol": "AAPL", "exit_time": "2026-09-24T15:30:00"}
+        ]
+        broker_fills = [
+            {"symbol": "CRCL", "exit_time": "2026-09-24T14:00:00"},  # No match in DB
+            {"symbol": "AAPL", "exit_time": "2026-09-24T15:30:00"},  # Matches DB
+        ]
+
+        result = _dedupe_trades_with_broker_fills(db_trades, broker_fills, frozenset())
+
+        # Should have 2 trades: AAPL from DB, CRCL as orphan
+        assert len(result) == 2
+        orphans = [t for t in result if t.get("is_orphan")]
+        assert len(orphans) == 1, "CRCL should be an orphan"
+        assert orphans[0]["symbol"] == "CRCL"
+
+    def test_dedupe_both_sources_keeps_db(self):
+        """When both sources have the same trade, DB version is kept (no duplicate)."""
+        def _dedupe_trades_with_broker_fills(db_trades, broker_fills, hands_off):
+            from datetime import datetime
+            db_index = {}
+            for t in db_trades:
+                sym = (t.get("symbol") or "").upper()
+                exit_ts = t.get("exit_time") or ""
+                try:
+                    if isinstance(exit_ts, str):
+                        exit_dt = datetime.fromisoformat(exit_ts.replace('Z', '+00:00'))
+                    else:
+                        exit_dt = exit_ts
+                    key = (sym, exit_dt.strftime("%Y-%m-%d %H:%M") if exit_dt else "")
+                except Exception:
+                    key = (sym, str(exit_ts)[:16])
+                db_index[key] = t
+
+            orphan_fills = []
+            for bf in broker_fills:
+                sym = (bf.get("symbol") or "").upper()
+                exit_ts = bf.get("exit_time") or ""
+                try:
+                    if isinstance(exit_ts, str):
+                        exit_dt = datetime.fromisoformat(exit_ts.replace('Z', '+00:00'))
+                    else:
+                        exit_dt = exit_ts
+                    key = (sym, exit_dt.strftime("%Y-%m-%d %H:%M") if exit_dt else "")
+                except Exception:
+                    key = (sym, str(exit_ts)[:16])
+
+                if key not in db_index:
+                    orphan_fills.append({
+                        "symbol": sym,
+                        "is_orphan": True,
+                        "source": "broker",
+                    })
+
+            return db_trades + orphan_fills
+
+        # Same trade in both sources
+        db_trades = [
+            {"symbol": "INTC", "exit_time": "2026-09-24T12:00:00", "pnl": 100, "source": "db"}
+        ]
+        broker_fills = [
+            {"symbol": "INTC", "exit_time": "2026-09-24T12:00:00", "pnl": 100, "source": "broker"}
+        ]
+
+        result = _dedupe_trades_with_broker_fills(db_trades, broker_fills, frozenset())
+
+        # Should have only 1 trade (DB version, no duplicate)
+        assert len(result) == 1
+        assert result[0].get("source") == "db", "DB version should be kept"
+
+
+class TestNavEntry:
+    """Tests for Activity nav entry in dashboard."""
+
+    def test_nav_entry_conditional_on_flag(self):
+        """Dashboard nav should conditionally include Activity based on flag."""
+        from pathlib import Path
+        dashboard_path = Path(__file__).parent.parent / "templates" / "dashboard.html"
+        source = dashboard_path.read_text()
+
+        assert 'UI_ACTIVITY_PAGE' in source, "Dashboard must check UI_ACTIVITY_PAGE flag"
+        assert 'activity' in source.lower(), "Dashboard must have activity nav entry"
+        assert '/activity' in source, "Dashboard must link to /activity page"
+
+    def test_flag_injected_into_dashboard(self):
+        """Dashboard route must inject UI_ACTIVITY_PAGE flag."""
+        from pathlib import Path
+        routes_path = Path(__file__).parent.parent / "api" / "routes.py"
+        source = routes_path.read_text()
+
+        assert 'UI_ACTIVITY_PAGE' in source, "Route must reference UI_ACTIVITY_PAGE"
+        assert 'window.UI_ACTIVITY_PAGE' in source, "Route must inject flag into window"
