@@ -2138,75 +2138,260 @@ async def get_trades(date: str = None, symbol: str = None, strategy: str = None,
 
 
 def _get_broker_fills_for_date(target_date: str, et_tz) -> list:
-    """Modular broker fills source: fetch today's fills from trading_engine.
+    """v-activity-page-p0-2026-09-24: Fetch broker fills via Schwab transactions API.
+
+    Uses get_transactions(transaction_types=TRADE) instead of get_orders to capture
+    actual fills regardless of when the order was placed. FIFO pairs entry and exit
+    fills per symbol into round trips, supporting partial fills and shorts.
+
+    Root cause of missing trades (CRCL, CRWV, NBIS, GOOGL, INTC): get_orders only
+    returns orders *entered* in the date window. An order entered yesterday but
+    filled today wouldn't appear. get_transactions returns actual fills.
 
     Returns list of dicts with keys: symbol, side, entry_time, exit_time,
     entry_price, exit_price, quantity, pnl, exit_reason, source='broker'.
 
     Falls back gracefully to empty list if engine unavailable or API errors.
-    This allows the Activity page to show orphan broker fills that never
-    made it to bot_trades (e.g., CRCL/NBIS on 2026-09-24).
+    Logs failures at WARNING with status code and body snippet.
     """
-    from datetime import datetime
+    from datetime import datetime, timedelta
     from zoneinfo import ZoneInfo
 
     if trading_engine is None:
         return []
 
     try:
-        # Use engine's cached Schwab fills (5s cache, avoids hammering API)
-        schwab_trades = trading_engine.get_todays_trades()
-        if not schwab_trades:
+        target_dt = datetime.strptime(target_date, "%Y-%m-%d").date()
+        
+        raw_fills = _fetch_schwab_transactions_for_date(target_dt, et_tz)
+        if not raw_fills:
             return []
 
-        # Parse target date
-        target_dt = datetime.strptime(target_date, "%Y-%m-%d").date()
+        round_trips = _fifo_pair_fills(raw_fills, et_tz)
+        return round_trips
+
+    except Exception as exc:
+        logger.warning("broker_fills_fetch_error: %s", exc)
+        return []
+
+
+def _fetch_schwab_transactions_for_date(target_date, et_tz) -> list:
+    """Fetch TRADE transactions from Schwab for a specific ET date.
+    
+    Returns raw fill records with: symbol, instruction, quantity, price, time.
+    Logs non-200 responses at WARNING with status code and body snippet.
+    """
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+
+    if trading_engine is None or not hasattr(trading_engine, 'schwab_client'):
+        return []
+
+    schwab_client = getattr(trading_engine, 'schwab_client', None)
+    account_hash = getattr(trading_engine, 'account_hash', None)
+
+    if not schwab_client or not account_hash:
+        logger.warning("schwab_transactions_missing_client_or_hash")
+        return []
+
+    try:
+        from schwab.client import Client as SchwabClient
+
+        start_of_day_et = datetime.combine(target_date, datetime.min.time())
+        end_of_day_et = datetime.combine(target_date, datetime.max.time())
+
+        start_dt = start_of_day_et.replace(tzinfo=et_tz)
+        end_dt = end_of_day_et.replace(tzinfo=et_tz)
+
+        response = schwab_client.get_transactions(
+            account_hash,
+            start_date=start_dt,
+            end_date=end_dt,
+            transaction_types=[SchwabClient.Transactions.TransactionType.TRADE],
+        )
+
+        if response.status_code != 200:
+            body_snippet = str(response.text)[:200] if hasattr(response, 'text') else str(response.content)[:200]
+            logger.warning(
+                "schwab_transactions_non_200: status=%d body=%s",
+                response.status_code, body_snippet
+            )
+            return []
+
+        transactions = response.json()
+        if not transactions:
+            return []
 
         fills = []
-        for t in schwab_trades:
-            # Filter to target date
-            exit_time_str = t.get("exit_time") or t.get("entry_time") or ""
-            try:
-                if isinstance(exit_time_str, str) and exit_time_str:
-                    exit_dt = datetime.fromisoformat(exit_time_str.replace('Z', '+00:00'))
-                elif hasattr(exit_time_str, 'date'):
-                    exit_dt = exit_time_str
-                else:
-                    continue
-                if exit_dt.tzinfo is None:
-                    exit_dt = exit_dt.replace(tzinfo=ZoneInfo("UTC"))
-                exit_date_et = exit_dt.astimezone(et_tz).date()
-                if exit_date_et != target_dt:
-                    continue
-            except Exception:
+        for txn in transactions:
+            txn_type = txn.get('type', '')
+            if txn_type != 'TRADE':
                 continue
 
-            # Normalize to common format
-            symbol = (t.get("symbol") or "").upper()
-            if not symbol:
-                continue
+            transfer_items = txn.get('transferItems', [])
+            for item in transfer_items:
+                instrument = item.get('instrument', {})
+                symbol = instrument.get('symbol', '').upper()
+                if not symbol:
+                    continue
 
-            instruction = (t.get("instruction") or "").upper()
-            side = "short" if "SELL_SHORT" in instruction else "long"
+                instruction = item.get('positionEffect', '').upper()
+                fidelity_type = item.get('fidelityType', '').upper()
+                cost = item.get('cost', 0)
+                amount = abs(item.get('amount', 0))
 
-            fills.append({
-                "symbol": symbol,
-                "side": side,
-                "entry_time": t.get("entry_time"),
-                "exit_time": t.get("exit_time") or t.get("entry_time"),
-                "entry_price": t.get("entry_price") or t.get("price"),
-                "exit_price": t.get("exit_price") or t.get("price"),
-                "quantity": t.get("quantity") or t.get("filled_quantity") or 0,
-                "pnl": t.get("pnl") or 0,
-                "exit_reason": t.get("reason") or "broker_fill",
-                "source": "broker",
-                "status": t.get("status"),
-            })
+                trade_date_str = txn.get('tradeDate', '')
+                settlement_date_str = txn.get('settlementDate', '')
+
+                price = abs(cost / amount) if amount > 0 else item.get('price', 0)
+
+                fills.append({
+                    'symbol': symbol,
+                    'instruction': instruction,
+                    'fidelity_type': fidelity_type,
+                    'quantity': abs(int(amount)),
+                    'price': price,
+                    'cost': cost,
+                    'time': trade_date_str or settlement_date_str,
+                    'txn_id': txn.get('activityId', ''),
+                    'description': txn.get('description', ''),
+                })
 
         return fills
 
     except Exception as exc:
-        logger.debug("broker_fills_fetch_error: %s", exc)
+        logger.warning("schwab_transactions_error: %s", exc)
+        return []
+
+
+def _fifo_pair_fills(raw_fills: list, et_tz) -> list:
+    """FIFO pair entry and exit fills per symbol into round trips.
+    
+    Supports:
+    - Longs: OPENING (buy) paired with CLOSING (sell)
+    - Shorts: OPENING (sell-to-open) paired with CLOSING (buy-to-close)
+    - Partial fills: pairs smallest common quantity, residual remains in queue
+    
+    Returns list of round-trip dicts ready for Activity page.
+    """
+    from datetime import datetime
+    from collections import defaultdict
+
+    entry_queues = defaultdict(list)
+    round_trips = []
+
+    sorted_fills = sorted(raw_fills, key=lambda f: f.get('time', ''))
+
+    for fill in sorted_fills:
+        symbol = fill['symbol']
+        instruction = fill.get('instruction', '').upper()
+        quantity = fill['quantity']
+        price = fill['price']
+        fill_time = fill.get('time', '')
+
+        is_opening = instruction == 'OPENING'
+        is_closing = instruction == 'CLOSING'
+
+        if is_opening:
+            entry_queues[symbol].append({
+                'quantity': quantity,
+                'price': price,
+                'time': fill_time,
+                'instruction': instruction,
+                'cost': fill.get('cost', 0),
+                'description': fill.get('description', ''),
+            })
+        elif is_closing and entry_queues[symbol]:
+            remaining_exit_qty = quantity
+            exit_price = price
+            exit_time = fill_time
+
+            while remaining_exit_qty > 0 and entry_queues[symbol]:
+                entry = entry_queues[symbol][0]
+                entry_qty = entry['quantity']
+                matched_qty = min(entry_qty, remaining_exit_qty)
+
+                entry_price = entry['price']
+                entry_time = entry['time']
+
+                description = entry.get('description', '').upper()
+                is_short = 'SELL SHORT' in description or 'SHORT' in fill.get('description', '').upper()
+                side = 'short' if is_short else 'long'
+
+                if side == 'long':
+                    pnl = (exit_price - entry_price) * matched_qty
+                else:
+                    pnl = (entry_price - exit_price) * matched_qty
+
+                round_trips.append({
+                    'symbol': symbol,
+                    'side': side,
+                    'entry_time': entry_time,
+                    'exit_time': exit_time,
+                    'entry_price': entry_price,
+                    'exit_price': exit_price,
+                    'quantity': matched_qty,
+                    'pnl': round(pnl, 2),
+                    'exit_reason': 'broker_fill',
+                    'source': 'broker',
+                })
+
+                remaining_exit_qty -= matched_qty
+                entry['quantity'] -= matched_qty
+                if entry['quantity'] <= 0:
+                    entry_queues[symbol].pop(0)
+        elif is_closing:
+            logger.debug("closing_fill_no_entry: symbol=%s qty=%d", symbol, quantity)
+
+    return round_trips
+
+
+def _get_open_positions_for_date(target_date: str, et_tz, hands_off_denylist: frozenset) -> list:
+    """Fetch currently open positions (not yet closed).
+    
+    These should be shown in a separate section, not as trades with $0 exit.
+    Includes unrealized P&L and labels hands-off/external positions.
+    """
+    if trading_engine is None:
+        return []
+
+    try:
+        positions = getattr(trading_engine, 'positions', {})
+        if not positions:
+            return []
+
+        open_positions = []
+        for symbol, pos in positions.items():
+            symbol_upper = symbol.upper()
+            is_hands_off = symbol_upper in hands_off_denylist
+
+            entry_time = getattr(pos, 'entry_time', None)
+            entry_price = getattr(pos, 'entry_price', 0)
+            quantity = getattr(pos, 'quantity', 0)
+            unrealized_pnl = getattr(pos, 'unrealized_pnl', 0)
+            side = getattr(pos, 'side', 'long')
+            strategy = (getattr(pos, 'reasoning', {}) or {}).get('strategy', 'unknown')
+            mode = getattr(pos, 'mode', 'live')
+            is_external = mode == 'external' or not strategy or strategy == 'unknown'
+
+            open_positions.append({
+                'symbol': symbol_upper,
+                'side': side or 'long',
+                'strategy': strategy,
+                'entry_time': entry_time.isoformat() if hasattr(entry_time, 'isoformat') else str(entry_time or ''),
+                'entry_price': entry_price,
+                'quantity': quantity,
+                'unrealized_pnl': round(unrealized_pnl, 2) if unrealized_pnl else 0,
+                'stop_loss': getattr(pos, 'stop_loss', None),
+                'take_profit': getattr(pos, 'take_profit', None),
+                'is_hands_off': is_hands_off,
+                'is_external': is_external,
+            })
+
+        return open_positions
+
+    except Exception as exc:
+        logger.debug("open_positions_error: %s", exc)
         return []
 
 
@@ -2516,34 +2701,53 @@ async def get_activity(date: str = None, strategy: str = None):
             return pnl / total_risk
 
         def _format_time_et(ts_str):
-            """Format timestamp to ET time string."""
+            """Format timestamp to ET time string.
+            
+            v-activity-page-p0-2026-09-24: bot_trades stores naive ET timestamps.
+            Treat naive timestamps as America/New_York, not UTC. This fixes the
+            4-hour offset where MRNA at 15:00 ET was showing as 11:00.
+            """
             if not ts_str:
                 return None
             try:
                 if isinstance(ts_str, str):
-                    ts = datetime.fromisoformat(ts_str.replace('Z', '+00:00'))
+                    if 'Z' in ts_str or '+' in ts_str or '-' in ts_str[10:]:
+                        ts = datetime.fromisoformat(ts_str.replace('Z', '+00:00'))
+                    else:
+                        ts = datetime.fromisoformat(ts_str)
                 else:
                     ts = ts_str
                 if ts.tzinfo is None:
-                    ts = ts.replace(tzinfo=ZoneInfo("UTC"))
+                    ts = ts.replace(tzinfo=et_tz)
                 ts_et = ts.astimezone(et_tz)
                 return ts_et.strftime("%H:%M:%S")
             except Exception:
                 return str(ts_str)[:8] if ts_str else None
 
         def _calc_hold_time(entry_time, exit_time):
-            """Calculate hold time in minutes."""
+            """Calculate hold time in minutes.
+            
+            v-activity-page-p0-2026-09-24: treat naive timestamps as ET.
+            """
             if not entry_time or not exit_time:
                 return None
             try:
-                if isinstance(entry_time, str):
-                    entry = datetime.fromisoformat(entry_time.replace('Z', '+00:00'))
-                else:
-                    entry = entry_time
-                if isinstance(exit_time, str):
-                    exit_t = datetime.fromisoformat(exit_time.replace('Z', '+00:00'))
-                else:
-                    exit_t = exit_time
+                def _parse_ts(ts_str):
+                    if isinstance(ts_str, str):
+                        if 'Z' in ts_str or '+' in ts_str or '-' in ts_str[10:]:
+                            return datetime.fromisoformat(ts_str.replace('Z', '+00:00'))
+                        else:
+                            ts = datetime.fromisoformat(ts_str)
+                            if ts.tzinfo is None:
+                                ts = ts.replace(tzinfo=et_tz)
+                            return ts
+                    return ts_str
+                entry = _parse_ts(entry_time)
+                exit_t = _parse_ts(exit_time)
+                if entry.tzinfo is None:
+                    entry = entry.replace(tzinfo=et_tz)
+                if exit_t.tzinfo is None:
+                    exit_t = exit_t.replace(tzinfo=et_tz)
                 delta = exit_t - entry
                 return int(delta.total_seconds() / 60)
             except Exception:
@@ -2706,17 +2910,24 @@ async def get_activity(date: str = None, strategy: str = None):
                 "is_orphan": is_orphan,
                 "reasoning": {
                     "setup_type": reasoning.get("setup_type") or reasoning.get("strategy"),
+                    "entry_pattern": reasoning.get("entry_pattern"),
                     "rs_vs_spy": _scrub(reasoning.get("rs_vs_spy")),
                     "rs_basis": reasoning.get("rs_basis"),
                     "rsi": _scrub(price_vol.get("rsi")),
                     "volume_ratio": _scrub(price_vol.get("volume_ratio")),
+                    "adx": _scrub(price_vol.get("adx") or reasoning.get("adx")),
+                    "atr": _scrub(reasoning.get("atr") or price_vol.get("atr")),
                     "score": _scrub(reasoning.get("score") or reasoning.get("heuristic_score")),
                     "gates_passed": reasoning.get("gates_passed") or reasoning.get("gates"),
                     "shadow_gates": reasoning.get("shadow_gates"),
                     "regime": regime_ctx.get("regime"),
+                    "spy_vs_open": _scrub(regime_ctx.get("spy_vs_open")),
                     "spy_slope_pct": _scrub(regime_ctx.get("spy_slope_pct")),
+                    "vwap_slope": _scrub(reasoning.get("vwap_slope") or price_vol.get("vwap_slope")),
                     "news_gate_action": news_ctx.get("gate_action"),
                     "news_article_count": news_ctx.get("article_count"),
+                    "theme_context": news_ctx.get("theme") or reasoning.get("theme"),
+                    "gpu_critic": reasoning.get("gpu_critic") or snapshot_extra.get("gpu_critic"),
                     "exit_rationale": reasoning.get("exit_rationale") or row.get("exit_reason"),
                     "mc_size_mult": _scrub(reasoning.get("mc_size_mult")),
                     "is_day_trade": reasoning.get("is_day_trade"),
@@ -2766,7 +2977,15 @@ async def get_activity(date: str = None, strategy: str = None):
             "bot_avg_r": round(bot_total_r / bot_valid_r_count, 2) if bot_valid_r_count > 0 else None,
         }
 
-        return {"status": "success", "summary": summary, "trades": trades}
+        # v-activity-page-p0-2026-09-24: Fetch open positions (separate from trades)
+        open_positions = _get_open_positions_for_date(date, et_tz, hands_off_denylist)
+
+        return {
+            "status": "success",
+            "summary": summary,
+            "trades": trades,
+            "open_positions": open_positions,
+        }
 
     except HTTPException:
         raise
