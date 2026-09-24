@@ -1148,6 +1148,35 @@ class Config:
         return bool(self.manager.get('trading.enable_ghost_flatten_after_broker_flat', False))
 
     @property
+    def CLEAR_PYRAMID_LOCK_ON_BROKER_FLAT(self) -> bool:
+        """v-pyramid-lock-broker-flat-2026-09-24: clear anti-pyramid lock when
+        position goes broker_flat/ghost shortly after entry.
+
+        RCA 2026-09-24 INTC midday bump: morning accept at 09:58, position went
+        broker_flat ~79s later. The 240-minute anti_pyramid lock persisted even
+        though there was no position to pyramid into. Midday continuation at
+        12:19:40 was blocked with age_min=141 (still within 240m cooldown).
+
+        When True (default — this is a BUG FIX):
+          - If a position goes broker_flat/ghost, clear _recent_entry_attempts
+            for that symbol so re-entry is not blocked by a ghost lock.
+          - Shadow-logs pyramid_lock_cleared_broker_flat for measure/audit.
+          - Does NOT weaken anti_pyramid for real held positions (only clears
+            when the position is confirmed flat at broker).
+
+        When False:
+          - Legacy behavior: lock persists for full 240 minutes regardless of
+            whether position was flattened externally.
+
+        SAFE DEFAULT: True (fixes the ghost-lock bug). Set to False only if you
+        want to preserve the old (buggy) behavior for investigation.
+        """
+        env_val = os.getenv("CLEAR_PYRAMID_LOCK_ON_BROKER_FLAT")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.clear_pyramid_lock_on_broker_flat', True))
+
+    @property
     def QUOTE_REFRESH_SEC(self) -> float:
         """Cadence of the quote streamer per active symbol. 3s × 10
         symbols = ~3.3 req/s to Schwab. Tighten only if you have
@@ -2944,6 +2973,122 @@ class Config:
         return bool(self.manager.get(
             'trading.dt_open30_cont_rs_from_open_live_enforce', False
         ))
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # v-inmove-index-turn-2026-09-24: Mid-session (non-opening_30) index turn
+    # detection for continuation longs. Research brief 2026-09-24.
+    #
+    # Detects "in-move" SPY reclaim during VWAP/prior-close recovery:
+    #   inmove_turn_active := spy_slope_N > 0 AND spy_last >= spy_session_vwap
+    #     AND (spy_crossed_above_vwap_within_M_bars OR spy_crossed_above_prior_close_within_M_bars)
+    #
+    # Scope: day_trade_momentum + continuation + time_of_day != opening_30.
+    # Does NOT touch: opening_30 (PR #102 gates preserved), pullback, breakout,
+    # risk_off, hands-off MU/HQGE/SPCX, DAY_TRADE_LIVE master flip.
+    #
+    # Shadow mode: logs inmove_turn_active + wanted_entry_at_T to ndjson.
+    # LIVE_ENFORCE: carve-out allows_long mixed+spy_red only when turn_active.
+    # ══════════════════════════════════════════════════════════════════════════
+
+    @property
+    def DT_INMOVE_INDEX_TURN(self) -> bool:
+        """v-inmove-index-turn-2026-09-24: enable index turn detection for
+        mid-session (non-opening_30) continuation longs.
+
+        When True, the day_trade_momentum strategy computes inmove_turn_active
+        for continuation longs when time_of_day != opening_30:
+          - spy_slope_N > 0 (positive short-horizon slope)
+          - spy_last >= spy_session_vwap (hold reclaim, not failed poke)
+          - spy_crossed_above_vwap_within_M_bars OR spy_crossed_above_prior_close_within_M_bars
+
+        Tunables (ENV or Config.yaml):
+          - DT_INMOVE_INDEX_TURN_SLOPE_N: minutes for slope (default 3)
+          - DT_INMOVE_INDEX_TURN_RECLAIM_M: bars for reclaim freshness (default 5)
+
+        When turn context is computed:
+          - Always logs to data/shadow_inmove_index_turn.ndjson
+          - If DT_INMOVE_INDEX_TURN_LIVE_ENFORCE=False (default): shadow only
+          - If DT_INMOVE_INDEX_TURN_LIVE_ENFORCE=True: carve-out allows_long
+
+        SCOPE LIMITS (does NOT touch):
+          - opening_30 time_of_day (PR #102 gates preserved, INMOVE inert)
+          - DAY_TRADE_LIVE_ENTRIES_ENABLED master flip
+          - MU / HQGE / SPCX hands-off denylist
+          - pullback / breakout patterns
+          - risk_off regime (turn does NOT override risk_off)
+          - existing RSI>=70 continuation hard-veto
+
+        SAFE OFF-PATH: Set DT_INMOVE_INDEX_TURN=0 to disable.
+        Default False (OFF). Set via env DT_INMOVE_INDEX_TURN=1
+        or trading.dt_inmove_index_turn: true in Config.yaml."""
+        env_val = os.getenv("DT_INMOVE_INDEX_TURN")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.dt_inmove_index_turn', False))
+
+    @property
+    def DT_INMOVE_INDEX_TURN_LIVE_ENFORCE(self) -> bool:
+        """v-inmove-index-turn-2026-09-24: live enforcement for the mid-session
+        index turn gate (carve-out only).
+
+        When True AND DT_INMOVE_INDEX_TURN=True AND time_of_day != opening_30:
+          - If inmove_turn_active=True AND regime=mixed AND spy_change_pct < 0:
+            Carve-out: treat mixed+spy_red as ALLOW for continuation evaluation
+            (overrides the always-on allows_long starve ONLY while turn is active).
+          - Does NOT globally weaken allows_long.
+          - Does NOT invent new entries in opening_30.
+          - Does NOT hard-require turn for already day-green+>=VWAP tapes.
+
+        When False (default) AND DT_INMOVE_INDEX_TURN=True:
+          - Shadow mode: log inmove_turn_active + wanted_entry_at_T but do NOT
+            modify allows_long evaluation. Entry proceeds/blocks as baseline.
+
+        Requires DT_INMOVE_INDEX_TURN=True to have any effect.
+
+        SAFE OFF-PATH: keep False (default) until Research confirms
+        shadow metrics pass Stage-A floors.
+        Default False. Set via env DT_INMOVE_INDEX_TURN_LIVE_ENFORCE=1
+        or trading.dt_inmove_index_turn_live_enforce: true."""
+        env_val = os.getenv("DT_INMOVE_INDEX_TURN_LIVE_ENFORCE")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get(
+            'trading.dt_inmove_index_turn_live_enforce', False
+        ))
+
+    @property
+    def DT_INMOVE_INDEX_TURN_SLOPE_N(self) -> int:
+        """v-inmove-index-turn-2026-09-24: N minutes for short-horizon slope.
+
+        spy_slope_N = (spy_last / spy_close_N_bars_ago) - 1
+        Positive slope indicates upward momentum in the reclaim.
+
+        Default 3 (Research locked). Set via env DT_INMOVE_INDEX_TURN_SLOPE_N=3
+        or trading.dt_inmove_index_turn_slope_n: 3 in Config.yaml."""
+        env_val = os.getenv("DT_INMOVE_INDEX_TURN_SLOPE_N")
+        if env_val is not None:
+            try:
+                return max(1, int(env_val))
+            except ValueError:
+                pass
+        return int(self.manager.get('trading.dt_inmove_index_turn_slope_n', 3))
+
+    @property
+    def DT_INMOVE_INDEX_TURN_RECLAIM_M(self) -> int:
+        """v-inmove-index-turn-2026-09-24: M bars for reclaim freshness window.
+
+        Reclaim is "fresh" if SPY crossed above VWAP or prior close within
+        the last M bars. Ensures we detect "in progress" turns, not stale ones.
+
+        Default 5 (Research locked). Set via env DT_INMOVE_INDEX_TURN_RECLAIM_M=5
+        or trading.dt_inmove_index_turn_reclaim_m: 5 in Config.yaml."""
+        env_val = os.getenv("DT_INMOVE_INDEX_TURN_RECLAIM_M")
+        if env_val is not None:
+            try:
+                return max(1, int(env_val))
+            except ValueError:
+                pass
+        return int(self.manager.get('trading.dt_inmove_index_turn_reclaim_m', 5))
 
     @property
     def MOMENTUM_MIN_VOLUME_RATIO(self) -> float:

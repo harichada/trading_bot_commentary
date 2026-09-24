@@ -834,3 +834,260 @@ def get_rs_from_open_context(
         rs_prior_close=round(rs_prior_close, 4),
         source=source,
     )
+
+
+# ────────────────────────────────────────────────────────────────────
+# v-inmove-index-turn-2026-09-24: In-Move Turn Context for mid-session
+# (non-opening_30) continuation longs. Research brief 2026-09-24.
+#
+# Detects developing SPY VWAP/prior reclaim with positive short-horizon slope.
+# Predicate:
+#   inmove_turn_active :=
+#     (spy_slope_N > 0)
+#     AND (spy_last >= spy_session_vwap)
+#     AND (spy_crossed_above_vwap_within_M_bars OR spy_crossed_above_prior_close_within_M_bars)
+#
+# Defaults: N=3 (slope = spy_last/spy_close_N_bars_ago - 1), M=5 bars.
+# Fail-open on missing VWAP/bars (same spirit as SpyIndexContext.is_above_vwap).
+# ────────────────────────────────────────────────────────────────────
+
+@dataclass(frozen=True)
+class InMoveTurnContext:
+    """In-Move turn context for mid-session continuation index turn detection."""
+    spy_last: float                    # Current SPY price
+    spy_session_vwap: Optional[float]  # Session VWAP (None if unavailable)
+    spy_prior_close: Optional[float]   # Prior close (None if unavailable)
+    spy_close_n_bars_ago: Optional[float]  # SPY close N bars ago for slope
+    spy_slope_n: Optional[float]       # (spy_last / spy_close_n_bars_ago - 1) * 100
+    spy_vs_prior_pct: Optional[float]  # (spy_last / spy_prior_close - 1) * 100
+    reclaim_vwap_within_m: bool        # Crossed above VWAP within M bars
+    reclaim_prior_within_m: bool       # Crossed above prior close within M bars
+    inmove_turn_active: bool           # Full predicate passes
+    n_bars_slope: int                  # N value used for slope
+    m_bars_reclaim: int                # M value used for reclaim freshness
+    source: str                        # "computed" | "partial" | "unavailable"
+    ts: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+
+    @property
+    def has_positive_slope(self) -> bool:
+        """True if spy_slope_n > 0."""
+        if self.spy_slope_n is None:
+            return True  # Fail-open
+        return self.spy_slope_n > 0
+
+    @property
+    def is_above_vwap(self) -> bool:
+        """True if spy_last >= spy_session_vwap. Fail-open if unavailable."""
+        if self.spy_session_vwap is None or self.spy_session_vwap <= 0:
+            return True  # Fail-open
+        return self.spy_last >= self.spy_session_vwap
+
+    @property
+    def has_fresh_reclaim(self) -> bool:
+        """True if VWAP or prior-close reclaim within M bars."""
+        return self.reclaim_vwap_within_m or self.reclaim_prior_within_m
+
+
+# Module-level cache for SPY bars used in INMOVE turn detection.
+# Reuses same cache structure as VWAP to avoid duplicate fetches.
+_SPY_BARS_CACHE: dict = {}
+_SPY_BARS_CACHE_TTL_SEC: float = 30.0
+
+
+def _get_spy_close_n_bars_ago(bars_df, n: int) -> Optional[float]:
+    """Get SPY close from N bars ago from the bars DataFrame.
+    
+    Args:
+        bars_df: DataFrame with SPY minute bars (must have 'Close' column)
+        n: Number of bars back to look
+        
+    Returns:
+        Close price N bars ago, or None if unavailable.
+    """
+    try:
+        if bars_df is None or bars_df.empty:
+            return None
+        if 'Close' not in bars_df.columns:
+            return None
+        if len(bars_df) < n + 1:
+            return None  # Not enough bars
+        return float(bars_df['Close'].iloc[-(n + 1)])
+    except Exception:
+        return None
+
+
+def _detect_reclaim_within_m_bars(
+    bars_df,
+    threshold: float,
+    m: int,
+) -> bool:
+    """Detect if SPY crossed above a threshold within the last M bars.
+    
+    Cross detection: bar where Close >= threshold AND previous bar Close < threshold.
+    
+    Args:
+        bars_df: DataFrame with SPY minute bars
+        threshold: Price level to detect crossing (VWAP or prior close)
+        m: Number of recent bars to check
+        
+    Returns:
+        True if a cross-above occurred within M bars, False otherwise.
+    """
+    try:
+        if bars_df is None or bars_df.empty:
+            return False
+        if 'Close' not in bars_df.columns:
+            return False
+        if threshold is None or threshold <= 0:
+            return False
+        if len(bars_df) < 2:
+            return False
+        
+        closes = bars_df['Close'].values
+        check_range = min(m, len(closes) - 1)
+        
+        for i in range(1, check_range + 1):
+            idx = len(closes) - i
+            if idx < 1:
+                break
+            current_close = closes[idx]
+            prev_close = closes[idx - 1]
+            if current_close >= threshold and prev_close < threshold:
+                return True
+        
+        return False
+    except Exception:
+        return False
+
+
+def get_inmove_turn_context(
+    spy_ctx: SpyIndexContext,
+    n_bars_slope: int = 3,
+    m_bars_reclaim: int = 5,
+    schwab_provider=None,
+) -> InMoveTurnContext:
+    """Get in-move turn context for mid-session continuation longs.
+
+    v-inmove-index-turn-2026-09-24: computes inmove_turn_active predicate:
+      (spy_slope_N > 0) AND (spy_last >= spy_session_vwap)
+      AND (spy_crossed_above_vwap_within_M_bars OR spy_crossed_above_prior_close_within_M_bars)
+
+    Args:
+        spy_ctx: SpyIndexContext with current SPY metrics (VWAP, last, etc.)
+        n_bars_slope: N minutes for slope calculation (default 3)
+        m_bars_reclaim: M bars for reclaim freshness (default 5)
+        schwab_provider: Optional SchwabDataProvider for bar data
+
+    Returns:
+        InMoveTurnContext with turn detection results.
+
+    Fail-open behavior: if data is unavailable (bars, VWAP, etc.),
+    the predicate returns False for turn_active but does not block.
+    """
+    import logging
+    _logger = logging.getLogger("TradingBot")
+    now_utc = datetime.now(timezone.utc)
+    session_date = now_utc.strftime("%Y-%m-%d")
+
+    spy_last = spy_ctx.spy_last
+    spy_vwap = spy_ctx.spy_session_vwap
+    spy_prior_close: Optional[float] = None
+    spy_close_n_bars_ago: Optional[float] = None
+    spy_slope_n: Optional[float] = None
+    spy_vs_prior_pct: Optional[float] = None
+    reclaim_vwap_within_m = False
+    reclaim_prior_within_m = False
+    source = "unavailable"
+    bars_df = None
+
+    # Get SPY prior close from MarketIndicesCache
+    try:
+        from core.market_indices import MarketIndicesCache
+        cache = MarketIndicesCache.instance()
+        spy_quote = cache.get_quote("SPY")
+        if spy_quote is not None and hasattr(spy_quote, 'close'):
+            spy_prior_close = spy_quote.close if spy_quote.close > 0 else None
+    except Exception as exc:
+        _logger.debug("get_inmove_turn_context: prior close fetch failed: %s", exc)
+
+    # Fetch SPY minute bars for slope/reclaim detection
+    global _SPY_BARS_CACHE
+    cached = _SPY_BARS_CACHE.get("bars_data")
+    if cached is not None:
+        cached_df = cached.get("bars_df")
+        cached_at = cached.get("fetched_at")
+        cached_session = cached.get("session_date")
+        if (cached_at is not None
+                and cached_session == session_date
+                and (now_utc - cached_at).total_seconds() < _SPY_BARS_CACHE_TTL_SEC):
+            bars_df = cached_df
+
+    if bars_df is None and schwab_provider is not None:
+        try:
+            bars_df = schwab_provider.get_market_data(
+                "SPY",
+                period_type="day",
+                period=1,
+                frequency_type="minute",
+                frequency=1,
+            )
+            if bars_df is not None and not bars_df.empty:
+                _SPY_BARS_CACHE["bars_data"] = {
+                    "bars_df": bars_df,
+                    "fetched_at": now_utc,
+                    "session_date": session_date,
+                }
+                source = "computed"
+        except Exception as exc:
+            _logger.debug("get_inmove_turn_context: SPY bars fetch failed: %s", exc)
+
+    # Calculate slope: (spy_last / spy_close_N_bars_ago - 1) * 100
+    if bars_df is not None:
+        spy_close_n_bars_ago = _get_spy_close_n_bars_ago(bars_df, n_bars_slope)
+        if spy_close_n_bars_ago is not None and spy_close_n_bars_ago > 0 and spy_last > 0:
+            spy_slope_n = ((spy_last / spy_close_n_bars_ago) - 1.0) * 100.0
+            source = "computed"
+
+    # Calculate SPY vs prior close %
+    if spy_prior_close is not None and spy_prior_close > 0 and spy_last > 0:
+        spy_vs_prior_pct = ((spy_last / spy_prior_close) - 1.0) * 100.0
+
+    # Detect VWAP reclaim within M bars
+    if bars_df is not None and spy_vwap is not None and spy_vwap > 0:
+        reclaim_vwap_within_m = _detect_reclaim_within_m_bars(bars_df, spy_vwap, m_bars_reclaim)
+
+    # Detect prior-close reclaim within M bars
+    if bars_df is not None and spy_prior_close is not None and spy_prior_close > 0:
+        reclaim_prior_within_m = _detect_reclaim_within_m_bars(bars_df, spy_prior_close, m_bars_reclaim)
+
+    # Evaluate full predicate
+    has_positive_slope = spy_slope_n is not None and spy_slope_n > 0
+    is_above_vwap = spy_vwap is None or spy_vwap <= 0 or spy_last >= spy_vwap
+    has_fresh_reclaim = reclaim_vwap_within_m or reclaim_prior_within_m
+
+    inmove_turn_active = has_positive_slope and is_above_vwap and has_fresh_reclaim
+
+    # If we have no bar data, fail-open: turn_active=False (does not block, just not detected)
+    if source == "unavailable":
+        inmove_turn_active = False
+
+    return InMoveTurnContext(
+        spy_last=round(spy_last, 2),
+        spy_session_vwap=round(spy_vwap, 2) if spy_vwap is not None else None,
+        spy_prior_close=round(spy_prior_close, 2) if spy_prior_close is not None else None,
+        spy_close_n_bars_ago=round(spy_close_n_bars_ago, 2) if spy_close_n_bars_ago is not None else None,
+        spy_slope_n=round(spy_slope_n, 4) if spy_slope_n is not None else None,
+        spy_vs_prior_pct=round(spy_vs_prior_pct, 4) if spy_vs_prior_pct is not None else None,
+        reclaim_vwap_within_m=reclaim_vwap_within_m,
+        reclaim_prior_within_m=reclaim_prior_within_m,
+        inmove_turn_active=inmove_turn_active,
+        n_bars_slope=n_bars_slope,
+        m_bars_reclaim=m_bars_reclaim,
+        source=source,
+    )
+
+
+def clear_spy_bars_cache() -> None:
+    """Clear the SPY bars cache (for tests)."""
+    global _SPY_BARS_CACHE
+    _SPY_BARS_CACHE = {}

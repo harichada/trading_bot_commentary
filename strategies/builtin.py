@@ -2374,6 +2374,160 @@ class DayTradeMomentumStrategy(TradingStrategyWithCommentary):
                 return None
             
             # ────────────────────────────────────────────────────────────────
+            # v-inmove-index-turn-2026-09-24: In-Move Index Turn detection for
+            # mid-session (non-opening_30) continuation longs.
+            #
+            # Research brief 2026-09-24: detect developing SPY VWAP/prior reclaim
+            # with positive short-horizon slope. Measure wanted_entry_at_T for
+            # counterfactual analysis (this timestamp is BEFORE anti_pyramid).
+            #
+            # Predicate:
+            #   inmove_turn_active := spy_slope_N > 0 AND spy_last >= spy_session_vwap
+            #     AND (spy_crossed_above_vwap_within_M_bars OR spy_crossed_above_prior_close_within_M_bars)
+            #
+            # Scope: continuation + time_of_day != opening_30. Does NOT touch:
+            #   - opening_30 (PR #102 gates preserved, INMOVE inert)
+            #   - pullback / breakout patterns
+            #   - risk_off (turn does NOT override risk_off)
+            #
+            # Modes:
+            #   DT_INMOVE_INDEX_TURN=True, LIVE_ENFORCE=False (default):
+            #     Shadow mode — compute turn, log to ndjson, entry proceeds/blocks as baseline.
+            #   DT_INMOVE_INDEX_TURN=True, LIVE_ENFORCE=True:
+            #     Carve-out: if turn_active AND regime=mixed AND spy_red, allow continuation.
+            # ────────────────────────────────────────────────────────────────
+            _inmove_turn_applies = (
+                cfg.DT_INMOVE_INDEX_TURN
+                and _entry_pattern == "continuation"
+                and _mc_time_of_day != "opening_30"
+            )
+
+            if _inmove_turn_applies:
+                try:
+                    from core.market_context import get_spy_index_context, get_inmove_turn_context
+                    from datetime import timezone as _tz_inmove
+                    import json as _json_inmove
+                    from pathlib import Path as _Path_inmove
+
+                    _spy_ctx_inmove = get_spy_index_context(
+                        schwab_provider=getattr(self, '_schwab_provider', None)
+                    )
+                    _inmove_ctx = get_inmove_turn_context(
+                        spy_ctx=_spy_ctx_inmove,
+                        n_bars_slope=cfg.DT_INMOVE_INDEX_TURN_SLOPE_N,
+                        m_bars_reclaim=cfg.DT_INMOVE_INDEX_TURN_RECLAIM_M,
+                        schwab_provider=getattr(self, '_schwab_provider', None),
+                    )
+
+                    _inmove_turn_active = _inmove_ctx.inmove_turn_active
+                    _live_enforce = cfg.DT_INMOVE_INDEX_TURN_LIVE_ENFORCE
+
+                    _allows_long_raw = not (_mc_regime == "mixed" and _mc_spy_change < 0)
+                    _would_carve_out = (
+                        _inmove_turn_active
+                        and _mc_regime == "mixed"
+                        and _mc_spy_change < 0
+                    )
+                    _wanted_entry_at_T = datetime.now(_tz_inmove.utc).isoformat()
+
+                    _inmove_fields = {
+                        'inmove_turn_active': _inmove_turn_active,
+                        'spy_slope_N': _inmove_ctx.spy_slope_n,
+                        'spy_last': _inmove_ctx.spy_last,
+                        'spy_vwap': _inmove_ctx.spy_session_vwap,
+                        'spy_vs_prior_pct': _inmove_ctx.spy_vs_prior_pct,
+                        'reclaim_vwap_within_M': _inmove_ctx.reclaim_vwap_within_m,
+                        'reclaim_prior_within_M': _inmove_ctx.reclaim_prior_within_m,
+                        'allows_long_raw': _allows_long_raw,
+                        'would_carve_out': _would_carve_out,
+                        'wanted_entry_at_T': _wanted_entry_at_T,
+                        'live_enforce': _live_enforce,
+                        'time_of_day': _mc_time_of_day,
+                        'regime': _mc_regime,
+                        'spy_change_pct': _mc_spy_change,
+                        'pattern': _entry_pattern,
+                        'n_bars_slope': _inmove_ctx.n_bars_slope,
+                        'm_bars_reclaim': _inmove_ctx.m_bars_reclaim,
+                        'source': _inmove_ctx.source,
+                    }
+
+                    self._log_decision(
+                        market_data, "shadow", "inmove_index_turn",
+                        gate_name="dt_inmove_index_turn",
+                        **_inmove_fields,
+                    )
+
+                    try:
+                        _shadow_inmove_entry = {
+                            'ts': _wanted_entry_at_T,
+                            'symbol': symbol,
+                            'strategy': self.name,
+                            'pattern': _entry_pattern,
+                            'time_of_day': _mc_time_of_day,
+                            'regime': _mc_regime,
+                            'inmove_turn_active': _inmove_turn_active,
+                            'spy_slope_N': float(_inmove_ctx.spy_slope_n) if _inmove_ctx.spy_slope_n is not None else None,
+                            'spy_last': float(_inmove_ctx.spy_last),
+                            'spy_vwap': float(_inmove_ctx.spy_session_vwap) if _inmove_ctx.spy_session_vwap is not None else None,
+                            'spy_vs_prior_pct': float(_inmove_ctx.spy_vs_prior_pct) if _inmove_ctx.spy_vs_prior_pct is not None else None,
+                            'reclaim_vwap_within_M': _inmove_ctx.reclaim_vwap_within_m,
+                            'reclaim_prior_within_M': _inmove_ctx.reclaim_prior_within_m,
+                            'allows_long_raw': _allows_long_raw,
+                            'would_carve_out': _would_carve_out,
+                            'wanted_entry_at_T': _wanted_entry_at_T,
+                            'live_enforce': _live_enforce,
+                            'session_id': _get_session_id(),
+                            'entry_price': float(market_data.close),
+                            'rsi': float(rsi),
+                            'volume_ratio': float(volume_ratio),
+                            'rs_vs_spy': float(_rs_vs_spy),
+                        }
+
+                        _repo_root_inmove = _Path_inmove(__file__).resolve().parent.parent
+                        _ledger_dir_inmove = _repo_root_inmove / "data"
+                        _ledger_dir_inmove.mkdir(parents=True, exist_ok=True)
+                        _ledger_path_inmove = str(_ledger_dir_inmove / "shadow_inmove_index_turn.ndjson")
+
+                        with open(_ledger_path_inmove, 'a') as _f_inmove:
+                            _f_inmove.write(_json_inmove.dumps(_shadow_inmove_entry, default=str) + "\n")
+
+                    except Exception as _shadow_inmove_exc:
+                        logger.warning(
+                            "shadow_inmove_index_turn write failed for %s: %s",
+                            symbol, _shadow_inmove_exc,
+                        )
+
+                    if _inmove_turn_active:
+                        _slope_str = f"{_inmove_ctx.spy_slope_n:+.2f}%" if _inmove_ctx.spy_slope_n is not None else "N/A"
+                        _vwap_str_im = f"${_inmove_ctx.spy_session_vwap:.2f}" if _inmove_ctx.spy_session_vwap else "N/A"
+
+                        self.commentary.add_commentary(TradingCommentary(
+                            timestamp=datetime.now(),
+                            type=CommentaryType.OPPORTUNITY,
+                            symbol=symbol,
+                            title=f"📈 INMOVE Turn Detected — {_mc_time_of_day} continuation",
+                            message=(
+                                f"SPY in-move turn ACTIVE for {symbol} continuation:\n"
+                                f"  SPY slope ({_inmove_ctx.n_bars_slope}m): {_slope_str}\n"
+                                f"  SPY last: ${_inmove_ctx.spy_last:.2f}\n"
+                                f"  SPY VWAP: {_vwap_str_im}\n"
+                                f"  VWAP reclaim within {_inmove_ctx.m_bars_reclaim} bars: {'✓' if _inmove_ctx.reclaim_vwap_within_m else '✗'}\n"
+                                f"  Prior reclaim within {_inmove_ctx.m_bars_reclaim} bars: {'✓' if _inmove_ctx.reclaim_prior_within_m else '✗'}\n\n"
+                                f"Regime: {_mc_regime} | SPY: {_mc_spy_change:+.2f}%\n"
+                                f"Would carve-out: {'YES' if _would_carve_out else 'NO'}\n"
+                                f"LIVE_ENFORCE: {'ON' if _live_enforce else 'OFF (shadow only)'}"
+                            ),
+                            data=_inmove_fields,
+                            importance=6,
+                        ))
+
+                except Exception as _inmove_exc:
+                    logger.debug(
+                        "day_trade_momentum: inmove_turn check failed: %s",
+                        _inmove_exc
+                    )
+            
+            # ────────────────────────────────────────────────────────────────
             # Calculate Stop/Target (ATR-based, tighter for day-trade)
             # ────────────────────────────────────────────────────────────────
             atr = _floored_atr(atr, market_data.close)
