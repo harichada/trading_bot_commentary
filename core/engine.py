@@ -37,6 +37,7 @@ from analysis.exit_managers import AdvancedExitManager, DynamicExitManager
 from analysis.alternative_data import AlternativeDataIntegrator, MarketNeutralStrategies
 from analysis.technical import TechnicalAnalyzerWithCommentary
 from analysis.screener import StockScreener
+from core.unified_exit import get_unified_exit_manager, UnifiedExitAction
 from ml.predictor import MLPredictorWithCommentary
 from risk.manager import RiskManagerWithCommentary
 from risk.backtest import PerformanceAnalyzer
@@ -8471,6 +8472,34 @@ class TradingEngineWithCommentary:
                         # territory. This is what the user asked for: the
                         # rule is not behind an `if`, it's not in the set.
                         _fsm_allows_proactive = is_exit_rule_allowed(_state, ExitRule.PROACTIVE_EXIT)
+                        
+                        # ────────────────────────────────────────────────────────────────
+                        # v-unified-exit-2026-09-24-r2: Evaluate unified exit manager
+                        # for day-trade positions. SHADOW-ONLY — logs what the unified
+                        # policy would do but NEVER overrides live exits.
+                        # Uses current_atr from market data, not proactive_indicators.
+                        # ────────────────────────────────────────────────────────────────
+                        if _is_day_trade and Config().DT_UNIFIED_EXIT:
+                            try:
+                                from zoneinfo import ZoneInfo
+                                _et_tz = ZoneInfo("America/New_York")
+                                _et_now_unified = datetime.now(_et_tz)
+                                _atr_for_unified = current_atr if current_atr else 0
+                                _unified_mgr = get_unified_exit_manager()
+                                _unified_mgr.evaluate_position(
+                                    position=position,
+                                    current_price=current_price,
+                                    atr=_atr_for_unified,
+                                    now_et_hour=_et_now_unified.hour,
+                                    now_et_minute=_et_now_unified.minute,
+                                    live_exit_reason=None,
+                                )
+                            except Exception as _unified_exc:
+                                logger.debug(
+                                    "unified_exit evaluation failed for %s: %s",
+                                    symbol, _unified_exc
+                                )
+                        
                         if Config().ENABLE_PROACTIVE_EXIT and proactive_indicators and _fsm_allows_proactive and not _proactive_allowed:
                             # Suppress and audit so we can measure how often
                             # the time-floor saved us a whipsaw.

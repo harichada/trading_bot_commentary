@@ -927,6 +927,42 @@ class Config:
         return bool(self.manager.get('trading.enable_proactive_exit', True))
 
     @property
+    def DT_UNIFIED_EXIT(self) -> bool:
+        """v-unified-exit-2026-09-24: enable the unified exit manager for
+        day-trade positions. When True, the unified exit policy is evaluated
+        on each position-manager tick and logged to shadow NDJSON.
+        
+        The unified policy replaces scattered indicator-based exits (MACD flip,
+        RSI < 50, open-desk RSI extreme) with a coherent structure:
+          - Scale 50% at +1R
+          - Move stop to breakeven after scale
+          - Trail remainder by ATR
+          - Time stop N minutes before flatten
+        
+        Default False (shadow-only). Set DT_UNIFIED_EXIT=1 or
+        trading.dt_unified_exit: true to enable shadow logging.
+        
+        Does NOT affect live exits unless DT_UNIFIED_EXIT_LIVE_ENFORCE is also True."""
+        env_val = os.getenv("DT_UNIFIED_EXIT")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.dt_unified_exit', False))
+
+    @property
+    def DT_UNIFIED_EXIT_LIVE_ENFORCE(self) -> bool:
+        """DEPRECATED: Live enforcement has been removed entirely.
+        
+        v-unified-exit-2026-09-24-r2: The unified exit manager is now
+        shadow-only. This property always returns False. Setting the
+        environment variable or config has no effect.
+        
+        The shadow log (data/shadow_unified_exit.ndjson) can be analyzed
+        offline to validate the policy before any live integration is
+        considered in a future PR.
+        """
+        return False
+
+    @property
     def PROACTIVE_EXIT_MIN_AGE_NEWS(self) -> int:
         """v-proactive-time-floor-2026-04-30: minimum minutes a news-driven
         position must be open before proactive_exit can fire. Whipsaw
