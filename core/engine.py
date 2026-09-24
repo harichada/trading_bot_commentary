@@ -4258,44 +4258,69 @@ class TradingEngineWithCommentary:
                     or "external"
                 )
 
-                await self.db_logger.log_trade(
-                    symbol=sym,
-                    side=side,
-                    strategy=strategy,
-                    entry_time=entry_time,
-                    exit_time=exit_time,
-                    entry_price=entry_price,
-                    exit_price=exit_price,
-                    quantity=int(quantity),
-                    pnl=float(pnl),
-                    pnl_pct=float(pnl_pct),
-                    exit_reason="external_close",
-                    atr_at_entry=(
-                        reasoning.get("atr") if isinstance(reasoning, dict) else None
-                    ),
-                    stop_loss=float(getattr(prior_pos, "stop_loss", 0) or 0) or None,
-                    take_profit=(
-                        float(getattr(prior_pos, "take_profit", 0) or 0)
-                        if getattr(prior_pos, "take_profit", 0) not in (float("inf"), 0, None)
-                        else None
-                    ),
-                    confidence=(
-                        reasoning.get("confidence") if isinstance(reasoning, dict) else None
-                    ),
-                    meta_proba=(
-                        reasoning.get("meta_proba") if isinstance(reasoning, dict) else None
-                    ),
-                    kelly_fraction=(
-                        reasoning.get("kelly_fraction") if isinstance(reasoning, dict) else None
-                    ),
-                    scaled_out=bool(getattr(prior_pos, "scaled_out", False)),
-                    mode=getattr(prior_pos, "mode", "live"),
-                    reasoning=(
-                        {**reasoning, "external_close": True}
-                        if isinstance(reasoning, dict)
-                        else {"external_close": True}
-                    ),
-                )
+                # v-ledger-integrity-2026-09-24: use log_trade_v2 for broker orphans
+                # Engine review: derive is_external from prior position metadata
+                if Config().LEDGER_INTEGRITY:
+                    from core.ledger_integrity import build_broker_orphan_entry
+                    entry = build_broker_orphan_entry(
+                        symbol=sym,
+                        side=side,
+                        entry_price=entry_price,
+                        exit_price=exit_price,
+                        quantity=int(quantity),
+                        entry_time=entry_time,
+                        exit_time=exit_time,
+                        exit_reason="external_close",  # engine review: keep external_close, not external_reconcile
+                        hands_off_denylist=Config().HANDS_OFF_DENYLIST,
+                        strategy=strategy,
+                        atr=reasoning.get("atr") if isinstance(reasoning, dict) else None,
+                        # Engine review: pass prior position metadata for accurate classification
+                        original_stop=getattr(prior_pos, "original_stop", None) or getattr(prior_pos, "initial_stop", None),
+                        original_tp=getattr(prior_pos, "take_profit", None),
+                        managed_by_bot=getattr(prior_pos, "managed_by_bot", None),
+                        is_long_term=getattr(prior_pos, "is_long_term", False),
+                        prior_is_external=getattr(prior_pos, "is_external", False),
+                    )
+                    await self.db_logger.log_trade_v2(**entry.to_db_params())
+                else:
+                    await self.db_logger.log_trade(
+                        symbol=sym,
+                        side=side,
+                        strategy=strategy,
+                        entry_time=entry_time,
+                        exit_time=exit_time,
+                        entry_price=entry_price,
+                        exit_price=exit_price,
+                        quantity=int(quantity),
+                        pnl=float(pnl),
+                        pnl_pct=float(pnl_pct),
+                        exit_reason="external_close",
+                        atr_at_entry=(
+                            reasoning.get("atr") if isinstance(reasoning, dict) else None
+                        ),
+                        stop_loss=float(getattr(prior_pos, "stop_loss", 0) or 0) or None,
+                        take_profit=(
+                            float(getattr(prior_pos, "take_profit", 0) or 0)
+                            if getattr(prior_pos, "take_profit", 0) not in (float("inf"), 0, None)
+                            else None
+                        ),
+                        confidence=(
+                            reasoning.get("confidence") if isinstance(reasoning, dict) else None
+                        ),
+                        meta_proba=(
+                            reasoning.get("meta_proba") if isinstance(reasoning, dict) else None
+                        ),
+                        kelly_fraction=(
+                            reasoning.get("kelly_fraction") if isinstance(reasoning, dict) else None
+                        ),
+                        scaled_out=bool(getattr(prior_pos, "scaled_out", False)),
+                        mode=getattr(prior_pos, "mode", "live"),
+                        reasoning=(
+                            {**reasoning, "external_close": True}
+                            if isinstance(reasoning, dict)
+                            else {"external_close": True}
+                        ),
+                    )
 
                 self._audit(
                     "external_close_reconcile", sym, "logged",
@@ -4692,6 +4717,21 @@ class TradingEngineWithCommentary:
                 logger.info("snapshot_table_ready")
             except Exception as exc:
                 logger.warning("snapshot_table_create_failed: %s", exc)
+
+        # v-ledger-integrity-2026-09-24: ensure ledger integrity columns exist
+        # Engine review: run OFF critical path as fire-and-forget background task.
+        # For production: run scripts/migrate_ledger_integrity.py in a quiet window.
+        if self.db_logger is not None and Config().LEDGER_INTEGRITY:
+            async def _bg_ensure_ledger_columns():
+                try:
+                    await self.db_logger.ensure_ledger_integrity_columns()
+                    logger.info("ledger_integrity_columns_ready")
+                except Exception as exc:
+                    logger.warning(
+                        "ledger_integrity_columns_create_failed: %s "
+                        "(run scripts/migrate_ledger_integrity.py manually)", exc
+                    )
+            asyncio.create_task(_bg_ensure_ledger_columns())
 
         # v-startup-schwab-sync-2026-04-30: previously this branch only
         # ran in LIVE mode, so SIM-mode dashboards saw the default
@@ -9296,34 +9336,70 @@ class TradingEngineWithCommentary:
                         if position.side == "long"
                         else (position.entry_price - exit_price) / position.entry_price * 100)
             try:
-                asyncio.get_event_loop().create_task(
-                    self.db_logger.log_trade(
-                        symbol=position.symbol,
-                        side=position.side or "long",
-                        strategy=(position.reasoning or {}).get("strategy"),
-                        entry_time=position.entry_time,
-                        exit_time=datetime.now(),
-                        entry_price=position.entry_price,
-                        exit_price=exit_price,
-                        quantity=position.quantity,
-                        pnl=pnl,
-                        pnl_pct=round(pnl_pct, 4),
-                        exit_reason=reason,
-                        atr_at_entry=(position.reasoning or {}).get("atr"),
-                        stop_loss=position.stop_loss,
-                        take_profit=position.take_profit,
-                        # v-trade-record-ml-columns-2026-09-02: Position has
-                        # no `confidence` attribute — the old getattr always
-                        # wrote NULL. Pull confidence/meta_proba/kelly from
-                        # reasoning, same as the external-close reconcile path.
-                        confidence=(position.reasoning or {}).get("confidence"),
-                        meta_proba=(position.reasoning or {}).get("meta_proba"),
-                        kelly_fraction=(position.reasoning or {}).get("kelly_fraction"),
-                        scaled_out=getattr(position, "scaled_out", False),
-                        mode=self.mode.value,
-                        reasoning=position.reasoning,
+                # v-ledger-integrity-2026-09-24: use log_trade_v2 for R-tracking
+                # Engine review fix: fallback to legacy log_trade if build_trade_ledger_entry raises
+                use_legacy = False
+                if Config().LEDGER_INTEGRITY:
+                    try:
+                        from core.ledger_integrity import (
+                            build_trade_ledger_entry,
+                            normalize_exit_reason,
+                        )
+                        entry = build_trade_ledger_entry(
+                            position=position,
+                            exit_price=exit_price,
+                            exit_time=datetime.now(),
+                            exit_reason=reason,
+                            pnl=pnl,
+                            pnl_pct=round(pnl_pct, 4),
+                            mode=self.mode.value,
+                            source="bot",
+                            hands_off_denylist=Config().HANDS_OFF_DENYLIST,
+                        )
+                        asyncio.get_event_loop().create_task(
+                            self.db_logger.log_trade_v2(
+                                **entry.to_db_params()
+                            )
+                        )
+                    except Exception as ledger_exc:
+                        # Fallback to legacy log_trade so trade row is never lost
+                        logger.warning(
+                            "build_trade_ledger_entry failed for %s, falling back to legacy: %s",
+                            position.symbol, ledger_exc,
+                        )
+                        use_legacy = True
+                else:
+                    use_legacy = True
+                
+                if use_legacy:
+                    asyncio.get_event_loop().create_task(
+                        self.db_logger.log_trade(
+                            symbol=position.symbol,
+                            side=position.side or "long",
+                            strategy=(position.reasoning or {}).get("strategy"),
+                            entry_time=position.entry_time,
+                            exit_time=datetime.now(),
+                            entry_price=position.entry_price,
+                            exit_price=exit_price,
+                            quantity=position.quantity,
+                            pnl=pnl,
+                            pnl_pct=round(pnl_pct, 4),
+                            exit_reason=reason,
+                            atr_at_entry=(position.reasoning or {}).get("atr"),
+                            stop_loss=position.stop_loss,
+                            take_profit=position.take_profit,
+                            # v-trade-record-ml-columns-2026-09-02: Position has
+                            # no `confidence` attribute — the old getattr always
+                            # wrote NULL. Pull confidence/meta_proba/kelly from
+                            # reasoning, same as the external-close reconcile path.
+                            confidence=(position.reasoning or {}).get("confidence"),
+                            meta_proba=(position.reasoning or {}).get("meta_proba"),
+                            kelly_fraction=(position.reasoning or {}).get("kelly_fraction"),
+                            scaled_out=getattr(position, "scaled_out", False),
+                            mode=self.mode.value,
+                            reasoning=position.reasoning,
+                        )
                     )
-                )
             except Exception as exc:
                 # v-trade-record-ml-columns-2026-09-02: was a bare pass —
                 # a failed bot_trades write vanished without a trace.

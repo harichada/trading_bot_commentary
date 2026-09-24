@@ -1447,6 +1447,259 @@ class DbLogger:
             logger.warning("db_logger_ensure_snapshot_table_error err=%s", exc)
 
     # =========================================================================
+    # v-ledger-integrity-2026-09-24: Ledger integrity columns for bot_trades
+    # =========================================================================
+    async def ensure_ledger_integrity_columns(self) -> None:
+        """v-ledger-integrity-2026-09-24: add ledger integrity columns to bot_trades.
+        
+        Adds new columns if they don't exist:
+          - initial_stop: TRUE stop at entry (immutable)
+          - initial_tp: TRUE take-profit at entry (immutable)
+          - initial_risk_per_share: |entry - initial_stop|
+          - pnl_r: P&L in R-multiples
+          - setup_type: breakout/pullback/continuation/etc.
+          - hold_time_seconds: time held
+          - source: 'bot', 'broker_orphan', 'external'
+          - is_hands_off: MU/HQGE/SPCX flag
+          - is_external: external/unmanaged flag
+        
+        Called during engine init. Idempotent — ALTER TABLE IF NOT EXISTS pattern.
+        """
+        if not self._enabled:
+            return
+        if self._route_to_owner_loop("ensure_ledger_integrity_columns", self._ensure_ledger_integrity_columns_impl):
+            return
+        await self._ensure_ledger_integrity_columns_impl()
+
+    async def _ensure_ledger_integrity_columns_impl(self) -> None:
+        """Internal impl: add ledger integrity columns to bot_trades.
+        
+        v-ledger-integrity-2026-09-24 (engine review fix):
+          - Uses SAVEPOINT per column so one failure doesn't roll back all
+          - Uses lock_timeout (3s) and statement_timeout (30s)
+          - Skips index creation (use scripts/migrate_ledger_integrity.py for CONCURRENTLY)
+          - Idempotent: ADD COLUMN IF NOT EXISTS
+        
+        For production, run scripts/migrate_ledger_integrity.py in a quiet window
+        which creates indexes with CONCURRENTLY.
+        """
+        columns_to_add = [
+            ("initial_stop", "REAL"),
+            ("initial_tp", "REAL"),
+            ("initial_risk_per_share", "REAL"),
+            ("pnl_r", "REAL"),
+            ("setup_type", "TEXT"),
+            ("hold_time_seconds", "INTEGER"),
+            ("source", "TEXT DEFAULT 'bot'"),
+            ("is_hands_off", "BOOLEAN DEFAULT FALSE"),
+            ("is_external", "BOOLEAN DEFAULT FALSE"),
+            ("exit_reason_raw", "TEXT"),  # v-ledger-integrity: keep raw exit reason
+        ]
+        added = 0
+        skipped = 0
+        failed = 0
+        try:
+            async with self._engine.begin() as conn:
+                await conn.execute(text("SET LOCAL lock_timeout = '3s'"))
+                await conn.execute(text("SET LOCAL statement_timeout = '30s'"))
+                
+                for col_name, col_type in columns_to_add:
+                    savepoint = f"sp_{col_name}"
+                    try:
+                        await conn.execute(text(f"SAVEPOINT {savepoint}"))
+                        await conn.execute(text(f"""
+                            ALTER TABLE bot_trades
+                            ADD COLUMN IF NOT EXISTS {col_name} {col_type}
+                        """))
+                        await conn.execute(text(f"RELEASE SAVEPOINT {savepoint}"))
+                        added += 1
+                    except Exception as e:
+                        await conn.execute(text(f"ROLLBACK TO SAVEPOINT {savepoint}"))
+                        if "already exists" in str(e).lower():
+                            skipped += 1
+                        else:
+                            failed += 1
+                            logger.debug("ledger_integrity_column_add col=%s err=%s", col_name, e)
+                
+                logger.info(
+                    "ledger_integrity_columns_ensured added=%d skipped=%d failed=%d "
+                    "(run scripts/migrate_ledger_integrity.py for indexes)",
+                    added, skipped, failed
+                )
+        except Exception as exc:
+            logger.warning("db_logger_ensure_ledger_integrity_columns_error err=%s", exc)
+
+    async def log_trade_v2(
+        self,
+        symbol: str,
+        side: str,
+        strategy: str | None,
+        entry_time: datetime,
+        exit_time: datetime,
+        entry_price: float,
+        exit_price: float,
+        quantity: int,
+        pnl: float,
+        pnl_pct: float,
+        exit_reason: str,
+        # v-ledger-integrity fields
+        pnl_r: float | None = None,
+        setup_type: str | None = None,
+        source: str = "bot",
+        hold_time_seconds: int | None = None,
+        initial_stop: float | None = None,
+        initial_tp: float | None = None,
+        initial_risk_per_share: float | None = None,
+        is_hands_off: bool = False,
+        is_external: bool = False,
+        exit_reason_raw: str | None = None,  # v-ledger-integrity: raw exit reason
+        # Existing fields
+        atr_at_entry: float | None = None,
+        stop_loss: float | None = None,
+        take_profit: float | None = None,
+        confidence: float | None = None,
+        meta_proba: float | None = None,
+        kelly_fraction: float | None = None,
+        scaled_out: bool = False,
+        mode: str | None = None,
+        reasoning: dict | None = None,
+    ) -> None:
+        """v-ledger-integrity-2026-09-24: enhanced trade logging with R-tracking.
+        
+        Extends log_trade with:
+          - pnl_r: P&L in R-multiples
+          - setup_type: entry pattern type
+          - source: 'bot', 'broker_orphan', 'external'
+          - hold_time_seconds: duration held
+          - initial_stop/tp/risk: immutable entry values
+          - is_hands_off/is_external: exclusion flags
+          - exit_reason_raw: original exit reason before normalization
+        
+        Falls back to log_trade if ledger integrity columns don't exist.
+        """
+        if not self._enabled:
+            return
+        if self._route_to_owner_loop(
+            "log_trade_v2",
+            self._log_trade_v2_impl,
+            symbol, side, strategy, entry_time, exit_time,
+            entry_price, exit_price, quantity, pnl, pnl_pct,
+            exit_reason, pnl_r, setup_type, source, hold_time_seconds,
+            initial_stop, initial_tp, initial_risk_per_share,
+            is_hands_off, is_external, exit_reason_raw, atr_at_entry, stop_loss, take_profit,
+            confidence, meta_proba, kelly_fraction, scaled_out, mode, reasoning,
+        ):
+            return
+        await self._log_trade_v2_impl(
+            symbol, side, strategy, entry_time, exit_time,
+            entry_price, exit_price, quantity, pnl, pnl_pct,
+            exit_reason, pnl_r, setup_type, source, hold_time_seconds,
+            initial_stop, initial_tp, initial_risk_per_share,
+            is_hands_off, is_external, exit_reason_raw, atr_at_entry, stop_loss, take_profit,
+            confidence, meta_proba, kelly_fraction, scaled_out, mode, reasoning,
+        )
+
+    async def _log_trade_v2_impl(
+        self,
+        symbol: str,
+        side: str,
+        strategy: str | None,
+        entry_time: datetime,
+        exit_time: datetime,
+        entry_price: float,
+        exit_price: float,
+        quantity: int,
+        pnl: float,
+        pnl_pct: float,
+        exit_reason: str,
+        pnl_r: float | None,
+        setup_type: str | None,
+        source: str,
+        hold_time_seconds: int | None,
+        initial_stop: float | None,
+        initial_tp: float | None,
+        initial_risk_per_share: float | None,
+        is_hands_off: bool,
+        is_external: bool,
+        exit_reason_raw: str | None,
+        atr_at_entry: float | None,
+        stop_loss: float | None,
+        take_profit: float | None,
+        confidence: float | None,
+        meta_proba: float | None,
+        kelly_fraction: float | None,
+        scaled_out: bool,
+        mode: str | None,
+        reasoning: dict | None,
+    ) -> None:
+        """Internal impl: insert trade with ledger integrity fields."""
+        try:
+            async with self._engine.begin() as conn:
+                await conn.execute(
+                    text("""
+                        INSERT INTO bot_trades
+                            (symbol, side, strategy, entry_time, exit_time,
+                             entry_price, exit_price, quantity, pnl, pnl_pct,
+                             exit_reason, atr_at_entry, stop_loss, take_profit,
+                             confidence, meta_proba, kelly_fraction, scaled_out,
+                             mode, reasoning_json,
+                             pnl_r, setup_type, source, hold_time_seconds,
+                             initial_stop, initial_tp, initial_risk_per_share,
+                             is_hands_off, is_external, exit_reason_raw)
+                        VALUES
+                            (:symbol, :side, :strategy, :entry_time, :exit_time,
+                             :entry_price, :exit_price, :quantity, :pnl, :pnl_pct,
+                             :exit_reason, :atr_at_entry, :stop_loss, :take_profit,
+                             :confidence, :meta_proba, :kelly_fraction, :scaled_out,
+                             :mode, :reasoning_json,
+                             :pnl_r, :setup_type, :source, :hold_time_seconds,
+                             :initial_stop, :initial_tp, :initial_risk_per_share,
+                             :is_hands_off, :is_external, :exit_reason_raw)
+                    """),
+                    {
+                        "symbol": symbol,
+                        "side": side,
+                        "strategy": strategy,
+                        "entry_time": entry_time,
+                        "exit_time": exit_time,
+                        "entry_price": entry_price,
+                        "exit_price": exit_price,
+                        "quantity": quantity,
+                        "pnl": pnl,
+                        "pnl_pct": pnl_pct,
+                        "exit_reason": exit_reason,
+                        "atr_at_entry": atr_at_entry,
+                        "stop_loss": stop_loss,
+                        "take_profit": take_profit,
+                        "confidence": confidence,
+                        "meta_proba": meta_proba,
+                        "kelly_fraction": kelly_fraction,
+                        "scaled_out": scaled_out,
+                        "mode": mode,
+                        "reasoning_json": json.dumps(reasoning or {}),
+                        "pnl_r": pnl_r,
+                        "setup_type": setup_type,
+                        "source": source,
+                        "hold_time_seconds": hold_time_seconds,
+                        "initial_stop": initial_stop,
+                        "initial_tp": initial_tp,
+                        "initial_risk_per_share": initial_risk_per_share,
+                        "is_hands_off": is_hands_off,
+                        "is_external": is_external,
+                        "exit_reason_raw": exit_reason_raw,
+                    },
+                )
+        except Exception as exc:
+            # Fallback to original log_trade if new columns don't exist
+            logger.debug("log_trade_v2_fallback err=%s", exc)
+            await self._log_trade_impl(
+                symbol, side, strategy, entry_time, exit_time,
+                entry_price, exit_price, quantity, pnl, pnl_pct,
+                exit_reason, atr_at_entry, stop_loss, take_profit,
+                confidence, meta_proba, kelly_fraction, scaled_out, mode, reasoning,
+            )
+
+    # =========================================================================
     # v-fix-log-strategy-decision-2026-09-14: Sync fire-and-forget for strategy logging
     # =========================================================================
     # Keys in log_decision signature that would collide with extra_data from Stage A cards
