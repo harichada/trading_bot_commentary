@@ -332,8 +332,16 @@ class TradingEngineWithCommentary:
         # lane. News is OPTIONAL (confirmation/size bump, not a veto).
         # Enabled by ENABLE_DAY_TRADE_MOMENTUM (default True).
         if Config().ENABLE_DAY_TRADE_MOMENTUM:
-            self.strategies.append(DayTradeMomentumStrategy(self.commentary))
-            logger.info("day_trade_momentum: strategy enabled")
+            # v-rs-schwab-wire-2026-09-21: same-basis RS needs SchwabDataProvider
+            # on the strategy; getattr(_schwab_provider) was always None so
+            # get_symbol_day_change_pct fell back to bar_estimate every time.
+            _dt_long = DayTradeMomentumStrategy(self.commentary)
+            _dt_long._schwab_provider = self.data_provider
+            self.strategies.append(_dt_long)
+            logger.info(
+                "day_trade_momentum: strategy enabled (schwab_provider=%s)",
+                "set" if self.data_provider else "NONE",
+            )
 
         # v-day-trade-short-2026-09-17: Day-trade momentum SHORT strategy.
         # Modular short path mirroring the long day-trade momentum with
@@ -341,9 +349,15 @@ class TradingEngineWithCommentary:
         # SHADOW-FIRST: LIVE disabled by default (DAY_TRADE_SHORT_LIVE_ENTRIES_ENABLED=0).
         # Respects HANDS_OFF_DENYLIST (MU, HQGE, SPCX) — never shorts these.
         if Config().ENABLE_DAY_TRADE_SHORT:
-            self.strategies.append(DayTradeMomentumShortStrategy(self.commentary))
-            logger.info("day_trade_momentum_short: strategy enabled (LIVE=%s)",
-                        Config().DAY_TRADE_SHORT_LIVE_ENTRIES_ENABLED)
+            # v-rs-schwab-wire-2026-09-21: same wire for short shadow RS path
+            _dt_short = DayTradeMomentumShortStrategy(self.commentary)
+            _dt_short._schwab_provider = self.data_provider
+            self.strategies.append(_dt_short)
+            logger.info(
+                "day_trade_momentum_short: strategy enabled (LIVE=%s, schwab_provider=%s)",
+                Config().DAY_TRADE_SHORT_LIVE_ENTRIES_ENABLED,
+                "set" if self.data_provider else "NONE",
+            )
 
         # v-orb-prototype-2026-09-10: ORB (Opening Range Breakout) + volatility
         # contraction + relative volume (RVOL) prototype strategy.
