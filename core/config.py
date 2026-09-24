@@ -3959,6 +3959,54 @@ class Config:
             return env_val.lower() in ("1", "true", "yes", "on")
         return bool(self.manager.get('trading.ui_activity_page', False))
 
+    @property
+    def MINUTE_BARS_INGEST_INCLUDE_TRADED(self) -> bool:
+        """v-ingest-traded-2026-09-24: include bot-traded/signaled symbols
+        in the daily minute_bars ingest universe alongside the top-N
+        volume symbols.
+
+        When True (default): ingest_alpaca_bars.py unions the top-N volume
+        universe with symbols the bot traded or signaled that ET day (from
+        bot_trades, bot_positions, bot_decisions with action allowlist,
+        bot_decision_snapshots, and best-effort signals_intraday).
+
+        When False: only top-N volume symbols are ingested (legacy behavior).
+
+        SAFE OFF-PATH: purely additive data (minute_bars INSERT ... ON
+        CONFLICT DO NOTHING is idempotent). With the flag off, behavior
+        is byte-identical to the pre-flag code. The flag only affects
+        data collection, never trading logic.
+
+        Override via env MINUTE_BARS_INGEST_INCLUDE_TRADED=0 or yaml
+        trading.minute_bars_ingest_include_traded: false."""
+        env_val = os.getenv("MINUTE_BARS_INGEST_INCLUDE_TRADED")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.minute_bars_ingest_include_traded', True))
+
+    @property
+    def MINUTE_BARS_INGEST_TRADED_ACTIONS(self) -> list:
+        """v-ingest-traded-2026-09-24: allowlist of bot_decisions.action
+        values to include when resolving traded symbols for ingest.
+
+        Default excludes 'shadow_pass' (covers ~290 symbols/day with no
+        trading intent) and similar noise actions. Only actions indicating
+        a real signal/order event are included by default.
+
+        Override via env MINUTE_BARS_INGEST_TRADED_ACTIONS (comma-separated)
+        or yaml trading.minute_bars_ingest_traded_actions (list)."""
+        default = [
+            'received', 'accepted', 'bracket_placed', 'position_created',
+            'suppressed', 'skip', 'signal_buy', 'signal_sell',
+        ]
+        env_val = os.getenv("MINUTE_BARS_INGEST_TRADED_ACTIONS")
+        if env_val is not None:
+            return [a.strip().lower() for a in env_val.split(',') if a.strip()]
+        custom = self.manager.get('trading.minute_bars_ingest_traded_actions', default)
+        if isinstance(custom, str):
+            custom = [a.strip().lower() for a in custom.split(',') if a.strip()]
+        return custom
+
 
 # Initialize configuration
 config = Config()
