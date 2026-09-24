@@ -209,20 +209,20 @@
             text-overflow: ellipsis;
         }
 
-        /* Column widths for 1280px viewport */
+        /* Column widths for 1280px viewport — v-activity-page-p0-2026-09-24 */
         th:nth-child(1) { width: 18px; }           /* expand icon */
         th:nth-child(2) { width: 70px; }           /* symbol+badges */
-        th:nth-child(3) { width: 36px; }           /* side */
-        th:nth-child(4) { width: 68px; }           /* strategy */
-        th:nth-child(5) { width: 80px; }           /* entry (time+price combined) */
-        th:nth-child(6) { width: 80px; }           /* exit (time+price combined) */
-        th:nth-child(7) { width: 32px; }           /* qty */
-        th:nth-child(8) { width: 58px; }           /* SL/TP compact */
-        th:nth-child(9) { width: 60px; }           /* exit reason */
-        th:nth-child(10) { width: 48px; }          /* hold (always visible) */
-        th:nth-child(11) { width: 62px; }          /* PnL $ (always visible) */
-        th:nth-child(12) { width: 48px; }          /* R (always visible) */
-        th:nth-child(13) { width: auto; min-width: 80px; }  /* reasoning preview */
+        th:nth-child(3) { width: 48px; }           /* side - widened to prevent LONG/SHORT truncation */
+        th:nth-child(4) { width: 62px; }           /* strategy */
+        th:nth-child(5) { width: 78px; }           /* entry (time+price combined) */
+        th:nth-child(6) { width: 78px; }           /* exit (time+price combined) */
+        th:nth-child(7) { width: 30px; }           /* qty */
+        th:nth-child(8) { width: 70px; }           /* SL/TP compact - widened for 2 decimals */
+        th:nth-child(9) { width: 58px; }           /* exit reason */
+        th:nth-child(10) { width: 44px; }          /* hold (always visible) */
+        th:nth-child(11) { width: 60px; }          /* PnL $ (always visible) */
+        th:nth-child(12) { width: 46px; }          /* R (always visible) */
+        th:nth-child(13) { width: auto; min-width: 70px; }  /* reasoning preview */
 
         td {
             padding: 5px 4px;
@@ -260,12 +260,25 @@
             font-size: 0.6875rem;
         }
 
+        /* v-activity-page-p0-2026-09-24: Side column pill styling */
+        .side-pill {
+            display: inline-block;
+            padding: 1px 5px;
+            border-radius: 3px;
+            font-size: 0.5625rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            white-space: nowrap;
+        }
+
         .side-long {
             color: var(--success);
+            background: oklch(0.70 0.18 155 / 0.15);
         }
 
         .side-short {
             color: var(--destructive);
+            background: oklch(0.58 0.20 25 / 0.15);
         }
 
         .badge {
@@ -459,6 +472,51 @@
 
         .sl-tp-compact .sl { color: var(--destructive); }
         .sl-tp-compact .tp { color: var(--success); }
+
+        /* v-activity-page-p0-2026-09-24: Open positions section */
+        .open-positions-section {
+            padding: 12px;
+            border-radius: var(--radius);
+        }
+
+        .section-header {
+            font-size: 0.875rem;
+            font-weight: 600;
+            color: var(--fg);
+            margin-bottom: 10px;
+        }
+
+        .section-note {
+            font-size: 0.625rem;
+            font-weight: 400;
+            color: var(--muted-fg);
+        }
+
+        .positions-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        .positions-table th {
+            text-align: left;
+            padding: 5px 6px;
+            font-weight: 600;
+            font-size: 0.5625rem;
+            color: var(--muted-fg);
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .positions-table td {
+            padding: 6px;
+            font-size: 0.6875rem;
+            border-bottom: 1px solid var(--border-soft);
+        }
+
+        .positions-table tr:hover td {
+            background: oklch(0.11 0.015 270 / 0.5);
+        }
     </style>
 </head>
 <body>
@@ -544,6 +602,26 @@
                 </tbody>
             </table>
         </div>
+
+        <!-- v-activity-page-p0-2026-09-24: Open positions section (excluded from trade totals) -->
+        <div id="open-positions-section" class="open-positions-section glass" style="display: none; margin-top: 12px;">
+            <h3 class="section-header">Open Positions <span class="section-note">(excluded from trade totals)</span></h3>
+            <table id="open-positions-table" class="positions-table">
+                <thead>
+                    <tr>
+                        <th>Symbol</th>
+                        <th>Side</th>
+                        <th>Strategy</th>
+                        <th>Entry</th>
+                        <th>Qty</th>
+                        <th>SL/TP</th>
+                        <th>Unrealized P&L</th>
+                    </tr>
+                </thead>
+                <tbody id="open-positions-body">
+                </tbody>
+            </table>
+        </div>
     </div>
 
     <script>
@@ -599,38 +677,71 @@
         }
 
         function buildNarrative(t) {
+            // v-activity-page-p0-2026-09-24: expanded "Why this trade" panel
             const r = t.reasoning || {};
             const parts = [];
 
+            // Setup and entry pattern
             if (r.setup_type) {
-                parts.push(`<strong>Setup:</strong> ${r.setup_type}`);
+                let setupDesc = `<strong>Setup:</strong> ${r.setup_type}`;
+                if (r.entry_pattern) {
+                    setupDesc += ` (${r.entry_pattern} pattern)`;
+                }
+                parts.push(setupDesc);
             }
 
+            // Market regime with SPY context
             if (r.regime) {
                 let regimeDesc = `Market regime was <strong>${r.regime}</strong>`;
-                if (r.spy_slope_pct != null) {
-                    regimeDesc += ` (SPY slope ${r.spy_slope_pct > 0 ? '+' : ''}${(r.spy_slope_pct * 100).toFixed(2)}%)`;
+                if (r.spy_vs_open != null) {
+                    const spySign = r.spy_vs_open >= 0 ? '+' : '';
+                    regimeDesc += ` (SPY vs open: ${spySign}${(r.spy_vs_open * 100).toFixed(2)}%`;
+                    if (r.spy_slope_pct != null) {
+                        const slopeSign = r.spy_slope_pct >= 0 ? '+' : '';
+                        regimeDesc += `, slope ${slopeSign}${(r.spy_slope_pct * 100).toFixed(2)}%`;
+                    }
+                    regimeDesc += ')';
+                } else if (r.spy_slope_pct != null) {
+                    regimeDesc += ` (SPY slope ${r.spy_slope_pct >= 0 ? '+' : ''}${(r.spy_slope_pct * 100).toFixed(2)}%)`;
                 }
                 parts.push(regimeDesc);
             }
 
-            if (r.rs_vs_spy != null) {
-                parts.push(`RS vs SPY: <strong>${r.rs_vs_spy > 0 ? '+' : ''}${(r.rs_vs_spy * 100).toFixed(1)}%</strong>${r.rs_basis ? ' (' + r.rs_basis + ')' : ''}`);
+            // VWAP slope if available
+            if (r.vwap_slope != null) {
+                const vwapSign = r.vwap_slope >= 0 ? '+' : '';
+                parts.push(`VWAP slope: <strong>${vwapSign}${r.vwap_slope.toFixed(3)}</strong>`);
             }
 
+            // RS vs SPY with correct formatting
+            if (r.rs_vs_spy != null) {
+                parts.push(`RS vs SPY: <strong>${formatRsVsSpy(r.rs_vs_spy)}</strong>${r.rs_basis ? ' (' + r.rs_basis + ')' : ''}`);
+            }
+
+            // Technical indicators
             if (r.rsi != null) {
                 const rsiVal = r.rsi < 1 ? r.rsi * 100 : r.rsi;
                 parts.push(`RSI: <strong>${rsiVal.toFixed(0)}</strong>`);
+            }
+
+            if (r.adx != null) {
+                parts.push(`ADX: <strong>${r.adx.toFixed(0)}</strong>`);
             }
 
             if (r.volume_ratio != null) {
                 parts.push(`Volume ratio: <strong>${r.volume_ratio.toFixed(1)}x</strong>`);
             }
 
-            if (r.score != null) {
-                parts.push(`Signal-strength score: <strong>${r.score.toFixed(2)}</strong> (heuristic, not probability)`);
+            if (r.atr != null) {
+                parts.push(`ATR: <strong>$${r.atr.toFixed(2)}</strong>`);
             }
 
+            // Signal strength (NOT a probability)
+            if (r.score != null) {
+                parts.push(`Signal strength: <strong>${r.score.toFixed(2)}</strong> (not a probability)`);
+            }
+
+            // Gates
             if (r.gates_passed) {
                 const gates = Array.isArray(r.gates_passed) ? r.gates_passed.join(', ') : r.gates_passed;
                 parts.push(`Gates passed: ${gates}`);
@@ -638,13 +749,23 @@
 
             if (r.shadow_gates) {
                 const sg = Array.isArray(r.shadow_gates) ? r.shadow_gates.join(', ') : r.shadow_gates;
-                parts.push(`Shadow gates (would skip): ${sg}`);
+                parts.push(`<span style="color: var(--warning);">Shadow gates (would skip): ${sg}</span>`);
             }
 
+            // News/theme/GPU critic context
             if (r.news_gate_action && r.news_gate_action !== 'no_news') {
                 parts.push(`News gate: ${r.news_gate_action}${r.news_article_count ? ' (' + r.news_article_count + ' articles)' : ''}`);
             }
 
+            if (r.theme_context) {
+                parts.push(`Theme: ${r.theme_context}`);
+            }
+
+            if (r.gpu_critic) {
+                parts.push(`GPU critic: ${r.gpu_critic}`);
+            }
+
+            // Day trade specifics
             if (r.is_day_trade) {
                 parts.push(`Day trade with flatten hour ${r.flatten_hour || 15}:00 ET`);
             }
@@ -653,18 +774,50 @@
                 parts.push(`Market context size multiplier: ${r.mc_size_mult.toFixed(2)}x`);
             }
 
+            // Exit rationale as plain English
             if (r.exit_rationale) {
-                parts.push(`<strong>Exit:</strong> ${r.exit_rationale}`);
+                const exitText = buildExitSentence(t, r.exit_rationale);
+                parts.push(`<strong>Exit:</strong> ${exitText}`);
             }
 
             if (parts.length === 0) {
                 if (t.is_orphan) {
-                    return '<em>Reasoning unavailable - broker fill without matching decision snapshot</em>';
+                    return '<em>Reasoning unavailable — broker fill without matching decision snapshot</em>';
                 }
                 return '<em>No detailed reasoning recorded</em>';
             }
 
             return parts.join('. ') + '.';
+        }
+
+        function buildExitSentence(t, exitReason) {
+            // v-activity-page-p0-2026-09-24: plain-English exit rationale
+            const pnlStr = t.pnl != null ? (t.pnl >= 0 ? '+' : '') + '$' + t.pnl.toFixed(2) : '';
+            const rStr = t.r_multiple != null ? (t.r_multiple >= 0 ? '+' : '') + t.r_multiple.toFixed(1) + 'R' : '';
+            const pnlPart = pnlStr && rStr ? ` for ${pnlStr} (${rStr})` : (pnlStr ? ` for ${pnlStr}` : '');
+
+            if (exitReason.includes('flatten_hour') || exitReason.includes('flatten')) {
+                const hour = t.reasoning?.flatten_hour || 15;
+                return `Exited at the ${hour}:00 ET flatten hour${pnlPart}.`;
+            }
+            if (exitReason.includes('stop_loss') || exitReason.includes('stop')) {
+                const stopPrice = t.stop_loss ? '$' + t.stop_loss.toFixed(2) : 'stop';
+                return `Stopped out at ${stopPrice}${pnlPart}.`;
+            }
+            if (exitReason.includes('take_profit') || exitReason.includes('target')) {
+                const tpPrice = t.take_profit ? '$' + t.take_profit.toFixed(2) : 'target';
+                return `Hit profit target at ${tpPrice}${pnlPart}.`;
+            }
+            if (exitReason.includes('proactive_rsi')) {
+                return `Proactive exit on RSI below 50${pnlPart}.`;
+            }
+            if (exitReason.includes('proactive_macd')) {
+                return `Proactive exit on MACD bearish flip${pnlPart}.`;
+            }
+            if (exitReason.includes('proactive')) {
+                return `Proactive exit${pnlPart}.`;
+            }
+            return exitReason + (pnlPart ? pnlPart : '') + '.';
         }
 
         function getReasoningPreview(t) {
@@ -679,10 +832,30 @@
         }
 
         function formatSlTp(sl, tp) {
+            // v-activity-page-p0-2026-09-24: use 2 decimals for SL/TP
             if (sl == null && tp == null) return '-';
-            const slStr = sl != null ? '$' + sl.toFixed(0) : '-';
-            const tpStr = tp != null ? '$' + tp.toFixed(0) : '-';
+            const slStr = sl != null ? '$' + sl.toFixed(2) : '-';
+            const tpStr = tp != null ? '$' + tp.toFixed(2) : '-';
             return `<span class="sl">${slStr}</span>/<span class="tp">${tpStr}</span>`;
+        }
+
+        function formatRsVsSpy(val) {
+            // v-activity-page-p0-2026-09-24: RS is stored raw (e.g., 4.72 = +472.4%).
+            // Values < 10 are likely raw ratios; values >= 10 are likely already percentages.
+            // Only multiply by 100 if it looks like a raw ratio.
+            if (val == null) return null;
+            const absVal = Math.abs(val);
+            const isRawRatio = absVal < 10;
+            const pctVal = isRawRatio ? val * 100 : val;
+            const sign = pctVal >= 0 ? '+' : '';
+            return sign + pctVal.toFixed(1) + '%';
+        }
+
+        function formatSignalStrength(score) {
+            // v-activity-page-p0-2026-09-24: signal strength is NOT a probability.
+            // Show as raw value with explicit label.
+            if (score == null) return null;
+            return score.toFixed(2);
         }
 
         function renderTrades(data) {
@@ -752,7 +925,7 @@
                     <tr class="expandable" data-idx="${idx}">
                         <td></td>
                         <td class="symbol-cell">${t.symbol}${badges}</td>
-                        <td class="${sideClass}">${t.side.toUpperCase()}</td>
+                        <td><span class="side-pill ${sideClass}">${t.side.toUpperCase()}</span></td>
                         <td style="font-size: 0.6875rem;">${t.strategy || '-'}</td>
                         <td>${entryCell}</td>
                         <td>${exitCell}</td>
@@ -771,13 +944,14 @@
                                 <div class="reasoning-narrative">${buildNarrative(t)}</div>
                                 <div class="reasoning-grid">
                                     ${t.reasoning?.setup_type ? `<div class="reasoning-item"><label>Setup</label><span>${t.reasoning.setup_type}</span></div>` : ''}
+                                    ${t.reasoning?.entry_pattern ? `<div class="reasoning-item"><label>Pattern</label><span>${t.reasoning.entry_pattern}</span></div>` : ''}
                                     ${t.reasoning?.regime ? `<div class="reasoning-item"><label>Regime</label><span>${t.reasoning.regime}</span></div>` : ''}
-                                    ${t.reasoning?.rs_vs_spy != null ? `<div class="reasoning-item"><label>RS vs SPY</label><span>${(t.reasoning.rs_vs_spy * 100).toFixed(1)}%</span></div>` : ''}
+                                    ${t.reasoning?.rs_vs_spy != null ? `<div class="reasoning-item"><label>RS vs SPY</label><span>${formatRsVsSpy(t.reasoning.rs_vs_spy)}</span></div>` : ''}
                                     ${t.reasoning?.rsi != null ? `<div class="reasoning-item"><label>RSI</label><span>${(t.reasoning.rsi < 1 ? t.reasoning.rsi * 100 : t.reasoning.rsi).toFixed(0)}</span></div>` : ''}
+                                    ${t.reasoning?.adx != null ? `<div class="reasoning-item"><label>ADX</label><span>${t.reasoning.adx.toFixed(0)}</span></div>` : ''}
                                     ${t.reasoning?.volume_ratio != null ? `<div class="reasoning-item"><label>Vol Ratio</label><span>${t.reasoning.volume_ratio.toFixed(1)}x</span></div>` : ''}
-                                    ${t.reasoning?.score != null ? `<div class="reasoning-item"><label>Signal</label><span>${t.reasoning.score.toFixed(2)}</span></div>` : ''}
-                                    ${t.confidence != null ? `<div class="reasoning-item"><label>Conf</label><span>${(t.confidence * 100).toFixed(0)}%</span></div>` : ''}
-                                    ${t.meta_proba != null ? `<div class="reasoning-item"><label>Meta</label><span>${(t.meta_proba * 100).toFixed(0)}%</span></div>` : ''}
+                                    ${t.reasoning?.atr != null ? `<div class="reasoning-item"><label>ATR</label><span>$${t.reasoning.atr.toFixed(2)}</span></div>` : ''}
+                                    ${t.reasoning?.score != null ? `<div class="reasoning-item"><label>Signal</label><span title="Signal strength (not a probability)">${t.reasoning.score.toFixed(2)}</span></div>` : ''}
                                 </div>
                             </div>
                         </td>
@@ -796,6 +970,52 @@
                     reasoningRow.classList.toggle('visible');
                 });
             });
+
+            // v-activity-page-p0-2026-09-24: Render open positions section
+            renderOpenPositions(data.open_positions || []);
+        }
+
+        function renderOpenPositions(positions) {
+            const section = document.getElementById('open-positions-section');
+            const tbody = document.getElementById('open-positions-body');
+
+            if (!positions || positions.length === 0) {
+                section.style.display = 'none';
+                return;
+            }
+
+            section.style.display = 'block';
+            let html = '';
+
+            positions.forEach(p => {
+                const pnlClass = p.unrealized_pnl > 0 ? 'positive' : p.unrealized_pnl < 0 ? 'negative' : 'neutral';
+                const sideClass = p.side === 'long' ? 'side-long' : 'side-short';
+
+                let badges = '';
+                if (p.is_hands_off) badges += '<span class="badge badge-hands-off">H</span>';
+                if (p.is_external) badges += '<span class="badge badge-external">E</span>';
+
+                const entryTime = p.entry_time ? new Date(p.entry_time).toLocaleTimeString('en-US', {hour: '2-digit', minute: '2-digit'}) : '-';
+
+                html += `
+                    <tr>
+                        <td class="symbol-cell">${p.symbol}${badges}</td>
+                        <td><span class="side-pill ${sideClass}">${p.side.toUpperCase()}</span></td>
+                        <td>${p.strategy || '-'}</td>
+                        <td>
+                            <div class="entry-exit-cell">
+                                <span class="time font-mono">${entryTime}</span>
+                                <span class="price font-mono tabular-nums">${formatPrice(p.entry_price)}</span>
+                            </div>
+                        </td>
+                        <td class="font-mono tabular-nums">${p.quantity}</td>
+                        <td class="sl-tp-compact font-mono tabular-nums">${formatSlTp(p.stop_loss, p.take_profit)}</td>
+                        <td class="font-mono tabular-nums ${pnlClass}">${formatCurrency(p.unrealized_pnl)}</td>
+                    </tr>
+                `;
+            });
+
+            tbody.innerHTML = html;
         }
 
         async function loadActivity() {

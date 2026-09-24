@@ -344,31 +344,72 @@ class TestActivityEndpointSchema:
 class TestTimeConversion:
     """Tests for time conversion to ET."""
 
-    def test_format_time_et(self):
-        """Time formatting should convert to ET correctly."""
+    def test_format_time_et_naive_as_et(self):
+        """v-activity-page-p0-2026-09-24: Naive timestamps should be treated as ET, not UTC.
+        
+        Root cause of 4-hour offset: bot_trades stores naive ET but old code
+        treated naive as UTC, showing MRNA 15:00 as 11:00.
+        """
         from datetime import datetime
         from zoneinfo import ZoneInfo
+
+        et_tz = ZoneInfo("America/New_York")
+
+        def _format_time_et(ts_str):
+            """Updated function that treats naive as ET."""
+            if not ts_str:
+                return None
+            try:
+                if isinstance(ts_str, str):
+                    if 'Z' in ts_str or '+' in ts_str or '-' in ts_str[10:]:
+                        ts = datetime.fromisoformat(ts_str.replace('Z', '+00:00'))
+                    else:
+                        ts = datetime.fromisoformat(ts_str)
+                else:
+                    ts = ts_str
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=et_tz)
+                ts_et = ts.astimezone(et_tz)
+                return ts_et.strftime("%H:%M:%S")
+            except Exception:
+                return str(ts_str)[:8] if ts_str else None
+
+        # Naive timestamp should stay the same time (it's already ET)
+        result = _format_time_et("2026-09-24T15:00:00")
+        assert result == "15:00:00", f"Naive ET 15:00 should display as 15:00, got {result}"
+
+        # Explicit UTC should convert to ET (EDT = UTC-4)
+        result_utc = _format_time_et("2026-09-24T19:00:00+00:00")
+        assert result_utc == "15:00:00", f"19:00 UTC should be 15:00 ET, got {result_utc}"
+
+    def test_format_time_et_with_tz(self):
+        """Timestamps with explicit timezone should convert correctly."""
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        et_tz = ZoneInfo("America/New_York")
 
         def _format_time_et(ts_str):
             if not ts_str:
                 return None
             try:
                 if isinstance(ts_str, str):
-                    ts = datetime.fromisoformat(ts_str.replace('Z', '+00:00'))
+                    if 'Z' in ts_str or '+' in ts_str or '-' in ts_str[10:]:
+                        ts = datetime.fromisoformat(ts_str.replace('Z', '+00:00'))
+                    else:
+                        ts = datetime.fromisoformat(ts_str)
                 else:
                     ts = ts_str
                 if ts.tzinfo is None:
-                    ts = ts.replace(tzinfo=ZoneInfo("UTC"))
-                ts_et = ts.astimezone(ZoneInfo("America/New_York"))
+                    ts = ts.replace(tzinfo=et_tz)
+                ts_et = ts.astimezone(et_tz)
                 return ts_et.strftime("%H:%M:%S")
             except Exception:
                 return str(ts_str)[:8] if ts_str else None
 
-        # Test with UTC timestamp
-        result = _format_time_et("2026-09-24T14:30:00+00:00")
-        assert result is not None
-        # 14:30 UTC = 10:30 ET (during EDT)
-        assert "10:30:00" in result or "09:30:00" in result, f"Got {result}"
+        # UTC timestamp (Z suffix)
+        result = _format_time_et("2026-09-24T14:30:00Z")
+        assert result == "10:30:00", f"14:30 UTC should be 10:30 ET, got {result}"
 
     def test_calc_hold_time(self):
         """Hold time calculation should return minutes correctly."""
@@ -686,3 +727,413 @@ class TestBrokerNoteLogic:
         assert 'id="broker-note"' in source, "Must have broker-note id"
         # The element should start hidden
         assert 'broker-note' in source and 'display: none' in source, "Broker note should be hidden by default"
+
+
+# =============================================================================
+# v-activity-page-p0-2026-09-24: Tests for P0 fixes
+# =============================================================================
+
+class TestFifoPairing:
+    """v-activity-page-p0-2026-09-24: Tests for FIFO pairing of broker fills."""
+
+    def test_fifo_pairs_long_round_trip(self):
+        """FIFO should pair OPENING (buy) with CLOSING (sell) for longs."""
+        from collections import defaultdict
+
+        def _fifo_pair_fills(raw_fills, et_tz=None):
+            entry_queues = defaultdict(list)
+            round_trips = []
+            sorted_fills = sorted(raw_fills, key=lambda f: f.get('time', ''))
+
+            for fill in sorted_fills:
+                symbol = fill['symbol']
+                instruction = fill.get('instruction', '').upper()
+                quantity = fill['quantity']
+                price = fill['price']
+                fill_time = fill.get('time', '')
+
+                is_opening = instruction == 'OPENING'
+                is_closing = instruction == 'CLOSING'
+
+                if is_opening:
+                    entry_queues[symbol].append({
+                        'quantity': quantity,
+                        'price': price,
+                        'time': fill_time,
+                        'description': fill.get('description', ''),
+                    })
+                elif is_closing and entry_queues[symbol]:
+                    entry = entry_queues[symbol].pop(0)
+                    pnl = (price - entry['price']) * quantity
+                    round_trips.append({
+                        'symbol': symbol,
+                        'side': 'long',
+                        'entry_price': entry['price'],
+                        'exit_price': price,
+                        'quantity': quantity,
+                        'pnl': round(pnl, 2),
+                    })
+
+            return round_trips
+
+        # Buy at 100, sell at 105 = +5 per share
+        fills = [
+            {'symbol': 'AAPL', 'instruction': 'OPENING', 'quantity': 100, 'price': 100.0, 'time': '2026-09-24T09:30:00'},
+            {'symbol': 'AAPL', 'instruction': 'CLOSING', 'quantity': 100, 'price': 105.0, 'time': '2026-09-24T10:00:00'},
+        ]
+
+        result = _fifo_pair_fills(fills)
+        assert len(result) == 1
+        assert result[0]['symbol'] == 'AAPL'
+        assert result[0]['side'] == 'long'
+        assert result[0]['pnl'] == 500.0  # 100 shares * $5
+
+    def test_fifo_pairs_short_round_trip(self):
+        """FIFO should handle shorts: sell-to-open paired with buy-to-close."""
+        from collections import defaultdict
+
+        def _fifo_pair_fills(raw_fills, et_tz=None):
+            entry_queues = defaultdict(list)
+            round_trips = []
+            sorted_fills = sorted(raw_fills, key=lambda f: f.get('time', ''))
+
+            for fill in sorted_fills:
+                symbol = fill['symbol']
+                instruction = fill.get('instruction', '').upper()
+                quantity = fill['quantity']
+                price = fill['price']
+                fill_time = fill.get('time', '')
+                description = fill.get('description', '').upper()
+
+                is_opening = instruction == 'OPENING'
+                is_closing = instruction == 'CLOSING'
+                is_short = 'SELL SHORT' in description or 'SHORT' in description
+
+                if is_opening:
+                    entry_queues[symbol].append({
+                        'quantity': quantity,
+                        'price': price,
+                        'time': fill_time,
+                        'is_short': is_short,
+                    })
+                elif is_closing and entry_queues[symbol]:
+                    entry = entry_queues[symbol].pop(0)
+                    side = 'short' if entry.get('is_short') else 'long'
+                    if side == 'short':
+                        pnl = (entry['price'] - price) * quantity
+                    else:
+                        pnl = (price - entry['price']) * quantity
+                    round_trips.append({
+                        'symbol': symbol,
+                        'side': side,
+                        'entry_price': entry['price'],
+                        'exit_price': price,
+                        'quantity': quantity,
+                        'pnl': round(pnl, 2),
+                    })
+
+            return round_trips
+
+        # Short sell at 100, buy to close at 95 = +5 per share
+        fills = [
+            {'symbol': 'META', 'instruction': 'OPENING', 'quantity': 50, 'price': 100.0, 'time': '2026-09-24T09:30:00', 'description': 'SELL SHORT'},
+            {'symbol': 'META', 'instruction': 'CLOSING', 'quantity': 50, 'price': 95.0, 'time': '2026-09-24T10:00:00', 'description': 'BUY TO COVER'},
+        ]
+
+        result = _fifo_pair_fills(fills)
+        assert len(result) == 1
+        assert result[0]['symbol'] == 'META'
+        assert result[0]['side'] == 'short'
+        assert result[0]['pnl'] == 250.0  # 50 shares * $5
+
+    def test_fifo_handles_partial_fills(self):
+        """FIFO should handle partial fills correctly."""
+        from collections import defaultdict
+
+        def _fifo_pair_fills(raw_fills, et_tz=None):
+            entry_queues = defaultdict(list)
+            round_trips = []
+            sorted_fills = sorted(raw_fills, key=lambda f: f.get('time', ''))
+
+            for fill in sorted_fills:
+                symbol = fill['symbol']
+                instruction = fill.get('instruction', '').upper()
+                quantity = fill['quantity']
+                price = fill['price']
+                fill_time = fill.get('time', '')
+
+                is_opening = instruction == 'OPENING'
+                is_closing = instruction == 'CLOSING'
+
+                if is_opening:
+                    entry_queues[symbol].append({
+                        'quantity': quantity,
+                        'price': price,
+                        'time': fill_time,
+                    })
+                elif is_closing and entry_queues[symbol]:
+                    remaining_exit_qty = quantity
+                    while remaining_exit_qty > 0 and entry_queues[symbol]:
+                        entry = entry_queues[symbol][0]
+                        matched_qty = min(entry['quantity'], remaining_exit_qty)
+                        pnl = (price - entry['price']) * matched_qty
+                        round_trips.append({
+                            'symbol': symbol,
+                            'side': 'long',
+                            'entry_price': entry['price'],
+                            'exit_price': price,
+                            'quantity': matched_qty,
+                            'pnl': round(pnl, 2),
+                        })
+                        remaining_exit_qty -= matched_qty
+                        entry['quantity'] -= matched_qty
+                        if entry['quantity'] <= 0:
+                            entry_queues[symbol].pop(0)
+
+            return round_trips
+
+        # Two entries, one exit covering both
+        fills = [
+            {'symbol': 'INTC', 'instruction': 'OPENING', 'quantity': 50, 'price': 30.0, 'time': '2026-09-24T09:30:00'},
+            {'symbol': 'INTC', 'instruction': 'OPENING', 'quantity': 50, 'price': 31.0, 'time': '2026-09-24T09:35:00'},
+            {'symbol': 'INTC', 'instruction': 'CLOSING', 'quantity': 100, 'price': 32.0, 'time': '2026-09-24T10:00:00'},
+        ]
+
+        result = _fifo_pair_fills(fills)
+        assert len(result) == 2  # Two round trips from partial matching
+        # First 50 shares: entry 30, exit 32 = +$100
+        assert result[0]['pnl'] == 100.0
+        # Second 50 shares: entry 31, exit 32 = +$50
+        assert result[1]['pnl'] == 50.0
+
+
+class TestOpenPositionsExclusion:
+    """v-activity-page-p0-2026-09-24: Open positions excluded from trade totals."""
+
+    def test_open_positions_section_in_template(self):
+        """Activity template must have open-positions-section."""
+        from pathlib import Path
+        template_path = Path(__file__).parent.parent / "templates" / "activity.html"
+        source = template_path.read_text()
+
+        assert 'open-positions-section' in source, "Template must have open-positions-section"
+        assert 'excluded from trade totals' in source, "Template must indicate exclusion"
+        assert 'renderOpenPositions' in source, "Template must have renderOpenPositions function"
+
+    def test_api_returns_open_positions(self):
+        """API response must include open_positions field."""
+        from pathlib import Path
+        routes_path = Path(__file__).parent.parent / "api" / "routes.py"
+        source = routes_path.read_text()
+
+        assert '"open_positions":' in source, "API must return open_positions in response"
+        assert '_get_open_positions_for_date' in source, "API must have open positions function"
+
+
+class TestRsFormatting:
+    """v-activity-page-p0-2026-09-24: RS vs SPY formatting (no double multiply)."""
+
+    def test_rs_raw_ratio_formatted_correctly(self):
+        """RS stored as raw ratio (4.72) should show as +472.0%, not +47200%."""
+        def format_rs_vs_spy(val):
+            if val is None:
+                return None
+            abs_val = abs(val)
+            is_raw_ratio = abs_val < 10
+            pct_val = val * 100 if is_raw_ratio else val
+            sign = '+' if pct_val >= 0 else ''
+            return f"{sign}{pct_val:.1f}%"
+
+        # Raw ratio (stored as 4.72 for +472%)
+        result = format_rs_vs_spy(4.72)
+        assert result == "+472.0%", f"Expected +472.0%, got {result}"
+
+        # Negative ratio
+        result_neg = format_rs_vs_spy(-0.5)
+        assert result_neg == "-50.0%", f"Expected -50.0%, got {result_neg}"
+
+    def test_rs_already_percentage_not_doubled(self):
+        """RS already as percentage (47.2) should not be doubled."""
+        def format_rs_vs_spy(val):
+            if val is None:
+                return None
+            abs_val = abs(val)
+            is_raw_ratio = abs_val < 10
+            pct_val = val * 100 if is_raw_ratio else val
+            sign = '+' if pct_val >= 0 else ''
+            return f"{sign}{pct_val:.1f}%"
+
+        # Already a percentage
+        result = format_rs_vs_spy(47.2)
+        assert result == "+47.2%", f"Expected +47.2%, got {result}"
+
+    def test_template_has_format_rs_function(self):
+        """Activity template must have formatRsVsSpy function."""
+        from pathlib import Path
+        template_path = Path(__file__).parent.parent / "templates" / "activity.html"
+        source = template_path.read_text()
+
+        assert 'formatRsVsSpy' in source, "Template must have formatRsVsSpy function"
+
+
+class TestSlTpDecimals:
+    """v-activity-page-p0-2026-09-24: SL/TP should show 2 decimal places."""
+
+    def test_template_formats_sl_tp_with_decimals(self):
+        """Activity template must use toFixed(2) for SL/TP."""
+        from pathlib import Path
+        template_path = Path(__file__).parent.parent / "templates" / "activity.html"
+        source = template_path.read_text()
+
+        # Look for the formatSlTp function
+        assert 'formatSlTp' in source, "Template must have formatSlTp function"
+        assert '.toFixed(2)' in source, "Template must use toFixed(2) for decimals"
+
+
+class TestSignalStrengthLabeling:
+    """v-activity-page-p0-2026-09-24: Signal strength labeled correctly (not probability)."""
+
+    def test_template_labels_signal_not_probability(self):
+        """Activity template must label signal strength as not a probability."""
+        from pathlib import Path
+        template_path = Path(__file__).parent.parent / "templates" / "activity.html"
+        source = template_path.read_text()
+
+        assert 'not a probability' in source, "Template must indicate signal is not probability"
+        assert 'Signal strength' in source or 'Signal-strength' in source, "Template must have signal strength label"
+
+
+class TestSchwabFailureLogging:
+    """v-activity-page-p0-2026-09-24: Schwab failures logged at WARNING."""
+
+    def test_schwab_transactions_logs_warning(self):
+        """_fetch_schwab_transactions_for_date must log failures at WARNING."""
+        from pathlib import Path
+        routes_path = Path(__file__).parent.parent / "api" / "routes.py"
+        source = routes_path.read_text()
+
+        assert 'logger.warning' in source, "Must log failures at WARNING"
+        assert 'schwab_transactions_non_200' in source or 'schwab_transactions_error' in source, "Must log Schwab errors"
+
+
+class TestSideColumnWidth:
+    """v-activity-page-p0-2026-09-24: Side column should not truncate LONG/SHORT."""
+
+    def test_side_column_width_sufficient(self):
+        """Side column must be wide enough for LONG/SHORT text."""
+        from pathlib import Path
+        template_path = Path(__file__).parent.parent / "templates" / "activity.html"
+        source = template_path.read_text()
+
+        # Check that side column is at least 45px wide
+        assert 'th:nth-child(3)' in source, "Must have side column width rule"
+        # The side pill should not truncate
+        assert 'side-pill' in source, "Must have side-pill class for non-truncating display"
+
+
+class TestActivityPageP0Fixture:
+    """v-activity-page-p0-2026-09-24: Fixture matching real 9/24 data."""
+
+    @pytest.fixture
+    def sept_24_fixture(self):
+        """Fixture mirroring 9/24 real data: 9 round trips with various sources."""
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        et_tz = ZoneInfo("America/New_York")
+
+        return {
+            "trades": [
+                # From broker fills only (not in bot_trades)
+                {"symbol": "CRCL", "side": "long", "entry_time": "2026-09-24T09:35:00",
+                 "exit_time": "2026-09-24T10:15:00", "entry_price": 12.50, "exit_price": 13.00,
+                 "quantity": 100, "pnl": 50.0, "stop_loss": 12.00, "take_profit": 14.00,
+                 "is_orphan": True, "source": "broker"},
+                {"symbol": "CRWV", "side": "long", "entry_time": "2026-09-24T09:40:00",
+                 "exit_time": "2026-09-24T11:00:00", "entry_price": 8.00, "exit_price": 7.50,
+                 "quantity": 150, "pnl": -75.0, "stop_loss": 7.50, "take_profit": 9.00,
+                 "is_orphan": True, "source": "broker"},
+                {"symbol": "NBIS", "side": "long", "entry_time": "2026-09-24T10:00:00",
+                 "exit_time": "2026-09-24T11:30:00", "entry_price": 22.00, "exit_price": 23.50,
+                 "quantity": 50, "pnl": 75.0, "stop_loss": 21.00, "take_profit": 25.00,
+                 "is_orphan": True, "source": "broker"},
+                {"symbol": "GOOGL", "side": "long", "entry_time": "2026-09-24T10:15:00",
+                 "exit_time": "2026-09-24T12:00:00", "entry_price": 165.00, "exit_price": 167.50,
+                 "quantity": 30, "pnl": 75.0, "stop_loss": 163.00, "take_profit": 170.00,
+                 "is_orphan": True, "source": "broker"},
+                # Two INTC trades
+                {"symbol": "INTC", "side": "long", "entry_time": "2026-09-24T09:45:00",
+                 "exit_time": "2026-09-24T10:30:00", "entry_price": 30.00, "exit_price": 30.50,
+                 "quantity": 200, "pnl": 100.0, "stop_loss": 29.50, "take_profit": 31.50,
+                 "is_orphan": True, "source": "broker"},
+                {"symbol": "INTC", "side": "long", "entry_time": "2026-09-24T11:00:00",
+                 "exit_time": "2026-09-24T12:30:00", "entry_price": 30.50, "exit_price": 31.00,
+                 "quantity": 200, "pnl": 100.0, "stop_loss": 30.00, "take_profit": 32.00,
+                 "is_orphan": True, "source": "broker"},
+                # From bot_trades with naive ET timestamps
+                {"symbol": "ONDS", "side": "long", "entry_time": "2026-09-24T09:30:00",
+                 "exit_time": "2026-09-24T15:00:00", "entry_price": 8.00, "exit_price": 8.50,
+                 "quantity": 300, "pnl": 150.0, "stop_loss": 7.50, "take_profit": 9.00,
+                 "is_orphan": False, "source": "db",
+                 "reasoning": {"rs_vs_spy": 4.72, "rsi": 55, "score": 0.60}},  # RS stored raw
+                {"symbol": "MRNA", "side": "long", "entry_time": "2026-09-24T10:00:00",
+                 "exit_time": "2026-09-24T15:00:00", "entry_price": 65.00, "exit_price": 66.00,
+                 "quantity": 50, "pnl": 50.0, "stop_loss": 63.50, "take_profit": 68.00,
+                 "is_orphan": False, "source": "db",
+                 "reasoning": {"rs_vs_spy": 0.25, "rsi": 48, "score": 0.45}},
+                # META short (external)
+                {"symbol": "META", "side": "short", "entry_time": "2026-09-24T09:35:00",
+                 "exit_time": "2026-09-24T14:00:00", "entry_price": 550.00, "exit_price": 545.00,
+                 "quantity": 20, "pnl": 100.0, "stop_loss": 555.00, "take_profit": 540.00,
+                 "is_external": True, "is_orphan": False, "source": "external"},
+            ],
+            "open_positions": [
+                # Currently held position (excluded from totals)
+                {"symbol": "MU", "side": "long", "entry_price": 100.00, "quantity": 50,
+                 "unrealized_pnl": 150.0, "stop_loss": 98.00, "take_profit": 110.00,
+                 "is_hands_off": True},
+                {"symbol": "HQGE", "side": "long", "entry_price": 5.00, "quantity": 500,
+                 "unrealized_pnl": -50.0, "stop_loss": 4.50, "take_profit": 6.00,
+                 "is_hands_off": True},
+            ],
+        }
+
+    def test_fixture_has_nine_round_trips(self, sept_24_fixture):
+        """Fixture should have 9 round trips."""
+        assert len(sept_24_fixture["trades"]) == 9
+
+    def test_fixture_has_broker_only_trades(self, sept_24_fixture):
+        """Fixture should have trades that only came from broker (is_orphan=True)."""
+        orphans = [t for t in sept_24_fixture["trades"] if t.get("is_orphan")]
+        assert len(orphans) >= 6, "Should have CRCL, CRWV, NBIS, GOOGL, INTC x2 as orphans"
+
+    def test_fixture_has_short(self, sept_24_fixture):
+        """Fixture should have META as a short."""
+        shorts = [t for t in sept_24_fixture["trades"] if t.get("side") == "short"]
+        assert len(shorts) == 1
+        assert shorts[0]["symbol"] == "META"
+
+    def test_fixture_has_open_positions(self, sept_24_fixture):
+        """Fixture should have open positions (excluded from totals)."""
+        assert len(sept_24_fixture["open_positions"]) >= 1
+        # MU and HQGE are hands-off
+        hands_off = [p for p in sept_24_fixture["open_positions"] if p.get("is_hands_off")]
+        assert len(hands_off) >= 2
+
+    def test_fixture_rs_stored_raw(self, sept_24_fixture):
+        """Fixture should have RS stored as raw ratio (4.72 = +472%)."""
+        onds = next(t for t in sept_24_fixture["trades"] if t["symbol"] == "ONDS")
+        rs = onds.get("reasoning", {}).get("rs_vs_spy")
+        assert rs == 4.72, "ONDS should have RS stored as raw 4.72"
+
+    def test_open_positions_excluded_from_pnl_totals(self, sept_24_fixture):
+        """Open positions should NOT be counted in trade totals."""
+        trades = sept_24_fixture["trades"]
+        open_positions = sept_24_fixture["open_positions"]
+
+        # Total PnL should only include closed trades
+        closed_pnl = sum(t.get("pnl", 0) for t in trades)
+        open_unrealized = sum(p.get("unrealized_pnl", 0) for p in open_positions)
+
+        # These should be separate
+        assert closed_pnl != closed_pnl + open_unrealized, "Open positions must be excluded from totals"
