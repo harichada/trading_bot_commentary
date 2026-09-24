@@ -85,6 +85,12 @@ class Position:
     scaled_out: bool = False            # Whether 1R partial exit has fired
     original_stop: Optional[float] = None  # Stop at entry (for computing R)
     trailing_stop: Optional[float] = None  # Current ATR trailing stop level
+    # v-ledger-integrity-2026-09-24: immutable fields for true risk tracking
+    # These capture the ORIGINAL stop/TP/risk at entry, never modified by
+    # breakeven lifts, trail adjustments, or partial exits. Used for R calc.
+    initial_stop: Optional[float] = None       # TRUE stop at entry (immutable)
+    initial_tp: Optional[float] = None         # TRUE take-profit at entry (immutable)
+    initial_risk_per_share: Optional[float] = None  # |entry - initial_stop| per share
     # v-mode-field-2026-04-20: attribute-based tagging replaces the old
     # container-only tagging ("position in self.positions = live"). Default
     # "simulation" so an unlabeled position never silently looks live.

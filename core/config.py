@@ -1850,6 +1850,35 @@ class Config:
         return bool(self.manager.get('trading.correlation_ignore_hands_off', True))
 
     @property
+    def LEDGER_INTEGRITY(self) -> bool:
+        """v-ledger-integrity-2026-09-24 (PR1): comprehensive trade ledger
+        integrity for accurate R-multiple computation and statistics.
+
+        When True (default):
+          1. Broker-orphan fills (broker stops/TPs that fired outside bot
+             management) are reconciled into bot_trades with source=broker_orphan
+          2. TRUE initial stop/TP/risk are stored at entry as immutable fields
+             (initial_stop, initial_tp, initial_risk_per_share), separate from
+             the dynamic trailing/breakeven-adjusted stop_loss field
+          3. Every closed trade includes: setup_type, exit_reason, hold_time_seconds,
+             pnl_r (P&L in R-multiples), source (bot/broker_orphan/external)
+          4. HANDS_OFF_DENYLIST symbols (MU, HQGE, SPCX) and external/unmanaged
+             positions are labeled and excluded from bot statistics
+
+        The feature is read-mostly and safe to enable. When off, existing
+        behavior is preserved: stop_loss may equal entry (R undefined),
+        broker orphans may be lost, and initial risk is not tracked.
+
+        SAFE OFF-PATH: Set LEDGER_INTEGRITY=0 to disable entirely and
+        preserve pre-PR1 behavior.
+
+        Override via env LEDGER_INTEGRITY or yaml trading.ledger_integrity."""
+        env_val = os.getenv("LEDGER_INTEGRITY")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.ledger_integrity', True))
+
+    @property
     def ENABLE_MANAGED_BY_BOT_PERSIST(self) -> bool:
         """v-manage-persist-2026-09-15: restore managed_by_bot=True across
         Schwab sync/restart for bot-session entries.

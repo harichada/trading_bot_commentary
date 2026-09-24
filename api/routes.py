@@ -2041,12 +2041,19 @@ async def get_trades(date: str = None, symbol: str = None, strategy: str = None,
             params["strat"] = strategy
 
         where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+        # v-ledger-integrity-2026-09-24: include new ledger integrity columns
         sql = sa_text(f"""
             SELECT id, symbol, side, strategy, entry_time::text, exit_time::text,
                    entry_price, exit_price, quantity, pnl,
                    ROUND(pnl_pct::numeric, 2) AS pnl_pct, exit_reason,
                    atr_at_entry, stop_loss, take_profit, confidence,
-                   meta_proba, kelly_fraction, scaled_out, mode
+                   meta_proba, kelly_fraction, scaled_out, mode,
+                   ROUND(pnl_r::numeric, 4) AS pnl_r,
+                   setup_type, source, hold_time_seconds,
+                   ROUND(initial_stop::numeric, 4) AS initial_stop,
+                   ROUND(initial_tp::numeric, 4) AS initial_tp,
+                   ROUND(initial_risk_per_share::numeric, 6) AS initial_risk_per_share,
+                   is_hands_off, is_external
             FROM bot_trades {where}
             ORDER BY exit_time DESC LIMIT :lim
         """)
