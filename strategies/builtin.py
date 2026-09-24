@@ -1753,6 +1753,381 @@ class DayTradeMomentumStrategy(TradingStrategyWithCommentary):
                     macd_signal=round(macd_signal, 4),
                 )
                 return None
+
+            # ────────────────────────────────────────────────────────────────
+            # v-open30-cont-index-confirm-2026-09-24: Index confirm gate for
+            # opening_30 continuation longs.
+            #
+            # Research brief 2026-09-24: Wed-Thu DT LIVE longs bled because
+            # opening_30 continuation bought single-name strength into a
+            # mixed/choppy tape with SPY still day-red.
+            #
+            # Predicate: Skip continuation longs when time_of_day==opening_30
+            # UNLESS: SPY change vs prior close ≥ 0 AND SPY last ≥ session VWAP
+            #
+            # Scope: continuation pattern + opening_30 ONLY. Does NOT touch:
+            #   - pullback / breakout patterns
+            #   - post-opening_30 windows
+            #   - RSI≥70 veto (unchanged, runs after this gate)
+            #
+            # Modes:
+            #   DT_OPEN30_CONT_INDEX_CONFIRM=True, LIVE_ENFORCE=False:
+            #     Shadow mode — log would_skip but ALLOW the trade.
+            #   DT_OPEN30_CONT_INDEX_CONFIRM=True, LIVE_ENFORCE=True:
+            #     Live mode — actually BLOCK the entry.
+            # ────────────────────────────────────────────────────────────────
+            _index_confirm_applies = (
+                cfg.DT_OPEN30_CONT_INDEX_CONFIRM
+                and _entry_pattern == "continuation"
+                and _mc_time_of_day == "opening_30"
+            )
+
+            if _index_confirm_applies:
+                try:
+                    from core.market_context import get_spy_index_context
+                    _spy_ctx = get_spy_index_context(
+                        schwab_provider=getattr(self, '_schwab_provider', None)
+                    )
+
+                    _index_confirm_passes = _spy_ctx.passes_index_confirm
+                    _would_skip = not _index_confirm_passes
+
+                    _index_confirm_fields = {
+                        'would_skip': _would_skip,
+                        'spy_chg_vs_prior_close': _spy_ctx.spy_change_vs_prior_close,
+                        'spy_last': _spy_ctx.spy_last,
+                        'spy_vwap': _spy_ctx.spy_session_vwap,
+                        'spy_vs_vwap': _spy_ctx.spy_vs_vwap,
+                        'spy_is_day_green': _spy_ctx.is_day_green,
+                        'spy_is_above_vwap': _spy_ctx.is_above_vwap,
+                        'symbol': symbol,
+                        'pattern': _entry_pattern,
+                        'time_of_day': _mc_time_of_day,
+                        'rsi': round(rsi, 2),
+                        'regime': _mc_regime,
+                        'entry_price': round(market_data.close, 2),
+                        'rs_vs_spy': round(_rs_vs_spy, 2),
+                        'volume_ratio': round(volume_ratio, 2),
+                        'session_id': _get_session_id(),
+                    }
+
+                    if _would_skip:
+                        if cfg.DT_OPEN30_CONT_INDEX_CONFIRM_LIVE_ENFORCE:
+                            # LIVE ENFORCEMENT: actually block the entry
+                            self._log_decision(
+                                market_data, "skip", "open30_cont_index_confirm_fail",
+                                gate_name="dt_open30_cont_index_confirm",
+                                live_enforce=True,
+                                **_index_confirm_fields,
+                            )
+
+                            _vwap_str = f"${_spy_ctx.spy_session_vwap:.2f}" if _spy_ctx.spy_session_vwap else "N/A"
+                            _vs_vwap_str = f"{_spy_ctx.spy_vs_vwap:+.2f}" if _spy_ctx.spy_vs_vwap else "N/A"
+
+                            self.commentary.add_commentary(TradingCommentary(
+                                timestamp=datetime.now(),
+                                type=CommentaryType.RISK_ASSESSMENT,
+                                symbol=symbol,
+                                title=f"🛑 Index Confirm BLOCKED — opening_30 continuation",
+                                message=(
+                                    f"BLOCKED {symbol} continuation in opening_30:\n"
+                                    f"  SPY vs prior close: {_spy_ctx.spy_change_vs_prior_close:+.2f}% "
+                                    f"({'day-green ✓' if _spy_ctx.is_day_green else 'day-RED ✗'})\n"
+                                    f"  SPY last: ${_spy_ctx.spy_last:.2f}\n"
+                                    f"  SPY VWAP: {_vwap_str}\n"
+                                    f"  SPY vs VWAP: {_vs_vwap_str} "
+                                    f"({'above VWAP ✓' if _spy_ctx.is_above_vwap else 'below VWAP ✗'})\n\n"
+                                    f"Predicate: SPY day-green AND SPY ≥ VWAP required.\n"
+                                    f"v-open30-cont-index-confirm-2026-09-24 (Research brief)"
+                                ),
+                                data=_index_confirm_fields,
+                                importance=8,
+                            ))
+
+                            return None
+                        else:
+                            # SHADOW MODE: log would_skip but ALLOW the trade
+                            self._log_decision(
+                                market_data, "shadow", "shadow_open30_cont_index_confirm",
+                                gate_name="dt_open30_cont_index_confirm",
+                                live_enforce=False,
+                                **_index_confirm_fields,
+                            )
+
+                            # Write to ndjson for Research counterfactual PF analysis
+                            try:
+                                from datetime import timezone as _tz_idx
+                                import json as _json_idx
+                                from pathlib import Path as _Path_idx
+
+                                _shadow_idx_entry = {
+                                    'timestamp': datetime.now(_tz_idx.utc).isoformat(),
+                                    'symbol': symbol,
+                                    'strategy': 'day_trade_momentum',
+                                    'pattern': _entry_pattern,
+                                    'time_of_day': _mc_time_of_day,
+                                    'would_skip': True,
+                                    'live_enforce': False,
+                                    # SPY index context fields
+                                    'spy_chg_vs_prior_close': _spy_ctx.spy_change_vs_prior_close,
+                                    'spy_last': _spy_ctx.spy_last,
+                                    'spy_vwap': _spy_ctx.spy_session_vwap,
+                                    'spy_vs_vwap': _spy_ctx.spy_vs_vwap,
+                                    'spy_is_day_green': _spy_ctx.is_day_green,
+                                    'spy_is_above_vwap': _spy_ctx.is_above_vwap,
+                                    # Signal fields for outcome tracking
+                                    'entry_price': float(market_data.close),
+                                    'rsi': float(rsi),
+                                    'regime': _mc_regime,
+                                    'rs_vs_spy': float(_rs_vs_spy),
+                                    'volume_ratio': float(volume_ratio),
+                                    'adx': float(adx),
+                                    'atr': float(atr),
+                                    'session_id': _get_session_id(),
+                                }
+
+                                _repo_root_idx = _Path_idx(__file__).resolve().parent.parent
+                                _ledger_dir_idx = _repo_root_idx / "data"
+                                _ledger_dir_idx.mkdir(parents=True, exist_ok=True)
+                                _ledger_path_idx = str(_ledger_dir_idx / "shadow_open30_cont_index_confirm.ndjson")
+
+                                with open(_ledger_path_idx, 'a') as _f_idx:
+                                    _f_idx.write(_json_idx.dumps(_shadow_idx_entry, default=str) + "\n")
+
+                            except Exception as _shadow_idx_exc:
+                                logger.warning(
+                                    "shadow_open30_cont_index_confirm write failed for %s: %s",
+                                    symbol, _shadow_idx_exc,
+                                )
+
+                            _vwap_str_sh = f"${_spy_ctx.spy_session_vwap:.2f}" if _spy_ctx.spy_session_vwap else "N/A"
+                            _vs_vwap_str_sh = f"{_spy_ctx.spy_vs_vwap:+.2f}" if _spy_ctx.spy_vs_vwap else "N/A"
+
+                            self.commentary.add_commentary(TradingCommentary(
+                                timestamp=datetime.now(),
+                                type=CommentaryType.RISK_ASSESSMENT,
+                                symbol=symbol,
+                                title=f"👁️ Shadow: opening_30 cont would skip (index confirm FAIL)",
+                                message=(
+                                    f"WOULD HAVE skipped {symbol} continuation in opening_30:\n"
+                                    f"  SPY vs prior close: {_spy_ctx.spy_change_vs_prior_close:+.2f}% "
+                                    f"({'day-green ✓' if _spy_ctx.is_day_green else 'day-RED ✗'})\n"
+                                    f"  SPY last: ${_spy_ctx.spy_last:.2f}\n"
+                                    f"  SPY VWAP: {_vwap_str_sh}\n"
+                                    f"  SPY vs VWAP: {_vs_vwap_str_sh} "
+                                    f"({'above VWAP ✓' if _spy_ctx.is_above_vwap else 'below VWAP ✗'})\n\n"
+                                    f"SHADOW MODE: entry ALLOWED for counterfactual PF.\n"
+                                    f"Set DT_OPEN30_CONT_INDEX_CONFIRM_LIVE_ENFORCE=1 to block."
+                                ),
+                                data=_index_confirm_fields,
+                                importance=6,
+                            ))
+                            # Continue to signal generation (shadow = don't block)
+
+                    else:
+                        # Predicate PASSES — log for audit but proceed normally
+                        self._log_decision(
+                            market_data, "pass", "open30_cont_index_confirm_pass",
+                            gate_name="dt_open30_cont_index_confirm",
+                            **_index_confirm_fields,
+                        )
+
+                except Exception as _index_exc:
+                    logger.debug(
+                        "day_trade_momentum: index_confirm check failed: %s",
+                        _index_exc
+                    )
+                    # Fail-open: if we can't check, don't block
+
+            # ────────────────────────────────────────────────────────────────
+            # v-open30-cont-rs-from-open-2026-09-24: RTH-open RS floor gate for
+            # opening_30 continuation longs.
+            #
+            # Kiddo Alpaca tape reconstruction RCA 2026-09-24: prior-close RS
+            # masked intraday deterioration. Symbol appeared strong vs prior
+            # close but was actually lagging SPY's intraday move.
+            #
+            # This gate requires: rs_from_open >= MOMENTUM_MIN_RS_VS_SPY
+            # Where: rs_from_open = (sym_last/sym_rth_open - 1) - (spy_last/spy_rth_open - 1)
+            #
+            # Scope: continuation + opening_30 ONLY. Stacks after index confirm.
+            # Modes: shadow (log + allow) vs live_enforce (block).
+            # ────────────────────────────────────────────────────────────────
+            _rs_from_open_applies = (
+                cfg.DT_OPEN30_CONT_RS_FROM_OPEN
+                and _entry_pattern == "continuation"
+                and _mc_time_of_day == "opening_30"
+            )
+
+            if _rs_from_open_applies:
+                try:
+                    from core.market_context import get_spy_index_context, get_rs_from_open_context
+                    
+                    # Re-use spy_ctx if already fetched, otherwise fetch fresh
+                    if '_spy_ctx' not in dir() or _spy_ctx is None:
+                        _spy_ctx = get_spy_index_context(
+                            schwab_provider=getattr(self, '_schwab_provider', None)
+                        )
+                    
+                    _rs_open_ctx = get_rs_from_open_context(
+                        symbol=symbol,
+                        sym_last=market_data.close,
+                        rs_prior_close=_rs_vs_spy,
+                        spy_ctx=_spy_ctx,
+                        schwab_provider=getattr(self, '_schwab_provider', None),
+                    )
+                    
+                    _min_rs = cfg.MOMENTUM_MIN_RS_VS_SPY
+                    _rs_from_open_passes = (
+                        _rs_open_ctx.rs_from_open is None  # Fail-open if unavailable
+                        or _rs_open_ctx.rs_from_open >= _min_rs
+                    )
+                    _would_skip_rs_open = not _rs_from_open_passes
+                    
+                    _rs_from_open_fields = {
+                        'would_skip': _would_skip_rs_open,
+                        'rs_from_open': _rs_open_ctx.rs_from_open,
+                        'rs_prior_close': _rs_open_ctx.rs_prior_close,
+                        'min_rs_threshold': _min_rs,
+                        'sym_last': _rs_open_ctx.sym_last,
+                        'sym_rth_open': _rs_open_ctx.sym_rth_open,
+                        'sym_change_from_open': _rs_open_ctx.sym_change_from_open,
+                        'spy_last': _rs_open_ctx.spy_last,
+                        'spy_rth_open': _rs_open_ctx.spy_rth_open,
+                        'spy_change_from_open': _rs_open_ctx.spy_change_from_open,
+                        'source': _rs_open_ctx.source,
+                        'symbol': symbol,
+                        'pattern': _entry_pattern,
+                        'time_of_day': _mc_time_of_day,
+                        'session_id': _get_session_id(),
+                    }
+                    
+                    if _would_skip_rs_open:
+                        if cfg.DT_OPEN30_CONT_RS_FROM_OPEN_LIVE_ENFORCE:
+                            # LIVE ENFORCEMENT: actually block the entry
+                            self._log_decision(
+                                market_data, "skip", "open30_cont_rs_from_open_fail",
+                                gate_name="dt_open30_cont_rs_from_open",
+                                live_enforce=True,
+                                **_rs_from_open_fields,
+                            )
+                            
+                            _rs_open_str = f"{_rs_open_ctx.rs_from_open:+.2f}%" if _rs_open_ctx.rs_from_open is not None else "N/A"
+                            _sym_chg_str = f"{_rs_open_ctx.sym_change_from_open:+.2f}%" if _rs_open_ctx.sym_change_from_open is not None else "N/A"
+                            _spy_chg_str = f"{_rs_open_ctx.spy_change_from_open:+.2f}%" if _rs_open_ctx.spy_change_from_open is not None else "N/A"
+                            
+                            self.commentary.add_commentary(TradingCommentary(
+                                timestamp=datetime.now(),
+                                type=CommentaryType.RISK_ASSESSMENT,
+                                symbol=symbol,
+                                title=f"🛑 RS-from-Open BLOCKED — opening_30 continuation",
+                                message=(
+                                    f"BLOCKED {symbol} continuation in opening_30:\n"
+                                    f"  RS from open: {_rs_open_str} < {_min_rs:+.2f}% threshold\n"
+                                    f"  RS from prior close: {_rs_open_ctx.rs_prior_close:+.2f}%\n"
+                                    f"  Symbol: {_sym_chg_str} from RTH open\n"
+                                    f"  SPY: {_spy_chg_str} from RTH open\n\n"
+                                    f"Predicate: rs_from_open >= MOMENTUM_MIN_RS_VS_SPY required.\n"
+                                    f"v-open30-cont-rs-from-open-2026-09-24 (Kiddo Alpaca RCA)"
+                                ),
+                                data=_rs_from_open_fields,
+                                importance=8,
+                            ))
+                            
+                            return None
+                        else:
+                            # SHADOW MODE: log would_skip but ALLOW the trade
+                            self._log_decision(
+                                market_data, "shadow", "shadow_open30_cont_rs_from_open",
+                                gate_name="dt_open30_cont_rs_from_open",
+                                live_enforce=False,
+                                **_rs_from_open_fields,
+                            )
+                            
+                            # Write to ndjson for Research counterfactual PF analysis
+                            try:
+                                from datetime import timezone as _tz_rs
+                                import json as _json_rs
+                                from pathlib import Path as _Path_rs
+                                
+                                _shadow_rs_entry = {
+                                    'timestamp': datetime.now(_tz_rs.utc).isoformat(),
+                                    'symbol': symbol,
+                                    'strategy': 'day_trade_momentum',
+                                    'pattern': _entry_pattern,
+                                    'time_of_day': _mc_time_of_day,
+                                    'would_skip': True,
+                                    'live_enforce': False,
+                                    'gate': 'rs_from_open',
+                                    # RS from open fields
+                                    'rs_from_open': _rs_open_ctx.rs_from_open,
+                                    'rs_prior_close': _rs_open_ctx.rs_prior_close,
+                                    'min_rs_threshold': _min_rs,
+                                    'sym_last': _rs_open_ctx.sym_last,
+                                    'sym_rth_open': _rs_open_ctx.sym_rth_open,
+                                    'sym_change_from_open': _rs_open_ctx.sym_change_from_open,
+                                    'spy_last': _rs_open_ctx.spy_last,
+                                    'spy_rth_open': _rs_open_ctx.spy_rth_open,
+                                    'spy_change_from_open': _rs_open_ctx.spy_change_from_open,
+                                    # Signal fields for outcome tracking
+                                    'entry_price': float(market_data.close),
+                                    'rsi': float(rsi),
+                                    'regime': _mc_regime,
+                                    'volume_ratio': float(volume_ratio),
+                                    'session_id': _get_session_id(),
+                                }
+                                
+                                _repo_root_rs = _Path_rs(__file__).resolve().parent.parent
+                                _ledger_dir_rs = _repo_root_rs / "data"
+                                _ledger_dir_rs.mkdir(parents=True, exist_ok=True)
+                                _ledger_path_rs = str(_ledger_dir_rs / "shadow_open30_cont_rs_from_open.ndjson")
+                                
+                                with open(_ledger_path_rs, 'a') as _f_rs:
+                                    _f_rs.write(_json_rs.dumps(_shadow_rs_entry, default=str) + "\n")
+                            
+                            except Exception as _shadow_rs_exc:
+                                logger.warning(
+                                    "shadow_open30_cont_rs_from_open write failed for %s: %s",
+                                    symbol, _shadow_rs_exc,
+                                )
+                            
+                            _rs_open_str_sh = f"{_rs_open_ctx.rs_from_open:+.2f}%" if _rs_open_ctx.rs_from_open is not None else "N/A"
+                            _sym_chg_str_sh = f"{_rs_open_ctx.sym_change_from_open:+.2f}%" if _rs_open_ctx.sym_change_from_open is not None else "N/A"
+                            _spy_chg_str_sh = f"{_rs_open_ctx.spy_change_from_open:+.2f}%" if _rs_open_ctx.spy_change_from_open is not None else "N/A"
+                            
+                            self.commentary.add_commentary(TradingCommentary(
+                                timestamp=datetime.now(),
+                                type=CommentaryType.RISK_ASSESSMENT,
+                                symbol=symbol,
+                                title=f"👁️ Shadow: opening_30 cont would skip (RS-from-open FAIL)",
+                                message=(
+                                    f"WOULD HAVE skipped {symbol} continuation in opening_30:\n"
+                                    f"  RS from open: {_rs_open_str_sh} < {_min_rs:+.2f}% threshold\n"
+                                    f"  RS from prior close: {_rs_open_ctx.rs_prior_close:+.2f}%\n"
+                                    f"  Symbol: {_sym_chg_str_sh} from RTH open\n"
+                                    f"  SPY: {_spy_chg_str_sh} from RTH open\n\n"
+                                    f"SHADOW MODE: entry ALLOWED for counterfactual PF.\n"
+                                    f"Set DT_OPEN30_CONT_RS_FROM_OPEN_LIVE_ENFORCE=1 to block."
+                                ),
+                                data=_rs_from_open_fields,
+                                importance=6,
+                            ))
+                            # Continue to signal generation (shadow = don't block)
+                    
+                    else:
+                        # Predicate PASSES — log for audit but proceed normally
+                        self._log_decision(
+                            market_data, "pass", "open30_cont_rs_from_open_pass",
+                            gate_name="dt_open30_cont_rs_from_open",
+                            **_rs_from_open_fields,
+                        )
+                
+                except Exception as _rs_open_exc:
+                    logger.debug(
+                        "day_trade_momentum: rs_from_open check failed: %s",
+                        _rs_open_exc
+                    )
+                    # Fail-open: if we can't check, don't block
             
             # ────────────────────────────────────────────────────────────────
             # v-hard-veto-rsi70-2026-09-14: Hard veto for continuation + RSI>=70
