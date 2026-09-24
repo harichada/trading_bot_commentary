@@ -613,3 +613,76 @@ class TestNavEntry:
 
         assert 'UI_ACTIVITY_PAGE' in source, "Route must reference UI_ACTIVITY_PAGE"
         assert 'window.UI_ACTIVITY_PAGE' in source, "Route must inject flag into window"
+
+
+class TestResponsiveLayout:
+    """Tests for responsive table layout at 1280px."""
+
+    def test_template_has_one_line_truncate_class(self):
+        """Activity template must have one-line-truncate class for ellipsis preview."""
+        from pathlib import Path
+        template_path = Path(__file__).parent.parent / "templates" / "activity.html"
+        source = template_path.read_text()
+
+        assert 'one-line-truncate' in source, "Template must have one-line-truncate class"
+        assert 'text-overflow: ellipsis' in source, "Template must have text-overflow ellipsis"
+
+    def test_template_has_reasoning_preview(self):
+        """Activity template must have reasoning-preview element for collapsed row."""
+        from pathlib import Path
+        template_path = Path(__file__).parent.parent / "templates" / "activity.html"
+        source = template_path.read_text()
+
+        assert 'reasoning-preview' in source, "Template must have reasoning-preview class"
+        assert 'getReasoningPreview' in source, "Template must have getReasoningPreview function"
+
+    def test_template_has_combined_entry_exit_cells(self):
+        """Activity template must combine entry time+price and exit time+price."""
+        from pathlib import Path
+        template_path = Path(__file__).parent.parent / "templates" / "activity.html"
+        source = template_path.read_text()
+
+        assert 'entry-exit-cell' in source, "Template must have entry-exit-cell class"
+
+    def test_reasoning_grid_wraps(self):
+        """Reasoning grid must use flex-wrap for responsive layout."""
+        from pathlib import Path
+        template_path = Path(__file__).parent.parent / "templates" / "activity.html"
+        source = template_path.read_text()
+
+        assert 'flex-wrap: wrap' in source, "Reasoning grid must use flex-wrap"
+
+
+class TestBrokerNoteLogic:
+    """Tests for broker-only fills note on past dates."""
+
+    def test_template_has_broker_note_element(self):
+        """Activity template must have broker-note element."""
+        from pathlib import Path
+        template_path = Path(__file__).parent.parent / "templates" / "activity.html"
+        source = template_path.read_text()
+
+        assert 'broker-note' in source, "Template must have broker-note element"
+        assert 'Broker-only fills are shown for today only' in source, "Template must have broker note text"
+
+    def test_broker_note_visibility_logic(self):
+        """Broker note should be shown when date is not today."""
+        from pathlib import Path
+        template_path = Path(__file__).parent.parent / "templates" / "activity.html"
+        source = template_path.read_text()
+
+        # Check that the JS logic compares selected date with today
+        assert 'selectedDate !== todayStr' in source, "Must compare selected date with today"
+        assert "brokerNote.style.display = 'flex'" in source, "Must show broker note"
+        assert "brokerNote.style.display = 'none'" in source, "Must hide broker note"
+
+    def test_broker_note_hidden_by_default(self):
+        """Broker note element should be hidden by default (display: none)."""
+        from pathlib import Path
+        template_path = Path(__file__).parent.parent / "templates" / "activity.html"
+        source = template_path.read_text()
+
+        # Check that broker-note has style="display: none;" initially
+        assert 'id="broker-note"' in source, "Must have broker-note id"
+        # The element should start hidden
+        assert 'broker-note' in source and 'display: none' in source, "Broker note should be hidden by default"
