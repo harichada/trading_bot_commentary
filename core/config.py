@@ -927,6 +927,48 @@ class Config:
         return bool(self.manager.get('trading.enable_proactive_exit', True))
 
     @property
+    def DT_UNIFIED_EXIT(self) -> bool:
+        """v-unified-exit-2026-09-24: enable the unified exit manager for
+        day-trade positions. When True, the unified exit policy is evaluated
+        on each position-manager tick and logged to shadow NDJSON.
+        
+        The unified policy replaces scattered indicator-based exits (MACD flip,
+        RSI < 50, open-desk RSI extreme) with a coherent structure:
+          - Scale 50% at +1R
+          - Move stop to breakeven after scale
+          - Trail remainder by ATR
+          - Time stop N minutes before flatten
+        
+        Default False (shadow-only). Set DT_UNIFIED_EXIT=1 or
+        trading.dt_unified_exit: true to enable shadow logging.
+        
+        Does NOT affect live exits unless DT_UNIFIED_EXIT_LIVE_ENFORCE is also True."""
+        env_val = os.getenv("DT_UNIFIED_EXIT")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.dt_unified_exit', False))
+
+    @property
+    def DT_UNIFIED_EXIT_LIVE_ENFORCE(self) -> bool:
+        """v-unified-exit-2026-09-24: enable live enforcement of the unified
+        exit manager. When True AND DT_UNIFIED_EXIT is True, the unified
+        policy will override proactive indicator exits (MACD/RSI/desk) for
+        day_trade_momentum positions.
+        
+        IMPORTANT: Hard stops, target hits, and flatten-hour are NEVER overridden.
+        Those always fire from the core engine loop regardless of this flag.
+        
+        Default False. Only set to True after the shadow log confirms the
+        unified policy outperforms the current proactive exits.
+        
+        Set DT_UNIFIED_EXIT_LIVE_ENFORCE=1 or
+        trading.dt_unified_exit_live_enforce: true to enable."""
+        env_val = os.getenv("DT_UNIFIED_EXIT_LIVE_ENFORCE")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.dt_unified_exit_live_enforce', False))
+
+    @property
     def PROACTIVE_EXIT_MIN_AGE_NEWS(self) -> int:
         """v-proactive-time-floor-2026-04-30: minimum minutes a news-driven
         position must be open before proactive_exit can fire. Whipsaw
