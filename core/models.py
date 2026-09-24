@@ -1,7 +1,9 @@
 from enum import Enum
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, Any, Optional
+
+from core.news_bus import ensure_utc_aware
 
 
 class TradingMode(Enum):
@@ -83,6 +85,12 @@ class Position:
     scaled_out: bool = False            # Whether 1R partial exit has fired
     original_stop: Optional[float] = None  # Stop at entry (for computing R)
     trailing_stop: Optional[float] = None  # Current ATR trailing stop level
+    # v-ledger-integrity-2026-09-24: immutable fields for true risk tracking
+    # These capture the ORIGINAL stop/TP/risk at entry, never modified by
+    # breakeven lifts, trail adjustments, or partial exits. Used for R calc.
+    initial_stop: Optional[float] = None       # TRUE stop at entry (immutable)
+    initial_tp: Optional[float] = None         # TRUE take-profit at entry (immutable)
+    initial_risk_per_share: Optional[float] = None  # |entry - initial_stop| per share
     # v-mode-field-2026-04-20: attribute-based tagging replaces the old
     # container-only tagging ("position in self.positions = live"). Default
     # "simulation" so an unlabeled position never silently looks live.
@@ -99,6 +107,12 @@ class Position:
     # In LIVE mode this is the primary gate; in SIM mode it's also honored
     # so users can pause management on a single position from the dashboard.
     managed_by_bot: bool = False
+    # v-manage-persist-hotfix-2026-09-15: track WHO set managed_by_bot so we
+    # can distinguish operator toggle-off (intentional) from stale sync data.
+    # Values: 'bot' (bot opened), 'operator' (user toggled via API),
+    #         'external' (discovered external), 'denylist' (hands-off denylist).
+    # None = legacy position without source tracking.
+    managed_source: Optional[str] = None
     # v-thesis-revalidate-2026-04-28: last time the thesis re-validation ran
     # for this position. Tracked separately from entry/management ticks so
     # the re-check can fire on its own cadence (default every 15 min after
@@ -131,6 +145,21 @@ class Position:
     # field(repr=False, compare=False) so the lock doesn't try to compare
     # or print as part of the dataclass machinery.
     _state_lock: Any = field(default=None, repr=False, compare=False)
+
+    # ──────────────────────────────────────────────────────────────────
+    # v-order-monitor-2026-09-10: bracket/OCO order tracking fields.
+    # When _place_bracket_orders succeeds, these IDs track the broker-side
+    # orders so the order monitor can:
+    #   1. Detect stop/TP fills and sync Position state
+    #   2. Cancel sibling legs when one side fills
+    #   3. Replace stops when software trail moves
+    # All three are optional (None = no active bracket for this position).
+    # ──────────────────────────────────────────────────────────────────
+    bracket_order_id: Optional[str] = None   # Parent OCO order ID
+    stop_order_id: Optional[str] = None      # Stop loss leg order ID
+    tp_order_id: Optional[str] = None        # Take profit leg order ID
+    # Last broker stop price (for detecting when trail replacement is needed)
+    broker_stop_price: Optional[float] = None
 
     # ──────────────────────────────────────────────────────────────────
     # v-pricebook-2026-05-01: reactive-pull current_price / unrealized_pnl.
@@ -216,6 +245,18 @@ def _position_migration_init(self, *args, **kwargs):
 Position.__init__ = _position_migration_init
 
 
+def clear_bracket_ids(position: Position) -> None:
+    """Clear all bracket/OCO order tracking IDs on a position.
+    
+    v-order-monitor-2026-09-10: called after bracket fills/cancels/rejects
+    to reset tracking state so the order monitor stops watching stale IDs.
+    """
+    position.bracket_order_id = None
+    position.stop_order_id = None
+    position.tp_order_id = None
+    position.broker_stop_price = None
+
+
 @dataclass
 class MarketData:
     symbol: str
@@ -243,4 +284,6 @@ class NewsItem:
     relevance_score: float = 0.0
 
     def age_hours(self) -> float:
-        return (datetime.now() - self.published_time).total_seconds() / 3600
+        now_utc = datetime.now(timezone.utc)
+        pub_utc = ensure_utc_aware(self.published_time)
+        return (now_utc - pub_utc).total_seconds() / 3600

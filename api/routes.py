@@ -232,7 +232,9 @@ async def get_dashboard():
     # This is NOT safe for internet-facing deployments. For multi-user or remote access,
     # replace with a proper login flow (e.g. session cookie from POST /api/login).
     api_key = os.getenv("TRADING_API_KEY", "")
-    auth_script = f'<script>window.TRADING_API_KEY={json.dumps(api_key)};</script>'
+    # v-activity-page-2026-09-24: inject feature flag so nav can conditionally show Activity link
+    activity_enabled = Config().UI_ACTIVITY_PAGE
+    auth_script = f'<script>window.TRADING_API_KEY={json.dumps(api_key)};window.UI_ACTIVITY_PAGE={json.dumps(activity_enabled)};</script>'
 
     # v-dashboard-hotreload-2026-05-28: re-read dashboard.html from
     # disk on every request instead of using the cached
@@ -255,7 +257,7 @@ async def get_dashboard():
         template_html = DASHBOARD_HTML_WITH_COMMENTARY  # fallback to import-time copy
 
     html = template_html.replace("</head>", f"{auth_script}</head>", 1)
-    return HTMLResponse(content=html)
+    return HTMLResponse(content=html, media_type="text/html; charset=utf-8")
 
 
 @app.get("/stream")
@@ -552,7 +554,7 @@ async def get_stream_view():
 </html>
 """
     html = html.replace("__APIKEY__", api_json)
-    return HTMLResponse(content=html)
+    return HTMLResponse(content=html, media_type="text/html; charset=utf-8")
 
 @app.post("/api/start")
 async def start_trading():
@@ -603,6 +605,11 @@ async def start_trading():
         # Engine may run on a background thread/loop; force WS broadcasts
         # back onto the FastAPI loop that owns WebSocket objects.
         trading_engine._ws_broadcast_loop = main_loop
+        
+        # v-fix-loop-safety-2026-09-10: Set db_logger owner loop so cross-loop
+        # snapshot writes/reads route back to this (FastAPI) loop.
+        if hasattr(trading_engine, 'db_logger') and trading_engine.db_logger is not None:
+            trading_engine.db_logger.set_owner_loop(main_loop)
 
         # Background task to process commentary broadcasts
         async def commentary_broadcaster():
@@ -771,6 +778,152 @@ async def reset_settings():
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
+
+# ============================================================================
+# HANDS-OFF DENYLIST API
+# v-hands-off-denylist-settings-2026-09-14
+# ============================================================================
+
+import re
+_TICKER_PATTERN = re.compile(r'^[A-Z]{1,5}$')
+
+# HARD FLOOR: these symbols can NEVER be removed from the denylist.
+# They are permanent long-term holds that must remain protected regardless
+# of any UI or API action. SNAP is NOT in this list — it's fully editable.
+PERMANENT_HANDS_OFF = frozenset({'MU', 'HQGE', 'SPCX'})
+
+
+def _is_valid_ticker(symbol: str) -> bool:
+    """Validate that a symbol looks like a valid US equity ticker.
+
+    Accepts 1-5 uppercase letters. Rejects numerics, special chars,
+    and overly long strings. This is a quick sanity check, not a
+    comprehensive exchange listing verification.
+    """
+    return bool(_TICKER_PATTERN.match(symbol))
+
+
+@app.get("/api/hands-off-denylist")
+async def get_hands_off_denylist():
+    """Get the current hands-off denylist from Config.
+
+    Returns the effective list of symbols that the bot must never
+    attempt to manage or close. Safe fallback: if config lookup
+    fails, returns the hardcoded defaults (MU, HQGE, SPCX).
+
+    Response:
+        {
+            "status": "success",
+            "symbols": ["HQGE", "MU", "SPCX"],  // sorted
+            "permanent": ["HQGE", "MU", "SPCX"],  // cannot be removed
+            "source": "config" | "default_fallback"
+        }
+    """
+    DEFAULT_DENYLIST = ['MU', 'HQGE', 'SPCX']
+    try:
+        from core.config import Config
+        cfg = Config()
+        symbols = list(cfg.HANDS_OFF_DENYLIST)
+        return {
+            "status": "success",
+            "symbols": sorted(symbols),
+            "permanent": sorted(PERMANENT_HANDS_OFF),
+            "source": "config"
+        }
+    except Exception as e:
+        logger.warning("hands-off-denylist GET failed, using defaults: %s", e)
+        return {
+            "status": "success",
+            "symbols": sorted(DEFAULT_DENYLIST),
+            "permanent": sorted(PERMANENT_HANDS_OFF),
+            "source": "default_fallback"
+        }
+
+
+@app.put("/api/hands-off-denylist")
+async def update_hands_off_denylist(request: dict):
+    """Update the hands-off denylist.
+
+    Normalizes input (uppercase, unique, valid ticker format), persists
+    via config_manager, and returns the saved list. Invalid symbols are
+    silently dropped with a warning in the response.
+
+    HARD FLOOR: MU, HQGE, SPCX can NEVER be removed. If the request
+    attempts to remove any of these, the API returns an error and does
+    NOT persist any changes. SNAP is fully editable.
+
+    Request body:
+        {"symbols": ["MU", "HQGE", "SPCX", "FOO"]}
+
+    Response (success):
+        {
+            "status": "success",
+            "symbols": ["FOO", "HQGE", "MU", "SPCX"],  // sorted
+            "dropped": ["123", "invalid!"],  // if any were invalid
+            "message": "Saved 4 symbols"
+        }
+
+    Response (error - tried to remove permanent symbol):
+        {
+            "status": "error",
+            "message": "Cannot remove permanent symbols: MU, HQGE, SPCX. These are protected forever.",
+            "missing_permanent": ["MU", "SPCX"]
+        }
+
+    Note: No bot restart required — Config.HANDS_OFF_DENYLIST re-reads
+    from config_manager on every access.
+    """
+    from trading_bot_commentary_updated import config_manager
+
+    raw_symbols = request.get('symbols', [])
+    if not isinstance(raw_symbols, list):
+        return {"status": "error", "message": "symbols must be a list"}
+
+    valid = []
+    dropped = []
+    seen = set()
+
+    for item in raw_symbols:
+        if not isinstance(item, str):
+            dropped.append(str(item))
+            continue
+        normalized = item.strip().upper()
+        if not normalized:
+            continue
+        if normalized in seen:
+            continue
+        if not _is_valid_ticker(normalized):
+            dropped.append(item)
+            continue
+        seen.add(normalized)
+        valid.append(normalized)
+
+    # HARD FLOOR: MU, HQGE, SPCX must ALWAYS be present
+    valid_set = set(valid)
+    missing_permanent = PERMANENT_HANDS_OFF - valid_set
+    if missing_permanent:
+        return {
+            "status": "error",
+            "message": f"Cannot remove permanent symbols: {', '.join(sorted(PERMANENT_HANDS_OFF))}. These are protected forever.",
+            "missing_permanent": sorted(missing_permanent)
+        }
+
+    config_manager.update('trading.hands_off_denylist', valid)
+
+    result = {
+        "status": "success",
+        "symbols": sorted(valid),
+        "permanent": sorted(PERMANENT_HANDS_OFF),
+        "message": f"Saved {len(valid)} symbol{'s' if len(valid) != 1 else ''}"
+    }
+    if dropped:
+        result["dropped"] = dropped
+        result["message"] += f" (dropped {len(dropped)} invalid)"
+
+    logger.info("hands-off-denylist updated: %s", sorted(valid))
+    return result
+
+
 @app.get("/api/market-indices")
 async def get_market_indices():
     """v-market-indices-strip-2026-05-27: regime strip data.
@@ -797,6 +950,102 @@ async def get_bot_status():
         "schwab_connected": trading_engine.schwab_client is not None if trading_engine else False,
         "uptime": str(datetime.now() - trading_engine.start_time) if trading_engine and hasattr(trading_engine, 'start_time') else "0:00:00"
     }
+
+
+@app.get("/api/system-stats")
+async def get_system_stats():
+    """Get system observability stats: NewsBus, supervisor, profile.
+    
+    v-newsbus-observability-2026-09-08: exposes metrics for monitoring:
+      - NewsBus item counts, high-impact alerts, refresh status
+      - Supervisor task states and crash counts
+      - Current autonomy profile and confirmation settings
+    """
+    from core.config import Config
+    cfg = Config()
+    
+    result = {
+        "status": "success",
+        "profile": {
+            "name": cfg.TRADING_PROFILE,
+            "confirmation_timeout_sec": cfg.CONFIRMATION_TIMEOUT_SEC,
+            "confirmation_timeout_action": cfg.CONFIRMATION_TIMEOUT_ACTION,
+            "require_close_confirmation": cfg.REQUIRE_CLOSE_CONFIRMATION,
+            "flatten_on_circuit": cfg.FLATTEN_ON_CIRCUIT,
+        },
+        "news_bus": None,
+        "news_loop": None,
+        "supervisor": None,
+        "last_wake_reason": None,
+    }
+    
+    if not trading_engine:
+        return result
+    
+    # NewsBus stats
+    bus = getattr(trading_engine, "_news_bus", None)
+    if bus is not None:
+        stats = bus.get_stats()
+        result["news_bus"] = {
+            "total_items": stats.total_items,
+            "symbols_tracked": stats.symbols_tracked,
+            "high_impact_items": stats.high_impact_items,
+            "refresh_count": stats.refresh_count,
+            "items_evicted": stats.items_evicted,
+            "fetch_errors": stats.fetch_errors,
+            "wake_events_fired": stats.wake_events_fired,
+            "last_refresh": stats.last_refresh.isoformat() if stats.last_refresh else None,
+            # v-newsbus-gates-2026-09-09: gate decision counters
+            "gate_pass": stats.gate_pass,
+            "gate_veto_stale": stats.gate_veto_stale,
+            "gate_veto_low_tier": stats.gate_veto_low_tier,
+            "gate_veto_no_corroboration": stats.gate_veto_no_corroboration,
+            "gate_size_reduced": stats.gate_size_reduced,
+        }
+    
+    # NewsLoop stats
+    news_loop = getattr(trading_engine, "_news_loop", None)
+    if news_loop is not None:
+        result["news_loop"] = news_loop.get_status()
+    
+    # Supervisor stats
+    supervisor = getattr(trading_engine, "_supervisor", None)
+    if supervisor is not None:
+        result["supervisor"] = supervisor.status()
+    
+    # Last wake reason
+    result["last_wake_reason"] = getattr(trading_engine, "_last_wake_reason", None)
+    
+    return result
+
+
+@app.get("/api/news-bus/{symbol}")
+async def get_news_bus_symbol(symbol: str, max_age_sec: float = 14400):
+    """Get NewsBus items for a specific symbol.
+    
+    v-newsbus-observability-2026-09-08: inspect cached news for a symbol.
+    Useful for debugging why a news signal did or didn't fire.
+    """
+    if not trading_engine:
+        return {"status": "error", "message": "Engine not running"}
+    
+    bus = getattr(trading_engine, "_news_bus", None)
+    if bus is None:
+        return {"status": "error", "message": "NewsBus not available"}
+    
+    items = await bus.get_items(symbol.upper(), max_age_sec=max_age_sec)
+    aggregate = await bus.get_aggregate_sentiment(symbol.upper(), max_age_sec=max_age_sec)
+    
+    return {
+        "status": "success",
+        "symbol": symbol.upper(),
+        "as_of": datetime.now().isoformat(),  # v-newsbus-gates-2026-09-09: timestamp for dashboard
+        "item_count": len(items),
+        "aggregate": aggregate,
+        "items": [item.to_dict() for item in items[:20]],  # Limit to 20 for payload size
+        "has_high_impact": bus.has_high_impact(symbol.upper()),
+    }
+
 
 @app.get("/api/account-stats")
 async def get_account_stats():
@@ -1792,18 +2041,57 @@ async def get_trades(date: str = None, symbol: str = None, strategy: str = None,
             params["strat"] = strategy
 
         where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
-        sql = sa_text(f"""
-            SELECT id, symbol, side, strategy, entry_time::text, exit_time::text,
-                   entry_price, exit_price, quantity, pnl,
-                   ROUND(pnl_pct::numeric, 2) AS pnl_pct, exit_reason,
-                   atr_at_entry, stop_loss, take_profit, confidence,
-                   meta_proba, kelly_fraction, scaled_out, mode
-            FROM bot_trades {where}
-            ORDER BY exit_time DESC LIMIT :lim
-        """)
+        # v-ledger-integrity-2026-09-24 (engine review): conditionally include
+        # new ledger integrity columns only when flag is on AND columns exist.
+        from core.config import Config
+        ledger_integrity_on = Config().LEDGER_INTEGRITY
+        
+        ledger_cols_exist = False
+        if ledger_integrity_on:
+            try:
+                with engine.connect() as check_conn:
+                    check_result = check_conn.execute(sa_text("""
+                        SELECT column_name FROM information_schema.columns
+                        WHERE table_name = 'bot_trades' AND column_name = 'pnl_r'
+                    """))
+                    ledger_cols_exist = check_result.fetchone() is not None
+            except Exception:
+                ledger_cols_exist = False
+        
+        if ledger_integrity_on and ledger_cols_exist:
+            # Include ledger integrity columns
+            sql = sa_text(f"""
+                SELECT id, symbol, side, strategy, entry_time::text, exit_time::text,
+                       entry_price, exit_price, quantity, pnl,
+                       ROUND(pnl_pct::numeric, 2) AS pnl_pct, exit_reason,
+                       atr_at_entry, stop_loss, take_profit, confidence,
+                       meta_proba, kelly_fraction, scaled_out, mode,
+                       ROUND(pnl_r::numeric, 4) AS pnl_r,
+                       setup_type, source, hold_time_seconds,
+                       ROUND(initial_stop::numeric, 4) AS initial_stop,
+                       ROUND(initial_tp::numeric, 4) AS initial_tp,
+                       ROUND(initial_risk_per_share::numeric, 6) AS initial_risk_per_share,
+                       is_hands_off, is_external, exit_reason_raw
+                FROM bot_trades {where}
+                ORDER BY exit_time DESC LIMIT :lim
+            """)
+        else:
+            # Legacy columns only (pre-ledger-integrity)
+            sql = sa_text(f"""
+                SELECT id, symbol, side, strategy, entry_time::text, exit_time::text,
+                       entry_price, exit_price, quantity, pnl,
+                       ROUND(pnl_pct::numeric, 2) AS pnl_pct, exit_reason,
+                       atr_at_entry, stop_loss, take_profit, confidence,
+                       meta_proba, kelly_fraction, scaled_out, mode
+                FROM bot_trades {where}
+                ORDER BY exit_time DESC LIMIT :lim
+            """)
 
         with engine.connect() as conn:
             rows = conn.execute(sql, params).mappings().all()
+
+        # v-fix-pool-leak-2026-09-10: dispose engine to release connection pool
+        engine.dispose()
 
         trades = [dict(r) for r in rows]
         # v-json-nan-sanitize-trades-2026-05-05: same NaN/inf scrub as
@@ -1841,6 +2129,673 @@ async def get_trades(date: str = None, symbol: str = None, strategy: str = None,
     except Exception as e:
         logger.error(f"Error querying trades: {e}")
         return {"status": "error", "message": str(e)}
+
+
+# ============================================================================
+# ACTIVITY PAGE API — v-activity-page-2026-09-24
+# Trade-by-trade activity log with expanded decision reasoning.
+# ============================================================================
+
+
+def _get_broker_fills_for_date(target_date: str, et_tz) -> list:
+    """Modular broker fills source: fetch today's fills from trading_engine.
+
+    Returns list of dicts with keys: symbol, side, entry_time, exit_time,
+    entry_price, exit_price, quantity, pnl, exit_reason, source='broker'.
+
+    Falls back gracefully to empty list if engine unavailable or API errors.
+    This allows the Activity page to show orphan broker fills that never
+    made it to bot_trades (e.g., CRCL/NBIS on 2026-09-24).
+    """
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    if trading_engine is None:
+        return []
+
+    try:
+        # Use engine's cached Schwab fills (5s cache, avoids hammering API)
+        schwab_trades = trading_engine.get_todays_trades()
+        if not schwab_trades:
+            return []
+
+        # Parse target date
+        target_dt = datetime.strptime(target_date, "%Y-%m-%d").date()
+
+        fills = []
+        for t in schwab_trades:
+            # Filter to target date
+            exit_time_str = t.get("exit_time") or t.get("entry_time") or ""
+            try:
+                if isinstance(exit_time_str, str) and exit_time_str:
+                    exit_dt = datetime.fromisoformat(exit_time_str.replace('Z', '+00:00'))
+                elif hasattr(exit_time_str, 'date'):
+                    exit_dt = exit_time_str
+                else:
+                    continue
+                if exit_dt.tzinfo is None:
+                    exit_dt = exit_dt.replace(tzinfo=ZoneInfo("UTC"))
+                exit_date_et = exit_dt.astimezone(et_tz).date()
+                if exit_date_et != target_dt:
+                    continue
+            except Exception:
+                continue
+
+            # Normalize to common format
+            symbol = (t.get("symbol") or "").upper()
+            if not symbol:
+                continue
+
+            instruction = (t.get("instruction") or "").upper()
+            side = "short" if "SELL_SHORT" in instruction else "long"
+
+            fills.append({
+                "symbol": symbol,
+                "side": side,
+                "entry_time": t.get("entry_time"),
+                "exit_time": t.get("exit_time") or t.get("entry_time"),
+                "entry_price": t.get("entry_price") or t.get("price"),
+                "exit_price": t.get("exit_price") or t.get("price"),
+                "quantity": t.get("quantity") or t.get("filled_quantity") or 0,
+                "pnl": t.get("pnl") or 0,
+                "exit_reason": t.get("reason") or "broker_fill",
+                "source": "broker",
+                "status": t.get("status"),
+            })
+
+        return fills
+
+    except Exception as exc:
+        logger.debug("broker_fills_fetch_error: %s", exc)
+        return []
+
+
+def _dedupe_trades_with_broker_fills(db_trades: list, broker_fills: list, hands_off_denylist: frozenset) -> list:
+    """Union bot_trades rows with broker fills, deduped by symbol+exit_time.
+
+    Returns combined list with is_orphan=True for broker-only fills.
+    Prioritizes db_trades when both sources have the same trade.
+    
+    v-ledger-integrity-2026-09-24 (engine review): normalize dedupe timestamps
+    to aware ET before the minute key so naive local/naive UTC/Z rows don't
+    duplicate and double-count the summary P&L.
+    """
+    from datetime import datetime, timezone
+    from zoneinfo import ZoneInfo
+    
+    et_tz = ZoneInfo("America/New_York")
+    
+    def _normalize_to_et_key(ts) -> str:
+        """Normalize any timestamp to aware ET minute key for deduplication."""
+        if not ts:
+            return ""
+        try:
+            if isinstance(ts, str):
+                # Handle various ISO formats: 'Z', '+00:00', naive
+                ts_str = ts.replace('Z', '+00:00')
+                dt = datetime.fromisoformat(ts_str)
+            else:
+                dt = ts
+            # If naive, assume UTC (DB stores in UTC typically)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            # Convert to ET for consistent comparison
+            dt_et = dt.astimezone(et_tz)
+            return dt_et.strftime("%Y-%m-%d %H:%M")
+        except Exception:
+            return str(ts)[:16] if ts else ""
+
+    # Index db_trades by (symbol, exit_time_rounded_to_minute_in_ET)
+    db_index = {}
+    for t in db_trades:
+        sym = (t.get("symbol") or "").upper()
+        exit_ts = t.get("exit_time") or ""
+        key = (sym, _normalize_to_et_key(exit_ts))
+        db_index[key] = t
+
+    # Add broker fills that aren't already in db_trades
+    orphan_fills = []
+    for bf in broker_fills:
+        sym = (bf.get("symbol") or "").upper()
+        exit_ts = bf.get("exit_time") or ""
+        key = (sym, _normalize_to_et_key(exit_ts))
+
+        if key not in db_index:
+            # This is an orphan broker fill
+            is_hands_off = sym in hands_off_denylist
+            orphan_fills.append({
+                "id": f"broker_{sym}_{key[1]}",
+                "symbol": sym,
+                "side": bf.get("side", "long"),
+                "strategy": None,
+                "entry_time": str(bf.get("entry_time") or ""),
+                "exit_time": str(bf.get("exit_time") or ""),
+                "entry_price": bf.get("entry_price"),
+                "exit_price": bf.get("exit_price"),
+                "quantity": bf.get("quantity", 0),
+                "pnl": bf.get("pnl", 0),
+                "exit_reason": bf.get("exit_reason", "broker_fill"),
+                "stop_loss": None,
+                "take_profit": None,
+                "confidence": None,
+                "meta_proba": None,
+                "is_hands_off": is_hands_off,
+                "is_external": False,
+                "is_orphan": True,
+                "source": "broker",
+                "reasoning_json": None,
+            })
+
+    return db_trades + orphan_fills
+
+
+@app.get("/api/activity")
+async def get_activity(date: str = None, strategy: str = None):
+    """v-activity-page-2026-09-24: trade activity with decision reasoning.
+
+    Returns paired entry+exit trades for the Activity page with:
+      - Trade details (symbol, side, entry/exit time+price, qty, PnL)
+      - Stop loss / take profit / R at entry
+      - Exit reason (take_profit, stop_loss, proactive_*, flatten_hour, etc.)
+      - Decision reasoning from bot_decision_snapshots
+      - Hands-off / external / orphan flags
+
+    Data sources (UNION, deduped):
+      1. bot_trades table (DB) - primary source for bot-managed trades
+      2. Broker fills (Schwab API via trading_engine) - catches orphans
+
+    Orphan fills: broker fills that have no matching bot_trades row appear
+    with is_orphan=true and 'reasoning unavailable'. This handles cases like
+    CRCL/NBIS on 2026-09-24 where broker fills exist but bot_trades is empty.
+
+    Query params:
+        date: Filter by exit date (YYYY-MM-DD), defaults to today
+        strategy: Filter by strategy name
+
+    Returns:
+        {
+            "status": "success",
+            "summary": {trades, win_rate, pnl, total_r, bot_trades, bot_win_rate, bot_pnl, bot_total_r},
+            "trades": [...]
+        }
+
+    The summary separates all-trades stats from bot-only stats (excluding
+    hands_off and external positions).
+    """
+    import os
+    import math as _math
+    from datetime import datetime, date as date_type
+    from sqlalchemy import create_engine, text as sa_text
+    from zoneinfo import ZoneInfo
+
+    # Check feature flag
+    if not Config().UI_ACTIVITY_PAGE:
+        raise HTTPException(status_code=404, detail="Activity page is disabled")
+
+    dsn = os.environ.get(
+        "POSTGRES_DSN",
+        "postgresql://rudra:rudra_dev_2024@localhost:5432/rudra_dev",
+    )
+    et_tz = ZoneInfo("America/New_York")
+
+    # Default to today in ET
+    if not date:
+        date = datetime.now(et_tz).strftime("%Y-%m-%d")
+
+    hands_off_denylist = Config().HANDS_OFF_DENYLIST
+
+    try:
+        engine = create_engine(dsn)
+
+        # Query bot_trades for the date
+        conditions = ["DATE(exit_time AT TIME ZONE 'America/New_York') = :dt"]
+        params = {"dt": date}
+
+        if strategy:
+            conditions.append("strategy = :strat")
+            params["strat"] = strategy
+
+        where = "WHERE " + " AND ".join(conditions)
+
+        # v-ledger-integrity-2026-09-24 (engine review): conditionally include
+        # ledger integrity columns (pnl_r, source, is_external, initial_risk_per_share)
+        # for proper R computation and classification
+        ledger_integrity_on = Config().LEDGER_INTEGRITY
+        
+        ledger_cols_exist = False
+        if ledger_integrity_on:
+            try:
+                with engine.connect() as check_conn:
+                    check_result = check_conn.execute(sa_text("""
+                        SELECT column_name FROM information_schema.columns
+                        WHERE table_name = 'bot_trades' AND column_name = 'pnl_r'
+                    """))
+                    ledger_cols_exist = check_result.fetchone() is not None
+            except Exception:
+                ledger_cols_exist = False
+
+        # Join with bot_decision_snapshots for reasoning
+        # Match on symbol + strategy + entry_time window (within 5 min)
+        if ledger_integrity_on and ledger_cols_exist:
+            # Include ledger integrity columns
+            sql = sa_text(f"""
+                WITH trades AS (
+                    SELECT id, symbol, side, strategy, entry_time, exit_time,
+                           entry_price, exit_price, quantity, pnl,
+                           ROUND(pnl_pct::numeric, 2) AS pnl_pct, exit_reason,
+                           atr_at_entry, stop_loss, take_profit, confidence,
+                           meta_proba, kelly_fraction, scaled_out, mode,
+                           reasoning_json,
+                           ROUND(pnl_r::numeric, 4) AS pnl_r,
+                           source, is_hands_off, is_external,
+                           ROUND(initial_risk_per_share::numeric, 6) AS initial_risk_per_share,
+                           ROUND(initial_stop::numeric, 4) AS initial_stop
+                    FROM bot_trades
+                    {where}
+                )
+                SELECT t.*,
+                       s.price_vol_json,
+                       s.news_json,
+                       s.regime_json,
+                       s.extra_json AS snapshot_extra_json,
+                       s.reason AS snapshot_reason,
+                       s.gate_name AS snapshot_gate_name,
+                       s.would_entry_price,
+                       s.would_stop_loss AS snapshot_stop_loss,
+                       s.would_take_profit AS snapshot_take_profit
+                FROM trades t
+                LEFT JOIN LATERAL (
+                    SELECT *
+                    FROM bot_decision_snapshots
+                    WHERE symbol = t.symbol
+                      AND strategy_id = t.strategy
+                      AND action IN ('signal_buy', 'signal_sell')
+                      AND ts BETWEEN t.entry_time - INTERVAL '5 minutes'
+                                 AND t.entry_time + INTERVAL '5 minutes'
+                    ORDER BY ABS(EXTRACT(EPOCH FROM (ts - t.entry_time)))
+                    LIMIT 1
+                ) s ON TRUE
+                ORDER BY t.exit_time DESC
+            """)
+        else:
+            # Legacy query without ledger integrity columns
+            sql = sa_text(f"""
+                WITH trades AS (
+                    SELECT id, symbol, side, strategy, entry_time, exit_time,
+                           entry_price, exit_price, quantity, pnl,
+                           ROUND(pnl_pct::numeric, 2) AS pnl_pct, exit_reason,
+                           atr_at_entry, stop_loss, take_profit, confidence,
+                           meta_proba, kelly_fraction, scaled_out, mode,
+                           reasoning_json
+                    FROM bot_trades
+                    {where}
+                )
+                SELECT t.*,
+                       s.price_vol_json,
+                       s.news_json,
+                       s.regime_json,
+                       s.extra_json AS snapshot_extra_json,
+                       s.reason AS snapshot_reason,
+                       s.gate_name AS snapshot_gate_name,
+                       s.would_entry_price,
+                       s.would_stop_loss AS snapshot_stop_loss,
+                       s.would_take_profit AS snapshot_take_profit
+                FROM trades t
+                LEFT JOIN LATERAL (
+                    SELECT *
+                    FROM bot_decision_snapshots
+                    WHERE symbol = t.symbol
+                      AND strategy_id = t.strategy
+                      AND action IN ('signal_buy', 'signal_sell')
+                      AND ts BETWEEN t.entry_time - INTERVAL '5 minutes'
+                                 AND t.entry_time + INTERVAL '5 minutes'
+                    ORDER BY ABS(EXTRACT(EPOCH FROM (ts - t.entry_time)))
+                    LIMIT 1
+                ) s ON TRUE
+                ORDER BY t.exit_time DESC
+            """)
+
+        with engine.connect() as conn:
+            rows = conn.execute(sql, params).mappings().all()
+
+        engine.dispose()
+
+        # Convert DB rows to list of dicts
+        db_trades_raw = [dict(r) for r in rows]
+
+        # Fetch broker fills and union with DB trades (deduped)
+        broker_fills = _get_broker_fills_for_date(date, et_tz)
+        combined_raw = _dedupe_trades_with_broker_fills(db_trades_raw, broker_fills, hands_off_denylist)
+
+        import json
+
+        def _scrub(v):
+            if isinstance(v, float):
+                return None if (_math.isnan(v) or _math.isinf(v)) else v
+            return v
+
+        def _safe_float(v, default=0.0):
+            try:
+                f = float(v) if v is not None else default
+                return default if (_math.isnan(f) or _math.isinf(f)) else f
+            except (TypeError, ValueError):
+                return default
+
+        def _calc_r(pnl, entry_price, stop_loss, quantity, pnl_r_from_db=None, initial_risk_per_share=None):
+            """Calculate R-multiple.
+            
+            v-ledger-integrity-2026-09-24 (engine review): prefer pnl_r from DB
+            (which uses initial_risk_per_share) over calculating from current stop_loss
+            which breaks after breakeven adjustments.
+            
+            Priority:
+              1. pnl_r from DB (ledger integrity) - already computed correctly
+              2. Compute from initial_risk_per_share if available
+              3. Fallback to stop_loss calculation (legacy, breaks after BE)
+            """
+            # Priority 1: Use pnl_r from DB if available
+            if pnl_r_from_db is not None:
+                return pnl_r_from_db
+            
+            # Priority 2: Use initial_risk_per_share if available
+            if initial_risk_per_share is not None and initial_risk_per_share > 0.0001:
+                if quantity is not None and quantity > 0:
+                    total_risk = initial_risk_per_share * quantity
+                    if total_risk > 0.01:
+                        return pnl / total_risk
+            
+            # Priority 3: Legacy fallback using stop_loss (may be inaccurate after BE)
+            if stop_loss is None or entry_price is None or quantity is None:
+                return None
+            risk_per_share = abs(entry_price - stop_loss)
+            if risk_per_share < 0.0001:
+                return None
+            total_risk = risk_per_share * quantity
+            if total_risk < 0.01:
+                return None
+            return pnl / total_risk
+
+        def _format_time_et(ts_str):
+            """Format timestamp to ET time string."""
+            if not ts_str:
+                return None
+            try:
+                if isinstance(ts_str, str):
+                    ts = datetime.fromisoformat(ts_str.replace('Z', '+00:00'))
+                else:
+                    ts = ts_str
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=ZoneInfo("UTC"))
+                ts_et = ts.astimezone(et_tz)
+                return ts_et.strftime("%H:%M:%S")
+            except Exception:
+                return str(ts_str)[:8] if ts_str else None
+
+        def _calc_hold_time(entry_time, exit_time):
+            """Calculate hold time in minutes."""
+            if not entry_time or not exit_time:
+                return None
+            try:
+                if isinstance(entry_time, str):
+                    entry = datetime.fromisoformat(entry_time.replace('Z', '+00:00'))
+                else:
+                    entry = entry_time
+                if isinstance(exit_time, str):
+                    exit_t = datetime.fromisoformat(exit_time.replace('Z', '+00:00'))
+                else:
+                    exit_t = exit_time
+                delta = exit_t - entry
+                return int(delta.total_seconds() / 60)
+            except Exception:
+                return None
+
+        trades = []
+        total_pnl = 0.0
+        total_r = 0.0
+        valid_r_count = 0
+        winners = 0
+        losers = 0
+
+        bot_total_pnl = 0.0
+        bot_total_r = 0.0
+        bot_valid_r_count = 0
+        bot_winners = 0
+        bot_losers = 0
+        bot_count = 0
+
+        for row in combined_raw:
+            symbol = (row.get("symbol") or "").upper()
+            
+            # Check if this is an orphan broker fill (already processed)
+            if row.get("source") == "broker" and row.get("is_orphan"):
+                # Already formatted orphan fill from _dedupe_trades_with_broker_fills
+                pnl = _safe_float(row.get("pnl"), 0.0)
+                entry_price = _safe_float(row.get("entry_price"))
+                
+                trade = {
+                    "id": row["id"],
+                    "symbol": symbol,
+                    "side": row.get("side", "long"),
+                    "strategy": "unknown",
+                    "entry_time": str(row.get("entry_time") or ""),
+                    "entry_time_et": _format_time_et(row.get("entry_time")),
+                    "exit_time": str(row.get("exit_time") or ""),
+                    "exit_time_et": _format_time_et(row.get("exit_time")),
+                    "entry_price": _scrub(entry_price),
+                    "exit_price": _scrub(_safe_float(row.get("exit_price"))),
+                    "quantity": int(row.get("quantity") or 0),
+                    "stop_loss": None,
+                    "take_profit": None,
+                    "pnl": round(pnl, 2),
+                    "pnl_pct": None,
+                    "r_multiple": None,
+                    "exit_reason": row.get("exit_reason", "broker_fill"),
+                    "hold_time_min": _calc_hold_time(row.get("entry_time"), row.get("exit_time")),
+                    "confidence": None,
+                    "meta_proba": None,
+                    "is_hands_off": row.get("is_hands_off", False),
+                    "is_external": False,
+                    "is_orphan": True,
+                    "reasoning": {},
+                }
+                trades.append(trade)
+                
+                # Update totals
+                total_pnl += pnl
+                if pnl > 0:
+                    winners += 1
+                elif pnl < 0:
+                    losers += 1
+                continue
+
+            # Process normal DB trade
+            # v-ledger-integrity-2026-09-24 (engine review): use source/is_external
+            # columns for classification when available
+            if row.get("is_hands_off") is not None:
+                # Ledger integrity columns available
+                is_hands_off = bool(row.get("is_hands_off"))
+            else:
+                # Legacy: check denylist
+                is_hands_off = symbol in hands_off_denylist
+            
+            if row.get("is_external") is not None:
+                # Ledger integrity columns available
+                is_external = bool(row.get("is_external"))
+            elif row.get("source") is not None:
+                # Use source column: external if source is 'external'
+                is_external = row.get("source") == "external"
+            else:
+                # Legacy fallback
+                is_external = row.get("mode") == "external" or not row.get("strategy")
+            
+            reasoning_json = row.get("reasoning_json")
+
+            pnl = _safe_float(row.get("pnl"), 0.0)
+            entry_price = _safe_float(row.get("entry_price"))
+            stop_loss = _safe_float(row.get("stop_loss"))
+            take_profit = _safe_float(row.get("take_profit"))
+            quantity = int(row.get("quantity") or 0)
+
+            # v-ledger-integrity-2026-09-24 (engine review): use pnl_r from DB
+            # (computed with initial_risk_per_share) instead of current stop_loss
+            pnl_r_from_db = row.get("pnl_r")  # May be None if columns don't exist
+            initial_risk_per_share = row.get("initial_risk_per_share")
+            r_multiple = _calc_r(pnl, entry_price, stop_loss, quantity, pnl_r_from_db, initial_risk_per_share)
+
+            # Parse reasoning JSON for decision context
+            reasoning = {}
+            if reasoning_json:
+                try:
+                    reasoning = json.loads(reasoning_json) if isinstance(reasoning_json, str) else reasoning_json
+                except Exception:
+                    pass
+
+            # Parse snapshot data for expanded reasoning
+            price_vol = {}
+            news_ctx = {}
+            regime_ctx = {}
+            snapshot_extra = {}
+
+            if row.get("price_vol_json"):
+                try:
+                    price_vol = json.loads(row["price_vol_json"])
+                except Exception:
+                    pass
+            if row.get("news_json"):
+                try:
+                    news_ctx = json.loads(row["news_json"])
+                except Exception:
+                    pass
+            if row.get("regime_json"):
+                try:
+                    regime_ctx = json.loads(row["regime_json"])
+                except Exception:
+                    pass
+            if row.get("snapshot_extra_json"):
+                try:
+                    snapshot_extra = json.loads(row["snapshot_extra_json"])
+                except Exception:
+                    pass
+
+            has_reasoning = bool(price_vol or reasoning.get("setup_type") or reasoning.get("rs_vs_spy"))
+            is_orphan = not has_reasoning and not is_external
+
+            trade = {
+                "id": row["id"],
+                "symbol": symbol,
+                "side": row["side"],
+                "strategy": row.get("strategy") or "unknown",
+                "entry_time": str(row.get("entry_time") or ""),
+                "entry_time_et": _format_time_et(row.get("entry_time")),
+                "exit_time": str(row.get("exit_time") or ""),
+                "exit_time_et": _format_time_et(row.get("exit_time")),
+                "entry_price": _scrub(entry_price),
+                "exit_price": _scrub(_safe_float(row.get("exit_price"))),
+                "quantity": quantity,
+                "stop_loss": _scrub(stop_loss),
+                "take_profit": _scrub(take_profit),
+                "pnl": round(pnl, 2),
+                "pnl_pct": _scrub(row.get("pnl_pct")),
+                "r_multiple": round(r_multiple, 2) if r_multiple is not None else None,
+                "exit_reason": row.get("exit_reason") or "unknown",
+                "hold_time_min": _calc_hold_time(row.get("entry_time"), row.get("exit_time")),
+                "confidence": _scrub(row.get("confidence")),
+                "meta_proba": _scrub(row.get("meta_proba")),
+                "is_hands_off": is_hands_off,
+                "is_external": is_external,
+                "is_orphan": is_orphan,
+                "reasoning": {
+                    "setup_type": reasoning.get("setup_type") or reasoning.get("strategy"),
+                    "rs_vs_spy": _scrub(reasoning.get("rs_vs_spy")),
+                    "rs_basis": reasoning.get("rs_basis"),
+                    "rsi": _scrub(price_vol.get("rsi")),
+                    "volume_ratio": _scrub(price_vol.get("volume_ratio")),
+                    "score": _scrub(reasoning.get("score") or reasoning.get("heuristic_score")),
+                    "gates_passed": reasoning.get("gates_passed") or reasoning.get("gates"),
+                    "shadow_gates": reasoning.get("shadow_gates"),
+                    "regime": regime_ctx.get("regime"),
+                    "spy_slope_pct": _scrub(regime_ctx.get("spy_slope_pct")),
+                    "news_gate_action": news_ctx.get("gate_action"),
+                    "news_article_count": news_ctx.get("article_count"),
+                    "exit_rationale": reasoning.get("exit_rationale") or row.get("exit_reason"),
+                    "mc_size_mult": _scrub(reasoning.get("mc_size_mult")),
+                    "is_day_trade": reasoning.get("is_day_trade"),
+                    "flatten_hour": reasoning.get("flatten_hour"),
+                },
+            }
+            trades.append(trade)
+
+            # Update totals
+            total_pnl += pnl
+            if r_multiple is not None:
+                total_r += r_multiple
+                valid_r_count += 1
+            if pnl > 0:
+                winners += 1
+            elif pnl < 0:
+                losers += 1
+
+            # Bot-only stats (exclude hands_off and external)
+            if not is_hands_off and not is_external:
+                bot_count += 1
+                bot_total_pnl += pnl
+                if r_multiple is not None:
+                    bot_total_r += r_multiple
+                    bot_valid_r_count += 1
+                if pnl > 0:
+                    bot_winners += 1
+                elif pnl < 0:
+                    bot_losers += 1
+
+        total_count = len(trades)
+        summary = {
+            "date": date,
+            "trades": total_count,
+            "winners": winners,
+            "losers": losers,
+            "win_rate": round(100 * winners / total_count, 1) if total_count > 0 else 0,
+            "pnl": round(total_pnl, 2),
+            "total_r": round(total_r, 2) if valid_r_count > 0 else None,
+            "avg_r": round(total_r / valid_r_count, 2) if valid_r_count > 0 else None,
+            "bot_trades": bot_count,
+            "bot_winners": bot_winners,
+            "bot_losers": bot_losers,
+            "bot_win_rate": round(100 * bot_winners / bot_count, 1) if bot_count > 0 else 0,
+            "bot_pnl": round(bot_total_pnl, 2),
+            "bot_total_r": round(bot_total_r, 2) if bot_valid_r_count > 0 else None,
+            "bot_avg_r": round(bot_total_r / bot_valid_r_count, 2) if bot_valid_r_count > 0 else None,
+        }
+
+        return {"status": "success", "summary": summary, "trades": trades}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error querying activity: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+@app.get("/activity")
+async def get_activity_page():
+    """v-activity-page-2026-09-24: Activity page HTML.
+
+    Returns the Activity page if UI_ACTIVITY_PAGE is enabled, else 404.
+    """
+    if not Config().UI_ACTIVITY_PAGE:
+        raise HTTPException(status_code=404, detail="Activity page is disabled")
+
+    api_key = os.getenv("TRADING_API_KEY", "")
+    auth_script = f'<script>window.TRADING_API_KEY={json.dumps(api_key)};</script>'
+
+    try:
+        activity_template = _os.path.join(_template_dir, 'activity.html')
+        with open(activity_template, 'r') as f:
+            template_html = f.read()
+    except FileNotFoundError:
+        raise HTTPException(status_code=500, detail="Activity template not found")
+
+    html = template_html.replace("</head>", f"{auth_script}</head>", 1)
+    return HTMLResponse(content=html, media_type="text/html; charset=utf-8")
 
 
 @app.get("/api/decisions")
@@ -1884,6 +2839,9 @@ async def get_decisions(date: str = None, symbol: str = None, component: str = N
 
         with engine.connect() as conn:
             rows = conn.execute(sql, params).mappings().all()
+
+        # v-fix-pool-leak-2026-09-10: dispose engine to release connection pool
+        engine.dispose()
 
         decisions = [dict(r) for r in rows]
         import math as _math
@@ -1990,6 +2948,9 @@ async def get_positions_db():
                 FROM bot_positions ORDER BY entry_time
             """)).mappings().all()
 
+        # v-fix-pool-leak-2026-09-10: dispose engine to release connection pool
+        engine.dispose()
+
         positions = [dict(r) for r in rows]
         # v-managed-by-bot-2026-04-28: enrich DB rows with per-position flag from
         # in-memory state so the dashboard checkbox reflects current truth (DB
@@ -2004,6 +2965,269 @@ async def get_positions_db():
 
     except Exception as e:
         logger.error(f"Error querying positions: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+# ============================================================================
+# DECISION SNAPSHOT API — v-feature-snapshot-2026-09-09
+# Exposes decision snapshots for ML training pipelines and tooling.
+# ============================================================================
+
+@app.get("/api/decision-snapshots")
+async def get_decision_snapshots(
+    symbol: str = None,
+    strategy_id: str = None,
+    action: str = None,
+    limit: int = 100,
+    offset: int = 0,
+    since: str = None,
+):
+    """v-feature-snapshot-2026-09-09: query decision snapshots for ML training.
+    
+    Returns machine-readable snapshots capturing what the bot saw at each
+    decision point (signal, skip, veto). These snapshots are the training
+    data for GPU-based policy models.
+    
+    Query params:
+        symbol: Filter by ticker symbol
+        strategy_id: Filter by strategy name
+        action: Filter by action (signal_buy, signal_sell, skip, veto, error)
+        limit: Max results (default 100, max 1000)
+        offset: Pagination offset
+        since: ISO timestamp — only return snapshots after this time
+    
+    Returns:
+        {
+            "status": "success",
+            "count": N,
+            "snapshots": [...]
+        }
+    
+    GPU inference sidecar integration:
+        Poll this endpoint or connect to the WebSocket for real-time snapshots.
+        Each snapshot contains price_vol (17-dim feature vector), news aggregate,
+        and regime context — ready for model input.
+    """
+    import os
+    from datetime import datetime
+    from sqlalchemy.ext.asyncio import create_async_engine
+    from sqlalchemy import text as sa_text
+    
+    limit = min(limit, 1000)
+    
+    # If engine has db_logger, use it
+    if trading_engine is not None and getattr(trading_engine, "db_logger", None) is not None:
+        try:
+            since_dt = datetime.fromisoformat(since) if since else None
+            snapshots = await trading_engine.db_logger.get_decision_snapshots(
+                symbol=symbol,
+                strategy_id=strategy_id,
+                action=action,
+                limit=limit,
+                offset=offset,
+                since=since_dt,
+            )
+            return {"status": "success", "count": len(snapshots), "snapshots": snapshots}
+        except Exception as e:
+            logger.error(f"Error querying snapshots via db_logger: {e}")
+    
+    # Fallback: direct DB query
+    dsn = os.environ.get("POSTGRES_DSN", "postgresql://rudra:rudra_dev_2024@localhost:5432/rudra_dev")
+    if "asyncpg" not in dsn:
+        dsn = dsn.replace("postgresql://", "postgresql+asyncpg://")
+    
+    try:
+        engine = create_async_engine(dsn, pool_size=1, max_overflow=0)
+        
+        filters = []
+        params = {"limit": limit, "offset": offset}
+        
+        if symbol:
+            filters.append("symbol = :symbol")
+            params["symbol"] = symbol.upper()
+        if strategy_id:
+            filters.append("strategy_id = :strategy_id")
+            params["strategy_id"] = strategy_id
+        if action:
+            filters.append("action = :action")
+            params["action"] = action
+        if since:
+            filters.append("ts >= :since")
+            params["since"] = since
+        
+        where = "WHERE " + " AND ".join(filters) if filters else ""
+        
+        async with engine.begin() as conn:
+            rows = (await conn.execute(
+                sa_text(f"""
+                    SELECT snapshot_id, symbol, ts, mode, strategy_id,
+                           action, reason, gate_name, confidence, price,
+                           price_vol_json, news_json, regime_json,
+                           would_entry_price, would_stop_loss, would_take_profit,
+                           would_size_shares, would_size_mult, extra_json
+                    FROM bot_decision_snapshots
+                    {where}
+                    ORDER BY ts DESC
+                    LIMIT :limit OFFSET :offset
+                """),
+                params,
+            )).mappings().all()
+        
+        await engine.dispose()
+        
+        import json
+        snapshots = []
+        for row in rows:
+            snapshots.append({
+                "snapshot_id": row["snapshot_id"],
+                "symbol": row["symbol"],
+                "ts": row["ts"].isoformat() if hasattr(row["ts"], "isoformat") else row["ts"],
+                "mode": row["mode"],
+                "strategy_id": row["strategy_id"],
+                "action": row["action"],
+                "reason": row["reason"],
+                "gate_name": row["gate_name"],
+                "confidence": row["confidence"],
+                "price_vol": json.loads(row["price_vol_json"]) if row["price_vol_json"] else {},
+                "news": json.loads(row["news_json"]) if row["news_json"] else {},
+                "regime": json.loads(row["regime_json"]) if row["regime_json"] else {},
+                "would_entry_price": row["would_entry_price"],
+                "would_stop_loss": row["would_stop_loss"],
+                "would_take_profit": row["would_take_profit"],
+                "would_size_shares": row["would_size_shares"],
+                "would_size_mult": row["would_size_mult"],
+                "extra": json.loads(row["extra_json"]) if row["extra_json"] else {},
+            })
+        
+        return {"status": "success", "count": len(snapshots), "snapshots": snapshots}
+        
+    except Exception as e:
+        logger.error(f"Error querying snapshots: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+@app.get("/api/features/{symbol}")
+async def get_symbol_features(symbol: str):
+    """v-feature-snapshot-2026-09-09: get the latest feature snapshot for a symbol.
+    
+    Returns the most recent DecisionSnapshot for the given symbol, with the
+    full feature vector (price_vol, news, regime) that can be fed directly
+    to a policy model.
+    
+    Returns:
+        {
+            "status": "success",
+            "symbol": "TSLA",
+            "snapshot": {...},
+            "feature_vector": [0.01, -0.02, ...]  // 17-dim price_vol vector
+        }
+    
+    GPU inference sidecar integration:
+        Call this endpoint to get the latest features for a symbol before
+        making an inference decision. The feature_vector is in the same
+        order as MLFeatureExtractor.feature_names.
+    """
+    import os
+    from sqlalchemy.ext.asyncio import create_async_engine
+    from sqlalchemy import text as sa_text
+    
+    symbol = symbol.upper()
+    
+    # If engine has db_logger, use it
+    if trading_engine is not None and getattr(trading_engine, "db_logger", None) is not None:
+        try:
+            snapshot = await trading_engine.db_logger.get_latest_snapshot(symbol)
+            if snapshot:
+                # Extract feature vector from price_vol
+                pv = snapshot.get("price_vol", {})
+                feature_vector = [
+                    pv.get("returns_1", 0), pv.get("returns_5", 0), pv.get("returns_20", 0),
+                    pv.get("price_vs_sma20", 0), pv.get("price_vs_sma50", 0),
+                    pv.get("rsi", 0.5), pv.get("macd", 0), pv.get("macd_signal", 0), pv.get("macd_hist", 0),
+                    pv.get("bb_position", 0.5), pv.get("bb_width", 0),
+                    pv.get("volume_ratio", 1), pv.get("volume_std_ratio", 0), pv.get("volume_trend", 0),
+                    pv.get("atr_ratio", 0), pv.get("high_low_ratio", 0), pv.get("std_dev_ratio", 0),
+                ]
+                return {
+                    "status": "success",
+                    "symbol": symbol,
+                    "snapshot": snapshot,
+                    "feature_vector": feature_vector,
+                }
+            return {"status": "success", "symbol": symbol, "snapshot": None, "feature_vector": None}
+        except Exception as e:
+            logger.error(f"Error getting features via db_logger: {e}")
+    
+    # Fallback: direct DB query
+    dsn = os.environ.get("POSTGRES_DSN", "postgresql://rudra:rudra_dev_2024@localhost:5432/rudra_dev")
+    if "asyncpg" not in dsn:
+        dsn = dsn.replace("postgresql://", "postgresql+asyncpg://")
+    
+    try:
+        engine = create_async_engine(dsn, pool_size=1, max_overflow=0)
+        
+        async with engine.begin() as conn:
+            row = (await conn.execute(
+                sa_text("""
+                    SELECT snapshot_id, symbol, ts, mode, strategy_id,
+                           action, reason, gate_name, confidence, price,
+                           price_vol_json, news_json, regime_json,
+                           would_entry_price, would_stop_loss, would_take_profit,
+                           would_size_shares, would_size_mult, extra_json
+                    FROM bot_decision_snapshots
+                    WHERE symbol = :symbol
+                    ORDER BY ts DESC
+                    LIMIT 1
+                """),
+                {"symbol": symbol},
+            )).mappings().first()
+        
+        await engine.dispose()
+        
+        if not row:
+            return {"status": "success", "symbol": symbol, "snapshot": None, "feature_vector": None}
+        
+        import json
+        pv = json.loads(row["price_vol_json"]) if row["price_vol_json"] else {}
+        feature_vector = [
+            pv.get("returns_1", 0), pv.get("returns_5", 0), pv.get("returns_20", 0),
+            pv.get("price_vs_sma20", 0), pv.get("price_vs_sma50", 0),
+            pv.get("rsi", 0.5), pv.get("macd", 0), pv.get("macd_signal", 0), pv.get("macd_hist", 0),
+            pv.get("bb_position", 0.5), pv.get("bb_width", 0),
+            pv.get("volume_ratio", 1), pv.get("volume_std_ratio", 0), pv.get("volume_trend", 0),
+            pv.get("atr_ratio", 0), pv.get("high_low_ratio", 0), pv.get("std_dev_ratio", 0),
+        ]
+        
+        snapshot = {
+            "snapshot_id": row["snapshot_id"],
+            "symbol": row["symbol"],
+            "ts": row["ts"].isoformat() if hasattr(row["ts"], "isoformat") else row["ts"],
+            "mode": row["mode"],
+            "strategy_id": row["strategy_id"],
+            "action": row["action"],
+            "reason": row["reason"],
+            "gate_name": row["gate_name"],
+            "confidence": row["confidence"],
+            "price_vol": pv,
+            "news": json.loads(row["news_json"]) if row["news_json"] else {},
+            "regime": json.loads(row["regime_json"]) if row["regime_json"] else {},
+            "would_entry_price": row["would_entry_price"],
+            "would_stop_loss": row["would_stop_loss"],
+            "would_take_profit": row["would_take_profit"],
+            "would_size_shares": row["would_size_shares"],
+            "would_size_mult": row["would_size_mult"],
+            "extra": json.loads(row["extra_json"]) if row["extra_json"] else {},
+        }
+        
+        return {
+            "status": "success",
+            "symbol": symbol,
+            "snapshot": snapshot,
+            "feature_vector": feature_vector,
+        }
+        
+    except Exception as e:
+        logger.error(f"Error querying features: {e}")
         return {"status": "error", "message": str(e)}
 
 
@@ -2440,6 +3664,8 @@ async def news_vetoes_report():
                 ORDER BY veto_time DESC
                 LIMIT 50
             """)).mappings().all()
+        # v-fix-pool-leak-2026-09-10: dispose engine to release connection pool
+        eng.dispose()
         # Compute headline metrics
         n_correct = sum(r['n'] for r in summary if r['outcome'] == 'correct_veto')
         n_missed  = sum(r['n'] for r in summary if r['outcome'] == 'missed_winner')
@@ -2502,6 +3728,13 @@ async def toggle_managed_by_bot(request: dict):
         new_state = not getattr(pos, 'managed_by_bot', False)
 
     pos.managed_by_bot = new_state
+    # v-manage-persist-discovery-path-2026-09-15: stamp managed_source differently
+    # based on toggle direction:
+    #   - 'operator' when disabling: blocks restore logic from auto-remanaging
+    #   - 'operator_on' when enabling: indicates deliberate re-enable, not weird
+    # This prevents "ON remanage looks weird" where turning management back ON
+    # was stamped the same as turning it OFF.
+    pos.managed_source = 'operator' if not new_state else 'operator_on'
     trading_engine._save_state()
 
     trading_engine.commentary.add_commentary(TradingCommentary(

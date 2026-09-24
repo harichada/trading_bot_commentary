@@ -1,0 +1,84 @@
+# Autonomous Live Profile Configuration
+# ======================================
+# v-autonomy-profile-2026-09-08
+#
+# This profile enables autonomous operation where the bot manages exits
+# without requiring UI confirmation. Key difference from 'supervised':
+#
+#   - Confirmation timeouts EXECUTE the close (fail-open) instead of
+#     blocking (fail-closed). This prevents losers from staying open
+#     because the operator wasn't watching the dashboard.
+#
+#   - Circuit breaker can flatten all positions automatically when
+#     the daily loss limit is hit.
+#
+# RISK WARNING: This profile allows the bot to close positions without
+# human approval. Use only when you understand the risks and have
+# appropriate risk controls in place.
+#
+# To enable this profile:
+#   1. Set environment variable: TRADING_PROFILE=autonomous_live
+#   2. Or set in your main config: profile: autonomous_live
+#   3. Or call API: PUT /api/settings/profile {"profile": "autonomous_live"}
+
+profile: autonomous_live
+
+order_management:
+  # Whether exits require UI confirmation. When true, the bot will
+  # request confirmation before closing positions. Recommended to keep
+  # true even in autonomous mode so you SEE the requests — but the
+  # timeout_action below controls what happens if you don't respond.
+  require_close_confirmation: true
+  
+  # Timeout for confirmation requests (seconds). After this, the
+  # action specified by confirmation_timeout_action fires.
+  confirmation_timeout_sec: 30
+  
+  # What to do when confirmation times out:
+  #   - deny: block the close, position stays open (supervised default)
+  #   - execute: fail-open, close the position (autonomous_live default)
+  #
+  # For autonomous operation, 'execute' is recommended. The bot's risk
+  # exits (stops, thesis-break, trail) should never be blocked by
+  # operator absence.
+  confirmation_timeout_action: execute
+  
+  # Only require confirmation for losing positions
+  confirm_only_losses: false
+  
+  # Only require confirmation above this percentage loss/gain
+  confirm_threshold_percent: 5
+
+trading:
+  # Maximum daily loss as percentage of equity before circuit trips.
+  # When the bot's own P&L (not account-wide) hits this, trading halts.
+  max_daily_loss_circuit: 0.02  # 2%
+  
+  # Whether to close ALL bot-managed positions when circuit trips.
+  # True for autonomous_live — prevents unattended bleed-out.
+  # False for supervised — just halts new entries, operator manages exits.
+  flatten_on_circuit: true
+  
+  # News loop cadence (seconds). Shorter = fresher news, more API calls.
+  news_loop_sec: 20
+  
+  # Analysis loop cadence during regular trading hours.
+  analysis_loop_rth_sec: 30
+  
+  # Analysis loop cadence outside regular hours.
+  analysis_loop_off_hours_sec: 300
+
+# Example usage with this profile:
+#
+# 1. Copy this file to your config directory
+# 2. Merge with your main config or reference via TRADING_PROFILE env var
+# 3. Start the bot
+#
+# The bot will log confirmation_timeout_action=execute in its structured
+# logs whenever it executes a close on timeout. Monitor these in your
+# alerting system.
+#
+# Success metrics to track:
+#   - confirmation_timeout_action=execute events (should be rare)
+#   - Circuit breaker trips (should be very rare)
+#   - Override rate (operator manual closes vs bot closes)

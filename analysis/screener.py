@@ -148,16 +148,24 @@ class StockScreener:
             # cache once per cycle if stale, then apply 3-gate filter
             # alongside existing _is_tradeable + dedup. Filter rejections
             # are logged per-symbol with reason for backtestability.
+            #
+            # v-mover-quality-relax-2026-09-10: when ENABLE_MOVER_QUALITY_RELAX
+            # is True, symbols from Yahoo day_gainers/day_losers/most_active
+            # bypass the SMA50/RS filters. They still respect leveraged ETF
+            # blocklist, price floor, and volume floor.
             try:
                 from core.config import Config as _CfgUQ
                 _enabled = _CfgUQ().ENABLE_UNIVERSE_QUALITY_FILTER
+                _mover_relax = _CfgUQ().ENABLE_MOVER_QUALITY_RELAX
             except Exception:
                 _enabled = True
+                _mover_relax = True
             if _enabled:
                 _candidate_syms = list({m['symbol'] for m in all_movers
                                         if m.get('symbol')})
                 await self._refresh_quality_data(_candidate_syms)
                 self._quality_filter_rejects = {}  # reset per cycle
+                self._mover_quality_relax_passes = {}  # v-mover-quality-relax-2026-09-10
 
             for mover in all_movers:
                 sym = mover.get('symbol')
@@ -165,8 +173,26 @@ class StockScreener:
                     continue
                 if not self._is_tradeable(mover):
                     continue
-                if _enabled and not self._passes_quality_filter(sym):
-                    continue
+                
+                # v-mover-quality-relax-2026-09-10: check if this is a mover source
+                # that qualifies for relaxed quality filtering
+                _source = mover.get('source', '')
+                _is_mover_source = _source in (
+                    'yahoo_most_active', 'yahoo_day_gainers', 'yahoo_day_losers'
+                )
+                mover['is_mover'] = _is_mover_source  # Tag for downstream use
+                
+                if _enabled:
+                    if _mover_relax and _is_mover_source:
+                        # Use relaxed filter for movers
+                        if not self._passes_mover_quality_filter(mover):
+                            continue
+                        self._mover_quality_relax_passes[sym] = True
+                    else:
+                        # Use standard quality filter
+                        if not self._passes_quality_filter(sym):
+                            continue
+                
                 seen.add(sym)
                 unique_movers.append(mover)
 
@@ -175,6 +201,14 @@ class StockScreener:
                     "screener: universe quality filter rejected %d candidates: %s",
                     sum(self._quality_filter_rejects.values()),
                     ", ".join(f"{k}={v}" for k, v in self._quality_filter_rejects.items()),
+                )
+            
+            # v-mover-quality-relax-2026-09-10: log how many movers passed via relaxed filter
+            if _mover_relax and hasattr(self, '_mover_quality_relax_passes') and self._mover_quality_relax_passes:
+                logger.info(
+                    "screener: mover quality relax passed %d movers: %s",
+                    len(self._mover_quality_relax_passes),
+                    ", ".join(list(self._mover_quality_relax_passes.keys())[:10]),
                 )
 
             # Sort by combined score (volatility + volume)
@@ -824,6 +858,80 @@ class StockScreener:
             logger.debug("screener: quality eval error for %s: %s", symbol, exc)
             return True  # don't block on eval error
 
+        return True
+
+    def _passes_mover_quality_filter(self, mover: Dict[str, Any]) -> bool:
+        """v-mover-quality-relax-2026-09-10: relaxed quality filter for movers.
+        
+        For Yahoo day_gainers/day_losers/most_active, we bypass SMA50/RS
+        filters because:
+          1. Day-gainers ARE the momentum names — requiring them to also
+             be above SMA50 is circular (they're moving BECAUSE something
+             changed today)
+          2. Quality-for-swing is wrong for intraday momentum
+        
+        Still enforced:
+          - Leveraged ETF blocklist (hard block)
+          - MIN_MOVER_PRICE floor ($5 default)
+          - MIN_MOVER_VOLUME floor (500k default)
+          - Spread filter (1% max, same as _is_tradeable)
+        
+        Returns True if mover passes the relaxed filter.
+        """
+        symbol = mover.get('symbol', '')
+        
+        # Gate 1: hard blocklist (always enforced)
+        if symbol in LEVERAGED_ETF_BLOCKLIST:
+            self._quality_filter_rejects[symbol] = self._quality_filter_rejects.get(symbol, 0) + 1
+            logger.debug(
+                "screener: mover_quality_relax blocked %s: leveraged_etf",
+                symbol,
+            )
+            return False
+        
+        # Gate 2: price floor
+        try:
+            from core.config import Config as _CfgMQ
+            _min_price = _CfgMQ().MIN_MOVER_PRICE
+            _min_volume = _CfgMQ().MIN_MOVER_VOLUME
+        except Exception:
+            _min_price = 5.0
+            _min_volume = 500000
+        
+        price = mover.get('last', 0)
+        if price < _min_price:
+            self._quality_filter_rejects[symbol] = self._quality_filter_rejects.get(symbol, 0) + 1
+            logger.debug(
+                "screener: mover_quality_relax blocked %s: price %.2f < %.2f",
+                symbol, price, _min_price,
+            )
+            return False
+        
+        # Gate 3: volume floor
+        volume = mover.get('volume', 0)
+        if volume < _min_volume:
+            self._quality_filter_rejects[symbol] = self._quality_filter_rejects.get(symbol, 0) + 1
+            logger.debug(
+                "screener: mover_quality_relax blocked %s: volume %d < %d",
+                symbol, volume, _min_volume,
+            )
+            return False
+        
+        # Gate 4: spread check (same as _is_tradeable but logged)
+        spread = mover.get('spread', 0)
+        if price > 0 and spread / price > 0.01:
+            self._quality_filter_rejects[symbol] = self._quality_filter_rejects.get(symbol, 0) + 1
+            logger.debug(
+                "screener: mover_quality_relax blocked %s: spread %.4f > 1%%",
+                symbol, spread / price if price > 0 else 0,
+            )
+            return False
+        
+        # Passed all mover filters
+        logger.debug(
+            "screener: mover_quality_relax PASSED %s: price=%.2f vol=%d spread_pct=%.4f",
+            symbol, price, volume, spread / price if price > 0 else 0,
+        )
         return True
 
     def _is_tradeable(self, mover: Dict[str, Any]) -> bool:

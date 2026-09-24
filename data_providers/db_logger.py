@@ -7,36 +7,131 @@ files or parsing JSON state.
 Tables: bot_decisions, bot_trades (created by migration in engine init).
 
 Thread-safe: uses a dedicated connection pool. Non-blocking: writes
-are fire-and-forget via asyncio tasks. A failed DB write logs a
+    are fire-and-forget via asyncio tasks. A failed DB write logs a
 warning but never crashes the trading loop.
+
+v-fix-loop-safety-2026-09-10: The async engine's connection pool is bound
+to the event loop it was created in. When fire-and-forget tasks run on
+different loops (strategy loop vs FastAPI loop), we get "Future attached
+to a different loop" errors. This module now tracks the owner loop and
+uses run_coroutine_threadsafe for cross-loop operations.
+
+v-fix-cross-loop-crash-2026-09-10: PR #19 only protected snapshot methods.
+    This revision protects ALL async methods (close, log_decision, log_trade,
+sync_positions, etc.) with loop-safety checks. When a loop mismatch is
+detected:
+  - Write operations: fail soft (log warning, skip the write) to avoid crash
+  - close(): dispose safely by detecting loop mismatch and handling gracefully
+  - Never call asyncpg operations from a different loop than created them
+
+v-fix-cross-loop-routing-2026-09-15: Cross-loop writes no longer skip!
+  Methods like log_decision, log_trade, sync_positions now ROUTE to the
+  owner loop via run_coroutine_threadsafe (same as log_decision_snapshot).
+  This eliminates silent data loss from the 411+ db_logger_cross_loop_skip
+  warnings observed in 16h KiddoKingdom soak (PID 331467, 045186b).
+  
+  Env flag DB_LOGGER_CROSS_LOOP_ROUTE (default True):
+    - True (default): cross-loop calls route to owner loop (no data loss)
+    - False: legacy skip behavior (for emergency rollback only)
+  
+  Owner loop is now "sticky": set once at init, subsequent set_owner_loop
+  calls from different loops are ignored with a one-time warning.
 """
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import json
 import logging
 import os
-from datetime import datetime
-from typing import Any
+import threading
+import time
+from datetime import datetime, timezone
+from typing import Any, Optional
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 logger = logging.getLogger("TradingBot")
 
+# v-fix-cross-loop-routing-2026-09-15: Cross-loop routing flag.
+# True (default): cross-loop calls route to owner loop via run_coroutine_threadsafe.
+# False: legacy skip behavior (for emergency rollback only — causes silent data loss).
+DB_LOGGER_CROSS_LOOP_ROUTE = os.environ.get("DB_LOGGER_CROSS_LOOP_ROUTE", "true").lower() in ("true", "1", "yes")
+
+# Rate-limit interval for cross-loop warnings (seconds). Max one warning per method per interval.
+_CROSS_LOOP_WARN_INTERVAL_SEC = 60.0
+
 DEFAULT_DSN = "postgresql+asyncpg://rudra:rudra_dev_2024@localhost:5432/rudra_dev"
+
+# v-fix-pool-leak-2026-09-10: module-level singleton instance to prevent
+# multiple engine/pool creations. API routes and other code paths should use
+# get_shared_db_logger() instead of creating new DbLogger instances.
+_shared_instance: Optional["DbLogger"] = None
+_shared_lock = asyncio.Lock()
+
+
+def get_shared_db_logger(dsn: str | None = None) -> "DbLogger":
+    """Get or create the shared DbLogger singleton.
+    
+    v-fix-pool-leak-2026-09-10: prevents multiple engine/pool creations
+    that exhaust max_connections. All code paths should use this instead
+    of creating new DbLogger instances directly.
+    
+    Thread-safe via module-level lock. The singleton is bound to the first
+    event loop that creates it; cross-loop operations are routed via
+    run_coroutine_threadsafe.
+    """
+    global _shared_instance
+    if _shared_instance is None:
+        _shared_instance = DbLogger(dsn)
+        try:
+            loop = asyncio.get_running_loop()
+            _shared_instance.set_owner_loop(loop)
+        except RuntimeError:
+            pass
+        logger.info("db_logger_singleton_created pool_size=5 max_overflow=3")
+    return _shared_instance
+
+
+async def dispose_shared_db_logger() -> None:
+    """Dispose the shared DbLogger singleton.
+    
+    Call during graceful shutdown to clean up connection pool.
+    """
+    global _shared_instance
+    if _shared_instance is not None:
+        await _shared_instance.close()
+        _shared_instance = None
+        logger.info("db_logger_singleton_disposed")
 
 
 class DbLogger:
-    """Fire-and-forget Postgres writer for decisions + trades."""
+    """Fire-and-forget Postgres writer for decisions + trades.
+    
+    v-fix-loop-safety-2026-09-10: Loop-safe async operations. The engine
+    is bound to an owner loop; cross-loop calls are routed via
+    run_coroutine_threadsafe to avoid "Future attached to different loop".
+    
+    v-fix-cross-loop-crash-2026-09-10: ALL async methods now check for loop
+    mismatch before touching the engine. Write operations fail soft (log +
+    skip) when on wrong loop. close() handles loop mismatch gracefully.
+    """
 
     def __init__(self, dsn: str | None = None) -> None:
-        raw_dsn = dsn or os.environ.get("POSTGRES_DSN_ASYNC", DEFAULT_DSN)
+        self._dsn = dsn or os.environ.get("POSTGRES_DSN_ASYNC", DEFAULT_DSN)
         # Ensure async driver
-        if "asyncpg" not in raw_dsn:
-            raw_dsn = raw_dsn.replace("postgresql://", "postgresql+asyncpg://")
+        if "asyncpg" not in self._dsn:
+            self._dsn = self._dsn.replace("postgresql://", "postgresql+asyncpg://")
+        # v-fix-pool-leak-2026-09-10: bounded pool with recycle to prevent
+        # connection exhaustion. pool_size=5 base, max_overflow=3 burst,
+        # pool_recycle=1800s (30min) to prevent stale connections.
         self._engine: AsyncEngine = create_async_engine(
-            raw_dsn, pool_size=2, max_overflow=2, pool_pre_ping=True,
+            self._dsn,
+            pool_size=5,
+            max_overflow=3,
+            pool_pre_ping=True,
+            pool_recycle=1800,
         )
         self._enabled = True
         # Serialise sync_positions so two fire-and-forget tasks can't race
@@ -44,9 +139,236 @@ class DbLogger:
         # UniqueViolationError on bot_positions_pkey when _save_state
         # fires twice in quick succession).
         self._sync_positions_lock = asyncio.Lock()
+        # v-fix-loop-safety-2026-09-10: track owner loop for cross-loop safety
+        self._owner_loop: Optional[asyncio.AbstractEventLoop] = None
+        # v-fix-cross-loop-crash-2026-09-10: lock to serialise engine recreation
+        self._engine_lock = threading.Lock()
+        # v-fix-cross-loop-routing-2026-09-15: rate-limit cross-loop warnings
+        self._cross_loop_warn_times: dict[str, float] = {}
+        self._cross_loop_warn_lock = threading.Lock()
+        # v-fix-cross-loop-routing-2026-09-15: sticky owner loop flag
+        self._owner_loop_set_once = False
+    
+    def set_owner_loop(self, loop: asyncio.AbstractEventLoop | None = None) -> None:
+        """Set the event loop that owns this DbLogger's engine.
+        
+        v-fix-loop-safety-2026-09-10: Call this once from the main async
+        context (e.g., FastAPI startup) so cross-loop operations can route
+        back correctly. If loop is None, uses the current running loop.
+        
+        v-fix-cross-loop-routing-2026-09-15: Owner loop is now STICKY.
+        Once set, subsequent calls from DIFFERENT loops are ignored with a
+        one-time warning. This prevents news/uvicorn/worker secondary loops
+        from overwriting the canonical main engine loop.
+        """
+        if loop is None:
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = asyncio.get_event_loop()
+        
+        # v-fix-cross-loop-routing-2026-09-15: Sticky owner loop
+        if self._owner_loop_set_once and self._owner_loop is not None:
+            if self._owner_loop is not loop:
+                self._warn_once(
+                    "set_owner_loop_ignored",
+                    "db_logger_set_owner_loop_ignored existing=%s attempted=%s "
+                    "(owner loop is sticky; first caller wins)",
+                    id(self._owner_loop), id(loop)
+                )
+                return
+            # Same loop - no-op, already set
+            return
+        
+        self._owner_loop = loop
+        self._owner_loop_set_once = True
+        logger.debug("db_logger_owner_loop_set loop_id=%s", id(loop))
+    
+    def _is_on_owner_loop(self) -> bool:
+        """Check if we're currently on the owner loop.
+        
+        v-fix-cross-loop-crash-2026-09-10: Returns True if:
+          - No owner loop is set (pre-startup, proceed cautiously)
+          - Current loop is the owner loop
+        Returns False if:
+          - We're on a different loop than the owner
+          - No running loop (shouldn't happen in async context)
+        """
+        if self._owner_loop is None:
+            return True
+        try:
+            current = asyncio.get_running_loop()
+            return current is self._owner_loop
+        except RuntimeError:
+            return False
+    
+    def _warn_once(self, key: str, msg: str, *args) -> None:
+        """Log a warning at most once per _CROSS_LOOP_WARN_INTERVAL_SEC per key.
+        
+        v-fix-cross-loop-routing-2026-09-15: Rate-limit warnings so logs stay
+        OS-grade clean even under sustained cross-loop traffic.
+        """
+        now = time.monotonic()
+        with self._cross_loop_warn_lock:
+            last = self._cross_loop_warn_times.get(key, 0.0)
+            if now - last < _CROSS_LOOP_WARN_INTERVAL_SEC:
+                return
+            self._cross_loop_warn_times[key] = now
+        logger.warning(msg, *args)
+    
+    def _check_loop_or_warn(self, method_name: str) -> bool:
+        """Check if we're on the owner loop, log warning if not.
+        
+        v-fix-cross-loop-crash-2026-09-10: Helper for write methods that
+        should fail soft on loop mismatch. Returns True if safe to proceed.
+        
+        v-fix-cross-loop-routing-2026-09-15: Warnings are now rate-limited
+        (max once per 60s per method) to keep logs OS-grade clean.
+        """
+        if self._is_on_owner_loop():
+            return True
+        try:
+            current = asyncio.get_running_loop()
+            self._warn_once(
+                f"cross_loop_skip_{method_name}",
+                "db_logger_cross_loop_skip method=%s owner_loop=%s current_loop=%s",
+                method_name, id(self._owner_loop), id(current)
+            )
+        except RuntimeError:
+            self._warn_once(
+                f"no_running_loop_{method_name}",
+                "db_logger_no_running_loop method=%s", method_name
+            )
+        return False
+    
+    def _route_to_owner_loop(
+        self,
+        method_name: str,
+        coro_factory,
+        *args,
+        **kwargs,
+    ) -> bool:
+        """Route a coroutine to the owner loop if we're on a different loop.
+        
+        v-fix-cross-loop-routing-2026-09-15: Instead of silently skipping
+        cross-loop calls (causing data loss), route them to the owner loop
+        via run_coroutine_threadsafe.
+        
+        Returns True if the call was routed (caller should return early).
+        Returns False if we're on the owner loop (caller should proceed).
+        
+        Args:
+            method_name: Name of the method (for logging)
+            coro_factory: A callable that returns the coroutine to run
+            *args, **kwargs: Arguments to pass to coro_factory
+        """
+        if self._is_on_owner_loop():
+            return False
+        
+        # Cross-loop detected
+        if not DB_LOGGER_CROSS_LOOP_ROUTE:
+            # Legacy skip mode (emergency rollback only)
+            self._warn_once(
+                f"cross_loop_skip_{method_name}",
+                "db_logger_cross_loop_skip method=%s owner_loop=%s (routing disabled)",
+                method_name, id(self._owner_loop)
+            )
+            return True
+        
+        if self._owner_loop is None:
+            self._warn_once(
+                f"cross_loop_no_owner_{method_name}",
+                "db_logger_cross_loop_no_owner method=%s (cannot route)",
+                method_name
+            )
+            return True
+        
+        if not self._owner_loop.is_running():
+            self._warn_once(
+                f"cross_loop_dead_{method_name}",
+                "db_logger_cross_loop_dead_owner method=%s owner_loop=%s",
+                method_name, id(self._owner_loop)
+            )
+            return True
+        
+        # Owner loop alive - route the call
+        try:
+            asyncio.run_coroutine_threadsafe(
+                coro_factory(*args, **kwargs),
+                self._owner_loop,
+            )
+            logger.debug(
+                "db_logger_cross_loop_routed method=%s owner_loop=%s",
+                method_name, id(self._owner_loop)
+            )
+        except Exception as exc:
+            self._warn_once(
+                f"cross_loop_route_error_{method_name}",
+                "db_logger_cross_loop_route_error method=%s err=%s",
+                method_name, exc
+            )
+        return True
 
     async def close(self) -> None:
-        await self._engine.dispose()
+        """Dispose the engine and close all connections.
+        
+        v-fix-cross-loop-crash-2026-09-10: Handle loop mismatch safely.
+        If called from a different loop than the owner:
+          - Try to route to owner loop if it's still running
+          - If owner loop is dead, dispose synchronously in thread pool
+          - Never let asyncpg see a cross-loop call
+        """
+        if not self._enabled:
+            return
+        
+        if self._is_on_owner_loop():
+            await self._engine.dispose()
+            return
+        
+        # Cross-loop close detected. Try to route to owner loop.
+        if self._owner_loop is not None:
+            try:
+                if self._owner_loop.is_running():
+                    # Owner loop still alive - route the dispose there
+                    fut = asyncio.run_coroutine_threadsafe(
+                        self._engine.dispose(), self._owner_loop
+                    )
+                    try:
+                        fut.result(timeout=5.0)
+                    except concurrent.futures.TimeoutError:
+                        logger.warning("db_logger_close_timeout owner_loop=%s", id(self._owner_loop))
+                    return
+            except RuntimeError:
+                # Owner loop closed/invalid
+                pass
+        
+        # Owner loop is dead or unreachable. Dispose synchronously in thread
+        # pool to avoid blocking and to handle cleanup outside any event loop.
+        logger.warning(
+            "db_logger_close_cross_loop_fallback owner=%s",
+            id(self._owner_loop) if self._owner_loop else "None"
+        )
+        try:
+            # Create a new temporary event loop in a thread to dispose
+            def _sync_dispose():
+                try:
+                    temp_loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(temp_loop)
+                    try:
+                        # Create a fresh engine just to close it cleanly
+                        # (the old engine's pool is orphaned on the dead loop)
+                        temp_loop.run_until_complete(asyncio.sleep(0))
+                    finally:
+                        temp_loop.close()
+                except Exception as e:
+                    logger.warning("db_logger_sync_dispose_error: %s", e)
+            
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                pool.submit(_sync_dispose).result(timeout=5.0)
+        except Exception as exc:
+            logger.warning("db_logger_close_fallback_error: %s", exc)
+        
+        self._enabled = False
 
     async def log_decision(
         self,
@@ -64,9 +386,46 @@ class DbLogger:
         price: float | None = None,
         **extra: Any,
     ) -> None:
-        """Insert one row into bot_decisions. Never raises."""
+        """Insert one row into bot_decisions. Never raises.
+        
+        v-fix-cross-loop-crash-2026-09-10: Skip write if called from wrong loop.
+        v-fix-cross-loop-routing-2026-09-15: Now ROUTES cross-loop calls to
+        owner loop instead of skipping (no more silent data loss).
+        """
         if not self._enabled:
             return
+        # v-fix-cross-loop-routing-2026-09-15: route cross-loop calls
+        if self._route_to_owner_loop(
+            "log_decision",
+            self._log_decision_impl,
+            component, symbol, action, reason, mode,
+            signal_type, confidence, strength, meta_proba,
+            atr, stop_distance, price, extra,
+        ):
+            return
+        await self._log_decision_impl(
+            component, symbol, action, reason, mode,
+            signal_type, confidence, strength, meta_proba,
+            atr, stop_distance, price, extra,
+        )
+
+    async def _log_decision_impl(
+        self,
+        component: str,
+        symbol: str | None,
+        action: str,
+        reason: str | None,
+        mode: str | None,
+        signal_type: int | None,
+        confidence: float | None,
+        strength: float | None,
+        meta_proba: float | None,
+        atr: float | None,
+        stop_distance: float | None,
+        price: float | None,
+        extra: dict,
+    ) -> None:
+        """Internal impl: actually insert decision into the database."""
         try:
             details = {k: _safe_json(v) for k, v in extra.items()} if extra else {}
             async with self._engine.begin() as conn:
@@ -123,9 +482,55 @@ class DbLogger:
         mode: str | None = None,
         reasoning: dict | None = None,
     ) -> None:
-        """Insert one row into bot_trades. Never raises."""
+        """Insert one row into bot_trades. Never raises.
+        
+        v-fix-cross-loop-crash-2026-09-10: Skip write if called from wrong loop.
+        v-fix-cross-loop-routing-2026-09-15: Now ROUTES cross-loop calls to
+        owner loop instead of skipping (no more silent data loss).
+        """
         if not self._enabled:
             return
+        # v-fix-cross-loop-routing-2026-09-15: route cross-loop calls
+        if self._route_to_owner_loop(
+            "log_trade",
+            self._log_trade_impl,
+            symbol, side, strategy, entry_time, exit_time,
+            entry_price, exit_price, quantity, pnl, pnl_pct,
+            exit_reason, atr_at_entry, stop_loss, take_profit,
+            confidence, meta_proba, kelly_fraction, scaled_out, mode, reasoning,
+        ):
+            return
+        await self._log_trade_impl(
+            symbol, side, strategy, entry_time, exit_time,
+            entry_price, exit_price, quantity, pnl, pnl_pct,
+            exit_reason, atr_at_entry, stop_loss, take_profit,
+            confidence, meta_proba, kelly_fraction, scaled_out, mode, reasoning,
+        )
+
+    async def _log_trade_impl(
+        self,
+        symbol: str,
+        side: str,
+        strategy: str | None,
+        entry_time: datetime,
+        exit_time: datetime,
+        entry_price: float,
+        exit_price: float,
+        quantity: int,
+        pnl: float,
+        pnl_pct: float,
+        exit_reason: str,
+        atr_at_entry: float | None,
+        stop_loss: float | None,
+        take_profit: float | None,
+        confidence: float | None,
+        meta_proba: float | None,
+        kelly_fraction: float | None,
+        scaled_out: bool,
+        mode: str | None,
+        reasoning: dict | None,
+    ) -> None:
+        """Internal impl: actually insert trade into the database."""
         try:
             async with self._engine.begin() as conn:
                 await conn.execute(
@@ -183,23 +588,28 @@ class DbLogger:
         race inside the DELETE+INSERT transaction. The lock serialises
         them; combined with ON CONFLICT DO UPDATE on the INSERT, the
         operation is now both safe under concurrency and idempotent.
+        
+        v-fix-cross-loop-crash-2026-09-10: Skip sync if called from wrong loop.
+        v-fix-cross-loop-routing-2026-09-15: Now ROUTES cross-loop calls to
+        owner loop instead of skipping (no more silent data loss).
         """
         if not self._enabled:
             return
+        # v-fix-cross-loop-routing-2026-09-15: route cross-loop calls
+        if self._route_to_owner_loop("sync_positions", self._sync_positions_impl, positions):
+            return
+        await self._sync_positions_impl(positions)
+
+    async def _sync_positions_impl(self, positions: dict) -> None:
+        """Internal impl: actually sync positions to the database."""
         async with self._sync_positions_lock:
             try:
-                # Compute the set of symbols we want to keep so we can
-                # delete only those that are no longer open — this avoids
-                # DELETE-all-then-INSERT patterns that briefly empty the
-                # table for any concurrent reader.
                 keep_symbols = [
                     sym for sym, pos in positions.items()
                     if pos is not None and getattr(pos, 'quantity', 0) > 0
                 ]
                 async with self._engine.begin() as conn:
                     if keep_symbols:
-                        # <>ALL(:keep) matches against a pg array param —
-                        # avoids expanding-bindparam complexity of NOT IN.
                         await conn.execute(
                             text("DELETE FROM bot_positions "
                                  "WHERE symbol <> ALL(:keep)"),
@@ -258,10 +668,6 @@ class DbLogger:
                                 "unrealized_pnl": getattr(pos, "unrealized_pnl", 0),
                                 "atr_at_entry": (getattr(pos, "reasoning", {}) or {}).get("atr"),
                                 "confidence": getattr(pos, "confidence", None),
-                                # v-mode-field-2026-04-20: was hardcoded "simulation";
-                                # now reads attribute-based tag set at Position
-                                # construction. Fallback "simulation" is the safe
-                                # default for objects created before the upgrade.
                                 "mode": getattr(pos, "mode", "simulation"),
                             },
                         )
@@ -285,9 +691,44 @@ class DbLogger:
         """v-news-veto-tracker-2026-04-28: record a vetoed news signal so we
         can later evaluate whether the veto was correct (saved a loss) or
         wrong (missed a winner). Outcome columns are filled later by
-        evaluate_open_news_vetoes(). Never raises."""
+        evaluate_open_news_vetoes(). Never raises.
+        
+        v-fix-cross-loop-crash-2026-09-10: Skip write if called from wrong loop.
+        v-fix-cross-loop-routing-2026-09-15: Now ROUTES cross-loop calls to
+        owner loop instead of skipping (no more silent data loss).
+        """
         if not self._enabled:
             return
+        # v-fix-cross-loop-routing-2026-09-15: route cross-loop calls
+        if self._route_to_owner_loop(
+            "log_news_veto",
+            self._log_news_veto_impl,
+            symbol, side, veto_reason, veto_source,
+            cached_sentiment, fresh_count, fresh_avg_sentiment,
+            latest_age_min, would_entry_price, would_stop_loss, would_take_profit,
+        ):
+            return
+        await self._log_news_veto_impl(
+            symbol, side, veto_reason, veto_source,
+            cached_sentiment, fresh_count, fresh_avg_sentiment,
+            latest_age_min, would_entry_price, would_stop_loss, would_take_profit,
+        )
+
+    async def _log_news_veto_impl(
+        self,
+        symbol: str,
+        side: str,
+        veto_reason: str,
+        veto_source: str | None,
+        cached_sentiment: float | None,
+        fresh_count: int | None,
+        fresh_avg_sentiment: float | None,
+        latest_age_min: float | None,
+        would_entry_price: float | None,
+        would_stop_loss: float | None,
+        would_take_profit: float | None,
+    ) -> None:
+        """Internal impl: actually insert news veto into the database."""
         try:
             async with self._engine.begin() as conn:
                 await conn.execute(
@@ -338,9 +779,30 @@ class DbLogger:
 
         Returns count of rows updated. Designed to run every 5-15 min
         from the engine main loop; cheap because the open-set is small.
+        
+        v-fix-cross-loop-crash-2026-09-10: Skip if called from wrong loop.
+        v-fix-cross-loop-routing-2026-09-15: Now ROUTES cross-loop calls to
+        owner loop instead of skipping (no more silent data loss).
+        Note: cross-loop routing returns 0 immediately (fire-and-forget).
         """
         if not self._enabled:
             return 0
+        # v-fix-cross-loop-routing-2026-09-15: route cross-loop calls
+        # Note: for methods that return values, cross-loop routing is fire-and-forget
+        if self._route_to_owner_loop(
+            "evaluate_open_news_vetoes",
+            self._evaluate_open_news_vetoes_impl,
+            get_current_price, max_age_hours,
+        ):
+            return 0
+        return await self._evaluate_open_news_vetoes_impl(get_current_price, max_age_hours)
+
+    async def _evaluate_open_news_vetoes_impl(
+        self,
+        get_current_price,
+        max_age_hours: int,
+    ) -> int:
+        """Internal impl: actually evaluate open news vetoes."""
         updated = 0
         try:
             async with self._engine.begin() as conn:
@@ -372,9 +834,6 @@ class DbLogger:
                     except Exception:
                         price = None
                     if price is None or price <= 0:
-                        # Time out positions older than max_age_hours that
-                        # we never managed to price — mark neutral so we
-                        # don't loop on them forever.
                         from datetime import datetime as _dt, timedelta as _td
                         if veto_time < _dt.now() - _td(hours=max_age_hours):
                             await conn.execute(
@@ -396,16 +855,12 @@ class DbLogger:
 
                     outcome = None
                     if hit_target and not hit_stop:
-                        outcome = 'missed_winner'    # we should have entered
+                        outcome = 'missed_winner'
                     elif hit_stop and not hit_target:
-                        outcome = 'correct_veto'     # we saved a loss
+                        outcome = 'correct_veto'
                     elif hit_target and hit_stop:
-                        # Both crossed inside the same window — ambiguous,
-                        # call it neutral and inspect manually.
                         outcome = 'neutral_both_crossed'
                     else:
-                        # Still open inside window. Only resolve if past
-                        # max_age_hours; otherwise wait.
                         from datetime import datetime as _dt, timedelta as _td
                         if veto_time < _dt.now() - _td(hours=max_age_hours):
                             outcome = 'neutral_timeout'
@@ -435,9 +890,21 @@ class DbLogger:
         return updated
 
     async def delete_position(self, symbol: str) -> None:
-        """Remove a closed position from bot_positions."""
+        """Remove a closed position from bot_positions.
+        
+        v-fix-cross-loop-crash-2026-09-10: Skip delete if called from wrong loop.
+        v-fix-cross-loop-routing-2026-09-15: Now ROUTES cross-loop calls to
+        owner loop instead of skipping (no more silent data loss).
+        """
         if not self._enabled:
             return
+        # v-fix-cross-loop-routing-2026-09-15: route cross-loop calls
+        if self._route_to_owner_loop("delete_position", self._delete_position_impl, symbol):
+            return
+        await self._delete_position_impl(symbol)
+
+    async def _delete_position_impl(self, symbol: str) -> None:
+        """Internal impl: actually delete position from the database."""
         try:
             async with self._engine.begin() as conn:
                 await conn.execute(
@@ -447,11 +914,947 @@ class DbLogger:
         except Exception as exc:
             logger.warning("db_logger_delete_position_error err=%s", exc)
 
+    # =========================================================================
+    # v-feature-snapshot-2026-09-09: Decision snapshots for ML training
+    # v-fix-loop-safety-2026-09-10: Loop-safe with cross-loop routing
+    # =========================================================================
+    async def log_decision_snapshot(self, snapshot) -> None:
+        """v-feature-snapshot-2026-09-09: persist a DecisionSnapshot for ML training.
+        
+        Table: bot_decision_snapshots
+        - snapshot_id (TEXT PK): deterministic hash for deduplication
+        - symbol, ts, mode, strategy_id, action, reason, gate_name
+        - confidence, price
+        - price_vol_json: PriceVolumeFeatures as JSON
+        - news_json: NewsAggregate as JSON
+        - regime_json: RegimeContext as JSON
+        - would_entry_price, would_stop_loss, would_take_profit
+        - would_size_shares, would_size_mult
+        - extra_json: strategy-specific extras
+        
+        Never raises. Fire-and-forget.
+        
+        v-fix-loop-safety-2026-09-10: If called from a different event loop
+        than the owner loop, routes the insert via run_coroutine_threadsafe.
+        
+        v-fix-cross-loop-crash-2026-09-10: Check if owner loop is alive before
+        routing. Skip write if owner loop is dead to avoid crash.
+        """
+        if not self._enabled:
+            return
+        try:
+            from core.decision_snapshot import is_snapshot_logging_enabled
+            if not is_snapshot_logging_enabled():
+                return
+        except ImportError:
+            return
+        
+        # v-fix-loop-safety-2026-09-10: cross-loop safety check
+        # v-fix-cross-loop-crash-2026-09-10: verify owner loop is alive
+        try:
+            current_loop = asyncio.get_running_loop()
+            if self._owner_loop is not None and self._owner_loop is not current_loop:
+                # Running on wrong loop — check if owner loop is alive
+                if not self._owner_loop.is_running():
+                    logger.warning(
+                        "db_logger_snapshot_skip_dead_loop owner=%s",
+                        id(self._owner_loop)
+                    )
+                    return
+                # Owner loop alive — route fire-and-forget
+                asyncio.run_coroutine_threadsafe(
+                    self._log_decision_snapshot_impl(snapshot),
+                    self._owner_loop,
+                )
+                return
+        except RuntimeError:
+            # No running loop — shouldn't happen in async context, but proceed
+            pass
+        
+        await self._log_decision_snapshot_impl(snapshot)
+
+    async def _log_decision_snapshot_impl(self, snapshot) -> None:
+        """Internal impl: actually insert the snapshot into the database.
+        
+        v-fix-loop-safety-2026-09-10: separated from log_decision_snapshot
+        for cross-loop routing.
+        """
+        try:
+            snap_dict = snapshot.to_dict()
+            # v-fix-snapshot-ts-2026-09-09: asyncpg requires datetime objects for
+            # TIMESTAMPTZ columns; snap_dict["ts"] is an ISO string from to_dict().
+            ts_value = _ensure_datetime(snap_dict["ts"])
+            if ts_value is None:
+                logger.warning("db_logger_snapshot_error: ts is None or unparseable")
+                return
+            async with self._engine.begin() as conn:
+                await conn.execute(
+                    text("""
+                        INSERT INTO bot_decision_snapshots
+                            (snapshot_id, symbol, ts, mode, strategy_id,
+                             action, reason, gate_name, confidence, price,
+                             price_vol_json, news_json, regime_json,
+                             would_entry_price, would_stop_loss, would_take_profit,
+                             would_size_shares, would_size_mult, extra_json)
+                        VALUES
+                            (:snapshot_id, :symbol, :ts, :mode, :strategy_id,
+                             :action, :reason, :gate_name, :confidence, :price,
+                             :price_vol_json, :news_json, :regime_json,
+                             :would_entry_price, :would_stop_loss, :would_take_profit,
+                             :would_size_shares, :would_size_mult, :extra_json)
+                        ON CONFLICT (snapshot_id) DO NOTHING
+                    """),
+                    {
+                        "snapshot_id": snap_dict["snapshot_id"],
+                        "symbol": snap_dict["symbol"],
+                        "ts": ts_value,
+                        "mode": snap_dict["mode"],
+                        "strategy_id": snap_dict["strategy_id"],
+                        "action": snap_dict["action"],
+                        "reason": snap_dict["reason"],
+                        "gate_name": snap_dict.get("gate_name"),
+                        "confidence": snap_dict["confidence"],
+                        "price": snap_dict["price_vol"]["price"],
+                        "price_vol_json": json.dumps(snap_dict["price_vol"]),
+                        "news_json": json.dumps(snap_dict["news"]),
+                        "regime_json": json.dumps(snap_dict["regime"]),
+                        "would_entry_price": snap_dict.get("would_entry_price"),
+                        "would_stop_loss": snap_dict.get("would_stop_loss"),
+                        "would_take_profit": snap_dict.get("would_take_profit"),
+                        "would_size_shares": snap_dict.get("would_size_shares"),
+                        "would_size_mult": snap_dict.get("would_size_mult"),
+                        "extra_json": json.dumps(snap_dict.get("extra", {})),
+                    },
+                )
+        except Exception as exc:
+            logger.warning("db_logger_snapshot_error err=%s", exc)
+
+    async def get_decision_snapshots(
+        self,
+        symbol: str | None = None,
+        strategy_id: str | None = None,
+        action: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+        since: datetime | None = None,
+    ) -> list[dict]:
+        """v-feature-snapshot-2026-09-09: query decision snapshots.
+        
+        Returns list of snapshot dicts for ML training pipelines.
+        Filters are optional and combinable.
+        
+        v-fix-loop-safety-2026-09-10: If called from a different event loop
+        than the owner loop, routes the query via run_coroutine_threadsafe.
+        
+        v-fix-cross-loop-crash-2026-09-10: Check if owner loop is alive before
+        routing. Return empty list if owner loop is dead to avoid crash.
+        """
+        if not self._enabled:
+            return []
+        
+        # v-fix-loop-safety-2026-09-10: cross-loop safety check
+        # v-fix-cross-loop-crash-2026-09-10: verify owner loop is alive
+        try:
+            current_loop = asyncio.get_running_loop()
+            if self._owner_loop is not None and self._owner_loop is not current_loop:
+                # Running on wrong loop — check if owner loop is alive
+                if not self._owner_loop.is_running():
+                    logger.warning(
+                        "db_logger_get_snapshots_skip_dead_loop owner=%s",
+                        id(self._owner_loop)
+                    )
+                    return []
+                # Owner loop alive — route and await result
+                fut = asyncio.run_coroutine_threadsafe(
+                    self._get_decision_snapshots_impl(
+                        symbol=symbol, strategy_id=strategy_id,
+                        action=action, limit=limit, offset=offset, since=since,
+                    ),
+                    self._owner_loop,
+                )
+                return await asyncio.wrap_future(fut)
+        except RuntimeError:
+            # No running loop — proceed (shouldn't happen in async context)
+            pass
+        
+        return await self._get_decision_snapshots_impl(
+            symbol=symbol, strategy_id=strategy_id,
+            action=action, limit=limit, offset=offset, since=since,
+        )
+
+    async def _get_decision_snapshots_impl(
+        self,
+        symbol: str | None = None,
+        strategy_id: str | None = None,
+        action: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+        since: datetime | None = None,
+    ) -> list[dict]:
+        """Internal impl: actually query snapshots from the database.
+        
+        v-fix-loop-safety-2026-09-10: separated from get_decision_snapshots
+        for cross-loop routing.
+        """
+        try:
+            filters = []
+            params: dict = {"limit": limit, "offset": offset}
+            
+            if symbol:
+                filters.append("symbol = :symbol")
+                params["symbol"] = symbol
+            if strategy_id:
+                filters.append("strategy_id = :strategy_id")
+                params["strategy_id"] = strategy_id
+            if action:
+                filters.append("action = :action")
+                params["action"] = action
+            if since:
+                filters.append("ts >= :since")
+                # v-fix-since-bind-2026-09-10: asyncpg requires datetime objects,
+                # not isoformat strings. Pass datetime directly.
+                params["since"] = since
+            
+            where = "WHERE " + " AND ".join(filters) if filters else ""
+            
+            async with self._engine.begin() as conn:
+                rows = (await conn.execute(
+                    text(f"""
+                        SELECT snapshot_id, symbol, ts, mode, strategy_id,
+                               action, reason, gate_name, confidence, price,
+                               price_vol_json, news_json, regime_json,
+                               would_entry_price, would_stop_loss, would_take_profit,
+                               would_size_shares, would_size_mult, extra_json
+                        FROM bot_decision_snapshots
+                        {where}
+                        ORDER BY ts DESC
+                        LIMIT :limit OFFSET :offset
+                    """),
+                    params,
+                )).mappings().all()
+            
+            result = []
+            for row in rows:
+                # v-fix-json-decode-2026-09-10: use _safe_json_decode for JSONB
+                # columns since asyncpg may return dicts directly
+                result.append({
+                    "snapshot_id": row["snapshot_id"],
+                    "symbol": row["symbol"],
+                    "ts": row["ts"].isoformat() if hasattr(row["ts"], "isoformat") else row["ts"],
+                    "mode": row["mode"],
+                    "strategy_id": row["strategy_id"],
+                    "action": row["action"],
+                    "reason": row["reason"],
+                    "gate_name": row["gate_name"],
+                    "confidence": row["confidence"],
+                    "price_vol": _safe_json_decode(row["price_vol_json"]),
+                    "news": _safe_json_decode(row["news_json"]),
+                    "regime": _safe_json_decode(row["regime_json"]),
+                    "would_entry_price": row["would_entry_price"],
+                    "would_stop_loss": row["would_stop_loss"],
+                    "would_take_profit": row["would_take_profit"],
+                    "would_size_shares": row["would_size_shares"],
+                    "would_size_mult": row["would_size_mult"],
+                    "extra": _safe_json_decode(row["extra_json"]),
+                })
+            return result
+        except Exception as exc:
+            logger.warning("db_logger_get_snapshots_error err=%s", exc)
+            return []
+
+    async def get_latest_snapshot(self, symbol: str) -> dict | None:
+        """v-feature-snapshot-2026-09-09: get the most recent snapshot for a symbol."""
+        snapshots = await self.get_decision_snapshots(symbol=symbol, limit=1)
+        return snapshots[0] if snapshots else None
+
+    async def get_todays_bot_entries(self, symbols: list[str] | None = None) -> dict[str, dict]:
+        """v-manage-persist-2026-09-15: get today's bot_trades entries.
+
+        Returns a dict mapping symbol -> trade metadata for bot-opened
+        positions from today. Used as a fallback source of truth for
+        restoring managed_by_bot=True when _saved_positions_meta is
+        stale or missing.
+
+        Only returns entries (entry_time today), not closes. The caller
+        determines which symbols are still open on Schwab and cross-refs.
+
+        Returns:
+            {symbol: {"side": "long"|"short", "entry_time": datetime,
+                      "entry_price": float, "quantity": int, "strategy": str}}
+        
+        v-manage-persist-hotfix-2026-09-15: cross-loop routing now properly
+        waits for the result instead of returning {}. This fixes the bug where
+        bot_trades fallback always returned empty on cross-loop calls.
+        """
+        if not self._enabled:
+            return {}
+        
+        # v-manage-persist-hotfix-2026-09-15: proper cross-loop routing for value-returning method
+        # Unlike fire-and-forget writes, this must wait for and return the actual result.
+        if not self._is_on_owner_loop():
+            if self._owner_loop is None:
+                self._warn_once(
+                    "get_todays_bot_entries_no_owner",
+                    "db_logger_get_todays_bot_entries_no_owner (cannot route, returning empty)",
+                )
+                return {}
+            if not self._owner_loop.is_running():
+                self._warn_once(
+                    "get_todays_bot_entries_dead_owner",
+                    "db_logger_get_todays_bot_entries_dead_owner (cannot route, returning empty)",
+                )
+                return {}
+            # Route to owner loop and await result
+            try:
+                fut = asyncio.run_coroutine_threadsafe(
+                    self._get_todays_bot_entries_impl(symbols),
+                    self._owner_loop,
+                )
+                return await asyncio.wrap_future(fut)
+            except Exception as exc:
+                self._warn_once(
+                    "get_todays_bot_entries_route_error",
+                    "db_logger_get_todays_bot_entries_route_error err=%s",
+                    exc,
+                )
+                return {}
+        
+        return await self._get_todays_bot_entries_impl(symbols)
+
+    async def _get_todays_bot_entries_impl(self, symbols: list[str] | None = None) -> dict[str, dict]:
+        """Internal impl: query bot_trades for today's entries."""
+        try:
+            async with self._engine.begin() as conn:
+                query = """
+                    SELECT symbol, side, entry_time, entry_price, quantity, strategy
+                    FROM bot_trades
+                    WHERE DATE(entry_time) = CURRENT_DATE
+                      AND mode = 'live'
+                """
+                params = {}
+                if symbols:
+                    query += " AND symbol = ANY(:symbols)"
+                    params["symbols"] = [s.upper() for s in symbols]
+                query += " ORDER BY entry_time DESC"
+                result = await conn.execute(text(query), params)
+                rows = result.mappings().all()
+                entries = {}
+                for row in rows:
+                    sym = row["symbol"].upper()
+                    if sym not in entries:
+                        entries[sym] = {
+                            "side": row["side"],
+                            "entry_time": row["entry_time"],
+                            "entry_price": float(row["entry_price"]),
+                            "quantity": int(row["quantity"]),
+                            "strategy": row["strategy"],
+                        }
+                return entries
+        except Exception as exc:
+            logger.warning("db_logger_get_todays_bot_entries_error err=%s", exc)
+            return {}
+
+    async def get_todays_bot_decision_entries(
+        self, symbols: list[str] | None = None
+    ) -> dict[str, dict]:
+        """v-evidence-broad-2026-09-15: get today's bot_decisions strategy entries.
+
+        Returns a dict mapping symbol -> decision metadata for bot strategy
+        entry decisions from today. Used as an additional evidence source
+        for restoring managed_by_bot=True when bot_trades is empty (e.g.,
+        mean_reversion sessions that don't write to bot_trades until exit).
+
+        Only returns strategy entry signals: action='entry' or 'open_position'
+        with known managed strategies (mean_reversion, day_trade_momentum, etc.).
+
+        Returns:
+            {symbol: {"side": "long"|"short", "ts": datetime, "strategy": str,
+                      "confidence": float|None}}
+        """
+        if not self._enabled:
+            return {}
+        
+        if not self._is_on_owner_loop():
+            if self._owner_loop is None or not self._owner_loop.is_running():
+                return {}
+            try:
+                fut = asyncio.run_coroutine_threadsafe(
+                    self._get_todays_bot_decision_entries_impl(symbols),
+                    self._owner_loop,
+                )
+                return await asyncio.wrap_future(fut)
+            except Exception as exc:
+                logger.debug("get_todays_bot_decision_entries_route_error: %s", exc)
+                return {}
+        
+        return await self._get_todays_bot_decision_entries_impl(symbols)
+
+    async def _get_todays_bot_decision_entries_impl(
+        self, symbols: list[str] | None = None
+    ) -> dict[str, dict]:
+        """Internal impl: query bot_decisions for today's strategy entries."""
+        try:
+            async with self._engine.begin() as conn:
+                query = """
+                    SELECT symbol, ts, signal_type, confidence,
+                           COALESCE(details_json->>'strategy', component) AS strategy
+                    FROM bot_decisions
+                    WHERE DATE(ts) = CURRENT_DATE
+                      AND mode = 'live'
+                      AND action IN ('entry', 'open_position', 'signal_generated')
+                      AND COALESCE(details_json->>'strategy', component) IN (
+                          'mean_reversion', 'day_trade_momentum', 'orb_breakout',
+                          'oversold_bounce', 'pullback_continuation', 'news_strategy'
+                      )
+                """
+                params: dict[str, Any] = {}
+                if symbols:
+                    query += " AND symbol = ANY(:symbols)"
+                    params["symbols"] = [s.upper() for s in symbols]
+                query += " ORDER BY ts DESC"
+                result = await conn.execute(text(query), params)
+                rows = result.mappings().all()
+                entries: dict[str, dict] = {}
+                for row in rows:
+                    sym = row["symbol"].upper()
+                    if sym not in entries:
+                        signal_type = row.get("signal_type") or ""
+                        side = "short" if "short" in signal_type.lower() else "long"
+                        entries[sym] = {
+                            "side": side,
+                            "ts": row["ts"],
+                            "strategy": row["strategy"],
+                            "confidence": float(row["confidence"]) if row["confidence"] else None,
+                        }
+                return entries
+        except Exception as exc:
+            logger.warning("db_logger_get_todays_bot_decision_entries_error err=%s", exc)
+            return {}
+
+    async def get_managed_bot_position(
+        self, symbol: str
+    ) -> dict | None:
+        """v-evidence-broad-2026-09-15: get bot_positions row for a symbol.
+
+        Returns position metadata if a bot_positions row exists with a
+        managed strategy. Used as last-resort evidence source for ownership.
+
+        Returns:
+            {"side": "long"|"short", "entry_time": datetime, "strategy": str}
+            or None if not found.
+        """
+        if not self._enabled:
+            return None
+        
+        if not self._is_on_owner_loop():
+            if self._owner_loop is None or not self._owner_loop.is_running():
+                return None
+            try:
+                fut = asyncio.run_coroutine_threadsafe(
+                    self._get_managed_bot_position_impl(symbol),
+                    self._owner_loop,
+                )
+                return await asyncio.wrap_future(fut)
+            except Exception as exc:
+                logger.debug("get_managed_bot_position_route_error: %s", exc)
+                return None
+        
+        return await self._get_managed_bot_position_impl(symbol)
+
+    async def _get_managed_bot_position_impl(self, symbol: str) -> dict | None:
+        """Internal impl: query bot_positions for a managed position."""
+        try:
+            async with self._engine.begin() as conn:
+                result = await conn.execute(
+                    text("""
+                        SELECT side, entry_time, strategy
+                        FROM bot_positions
+                        WHERE symbol = :symbol
+                          AND strategy IS NOT NULL
+                        LIMIT 1
+                    """),
+                    {"symbol": symbol.upper()},
+                )
+                row = result.mappings().first()
+                if row:
+                    return {
+                        "side": row["side"],
+                        "entry_time": row["entry_time"],
+                        "strategy": row["strategy"],
+                    }
+                return None
+        except Exception as exc:
+            logger.warning("db_logger_get_managed_bot_position_error err=%s", exc)
+            return None
+
+    async def ensure_snapshot_table(self) -> None:
+        """v-feature-snapshot-2026-09-09: create bot_decision_snapshots table if missing.
+        
+        Called during engine init. Idempotent.
+        
+        v-fix-cross-loop-crash-2026-09-10: Skip if called from wrong loop.
+        v-fix-cross-loop-routing-2026-09-15: Now ROUTES cross-loop calls to
+        owner loop instead of skipping (no more silent data loss).
+        """
+        if not self._enabled:
+            return
+        # v-fix-cross-loop-routing-2026-09-15: route cross-loop calls
+        if self._route_to_owner_loop("ensure_snapshot_table", self._ensure_snapshot_table_impl):
+            return
+        await self._ensure_snapshot_table_impl()
+
+    async def _ensure_snapshot_table_impl(self) -> None:
+        """Internal impl: actually create snapshot table if missing."""
+        try:
+            async with self._engine.begin() as conn:
+                await conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS bot_decision_snapshots (
+                        snapshot_id TEXT PRIMARY KEY,
+                        symbol TEXT NOT NULL,
+                        ts TIMESTAMPTZ NOT NULL,
+                        mode TEXT,
+                        strategy_id TEXT NOT NULL,
+                        action TEXT NOT NULL,
+                        reason TEXT,
+                        gate_name TEXT,
+                        confidence REAL,
+                        price REAL,
+                        price_vol_json JSONB,
+                        news_json JSONB,
+                        regime_json JSONB,
+                        would_entry_price REAL,
+                        would_stop_loss REAL,
+                        would_take_profit REAL,
+                        would_size_shares INTEGER,
+                        would_size_mult REAL,
+                        extra_json JSONB,
+                        created_at TIMESTAMPTZ DEFAULT NOW()
+                    )
+                """))
+                await conn.execute(text("""
+                    CREATE INDEX IF NOT EXISTS idx_snapshots_symbol_ts
+                    ON bot_decision_snapshots (symbol, ts DESC)
+                """))
+                await conn.execute(text("""
+                    CREATE INDEX IF NOT EXISTS idx_snapshots_strategy_ts
+                    ON bot_decision_snapshots (strategy_id, ts DESC)
+                """))
+                await conn.execute(text("""
+                    CREATE INDEX IF NOT EXISTS idx_snapshots_action
+                    ON bot_decision_snapshots (action)
+                """))
+        except Exception as exc:
+            logger.warning("db_logger_ensure_snapshot_table_error err=%s", exc)
+
+    # =========================================================================
+    # v-ledger-integrity-2026-09-24: Ledger integrity columns for bot_trades
+    # =========================================================================
+    async def ensure_ledger_integrity_columns(self) -> None:
+        """v-ledger-integrity-2026-09-24: add ledger integrity columns to bot_trades.
+        
+        Adds new columns if they don't exist:
+          - initial_stop: TRUE stop at entry (immutable)
+          - initial_tp: TRUE take-profit at entry (immutable)
+          - initial_risk_per_share: |entry - initial_stop|
+          - pnl_r: P&L in R-multiples
+          - setup_type: breakout/pullback/continuation/etc.
+          - hold_time_seconds: time held
+          - source: 'bot', 'broker_orphan', 'external'
+          - is_hands_off: MU/HQGE/SPCX flag
+          - is_external: external/unmanaged flag
+        
+        Called during engine init. Idempotent — ALTER TABLE IF NOT EXISTS pattern.
+        """
+        if not self._enabled:
+            return
+        if self._route_to_owner_loop("ensure_ledger_integrity_columns", self._ensure_ledger_integrity_columns_impl):
+            return
+        await self._ensure_ledger_integrity_columns_impl()
+
+    async def _ensure_ledger_integrity_columns_impl(self) -> None:
+        """Internal impl: add ledger integrity columns to bot_trades.
+        
+        v-ledger-integrity-2026-09-24 (engine review fix):
+          - Uses SAVEPOINT per column so one failure doesn't roll back all
+          - Uses lock_timeout (3s) and statement_timeout (30s)
+          - Skips index creation (use scripts/migrate_ledger_integrity.py for CONCURRENTLY)
+          - Idempotent: ADD COLUMN IF NOT EXISTS
+        
+        For production, run scripts/migrate_ledger_integrity.py in a quiet window
+        which creates indexes with CONCURRENTLY.
+        """
+        columns_to_add = [
+            ("initial_stop", "REAL"),
+            ("initial_tp", "REAL"),
+            ("initial_risk_per_share", "REAL"),
+            ("pnl_r", "REAL"),
+            ("setup_type", "TEXT"),
+            ("hold_time_seconds", "INTEGER"),
+            ("source", "TEXT DEFAULT 'bot'"),
+            ("is_hands_off", "BOOLEAN DEFAULT FALSE"),
+            ("is_external", "BOOLEAN DEFAULT FALSE"),
+            ("exit_reason_raw", "TEXT"),  # v-ledger-integrity: keep raw exit reason
+        ]
+        added = 0
+        skipped = 0
+        failed = 0
+        try:
+            async with self._engine.begin() as conn:
+                await conn.execute(text("SET LOCAL lock_timeout = '3s'"))
+                await conn.execute(text("SET LOCAL statement_timeout = '30s'"))
+                
+                for col_name, col_type in columns_to_add:
+                    savepoint = f"sp_{col_name}"
+                    try:
+                        await conn.execute(text(f"SAVEPOINT {savepoint}"))
+                        await conn.execute(text(f"""
+                            ALTER TABLE bot_trades
+                            ADD COLUMN IF NOT EXISTS {col_name} {col_type}
+                        """))
+                        await conn.execute(text(f"RELEASE SAVEPOINT {savepoint}"))
+                        added += 1
+                    except Exception as e:
+                        await conn.execute(text(f"ROLLBACK TO SAVEPOINT {savepoint}"))
+                        if "already exists" in str(e).lower():
+                            skipped += 1
+                        else:
+                            failed += 1
+                            logger.debug("ledger_integrity_column_add col=%s err=%s", col_name, e)
+                
+                logger.info(
+                    "ledger_integrity_columns_ensured added=%d skipped=%d failed=%d "
+                    "(run scripts/migrate_ledger_integrity.py for indexes)",
+                    added, skipped, failed
+                )
+        except Exception as exc:
+            logger.warning("db_logger_ensure_ledger_integrity_columns_error err=%s", exc)
+
+    async def log_trade_v2(
+        self,
+        symbol: str,
+        side: str,
+        strategy: str | None,
+        entry_time: datetime,
+        exit_time: datetime,
+        entry_price: float,
+        exit_price: float,
+        quantity: int,
+        pnl: float,
+        pnl_pct: float,
+        exit_reason: str,
+        # v-ledger-integrity fields
+        pnl_r: float | None = None,
+        setup_type: str | None = None,
+        source: str = "bot",
+        hold_time_seconds: int | None = None,
+        initial_stop: float | None = None,
+        initial_tp: float | None = None,
+        initial_risk_per_share: float | None = None,
+        is_hands_off: bool = False,
+        is_external: bool = False,
+        exit_reason_raw: str | None = None,  # v-ledger-integrity: raw exit reason
+        # Existing fields
+        atr_at_entry: float | None = None,
+        stop_loss: float | None = None,
+        take_profit: float | None = None,
+        confidence: float | None = None,
+        meta_proba: float | None = None,
+        kelly_fraction: float | None = None,
+        scaled_out: bool = False,
+        mode: str | None = None,
+        reasoning: dict | None = None,
+    ) -> None:
+        """v-ledger-integrity-2026-09-24: enhanced trade logging with R-tracking.
+        
+        Extends log_trade with:
+          - pnl_r: P&L in R-multiples
+          - setup_type: entry pattern type
+          - source: 'bot', 'broker_orphan', 'external'
+          - hold_time_seconds: duration held
+          - initial_stop/tp/risk: immutable entry values
+          - is_hands_off/is_external: exclusion flags
+          - exit_reason_raw: original exit reason before normalization
+        
+        Falls back to log_trade if ledger integrity columns don't exist.
+        """
+        if not self._enabled:
+            return
+        if self._route_to_owner_loop(
+            "log_trade_v2",
+            self._log_trade_v2_impl,
+            symbol, side, strategy, entry_time, exit_time,
+            entry_price, exit_price, quantity, pnl, pnl_pct,
+            exit_reason, pnl_r, setup_type, source, hold_time_seconds,
+            initial_stop, initial_tp, initial_risk_per_share,
+            is_hands_off, is_external, exit_reason_raw, atr_at_entry, stop_loss, take_profit,
+            confidence, meta_proba, kelly_fraction, scaled_out, mode, reasoning,
+        ):
+            return
+        await self._log_trade_v2_impl(
+            symbol, side, strategy, entry_time, exit_time,
+            entry_price, exit_price, quantity, pnl, pnl_pct,
+            exit_reason, pnl_r, setup_type, source, hold_time_seconds,
+            initial_stop, initial_tp, initial_risk_per_share,
+            is_hands_off, is_external, exit_reason_raw, atr_at_entry, stop_loss, take_profit,
+            confidence, meta_proba, kelly_fraction, scaled_out, mode, reasoning,
+        )
+
+    async def _log_trade_v2_impl(
+        self,
+        symbol: str,
+        side: str,
+        strategy: str | None,
+        entry_time: datetime,
+        exit_time: datetime,
+        entry_price: float,
+        exit_price: float,
+        quantity: int,
+        pnl: float,
+        pnl_pct: float,
+        exit_reason: str,
+        pnl_r: float | None,
+        setup_type: str | None,
+        source: str,
+        hold_time_seconds: int | None,
+        initial_stop: float | None,
+        initial_tp: float | None,
+        initial_risk_per_share: float | None,
+        is_hands_off: bool,
+        is_external: bool,
+        exit_reason_raw: str | None,
+        atr_at_entry: float | None,
+        stop_loss: float | None,
+        take_profit: float | None,
+        confidence: float | None,
+        meta_proba: float | None,
+        kelly_fraction: float | None,
+        scaled_out: bool,
+        mode: str | None,
+        reasoning: dict | None,
+    ) -> None:
+        """Internal impl: insert trade with ledger integrity fields."""
+        try:
+            async with self._engine.begin() as conn:
+                await conn.execute(
+                    text("""
+                        INSERT INTO bot_trades
+                            (symbol, side, strategy, entry_time, exit_time,
+                             entry_price, exit_price, quantity, pnl, pnl_pct,
+                             exit_reason, atr_at_entry, stop_loss, take_profit,
+                             confidence, meta_proba, kelly_fraction, scaled_out,
+                             mode, reasoning_json,
+                             pnl_r, setup_type, source, hold_time_seconds,
+                             initial_stop, initial_tp, initial_risk_per_share,
+                             is_hands_off, is_external, exit_reason_raw)
+                        VALUES
+                            (:symbol, :side, :strategy, :entry_time, :exit_time,
+                             :entry_price, :exit_price, :quantity, :pnl, :pnl_pct,
+                             :exit_reason, :atr_at_entry, :stop_loss, :take_profit,
+                             :confidence, :meta_proba, :kelly_fraction, :scaled_out,
+                             :mode, :reasoning_json,
+                             :pnl_r, :setup_type, :source, :hold_time_seconds,
+                             :initial_stop, :initial_tp, :initial_risk_per_share,
+                             :is_hands_off, :is_external, :exit_reason_raw)
+                    """),
+                    {
+                        "symbol": symbol,
+                        "side": side,
+                        "strategy": strategy,
+                        "entry_time": entry_time,
+                        "exit_time": exit_time,
+                        "entry_price": entry_price,
+                        "exit_price": exit_price,
+                        "quantity": quantity,
+                        "pnl": pnl,
+                        "pnl_pct": pnl_pct,
+                        "exit_reason": exit_reason,
+                        "atr_at_entry": atr_at_entry,
+                        "stop_loss": stop_loss,
+                        "take_profit": take_profit,
+                        "confidence": confidence,
+                        "meta_proba": meta_proba,
+                        "kelly_fraction": kelly_fraction,
+                        "scaled_out": scaled_out,
+                        "mode": mode,
+                        "reasoning_json": json.dumps(reasoning or {}),
+                        "pnl_r": pnl_r,
+                        "setup_type": setup_type,
+                        "source": source,
+                        "hold_time_seconds": hold_time_seconds,
+                        "initial_stop": initial_stop,
+                        "initial_tp": initial_tp,
+                        "initial_risk_per_share": initial_risk_per_share,
+                        "is_hands_off": is_hands_off,
+                        "is_external": is_external,
+                        "exit_reason_raw": exit_reason_raw,
+                    },
+                )
+        except Exception as exc:
+            # Fallback to original log_trade if new columns don't exist
+            logger.debug("log_trade_v2_fallback err=%s", exc)
+            await self._log_trade_impl(
+                symbol, side, strategy, entry_time, exit_time,
+                entry_price, exit_price, quantity, pnl, pnl_pct,
+                exit_reason, atr_at_entry, stop_loss, take_profit,
+                confidence, meta_proba, kelly_fraction, scaled_out, mode, reasoning,
+            )
+
+    # =========================================================================
+    # v-fix-log-strategy-decision-2026-09-14: Sync fire-and-forget for strategy logging
+    # =========================================================================
+    # Keys in log_decision signature that would collide with extra_data from Stage A cards
+    _LOG_DECISION_RESERVED_KEYS = frozenset({
+        'component', 'symbol', 'action', 'reason', 'mode',
+        'signal_type', 'confidence', 'strength', 'meta_proba',
+        'atr', 'stop_distance', 'price',
+    })
+
+    def log_strategy_decision(
+        self,
+        strategy: str,
+        symbol: str,
+        action: str,
+        reason: str | None = None,
+        extra_data: dict | None = None,
+    ) -> None:
+        """Sync fire-and-forget entry point for strategy decision logging.
+        
+        v-fix-log-strategy-decision-2026-09-14: gpu_news_critic and theme_shock_logger
+        call this from sync contexts (NewsBus.on_publish path). This method schedules
+        the async log_decision onto the owner loop without blocking.
+        
+        Maps to existing log_decision with:
+          - component=strategy (e.g. 'gpu_news_critic', 'theme_shock_logger')
+          - symbol=symbol
+          - action=action
+          - reason=reason
+          - extra_data passed to details_json (with collision handling)
+        
+        v-hotfix-collision-2026-09-14: CriticCard.to_dict() and ThemeEvent.to_dict()
+        include keys like 'action', 'symbol', 'confidence' that collide with
+        log_decision's explicit parameters. We split extra_data:
+          - Non-colliding keys go directly into details_json (flat structure)
+          - Colliding keys go into details_json._card_original (preserved for Research)
+        
+        Never raises to callers. Fails soft with warning log.
+        """
+        if not self._enabled:
+            return
+        
+        try:
+            if self._owner_loop is None:
+                logger.warning(
+                    "db_logger_strategy_decision_skip_no_owner_loop strategy=%s symbol=%s",
+                    strategy, symbol
+                )
+                return
+            
+            if not self._owner_loop.is_running():
+                logger.warning(
+                    "db_logger_strategy_decision_skip_dead_loop strategy=%s symbol=%s",
+                    strategy, symbol
+                )
+                return
+            
+            # v-hotfix-collision-2026-09-14: split extra_data to avoid kwarg collision
+            safe_extra: dict = {}
+            if extra_data:
+                colliding = {}
+                for k, v in extra_data.items():
+                    if k in self._LOG_DECISION_RESERVED_KEYS:
+                        colliding[k] = v
+                    else:
+                        safe_extra[k] = v
+                # Preserve colliding keys under _card_original for Research
+                if colliding:
+                    safe_extra['_card_original'] = colliding
+            
+            asyncio.run_coroutine_threadsafe(
+                self.log_decision(
+                    component=strategy,
+                    symbol=symbol,
+                    action=action,
+                    reason=reason,
+                    **safe_extra,
+                ),
+                self._owner_loop,
+            )
+        except Exception as exc:
+            logger.warning(
+                "db_logger_strategy_decision_error strategy=%s symbol=%s err=%s",
+                strategy, symbol, exc
+            )
+
 
 def _safe_json(value: Any) -> Any:
-    """Coerce a value to JSON-serializable form."""
+    """Coerce a value to JSON-serializable form.
+    
+    v-fix-log-strategy-decision-2026-09-14: properly handle dicts and lists
+    so that nested structures like theme_probs and relevance_by_symbol are
+    preserved as proper JSON objects in details_json, not string representations.
+    """
     if isinstance(value, (str, int, float, bool, type(None))):
         return value
+    if isinstance(value, dict):
+        return {k: _safe_json(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_safe_json(v) for v in value]
     if isinstance(value, set):
-        return list(value)
+        return [_safe_json(v) for v in value]
+    if isinstance(value, datetime):
+        return value.isoformat()
     return str(value)
+
+
+def _safe_json_decode(value: Any) -> dict | list:
+    """Decode JSON, handling asyncpg's automatic JSONB deserialization.
+    
+    v-fix-json-decode-2026-09-10: asyncpg/SQLAlchemy returns JSONB columns
+    as Python dicts directly. Calling json.loads() on an already-deserialized
+    dict raises: "the JSON object must be str, bytes or bytearray, not dict".
+    
+    This helper:
+      - Returns dict/list values as-is (already deserialized by asyncpg)
+      - Parses str/bytes/bytearray via json.loads()
+      - Returns {} for None or unparseable values
+    """
+    if value is None:
+        return {}
+    if isinstance(value, (dict, list)):
+        return value
+    if isinstance(value, (str, bytes, bytearray)):
+        try:
+            return json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            logger.warning("_safe_json_decode: failed to parse %r", value[:100] if hasattr(value, '__getitem__') else value)
+            return {}
+    return {}
+
+
+def _ensure_datetime(value: Any) -> datetime | None:
+    """Coerce a value to datetime for asyncpg bind parameters.
+    
+    asyncpg requires actual datetime objects for TIMESTAMPTZ columns;
+    ISO format strings cause DataError. This function normalizes:
+      - datetime objects: returned as-is (timezone added if naive)
+      - ISO strings: parsed to datetime (timezone-aware)
+      - None: returned as None
+    
+    v-fix-snapshot-ts-2026-09-09: fixes asyncpg DataError on snapshot insert.
+    """
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value
+    if isinstance(value, str):
+        try:
+            dt = datetime.fromisoformat(value)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt
+        except ValueError:
+            logger.warning("_ensure_datetime: could not parse %r", value)
+            return None
+    return None

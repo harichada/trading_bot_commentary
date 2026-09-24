@@ -36,6 +36,7 @@ shap>=0.42.0
 textblob>=0.17.0
 nltk>=3.8.0
 feedparser>=6.0.0
+sentence-transformers>=2.2.0,<7
 
 # Data Sources
 yfinance>=0.2.0

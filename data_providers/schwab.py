@@ -180,6 +180,13 @@ class SchwabDataProvider:
             else:
                 quote = quote_data
 
+            # v-same-basis-rs-2026-09-21: add netPercentChange (day % vs prior close)
+            # so symbol day change uses same basis as SPY from MarketIndicesCache.
+            # Schwab may return netPercentChange or netPercentChangeInDouble.
+            net_change_pct = quote.get(
+                'netPercentChange',
+                quote.get('netPercentChangeInDouble', 0.0)
+            )
             return {
                 'bid': quote.get('bidPrice', 0),
                 'ask': quote.get('askPrice', 0),
@@ -189,7 +196,8 @@ class SchwabDataProvider:
                 'low': quote.get('lowPrice', 0),
                 'open': quote.get('openPrice', 0),
                 'close': quote.get('closePrice', 0),
-                'mark': quote.get('mark', 0)
+                'mark': quote.get('mark', 0),
+                'netPercentChange': float(net_change_pct) if net_change_pct else 0.0,
             }
         except Exception as e:
             logger.error(f"Error fetching quote for {symbol}: {e}")
