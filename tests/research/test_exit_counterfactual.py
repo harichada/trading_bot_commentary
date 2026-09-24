@@ -49,10 +49,13 @@ def _entry(
     atr: float = 2.0,
     side: str = "long",
     entry_time: datetime = None,
+    initial_stop_distance: float = None,
 ) -> DayTradeEntry:
     """Create a test DayTradeEntry."""
     if entry_time is None:
         entry_time = datetime(2026, 9, 15, 10, 0, 0)
+    if initial_stop_distance is None:
+        initial_stop_distance = stop_distance
     return DayTradeEntry(
         symbol=symbol,
         entry_time=entry_time,
@@ -67,6 +70,7 @@ def _entry(
         stop_loss=stop_loss,
         take_profit=take_profit,
         stop_distance=stop_distance,
+        initial_stop_distance=initial_stop_distance,
         atr=atr,
         rsi=55.0,
         regime="risk_on",
@@ -576,7 +580,7 @@ class TestRunCounterfactualReplay:
         entries = [_entry(symbol="A"), _entry(symbol="B")]
         
         call_count = [0]
-        def mock_loader(symbol, start, lookforward_minutes):
+        def mock_loader(symbol, start, entry_ts, lookforward_minutes):
             call_count[0] += 1
             if symbol == "A":
                 return _make_bars_df(start, [(100, 101, 99, 100)])
@@ -591,7 +595,7 @@ class TestRunCounterfactualReplay:
         """All policies have the same sample (trades with bars)."""
         entries = [_entry(symbol="A"), _entry(symbol="B")]
         
-        def mock_loader(symbol, start, lookforward_minutes):
+        def mock_loader(symbol, start, entry_ts, lookforward_minutes):
             if symbol == "A":
                 return _make_bars_df(start, [(100, 101, 99, 100)])
             return pd.DataFrame()

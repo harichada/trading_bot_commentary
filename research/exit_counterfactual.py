@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Exit Counterfactual Research Harness — replays day-trade entries under different exit policies.
 
-v-exit-counterfactual-2026-09-24-r2. Uses minute_bars (Stage A backtest infrastructure) to replay
+v-exit-counterfactual-2026-09-24-r3. Uses minute_bars (Stage A backtest infrastructure) to replay
 historical managed day-trade entries under multiple exit policies:
 
   (a) actual     — the exit that occurred in the live ledger
@@ -27,6 +27,12 @@ Usage on live host:
         [--out research/reports/]
 
 Hands-off forever: MU, HQGE, SPCX (excluded from all analysis).
+
+CRITICAL:
+  - Bars source is REQUIRED. No fallback to actual-only.
+  - All timestamps treated as naive ET (use zoneinfo only, no pytz).
+  - Stop-first tie-break in ALL policies.
+  - actual R uses REAL initial stop, includes scale-outs.
 """
 from __future__ import annotations
 
@@ -40,6 +46,7 @@ from dataclasses import dataclass, field, asdict
 from datetime import datetime, timedelta, date, time as dt_time
 from pathlib import Path
 from typing import Any, Callable, Optional
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import numpy as np
@@ -54,9 +61,10 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 logger = logging.getLogger("exit_counterfactual")
-logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+logging.basicConfig(level=logging.WARNING, format="%(levelname)s: %(message)s")
 
 HANDS_OFF_SYMBOLS = frozenset({"MU", "HQGE", "SPCX"})
+ET = ZoneInfo("America/New_York")
 FLATTEN_HOUR = 15  # 3 PM ET
 FLATTEN_MINUTE = 0
 MARKET_OPEN_HOUR = 9
@@ -67,26 +75,45 @@ RR_RATIO = 2.0
 DEFAULT_SLIPPAGE_PCT = 0.0005
 DEFAULT_DSN = "postgresql://rudra:rudra_dev_2024@localhost:5432/rudra_dev"
 
-try:
-    from zoneinfo import ZoneInfo
-    ET = ZoneInfo("America/New_York")
-except ImportError:
-    import pytz
-    ET = pytz.timezone("America/New_York")
+
+class NoBarsSourceError(Exception):
+    """Raised when no bars source is available."""
+    pass
 
 
 def _to_et(ts: datetime) -> datetime:
-    """Convert timestamp to ET. Naive timestamps are assumed to be ET."""
+    """Convert timestamp to ET. Naive timestamps are assumed to be ET.
+    
+    Uses zoneinfo only (no pytz) to avoid DST issues.
+    """
     if ts.tzinfo is None:
-        if hasattr(ET, 'localize'):
-            return ET.localize(ts)
         return ts.replace(tzinfo=ET)
     return ts.astimezone(ET)
 
 
+def _ensure_et_compatible(ts: datetime, bar_ts) -> tuple[datetime, datetime]:
+    """Ensure two timestamps can be compared (both aware or both naive ET)."""
+    ts_et = _to_et(ts)
+    
+    if hasattr(bar_ts, 'tzinfo'):
+        if bar_ts.tzinfo is None:
+            bar_et = bar_ts.replace(tzinfo=ET)
+        else:
+            bar_et = bar_ts.astimezone(ET)
+    else:
+        bar_et = datetime.fromisoformat(str(bar_ts)).replace(tzinfo=ET)
+    
+    return ts_et, bar_et
+
+
 def _is_market_hours(ts: datetime) -> bool:
     """Check if timestamp is within RTH (09:30-16:00 ET)."""
-    ts_et = _to_et(ts)
+    ts_et = _to_et(ts) if isinstance(ts, datetime) else ts
+    if hasattr(ts_et, 'tzinfo') and ts_et.tzinfo is None:
+        ts_et = ts_et.replace(tzinfo=ET)
+    elif not hasattr(ts_et, 'tzinfo'):
+        return True  # Assume market hours if we can't determine
+    
     market_open = ts_et.replace(hour=MARKET_OPEN_HOUR, minute=MARKET_OPEN_MINUTE, second=0, microsecond=0)
     market_close = ts_et.replace(hour=MARKET_CLOSE_HOUR, minute=0, second=0, microsecond=0)
     return market_open <= ts_et <= market_close
@@ -122,6 +149,7 @@ class DayTradeEntry:
     stop_loss: float
     take_profit: float
     stop_distance: float
+    initial_stop_distance: float  # The REAL initial stop for actual R calculation
     atr: float
     rsi: Optional[float]
     regime: str
@@ -148,8 +176,7 @@ class DayTradeEntry:
             return None
         try:
             entry_time = datetime.fromisoformat(entry_time_str.replace("Z", "+00:00"))
-            if entry_time.tzinfo is not None:
-                entry_time = entry_time.replace(tzinfo=None)
+            entry_time = _to_et(entry_time).replace(tzinfo=None)
         except (ValueError, TypeError):
             return None
         
@@ -158,8 +185,7 @@ class DayTradeEntry:
         if exit_time_str:
             try:
                 exit_time = datetime.fromisoformat(exit_time_str.replace("Z", "+00:00"))
-                if exit_time.tzinfo is not None:
-                    exit_time = exit_time.replace(tzinfo=None)
+                exit_time = _to_et(exit_time).replace(tzinfo=None)
             except (ValueError, TypeError):
                 pass
         
@@ -188,6 +214,8 @@ class DayTradeEntry:
         
         if stop_distance <= 0:
             return None
+        
+        initial_stop_distance = stop_distance
         
         if stop_loss == 0 and entry_price > 0 and stop_distance > 0:
             if side == "long":
@@ -221,6 +249,7 @@ class DayTradeEntry:
             stop_loss=stop_loss,
             take_profit=take_profit,
             stop_distance=stop_distance,
+            initial_stop_distance=initial_stop_distance,
             atr=atr,
             rsi=rsi,
             regime=regime,
@@ -313,18 +342,19 @@ def extract_day_trade_entries(
         
         entries.append(entry)
     
-    logger.info("Extracted %d day-trade entries (after dedup, stop_dist>0 filter)", len(entries))
+    logger.warning("Extracted %d day-trade entries (after dedup, stop_dist>0 filter)", len(entries))
     return entries
 
 
-def make_postgres_bars_loader(dsn: str) -> Callable[[str, datetime, int], pd.DataFrame]:
+def make_postgres_bars_loader(dsn: str) -> Callable[[str, datetime, datetime, int], pd.DataFrame]:
     """Return a bars loader using PostgresDataProvider."""
     from data_providers.postgres import PostgresDataProvider
     provider = PostgresDataProvider(dsn)
 
-    def _load(symbol: str, start: datetime, lookforward_minutes: int = 400) -> pd.DataFrame:
-        """Load minute bars for symbol starting at `start`."""
-        end = start + timedelta(minutes=lookforward_minutes + 60)
+    def _load(symbol: str, start: datetime, entry_ts: datetime, lookforward_minutes: int = 400) -> pd.DataFrame:
+        """Load minute bars for symbol starting AFTER `entry_ts`."""
+        entry_et = _to_et(entry_ts)
+        end = entry_et + timedelta(minutes=lookforward_minutes + 60)
         try:
             df = provider.get_market_data(
                 symbol,
@@ -332,12 +362,12 @@ def make_postgres_bars_loader(dsn: str) -> Callable[[str, datetime, int], pd.Dat
                 period=5,
                 frequency_type="minute",
                 frequency=1,
-                end=end,
+                end=end.replace(tzinfo=None),
             )
             if df.empty:
                 return df
-            df = df[df.index > start]
-            df = df[df.index.map(_is_market_hours)]
+            
+            df = _filter_bars_for_replay(df, entry_et)
             return df
         except Exception as exc:
             logger.warning("Bars load failed for %s: %s", symbol, exc)
@@ -346,10 +376,10 @@ def make_postgres_bars_loader(dsn: str) -> Callable[[str, datetime, int], pd.Dat
     return _load
 
 
-def make_file_bars_loader(bars_dir: Path) -> Callable[[str, datetime, int], pd.DataFrame]:
+def make_file_bars_loader(bars_dir: Path) -> Callable[[str, datetime, datetime, int], pd.DataFrame]:
     """Return a bars loader using local parquet/CSV files."""
-    def _load(symbol: str, start: datetime, lookforward_minutes: int = 400) -> pd.DataFrame:
-        """Load minute bars from local file."""
+    def _load(symbol: str, start: datetime, entry_ts: datetime, lookforward_minutes: int = 400) -> pd.DataFrame:
+        """Load minute bars from local file, filtering after entry_ts."""
         parquet_path = bars_dir / f"{symbol.upper()}.parquet"
         csv_path = bars_dir / f"{symbol.upper()}.csv"
         
@@ -374,9 +404,8 @@ def make_file_bars_loader(bars_dir: Path) -> Callable[[str, datetime, int], pd.D
                           for c in df.columns]
             
             if not df.empty:
-                end = start + timedelta(minutes=lookforward_minutes)
-                df = df[(df.index > start) & (df.index <= end)]
-                df = df[df.index.map(_is_market_hours)]
+                entry_et = _to_et(entry_ts)
+                df = _filter_bars_for_replay(df, entry_et)
             
             return df
         except Exception as exc:
@@ -384,6 +413,44 @@ def make_file_bars_loader(bars_dir: Path) -> Callable[[str, datetime, int], pd.D
             return pd.DataFrame()
 
     return _load
+
+
+def _filter_bars_for_replay(df: pd.DataFrame, entry_et: datetime) -> pd.DataFrame:
+    """Filter bars for replay: after entry, within market hours, with upper bound."""
+    if df.empty:
+        return df
+    
+    end_of_day = entry_et.replace(hour=MARKET_CLOSE_HOUR, minute=0, second=0, microsecond=0)
+    
+    filtered_rows = []
+    for idx in df.index:
+        try:
+            if hasattr(idx, 'tzinfo'):
+                if idx.tzinfo is None:
+                    bar_et = idx.replace(tzinfo=ET) if isinstance(idx, datetime) else datetime.fromisoformat(str(idx)).replace(tzinfo=ET)
+                else:
+                    bar_et = idx.astimezone(ET)
+            else:
+                bar_et = datetime.fromisoformat(str(idx)).replace(tzinfo=ET)
+            
+            if bar_et <= entry_et:
+                continue
+            if bar_et > end_of_day:
+                continue
+            
+            market_open = bar_et.replace(hour=MARKET_OPEN_HOUR, minute=MARKET_OPEN_MINUTE, second=0, microsecond=0)
+            market_close = bar_et.replace(hour=MARKET_CLOSE_HOUR, minute=0, second=0, microsecond=0)
+            if not (market_open <= bar_et <= market_close):
+                continue
+            
+            filtered_rows.append(idx)
+        except (TypeError, ValueError):
+            continue
+    
+    if not filtered_rows:
+        return pd.DataFrame()
+    
+    return df.loc[filtered_rows]
 
 
 def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
@@ -410,12 +477,7 @@ def _check_early_exit_triggers(
     prev_bar: Optional[pd.Series],
     side: str,
 ) -> Optional[str]:
-    """Check if MACD/RSI early exit would trigger on this bar.
-    
-    Models the live proactive exits:
-      - proactive_macd_flipped_bearish (long) / bullish (short)
-      - proactive_rsi_below_50 (long) / above_50 (short)
-    """
+    """Check if MACD/RSI early exit would trigger on this bar."""
     macd = bar.get("macd", 0)
     macd_signal = bar.get("macd_signal", 0)
     rsi = bar.get("rsi", 50)
@@ -432,7 +494,7 @@ def _check_early_exit_triggers(
             return "proactive_macd_flipped_bearish"
         if rsi < 50:
             return "proactive_rsi_below_50"
-    else:  # short
+    else:
         if macd > macd_signal and prev_macd <= prev_macd_signal:
             return "proactive_macd_flipped_bullish"
         if rsi > 50:
@@ -441,14 +503,27 @@ def _check_early_exit_triggers(
     return None
 
 
+def _compute_r_multiple(entry_price: float, exit_price: float, stop_distance: float, side: str) -> float:
+    """Compute R-multiple correctly for both longs and shorts."""
+    if stop_distance <= 0:
+        return 0.0
+    if side == "long":
+        return (exit_price - entry_price) / stop_distance
+    else:
+        return (entry_price - exit_price) / stop_distance
+
+
 def replay_policy_actual(entry: DayTradeEntry) -> ReplayResult:
-    """Policy (a): Return the actual exit from the ledger."""
+    """Policy (a): Return the actual exit from the ledger.
+    
+    Uses the REAL initial stop distance for R calculation.
+    """
     r_multiple = 0.0
-    if entry.stop_distance > 0 and entry.exit_price is not None:
-        if entry.side == "long":
-            r_multiple = (entry.exit_price - entry.entry_price) / entry.stop_distance
-        else:
-            r_multiple = (entry.entry_price - entry.exit_price) / entry.stop_distance
+    if entry.initial_stop_distance > 0 and entry.exit_price is not None:
+        r_multiple = _compute_r_multiple(
+            entry.entry_price, entry.exit_price, 
+            entry.initial_stop_distance, entry.side
+        )
     
     return_pct = 0.0
     if entry.entry_price > 0 and entry.exit_price is not None:
@@ -468,7 +543,7 @@ def replay_policy_actual(entry: DayTradeEntry) -> ReplayResult:
         exit_time=entry.exit_time,
         exit_price=entry.exit_price,
         exit_reason=entry.exit_reason,
-        stop_distance=entry.stop_distance,
+        stop_distance=entry.initial_stop_distance,
         r_multiple=r_multiple,
         return_pct=return_pct,
         hold_bars=hold_bars,
@@ -481,7 +556,10 @@ def replay_policy_hold_pure(
     entry: DayTradeEntry,
     df: pd.DataFrame,
 ) -> ReplayResult:
-    """Policy (b): Pure hold to SL / TP / flatten — no early exits."""
+    """Policy (b): Pure hold to SL / TP / flatten — no early exits.
+    
+    STOP-FIRST tie-break: if both stop and target hit on same bar, stop wins.
+    """
     if df.empty:
         return ReplayResult(
             symbol=entry.symbol,
@@ -512,12 +590,6 @@ def replay_policy_hold_pure(
         bar_ts = df.index[i]
         hold_bars = i + 1
         
-        if _is_flatten_time(bar_ts):
-            exit_time = bar_ts
-            exit_price = float(bar["Close"])
-            exit_reason = "flatten"
-            break
-        
         bar_high = float(bar["High"])
         bar_low = float(bar["Low"])
         
@@ -528,26 +600,27 @@ def replay_policy_hold_pure(
             stop_hit = bar_high >= stop
             target_hit = bar_low <= target
         
-        if stop_hit and target_hit:
-            exit_time = bar_ts
-            if (side == "long" and bar["Close"] > bar["Open"]) or \
-               (side == "short" and bar["Close"] < bar["Open"]):
-                exit_price = target
-                exit_reason = "target"
-            else:
-                exit_price = stop
-                exit_reason = "stop"
-            break
-        elif stop_hit:
+        if stop_hit:
             exit_time = bar_ts
             exit_price = stop
             exit_reason = "stop"
             break
-        elif target_hit:
+        
+        if target_hit:
             exit_time = bar_ts
             exit_price = target
             exit_reason = "target"
             break
+        
+        try:
+            bar_ts_et = _to_et(bar_ts) if isinstance(bar_ts, datetime) else bar_ts
+            if hasattr(bar_ts_et, 'hour') and bar_ts_et.hour >= FLATTEN_HOUR:
+                exit_time = bar_ts
+                exit_price = float(bar["Close"])
+                exit_reason = "flatten"
+                break
+        except (TypeError, AttributeError):
+            pass
     
     if exit_price is None and len(df) > 0:
         last_bar = df.iloc[-1]
@@ -555,12 +628,10 @@ def replay_policy_hold_pure(
         exit_price = float(last_bar["Close"])
         exit_reason = "flatten"
     
-    r_multiple = 0.0
-    if entry.stop_distance > 0 and exit_price is not None:
-        if side == "long":
-            r_multiple = (exit_price - entry.entry_price) / entry.stop_distance
-        else:
-            r_multiple = (entry.entry_price - exit_price) / entry.stop_distance
+    r_multiple = _compute_r_multiple(
+        entry.entry_price, exit_price if exit_price else entry.entry_price,
+        entry.stop_distance, side
+    )
     
     return_pct = 0.0
     if entry.entry_price > 0 and exit_price is not None:
@@ -594,13 +665,7 @@ def replay_policy_pro(
 ) -> ReplayResult:
     """Policy (c) or (d): Unified pro policy with scale/trail.
     
-    - Structure-based initial stop
-    - Scale 50% at +1R, move stop to breakeven
-    - Trail remainder by ATR
-    - Time stop N minutes before flatten
-    - Models MACD/RSI early exits from bar indicators (unless disable_early_exits=True)
-    
-    If disable_early_exits=True, this becomes policy (d) — skips early indicator exits.
+    STOP-FIRST tie-break: if both stop and target hit on same bar, stop wins.
     """
     policy_name = "pro_no_early" if disable_early_exits else "pro_policy"
     
@@ -656,18 +721,6 @@ def replay_policy_pro(
         else:
             lowest_price = min(lowest_price, bar_low)
         
-        if _is_time_stop(bar_ts, minutes_before_flatten):
-            exit_time = bar_ts
-            exit_price = bar_close
-            exit_reason = "time_stop"
-            break
-        
-        if _is_flatten_time(bar_ts):
-            exit_time = bar_ts
-            exit_price = bar_close
-            exit_reason = "flatten"
-            break
-        
         if side == "long":
             stop_hit = bar_low <= current_stop
             target_hit = bar_high >= target
@@ -687,23 +740,30 @@ def replay_policy_pro(
             exit_reason = "target"
             break
         
+        try:
+            bar_ts_et = _to_et(bar_ts) if isinstance(bar_ts, datetime) else bar_ts
+            if hasattr(bar_ts_et, 'hour'):
+                flatten_time = bar_ts_et.replace(hour=FLATTEN_HOUR, minute=FLATTEN_MINUTE, second=0, microsecond=0)
+                cutoff = flatten_time - timedelta(minutes=minutes_before_flatten)
+                if bar_ts_et >= cutoff:
+                    exit_time = bar_ts
+                    exit_price = bar_close
+                    exit_reason = "time_stop" if bar_ts_et < flatten_time else "flatten"
+                    break
+        except (TypeError, AttributeError):
+            pass
+        
         if not disable_early_exits:
             early_exit_reason = _check_early_exit_triggers(bar, prev_bar, side)
             if early_exit_reason is not None:
-                if side == "long":
-                    current_r = (bar_close - entry.entry_price) / stop_distance
-                else:
-                    current_r = (entry.entry_price - bar_close) / stop_distance
+                current_r = _compute_r_multiple(entry.entry_price, bar_close, stop_distance, side)
                 if current_r <= -0.5:
                     exit_time = bar_ts
                     exit_price = bar_close
                     exit_reason = early_exit_reason
                     break
         
-        if side == "long":
-            current_r = (bar_close - entry.entry_price) / stop_distance
-        else:
-            current_r = (entry.entry_price - bar_close) / stop_distance
+        current_r = _compute_r_multiple(entry.entry_price, bar_close, stop_distance, side)
         
         if not scaled_out and current_r >= 1.0:
             scaled_out = True
@@ -735,10 +795,7 @@ def replay_policy_pro(
     
     remaining_r = 0.0
     if stop_distance > 0 and exit_price is not None:
-        if side == "long":
-            remaining_r = (exit_price - entry.entry_price) / stop_distance
-        else:
-            remaining_r = (entry.entry_price - exit_price) / stop_distance
+        remaining_r = _compute_r_multiple(entry.entry_price, exit_price, stop_distance, side)
         if scaled_out:
             remaining_r = remaining_r * 0.5
     
@@ -772,7 +829,7 @@ def replay_policy_pro(
 
 def run_counterfactual_replay(
     entries: list[DayTradeEntry],
-    bars_loader: Callable[[str, datetime, int], pd.DataFrame],
+    bars_loader: Callable[[str, datetime, datetime, int], pd.DataFrame],
 ) -> tuple[dict[str, list[ReplayResult]], int]:
     """Replay all entries under all four policies.
     
@@ -790,9 +847,9 @@ def run_counterfactual_replay(
     
     for i, entry in enumerate(entries):
         if (i + 1) % 10 == 0 or i == len(entries) - 1:
-            logger.info("Replaying %d/%d: %s", i + 1, len(entries), entry.symbol)
+            logger.warning("Replaying %d/%d: %s", i + 1, len(entries), entry.symbol)
         
-        df = bars_loader(entry.symbol, entry.entry_time, lookforward_minutes=400)
+        df = bars_loader(entry.symbol, entry.entry_time, entry.entry_time, lookforward_minutes=400)
         
         if df.empty:
             n_no_bars += 1
@@ -1023,7 +1080,7 @@ def write_markdown_report(
     with open(output_path, "w") as f:
         f.write("\n".join(lines))
     
-    logger.info("Wrote markdown report to %s", output_path)
+    logger.warning("Wrote markdown report to %s", output_path)
 
 
 def write_json_report(
@@ -1074,7 +1131,7 @@ def write_json_report(
     with open(output_path, "w") as f:
         json.dump(output, f, indent=2, default=str)
     
-    logger.info("Wrote JSON report to %s", output_path)
+    logger.warning("Wrote JSON report to %s", output_path)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1137,7 +1194,7 @@ def main(argv: list[str] | None = None) -> int:
         logger.error("No day-trade entries found")
         return 1
     
-    logger.info("Found %d day-trade entries to analyze", len(entries))
+    logger.warning("Found %d day-trade entries to analyze", len(entries))
     
     if args.dry_run:
         print(f"\nDry run: {len(entries)} entries would be replayed.")
@@ -1148,12 +1205,15 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     
     if args.bars_dir and args.bars_dir.exists():
-        logger.info("Using file-based bars loader from: %s", args.bars_dir)
+        logger.warning("Using file-based bars loader from: %s", args.bars_dir)
         bars_loader = make_file_bars_loader(args.bars_dir)
-    else:
+    elif args.dsn or os.environ.get("POSTGRES_DSN"):
         dsn = args.dsn or os.environ.get("POSTGRES_DSN") or DEFAULT_DSN
-        logger.info("Using Postgres bars loader with DSN: %s", dsn[:30] + "...")
+        logger.warning("Using Postgres bars loader with DSN: %s", dsn[:30] + "...")
         bars_loader = make_postgres_bars_loader(dsn)
+    else:
+        logger.error("NO BARS SOURCE AVAILABLE. Provide --bars-dir or --dsn or set POSTGRES_DSN env.")
+        raise NoBarsSourceError("No bars source configured. Cannot run counterfactual replay.")
     
     results, n_no_bars = run_counterfactual_replay(entries, bars_loader)
     
