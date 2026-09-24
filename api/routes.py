@@ -232,7 +232,9 @@ async def get_dashboard():
     # This is NOT safe for internet-facing deployments. For multi-user or remote access,
     # replace with a proper login flow (e.g. session cookie from POST /api/login).
     api_key = os.getenv("TRADING_API_KEY", "")
-    auth_script = f'<script>window.TRADING_API_KEY={json.dumps(api_key)};</script>'
+    # v-activity-page-2026-09-24: inject feature flag so nav can conditionally show Activity link
+    activity_enabled = Config().UI_ACTIVITY_PAGE
+    auth_script = f'<script>window.TRADING_API_KEY={json.dumps(api_key)};window.UI_ACTIVITY_PAGE={json.dumps(activity_enabled)};</script>'
 
     # v-dashboard-hotreload-2026-05-28: re-read dashboard.html from
     # disk on every request instead of using the cached
@@ -2091,6 +2093,557 @@ async def get_trades(date: str = None, symbol: str = None, strategy: str = None,
     except Exception as e:
         logger.error(f"Error querying trades: {e}")
         return {"status": "error", "message": str(e)}
+
+
+# ============================================================================
+# ACTIVITY PAGE API — v-activity-page-2026-09-24
+# Trade-by-trade activity log with expanded decision reasoning.
+# ============================================================================
+
+
+def _get_broker_fills_for_date(target_date: str, et_tz) -> list:
+    """Modular broker fills source: fetch today's fills from trading_engine.
+
+    Returns list of dicts with keys: symbol, side, entry_time, exit_time,
+    entry_price, exit_price, quantity, pnl, exit_reason, source='broker'.
+
+    Falls back gracefully to empty list if engine unavailable or API errors.
+    This allows the Activity page to show orphan broker fills that never
+    made it to bot_trades (e.g., CRCL/NBIS on 2026-09-24).
+    """
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    if trading_engine is None:
+        return []
+
+    try:
+        # Use engine's cached Schwab fills (5s cache, avoids hammering API)
+        schwab_trades = trading_engine.get_todays_trades()
+        if not schwab_trades:
+            return []
+
+        # Parse target date
+        target_dt = datetime.strptime(target_date, "%Y-%m-%d").date()
+
+        fills = []
+        for t in schwab_trades:
+            # Filter to target date
+            exit_time_str = t.get("exit_time") or t.get("entry_time") or ""
+            try:
+                if isinstance(exit_time_str, str) and exit_time_str:
+                    exit_dt = datetime.fromisoformat(exit_time_str.replace('Z', '+00:00'))
+                elif hasattr(exit_time_str, 'date'):
+                    exit_dt = exit_time_str
+                else:
+                    continue
+                if exit_dt.tzinfo is None:
+                    exit_dt = exit_dt.replace(tzinfo=ZoneInfo("UTC"))
+                exit_date_et = exit_dt.astimezone(et_tz).date()
+                if exit_date_et != target_dt:
+                    continue
+            except Exception:
+                continue
+
+            # Normalize to common format
+            symbol = (t.get("symbol") or "").upper()
+            if not symbol:
+                continue
+
+            instruction = (t.get("instruction") or "").upper()
+            side = "short" if "SELL_SHORT" in instruction else "long"
+
+            fills.append({
+                "symbol": symbol,
+                "side": side,
+                "entry_time": t.get("entry_time"),
+                "exit_time": t.get("exit_time") or t.get("entry_time"),
+                "entry_price": t.get("entry_price") or t.get("price"),
+                "exit_price": t.get("exit_price") or t.get("price"),
+                "quantity": t.get("quantity") or t.get("filled_quantity") or 0,
+                "pnl": t.get("pnl") or 0,
+                "exit_reason": t.get("reason") or "broker_fill",
+                "source": "broker",
+                "status": t.get("status"),
+            })
+
+        return fills
+
+    except Exception as exc:
+        logger.debug("broker_fills_fetch_error: %s", exc)
+        return []
+
+
+def _dedupe_trades_with_broker_fills(db_trades: list, broker_fills: list, hands_off_denylist: frozenset) -> list:
+    """Union bot_trades rows with broker fills, deduped by symbol+exit_time.
+
+    Returns combined list with is_orphan=True for broker-only fills.
+    Prioritizes db_trades when both sources have the same trade.
+    """
+    from datetime import datetime
+
+    # Index db_trades by (symbol, exit_time_rounded_to_minute)
+    db_index = {}
+    for t in db_trades:
+        sym = (t.get("symbol") or "").upper()
+        exit_ts = t.get("exit_time") or ""
+        try:
+            if isinstance(exit_ts, str):
+                exit_dt = datetime.fromisoformat(exit_ts.replace('Z', '+00:00'))
+            else:
+                exit_dt = exit_ts
+            key = (sym, exit_dt.strftime("%Y-%m-%d %H:%M") if exit_dt else "")
+        except Exception:
+            key = (sym, str(exit_ts)[:16])
+        db_index[key] = t
+
+    # Add broker fills that aren't already in db_trades
+    orphan_fills = []
+    for bf in broker_fills:
+        sym = (bf.get("symbol") or "").upper()
+        exit_ts = bf.get("exit_time") or ""
+        try:
+            if isinstance(exit_ts, str):
+                exit_dt = datetime.fromisoformat(exit_ts.replace('Z', '+00:00'))
+            else:
+                exit_dt = exit_ts
+            key = (sym, exit_dt.strftime("%Y-%m-%d %H:%M") if exit_dt else "")
+        except Exception:
+            key = (sym, str(exit_ts)[:16])
+
+        if key not in db_index:
+            # This is an orphan broker fill
+            is_hands_off = sym in hands_off_denylist
+            orphan_fills.append({
+                "id": f"broker_{sym}_{key[1]}",
+                "symbol": sym,
+                "side": bf.get("side", "long"),
+                "strategy": None,
+                "entry_time": str(bf.get("entry_time") or ""),
+                "exit_time": str(bf.get("exit_time") or ""),
+                "entry_price": bf.get("entry_price"),
+                "exit_price": bf.get("exit_price"),
+                "quantity": bf.get("quantity", 0),
+                "pnl": bf.get("pnl", 0),
+                "exit_reason": bf.get("exit_reason", "broker_fill"),
+                "stop_loss": None,
+                "take_profit": None,
+                "confidence": None,
+                "meta_proba": None,
+                "is_hands_off": is_hands_off,
+                "is_external": False,
+                "is_orphan": True,
+                "source": "broker",
+                "reasoning_json": None,
+            })
+
+    return db_trades + orphan_fills
+
+
+@app.get("/api/activity")
+async def get_activity(date: str = None, strategy: str = None):
+    """v-activity-page-2026-09-24: trade activity with decision reasoning.
+
+    Returns paired entry+exit trades for the Activity page with:
+      - Trade details (symbol, side, entry/exit time+price, qty, PnL)
+      - Stop loss / take profit / R at entry
+      - Exit reason (take_profit, stop_loss, proactive_*, flatten_hour, etc.)
+      - Decision reasoning from bot_decision_snapshots
+      - Hands-off / external / orphan flags
+
+    Data sources (UNION, deduped):
+      1. bot_trades table (DB) - primary source for bot-managed trades
+      2. Broker fills (Schwab API via trading_engine) - catches orphans
+
+    Orphan fills: broker fills that have no matching bot_trades row appear
+    with is_orphan=true and 'reasoning unavailable'. This handles cases like
+    CRCL/NBIS on 2026-09-24 where broker fills exist but bot_trades is empty.
+
+    Query params:
+        date: Filter by exit date (YYYY-MM-DD), defaults to today
+        strategy: Filter by strategy name
+
+    Returns:
+        {
+            "status": "success",
+            "summary": {trades, win_rate, pnl, total_r, bot_trades, bot_win_rate, bot_pnl, bot_total_r},
+            "trades": [...]
+        }
+
+    The summary separates all-trades stats from bot-only stats (excluding
+    hands_off and external positions).
+    """
+    import os
+    import math as _math
+    from datetime import datetime, date as date_type
+    from sqlalchemy import create_engine, text as sa_text
+    from zoneinfo import ZoneInfo
+
+    # Check feature flag
+    if not Config().UI_ACTIVITY_PAGE:
+        raise HTTPException(status_code=404, detail="Activity page is disabled")
+
+    dsn = os.environ.get(
+        "POSTGRES_DSN",
+        "postgresql://rudra:rudra_dev_2024@localhost:5432/rudra_dev",
+    )
+    et_tz = ZoneInfo("America/New_York")
+
+    # Default to today in ET
+    if not date:
+        date = datetime.now(et_tz).strftime("%Y-%m-%d")
+
+    hands_off_denylist = Config().HANDS_OFF_DENYLIST
+
+    try:
+        engine = create_engine(dsn)
+
+        # Query bot_trades for the date
+        conditions = ["DATE(exit_time AT TIME ZONE 'America/New_York') = :dt"]
+        params = {"dt": date}
+
+        if strategy:
+            conditions.append("strategy = :strat")
+            params["strat"] = strategy
+
+        where = "WHERE " + " AND ".join(conditions)
+
+        # Join with bot_decision_snapshots for reasoning
+        # Match on symbol + strategy + entry_time window (within 5 min)
+        sql = sa_text(f"""
+            WITH trades AS (
+                SELECT id, symbol, side, strategy, entry_time, exit_time,
+                       entry_price, exit_price, quantity, pnl,
+                       ROUND(pnl_pct::numeric, 2) AS pnl_pct, exit_reason,
+                       atr_at_entry, stop_loss, take_profit, confidence,
+                       meta_proba, kelly_fraction, scaled_out, mode,
+                       reasoning_json
+                FROM bot_trades
+                {where}
+            )
+            SELECT t.*,
+                   s.price_vol_json,
+                   s.news_json,
+                   s.regime_json,
+                   s.extra_json AS snapshot_extra_json,
+                   s.reason AS snapshot_reason,
+                   s.gate_name AS snapshot_gate_name,
+                   s.would_entry_price,
+                   s.would_stop_loss AS snapshot_stop_loss,
+                   s.would_take_profit AS snapshot_take_profit
+            FROM trades t
+            LEFT JOIN LATERAL (
+                SELECT *
+                FROM bot_decision_snapshots
+                WHERE symbol = t.symbol
+                  AND strategy_id = t.strategy
+                  AND action IN ('signal_buy', 'signal_sell')
+                  AND ts BETWEEN t.entry_time - INTERVAL '5 minutes'
+                             AND t.entry_time + INTERVAL '5 minutes'
+                ORDER BY ABS(EXTRACT(EPOCH FROM (ts - t.entry_time)))
+                LIMIT 1
+            ) s ON TRUE
+            ORDER BY t.exit_time DESC
+        """)
+
+        with engine.connect() as conn:
+            rows = conn.execute(sql, params).mappings().all()
+
+        engine.dispose()
+
+        # Convert DB rows to list of dicts
+        db_trades_raw = [dict(r) for r in rows]
+
+        # Fetch broker fills and union with DB trades (deduped)
+        broker_fills = _get_broker_fills_for_date(date, et_tz)
+        combined_raw = _dedupe_trades_with_broker_fills(db_trades_raw, broker_fills, hands_off_denylist)
+
+        import json
+
+        def _scrub(v):
+            if isinstance(v, float):
+                return None if (_math.isnan(v) or _math.isinf(v)) else v
+            return v
+
+        def _safe_float(v, default=0.0):
+            try:
+                f = float(v) if v is not None else default
+                return default if (_math.isnan(f) or _math.isinf(f)) else f
+            except (TypeError, ValueError):
+                return default
+
+        def _calc_r(pnl, entry_price, stop_loss, quantity):
+            """Calculate R-multiple. Returns None if R is undefined (SL==entry)."""
+            if stop_loss is None or entry_price is None or quantity is None:
+                return None
+            risk_per_share = abs(entry_price - stop_loss)
+            if risk_per_share < 0.0001:
+                return None
+            total_risk = risk_per_share * quantity
+            if total_risk < 0.01:
+                return None
+            return pnl / total_risk
+
+        def _format_time_et(ts_str):
+            """Format timestamp to ET time string."""
+            if not ts_str:
+                return None
+            try:
+                if isinstance(ts_str, str):
+                    ts = datetime.fromisoformat(ts_str.replace('Z', '+00:00'))
+                else:
+                    ts = ts_str
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=ZoneInfo("UTC"))
+                ts_et = ts.astimezone(et_tz)
+                return ts_et.strftime("%H:%M:%S")
+            except Exception:
+                return str(ts_str)[:8] if ts_str else None
+
+        def _calc_hold_time(entry_time, exit_time):
+            """Calculate hold time in minutes."""
+            if not entry_time or not exit_time:
+                return None
+            try:
+                if isinstance(entry_time, str):
+                    entry = datetime.fromisoformat(entry_time.replace('Z', '+00:00'))
+                else:
+                    entry = entry_time
+                if isinstance(exit_time, str):
+                    exit_t = datetime.fromisoformat(exit_time.replace('Z', '+00:00'))
+                else:
+                    exit_t = exit_time
+                delta = exit_t - entry
+                return int(delta.total_seconds() / 60)
+            except Exception:
+                return None
+
+        trades = []
+        total_pnl = 0.0
+        total_r = 0.0
+        valid_r_count = 0
+        winners = 0
+        losers = 0
+
+        bot_total_pnl = 0.0
+        bot_total_r = 0.0
+        bot_valid_r_count = 0
+        bot_winners = 0
+        bot_losers = 0
+        bot_count = 0
+
+        for row in combined_raw:
+            symbol = (row.get("symbol") or "").upper()
+            
+            # Check if this is an orphan broker fill (already processed)
+            if row.get("source") == "broker" and row.get("is_orphan"):
+                # Already formatted orphan fill from _dedupe_trades_with_broker_fills
+                pnl = _safe_float(row.get("pnl"), 0.0)
+                entry_price = _safe_float(row.get("entry_price"))
+                
+                trade = {
+                    "id": row["id"],
+                    "symbol": symbol,
+                    "side": row.get("side", "long"),
+                    "strategy": "unknown",
+                    "entry_time": str(row.get("entry_time") or ""),
+                    "entry_time_et": _format_time_et(row.get("entry_time")),
+                    "exit_time": str(row.get("exit_time") or ""),
+                    "exit_time_et": _format_time_et(row.get("exit_time")),
+                    "entry_price": _scrub(entry_price),
+                    "exit_price": _scrub(_safe_float(row.get("exit_price"))),
+                    "quantity": int(row.get("quantity") or 0),
+                    "stop_loss": None,
+                    "take_profit": None,
+                    "pnl": round(pnl, 2),
+                    "pnl_pct": None,
+                    "r_multiple": None,
+                    "exit_reason": row.get("exit_reason", "broker_fill"),
+                    "hold_time_min": _calc_hold_time(row.get("entry_time"), row.get("exit_time")),
+                    "confidence": None,
+                    "meta_proba": None,
+                    "is_hands_off": row.get("is_hands_off", False),
+                    "is_external": False,
+                    "is_orphan": True,
+                    "reasoning": {},
+                }
+                trades.append(trade)
+                
+                # Update totals
+                total_pnl += pnl
+                if pnl > 0:
+                    winners += 1
+                elif pnl < 0:
+                    losers += 1
+                continue
+
+            # Process normal DB trade
+            is_hands_off = symbol in hands_off_denylist
+            is_external = row.get("mode") == "external" or not row.get("strategy")
+            reasoning_json = row.get("reasoning_json")
+
+            pnl = _safe_float(row.get("pnl"), 0.0)
+            entry_price = _safe_float(row.get("entry_price"))
+            stop_loss = _safe_float(row.get("stop_loss"))
+            take_profit = _safe_float(row.get("take_profit"))
+            quantity = int(row.get("quantity") or 0)
+
+            r_multiple = _calc_r(pnl, entry_price, stop_loss, quantity)
+
+            # Parse reasoning JSON for decision context
+            reasoning = {}
+            if reasoning_json:
+                try:
+                    reasoning = json.loads(reasoning_json) if isinstance(reasoning_json, str) else reasoning_json
+                except Exception:
+                    pass
+
+            # Parse snapshot data for expanded reasoning
+            price_vol = {}
+            news_ctx = {}
+            regime_ctx = {}
+            snapshot_extra = {}
+
+            if row.get("price_vol_json"):
+                try:
+                    price_vol = json.loads(row["price_vol_json"])
+                except Exception:
+                    pass
+            if row.get("news_json"):
+                try:
+                    news_ctx = json.loads(row["news_json"])
+                except Exception:
+                    pass
+            if row.get("regime_json"):
+                try:
+                    regime_ctx = json.loads(row["regime_json"])
+                except Exception:
+                    pass
+            if row.get("snapshot_extra_json"):
+                try:
+                    snapshot_extra = json.loads(row["snapshot_extra_json"])
+                except Exception:
+                    pass
+
+            has_reasoning = bool(price_vol or reasoning.get("setup_type") or reasoning.get("rs_vs_spy"))
+            is_orphan = not has_reasoning and not is_external
+
+            trade = {
+                "id": row["id"],
+                "symbol": symbol,
+                "side": row["side"],
+                "strategy": row.get("strategy") or "unknown",
+                "entry_time": str(row.get("entry_time") or ""),
+                "entry_time_et": _format_time_et(row.get("entry_time")),
+                "exit_time": str(row.get("exit_time") or ""),
+                "exit_time_et": _format_time_et(row.get("exit_time")),
+                "entry_price": _scrub(entry_price),
+                "exit_price": _scrub(_safe_float(row.get("exit_price"))),
+                "quantity": quantity,
+                "stop_loss": _scrub(stop_loss),
+                "take_profit": _scrub(take_profit),
+                "pnl": round(pnl, 2),
+                "pnl_pct": _scrub(row.get("pnl_pct")),
+                "r_multiple": round(r_multiple, 2) if r_multiple is not None else None,
+                "exit_reason": row.get("exit_reason") or "unknown",
+                "hold_time_min": _calc_hold_time(row.get("entry_time"), row.get("exit_time")),
+                "confidence": _scrub(row.get("confidence")),
+                "meta_proba": _scrub(row.get("meta_proba")),
+                "is_hands_off": is_hands_off,
+                "is_external": is_external,
+                "is_orphan": is_orphan,
+                "reasoning": {
+                    "setup_type": reasoning.get("setup_type") or reasoning.get("strategy"),
+                    "rs_vs_spy": _scrub(reasoning.get("rs_vs_spy")),
+                    "rs_basis": reasoning.get("rs_basis"),
+                    "rsi": _scrub(price_vol.get("rsi")),
+                    "volume_ratio": _scrub(price_vol.get("volume_ratio")),
+                    "score": _scrub(reasoning.get("score") or reasoning.get("heuristic_score")),
+                    "gates_passed": reasoning.get("gates_passed") or reasoning.get("gates"),
+                    "shadow_gates": reasoning.get("shadow_gates"),
+                    "regime": regime_ctx.get("regime"),
+                    "spy_slope_pct": _scrub(regime_ctx.get("spy_slope_pct")),
+                    "news_gate_action": news_ctx.get("gate_action"),
+                    "news_article_count": news_ctx.get("article_count"),
+                    "exit_rationale": reasoning.get("exit_rationale") or row.get("exit_reason"),
+                    "mc_size_mult": _scrub(reasoning.get("mc_size_mult")),
+                    "is_day_trade": reasoning.get("is_day_trade"),
+                    "flatten_hour": reasoning.get("flatten_hour"),
+                },
+            }
+            trades.append(trade)
+
+            # Update totals
+            total_pnl += pnl
+            if r_multiple is not None:
+                total_r += r_multiple
+                valid_r_count += 1
+            if pnl > 0:
+                winners += 1
+            elif pnl < 0:
+                losers += 1
+
+            # Bot-only stats (exclude hands_off and external)
+            if not is_hands_off and not is_external:
+                bot_count += 1
+                bot_total_pnl += pnl
+                if r_multiple is not None:
+                    bot_total_r += r_multiple
+                    bot_valid_r_count += 1
+                if pnl > 0:
+                    bot_winners += 1
+                elif pnl < 0:
+                    bot_losers += 1
+
+        total_count = len(trades)
+        summary = {
+            "date": date,
+            "trades": total_count,
+            "winners": winners,
+            "losers": losers,
+            "win_rate": round(100 * winners / total_count, 1) if total_count > 0 else 0,
+            "pnl": round(total_pnl, 2),
+            "total_r": round(total_r, 2) if valid_r_count > 0 else None,
+            "avg_r": round(total_r / valid_r_count, 2) if valid_r_count > 0 else None,
+            "bot_trades": bot_count,
+            "bot_winners": bot_winners,
+            "bot_losers": bot_losers,
+            "bot_win_rate": round(100 * bot_winners / bot_count, 1) if bot_count > 0 else 0,
+            "bot_pnl": round(bot_total_pnl, 2),
+            "bot_total_r": round(bot_total_r, 2) if bot_valid_r_count > 0 else None,
+            "bot_avg_r": round(bot_total_r / bot_valid_r_count, 2) if bot_valid_r_count > 0 else None,
+        }
+
+        return {"status": "success", "summary": summary, "trades": trades}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error querying activity: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+@app.get("/activity")
+async def get_activity_page():
+    """v-activity-page-2026-09-24: Activity page HTML.
+
+    Returns the Activity page if UI_ACTIVITY_PAGE is enabled, else 404.
+    """
+    if not Config().UI_ACTIVITY_PAGE:
+        raise HTTPException(status_code=404, detail="Activity page is disabled")
+
+    api_key = os.getenv("TRADING_API_KEY", "")
+    auth_script = f'<script>window.TRADING_API_KEY={json.dumps(api_key)};</script>'
+
+    try:
+        activity_template = _os.path.join(_template_dir, 'activity.html')
+        with open(activity_template, 'r') as f:
+            template_html = f.read()
+    except FileNotFoundError:
+        raise HTTPException(status_code=500, detail="Activity template not found")
+
+    html = template_html.replace("</head>", f"{auth_script}</head>", 1)
+    return HTMLResponse(content=html, media_type="text/html; charset=utf-8")
 
 
 @app.get("/api/decisions")

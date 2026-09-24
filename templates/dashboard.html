@@ -5592,21 +5592,37 @@
         // v-ui-header-2026-04-29: build the new top-bar nav and decorate
         // the logo + populate session uptime. Idempotent — safe to call
         // many times.
-        const _NAV_TABS = [
-            { id: 'dashboard',   label: 'Dashboard',         icon: 'bar-chart-3' },
-            { id: 'sentiment',   label: 'News & Sentiment',  icon: 'newspaper'   },
-            { id: 'backtest',    label: 'Backtesting',       icon: 'activity'    },
-            { id: 'settings',    label: 'Settings',          icon: 'settings'    },
-        ];
+        // v-activity-page-2026-09-24: conditionally include Activity link when flag is on
+        function _getNavTabs() {
+            const tabs = [
+                { id: 'dashboard',   label: 'Dashboard',         icon: 'bar-chart-3' },
+                { id: 'sentiment',   label: 'News & Sentiment',  icon: 'newspaper'   },
+                { id: 'backtest',    label: 'Backtesting',       icon: 'activity'    },
+            ];
+            // Activity page link (external page) — only shown when flag is on
+            if (window.UI_ACTIVITY_PAGE) {
+                tabs.push({ id: 'activity', label: 'Activity', icon: 'list', href: '/activity' });
+            }
+            tabs.push({ id: 'settings', label: 'Settings', icon: 'settings' });
+            return tabs;
+        }
+        const _NAV_TABS = _getNavTabs();
         function buildAppNav(activeId = 'dashboard') {
             const nav = document.getElementById('app-nav');
             if (!nav) return;
-            nav.innerHTML = _NAV_TABS.map(t => `
-                <button class="nav-btn ${t.id === activeId ? 'active' : ''}" onclick="switchAppTab('${t.id}')">
+            nav.innerHTML = _NAV_TABS.map(t => {
+                if (t.href) {
+                    // External link (Activity page)
+                    return `<a class="nav-btn" href="${t.href}" style="text-decoration:none">
+                        ${lucide(t.icon, 16)}
+                        <span>${t.label}</span>
+                    </a>`;
+                }
+                return `<button class="nav-btn ${t.id === activeId ? 'active' : ''}" onclick="switchAppTab('${t.id}')">
                     ${lucide(t.icon, 16)}
                     <span>${t.label}</span>
-                </button>
-            `).join('');
+                </button>`;
+            }).join('');
         }
         function switchAppTab(id) {
             // Drive existing switchTab() — keeps all old DOM logic (tab-content

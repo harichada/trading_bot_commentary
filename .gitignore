@@ -1,3 +1,7 @@
+# Node.js
+node_modules/
+package-lock.json
+
 # Sensitive files - NEVER commit credentials
 .env
 .env.local

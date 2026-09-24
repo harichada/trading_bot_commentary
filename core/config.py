@@ -3939,6 +3939,26 @@ class Config:
                 pass
         return float(self.manager.get('trading.alpaca_news_bus_interval_sec', 60.0))
 
+    @property
+    def UI_ACTIVITY_PAGE(self) -> bool:
+        """Enable the Activity page on the :9000 FastAPI UI dashboard.
+
+        v-activity-page-2026-09-24: when True (via UI_ACTIVITY_PAGE=1 env
+        or trading.ui_activity_page: true in config), exposes:
+          - GET /api/activity?date=YYYY-MM-DD&strategy=... endpoint
+          - /activity page with trade-by-trade log, expandable reasoning
+          - Daily summary strip (trades, win rate, $ PnL, total R)
+
+        When False: /activity returns 404, nav entry hidden, no impact
+        on existing dashboard.
+
+        SAFE OFF-PATH: default False. Set UI_ACTIVITY_PAGE=1 to enable.
+        """
+        env_val = os.getenv("UI_ACTIVITY_PAGE")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.ui_activity_page', False))
+
 
 # Initialize configuration
 config = Config()
