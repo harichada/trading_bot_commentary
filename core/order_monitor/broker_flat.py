@@ -103,15 +103,22 @@ async def handle_broker_flat_detected(
     NOT auto-removed — operator must manually reconcile. When True, position
     is auto-removed from tracking.
 
+    v-pyramid-lock-broker-flat-2026-09-24: added CLEAR_PYRAMID_LOCK_ON_BROKER_FLAT
+    flag control. When True (default — bug fix), clears the anti_pyramid
+    _recent_entry_attempts lock for this symbol. RCA: INTC midday bump was
+    blocked by stale 141-min lock from a morning accept that went broker_flat
+    ~79s later. Lock should not survive a flat that never held.
+
     Actions (always):
       1. Clear managed_by_bot → stop all exit management
       2. Cancel any working exit orders for this symbol
       3. Clear bracket IDs
       4. Audit for post-mortem
+      5. Clear anti_pyramid lock if CLEAR_PYRAMID_LOCK_ON_BROKER_FLAT=True
 
     Actions (when ENABLE_GHOST_FLATTEN_AFTER_BROKER_FLAT=True OR explicit close):
-      5. Mark position as CLOSED (external close)
-      6. Remove from active tracking
+      6. Mark position as CLOSED (external close)
+      7. Remove from active tracking
 
     This breaks the infinite re_bracket loop that occurs when:
       - Bot thinks it has a position (ghost qty in self.positions)
@@ -127,6 +134,7 @@ async def handle_broker_flat_detected(
     symbol = position.symbol
     cfg = Config()
     ghost_flatten_enabled = cfg.ENABLE_GHOST_FLATTEN_AFTER_BROKER_FLAT
+    clear_pyramid_lock = cfg.CLEAR_PYRAMID_LOCK_ON_BROKER_FLAT
 
     engine._audit(
         "order_monitor", symbol, "broker_flat_detected",
@@ -134,6 +142,7 @@ async def handle_broker_flat_detected(
         local_qty=position.quantity,
         managed_by_bot=getattr(position, 'managed_by_bot', False),
         ghost_flatten_enabled=ghost_flatten_enabled,
+        clear_pyramid_lock=clear_pyramid_lock,
     )
 
     # Clear managed_by_bot to stop any other exit paths
@@ -151,6 +160,15 @@ async def handle_broker_flat_detected(
     # Clear bracket IDs (already rejected/cancelled anyway)
     clear_bracket_ids(position)
 
+    # v-pyramid-lock-broker-flat-2026-09-24: clear anti_pyramid lock if enabled.
+    # RCA: INTC midday bump blocked by stale 141-min lock from morning accept
+    # that went broker_flat ~79s later. Lock should not survive a flat.
+    pyramid_lock_cleared = False
+    if clear_pyramid_lock:
+        pyramid_lock_cleared = engine._clear_recent_attempt_for_symbol(
+            symbol, f"broker_flat_{reason}"
+        )
+
     # v-broker-leg-authority-2026-09-14: respect ENABLE_GHOST_FLATTEN_AFTER_BROKER_FLAT
     # When disabled, we alert but don't auto-remove the ghost position.
     # Reasons to keep the ghost: operator may want to investigate desync,
@@ -167,6 +185,7 @@ async def handle_broker_flat_detected(
         # Remove from active tracking (will be picked up by next sync)
         engine.positions.pop(symbol, None)
 
+        _pyramid_msg = " Anti-pyramid lock cleared." if pyramid_lock_cleared else ""
         engine.commentary.add_commentary(TradingCommentary(
             timestamp=datetime.now(),
             type=CommentaryType.WARNING,
@@ -174,18 +193,24 @@ async def handle_broker_flat_detected(
             title=f"🔄 External Close Detected",
             message=(
                 f"Position {symbol} was closed externally (broker shows flat). "
-                f"Reason: {reason}. Bot will stop managing this position."
+                f"Reason: {reason}. Bot will stop managing this position.{_pyramid_msg}"
             ),
-            data={'reason': reason, 'auto_flattened': True},
+            data={
+                'reason': reason,
+                'auto_flattened': True,
+                'pyramid_lock_cleared': pyramid_lock_cleared,
+            },
             importance=9
         ))
 
         logger.info(
-            "broker_flat_handled symbol=%s reason=%s — position removed from tracking",
-            symbol, reason,
+            "broker_flat_handled symbol=%s reason=%s pyramid_lock_cleared=%s "
+            "— position removed from tracking",
+            symbol, reason, pyramid_lock_cleared,
         )
     else:
         # Shadow-log mode: alert but don't auto-remove
+        _pyramid_msg = " Anti-pyramid lock cleared." if pyramid_lock_cleared else ""
         engine.commentary.add_commentary(TradingCommentary(
             timestamp=datetime.now(),
             type=CommentaryType.WARNING,
@@ -195,14 +220,18 @@ async def handle_broker_flat_detected(
                 f"Position {symbol} appears closed at broker (shows flat) but "
                 f"local state still shows LIVE. Reason: {reason}. "
                 f"ENABLE_GHOST_FLATTEN_AFTER_BROKER_FLAT=False, so position "
-                f"NOT auto-removed. Manual reconciliation required."
+                f"NOT auto-removed. Manual reconciliation required.{_pyramid_msg}"
             ),
-            data={'reason': reason, 'auto_flattened': False},
+            data={
+                'reason': reason,
+                'auto_flattened': False,
+                'pyramid_lock_cleared': pyramid_lock_cleared,
+            },
             importance=10
         ))
 
         logger.warning(
-            "broker_flat_ghost_detected symbol=%s reason=%s — "
+            "broker_flat_ghost_detected symbol=%s reason=%s pyramid_lock_cleared=%s — "
             "ghost_flatten_disabled, position NOT removed (manual action required)",
             symbol, reason,
         )

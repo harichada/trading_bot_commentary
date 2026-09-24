@@ -2037,6 +2037,48 @@ class TradingEngineWithCommentary:
                     sym, order_id, reason,
                 )
 
+    def _clear_recent_attempt_for_symbol(self, symbol: str, reason: str) -> bool:
+        """v-pyramid-lock-broker-flat-2026-09-24: clear ghost pyramid lock by symbol.
+
+        Called when a position goes broker_flat/ghost shortly after entry.
+        The 240-minute anti_pyramid lock should not persist when there is
+        no position to pyramid into.
+
+        RCA 2026-09-24 INTC midday bump:
+          - Morning accept at 09:58 → _recent_entry_attempts[INTC] = 09:58
+          - Position went broker_flat ~79s later (10:00ish)
+          - Lock persisted for full 240 minutes
+          - Midday continuation at 12:19:40 blocked with age_min=141
+          - Restart wiped memory → 12:45 fill succeeded
+
+        Fix: when broker_flat detected, clear _recent_entry_attempts[symbol]
+        so re-entry is permitted (no position to pyramid into).
+
+        Returns True if a lock was cleared, False otherwise.
+        Logs pyramid_lock_cleared_broker_flat for shadow/measure.
+        """
+        if not hasattr(self, '_recent_entry_attempts'):
+            return False
+
+        attempt_time = self._recent_entry_attempts.pop(symbol, None)
+        if attempt_time is not None:
+            age_min = (datetime.now() - attempt_time).total_seconds() / 60
+            self._audit(
+                "anti_pyramid", symbol, "pyramid_lock_cleared_broker_flat",
+                reason,
+                original_attempt_time=attempt_time.isoformat(),
+                age_min=round(age_min, 1),
+                lock_would_have_blocked_until_min=240,
+                remaining_lock_min=round(240 - age_min, 1),
+            )
+            logger.info(
+                "pyramid_lock_cleared_broker_flat symbol=%s reason=%s "
+                "age_min=%.1f remaining_lock_min=%.1f",
+                symbol, reason, age_min, 240 - age_min,
+            )
+            return True
+        return False
+
     async def _verify_order_fill(self, order_id: str, signal, max_retries: int = 30) -> bool:
         """Verify order filled with retries.
 

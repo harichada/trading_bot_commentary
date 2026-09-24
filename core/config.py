@@ -1148,6 +1148,35 @@ class Config:
         return bool(self.manager.get('trading.enable_ghost_flatten_after_broker_flat', False))
 
     @property
+    def CLEAR_PYRAMID_LOCK_ON_BROKER_FLAT(self) -> bool:
+        """v-pyramid-lock-broker-flat-2026-09-24: clear anti-pyramid lock when
+        position goes broker_flat/ghost shortly after entry.
+
+        RCA 2026-09-24 INTC midday bump: morning accept at 09:58, position went
+        broker_flat ~79s later. The 240-minute anti_pyramid lock persisted even
+        though there was no position to pyramid into. Midday continuation at
+        12:19:40 was blocked with age_min=141 (still within 240m cooldown).
+
+        When True (default — this is a BUG FIX):
+          - If a position goes broker_flat/ghost, clear _recent_entry_attempts
+            for that symbol so re-entry is not blocked by a ghost lock.
+          - Shadow-logs pyramid_lock_cleared_broker_flat for measure/audit.
+          - Does NOT weaken anti_pyramid for real held positions (only clears
+            when the position is confirmed flat at broker).
+
+        When False:
+          - Legacy behavior: lock persists for full 240 minutes regardless of
+            whether position was flattened externally.
+
+        SAFE DEFAULT: True (fixes the ghost-lock bug). Set to False only if you
+        want to preserve the old (buggy) behavior for investigation.
+        """
+        env_val = os.getenv("CLEAR_PYRAMID_LOCK_ON_BROKER_FLAT")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.clear_pyramid_lock_on_broker_flat', True))
+
+    @property
     def QUOTE_REFRESH_SEC(self) -> float:
         """Cadence of the quote streamer per active symbol. 3s × 10
         symbols = ~3.3 req/s to Schwab. Tighten only if you have

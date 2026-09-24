@@ -3864,3 +3864,87 @@ class TestCorrelationIgnoreUnmanagedBehavior:
         assert "MU" not in correlation_positions, "MU (denylist) should be excluded"
         assert "HQGE" not in correlation_positions, "HQGE (denylist) should be excluded"
         assert "AMD" in correlation_positions, "AMD (not denylist, managed) should be included"
+
+
+# ── v-pyramid-lock-broker-flat-2026-09-24 ─────────────────────────────
+
+class TestPyramidLockClearOnBrokerFlat:
+    """v-pyramid-lock-broker-flat-2026-09-24: clear anti_pyramid lock on broker_flat.
+
+    RCA 2026-09-24 INTC midday bump:
+      - Morning accept at 09:58 → _recent_entry_attempts[INTC] = 09:58
+      - Position went broker_flat ~79s later (10:00ish)
+      - Lock persisted for full 240 minutes
+      - Midday continuation at 12:19:40 blocked with age_min=141
+      - Restart wiped memory → 12:45 fill succeeded
+
+    Fix: when broker_flat detected, clear _recent_entry_attempts[symbol]
+    so re-entry is not blocked by a ghost lock. Default ON (bug fix).
+    """
+
+    def test_config_property_exists_default_true(self):
+        """CLEAR_PYRAMID_LOCK_ON_BROKER_FLAT must exist and default True (bug fix)."""
+        from core.config import Config
+        cfg = Config()
+        assert hasattr(cfg, 'CLEAR_PYRAMID_LOCK_ON_BROKER_FLAT')
+        # Default must be True — this is a BUG FIX, not a new feature
+        assert cfg.CLEAR_PYRAMID_LOCK_ON_BROKER_FLAT is True, (
+            "CLEAR_PYRAMID_LOCK_ON_BROKER_FLAT must default to True — "
+            "this is a bug fix: lock should not survive a flat that never held"
+        )
+
+    def test_clear_recent_attempt_for_symbol_method_exists(self):
+        """_clear_recent_attempt_for_symbol is defined on the engine class."""
+        src = ENGINE_PATH.read_text()
+        assert "def _clear_recent_attempt_for_symbol(self, symbol: str, reason: str)" in src
+
+    def test_clear_method_pops_and_returns_bool(self):
+        """The helper pops the symbol and returns True if cleared, False otherwise."""
+        src = ENGINE_PATH.read_text()
+        marker = "def _clear_recent_attempt_for_symbol"
+        start = src.index(marker)
+        body = src[start : start + 2500]
+        # Must pop from _recent_entry_attempts
+        assert "self._recent_entry_attempts.pop(symbol, None)" in body
+        # Must return True if popped, False otherwise
+        assert "return True" in body
+        assert "return False" in body
+
+    def test_clear_method_audits_when_lock_cleared(self):
+        """Clearing a lock must emit an audit for shadow/measure."""
+        src = ENGINE_PATH.read_text()
+        marker = "def _clear_recent_attempt_for_symbol"
+        start = src.index(marker)
+        body = src[start : start + 1500]
+        # Must audit with pyramid_lock_cleared_broker_flat
+        assert "pyramid_lock_cleared_broker_flat" in body
+        # Must include age_min for measurement
+        assert "age_min" in body
+
+    def test_broker_flat_calls_clear_when_enabled(self):
+        """handle_broker_flat_detected calls _clear_recent_attempt_for_symbol
+        when CLEAR_PYRAMID_LOCK_ON_BROKER_FLAT is True."""
+        from pathlib import Path
+        broker_flat_path = Path(__file__).parent.parent / "core" / "order_monitor" / "broker_flat.py"
+        src = broker_flat_path.read_text()
+
+        # Must read the config flag
+        assert "CLEAR_PYRAMID_LOCK_ON_BROKER_FLAT" in src
+        # Must call the engine method
+        assert "_clear_recent_attempt_for_symbol" in src
+        # Must be called with broker_flat reason
+        assert 'broker_flat_' in src
+
+    def test_broker_flat_marker_present(self):
+        """v-pyramid-lock-broker-flat-2026-09-24 marker in broker_flat.py."""
+        from pathlib import Path
+        broker_flat_path = Path(__file__).parent.parent / "core" / "order_monitor" / "broker_flat.py"
+        src = broker_flat_path.read_text()
+        assert "v-pyramid-lock-broker-flat-2026-09-24" in src
+
+    def test_commentary_includes_pyramid_lock_cleared(self):
+        """Commentary messages include pyramid_lock_cleared status."""
+        from pathlib import Path
+        broker_flat_path = Path(__file__).parent.parent / "core" / "order_monitor" / "broker_flat.py"
+        src = broker_flat_path.read_text()
+        assert "pyramid_lock_cleared" in src
