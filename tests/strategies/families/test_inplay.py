@@ -122,9 +122,9 @@ def test_orb_inplay_no_context_columns_proposes_nothing():
 
 def test_pead_smallcap_long_entry_and_levels():
     from strategies.families.inplay import pead_smallcap_entries
-    rows = [{"open": 20.0, "high": 20.2, "low": 19.8, "close": 20.0} for _ in range(6)]
-    rows.append({"open": 20.9, "high": 21.1, "low": 20.8, "close": 21.0})   # bar 6 (10:00): closed above open
-    rows.append({"open": 21.05, "high": 21.2, "low": 21.0, "close": 21.1})  # bar 7: fill bar (i+1)
+    rows = [{"open": 20.0, "high": 20.2, "low": 19.8, "close": 20.0} for _ in range(5)]
+    rows.append({"open": 20.9, "high": 21.1, "low": 20.8, "close": 21.0})   # bar 5 (closes 10:00): green
+    rows.append({"open": 21.05, "high": 21.2, "low": 21.0, "close": 21.1})  # bar 6 (10:00): fill bar (i+1)
     rows.append({"open": 21.10, "high": 21.2, "low": 21.0, "close": 21.1})
     bars = _bars("2025-01-02", rows)
     ind = _const_ind(bars, ctx_earnings_prev=True, ctx_adv_bucket="small", ctx_gap_pct=5.0,
@@ -138,14 +138,14 @@ def test_pead_smallcap_long_entry_and_levels():
     stop = px - 1.5 * atr_dollars
     risk = px - stop
     target = px + 3 * risk
-    assert e.side == "long" and e.tag == "pead_long" and e.entry_ts == bars.index[7]
+    assert e.side == "long" and e.tag == "pead_long" and e.entry_ts == bars.index[6]
     assert e.stop_px == pytest.approx(stop) and e.target_px == pytest.approx(target)
     assert e.time_stop == 10 and e.hold_kind == "multiday"
 
 
 def test_pead_smallcap_requires_earnings_prev():
     from strategies.families.inplay import pead_smallcap_entries
-    rows = [{"open": 20.0, "high": 20.2, "low": 19.8, "close": 20.0} for _ in range(6)]
+    rows = [{"open": 20.0, "high": 20.2, "low": 19.8, "close": 20.0} for _ in range(5)]
     rows.append({"open": 20.9, "high": 21.1, "low": 20.8, "close": 21.0})
     rows.append({"open": 21.05, "high": 21.2, "low": 21.0, "close": 21.1})
     rows.append({"open": 21.10, "high": 21.2, "low": 21.0, "close": 21.1})
@@ -159,7 +159,7 @@ def test_pead_smallcap_requires_earnings_prev():
 def test_pead_smallcap_two_sessions_both_produce_entries():
     from strategies.families.inplay import pead_smallcap_entries
     days = ["2025-01-02", "2025-01-03"]
-    rows = [{"open": 20.0, "high": 20.2, "low": 19.8, "close": 20.0} for _ in range(6)]
+    rows = [{"open": 20.0, "high": 20.2, "low": 19.8, "close": 20.0} for _ in range(5)]
     rows.append({"open": 20.9, "high": 21.1, "low": 20.8, "close": 21.0})
     rows.append({"open": 21.05, "high": 21.2, "low": 21.0, "close": 21.1})
     rows.append({"open": 21.10, "high": 21.2, "low": 21.0, "close": 21.1})
@@ -175,7 +175,7 @@ def test_pead_smallcap_two_sessions_both_produce_entries():
 
 def test_pead_smallcap_no_context_columns_proposes_nothing():
     from strategies.families.inplay import pead_smallcap_entries
-    rows = [{"open": 20.0, "high": 20.2, "low": 19.8, "close": 20.0} for _ in range(6)]
+    rows = [{"open": 20.0, "high": 20.2, "low": 19.8, "close": 20.0} for _ in range(5)]
     rows.append({"open": 20.9, "high": 21.1, "low": 20.8, "close": 21.0})
     rows.append({"open": 21.05, "high": 21.2, "low": 21.0, "close": 21.1})
     rows.append({"open": 21.10, "high": 21.2, "low": 21.0, "close": 21.1})
@@ -245,3 +245,39 @@ def test_family_descriptors():
     assert by_name["orb_inplay"].hold_kind == "intraday" and set(by_name["orb_inplay"].sides) == {"long", "short"}
     assert by_name["pead_smallcap"].hold_kind == "multiday" and set(by_name["pead_smallcap"].sides) == {"long", "short"}
     assert by_name["rs_leader"].hold_kind == "multiday" and set(by_name["rs_leader"].sides) == {"long"}
+
+
+# ---- v-playbook-desk-b1-6 (final review, Minor 5) — PEAD entry bar ------------------------------
+
+def test_pead_entry_bar_is_the_bar_closing_at_1000():
+    """The spec's PEAD entry is "signal on the bar that closes at 10:00, fill at the 10:00
+    bar's open". On a 5-minute RTH grid (09:30 = bar 0) that closing bar is bar 5, and
+    `make_entry` fills at bar 6 -- the 10:00 bar. Bar 6 as the signal bar shifted the whole
+    family five minutes late."""
+    from strategies.families.inplay import PEAD_ENTRY_BAR
+    assert PEAD_ENTRY_BAR == 5
+
+
+def test_pead_smallcap_signals_on_bar5_and_fills_at_the_1000_bar():
+    from strategies.families.inplay import pead_smallcap_entries
+    rows = [{"open": 20.0, "high": 20.2, "low": 19.8, "close": 20.0} for _ in range(5)]
+    rows.append({"open": 20.9, "high": 21.1, "low": 20.8, "close": 21.0})   # bar 5 (closes 10:00)
+    rows.append({"open": 21.05, "high": 21.2, "low": 21.0, "close": 21.1})  # bar 6 (10:00): fill bar
+    rows.append({"open": 21.10, "high": 21.2, "low": 21.0, "close": 21.1})
+    bars = _bars("2025-01-02", rows)
+    ind = _const_ind(bars, ctx_earnings_prev=True, ctx_adv_bucket="small", ctx_gap_pct=5.0,
+                     ctx_eps_surprise_pct=12.0, ctx_atr14_pct=3.0, session_open=20.0)
+    es = pead_smallcap_entries(bars, ind, pd.DataFrame(), pd.DataFrame(),
+                               {"s": 10, "hold_days": 10, "min_gap": 2})
+    assert len(es) == 1
+    assert es[0].entry_ts == bars.index[6] == pd.Timestamp("2025-01-02 10:00")
+    assert es[0].entry_px == pytest.approx(21.05)
+
+
+def test_pead_target_r_is_documented_as_an_addition_to_the_spec():
+    """`PEAD_TARGET_R` is not in the spec's PEAD description; the module docstring has to say
+    so, since an undocumented 3R target silently changes the family's payoff profile."""
+    import strategies.families.inplay as mod
+    assert mod.PEAD_TARGET_R == 3.0
+    doc = mod.__doc__ or ""
+    assert "PEAD_TARGET_R" in doc

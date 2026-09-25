@@ -245,7 +245,8 @@ def test_cmd_promote_isolates_a_single_familys_ledger_error(tmp_path, monkeypatc
     rc = cmd_promote(a)
     assert rc == 0
 
-    out = tmp_path / "docs" / "research" / "strategy_hunt_promotion.md"
+    # v-playbook-desk-b1-6 (Minor 2): the markdown belongs to the root it was computed from.
+    out = tmp_path / "strategy_hunt_root" / "reports" / "strategy_hunt_promotion.md"
     assert out.exists()
     text = out.read_text()
     assert "| orb " in text

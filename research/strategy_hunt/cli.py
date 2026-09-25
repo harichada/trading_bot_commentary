@@ -10,16 +10,14 @@ import time
 from pathlib import Path
 
 from core.desk.playbook import DEFAULT_DESK_DIR as PLAYBOOK_DESK_DIR
+from research.strategy_hunt.cli_args import BASELINE_SHUFFLE_SEED, add_common_args
 from research.strategy_hunt.fit.writer import write_fit
-from research.strategy_hunt.paths import SHUFFLE_VARIANT
+from research.strategy_hunt.paths import SHUFFLE_VARIANT, reports_dir
 from research.strategy_hunt.run import DEFAULT_ROOT, run_symbols, score_regime_root, score_root, write_manifest
 from strategies.families import family_names
 
 logger = logging.getLogger("strategy_hunt.cli")
 CONTEXT_SYMBOLS = ("SPY", "VIX")
-# v-playbook-desk-b1-5 task 10: `all` runs the shuffled baseline with this fixed seed, so the
-# control is reproducible and the same across nightly runs.
-BASELINE_SHUFFLE_SEED = 7
 
 
 def _symbols_arg(value: str | None, root: Path) -> list[str]:
@@ -282,7 +280,12 @@ def cmd_promote(a: argparse.Namespace) -> int:
     md = render_promotion(rows)
     print(md)
 
-    out = Path("docs/research/strategy_hunt_promotion.md")
+    # v-playbook-desk-b1-6 (final review, Minor 2): the promotion table describes *this root's*
+    # snapshot, so it belongs beside that root's report and manifest. `reports_dir` keeps the
+    # committed `research/reports/strategy_hunt/` for the default root and sends any other root
+    # (a cost control, a scratch run) to `<root>/reports/`, so a control can no longer overwrite
+    # the real run's committed promotion table.
+    out = reports_dir(a.root) / "strategy_hunt_promotion.md"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(md)
     print(f"promote: {out}")
@@ -323,29 +326,14 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="python -m research.strategy_hunt")
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    def common(sp):
-        sp.add_argument("--root", type=Path, default=DEFAULT_ROOT)
-        sp.add_argument("--symbols", default=None, help="comma list or @file")
-        sp.add_argument("--families", default=None, help="comma list; default all")
-        sp.add_argument("--min-days", type=int, default=250)
-        sp.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 2) - 2))
-        sp.add_argument("--force", action="store_true")
-        sp.add_argument("--cost-mult", type=float, default=1.0)
-        sp.add_argument("--shuffle-seed", type=int, default=None)
-        sp.add_argument("--notional", type=float, default=6000.0)
-        sp.add_argument("--no-coldstart", action="store_true")
-        sp.add_argument("--no-baseline", action="store_true",
-                        help="`all` only: skip the shuffled baseline run. Whatever baseline is "
-                             "already in the root is reused; scoring flags it baseline_mismatch / "
-                             "baseline_stale if it is partial or old, and pooled rows fall back to "
-                             "no_baseline only when the root has none at all")
-        sp.add_argument("--postgres", action="store_true")
+    def common(sp, user_shuffle_seed: bool = True):
+        add_common_args(sp, DEFAULT_ROOT, user_shuffle_seed=user_shuffle_seed)
 
     for name, fn in (("export", cmd_export), ("context", cmd_context),
                      ("earnings", cmd_earnings), ("calibrate", cmd_calibrate), ("run", cmd_run),
                      ("score", cmd_score), ("report", cmd_report), ("all", cmd_all)):
         sp = sub.add_parser(name)
-        common(sp)
+        common(sp, user_shuffle_seed=(name != "all"))
         sp.set_defaults(fn=fn)
 
     # v-playbook-desk-b1-2026-09-25 (Task 7b): `news` gets its own subparser (like

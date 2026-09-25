@@ -61,6 +61,9 @@ __all__ = ["FitRow", "StrategyFit"]
 # ────────────────────────────────────────────────────────────────────
 
 _PASS_VERDICT = "PASS"
+# The only verdict that blocks a pooled row from standing in for a symbol's lane
+# (v-playbook-desk-b1-6, Important 3): a measured FAIL is evidence, a WATCH is a gap.
+_FAIL_VERDICT = "FAIL"
 
 
 class StrategyFit:
@@ -216,7 +219,8 @@ class StrategyFit:
         """Best available row for this lane *in this regime*, in precedence order:
 
         1. the symbol's own row for that regime,
-        2. the universe-pooled row for that regime (`symbol == "*"`, `pooled`),
+        2. the universe-pooled row for that regime (`symbol == "*"`, `pooled`) — but only
+           when the symbol's *unconditional* row for this lane is absent or is not FAIL,
         3. the unconditional row for the lane,
         4. None.
 
@@ -225,16 +229,28 @@ class StrategyFit:
         (`score/regime_rows.REGIME_ROW_MIN_N`), precisely so a thin sample cannot
         manufacture a FAIL that outranks the pooled or unconditional evidence below it.
 
+        The step-2 restriction is v-playbook-desk-b1-6 (final review, Important 3). A pooled
+        PASS is the family-level claim "this lane works in this regime somewhere in the
+        universe"; it may *fill a gap* for a symbol the pipeline has not measured, and it may
+        stand in front of a WATCH ("not measured well enough yet"), but it must never
+        overrule the pipeline's own measured FAIL for this symbol and lane — that would let
+        the universe's average authorise precisely the symbol the evidence rejected.
+
         A stale, missing or unloaded snapshot yields None, exactly as `lookup` does.
         """
         if self.is_stale():
             return None
         key = f"{strategy}:{side}:{regime}"
+        lane = f"{strategy}:{side}"
         with self._lock:
-            row = self._regime_rows.get(symbol, {}).get(key) or self._pooled_rows.get(key)
-        if row is not None:
-            return row
-        return self.lookup(symbol, strategy, side)   # outside the lock: lookup takes it
+            own = self._regime_rows.get(symbol, {}).get(key)
+            uncond = self._rows.get(symbol, {}).get(lane)
+            pooled = self._pooled_rows.get(key)
+        if own is not None:
+            return own
+        if pooled is not None and (uncond is None or uncond.verdict != _FAIL_VERDICT):
+            return pooled
+        return uncond
 
     def allowed_lanes(self, symbol: str) -> List[FitRow]:
         """PASS rows for `symbol`, sorted by score desc then strategy

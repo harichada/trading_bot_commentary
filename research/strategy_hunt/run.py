@@ -17,7 +17,7 @@ from research.strategy_hunt.context import load_context_slice
 from research.strategy_hunt.data.bars import load_bars5, load_daily
 from research.strategy_hunt.data.earnings import earnings_days
 from research.strategy_hunt.data.news import load_news
-from research.strategy_hunt.data.regime import regime_at, regime_series
+from research.strategy_hunt.data.regime import build_regime_lookup
 from research.strategy_hunt.data.splits import load_adjusted
 from research.strategy_hunt.fit.coldstart import FEATURES, predict_coldstart, symbol_characteristics, train_coldstart
 from research.strategy_hunt.fit.writer import build_row
@@ -67,9 +67,15 @@ def shuffle_bars(bars5: pd.DataFrame, seed: int) -> pd.DataFrame:
 
 
 def load_context(root: Path, spy_symbol: str = "SPY", vix_symbol: str = "VIX") -> dict[str, Any]:
+    """The run-wide market context: SPY 5-minute bars, SPY dailies, and the regime lookup.
+
+    v-playbook-desk-b1-6 (final review, Critical 1): `regime_lookup` replaces the old daily
+    `regime` series. It is built from `spy5` (not `spy_daily`) so a trade can be labelled with
+    SPY's move *up to the entry bar* rather than the entry day's close -- see
+    `research/strategy_hunt/data/regime.py`. VIX stays daily and enters lagged one session.
+    """
     spy5, spy_d, vix_d = load_bars5(root, spy_symbol), load_daily(root, spy_symbol), load_daily(root, vix_symbol)
-    regime = regime_series(spy_d, vix_d) if not spy_d.empty and not vix_d.empty else pd.Series(dtype=object)
-    return {"spy5": spy5, "spy_daily": spy_d, "regime": regime}
+    return {"spy5": spy5, "spy_daily": spy_d, "regime_lookup": build_regime_lookup(spy5, vix_d)}
 
 
 def _git_commit() -> str:
@@ -113,8 +119,10 @@ def process_symbol(symbol: str, root: Path, family_names: list[str], notional: f
         news = load_news(root, symbol)
         earnings = earnings_days(root, symbol, daily)
         ctx = context or load_context(root)
-        regime = ctx["regime"]
-        lookup = (lambda ts: regime_at(regime, ts)) if len(regime) else None
+        # One lookup object serves both variants: it is built from the *real* SPY bars, which
+        # the shuffle control never permutes (only `bars5`, this symbol's own tape, is shuffled),
+        # so the control is measured against the same regime labels as the real tape.
+        lookup = ctx["regime_lookup"] or None
         cost_model = CostModel.from_bars(bars5, notional, slippage_override=override).scaled(cost_mult)
         # v-playbook-desk-b1-2026-09-25: the symbol's cross-sectional universe-context slice
         # (rvol rank, RS rank, catalysts, ...), joined onto `ind` as `ctx_*` columns so the

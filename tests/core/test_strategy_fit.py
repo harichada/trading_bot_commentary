@@ -248,3 +248,52 @@ def test_snapshot_with_a_baseline_pooled_rows_section_loads_and_is_ignored(tmp_p
     assert fit.lookup("NVDA", "orb", "long").verdict == "PASS"
     assert fit.summary()["n_pooled_pass"] == 0 and fit.summary()["n_regime_rows"] == 0
     assert fit.lookup_regime("NVDA", "orb", "long", "risk_on").symbol == "NVDA"
+
+
+# ──────────────────────
+# v-playbook-desk-b1-6 (final review, Important 3) — pooled rows never override a symbol's FAIL
+# ──────────────────────
+
+def test_pooled_row_never_overrides_the_symbols_own_unconditional_fail(tmp_path):
+    """A pooled PASS is family-level evidence that may *fill a gap*; it is not permission to
+    trade a symbol the pipeline has already measured and failed for that lane."""
+    p = _regime_snap(
+        tmp_path, "2025-09-25T01:00:00",
+        rows={"NVDA": {"orb:long": _row("NVDA", "orb", "long", "FAIL", 0.0)}},
+        pooled_rows={"orb:long:risk_on": _rrow("*", "orb", "long", "PASS", 0.9, "risk_on", source="pooled")},
+    )
+    row = _fit(p).lookup_regime("NVDA", "orb", "long", "risk_on")
+    assert row.verdict == "FAIL" and row.symbol == "NVDA" and row.pooled is False
+
+
+def test_pooled_row_fills_a_gap_when_the_symbol_has_no_unconditional_row(tmp_path):
+    p = _regime_snap(
+        tmp_path, "2025-09-25T01:00:00",
+        rows={"TSLA": {"orb:long": _row("TSLA", "orb", "long", "FAIL", 0.0)}},
+        pooled_rows={"orb:long:risk_on": _rrow("*", "orb", "long", "PASS", 0.9, "risk_on", source="pooled")},
+    )
+    row = _fit(p).lookup_regime("NVDA", "orb", "long", "risk_on")
+    assert row.verdict == "PASS" and row.symbol == "*" and row.pooled is True
+
+
+def test_pooled_row_applies_over_a_symbol_watch(tmp_path):
+    """Only a FAIL blocks the pooled row: a WATCH is "not yet measured well enough", which is
+    exactly the gap a pooled PASS exists to fill."""
+    p = _regime_snap(
+        tmp_path, "2025-09-25T01:00:00",
+        rows={"NVDA": {"orb:long": _row("NVDA", "orb", "long", "WATCH", 0.1)}},
+        pooled_rows={"orb:long:risk_on": _rrow("*", "orb", "long", "PASS", 0.9, "risk_on", source="pooled")},
+    )
+    row = _fit(p).lookup_regime("NVDA", "orb", "long", "risk_on")
+    assert row.verdict == "PASS" and row.pooled is True
+
+
+def test_symbols_own_regime_row_still_wins_over_both(tmp_path):
+    p = _regime_snap(
+        tmp_path, "2025-09-25T01:00:00",
+        rows={"NVDA": {"orb:long": _row("NVDA", "orb", "long", "FAIL", 0.0)}},
+        regime_rows={"NVDA": {"orb:long:risk_on": _rrow("NVDA", "orb", "long", "PASS", 0.5, "risk_on")}},
+        pooled_rows={"orb:long:risk_on": _rrow("*", "orb", "long", "FAIL", 0.0, "risk_on", source="pooled")},
+    )
+    row = _fit(p).lookup_regime("NVDA", "orb", "long", "risk_on")
+    assert row.verdict == "PASS" and row.symbol == "NVDA" and row.regime == "risk_on"

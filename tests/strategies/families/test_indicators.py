@@ -100,8 +100,11 @@ def test_indicator_frame_joins_ctx_columns_per_session():
         index=pd.DatetimeIndex([DAYS[0], DAYS[1]], name="date"),
     )
     ind = indicator_frame(b, _daily(b), context=context)
-    assert (ind.loc[DAYS[0], "ctx_rvol_rank5"] == 1).all()
-    assert (ind.loc[DAYS[1], "ctx_rvol_rank5"] == 5).all()
+    # bar 0 is masked (v-playbook-desk-b1-6 Minor 6: rvol_rank5 ranks rvol_open5, which needs the
+    # first 5-minute bar to have closed); every later bar carries the session's value.
+    assert (ind.loc[DAYS[0], "ctx_rvol_rank5"].iloc[1:] == 1).all()
+    assert (ind.loc[DAYS[1], "ctx_rvol_rank5"].iloc[1:] == 5).all()
+    assert ind.loc[DAYS[0], "ctx_rvol_rank5"].iloc[:1].isna().all()
     assert (ind.loc[DAYS[0], "ctx_adv_bucket"] == "mega").all()
     assert (ind.loc[DAYS[1], "ctx_adv_bucket"] == "small").all()
     # unrelated columns are unaffected by the join
@@ -132,3 +135,39 @@ def test_safe_atr_boundary_len_equals_window_is_valid_len_below_is_nan():
     h13, l13 = c13 + 0.5, c13 - 0.5
     r13 = _safe_atr(h13, l13, c13, window=14)
     assert len(r13) == 13 and np.isnan(r13.iloc[-1])   # len(c) < window: NaN, no raise
+
+
+# ---- v-playbook-desk-b1-6 (final review, Minor 6) — known-at-open ctx guard ---------------------
+
+def _ctx_frame(days):
+    return pd.DataFrame({"rvol_open5": 1.5, "rvol_open15": 2.5, "rvol_rank5": 3.0, "gap_pct": 1.0,
+                         "atr14_pct": 2.0},
+                        index=pd.DatetimeIndex([pd.Timestamp(d) for d in days], name="date"))
+
+
+def test_ctx_opening_columns_are_nan_before_their_bars_have_closed():
+    """`rvol_open5` needs the first 5-minute bar to have closed and `rvol_open15` the first
+    three; the universe-context frame is per *session*, so the join would otherwise hand a
+    bar-0 caller a number built from bars that had not happened yet. The guard makes the
+    known-at-open contract mechanical rather than a comment in context.py."""
+    from strategies.families.indicators import indicator_frame
+    b = _bars(DAYS[:2], n=20)
+    ind = indicator_frame(b, _daily(b), context=_ctx_frame(DAYS[:2]))
+    for day in DAYS[:2]:
+        d = ind.loc[day]
+        assert np.isnan(d["ctx_rvol_open5"].iloc[0]) and np.isnan(d["ctx_rvol_rank5"].iloc[0])
+        assert (d["ctx_rvol_open5"].iloc[1:] == 1.5).all()
+        assert (d["ctx_rvol_rank5"].iloc[1:] == 3.0).all()
+        assert d["ctx_rvol_open15"].iloc[:3].isna().all()
+        assert (d["ctx_rvol_open15"].iloc[3:] == 2.5).all()
+        # columns that are genuinely known at the open are untouched
+        assert (d["ctx_gap_pct"] == 1.0).all() and (d["ctx_atr14_pct"] == 2.0).all()
+
+
+def test_ctx_guard_is_a_no_op_when_those_columns_are_absent():
+    from strategies.families.indicators import indicator_frame
+    b = _bars(DAYS[:2], n=20)
+    ctx = pd.DataFrame({"gap_pct": 1.0}, index=pd.DatetimeIndex([pd.Timestamp(d) for d in DAYS[:2]],
+                                                                name="date"))
+    ind = indicator_frame(b, _daily(b), context=ctx)
+    assert (ind["ctx_gap_pct"] == 1.0).all() and "ctx_rvol_open5" not in ind.columns

@@ -11,7 +11,7 @@ import pandas as pd
 
 from research.strategy_hunt.paths import reports_dir, trades_dir
 from research.strategy_hunt.run import REPORTS_DIR  # noqa: F401 -- back-compat monkeypatch target only
-from research.strategy_hunt.score.regime_rows import POOLED_SOURCE
+from research.strategy_hunt.score.regime_rows import BASELINE_POPULATION_MISMATCH, POOLED_SOURCE
 
 # v-playbook-desk-b1-5 task 10 fix r1: only the cost controls live in separate roots now. The
 # shuffled control moved in-root (<root>/trades_shuffle/) and is reported as the per-pooled-row
@@ -101,12 +101,14 @@ def _pooled_baseline_table(pooled: Optional[list[dict]]) -> str:
     """Every pooled row against its same-regime shuffled baseline, biggest excess first.
 
     This is the table the B1 run needed: a pooled `exp_R` alone cannot say whether a lane
-    beats the regime's drift, and `excess` is exactly that difference."""
+    beats the regime's drift, and `excess` is exactly that difference. `baseline n` is next to
+    it (v-playbook-desk-b1-6, Important 2) because an excess is only meaningful when the two
+    groups are comparable in size -- a far-off count raises `baseline_population_mismatch`."""
     if not pooled:
         return "_no pooled rows_"
-    lines = ["| family | side | regime | n | exp_R | baseline exp_R | excess | t_session | recovery | "
-             "verdict | failed floors |",
-             "|---|---|---|---|---|---|---|---|---|---|---|"]
+    lines = ["| family | side | regime | n | exp_R | baseline exp_R | baseline n | excess | t_session | "
+             "recovery | verdict | failed floors |",
+             "|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for r in sorted(pooled, key=_excess_key, reverse=True):
         try:
             failed = ", ".join(json.loads(r.get("failed_floors") or "[]"))
@@ -114,6 +116,7 @@ def _pooled_baseline_table(pooled: Optional[list[dict]]) -> str:
             failed = str(r.get("failed_floors"))
         lines.append(f"| {r.get('strategy', '')} | {r.get('side', '')} | {r.get('regime', '')} | "
                      f"{r.get('n', 0)} | {_f(r.get('exp_r'))} | {_f(r.get('baseline_exp_r'))} | "
+                     f"{int(r.get('baseline_n') or 0)} | "
                      f"{_f(r.get('excess_r'))} | {_f(r.get('t_stat_session'), 2)} | "
                      f"{_f(r.get('recovery'), 2)} | {r.get('verdict', '')} | {failed} |")
     return "\n".join(lines)
@@ -255,9 +258,22 @@ def report_stem(computed_at: str) -> str:
     return f"{ts[:10]}T{hhmm or '0000'}"
 
 
+def _failed_floors(row: dict) -> list[str]:
+    """A row's failed-floor keys, `[]` for a hand-edited snapshot the report must still render."""
+    try:
+        parsed = json.loads(row.get("failed_floors") or "[]")
+    except (TypeError, ValueError):
+        return []
+    return [str(k) for k in parsed] if isinstance(parsed, list) else []
+
+
 def _report_manifest(rows: list[dict], pooled: Optional[list[dict]], computed_at: str, report_name: str) -> dict:
     """The machine-readable companion to the markdown report, same stem so the pair stays
-    together and neither is overwritten by the next run."""
+    together and neither is overwritten by the next run.
+
+    `pooled_baseline_population_mismatch` (v-playbook-desk-b1-6, Important 2) is the count of
+    pooled rows whose shuffled control group was too far from their own size to be a yardstick:
+    a nightly watcher can read it without parsing the markdown."""
     verdicts: dict[str, int] = {}
     for r in rows:
         if r.get("source") == "walkforward":
@@ -270,7 +286,9 @@ def _report_manifest(rows: list[dict], pooled: Optional[list[dict]], computed_at
     return {"computed_at": computed_at, "report": report_name, "n_rows": len(rows),
             "n_symbols": len({r.get("symbol", "") for r in rows}), "verdicts": verdicts,
             "pooled_verdicts": pooled_verdicts,
-            "pooled_with_baseline": sum(1 for r in pooled or [] if int(r.get("baseline_n") or 0) > 0)}
+            "pooled_with_baseline": sum(1 for r in pooled or [] if int(r.get("baseline_n") or 0) > 0),
+            "pooled_baseline_population_mismatch": sum(
+                1 for r in pooled or [] if BASELINE_POPULATION_MISMATCH in _failed_floors(r))}
 
 
 def write_report(root: Path, rows: list[dict], computed_at: str, pooled: Optional[list[dict]] = None) -> Path:

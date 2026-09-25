@@ -1,6 +1,30 @@
 # Changelog
 
 ## 2026-09-25
+- fix(strategy-hunt): Playbook Desk B1.6 — the research regime label is now the one the desk could
+  have known at entry. `research/strategy_hunt/data/regime.py` built its label from the entry
+  *day's* SPY and VIX **closes**, so a 10:00 entry was stamped with a regime decided six hours
+  later and every regime-conditioned/pooled row (and the live gate reading them) was fitted to the
+  future. It is replaced by a per-run `RegimeLookup` over the root's 5-minute SPY bars plus daily
+  VIX: `spy_change_pct` is SPY's day-to-date move through the last bar that closed at or before the
+  entry bar's open, `vix_level`/`vix_change_pct` are the prior session's close and close-to-close
+  change (a documented lagged proxy — the store holds daily VIX only), classified through the same
+  thresholds as `core/market_context.py::_classify_regime` with a parity test pinning the two
+  together. The shuffle control shares the same lookup, since SPY is never shuffled. Alongside it:
+  a `baseline_population_mismatch` pooled failure key when the shuffled control group's trade count
+  is outside 0.5x–2x the real row's `n`, with `baseline_n` rendered in the report's pooled table and
+  counted in the report manifest; `StrategyFit.lookup_regime` now lets a universe-pooled row fill a
+  gap or stand in front of a WATCH but **never** override the symbol's own measured FAIL for that
+  lane; `all` rejects `--shuffle-seed` with a parser error (it runs the fixed-seed baseline itself,
+  and a user seed meant `trades/` was never written); `promote` writes its markdown under
+  `reports_dir(root)` (`research/reports/strategy_hunt/strategy_hunt_promotion.md` for the default
+  root) instead of unconditionally into `docs/research/`; PEAD's entry bar is corrected to
+  `bar_of_day == 5` so the signal is the bar closing 10:00 and the fill is the 10:00 bar's open,
+  with `PEAD_TARGET_R` documented as an addition to the spec; and `indicator_frame`'s context join
+  NaNs `ctx_rvol_open5`/`ctx_rvol_rank5` at `bar_of_day == 0` and `ctx_rvol_open15` at
+  `bar_of_day < 3`, making the known-at-open contract mechanical. Docs:
+  `docs/research/strategy_hunt.md` § "Regime and pooled rows",
+  `docs/BOT_OPERATIONS_MANUAL.md` § "Strategy fit gate".
 - feat(strategy-hunt): full strategy-fit system — shared candidate-family library
   (`strategies/families/`: ten intraday and swing families, common entry/grid/de-dup helpers) used by
   both the offline research pipeline and the live engine; the offline walk-forward pipeline
@@ -27,7 +51,8 @@
   (`research/strategy_hunt/promote.py`, `cli.py promote`) that combines the fit snapshot's per-family
   PASS counts, each family's latest scorecard, and the live-facing flags into a promotion table with a
   blocker/recommendation per family (`collect_shadow`/`register_shadow`/`promote_live`/`hold`), printing
-  the exact `.env` lines to apply and writing `docs/research/strategy_hunt_promotion.md` — never editing
+  the exact `.env` lines to apply and writing the promotion markdown (moved to
+  `research/reports/strategy_hunt/strategy_hunt_promotion.md` in B1.6) — never editing
   `.env` or `Config().yaml` itself. Operator flow (nightly `all` → `scorecard` → `promote` → apply →
   restart via `./deploy.sh` → rollback by unsetting the flag) documented in
   `docs/research/strategy_hunt.md` § "Operator flow"; fit-lane row and the eight strategy-fit flags

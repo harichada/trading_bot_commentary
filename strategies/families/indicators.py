@@ -122,6 +122,28 @@ def indicator_frame(bars5: pd.DataFrame, daily: pd.DataFrame, spy5: Optional[pd.
     if context is not None:
         ctx_df = context.add_prefix("ctx_")
         ind = ind.join(ctx_df.reindex(bars5.index.normalize()).set_index(bars5.index))
+        ind = _mask_opening_ctx(ind)
+    return ind
+
+
+# v-playbook-desk-b1-6 (final review, Minor 6). The universe-context frame is per *session*, so
+# joining it onto 5-minute bars broadcasts a session's value onto every bar of that session --
+# including bars before the value could exist. `rvol_open5` is built from the first 5-minute bar
+# and `rvol_open15` from the first three, so a bar-0 caller reading either would be reading bars
+# that had not closed yet. Masking them here makes the known-at-open contract mechanical instead
+# of a comment in research/strategy_hunt/context.py that a new family could quietly violate.
+# `rvol_rank5` is a same-date cross-sectional rank *of* rvol_open5 and inherits its bar.
+CTX_MIN_BAR_OF_DAY = {"ctx_rvol_open5": 1, "ctx_rvol_rank5": 1, "ctx_rvol_open15": 3}
+
+
+def _mask_opening_ctx(ind: pd.DataFrame) -> pd.DataFrame:
+    """NaN the opening-window `ctx_*` columns on the bars that precede their inputs' close."""
+    if "bar_of_day" not in ind.columns:
+        return ind
+    bod = ind["bar_of_day"]
+    for name, min_bar in CTX_MIN_BAR_OF_DAY.items():
+        if name in ind.columns:
+            ind[name] = ind[name].where(bod >= min_bar)
     return ind
 
 

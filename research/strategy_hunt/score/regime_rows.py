@@ -37,11 +37,11 @@ Three sample rules matter, because a row here is read by the live gate:
   is `exp_r` minus the matching baseline group's `exp_r`, `min_excess_r` is the floor,
   and a row with no baseline records `no_baseline` and can never PASS.
 
-Only the three real regime labels are scored (`REGIMES`). `regime_at` returns
-"unknown" whenever the SPY/VIX context is missing for a session; a row built from
-those trades would describe the data gap, not a regime, and the gate never asks
-for it — so those trades are dropped from both row families (they remain in the
-unconditional row, which is computed over every trade).
+Only the three real regime labels are scored (`REGIMES`). The entry-time lookup in
+`data/regime.py` returns "unknown" whenever the SPY/VIX context is missing for a
+session; a row built from those trades would describe the data gap, not a regime,
+and the gate never asks for it — so those trades are dropped from both row families
+(they remain in the unconditional row, which is computed over every trade).
 """
 from __future__ import annotations
 
@@ -100,6 +100,15 @@ BASELINE_STALE = "baseline_stale"            # the baseline stopped too long bef
 BASELINE_MAX_MISSING_FRAC = 0.05             # strictly more than 5% of real symbols missing
 BASELINE_MAX_STALE_DAYS = 7                  # strictly more than 7 calendar days behind
 
+# v-playbook-desk-b1-6 (final review, Important 2). `baseline_guard` above compares the two
+# *tapes*; this compares the two *groups*. A control group with a fifth of the real group's
+# trades is measuring a different population, so the difference of their expectancies is not
+# the "excess over the regime's drift" the verdict claims it is -- most often it means the
+# shuffled tape stopped proposing this lane, not that the real one has an edge over it.
+BASELINE_POPULATION_MISMATCH = "baseline_population_mismatch"
+BASELINE_POPULATION_MIN_RATIO = 0.5         # baseline_n below this multiple of n is a mismatch
+BASELINE_POPULATION_MAX_RATIO = 2.0         # ...and so is above this multiple
+
 
 def _symbols(trades: Optional[pd.DataFrame]) -> set[str]:
     if trades is None or trades.empty or "symbol" not in trades.columns:
@@ -152,14 +161,31 @@ def baseline_guard(real_trades: Optional[pd.DataFrame],
     return flags
 
 
+def _population_ok(n: int, baseline_n: Optional[int]) -> bool:
+    """Whether the baseline group is close enough in size to the real group to be its yardstick.
+
+    `None` means the caller did not measure the control's population at all (the
+    `verdict_pooled` default, kept so a metrics-only caller keeps its old contract);
+    `pooled_rows` always passes the real number."""
+    if baseline_n is None:
+        return True
+    lo = BASELINE_POPULATION_MIN_RATIO * float(n)
+    hi = BASELINE_POPULATION_MAX_RATIO * float(n)
+    return lo <= float(baseline_n) <= hi
+
+
 def _pooled_failures(m: FitMetrics, excess_r: float = NO_BASELINE,
-                     guard: tuple[str, ...] = ()) -> list[str]:
+                     guard: tuple[str, ...] = (),
+                     baseline_n: Optional[int] = None) -> list[str]:
     # A missing baseline is its own failure key: without one there is nothing to show the
-    # row is more than the regime's drift, so it can WATCH but never PASS.
+    # row is more than the regime's drift, so it can WATCH but never PASS. The population
+    # check only applies when a baseline *was* measured -- with none, "no_baseline" is the
+    # whole story and a second key would only obscure which case happened.
     if math.isnan(excess_r):
         baseline_checks = {"no_baseline": False}
     else:
-        baseline_checks = {"min_excess_r": excess_r >= POOLED_FLOORS["min_excess_r"]}
+        baseline_checks = {"min_excess_r": excess_r >= POOLED_FLOORS["min_excess_r"],
+                           BASELINE_POPULATION_MISMATCH: _population_ok(m.n, baseline_n)}
     checks = {
         "min_n": m.n >= POOLED_FLOORS["min_n"], "min_sessions": m.sessions >= POOLED_FLOORS["min_sessions"],
         "min_pf": m.pf >= POOLED_FLOORS["min_pf"], "min_wr": m.wr >= POOLED_FLOORS["min_wr"],
@@ -178,7 +204,8 @@ def _pooled_failures(m: FitMetrics, excess_r: float = NO_BASELINE,
 
 
 def verdict_pooled(m: FitMetrics, excess_r: float = NO_BASELINE,
-                   guard: tuple[str, ...] = ()) -> tuple[str, list[str]]:
+                   guard: tuple[str, ...] = (),
+                   baseline_n: Optional[int] = None) -> tuple[str, list[str]]:
     """PASS / WATCH / FAIL against `POOLED_FLOORS` (mirrors `score.verdict.verdict`).
 
     `excess_r` is `exp_r` minus the same-regime shuffled baseline's `exp_r`, or NaN when no
@@ -186,8 +213,13 @@ def verdict_pooled(m: FitMetrics, excess_r: float = NO_BASELINE,
     caller that forgets the baseline gets "no_baseline" instead of a free PASS.
 
     `guard` carries `baseline_guard`'s keys for a baseline that exists but is partial or
-    stale; like `no_baseline` they permit WATCH and forbid PASS."""
-    failed = _pooled_failures(m, excess_r, guard)
+    stale; like `no_baseline` they permit WATCH and forbid PASS.
+
+    `baseline_n` is the matching baseline group's trade count; when it is outside
+    [`BASELINE_POPULATION_MIN_RATIO`, `BASELINE_POPULATION_MAX_RATIO`] x `m.n` the row carries
+    `baseline_population_mismatch` and cannot PASS (v-playbook-desk-b1-6, Important 2). `None`
+    -- the default -- means the caller measured no population and the check is skipped."""
+    failed = _pooled_failures(m, excess_r, guard, baseline_n)
     if not failed:
         return "PASS", []
     if m.n >= POOLED_WATCH_FLOORS["min_n"] and m.exp_r > 0 and m.pf >= POOLED_WATCH_FLOORS["min_pf"]:
@@ -257,7 +289,9 @@ def pooled_rows(all_trades: Optional[pd.DataFrame], computed_at: str,
     `baseline` is the shuffled control's pooled rows (`baseline_pooled_rows` over
     `<root>/trades_shuffle/`). Each row gains `baseline_exp_r`, `baseline_n` and
     `excess_r = exp_r - baseline_exp_r`, and its verdict is scored against that excess:
-    with no matching baseline group the excess is NaN and the row can never PASS.
+    with no matching baseline group the excess is NaN and the row can never PASS, and with a
+    baseline group whose population is far from this row's it carries
+    `baseline_population_mismatch` and cannot PASS either.
 
     `guard` is `baseline_guard(real_trades, baseline_trades)`: keys stamped on *every* row
     because a partial or stale control is a property of the run, not of one lane."""
@@ -278,7 +312,8 @@ def pooled_rows(all_trades: Optional[pd.DataFrame], computed_at: str,
         # from the metrics the builder just computed rather than by scoring the group twice.
         row = build_row(POOLED_SYMBOL, family, side, bucketed, n_windows, {}, computed_at, _window_end(sub),
                         source=POOLED_SOURCE,
-                        verdict_fn=lambda m, b=base_exp: verdict_pooled(m, m.exp_r - b, guard))
+                        verdict_fn=lambda m, b=base_exp, bn=base_n: verdict_pooled(
+                            m, m.exp_r - b, guard, baseline_n=bn))
         out.append({**row, "regime": regime, "baseline_exp_r": base_exp, "baseline_n": base_n,
                     "excess_r": row["exp_r"] - base_exp})
     return out

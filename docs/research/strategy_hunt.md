@@ -115,7 +115,9 @@ writes `trades_shuffle/`, `checkpoints_shuffle/` and `choices_shuffle/` next to 
 directories and shares the root's bars, news, earnings and context, so no second root and no
 symlinking are needed. `score` picks it up automatically whenever `trades_shuffle/` exists and pools
 it into baseline rows the real pooled rows must beat (see "Regime and pooled rows"). `all` runs it
-for you with seed 7 right after the real `run`; `--no-baseline` skips it, in which case whatever
+for you with seed 7 right after the real `run` — and **`all` rejects `--shuffle-seed`** with a
+parser error (B1.6), since a user-supplied seed would turn its real leg into a second shuffled run
+and `trades/` would never be written; `--no-baseline` skips it, in which case whatever
 baseline is already in the root is reused — `score` checks it rather than trusting it, and flags
 `baseline_mismatch` (the control covers less than 95% of the real tape's symbols) or
 `baseline_stale` (its last exit is more than 7 calendar days behind the real tape's) on every
@@ -159,7 +161,7 @@ editing the verdict floors without re-simulating, or `universe-context` after a 
 | `research/reports/strategy_hunt/<date>.json` | Run manifest (symbol/family counts, elapsed, errors), written by `run`; the shuffled baseline run records itself under `run_shuffle` / `errors_shuffle` so it cannot overwrite the real run's entry or its error list |
 | `research/reports/strategy_hunt/<date>T<HHMM>-equity-curve.csv` | Monthly equity curve from the portfolio replay |
 | `research/reports/strategy_hunt/scorecard-<family>-<date>.md` | Stage A shadow-resolver scorecard for one family |
-| `docs/research/strategy_hunt_promotion.md` | Promotion table (all families) + the `.env` lines to apply, rewritten each `promote` run |
+| `research/reports/strategy_hunt/strategy_hunt_promotion.md` | Promotion table (all families) + the `.env` lines to apply, rewritten each `promote` run. Written under `reports_dir(root)` (B1.6), so a control root writes `<root>/reports/` instead of overwriting the committed one |
 
 ## Families
 
@@ -268,20 +270,55 @@ unconditional per-(symbol, family, side) rows, both written by `score` and read 
   covers less than 95% of the real tape's symbols, or whose last exit is more than 7 calendar days
   behind it, is flagged `baseline_mismatch` / `baseline_stale` on every pooled row
   (`score/regime_rows.py::baseline_guard`) — a leftover control silently becoming the yardstick is
-  worse than having none. Baseline rows never appear in `pooled_rows`/`regime_rows` and the live
-  gate never reads them.
+  worse than having none. A baseline *group* whose trade count is below 0.5x or above 2x the real
+  row's `n` is flagged `baseline_population_mismatch` (B1.6): the two rows are then measuring
+  different populations, so their expectancy difference is not an excess over drift. That key also
+  forbids PASS, `baseline_n` is rendered next to `baseline exp_R` in the report's pooled table, and
+  the report's JSON manifest counts the flagged rows as `pooled_baseline_population_mismatch`.
+  Baseline rows never appear in `pooled_rows`/`regime_rows` and the live gate never reads them.
 
-Trades whose regime is `unknown` (SPY/VIX context missing for that session) are dropped from both
-row families — they would describe a data gap, not a regime — and still count in the unconditional
-row.
+### How a trade's regime label is computed (entry-time only)
+
+`research/strategy_hunt/data/regime.py` builds one `RegimeLookup` per symbol run from the root's
+**5-minute SPY bars** and **daily VIX** closes, and the simulator stamps every trade with
+`lookup(entry_ts)` where `entry_ts` is the fill bar's timestamp. The three inputs are the same ones
+`core/market_context.py` uses live, through the same `classify_regime` thresholds, but reconstructed
+from data that existed *at the entry bar*:
+
+| input | value |
+|---|---|
+| `spy_change_pct` | SPY's day-to-date move: the close of the last 5-minute SPY bar that closed at or before the entry bar's open, against that session's open. `0.0` for an entry on the session's first bar (nothing has closed yet). |
+| `vix_level` | the **prior** session's VIX close. |
+| `vix_change_pct` | the **prior** session's close-to-close VIX change. |
+
+Until B1.6 the label was computed from the entry *day's* SPY and VIX **closes**, which is a
+look-ahead: a 10:00 entry was stamped `risk_off` because SPY closed −1% six hours later, and every
+regime row (and the gate reading it) was fitted to information the desk could not have had. The
+shuffle control shares the same lookup object, since SPY is never shuffled — only the symbol's own
+tape is — so the control is measured against the same labels as the real tape.
+
+The VIX pair is a documented **lagged proxy**: the research store holds daily VIX only, so an
+intraday level is unavailable. Live, `vix_change_pct` is today's move; here it is yesterday's.
+Lagging can never smuggle in the future, but it does make a regime row a blunter instrument than
+the live label on days when VIX turns intraday.
+
+Trades whose regime is `unknown` (no SPY bars for that session, or no prior VIX session to take a
+close-to-close change from) are dropped from both row families — they would describe a data gap,
+not a regime — and still count in the unconditional row.
 
 **Lookup precedence** (`StrategyFit.lookup_regime`, used by the gate when
 `STRATEGY_FIT_REGIME_ROWS` is on and the live regime is one of the three labels):
 
 1. the symbol's own row for that regime,
-2. the universe-pooled row for that regime,
+2. the universe-pooled row for that regime — **only when the symbol's own unconditional row for
+   that lane is absent or is not FAIL** (B1.6),
 3. the unconditional row for the lane,
 4. `None` (which the gate treats as `fit_missing_row`).
+
+Step 2's restriction is the difference between filling a gap and overruling evidence. A pooled PASS
+says "this lane works in this regime somewhere in the universe"; it may stand in for a symbol the
+pipeline has never measured, and it may stand in front of a WATCH ("not measured well enough yet"),
+but it must never outrank the pipeline's own measured FAIL for that symbol and lane.
 
 A stale, missing or unloaded snapshot yields `None`, exactly as `lookup` does.
 
@@ -486,7 +523,8 @@ End-to-end nightly-to-promotion loop, tying together "Scheduling", "Run", and "E
    `ENABLE_STRATEGY_FIT_GATE`, `STRATEGY_FIT_SHADOW`) into one table: `pass_symbols`/`watch_symbols`
    counts, `blocker` (why it isn't promotable yet), and `recommendation` (`collect_shadow`,
    `register_shadow`, `promote_live`, or `hold`). It prints the table and the exact `.env` lines to
-   apply, and writes the same content to `docs/research/strategy_hunt_promotion.md`. It never edits
+   apply, and writes the same content to `reports_dir(root)/strategy_hunt_promotion.md`
+   (`research/reports/strategy_hunt/` for the default root). It never edits
    `.env` or `Config().yaml` itself.
 
    **The gate must be enabled and enforcing before any lane goes live.** `promote` reports the

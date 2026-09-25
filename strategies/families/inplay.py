@@ -4,6 +4,15 @@ post-earnings-announcement drift for small caps, and a relative-strength leader 
 
 All three read the cross-sectional `ctx_*` columns from strategies/families/context.py, which are
 NaN by default when the runner has not supplied context (so these families propose nothing).
+
+Additions to the spec, called out here because they are parameters the spec does not name
+(v-playbook-desk-b1-6, final review Minor 5):
+
+* `PEAD_TARGET_R = 3.0` — the spec gives PEAD an ATR stop and a hold-days time stop but no
+  profit target. A 3R target is added so the family has a bounded payoff and is comparable to
+  the other multiday families (`RS_LEADER_TARGET_R` is the same 3R). It is *not* in the spec,
+  and raising or removing it changes the family's measured expectancy, so it is a fixed
+  constant rather than a grid axis: the walk-forward grid must not tune it.
 """
 from __future__ import annotations
 
@@ -18,7 +27,11 @@ ORB_INPLAY_ENTRY_BAR = 1        # bar_of_day == 1: the second 5-min bar, evaluat
 ORB_INPLAY_LAST_BAR = 77        # 15:55 bar-of-day on a 5-min RTH grid (09:30 = bar 0, 78 bars/session)
 ORB_INPLAY_MIN_PRICE = 5.0      # dollars; bar-0 close must clear this
 ORB_INPLAY_MIN_ATR14_PCT = 0.5  # percent; ctx_atr14_pct floor
-PEAD_ENTRY_BAR = 6              # bar_of_day == 6: the 10:00 bar has just closed
+# v-playbook-desk-b1-6 (final review, Minor 5): bar_of_day == 5 is the 09:55-10:00 bar, i.e. the
+# bar that *closes at* 10:00. `make_entry` fills at bar 6 -- the 10:00 bar's open -- which is the
+# spec's "signal on the bar closing 10:00, fill at the 10:00 bar's open". The old value of 6
+# signalled on the 10:00-10:05 bar and filled at 10:05, five minutes late for the whole family.
+PEAD_ENTRY_BAR = 5
 PEAD_STOP_ATR = 1.5
 PEAD_TARGET_R = 3.0
 RS_LEADER_HOLD = 20
