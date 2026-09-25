@@ -63,3 +63,7 @@ alpaca_ingest_checkpoint.json.tmp
 
 # Stage A scorecard regenerations (keep committed baseline)
 # research/reports/*.json
+
+# strategy-hunt research artifacts
+data/strategy_hunt/
+data/strategy_hunt_*/
