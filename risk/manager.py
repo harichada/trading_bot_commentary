@@ -37,6 +37,31 @@ PLAYBOOK_SIZE_MULT_MIN = 0.0
 PLAYBOOK_SIZE_MULT_MAX = 1.5
 
 
+def playbook_size_step(position_size: int, reasoning: Any,
+                       enabled: bool) -> Tuple[int, float]:
+    """The playbook's whole step in the sizing chain: `(shares, multiplier)`.
+
+    v-playbook-desk-b2-review1-2026-09-25 (Important 1): a multiplier at or
+    below zero means the playbook says this (family, side, regime) carries **no
+    position** — a suspended entry, or an entry whose `size_mult` is missing and
+    therefore coerces to 0.0. Flooring that to one share (as every other
+    multiplier in this chain does) would put a live 1-share order on a lane the
+    playbook has switched off, so the zero case returns 0 shares, which
+    `engine._execute_signal` reads as "no trade".
+
+    A *positive* multiplier keeps the chain's existing semantics —
+    `max(1, int(size * mult))` — so 0.5 halves and never rounds a real position
+    down to nothing. `mult == 1.0` (gate off, no key, unusable value) leaves the
+    size untouched.
+    """
+    mult = playbook_size_multiplier(reasoning, enabled)
+    if mult == 1.0:
+        return int(position_size), mult
+    if mult <= PLAYBOOK_SIZE_MULT_MIN:
+        return 0, mult
+    return max(1, int(position_size * mult)), mult
+
+
 def playbook_size_multiplier(reasoning: Any, enabled: bool) -> float:
     """The playbook's size multiplier for this signal, clamped to
     [0.0, 1.5]; 1.0 (a no-op) whenever the gate is off or the value is
@@ -252,15 +277,35 @@ class RiskManagerWithCommentary:
         # (family, side, regime) sizes to 0.0, which the gate has already
         # skipped upstream; sizing still floors shares at 1 like every other
         # multiplier in this chain rather than emitting a 0-share order.
-        pb_mult = playbook_size_multiplier(
-            getattr(signal, 'reasoning', None), Config().ENABLE_PLAYBOOK_GATE)
+        pb_size, pb_mult = playbook_size_step(
+            position_size, getattr(signal, 'reasoning', None),
+            Config().ENABLE_PLAYBOOK_GATE)
         if pb_mult != 1.0:
             old_size = position_size
-            position_size = max(1, int(position_size * pb_mult))
-            logger.info(
-                "playbook_size_multiplier symbol=%s mult=%.2f old=%d new=%d",
-                signal.symbol, pb_mult, old_size, position_size,
-            )
+            position_size = pb_size
+            if position_size == 0:
+                # v-playbook-desk-b2-review1-2026-09-25 (Important 1): no trade,
+                # not a 1-share trade. The playbook gate normally skips this
+                # signal upstream; this is the sizing chain's backstop.
+                logger.warning(
+                    "playbook_size_zero symbol=%s strategy=%s mult=%.2f old=%d "
+                    "new=0 (playbook says this lane carries no position)",
+                    signal.symbol, strategy_name or 'unknown', pb_mult, old_size,
+                )
+                self.commentary.add_commentary(TradingCommentary(
+                    timestamp=datetime.now(),
+                    type=CommentaryType.WARNING,
+                    symbol=signal.symbol,
+                    title="⛔ Playbook — no position",
+                    message=(f"The playbook sizes {strategy_name or 'this lane'} at "
+                             f"{pb_mult:.2f}x for this regime, so no shares are taken."),
+                    importance=8,
+                ))
+            else:
+                logger.info(
+                    "playbook_size_multiplier symbol=%s mult=%.2f old=%d new=%d",
+                    signal.symbol, pb_mult, old_size, position_size,
+                )
 
         # v-market-context-sizing-2026-06-08: scale position by the
         # MarketContext conviction multiplier (0.5..1.5). Strategies

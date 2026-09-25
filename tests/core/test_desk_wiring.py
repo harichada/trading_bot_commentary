@@ -120,7 +120,61 @@ def test_desk_modules_import():
 
 
 def test_core_desk_never_imports_research():
-    for path in Path("core/desk").glob("*.py"):
+    """`core` reads the research *data* tree but never imports the package.
+
+    Fix round 1, Minor 4: the desk's loop-side modules are covered too, not just
+    `core/desk/*` — they are the ones that read the nightly Parquet files.
+    """
+    paths = list(Path("core/desk").glob("*.py")) + [
+        Path("core/loops/desk_loop.py"),
+        Path("core/loops/desk_steps.py"),
+        Path("core/loops/desk_trade_stats.py"),
+    ]
+    for path in paths:
         text = path.read_text()
-        assert "import research" not in text and "from research" not in text
-    assert "import research" not in LOOP and "from research" not in LOOP
+        assert "import research" not in text, path
+        assert "from research" not in text, path
+
+
+# ────────────────────────────────────────────────────────────────────
+# fix round 1 (review r1): hook short-circuit, DB timeout, watchlist cap
+# ────────────────────────────────────────────────────────────────────
+
+def test_the_desk_hook_short_circuits_before_the_db_read():
+    """Minor 2: no plan loaded means nothing to govern — the hook must not run a
+    per-signal `bot_trades` query to reach a governed=False decision."""
+    desk = ENGINE.index('self._audit("desk_limit"')
+    block = ENGINE[max(0, desk - 1200):desk]
+    plan_read = block.index("self._desk_plan_today()")
+    guard = block.index("if _desk_plan is not None:")
+    trades_read = block.index("self._desk_trades_today()")
+    assert plan_read < guard < trades_read
+
+
+def test_the_trade_count_read_is_time_boxed():
+    """Minor 3: a slow Postgres must not hold a signal — the await is bounded and
+    a timeout degrades to an untrustworthy (ungoverned) count."""
+    assert "_DESK_DB_TIMEOUT_SEC" in ENGINE
+    helper = ENGINE.index("async def _desk_trades_today")
+    block = ENGINE[helper:helper + 2200]
+    assert "asyncio.wait_for(" in block
+    assert "asyncio.TimeoutError" in block
+    assert 'self._desk_hook_warn("desk_trades_today"' in block
+
+
+def test_the_desk_watchlist_handover_is_capped():
+    """Minor 5: the desk may not hand the engine a watchlist longer than the
+    screener's own cap, and pinned symbols come first."""
+    assert "WATCHLIST_SIZE" in LOOP
+    assert "_watchlist_from(" in LOOP
+
+
+def test_the_playbook_size_step_has_no_one_share_floor_for_zero():
+    """Important 1: the sizing chain's playbook step yields 0 shares, not 1."""
+    assert "def playbook_size_step(" in RISK
+    assert "playbook_size_zero" in RISK
+    step = RISK.index("def playbook_size_step(")
+    body = RISK[step:step + 1600]
+    zero = body.index("if mult <= PLAYBOOK_SIZE_MULT_MIN:")
+    floor = body.index("return max(1, int(position_size * mult)), mult")
+    assert zero < floor, "the zero case must be decided before the 1-share floor"

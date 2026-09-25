@@ -226,8 +226,32 @@ def test_refresh_hands_the_watchlist_to_the_desk_when_the_flag_is_on(tmp_path):
                         watchlist=["NVDA", "AMD"])
     loop = _loop(engine, cfg)
     asyncio.run(loop._step_refresh(cfg, _et(2026, 9, 25, 9, 35), "2026-09-25"))
-    assert engine.dynamic_watchlist[0] == "NVDA"
-    assert "SPY" in engine.dynamic_watchlist            # pinned is preserved
+    assert engine.dynamic_watchlist[0] == "SPY"         # pinned first
+    assert engine.dynamic_watchlist[1] == "NVDA"        # then by in-play score
+    assert set(engine.dynamic_watchlist) == {"SPY", "NVDA", "AMD"}
+
+
+def test_the_watchlist_handover_is_capped_at_watchlist_size(tmp_path):
+    """Review r1, Minor 5: the desk must not hand the engine more symbols than
+    the screener's own cap — pinned first, then the ranked list, truncated."""
+    cfg = _with_plan(tmp_path, ENABLE_DESK_WATCHLIST=True, WATCHLIST_SIZE=2)
+    engine = FakeEngine(frames={"NVDA": _bars(4500.0), "AMD": _bars(1200.0)},
+                        watchlist=["NVDA", "AMD"])
+    loop = _loop(engine, cfg)
+    asyncio.run(loop._step_refresh(cfg, _et(2026, 9, 25, 9, 35), "2026-09-25"))
+    assert engine.dynamic_watchlist == ["SPY", "NVDA"]
+    # The plan itself still carries the full ranked list.
+    plan = load_plan(cfg.DESK_DATA_DIR, "2026-09-25")
+    assert len(plan.in_play) == 3
+
+
+def test_the_watchlist_cap_falls_back_to_the_full_list(tmp_path):
+    """An unusable WATCHLIST_SIZE must not silently empty the watchlist."""
+    cfg = _with_plan(tmp_path, ENABLE_DESK_WATCHLIST=True, WATCHLIST_SIZE="nonsense")
+    engine = FakeEngine(frames={"NVDA": _bars(4500.0)}, watchlist=["NVDA"])
+    loop = _loop(engine, cfg)
+    asyncio.run(loop._step_refresh(cfg, _et(2026, 9, 25, 9, 35), "2026-09-25"))
+    assert set(engine.dynamic_watchlist) == {"SPY", "NVDA"}
 
 
 def test_refresh_keeps_scanning_when_one_symbol_fails(tmp_path):

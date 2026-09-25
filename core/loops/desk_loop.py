@@ -250,9 +250,38 @@ class DeskLoop:
                     top=",".join(r.symbol for r in ranked[:5]) or "-", path=path)
 
         if getattr(cfg, "ENABLE_DESK_WATCHLIST", False) and ranked:
-            self.engine.dynamic_watchlist = [r.symbol for r in ranked]
-            logger.info("desk_loop watchlist set from in-play list (%d symbols)",
-                        len(ranked))
+            handover = self._watchlist_from(ranked, pinned,
+                                            getattr(cfg, "WATCHLIST_SIZE", None))
+            self.engine.dynamic_watchlist = handover
+            logger.info("desk_loop watchlist set from in-play list "
+                        "(%d of %d ranked symbols)", len(handover), len(ranked))
+
+    @staticmethod
+    def _watchlist_from(ranked: Sequence[InPlayRow], pinned: Sequence[str],
+                        limit: Any) -> List[str]:
+        """The symbols to hand `engine.dynamic_watchlist`: pinned first, then the
+        ranked in-play list, capped at `Config().WATCHLIST_SIZE`.
+
+        v-playbook-desk-b2-review1-2026-09-25 (Minor 5): the in-play list can be
+        longer than the watchlist the rest of the engine is sized for
+        (`DESK_IN_PLAY_N` plus every pinned symbol), and the screener's own
+        builder caps at WATCHLIST_SIZE — the desk must respect the same ceiling.
+        Pinned symbols come first for the same reason they do in
+        `ScreenerLoop._build_pinned_watchlist`: they are the liquid core the bot
+        must keep watching. An unusable cap leaves the list uncapped rather than
+        silently emptying the watchlist. The saved plan always keeps the full
+        ranked list — this only shapes what the engine tracks.
+        """
+        order = [str(s).strip().upper() for s in (pinned or []) if str(s).strip()]
+        symbols = [s for s in order if s in {r.symbol for r in ranked}]
+        symbols += [r.symbol for r in ranked if r.symbol not in symbols]
+        try:
+            cap = int(limit)
+        except (TypeError, ValueError):
+            logger.debug("desk_loop unusable WATCHLIST_SIZE %r — handing over %d symbols",
+                         limit, len(symbols))
+            return symbols
+        return symbols[:cap] if cap > 0 else symbols
 
     @staticmethod
     def _pinned(cfg: Any) -> List[str]:

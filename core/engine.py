@@ -553,6 +553,7 @@ class TradingEngineWithCommentary:
     # from inside a hook's try/except — a failure there is logged (at most once a
     # minute) and the signal proceeds untouched.
     _DESK_CACHE_SEC = 60.0
+    _DESK_DB_TIMEOUT_SEC = 2.0
 
     def _desk_plan_today(self):
         """Today's desk plan (`<DESK_DATA_DIR>/plans/<date>.json`), or None."""
@@ -575,21 +576,35 @@ class TradingEngineWithCommentary:
         self._desk_playbook_cache = (now, book)
         return book
 
-    async def _desk_trades_today(self) -> int:
+    async def _desk_trades_today(self) -> Optional[int]:
         """How many symbols the bot has entered today — the desk's `max_trades`
         counter. There is no existing per-day entry counter on the engine
         (`get_internal_trades_today` is the sim-only fallback used here), so the
         count comes from `bot_trades` via `get_todays_bot_entries`, cached for a
-        minute."""
+        minute.
+
+        v-playbook-desk-b2-review1-2026-09-25 (Minor 3): the DB read is bounded
+        by `_DESK_DB_TIMEOUT_SEC`. A slow Postgres must not hold a signal in the
+        router, so a timeout returns None — `evaluate_desk_gate` reads that as an
+        untrustworthy count and simply does not apply the max-trades rule (the
+        sit-out and direction rules still govern). The None is cached like any
+        other reading so one slow minute costs one wait, not one per signal.
+        """
         date = desk_session_date(desk_now_et())
         now = time.time()
         cached = getattr(self, "_desk_trades_cache", None)
         if cached is not None and cached[0] == date and (now - cached[1]) < self._DESK_CACHE_SEC:
             return cached[2]
         getter = getattr(getattr(self, "db_logger", None), "get_todays_bot_entries", None)
+        count: Optional[int]
         if callable(getter):
-            entries = await getter()
-            count = len(entries) if isinstance(entries, (dict, list, tuple)) else 0
+            try:
+                entries = await asyncio.wait_for(getter(), timeout=self._DESK_DB_TIMEOUT_SEC)
+            except asyncio.TimeoutError as _desk_to:
+                self._desk_hook_warn("desk_trades_today", _desk_to)
+                count = None
+            else:
+                count = len(entries) if isinstance(entries, (dict, list, tuple)) else 0
         else:
             count = len(self.get_internal_trades_today() or [])
         self._desk_trades_cache = (date, now, count)
@@ -6230,15 +6245,21 @@ class TradingEngineWithCommentary:
         # signal by accident.
         if Config().ENABLE_DESK:
             try:
-                _desk_side = "long" if signal.signal_type == SignalType.BUY else "short"
-                _dd = evaluate_desk_gate(self._desk_plan_today(),
-                                         await self._desk_trades_today(),
-                                         _desk_side, Config().ENABLE_DESK_LIMITS)
-                if _dd.governed:
-                    self._audit("desk_limit", signal.symbol, _dd.action, _dd.reason,
-                                side=_desk_side, **_dd.audit_fields())
-                    if _dd.action == "skip":
-                        return
+                # v-playbook-desk-b2-review1-2026-09-25 (Minor 2): no plan means
+                # nothing to govern (before 09:00, a day the desk did not run, or
+                # desk files absent) — short-circuit before the trade-count read
+                # so an ungoverned decision never costs a per-signal DB query.
+                _desk_plan = self._desk_plan_today()
+                if _desk_plan is not None:
+                    _desk_side = "long" if signal.signal_type == SignalType.BUY else "short"
+                    _dd = evaluate_desk_gate(_desk_plan,
+                                             await self._desk_trades_today(),
+                                             _desk_side, Config().ENABLE_DESK_LIMITS)
+                    if _dd.governed:
+                        self._audit("desk_limit", signal.symbol, _dd.action, _dd.reason,
+                                    side=_desk_side, **_dd.audit_fields())
+                        if _dd.action == "skip":
+                            return
             except Exception as _desk_exc:
                 self._desk_hook_warn("desk_limit", _desk_exc)
 
