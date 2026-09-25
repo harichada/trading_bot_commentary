@@ -120,3 +120,73 @@ def test_strategy_fit_endpoint_without_symbol_returns_empty_rows(tmp_path, monke
     assert response.status_code == 200
     body = response.json()
     assert body["rows"] == []
+
+
+# ──────────────────────────────────────────────────────────────────────
+# v-strategy-fit-review2-2026-09-25 — Important 5: NaN metrics and symbol
+# case.
+# ──────────────────────────────────────────────────────────────────────
+
+def test_strategy_fit_endpoint_coldstart_row_with_nan_metrics_returns_200(tmp_path, monkeypatch):
+    """A cold-start row carries NaN for every metric the walk-forward pipeline
+    never measured. Starlette's JSONResponse serializes with allow_nan=False,
+    so bare NaN raised ValueError and the endpoint answered 500. Non-finite
+    floats must come back as JSON null instead.
+    """
+    row = {
+        "symbol": "NVDA",
+        "strategy": "orb",
+        "side": "long",
+        "verdict": "WATCH",
+        "source": "coldstart",
+        "n": 0,
+        "params_json": json.dumps({}),
+        "computed_at": datetime.now().isoformat(),
+        # score / exp_r / exp_r_lb / t_stat / pf / wr / stability / decay all
+        # absent -> FitRow.from_dict defaults each to nan.
+    }
+    snapshot_path = _write_snapshot(tmp_path, {"NVDA": {"orb:long": row}})
+    monkeypatch.setenv("STRATEGY_FIT_PATH", str(snapshot_path))
+
+    client, _routes = _make_client(monkeypatch)
+    response = client.get("/api/strategy-fit", params={"symbol": "NVDA"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["rows"]) == 1
+    r = body["rows"][0]
+    for metric in ("score", "exp_r", "exp_r_lb", "t_stat", "pf", "wr", "stability", "decay"):
+        assert r[metric] is None, f"{metric} should be null, got {r[metric]!r}"
+    # Non-numeric fields survive untouched.
+    assert r["verdict"] == "WATCH" and r["source"] == "coldstart" and r["n"] == 0
+
+
+def test_strategy_fit_endpoint_uppercases_symbol_query_param(tmp_path, monkeypatch):
+    """Snapshot keys are upper-case symbols, so a lower-case query param used
+    to silently return zero rows."""
+    row = {
+        "symbol": "NVDA", "strategy": "orb", "side": "long", "verdict": "PASS", "score": 0.5,
+        "exp_r": 0.5, "exp_r_lb": 0.1, "t_stat": 2.5, "pf": 1.4, "wr": 0.5, "stability": 0.7,
+        "decay": 0.9, "n": 200, "source": "walkforward", "params_json": json.dumps({}),
+        "computed_at": datetime.now().isoformat(),
+    }
+    snapshot_path = _write_snapshot(tmp_path, {"NVDA": {"orb:long": row}})
+    monkeypatch.setenv("STRATEGY_FIT_PATH", str(snapshot_path))
+
+    client, _routes = _make_client(monkeypatch)
+    for param in ("nvda", "Nvda", "NVDA"):
+        response = client.get("/api/strategy-fit", params={"symbol": param})
+        assert response.status_code == 200
+        assert len(response.json()["rows"]) == 1, f"no rows for symbol={param!r}"
+
+
+def test_fit_row_to_json_dict_replaces_non_finite_floats():
+    from core.strategy_fit import FitRow
+
+    row = FitRow.from_dict({"symbol": "NVDA", "strategy": "orb", "side": "long", "verdict": "WATCH",
+                            "source": "coldstart", "n": 3, "pf": float("inf"), "wr": 0.5})
+    d = row.to_json_dict()
+    assert d["score"] is None and d["exp_r"] is None
+    assert d["pf"] is None                      # +inf is non-finite too
+    assert d["wr"] == 0.5 and d["n"] == 3 and d["symbol"] == "NVDA"
+    json.dumps(d, allow_nan=False)              # must not raise

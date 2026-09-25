@@ -30,7 +30,9 @@ reads the JSON the research pipeline produces.
 """
 from __future__ import annotations
 
+import dataclasses
 import json
+import math
 import os
 import threading
 from dataclasses import dataclass, field
@@ -116,6 +118,24 @@ class FitRow:
             params=params,
             computed_at=_s("computed_at", ""),
         )
+
+    def to_json_dict(self) -> Dict:
+        """JSON-safe dict of this row: every non-finite float becomes None.
+
+        v-strategy-fit-review2-2026-09-25 (Important 5): cold-start rows
+        legitimately carry NaN metrics (`from_dict` defaults every missing
+        numeric to nan). `json.dumps` emits bare `NaN`, which is not valid
+        JSON — FastAPI's encoder rejects it and `GET /api/strategy-fit`
+        answered 500 for any symbol with a cold-start row. `None` is the
+        honest wire representation of "not measured".
+        """
+        out: Dict = {}
+        for key, value in dataclasses.asdict(self).items():
+            if isinstance(value, float) and not math.isfinite(value):
+                out[key] = None
+            else:
+                out[key] = value
+        return out
 
 
 # ────────────────────────────────────────────────────────────────────

@@ -952,8 +952,6 @@ async def get_strategy_fit(symbol: Optional[str] = None):
     with the error surfaced in `summary["last_error"]`, HTTP 200.
     """
     try:
-        import dataclasses
-
         from core.config import Config
         from core.strategy_fit import StrategyFit
 
@@ -966,7 +964,11 @@ async def get_strategy_fit(symbol: Optional[str] = None):
 
         rows = []
         if symbol:
-            rows = [dataclasses.asdict(row) for row in fit.rows_for(symbol)]
+            # v-strategy-fit-review2-2026-09-25 (Important 5): snapshot keys are
+            # upper-case symbols, and to_json_dict() replaces the NaN metrics a
+            # cold-start row carries with None — bare NaN is not valid JSON and
+            # made this endpoint answer 500 for any such symbol.
+            rows = [row.to_json_dict() for row in fit.rows_for(symbol.upper())]
 
         return {"summary": fit.summary(), "rows": rows}
     except Exception as exc:  # noqa: BLE001 - never raise to caller
