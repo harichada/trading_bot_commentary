@@ -114,6 +114,80 @@ def test_fetch_news_finbert_column_populated_and_selected_when_configured(monkey
     assert df.iloc[0]["sentiment"] == pytest.approx(0.42)
 
 
+def test_fetch_news_vader_backend_never_touches_finbert_factory(monkeypatch):
+    """Critical finding: with SENTIMENT_BACKEND=vader (the default),
+    `_score_columns` must not attempt a FinBERT load at all — a counting
+    stub that would raise if called must see zero calls.
+    """
+    import core.sentiment_backend as sb
+
+    calls = {"n": 0}
+
+    def counting_raising_factory():
+        calls["n"] += 1
+        raise RuntimeError("factory should never be reached for vader backend")
+
+    monkeypatch.setattr(sb, "_finbert_factory", counting_raising_factory)
+    monkeypatch.delenv("SENTIMENT_BACKEND", raising=False)
+
+    from research.strategy_hunt.data import news as N
+    sess = _Session([
+        {"news": [{"created_at": "2025-01-02T14:35:00Z", "headline": "Excellent beats", "source": "benzinga", "symbols": ["NVDA"]}],
+         "next_page_token": None},
+    ])
+    df = N.fetch_news("NVDA", pd.Timestamp("2025-01-01"), pd.Timestamp("2025-01-03"), sess, "k", "s")
+
+    assert calls["n"] == 0
+    assert pd.isna(df.iloc[0]["sentiment_finbert"])
+    assert df.iloc[0]["sentiment"] == pytest.approx(df.iloc[0]["sentiment_vader"])
+
+
+def test_fetch_news_finbert_backend_populates_column_via_fake_pipeline(monkeypatch):
+    """Critical finding: with SENTIMENT_BACKEND=finbert and a fake FinBERT
+    pipeline injected at the `core.sentiment_backend` factory level (no
+    monkeypatching of news.py's own functions), `sentiment_finbert` must be
+    populated with real (fake) scores and selected into `sentiment`.
+    """
+    import core.sentiment_backend as sb
+
+    class _FakePipeline:
+        def __call__(self, texts, **kwargs):
+            return [[{"label": "positive", "score": 0.8}, {"label": "negative", "score": 0.1},
+                     {"label": "neutral", "score": 0.1}] for _ in texts]
+
+    monkeypatch.setattr(sb, "_finbert_factory", lambda: _FakePipeline())
+    monkeypatch.setenv("SENTIMENT_BACKEND", "finbert")
+
+    from research.strategy_hunt.data import news as N
+    sess = _Session([
+        {"news": [{"created_at": "2025-01-02T14:35:00Z", "headline": "Excellent beats", "source": "benzinga", "symbols": ["NVDA"]}],
+         "next_page_token": None},
+    ])
+    df = N.fetch_news("NVDA", pd.Timestamp("2025-01-01"), pd.Timestamp("2025-01-03"), sess, "k", "s")
+
+    assert df.iloc[0]["sentiment_finbert"] == pytest.approx(0.8 - 0.1)
+    assert df.iloc[0]["sentiment"] == pytest.approx(0.8 - 0.1)
+
+
+def test_fetch_news_sentiment_falls_back_to_vader_when_finbert_nan(monkeypatch):
+    """Minor finding: when SENTIMENT_BACKEND=finbert but FinBERT is
+    unavailable (factory raises, via the conftest default), `sentiment`
+    must fall back to `sentiment_vader` rather than being poisoned with NaN.
+    """
+    monkeypatch.setenv("SENTIMENT_BACKEND", "finbert")
+
+    from research.strategy_hunt.data import news as N
+    sess = _Session([
+        {"news": [{"created_at": "2025-01-02T14:35:00Z", "headline": "Excellent beats", "source": "benzinga", "symbols": ["NVDA"]}],
+         "next_page_token": None},
+    ])
+    df = N.fetch_news("NVDA", pd.Timestamp("2025-01-01"), pd.Timestamp("2025-01-03"), sess, "k", "s")
+
+    assert pd.isna(df.iloc[0]["sentiment_finbert"])
+    assert not pd.isna(df.iloc[0]["sentiment"])
+    assert df.iloc[0]["sentiment"] == pytest.approx(df.iloc[0]["sentiment_vader"])
+
+
 def test_load_news_returns_extra_columns_when_present(tmp_path):
     from research.strategy_hunt.data import news as N
     df = pd.DataFrame({

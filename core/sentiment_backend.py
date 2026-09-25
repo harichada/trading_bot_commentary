@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from typing import Callable, List, Optional, Sequence
 
 logger = logging.getLogger("TradingBot")
@@ -31,6 +32,9 @@ _VADER_ANALYZER = None
 _FINBERT_PIPELINE = None
 _FINBERT_LOAD_FAILED = False
 _FINBERT_WARNED = False
+# v-playbook-desk-b1-2026-09-25 (Task 7 fix round 1, Important finding):
+# guards the lazy singleton init below against concurrent first-callers.
+_FINBERT_LOCK = threading.Lock()
 
 
 def _vader_analyzer():
@@ -104,24 +108,35 @@ def _get_finbert_pipeline():
 
     Returns None (without raising) if the pipeline cannot be built, and
     logs a one-time warning in that case.
+
+    Double-checked locking: the common-case fast path (pipeline already
+    built, or a previous load already failed) never touches the lock.
+    Only a first caller that finds neither state set takes `_FINBERT_LOCK`,
+    and re-checks both conditions inside it, so concurrent first-callers
+    still build the pipeline exactly once instead of racing the factory.
     """
     global _FINBERT_PIPELINE, _FINBERT_LOAD_FAILED, _FINBERT_WARNED
     if _FINBERT_PIPELINE is not None:
         return _FINBERT_PIPELINE
     if _FINBERT_LOAD_FAILED:
         return None
-    try:
-        _FINBERT_PIPELINE = _finbert_factory()
-        return _FINBERT_PIPELINE
-    except Exception as exc:
-        _FINBERT_LOAD_FAILED = True
-        if not _FINBERT_WARNED:
-            logger.warning(
-                "sentiment_backend: FinBERT unavailable (%s); falling back to VADER",
-                exc,
-            )
-            _FINBERT_WARNED = True
-        return None
+    with _FINBERT_LOCK:
+        if _FINBERT_PIPELINE is not None:
+            return _FINBERT_PIPELINE
+        if _FINBERT_LOAD_FAILED:
+            return None
+        try:
+            _FINBERT_PIPELINE = _finbert_factory()
+            return _FINBERT_PIPELINE
+        except Exception as exc:
+            _FINBERT_LOAD_FAILED = True
+            if not _FINBERT_WARNED:
+                logger.warning(
+                    "sentiment_backend: FinBERT unavailable (%s); falling back to VADER",
+                    exc,
+                )
+                _FINBERT_WARNED = True
+            return None
 
 
 def _score_vader(headlines: Sequence[str]) -> List[float]:
@@ -135,15 +150,23 @@ def _finbert_probs(label_scores: Sequence[dict]) -> tuple:
 
 
 def _score_finbert(headlines: Sequence[str]) -> List[float]:
+    """Score `headlines` with FinBERT, batch by batch.
+
+    v-playbook-desk-b1-2026-09-25 (Task 7 fix round 1, Minor finding): each
+    batch is scored independently. A batch that raises falls back to VADER
+    for just that batch (with a one-time warning) instead of discarding
+    every earlier batch's real FinBERT scores.
+    """
     pipe = _get_finbert_pipeline()
     if pipe is None:
         return _score_vader(headlines)
 
+    global _FINBERT_WARNED
     texts = [h or "" for h in headlines]
     scores: List[float] = []
-    try:
-        for i in range(0, len(texts), FINBERT_BATCH_SIZE):
-            batch = texts[i:i + FINBERT_BATCH_SIZE]
+    for i in range(0, len(texts), FINBERT_BATCH_SIZE):
+        batch = texts[i:i + FINBERT_BATCH_SIZE]
+        try:
             results = pipe(
                 batch,
                 batch_size=FINBERT_BATCH_SIZE,
@@ -153,15 +176,14 @@ def _score_finbert(headlines: Sequence[str]) -> List[float]:
             for label_scores in results:
                 p_pos, p_neg = _finbert_probs(label_scores)
                 scores.append(float(p_pos - p_neg))
-    except Exception as exc:
-        global _FINBERT_WARNED
-        if not _FINBERT_WARNED:
-            logger.warning(
-                "sentiment_backend: FinBERT scoring failed (%s); falling back to VADER",
-                exc,
-            )
-            _FINBERT_WARNED = True
-        return _score_vader(headlines)
+        except Exception as exc:
+            if not _FINBERT_WARNED:
+                logger.warning(
+                    "sentiment_backend: FinBERT scoring failed (%s); falling back to VADER",
+                    exc,
+                )
+                _FINBERT_WARNED = True
+            scores.extend(_score_vader(batch))
     return scores
 
 

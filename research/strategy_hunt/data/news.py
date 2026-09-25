@@ -41,9 +41,16 @@ def _configured_backend() -> str:
 
 
 def _score_columns(headlines: list[str]) -> dict[str, list[float]]:
-    """sentiment_vader always; sentiment_finbert when available, else NaN."""
+    """sentiment_vader always; sentiment_finbert only when the configured
+    backend is finbert (and it is actually available), else NaN.
+
+    v-playbook-desk-b1-2026-09-25 (Task 7 fix round 1, Critical finding):
+    `available_backends()` (which triggers the lazy FinBERT load) is only
+    called when the configured backend is "finbert" — under the default
+    "vader" backend, no FinBERT load is attempted at all.
+    """
     cols: dict[str, list[float]] = {"sentiment_vader": score(headlines, backend="vader")}
-    if "finbert" in available_backends():
+    if _configured_backend() == "finbert" and "finbert" in available_backends():
         cols["sentiment_finbert"] = score(headlines, backend="finbert")
     else:
         cols["sentiment_finbert"] = [float("nan")] * len(headlines)
@@ -76,7 +83,14 @@ def fetch_news(symbol: str, start: pd.Timestamp, end: pd.Timestamp, session: Any
         df[col] = values
     backend = _configured_backend()
     sentiment_col = f"sentiment_{backend}"
-    df["sentiment"] = df[sentiment_col] if sentiment_col in df.columns else df["sentiment_vader"]
+    # v-playbook-desk-b1-2026-09-25 (Task 7 fix round 1, Minor finding):
+    # fall back to sentiment_vader per-row wherever the configured backend's
+    # column is NaN (e.g. finbert configured but unavailable), rather than
+    # poisoning `sentiment` with NaN for the whole batch.
+    if sentiment_col in df.columns:
+        df["sentiment"] = df[sentiment_col].fillna(df["sentiment_vader"])
+    else:
+        df["sentiment"] = df["sentiment_vader"]
     return df[COLUMNS + EXTRA_COLUMNS].sort_values("created_at").reset_index(drop=True)
 
 

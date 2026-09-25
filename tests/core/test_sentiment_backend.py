@@ -6,21 +6,35 @@ FinBERT path via a fake pipeline injected through the module-level
 `_finbert_factory` so no model download ever occurs in tests.
 """
 import os
+import threading
+import time
 
 import pytest
 
 
+def _raising_finbert_factory():
+    raise RuntimeError("FinBERT disabled in tests")
+
+
 @pytest.fixture(autouse=True)
 def _reset_sentiment_backend_state():
-    """Reset module-level caches so tests don't leak state into each other."""
+    """Reset module-level caches so tests don't leak state into each other.
+
+    v-playbook-desk-b1-2026-09-25 (Task 7 fix round 1, Critical finding):
+    default `_finbert_factory` to a stub that raises, not
+    `_default_finbert_factory` — a test that reaches the real factory
+    without injecting its own fake must fail loudly instead of silently
+    downloading/loading the real model onto the GPU. Tests that exercise
+    the FinBERT path inject their own fake factory before calling in.
+    """
     import core.sentiment_backend as sb
 
-    sb._finbert_factory = sb._default_finbert_factory
+    sb._finbert_factory = _raising_finbert_factory
     sb._FINBERT_PIPELINE = None
     sb._FINBERT_LOAD_FAILED = False
     sb._FINBERT_WARNED = False
     yield
-    sb._finbert_factory = sb._default_finbert_factory
+    sb._finbert_factory = _raising_finbert_factory
     sb._FINBERT_PIPELINE = None
     sb._FINBERT_LOAD_FAILED = False
     sb._FINBERT_WARNED = False
@@ -181,6 +195,92 @@ class TestFinbertBackend:
         # second failure should not re-warn (one-time warning)
         second_warnings = [r for r in caplog.records if "FinBERT" in r.message]
         assert len(second_warnings) == 0
+
+
+class TestFinbertConcurrency:
+    def test_lazy_finbert_load_is_thread_safe(self):
+        """Important finding: lazy singleton init must be locked.
+
+        8 threads race to trigger the first FinBERT call. A slow fake
+        factory widens the race window; without a lock, multiple threads
+        observe `_FINBERT_PIPELINE is None` before any of them finishes
+        building it, so the factory runs more than once.
+        """
+        import core.sentiment_backend as sb
+
+        load_count = {"n": 0}
+        lock = threading.Lock()
+
+        def slow_factory():
+            with lock:
+                load_count["n"] += 1
+            time.sleep(0.05)
+            return _FakeFinbertPipeline(_bullish_bearish_scores)
+
+        sb._finbert_factory = slow_factory
+
+        barrier = threading.Barrier(8)
+        errors = []
+
+        def worker():
+            try:
+                barrier.wait(timeout=5)
+                sb.score(["beat"], backend="finbert")
+            except Exception as exc:  # pragma: no cover - surfaced via errors list
+                errors.append(exc)
+
+        threads = [threading.Thread(target=worker) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5)
+
+        assert not errors
+        assert load_count["n"] == 1
+
+
+class TestFinbertPerBatchFallback:
+    def test_batch_failure_falls_back_to_vader_for_that_batch_only(self):
+        """Minor finding: a failing batch must not discard earlier batches.
+
+        33 headlines -> batches of [32, 1] (FINBERT_BATCH_SIZE=32). The fake
+        pipeline raises on the second call (the 1-headline batch), so the
+        first 32 scores must still be FinBERT values and only the 33rd
+        falls back to VADER.
+        """
+        import core.sentiment_backend as sb
+
+        class _FailSecondBatchPipeline:
+            def __init__(self):
+                self.calls = 0
+
+            def __call__(self, texts, **kwargs):
+                self.calls += 1
+                if self.calls == 2:
+                    raise RuntimeError("simulated batch failure")
+                out = []
+                for _ in texts:
+                    out.append([
+                        {"label": "positive", "score": 0.9},
+                        {"label": "negative", "score": 0.05},
+                        {"label": "neutral", "score": 0.05},
+                    ])
+                return out
+
+        fake = _FailSecondBatchPipeline()
+        sb._finbert_factory = lambda: fake
+
+        headlines = [f"beat #{i}" for i in range(33)]
+        result = sb.score(headlines, backend="finbert")
+
+        assert len(result) == 33
+        assert fake.calls == 2
+        finbert_value = pytest.approx(0.9 - 0.05)
+        for v in result[:32]:
+            assert v == finbert_value
+        vader_expected = sb._score_vader([headlines[32]])[0]
+        assert result[32] == pytest.approx(vader_expected)
+        assert result[32] != finbert_value
 
 
 class TestAvailableBackends:
