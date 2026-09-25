@@ -122,18 +122,23 @@ Failed floors are abbreviated to the metric name.
 | news_catalyst | long | mixed | 595 | 302 | -0.160 | -0.004 | **-0.156** | -3.39 | -2.67 | 0.00 | 0.73 | 0.36 | 0.21 | +0.00 | FAIL | pf, wr, exp_r, recovery, stability, decay, t, t_session, exp_r_lb, excess |
 | mean_rev_intraday | long | risk_off | 2,724 | 177 | -0.590 | -0.429 | **-0.160** | -23.19 | -8.79 | 0.00 | 0.38 | 0.21 | 0.05 | +0.00 | FAIL | pf, wr, exp_r, recovery, stability, decay, t, t_session, exp_r_lb, excess |
 
-**Reading the table.** 43 of 69 pooled rows have positive excess and 17 clear the +0.05 floor — but
-13 of those 17 are rows with *negative* expectancy whose shuffled twin is merely more negative still.
+**Reading the table.** Across all 69 pooled rows, 43 have positive excess and 17 clear the +0.05
+floor — but 12 of those 17 are rows with *negative* expectancy whose shuffled twin is merely more
+negative still. Restricted to the 36 rows with n ≥ 500 shown above, 13 clear the floor and 10 of
+those are negative-expectancy.
 That is the excess test behaving as designed: `min_excess_r` is a necessary condition layered on top
 of `min_exp_r`, `min_pf`, `min_wr` and the rest, not a substitute for them. The six `orb_inplay` rows
 make the point loudly — permuting intraday returns destroys the opening range the family trades, so
 its baseline collapses to −1.3 … −2.0 R and every `orb_inplay` excess lands above +0.9 R. An excess
 that large means "the rule depends on intraday structure", not "the rule makes money".
 
-Only three rows are simultaneously positive-expectancy *and* clear of the excess floor:
-`orb_inplay short/risk_off` (+0.200, excess +1.497), `orb_inplay long/risk_on` (+0.128, excess
-+1.444) and `gap_play short/risk_off` (+0.181, excess +0.073). The two `orb_inplay` rows fail on PF,
-WR, recovery, stability and both t-statistics; `gap_play short/risk_off` fails only `min_decay`.
+Only five rows are simultaneously positive-expectancy *and* clear of the excess floor, and only
+three of them have n ≥ 500: `orb_inplay short/risk_off` (+0.200, excess +1.497), `orb_inplay
+long/risk_on` (+0.128, excess +1.444) and `gap_play short/risk_off` (+0.181, excess +0.073). The two
+`orb_inplay` rows fail on PF, WR, recovery, stability and both t-statistics; `gap_play short/risk_off`
+fails only `min_decay`. The other two are tiny-n FAIL rows that no floor set would admit:
+`pead_smallcap short/mixed` (n 39, +0.234, excess +0.160) and `vol_breakout long/risk_off` (n 26,
++0.412, excess +0.149).
 
 ## Do B1's WATCH rows survive the excess test?
 
