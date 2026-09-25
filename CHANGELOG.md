@@ -11,8 +11,11 @@
   real sizing rules; a strategy-fit gate in the live engine (`core/strategy_fit_gate.py`, wired after
   the regime gate) that is off by default and shadow-only (`STRATEGY_FIT_SHADOW=True`) when enabled;
   swing-lane multi-session exit support (`SWING_ALLOW_OVERNIGHT`, `SWING_MAX_HOLD_SESSIONS`); fit-lane
-  adapters (`strategies/fit_lane.py`) that route governed signals through their family's verdict,
-  shadow-first per family via `FIT_LANES_ENABLED` / `FIT_LANE_LIVE_ENTRIES_ENABLED`; a "Strategy fit"
+  adapters (`strategies/fit_lane.py`) that are shadow-first per family via `FIT_LANES_ENABLED` /
+  `FIT_LANE_LIVE_ENTRIES_ENABLED` and emit a live signal only for an entry whose own
+  (symbol, family, side) fit row is a walk-forward `PASS` — a `WATCH`, `FAIL`, or cold-start row
+  stays shadow (ledger line plus a `fit_lane_shadow_verdict` decision) even for a family listed in
+  `FIT_LANE_LIVE_ENTRIES_ENABLED`; a "Strategy fit"
   section in `tools/bot_monitor.py`'s report; and a read-only `GET /api/strategy-fit` endpoint. Nightly
   cron scheduling and full docs in `docs/research/strategy_hunt.md` and
   `docs/BOT_OPERATIONS_MANUAL.md` § "Strategy fit gate". Plan:

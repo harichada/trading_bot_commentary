@@ -18,7 +18,8 @@ class _Fit:
 
 
 class _Row:
-    def __init__(self, verdict, score): self.verdict, self.score = verdict, score
+    def __init__(self, verdict, score, source="walkforward"):
+        self.verdict, self.score, self.source = verdict, score, source
 
 
 def _bars(n_sessions=3, last_close=100.0):
@@ -188,13 +189,30 @@ def test_stale_bars_after_close_skipped(monkeypatch, tmp_path, caplog):
     assert "reason=stale_bars" in caplog.text
 
 
-def test_stale_bars_before_open_skipped(monkeypatch, tmp_path, caplog):
-    """Review fix #3 (Important): clock the next morning before the first
-    bar of the new session prints -> the last closed bar is from
-    yesterday's session, well outside the freshness window."""
+def test_stale_bars_before_synthetic_bar_prints(monkeypatch, tmp_path, caplog):
+    """Review fix #3 (Important): clock before the synthetic bar's own
+    timestamp -> nothing to evaluate yet, so the snapshot is rejected.
+
+    v-strategy-fit-review2-2026-09-25 (Important 4): the last closed bar is
+    yesterday's 15:55, so the synthetic bar is today 09:30; a 09:20 clock is
+    still ahead of it."""
     lane = _lane(monkeypatch, tmp_path, live=True)
     lane._bars_source = lambda sym: (_full_bars(2), pd.DataFrame())
-    lane._clock = lambda: datetime(2025, 9, 24, 9, 31)
+    lane._clock = lambda: datetime(2025, 9, 24, 9, 20)
+    with caplog.at_level("INFO", logger="TradingBot"):
+        result = asyncio.run(lane.generate_signal_with_commentary(_md()))
+    assert result is None
+    assert not (tmp_path / "shadow_fit_toy.ndjson").exists()
+    assert "reason=stale_bars" in caplog.text
+
+
+def test_stale_bars_past_opening_window(monkeypatch, tmp_path, caplog):
+    """v-strategy-fit-review2-2026-09-25 (Important 4): the opening window is
+    09:30-09:45 (synthetic bar + 15 min). A 09:50 clock is past it, so the
+    session-open snapshot is stale even though the market is open."""
+    lane = _lane(monkeypatch, tmp_path, live=True)
+    lane._bars_source = lambda sym: (_full_bars(2), pd.DataFrame())
+    lane._clock = lambda: datetime(2025, 9, 24, 9, 50)
     with caplog.at_level("INFO", logger="TradingBot"):
         result = asyncio.run(lane.generate_signal_with_commentary(_md()))
     assert result is None
@@ -233,3 +251,173 @@ def test_empty_bars_skip_insufficient_bars_no_error(monkeypatch, tmp_path, caplo
     assert "reason=insufficient_bars" in caplog.text
     assert "reason=fit_lane_error" not in caplog.text
     assert not any(r.levelname == "WARNING" for r in caplog.records)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# v-strategy-fit-review2-2026-09-25 — Critical 1: live entries require a
+# walk-forward PASS row for the entry's own side.
+# ──────────────────────────────────────────────────────────────────────
+
+def _ledger_lines(tmp_path, family="toy"):
+    p = tmp_path / f"shadow_fit_{family}.ndjson"
+    return [json.loads(l) for l in p.read_text().strip().splitlines()] if p.exists() else []
+
+
+def test_watch_row_in_live_family_stays_shadow_with_ledger_line(monkeypatch, tmp_path, caplog):
+    """Critical 1: a WATCH row must not emit a live signal just because the
+    family is in FIT_LANE_LIVE_ENTRIES_ENABLED. The entry is still recorded
+    in the shadow ledger so the evidence keeps accumulating."""
+    lane = _lane(monkeypatch, tmp_path, live=True,
+                 rows={("NVDA", "toy", "long"): _Row("WATCH", 0.2, "walkforward")})
+    with caplog.at_level("INFO", logger="TradingBot"):
+        result = asyncio.run(lane.generate_signal_with_commentary(_md()))
+    assert result is None
+    assert "reason=fit_lane_shadow_verdict" in caplog.text
+    recs = _ledger_lines(tmp_path)
+    assert len(recs) == 1 and recs[0]["verdict"] == "WATCH" and recs[0]["symbol"] == "NVDA"
+
+
+def test_pass_walkforward_row_in_live_family_emits_signal(monkeypatch, tmp_path):
+    """Critical 1: the one combination that may go live — PASS from the
+    walk-forward pipeline, family enabled for live entries."""
+    from core.models import SignalType
+    lane = _lane(monkeypatch, tmp_path, live=True,
+                 rows={("NVDA", "toy", "long"): _Row("PASS", 0.4, "walkforward")})
+    sig = asyncio.run(lane.generate_signal_with_commentary(_md()))
+    assert sig is not None and sig.signal_type == SignalType.BUY
+    assert sig.reasoning["fit_verdict"] == "PASS"
+
+
+def test_pass_coldstart_row_in_live_family_stays_shadow(monkeypatch, tmp_path, caplog):
+    """Critical 1: PASS alone isn't enough — a cold-start row has no
+    walk-forward evidence behind it, so it stays shadow."""
+    lane = _lane(monkeypatch, tmp_path, live=True,
+                 rows={("NVDA", "toy", "long"): _Row("PASS", 0.4, "coldstart")})
+    with caplog.at_level("INFO", logger="TradingBot"):
+        result = asyncio.run(lane.generate_signal_with_commentary(_md()))
+    assert result is None
+    assert "reason=fit_lane_shadow_verdict" in caplog.text
+    assert len(_ledger_lines(tmp_path)) == 1
+
+
+def test_live_eligible_predicate():
+    from strategies.fit_lane import live_eligible
+    assert live_eligible(_Row("PASS", 0.4, "walkforward")) is True
+    assert live_eligible(_Row("PASS", 0.4, "coldstart")) is False
+    assert live_eligible(_Row("WATCH", 0.4, "walkforward")) is False
+    assert live_eligible(_Row("FAIL", 0.4, "walkforward")) is False
+    assert live_eligible(None) is False
+
+
+def test_clamp_guards_nan_score(monkeypatch, tmp_path):
+    """Minor: a NaN score must clamp to the 0.2 floor, not become strength
+    1.0 (or NaN) on the emitted signal."""
+    from strategies.fit_lane import _clamp
+    assert _clamp(float("nan"), 0.2, 1.0) == 0.2
+    assert _clamp(float("inf"), 0.2, 1.0) == 0.2
+    assert _clamp(None, 0.2, 1.0) == 0.2
+    assert _clamp(0.6, 0.2, 1.0) == 0.6
+
+    lane = _lane(monkeypatch, tmp_path, live=True,
+                 rows={("NVDA", "toy", "long"): _Row("PASS", float("nan"), "walkforward")})
+    sig = asyncio.run(lane.generate_signal_with_commentary(_md()))
+    assert sig is not None and sig.strength == 0.2 and sig.confidence == 0.2
+
+
+# ──────────────────────────────────────────────────────────────────────
+# v-strategy-fit-review2-2026-09-25 — Important 4: session-open mode.
+# ──────────────────────────────────────────────────────────────────────
+
+def test_next_rth_bar_maps_1555_to_next_weekday_open():
+    from strategies.fit_lane import next_rth_bar
+    assert next_rth_bar(pd.Timestamp("2025-09-23 15:55")) == pd.Timestamp("2025-09-24 09:30")
+    assert next_rth_bar(pd.Timestamp("2025-09-26 15:55")) == pd.Timestamp("2025-09-29 09:30")   # Fri -> Mon
+    assert next_rth_bar(pd.Timestamp("2025-09-24 13:25")) == pd.Timestamp("2025-09-24 13:30")
+
+
+def _session_open_family(monkeypatch, name="toy_open"):
+    """Toy family shaped like the real session-open families: it signals at
+    bar_of_day == 0 via make_entry(bars5, j - 1, ...) with a multiday hold."""
+    from strategies.families import registry
+    from strategies.families.common import Family, make_entry
+    import numpy as np
+
+    def fn(bars5, ind, daily, news, params):
+        out = []
+        for j in [int(i) for i in np.flatnonzero(ind["bar_of_day"].to_numpy() == 0) if i > 0]:
+            px = float(bars5["open"].iloc[j])
+            e = make_entry(bars5, j - 1, "long", px - 1.0, px + 2.0, 10, "multiday", "toy_open")
+            if e:
+                out.append(e)
+        return out
+
+    monkeypatch.setitem(registry.FAMILIES, name, Family(name, fn, {"x": [1]}, "multiday", ("long",)))
+    return name
+
+
+def _daily_for(bars5):
+    """Daily frame covering every session present in `bars5` (not the new one)."""
+    g = bars5.groupby(bars5.index.normalize())
+    d = pd.DataFrame({"open": g["open"].first(), "high": g["high"].max(), "low": g["low"].min(),
+                      "close": g["close"].last(), "volume": g["volume"].sum()})
+    d.index.name = "date"
+    return d
+
+
+def _open_lane(monkeypatch, tmp_path, clock, bars5, rows=None):
+    from strategies.fit_lane import FitLaneStrategy
+    name = _session_open_family(monkeypatch)
+    rows = rows if rows is not None else {("NVDA", name, "long"): _Row("PASS", 0.4, "walkforward")}
+    fit = _Fit(rows, {})
+    src = lambda sym: (bars5, _daily_for(bars5))
+    return FitLaneStrategy(_Commentary(), name, fit, src, lambda: (name,), ledger_dir=tmp_path,
+                           clock=lambda: clock)
+
+
+def test_session_open_family_fires_in_opening_window(monkeypatch, tmp_path):
+    """Important 4: last closed bar is yesterday's 15:55 and the clock is
+    09:33 today -> the synthetic bar is today's 09:30 open, so a
+    bar_of_day == 0 family is reachable live."""
+    bars5 = _full_bars(3)                       # 09/22..09/24, last bar 2025-09-24 15:55
+    lane = _open_lane(monkeypatch, tmp_path, datetime(2025, 9, 25, 9, 33), bars5)
+    sig = asyncio.run(lane.generate_signal_with_commentary(_md()))
+    assert sig is not None
+    recs = _ledger_lines(tmp_path, "toy_open")
+    assert recs and recs[-1]["ts"] == "2025-09-25T09:30:00" and recs[-1]["hold_kind"] == "multiday"
+
+
+def test_session_open_family_stale_past_0945(monkeypatch, tmp_path, caplog):
+    """Important 4: the same snapshot at 09:50 is past the opening window."""
+    bars5 = _full_bars(3)
+    lane = _open_lane(monkeypatch, tmp_path, datetime(2025, 9, 25, 9, 50), bars5)
+    with caplog.at_level("INFO", logger="TradingBot"):
+        result = asyncio.run(lane.generate_signal_with_commentary(_md()))
+    assert result is None
+    assert "reason=stale_bars" in caplog.text
+
+
+def test_session_open_friday_close_maps_to_monday(monkeypatch, tmp_path):
+    """Important 4: a Friday 15:55 last close with a Monday 09:33 clock
+    yields Monday's 09:30 synthetic bar (the weekend is skipped)."""
+    frames = []
+    for d in pd.bdate_range("2025-09-24", periods=3):        # Wed, Thu, Fri 2025-09-26
+        idx = pd.date_range(f"{d.date()} 09:30", periods=78, freq="5min", name="ts")
+        frames.append(pd.DataFrame({"open": 100.0, "high": 100.5, "low": 99.5, "close": 100.0,
+                                    "volume": 1000}, index=idx))
+    bars5 = pd.concat(frames)
+    assert bars5.index[-1] == pd.Timestamp("2025-09-26 15:55")
+    lane = _open_lane(monkeypatch, tmp_path, datetime(2025, 9, 29, 9, 33), bars5)
+    sig = asyncio.run(lane.generate_signal_with_commentary(_md()))
+    assert sig is not None
+    assert _ledger_lines(tmp_path, "toy_open")[-1]["ts"] == "2025-09-29T09:30:00"
+
+
+def test_with_daily_placeholder_adds_new_session_date():
+    from strategies.fit_lane import with_daily_placeholder
+    d = _daily_for(_full_bars(2))
+    out = with_daily_placeholder(d, pd.Timestamp("2025-09-24 09:30"))
+    assert pd.Timestamp("2025-09-24") in out.index and len(out) == len(d) + 1
+    assert out["volume"].iloc[-1] == 0 and pd.isna(out["close"].iloc[-1])
+    # Idempotent for a date already present, and safe on an empty frame.
+    assert with_daily_placeholder(out, pd.Timestamp("2025-09-24 09:30")).equals(out)
+    assert with_daily_placeholder(pd.DataFrame(), pd.Timestamp("2025-09-24")).empty

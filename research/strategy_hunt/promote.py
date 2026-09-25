@@ -11,14 +11,20 @@ Blocker precedence (first that applies wins):
   2. "not_registered"         -- family not in FIT_LANES_ENABLED
   3. "scorecard_missing"      -- no Stage A scorecard yet (no shadow ledger / never resolved)
   4. "scorecard_no_go"        -- latest scorecard verdict is NO_GO
-  5. "swing_overnight_disabled" -- multiday family but SWING_ALLOW_OVERNIGHT is off
+  5. "gate_not_enforcing"     -- ENABLE_STRATEGY_FIT_GATE off, or STRATEGY_FIT_SHADOW on
+  6. "swing_overnight_disabled" -- multiday family but SWING_ALLOW_OVERNIGHT is off
   else ""                     -- clear to promote
 
+`gate_not_enforcing` (v-strategy-fit-review2-2026-09-25, Critical 1): promoting a lane to live
+entries while the strategy-fit gate is disabled or still in shadow mode means the engine-side
+per-symbol check is inert, so the lane's live entries would be governed by nothing but the fit
+row the adapter itself reads. The gate must be enabled AND enforcing before any lane goes live.
+
 Recommendation follows the blocker: no_pass_symbols/scorecard_missing -> "collect_shadow";
-not_registered -> "register_shadow"; scorecard_no_go/swing_overnight_disabled -> "hold";
-no blocker -> "promote_live" -- unless the family is already live (in `live_enabled`), in which
-case there's nothing to do and it's "hold" instead, so an already-promoted family is never
-recommended for (re-)promotion.
+not_registered -> "register_shadow"; scorecard_no_go/gate_not_enforcing/swing_overnight_disabled
+-> "hold"; no blocker -> "promote_live" -- unless the family is already live (in `live_enabled`),
+in which case there's nothing to do and it's "hold" instead, so an already-promoted family is
+never recommended for (re-)promotion.
 """
 from __future__ import annotations
 
@@ -36,7 +42,8 @@ def _scorecard_verdict(scorecards: dict[str, Any], family: str) -> str:
     return "none"
 
 
-def _blocker(pass_symbols: int, registered: bool, scorecard_verdict: str, hold_kind: str, swing_allowed: bool) -> str:
+def _blocker(pass_symbols: int, registered: bool, scorecard_verdict: str, hold_kind: str, swing_allowed: bool,
+             gate_enabled: bool, gate_shadow: bool) -> str:
     if pass_symbols < MIN_PASS_SYMBOLS:
         return "no_pass_symbols"
     if not registered:
@@ -45,6 +52,8 @@ def _blocker(pass_symbols: int, registered: bool, scorecard_verdict: str, hold_k
         return "scorecard_missing"
     if scorecard_verdict == "NO_GO":
         return "scorecard_no_go"
+    if not gate_enabled or gate_shadow:
+        return "gate_not_enforcing"
     if hold_kind == "multiday" and not swing_allowed:
         return "swing_overnight_disabled"
     return ""
@@ -55,15 +64,21 @@ _RECOMMENDATION_BY_BLOCKER = {
     "not_registered": "register_shadow",
     "scorecard_missing": "collect_shadow",
     "scorecard_no_go": "hold",
+    "gate_not_enforcing": "hold",
     "swing_overnight_disabled": "hold",
     "": "promote_live",
 }
 
 
 def promotion_table(snapshot: dict, scorecards: dict[str, dict], lanes_enabled: tuple[str, ...],
-                     live_enabled: tuple[str, ...], swing_allowed: bool) -> list[dict]:
+                     live_enabled: tuple[str, ...], swing_allowed: bool,
+                     gate_enabled: bool = False, gate_shadow: bool = True) -> list[dict]:
     """One row per known family (`strategies.families.family_names`), independent of
-    whether the family has any rows in `snapshot` yet."""
+    whether the family has any rows in `snapshot` yet.
+
+    `gate_enabled`/`gate_shadow` are `Config().ENABLE_STRATEGY_FIT_GATE` /
+    `STRATEGY_FIT_SHADOW`; their defaults mirror the shipped config defaults, which block
+    promotion (`gate_not_enforcing`)."""
     rows_by_family: dict[str, list[dict]] = {}
     for sym_rows in snapshot.get("rows", {}).values():
         for row in sym_rows.values():
@@ -79,7 +94,8 @@ def promotion_table(snapshot: dict, scorecards: dict[str, dict], lanes_enabled: 
         live = name in live_enabled
         scorecard_verdict = _scorecard_verdict(scorecards, name)
 
-        blocker = _blocker(pass_symbols, registered, scorecard_verdict, family.hold_kind, swing_allowed)
+        blocker = _blocker(pass_symbols, registered, scorecard_verdict, family.hold_kind, swing_allowed,
+                           gate_enabled, gate_shadow)
         if live and blocker == "":
             recommendation = "hold"  # already promoted; nothing to do
         else:

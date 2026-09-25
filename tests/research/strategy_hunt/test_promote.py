@@ -18,13 +18,20 @@ def _pass_rows(strategy, n, side="long"):
     return [_row(f"SYM{i}", strategy, side, "PASS") for i in range(n)]
 
 
+# v-strategy-fit-review2-2026-09-25 (Critical 1): the gate must be enabled and enforcing
+# before any lane can be promoted, so every test that expects a *non-gate* blocker (or no
+# blocker at all) has to state that posture explicitly.
+ENFORCING = {"gate_enabled": True, "gate_shadow": False}
+
+
 def test_promotion_table_promote_live_when_clean_and_short_family_needs_more_evidence():
     from research.strategy_hunt.promote import promotion_table
 
     rows = _pass_rows("orb", 12) + _pass_rows("mr_20d", 3)
     snap = _snapshot(rows)
     scorecards = {"orb": {"verdict": "GO"}}
-    table = promotion_table(snap, scorecards, lanes_enabled=("orb",), live_enabled=(), swing_allowed=False)
+    table = promotion_table(snap, scorecards, lanes_enabled=("orb",), live_enabled=(), swing_allowed=False,
+                            **ENFORCING)
 
     by_family = {r["family"]: r for r in table}
     orb = by_family["orb"]
@@ -48,7 +55,8 @@ def test_promotion_table_swing_overnight_blocker_for_multiday_family():
     rows = _pass_rows("mr_20d", 12)
     snap = _snapshot(rows)
     scorecards = {"mr_20d": {"verdict": "GO"}}
-    table = promotion_table(snap, scorecards, lanes_enabled=("mr_20d",), live_enabled=(), swing_allowed=False)
+    table = promotion_table(snap, scorecards, lanes_enabled=("mr_20d",), live_enabled=(), swing_allowed=False,
+                            **ENFORCING)
 
     mr = next(r for r in table if r["family"] == "mr_20d")
     assert mr["hold_kind"] == "multiday"
@@ -62,7 +70,8 @@ def test_promotion_table_swing_allowed_lets_multiday_family_through():
     rows = _pass_rows("mr_20d", 12)
     snap = _snapshot(rows)
     scorecards = {"mr_20d": {"verdict": "GO"}}
-    table = promotion_table(snap, scorecards, lanes_enabled=("mr_20d",), live_enabled=(), swing_allowed=True)
+    table = promotion_table(snap, scorecards, lanes_enabled=("mr_20d",), live_enabled=(), swing_allowed=True,
+                            **ENFORCING)
 
     mr = next(r for r in table if r["family"] == "mr_20d")
     assert mr["blocker"] == ""
@@ -74,7 +83,7 @@ def test_promotion_table_not_registered_blocks_before_scorecard_checks():
 
     rows = _pass_rows("orb", 12)
     snap = _snapshot(rows)
-    table = promotion_table(snap, {}, lanes_enabled=(), live_enabled=(), swing_allowed=False)
+    table = promotion_table(snap, {}, lanes_enabled=(), live_enabled=(), swing_allowed=False, **ENFORCING)
 
     orb = next(r for r in table if r["family"] == "orb")
     assert orb["blocker"] == "not_registered"
@@ -87,14 +96,14 @@ def test_promotion_table_scorecard_missing_vs_no_go():
     rows = _pass_rows("orb", 12)
     snap = _snapshot(rows)
 
-    missing = promotion_table(snap, {}, lanes_enabled=("orb",), live_enabled=(), swing_allowed=False)
+    missing = promotion_table(snap, {}, lanes_enabled=("orb",), live_enabled=(), swing_allowed=False, **ENFORCING)
     orb_missing = next(r for r in missing if r["family"] == "orb")
     assert orb_missing["scorecard_verdict"] == "none"
     assert orb_missing["blocker"] == "scorecard_missing"
     assert orb_missing["recommendation"] == "collect_shadow"
 
     no_go = promotion_table(snap, {"orb": {"verdict": "NO_GO"}}, lanes_enabled=("orb",), live_enabled=(),
-                             swing_allowed=False)
+                            swing_allowed=False, **ENFORCING)
     orb_no_go = next(r for r in no_go if r["family"] == "orb")
     assert orb_no_go["scorecard_verdict"] == "NO_GO"
     assert orb_no_go["blocker"] == "scorecard_no_go"
@@ -106,7 +115,8 @@ def test_promotion_table_accepts_scorecard_value_of_literal_none_string():
 
     rows = _pass_rows("orb", 12)
     snap = _snapshot(rows)
-    table = promotion_table(snap, {"orb": "none"}, lanes_enabled=("orb",), live_enabled=(), swing_allowed=False)
+    table = promotion_table(snap, {"orb": "none"}, lanes_enabled=("orb",), live_enabled=(), swing_allowed=False,
+                            **ENFORCING)
     orb = next(r for r in table if r["family"] == "orb")
     assert orb["scorecard_verdict"] == "none"
     assert orb["blocker"] == "scorecard_missing"
@@ -129,7 +139,7 @@ def test_promotion_table_already_live_family_recommends_hold_not_promote_live():
     rows = _pass_rows("orb", 12)
     snap = _snapshot(rows)
     table = promotion_table(snap, {"orb": {"verdict": "GO"}}, lanes_enabled=("orb",), live_enabled=("orb",),
-                             swing_allowed=False)
+                            swing_allowed=False, **ENFORCING)
     orb = next(r for r in table if r["family"] == "orb")
     assert orb["live"] is True
     assert orb["blocker"] == ""
@@ -142,7 +152,7 @@ def test_render_promotion_includes_markdown_table_and_live_env_line():
     rows = _pass_rows("orb", 12)
     snap = _snapshot(rows)
     table = promotion_table(snap, {"orb": {"verdict": "GO"}}, lanes_enabled=("orb",), live_enabled=(),
-                             swing_allowed=False)
+                            swing_allowed=False, **ENFORCING)
     md = render_promotion(table)
 
     assert "| family " in md
@@ -157,7 +167,7 @@ def test_render_promotion_swing_note_only_for_blocked_multiday_family():
     rows = _pass_rows("mr_20d", 12)
     snap = _snapshot(rows)
     table = promotion_table(snap, {"mr_20d": {"verdict": "GO"}}, lanes_enabled=("mr_20d",), live_enabled=(),
-                             swing_allowed=False)
+                            swing_allowed=False, **ENFORCING)
     md = render_promotion(table)
     assert "SWING_ALLOW_OVERNIGHT=1" in md
     assert "mr_20d" in md.split("SWING_ALLOW_OVERNIGHT=1")[1].splitlines()[0]
@@ -179,7 +189,7 @@ def test_render_promotion_omits_live_env_line_for_already_live_family_with_nothi
     rows = _pass_rows("orb", 12)
     snap = _snapshot(rows)
     table = promotion_table(snap, {"orb": {"verdict": "GO"}}, lanes_enabled=("orb",), live_enabled=("orb",),
-                             swing_allowed=False)
+                            swing_allowed=False, **ENFORCING)
     md = render_promotion(table)
     assert "FIT_LANE_LIVE_ENTRIES_ENABLED" not in md
 
@@ -193,7 +203,7 @@ def test_render_promotion_live_line_unions_already_live_with_newly_promoted():
     snap = _snapshot(rows)
     scorecards = {"orb": {"verdict": "GO"}, "mr_20d": {"verdict": "GO"}}
     table = promotion_table(snap, scorecards, lanes_enabled=("orb", "mr_20d"), live_enabled=("orb",),
-                             swing_allowed=True)
+                            swing_allowed=True, **ENFORCING)
     md = render_promotion(table)
     line = next(l for l in md.splitlines() if l.startswith("FIT_LANE_LIVE_ENTRIES_ENABLED="))
     assert set(line.split("=", 1)[1].split(",")) == {"orb", "mr_20d"}
@@ -205,7 +215,7 @@ def test_promotion_table_watch_symbols_filtered_to_walkforward_source():
     rows = _pass_rows("orb", 12) + [_row("COLD1", "orb", "long", "WATCH", source="coldstart"),
                                      _row("SYM99", "orb", "long", "WATCH", source="walkforward")]
     snap = _snapshot(rows)
-    table = promotion_table(snap, {}, lanes_enabled=(), live_enabled=(), swing_allowed=False)
+    table = promotion_table(snap, {}, lanes_enabled=(), live_enabled=(), swing_allowed=False, **ENFORCING)
     orb = next(r for r in table if r["family"] == "orb")
     assert orb["watch_symbols"] == 1
 
@@ -241,3 +251,72 @@ def test_cmd_promote_isolates_a_single_familys_ledger_error(tmp_path, monkeypatc
     assert "| orb " in text
     assert "| mr_20d " in text
     assert "| vwap_reversion " in text
+
+
+def test_promotion_table_gate_not_enforcing_blocks_after_scorecard_no_go(monkeypatch):
+    """v-strategy-fit-review2-2026-09-25 (Critical 1): a family that is otherwise clear to
+    promote is still blocked while the engine-side strategy-fit gate is disabled or in
+    shadow — the blocker sits after `scorecard_no_go` and before
+    `swing_overnight_disabled`."""
+    from research.strategy_hunt.promote import promotion_table
+
+    snap = _snapshot(_pass_rows("orb", 12))
+    scorecards = {"orb": {"verdict": "GO"}}
+
+    def _orb(gate_enabled, gate_shadow, **kw):
+        table = promotion_table(snap, scorecards, lanes_enabled=("orb",), live_enabled=(),
+                                swing_allowed=False, gate_enabled=gate_enabled, gate_shadow=gate_shadow, **kw)
+        return next(r for r in table if r["family"] == "orb")
+
+    assert _orb(False, True)["blocker"] == "gate_not_enforcing"        # shipped default
+    assert _orb(False, False)["blocker"] == "gate_not_enforcing"       # disabled
+    assert _orb(True, True)["blocker"] == "gate_not_enforcing"         # enabled but shadow
+    assert _orb(True, True)["recommendation"] == "hold"
+    assert _orb(True, False)["blocker"] == ""                          # enabled and enforcing
+    assert _orb(True, False)["recommendation"] == "promote_live"
+
+    # Precedence: NO_GO still wins over gate_not_enforcing.
+    no_go = promotion_table(snap, {"orb": {"verdict": "NO_GO"}}, lanes_enabled=("orb",), live_enabled=(),
+                            swing_allowed=False, gate_enabled=False, gate_shadow=True)
+    assert next(r for r in no_go if r["family"] == "orb")["blocker"] == "scorecard_no_go"
+
+    # ...and gate_not_enforcing wins over swing_overnight_disabled.
+    swing = promotion_table(_snapshot(_pass_rows("mr_20d", 12)), {"mr_20d": {"verdict": "GO"}},
+                            lanes_enabled=("mr_20d",), live_enabled=(), swing_allowed=False,
+                            gate_enabled=True, gate_shadow=True)
+    assert next(r for r in swing if r["family"] == "mr_20d")["blocker"] == "gate_not_enforcing"
+
+
+def test_promotion_table_gate_defaults_block_promotion():
+    """Omitting the gate arguments must default to the shipped (blocking) posture, so no
+    caller can accidentally get a promote_live recommendation by forgetting them."""
+    from research.strategy_hunt.promote import promotion_table
+
+    snap = _snapshot(_pass_rows("orb", 12))
+    table = promotion_table(snap, {"orb": {"verdict": "GO"}}, lanes_enabled=("orb",), live_enabled=(),
+                            swing_allowed=False)
+    assert next(r for r in table if r["family"] == "orb")["blocker"] == "gate_not_enforcing"
+
+
+def test_cmd_promote_reads_gate_flags_off_config(tmp_path, monkeypatch):
+    """cmd_promote must feed Config()'s two gate flags into promotion_table."""
+    from research.strategy_hunt import promote as P
+    from research.strategy_hunt.cli import cmd_promote
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("ENABLE_STRATEGY_FIT_GATE", "1")
+    monkeypatch.setenv("STRATEGY_FIT_SHADOW", "0")
+    seen = {}
+    real = P.promotion_table
+
+    def spy(snapshot, scorecards, lanes_enabled, live_enabled, swing_allowed, gate_enabled=False,
+            gate_shadow=True):
+        seen["gate"] = (gate_enabled, gate_shadow)
+        return real(snapshot, scorecards, lanes_enabled, live_enabled, swing_allowed, gate_enabled, gate_shadow)
+
+    import research.strategy_hunt.cli as C
+    monkeypatch.setattr(P, "promotion_table", spy)
+    monkeypatch.setattr(C, "promotion_table", spy, raising=False)
+
+    assert cmd_promote(argparse.Namespace(root=tmp_path / "root")) == 0
+    assert seen["gate"] == (True, False)

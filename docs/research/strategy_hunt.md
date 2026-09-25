@@ -210,16 +210,30 @@ End-to-end nightly-to-promotion loop, tying together "Scheduling", "Run", and "E
    ledger has enough history to be worth scoring — it does not require `all` to have just run.
 3. **`promote`** combines the latest fit snapshot's PASS counts with each family's latest scorecard
    (re-derived the same way `scorecard` does, over every family with a ledger) and the live-facing
-   flags (`Config().FIT_LANES_ENABLED`, `FIT_LANE_LIVE_ENTRIES_ENABLED`, `SWING_ALLOW_OVERNIGHT`) into
-   one table: `pass_symbols`/`watch_symbols` counts, `blocker` (why it isn't promotable yet), and
-   `recommendation` (`collect_shadow`, `register_shadow`, `promote_live`, or `hold`). It prints the
-   table and the exact `.env` lines to apply, and writes the same content to
-   `docs/research/strategy_hunt_promotion.md`. It never edits `.env` or `Config().yaml` itself.
+   flags (`Config().FIT_LANES_ENABLED`, `FIT_LANE_LIVE_ENTRIES_ENABLED`, `SWING_ALLOW_OVERNIGHT`,
+   `ENABLE_STRATEGY_FIT_GATE`, `STRATEGY_FIT_SHADOW`) into one table: `pass_symbols`/`watch_symbols`
+   counts, `blocker` (why it isn't promotable yet), and `recommendation` (`collect_shadow`,
+   `register_shadow`, `promote_live`, or `hold`). It prints the table and the exact `.env` lines to
+   apply, and writes the same content to `docs/research/strategy_hunt_promotion.md`. It never edits
+   `.env` or `Config().yaml` itself.
+
+   **The gate must be enabled and enforcing before any lane goes live.** `promote` reports the
+   `gate_not_enforcing` blocker for every otherwise-clear family while `ENABLE_STRATEGY_FIT_GATE`
+   is `False` or `STRATEGY_FIT_SHADOW` is `True` — promoting a lane to live entries while the
+   engine-side per-symbol check is inert would put live orders behind no governance at all.
+   Turning the gate on is therefore step zero of any promotion, not an afterthought; see the
+   snapshot caveat under "Engine gate" above for what enforcing mode costs today.
 4. **Apply the printed `.env` lines** by hand — e.g. add `orb` to `FIT_LANES_ENABLED` to register its
    shadow adapter, or to `FIT_LANE_LIVE_ENTRIES_ENABLED` once its scorecard is GO and it clears the
    pass-symbol floor; add `SWING_ALLOW_OVERNIGHT=1` only when `promote` flags a multiday family
    blocked by `swing_overnight_disabled`. These are comma-separated family-name lists (env-var
    precedence over yaml over code default, per `core/config.py`, search `v-strategy-fit-2026-09-25`).
+
+   A family in `FIT_LANE_LIVE_ENTRIES_ENABLED` is still only *permitted* to trade live: the adapter
+   emits a signal only for an entry whose own (symbol, family, side) row is a walk-forward `PASS`.
+   `WATCH`, `FAIL`, and cold-start rows keep writing shadow-ledger lines and log
+   `reason=fit_lane_shadow_verdict` instead of producing an order. So promoting a family with no
+   walk-forward PASS rows for the symbols it fires on changes nothing in practice.
 5. **Restart** via `./deploy.sh` so the engine picks up the new `.env` values — flags are read once at
    process start (`Config()` properties re-read `os.getenv` per call, but the fit-lane adapters
    registered in `core/engine.py` are fixed at construction time).

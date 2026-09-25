@@ -192,8 +192,11 @@ def cmd_promote(a: argparse.Namespace) -> int:
                            exc_info=True)
             scorecards[name] = "none"
 
+    # v-strategy-fit-review2-2026-09-25 (Critical 1): the gate's own two flags feed the
+    # gate_not_enforcing blocker -- a lane must not go live while the engine-side
+    # per-symbol check is disabled or still in shadow.
     rows = promotion_table(snapshot, scorecards, cfg.FIT_LANES_ENABLED, cfg.FIT_LANE_LIVE_ENTRIES_ENABLED,
-                           cfg.SWING_ALLOW_OVERNIGHT)
+                           cfg.SWING_ALLOW_OVERNIGHT, cfg.ENABLE_STRATEGY_FIT_GATE, cfg.STRATEGY_FIT_SHADOW)
     md = render_promotion(rows)
     print(md)
 
