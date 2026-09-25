@@ -54,7 +54,7 @@ pipeline position, audit line format, and fail-closed behavior.
 | `SWING_ALLOW_OVERNIGHT` | `False` | Allow swing-lane positions to hold across sessions instead of forced flat by EOD. |
 | `SWING_MAX_HOLD_SESSIONS` | `10` | Maximum sessions a swing-lane position may be held before a forced exit. |
 
-All seven flags follow the config manager's env-var-then-yaml-then-default
+All eight flags follow the config manager's env-var-then-yaml-then-default
 precedence (`env ENABLE_STRATEGY_FIT_GATE=1`, yaml
 `trading.enable_strategy_fit_gate: true`, etc. — see
 `core/config.py`, search `v-strategy-fit-2026-09-25`).
