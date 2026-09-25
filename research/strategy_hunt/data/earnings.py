@@ -3,11 +3,16 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Union
 
 import pandas as pd
 
 logger = logging.getLogger("strategy_hunt.earnings")
+
+_TABLE_COLUMNS = ["eps_estimate", "reported_eps", "surprise_pct"]
+_SOURCE_COLUMNS = ("EPS Estimate", "Reported EPS", "Surprise(%)")
+
+FetchResult = Union[pd.DatetimeIndex, pd.DataFrame]
 
 
 def earnings_path(root: Path, symbol: str) -> Path:
@@ -25,16 +30,52 @@ def infer_event_days(daily: pd.DataFrame, gap_pct: float = 8.0, vol_mult: float 
     return {pd.Timestamp(d).normalize() for d in daily.index[hit.fillna(False)]}
 
 
-def update_earnings(root: Path, symbol: str, fetcher: Callable[[str], pd.DatetimeIndex]) -> int:
-    dates = pd.DatetimeIndex(fetcher(symbol))
-    dates = pd.DatetimeIndex(sorted({pd.Timestamp(d).tz_localize(None).normalize() if getattr(d, "tzinfo", None)
-                                     else pd.Timestamp(d).normalize() for d in dates}))
+def _normalize_date(d) -> pd.Timestamp:
+    ts = pd.Timestamp(d)
+    if ts.tzinfo is not None:
+        ts = ts.tz_localize(None)
+    return ts.normalize()
+
+
+def _to_float(value) -> float:
+    return float(value) if pd.notna(value) else float("nan")
+
+
+def _rows_from_fetch(raw: FetchResult) -> dict[pd.Timestamp, tuple[float, float, float]]:
+    """Normalize a fetcher's return value (legacy DatetimeIndex or a DataFrame with
+    EPS Estimate / Reported EPS / Surprise(%) columns) into date -> (eps_estimate,
+    reported_eps, surprise_pct). Later duplicate dates overwrite earlier ones."""
+    rows: dict[pd.Timestamp, tuple[float, float, float]] = {}
+    if isinstance(raw, pd.DataFrame):
+        series = {col: raw[col] if col in raw.columns else None for col in _SOURCE_COLUMNS}
+        for pos, d in enumerate(raw.index):
+            rows[_normalize_date(d)] = tuple(
+                _to_float(series[col].iloc[pos]) if series[col] is not None else float("nan")
+                for col in _SOURCE_COLUMNS
+            )
+    else:
+        for d in pd.DatetimeIndex(raw):
+            rows[_normalize_date(d)] = (float("nan"), float("nan"), float("nan"))
+    return rows
+
+
+def update_earnings(root: Path, symbol: str, fetcher: Callable[[str], FetchResult]) -> int:
+    rows = _rows_from_fetch(fetcher(symbol))
+    dates = sorted(rows)
+    table = pd.DataFrame(
+        {
+            "date": dates,
+            "eps_estimate": [rows[d][0] for d in dates],
+            "reported_eps": [rows[d][1] for d in dates],
+            "surprise_pct": [rows[d][2] for d in dates],
+        }
+    )
     p = earnings_path(root, symbol)
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_suffix(".tmp.parquet")
-    pd.DataFrame({"date": dates}).to_parquet(tmp, index=False)
+    table.to_parquet(tmp, index=False)
     tmp.replace(p)
-    return len(dates)
+    return len(table)
 
 
 def load_earnings(root: Path, symbol: str) -> set[pd.Timestamp]:
@@ -45,19 +86,42 @@ def load_earnings(root: Path, symbol: str) -> set[pd.Timestamp]:
     return {pd.Timestamp(d).normalize() for d in pd.to_datetime(df["date"])}
 
 
+def load_earnings_table(root: Path, symbol: str) -> pd.DataFrame:
+    """Full earnings cache table indexed by normalized, tz-naive date, with float
+    columns eps_estimate, reported_eps, surprise_pct. Empty (but columned) frame
+    when the cache is missing."""
+    p = earnings_path(root, symbol)
+    if not p.exists():
+        empty = pd.DataFrame(columns=_TABLE_COLUMNS)
+        empty.index = pd.DatetimeIndex([], name="date")
+        return empty
+    df = pd.read_parquet(p)
+    df = df.copy()
+    df["date"] = [pd.Timestamp(d).normalize() for d in pd.to_datetime(df["date"])]
+    return df.set_index("date")[_TABLE_COLUMNS]
+
+
 def earnings_days(root: Path, symbol: str, daily: pd.DataFrame) -> set[pd.Timestamp]:
     return load_earnings(root, symbol) | infer_event_days(daily)
 
 
-def yfinance_fetcher(symbol: str) -> pd.DatetimeIndex:
-    """Network call; returns an empty index on any failure so the fallback still applies."""
+def yfinance_fetcher(symbol: str) -> pd.DataFrame:
+    """Network call; returns an empty DataFrame on any failure so the fallback still applies."""
+    empty = pd.DataFrame(columns=list(_SOURCE_COLUMNS))
     try:
         import yfinance as yf
 
         df = yf.Ticker(symbol).earnings_dates
         if df is None or df.empty:
-            return pd.DatetimeIndex([])
-        return pd.DatetimeIndex(df.index)
+            return empty
+        if "Event Type" in df.columns:
+            df = df[df["Event Type"] == "Earnings"]
+        idx = df.index
+        if getattr(idx, "tz", None) is not None:
+            idx = idx.tz_localize(None)
+        df = df.set_axis(idx)
+        cols = [c for c in _SOURCE_COLUMNS if c in df.columns]
+        return df[cols]
     except Exception as exc:  # network / parsing errors degrade to the gap fallback
         logger.warning("earnings fetch failed for %s: %s", symbol, exc)
-        return pd.DatetimeIndex([])
+        return empty
