@@ -4155,6 +4155,27 @@ class Config:
         return int(self.manager.get('trading.strategy_fit_max_age_days', 7))
 
     @property
+    def STRATEGY_FIT_REGIME_ROWS(self) -> bool:
+        """v-strategy-fit-2026-09-25: let the strategy-fit gate consult the
+        regime-conditioned fit rows (and the universe-pooled regime lanes)
+        for the live market-context regime.
+
+        When True (default), the gate looks up the row measured in the
+        current regime -- the symbol's own row, else the pooled row for
+        that regime -- and only falls back to the unconditional row when
+        neither exists, so a lane that only works in risk_on stands down
+        when the tape turns. When False, the gate reads the unconditional
+        row exactly as before.
+
+        Default True. Set via env STRATEGY_FIT_REGIME_ROWS=0 or yaml
+        trading.strategy_fit_regime_rows: false.
+        """
+        env_val = os.getenv("STRATEGY_FIT_REGIME_ROWS")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.strategy_fit_regime_rows', True))
+
+    @property
     def FIT_LANES_ENABLED(self) -> tuple:
         """v-strategy-fit-2026-09-25: comma-separated family names to
         register live strategy-fit adapters for.

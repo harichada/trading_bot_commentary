@@ -7,7 +7,8 @@ scorecard from its shadow ledger, reads the live-facing flags off `Config()`, an
 plain data in here so this module stays testable without a filesystem or `core` import.
 
 Blocker precedence (first that applies wins):
-  1. "no_pass_symbols"        -- fewer than 10 walk-forward PASS rows for the family
+  1. "no_pass_symbols"        -- fewer than 10 walk-forward PASS rows for the family AND no
+                                 pooled regime PASS row (v-playbook-desk-b1-2026-09-25)
   2. "not_registered"         -- family not in FIT_LANES_ENABLED
   3. "scorecard_missing"      -- no Stage A scorecard yet (no shadow ledger / never resolved)
   4. "scorecard_no_go"        -- latest scorecard verdict is NO_GO
@@ -33,6 +34,7 @@ from typing import Any
 from strategies.families import family_names, get_family
 
 MIN_PASS_SYMBOLS = 10
+MIN_POOLED_PASS_REGIMES = 1
 
 
 def _scorecard_verdict(scorecards: dict[str, Any], family: str) -> str:
@@ -43,8 +45,12 @@ def _scorecard_verdict(scorecards: dict[str, Any], family: str) -> str:
 
 
 def _blocker(pass_symbols: int, registered: bool, scorecard_verdict: str, hold_kind: str, swing_allowed: bool,
-             gate_enabled: bool, gate_shadow: bool) -> str:
-    if pass_symbols < MIN_PASS_SYMBOLS:
+             gate_enabled: bool, gate_shadow: bool, pooled_pass_regimes: int = 0) -> str:
+    # v-playbook-desk-b1-2026-09-25: a pooled regime PASS is family-level evidence measured
+    # over the whole universe against stricter floors (score/regime_rows.POOLED_FLOORS), so
+    # it answers the same question `pass_symbols` does -- "is there an edge here at all?" --
+    # for a family whose per-symbol samples are each too thin to clear the floors alone.
+    if pass_symbols < MIN_PASS_SYMBOLS and pooled_pass_regimes < MIN_POOLED_PASS_REGIMES:
         return "no_pass_symbols"
     if not registered:
         return "not_registered"
@@ -70,6 +76,22 @@ _RECOMMENDATION_BY_BLOCKER = {
 }
 
 
+def _pooled_pass_regimes(snapshot: dict) -> dict[str, set[str]]:
+    """{family: {regimes with a pooled PASS row, either side}} from `snapshot["pooled_rows"]`.
+
+    Absent in snapshots written before the pooled lanes existed, so every read defaults."""
+    out: dict[str, set[str]] = {}
+    for key, row in (snapshot.get("pooled_rows") or {}).items():
+        if not isinstance(row, dict) or row.get("verdict") != "PASS":
+            continue
+        parts = str(key).split(":")
+        regime = row.get("regime") or (parts[2] if len(parts) > 2 else "")
+        family = row.get("strategy") or (parts[0] if parts else "")
+        if family and regime:
+            out.setdefault(family, set()).add(regime)
+    return out
+
+
 def promotion_table(snapshot: dict, scorecards: dict[str, dict], lanes_enabled: tuple[str, ...],
                      live_enabled: tuple[str, ...], swing_allowed: bool,
                      gate_enabled: bool = False, gate_shadow: bool = True) -> list[dict]:
@@ -83,6 +105,7 @@ def promotion_table(snapshot: dict, scorecards: dict[str, dict], lanes_enabled: 
     for sym_rows in snapshot.get("rows", {}).values():
         for row in sym_rows.values():
             rows_by_family.setdefault(row["strategy"], []).append(row)
+    pooled_pass = _pooled_pass_regimes(snapshot)
 
     out: list[dict] = []
     for name in family_names():
@@ -94,8 +117,9 @@ def promotion_table(snapshot: dict, scorecards: dict[str, dict], lanes_enabled: 
         live = name in live_enabled
         scorecard_verdict = _scorecard_verdict(scorecards, name)
 
+        pooled_pass_regimes = len(pooled_pass.get(name, set()))
         blocker = _blocker(pass_symbols, registered, scorecard_verdict, family.hold_kind, swing_allowed,
-                           gate_enabled, gate_shadow)
+                           gate_enabled, gate_shadow, pooled_pass_regimes)
         if live and blocker == "":
             recommendation = "hold"  # already promoted; nothing to do
         else:
@@ -103,6 +127,7 @@ def promotion_table(snapshot: dict, scorecards: dict[str, dict], lanes_enabled: 
 
         out.append({
             "family": name, "pass_symbols": pass_symbols, "watch_symbols": watch_symbols,
+            "pooled_pass_regimes": pooled_pass_regimes,
             "hold_kind": family.hold_kind, "registered": registered, "live": live,
             "scorecard_verdict": scorecard_verdict, "blocker": blocker, "recommendation": recommendation,
         })
@@ -115,12 +140,13 @@ def render_promotion(rows: list[dict]) -> str:
     lines = [
         "# Strategy-hunt promotion",
         "",
-        "| family | pass_symbols | watch_symbols | hold_kind | registered | live | scorecard_verdict | blocker | "
-        "recommendation |",
-        "|---|---|---|---|---|---|---|---|---|",
+        "| family | pass_symbols | watch_symbols | pooled_pass_regimes | hold_kind | registered | live | "
+        "scorecard_verdict | blocker | recommendation |",
+        "|---|---|---|---|---|---|---|---|---|---|",
     ]
     for r in rows:
-        lines.append(f"| {r['family']} | {r['pass_symbols']} | {r['watch_symbols']} | {r['hold_kind']} | "
+        lines.append(f"| {r['family']} | {r['pass_symbols']} | {r['watch_symbols']} | "
+                     f"{r.get('pooled_pass_regimes', 0)} | {r['hold_kind']} | "
                      f"{r['registered']} | {r['live']} | {r['scorecard_verdict']} | {r['blocker'] or '-'} | "
                      f"{r['recommendation']} |")
 

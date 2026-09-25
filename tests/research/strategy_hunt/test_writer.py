@@ -63,4 +63,68 @@ def test_write_fit_parquet_json_and_sqlite_upsert(tmp_path):
 
 def test_load_snapshot_missing(tmp_path):
     from research.strategy_hunt.fit.writer import load_snapshot
-    assert load_snapshot(tmp_path) == {"computed_at": None, "floors": {}, "rows": {}}
+    # v-playbook-desk-b1-2026-09-25: the regime/pooled keys are always present in the
+    # default so a reader never has to special-case a missing snapshot.
+    assert load_snapshot(tmp_path) == {"computed_at": None, "floors": {}, "rows": {}, "regime_rows": {},
+                                       "pooled_rows": {}}
+
+
+# ──────────────────────
+# v-playbook-desk-b1-2026-09-25 - regime-conditioned and pooled rows
+# ──────────────────────
+
+def _regime_and_pooled():
+    from research.strategy_hunt.models import TRADE_COLUMNS
+    from research.strategy_hunt.score.regime_rows import pooled_rows, regime_rows
+    trades = [_t(1.5 if i % 3 else -1.0, w=i // 5, day=d.strftime("%Y-%m-%d"),
+                 regime="risk_on" if i % 2 else "mixed")
+              for i, d in enumerate(pd.bdate_range("2025-01-02", periods=20))]
+    rr = regime_rows("NVDA", "orb", "long", trades, 4, "2025-09-25T01:00:00", {"k": 1}, "2025-09-24")
+    pr = pooled_rows(pd.DataFrame([t.to_dict() for t in trades], columns=list(TRADE_COLUMNS)),
+                     "2025-09-25T01:00:00")
+    return rr, pr
+
+
+def test_build_row_accepts_source_and_verdict_override():
+    from research.strategy_hunt.fit.writer import build_row
+    from research.strategy_hunt.score.regime_rows import verdict_pooled
+    row = build_row("*", "orb", "long", _trades(), 4, {}, "2025-09-25", "2025-09-24",
+                    source="pooled", verdict_fn=verdict_pooled)
+    assert row["symbol"] == "*" and row["source"] == "pooled"
+    assert row["verdict"] == "FAIL" and "min_n" in json.loads(row["failed_floors"])
+
+
+def test_write_fit_persists_regime_and_pooled_lanes(tmp_path):
+    from sqlalchemy import create_engine, text
+    from research.strategy_hunt.fit.writer import build_row, load_snapshot, write_fit
+    rr, pr = _regime_and_pooled()
+    assert rr and pr
+    lane = [build_row("NVDA", "orb", "long", _trades(), 4, {"k": 1}, "2025-09-25T01:00:00", "2025-09-24")]
+    engine = create_engine("sqlite:///" + str(tmp_path / "t.db"))
+    out = write_fit(lane, tmp_path, "2025-09-25T01:00:00", engine=engine, regime_rows=rr, pooled_rows=pr)
+
+    assert (tmp_path / "fit" / "fit_regime_2025-09-25.parquet").exists()
+    assert (tmp_path / "fit" / "fit_pooled_2025-09-25.parquet").exists()
+    assert "regime_parquet" in out and "pooled_parquet" in out
+    snap = load_snapshot(tmp_path)
+    assert set(snap["regime_rows"]["NVDA"]) == {f"orb:long:{r['regime']}" for r in rr}
+    assert snap["regime_rows"]["NVDA"]["orb:long:risk_on"]["regime"] == "risk_on"
+    assert set(snap["pooled_rows"]) == {f"orb:long:{r['regime']}" for r in pr}
+    assert all(r["symbol"] == "*" for r in snap["pooled_rows"].values())
+    # the SQL table and the unconditional parquet stay lane-only: (symbol, strategy, side,
+    # computed_at) is the primary key, so pooled rows would collide across regimes.
+    with engine.connect() as c:
+        assert c.execute(text("SELECT count(*) FROM strategy_fit")).scalar() == 1
+    assert len(pd.read_parquet(tmp_path / "fit" / "fit_2025-09-25.parquet")) == 1
+    regime_pq = pd.read_parquet(tmp_path / "fit" / "fit_regime_2025-09-25.parquet")
+    assert "regime" in regime_pq.columns and len(regime_pq) == len(rr)
+
+
+def test_write_fit_without_regime_rows_keeps_keys_empty(tmp_path):
+    from research.strategy_hunt.fit.writer import build_row, load_snapshot, write_fit
+    rows = [build_row("NVDA", "orb", "long", _trades(), 4, {}, "2025-09-25T01:00:00", "2025-09-24")]
+    out = write_fit(rows, tmp_path, "2025-09-25T01:00:00")
+    snap = load_snapshot(tmp_path)
+    assert snap["regime_rows"] == {} and snap["pooled_rows"] == {}
+    assert not (tmp_path / "fit" / "fit_regime_2025-09-25.parquet").exists()
+    assert "regime_parquet" not in out

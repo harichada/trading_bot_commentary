@@ -22,6 +22,15 @@ The research pipeline periodically writes a JSON snapshot of the form:
         }
     }
 
+v-playbook-desk-b1-2026-09-25 adds two optional, additive sections:
+
+    "regime_rows": {"<SYMBOL>": {"<strategy>:<side>:<regime>": {...}}},
+    "pooled_rows": {"<strategy>:<side>:<regime>": {... "symbol": "*",
+                                                   "source": "pooled"}}
+
+A snapshot written before they existed simply has neither key, which reads as
+"no regime-conditioned evidence" and falls back to the unconditional rows.
+
 `StrategyFit` watches the file's mtime and reloads it on change, never
 raising to callers: a missing file, a corrupt file, or a stale snapshot
 all degrade to "no lanes allowed" rather than an exception on the hot
@@ -30,112 +39,21 @@ reads the JSON the research pipeline produces.
 """
 from __future__ import annotations
 
-import dataclasses
 import json
-import math
 import os
 import threading
-from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Callable, Dict, List, Optional
 
+from core.strategy_fit_rows import FitRow
+
 
 # ────────────────────────────────────────────────────────────────────
-# Row model
+# Row model — see core/strategy_fit_rows.py
 # ────────────────────────────────────────────────────────────────────
 
-@dataclass(frozen=True)
-class FitRow:
-    """One (symbol, strategy, side) fit verdict from the snapshot.
-
-    Frozen: a row is a point-in-time read from the snapshot and should
-    never be mutated by a caller.
-    """
-    symbol: str
-    strategy: str
-    side: str
-    verdict: str
-    exp_r: float
-    exp_r_lb: float
-    t_stat: float
-    pf: float
-    wr: float
-    stability: float
-    decay: float
-    n: int
-    score: float
-    source: str
-    params: Dict = field(default_factory=dict)
-    computed_at: str = ""
-
-    @staticmethod
-    def from_dict(d: Dict) -> "FitRow":
-        """Build a FitRow from a raw snapshot row dict.
-
-        Tolerant of missing keys (default to nan/0/"") and of a
-        `params_json` field that is a JSON string rather than a dict.
-        """
-        def _f(key: str, default: float) -> float:
-            try:
-                return float(d.get(key, default))
-            except (TypeError, ValueError):
-                return default
-
-        def _i(key: str, default: int) -> int:
-            try:
-                return int(d.get(key, default))
-            except (TypeError, ValueError):
-                return default
-
-        def _s(key: str, default: str) -> str:
-            v = d.get(key, default)
-            return v if isinstance(v, str) else default
-
-        params = d.get("params")
-        if not isinstance(params, dict):
-            raw = d.get("params_json")
-            try:
-                parsed = json.loads(raw) if isinstance(raw, str) else {}
-                params = parsed if isinstance(parsed, dict) else {}
-            except (TypeError, ValueError, json.JSONDecodeError):
-                params = {}
-
-        return FitRow(
-            symbol=_s("symbol", ""),
-            strategy=_s("strategy", ""),
-            side=_s("side", ""),
-            verdict=_s("verdict", ""),
-            exp_r=_f("exp_r", float("nan")),
-            exp_r_lb=_f("exp_r_lb", float("nan")),
-            t_stat=_f("t_stat", float("nan")),
-            pf=_f("pf", float("nan")),
-            wr=_f("wr", float("nan")),
-            stability=_f("stability", float("nan")),
-            decay=_f("decay", float("nan")),
-            n=_i("n", 0),
-            score=_f("score", float("nan")),
-            source=_s("source", ""),
-            params=params,
-            computed_at=_s("computed_at", ""),
-        )
-
-    def to_json_dict(self) -> Dict:
-        """JSON-safe dict of this row: every non-finite float becomes None.
-
-        v-strategy-fit-review2-2026-09-25 (Important 5): cold-start rows
-        legitimately carry NaN metrics (`from_dict` defaults every missing
-        numeric to nan). `json.dumps` emits bare `NaN`, which is not valid
-        JSON — FastAPI's encoder rejects it and `GET /api/strategy-fit`
-        answered 500 for any symbol with a cold-start row. `None` is the
-        honest wire representation of "not measured".
-        """
-        out: Dict = {}
-        for key, value in dataclasses.asdict(self).items():
-            if isinstance(value, float) and not math.isfinite(value):
-                out[key] = None
-            else:
-                out[key] = value
-        return out
+# Re-exported: `from core.strategy_fit import FitRow` stays the public path.
+__all__ = ["FitRow", "StrategyFit"]
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -166,6 +84,10 @@ class StrategyFit:
         self._lock = threading.Lock()
 
         self._rows: Dict[str, Dict[str, FitRow]] = {}
+        # v-playbook-desk-b1-2026-09-25: regime-conditioned lanes, keyed
+        # "<strategy>:<side>:<regime>" (per symbol, and pooled across the universe).
+        self._regime_rows: Dict[str, Dict[str, FitRow]] = {}
+        self._pooled_rows: Dict[str, FitRow] = {}
         self._computed_at: Optional[str] = None
         self._mtime: Optional[float] = None
         self._last_error: Optional[str] = None
@@ -206,12 +128,16 @@ class StrategyFit:
 
             try:
                 rows = self._parse_rows(raw)
+                regime_rows = self._parse_nested(raw, "regime_rows")
+                pooled_rows = self._parse_flat(raw, "pooled_rows")
             except Exception as exc:  # noqa: BLE001 - never raise to caller
                 self._last_error = f"parse failed: {exc}"
                 return False
 
             computed_at_raw = raw.get("computed_at") if isinstance(raw, dict) else None
             self._rows = rows
+            self._regime_rows = regime_rows
+            self._pooled_rows = pooled_rows
             self._computed_at = computed_at_raw if isinstance(computed_at_raw, str) else None
             self._mtime = mtime
             self._last_error = None
@@ -219,7 +145,18 @@ class StrategyFit:
 
     @staticmethod
     def _parse_rows(raw: object) -> Dict[str, Dict[str, FitRow]]:
-        rows_raw = raw.get("rows", {}) if isinstance(raw, dict) else {}
+        return StrategyFit._parse_nested(raw, "rows")
+
+    @staticmethod
+    def _parse_nested(raw: object, key: str) -> Dict[str, Dict[str, FitRow]]:
+        """{symbol: {lane_key: row}} for the snapshot section `key`.
+
+        A missing section (older snapshots have no "regime_rows") and any
+        non-dict entry inside it are skipped rather than raised on.
+        """
+        rows_raw = raw.get(key, {}) if isinstance(raw, dict) else {}
+        if not isinstance(rows_raw, dict):
+            return {}
         parsed: Dict[str, Dict[str, FitRow]] = {}
         for symbol, lanes in rows_raw.items():
             if not isinstance(lanes, dict):
@@ -231,6 +168,15 @@ class StrategyFit:
                 lane_map[lane_key] = FitRow.from_dict(row_dict)
             parsed[symbol] = lane_map
         return parsed
+
+    @staticmethod
+    def _parse_flat(raw: object, key: str) -> Dict[str, FitRow]:
+        """{lane_key: row} for a flat (symbol-less) snapshot section."""
+        rows_raw = raw.get(key, {}) if isinstance(raw, dict) else {}
+        if not isinstance(rows_raw, dict):
+            return {}
+        return {lane_key: FitRow.from_dict(row) for lane_key, row in rows_raw.items()
+                if isinstance(row, dict)}
 
     # ------------------------------------------------------------------
     # Age / staleness
@@ -266,6 +212,25 @@ class StrategyFit:
         with self._lock:
             return self._rows.get(symbol, {}).get(key)
 
+    def lookup_regime(self, symbol: str, strategy: str, side: str, regime: str) -> Optional[FitRow]:
+        """Best available row for this lane *in this regime*, in precedence order:
+
+        1. the symbol's own row for that regime,
+        2. the universe-pooled row for that regime (`symbol == "*"`, `pooled`),
+        3. the unconditional row for the lane,
+        4. None.
+
+        A stale, missing or unloaded snapshot yields None, exactly as `lookup` does.
+        """
+        if self.is_stale():
+            return None
+        key = f"{strategy}:{side}:{regime}"
+        with self._lock:
+            row = self._regime_rows.get(symbol, {}).get(key) or self._pooled_rows.get(key)
+        if row is not None:
+            return row
+        return self.lookup(symbol, strategy, side)   # outside the lock: lookup takes it
+
     def allowed_lanes(self, symbol: str) -> List[FitRow]:
         """PASS rows for `symbol`, sorted by score desc then strategy
         asc. Empty when stale, missing, or unloaded."""
@@ -298,6 +263,8 @@ class StrategyFit:
     def summary(self) -> Dict:
         with self._lock:
             rows = self._rows
+            regime_rows = self._regime_rows
+            pooled_rows = self._pooled_rows
             computed_at = self._computed_at
             last_error = self._last_error
 
@@ -317,5 +284,7 @@ class StrategyFit:
             "counts": counts,
             "sources": sources,
             "n_symbols": n_symbols,
+            "n_regime_rows": sum(len(lanes) for lanes in regime_rows.values()),
+            "n_pooled_pass": sum(1 for row in pooled_rows.values() if row.verdict == _PASS_VERDICT),
             "last_error": last_error,
         }

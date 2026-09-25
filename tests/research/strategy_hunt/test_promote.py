@@ -320,3 +320,68 @@ def test_cmd_promote_reads_gate_flags_off_config(tmp_path, monkeypatch):
 
     assert cmd_promote(argparse.Namespace(root=tmp_path / "root")) == 0
     assert seen["gate"] == (True, False)
+
+
+# ──────────────────────
+# v-playbook-desk-b1-2026-09-25 — pooled regime PASS rows count as evidence
+# ──────────────────────
+
+def _pooled(strategy, side, regime, verdict="PASS"):
+    return {"symbol": "*", "strategy": strategy, "side": side, "regime": regime, "verdict": verdict,
+            "source": "pooled"}
+
+
+def _pooled_snapshot(rows, pooled):
+    snap = _snapshot(rows)
+    snap["pooled_rows"] = {f"{p['strategy']}:{p['side']}:{p['regime']}": p for p in pooled}
+    return snap
+
+
+def test_pooled_pass_regime_clears_the_no_pass_symbols_blocker():
+    from research.strategy_hunt.promote import promotion_table
+
+    snap = _pooled_snapshot(_pass_rows("orb", 3), [_pooled("orb", "long", "risk_on"),
+                                                   _pooled("orb", "short", "risk_on"),
+                                                   _pooled("orb", "long", "mixed", verdict="WATCH")])
+    table = promotion_table(snap, {"orb": {"verdict": "GO"}}, lanes_enabled=("orb",), live_enabled=(),
+                            swing_allowed=False, **ENFORCING)
+    orb = next(r for r in table if r["family"] == "orb")
+    assert orb["pass_symbols"] == 3                      # unchanged: still only 3 symbol PASS rows
+    assert orb["pooled_pass_regimes"] == 1               # one distinct regime, either side
+    assert orb["blocker"] == "" and orb["recommendation"] == "promote_live"
+
+
+def test_no_pooled_pass_leaves_the_blocker_in_place():
+    from research.strategy_hunt.promote import promotion_table
+
+    snap = _pooled_snapshot(_pass_rows("orb", 3), [_pooled("orb", "long", "risk_on", verdict="WATCH"),
+                                                   _pooled("mr_20d", "long", "risk_on")])
+    table = {r["family"]: r for r in promotion_table(snap, {"orb": {"verdict": "GO"}}, lanes_enabled=("orb",),
+                                                     live_enabled=(), swing_allowed=False, **ENFORCING)}
+    assert table["orb"]["pooled_pass_regimes"] == 0 and table["orb"]["blocker"] == "no_pass_symbols"
+    # another family's pooled PASS never leaks across families
+    assert table["mr_20d"]["pooled_pass_regimes"] == 1
+
+
+def test_snapshot_without_pooled_rows_still_works():
+    from research.strategy_hunt.promote import promotion_table
+
+    table = promotion_table(_snapshot(_pass_rows("orb", 12)), {"orb": {"verdict": "GO"}}, lanes_enabled=("orb",),
+                            live_enabled=(), swing_allowed=False, **ENFORCING)
+    orb = next(r for r in table if r["family"] == "orb")
+    assert orb["pooled_pass_regimes"] == 0 and orb["blocker"] == ""
+
+
+def test_render_promotion_shows_the_pooled_column():
+    from research.strategy_hunt.promote import promotion_table, render_promotion
+
+    snap = _pooled_snapshot(_pass_rows("orb", 3), [_pooled("orb", "long", "risk_on"),
+                                                   _pooled("orb", "long", "risk_off")])
+    md = render_promotion(promotion_table(snap, {"orb": {"verdict": "GO"}}, lanes_enabled=("orb",),
+                                          live_enabled=(), swing_allowed=False, **ENFORCING))
+    header, sep = md.splitlines()[2], md.splitlines()[3]
+    assert "pooled_pass_regimes" in header
+    assert sep.count("---") == header.count("|") - 1
+    orb_line = next(l for l in md.splitlines() if l.startswith("| orb "))
+    assert orb_line.count("|") == header.count("|")
+    assert "| 3 | 0 | 2 |" in orb_line       # pass_symbols | watch_symbols | pooled_pass_regimes

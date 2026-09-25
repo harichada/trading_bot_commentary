@@ -6142,8 +6142,13 @@ class TradingEngineWithCommentary:
             _competing = [f for f in self._fit_signals_this_pass.get(_fit_key, []) if f != _fit_fam]
             if _fit_fam:
                 self._fit_signals_this_pass.setdefault(_fit_key, []).append(_fit_fam)
+            # v-strategy-fit-2026-09-25: hand the gate the live regime so it can use the
+            # regime-conditioned row (symbol's own, else the pooled one) instead of the
+            # unconditional one. None => unconditional row, as before.
+            _fit_regime = (signal.reasoning.get("market_context_regime")
+                           if signal.reasoning and Config().STRATEGY_FIT_REGIME_ROWS else None)
             _fd = evaluate_fit_gate(self._strategy_fit, _fit_strategy, _fit_side, signal.symbol, True,
-                                    Config().STRATEGY_FIT_SHADOW, _competing)
+                                    Config().STRATEGY_FIT_SHADOW, _competing, regime=_fit_regime)
             if _fd.governed:
                 self._audit("strategy_fit", signal.symbol, _fd.action, _fd.reason,
                             strategy=_fit_strategy, side=_fit_side, **_fd.audit_fields())

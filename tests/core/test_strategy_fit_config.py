@@ -1,7 +1,7 @@
 def _cfg(monkeypatch, **env):
     for k in ("ENABLE_STRATEGY_FIT_GATE", "STRATEGY_FIT_SHADOW", "STRATEGY_FIT_PATH", "STRATEGY_FIT_MAX_AGE_DAYS",
               "FIT_LANES_ENABLED", "FIT_LANE_LIVE_ENTRIES_ENABLED", "SWING_ALLOW_OVERNIGHT", "SWING_MAX_HOLD_SESSIONS",
-              "STRATEGY_HUNT_DATA_ROOT"):
+              "STRATEGY_HUNT_DATA_ROOT", "STRATEGY_FIT_REGIME_ROWS"):
         monkeypatch.delenv(k, raising=False)
     for k, v in env.items():
         monkeypatch.setenv(k, v)
@@ -25,14 +25,17 @@ def test_defaults(monkeypatch):
     assert c.SWING_ALLOW_OVERNIGHT is False and c.SWING_MAX_HOLD_SESSIONS == 10
     # v-strategy-fit-review2-2026-09-25 (Important 3)
     assert c.STRATEGY_HUNT_DATA_ROOT == "data/strategy_hunt"
+    # v-playbook-desk-b1-2026-09-25: regime-conditioned rows are consulted by default;
+    # they can only narrow the gate (a missing regime row falls back to the plain row).
+    assert c.STRATEGY_FIT_REGIME_ROWS is True
 
 
 def test_env_overrides(monkeypatch):
     c = _cfg(monkeypatch, ENABLE_STRATEGY_FIT_GATE="1", STRATEGY_FIT_SHADOW="0", STRATEGY_FIT_MAX_AGE_DAYS="3",
              FIT_LANES_ENABLED="orb, vwap_reversion", FIT_LANE_LIVE_ENTRIES_ENABLED="orb", SWING_ALLOW_OVERNIGHT="true",
              SWING_MAX_HOLD_SESSIONS="5", STRATEGY_FIT_PATH="/tmp/x.json",
-             STRATEGY_HUNT_DATA_ROOT="/srv/hunt")
+             STRATEGY_HUNT_DATA_ROOT="/srv/hunt", STRATEGY_FIT_REGIME_ROWS="0")
     assert c.ENABLE_STRATEGY_FIT_GATE is True and c.STRATEGY_FIT_SHADOW is False and c.STRATEGY_FIT_MAX_AGE_DAYS == 3
     assert c.FIT_LANES_ENABLED == ("orb", "vwap_reversion") and c.FIT_LANE_LIVE_ENTRIES_ENABLED == ("orb",)
     assert c.SWING_ALLOW_OVERNIGHT is True and c.SWING_MAX_HOLD_SESSIONS == 5 and c.STRATEGY_FIT_PATH == "/tmp/x.json"
-    assert c.STRATEGY_HUNT_DATA_ROOT == "/srv/hunt"
+    assert c.STRATEGY_HUNT_DATA_ROOT == "/srv/hunt" and c.STRATEGY_FIT_REGIME_ROWS is False

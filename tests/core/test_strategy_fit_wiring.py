@@ -57,3 +57,15 @@ def test_engine_wires_swing_exits_and_overnight_gate():
     assert 'self._audit("swing_exit", position.symbol, "exit", why' in src
     assert 'self._audit("swing_overnight_gate", signal.symbol, "skip", "overnight_not_allowed"' in src
     assert src.index('return True, "day_trade_flatten_hour"') < src.index('self._audit("swing_exit"')
+
+
+def test_engine_passes_the_live_regime_into_the_fit_gate():
+    """v-playbook-desk-b1-2026-09-25: the gate consults the regime-conditioned
+    row when the market-context regime is known and the flag is on."""
+    src = Path("core/engine.py").read_text()
+    assert 'Config().STRATEGY_FIT_REGIME_ROWS' in src
+    assert 'signal.reasoning.get("market_context_regime")' in src
+    gate = src.index("_fd = evaluate_fit_gate(")
+    call = src[gate:gate + 400]
+    assert "regime=_fit_regime" in call
+    assert src.index("_fit_regime =") < gate

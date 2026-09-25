@@ -121,3 +121,68 @@ def test_checkpoint_invalidated_by_calibration_change(root):
     assert process_symbol("AAA", root, ["toy"])["status"] == "skipped"
     write_calibration(root, {"n": 40, "median_frac": 0.0003, "p75_frac": 0.001, "by_bucket": {}, "usable": True})
     assert process_symbol("AAA", root, ["toy"])["status"] == "done"
+
+
+# ──────────────────────
+# v-playbook-desk-b1-2026-09-25 — regime-conditioned and pooled scoring
+# ──────────────────────
+
+def _trade(symbol, family, side, day, w, regime, r):
+    from research.strategy_hunt.models import SimTrade
+    ts = pd.Timestamp(f"{day} 10:00")
+    return SimTrade(symbol, family, side, ts, ts + pd.Timedelta(minutes=30), 100.0, 99.0, 102.0, 100.0 + r,
+                    100.0, 100.0 + r, r, r, 0.0, "target" if r > 0 else "stop", 6, 1, f"{family}_{side}",
+                    regime, w, '{"w": 1.0}')
+
+
+def _write_trades(root, symbol, trades):
+    from research.strategy_hunt.models import TRADE_COLUMNS
+    from research.strategy_hunt.run import choices_path, trades_path
+    trades_path(root, symbol).parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame([t.to_dict() for t in trades], columns=list(TRADE_COLUMNS)).to_parquet(
+        trades_path(root, symbol), index=False)
+    choices_path(root, symbol).parent.mkdir(parents=True, exist_ok=True)
+    choices_path(root, symbol).write_text(json.dumps(
+        {"toy": [{"window_id": w, "params": {"w": 1.0}} for w in range(3)]}))
+
+
+def _regime_trades(symbol):
+    out = []
+    for di, d in enumerate(pd.bdate_range("2025-01-02", periods=30)):
+        for j in range(10):
+            regime = ("unknown", "risk_on", "mixed")[di % 3]
+            out.append(_trade(symbol, "toy", "long", d.strftime("%Y-%m-%d"), di // 10, regime,
+                              1.0 if (di * 10 + j) % 3 else -1.0))
+    return out
+
+
+def test_score_regime_root_builds_symbol_regime_and_pooled_rows(tmp_path):
+    from research.strategy_hunt.run import score_regime_root
+    from research.strategy_hunt.score.regime_rows import REGIMES
+    for sym in ("AAA", "BBB"):
+        _write_trades(tmp_path, sym, _regime_trades(sym))
+
+    reg_rows, pool_rows = score_regime_root(tmp_path, ["toy"], "2025-09-25T00:00:00")
+
+    assert {r["symbol"] for r in reg_rows} == {"AAA", "BBB"}
+    assert {r["regime"] for r in reg_rows} <= set(REGIMES) and "unknown" not in {r["regime"] for r in reg_rows}
+    assert all(r["strategy"] == "toy" and r["side"] == "long" for r in reg_rows)
+    assert all(r["source"] == "walkforward" and r["computed_at"] == "2025-09-25T00:00:00" for r in reg_rows)
+    assert all(json.loads(r["params_json"]) == {"w": 1.0} for r in reg_rows)
+
+    assert pool_rows and all(r["symbol"] == "*" and r["source"] == "pooled" for r in pool_rows)
+    by_regime = {r["regime"]: r for r in pool_rows}
+    # pooled rows aggregate both symbols for the same (family, side, regime)
+    per_symbol = {r["regime"]: r for r in reg_rows if r["symbol"] == "AAA"}
+    for regime, prow in by_regime.items():
+        assert prow["n"] == 2 * per_symbol[regime]["n"]
+
+
+def test_score_regime_root_empty_root_and_score_root_unchanged(root):
+    from research.strategy_hunt.run import run_symbols, score_regime_root, score_root
+    assert score_regime_root(root, ["toy"], "2025-09-25T00:00:00") == ([], [])   # no trades yet
+    # score_root keeps returning only the unconditional lane rows (the report and the
+    # cold-start model consume that list).
+    run_symbols(["AAA"], root, ["toy"], workers=1)
+    rows = score_root(root, ["toy"], "2025-09-25T00:00:00", coldstart=False)
+    assert len(rows) == 1 and "regime" not in rows[0]

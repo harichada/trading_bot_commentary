@@ -21,6 +21,7 @@ from research.strategy_hunt.data.splits import load_adjusted
 from research.strategy_hunt.fit.coldstart import FEATURES, predict_coldstart, symbol_characteristics, train_coldstart
 from research.strategy_hunt.fit.writer import build_row
 from research.strategy_hunt.models import TRADE_COLUMNS, SimTrade
+from research.strategy_hunt.score.regime_rows import pooled_rows, regime_rows, trades_from_frame
 from research.strategy_hunt.sim.calibrate import slippage_override_from
 from research.strategy_hunt.sim.costs import CostModel
 from research.strategy_hunt.sim.simulator import build_session_table
@@ -191,6 +192,38 @@ def _coldstart_rows(root: Path, wf_rows: list[dict], computed_at: str) -> list[d
     preds = predict_coldstart(models, X, computed_at)
     return [p for p in preds if have.get((p["symbol"], p["strategy"], p["side"]), 0) < COLDSTART_MAX_N
             and (p["symbol"], p["strategy"], p["side"]) not in {k for k, n in have.items() if n >= COLDSTART_MAX_N}]
+
+
+def score_regime_root(root: Path, family_names: list[str], computed_at: str) -> tuple[list[dict], list[dict]]:
+    """v-playbook-desk-b1-2026-09-25: the regime-conditioned per-symbol rows and the
+    universe-pooled (family, side, regime) rows, for `write_fit(..., regime_rows=,
+    pooled_rows=)`.
+
+    Kept out of `score_root`'s list on purpose: that list feeds the cold-start model and
+    the markdown report, both of which count one row per (symbol, family, side) lane and
+    would double-count a regime row.
+    """
+    per_symbol: list[dict] = []
+    frames: list[pd.DataFrame] = []
+    for tp in sorted((Path(root) / "trades").glob("*.parquet")):
+        df = pd.read_parquet(tp)
+        if df.empty:
+            continue
+        symbol = tp.stem
+        choices = json.loads(choices_path(root, symbol).read_text()) if choices_path(root, symbol).exists() else {}
+        frames.append(df[df["family"].isin(family_names)])
+        for fam in family_names:
+            sub = df[df["family"] == fam]
+            if sub.empty:
+                continue
+            ch = choices.get(fam, [])
+            latest = ch[-1]["params"] if ch else {}
+            window_end = str(sub["exit_ts"].max())[:10]
+            for side in sorted(sub["side"].unique()):
+                trades = trades_from_frame(sub[sub["side"] == side])
+                per_symbol.extend(regime_rows(symbol, fam, side, trades, len(ch), computed_at, latest, window_end))
+    pooled = pooled_rows(pd.concat(frames, ignore_index=True), computed_at) if frames else []
+    return per_symbol, pooled
 
 
 def score_root(root: Path, family_names: list[str], computed_at: str, coldstart: bool = True) -> list[dict]:

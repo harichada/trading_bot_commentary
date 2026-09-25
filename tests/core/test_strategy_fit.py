@@ -109,3 +109,112 @@ def test_invalid_utf8_file_never_raises(tmp_path):
     fit = StrategyFit(str(p), clock=lambda: datetime(2025, 9, 25))
     assert fit.reload_if_changed() is False
     assert fit.summary()["last_error"]
+
+
+# ──────────────────────
+# v-playbook-desk-b1-2026-09-25 — regime-conditioned and pooled rows
+# ──────────────────────
+
+def _regime_snap(tmp_path, computed_at, rows, regime_rows=None, pooled_rows=None):
+    payload = {"computed_at": computed_at, "floors": {"min_n": 150}, "rows": rows}
+    if regime_rows is not None:
+        payload["regime_rows"] = regime_rows
+    if pooled_rows is not None:
+        payload["pooled_rows"] = pooled_rows
+    p = tmp_path / "strategy_fit.json"
+    p.write_text(json.dumps(payload))
+    return p
+
+
+def _rrow(sym, strat, side, verdict, score, regime, source="walkforward", n=200):
+    row = _row(sym, strat, side, verdict, score, source=source, n=n)
+    row["regime"] = regime
+    return row
+
+
+def _fit(path, now=datetime(2025, 9, 25, 10)):
+    from core.strategy_fit import StrategyFit
+    f = StrategyFit(str(path), max_age_days=7, clock=lambda: now)
+    f.reload_if_changed()
+    return f
+
+
+def test_lookup_regime_precedence_symbol_then_pooled_then_unconditional(tmp_path):
+    p = _regime_snap(
+        tmp_path, "2025-09-25T01:00:00",
+        rows={"NVDA": {"orb:long": _row("NVDA", "orb", "long", "PASS", 0.3)}},
+        regime_rows={"NVDA": {"orb:long:risk_on": _rrow("NVDA", "orb", "long", "FAIL", -0.1, "risk_on")}},
+        pooled_rows={"orb:long:risk_off": _rrow("*", "orb", "long", "PASS", 0.4, "risk_off", source="pooled"),
+                     "orb:long:risk_on": _rrow("*", "orb", "long", "PASS", 0.9, "risk_on", source="pooled")},
+    )
+    fit = _fit(p)
+
+    # 1. the symbol's own regime row wins over the pooled one
+    own = fit.lookup_regime("NVDA", "orb", "long", "risk_on")
+    assert own.verdict == "FAIL" and own.regime == "risk_on" and own.pooled is False and own.symbol == "NVDA"
+    # 2. no symbol regime row -> the pooled regime row, flagged pooled
+    pooled = fit.lookup_regime("NVDA", "orb", "long", "risk_off")
+    assert pooled.verdict == "PASS" and pooled.symbol == "*" and pooled.pooled is True and pooled.source == "pooled"
+    # 3. neither -> the unconditional row
+    fallback = fit.lookup_regime("NVDA", "orb", "long", "mixed")
+    assert fallback.verdict == "PASS" and fallback.regime == "" and fallback.pooled is False
+    # 4. nothing at all -> None
+    assert fit.lookup_regime("TSLA", "orb", "long", "mixed") is None
+    assert fit.lookup_regime("NVDA", "mr_20d", "long", "risk_on") is None
+
+
+def test_lookup_regime_none_when_stale_or_snapshot_lacks_keys(tmp_path):
+    stale = _fit(_regime_snap(tmp_path, "2025-09-01T01:00:00",
+                              rows={"NVDA": {"orb:long": _row("NVDA", "orb", "long", "PASS", 0.3)}},
+                              regime_rows={"NVDA": {"orb:long:risk_on": _rrow("NVDA", "orb", "long", "PASS", 0.3,
+                                                                              "risk_on")}}))
+    assert stale.lookup_regime("NVDA", "orb", "long", "risk_on") is None
+
+    # An older snapshot with neither key must degrade to the unconditional row, not raise.
+    older_dir = tmp_path / "older"
+    older_dir.mkdir()
+    old = _fit(_regime_snap(older_dir, "2025-09-25T01:00:00",
+                            rows={"NVDA": {"orb:long": _row("NVDA", "orb", "long", "PASS", 0.3)}}))
+    assert old.lookup_regime("NVDA", "orb", "long", "risk_on").verdict == "PASS"
+    s = old.summary()
+    assert s["n_regime_rows"] == 0 and s["n_pooled_pass"] == 0
+
+
+def test_summary_counts_regime_and_pooled_rows(tmp_path):
+    p = _regime_snap(
+        tmp_path, "2025-09-25T01:00:00",
+        rows={"NVDA": {"orb:long": _row("NVDA", "orb", "long", "PASS", 0.3)}},
+        regime_rows={"NVDA": {"orb:long:risk_on": _rrow("NVDA", "orb", "long", "PASS", 0.3, "risk_on"),
+                              "orb:long:mixed": _rrow("NVDA", "orb", "long", "FAIL", 0.0, "mixed")},
+                     "TSLA": {"orb:short:risk_off": _rrow("TSLA", "orb", "short", "WATCH", 0.1, "risk_off")}},
+        pooled_rows={"orb:long:risk_on": _rrow("*", "orb", "long", "PASS", 0.5, "risk_on", source="pooled"),
+                     "orb:long:mixed": _rrow("*", "orb", "long", "WATCH", 0.2, "mixed", source="pooled")},
+    )
+    s = _fit(p).summary()
+    assert s["n_regime_rows"] == 3 and s["n_pooled_pass"] == 1
+    # the unconditional counts are unchanged by the new lanes
+    assert s["counts"] == {"PASS": 1} and s["n_symbols"] == 1
+
+
+def test_fit_row_defaults_and_pooled_flag_from_source(tmp_path):
+    from core.strategy_fit import FitRow
+    plain = FitRow.from_dict({"symbol": "NVDA", "strategy": "orb", "side": "long", "verdict": "PASS"})
+    assert plain.regime == "" and plain.pooled is False
+    pooled = FitRow.from_dict({"symbol": "*", "strategy": "orb", "side": "long", "verdict": "PASS",
+                               "source": "pooled", "regime": "risk_on"})
+    assert pooled.pooled is True and pooled.regime == "risk_on"
+    assert pooled.to_json_dict()["regime"] == "risk_on" and pooled.to_json_dict()["pooled"] is True
+    # a non-dict / garbage regime never raises
+    assert FitRow.from_dict({"regime": 7, "pooled": "yes"}).regime == ""
+
+
+def test_malformed_regime_and_pooled_sections_never_raise(tmp_path):
+    p = tmp_path / "bad_sections.json"
+    p.write_text(json.dumps({"computed_at": "2025-09-25T01:00:00", "floors": {},
+                             "rows": {"NVDA": {"orb:long": _row("NVDA", "orb", "long", "PASS", 0.3)}},
+                             "regime_rows": {"NVDA": ["not", "a", "dict"], "TSLA": {"orb:long:risk_on": 5}},
+                             "pooled_rows": ["nope"]}))
+    fit = _fit(p)
+    assert fit.lookup("NVDA", "orb", "long").verdict == "PASS"
+    assert fit.lookup_regime("NVDA", "orb", "long", "risk_on").verdict == "PASS"   # falls back
+    assert fit.summary()["n_regime_rows"] == 0 and fit.summary()["last_error"] is None
