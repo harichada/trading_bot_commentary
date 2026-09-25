@@ -17,15 +17,18 @@ re-exports nothing of the sort — the map actually lives in
 core-internal import (`core.desk` -> `core.strategy_fit_gate`), not a
 `core` -> `strategies` dependency, so it needs no parameter escape hatch.
 
-`decisions_for` is limited by what `DbLogger` exposes today:
-`get_todays_bot_decision_entries` only returns *entry* signals (symbol ->
-side/ts/strategy/confidence) for a fixed set of managed strategies, not the
-strategy-fit / playbook gate's skip/shadow audit rows. Those aren't
-queryable through `DbLogger` yet, so the "skips" and "shadow audits that
-would have blocked" journal sections stay empty against the live adapter
-until a future task adds that read — `render_journal` itself already
-handles decision dicts carrying `action="skip"`/`"shadow"` correctly (see
-its tests), so no rendering change will be needed then.
+`decisions_for` reads `DbLogger.get_bot_decisions_between` (review round 1,
+Important finding 1) rather than the older, narrower
+`get_todays_bot_decision_entries`: that getter only returns *entry* signals
+(symbol -> side/ts/strategy/confidence) for a fixed set of managed
+strategies and, checked against `core/engine.py`'s `EngineWithCommentary.
+_audit()` (`bot_decisions`'s only writer), for action values
+("entry"/"open_position"/"signal_generated") no current write path ever
+emits — so any row it could return is already inside `bot_decisions` and
+would double count against `get_bot_decisions_between`. It is intentionally
+never called here. Reading the whole table (all components, all modes) is
+what surfaces the strategy-fit / playbook / desk_* shadow-and-skip audits in
+the journal's Decisions section.
 """
 from __future__ import annotations
 
@@ -48,36 +51,39 @@ JOURNAL_SUBDIR = "journal"
 # ────────────────────────────────────────────────────────────────────
 
 async def decisions_for(date: str, db_logger: Any) -> List[dict]:
-    """Today's governed decisions, shaped for `render_journal`.
-
-    `date` is accepted for a future date-scoped query and otherwise unused:
-    `DbLogger.get_todays_bot_decision_entries` only ever reads "today" in
-    Postgres. Never raises: [] on a missing method, a disabled logger, or
-    any read failure.
+    """Every governed decision for `date` (00:00-24:00, via
+    `DbLogger.get_bot_decisions_between(date, date)`), shaped for
+    `render_journal`: `{symbol, component, action, reason, mode, ts,
+    details}`. All components, all modes — no filtering, so
+    `render_journal`'s "by component/action" counts, "skips", and "shadow
+    audits that would have blocked" subsections see the real strategy-fit /
+    playbook / desk_* governance trail. Never raises: [] on a missing
+    method, a disabled logger, or any read failure; a non-dict row is
+    skipped rather than raising.
     """
-    getter = getattr(db_logger, "get_todays_bot_decision_entries", None)
+    getter = getattr(db_logger, "get_bot_decisions_between", None)
     if not callable(getter):
         return []
     try:
-        raw = await getter()
+        raw = await getter(date, date)
     except Exception as exc:
         logger.warning("desk journal_data decisions_for failed date=%s err=%s", date, exc)
         return []
-    if not isinstance(raw, dict):
+    if not isinstance(raw, list):
         return []
 
     out: List[dict] = []
-    for symbol, entry in raw.items():
-        if not isinstance(entry, dict):
+    for row in raw:
+        if not isinstance(row, dict):
             continue
         out.append({
-            "symbol": symbol,
-            "component": entry.get("strategy") or "unknown",
-            "action": "entry",
-            "reason": "",
-            "side": entry.get("side"),
-            "ts": entry.get("ts"),
-            "confidence": entry.get("confidence"),
+            "symbol": row.get("symbol"),
+            "component": row.get("component") or "unknown",
+            "action": row.get("action") or "unknown",
+            "reason": row.get("reason") or "",
+            "mode": row.get("mode"),
+            "ts": row.get("ts"),
+            "details": row.get("details"),
         })
     return out
 

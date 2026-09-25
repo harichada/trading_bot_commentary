@@ -1,26 +1,16 @@
-"""v-playbook-desk-b2-2026-09-25 (Task 4): journal rendering and data adapters.
+"""v-playbook-desk-b2-2026-09-25 (Task 4): journal rendering.
 
 `render_journal` is pure — every section is exercised on hand-built
 fixtures, including the three "what to change" derivation rules and the
-"missing data renders 'none'" contract. The adapters in `journal_data.py`
-are exercised against a fake `db_logger` (no Postgres): success paths,
-missing-method paths, and exception paths.
+"missing data renders 'none'" contract.
+
+(Split from `test_journal.py` in review round 1 — see
+`.superpowers/sdd/2026-09-25-playbook-desk-b2/task-4-findings-r1.md` item 2.
+Adapter/data-store tests moved to `test_journal_data.py`.)
 """
 from __future__ import annotations
 
-import asyncio
-import os
-
-import pytest
-
 from core.desk.journal import render_journal
-from core.desk.journal_data import (
-    decisions_for,
-    journal_dir,
-    journal_path,
-    trades_for,
-    write_journal,
-)
 from core.desk.models import DailyPlan, InPlayRow
 
 
@@ -305,112 +295,3 @@ def test_render_journal_tolerates_malformed_rows():
         trailing={"expectancy": "not-a-list", "sit_out_days": None, "max_trades_days": [{}]},
     )
     assert "## Plan" in out
-
-
-# ────────────────────────────────────────────────────────────────────
-# Adapters: decisions_for / trades_for against a fake db_logger
-# ────────────────────────────────────────────────────────────────────
-
-class _FakeDbLogger:
-    def __init__(self, decision_entries=None, trades=None, raise_on=None):
-        self._decision_entries = decision_entries or {}
-        self._trades = trades if trades is not None else []
-        self._raise_on = raise_on or ()
-
-    async def get_todays_bot_decision_entries(self, symbols=None):
-        if "decisions" in self._raise_on:
-            raise RuntimeError("boom")
-        return self._decision_entries
-
-    async def get_bot_trades_between(self, start, end):
-        if "trades" in self._raise_on:
-            raise RuntimeError("boom")
-        return self._trades
-
-
-def test_decisions_for_shapes_entries_from_fake_db_logger():
-    fake = _FakeDbLogger(decision_entries={
-        "AAPL": {"side": "long", "ts": "2026-09-25T09:31:00", "strategy": "mean_reversion",
-                  "confidence": 0.8},
-    })
-    out = asyncio.run(decisions_for("2026-09-25", fake))
-    assert out == [{
-        "symbol": "AAPL", "component": "mean_reversion", "action": "entry", "reason": "",
-        "side": "long", "ts": "2026-09-25T09:31:00", "confidence": 0.8,
-    }]
-
-
-def test_decisions_for_returns_empty_on_exception():
-    fake = _FakeDbLogger(raise_on=("decisions",))
-    assert asyncio.run(decisions_for("2026-09-25", fake)) == []
-
-
-def test_decisions_for_returns_empty_when_method_missing():
-    class _NoMethod:
-        pass
-    assert asyncio.run(decisions_for("2026-09-25", _NoMethod())) == []
-
-
-def test_trades_for_shapes_rows_with_family_from_lane_map():
-    fake = _FakeDbLogger(trades=[
-        {"symbol": "AAPL", "side": "long", "strategy": "mean_reversion",
-         "entry_time": "2026-09-25T09:35:00", "exit_time": "2026-09-25T10:00:00",
-         "pnl": 120.0, "pnl_r": 0.8, "exit_reason": "target", "setup_type": "mean_rev"},
-    ])
-    out = asyncio.run(trades_for(("2026-09-24", "2026-09-25"), fake))
-    assert len(out) == 1
-    assert out[0]["family"] == "mean_rev_intraday"
-    assert out[0]["r"] == 0.8
-
-
-def test_trades_for_unmapped_strategy_gets_unknown_family():
-    fake = _FakeDbLogger(trades=[
-        {"symbol": "XYZ", "side": "short", "strategy": "some_unmapped_strategy",
-         "entry_time": None, "exit_time": None, "pnl": None, "pnl_r": None,
-         "exit_reason": None, "setup_type": None},
-    ])
-    out = asyncio.run(trades_for(("2026-09-24", "2026-09-25"), fake))
-    assert out[0]["family"] == "unknown"
-
-
-def test_trades_for_returns_empty_on_exception():
-    fake = _FakeDbLogger(raise_on=("trades",))
-    assert asyncio.run(trades_for(("2026-09-24", "2026-09-25"), fake)) == []
-
-
-def test_trades_for_returns_empty_on_bad_date_range():
-    fake = _FakeDbLogger(trades=[{"symbol": "AAPL"}])
-    assert asyncio.run(trades_for("not-a-range", fake)) == []
-
-
-# ────────────────────────────────────────────────────────────────────
-# journal_path / write_journal (atomic file store)
-# ────────────────────────────────────────────────────────────────────
-
-def test_journal_path_layout(tmp_path):
-    desk_dir = str(tmp_path / "desk")
-    path = journal_path(desk_dir, "2026-09-25")
-    assert path == os.path.join(desk_dir, "journal", "2026-09-25.md")
-    assert journal_dir(desk_dir) == os.path.join(desk_dir, "journal")
-
-
-def test_write_journal_round_trip_and_atomicity(tmp_path):
-    desk_dir = str(tmp_path / "desk")
-    text = "# journal\nsome content\n"
-    written = write_journal(text, desk_dir, "2026-09-25")
-    assert written == journal_path(desk_dir, "2026-09-25")
-    with open(written) as fh:
-        assert fh.read() == text
-    leftovers = [f for f in os.listdir(journal_dir(desk_dir)) if f.endswith(".tmp")]
-    assert leftovers == []
-
-
-def test_write_journal_returns_none_on_failure(tmp_path, monkeypatch):
-    desk_dir = str(tmp_path / "desk")
-
-    def _boom(*a, **kw):
-        raise OSError("disk full")
-
-    import core.desk.journal_data as journal_data_module
-    monkeypatch.setattr(journal_data_module.tempfile, "mkstemp", _boom)
-    assert write_journal("text", desk_dir, "2026-09-25") is None

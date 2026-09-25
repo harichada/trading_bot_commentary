@@ -1394,6 +1394,76 @@ class DbLogger:
             logger.warning("db_logger_get_bot_trades_between_error err=%s", exc)
             return []
 
+    async def get_bot_decisions_between(self, start: Any, end: Any) -> list[dict]:
+        """v-playbook-desk-b2-2026-09-25 (Task 4 review fix, round 1): every
+        `bot_decisions` row between two dates (inclusive, by `ts`), all
+        components and all modes — for the desk journal's Decisions section.
+
+        `bot_decisions`'s only writer is `EngineWithCommentary._audit()`
+        (`core/engine.py`), which stamps every governed decision (gate
+        proceed/shadow/skip, exits, recovery, etc.) with `component`,
+        `symbol`, `action`, `reason`, `mode`; `details_json` carries whatever
+        extra fields that call passed. Unlike `get_todays_bot_decision_entries`
+        (narrow: a fixed strategy allowlist, "today" only, action IN
+        ('entry', 'open_position', 'signal_generated')), this reads the whole
+        table unfiltered so strategy-fit / playbook / desk_* shadow-and-skip
+        audits reach the journal.
+
+        Returns a list of dicts: {"ts", "component", "symbol", "action",
+        "reason", "mode", "details"}. Never raises: [] on a disabled logger,
+        unreachable Postgres, or a malformed row. `start`/`end` are date-like
+        (str "YYYY-MM-DD" or date/datetime); both are cast to str for the
+        parameterized query — same `DATE(col) BETWEEN` convention as
+        `get_bot_trades_between` (session-timezone dependent, not an
+        explicit ET conversion; no other read in this file does one either).
+        """
+        if not self._enabled:
+            return []
+
+        if not self._is_on_owner_loop():
+            if self._owner_loop is None or not self._owner_loop.is_running():
+                return []
+            try:
+                fut = asyncio.run_coroutine_threadsafe(
+                    self._get_bot_decisions_between_impl(start, end),
+                    self._owner_loop,
+                )
+                return await asyncio.wrap_future(fut)
+            except Exception as exc:
+                logger.warning("db_logger_get_bot_decisions_between_route_error err=%s", exc)
+                return []
+
+        return await self._get_bot_decisions_between_impl(start, end)
+
+    async def _get_bot_decisions_between_impl(self, start: Any, end: Any) -> list[dict]:
+        """Internal impl: query bot_decisions for a date-bounded range, unfiltered."""
+        try:
+            async with self._engine.begin() as conn:
+                query = """
+                    SELECT ts, component, symbol, action, reason, mode, details_json
+                    FROM bot_decisions
+                    WHERE DATE(ts) BETWEEN :start AND :end
+                    ORDER BY ts ASC
+                """
+                result = await conn.execute(text(query), {"start": str(start), "end": str(end)})
+                rows = result.mappings().all()
+                decisions = []
+                for row in rows:
+                    symbol = row["symbol"]
+                    decisions.append({
+                        "ts": row["ts"],
+                        "component": row["component"],
+                        "symbol": symbol.upper() if isinstance(symbol, str) else symbol,
+                        "action": row["action"],
+                        "reason": row["reason"],
+                        "mode": row["mode"],
+                        "details": _safe_json_decode(row["details_json"]),
+                    })
+                return decisions
+        except Exception as exc:
+            logger.warning("db_logger_get_bot_decisions_between_error err=%s", exc)
+            return []
+
     async def get_managed_bot_position(
         self, symbol: str
     ) -> dict | None:
