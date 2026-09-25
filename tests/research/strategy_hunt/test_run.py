@@ -81,9 +81,19 @@ def test_run_symbols_serial_and_score_root(root):
     assert rows[0]["n"] > 0 and rows[0]["verdict"] in ("PASS", "WATCH", "FAIL")
 
 
-def test_cli_run_and_score_end_to_end(root, monkeypatch, capsys):
+def test_cli_run_and_score_end_to_end(root, monkeypatch, capsys, tmp_path):
     from research.strategy_hunt import cli
+    from research.strategy_hunt import report as R
+    from research.strategy_hunt import run as RUN
     from research.strategy_hunt.fit.writer import load_snapshot
+    # v-strategy-fit-review2-2026-09-25 (Important 8): `run`'s manifest and
+    # `score`'s report both land in REPORTS_DIR, which defaults to the real
+    # repo path research/reports/strategy_hunt/ — a test must never write
+    # there. run.py owns the constant; report.py binds its own module-level
+    # copy at import time, so both need redirecting.
+    reports = tmp_path / "reports"
+    monkeypatch.setattr(RUN, "REPORTS_DIR", reports)
+    monkeypatch.setattr(R, "REPORTS_DIR", reports)
     assert cli.main(["run", "--root", str(root), "--symbols", "AAA", "--families", "toy", "--workers", "1"]) == 0
     assert cli.main(["score", "--root", str(root), "--families", "toy", "--no-coldstart"]) == 0
     snap = load_snapshot(root)
