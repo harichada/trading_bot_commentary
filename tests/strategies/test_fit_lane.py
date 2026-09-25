@@ -92,7 +92,7 @@ def test_no_row_and_insufficient_bars(monkeypatch, tmp_path):
     assert asyncio.run(lane2.generate_signal_with_commentary(_md())) is None
 
 
-def test_synthetic_next_bar_and_stale_entries_ignored(monkeypatch, tmp_path):
+def test_synthetic_next_bar_and_stale_entries_ignored(monkeypatch, tmp_path, caplog):
     from strategies.fit_lane import with_synthetic_next_bar
     b = _bars()
     nb = with_synthetic_next_bar(b, 101.0)
@@ -118,9 +118,11 @@ def test_synthetic_next_bar_and_stale_entries_ignored(monkeypatch, tmp_path):
     lane = FitLaneStrategy(_Commentary(), "toy_stale", fit, src, lambda: ("toy_stale",), ledger_dir=tmp_path,
                            clock=lambda: datetime(2025, 9, 24, 13, 32))
 
-    result = asyncio.run(lane.generate_signal_with_commentary(_md()))
+    with caplog.at_level("INFO", logger="TradingBot"):
+        result = asyncio.run(lane.generate_signal_with_commentary(_md()))
     assert result is None
     assert not (tmp_path / "shadow_fit_toy_stale.ndjson").exists()
+    assert "reason=no_entry_now" in caplog.text
 
 
 def test_signal_carries_symbol_from_market_data(monkeypatch, tmp_path):
@@ -172,26 +174,32 @@ def test_unknown_family_raises_at_construction(monkeypatch, tmp_path):
         FitLaneStrategy(_Commentary(), "no_such_family_xyz", fit, src, lambda: (), ledger_dir=tmp_path)
 
 
-def test_stale_bars_after_close_skipped(monkeypatch, tmp_path):
+def test_stale_bars_after_close_skipped(monkeypatch, tmp_path, caplog):
     """Review fix #3 (Important): clock well after the close with bars
     ending at 15:55 -> the synthetic bar would land at 16:00, past RTH
     close, so the adapter skips instead of polluting the ledger."""
     lane = _lane(monkeypatch, tmp_path, live=True)
     lane._bars_source = lambda sym: (_full_bars(3), pd.DataFrame())
     lane._clock = lambda: datetime(2025, 9, 24, 16, 7)
-    assert asyncio.run(lane.generate_signal_with_commentary(_md())) is None
+    with caplog.at_level("INFO", logger="TradingBot"):
+        result = asyncio.run(lane.generate_signal_with_commentary(_md()))
+    assert result is None
     assert not (tmp_path / "shadow_fit_toy.ndjson").exists()
+    assert "reason=stale_bars" in caplog.text
 
 
-def test_stale_bars_before_open_skipped(monkeypatch, tmp_path):
+def test_stale_bars_before_open_skipped(monkeypatch, tmp_path, caplog):
     """Review fix #3 (Important): clock the next morning before the first
     bar of the new session prints -> the last closed bar is from
     yesterday's session, well outside the freshness window."""
     lane = _lane(monkeypatch, tmp_path, live=True)
     lane._bars_source = lambda sym: (_full_bars(2), pd.DataFrame())
     lane._clock = lambda: datetime(2025, 9, 24, 9, 31)
-    assert asyncio.run(lane.generate_signal_with_commentary(_md())) is None
+    with caplog.at_level("INFO", logger="TradingBot"):
+        result = asyncio.run(lane.generate_signal_with_commentary(_md()))
+    assert result is None
     assert not (tmp_path / "shadow_fit_toy.ndjson").exists()
+    assert "reason=stale_bars" in caplog.text
 
 
 def test_insufficient_closed_bars(monkeypatch, tmp_path, caplog):
@@ -207,3 +215,21 @@ def test_insufficient_closed_bars(monkeypatch, tmp_path, caplog):
         result = asyncio.run(lane.generate_signal_with_commentary(_md()))
     assert result is None
     assert "reason=insufficient_bars" in caplog.text
+
+
+def test_empty_bars_skip_insufficient_bars_no_error(monkeypatch, tmp_path, caplog):
+    """Regression (Task 31 re-review): the engine's _fit_bars_source degrades
+    to two empty DataFrames on any fetch failure. closed_bars() raises
+    TypeError on an empty frame's default RangeIndex, so bars5.empty must be
+    checked *before* calling closed_bars() -- otherwise every fetch failure
+    is misreported as a caught exception (action=error reason=fit_lane_error)
+    instead of the expected clean insufficient_bars skip, and a spurious
+    warning is logged on every tick for every symbol/family."""
+    lane = _lane(monkeypatch, tmp_path, live=True)
+    lane._bars_source = lambda sym: (pd.DataFrame(), pd.DataFrame())
+    with caplog.at_level("DEBUG", logger="TradingBot"):
+        result = asyncio.run(lane.generate_signal_with_commentary(_md()))
+    assert result is None
+    assert "reason=insufficient_bars" in caplog.text
+    assert "reason=fit_lane_error" not in caplog.text
+    assert not any(r.levelname == "WARNING" for r in caplog.records)

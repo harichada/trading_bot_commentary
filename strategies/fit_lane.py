@@ -204,8 +204,13 @@ class FitLaneStrategy(TradingStrategyWithCommentary):
         family = self._family_name
 
         bars5, daily = await asyncio.to_thread(self._bars_source, symbol)
-        if bars5 is None:
-            bars5 = pd.DataFrame()
+        # v-strategy-fit-review-2026-09-25: closed_bars() compares its
+        # index to a Timestamp and raises TypeError on an empty frame's
+        # default RangeIndex — check emptiness before calling it rather
+        # than coercing None to an empty frame and passing it through.
+        if bars5 is None or bars5.empty:
+            self._log_decision(market_data, "skip", "insufficient_bars", skip_snapshot=True)
+            return None
 
         now = self._clock()
         closed = closed_bars(bars5, now)
