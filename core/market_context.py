@@ -477,17 +477,24 @@ def get_symbol_day_change_pct(
     Schwab quotes (netPercentChange), the same source MarketIndicesCache
     uses for SPY. This enables true apples-to-apples RS comparison.
 
+    v-fix-schwab-provider-rs-2026-09-21: when schwab_provider is None,
+    auto-resolves via MarketIndicesCache.instance() which stores a
+    reference to the schwab_client from engine refresh loops. This fixes
+    the bug where strategies called with schwab_provider=None always fell
+    through to bar_estimate.
+
     Fallback order:
-      1. Schwab quote netPercentChange (same-basis, authoritative)
-      2. Cached value if within TTL
-      3. Bar-based estimate: (bar_close - bar_open) / bar_open (legacy)
+      1. Schwab quote netPercentChange via explicit provider (same-basis)
+      2. Schwab quote via MarketIndicesCache auto-resolve (same-basis)
+      3. Cached value if within TTL
+      4. Bar-based estimate: (bar_close - bar_open) / bar_open (legacy)
 
     Args:
         symbol: Stock symbol to look up
         bar_open: Current bar's open price (for legacy fallback)
         bar_close: Current bar's close price (for legacy fallback)
         schwab_provider: Optional SchwabDataProvider instance for direct fetch.
-            If None, falls back to cached values or bar-based estimate.
+            If None, auto-resolves via MarketIndicesCache.
 
     Returns:
         (day_change_pct, source) where source is one of:
@@ -508,7 +515,7 @@ def get_symbol_day_change_pct(
         if age_sec < _SYMBOL_DAY_CHANGE_CACHE_TTL_SEC:
             return (cached_pct, "cache")
 
-    # Try fetching from Schwab provider if available
+    # Try fetching from explicit Schwab provider if available
     if schwab_provider is not None:
         try:
             quote = schwab_provider.get_quote(symbol)
@@ -519,7 +526,25 @@ def get_symbol_day_change_pct(
                 return (net_pct, "schwab_quote")
         except Exception as exc:
             _logger.debug(
-                "get_symbol_day_change_pct: Schwab fetch failed for %s: %s",
+                "get_symbol_day_change_pct: Schwab provider fetch failed for %s: %s",
+                symbol, exc
+            )
+
+    # v-fix-schwab-provider-rs-2026-09-21: auto-resolve via MarketIndicesCache
+    # when no explicit provider is passed. The cache stores a reference to the
+    # schwab_client from engine refresh loops, enabling same-basis RS without
+    # requiring strategies to wire providers.
+    if schwab_provider is None:
+        try:
+            from core.market_indices import MarketIndicesCache
+            cache = MarketIndicesCache.instance()
+            net_pct = cache.fetch_symbol_day_change(symbol)
+            if net_pct is not None:
+                _SYMBOL_DAY_CHANGE_CACHE[symbol] = (net_pct, now_utc)
+                return (net_pct, "schwab_quote")
+        except Exception as exc:
+            _logger.debug(
+                "get_symbol_day_change_pct: MarketIndicesCache fetch failed for %s: %s",
                 symbol, exc
             )
 
