@@ -1,12 +1,12 @@
-"""v-playbook-desk-b2-2026-09-25 (Task 3): the nightly playbook updater.
+"""v-playbook-desk-b2-2026-09-25 (Task 3): the nightly updater's two tapes.
 
-Offline: the shadow side runs the real `shadow_resolver.resolve` against a tmp
-root of generated bars, and the live side gets its `bot_trades` /
-`bot_decisions` frames from an injected SQL reader callable (no Postgres).
+Offline: the shadow side runs the real `shadow_resolver.resolve` against a tmp root of generated
+bars, and the live side gets its `bot_trades` / `bot_decisions` frames from an injected SQL reader
+callable (no Postgres). The verdict/rewrite tests live in `test_playbook_nightly.py`; shared
+builders in `playbook_helpers.py`.
 """
 import json
 
-import numpy as np
 import pandas as pd
 import pytest
 
@@ -15,81 +15,21 @@ from research.strategy_hunt.playbook_update import (
     LIVE_LOOKBACK_DAYS,
     LIVE_REGIME_SQL,
     LIVE_TRADES_SQL,
-    RECENT_DAYS,
-    best_verdict,
     group_by_key,
     live_resolved_trades,
     resolved_from_live,
     resolved_from_sim,
     resolved_trades_by_key,
-    update_playbook,
 )
 
-NOW = "2026-09-25T20:00:00"
-
-
-# ────────────────────────── fixtures ──────────────────────────
-
-def _bars(start="2026-07-01", sessions=30, seed=0):
-    rng = np.random.default_rng(seed)
-    frames, px = [], 100.0
-    for d in pd.bdate_range(start, periods=sessions):
-        idx = pd.date_range(f"{d.date()} 09:30", periods=78, freq="5min", name="ts")
-        close = px + rng.normal(0, 0.05, 78).cumsum()
-        frames.append(pd.DataFrame({"open": close - 0.02, "high": close + 0.3, "low": close - 0.3,
-                                    "close": close, "volume": 1000}, index=idx))
-        px = float(close[-1])
-    return pd.concat(frames)
-
-
-@pytest.fixture
-def root(tmp_path):
-    from research.strategy_hunt.data.bars import _write, bars5_path, daily_path, to_daily
-
-    b = _bars()
-    _write(bars5_path(tmp_path, "AAA"), b, "ts")
-    _write(daily_path(tmp_path, "AAA"), to_daily(b), "date")
-    return tmp_path
-
-
-def _ledger(ledger_dir, family="toy", timestamps=("2026-07-06T10:00:00", "2026-07-09T10:00:00")):
-    from research.strategy_hunt.shadow_resolver import default_ledger_path
-
-    p = default_ledger_path(family, ledger_dir)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text("\n".join(json.dumps({
-        "ts": ts, "symbol": "AAA", "side": "long", "entry_px": 100.0, "stop_px": 99.0,
-        "target_px": 100.5, "time_stop": 20, "hold_kind": "intraday", "tag": "t",
-        "params": {"w": 1.0}, "verdict": "PASS", "score": 0.5,
-    }) for ts in timestamps) + "\n")
-    return p
-
-
-def _sim_trade(**kw):
-    from research.strategy_hunt.models import SimTrade
-
-    base = dict(symbol="AAA", family="orb", side="long", entry_ts=pd.Timestamp("2026-09-01 10:00"),
-                exit_ts=pd.Timestamp("2026-09-01 11:00"), entry_px=100.0, stop_px=99.0, target_px=102.0,
-                exit_px=102.0, entry_fill=100.0, exit_fill=102.0, r_multiple=2.0, pnl_pct=0.02,
-                cost_pct=0.0005, exit_reason="target", hold_bars=12, hold_sessions=1, tag="t",
-                regime="risk_on", window_id=-1, params_json="{}")
-    base.update(kw)
-    return SimTrade(**base)
-
-
-def _live_frames(rows, decisions=()):
-    trades = pd.DataFrame(list(rows), columns=["symbol", "side", "strategy", "entry_time", "exit_time", "pnl_r"])
-    dec = pd.DataFrame(list(decisions), columns=["symbol", "ts", "details_json"])
-    return {LIVE_TRADES_SQL: trades, LIVE_REGIME_SQL: dec}
-
-
-def _reader(frames, seen=None):
-    """A `reader(query, params)` over pre-built frames (the injected SQL reader contract)."""
-    def _read(query, params=None):
-        if seen is not None:
-            seen.append((query, params))
-        return frames[query]
-    return _read
+from tests.research.strategy_hunt.playbook_helpers import (  # noqa: F401 - `root` is a fixture
+    NOW,
+    _ledger,
+    _live_frames,
+    _reader,
+    _sim_trade,
+    root,
+)
 
 
 # ────────────────────────── the family map ──────────────────────────
@@ -296,206 +236,6 @@ def test_resolved_trades_by_key_survives_a_family_that_cannot_be_resolved(root, 
     assert not any(k[0] == "broken" for k in grouped)
 
 
-# ────────────────────────── snapshot verdicts ──────────────────────────
-
-def _snapshot(pooled=None, regime=None, rows=None):
-    return {"computed_at": NOW, "floors": {}, "rows": rows or {}, "regime_rows": regime or {},
-            "pooled_rows": pooled or {}, "baseline_pooled_rows": {}}
-
-
-def test_best_verdict_prefers_pass_over_watch_over_fail():
-    snap = _snapshot(
-        pooled={"orb:long:risk_on": {"verdict": "WATCH"}},
-        regime={"AAA": {"orb:long:risk_on": {"verdict": "FAIL"}},
-                "BBB": {"orb:long:risk_on": {"verdict": "PASS"}}},
-    )
-    assert best_verdict(snap, "orb", "long", "risk_on") == "PASS"
-
-
-def test_best_verdict_uses_the_pooled_row_when_it_is_the_only_one():
-    snap = _snapshot(pooled={"orb:long:risk_off": {"verdict": "WATCH"}})
-    assert best_verdict(snap, "orb", "long", "risk_off") == "WATCH"
-    assert best_verdict(snap, "orb", "long", "risk_on") is None
-    assert best_verdict(snap, "dt_momentum", "long", "risk_off") is None
-
-
-def test_best_verdict_falls_back_to_unconditional_rows_only_for_unknown_regime():
-    snap = _snapshot(rows={"AAA": {"orb:long": {"verdict": "PASS"}}})
-    assert best_verdict(snap, "orb", "long", "unknown") == "PASS"
-    assert best_verdict(snap, "orb", "long", "risk_on") is None
-
-
-def test_best_verdict_tolerates_malformed_sections():
-    assert best_verdict({"pooled_rows": ["nope"], "regime_rows": "bad", "rows": None},
-                        "orb", "long", "unknown") is None
-    assert best_verdict({}, "orb", "long", "risk_on") is None
-
-
-# ────────────────────────── update_playbook ──────────────────────────
-
-def test_update_playbook_writes_the_file_and_applies_the_rules(root, tmp_path):
-    from core.desk.playbook import load_playbook, playbook_path
-
-    desk = tmp_path / "desk"
-    ledger_dir = tmp_path / "ledgers"
-    _ledger(ledger_dir)
-    losers = [("AAA", "long", "orb_contraction_rvol", f"2026-09-{d:02d}T10:00:00",
-               f"2026-09-{d:02d}T11:00:00", -1.0 if d % 2 else -0.8) for d in range(1, 13)]
-    frames = _live_frames(losers)
-
-    pb = update_playbook(root, _snapshot(), NOW, desk_dir=desk, families=["toy"],
-                         reader=_reader(frames), ledger_dir=ledger_dir)
-
-    assert pb.updated_at == NOW
-    entry = pb.get("orb", "long", "unknown")
-    assert entry is not None and entry.status == "suspended" and entry.size_mult == 0.0
-    assert pb.get("toy", "long", "unknown").status == "probation"
-
-    on_disk = load_playbook(playbook_path(desk))
-    assert on_disk.entries == pb.entries
-
-
-def _live_row(day_offset, r, strategy="orb_contraction_rvol", hour=10, symbol="AAA", side="long"):
-    """One bot_trades row `day_offset` days before NOW (entry and exit on the same day)."""
-    day = (pd.Timestamp(NOW) - pd.Timedelta(days=day_offset)).normalize()
-    return (symbol, side, strategy, (day + pd.Timedelta(hours=hour - 1)).isoformat(),
-            (day + pd.Timedelta(hours=hour)).isoformat(), r)
-
-
-def test_update_playbook_slices_the_last_recent_window_trades_and_can_upsize(root, tmp_path):
-    """r1 finding 2: the window is the last 60 trades, and 60 >= the 40-trade upsize floor, so
-    a full window of winners with a PASS row reaches 1.25."""
-    from core.desk.playbook import RECENT_WINDOW
-
-    desk = tmp_path / "desk"
-    # 80 trades inside the 90-day bound: the oldest 20 are heavy losers the slice must drop.
-    rows = [_live_row(88 - i, -5.0 if i < 20 else 0.3, hour=10 + (i % 5)) for i in range(80)]
-    snap = _snapshot(pooled={"orb:long:unknown": {"verdict": "PASS"}})
-
-    pb = update_playbook(root, snap, NOW, desk_dir=desk, families=[],
-                         reader=_reader(_live_frames(rows)))
-
-    entry = pb.get("orb", "long", "unknown")
-    assert entry.n_recent == RECENT_WINDOW == 60
-    assert entry.exp_r_recent == pytest.approx(0.3)
-    assert entry.status == "enabled" and entry.size_mult == 1.25
-    assert entry.reason == "enabled_upsize_fit_confirmed"
-
-
-def test_update_playbook_window_is_time_bounded(root, tmp_path):
-    """r1 finding 3: trades older than RECENT_DAYS are out of the sample, so a stale losing
-    streak cannot re-suspend a key every night forever."""
-    desk = tmp_path / "desk"
-    rows = [_live_row(RECENT_DAYS + 5 + i, -3.0) for i in range(20)]        # too old to count
-    rows += [_live_row(3 + i, 0.4, hour=11) for i in range(12)]             # this is the sample
-
-    pb = update_playbook(root, _snapshot(), NOW, desk_dir=desk, families=[],
-                         reader=_reader(_live_frames(rows)))
-
-    entry = pb.get("orb", "long", "unknown")
-    assert RECENT_DAYS == 90
-    assert entry.n_recent == 12 and entry.exp_r_recent == pytest.approx(0.4)
-    assert entry.status == "enabled"
-
-
-def test_update_playbook_lapses_a_suspension_when_the_sample_is_all_stale(root, tmp_path):
-    """A key whose only trades are 31-90 days old still gets measured, but it may not stay
-    suspended: no resolved trade in 30 days means the suspension lapses to probation."""
-    desk = tmp_path / "desk"
-    rows = [_live_row(40 + i, -1.0 if i % 2 else -0.8, hour=10 + (i % 4)) for i in range(12)]
-
-    pb = update_playbook(root, _snapshot(), NOW, desk_dir=desk, families=[],
-                         reader=_reader(_live_frames(rows)))
-
-    entry = pb.get("orb", "long", "unknown")
-    assert entry.n_recent == 12 and entry.exp_r_recent < 0
-    assert entry.status == "probation" and entry.size_mult == 0.5
-    assert entry.reason == "suspension_lapsed_no_recent_trades"
-
-
-def test_update_playbook_keeps_a_suspension_backed_by_fresh_trades(root, tmp_path):
-    desk = tmp_path / "desk"
-    rows = [_live_row(2 + i, -1.0 if i % 2 else -0.8, hour=10 + (i % 4)) for i in range(12)]
-
-    pb = update_playbook(root, _snapshot(), NOW, desk_dir=desk, families=[],
-                         reader=_reader(_live_frames(rows)))
-
-    entry = pb.get("orb", "long", "unknown")
-    assert entry.status == "suspended" and entry.reason == "suspended_negative_expectancy"
-
-
-def _seed(desk, *entries):
-    from core.desk.playbook import Playbook, playbook_path, save_playbook
-
-    pb = Playbook(entries={}, updated_at="2026-06-01T00:00:00")
-    for e in entries:
-        pb = pb.with_entry(e)
-    save_playbook(pb, playbook_path(desk))
-
-
-def _prev_entry(**kw):
-    from core.desk.playbook import PlaybookEntry
-
-    base = dict(family="news_catalyst", side="short", regime="mixed", status="suspended",
-                size_mult=0.0, exp_r_recent=-0.4, t_stat_recent=-2.5, n_recent=20,
-                updated_at="2026-06-01T00:00:00", reason="suspended_negative_expectancy")
-    base.update(kw)
-    return PlaybookEntry(**base)
-
-
-def test_update_playbook_lapses_a_carried_forward_suspension(root, tmp_path):
-    """r1 finding 3: a suspended key places no live orders, so silence is not evidence — after
-    30 days with no resolved trade the suspension lapses to probation."""
-    desk = tmp_path / "desk"
-    _seed(desk, _prev_entry())
-
-    pb = update_playbook(root, _snapshot(), NOW, desk_dir=desk, families=[], reader=None)
-
-    kept = pb.get("news_catalyst", "short", "mixed")
-    assert kept.status == "probation" and kept.size_mult == 0.5
-    assert kept.reason == "suspension_lapsed_no_recent_trades" and kept.updated_at == NOW
-    assert (kept.exp_r_recent, kept.n_recent) == (-0.4, 20)     # the evidence is kept
-    assert pb.updated_at == NOW
-
-
-def test_update_playbook_carries_a_non_suspended_key_forward_verbatim(root, tmp_path):
-    desk = tmp_path / "desk"
-    prev = _prev_entry(status="enabled", size_mult=1.0, exp_r_recent=0.2, t_stat_recent=2.0,
-                       reason="enabled_normal")
-    _seed(desk, prev)
-
-    pb = update_playbook(root, _snapshot(), NOW, desk_dir=desk, families=[], reader=None)
-
-    assert pb.get("news_catalyst", "short", "mixed") == prev
-
-
-def test_shadow_and_live_trades_land_in_one_key_and_both_count(root, tmp_path):
-    """r1 finding 10: a resolved ledger trade and a live `fit:toy` bot_trades row describe the
-    same setup, so they must share a (family, side, regime) key and one sample."""
-    desk = tmp_path / "desk"
-    ledger_dir = tmp_path / "ledgers"
-    _ledger(ledger_dir)                                      # two shadow trades, family "toy"
-    rows = [_live_row(4, 0.9, strategy="fit:toy")]            # one live trade, same family/side
-
-    pb = update_playbook(root, _snapshot(), NOW, desk_dir=desk, families=["toy"],
-                         reader=_reader(_live_frames(rows)), ledger_dir=ledger_dir)
-
-    grouped = resolved_trades_by_key(root, ["toy"], reader=_reader(_live_frames(rows)),
-                                     ledger_dir=ledger_dir, now=NOW)
-    key = ("toy", "long", "unknown")
-    assert sorted(t.source for t in grouped[key]) == ["live", "shadow", "shadow"]
-    assert pb.get(*key).n_recent == 3
-
-
-def test_update_playbook_never_writes_outside_the_desk_dir(root, tmp_path):
-    desk = tmp_path / "nested" / "desk"
-    pb = update_playbook(root, _snapshot(), NOW, desk_dir=desk, families=[], reader=None)
-
-    assert (desk / "playbook.json").exists()
-    assert json.loads((desk / "playbook.json").read_text())["updated_at"] == NOW
-    assert pb.entries == {}
-
-
 def test_resolved_from_live_joins_tz_aware_decisions_to_naive_trade_times():
     """Postgres hands back tz-aware timestamps; comparing them to naive ones raises, which
     would silently cost the entire live tape."""
@@ -506,3 +246,82 @@ def test_resolved_from_live_joins_tz_aware_decisions_to_naive_trade_times():
                                "details_json": {"regime": "risk_off"}}])
 
     assert [t.regime for t in resolved_from_live(trades, decisions)] == ["risk_off"]
+
+
+# ── entry-time regime for the shadow tape (fix r2, finding 1a) ──
+
+def test_shadow_trades_are_stamped_with_the_entry_time_regime(root, tmp_path):
+    """A 10:00 entry on a session that is +0.5% at 09:55 and closes -1% must be labelled from
+    what had closed by 10:00 (risk_on), never from the session's close (risk_off)."""
+    from tests.research.strategy_hunt.playbook_helpers import write_regime_context
+
+    write_regime_context(root)
+    ledger_dir = tmp_path / "ledgers"
+    _ledger(ledger_dir)
+
+    grouped = resolved_trades_by_key(root, ["toy"], ledger_dir=ledger_dir, now=NOW)
+
+    assert ("toy", "long", "risk_off") not in grouped
+    assert [t.regime for t in grouped[("toy", "long", "risk_on")]] == ["risk_on", "risk_on"]
+
+
+def test_a_session_the_lookup_cannot_label_stays_unknown(root, tmp_path):
+    """SPY has no bars for the entry session → `unknown`, never a guess."""
+    from tests.research.strategy_hunt.playbook_helpers import spy_bars, write_regime_context
+
+    write_regime_context(root, spy=spy_bars(sessions=("2026-07-06",)))
+    ledger_dir = tmp_path / "ledgers"
+    _ledger(ledger_dir)                       # entries on 07-06 (labelled) and 07-09 (no SPY)
+
+    grouped = resolved_trades_by_key(root, ["toy"], ledger_dir=ledger_dir, now=NOW)
+
+    assert [t.regime for t in grouped[("toy", "long", "risk_on")]] == ["risk_on"]
+    assert [t.regime for t in grouped[("toy", "long", "unknown")]] == ["unknown"]
+
+
+def test_no_spy_bars_at_all_leaves_every_shadow_trade_unknown(root, tmp_path):
+    ledger_dir = tmp_path / "ledgers"
+    _ledger(ledger_dir)
+
+    grouped = resolved_trades_by_key(root, ["toy"], ledger_dir=ledger_dir, now=NOW)
+
+    assert set(grouped) == {("toy", "long", "unknown")}
+
+
+def test_regime_lookup_for_never_raises_and_is_built_once(root, monkeypatch):
+    """The lookup is built once per updater run (not per trade) and a broken context tree is a
+    warning plus `unknown` labels, never an exception out of the nightly job."""
+    from research.strategy_hunt import playbook_update as PU
+    from tests.research.strategy_hunt.playbook_helpers import write_regime_context
+
+    write_regime_context(root)
+    calls = []
+    real = PU.regime_lookup_for
+    monkeypatch.setattr(PU, "regime_lookup_for", lambda r: calls.append(r) or real(r))
+
+    resolved_trades_by_key(root, ["toy", "orb", "dt_momentum"], now=NOW)
+    assert len(calls) == 1
+
+    monkeypatch.setattr(PU, "load_context", lambda root_: (_ for _ in ()).throw(OSError("nope")))
+    assert PU.regime_lookup_for(root) is None
+
+
+def test_resolved_from_sim_keeps_a_regime_the_resolver_already_stamped(root):
+    """A resolver that labels its own trades wins: the lookup only fills in `unknown`."""
+    out = resolved_from_sim([_sim_trade(regime="risk_off")], "orb",
+                            regime_lookup=lambda ts: "risk_on")
+    assert [t.regime for t in out] == ["risk_off"]
+
+
+def test_resolved_from_sim_uses_the_lookup_for_unknown_trades():
+    out = resolved_from_sim([_sim_trade(regime="unknown")], "orb", regime_lookup=lambda ts: "mixed")
+    assert [t.regime for t in out] == ["mixed"]
+
+
+def test_resolved_from_sim_survives_a_raising_lookup(caplog):
+    def _boom(ts):
+        raise ValueError("bad bars")
+
+    with caplog.at_level("WARNING"):
+        out = resolved_from_sim([_sim_trade(regime="unknown")], "orb", regime_lookup=_boom)
+    assert [t.regime for t in out] == ["unknown"]
