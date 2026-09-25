@@ -86,3 +86,18 @@ def test_write_report_creates_file(tmp_path, monkeypatch):
     assert csv_path.exists()
     csv_text = csv_path.read_text()
     assert csv_text.splitlines()[0] == "date,equity"
+
+
+def test_write_report_with_empty_trades_frame_renders_zero_portfolio(tmp_path, monkeypatch):
+    from research.strategy_hunt import report as R
+    monkeypatch.setattr(R, "REPORTS_DIR", tmp_path / "reports")
+    (tmp_path / "trades").mkdir()
+    pd.DataFrame([], columns=list(TRADE_COLUMNS)).to_parquet(tmp_path / "trades" / "NVDA.parquet")
+    rows = [_row("NVDA", "orb", "long", "PASS", 0.2)]
+    p = R.write_report(tmp_path, rows, "2025-09-25T00:00:00")
+    md = p.read_text()
+    section = md.split("## Portfolio replay of PASS lanes")[1].split("## Cost calibration")[0]
+    assert "- taken: 0" in section
+    csv_path = tmp_path / "reports" / "2025-09-25-equity-curve.csv"
+    assert csv_path.exists()
+    assert csv_path.read_text().splitlines() == ["date,equity"]

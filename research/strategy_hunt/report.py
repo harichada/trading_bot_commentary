@@ -196,7 +196,7 @@ def write_report(root: Path, rows: list[dict], computed_at: str) -> Path:
     trades = pd.concat([pd.read_parquet(f) for f in files], ignore_index=True) if files else None
     controls = _load_controls(root)
     calibration = load_calibration(root)
-    portfolio = replay(pass_lane_trades(trades, rows)) if trades is not None and not trades.empty else None
+    portfolio = replay(pass_lane_trades(trades, rows)) if trades is not None else None
     md = render_report(rows, computed_at, trades, controls, portfolio, calibration)
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     p = REPORTS_DIR / f"{computed_at[:10]}-strategy-hunt.md"
