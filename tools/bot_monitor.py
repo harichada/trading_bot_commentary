@@ -335,6 +335,7 @@ def build_report(window_seconds: int = 3600) -> str:
     status = fetch_api("/api/status")
     positions = fetch_api("/api/positions/db")
     indices = fetch_api("/api/market-indices")
+    strategy_fit = fetch_api("/api/strategy-fit")
 
     entries = tail_log(seconds_back=window_seconds)
     activity = parse_signal_activity(entries)
@@ -503,6 +504,36 @@ def build_report(window_seconds: int = 3600) -> str:
             lines.append(
                 f"- **{label}:** {rows_today} rows today (UTC) — "
                 f"last: {sym} at {ts} ({extra})")
+    lines.append("")
+
+    # ── Strategy fit ─────────────────────────────────────────────────
+    # v-strategy-fit-2026-09-25: surfaces the offline strategy-fit
+    # snapshot (data/strategy_hunt/fit/strategy_fit.json) that the
+    # (currently disabled) strategy-fit entry gate consults. Pure
+    # read via GET /api/strategy-fit — never mutates anything.
+    lines.append("## Strategy fit")
+    lines.append("")
+    if strategy_fit is None:
+        lines.append("_unavailable_")
+    else:
+        fit_summary = strategy_fit.get("summary", {}) or {}
+        computed_at = fit_summary.get("computed_at")
+        age_days = fit_summary.get("age_days")
+        stale = fit_summary.get("stale")
+        counts = fit_summary.get("counts", {}) or {}
+        last_error = fit_summary.get("last_error")
+        lines.append(f"- **Computed at:** {computed_at if computed_at else 'unknown'}")
+        if age_days is not None:
+            lines.append(f"- **Age:** {age_days * 24:.1f}h")
+        else:
+            lines.append("- **Age:** unknown")
+        lines.append(f"- **Stale:** {'yes' if stale else 'no'}")
+        lines.append(
+            f"- **Counts:** PASS {counts.get('PASS', 0)} / "
+            f"WATCH {counts.get('WATCH', 0)} / FAIL {counts.get('FAIL', 0)}"
+        )
+        if last_error:
+            lines.append(f"- **Last error:** {last_error}")
     lines.append("")
 
     # ── Market regime ───────────────────────────────────────────────

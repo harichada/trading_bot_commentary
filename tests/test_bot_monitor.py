@@ -191,6 +191,74 @@ class TestFormatters:
 
 
 # ────────────────────────────────────────────────────────────────────
+# Strategy fit section (v-strategy-fit-2026-09-25)
+# ────────────────────────────────────────────────────────────────────
+
+class TestStrategyFitSection:
+    def test_renders_summary_when_available(self, monkeypatch):
+        fake_summary = {
+            "path": "data/strategy_hunt/fit/strategy_fit.json",
+            "computed_at": "2026-09-24T22:00:00+00:00",
+            "age_days": 0.5,
+            "stale": False,
+            "counts": {"PASS": 12, "WATCH": 5, "FAIL": 30},
+            "sources": {"fit": 47},
+            "n_symbols": 20,
+            "last_error": None,
+        }
+
+        def fake_fetch_api(path, port=9000, timeout=3.0):
+            if path == "/api/strategy-fit":
+                return {"summary": fake_summary, "rows": []}
+            return None
+
+        monkeypatch.setattr(bm, "fetch_api", fake_fetch_api)
+
+        result = bm.build_report(window_seconds=60)
+
+        assert "## Strategy fit" in result
+        section = result.split("## Strategy fit", 1)[1].split("\n## ", 1)[0]
+        assert "2026-09-24T22:00:00+00:00" in section
+        assert "12.0h" in section  # 0.5 days * 24
+        assert "PASS 12 / WATCH 5 / FAIL 30" in section
+        assert "_unavailable_" not in section
+
+    def test_renders_unavailable_when_fetch_returns_none(self, monkeypatch):
+        def fake_fetch_api(path, port=9000, timeout=3.0):
+            return None
+
+        monkeypatch.setattr(bm, "fetch_api", fake_fetch_api)
+
+        result = bm.build_report(window_seconds=60)
+
+        assert "## Strategy fit" in result
+        section = result.split("## Strategy fit", 1)[1].split("\n## ", 1)[0]
+        assert "_unavailable_" in section
+
+    def test_strategy_fit_section_precedes_market_regime(self, monkeypatch):
+        fake_summary = {
+            "computed_at": "2026-09-24T22:00:00+00:00",
+            "age_days": 1.0,
+            "stale": False,
+            "counts": {"PASS": 1, "WATCH": 0, "FAIL": 0},
+            "last_error": None,
+        }
+
+        def fake_fetch_api(path, port=9000, timeout=3.0):
+            if path == "/api/strategy-fit":
+                return {"summary": fake_summary, "rows": []}
+            if path == "/api/market-indices":
+                return {"indices": [{"name": "SPY", "last": 500.0, "change_pct": 0.5}]}
+            return None
+
+        monkeypatch.setattr(bm, "fetch_api", fake_fetch_api)
+
+        result = bm.build_report(window_seconds=60)
+
+        assert result.index("## Strategy fit") < result.index("## Market regime")
+
+
+# ────────────────────────────────────────────────────────────────────
 # Smoke — build_report doesn't crash on minimum data
 # ────────────────────────────────────────────────────────────────────
 
