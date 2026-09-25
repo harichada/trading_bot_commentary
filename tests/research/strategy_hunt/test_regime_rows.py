@@ -35,7 +35,7 @@ def _frame(trades):
 
 def _metrics(**kw):
     base = dict(n=600, sessions=60, exp_r=0.33, exp_r_lb=0.2, t_stat=8.0, pf=2.0, wr=0.66, max_dd_r=10.0,
-                stability=1.0, decay=1.0)
+                stability=1.0, decay=1.0, t_stat_session=10.0, recovery=10.0)
     base.update(kw)
     return FitMetrics(**base)
 
@@ -113,9 +113,23 @@ def test_pooled_floors_are_stricter_than_the_per_symbol_floors():
     from research.strategy_hunt.score.verdict import FLOORS
 
     assert POOLED_FLOORS == {"min_n": 500, "min_sessions": 60, "min_pf": 1.2, "min_wr": 0.45, "min_exp_r": 0.05,
-                             "max_dd_r": 60.0, "min_stability": 0.6, "min_decay": 0.5, "min_t_stat": 3.0,
-                             "min_exp_r_lb": 0.0}
+                             "min_recovery": 3.0, "min_stability": 0.6, "min_decay": 0.5, "min_t_stat": 3.0,
+                             "min_t_stat_session": 3.0, "min_exp_r_lb": 0.0}
     assert POOLED_FLOORS["min_n"] > FLOORS["min_n"] and POOLED_FLOORS["min_t_stat"] > FLOORS["min_t_stat"]
+    assert "max_dd_r" not in POOLED_FLOORS          # not scale-invariant across pooled trade counts
+
+
+def test_pooled_floors_use_recovery_not_max_dd():
+    from research.strategy_hunt.score.regime_rows import _pooled_failures
+
+    ok = _metrics(max_dd_r=639.0, recovery=3.6, t_stat_session=10.0)
+    assert _pooled_failures(ok) == []                # a 639R pooled drawdown no longer fails on its own
+
+    low_recovery = _metrics(max_dd_r=639.0, recovery=2.0, t_stat_session=10.0)
+    assert _pooled_failures(low_recovery) == ["min_recovery"]
+
+    low_t_session = _metrics(max_dd_r=639.0, recovery=3.6, t_stat_session=2.0)
+    assert _pooled_failures(low_t_session) == ["min_t_stat_session"]
 
 
 def test_verdict_pooled_pass_watch_fail():

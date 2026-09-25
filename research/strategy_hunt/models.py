@@ -53,6 +53,10 @@ class FitMetrics:
     max_dd_r: float
     stability: float
     decay: float
+    # v-playbook-desk-b1-5 task 9: last two, with defaults, so every existing positional
+    # FitMetrics(...) construction (compute_metrics's early return, tests) keeps working.
+    t_stat_session: float = 0.0
+    recovery: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

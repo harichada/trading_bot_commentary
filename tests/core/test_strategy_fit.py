@@ -208,6 +208,18 @@ def test_fit_row_defaults_and_pooled_flag_from_source(tmp_path):
     assert FitRow.from_dict({"regime": 7, "pooled": "yes"}).regime == ""
 
 
+def test_fit_row_from_dict_ignores_unknown_metric_keys():
+    """v-playbook-desk-b1-5 task 9: pooled rows will start carrying t_stat_session,
+    recovery, and (later) excess_r. FitRow.from_dict must tolerate keys it doesn't
+    know yet -- core never imports research, so it can't validate against the
+    research-side row shape and just ignores what it doesn't recognize."""
+    from core.strategy_fit import FitRow
+    row = _row("NVDA", "orb", "long", "PASS", 0.3)
+    row.update({"t_stat_session": 4.2, "recovery": 5.1, "excess_r": 0.02})
+    parsed = FitRow.from_dict(row)
+    assert parsed.symbol == "NVDA" and parsed.verdict == "PASS" and parsed.score == 0.3
+
+
 def test_malformed_regime_and_pooled_sections_never_raise(tmp_path):
     p = tmp_path / "bad_sections.json"
     p.write_text(json.dumps({"computed_at": "2025-09-25T01:00:00", "floors": {},

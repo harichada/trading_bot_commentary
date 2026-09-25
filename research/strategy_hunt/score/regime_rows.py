@@ -54,11 +54,16 @@ REGIME_ROW_MIN_N = WATCH_FLOORS["min_n"]
 # Pooled floors are deliberately stricter than the per-symbol floors: a pooled row
 # aggregates hundreds of symbols, so n is cheap and only a large t-stat and a real
 # profit factor distinguish a family-wide edge from the average of many small ones.
-# max_dd_r is looser (60R vs 20R) because the pooled equity curve concatenates every
-# symbol's trades — its drawdown is not a position-sizing constraint.
+# There is no max_dd_r cap here (v-playbook-desk-b1-5 task 9): a flat R drawdown
+# ceiling is not scale-invariant — the B1 run showed a 13k-trade pooled row with a
+# 639R drawdown by arithmetic, which a fixed 60R cap would fail regardless of how many
+# times net R clears it. min_recovery (net_r / max_dd_r) asks the scale-invariant
+# question instead. Likewise min_t_stat alone treats same-session trades across
+# symbols as independent observations, inflating significance; min_t_stat_session
+# clusters by session (the true independent unit) on top of it.
 POOLED_FLOORS = {"min_n": 500, "min_sessions": 60, "min_pf": 1.2, "min_wr": 0.45, "min_exp_r": 0.05,
-                 "max_dd_r": 60.0, "min_stability": 0.6, "min_decay": 0.5, "min_t_stat": 3.0,
-                 "min_exp_r_lb": 0.0}
+                 "min_recovery": 3.0, "min_stability": 0.6, "min_decay": 0.5, "min_t_stat": 3.0,
+                 "min_t_stat_session": 3.0, "min_exp_r_lb": 0.0}
 POOLED_WATCH_FLOORS = {"min_n": 200, "min_pf": 1.05}
 POOLED_SYMBOL = "*"
 # String contract with core/strategy_fit_rows.py: FitRow.from_dict flags a row pooled when
@@ -70,10 +75,12 @@ def _pooled_failures(m: FitMetrics) -> list[str]:
     checks = {
         "min_n": m.n >= POOLED_FLOORS["min_n"], "min_sessions": m.sessions >= POOLED_FLOORS["min_sessions"],
         "min_pf": m.pf >= POOLED_FLOORS["min_pf"], "min_wr": m.wr >= POOLED_FLOORS["min_wr"],
-        "min_exp_r": m.exp_r >= POOLED_FLOORS["min_exp_r"], "max_dd_r": m.max_dd_r <= POOLED_FLOORS["max_dd_r"],
+        "min_exp_r": m.exp_r >= POOLED_FLOORS["min_exp_r"],
+        "min_recovery": m.recovery >= POOLED_FLOORS["min_recovery"],
         "min_stability": m.stability >= POOLED_FLOORS["min_stability"],
         "min_decay": m.decay >= POOLED_FLOORS["min_decay"],
         "min_t_stat": m.t_stat >= POOLED_FLOORS["min_t_stat"],
+        "min_t_stat_session": m.t_stat_session >= POOLED_FLOORS["min_t_stat_session"],
         "min_exp_r_lb": m.exp_r_lb >= POOLED_FLOORS["min_exp_r_lb"],
     }
     return [k for k, ok in checks.items() if not ok]
