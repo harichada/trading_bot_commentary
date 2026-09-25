@@ -177,13 +177,25 @@ From the Task 23 smoke run on `NVDA,TSLA,AMD` (2026-09-25, all ten families, war
 | `run --symbols NVDA,TSLA,AMD --workers 3` | 24s wall (3 in parallel) | per-symbol (sequential re-run for isolated timing): NVDA 18.5s / 1,081 trades, TSLA 23.0s / 1,230 trades, AMD 12.7s / 1,023 trades |
 | `score --no-coldstart` | 1.4s | verdicts: FAIL=43, WATCH=1, PASS=0 (three-symbol sample; too small for any combo to clear the n≥150 PASS floor on most families) |
 
-Full-universe estimate: at ~18s/symbol average for `run` across all ten families and ~500 symbols in
+Full-universe estimate (superseded by measured run below): at ~18s/symbol average for `run` across all ten families and ~500 symbols in
 the universe, `run --workers 12` is roughly `500 * 18 / 12 ≈ 750s` (~13 minutes), well under the
 12-hour budget noted for Task 21. `export` and `news` are bound by Postgres/Alpaca round-trips rather
 than CPU; the 12s/41s above are for three symbols against a local, low-latency Postgres instance and
 should not be extrapolated linearly to the full ~500-symbol universe over a 5-year window — the
 Task 21 plan budgets 10–30 minutes for that full export, which this smoke run does not contradict but
 also does not confirm at scale.
+
+**Full-universe run (2026-09-25)** (measured):
+
+| Step | Wall-clock | Notes |
+|---|---|---|
+| `export` | ~12 min | 539 symbols (min 250 sessions, ADV ≥ $20M) from Postgres 5-min bars |
+| `news` | ~5 min | 539 symbols with four parallel fetchers (incremental cache) |
+| `context` + `earnings` + `calibrate` | <1 min | regime inputs, split detection, earnings dates, fill-slippage calibration |
+| `run --workers 12` | 281s | 536 symbols completed, 3 skipped (checkpoint); all ten families; measured on 12-core host |
+| `run` control (50-symbol) | 31–38s | each control run for structure-destroying validation |
+| `score` | 30s | verdicts + fit snapshot + report generation |
+| **Total wall-clock** | **~25 min** | from `export` start to final score and report |
 
 ## Operator flow
 

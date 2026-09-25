@@ -1,0 +1,26 @@
+{
+ "date": "2026-09-25",
+ "run": {
+  "symbols": 50,
+  "families": [
+   "dt_momentum",
+   "gap_play",
+   "mean_rev_intraday",
+   "mr_20d",
+   "news_catalyst",
+   "orb",
+   "post_news_drift",
+   "pullback_trend",
+   "vol_breakout",
+   "vwap_reversion"
+  ],
+  "counts": {
+   "done": 50
+  },
+  "cost_mult": 2.0,
+  "shuffle_seed": null,
+  "notional": 6000.0,
+  "elapsed_sec": 31
+ },
+ "errors": []
+}
