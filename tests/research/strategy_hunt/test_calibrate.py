@@ -40,8 +40,33 @@ def test_load_fill_pairs_returns_empty_on_sql_error():
     assert load_fill_pairs(_Engine()).empty
 
 
+def test_extract_entry_price_handles_dict_and_str():
+    """Test _extract_entry_price handles both dict (from psycopg2 JSON typecaster) and string inputs."""
+    from research.strategy_hunt.sim.calibrate import _extract_entry_price
+
+    # Dict input (psycopg2 JSON typecaster)
+    assert _extract_entry_price({"entry": 100.5}) == pytest.approx(100.5)
+    assert _extract_entry_price({"entry": 0.0}) == pytest.approx(0.0)
+
+    # String input (JSON text)
+    assert _extract_entry_price('{"entry": 100.5}') == pytest.approx(100.5)
+    assert _extract_entry_price('{"entry": 99.99, "side": "LONG"}') == pytest.approx(99.99)
+
+    # Missing or None entry
+    assert pd.isna(_extract_entry_price({"side": "LONG"}))
+    assert pd.isna(_extract_entry_price({"entry": None}))
+    assert pd.isna(_extract_entry_price('{"side": "LONG"}'))
+
+    # Malformed or invalid
+    assert pd.isna(_extract_entry_price("not json"))
+    assert pd.isna(_extract_entry_price(""))
+    assert pd.isna(_extract_entry_price(None))
+    assert pd.isna(_extract_entry_price(123))
+
+
 def test_load_fill_pairs_extracts_entry_from_details_json(monkeypatch):
-    """Realistic test: joins bot_trades to bot_decisions via details_json JSON 'entry' key."""
+    """Realistic test: joins bot_trades to bot_decisions via details_json JSON 'entry' key.
+    Tests: dict/str entry extraction, merge tolerance (within 10min matched, beyond rejected)."""
     from research.strategy_hunt.sim.calibrate import load_fill_pairs
     import pandas as pd
 
@@ -50,16 +75,21 @@ def test_load_fill_pairs_extracts_entry_from_details_json(monkeypatch):
         query_str = str(query)
         if "bot_trades" in query_str:
             return pd.DataFrame({
-                "symbol": ["AAPL", "AAPL"],
-                "side": ["LONG", "SHORT"],
-                "entry_time": pd.to_datetime(["2026-09-25 10:05:00", "2026-09-25 10:15:00"]),
-                "entry_price": [150.0, 150.5]
+                "symbol": ["AAPL", "AAPL", "AAPL"],
+                "side": ["LONG", "SHORT", "LONG"],
+                "entry_time": pd.to_datetime(["2026-09-25 10:05:00", "2026-09-25 10:15:00", "2026-09-25 11:00:00"]),
+                "entry_price": [150.0, 150.5, 151.0]
             })
         elif "bot_decisions" in query_str:
             return pd.DataFrame({
-                "symbol": ["AAPL", "AAPL", "AAPL"],
-                "ts": pd.to_datetime(["2026-09-25 10:02:00", "2026-09-25 10:05:30", "2026-09-25 10:30:00"]),
-                "details_json": ['{"entry": 100.0, "side": "LONG"}', '{"entry": 100.5, "side": "SHORT"}', '{"entry": 101.0}']
+                "symbol": ["AAPL", "AAPL", "AAPL", "AAPL"],
+                "ts": pd.to_datetime(["2026-09-25 10:02:00", "2026-09-25 10:05:30", "2026-09-25 10:30:00", "2026-09-25 10:35:00"]),
+                "details_json": [
+                    '{"entry": 100.0, "side": "LONG"}',  # Within 10min of trade 1 (3min before)
+                    {"entry": 100.5, "side": "SHORT"},   # Within 10min of trade 2 (9.5min before), dict input
+                    '{"entry": 101.0}',                  # 25min before trade 3, outside tolerance -> no match
+                    '{"entry": 101.5}'                   # unrelated decision
+                ]
             })
         elif "daily_bars" in query_str:
             return pd.DataFrame({
@@ -78,7 +108,7 @@ def test_load_fill_pairs_extracts_entry_from_details_json(monkeypatch):
             return _Conn()
 
     result = load_fill_pairs(_Engine())
-    assert len(result) == 2, f"Expected 2 rows, got {len(result)}"
+    assert len(result) == 2, f"Expected 2 rows (trades 1 & 2 matched, trade 3 rejected by tolerance), got {len(result)}"
     assert list(result["signal_price"]) == [100.0, 100.5]
     assert list(result["fill_price"]) == [150.0, 150.5]
     assert list(result["adv_dollars"]) == [5e8, 5e8]

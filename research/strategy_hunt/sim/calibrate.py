@@ -20,17 +20,26 @@ def _bucket(adv: float) -> str:
     return "small"
 
 
-def _extract_entry_price(details_json_str: str) -> float:
-    """Extract entry price from details_json JSON string. Primary: JSON 'entry' key. Fallback: None. Returns NaN on failure."""
-    if not isinstance(details_json_str, str) or not details_json_str.strip():
+def _extract_entry_price(v: str | dict | Any) -> float:
+    """Extract entry price from details_json (dict or JSON string). psycopg2 may return dicts from JSON/JSONB columns.
+    Primary: JSON 'entry' key. Returns NaN on failure."""
+    obj = None
+    if isinstance(v, dict):
+        obj = v
+    elif isinstance(v, str) and v.strip():
+        try:
+            obj = json.loads(v)
+        except (json.JSONDecodeError, ValueError, TypeError):
+            return float("nan")
+    else:
         return float("nan")
-    try:
-        obj = json.loads(details_json_str)
-        if isinstance(obj, dict) and "entry" in obj:
-            val = obj["entry"]
+
+    if isinstance(obj, dict) and "entry" in obj:
+        val = obj["entry"]
+        try:
             return float(val) if val is not None else float("nan")
-    except (json.JSONDecodeError, ValueError, TypeError):
-        pass
+        except (ValueError, TypeError):
+            return float("nan")
     return float("nan")
 
 

@@ -939,6 +939,40 @@ async def get_market_indices():
     return MarketIndicesCache.instance().snapshot()
 
 
+@app.get("/api/strategy-fit")
+async def get_strategy_fit(symbol: Optional[str] = None):
+    """v-strategy-hunt-full-system-2026-09-25: read-only strategy-fit snapshot.
+
+    Returns the current strategy-fit snapshot summary, plus the fit rows
+    for `symbol` (across every strategy and side) when a symbol query
+    param is given. Uses the running engine's `_strategy_fit` reader when
+    available so results reflect the same in-memory snapshot the trading
+    loop gates on; falls back to a fresh reader over the configured path
+    otherwise. Never raises: any failure degrades to an empty row list
+    with the error surfaced in `summary["last_error"]`, HTTP 200.
+    """
+    try:
+        import dataclasses
+
+        from core.config import Config
+        from core.strategy_fit import StrategyFit
+
+        fit = getattr(trading_engine, "_strategy_fit", None)
+        if fit is None:
+            cfg = Config()
+            fit = StrategyFit(cfg.STRATEGY_FIT_PATH, cfg.STRATEGY_FIT_MAX_AGE_DAYS)
+
+        fit.reload_if_changed()
+
+        rows = []
+        if symbol:
+            rows = [dataclasses.asdict(row) for row in fit.rows_for(symbol)]
+
+        return {"summary": fit.summary(), "rows": rows}
+    except Exception as exc:  # noqa: BLE001 - never raise to caller
+        return {"summary": {"last_error": str(exc)}, "rows": []}
+
+
 @app.get("/api/status")
 async def get_bot_status():
     """Get current bot status"""
