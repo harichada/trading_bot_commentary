@@ -108,7 +108,9 @@ def _loop(engine, cfg, ctx=_CTX, now=None) -> DeskLoop:
 
 
 def _session(day: str, volume: float = 1000.0, rows: int = 4) -> pd.DataFrame:
-    idx = pd.date_range(f"{day} 09:30", periods=rows, freq="5min")
+    # Naive **UTC** stamps, exactly what `data_providers/schwab.py` builds from the
+    # candles' epoch milliseconds: 13:30 UTC is the 09:30 ET open (I2).
+    idx = pd.date_range(f"{day} 13:30", periods=rows, freq="5min")
     return pd.DataFrame({"open": 10.0, "high": 10.5, "low": 9.8, "close": 10.1,
                          "volume": volume}, index=idx)
 

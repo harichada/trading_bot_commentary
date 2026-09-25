@@ -23,6 +23,56 @@ except ImportError:
 logger = logging.getLogger('TradingBot')
 
 
+# ── v-playbook-desk-b2-final-2026-09-25 (whole-branch review, I1) ──
+# Which schwab-py price-history helper serves a request shape. The old routing
+# only reached a minute endpoint when `period == 1`, so every 10-day 5-minute
+# request (`core/engine.py::_fit_bars_source`,
+# `core/loops/desk_steps.py::fetch_today_bars5`) silently received *daily*
+# candles. Route on `frequency_type` instead: Schwab's `periodType=day` supports
+# period 1-5,10 with minute bars, and each schwab-py helper below asks for the
+# full range the endpoint will give (~9 months of 5-minute bars, ~48 days of
+# 1-minute bars) regardless of the `period` the caller passed, so `period` only
+# decides whether a minute endpoint exists at all.
+MINUTE_HISTORY_CALLS = {
+    1: "get_price_history_every_minute",
+    5: "get_price_history_every_five_minutes",
+    10: "get_price_history_every_ten_minutes",
+    15: "get_price_history_every_fifteen_minutes",
+    30: "get_price_history_every_thirty_minutes",
+}
+DAILY_HISTORY_CALL = "get_price_history_every_day"
+MINUTE_MAX_PERIOD = 10          # Schwab: periodType=day accepts period 1-5,10 for minute bars
+DEFAULT_MINUTE_PERIOD = 1       # an unreadable period is read as the single-day default
+
+
+def _as_int(value: Any, default: Optional[int] = None) -> Optional[int]:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def history_call_name(period_type: str, period: Any, frequency_type: str,
+                      frequency: Any) -> str:
+    """The `schwab.client` method that serves this request shape.
+
+    A minute request inside Schwab's minute window routes to the matching minute
+    helper; everything else (a `daily` request, a minute window Schwab has no
+    endpoint for, an unsupported minute frequency) routes to the daily helper —
+    and that fallback is logged rather than silent, which was finding I1.
+    """
+    if str(frequency_type or "").strip().lower() != "minute":
+        return DAILY_HISTORY_CALL
+    days = _as_int(period, DEFAULT_MINUTE_PERIOD)
+    name = MINUTE_HISTORY_CALLS.get(_as_int(frequency))
+    if name is not None and days is not None and days <= MINUTE_MAX_PERIOD:
+        return name
+    logger.warning(
+        "schwab: no minute endpoint for period_type=%r period=%r frequency=%r - "
+        "falling back to daily candles", period_type, period, frequency)
+    return DAILY_HISTORY_CALL
+
+
 class SchwabDataProvider:
     """Schwab data provider with commentary"""
 
@@ -38,7 +88,11 @@ class SchwabDataProvider:
                        period: int = 1, frequency_type: str = 'minute',
                        frequency: int = 5) -> pd.DataFrame:
         """Get market data using Schwab API with circuit breaker protection"""
-        cache_key = f"{symbol}_{period_type}_{frequency_type}_{frequency}"
+        # The resolved endpoint - not the requested shape - keys the cache: two
+        # shapes that route to the same helper get the same candles, and a shape
+        # that fell back to daily must never be served to a minute request (I1).
+        call_name = history_call_name(period_type, period, frequency_type, frequency)
+        cache_key = f"{symbol}_{call_name}"
 
         # Check cache
         if cache_key in self._cache:
@@ -47,18 +101,12 @@ class SchwabDataProvider:
                 return cached_data
 
         try:
-            # Use simplified calls for common scenarios
-            if period_type == 'day' and period == 1 and frequency_type == 'minute':
-                if frequency == 5:
-                    response = self.client.get_price_history_every_five_minutes(symbol)
-                elif frequency == 1:
-                    response = self.client.get_price_history_every_minute(symbol)
-                else:
-                    response = self.client.get_price_history_every_day(symbol)
-            elif frequency_type == 'daily':
-                response = self.client.get_price_history_every_day(symbol)
-            else:
-                response = self.client.get_price_history_every_day(symbol)
+            history_call = getattr(self.client, call_name, None)
+            if not callable(history_call):
+                logger.warning("schwab: client has no %s - falling back to %s",
+                               call_name, DAILY_HISTORY_CALL)
+                history_call = getattr(self.client, DAILY_HISTORY_CALL)
+            response = history_call(symbol)
 
             if response and hasattr(response, 'status_code') and response.status_code == 200:
                 data = response.json()
@@ -91,6 +139,10 @@ class SchwabDataProvider:
                 try:
                     df = pd.DataFrame(candles)
                     if not df.empty and 'datetime' in df.columns:
+                        # Epoch milliseconds -> a *naive UTC* index (pandas attaches no
+                        # timezone here). Every consumer that needs ET must localize UTC
+                        # first and then convert - see core/engine.py::_fit_bars_source
+                        # and core/loops/desk_steps.py::fetch_today_bars5.
                         df['datetime'] = pd.to_datetime(df['datetime'], unit='ms')
                         df.set_index('datetime', inplace=True)
                         df.rename(columns={

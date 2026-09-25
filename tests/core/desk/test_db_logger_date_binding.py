@@ -67,12 +67,14 @@ class _FakeResult:
 
 
 class _FakeConn:
-    def __init__(self, rows, calls):
+    def __init__(self, rows, calls, queries):
         self._rows = rows
         self._calls = calls
+        self._queries = queries
 
     async def execute(self, query, params):
         self._calls.append(dict(params))
+        self._queries.append(str(query))          # the SQL text, for shape assertions
         return _FakeResult(self._rows)
 
 
@@ -90,7 +92,8 @@ class _FakeBeginCtx:
 class _FakeEngine:
     def __init__(self, rows=()):
         self.calls: list[dict] = []
-        self._conn = _FakeConn(rows, self.calls)
+        self.queries: list[str] = []
+        self._conn = _FakeConn(rows, self.calls, self.queries)
 
     def begin(self):
         return _FakeBeginCtx(self._conn)
@@ -167,3 +170,31 @@ def test_get_bot_decisions_between_round_trips_a_row():
     assert len(out) == 1
     assert out[0]["symbol"] == "AAA"
     assert out[0]["details"] == {"family": "orb"}
+
+
+# ────────────────────────────────────────────────────────────────────
+# v-playbook-desk-b2-final-2026-09-25 (whole-branch review, I7):
+# the trades window is dated by *exit*, not entry
+# ────────────────────────────────────────────────────────────────────
+
+def test_get_bot_trades_between_filters_on_exit_time():
+    """`get_bot_trades_between` feeds the desk journal and the loss-streak rule,
+    and both date a closed round trip by its `exit_time`
+    (`core/loops/desk_trade_stats.py::_row_date`). Filtering on `DATE(entry_time)`
+    counted a trade opened yesterday and closed today into *yesterday*, and dropped it
+    from today's journal entirely."""
+    db_logger, engine = _fake_logger(rows=[])
+    asyncio.run(db_logger.get_bot_trades_between("2026-09-15", "2026-09-25"))
+
+    sql = engine.queries[0]
+    assert "DATE(exit_time) BETWEEN :start AND :end" in sql
+    assert "DATE(entry_time)" not in sql
+
+
+def test_get_bot_trades_between_still_reads_closed_live_round_trips_only():
+    db_logger, engine = _fake_logger(rows=[])
+    asyncio.run(db_logger.get_bot_trades_between("2026-09-15", "2026-09-25"))
+
+    sql = engine.queries[0]
+    assert "exit_time IS NOT NULL" in sql
+    assert "mode = 'live'" in sql

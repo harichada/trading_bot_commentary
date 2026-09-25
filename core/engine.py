@@ -555,24 +555,30 @@ class TradingEngineWithCommentary:
     _DESK_CACHE_SEC = 60.0
     _DESK_DB_TIMEOUT_SEC = 2.0
 
-    def _desk_plan_today(self):
+    # v-playbook-desk-b2-final-2026-09-25 (whole-branch review, M4): both readers are
+    # awaited from the async router path, so their file I/O goes through
+    # `asyncio.to_thread` — a slow or contended disk must not block the event loop for
+    # every other position and order. The 60 s cache is unchanged, so the thread hop
+    # costs one hand-off a minute, not one per signal.
+    async def _desk_plan_today(self):
         """Today's desk plan (`<DESK_DATA_DIR>/plans/<date>.json`), or None."""
         date = desk_session_date(desk_now_et())
         now = time.time()
         cached = getattr(self, "_desk_plan_cache", None)
         if cached is not None and cached[0] == date and (now - cached[1]) < self._DESK_CACHE_SEC:
             return cached[2]
-        plan = load_desk_plan(Config().DESK_DATA_DIR, date)
+        plan = await asyncio.to_thread(load_desk_plan, Config().DESK_DATA_DIR, date)
         self._desk_plan_cache = (date, now, plan)
         return plan
 
-    def _desk_playbook(self):
+    async def _desk_playbook(self):
         """The adaptive playbook (`<DESK_DATA_DIR>/playbook.json`); empty when absent."""
         now = time.time()
         cached = getattr(self, "_desk_playbook_cache", None)
         if cached is not None and (now - cached[0]) < self._DESK_CACHE_SEC:
             return cached[1]
-        book = load_playbook(playbook_path(Config().DESK_DATA_DIR))
+        # `playbook_path` only joins strings; the thread does the file read.
+        book = await asyncio.to_thread(load_playbook, playbook_path(Config().DESK_DATA_DIR))
         self._desk_playbook_cache = (now, book)
         return book
 
@@ -589,6 +595,9 @@ class TradingEngineWithCommentary:
         untrustworthy count and simply does not apply the max-trades rule (the
         sit-out and direction rules still govern). The None is cached like any
         other reading so one slow minute costs one wait, not one per signal.
+
+        v-playbook-desk-b2-final-2026-09-25 (M4/M3): awaited from the router, and
+        *every* failure — not only a timeout — degrades to that cached None.
         """
         date = desk_session_date(desk_now_et())
         now = time.time()
@@ -600,8 +609,14 @@ class TradingEngineWithCommentary:
         if callable(getter):
             try:
                 entries = await asyncio.wait_for(getter(), timeout=self._DESK_DB_TIMEOUT_SEC)
-            except asyncio.TimeoutError as _desk_to:
-                self._desk_hook_warn("desk_trades_today", _desk_to)
+            # v-playbook-desk-b2-final-2026-09-25 (M3): *any* failure, not only a
+            # timeout. A read that raises (connection reset, a malformed row) used to
+            # escape this helper before caching anything, so the hook's own
+            # try/except swallowed it and the next signal ran the same broken query.
+            # An untrustworthy count is None — `evaluate_desk_gate` then skips the
+            # max-trades rule — and it is cached like any other reading.
+            except Exception as _desk_exc:
+                self._desk_hook_warn("desk_trades_today", _desk_exc)
                 count = None
             else:
                 count = len(entries) if isinstance(entries, (dict, list, tuple)) else 0
@@ -6249,7 +6264,7 @@ class TradingEngineWithCommentary:
                 # nothing to govern (before 09:00, a day the desk did not run, or
                 # desk files absent) — short-circuit before the trade-count read
                 # so an ungoverned decision never costs a per-signal DB query.
-                _desk_plan = self._desk_plan_today()
+                _desk_plan = await self._desk_plan_today()
                 if _desk_plan is not None:
                     _desk_side = "long" if signal.signal_type == SignalType.BUY else "short"
                     _dd = evaluate_desk_gate(_desk_plan,
@@ -6297,7 +6312,7 @@ class TradingEngineWithCommentary:
                 _pb_strategy = signal.reasoning.get("strategy", "unknown") if signal.reasoning else "unknown"
                 _pb_regime = signal.reasoning.get("market_context_regime") if signal.reasoning else None
                 _pb_enabled = Config().ENABLE_PLAYBOOK_GATE
-                _pd = evaluate_playbook_gate(self._desk_playbook(),
+                _pd = evaluate_playbook_gate(await self._desk_playbook(),
                                              family_for(_pb_strategy) or "",
                                              _pb_side, _pb_regime, _pb_enabled)
                 if _pd.governed:

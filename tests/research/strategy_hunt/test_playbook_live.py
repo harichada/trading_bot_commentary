@@ -13,7 +13,9 @@ from __future__ import annotations
 import pandas as pd
 
 from research.strategy_hunt.playbook_live import (
+    LIVE_REGIME_SQL,
     LIVE_TRADES_SQL,
+    UNKNOWN_REGIME,
     resolved_from_live,
 )
 
@@ -89,3 +91,39 @@ def test_live_trades_sql_filters_to_live_mode():
 
 def test_live_trades_sql_still_bounds_by_exit_time():
     assert "exit_time >= :since" in LIVE_TRADES_SQL
+
+
+# ── regime evidence (whole-branch review, I4) ──
+
+def test_live_regime_sql_reads_only_strategy_fit_rows():
+    """v-playbook-desk-b2-final-2026-09-25 (I4): the regime a live trade is keyed to
+    must come from an *independent* audit row. Reading `component = 'playbook'` rows
+    too fed the playbook's own audits back in as evidence for the next night's
+    playbook — a self-confirming loop."""
+    assert "'strategy_fit'" in LIVE_REGIME_SQL
+    assert "playbook" not in LIVE_REGIME_SQL
+
+
+def test_live_regime_sql_stays_bounded_and_parameterized():
+    assert "ts >= :since" in LIVE_REGIME_SQL
+    assert "details_json IS NOT NULL" in LIVE_REGIME_SQL
+
+
+def _fit_decision(regime, symbol="AAA", ts="2026-09-01T09:50:00"):
+    return {"symbol": symbol, "ts": ts, "details_json": {"regime": regime}}
+
+
+def test_a_measured_regime_label_keys_the_trade():
+    out = resolved_from_live(pd.DataFrame([_un_migrated_row()]),
+                             pd.DataFrame([_fit_decision("risk_on")]))
+    assert [t.regime for t in out] == ["risk_on"]
+
+
+def test_a_fallback_regime_label_is_not_evidence():
+    """Only `risk_on`/`risk_off`/`mixed` are regimes the scorer may condition on;
+    anything else in an audit row (a fallback label, a renamed state) must leave the
+    trade keyed `unknown` rather than inventing a fourth regime."""
+    for label in (UNKNOWN_REGIME, "neutral", "", None):
+        out = resolved_from_live(pd.DataFrame([_un_migrated_row()]),
+                                 pd.DataFrame([_fit_decision(label)]))
+        assert [t.regime for t in out] == [UNKNOWN_REGIME], label

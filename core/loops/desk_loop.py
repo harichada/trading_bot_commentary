@@ -159,7 +159,7 @@ class DeskLoop:
         breadth = steps.breadth_score((getattr(self.engine, "market_state", None) or {})
                                       .get("breadth"))
         flags = await asyncio.to_thread(load_calendar_flags, cfg.DESK_CALENDAR_PATH, date)
-        streak, prev_r = await self._recent_r(now, date)
+        streak, prev_r, trades_read = await self._recent_r(now, date)
 
         inputs = PlanInputs(
             date=date,
@@ -188,7 +188,11 @@ class DeskLoop:
                     long_ok=plan.long_ok, short_ok=plan.short_ok,
                     breadth=None if breadth is None else round(breadth, 3),
                     calendar=len(flags), losing_day_streak=streak,
-                    prev_day_r=round(prev_r, 3), path=path)
+                    prev_day_r=round(prev_r, 3),
+                    # v-playbook-desk-b2-final-2026-09-25 (M2): how many trade rows the
+                    # streak inputs were computed from. A 0 streak on 40 rows is a
+                    # finding; a 0 streak on 0 rows is a read that came back empty.
+                    trades_read=trades_read, path=path)
 
     def _context(self) -> ContextReading:
         """The market-context reading the plan rules need, or the unknown one.
@@ -221,10 +225,17 @@ class DeskLoop:
             logger.debug("desk_loop fit staleness unreadable: %s", exc)
             return False
 
-    async def _recent_r(self, now: datetime, date: str) -> Tuple[int, float]:
+    async def _recent_r(self, now: datetime, date: str) -> Tuple[int, float, int]:
+        """`(losing_day_streak, prev_day_pnl_r, trades_read)` over the streak window.
+
+        `trades_read` is the row count the first two were computed from, audited so a
+        zero streak on an empty read is distinguishable from a zero streak on a real
+        tape (M2) — `trades_for` fails soft to `[]`.
+        """
         start = (now.date() - timedelta(days=STREAK_LOOKBACK_DAYS)).isoformat()
         trades = await trades_for((start, date), getattr(self.engine, "db_logger", None))
-        return steps.daily_r_stats(trades, date)
+        streak, prev_r = steps.daily_r_stats(trades, date)
+        return streak, prev_r, len(trades or [])
 
     # ── 09:35 — the in-play list ────────────────────────────────────
 

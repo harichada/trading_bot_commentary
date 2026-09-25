@@ -76,6 +76,13 @@ below needs to be set to run the desk):
 | `DESK_JOURNAL_TIME_ET` | `16:05` | ET wall-clock time of the journal write. |
 | `DESK_CALENDAR_PATH` | `data/desk/calendar.json` | Economic-calendar file the plan's sit-out rule reads. |
 
+**Day one recommendation: `DESK_SCAN_MAX_SYMBOLS=20`.** The default 60 makes the
+09:35 refresh fire roughly 60-80 provider calls in a two-minute window right
+after the open (see "Known limitations"), on the same Schwab credentials the
+live bot is trading on. Start the first shadow session at 20 — the in-play list
+is capped at `DESK_IN_PLAY_N=20` anyway — read the `desk_inplay` audit line's
+`scanned=` field, and raise it only once the rate-limit behaviour is known.
+
 ### Shadow semantics, precisely
 
 - `ENABLE_DESK` off: nothing new runs, no new audit lines, byte-identical
@@ -300,10 +307,19 @@ regime is never governed by another measured regime's entry — only
    `neutral (no bias)`), risk budget, max trades, sit-out (yes/no + reason),
    top 10 in-play with score/rvol/gap/reasons.
 2. **Decisions** — every governed decision for the day, grouped
-   `component/action: count`, then every `skip` line (actually blocked) and
-   every `shadow` line (would have blocked, flag was off) with its reason.
+   `component/action: count`, then every `skip` line (actually blocked), then
+   the `shadow` lines that would have blocked. That last list is restricted to
+   the three components the desk actually governs (`desk_limit`,
+   `strategy_fit`, `playbook` — `core/desk/journal.py::GOVERNED_COMPONENTS`):
+   other components write `action="shadow"` for their own purposes, and
+   counting those as "would have blocked" overstated the desk's effect. They
+   are still in the `component/action` summary above.
 3. **Trades** — symbol, side, family, R, exit reason, hold time for each
-   closed trade.
+   closed trade. A round trip belongs to the session it was **closed** in:
+   `DbLogger.get_bot_trades_between` filters on `DATE(exit_time)`, matching
+   `core/loops/desk_trade_stats.py::_row_date`. So a position opened yesterday
+   and closed today appears in today's journal, and in today's R for the
+   losing-day-streak rule.
 4. **Expectancy by Setup x Regime** — `family/regime: n=… exp_R=… PF=…`,
    both for today and trailing 20 sessions.
 5. **Playbook Changes** — every entry the nightly updater stamped today
@@ -362,6 +378,37 @@ yet says any one of those keys is worth trading harder than another.
 Carried over from `.superpowers/sdd/2026-09-25-playbook-desk-b2/task-5-report.md`
 (Task 5's self-review) unless noted otherwise:
 
+- **R on the un-migrated `bot_trades` schema is derived from the *closing*
+  stop.** `scripts/migrate_ledger_integrity.py` (gated by `LEDGER_INTEGRITY`,
+  default **off**) is what adds `initial_stop` / `initial_risk_per_share` /
+  `pnl_r` to `bot_trades`; until it runs, the live tape's R comes from
+  `core.desk.r_multiple.derive_pnl_r`, i.e. `pnl / (abs(entry_price -
+  stop_loss) * quantity)` — and `stop_loss` on a closed row is the stop **as it
+  stood at exit**, not the stop the trade was risked against. Two consequences,
+  both of which bias the playbook that learns from those rows:
+  - a stop moved to break-even makes the denominator zero, so R is `None` and
+    the trade is **dropped** from the tape entirely (a winner that was trailed
+    to break-even and a scratch both vanish, so the sample skews);
+  - a scaled-out or trailed position measures its full P&L against a *tightened*
+    stop distance, so R comes out **inflated**.
+  A faithful R needs the migration (it records the initial stop at entry and
+  writes `pnl_r` directly, which `derive_pnl_r` then prefers). Applying it is a
+  live schema change and therefore the user's decision; until then, read the
+  playbook's live-sourced `exp_R` as indicative, and prefer the shadow-ledger
+  rows (which carry their own R) when the two disagree.
+- **A suspension lapses on silence, and in shadow it never gets the chance.**
+  `carry_forward` puts a `suspended` key back on `probation` after
+  `SUSPENSION_LAPSE_DAYS=30` days with no resolved trade, because a key the gate
+  is blocking cannot produce evidence in its own defence. That rule only ever
+  fires with `ENABLE_PLAYBOOK_GATE` **on**: during the shadow period the gate
+  blocks nothing, so a suspended key keeps trading and keeps being re-measured
+  each night from its own recent results. Two things follow. In shadow, a
+  suspension is only as stable as the last `RECENT_WINDOW=60` trades — expect
+  keys to flip status between sessions, and read the journal's "Playbook
+  Changes" section rather than any one night's file. Once the gate enforces, no
+  suspension is permanent: a blocked key returns to `probation` (0.5x size)
+  after 30 quiet days, trades again at half size, and is re-judged on what that
+  produces.
 - **`trades_today` counts symbols, not trades.** The desk's `max_trades`
   counter comes from `DbLogger.get_todays_bot_entries()`, which is keyed by
   symbol — two entries in the same symbol on the same day count once. This
@@ -379,7 +426,12 @@ Carried over from `.superpowers/sdd/2026-09-25-playbook-desk-b2/task-5-report.md
   universe symbols), bounded to 4 concurrent requests. At the default cap of
   60 that is roughly 60–80 REST calls in ~15–20 batches right after the
   open — worth watching against provider rate limits on the first live
-  shadow day.
+  shadow day (hence `DESK_SCAN_MAX_SYMBOLS=20` on day one, above). Note that
+  until the whole-branch review's I1 fix, `data_providers/schwab.py` answered
+  *any* `period > 1` minute request with **daily** candles; it now routes by
+  `frequency_type` (`history_call_name`), so the first shadow session is also
+  the first time the in-play features — and the strategy-fit lane's
+  `_fit_bars_source` — actually see 5-minute bars.
 - **Breadth mapping is heuristic.** Providers disagree on shape
   (`advancing_percent`, `advances`/`declines`, a signed `advance_decline`,
   `new_highs`/`new_lows`); each is mapped to a 0–1 scale by

@@ -259,9 +259,10 @@ def load_scan_universe(root: Any, limit: Any) -> List[str]:
 def fetch_today_bars5(provider: Any, symbol: str) -> Optional[pd.DataFrame]:
     """The provider's recent 5-minute regular-hours window, ET-naive.
 
-    Mirrors `engine._fit_bars_source`'s normalization (lower-cased columns, ET
-    index with the timezone dropped, `between_time` 09:30–15:55) because the
-    in-play features must never see pre- or post-market bars. None on any
+    Mirrors `engine._fit_bars_source`'s normalization exactly (lower-cased
+    columns; a tz-aware index converted to ET, a naive one localized UTC first;
+    the timezone then dropped; `between_time` 09:30–15:55) because the in-play
+    features must never see pre- or post-market bars. None on any
     failure — the scan reports the symbol as `missing:today_bars` instead.
     """
     try:
@@ -271,8 +272,14 @@ def fetch_today_bars5(provider: Any, symbol: str) -> Optional[pd.DataFrame]:
             return None
         frame = frame.rename(columns={c: str(c).lower() for c in frame.columns})
         index = pd.DatetimeIndex(pd.to_datetime(frame.index))
+        # v-playbook-desk-b2-final-2026-09-25 (I2): mirror `_fit_bars_source` exactly.
+        # `data_providers/schwab.py` builds the index from epoch milliseconds, which
+        # pandas leaves *naive UTC* — reading those stamps as ET kept 09:30-15:55 UTC
+        # (05:30-11:55 ET), i.e. pre-market bars instead of the session.
         if getattr(index, "tz", None) is not None:
             index = index.tz_convert(ET_TZ).tz_localize(None)
+        else:
+            index = index.tz_localize("UTC").tz_convert(ET_TZ).tz_localize(None)
         frame = frame.copy()
         frame.index = index
         frame = frame.sort_index().between_time(RTH_START, RTH_END)

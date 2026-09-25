@@ -151,15 +151,33 @@ def test_the_desk_hook_short_circuits_before_the_db_read():
     assert plan_read < guard < trades_read
 
 
-def test_the_trade_count_read_is_time_boxed():
-    """Minor 3: a slow Postgres must not hold a signal — the await is bounded and
-    a timeout degrades to an untrustworthy (ungoverned) count."""
+def test_the_trade_count_read_is_time_boxed_and_fails_closed():
+    """Minor 3: a slow Postgres must not hold a signal — the await is bounded and a
+    timeout degrades to an untrustworthy (ungoverned) count.
+
+    v-playbook-desk-b2-final-2026-09-25 (M3): the same degradation now covers *any*
+    failure, so a broken read is cached (retried once a minute) instead of escaping
+    the helper on every signal.
+    """
     assert "_DESK_DB_TIMEOUT_SEC" in ENGINE
     helper = ENGINE.index("async def _desk_trades_today")
-    block = ENGINE[helper:helper + 2200]
+    block = ENGINE[helper:helper + 3000]
     assert "asyncio.wait_for(" in block
-    assert "asyncio.TimeoutError" in block
+    assert "except Exception as _desk_exc:" in block
     assert 'self._desk_hook_warn("desk_trades_today"' in block
+
+
+def test_the_plan_and_playbook_reads_go_through_a_thread():
+    """M4: both readers sit on the async router path, so their file I/O is awaited in
+    a thread rather than blocking the event loop."""
+    plan = ENGINE.index("async def _desk_plan_today")
+    assert "await asyncio.to_thread(load_desk_plan" in ENGINE[plan:plan + 1400]
+    book = ENGINE.index("async def _desk_playbook")
+    assert "await asyncio.to_thread(load_playbook" in ENGINE[book:book + 1400]
+    hook = ENGINE.index('self._audit("desk_limit"')
+    assert "await self._desk_plan_today()" in ENGINE[max(0, hook - 1500):hook]
+    playbook_hook = ENGINE.index('self._audit("playbook"')
+    assert "await self._desk_playbook()" in ENGINE[max(0, playbook_hook - 1200):playbook_hook]
 
 
 def test_the_desk_watchlist_handover_is_capped():

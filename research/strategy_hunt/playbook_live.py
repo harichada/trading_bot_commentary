@@ -61,8 +61,15 @@ REGIME_VALUES = ("risk_on", "risk_off", "mixed")
 # 'live'` excludes simulation rows, which the old query never filtered.
 LIVE_LOOKBACK_DAYS = 120
 LIVE_TRADES_SQL = ("SELECT * FROM bot_trades WHERE mode = 'live' AND exit_time >= :since")
+# v-playbook-desk-b2-final-2026-09-25 (whole-branch review, I4): `strategy_fit` rows only.
+# The `playbook` component's own audit rows carry the regime *the playbook gate read*, so
+# including them fed tonight's playbook its own output as evidence for tomorrow's — a
+# self-confirming loop. `strategy_fit` is written by the independent fit gate
+# (`core/engine.py::_audit("strategy_fit", ...)`) from `market_context_regime`, which is the
+# entry-time regime this keying is supposed to mean. `_regime_from_details` then keeps only
+# the labels in `REGIME_VALUES`: a fallback label is no evidence, not a fourth regime.
 LIVE_REGIME_SQL = ("SELECT symbol, ts, details_json FROM bot_decisions "
-                   "WHERE component IN ('strategy_fit', 'playbook') AND details_json IS NOT NULL "
+                   "WHERE component = 'strategy_fit' AND details_json IS NOT NULL "
                    "AND ts >= :since")
 # How far before an entry an audit row may sit and still describe that entry's regime.
 REGIME_MATCH_WINDOW = pd.Timedelta(minutes=30)

@@ -1333,7 +1333,8 @@ class DbLogger:
 
     async def get_bot_trades_between(self, start: Any, end: Any) -> list[dict]:
         """v-playbook-desk-b2-2026-09-25 (Task 4): closed bot_trades between two
-        dates (inclusive, by entry_time), for the desk journal.
+        dates (inclusive, by **exit_time** — a closed round trip belongs to the
+        session it was closed in; whole-branch review I7), for the desk journal.
 
         Returns a list of dicts, one per closed trade:
             {"symbol", "side", "strategy", "entry_time", "exit_time",
@@ -1386,9 +1387,17 @@ class DbLogger:
 
         try:
             async with self._engine.begin() as conn:
+                # v-playbook-desk-b2-final-2026-09-25 (whole-branch review, I7):
+                # dated by **exit**, not entry. These rows are closed round trips,
+                # and every consumer dates one by its exit
+                # (`core/loops/desk_trade_stats.py::_row_date`, which reads
+                # `exit_time` first). Filtering on `DATE(entry_time)` put a trade
+                # opened yesterday and closed today in yesterday's window — absent
+                # from today's journal, and counted into the wrong day's R for the
+                # losing-streak rule.
                 query = """
                     SELECT * FROM bot_trades
-                    WHERE DATE(entry_time) BETWEEN :start AND :end
+                    WHERE DATE(exit_time) BETWEEN :start AND :end
                       AND exit_time IS NOT NULL
                       AND mode = 'live'
                     ORDER BY exit_time ASC

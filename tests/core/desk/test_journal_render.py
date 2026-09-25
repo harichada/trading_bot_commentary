@@ -136,6 +136,44 @@ def test_decisions_shadow_audits_that_would_have_blocked():
     assert "TSLA playbook: playbook_suspended" in out
 
 
+def _blocked_section(out: str) -> str:
+    """Just the "shadow audits that would have blocked" bullets (up to the next
+    section heading) — the rest of the journal has "none" lines of its own."""
+    return out.split("shadow audits that would have blocked:")[1].split("\n##")[0]
+
+
+def test_shadow_section_lists_only_the_governed_components():
+    """v-playbook-desk-b2-final-2026-09-25 (I5): "would have blocked" is a claim only
+    the desk's own shadow gates can make. Other components write `action="shadow"` for
+    their own reasons, and listing them there mislabelled them as blocked trades — they
+    belong in the per-component summary only."""
+    decisions = [
+        _decision(symbol="TSLA", component="playbook", action="shadow",
+                  reason="playbook_suspended"),
+        _decision(symbol="NVDA", component="desk_limit", action="shadow",
+                  reason="desk_max_trades"),
+        _decision(symbol="AMD", component="strategy_fit", action="shadow",
+                  reason="fit_fail"),
+        _decision(symbol="SPY", component="regime_allocator", action="shadow",
+                  reason="tape_negative"),
+    ]
+    out = render_journal(_plan(), decisions, [], [], {})
+    blocked = _blocked_section(out)
+
+    assert "TSLA playbook: playbook_suspended" in blocked
+    assert "NVDA desk_limit: desk_max_trades" in blocked
+    assert "AMD strategy_fit: fit_fail" in blocked
+    assert "regime_allocator" not in blocked
+
+
+def test_an_ungoverned_shadow_row_is_still_counted_in_the_summary():
+    decisions = [_decision(symbol="SPY", component="regime_allocator", action="shadow",
+                           reason="tape_negative")]
+    out = render_journal(_plan(), decisions, [], [], {})
+    assert "regime_allocator/shadow: 1" in out
+    assert _blocked_section(out).strip() == "- none"
+
+
 def test_decisions_empty_renders_none():
     out = render_journal(_plan(), [], [], [], {})
     decisions_block = out.split("## Decisions")[1].split("## Trades")[0]

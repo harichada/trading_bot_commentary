@@ -38,6 +38,14 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 __all__ = ["render_journal"]
 
 NONE_LINE = "none"
+# v-playbook-desk-b2-final-2026-09-25 (whole-branch review, I5): only these three
+# components' shadow rows mean "this trade would have been blocked" — they are the desk's
+# own gates, each of which turns into a `skip` once its flag is on
+# (`ENABLE_DESK_LIMITS` / `ENABLE_STRATEGY_FIT_GATE` / `ENABLE_PLAYBOOK_GATE`). Every other
+# component writes `action="shadow"` for its own reasons, so listing those under "would
+# have blocked" overstated the desk's effect; they are still counted in the
+# per-component/action summary above it.
+GOVERNED_COMPONENTS = ("desk_limit", "strategy_fit", "playbook")
 _SUSPEND_MIN_N = 20
 
 
@@ -186,7 +194,7 @@ def _render_decisions(decisions: Sequence[Any]) -> str:
         counts[(component, action)] += 1
         if action == "skip":
             skips.append(f"{tag}{component}: {reason or NONE_LINE}")
-        elif action == "shadow":
+        elif action == "shadow" and component in GOVERNED_COMPONENTS:
             shadow_blocks.append(f"{tag}{component}: {reason or NONE_LINE}")
 
     lines.append("- by component/action:")

@@ -197,11 +197,44 @@ def test_fetch_today_bars5_normalizes_to_naive_et_regular_hours():
 
 
 def test_fetch_today_bars5_drops_extended_hours():
-    idx = pd.DatetimeIndex(["2026-09-25 08:00", "2026-09-25 09:30", "2026-09-25 16:30"])
+    """A naive index is UTC (what `data_providers/schwab.py` builds from epoch ms):
+    12:00 UTC is 08:00 ET (pre-market), 20:30 UTC is 16:30 ET (post-market)."""
+    idx = pd.DatetimeIndex(["2026-09-25 12:00", "2026-09-25 13:30", "2026-09-25 20:30"])
     frame = pd.DataFrame({"open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0,
                           "volume": 1.0}, index=idx)
     out = steps.fetch_today_bars5(_Provider(frame), "NVDA")
     assert len(out) == 1 and str(out.index[0]) == "2026-09-25 09:30:00"
+
+
+def test_fetch_today_bars5_reads_a_naive_index_as_utc_like_fit_bars_source():
+    """v-playbook-desk-b2-final-2026-09-25 (I2): the Schwab provider hands back a
+    *naive UTC* index, and `engine._fit_bars_source` localizes UTC before converting
+    to ET. Reading those stamps as ET instead kept 09:30-15:55 **UTC** — 05:30-11:55
+    ET — so the in-play features saw pre-market bars and missed the afternoon.
+
+    A full 09:30-15:55 ET session is 13:30-19:55 UTC: 78 five-minute bars."""
+    idx = pd.date_range("2026-09-25 13:30", periods=96, freq="5min")   # naive UTC
+    frame = pd.DataFrame({"open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0,
+                          "volume": 1.0}, index=idx)
+    out = steps.fetch_today_bars5(_Provider(frame), "NVDA")
+    assert len(out) == 78
+    assert str(out.index[0]) == "2026-09-25 09:30:00"
+    assert str(out.index[-1]) == "2026-09-25 15:55:00"
+
+
+def test_fetch_today_bars5_matches_fit_bars_source_on_the_same_frame():
+    """Both readers must normalize identically — the desk's in-play features and the
+    fit lane's 5-minute features are computed from the same provider frame."""
+    idx = pd.date_range("2026-09-25 13:30", periods=96, freq="5min")   # naive UTC
+    frame = pd.DataFrame({"Open": 1.0, "High": 1.0, "Low": 1.0, "Close": 1.0,
+                          "Volume": 1.0}, index=idx)
+    out = steps.fetch_today_bars5(_Provider(frame), "NVDA")
+
+    mirror = frame.rename(columns={c: c.lower() for c in frame.columns})
+    mirror.index = (mirror.index.tz_localize("UTC")
+                    .tz_convert("America/New_York").tz_localize(None))
+    mirror = mirror.between_time("09:30", "15:55")
+    assert list(out.index) == list(mirror.index)
 
 
 def test_fetch_today_bars5_returns_none_on_failure():

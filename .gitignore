@@ -67,3 +67,6 @@ alpaca_ingest_checkpoint.json.tmp
 # strategy-hunt research artifacts
 data/strategy_hunt/
 data/strategy_hunt_*/
+
+# desk runtime artifacts (plans, journals, playbook.json)
+data/desk/
