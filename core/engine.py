@@ -34,6 +34,10 @@ from core.calculations import CalculationEngine, PnLResult
 # v-strategy-fit-2026-09-25: per-symbol strategy fit snapshot (Phase 2 gate)
 from core.strategy_fit import StrategyFit
 from core.strategy_fit_gate import evaluate_fit_gate, family_for
+from core.swing_exits import (
+    is_multiday, should_time_stop, should_earnings_eve_flatten,
+    load_earnings_dates, sessions_held,
+)
 from analysis.anomaly import AnomalyDetector, DataValidator
 from analysis.behavioral import BehavioralAnalyzer
 from analysis.exit_managers import AdvancedExitManager, DynamicExitManager
@@ -6077,6 +6081,12 @@ class TradingEngineWithCommentary:
                 if _fd.action == "skip":
                     return
 
+        # v-strategy-fit-2026-09-25: swing lanes may not hold overnight unless allowed
+        if (is_multiday(signal.reasoning or {}) and self.mode == TradingMode.LIVE and not Config().SWING_ALLOW_OVERNIGHT):
+            self._audit("swing_overnight_gate", signal.symbol, "skip", "overnight_not_allowed",
+                        strategy=signal.reasoning.get("strategy", "unknown"))
+            return
+
         # v-conviction-floor-meanrev-2026-06-17: skip mean-rev signals
         # below the meta-model conviction floor. The meta<0.60 bucket
         # ran PF 0.44 across 89 trades; 2026-06-16 live, an all-medium-
@@ -8835,6 +8845,17 @@ class TradingEngineWithCommentary:
                     "day_trade_flatten check failed for %s: %s",
                     position.symbol, _flatten_exc
                 )
+
+        # v-strategy-fit-2026-09-25: multi-day (swing) exits
+        if is_multiday(_reasoning):
+            from zoneinfo import ZoneInfo
+            _now_et = datetime.now(ZoneInfo("America/New_York")).replace(tzinfo=None)
+            hit, why = should_time_stop(_reasoning, position.entry_time, _now_et, Config().SWING_MAX_HOLD_SESSIONS)
+            if not hit:
+                hit, why = should_earnings_eve_flatten(position.symbol, _now_et, load_earnings_dates("data/strategy_hunt", position.symbol))
+            if hit:
+                self._audit("swing_exit", position.symbol, "exit", why, sessions_held=sessions_held(position.entry_time, _now_et))
+                return True, why
 
         # Check if stop loss / take profit are hit based on position side.
         # Both use the same simple price comparison — no indicator logic.

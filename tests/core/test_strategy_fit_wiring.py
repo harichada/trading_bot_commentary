@@ -18,3 +18,10 @@ def test_engine_module_imports():
     import importlib
     importlib.import_module("core.strategy_fit_gate")
     importlib.import_module("core.engine")
+
+
+def test_engine_wires_swing_exits_and_overnight_gate():
+    src = Path("core/engine.py").read_text()
+    assert 'self._audit("swing_exit", position.symbol, "exit", why' in src
+    assert 'self._audit("swing_overnight_gate", signal.symbol, "skip", "overnight_not_allowed"' in src
+    assert src.index('return True, "day_trade_flatten_hour"') < src.index('self._audit("swing_exit"')
