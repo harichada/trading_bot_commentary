@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from pathlib import Path
 from typing import Any, Optional
 
@@ -12,7 +11,6 @@ import pandas as pd
 
 logger = logging.getLogger("strategy_hunt.calibrate")
 BUCKETS = (("mega", 1e9), ("large", 2e8), ("mid", 2e7))
-ENTRY_RE = re.compile(r"entry_price=([0-9.]+)")
 
 
 def _bucket(adv: float) -> str:
@@ -20,6 +18,20 @@ def _bucket(adv: float) -> str:
         if adv >= floor:
             return name
     return "small"
+
+
+def _extract_entry_price(details_json_str: str) -> float:
+    """Extract entry price from details_json JSON string. Primary: JSON 'entry' key. Fallback: None. Returns NaN on failure."""
+    if not isinstance(details_json_str, str) or not details_json_str.strip():
+        return float("nan")
+    try:
+        obj = json.loads(details_json_str)
+        if isinstance(obj, dict) and "entry" in obj:
+            val = obj["entry"]
+            return float(val) if val is not None else float("nan")
+    except (json.JSONDecodeError, ValueError, TypeError):
+        pass
+    return float("nan")
 
 
 def realized_slippage(fills: pd.DataFrame) -> pd.DataFrame:
@@ -54,7 +66,7 @@ def load_fill_pairs(engine: Any) -> pd.DataFrame:
         return pd.DataFrame(columns=cols)
     if trades.empty or decisions.empty:
         return pd.DataFrame(columns=cols)
-    decisions["signal_price"] = decisions["details_json"].astype(str).str.extract(ENTRY_RE)[0].astype(float)
+    decisions = decisions.assign(signal_price=decisions["details_json"].apply(_extract_entry_price))
     decisions = decisions.dropna(subset=["signal_price"])
     trades["entry_time"] = pd.to_datetime(trades["entry_time"])
     decisions["ts"] = pd.to_datetime(decisions["ts"])
