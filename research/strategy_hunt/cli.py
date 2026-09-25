@@ -150,6 +150,25 @@ def cmd_report(a: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_scorecard(a: argparse.Namespace) -> int:
+    from research.strategy_hunt.shadow_resolver import (default_ledger_path, read_ledger, resolve,
+                                                         stage_a_scorecard, write_scorecard)
+
+    ledger = a.ledger or default_ledger_path(a.family)
+    records = read_ledger(ledger)
+    trades = resolve(records, a.root, a.family, cost_mult=a.cost_mult)
+    card = stage_a_scorecard(trades, a.family)
+    computed_at = time.strftime("%Y-%m-%dT%H:%M:%S")
+    for side in ("long", "short"):
+        m = card.get(side, {})
+        print(f"{a.family:14} {side:5} n={m.get('n', 0):4} pf={m.get('pf', 0):.3f} wr={m.get('wr', 0):.3f} "
+              f"exp_r={m.get('exp_r', 0):+.4f} max_dd_pct={m.get('max_dd_pct', 0):.4f} verdict={m.get('verdict', '')}")
+    print(f"scorecard {a.family}: {card['verdict']} (ledger={ledger})")
+    rp = write_scorecard(a.root, a.family, card, computed_at)
+    print(f"scorecard: {rp}")
+    return 0
+
+
 def cmd_all(a: argparse.Namespace) -> int:
     for fn in (cmd_export, cmd_context, cmd_news, cmd_earnings, cmd_calibrate, cmd_run, cmd_score):
         rc = fn(a)
@@ -181,6 +200,13 @@ def build_parser() -> argparse.ArgumentParser:
         sp = sub.add_parser(name)
         common(sp)
         sp.set_defaults(fn=fn)
+
+    sp = sub.add_parser("scorecard")
+    sp.add_argument("--root", type=Path, default=DEFAULT_ROOT)
+    sp.add_argument("--family", required=True)
+    sp.add_argument("--ledger", type=Path, default=None, help="default: data/shadow_fit_<family>.ndjson")
+    sp.add_argument("--cost-mult", type=float, default=1.0)
+    sp.set_defaults(fn=cmd_scorecard)
     return p
 
 
