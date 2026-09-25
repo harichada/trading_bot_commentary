@@ -31,10 +31,12 @@ import json
 import logging
 import math
 import os
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from core.desk.models import DailyPlan, InPlayRow, PlanInputs
+from core.strategy_fit_gate import GateDecision
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +44,8 @@ __all__ = [
     "build_daily_plan",
     "refresh_plan",
     "load_calendar_flags",
+    "evaluate_desk_gate",
+    "DeskDecision",
     "REGIME_RISK_MULT",
     "REGIME_MAX_TRADES",
 ]
@@ -269,3 +273,98 @@ def refresh_plan(plan: DailyPlan, in_play: Sequence[InPlayRow],
     and sit-out decisions stand for the day.
     """
     return plan.with_in_play(tuple(in_play), now_et.isoformat())
+
+
+# ────────────────────────────────────────────────────────────────────
+# Router gate (Task 5) — what the plan permits, per signal
+# ────────────────────────────────────────────────────────────────────
+
+SIDE_LONG = "long"
+SIDE_SHORT = "short"
+DESK_SIT_OUT_PREFIX = "desk_sit_out:"
+DESK_MAX_TRADES = "desk_max_trades"
+DESK_LONG_OFF = "desk_direction_long_off"
+DESK_SHORT_OFF = "desk_direction_short_off"
+DESK_OK = "desk_ok"
+DESK_NO_PLAN = "no_desk_plan"
+DESK_SIDE_UNKNOWN = "desk_side_unknown"
+
+
+@dataclass(frozen=True)
+class DeskDecision(GateDecision):
+    """A `GateDecision` (the contract the router already audits) plus the plan
+    context the journal needs to explain the call."""
+    trades_today: Optional[int] = None
+    max_trades: Optional[int] = None
+    sit_out_reason: Optional[str] = None
+    plan_date: Optional[str] = None
+
+    def audit_fields(self) -> dict:
+        out = super().audit_fields()
+        for name in ("trades_today", "max_trades", "sit_out_reason", "plan_date"):
+            value = getattr(self, name)
+            if value is not None:
+                out[name] = value
+        return out
+
+
+def _count(value: Any) -> Optional[int]:
+    """A trade count as an int, or None when it cannot be trusted.
+
+    An untrustworthy count must never block: `evaluate_desk_gate` skips the
+    max-trades rule rather than comparing garbage against the cap.
+    """
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        out = int(value)
+    except (TypeError, ValueError):
+        return None
+    return out if out >= 0 else None
+
+
+def evaluate_desk_gate(plan: Any, trades_today: Any, side: Any,
+                       enabled: bool) -> GateDecision:
+    """What today's plan says about one signal. Pure — no clock, no I/O.
+
+    `enabled` is `ENABLE_DESK_LIMITS`: with it off a blocking rule resolves to
+    `"shadow"` (audited, never blocking), which is the desk's shipping posture.
+    A missing plan, an unrecognised side and an unusable trade count are
+    explicitly *not governed* — the desk only speaks when it has a plan and
+    understands the question.
+
+    Rules, first match wins (spec §7):
+      sit_out          -> `desk_sit_out:<reason>`
+      trades_today >= plan.max_trades (when the plan set a cap) -> `desk_max_trades`
+      side long/short  disallowed by the plan -> `desk_direction_<side>_off`
+    """
+    if not isinstance(plan, DailyPlan):
+        return DeskDecision("allow", DESK_NO_PLAN, False)
+
+    label = side.strip().lower() if isinstance(side, str) else ""
+    if label not in (SIDE_LONG, SIDE_SHORT):
+        return DeskDecision("allow", DESK_SIDE_UNKNOWN, False, plan_date=plan.date or None)
+
+    count = _count(trades_today)
+    fields: Dict[str, Any] = dict(
+        regime=plan.regime or None,
+        plan_date=plan.date or None,
+        trades_today=count,
+        max_trades=plan.max_trades if plan.max_trades > 0 else None,
+        sit_out_reason=(plan.sit_out_reason or "unknown") if plan.sit_out else None,
+    )
+    blocked = "skip" if enabled else "shadow"
+
+    if plan.sit_out:
+        reason = f"{DESK_SIT_OUT_PREFIX}{plan.sit_out_reason or 'unknown'}"
+        return DeskDecision(blocked, reason, True, **fields)
+
+    if plan.max_trades > 0 and count is not None and count >= plan.max_trades:
+        return DeskDecision(blocked, DESK_MAX_TRADES, True, **fields)
+
+    if label == SIDE_LONG and not plan.long_ok:
+        return DeskDecision(blocked, DESK_LONG_OFF, True, **fields)
+    if label == SIDE_SHORT and not plan.short_ok:
+        return DeskDecision(blocked, DESK_SHORT_OFF, True, **fields)
+
+    return DeskDecision("allow", DESK_OK, True, **fields)

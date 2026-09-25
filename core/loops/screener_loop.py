@@ -104,7 +104,22 @@ class ScreenerLoop:
         if not final_watchlist:
             return
 
-        self.engine.dynamic_watchlist = final_watchlist
+        # v-playbook-desk-b2-2026-09-25: once the desk has ranked today's
+        # in-play list (and ENABLE_DESK_WATCHLIST is on), that list *is* the
+        # watchlist — the screener must not overwrite it on its next tick.
+        # Everything below still runs against whatever is current, so the
+        # PriceBook interest scopes stay in sync either way.
+        if self._desk_owns_watchlist():
+            logger.debug(
+                "screener_loop: desk in-play list owns the watchlist "
+                "(%d symbols) — not overwriting",
+                len(self.engine.dynamic_watchlist or []),
+            )
+        else:
+            self.engine.dynamic_watchlist = final_watchlist
+        # What the engine is actually tracking after the guard — the commentary
+        # below must report that, not the list the screener would have set.
+        tracked: List[str] = list(self.engine.dynamic_watchlist or [])
 
         # v-watchlist-stream-2026-05-01: register watchlist + ticker
         # tape interest scopes so streamed ticks update prices in both
@@ -135,10 +150,10 @@ class ScreenerLoop:
         if commentary is not None:
             # Include info about pinned vs mover composition
             pinned_set = set(cfg.PINNED_WATCHLIST) if cfg.ENABLE_PINNED_WATCHLIST else set()
-            pinned_in_wl = [s for s in final_watchlist if s in pinned_set]
-            movers_in_wl = [s for s in final_watchlist if s not in pinned_set]
-            
-            msg = f"Now tracking: {', '.join(final_watchlist)}"
+            pinned_in_wl = [s for s in tracked if s in pinned_set]
+            movers_in_wl = [s for s in tracked if s not in pinned_set]
+
+            msg = f"Now tracking: {', '.join(tracked)}"
             if pinned_in_wl and cfg.ENABLE_PINNED_WATCHLIST:
                 msg += f"\n  Pinned ({len(pinned_in_wl)}): {', '.join(pinned_in_wl)}"
                 msg += f"\n  Movers ({len(movers_in_wl)}): {', '.join(movers_in_wl[:5])}{'...' if len(movers_in_wl) > 5 else ''}"
@@ -153,6 +168,26 @@ class ScreenerLoop:
                     importance=6,
                 )
             )
+
+    def _desk_owns_watchlist(self) -> bool:
+        """v-playbook-desk-b2-2026-09-25: has the desk taken over the watchlist?
+
+        True only when both `ENABLE_DESK` and `ENABLE_DESK_WATCHLIST` are on and
+        today's plan actually carries in-play rows — before 09:35 (or on a day
+        the scan found nothing) the screener keeps its normal job. Never raises:
+        any failure reading the plan means the screener stays in charge.
+        """
+        cfg = Config()
+        if not (cfg.ENABLE_DESK and cfg.ENABLE_DESK_WATCHLIST):
+            return False
+        try:
+            from core.desk.store import load_plan
+            from core.loops.desk_steps import now_et, session_date_str
+            plan = load_plan(cfg.DESK_DATA_DIR, session_date_str(now_et()))
+            return bool(plan is not None and plan.in_play)
+        except Exception as exc:
+            logger.debug("screener_loop: desk plan unreadable: %s", exc)
+            return False
 
     def _build_pinned_watchlist(
         self,

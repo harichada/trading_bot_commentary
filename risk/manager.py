@@ -21,6 +21,45 @@ class Config:
         return cls._instance
 
 
+# v-playbook-desk-b2-2026-09-25 (Task 5): the adaptive playbook's size step.
+# `strategy_size_multiplier` is written into `signal.reasoning` by the engine's
+# playbook hook — and only when ENABLE_PLAYBOOK_GATE is on. Kept as a module
+# function taking `enabled` explicitly so the rule is testable without the main
+# module's Config singleton (this file's `Config` imports
+# trading_bot_commentary_updated).
+#
+# Pre-existing writer of the same key: `strategies/fit_lane.py` puts a neutral
+# 1.0 into every fit-lane signal's reasoning, which this step reads as "no
+# opinion". With ENABLE_PLAYBOOK_GATE on, the engine's playbook hook overwrites
+# it with the playbook's multiplier for that (family, side, regime) — the
+# playbook is the authority on lane size, by design.
+PLAYBOOK_SIZE_MULT_MIN = 0.0
+PLAYBOOK_SIZE_MULT_MAX = 1.5
+
+
+def playbook_size_multiplier(reasoning: Any, enabled: bool) -> float:
+    """The playbook's size multiplier for this signal, clamped to
+    [0.0, 1.5]; 1.0 (a no-op) whenever the gate is off or the value is
+    absent or unusable.
+
+    Fail-open by construction: a garbage multiplier must never shrink or
+    inflate a position, so it degrades to "no opinion" rather than to an
+    exception or to zero.
+    """
+    if not enabled or not isinstance(reasoning, dict):
+        return 1.0
+    raw = reasoning.get('strategy_size_multiplier')
+    if raw is None or isinstance(raw, bool):
+        return 1.0
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return 1.0
+    if not np.isfinite(value):
+        return 1.0
+    return min(max(value, PLAYBOOK_SIZE_MULT_MIN), PLAYBOOK_SIZE_MULT_MAX)
+
+
 class RiskManagerWithCommentary:
     """Risk manager that explains its decisions"""
 
@@ -204,6 +243,23 @@ class RiskManagerWithCommentary:
             logger.info(
                 "strategy_size_multiplier symbol=%s strategy=%s mult=%.2f old=%d new=%d",
                 signal.symbol, strategy_name, strategy_mult, old_size, position_size,
+            )
+
+        # v-playbook-desk-b2-2026-09-25: adaptive-playbook size multiplier,
+        # composed right after the per-strategy one. Inert unless
+        # ENABLE_PLAYBOOK_GATE is on — with the gate off the engine never
+        # writes the key, and this step reads 1.0 regardless. A suspended
+        # (family, side, regime) sizes to 0.0, which the gate has already
+        # skipped upstream; sizing still floors shares at 1 like every other
+        # multiplier in this chain rather than emitting a 0-share order.
+        pb_mult = playbook_size_multiplier(
+            getattr(signal, 'reasoning', None), Config().ENABLE_PLAYBOOK_GATE)
+        if pb_mult != 1.0:
+            old_size = position_size
+            position_size = max(1, int(position_size * pb_mult))
+            logger.info(
+                "playbook_size_multiplier symbol=%s mult=%.2f old=%d new=%d",
+                signal.symbol, pb_mult, old_size, position_size,
             )
 
         # v-market-context-sizing-2026-06-08: scale position by the

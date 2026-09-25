@@ -41,6 +41,13 @@ from core.strategy_fit_bars import (
     merge_history as merge_fit_history,
 )
 from core.strategy_fit_gate import evaluate_fit_gate, family_for
+# v-playbook-desk-b2-2026-09-25 (Task 5): the desk's two pure router gates and
+# the readers behind them. Importing them is inert — both hook blocks in the
+# signal router are guarded by Config().ENABLE_DESK (default False).
+from core.desk.daily_plan import evaluate_desk_gate
+from core.desk.playbook import evaluate_playbook_gate, load_playbook, playbook_path
+from core.desk.store import load_plan as load_desk_plan
+from core.loops.desk_steps import now_et as desk_now_et, session_date_str as desk_session_date
 from core.swing_exits import (
     is_multiday, should_time_stop, should_earnings_eve_flatten,
     load_earnings_dates, sessions_held,
@@ -539,6 +546,67 @@ class TradingEngineWithCommentary:
             result = (pd.DataFrame(), pd.DataFrame())
         self._fit_bars_cache[symbol] = result
         return result
+
+    # ── v-playbook-desk-b2-2026-09-25 (Task 5): desk readers for the router hooks ──
+    # Each is cached for _DESK_CACHE_SEC so the per-signal hooks cost one small
+    # file read a minute instead of one per signal, and each is only ever called
+    # from inside a hook's try/except — a failure there is logged (at most once a
+    # minute) and the signal proceeds untouched.
+    _DESK_CACHE_SEC = 60.0
+
+    def _desk_plan_today(self):
+        """Today's desk plan (`<DESK_DATA_DIR>/plans/<date>.json`), or None."""
+        date = desk_session_date(desk_now_et())
+        now = time.time()
+        cached = getattr(self, "_desk_plan_cache", None)
+        if cached is not None and cached[0] == date and (now - cached[1]) < self._DESK_CACHE_SEC:
+            return cached[2]
+        plan = load_desk_plan(Config().DESK_DATA_DIR, date)
+        self._desk_plan_cache = (date, now, plan)
+        return plan
+
+    def _desk_playbook(self):
+        """The adaptive playbook (`<DESK_DATA_DIR>/playbook.json`); empty when absent."""
+        now = time.time()
+        cached = getattr(self, "_desk_playbook_cache", None)
+        if cached is not None and (now - cached[0]) < self._DESK_CACHE_SEC:
+            return cached[1]
+        book = load_playbook(playbook_path(Config().DESK_DATA_DIR))
+        self._desk_playbook_cache = (now, book)
+        return book
+
+    async def _desk_trades_today(self) -> int:
+        """How many symbols the bot has entered today — the desk's `max_trades`
+        counter. There is no existing per-day entry counter on the engine
+        (`get_internal_trades_today` is the sim-only fallback used here), so the
+        count comes from `bot_trades` via `get_todays_bot_entries`, cached for a
+        minute."""
+        date = desk_session_date(desk_now_et())
+        now = time.time()
+        cached = getattr(self, "_desk_trades_cache", None)
+        if cached is not None and cached[0] == date and (now - cached[1]) < self._DESK_CACHE_SEC:
+            return cached[2]
+        getter = getattr(getattr(self, "db_logger", None), "get_todays_bot_entries", None)
+        if callable(getter):
+            entries = await getter()
+            count = len(entries) if isinstance(entries, (dict, list, tuple)) else 0
+        else:
+            count = len(self.get_internal_trades_today() or [])
+        self._desk_trades_cache = (date, now, count)
+        return count
+
+    def _desk_hook_warn(self, where: str, exc: Exception) -> None:
+        """Log a desk hook failure at most once a minute per hook. The desk is
+        shadow infrastructure — it must never be able to spam the log or to
+        change what a signal does."""
+        now = time.time()
+        seen = getattr(self, "_desk_warn_at", None)
+        if seen is None:
+            seen = {}
+            self._desk_warn_at = seen
+        if now - seen.get(where, 0.0) >= 60.0:
+            seen[where] = now
+            logger.warning("desk hook failed where=%s err=%s", where, exc, exc_info=True)
 
     @property
     def auto_close_disabled(self) -> bool:
@@ -3978,6 +4046,27 @@ class TradingEngineWithCommentary:
             self._active_open_desk = None
             logger.debug("active_open_desk NOT registered (ENABLE_ACTIVE_OPEN_DESK=False)")
 
+        # v-playbook-desk-b2-2026-09-25 (Task 5): the desk's daily routine —
+        # 09:00 plan, 09:35 in-play ranking, 16:05 journal. Nothing is
+        # registered when ENABLE_DESK is False, so the desk is zero behavior
+        # change by default. NORMAL priority: the desk informs trading, it
+        # never executes.
+        if Config().ENABLE_DESK:
+            from core.loops.desk_loop import DeskLoop
+            self._desk_loop = DeskLoop(self)
+            sup.register("desk_loop", self._desk_loop.run, TaskPriority.NORMAL)
+            logger.info(
+                "desk_loop registered (plan=%s refresh=%s journal=%s dir=%s "
+                "limits=%s playbook_gate=%s watchlist=%s)",
+                Config().DESK_PLAN_TIME_ET, Config().DESK_REFRESH_TIME_ET,
+                Config().DESK_JOURNAL_TIME_ET, Config().DESK_DATA_DIR,
+                Config().ENABLE_DESK_LIMITS, Config().ENABLE_PLAYBOOK_GATE,
+                Config().ENABLE_DESK_WATCHLIST,
+            )
+        else:
+            self._desk_loop = None
+            logger.debug("desk_loop NOT registered (ENABLE_DESK=False)")
+
         return sup
 
     def _on_news_high_impact(self, symbol: str, item) -> None:
@@ -6133,6 +6222,26 @@ class TradingEngineWithCommentary:
             )
             return  # abort the signal — no order placed
 
+        # v-playbook-desk-b2-2026-09-25 (Task 5): desk daily-plan limits, before the
+        # fit gate. Shadow by default: with ENABLE_DESK_LIMITS off the decision is
+        # audited (action="shadow") and nothing is blocked; only the flag turns a
+        # blocking rule into a "skip". The whole block is inert unless ENABLE_DESK
+        # is on, and any failure inside it is swallowed — the desk never blocks a
+        # signal by accident.
+        if Config().ENABLE_DESK:
+            try:
+                _desk_side = "long" if signal.signal_type == SignalType.BUY else "short"
+                _dd = evaluate_desk_gate(self._desk_plan_today(),
+                                         await self._desk_trades_today(),
+                                         _desk_side, Config().ENABLE_DESK_LIMITS)
+                if _dd.governed:
+                    self._audit("desk_limit", signal.symbol, _dd.action, _dd.reason,
+                                side=_desk_side, **_dd.audit_fields())
+                    if _dd.action == "skip":
+                        return
+            except Exception as _desk_exc:
+                self._desk_hook_warn("desk_limit", _desk_exc)
+
         # v-strategy-fit-2026-09-25: per-symbol strategy fit gate (after regime gate)
         if Config().ENABLE_STRATEGY_FIT_GATE:
             _fit_side = "long" if signal.signal_type == SignalType.BUY else "short"
@@ -6154,6 +6263,32 @@ class TradingEngineWithCommentary:
                             strategy=_fit_strategy, side=_fit_side, **_fd.audit_fields())
                 if _fd.action == "skip":
                     return
+
+        # v-playbook-desk-b2-2026-09-25 (Task 5): the adaptive playbook, immediately
+        # after the fit gate. Shadow by default: a suspended (family, side, regime)
+        # is only audited unless ENABLE_PLAYBOOK_GATE is on, and the size
+        # multiplier is written into reasoning (where risk/manager.py reads it)
+        # only under that same flag. Inert unless ENABLE_DESK is on; any failure is
+        # swallowed.
+        if Config().ENABLE_DESK:
+            try:
+                _pb_side = "long" if signal.signal_type == SignalType.BUY else "short"
+                _pb_strategy = signal.reasoning.get("strategy", "unknown") if signal.reasoning else "unknown"
+                _pb_regime = signal.reasoning.get("market_context_regime") if signal.reasoning else None
+                _pb_enabled = Config().ENABLE_PLAYBOOK_GATE
+                _pd = evaluate_playbook_gate(self._desk_playbook(),
+                                             family_for(_pb_strategy) or "",
+                                             _pb_side, _pb_regime, _pb_enabled)
+                if _pd.governed:
+                    self._audit("playbook", signal.symbol, _pd.action, _pd.reason,
+                                strategy=_pb_strategy, side=_pb_side, **_pd.audit_fields())
+                    _pb_mult = getattr(_pd, "size_mult", None)
+                    if _pb_enabled and _pb_mult is not None and signal.reasoning is not None:
+                        signal.reasoning["strategy_size_multiplier"] = float(_pb_mult)
+                    if _pd.action == "skip":
+                        return
+            except Exception as _pb_exc:
+                self._desk_hook_warn("playbook", _pb_exc)
 
         # v-strategy-fit-2026-09-25: swing lanes may not hold overnight unless allowed
         if (is_multiday(signal.reasoning or {}) and self.mode == TradingMode.LIVE and not Config().SWING_ALLOW_OVERNIGHT):
