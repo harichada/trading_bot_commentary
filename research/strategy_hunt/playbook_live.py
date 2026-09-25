@@ -7,6 +7,13 @@ past the 400-line budget. This is the lower layer: it knows nothing about playbo
 
 The only Postgres touch point is `sql_reader(engine)`; every other entry point takes an injected
 `reader(query, params) -> DataFrame`, which is what makes the updater testable offline.
+
+v-playbook-desk-b2-2026-09-25 (Task 3b): the live `bot_trades` table may or may not have run
+`scripts/migrate_ledger_integrity.py` (gated by `LEDGER_INTEGRITY`, default off) — the migrated
+schema has `pnl_r`, the un-migrated one doesn't. `LIVE_TRADES_SQL` never names `pnl_r` (or any
+other migration-only column) so it runs unchanged on either schema; `resolved_from_live` derives
+R for each row through `core.desk.r_multiple.derive_pnl_r`, which prefers the row's own `pnl_r`
+when present and otherwise falls back to `pnl / (abs(entry_price - stop_loss) * quantity)`.
 """
 from __future__ import annotations
 
@@ -18,6 +25,7 @@ from typing import Any, Callable, Dict, List, Optional
 import pandas as pd
 
 from core.desk.playbook import ResolvedTrade
+from core.desk.r_multiple import derive_pnl_r
 
 logger = logging.getLogger("strategy_hunt.playbook_update")
 
@@ -45,9 +53,14 @@ REGIME_VALUES = ("risk_on", "risk_off", "mixed")
 
 # Both reads are bounded and parameterized (fix r1, finding 7): the rules only ever look back
 # RECENT_DAYS, so dragging years of bot_trades through pandas every night buys nothing.
+#
+# `SELECT *` (Task 3b) rather than a named column list: the migrated schema's `pnl_r` may or
+# may not exist, and a query that names it errors on whichever schema doesn't have it (that was
+# today's bug). Selecting `*` and reading `pnl_r`/`entry_price`/`stop_loss`/`quantity` out of
+# whatever pandas hands back — via `derive_pnl_r` — works on either schema unchanged. `mode =
+# 'live'` excludes simulation rows, which the old query never filtered.
 LIVE_LOOKBACK_DAYS = 120
-LIVE_TRADES_SQL = ("SELECT symbol, side, strategy, entry_time, exit_time, pnl_r "
-                   "FROM bot_trades WHERE pnl_r IS NOT NULL AND exit_time >= :since")
+LIVE_TRADES_SQL = ("SELECT * FROM bot_trades WHERE mode = 'live' AND exit_time >= :since")
 LIVE_REGIME_SQL = ("SELECT symbol, ts, details_json FROM bot_decisions "
                    "WHERE component IN ('strategy_fit', 'playbook') AND details_json IS NOT NULL "
                    "AND ts >= :since")
@@ -103,8 +116,10 @@ def _regime_at(index: Dict[str, tuple], symbol: str, when: Any) -> str:
 
 def resolved_from_live(trades: Optional[pd.DataFrame],
                        decisions: Optional[pd.DataFrame] = None) -> List[ResolvedTrade]:
-    """`bot_trades` rows → `ResolvedTrade`s, keeping only rows with a readable R, a
-    readable side and a strategy this research map knows."""
+    """`bot_trades` rows → `ResolvedTrade`s, keeping only rows with a derivable R (see
+    `core.desk.r_multiple.derive_pnl_r` — the stored `pnl_r`, or `pnl`/`stop_loss`
+    distance on the un-migrated schema), a readable side and a strategy this research
+    map knows."""
     if trades is None or not isinstance(trades, pd.DataFrame) or trades.empty:
         return []
     index = _regime_index(decisions)
@@ -114,11 +129,9 @@ def resolved_from_live(trades: Optional[pd.DataFrame],
         side = _norm_side(rec.get("side"))
         if family is None or side is None:
             continue
-        try:
-            r = float(rec.get("pnl_r"))
-        except (TypeError, ValueError):
-            continue
-        if not pd.notna(r):
+        r = derive_pnl_r(rec.get("pnl_r"), rec.get("pnl"), rec.get("entry_price"),
+                         rec.get("stop_loss"), rec.get("quantity"))
+        if r is None:
             continue
         exit_ts = _iso(rec.get("exit_time"))
         if not exit_ts:

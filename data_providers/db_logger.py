@@ -1339,6 +1339,14 @@ class DbLogger:
             {"symbol", "side", "strategy", "entry_time", "exit_time",
              "pnl", "pnl_r", "exit_reason", "setup_type"}
 
+        v-playbook-desk-b2-2026-09-25 (Task 3b): `bot_trades` may or may not have run
+        `scripts/migrate_ledger_integrity.py` (gated by `LEDGER_INTEGRITY`, default
+        off) — the migrated schema has `pnl_r`/`setup_type`, the un-migrated one
+        doesn't. The query below never names either by column, and `pnl_r` in the
+        returned dict is derived through `core.desk.r_multiple.derive_pnl_r` (the
+        row's own `pnl_r` when present, else `pnl`/`stop_loss` distance, else
+        `None` — shown as R "none" in the journal). Only `mode = 'live'` rows count.
+
         Never raises: [] on a disabled logger, unreachable Postgres, or a
         malformed row. `start`/`end` are date-like (str "YYYY-MM-DD" or
         date/datetime); both are cast to str for the parameterized query.
@@ -1362,32 +1370,43 @@ class DbLogger:
         return await self._get_bot_trades_between_impl(start, end)
 
     async def _get_bot_trades_between_impl(self, start: Any, end: Any) -> list[dict]:
-        """Internal impl: query bot_trades for a closed, date-bounded range."""
+        """Internal impl: query bot_trades for a closed, date-bounded range.
+
+        `SELECT *` (Task 3b) rather than a named column list: `pnl_r` and
+        `setup_type` only exist once `scripts/migrate_ledger_integrity.py` has run,
+        and a query that names either errors on whichever schema doesn't have it
+        (`column "pnl_r" does not exist`). Reading whatever sqlalchemy hands back
+        via `.get()` — and deriving `pnl_r` through `derive_pnl_r` — works on either
+        schema unchanged.
+        """
+        from core.desk.r_multiple import derive_pnl_r
+
         try:
             async with self._engine.begin() as conn:
                 query = """
-                    SELECT symbol, side, strategy, entry_time, exit_time,
-                           pnl, pnl_r, exit_reason, setup_type
-                    FROM bot_trades
+                    SELECT * FROM bot_trades
                     WHERE DATE(entry_time) BETWEEN :start AND :end
                       AND exit_time IS NOT NULL
+                      AND mode = 'live'
                     ORDER BY exit_time ASC
                 """
                 result = await conn.execute(text(query), {"start": str(start), "end": str(end)})
                 rows = result.mappings().all()
                 trades = []
                 for row in rows:
-                    symbol = row["symbol"]
+                    symbol = row.get("symbol")
+                    pnl = float(row["pnl"]) if row.get("pnl") is not None else None
                     trades.append({
                         "symbol": symbol.upper() if isinstance(symbol, str) else symbol,
-                        "side": row["side"],
-                        "strategy": row["strategy"],
-                        "entry_time": row["entry_time"],
-                        "exit_time": row["exit_time"],
-                        "pnl": float(row["pnl"]) if row["pnl"] is not None else None,
-                        "pnl_r": float(row["pnl_r"]) if row["pnl_r"] is not None else None,
-                        "exit_reason": row["exit_reason"],
-                        "setup_type": row["setup_type"],
+                        "side": row.get("side"),
+                        "strategy": row.get("strategy"),
+                        "entry_time": row.get("entry_time"),
+                        "exit_time": row.get("exit_time"),
+                        "pnl": pnl,
+                        "pnl_r": derive_pnl_r(row.get("pnl_r"), pnl, row.get("entry_price"),
+                                             row.get("stop_loss"), row.get("quantity")),
+                        "exit_reason": row.get("exit_reason"),
+                        "setup_type": row.get("setup_type"),
                     })
                 return trades
         except Exception as exc:
