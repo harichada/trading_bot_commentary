@@ -1,5 +1,24 @@
 # Changelog
 
+## 2026-09-25
+- feat(strategy-hunt): full strategy-fit system — shared candidate-family library
+  (`strategies/families/`: ten intraday and swing families, common entry/grid/de-dup helpers) used by
+  both the offline research pipeline and the live engine; the offline walk-forward pipeline
+  (`research/strategy_hunt/`, subcommands export/context/news/earnings/calibrate/run/score/report/all)
+  with a realistic cost model (Corwin-Schultz spread, volume-scaled slippage with a calibration
+  override, sell fees, 3% short borrow), split-adjusted bars, per-symbol fit table with t-stat/CI
+  floors, cold-start classifier fallback, and a portfolio replay of the PASS lane against the bot's
+  real sizing rules; a strategy-fit gate in the live engine (`core/strategy_fit_gate.py`, wired after
+  the regime gate) that is off by default and shadow-only (`STRATEGY_FIT_SHADOW=True`) when enabled;
+  swing-lane multi-session exit support (`SWING_ALLOW_OVERNIGHT`, `SWING_MAX_HOLD_SESSIONS`); fit-lane
+  adapters (`strategies/fit_lane.py`) that route governed signals through their family's verdict,
+  shadow-first per family via `FIT_LANES_ENABLED` / `FIT_LANE_LIVE_ENTRIES_ENABLED`; a "Strategy fit"
+  section in `tools/bot_monitor.py`'s report; and a read-only `GET /api/strategy-fit` endpoint. Nightly
+  cron scheduling and full docs in `docs/research/strategy_hunt.md` and
+  `docs/BOT_OPERATIONS_MANUAL.md` § "Strategy fit gate". Plan:
+  `docs/superpowers/plans/2026-09-25-strategy-hunt-full-system.md`; spec:
+  `docs/superpowers/specs/2026-09-24-strategy-hunt-design.md`.
+
 ## 2026-09-21 — fix: Day-trade RSI missing from reasoning + breakout hard veto (v-rsi-breakout-veto-2026-09-21)
 
 ### Problem

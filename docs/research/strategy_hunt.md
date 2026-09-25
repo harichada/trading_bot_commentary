@@ -58,3 +58,127 @@ All eight flags follow the config manager's env-var-then-yaml-then-default
 precedence (`env ENABLE_STRATEGY_FIT_GATE=1`, yaml
 `trading.enable_strategy_fit_gate: true`, etc. — see
 `core/config.py`, search `v-strategy-fit-2026-09-25`).
+
+## Run
+
+The pipeline is a sequence of subcommands under `python -m research.strategy_hunt`, each
+reading/writing under `--root` (default `data/strategy_hunt/`):
+
+    set -a; . ./.env; set +a
+    PY=/home/nvidia/anaconda3/envs/trading-bot/bin/python
+    $PY -m research.strategy_hunt export --min-days 250        # Postgres minute_bars -> bars5/daily Parquet
+    $PY -m research.strategy_hunt context --symbols NVDA,TSLA   # SPY/VIX regime inputs + per-symbol splits
+    $PY -m research.strategy_hunt news --symbols NVDA,TSLA      # Alpaca news, incremental
+    $PY -m research.strategy_hunt earnings --symbols NVDA,TSLA  # yfinance earnings dates
+    $PY -m research.strategy_hunt calibrate                     # realized fill slippage from Postgres fills
+    $PY -m research.strategy_hunt run --workers 12              # walk-forward per symbol; incremental, safe to rerun
+    $PY -m research.strategy_hunt run --force                   # recompute everything
+    $PY -m research.strategy_hunt run --shuffle-seed 7 --root data/strategy_hunt_shuffle   # structure-destroying control
+    $PY -m research.strategy_hunt score --no-coldstart          # verdicts + fit snapshot + report
+    $PY -m research.strategy_hunt score --root data/strategy_hunt_shuffle --no-coldstart
+    cp data/strategy_hunt_shuffle/fit/strategy_fit.json data/strategy_hunt/fit/strategy_fit_shuffle.json
+    $PY -m research.strategy_hunt report                        # rebuild the report from an existing fit snapshot
+    $PY -m research.strategy_hunt scorecard --family orb        # Stage A shadow-resolver scorecard for one family
+    $PY -m research.strategy_hunt all --workers 12              # export -> context -> news -> earnings -> calibrate -> run -> score
+
+Controls for cost sensitivity use `--cost-mult 0.5` / `2.0` with their own `--root`, then copy the
+JSON to `fit/strategy_fit_cost_0.5.json` / `fit/strategy_fit_cost_2.0.json` before `score` so the
+report picks them up. `all` is what the nightly cron job (see "Scheduling" above) runs; the other
+subcommands are for ad hoc reruns of one stage (e.g. re-running `score` after editing the verdict
+floors without re-simulating).
+
+## Outputs
+
+| Path | Content |
+|---|---|
+| `data/strategy_hunt/bars5/<SYM>.parquet`, `daily/`, `news/`, `earnings/`, `splits/` | Inputs (git-ignored) |
+| `data/strategy_hunt/trades/<SYM>.parquet` | All out-of-sample trades for the symbol |
+| `data/strategy_hunt/choices/<SYM>.json` | Chosen parameters per window and family |
+| `data/strategy_hunt/checkpoints/<SYM>.json` | Skip marker for incremental runs |
+| `data/strategy_hunt/calibration.json` | Realized slippage summary (`calibrate`); used as a fixed slippage override when usable |
+| `data/strategy_hunt/fit/strategy_fit.json` | Latest fit snapshot (what the engine gate and `/api/strategy-fit` read) |
+| `research/reports/strategy_hunt/<date>-strategy-hunt.md` | Report (verdict table, pooled metrics, portfolio replay, cost calibration) |
+| `research/reports/strategy_hunt/<date>.json` | Run manifest (symbol/family counts, elapsed, errors) |
+| `research/reports/strategy_hunt/<date>-equity-curve.csv` | Monthly equity curve from the portfolio replay |
+| `research/reports/strategy_hunt/scorecard-<family>-<date>.md` | Stage A shadow-resolver scorecard for one family |
+
+## Verdicts
+
+PASS requires n ≥ 150, sessions ≥ 10, PF ≥ 1.30, WR ≥ 48%, exp_R ≥ +0.05, max DD ≤ 20 R,
+stability ≥ 0.6, decay ≥ 0.5, t_stat ≥ 2.0, and exp_r_lb ≥ 0.0 (see
+`research/strategy_hunt/score/verdict.py`, `FLOORS`). The last two floors are statistical-significance
+guards on top of v1's original eight: `t_stat` is the trade-level mean-R t-statistic and `exp_r_lb` is
+the lower bound of its confidence interval, so a (symbol, family, side) combo cannot PASS on a lucky
+small sample with a wide confidence interval even if its point-estimate exp_R clears +0.05.
+
+WATCH requires n ≥ 60, exp_R > 0, and PF ≥ 1.1 but falls short of at least one PASS floor. Cold-start
+rows (symbols below `COLDSTART_MAX_N` walk-forward trades, scored by the trained classifier in
+`research/strategy_hunt/fit/coldstart.py` instead of the floors above) can only be WATCH or FAIL —
+never PASS — since there isn't enough direct evidence yet. Everything else is FAIL.
+
+## Split handling
+
+`research/strategy_hunt/data/splits.py` fetches each symbol's split history (default fetcher:
+yfinance) via `update_splits` and caches it to `data/strategy_hunt/splits/<SYM>.parquet` as
+`(date, prior_multiplier)` rows — `prior_multiplier` back-adjusts all bars *before* the split date so
+price levels are continuous across it. `detect_splits` independently flags likely splits straight from
+the daily bars (a large overnight open/close ratio against one of the common split ratios, with
+same-day intraday move capped so ordinary gaps aren't mistaken for splits) as a sanity cross-check
+against the fetched history. `run.py`'s `process_symbol` always loads bars through
+`data.splits.load_adjusted`, so every family sees split-adjusted prices; entries, stops, and R-multiples
+are computed on adjusted prices throughout.
+
+## Costs
+
+`research/strategy_hunt/sim/costs.py`'s `CostModel` prices every fill with:
+
+- **Spread** — a monthly half-spread estimated from the Corwin-Schultz high/low estimator
+  (`corwin_schultz_spread`), clipped to `[0.0002, 0.005]` and looked up by the entry/exit month.
+- **Slippage** — volume-scaled by default: `0.0001 * participation_pct` where `participation_pct` is
+  the requested notional's share of the bar's dollar volume, floored at `0.0001`. `calibrate` can
+  replace this with a fixed `slippage_override` fraction derived from realized (broker fill vs.
+  decision price) slippage in Postgres, when the sample is large/consistent enough
+  (`calibration_summary`'s `usable` flag; `slippage_override_from` reads it back for `run`).
+- **Sell fees** — a flat `2.946e-5` of notional on every sell (SEC/TAF-style), long exits and short
+  entries alike.
+- **Borrow** — 3% annualized (`BORROW_RATE_ANNUAL = 0.03`), charged only on short positions,
+  prorated by `hold_sessions / 252` and added to the short's exit fill.
+
+`--cost-mult` scales spread, slippage floor, borrow rate, and any slippage override together
+(`CostModel.scaled`) for the cost-sensitivity control runs described under "Run" above.
+
+## Portfolio replay
+
+After scoring, `report.py` filters all pooled trades down to the (symbol, family, side) combos with a
+walk-forward PASS verdict (`portfolio.pass_lane_trades`) and replays them chronologically through the
+bot's real position-sizing rules (`portfolio.SizingRules`: $43,500 starting equity, 1.5% risk per trade,
+0.5 Kelly fraction, day-trade risk halved, $10,000 / 20%-of-buying-power notional cap, 5 concurrent
+positions, 0.69 buying-power ratio) to produce a dollar equity curve — a sanity check that the PASS
+lane, taken together under real capacity constraints, is still profitable and not just a sum of
+individually-profitable-but-mutually-exclusive edges. The replay counts trades skipped for capacity
+(`max_positions` full), a symbol already having an open position, or a computed size of zero shares,
+alongside final equity, total return %, max drawdown %, and daily Sharpe. The "Portfolio replay of PASS
+lanes" section of the Markdown report renders this summary; the monthly equity curve is also written to
+`research/reports/strategy_hunt/<date>-equity-curve.csv`.
+
+## Timing
+
+From the Task 23 smoke run on `NVDA,TSLA,AMD` (2026-09-25, all ten families, warm Postgres cache):
+
+| Step | Wall-clock | Notes |
+|---|---|---|
+| `export --symbols NVDA,TSLA,AMD` | 12s | SPY +103,569, VIX +0 (not in Postgres `minute_bars`), NVDA +112,153, TSLA +112,163, AMD +112,149 bars |
+| `context --symbols NVDA,TSLA,AMD` | 6s | SPY +8,590, VIX +1,463 (yfinance fallback since Postgres had none — confirmed `data/strategy_hunt/daily/VIX.parquet` exists after); splits NVDA=6, TSLA=2, AMD=4 |
+| `news --symbols NVDA,TSLA,AMD` | 41s | NVDA +19,015, TSLA +29,632, AMD +7,424 headlines |
+| `earnings --symbols NVDA,TSLA,AMD` | 2s | 12 dates per symbol |
+| `calibrate` | 19s | n=108 realized fills, median_frac=0.000127, usable=True |
+| `run --symbols NVDA,TSLA,AMD --workers 3` | 24s wall (3 in parallel) | per-symbol (sequential re-run for isolated timing): NVDA 18.5s / 1,081 trades, TSLA 23.0s / 1,230 trades, AMD 12.7s / 1,023 trades |
+| `score --no-coldstart` | 1.4s | verdicts: FAIL=43, WATCH=1, PASS=0 (three-symbol sample; too small for any combo to clear the n≥150 PASS floor on most families) |
+
+Full-universe estimate: at ~18s/symbol average for `run` across all ten families and ~500 symbols in
+the universe, `run --workers 12` is roughly `500 * 18 / 12 ≈ 750s` (~13 minutes), well under the
+12-hour budget noted for Task 21. `export` and `news` are bound by Postgres/Alpaca round-trips rather
+than CPU; the 12s/41s above are for three symbols against a local, low-latency Postgres instance and
+should not be extrapolated linearly to the full ~500-symbol universe over a 5-year window — the
+Task 21 plan budgets 10–30 minutes for that full export, which this smoke run does not contradict but
+also does not confirm at scale.
