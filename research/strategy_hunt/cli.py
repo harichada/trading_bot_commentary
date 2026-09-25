@@ -8,7 +8,7 @@ import sys
 import time
 from pathlib import Path
 
-from research.strategy_hunt.run import DEFAULT_ROOT, run_symbols, score_root, write_manifest
+from research.strategy_hunt.run import DEFAULT_ROOT, run_symbols, score_regime_root, score_root, write_manifest
 from strategies.families import family_names
 
 logger = logging.getLogger("strategy_hunt.cli")
@@ -44,6 +44,7 @@ def cmd_export(a: argparse.Namespace) -> int:
 
 def cmd_context(a: argparse.Namespace) -> int:
     import requests
+    from research.strategy_hunt.context import build_universe_context
     from research.strategy_hunt.data.context import ensure_context
     from research.strategy_hunt.data.splits import update_splits, yfinance_splits_fetcher
 
@@ -57,6 +58,22 @@ def cmd_context(a: argparse.Namespace) -> int:
             print(f"splits {s}: {n}")
         except Exception as exc:
             print(f"splits {s}: ERROR {exc}")
+    try:
+        uc = build_universe_context(a.root)
+        print(f"context: universe -> {uc}")
+    except Exception as exc:
+        print(f"context: universe ERROR {exc}")
+    return 0
+
+
+def cmd_universe_context(a: argparse.Namespace) -> int:
+    """Rebuild only <root>/context/universe_daily.parquet from whatever bars5/earnings/news are
+    already on disk -- no SPY/VIX/splits fetch. Useful to refresh the cross-sectional context
+    after `news`/`earnings` land, without re-running the whole `context` subcommand."""
+    from research.strategy_hunt.context import build_universe_context
+
+    uc = build_universe_context(a.root)
+    print(f"universe-context: {uc}")
     return 0
 
 
@@ -122,11 +139,15 @@ def cmd_score(a: argparse.Namespace) -> int:
 
     computed_at = time.strftime("%Y-%m-%dT%H:%M:%S")
     rows = score_root(a.root, _families_arg(a.families), computed_at, coldstart=not a.no_coldstart)
+    # v-playbook-desk-b1-2026-09-25: regime-conditioned per-symbol rows and the universe-pooled
+    # (family, side, regime) rows -- without this the gate's lookup_regime always falls back to
+    # the unconditional lookup(), since write_fit never sees any regime/pooled rows to persist.
+    reg_rows, pool_rows = score_regime_root(a.root, _families_arg(a.families), computed_at)
     engine = None
     if a.postgres:
         from sqlalchemy import create_engine
         engine = create_engine(os.environ["POSTGRES_DSN"])
-    out = write_fit(rows, a.root, computed_at, engine=engine)
+    out = write_fit(rows, a.root, computed_at, engine=engine, regime_rows=reg_rows, pooled_rows=pool_rows)
     counts = {}
     for r in rows:
         counts[r["verdict"]] = counts.get(r["verdict"], 0) + 1
@@ -232,9 +253,9 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--no-coldstart", action="store_true")
         sp.add_argument("--postgres", action="store_true")
 
-    for name, fn in (("export", cmd_export), ("context", cmd_context), ("news", cmd_news), ("earnings", cmd_earnings),
-                     ("calibrate", cmd_calibrate), ("run", cmd_run), ("score", cmd_score), ("report", cmd_report),
-                     ("all", cmd_all)):
+    for name, fn in (("export", cmd_export), ("context", cmd_context), ("universe-context", cmd_universe_context),
+                     ("news", cmd_news), ("earnings", cmd_earnings), ("calibrate", cmd_calibrate), ("run", cmd_run),
+                     ("score", cmd_score), ("report", cmd_report), ("all", cmd_all)):
         sp = sub.add_parser(name)
         common(sp)
         sp.set_defaults(fn=fn)

@@ -13,6 +13,7 @@ import numpy as np
 import pandas as pd
 
 from research.strategy_hunt import __version__
+from research.strategy_hunt.context import load_context_slice
 from research.strategy_hunt.data.bars import load_bars5, load_daily
 from research.strategy_hunt.data.earnings import earnings_days
 from research.strategy_hunt.data.news import load_news
@@ -114,14 +115,21 @@ def process_symbol(symbol: str, root: Path, family_names: list[str], notional: f
         regime = ctx["regime"]
         lookup = (lambda ts: regime_at(regime, ts)) if len(regime) else None
         cost_model = CostModel.from_bars(bars5, notional, slippage_override=override).scaled(cost_mult)
-        ind = indicator_frame(bars5, daily, ctx["spy5"])
+        # v-playbook-desk-b1-2026-09-25: the symbol's cross-sectional universe-context slice
+        # (rvol rank, RS rank, catalysts, ...), joined onto `ind` as `ctx_*` columns so the
+        # in-play families (strategies/families/inplay.py) have something to read. Empty
+        # (all-NaN after the join) when the universe context hasn't been built yet, in which
+        # case those families propose nothing -- never an error.
+        universe_ctx = load_context_slice(root, symbol)
+        ind = indicator_frame(bars5, daily, ctx["spy5"], context=universe_ctx)
         table = build_session_table(bars5)
         windows = build_windows(bars5.index[0], bars5.index[-1])
         all_trades, choices = [], {}
         for name in family_names:
             fam = get_family(name)
             trades, ch = run_symbol_family(fam, symbol, bars5, daily, news, cost_model, earnings, windows,
-                                           regime_lookup=lookup, spy5=ctx["spy5"], ind=ind, table=table)
+                                           regime_lookup=lookup, spy5=ctx["spy5"], ind=ind, table=table,
+                                           context=universe_ctx)
             all_trades.extend(t.to_dict() for t in trades)
             choices[name] = ch
         tp = trades_path(root, symbol)

@@ -124,6 +124,79 @@ def test_checkpoint_invalidated_by_calibration_change(root):
 
 
 # ──────────────────────
+# v-playbook-desk-b1-2026-09-25 — process_symbol threads the universe context into families
+# ──────────────────────
+
+def _ctx_toy(bars5, ind, daily, news, params):
+    from strategies.families.context import in_play
+    out = []
+    mask = in_play(ind, 1) & (ind["bar_of_day"].to_numpy() == 10)
+    for i in np.flatnonzero(mask):
+        if i + 1 < len(bars5):
+            px = float(bars5["open"].iloc[i + 1])
+            e = make_entry(bars5, int(i), "long", px - 1.0, px + 2.0, 30, "intraday", "ctxtoy")
+            if e:
+                out.append(e)
+    return one_per_session(out)
+
+
+CTX_TOY = Family("ctxtoy", _ctx_toy, {"w": [1.0]}, "intraday", ("long",))
+
+
+def _write_universe_context(root, symbol, dates):
+    """Hand-written <root>/context/universe_daily.parquet with ctx_rvol_rank5 == 1 for `symbol`
+    on every date -- everything `strategies.families.context.in_play` needs, without depending
+    on `build_universe_context`'s earnings/news file plumbing."""
+    from strategies.families.context import CTX_COLUMNS
+    df = pd.DataFrame({c: np.nan for c in CTX_COLUMNS}, index=pd.DatetimeIndex(dates, name="date"))
+    df["rvol_rank5"] = 1.0
+    out = df.reset_index()
+    out.insert(1, "symbol", symbol.upper())
+    out = out[["date", "symbol", *CTX_COLUMNS]]
+    ctx_dir = root / "context"
+    ctx_dir.mkdir(parents=True, exist_ok=True)
+    out.to_parquet(ctx_dir / "universe_daily.parquet", index=False)
+
+
+def test_process_symbol_passes_context_slice_to_families(root, monkeypatch):
+    """A family that only proposes entries where ctx_rvol_rank5 ranks in the top-N must be silent
+    when process_symbol has no universe context on disk yet (load_context_slice returns an empty
+    frame), and must fire once research/strategy_hunt/context.py::build_universe_context (or, here,
+    a hand-written equivalent) has written one."""
+    from research.strategy_hunt.run import process_symbol
+    from strategies.families import registry
+    monkeypatch.setitem(registry.FAMILIES, "ctxtoy", CTX_TOY)
+
+    rec = process_symbol("AAA", root, ["ctxtoy"], force=True)
+    assert rec["status"] == "done" and rec["n_trades"] == 0
+
+    dates = sorted(set(_bars().index.normalize()))
+    _write_universe_context(root, "AAA", dates)
+    rec2 = process_symbol("AAA", root, ["ctxtoy"], force=True)
+    assert rec2["status"] == "done" and rec2["n_trades"] > 0
+
+
+def test_version_bump_invalidates_checkpoint(root):
+    """__version__ feeds _config_key, which is part of the checkpoint's stored config -- bumping
+    it (0.2.0 -> 0.3.0 for this phase, so the newly-wired context reaches every symbol on the next
+    nightly run) must force a re-run even though last_bar and every other config field match."""
+    import json as _json
+    from research.strategy_hunt.run import checkpoint_path, process_symbol
+    assert process_symbol("AAA", root, ["toy"])["status"] == "done"
+    assert process_symbol("AAA", root, ["toy"])["status"] == "skipped"
+    cp = checkpoint_path(root, "AAA")
+    rec = _json.loads(cp.read_text())
+    rec["config"]["version"] = "0.0.1-stale"
+    cp.write_text(_json.dumps(rec))
+    assert process_symbol("AAA", root, ["toy"])["status"] == "done"
+
+
+def test_version_is_0_3_0():
+    from research.strategy_hunt import __version__
+    assert __version__ == "0.3.0"
+
+
+# ──────────────────────
 # v-playbook-desk-b1-2026-09-25 — regime-conditioned and pooled scoring
 # ──────────────────────
 

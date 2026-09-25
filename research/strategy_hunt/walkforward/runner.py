@@ -62,10 +62,14 @@ def select_params(pre: dict[str, list[SimTrade]], window: Window, min_trades: in
 def run_symbol_family(family: Family, symbol: str, bars5: pd.DataFrame, daily: pd.DataFrame, news: pd.DataFrame,
                       cost_model: CostModel, earnings: set, windows: list[Window],
                       regime_lookup: Optional[Callable[[pd.Timestamp], str]] = None, spy5: Optional[pd.DataFrame] = None,
-                      ind: Optional[pd.DataFrame] = None, table: Optional[SessionTable] = None) -> tuple[list[SimTrade], list[dict[str, Any]]]:
+                      ind: Optional[pd.DataFrame] = None, table: Optional[SessionTable] = None,
+                      context: Optional[pd.DataFrame] = None) -> tuple[list[SimTrade], list[dict[str, Any]]]:
+    """`context` (v-playbook-desk-b1-2026-09-25) is the symbol's universe-context slice from
+    `research.strategy_hunt.context.load_context_slice`; only consulted when `ind` isn't already
+    precomputed (a caller that hands in `ind` has already decided whether to join it)."""
     if bars5.empty or not windows:
         return [], []
-    ind = ind if ind is not None else indicator_frame(bars5, daily, spy5)
+    ind = ind if ind is not None else indicator_frame(bars5, daily, spy5, context)
     pre = precompute(family, symbol, bars5, ind, daily, news, cost_model, earnings, regime_lookup, table)
     trades: list[SimTrade] = []
     choices: list[dict[str, Any]] = []

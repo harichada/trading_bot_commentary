@@ -52,6 +52,47 @@ def test_precompute_one_key_per_combo_and_select_uses_in_sample_only():
     assert json.loads(select_params(pre, tiny, grid=TOY.grid)) == {"width": 1.0}
 
 
+# ──────────────────────
+# v-playbook-desk-b1-2026-09-25 — run_symbol_family threads context into indicator_frame
+# ──────────────────────
+
+def _ctx_toy(bars5, ind, daily, news, params):
+    from strategies.families.context import in_play
+    out = []
+    mask = in_play(ind, 1) & (ind["bar_of_day"].to_numpy() == 10)
+    for i in np.flatnonzero(mask):
+        if i + 1 < len(bars5):
+            px = float(bars5["open"].iloc[i + 1]); w = params["width"]
+            e = make_entry(bars5, int(i), "long", px - w, px + 2 * w, 30, "intraday", "ctxtoy")
+            if e: out.append(e)
+    return one_per_session(out)
+
+
+CTX_TOY = Family("ctxtoy", _ctx_toy, {"width": [1.0]}, "intraday", ("long",))
+
+
+def test_run_symbol_family_context_gates_a_ctx_reading_family():
+    """A family that only proposes entries where ctx_rvol_rank5 is in the top-N must fire when
+    `run_symbol_family` is given a context slice, and stay silent (0 trades) without one -- since
+    the join in indicator_frame leaves ctx_rvol_rank5 all-NaN and `in_play` is never true."""
+    from research.strategy_hunt.walkforward.runner import run_symbol_family
+    from research.strategy_hunt.walkforward.windows import build_windows
+    from research.strategy_hunt.data.bars import to_daily
+    b = _bars(start="2023-01-03", sessions=520); daily = to_daily(b)
+    windows = build_windows(b.index[0], b.index[-1])
+
+    trades_no_ctx, _ = run_symbol_family(CTX_TOY, "X", b, daily, pd.DataFrame(), ZERO_COSTS, set(), windows)
+    assert trades_no_ctx == []
+
+    dates = pd.DatetimeIndex(sorted(set(b.index.normalize())), name="date")
+    context = pd.DataFrame({"rvol_rank5": 1.0}, index=dates)
+    trades_ctx, _ = run_symbol_family(CTX_TOY, "X", b, daily, pd.DataFrame(), ZERO_COSTS, set(), windows,
+                                      context=context)
+    assert trades_ctx
+    for t in trades_ctx:
+        assert t.family == "ctxtoy"
+
+
 def test_run_symbol_family_keeps_only_oos_entries_and_tags_windows():
     from research.strategy_hunt.walkforward.runner import run_symbol_family
     from research.strategy_hunt.walkforward.windows import build_windows
