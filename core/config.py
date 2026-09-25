@@ -4071,6 +4071,131 @@ class Config:
             custom = [a.strip().lower() for a in custom.split(',') if a.strip()]
         return custom
 
+    # ══════════════════════════════════════════════════════════════════════════
+    # v-strategy-fit-2026-09-25: Strategy-fit gate, fit lanes, and swing lanes
+    # ══════════════════════════════════════════════════════════════════════════
+
+    @property
+    def ENABLE_STRATEGY_FIT_GATE(self) -> bool:
+        """v-strategy-fit-2026-09-25: master switch for the strategy-fit gate.
+
+        When True, entries are checked against the strategy-fit model
+        (STRATEGY_FIT_PATH) before being allowed through. When False
+        (default), the gate is fully off and has no effect on entries.
+
+        Default False. Set via env ENABLE_STRATEGY_FIT_GATE=1 or yaml
+        trading.enable_strategy_fit_gate: true.
+        """
+        env_val = os.getenv("ENABLE_STRATEGY_FIT_GATE")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.enable_strategy_fit_gate', False))
+
+    @property
+    def STRATEGY_FIT_SHADOW(self) -> bool:
+        """v-strategy-fit-2026-09-25: run the strategy-fit gate in shadow
+        mode (log the decision but never block an entry).
+
+        Default True: even when ENABLE_STRATEGY_FIT_GATE is on, the gate
+        starts in shadow-only mode until explicitly promoted to enforce.
+
+        Default via env STRATEGY_FIT_SHADOW=0 or yaml
+        trading.strategy_fit_shadow: false.
+        """
+        env_val = os.getenv("STRATEGY_FIT_SHADOW")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.strategy_fit_shadow', True))
+
+    @property
+    def STRATEGY_FIT_PATH(self) -> str:
+        """v-strategy-fit-2026-09-25: path to the strategy-fit model/data
+        file consulted by the strategy-fit gate.
+
+        Default "data/strategy_hunt/fit/strategy_fit.json". Override via
+        env STRATEGY_FIT_PATH or yaml trading.strategy_fit_path.
+        """
+        env_val = os.getenv("STRATEGY_FIT_PATH")
+        if env_val is not None:
+            return env_val
+        return str(self.manager.get('trading.strategy_fit_path', 'data/strategy_hunt/fit/strategy_fit.json'))
+
+    @property
+    def STRATEGY_FIT_MAX_AGE_DAYS(self) -> int:
+        """v-strategy-fit-2026-09-25: maximum age (days) of the
+        strategy-fit file before it's treated as stale by the gate.
+
+        Default 7. Override via env STRATEGY_FIT_MAX_AGE_DAYS or yaml
+        trading.strategy_fit_max_age_days.
+        """
+        env_val = os.getenv("STRATEGY_FIT_MAX_AGE_DAYS")
+        if env_val is not None:
+            return int(env_val)
+        return int(self.manager.get('trading.strategy_fit_max_age_days', 7))
+
+    @property
+    def FIT_LANES_ENABLED(self) -> tuple:
+        """v-strategy-fit-2026-09-25: comma-separated family names to
+        register live strategy-fit adapters for.
+
+        Default "" (empty tuple; no fit-lane adapters registered).
+        Override via env FIT_LANES_ENABLED (comma list, e.g.
+        "orb,vwap_reversion") or yaml trading.fit_lanes_enabled.
+        """
+        env_val = os.getenv("FIT_LANES_ENABLED")
+        if env_val is not None:
+            raw = env_val
+        else:
+            raw = self.manager.get('trading.fit_lanes_enabled', "")
+        if isinstance(raw, (list, tuple)):
+            return tuple(str(v).strip() for v in raw if str(v).strip())
+        return tuple(v.strip() for v in str(raw).split(',') if v.strip())
+
+    @property
+    def FIT_LANE_LIVE_ENTRIES_ENABLED(self) -> tuple:
+        """v-strategy-fit-2026-09-25: comma-separated family names allowed
+        to place LIVE entries via their fit lane.
+
+        A family absent from this list is shadow-only, even if it's
+        present in FIT_LANES_ENABLED. Default "" (empty tuple).
+        Override via env FIT_LANE_LIVE_ENTRIES_ENABLED (comma list) or
+        yaml trading.fit_lane_live_entries_enabled.
+        """
+        env_val = os.getenv("FIT_LANE_LIVE_ENTRIES_ENABLED")
+        if env_val is not None:
+            raw = env_val
+        else:
+            raw = self.manager.get('trading.fit_lane_live_entries_enabled', "")
+        if isinstance(raw, (list, tuple)):
+            return tuple(str(v).strip() for v in raw if str(v).strip())
+        return tuple(v.strip() for v in str(raw).split(',') if v.strip())
+
+    @property
+    def SWING_ALLOW_OVERNIGHT(self) -> bool:
+        """v-strategy-fit-2026-09-25: allow swing-lane positions to be
+        held overnight (across sessions) instead of forced flat by EOD.
+
+        Default False. Override via env SWING_ALLOW_OVERNIGHT=1 or yaml
+        trading.swing_allow_overnight: true.
+        """
+        env_val = os.getenv("SWING_ALLOW_OVERNIGHT")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.swing_allow_overnight', False))
+
+    @property
+    def SWING_MAX_HOLD_SESSIONS(self) -> int:
+        """v-strategy-fit-2026-09-25: maximum number of sessions a swing
+        lane position may be held before a forced exit.
+
+        Default 10. Override via env SWING_MAX_HOLD_SESSIONS or yaml
+        trading.swing_max_hold_sessions.
+        """
+        env_val = os.getenv("SWING_MAX_HOLD_SESSIONS")
+        if env_val is not None:
+            return int(env_val)
+        return int(self.manager.get('trading.swing_max_hold_sessions', 10))
+
 
 # Initialize configuration
 config = Config()
