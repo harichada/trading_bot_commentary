@@ -83,7 +83,8 @@ class TestEngineWiring:
         assert "_conviction_sizer" in src
         anchor = src.find("regime_allocator shadow error")
         assert anchor != -1
-        window = src[anchor: anchor + 3000]
+        # The strategy-fit gate (v-strategy-fit-2026-09-25) sits between allocator and conviction hooks
+        window = src[anchor: anchor + 8000]
         assert "conviction" in window, (
             "conviction shadow hook must follow the allocator hook in "
             "the signal router"
