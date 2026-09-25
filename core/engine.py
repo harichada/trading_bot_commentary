@@ -55,6 +55,7 @@ from strategies.builtin import (BreakoutStrategyWithCommentary,
                                 DayTradeMomentumShortStrategy,
                                 ORBContractionRVOLStrategy)
 from strategies.news_strategy import FreeNewsSignalStrategy
+from strategies.fit_lane import FitLaneStrategy
 from data_providers.realtime import RealTimeDataProvider, DummyDataProvider
 from data_providers.schwab import SchwabDataProvider
 
@@ -387,7 +388,18 @@ class TradingEngineWithCommentary:
             logger.info("orb_contraction_rvol: strategy enabled (sim_shadow=%s, live=%s)",
                         Config().ORB_SIM_SHADOW_ENABLED,
                         Config().ORB_LIVE_ENTRIES_ENABLED)
-        
+
+        # v-strategy-fit-2026-09-25: generic fit-lane adapters (shadow-first)
+        self._fit_bars_cache: dict[str, tuple] = {}
+        for _fam in Config().FIT_LANES_ENABLED:
+            try:
+                _lane = FitLaneStrategy(self.commentary, _fam, self._strategy_fit, self._fit_bars_source,
+                                        lambda: Config().FIT_LANE_LIVE_ENTRIES_ENABLED)
+                self.strategies.append(_lane)
+                logger.info("fit_lane: registered family=%s live=%s", _fam, _fam in Config().FIT_LANE_LIVE_ENTRIES_ENABLED)
+            except Exception as _fl_exc:
+                logger.warning("fit_lane: failed to register %s: %s", _fam, _fl_exc)
+
         # v-feature-snapshot-2026-09-09: wire engine ref on all strategies
         # so they can emit DecisionSnapshots via db_logger
         for strat in self.strategies:
@@ -472,6 +484,46 @@ class TradingEngineWithCommentary:
             'slippage': [],
             'fill_rate': {'attempts': 0, 'fills': 0}
         }
+
+    # v-strategy-fit-2026-09-25: bars_source callable for FitLaneStrategy
+    # adapters. Sync (families run in a worker thread via asyncio.to_thread),
+    # cached per analysis pass in self._fit_bars_cache (reset each pass by
+    # _analyze_markets_with_commentary). Never raises — a fetch failure
+    # degrades to two empty frames so the fit-lane skips cleanly.
+    def _fit_bars_source(self, symbol: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
+        if symbol in self._fit_bars_cache:
+            return self._fit_bars_cache[symbol]
+        try:
+            bars5 = self.data_provider.get_market_data(
+                symbol, period_type="day", period=10, frequency_type="minute", frequency=5,
+            )
+            bars5 = bars5.rename(columns={c: c.lower() for c in bars5.columns})
+            idx = bars5.index
+            if getattr(idx, "tz", None) is not None:
+                idx = idx.tz_convert("America/New_York").tz_localize(None)
+            else:
+                idx = idx.tz_localize("UTC").tz_convert("America/New_York").tz_localize(None)
+            bars5.index = idx
+            bars5 = bars5.between_time("09:30", "15:55")
+
+            daily = self.data_provider.get_market_data(
+                symbol, period_type="year", period=1, frequency_type="daily", frequency=1,
+            )
+            daily = daily.rename(columns={c: c.lower() for c in daily.columns})
+            didx = daily.index
+            if getattr(didx, "tz", None) is not None:
+                didx = didx.tz_convert("America/New_York").tz_localize(None)
+            else:
+                didx = didx.tz_localize("UTC").tz_convert("America/New_York").tz_localize(None)
+            daily.index = didx.normalize()
+            daily.index.name = "date"
+
+            result = (bars5, daily)
+        except Exception as _fit_bars_exc:
+            logger.debug("fit_bars_source: failed for %s: %s", symbol, _fit_bars_exc)
+            result = (pd.DataFrame(), pd.DataFrame())
+        self._fit_bars_cache[symbol] = result
+        return result
 
     @property
     def auto_close_disabled(self) -> bool:
@@ -5586,6 +5638,8 @@ class TradingEngineWithCommentary:
         """
         # v-strategy-fit-2026-09-25: per-symbol strategy fit gate (after regime gate)
         self._fit_signals_this_pass = {}
+        # v-strategy-fit-2026-09-25: fit-lane bars cache reset each pass (Task 31)
+        self._fit_bars_cache = {}
         if Config().ENABLE_STRATEGY_FIT_GATE:
             try:
                 await asyncio.to_thread(self._strategy_fit.reload_if_changed)

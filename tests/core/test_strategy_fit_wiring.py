@@ -20,6 +20,13 @@ def test_engine_module_imports():
     importlib.import_module("core.engine")
 
 
+def test_engine_registers_fit_lanes_and_bars_source():
+    src = Path("core/engine.py").read_text()
+    assert "from strategies.fit_lane import FitLaneStrategy" in src
+    assert "for _fam in Config().FIT_LANES_ENABLED:" in src and "def _fit_bars_source(self, symbol" in src
+    assert "self._fit_bars_cache = {}" in src
+
+
 def test_engine_wires_swing_exits_and_overnight_gate():
     src = Path("core/engine.py").read_text()
     assert 'self._audit("swing_exit", position.symbol, "exit", why' in src
