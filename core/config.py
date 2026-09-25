@@ -4237,6 +4237,24 @@ class Config:
             return env_val
         return str(self.manager.get('trading.sentiment_backend', 'vader'))
 
+    @property
+    def SENTIMENT_FINBERT_PATH(self) -> str:
+        """v-playbook-desk-b1-2026-09-25: directory holding a locally prepared
+        FinBERT checkpoint in safetensors format (config.json, tokenizer
+        files, model.safetensors), built by `scripts/prepare_finbert.py`.
+
+        The hub copy of ProsusAI/finbert ships only a pickle checkpoint,
+        which transformers >= 5 refuses to load on torch < 2.6, so the
+        backend prefers this directory when it is complete and otherwise
+        falls back to the hub id. Relative paths resolve against the
+        working directory. Override via env SENTIMENT_FINBERT_PATH or yaml
+        trading.sentiment_finbert_path.
+        """
+        env_val = os.getenv("SENTIMENT_FINBERT_PATH")
+        if env_val is not None:
+            return env_val
+        return str(self.manager.get('trading.sentiment_finbert_path', 'models/finbert'))
+
 
 # Initialize configuration
 config = Config()

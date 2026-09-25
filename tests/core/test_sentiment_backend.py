@@ -204,3 +204,52 @@ class TestAvailableBackends:
         import core.sentiment_backend as sb
 
         assert isinstance(sb.available_backends(), tuple)
+
+
+# ---------------------------------------------------------------------------
+# Model source resolution (local safetensors dir vs hub id)
+# ---------------------------------------------------------------------------
+# transformers >= 5 refuses pickle (.bin) checkpoints on torch < 2.6, and the
+# hub copy of ProsusAI/finbert ships only .bin. The factory therefore prefers
+# a locally prepared safetensors directory (scripts/prepare_finbert.py) and
+# always requests safetensors loading.
+
+
+def test_finbert_model_source_prefers_prepared_local_dir(tmp_path, monkeypatch):
+    import core.sentiment_backend as sb
+
+    local = tmp_path / "finbert"
+    local.mkdir()
+    (local / "config.json").write_text("{}")
+    (local / "model.safetensors").write_bytes(b"")
+    monkeypatch.setenv("SENTIMENT_FINBERT_PATH", str(local))
+
+    assert sb._finbert_model_source() == str(local)
+
+
+def test_finbert_model_source_falls_back_to_hub_id_when_dir_incomplete(tmp_path, monkeypatch):
+    import core.sentiment_backend as sb
+
+    local = tmp_path / "finbert"
+    local.mkdir()
+    (local / "config.json").write_text("{}")  # weights missing
+    monkeypatch.setenv("SENTIMENT_FINBERT_PATH", str(local))
+
+    assert sb._finbert_model_source() == sb.FINBERT_MODEL
+
+
+def test_finbert_model_source_falls_back_to_hub_id_when_dir_missing(tmp_path, monkeypatch):
+    import core.sentiment_backend as sb
+
+    monkeypatch.setenv("SENTIMENT_FINBERT_PATH", str(tmp_path / "nope"))
+
+    assert sb._finbert_model_source() == sb.FINBERT_MODEL
+
+
+def test_config_sentiment_finbert_path_default_and_env(monkeypatch):
+    from core.config import Config
+
+    monkeypatch.delenv("SENTIMENT_FINBERT_PATH", raising=False)
+    assert Config().SENTIMENT_FINBERT_PATH == "models/finbert"
+    monkeypatch.setenv("SENTIMENT_FINBERT_PATH", "/x/y")
+    assert Config().SENTIMENT_FINBERT_PATH == "/x/y"

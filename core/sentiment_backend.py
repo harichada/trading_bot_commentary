@@ -18,6 +18,7 @@ reason, FinBERT scoring falls back to VADER and logs a one-time warning.
 from __future__ import annotations
 
 import logging
+import os
 from typing import Callable, List, Optional, Sequence
 
 logger = logging.getLogger("TradingBot")
@@ -42,6 +43,32 @@ def _vader_analyzer():
     return _VADER_ANALYZER
 
 
+FINBERT_LOCAL_REQUIRED_FILES = ("config.json", "model.safetensors")
+
+
+def _finbert_model_source() -> str:
+    """Resolve where to load FinBERT from: a prepared local safetensors
+    directory (`Config().SENTIMENT_FINBERT_PATH`, built by
+    `scripts/prepare_finbert.py`) when it is complete, else the hub id.
+
+    The hub copy of ProsusAI/finbert ships only a pickle checkpoint, which
+    transformers >= 5 refuses on torch < 2.6 (CVE-2025-32434), so a local
+    safetensors copy is the reliable path on this machine.
+    """
+    from core.config import Config
+
+    local = Config().SENTIMENT_FINBERT_PATH
+    try:
+        if local and all(
+            os.path.isfile(os.path.join(local, name))
+            for name in FINBERT_LOCAL_REQUIRED_FILES
+        ):
+            return local
+    except OSError as exc:  # unreadable path: fall through to the hub id
+        logger.debug("sentiment_backend: cannot inspect %s (%s)", local, exc)
+    return FINBERT_MODEL
+
+
 def _default_finbert_factory():
     """Build the real FinBERT text-classification pipeline.
 
@@ -53,13 +80,16 @@ def _default_finbert_factory():
     from transformers import pipeline
 
     device = 0 if torch.cuda.is_available() else -1
+    source = _finbert_model_source()
+    logger.info("sentiment_backend: loading FinBERT from %s (device=%s)", source, device)
     return pipeline(
         "text-classification",
-        model=FINBERT_MODEL,
+        model=source,
         top_k=None,
         device=device,
         truncation=True,
         max_length=FINBERT_MAX_LENGTH,
+        model_kwargs={"use_safetensors": True},
     )
 
 
