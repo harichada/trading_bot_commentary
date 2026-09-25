@@ -183,9 +183,14 @@ def cmd_promote(a: argparse.Namespace) -> int:
         if not ledger.exists():
             scorecards[name] = "none"
             continue
-        records = read_ledger(ledger)
-        trades = resolve(records, a.root, name)
-        scorecards[name] = stage_a_scorecard(trades, name)
+        try:
+            records = read_ledger(ledger)
+            trades = resolve(records, a.root, name)
+            scorecards[name] = stage_a_scorecard(trades, name)
+        except Exception:
+            logger.warning("promote: failed to resolve scorecard for family %s; treating as none", name,
+                           exc_info=True)
+            scorecards[name] = "none"
 
     rows = promotion_table(snapshot, scorecards, cfg.FIT_LANES_ENABLED, cfg.FIT_LANE_LIVE_ENTRIES_ENABLED,
                            cfg.SWING_ALLOW_OVERNIGHT)

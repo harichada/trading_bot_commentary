@@ -1,5 +1,6 @@
 """Tests for research/strategy_hunt/promote.py: the pure promotion-table builder and its
 markdown/`.env`-lines renderer. See task-33-brief.md for the interface contract."""
+import argparse
 
 
 def _row(symbol, strategy, side, verdict, source="walkforward"):
@@ -120,7 +121,9 @@ def test_promotion_table_one_row_per_known_family():
     assert all(r["blocker"] == "no_pass_symbols" for r in table)
 
 
-def test_promotion_table_live_flag_reflects_live_enabled_tuple():
+def test_promotion_table_already_live_family_recommends_hold_not_promote_live():
+    """An already-live family has nothing new to promote: recommendation must be "hold", not
+    "promote_live", so it's distinguishable from a family that's newly clear to promote."""
     from research.strategy_hunt.promote import promotion_table
 
     rows = _pass_rows("orb", 12)
@@ -129,7 +132,8 @@ def test_promotion_table_live_flag_reflects_live_enabled_tuple():
                              swing_allowed=False)
     orb = next(r for r in table if r["family"] == "orb")
     assert orb["live"] is True
-    assert orb["recommendation"] == "promote_live"
+    assert orb["blocker"] == ""
+    assert orb["recommendation"] == "hold"
 
 
 def test_render_promotion_includes_markdown_table_and_live_env_line():
@@ -165,3 +169,75 @@ def test_render_promotion_no_changes_recommended_message():
     table = promotion_table({"rows": {}}, {}, (), (), False)
     md = render_promotion(table)
     assert "no changes recommended" in md.lower()
+
+
+def test_render_promotion_omits_live_env_line_for_already_live_family_with_nothing_new():
+    """Nothing is newly promotable (orb is already live) -> no FIT_LANE_LIVE_ENTRIES_ENABLED
+    line should be printed at all, even though orb's own `live` flag is True."""
+    from research.strategy_hunt.promote import promotion_table, render_promotion
+
+    rows = _pass_rows("orb", 12)
+    snap = _snapshot(rows)
+    table = promotion_table(snap, {"orb": {"verdict": "GO"}}, lanes_enabled=("orb",), live_enabled=("orb",),
+                             swing_allowed=False)
+    md = render_promotion(table)
+    assert "FIT_LANE_LIVE_ENTRIES_ENABLED" not in md
+
+
+def test_render_promotion_live_line_unions_already_live_with_newly_promoted():
+    """When another family *is* newly promotable, the printed FIT_LANE_LIVE_ENTRIES_ENABLED
+    line is the union of already-live and newly-promoted families -- that's fine/expected."""
+    from research.strategy_hunt.promote import promotion_table, render_promotion
+
+    rows = _pass_rows("orb", 12) + _pass_rows("mr_20d", 12)
+    snap = _snapshot(rows)
+    scorecards = {"orb": {"verdict": "GO"}, "mr_20d": {"verdict": "GO"}}
+    table = promotion_table(snap, scorecards, lanes_enabled=("orb", "mr_20d"), live_enabled=("orb",),
+                             swing_allowed=True)
+    md = render_promotion(table)
+    line = next(l for l in md.splitlines() if l.startswith("FIT_LANE_LIVE_ENTRIES_ENABLED="))
+    assert set(line.split("=", 1)[1].split(",")) == {"orb", "mr_20d"}
+
+
+def test_promotion_table_watch_symbols_filtered_to_walkforward_source():
+    from research.strategy_hunt.promote import promotion_table
+
+    rows = _pass_rows("orb", 12) + [_row("COLD1", "orb", "long", "WATCH", source="coldstart"),
+                                     _row("SYM99", "orb", "long", "WATCH", source="walkforward")]
+    snap = _snapshot(rows)
+    table = promotion_table(snap, {}, lanes_enabled=(), live_enabled=(), swing_allowed=False)
+    orb = next(r for r in table if r["family"] == "orb")
+    assert orb["watch_symbols"] == 1
+
+
+def test_cmd_promote_isolates_a_single_familys_ledger_error(tmp_path, monkeypatch):
+    """One family's shadow ledger blows up in `resolve()`; `cmd_promote` must not abort the
+    whole run -- it logs a warning, treats that family's scorecard as "none", and still
+    produces a table (and exit code 0) covering every other family."""
+    from research.strategy_hunt import shadow_resolver as SR
+    from research.strategy_hunt.cli import cmd_promote
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "shadow_fit_orb.ndjson").write_text(
+        '{"symbol": "AAA", "side": "long", "ts": "2024-01-05T10:00:00", "entry_px": 100.0, '
+        '"stop_px": 99.0, "target_px": 102.0, "time_stop": 20, "hold_kind": "intraday", "tag": "t", '
+        '"params": {}, "verdict": "PASS", "score": 0.5}\n')
+
+    def _boom(records, root, family, cost_mult=1.0):
+        if family == "orb":
+            raise RuntimeError("boom: incompatible ledger")
+        return []
+
+    monkeypatch.setattr(SR, "resolve", _boom)
+
+    a = argparse.Namespace(root=tmp_path / "strategy_hunt_root")
+    rc = cmd_promote(a)
+    assert rc == 0
+
+    out = tmp_path / "docs" / "research" / "strategy_hunt_promotion.md"
+    assert out.exists()
+    text = out.read_text()
+    assert "| orb " in text
+    assert "| mr_20d " in text
+    assert "| vwap_reversion " in text

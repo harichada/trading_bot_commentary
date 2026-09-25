@@ -16,7 +16,9 @@ Blocker precedence (first that applies wins):
 
 Recommendation follows the blocker: no_pass_symbols/scorecard_missing -> "collect_shadow";
 not_registered -> "register_shadow"; scorecard_no_go/swing_overnight_disabled -> "hold";
-no blocker -> "promote_live".
+no blocker -> "promote_live" -- unless the family is already live (in `live_enabled`), in which
+case there's nothing to do and it's "hold" instead, so an already-promoted family is never
+recommended for (re-)promotion.
 """
 from __future__ import annotations
 
@@ -72,13 +74,16 @@ def promotion_table(snapshot: dict, scorecards: dict[str, dict], lanes_enabled: 
         family = get_family(name)
         frows = rows_by_family.get(name, [])
         pass_symbols = sum(1 for r in frows if r.get("verdict") == "PASS" and r.get("source") == "walkforward")
-        watch_symbols = sum(1 for r in frows if r.get("verdict") == "WATCH")
+        watch_symbols = sum(1 for r in frows if r.get("verdict") == "WATCH" and r.get("source") == "walkforward")
         registered = name in lanes_enabled
         live = name in live_enabled
         scorecard_verdict = _scorecard_verdict(scorecards, name)
 
         blocker = _blocker(pass_symbols, registered, scorecard_verdict, family.hold_kind, swing_allowed)
-        recommendation = _RECOMMENDATION_BY_BLOCKER[blocker]
+        if live and blocker == "":
+            recommendation = "hold"  # already promoted; nothing to do
+        else:
+            recommendation = _RECOMMENDATION_BY_BLOCKER[blocker]
 
         out.append({
             "family": name, "pass_symbols": pass_symbols, "watch_symbols": watch_symbols,
@@ -104,7 +109,13 @@ def render_promotion(rows: list[dict]) -> str:
                      f"{r['recommendation']} |")
 
     register = sorted({r["family"] for r in rows if r["registered"] or r["recommendation"] == "register_shadow"})
-    live = sorted({r["family"] for r in rows if r["live"] or r["recommendation"] == "promote_live"})
+    newly_live = {r["family"] for r in rows if r["recommendation"] == "promote_live"}
+    # Only print a live-entries line when something is actually being newly promoted -- an
+    # already-live family with nothing new to promote gets no line of its own (recommendation
+    # is "hold", not "promote_live"). When something else *is* newly promoted, the union
+    # naturally includes any already-live families too, which is fine (it's still the correct
+    # full value for the flag).
+    live = sorted({r["family"] for r in rows if r["live"]} | newly_live) if newly_live else []
     swing_blocked = sorted({r["family"] for r in rows if r["blocker"] == "swing_overnight_disabled"})
 
     lines += ["", "## Apply", ""]
