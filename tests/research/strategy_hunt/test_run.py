@@ -261,3 +261,23 @@ def test_score_regime_root_empty_root_and_score_root_unchanged(root):
     run_symbols(["AAA"], root, ["toy"], workers=1)
     rows = score_root(root, ["toy"], "2025-09-25T00:00:00", coldstart=False)
     assert len(rows) == 1 and "regime" not in rows[0]
+
+
+def test_scoring_contains_one_unreadable_trades_file(tmp_path, caplog):
+    """v-playbook-desk-b1-2026-09-25 (review r1, Minor 5): one corrupt Parquet must not
+    abort the whole scoring pass -- the symbol is logged and skipped."""
+    import logging
+
+    from research.strategy_hunt.run import score_regime_root, score_root
+    for sym in ("AAA", "BBB"):
+        _write_trades(tmp_path, sym, _regime_trades(sym))
+    (tmp_path / "trades" / "BAD.parquet").write_bytes(b"this is not a parquet file")
+
+    with caplog.at_level(logging.WARNING, logger="strategy_hunt.run"):
+        rows = score_root(tmp_path, ["toy"], "2025-09-25T00:00:00", coldstart=False)
+        reg_rows, pool_rows = score_regime_root(tmp_path, ["toy"], "2025-09-25T00:00:00")
+
+    assert {r["symbol"] for r in rows} == {"AAA", "BBB"}
+    assert {r["symbol"] for r in reg_rows} == {"AAA", "BBB"} and pool_rows
+    warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert len(warnings) == 2 and all("BAD" in m for m in warnings)      # both scorers, once each

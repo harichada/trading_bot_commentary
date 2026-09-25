@@ -16,6 +16,9 @@ import math
 from dataclasses import dataclass, field
 from typing import Dict
 
+# String contract with research/strategy_hunt/score/regime_rows.py, which stamps this as the
+# `source` of every pooled row it writes. `core` never imports `research`; the JSON snapshot
+# is the only channel between them, so the literal has to match on both sides.
 POOLED_SOURCE = "pooled"
 
 

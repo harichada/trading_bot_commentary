@@ -3,14 +3,29 @@
 Two extra row families on top of the unconditional per-(symbol, family, side)
 rows `fit/writer.build_row` produces:
 
-* `regime_rows(...)` — one row per market regime the symbol actually traded in,
-  scored against the *same* floors as the unconditional row. A symbol whose edge
-  only exists in `risk_on` shows PASS there and FAIL elsewhere, which is what the
-  live gate needs in order to stand a lane down when the tape turns.
+* `regime_rows(...)` — one row per market regime the symbol traded in *often enough
+  to measure*, scored against the same floors as the unconditional row. A symbol
+  whose edge only exists in `risk_on` shows PASS there and FAIL elsewhere, which is
+  what the live gate needs in order to stand a lane down when the tape turns.
 * `pooled_rows(...)` — one row per (family, side, regime) across the whole
   universe, symbol `"*"`, source `"pooled"`, scored against `POOLED_FLOORS`.
   A pooled PASS is the family-level statement "this lane works in this regime",
   which lets a lane trade a symbol that has no history of its own yet.
+
+Two sample rules matter, because a row here is read by the live gate:
+
+* **No evidence is not a FAIL** (v-playbook-desk-b1-2026-09-25, review r1). Under
+  `REGIME_ROW_MIN_N` trades a row could only ever come out FAIL — `stability` and
+  `decay` are structurally 0 below four windows and `min_n` is 150 — and
+  `StrategyFit.lookup_regime` would let that manufactured FAIL outrank both the
+  pooled PASS and the symbol's own unconditional PASS. So a thin regime gets no
+  row at all and the lookup falls through; its trades still count in the pooled
+  and unconditional rows.
+* **Pooled windows are calendar quarters.** `window_id` is a per-symbol
+  walk-forward index, so grouping pooled trades by it would average
+  non-contemporaneous windows together. Pooled rows are re-bucketed by the
+  calendar quarter of `entry_ts` before the metrics are computed; per-symbol
+  regime rows keep `window_id`, which is contemporaneous within one symbol.
 
 Only the three real regime labels are scored (`REGIMES`). `regime_at` returns
 "unknown" whenever the SPY/VIX context is missing for a session; a row built from
@@ -20,15 +35,21 @@ unconditional row, which is computed over every trade).
 """
 from __future__ import annotations
 
+import dataclasses
 from typing import Any, Optional
 
 import pandas as pd
 
 from research.strategy_hunt.fit.writer import ROW_KEYS, build_row
 from research.strategy_hunt.models import TRADE_COLUMNS, FitMetrics, SimTrade
+from research.strategy_hunt.score.verdict import WATCH_FLOORS
 
 REGIMES = ("risk_on", "risk_off", "mixed")
+# The row shape of both new families. fit/writer.py imports this (lazily, to avoid the
+# import cycle: this module imports build_row from there) to lay out their Parquet files.
 REGIME_ROW_KEYS = ROW_KEYS + ("regime",)
+# Fewer trades than the WATCH floor is not a measurement: emit no row (see the docstring).
+REGIME_ROW_MIN_N = WATCH_FLOORS["min_n"]
 
 # Pooled floors are deliberately stricter than the per-symbol floors: a pooled row
 # aggregates hundreds of symbols, so n is cheap and only a large t-stat and a real
@@ -40,6 +61,8 @@ POOLED_FLOORS = {"min_n": 500, "min_sessions": 60, "min_pf": 1.2, "min_wr": 0.45
                  "min_exp_r_lb": 0.0}
 POOLED_WATCH_FLOORS = {"min_n": 200, "min_pf": 1.05}
 POOLED_SYMBOL = "*"
+# String contract with core/strategy_fit_rows.py: FitRow.from_dict flags a row pooled when
+# its "source" is this value. Change one side and the live gate stops seeing pooled lanes.
 POOLED_SOURCE = "pooled"
 
 
@@ -78,26 +101,45 @@ def _window_end(trades: list[SimTrade]) -> str:
     return str(max(t.exit_ts for t in trades))[:10] if trades else ""
 
 
+def quarter_index(ts) -> int:
+    """Chronological integer id of the calendar quarter `ts` falls in (2025Q4 < 2026Q1)."""
+    period = pd.Timestamp(ts).to_period("Q")
+    return int(period.year) * 4 + int(period.quarter)
+
+
+def bucket_by_quarter(trades: list[SimTrade]) -> list[SimTrade]:
+    """Copies of `trades` whose `window_id` is the calendar quarter of `entry_ts`.
+
+    `score.metrics` measures stability and decay by grouping on `window_id`; re-labelling
+    it is how pooled rows get contemporaneous buckets without a second metrics path.
+    Returns new frozen trades — nothing is mutated."""
+    return [dataclasses.replace(t, window_id=quarter_index(t.entry_ts)) for t in trades]
+
+
 def regime_rows(symbol: str, family: str, side: str, trades: list[SimTrade], n_windows: int, computed_at: str,
-                latest_params: Optional[dict] = None, window_end: str = "") -> list[dict[str, Any]]:
-    """One `build_row`-shaped dict (plus `regime`) per regime in `REGIMES` with ≥ 1 trade."""
+                latest_params: Optional[dict] = None) -> list[dict[str, Any]]:
+    """One `build_row`-shaped dict (plus `regime`) per regime in `REGIMES` with at least
+    `REGIME_ROW_MIN_N` trades. Each row's `window_end` is that regime's own last exit."""
     by_regime: dict[str, list[SimTrade]] = {}
     for t in trades:
         if t.regime in REGIMES:
             by_regime.setdefault(t.regime, []).append(t)
     out = []
     for regime in REGIMES:
-        sub = by_regime.get(regime)
-        if not sub:
+        sub = by_regime.get(regime, [])
+        if len(sub) < REGIME_ROW_MIN_N:
             continue
         row = build_row(symbol, family, side, sub, n_windows, latest_params or {}, computed_at,
-                        window_end or _window_end(sub))
+                        _window_end(sub))
         out.append({**row, "regime": regime})
     return out
 
 
 def pooled_rows(all_trades: Optional[pd.DataFrame], computed_at: str) -> list[dict[str, Any]]:
-    """One pooled row per (family, side, regime) over the whole universe's trades."""
+    """One pooled row per (family, side, regime) over the whole universe's trades.
+
+    Windows are calendar quarters here, not per-symbol `window_id`s (see the module
+    docstring), so `stability`/`decay` compare the same stretch of tape across symbols."""
     trades = trades_from_frame(all_trades)
     groups: dict[tuple[str, str, str], list[SimTrade]] = {}
     for t in trades:
@@ -105,8 +147,9 @@ def pooled_rows(all_trades: Optional[pd.DataFrame], computed_at: str) -> list[di
             groups.setdefault((t.family, t.side, t.regime), []).append(t)
     out = []
     for (family, side, regime), sub in sorted(groups.items()):
-        n_windows = len({t.window_id for t in sub})
-        row = build_row(POOLED_SYMBOL, family, side, sub, n_windows, {}, computed_at, _window_end(sub),
+        bucketed = bucket_by_quarter(sub)
+        n_windows = len({t.window_id for t in bucketed})
+        row = build_row(POOLED_SYMBOL, family, side, bucketed, n_windows, {}, computed_at, _window_end(sub),
                         source=POOLED_SOURCE, verdict_fn=verdict_pooled)
         out.append({**row, "regime": regime})
     return out

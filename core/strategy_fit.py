@@ -220,6 +220,11 @@ class StrategyFit:
         3. the unconditional row for the lane,
         4. None.
 
+        A missing regime row means "insufficient sample", not "no edge": the scorer only
+        writes one once the symbol has traded that regime enough times to measure it
+        (`score/regime_rows.REGIME_ROW_MIN_N`), precisely so a thin sample cannot
+        manufacture a FAIL that outranks the pooled or unconditional evidence below it.
+
         A stale, missing or unloaded snapshot yields None, exactly as `lookup` does.
         """
         if self.is_stale():

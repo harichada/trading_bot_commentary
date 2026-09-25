@@ -74,12 +74,15 @@ def test_load_snapshot_missing(tmp_path):
 # ──────────────────────
 
 def _regime_and_pooled():
+    """Two regimes, each with enough trades to clear REGIME_ROW_MIN_N (review r1, Important 1).
+
+    `window_end` is not passed: regime_rows derives each row's own regime's last exit."""
     from research.strategy_hunt.models import TRADE_COLUMNS
     from research.strategy_hunt.score.regime_rows import pooled_rows, regime_rows
-    trades = [_t(1.5 if i % 3 else -1.0, w=i // 5, day=d.strftime("%Y-%m-%d"),
+    trades = [_t(1.5 if i % 3 else -1.0, w=i // 40, day=d.strftime("%Y-%m-%d"),
                  regime="risk_on" if i % 2 else "mixed")
-              for i, d in enumerate(pd.bdate_range("2025-01-02", periods=20))]
-    rr = regime_rows("NVDA", "orb", "long", trades, 4, "2025-09-25T01:00:00", {"k": 1}, "2025-09-24")
+              for i, d in enumerate(pd.bdate_range("2025-01-02", periods=200))]
+    rr = regime_rows("NVDA", "orb", "long", trades, 5, "2025-09-25T01:00:00", {"k": 1})
     pr = pooled_rows(pd.DataFrame([t.to_dict() for t in trades], columns=list(TRADE_COLUMNS)),
                      "2025-09-25T01:00:00")
     return rr, pr
@@ -107,6 +110,7 @@ def test_write_fit_persists_regime_and_pooled_lanes(tmp_path):
     assert (tmp_path / "fit" / "fit_pooled_2025-09-25.parquet").exists()
     assert "regime_parquet" in out and "pooled_parquet" in out
     snap = load_snapshot(tmp_path)
+    assert len(rr) == 2 and all(r["n"] == 100 for r in rr)
     assert set(snap["regime_rows"]["NVDA"]) == {f"orb:long:{r['regime']}" for r in rr}
     assert snap["regime_rows"]["NVDA"]["orb:long:risk_on"]["regime"] == "risk_on"
     assert set(snap["pooled_rows"]) == {f"orb:long:{r['regime']}" for r in pr}

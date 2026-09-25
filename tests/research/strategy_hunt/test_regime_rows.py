@@ -14,10 +14,15 @@ def _t(r, day, w, regime, symbol="NVDA", family="orb", side="long"):
                     regime, w, '{"k": 1}')
 
 
-def _many(regime="risk_on", per_day=10, sessions=60, symbol="NVDA", family="orb", side="long", start="2025-01-02"):
-    """`per_day * sessions` trades, two winners per loser, 10 sessions per window."""
+def _many(regime="risk_on", per_day=10, sessions=60, symbol="NVDA", family="orb", side="long",
+          start="2025-01-02", step=5):
+    """`per_day * sessions` trades, two winners per loser, 10 sessions per walk-forward window.
+
+    Sessions are spaced `step` business days apart, so the default 60 sessions span five
+    calendar quarters — pooled rows bucket their windows by quarter and need at least the
+    four qualifying buckets `metrics.MIN_QUALIFYING_WINDOWS` asks for."""
     out = []
-    for di, d in enumerate(pd.bdate_range(start, periods=sessions)):
+    for di, d in enumerate(pd.bdate_range(start, periods=sessions * step)[::step]):
         for j in range(per_day):
             r = 1.0 if (di * per_day + j) % 3 else -1.0
             out.append(_t(r, d.strftime("%Y-%m-%d"), di // 10, regime, symbol, family, side))
@@ -45,17 +50,22 @@ def test_regime_rows_one_row_per_known_regime_present():
 
     trades = _many(regime="risk_on", sessions=20) + _many(regime="mixed", sessions=20, start="2025-04-01")
     trades += [_t(0.5, "2025-07-01", 9, "unknown")]
-    rows = regime_rows("NVDA", "orb", "long", trades, 4, "2025-09-25T00:00:00", {"k": 1}, "2025-09-24")
+    rows = regime_rows("NVDA", "orb", "long", trades, 4, "2025-09-25T00:00:00", {"k": 1})
 
     assert {r["regime"] for r in rows} == {"risk_on", "mixed"}           # no row for "unknown"
     assert REGIME_ROW_KEYS == ROW_KEYS + ("regime",)
+    by_regime = {r["regime"]: r for r in rows}
     for r in rows:
         assert tuple(r) == REGIME_ROW_KEYS
         assert r["symbol"] == "NVDA" and r["strategy"] == "orb" and r["side"] == "long"
         assert r["source"] == "walkforward" and r["regime"] in REGIMES
-        assert r["computed_at"] == "2025-09-25T00:00:00" and r["window_end"] == "2025-09-24"
+        assert r["computed_at"] == "2025-09-25T00:00:00"
         assert json.loads(r["params_json"]) == {"k": 1}
     assert sum(r["n"] for r in rows) == 400
+    # each row's window_end is its own regime's last exit, never the caller's or the family's
+    assert by_regime["risk_on"]["window_end"] == str(max(t.exit_ts for t in trades
+                                                        if t.regime == "risk_on"))[:10]
+    assert by_regime["risk_on"]["window_end"] < by_regime["mixed"]["window_end"]
 
 
 def test_regime_rows_use_the_unconditional_floors():
@@ -64,7 +74,27 @@ def test_regime_rows_use_the_unconditional_floors():
     trades = _many(regime="risk_on", sessions=60) + [_t(-1.0, "2025-01-02", 0, "risk_off")]
     by_regime = {r["regime"]: r for r in regime_rows("NVDA", "orb", "long", trades, 6, "2025-09-25T00:00:00")}
     assert by_regime["risk_on"]["verdict"] == "PASS"                     # 600 trades, pf 2.0, 60 sessions
-    assert by_regime["risk_off"]["verdict"] == "FAIL" and by_regime["risk_off"]["n"] == 1
+    # a single risk_off trade is no evidence, not a FAIL verdict: no row at all (finding 1)
+    assert "risk_off" not in by_regime
+
+
+def test_regime_rows_need_a_minimum_sample():
+    """v-playbook-desk-b1-2026-09-25 (review r1, Important 1): below REGIME_ROW_MIN_N a
+    regime row could only ever be FAIL (stability/decay are structurally 0 under four
+    windows, and min_n is 150), and `lookup_regime` would let that manufactured FAIL
+    outrank both the pooled PASS and the symbol's own unconditional PASS. "No evidence"
+    must not read as "no edge" — such regimes get no row and fall through."""
+    from research.strategy_hunt.score.regime_rows import REGIME_ROW_MIN_N, regime_rows
+    from research.strategy_hunt.score.verdict import WATCH_FLOORS
+
+    assert REGIME_ROW_MIN_N == WATCH_FLOORS["min_n"] == 60
+
+    def _n(count):
+        trades = _many(regime="risk_on", per_day=1, sessions=count, step=1)
+        return {r["regime"] for r in regime_rows("NVDA", "orb", "long", trades, 6, "x")}
+
+    assert _n(REGIME_ROW_MIN_N - 1) == set()          # 59 trades -> no row
+    assert _n(REGIME_ROW_MIN_N) == {"risk_on"}        # 60 trades -> row
 
 
 def test_regime_rows_empty_for_no_trades():
@@ -134,12 +164,34 @@ def test_pooled_rows_skip_unknown_regime_and_empty_frame():
     assert pooled_rows(None, "2025-09-25T00:00:00") == []
 
 
-def test_pooled_rows_count_windows_by_distinct_window_id():
-    from research.strategy_hunt.score.regime_rows import pooled_rows, trades_from_frame
+def test_pooled_rows_measure_stability_over_quarters_not_window_ids():
+    """v-playbook-desk-b1-2026-09-25 (review r1, Minor 2): `window_id` is a per-symbol
+    walk-forward index, so pooling by it mixes non-contemporaneous windows. Pooled rows
+    bucket by calendar quarter of `entry_ts` instead."""
+    from research.strategy_hunt.score.regime_rows import bucket_by_quarter, pooled_rows, quarter_index
 
-    trades = _many(regime="risk_on")
-    df = _frame(trades)
-    assert len(trades_from_frame(df)) == 600 and trades_from_frame(df)[0].regime == "risk_on"
-    # stability is measured over windows: 6 distinct window_ids, all positive -> 1.0
-    row = pooled_rows(df, "2025-09-25T00:00:00")[0]
-    assert row["stability"] == pytest.approx(1.0)
+    a = _many(symbol="AAA", sessions=60, step=1, start="2025-01-02")      # Q1 2025
+    b = _many(symbol="BBB", sessions=60, step=1, start="2025-04-01")      # Q2 2025
+    trades = a + b
+    # both symbols reuse window_ids 0..5, and those ids are not contemporaneous
+    assert {t.window_id for t in trades} == {0, 1, 2, 3, 4, 5}
+    quarters = {str(pd.Timestamp(t.entry_ts).to_period("Q")) for t in trades}
+    assert len({t.window_id for t in bucket_by_quarter(trades)}) == len(quarters) == 2
+    assert [t.regime for t in bucket_by_quarter(trades)] == [t.regime for t in trades]   # only ids change
+    # two quarters is under metrics.MIN_QUALIFYING_WINDOWS, so no stability is claimed --
+    # bucketing by the six window_ids would have reported a spurious 1.0.
+    assert pooled_rows(_frame(trades), "2025-09-25T00:00:00")[0]["stability"] == 0.0
+    # ...while the same trade count spread over five quarters does clear it
+    assert pooled_rows(_frame(_many(sessions=60)), "2025-09-25T00:00:00")[0]["stability"] == pytest.approx(1.0)
+    # the bucket index is chronological across a year boundary
+    assert quarter_index(pd.Timestamp("2025-12-31")) < quarter_index(pd.Timestamp("2026-01-01"))
+
+
+def test_trades_from_frame_round_trips_a_trades_parquet_frame():
+    from research.strategy_hunt.score.regime_rows import trades_from_frame
+
+    df = _frame(_many(regime="risk_on"))
+    trades = trades_from_frame(df)
+    assert len(trades) == 600 and trades[0].regime == "risk_on" and trades[0].symbol == "NVDA"
+    assert trades[0].window_id == 0 and trades[-1].window_id == 5
+    assert trades_from_frame(df.assign(extra=1))[0].symbol == "NVDA"     # extra columns ignored

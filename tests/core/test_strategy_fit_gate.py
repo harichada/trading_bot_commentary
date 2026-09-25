@@ -157,11 +157,12 @@ def test_regime_row_governs_when_a_live_regime_is_known(tmp_path):
     assert d.audit_fields()["regime"] == "risk_off" and d.audit_fields()["pooled"] is False
     # no regime -> the unconditional row still governs
     assert evaluate_fit_gate(fit, "day_trade_momentum", "long", "NVDA", True, False).reason == "fit_pass"
-    # an unknown / unrecognised regime is treated as "no regime"
+    # an unknown / unrecognised regime is treated as "no regime": the unconditional row
+    # governs and nothing is audited as the governing regime
     for regime in ("unknown", "", None, "sideways"):
         d2 = evaluate_fit_gate(fit, "day_trade_momentum", "long", "NVDA", True, False, regime=regime)
         assert d2.reason == "fit_pass", regime
-        assert "regime" not in d2.audit_fields() or d2.audit_fields()["regime"] == regime
+        assert "regime" not in d2.audit_fields(), regime
 
 
 def test_pooled_regime_row_lets_a_lane_trade_a_symbol_with_no_rows(tmp_path):

@@ -21,7 +21,7 @@ from research.strategy_hunt.data.regime import regime_at, regime_series
 from research.strategy_hunt.data.splits import load_adjusted
 from research.strategy_hunt.fit.coldstart import FEATURES, predict_coldstart, symbol_characteristics, train_coldstart
 from research.strategy_hunt.fit.writer import build_row
-from research.strategy_hunt.models import TRADE_COLUMNS, SimTrade
+from research.strategy_hunt.models import TRADE_COLUMNS
 from research.strategy_hunt.score.regime_rows import pooled_rows, regime_rows, trades_from_frame
 from research.strategy_hunt.sim.calibrate import slippage_override_from
 from research.strategy_hunt.sim.costs import CostModel
@@ -163,12 +163,23 @@ def run_symbols(symbols: list[str], root: Path, family_names: list[str], workers
     return sorted(recs, key=lambda r: r["symbol"])
 
 
+def _load_symbol_trades(tp: Path, root: Path) -> tuple[str, pd.DataFrame, dict]:
+    """(symbol, trades frame, choices) for one trades Parquet file. Raises on a bad file;
+    both scorers contain that per symbol so one unreadable file cannot end the pass."""
+    symbol = tp.stem
+    df = pd.read_parquet(tp)
+    choices = json.loads(choices_path(root, symbol).read_text()) if choices_path(root, symbol).exists() else {}
+    return symbol, df, choices
+
+
 def _walkforward_rows(root: Path, family_names: list[str], computed_at: str) -> list[dict]:
     rows: list[dict] = []
     for tp in sorted((Path(root) / "trades").glob("*.parquet")):
-        df = pd.read_parquet(tp)
-        symbol = tp.stem
-        choices = json.loads(choices_path(root, symbol).read_text()) if choices_path(root, symbol).exists() else {}
+        try:
+            symbol, df, choices = _load_symbol_trades(tp, root)
+        except Exception:  # per-symbol isolation: a corrupt Parquet must not end the pass
+            logger.warning("score: skipping unreadable trades file %s", tp.name, exc_info=True)
+            continue
         for fam in family_names:
             sub = df[df["family"] == fam]
             ch = choices.get(fam, [])
@@ -176,9 +187,7 @@ def _walkforward_rows(root: Path, family_names: list[str], computed_at: str) -> 
             latest = ch[-1]["params"] if ch else {}
             window_end = str(sub["exit_ts"].max())[:10] if len(sub) else ""
             for side in sorted(sub["side"].unique()) if len(sub) else []:
-                s2 = sub[sub["side"] == side]
-                trades = [SimTrade(**{**r, "entry_ts": pd.Timestamp(r["entry_ts"]), "exit_ts": pd.Timestamp(r["exit_ts"])})
-                          for r in s2.to_dict("records")]
+                trades = trades_from_frame(sub[sub["side"] == side])
                 rows.append(build_row(symbol, fam, side, trades, n_windows, latest, computed_at, window_end))
     return rows
 
@@ -214,11 +223,13 @@ def score_regime_root(root: Path, family_names: list[str], computed_at: str) -> 
     per_symbol: list[dict] = []
     frames: list[pd.DataFrame] = []
     for tp in sorted((Path(root) / "trades").glob("*.parquet")):
-        df = pd.read_parquet(tp)
+        try:
+            symbol, df, choices = _load_symbol_trades(tp, root)
+        except Exception:  # per-symbol isolation: a corrupt Parquet must not end the pass
+            logger.warning("score_regime: skipping unreadable trades file %s", tp.name, exc_info=True)
+            continue
         if df.empty:
             continue
-        symbol = tp.stem
-        choices = json.loads(choices_path(root, symbol).read_text()) if choices_path(root, symbol).exists() else {}
         frames.append(df[df["family"].isin(family_names)])
         for fam in family_names:
             sub = df[df["family"] == fam]

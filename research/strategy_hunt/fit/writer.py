@@ -15,9 +15,6 @@ from research.strategy_hunt.score.verdict import FLOORS, verdict
 ROW_KEYS = ("symbol", "strategy", "side", "computed_at", "window_end", "n", "sessions", "exp_r", "exp_r_lb",
             "t_stat", "pf", "wr", "max_dd_r", "stability", "decay", "score", "verdict", "failed_floors",
             "params_json", "regime_exp_json", "source")
-# v-playbook-desk-b1-2026-09-25: regime-conditioned and pooled rows are the same row
-# shape plus the regime they were measured in. score/regime_rows.py builds them.
-REGIME_ROW_KEYS = ROW_KEYS + ("regime",)
 PF_INF = 999.0
 TABLE = "strategy_fit"
 
@@ -76,6 +73,11 @@ def write_fit(rows: list[dict], root: Path, computed_at: str, engine: Any = None
     for r in regime_rows or []:
         regime_nested.setdefault(r["symbol"], {})[_regime_key(r)] = r
     pooled_flat = {_regime_key(r): r for r in pooled_rows or []}
+
+    # v-playbook-desk-b1-2026-09-25: the regime/pooled row shape is defined next to the code
+    # that builds it. Imported here rather than at module scope because score/regime_rows.py
+    # imports build_row from this module — a top-level import either way would be a cycle.
+    from research.strategy_hunt.score.regime_rows import REGIME_ROW_KEYS
 
     out = {"parquet": str(pq), "json": ""}
     if regime_rows:
