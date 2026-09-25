@@ -51,3 +51,10 @@ def test_pass_lane_filter():
     rows = [{"symbol": "A", "strategy": "f", "side": "long", "verdict": "PASS", "source": "walkforward"},
             {"symbol": "B", "strategy": "f", "side": "long", "verdict": "WATCH", "source": "walkforward"}]
     assert list(pass_lane_trades(df, rows)["symbol"]) == ["A"]
+
+
+def test_pass_lane_filter_excludes_missing_source():
+    from research.strategy_hunt.portfolio import pass_lane_trades
+    df = pd.DataFrame([_trade("A", "f", "2025-01-02 10:00", "2025-01-02 11:00", 100, 101)])
+    rows = [{"symbol": "A", "strategy": "f", "side": "long", "verdict": "PASS"}]  # no "source" key
+    assert list(pass_lane_trades(df, rows)["symbol"]) == []

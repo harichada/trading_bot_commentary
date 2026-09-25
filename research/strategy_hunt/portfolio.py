@@ -35,7 +35,7 @@ def shares_for(rules: SizingRules, equity: float, entry_px: float, stop_px: floa
 def pass_lane_trades(trades: pd.DataFrame, fit_rows: list[dict]) -> pd.DataFrame:
     """Filter trades to (symbol, family, side) combos with a walkforward PASS verdict."""
     keys = {(r["symbol"], r["strategy"], r["side"]) for r in fit_rows
-            if r.get("verdict") == "PASS" and r.get("source", "walkforward") == "walkforward"}
+            if r.get("verdict") == "PASS" and r.get("source") == "walkforward"}
     if trades.empty:
         return trades
     mask = [(s, f, sd) in keys for s, f, sd in zip(trades["symbol"], trades["family"], trades["side"])]
