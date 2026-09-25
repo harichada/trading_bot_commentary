@@ -4276,6 +4276,161 @@ class Config:
             return env_val
         return str(self.manager.get('trading.sentiment_finbert_path', 'models/finbert'))
 
+    # ══════════════════════════════════════════════════════════════════════════
+    # v-playbook-desk-b2-2026-09-25: desk flags
+    # ══════════════════════════════════════════════════════════════════════════
+
+    @property
+    def ENABLE_DESK(self) -> bool:
+        """v-playbook-desk-b2-2026-09-25: master switch for the desk layer.
+
+        When False (default) nothing new runs: the desk loop is not
+        registered and no desk decision is computed or audited. When True the
+        desk builds its daily plan, ranks in-play stocks and writes a journal;
+        its gates still only audit unless their own flags below are on.
+
+        Set via env ENABLE_DESK=1 or yaml trading.enable_desk: true.
+        """
+        env_val = os.getenv("ENABLE_DESK")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.enable_desk', False))
+
+    @property
+    def ENABLE_DESK_WATCHLIST(self) -> bool:
+        """v-playbook-desk-b2-2026-09-25: let the desk's in-play list drive
+        the engine's dynamic watchlist instead of the screener's output.
+
+        Default False (the screener keeps ownership of the watchlist).
+        Set via env ENABLE_DESK_WATCHLIST=1 or yaml
+        trading.enable_desk_watchlist: true.
+        """
+        env_val = os.getenv("ENABLE_DESK_WATCHLIST")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.enable_desk_watchlist', False))
+
+    @property
+    def ENABLE_DESK_LIMITS(self) -> bool:
+        """v-playbook-desk-b2-2026-09-25: enforce the desk's daily-plan limits
+        (sit-out days, max trades, direction bias) on live entries.
+
+        Default False: the limits are computed and audited in shadow, and
+        block nothing. Set via env ENABLE_DESK_LIMITS=1 or yaml
+        trading.enable_desk_limits: true.
+        """
+        env_val = os.getenv("ENABLE_DESK_LIMITS")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.enable_desk_limits', False))
+
+    @property
+    def ENABLE_PLAYBOOK_GATE(self) -> bool:
+        """v-playbook-desk-b2-2026-09-25: enforce the adaptive playbook — skip
+        suspended (family, side, regime) keys and apply its size multiplier.
+
+        Default False: the playbook decision is audited in shadow only, and
+        no size multiplier reaches the sizing chain. Set via env
+        ENABLE_PLAYBOOK_GATE=1 or yaml trading.enable_playbook_gate: true.
+        """
+        env_val = os.getenv("ENABLE_PLAYBOOK_GATE")
+        if env_val is not None:
+            return env_val.lower() in ("1", "true", "yes", "on")
+        return bool(self.manager.get('trading.enable_playbook_gate', False))
+
+    @property
+    def DESK_IN_PLAY_N(self) -> int:
+        """v-playbook-desk-b2-2026-09-25: how many ranked stocks the desk keeps
+        on its in-play list at the 09:35 refresh.
+
+        Default 20. Override via env DESK_IN_PLAY_N or yaml
+        trading.desk_in_play_n.
+        """
+        env_val = os.getenv("DESK_IN_PLAY_N")
+        if env_val is not None:
+            return int(env_val)
+        return int(self.manager.get('trading.desk_in_play_n', 20))
+
+    @property
+    def DESK_SCAN_MAX_SYMBOLS(self) -> int:
+        """v-playbook-desk-b2-2026-09-25: cap on how many symbols the 09:35
+        in-play scan pulls opening bars for.
+
+        Bounds the provider work in the first minutes after the open.
+        Default 60. Override via env DESK_SCAN_MAX_SYMBOLS or yaml
+        trading.desk_scan_max_symbols.
+        """
+        env_val = os.getenv("DESK_SCAN_MAX_SYMBOLS")
+        if env_val is not None:
+            return int(env_val)
+        return int(self.manager.get('trading.desk_scan_max_symbols', 60))
+
+    @property
+    def DESK_DATA_DIR(self) -> str:
+        """v-playbook-desk-b2-2026-09-25: directory holding the desk's runtime
+        artifacts — daily plans, the playbook, and the journal.
+
+        Default "data/desk" (git-ignored runtime output). Override via env
+        DESK_DATA_DIR or yaml trading.desk_data_dir.
+        """
+        env_val = os.getenv("DESK_DATA_DIR")
+        if env_val is not None:
+            return env_val
+        return str(self.manager.get('trading.desk_data_dir', 'data/desk'))
+
+    @property
+    def DESK_PLAN_TIME_ET(self) -> str:
+        """v-playbook-desk-b2-2026-09-25: ET wall-clock time ("HH:MM") at which
+        the desk builds the day's plan.
+
+        Default "09:00" (pre-market). Override via env DESK_PLAN_TIME_ET or
+        yaml trading.desk_plan_time_et.
+        """
+        env_val = os.getenv("DESK_PLAN_TIME_ET")
+        if env_val is not None:
+            return env_val
+        return str(self.manager.get('trading.desk_plan_time_et', '09:00'))
+
+    @property
+    def DESK_REFRESH_TIME_ET(self) -> str:
+        """v-playbook-desk-b2-2026-09-25: ET wall-clock time ("HH:MM") of the
+        in-play refresh, once the opening range has printed.
+
+        Default "09:35". Override via env DESK_REFRESH_TIME_ET or yaml
+        trading.desk_refresh_time_et.
+        """
+        env_val = os.getenv("DESK_REFRESH_TIME_ET")
+        if env_val is not None:
+            return env_val
+        return str(self.manager.get('trading.desk_refresh_time_et', '09:35'))
+
+    @property
+    def DESK_JOURNAL_TIME_ET(self) -> str:
+        """v-playbook-desk-b2-2026-09-25: ET wall-clock time ("HH:MM") at which
+        the desk writes the post-close journal.
+
+        Default "16:05" (just after the close). Override via env
+        DESK_JOURNAL_TIME_ET or yaml trading.desk_journal_time_et.
+        """
+        env_val = os.getenv("DESK_JOURNAL_TIME_ET")
+        if env_val is not None:
+            return env_val
+        return str(self.manager.get('trading.desk_journal_time_et', '16:05'))
+
+    @property
+    def DESK_CALENDAR_PATH(self) -> str:
+        """v-playbook-desk-b2-2026-09-25: path to the economic-calendar JSON
+        the plan rules read (a list of {date, time_et, event, impact}).
+
+        A missing file simply means "no scheduled events today".
+        Default "data/desk/calendar.json". Override via env
+        DESK_CALENDAR_PATH or yaml trading.desk_calendar_path.
+        """
+        env_val = os.getenv("DESK_CALENDAR_PATH")
+        if env_val is not None:
+            return env_val
+        return str(self.manager.get('trading.desk_calendar_path', 'data/desk/calendar.json'))
+
 
 # Initialize configuration
 config = Config()
