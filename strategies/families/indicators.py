@@ -106,7 +106,8 @@ def daily_features(daily: pd.DataFrame) -> pd.DataFrame:
     return f.shift(1)
 
 
-def indicator_frame(bars5: pd.DataFrame, daily: pd.DataFrame, spy5: Optional[pd.DataFrame] = None) -> pd.DataFrame:
+def indicator_frame(bars5: pd.DataFrame, daily: pd.DataFrame, spy5: Optional[pd.DataFrame] = None,
+                     context: Optional[pd.DataFrame] = None) -> pd.DataFrame:
     ind = pd.concat([_intraday(bars5), _session_columns(bars5)], axis=1)
     if not daily.empty:
         df = daily_features(daily)
@@ -118,6 +119,9 @@ def indicator_frame(bars5: pd.DataFrame, daily: pd.DataFrame, spy5: Optional[pd.
         ind["rs_vs_spy_pct"] = own_ret - spy_ret
     else:
         ind["rs_vs_spy_pct"] = np.nan
+    if context is not None:
+        ctx_df = context.add_prefix("ctx_")
+        ind = ind.join(ctx_df.reindex(bars5.index.normalize()).set_index(bars5.index))
     return ind
 
 

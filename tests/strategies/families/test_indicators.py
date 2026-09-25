@@ -85,6 +85,30 @@ def test_rs_vs_spy_same_basis():
     assert row["rs_vs_spy_pct"] == pytest.approx(expected - (100.0 / 99.9 - 1) * 100)
 
 
+def test_indicator_frame_without_context_has_no_ctx_columns():
+    from strategies.families.indicators import indicator_frame
+    b = _bars(DAYS[:2])
+    ind = indicator_frame(b, _daily(b))
+    assert not any(c.startswith("ctx_") for c in ind.columns)
+
+
+def test_indicator_frame_joins_ctx_columns_per_session():
+    from strategies.families.indicators import indicator_frame
+    b = _bars(DAYS[:2])
+    context = pd.DataFrame(
+        {"rvol_rank5": [1, 5], "adv_bucket": ["mega", "small"]},
+        index=pd.DatetimeIndex([DAYS[0], DAYS[1]], name="date"),
+    )
+    ind = indicator_frame(b, _daily(b), context=context)
+    assert (ind.loc[DAYS[0], "ctx_rvol_rank5"] == 1).all()
+    assert (ind.loc[DAYS[1], "ctx_rvol_rank5"] == 5).all()
+    assert (ind.loc[DAYS[0], "ctx_adv_bucket"] == "mega").all()
+    assert (ind.loc[DAYS[1], "ctx_adv_bucket"] == "small").all()
+    # unrelated columns are unaffected by the join
+    assert ind.loc[DAYS[0], "bar_of_day"].iloc[0] == 0
+    assert ind.loc[DAYS[1]]["session_open"].iloc[0] == b.loc[DAYS[1]].iloc[0]["open"]
+
+
 def test_closed_bars_drops_in_progress_bar():
     import pandas as pd
     from strategies.families.indicators import closed_bars
