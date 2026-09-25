@@ -421,3 +421,26 @@ def test_with_daily_placeholder_adds_new_session_date():
     # Idempotent for a date already present, and safe on an empty frame.
     assert with_daily_placeholder(out, pd.Timestamp("2025-09-24 09:30")).equals(out)
     assert with_daily_placeholder(pd.DataFrame(), pd.Timestamp("2025-09-24")).empty
+
+
+def test_fit_lane_frames_module_is_pure_and_reexported():
+    """v-strategy-fit-review2-2026-09-25: the pure helpers were split into
+    strategies/fit_lane_frames.py for the 400-line file budget. That module
+    must stay pure (no research/core/api imports) and every name must remain
+    reachable from strategies.fit_lane so existing call sites don't break."""
+    import pathlib
+    import re
+
+    import strategies.fit_lane as F
+
+    src = pathlib.Path("strategies/fit_lane_frames.py").read_text()
+    assert not re.search(r"^\s*(from|import)\s+(research|core|api)\b", src, re.M)
+
+    for name in ("with_synthetic_next_bar", "next_rth_bar", "with_daily_placeholder",
+                 "live_eligible", "news_frame_from_items", "ledger_path", "entry_to_signal",
+                 "FitLaneStrategy"):
+        assert hasattr(F, name), name
+
+    # Both halves stay inside the project's 400-line file budget.
+    for path in ("strategies/fit_lane.py", "strategies/fit_lane_frames.py"):
+        assert len(pathlib.Path(path).read_text().splitlines()) < 400, path
