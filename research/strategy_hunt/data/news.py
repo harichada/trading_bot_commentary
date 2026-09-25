@@ -1,4 +1,4 @@
-"""Alpaca historical news -> per-symbol Parquet with VADER sentiment. Incremental and cached."""
+"""Alpaca historical news -> per-symbol Parquet with pluggable sentiment scoring. Incremental and cached."""
 from __future__ import annotations
 
 import logging
@@ -7,28 +7,22 @@ from typing import Any, Optional
 
 import pandas as pd
 
+from research.strategy_hunt.data.sentiment import available_backends, score
+
 logger = logging.getLogger("strategy_hunt.news")
 
 NEWS_URL = "https://data.alpaca.markets/v1beta1/news"
 COLUMNS = ["created_at", "headline", "source", "sentiment"]
+# v-playbook-desk-b1-2026-09-25: per-backend sentiment columns stored alongside
+# the legacy `sentiment` column so families can pick either (§7.5).
+EXTRA_COLUMNS = ["sentiment_vader", "sentiment_finbert"]
 PAGE_LIMIT = 50
 ET = "America/New_York"
 
-_analyzer = None
-
-
-def _vader():
-    global _analyzer
-    if _analyzer is None:
-        from nltk.sentiment import SentimentIntensityAnalyzer
-
-        _analyzer = SentimentIntensityAnalyzer()
-    return _analyzer
-
 
 def score_headlines(headlines: list[str]) -> list[float]:
-    an = _vader()
-    return [float(an.polarity_scores(h or "")["compound"]) for h in headlines]
+    """VADER sentiment for `headlines` (backward-compatible helper; always VADER)."""
+    return score(headlines, backend="vader")
 
 
 def news_path(root: Path, symbol: str) -> Path:
@@ -38,6 +32,22 @@ def news_path(root: Path, symbol: str) -> Path:
 def _iso(ts: pd.Timestamp) -> str:
     t = ts if ts.tzinfo else ts.tz_localize("UTC")
     return t.tz_convert("UTC").strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _configured_backend() -> str:
+    from core.config import Config
+
+    return Config().SENTIMENT_BACKEND
+
+
+def _score_columns(headlines: list[str]) -> dict[str, list[float]]:
+    """sentiment_vader always; sentiment_finbert when available, else NaN."""
+    cols: dict[str, list[float]] = {"sentiment_vader": score(headlines, backend="vader")}
+    if "finbert" in available_backends():
+        cols["sentiment_finbert"] = score(headlines, backend="finbert")
+    else:
+        cols["sentiment_finbert"] = [float("nan")] * len(headlines)
+    return cols
 
 
 def fetch_news(symbol: str, start: pd.Timestamp, end: pd.Timestamp, session: Any, key: str, secret: str) -> pd.DataFrame:
@@ -58,11 +68,16 @@ def fetch_news(symbol: str, start: pd.Timestamp, end: pd.Timestamp, session: Any
             break
         params = {**params, "page_token": token}
     if not rows:
-        return pd.DataFrame(columns=COLUMNS)
+        return pd.DataFrame(columns=COLUMNS + EXTRA_COLUMNS)
     df = pd.DataFrame(rows)
     df["created_at"] = pd.to_datetime(df["created_at"], utc=True).dt.tz_convert(ET).dt.tz_localize(None)
-    df["sentiment"] = score_headlines(df["headline"].tolist())
-    return df[COLUMNS].sort_values("created_at").reset_index(drop=True)
+    headlines = df["headline"].tolist()
+    for col, values in _score_columns(headlines).items():
+        df[col] = values
+    backend = _configured_backend()
+    sentiment_col = f"sentiment_{backend}"
+    df["sentiment"] = df[sentiment_col] if sentiment_col in df.columns else df["sentiment_vader"]
+    return df[COLUMNS + EXTRA_COLUMNS].sort_values("created_at").reset_index(drop=True)
 
 
 def load_news(root: Path, symbol: str) -> pd.DataFrame:
@@ -71,7 +86,8 @@ def load_news(root: Path, symbol: str) -> pd.DataFrame:
         return pd.DataFrame(columns=COLUMNS)
     df = pd.read_parquet(p)
     df["created_at"] = pd.to_datetime(df["created_at"])
-    return df[COLUMNS].sort_values("created_at").reset_index(drop=True)
+    extra = [c for c in EXTRA_COLUMNS if c in df.columns]
+    return df[COLUMNS + extra].sort_values("created_at").reset_index(drop=True)
 
 
 def update_news(root: Path, symbol: str, session: Any, key: str, secret: str,

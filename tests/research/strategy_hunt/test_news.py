@@ -61,3 +61,86 @@ def test_load_news_missing(tmp_path):
     from research.strategy_hunt.data.news import load_news
     df = load_news(tmp_path, "ZZZZ")
     assert df.empty and list(df.columns) == ["created_at", "headline", "source", "sentiment"]
+
+
+# v-playbook-desk-b1-2026-09-25: Task 7 pluggable sentiment backend coverage.
+# `available_backends`/`score` are monkeypatched on the `news` module (not on
+# core.sentiment_backend) so these tests stay focused on news.py's column
+# logic and never risk a real FinBERT model load/download.
+
+def test_fetch_news_stores_vader_column_always():
+    from research.strategy_hunt.data import news as N
+    sess = _Session([
+        {"news": [{"created_at": "2025-01-02T14:35:00Z", "headline": "Excellent beats", "source": "benzinga", "symbols": ["NVDA"]}],
+         "next_page_token": None},
+    ])
+    df = N.fetch_news("NVDA", pd.Timestamp("2025-01-01"), pd.Timestamp("2025-01-03"), sess, "k", "s")
+    assert "sentiment_vader" in df.columns
+    assert df.iloc[0]["sentiment_vader"] > 0
+    # default configured backend is vader -> sentiment mirrors sentiment_vader
+    assert df.iloc[0]["sentiment"] == df.iloc[0]["sentiment_vader"]
+
+
+def test_fetch_news_finbert_column_nan_when_unavailable(monkeypatch):
+    from research.strategy_hunt.data import news as N
+    monkeypatch.setattr(N, "available_backends", lambda: ("vader",))
+    sess = _Session([
+        {"news": [{"created_at": "2025-01-02T14:35:00Z", "headline": "Excellent beats", "source": "benzinga", "symbols": ["NVDA"]}],
+         "next_page_token": None},
+    ])
+    df = N.fetch_news("NVDA", pd.Timestamp("2025-01-01"), pd.Timestamp("2025-01-03"), sess, "k", "s")
+    assert "sentiment_finbert" in df.columns
+    assert pd.isna(df.iloc[0]["sentiment_finbert"])
+
+
+def test_fetch_news_finbert_column_populated_and_selected_when_configured(monkeypatch):
+    from research.strategy_hunt.data import news as N
+
+    monkeypatch.setattr(N, "available_backends", lambda: ("vader", "finbert"))
+
+    def fake_score(headlines, backend=None):
+        return [0.42 for _ in headlines] if backend == "finbert" else [0.1 for _ in headlines]
+
+    monkeypatch.setattr(N, "score", fake_score)
+    monkeypatch.setenv("SENTIMENT_BACKEND", "finbert")
+
+    sess = _Session([
+        {"news": [{"created_at": "2025-01-02T14:35:00Z", "headline": "Excellent beats", "source": "benzinga", "symbols": ["NVDA"]}],
+         "next_page_token": None},
+    ])
+    df = N.fetch_news("NVDA", pd.Timestamp("2025-01-01"), pd.Timestamp("2025-01-03"), sess, "k", "s")
+    assert df.iloc[0]["sentiment_finbert"] == pytest.approx(0.42)
+    assert df.iloc[0]["sentiment_vader"] == pytest.approx(0.1)
+    assert df.iloc[0]["sentiment"] == pytest.approx(0.42)
+
+
+def test_load_news_returns_extra_columns_when_present(tmp_path):
+    from research.strategy_hunt.data import news as N
+    df = pd.DataFrame({
+        "created_at": [pd.Timestamp("2025-01-02 09:35")],
+        "headline": ["A"],
+        "source": ["x"],
+        "sentiment": [0.1],
+        "sentiment_vader": [0.1],
+        "sentiment_finbert": [0.2],
+    })
+    p = N.news_path(tmp_path, "NVDA")
+    p.parent.mkdir(parents=True, exist_ok=True)
+    df.to_parquet(p, index=False)
+    loaded = N.load_news(tmp_path, "NVDA")
+    assert list(loaded.columns) == ["created_at", "headline", "source", "sentiment", "sentiment_vader", "sentiment_finbert"]
+
+
+def test_load_news_legacy_file_without_extra_columns(tmp_path):
+    from research.strategy_hunt.data import news as N
+    df = pd.DataFrame({
+        "created_at": [pd.Timestamp("2025-01-02 09:35")],
+        "headline": ["A"],
+        "source": ["x"],
+        "sentiment": [0.1],
+    })
+    p = N.news_path(tmp_path, "NVDA")
+    p.parent.mkdir(parents=True, exist_ok=True)
+    df.to_parquet(p, index=False)
+    loaded = N.load_news(tmp_path, "NVDA")
+    assert list(loaded.columns) == ["created_at", "headline", "source", "sentiment"]

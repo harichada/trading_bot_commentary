@@ -23,7 +23,6 @@ from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, List, Optional
 
 import aiohttp
-from nltk.sentiment import SentimentIntensityAnalyzer
 
 from core.config import Config
 from core.news_bus import (
@@ -32,6 +31,7 @@ from core.news_bus import (
     NewsImpactLevel,
     get_news_bus,
 )
+from core.sentiment_backend import score as score_sentiment
 from strategies.news_strategy import FreeNewsAggregator
 
 if TYPE_CHECKING:
@@ -61,7 +61,6 @@ class NewsLoop:
         self.cadence_sec = cadence_sec if cadence_sec is not None else self._get_cadence()
         self.bus = bus or get_news_bus()
         self.aggregator = FreeNewsAggregator()
-        self.analyzer = SentimentIntensityAnalyzer()
         self._last_run: Optional[datetime] = None
         self._symbols_refreshed: int = 0
         self._items_published: int = 0
@@ -139,8 +138,7 @@ class NewsLoop:
 
         for item in raw_items:
             text = f"{item.headline} {getattr(item, 'summary', '')}"
-            vader_scores = self.analyzer.polarity_scores(text)
-            sentiment = vader_scores["compound"]
+            sentiment = score_sentiment([text])[0]
             confidence = abs(sentiment)
 
             impact = NewsBus.detect_impact(item.headline, getattr(item, "summary", ""))
@@ -209,7 +207,6 @@ class AlpacaNewsBusPublisher:
         self._alpaca_key = os.getenv("ALPACA_API_KEY", "")
         self._alpaca_secret = os.getenv("ALPACA_SECRET_KEY", "")
         self._cadence_sec = cadence_sec or Config().ALPACA_NEWS_BUS_INTERVAL_SEC
-        self._analyzer = SentimentIntensityAnalyzer()
         self._last_run: Optional[datetime] = None
         self._items_published: int = 0
 
@@ -342,8 +339,7 @@ class AlpacaNewsBusPublisher:
                 pub_time = datetime.now(timezone.utc)
 
             text = f"{headline} {summary}"
-            vader_scores = self._analyzer.polarity_scores(text)
-            sentiment = vader_scores["compound"]
+            sentiment = score_sentiment([text])[0]
             confidence = abs(sentiment)
 
             impact = NewsBus.detect_impact(headline, summary)

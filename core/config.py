@@ -4217,6 +4217,26 @@ class Config:
             return int(env_val)
         return int(self.manager.get('trading.swing_max_hold_sessions', 10))
 
+    # ══════════════════════════════════════════════════════════════════════════
+    # v-playbook-desk-b1-2026-09-25: pluggable sentiment backend (Task 7)
+    # ══════════════════════════════════════════════════════════════════════════
+
+    @property
+    def SENTIMENT_BACKEND(self) -> str:
+        """v-playbook-desk-b1-2026-09-25: sentiment scoring backend used by
+        core.sentiment_backend.score() for both research and live news
+        scoring, so the two always agree.
+
+        "vader" (default; CPU; always available) or "finbert"
+        (ProsusAI/finbert on GPU when available; falls back to VADER with
+        a one-time warning if transformers/torch/the model are missing).
+        Override via env SENTIMENT_BACKEND or yaml trading.sentiment_backend.
+        """
+        env_val = os.getenv("SENTIMENT_BACKEND")
+        if env_val is not None:
+            return env_val
+        return str(self.manager.get('trading.sentiment_backend', 'vader'))
+
 
 # Initialize configuration
 config = Config()
