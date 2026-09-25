@@ -28,3 +28,10 @@ def test_earnings_eve_flatten(tmp_path):
     (tmp_path / "earnings").mkdir()
     pd.DataFrame({"date": pd.to_datetime(["2025-09-29"])}).to_parquet(tmp_path / "earnings" / "X.parquet", index=False)
     assert load_earnings_dates(str(tmp_path), "X") == {date(2025, 9, 29)} and load_earnings_dates(str(tmp_path), "Y") == set()
+
+
+def test_load_earnings_dates_malformed_column_returns_empty_set(tmp_path):
+    from core.swing_exits import load_earnings_dates
+    (tmp_path / "earnings").mkdir()
+    pd.DataFrame({"date": ["not-a-date", "??"]}).to_parquet(tmp_path / "earnings" / "Z.parquet", index=False)
+    assert load_earnings_dates(str(tmp_path), "Z") == set()

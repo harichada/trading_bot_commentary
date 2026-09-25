@@ -6,11 +6,14 @@ Pure helpers with no engine or research dependencies, wired into
 from __future__ import annotations
 
 import functools
+import logging
 import time
 from datetime import date, datetime, timedelta
 from typing import Tuple
 
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 _TIME_STOP_CUTOFF = (15, 50)  # 15:50 local (ET) — same cutoff as flatten checks
 
@@ -67,10 +70,14 @@ def _load_earnings_dates_cached(root: str, symbol: str, hour_bucket: int) -> fro
     path = f"{root}/earnings/{symbol.upper()}.parquet"
     try:
         df = pd.read_parquet(path, columns=["date"])
-    except (FileNotFoundError, OSError, ValueError):
+        dates = pd.to_datetime(df["date"]).dt.date
+        return frozenset(dates.tolist())
+    except Exception:
+        # Never raise into the exit-check path: missing dir, malformed
+        # parquet, garbage date values, or a missing parquet engine
+        # (ImportError) must all fail open to an empty earnings set.
+        logger.debug("load_earnings_dates: failed to load %s", path, exc_info=True)
         return frozenset()
-    dates = pd.to_datetime(df["date"]).dt.date
-    return frozenset(dates.tolist())
 
 
 def load_earnings_dates(root: str, symbol: str) -> set:
