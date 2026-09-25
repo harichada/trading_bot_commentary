@@ -128,8 +128,7 @@ def process_symbol(symbol: str, root: Path, family_names: list[str], notional: f
         for name in family_names:
             fam = get_family(name)
             trades, ch = run_symbol_family(fam, symbol, bars5, daily, news, cost_model, earnings, windows,
-                                           regime_lookup=lookup, spy5=ctx["spy5"], ind=ind, table=table,
-                                           context=universe_ctx)
+                                           regime_lookup=lookup, spy5=ctx["spy5"], ind=ind, table=table)
             all_trades.extend(t.to_dict() for t in trades)
             choices[name] = ch
         tp = trades_path(root, symbol)

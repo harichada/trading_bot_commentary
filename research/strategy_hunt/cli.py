@@ -1,4 +1,5 @@
-"""Command line for the strategy-hunt pipeline: export, context, news, earnings, calibrate, run, score, report, all."""
+"""Command line for the strategy-hunt pipeline: export, context, universe-context, news, earnings,
+calibrate, run, score, report, all."""
 from __future__ import annotations
 
 import argparse
@@ -8,6 +9,7 @@ import sys
 import time
 from pathlib import Path
 
+from research.strategy_hunt.fit.writer import write_fit
 from research.strategy_hunt.run import DEFAULT_ROOT, run_symbols, score_regime_root, score_root, write_manifest
 from strategies.families import family_names
 
@@ -58,11 +60,17 @@ def cmd_context(a: argparse.Namespace) -> int:
             print(f"splits {s}: {n}")
         except Exception as exc:
             print(f"splits {s}: ERROR {exc}")
+    # v-playbook-desk-b1-2026-09-25 (fix round 1, finding 2): a failed universe-context build is
+    # fatal, not a swallowed warning. Every ctx_* column downstream families read
+    # (strategies/families/inplay.py) depends on this file; letting the pipeline limp on with a
+    # missing/stale one means those families silently propose nothing for the rest of the run,
+    # which is worse than stopping loudly here.
     try:
         uc = build_universe_context(a.root)
-        print(f"context: universe -> {uc}")
     except Exception as exc:
         print(f"context: universe ERROR {exc}")
+        return 1
+    print(f"context: universe -> {uc}")
     return 0
 
 
@@ -72,7 +80,11 @@ def cmd_universe_context(a: argparse.Namespace) -> int:
     after `news`/`earnings` land, without re-running the whole `context` subcommand."""
     from research.strategy_hunt.context import build_universe_context
 
-    uc = build_universe_context(a.root)
+    try:
+        uc = build_universe_context(a.root)
+    except Exception as exc:
+        print(f"universe-context ERROR {exc}")
+        return 1
     print(f"universe-context: {uc}")
     return 0
 
@@ -134,7 +146,6 @@ def cmd_run(a: argparse.Namespace) -> int:
 
 
 def cmd_score(a: argparse.Namespace) -> int:
-    from research.strategy_hunt.fit.writer import write_fit
     from research.strategy_hunt.report import write_report
 
     computed_at = time.strftime("%Y-%m-%dT%H:%M:%S")
@@ -229,7 +240,10 @@ def cmd_promote(a: argparse.Namespace) -> int:
 
 
 def cmd_all(a: argparse.Namespace) -> int:
-    for fn in (cmd_export, cmd_context, cmd_news, cmd_earnings, cmd_calibrate, cmd_run, cmd_score):
+    # v-playbook-desk-b1-2026-09-25 (fix round 1, finding 1): context must build the universe
+    # context AFTER news/earnings land, so ctx_news_count_24h/ctx_earnings_prev/ctx_eps_surprise_pct
+    # reflect tonight's caches by the time `run` consumes them via process_symbol -> ctx_* columns.
+    for fn in (cmd_export, cmd_news, cmd_earnings, cmd_context, cmd_calibrate, cmd_run, cmd_score):
         rc = fn(a)
         if rc:
             return rc
@@ -253,12 +267,18 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--no-coldstart", action="store_true")
         sp.add_argument("--postgres", action="store_true")
 
-    for name, fn in (("export", cmd_export), ("context", cmd_context), ("universe-context", cmd_universe_context),
-                     ("news", cmd_news), ("earnings", cmd_earnings), ("calibrate", cmd_calibrate), ("run", cmd_run),
+    for name, fn in (("export", cmd_export), ("context", cmd_context), ("news", cmd_news),
+                     ("earnings", cmd_earnings), ("calibrate", cmd_calibrate), ("run", cmd_run),
                      ("score", cmd_score), ("report", cmd_report), ("all", cmd_all)):
         sp = sub.add_parser(name)
         common(sp)
         sp.set_defaults(fn=fn)
+
+    # v-playbook-desk-b1-2026-09-25 (fix round 1, finding 5): rebuild-only-the-context-file takes
+    # no symbols/families/cost-mult/etc -- just --root, like `promote`.
+    sp = sub.add_parser("universe-context")
+    sp.add_argument("--root", type=Path, default=DEFAULT_ROOT)
+    sp.set_defaults(fn=cmd_universe_context)
 
     sp = sub.add_parser("scorecard")
     sp.add_argument("--root", type=Path, default=DEFAULT_ROOT)
