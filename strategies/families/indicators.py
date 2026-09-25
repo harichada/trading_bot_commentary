@@ -11,9 +11,9 @@ RVOL_LOOKBACK = 20
 
 
 def _safe_atr(h: pd.Series, l: pd.Series, c: pd.Series, window: int) -> pd.Series:
-    """ta.volatility.average_true_range indexes out of bounds when len(c) <= window; every other
+    """ta.volatility.average_true_range indexes out of bounds when len(c) < window; every other
     indicator here degrades to NaN in that case, so match that contract instead of crashing."""
-    if len(c) <= window:
+    if len(c) < window:
         return pd.Series(np.nan, index=c.index)
     return ta.volatility.average_true_range(h, l, c, window=window)
 

@@ -92,3 +92,19 @@ def test_closed_bars_drops_in_progress_bar():
     b = pd.DataFrame({"open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0, "volume": 1}, index=idx)
     assert len(closed_bars(b, pd.Timestamp("2025-01-02 09:52"))) == 4      # 09:50 bar still forming
     assert len(closed_bars(b, pd.Timestamp("2025-01-02 09:55"))) == 5
+
+
+def test_safe_atr_boundary_len_equals_window_is_valid_len_below_is_nan():
+    # Exercise _safe_atr directly (not via indicator_frame/daily_features): ta's ADXIndicator has its
+    # own, separate out-of-bounds bug on very short 5-min frames, which would make an indicator_frame-level
+    # boundary test fail for an unrelated reason. This isolates the exact fix under review.
+    from strategies.families.indicators import _safe_atr
+    c14 = pd.Series(range(100, 114), dtype=float)
+    h14, l14 = c14 + 0.5, c14 - 0.5
+    r14 = _safe_atr(h14, l14, c14, window=14)
+    assert len(r14) == 14 and not np.isnan(r14.iloc[-1])   # len(c) == window: must compute, not NaN
+
+    c13 = pd.Series(range(100, 113), dtype=float)
+    h13, l13 = c13 + 0.5, c13 - 0.5
+    r13 = _safe_atr(h13, l13, c13, window=14)
+    assert len(r13) == 13 and np.isnan(r13.iloc[-1])   # len(c) < window: NaN, no raise
