@@ -124,6 +124,22 @@ def test_hold_sessions_and_short_borrow():
     assert t.r_multiple == pytest.approx(-(t.exit_fill - 100.0) / 10.0)
 
 
+def test_intraday_time_stop_ties_eod_labels_time_stop():
+    from research.strategy_hunt.sim.simulator import simulate
+    bars = _flat_session("2025-01-02")
+    e = Entry("X", "long", bars.index[10], 100.0, 90.0, 120.0, 67, "intraday")
+    t = simulate([e], bars, ZERO_COSTS, set(), "fam")[0]
+    assert t.exit_reason == "time_stop" and t.exit_ts == bars.index[77]
+
+
+def test_multiday_earnings_eve_beats_time_stop_on_tie():
+    from research.strategy_hunt.sim.simulator import simulate
+    bars = pd.concat([_flat_session("2025-01-02"), _flat_session("2025-01-03"), _flat_session("2025-01-06")])
+    e = Entry("X", "long", bars.index[5], 100.0, 90.0, 120.0, 2, "multiday")
+    t = simulate([e], bars, ZERO_COSTS, {pd.Timestamp("2025-01-06")}, "fam")[0]
+    assert t.exit_reason == "earnings_eve" and t.exit_ts == pd.Timestamp("2025-01-03 15:55")
+
+
 def test_session_table():
     from research.strategy_hunt.sim.simulator import build_session_table
     bars = pd.concat([_flat_session("2025-01-02"), _flat_session("2025-01-03")])

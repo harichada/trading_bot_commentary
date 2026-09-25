@@ -38,10 +38,10 @@ def _limit(entry: Entry, start: int, tb: SessionTable, earn_next: np.ndarray, n:
     if entry.hold_kind == "intraday":
         eod = int(tb.last_pos[s0])
         ts_pos = start + int(entry.time_stop)
-        return (ts_pos, "time_stop") if ts_pos < eod else (eod, "eod")
+        return (ts_pos, "time_stop") if ts_pos <= eod else (eod, "eod")
     last_session = s0 + int(entry.time_stop) - 1
     for s in range(s0, min(last_session, len(tb.last_pos) - 1) + 1):
-        if s < last_session and earn_next[s]:
+        if earn_next[s]:
             return int(tb.last_pos[s]), "earnings_eve"
     if last_session <= len(tb.last_pos) - 1:
         return int(tb.last_pos[last_session]), "time_stop"
