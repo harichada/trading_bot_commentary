@@ -9,8 +9,8 @@ from typing import Optional
 
 import pandas as pd
 
-from research.strategy_hunt.paths import trades_dir
-from research.strategy_hunt.run import REPORTS_DIR
+from research.strategy_hunt.paths import reports_dir, trades_dir
+from research.strategy_hunt.run import REPORTS_DIR  # noqa: F401 -- back-compat monkeypatch target only
 from research.strategy_hunt.score.regime_rows import POOLED_SOURCE
 
 # v-playbook-desk-b1-5 task 10 fix r1: only the cost controls live in separate roots now. The
@@ -283,12 +283,13 @@ def write_report(root: Path, rows: list[dict], computed_at: str, pooled: Optiona
     calibration = load_calibration(root)
     portfolio = replay(pass_lane_trades(trades, rows)) if trades is not None else None
     md = render_report(rows, computed_at, trades, controls, portfolio, calibration, pooled=pooled)
-    REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    d = reports_dir(root)
+    d.mkdir(parents=True, exist_ok=True)
     stem = report_stem(computed_at)
-    p = REPORTS_DIR / f"{stem}-strategy-hunt.md"
+    p = d / f"{stem}-strategy-hunt.md"
     p.write_text(md)
     p.with_suffix(".json").write_text(
         json.dumps(_report_manifest(rows, pooled, computed_at, p.name), indent=1, allow_nan=False))
     if portfolio is not None:
-        _write_equity_curve_csv(portfolio["equity_curve"], REPORTS_DIR / f"{stem}-equity-curve.csv")
+        _write_equity_curve_csv(portfolio["equity_curve"], d / f"{stem}-equity-curve.csv")
     return p

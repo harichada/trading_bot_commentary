@@ -22,8 +22,8 @@ from research.strategy_hunt.data.splits import load_adjusted
 from research.strategy_hunt.fit.coldstart import FEATURES, predict_coldstart, symbol_characteristics, train_coldstart
 from research.strategy_hunt.fit.writer import build_row
 from research.strategy_hunt.models import TRADE_COLUMNS
-from research.strategy_hunt.paths import (SHUFFLE_VARIANT, checkpoint_path, choices_path, trades_dir,
-                                          trades_path)
+from research.strategy_hunt.paths import (SHUFFLE_VARIANT, checkpoint_path, choices_path, reports_dir,
+                                          trades_dir, trades_path)
 from research.strategy_hunt.score.regime_rows import (baseline_coverage, baseline_guard, baseline_pooled_rows,
                                                       pooled_rows, regime_rows, trades_from_frame)
 from research.strategy_hunt.sim.calibrate import slippage_override_from
@@ -309,8 +309,9 @@ def score_root(root: Path, family_names: list[str], computed_at: str, coldstart:
 
 
 def write_manifest(root: Path, record: dict) -> Path:
-    REPORTS_DIR.mkdir(parents=True, exist_ok=True)
-    p = REPORTS_DIR / f"{record.get('date', time.strftime('%Y-%m-%d'))}.json"
+    d = reports_dir(root)
+    d.mkdir(parents=True, exist_ok=True)
+    p = d / f"{record.get('date', time.strftime('%Y-%m-%d'))}.json"
     existing = json.loads(p.read_text()) if p.exists() else {}
     existing.update(record)
     p.write_text(json.dumps(existing, indent=1, default=str))

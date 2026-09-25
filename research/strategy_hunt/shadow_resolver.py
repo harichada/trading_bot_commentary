@@ -26,7 +26,8 @@ from backtest.stage_a_scorer import StageAMetrics, check_floors
 from research.strategy_hunt.data.earnings import earnings_days
 from research.strategy_hunt.data.splits import load_adjusted
 from research.strategy_hunt.models import SimTrade
-from research.strategy_hunt.run import REPORTS_DIR
+from research.strategy_hunt.paths import reports_dir
+from research.strategy_hunt.run import REPORTS_DIR  # noqa: F401 -- back-compat monkeypatch target only
 from research.strategy_hunt.sim.costs import CostModel
 from research.strategy_hunt.sim.simulator import build_session_table, simulate
 from strategies.families.models import SIDES, Entry
@@ -202,8 +203,9 @@ def stage_a_scorecard(trades: list[SimTrade], family: str) -> dict:
 
 
 def write_scorecard(root: Path, family: str, card: dict, computed_at: str) -> Path:
-    REPORTS_DIR.mkdir(parents=True, exist_ok=True)
-    p = REPORTS_DIR / f"scorecard-{family}-{computed_at[:10]}.md"
+    d = reports_dir(root)
+    d.mkdir(parents=True, exist_ok=True)
+    p = d / f"scorecard-{family}-{computed_at[:10]}.md"
     lines = [
         f"# Stage A scorecard: {family}",
         "",

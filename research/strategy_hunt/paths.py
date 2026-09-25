@@ -53,3 +53,27 @@ def checkpoint_path(root: Path, symbol: str, variant: Optional[str] = None) -> P
 
 def choices_path(root: Path, symbol: str, variant: Optional[str] = None) -> Path:
     return variant_dir(root, "choices", variant) / f"{symbol.upper()}.json"
+
+
+def reports_dir(root: Path) -> Path:
+    """Where a root's manifest, reports, and scorecards belong.
+
+    v-playbook-desk-b1-5 task 12: `write_manifest` / `write_report` / `write_scorecard`
+    used to write unconditionally into the committed `research/reports/strategy_hunt/`,
+    keyed by date or run stamp. A control run on a different root (e.g.
+    `--root data/strategy_hunt_cost2`) then overwrote the real run's manifest record and
+    dropped its report/equity-CSV/json companion into the committed directory. Artefacts
+    belong to the root they came from: the real run's root (`DEFAULT_ROOT`, resolved so a
+    caller's relative/absolute spelling doesn't matter) still gets the committed dir; any
+    other root gets `<root>/reports`.
+
+    Imports `DEFAULT_ROOT` from `run.py` lazily (inside the function body, not at module
+    load) because `run.py` imports this module at load time -- a module-level import here
+    would be circular.
+    """
+    from research.strategy_hunt.run import DEFAULT_ROOT
+
+    root = Path(root)
+    if root.resolve() == DEFAULT_ROOT.resolve():
+        return Path("research/reports/strategy_hunt")
+    return root / "reports"
