@@ -314,3 +314,221 @@ What the run does establish, and what B2/B3 should build on:
 - The shared run manifest `research/reports/strategy_hunt/<date>.json` is keyed by variant but not by
   root, so a control run in a separate root overwrites the real run's `run` record. It was restored
   from a pre-control copy for this report; see "Concerns" in the task report.
+
+---
+
+# B1.6 — regime label fix (rerun under entry-time labels)
+
+**Run:** 2026-09-25 15:45–15:59, branch `feature/newsbus-autonomy-decision-card`, code at `7d394d5`.
+Machine report: `research/reports/strategy_hunt/2026-09-25T1557-strategy-hunt.md` (+ `.json`,
+`2026-09-25T1557-equity-curve.csv`). Supersedes the B1.5 numbers above wherever they disagree.
+
+Why the rerun: the whole-branch review found that `research/strategy_hunt/data/regime.py` labelled
+every trade with the regime computed from the entry **day's** SPY and VIX **closes**. A 10:00 entry
+was therefore stamped with a regime decided six hours later. That is a look-ahead of exactly the
+kind a regime-conditioned row is most vulnerable to: a day that *ended* down 1% with VIX up was
+labelled `risk_off`, so "shorts work in `risk_off`" was partly the tautology "shorts work on days
+that ended down". The label is now reconstructed from what was knowable at the entry bar — SPY's
+day-to-date move through the last 5-minute bar that closed at or before the entry bar's open, plus
+the **prior** session's VIX close and close-to-close change — through the same
+`classify_regime` thresholds as `core/market_context.py`. Full description in
+`docs/research/strategy_hunt.md` § "Regime and pooled rows" → "How a trade's regime label is
+computed".
+
+## Headline
+
+**The regime split was mostly the look-ahead.** Nothing reaches PASS under either labelling, so the
+B2 gate is unchanged — but the single finding B1/B1.5 offered as "real and large" does not survive
+honest labels.
+
+| | B1.5 (close-of-day labels) | **B1.6 (entry-time labels)** |
+|---|---|---|
+| Unconditional rows | 9,231 · PASS 0 / WATCH 127 / FAIL 9,104 | **9,227 · PASS 0 / WATCH 127 / FAIL 9,100** |
+| Symbol-regime rows | 1,390 over 396 symbols · PASS 0 / WATCH 159 | **1,625 over 496 symbols · PASS 0 / WATCH 107 / FAIL 1,518** |
+| Universe-pooled rows | 69 · PASS 0 / WATCH 14 / FAIL 55 | **67 · PASS 0 / WATCH 6 / FAIL 61** |
+| Pooled rows with a baseline | 69 of 69 | **67 of 67** (9 flagged `baseline_population_mismatch`) |
+| Mean unconditional exp_R | −0.126 | **−0.1265** |
+| Out-of-sample trades | 335,499 real · 479,354 shuffled | **335,495 real · 479,357 shuffled** |
+| Trades by regime | mixed 47.2% · risk_on 35.2% · risk_off 17.6% | **mixed 72.7% · risk_on 16.1% · risk_off 11.2%** |
+| Sessions by regime | risk_off ~179 | **mixed 1,079 · risk_on 409 · risk_off 158** |
+
+The trade count barely moves (−4 trades, from the `PEAD_ENTRY_BAR 6 → 5` correction in the same
+batch), so this is the *same tape* re-labelled. What changes is which regime each trade is assigned
+to: at 10:00 most sessions have not yet moved ±0.3%, so **72.7% of trades are now `mixed`** against
+47.2% before. The old labels were, in effect, sorting trades by the day's eventual outcome.
+
+## The two risk_off pooled rows, before and after
+
+These are the two rows B1.5 named as its best candidates. Both flip sign.
+
+| row | | n | exp_R | baseline exp_R | excess | t_session | recovery | decay | verdict | failed floors |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `dt_momentum short/risk_off` | B1.5 | 13,370 | **+0.172** | +0.142 | +0.030 | +0.56 | 3.60 | — | WATCH | `min_t_stat_session`, `min_excess_r` |
+| | **B1.6** | 8,868 | **−0.275** | −0.230 | **−0.045** | −3.97 | 0.00 | 0.00 | **FAIL** | 10 floors incl. `min_exp_r`, `min_excess_r` |
+| `gap_play short/risk_off` | B1.5 | 5,292 | **+0.181** | +0.107 | +0.073 | +3.52 | 4.20 | −1.86 | WATCH | `min_decay` only |
+| | **B1.6** | 2,477 | **−0.152** | −0.173 | +0.021 | −2.21 | 0.00 | 0.00 | **FAIL** | 10 floors incl. `min_exp_r`, `min_excess_r` |
+
+`gap_play short/risk_off` — the row B1.5 described as "the only one of 69 that fails a single floor"
+— loses 33 basis points of R per trade and now fails ten. `dt_momentum short/risk_off`, B1.5's
+closest row, loses 45. Neither was a lane that worked when the tape was risk-off; both were lanes
+that worked on days that *closed* risk-off, which is not a fact available at 10:00.
+
+## The regime split headline, before and after
+
+| family / side | regime | B1.5 exp_R (n) | **B1.6 exp_R (n)** |
+|---|---|---|---|
+| `dt_momentum` short | risk_off | **+0.172** (13,370) | **−0.275** (8,868) |
+| | risk_on | −0.457 (30,551) | **−0.276** (14,625) |
+| | mixed | −0.136 (40,690) | −0.176 (61,118) |
+| `dt_momentum` long | risk_on | **+0.048** (24,229) | **−0.130** (12,463) |
+| | risk_off | −0.483 (12,004) | **−0.140** (8,020) |
+| | mixed | −0.174 (35,247) | −0.157 (50,997) |
+| `gap_play` long | risk_on | +0.060 (8,771) | **+0.114** (2,916) |
+| | risk_off | −0.233 (3,861) | **+0.060** (2,466) |
+| | mixed | −0.120 (8,614) | −0.119 (15,864) |
+| `gap_play` short | risk_off | **+0.181** (5,292) | **−0.152** (2,477) |
+| | risk_on | −0.160 (7,560) | −0.191 (1,643) |
+| | mixed | −0.060 (9,017) | −0.006 (17,749) |
+
+B1.5's item 1 ("the regime split is real and large, and it is the only robust finding") claimed a
+**+0.63 R** spread for `dt_momentum short` between `risk_off` and `risk_on`, and **+0.53 R** for
+`dt_momentum long`. Under entry-time labels those spreads are **+0.000 R** and **−0.010 R** — the
+two regimes are indistinguishable. The same collapse happens to `orb_inplay short` (+0.200 /
+−0.539 → +0.003 / −0.176) and `mean_rev_intraday long` (+0.267 in `risk_on` → −0.159). **That
+finding must be withdrawn.**
+
+One conditional pattern does survive, and it is the source of both surviving WATCH rows of any
+substance: `gap_play long` earns **+0.114 R in `risk_on` and +0.060 R in `risk_off` against −0.119
+in `mixed`** — i.e. it wants a market that is *already* moving in either direction by 10:00 and
+loses money when it is not. That is a statement about known-at-entry conditions, so it is the first
+regime claim in this programme that is not circular. It is still not a PASS: both rows fail
+`min_recovery`, `min_stability` and `min_t_stat_session`.
+
+## Pooled verdicts under the corrected labels
+
+**PASS 0 / WATCH 6 / FAIL 61** of 67 rows (B1.5: 0 / 14 / 55 of 69). Two rows disappear and none
+appear: `rs_leader long/risk_on` and `vol_breakout long/risk_on` have **no** trades left in `risk_on`
+once the labels stop counting days that merely *closed* up (both families are multiday and thin —
+169 and 371 trades universe-wide; `rs_leader` now has 160 `mixed` + 9 `risk_off` and nothing else). The six WATCH rows:
+
+| family | side | regime | n | exp_R | excess | baseline n | failed floors |
+|---|---|---|---|---|---|---|---|
+| `gap_play` | long | risk_off | 2,466 | +0.060 | **+0.154** | 2,666 | `min_pf`, `min_recovery`, `min_stability`, `min_t_stat`, `min_t_stat_session` |
+| `gap_play` | long | risk_on | 2,916 | +0.114 | **+0.098** | 2,298 | `min_wr`, `min_recovery`, `min_stability`, `min_t_stat_session` |
+| `mr_20d` | long | mixed | 701 | +0.027 | +0.008 | 701 | 9 floors incl. `min_excess_r` |
+| `mr_20d` | long | risk_off | 331 | +0.227 | −0.031 | 331 | `min_n`, `min_recovery`, `min_stability`, `min_t_stat_session`, `min_excess_r` |
+| `news_catalyst` | short | mixed | 424 | +0.044 | −0.026 | 438 | 10 floors incl. `min_excess_r` |
+| `post_news_drift` | short | mixed | 394 | +0.052 | −0.000 | 394 | 9 floors incl. `min_excess_r` |
+
+Only the two `gap_play long` rows clear the excess floor; the other four are WATCH on
+`POOLED_WATCH_FLOORS` (n ≥ 200, exp_R > 0, PF ≥ 1.05) alone and fail `min_excess_r`. **Every one of
+the 67 rows still fails `min_t_stat_session`, `min_recovery` or both** — B1.5's item 3 (session
+clustering is the binding constraint) survives the relabelling intact.
+
+## The new pooled guard (`baseline_population_mismatch`)
+
+Nine of 67 rows carry the new key, meaning the shuffled control group's trade count is outside
+[0.5×, 2×] the real row's `n`:
+
+| row | real n | baseline n | ratio |
+|---|---|---|---|
+| `orb short/risk_on` | 166 | 1,027 | 6.19 |
+| `orb short/mixed` | 1,826 | 9,353 | 5.12 |
+| `orb long/mixed` | 1,750 | 9,286 | 5.31 |
+| `orb long/risk_off` | 195 | 913 | 4.68 |
+| `orb long/risk_on` | 478 | 1,374 | 2.87 |
+| `orb short/risk_off` | 339 | 935 | 2.76 |
+| `vwap_reversion long/risk_on` | 3,397 | 8,592 | 2.53 |
+| `dt_momentum short/risk_on` | 14,625 | 31,834 | 2.18 |
+| `mean_rev_intraday long/risk_off` | 1,299 | 599 | 0.46 |
+
+All nine were already FAIL on eight or more other floors, so **the key changed no verdict this
+run** — it is currently diagnostic. What it diagnoses is real: `orb` fires 3–6× as often on
+structure-destroyed bars as on the real tape (its contraction filter keys off a *lack* of range
+expansion, which a within-session permutation manufactures), so its `excess_r` was never comparing
+like with like. Any future `orb` pooled row must be read with that in mind, and the earlier
+"`orb` excess" numbers in the B1/B1.5 tables should be treated as uninterpretable rather than
+merely weak.
+
+## Steps and durations
+
+Environment `set -a; . ./.env; set +a` with `POSTGRES_DSN` from `backtest.engine.DEFAULT_DSN`.
+Logs under `data/strategy_hunt/` (not committed).
+
+| # | Step | Command | Wall-clock | Outcome |
+|---|---|---|---|---|
+| 1 | run (real) | `… run --workers 12 --force` | **303 s** | 539/539 done, 0 errors, 335,495 trades (`run_real_b16.log`) |
+| 2 | run (baseline) | `… run --shuffle-seed 7 --workers 12 --force` | **366 s** | 539/539 done, 0 errors, 479,357 trades → `trades_shuffle/` (`run_baseline_b16.log`) |
+| 3 | score | `… score --postgres` | **71 s** | 9,227 unconditional + 1,625 symbol-regime + 67 pooled + 67 baseline; snapshot + Parquet + Postgres upsert (`score_b16.log`) |
+| 4 | report | `… report` | 2 s | `2026-09-25T1557-strategy-hunt.md` + `.json` + equity CSV (`report_b16.log`) |
+| 5 | promote | `… promote` | 1 s | 13-family table → `research/reports/strategy_hunt/strategy_hunt_promotion.md` (`promote_b16.log`) |
+
+No step failed and no step was skipped. `export`/`news`/`earnings`/`context`/`calibrate` were not
+re-run: this batch changed no input, only how trades are labelled and scored. The 2× cost control
+was not re-run either — its root's trades are unaffected by the label fix, and its snapshot is
+quoted above as B1.5's.
+
+**The baseline guard passed.** `score` logged no `baseline_mismatch` / `baseline_stale` warning and
+no row carries `no_baseline`: the control covers all 539 real symbols and ends on the same session.
+
+Side effects of the same fix batch, visible in these numbers:
+
+- **Symbol-regime rows rose 1,390 → 1,625 over 396 → 496 symbols** while their WATCH count fell
+  159 → 107. More symbols now clear `REGIME_ROW_MIN_N` (= 60) in *some* regime because the labels
+  concentrate into `mixed`, which is the largest bucket; and fewer of those rows are WATCH because
+  the flattering `risk_off` rows are gone.
+- `promote` writes to `research/reports/strategy_hunt/strategy_hunt_promotion.md` now (was
+  `docs/research/`). All 13 families: `pass_symbols 0`, `pooled_pass_regimes 0`, blocker
+  `no_pass_symbols`, recommendation `collect_shadow`. Nothing applied; `.env` and `Config().yaml`
+  untouched, live bot not restarted.
+- **Portfolio replay is still empty** (no PASS lane → no trades; `2026-09-25T1557-equity-curve.csv`
+  is a header row). Calibration unchanged (n=108 fills, median slippage fraction 0.000127, usable).
+- 0 cold-start rows: every (symbol, family, side) lane has ≥ `COLDSTART_MAX_N` walk-forward trades.
+
+## B2 go/no-go, restated
+
+The gate, unchanged:
+
+> Gate: at least one family reaches PASS or a pooled regime row reaches PASS before B2's live
+> wiring is enabled beyond shadow — and a pooled PASS counts only with positive excess over the
+> shuffled baseline.
+
+**Verdict: NO-GO — and B1.5's NO-GO should now be read as *more* firmly established, not less.**
+0 PASS rows of any kind: 0 of 9,227 unconditional, 0 of 1,625 symbol-regime, 0 of 67 pooled. B2
+live wiring stays shadow-only; B2's shadow-only work proceeds.
+
+What changes in the *reasoning* behind the verdict:
+
+1. **Withdraw B1.5's item 1.** "The regime split is real and large" was a look-ahead artefact. The
+   `dt_momentum short` risk_off/risk_on spread goes from +0.63 R to 0.00 R. Any downstream design
+   that leaned on regime-conditioned sizing for `dt_momentum`, `orb_inplay` or `mean_rev_intraday`
+   has no evidence behind it.
+2. **B1.5's item 2 stands, and hardens.** "Most of that asymmetry is drift, not edge" was the right
+   instinct; the honest version is stronger — most of it was not even drift, it was the outcome
+   variable leaking into the conditioning variable.
+3. **B1.5's items 3 and 4 stand unchanged.** Session clustering is still the binding constraint
+   (all 67 rows fail `min_t_stat_session` and/or `min_recovery`); `min_decay` still earns its place.
+4. **One new, non-circular lead:** `gap_play long` prefers a market already moving by 10:00
+   (+0.114 `risk_on`, +0.060 `risk_off`, −0.119 `mixed`, excess +0.098 / +0.154 over the shuffled
+   control). It is the only regime claim in this programme measured on known-at-entry information.
+   It is not a PASS and should be treated as a shadow-ledger hypothesis, not a lane.
+5. **A methodological lesson worth carrying:** the leak was invisible in every summary statistic —
+   B1 and B1.5 both looked internally consistent, and the shuffle baseline did not catch it because
+   the baseline shares the same labels. Only reading the label's construction found it. Every
+   future conditioning variable needs an explicit "what did we know, and when" note before its rows
+   are believed.
+
+## Known limitations added by B1.6
+
+- **VIX is lagged one session.** The research store holds daily VIX only, so `vix_level` and
+  `vix_change_pct` are the *prior* session's. Live, `vix_change_pct` is today's move. Lagging can
+  never smuggle in the future, but on a day when VIX turns intraday the research label is blunter
+  than the live one — so a research `mixed` row may be governing live signals the gate sees as
+  `risk_off`. Closing this needs intraday VIX history in `export`.
+- **`spy_change_pct` is 0.0 on the session's opening bar**, so every bar-0 entry lands in `mixed`
+  unless the prior session's VIX alone decides it. That is correct (nothing has closed yet) but it
+  means opening-bar families are structurally under-represented in `risk_on`/`risk_off`.
+- **The `mixed` bucket now holds 72.7% of trades**, which makes it a weak conditioning variable:
+  it is closer to "the market has not moved yet" than to a regime. A future iteration should
+  consider finer intraday thresholds rather than reusing the live gate's daily-scale ±0.3%/±0.5%
+  cuts at 10:00.

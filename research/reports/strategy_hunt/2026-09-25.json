@@ -22,8 +22,9 @@
   },
   "cost_mult": 1.0,
   "shuffle_seed": null,
+  "variant": null,
   "notional": 6000.0,
-  "elapsed_sec": 298
+  "elapsed_sec": 303
  },
  "errors": [],
  "run_shuffle": {
@@ -50,6 +51,7 @@
   "shuffle_seed": 7,
   "variant": "shuffle",
   "notional": 6000.0,
-  "elapsed_sec": 362
- }
+  "elapsed_sec": 366
+ },
+ "errors_shuffle": []
 }

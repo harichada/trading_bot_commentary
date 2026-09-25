@@ -25,6 +25,22 @@
   `bar_of_day < 3`, making the known-at-open contract mechanical. Docs:
   `docs/research/strategy_hunt.md` § "Regime and pooled rows",
   `docs/BOT_OPERATIONS_MANUAL.md` § "Strategy fit gate".
+- docs(strategy-hunt): B1.6 rerun of the full universe under the corrected labels
+  (`research/reports/strategy_hunt/2026-09-25T1557-strategy-hunt.md` + json + equity CSV; narrated
+  in `research/reports/strategy_hunt/2026-09-25-strategy-hunt-b1-5.md` § "B1.6 — regime label fix").
+  Same tape (335,495 real / 479,357 shuffled trades), re-labelled: **0 PASS rows anywhere** (0 of
+  9,227 unconditional, 0 of 1,625 symbol-regime, 0 of 67 pooled — pooled PASS 0 / WATCH 6 / FAIL 61,
+  was 0 / 14 / 55). B2 stays **NO-GO**. The substantive result is that B1/B1.5's headline finding is
+  **withdrawn**: the "regime split is real and large" was the look-ahead. `dt_momentum short`'s
+  risk_off-minus-risk_on spread collapses from +0.63 R to 0.00 R; the two rows B1.5 named as its
+  best candidates flip sign (`dt_momentum short/risk_off` +0.172 → −0.275 R,
+  `gap_play short/risk_off` +0.181 → −0.152 R, the latter going from "fails one floor" to ten).
+  `mixed` now holds 72.7% of trades (was 47.2%), since at 10:00 most sessions have not yet moved
+  ±0.3%. One non-circular lead survives: `gap_play long` earns +0.114 R in risk_on and +0.060 in
+  risk_off against −0.119 in mixed, with excess +0.098 / +0.154 over the shuffled control — WATCH,
+  not PASS. Nine of 67 pooled rows carry the new `baseline_population_mismatch` (all already FAIL on
+  other floors); it shows `orb` firing 3–6x as often on structure-destroyed bars, which makes its
+  earlier excess numbers uninterpretable.
 - feat(strategy-hunt): full strategy-fit system — shared candidate-family library
   (`strategies/families/`: ten intraday and swing families, common entry/grid/de-dup helpers) used by
   both the offline research pipeline and the live engine; the offline walk-forward pipeline
