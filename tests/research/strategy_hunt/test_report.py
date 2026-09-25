@@ -24,21 +24,25 @@ def _trade_row(sym, fam, side, entry_ts="2025-09-02 10:00", exit_ts="2025-09-02 
     return {k: d[k] for k in TRADE_COLUMNS}
 
 
-def test_render_report_sections_and_fdr():
+def test_render_report_sections():
     from research.strategy_hunt.report import render_report
     rows = [_row("NVDA", "orb", "long", "PASS", 0.2), _row("TSLA", "orb", "long", "FAIL", -0.1),
             _row("AMD", "mr_20d", "short", "WATCH", 0.05), _row("NEW", "orb", "long", "WATCH", float("nan"), n=0, source="coldstart")]
     trades = pd.DataFrame({"family": ["orb", "orb", "mr_20d"], "side": ["long", "long", "short"], "r_multiple": [1.0, -0.5, 0.3],
                            "regime": ["risk_on", "mixed", "mixed"]})
-    controls = {"shuffle": [_row("X", "orb", "long", "PASS", 0.3), _row("Y", "orb", "long", "FAIL", -0.2)],
+    controls = {"cost_0.5": [_row("X", "orb", "long", "PASS", 0.3), _row("Y", "orb", "long", "FAIL", -0.2)],
                 "cost_2.0": [_row("NVDA", "orb", "long", "WATCH", 0.05)]}
     md = render_report(rows, "2025-09-25T00:00:00", trades, controls)
     for section in ("## Verdicts by family", "## Top lanes by score", "## Pooled out-of-sample by family",
-                    "## Per-regime expectancy by family", "## Controls", "## Symbols with no passing lane", "## Caveats",
+                    "## Per-regime expectancy by family", "## Pooled rows vs shuffled baseline",
+                    "## Controls", "## Symbols with no passing lane", "## Caveats",
                     "## Portfolio replay of PASS lanes", "## Cost calibration"):
         assert section in md
     assert "| orb | long | 1 | 0 | 1 | 1 |" in md            # PASS, WATCH(walkforward), FAIL, coldstart WATCH
-    assert "NVDA" in md and "false-discovery" in md and "1 / 1" in md
+    assert "NVDA" in md and "cost_0.5" in md and "cost_2.0" in md
+    # v-playbook-desk-b1-5 task 10 fix r1: the separate-root shuffle control (and its
+    # false-discovery line) is gone -- the in-root baseline supersedes it.
+    assert "false-discovery" not in md
     assert "TSLA" in md.split("## Symbols with no passing lane")[1]
     # portfolio and calibration were not passed -> not available
     assert "_not available_" in md.split("## Portfolio replay of PASS lanes")[1].split("## Cost calibration")[0]
@@ -202,3 +206,23 @@ def test_report_stem_from_computed_at():
     assert report_stem("2025-09-25") == "2025-09-25T0000"
     with pytest.raises(ValueError):
         report_stem("nope")
+
+
+def test_control_files_no_longer_include_the_separate_root_shuffle_control():
+    """v-playbook-desk-b1-5 task 10 fix r1: the in-root shuffled baseline supersedes the
+    separate-root shuffle run, and no documented command produces strategy_fit_shuffle.json."""
+    from research.strategy_hunt.report import CONTROL_FILES
+    assert set(CONTROL_FILES) == {"cost_0.5", "cost_2.0"}
+    assert all("shuffle" not in f for f in CONTROL_FILES.values())
+
+
+def test_report_manifest_tolerates_rows_missing_keys():
+    """Finding 5: the manifest reads rows with `.get` defaults like the rest of the module, so a
+    hand-written or partial snapshot row cannot raise on the way to disk."""
+    from research.strategy_hunt.report import _report_manifest
+    rows = [{"source": "walkforward"}, {"symbol": "NVDA", "source": "walkforward", "verdict": "PASS"}]
+    pooled = [{"baseline_n": None}, {"verdict": "WATCH", "baseline_n": 3}]
+    rec = _report_manifest(rows, pooled, "2025-09-25T01:05:00", "r.md")
+    assert rec["verdicts"] == {"": 1, "PASS": 1} and rec["pooled_verdicts"] == {"": 1, "WATCH": 1}
+    assert rec["n_rows"] == 2 and rec["n_symbols"] == 2 and rec["pooled_with_baseline"] == 1
+    assert rec["computed_at"] == "2025-09-25T01:05:00" and rec["report"] == "r.md"

@@ -24,8 +24,8 @@ from research.strategy_hunt.fit.writer import build_row
 from research.strategy_hunt.models import TRADE_COLUMNS
 from research.strategy_hunt.paths import (SHUFFLE_VARIANT, checkpoint_path, choices_path, trades_dir,
                                           trades_path)
-from research.strategy_hunt.score.regime_rows import (baseline_pooled_rows, pooled_rows, regime_rows,
-                                                      trades_from_frame)
+from research.strategy_hunt.score.regime_rows import (baseline_coverage, baseline_guard, baseline_pooled_rows,
+                                                      pooled_rows, regime_rows, trades_from_frame)
 from research.strategy_hunt.sim.calibrate import slippage_override_from
 from research.strategy_hunt.sim.costs import CostModel
 from research.strategy_hunt.sim.simulator import build_session_table
@@ -244,7 +244,10 @@ def score_regime_root(root: Path, family_names: list[str],
     exists, the shuffled control's trades are pooled the same way into baseline rows, and
     the real pooled rows are scored against the excess over their matching baseline group.
     With no `trades_shuffle/` the baseline list is empty and every pooled row reports
-    `no_baseline` — which is a WATCH ceiling, not a PASS.
+    `no_baseline` — which is a WATCH ceiling, not a PASS. A baseline that *is* present but
+    covers too little of the universe or stopped too long ago is flagged by `baseline_guard`
+    (fix r1) and stamped on every pooled row, since trusting a leftover control silently is
+    worse than having none.
     """
     per_symbol: list[dict] = []
     frames: list[pd.DataFrame] = []
@@ -269,9 +272,31 @@ def score_regime_root(root: Path, family_names: list[str],
                 # window_end is left to regime_rows: each row ends where *that regime*
                 # last traded, which is the honest answer to "how current is this row?".
                 per_symbol.extend(regime_rows(symbol, fam, side, trades, len(ch), computed_at, latest))
-    baseline = baseline_pooled_rows(pd.concat(base_frames, ignore_index=True), computed_at) if base_frames else []
-    pooled = pooled_rows(pd.concat(frames, ignore_index=True), computed_at, baseline=baseline) if frames else []
+    real_frame = pd.concat(frames, ignore_index=True) if frames else None
+    base_frame = pd.concat(base_frames, ignore_index=True) if base_frames else None
+    baseline = baseline_pooled_rows(base_frame, computed_at) if base_frame is not None else []
+    guard = _baseline_guard_logged(real_frame, base_frame)
+    pooled = pooled_rows(real_frame, computed_at, baseline=baseline, guard=guard) if real_frame is not None else []
     return per_symbol, pooled, baseline
+
+
+def _baseline_guard_logged(real_frame: Optional[pd.DataFrame],
+                           base_frame: Optional[pd.DataFrame]) -> tuple[str, ...]:
+    """`baseline_guard` plus the one warning that says, in counts and dates, what it saw.
+
+    A pooled row only carries the failure key; the operator needs the numbers to decide
+    whether to re-run the baseline or ignore the flag."""
+    guard = baseline_guard(real_frame, base_frame)
+    if guard:
+        cov = baseline_coverage(real_frame, base_frame)
+        logger.warning(
+            "score_regime: %s -- real symbols %d, baseline symbols %d (missing %d = %.1f%%, e.g. %s); "
+            "real last exit %s, baseline last exit %s (%d days behind). Re-run "
+            "`run --shuffle-seed 7 --force` to refresh the baseline.",
+            ", ".join(guard), cov["n_real_symbols"], cov["n_baseline_symbols"], cov["n_missing"],
+            100.0 * cov["missing_frac"], ", ".join(cov["missing"][:5]) or "-",
+            cov["real_last_exit"] or "-", cov["baseline_last_exit"] or "-", cov["stale_days"])
+    return tuple(guard)
 
 
 def score_root(root: Path, family_names: list[str], computed_at: str, coldstart: bool = True) -> list[dict]:

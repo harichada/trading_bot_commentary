@@ -308,3 +308,91 @@ def test_baseline_pooled_rows_are_pooled_rows_stamped_baseline():
     # a baseline row has no baseline of its own
     assert math.isnan(rows[0]["excess_r"]) and rows[0]["baseline_n"] == 0
     assert baseline_pooled_rows(None, "2025-09-25T00:00:00") == []
+
+
+# ──────────────────────────────────────────────────────────────────────
+# v-playbook-desk-b1-5 task 10 fix r1 — baseline coverage / staleness guard
+# ──────────────────────────────────────────────────────────────────────
+
+def _tape(symbols, last_day="2025-06-02"):
+    """One trade per symbol on `last_day`, plus an older one, as a trades frame."""
+    out = []
+    for sym in symbols:
+        out.append(_t(1.0, "2025-01-02", 0, "risk_on", sym))
+        out.append(_t(1.0, last_day, 0, "risk_on", sym))
+    return _frame(out)
+
+
+def test_baseline_guard_clean_when_coverage_and_freshness_match():
+    from research.strategy_hunt.score.regime_rows import baseline_guard
+
+    syms = [f"S{i:03d}" for i in range(100)]
+    assert baseline_guard(_tape(syms), _tape(syms)) == []
+    # exactly 5% of symbols missing is not "more than 5%"
+    assert baseline_guard(_tape(syms), _tape(syms[:95])) == []
+    # exactly 7 calendar days older is not "more than 7 days"
+    assert baseline_guard(_tape(syms, "2025-06-09"), _tape(syms, "2025-06-02")) == []
+
+
+def test_baseline_guard_flags_missing_coverage():
+    from research.strategy_hunt.score.regime_rows import BASELINE_MISMATCH, baseline_guard
+
+    syms = [f"S{i:03d}" for i in range(100)]
+    assert BASELINE_MISMATCH == "baseline_mismatch"
+    assert baseline_guard(_tape(syms), _tape(syms[:94])) == ["baseline_mismatch"]
+    assert baseline_guard(_tape(syms), _tape(syms[:10])) == ["baseline_mismatch"]
+
+
+def test_baseline_guard_flags_a_stale_baseline():
+    from research.strategy_hunt.score.regime_rows import BASELINE_STALE, baseline_guard
+
+    syms = [f"S{i:03d}" for i in range(100)]
+    assert BASELINE_STALE == "baseline_stale"
+    assert baseline_guard(_tape(syms, "2025-06-10"), _tape(syms, "2025-06-02")) == ["baseline_stale"]
+    # a baseline *newer* than the real tape is not stale
+    assert baseline_guard(_tape(syms, "2025-06-02"), _tape(syms, "2025-06-30")) == []
+
+
+def test_baseline_guard_reports_both_conditions_and_tolerates_an_empty_tape():
+    from research.strategy_hunt.score.regime_rows import baseline_guard
+
+    syms = [f"S{i:03d}" for i in range(100)]
+    assert baseline_guard(_tape(syms, "2025-06-30"), _tape(syms[:10], "2025-06-02")) == [
+        "baseline_mismatch", "baseline_stale"]
+    # no baseline at all is `no_baseline`'s job, not the guard's
+    assert baseline_guard(_tape(syms), None) == []
+    assert baseline_guard(None, _tape(syms)) == []
+    assert baseline_guard(_tape(syms), _frame([])) == []
+
+
+def test_baseline_coverage_reports_the_counts_and_dates_the_warning_needs():
+    from research.strategy_hunt.score.regime_rows import baseline_coverage
+
+    syms = [f"S{i:03d}" for i in range(100)]
+    cov = baseline_coverage(_tape(syms, "2025-06-30"), _tape(syms[:60], "2025-06-02"))
+    assert cov["n_real_symbols"] == 100 and cov["n_baseline_symbols"] == 60 and cov["n_missing"] == 40
+    assert cov["missing_frac"] == pytest.approx(0.40)
+    assert cov["real_last_exit"] == "2025-06-30" and cov["baseline_last_exit"] == "2025-06-02"
+    assert cov["stale_days"] == 28
+
+
+def test_pooled_rows_carry_the_guard_flags_and_cannot_pass():
+    from research.strategy_hunt.score.regime_rows import pooled_rows
+
+    base = [_baseline_row(0.10)]
+    row = pooled_rows(_frame(_flat(0.20)), "2025-09-25T00:00:00", baseline=base,
+                      guard=("baseline_mismatch",))[0]
+    failed = json.loads(row["failed_floors"])
+    assert "baseline_mismatch" in failed and "min_excess_r" not in failed
+    assert row["verdict"] != "PASS"
+    # ...and with no guard the same row keeps its clean excess
+    clean = pooled_rows(_frame(_flat(0.20)), "2025-09-25T00:00:00", baseline=base)[0]
+    assert "baseline_mismatch" not in json.loads(clean["failed_floors"])
+
+
+def test_verdict_pooled_guard_flags_block_pass_but_allow_watch():
+    from research.strategy_hunt.score.regime_rows import verdict_pooled
+
+    v, failed = verdict_pooled(_metrics(), GOOD_EXCESS, guard=("baseline_stale",))
+    assert v == "WATCH" and failed == ["baseline_stale"]
+    assert verdict_pooled(_metrics(), GOOD_EXCESS)[0] == "PASS"

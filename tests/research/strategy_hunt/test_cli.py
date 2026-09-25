@@ -344,3 +344,58 @@ def test_universe_context_subcommand_has_only_root_flag():
     assert str(ns.root) == "/tmp/somewhere"
     with pytest.raises(SystemExit):
         p.parse_args(["universe-context", "--symbols", "AAA"])
+
+
+# ──────────────────────
+# v-playbook-desk-b1-5 task 10 fix r1 — per-variant manifest errors, tolerant cmd_report
+# ──────────────────────
+
+def test_cmd_run_manifest_keeps_both_error_lists(monkeypatch, tmp_path):
+    """`write_manifest` merges with `dict.update`, so a single top-level `errors` key meant the
+    baseline run wiped the real run's failures off the record."""
+    import json as _json
+    from research.strategy_hunt import cli
+    from research.strategy_hunt import run as RUN
+
+    reports = tmp_path / "reports"
+    monkeypatch.setattr(RUN, "REPORTS_DIR", reports)
+
+    def _fake(symbols, root, families, workers=1, **kw):
+        tag = "shuffle" if kw.get("variant") else "real"
+        return [{"symbol": f"BAD_{tag}", "status": "error", "n_trades": 0, "error": f"{tag} boom"}]
+
+    monkeypatch.setattr(cli, "run_symbols", _fake)
+    assert cli.main(["run", "--root", str(tmp_path), "--symbols", "AAA", "--families", "toy"]) == 1
+    assert cli.main(["run", "--root", str(tmp_path), "--symbols", "AAA", "--families", "toy",
+                     "--shuffle-seed", "7"]) == 1
+
+    rec = _json.loads(next(reports.glob("*.json")).read_text())
+    assert [e["symbol"] for e in rec["errors"]] == ["BAD_real"]
+    assert [e["symbol"] for e in rec["errors_shuffle"]] == ["BAD_shuffle"]
+    assert rec["run"]["shuffle_seed"] is None and rec["run_shuffle"]["shuffle_seed"] == 7
+
+
+def test_cmd_report_tolerates_a_malformed_pooled_rows_section(monkeypatch, tmp_path, capsys):
+    """`core/strategy_fit.py` never raises on a malformed section; neither may the report path."""
+    import json as _json
+    from research.strategy_hunt import cli
+    from research.strategy_hunt import report as R
+    from research.strategy_hunt.fit.writer import fit_dir
+
+    monkeypatch.setattr(R, "REPORTS_DIR", tmp_path / "reports")
+    d = fit_dir(tmp_path)
+    d.mkdir(parents=True)
+    row = {"symbol": "NVDA", "strategy": "orb", "side": "long", "verdict": "PASS", "exp_r": 0.2,
+           "exp_r_lb": 0.02, "t_stat": 2.5, "pf": 1.4, "wr": 0.5, "max_dd_r": 5.0, "stability": 0.7,
+           "decay": 0.8, "score": 0.17, "n": 200, "sessions": 40, "computed_at": "2025-09-25T01:00:00",
+           "window_end": "2025-09-24", "failed_floors": "[]", "params_json": "{}",
+           "regime_exp_json": "{}", "source": "walkforward"}
+    (d / "strategy_fit.json").write_text(_json.dumps(
+        {"computed_at": "2025-09-25T01:00:00", "floors": {}, "rows": {"NVDA": {"orb:long": row}},
+         "regime_rows": {}, "pooled_rows": ["nope"]}))
+
+    assert cli.main(["report", "--root", str(tmp_path)]) == 0
+    out = capsys.readouterr().out
+    assert "report:" in out
+    md = (tmp_path / "reports" / "2025-09-25T0100-strategy-hunt.md").read_text()
+    assert "_no pooled rows_" in md.split("## Pooled rows vs shuffled baseline")[1].split("## Controls")[0]

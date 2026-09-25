@@ -92,8 +92,68 @@ BASELINE_SOURCE = "baseline"
 # the shuffled control" are different claims and only the second one is evidence.
 NO_BASELINE = float("nan")
 
+# v-playbook-desk-b1-5 task 10 fix r1. A *leftover* baseline is worse than none: it silently
+# becomes the yardstick for every pooled verdict while looking exactly like a fresh one. These
+# two failure keys say so on the row itself, so a stale/partial control can never mint a PASS.
+BASELINE_MISMATCH = "baseline_mismatch"      # the baseline skipped too much of the universe
+BASELINE_STALE = "baseline_stale"            # the baseline stopped too long before the real tape
+BASELINE_MAX_MISSING_FRAC = 0.05             # strictly more than 5% of real symbols missing
+BASELINE_MAX_STALE_DAYS = 7                  # strictly more than 7 calendar days behind
 
-def _pooled_failures(m: FitMetrics, excess_r: float = NO_BASELINE) -> list[str]:
+
+def _symbols(trades: Optional[pd.DataFrame]) -> set[str]:
+    if trades is None or trades.empty or "symbol" not in trades.columns:
+        return set()
+    return {str(s) for s in trades["symbol"].unique()}
+
+
+def _last_exit(trades: Optional[pd.DataFrame]) -> Optional[pd.Timestamp]:
+    if trades is None or trades.empty or "exit_ts" not in trades.columns:
+        return None
+    last = pd.to_datetime(trades["exit_ts"]).max()
+    return None if pd.isna(last) else pd.Timestamp(last)
+
+
+def baseline_coverage(real_trades: Optional[pd.DataFrame],
+                      baseline_trades: Optional[pd.DataFrame]) -> dict[str, Any]:
+    """How much of the real tape the shuffled baseline actually covers, and how far behind it is.
+
+    Pure: the counts and dates `baseline_guard` decides on and `score_regime_root` logs, so the
+    warning and the verdict can never disagree about what they saw."""
+    real_syms, base_syms = _symbols(real_trades), _symbols(baseline_trades)
+    missing = sorted(real_syms - base_syms)
+    real_last, base_last = _last_exit(real_trades), _last_exit(baseline_trades)
+    stale_days = (real_last.date() - base_last.date()).days if real_last is not None and base_last is not None else 0
+    return {"n_real_symbols": len(real_syms), "n_baseline_symbols": len(base_syms),
+            "n_missing": len(missing), "missing": missing[:20],
+            "missing_frac": len(missing) / len(real_syms) if real_syms else 0.0,
+            "real_last_exit": str(real_last)[:10] if real_last is not None else "",
+            "baseline_last_exit": str(base_last)[:10] if base_last is not None else "",
+            "stale_days": stale_days}
+
+
+def baseline_guard(real_trades: Optional[pd.DataFrame],
+                   baseline_trades: Optional[pd.DataFrame]) -> list[str]:
+    """Failure keys for a baseline that is present but not trustworthy.
+
+    `BASELINE_MISMATCH` when the control skipped more than `BASELINE_MAX_MISSING_FRAC` of the
+    real universe's symbols, `BASELINE_STALE` when its last exit is more than
+    `BASELINE_MAX_STALE_DAYS` calendar days behind the real tape's. A baseline that is *newer*
+    than the real tape is not stale. An absent baseline returns `[]` — that case is already
+    `no_baseline`, and saying it twice would only obscure which one happened."""
+    cov = baseline_coverage(real_trades, baseline_trades)
+    if not cov["n_real_symbols"] or not cov["n_baseline_symbols"]:
+        return []
+    flags = []
+    if cov["missing_frac"] > BASELINE_MAX_MISSING_FRAC:
+        flags.append(BASELINE_MISMATCH)
+    if cov["stale_days"] > BASELINE_MAX_STALE_DAYS:
+        flags.append(BASELINE_STALE)
+    return flags
+
+
+def _pooled_failures(m: FitMetrics, excess_r: float = NO_BASELINE,
+                     guard: tuple[str, ...] = ()) -> list[str]:
     # A missing baseline is its own failure key: without one there is nothing to show the
     # row is more than the regime's drift, so it can WATCH but never PASS.
     if math.isnan(excess_r):
@@ -111,17 +171,23 @@ def _pooled_failures(m: FitMetrics, excess_r: float = NO_BASELINE) -> list[str]:
         "min_t_stat_session": m.t_stat_session >= POOLED_FLOORS["min_t_stat_session"],
         "min_exp_r_lb": m.exp_r_lb >= POOLED_FLOORS["min_exp_r_lb"],
         **baseline_checks,
+        # `baseline_guard` keys are already decided; they enter as checks that cannot pass.
+        **{g: False for g in guard},
     }
     return [k for k, ok in checks.items() if not ok]
 
 
-def verdict_pooled(m: FitMetrics, excess_r: float = NO_BASELINE) -> tuple[str, list[str]]:
+def verdict_pooled(m: FitMetrics, excess_r: float = NO_BASELINE,
+                   guard: tuple[str, ...] = ()) -> tuple[str, list[str]]:
     """PASS / WATCH / FAIL against `POOLED_FLOORS` (mirrors `score.verdict.verdict`).
 
     `excess_r` is `exp_r` minus the same-regime shuffled baseline's `exp_r`, or NaN when no
     baseline was measured. The default is that NaN rather than a pass-through value, so a
-    caller that forgets the baseline gets "no_baseline" instead of a free PASS."""
-    failed = _pooled_failures(m, excess_r)
+    caller that forgets the baseline gets "no_baseline" instead of a free PASS.
+
+    `guard` carries `baseline_guard`'s keys for a baseline that exists but is partial or
+    stale; like `no_baseline` they permit WATCH and forbid PASS."""
+    failed = _pooled_failures(m, excess_r, guard)
     if not failed:
         return "PASS", []
     if m.n >= POOLED_WATCH_FLOORS["min_n"] and m.exp_r > 0 and m.pf >= POOLED_WATCH_FLOORS["min_pf"]:
@@ -181,7 +247,8 @@ def _baseline_index(baseline: Optional[list[dict[str, Any]]]) -> dict[tuple[str,
 
 
 def pooled_rows(all_trades: Optional[pd.DataFrame], computed_at: str,
-                baseline: Optional[list[dict[str, Any]]] = None) -> list[dict[str, Any]]:
+                baseline: Optional[list[dict[str, Any]]] = None,
+                guard: tuple[str, ...] = ()) -> list[dict[str, Any]]:
     """One pooled row per (family, side, regime) over the whole universe's trades.
 
     Windows are calendar quarters here, not per-symbol `window_id`s (see the module
@@ -190,7 +257,10 @@ def pooled_rows(all_trades: Optional[pd.DataFrame], computed_at: str,
     `baseline` is the shuffled control's pooled rows (`baseline_pooled_rows` over
     `<root>/trades_shuffle/`). Each row gains `baseline_exp_r`, `baseline_n` and
     `excess_r = exp_r - baseline_exp_r`, and its verdict is scored against that excess:
-    with no matching baseline group the excess is NaN and the row can never PASS."""
+    with no matching baseline group the excess is NaN and the row can never PASS.
+
+    `guard` is `baseline_guard(real_trades, baseline_trades)`: keys stamped on *every* row
+    because a partial or stale control is a property of the run, not of one lane."""
     trades = trades_from_frame(all_trades)
     index = _baseline_index(baseline)
     groups: dict[tuple[str, str, str], list[SimTrade]] = {}
@@ -208,7 +278,7 @@ def pooled_rows(all_trades: Optional[pd.DataFrame], computed_at: str,
         # from the metrics the builder just computed rather than by scoring the group twice.
         row = build_row(POOLED_SYMBOL, family, side, bucketed, n_windows, {}, computed_at, _window_end(sub),
                         source=POOLED_SOURCE,
-                        verdict_fn=lambda m, b=base_exp: verdict_pooled(m, m.exp_r - b))
+                        verdict_fn=lambda m, b=base_exp: verdict_pooled(m, m.exp_r - b, guard))
         out.append({**row, "regime": regime, "baseline_exp_r": base_exp, "baseline_n": base_n,
                     "excess_r": row["exp_r"] - base_exp})
     return out

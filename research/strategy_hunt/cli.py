@@ -158,12 +158,16 @@ def cmd_run(a: argparse.Namespace) -> int:
         counts[r["status"]] = counts.get(r["status"], 0) + 1
         print(f"run {r['symbol']}: {r['status']} trades={r['n_trades']} {r.get('error', '')}")
     print(f"run{'' if variant is None else ' (' + variant + ')'} summary: {counts} elapsed={time.time() - t0:.0f}s")
-    # Keyed by variant so the baseline run does not overwrite the real run's manifest entry.
-    key = "run" if variant is None else f"run_{variant}"
-    write_manifest(a.root, {"date": time.strftime("%Y-%m-%d"), key: {"symbols": len(symbols), "families": fams,
-                            "counts": counts, "cost_mult": a.cost_mult, "shuffle_seed": a.shuffle_seed,
-                            "variant": variant, "notional": a.notional, "elapsed_sec": round(time.time() - t0)},
-                            "errors": [r for r in recs if r["status"] == "error"]})
+    # Keyed by variant -- both the run record and its error list. `write_manifest` merges with
+    # dict.update, so a shared "errors" key meant the baseline run wiped the real run's failures
+    # off the record for that date (fix r1, finding 1).
+    suffix = "" if variant is None else f"_{variant}"
+    write_manifest(a.root, {"date": time.strftime("%Y-%m-%d"),
+                            f"run{suffix}": {"symbols": len(symbols), "families": fams,
+                                             "counts": counts, "cost_mult": a.cost_mult,
+                                             "shuffle_seed": a.shuffle_seed, "variant": variant,
+                                             "notional": a.notional, "elapsed_sec": round(time.time() - t0)},
+                            f"errors{suffix}": [r for r in recs if r["status"] == "error"]})
     return 0 if counts.get("error", 0) <= 0.1 * max(1, len(recs)) else 1
 
 
@@ -202,7 +206,15 @@ def cmd_report(a: argparse.Namespace) -> int:
 
     snap = load_snapshot(a.root)
     rows = [row for sym_rows in snap["rows"].values() for row in sym_rows.values()]
-    pooled = list(snap.get("pooled_rows", {}).values())
+    # A malformed section must degrade to "no pooled rows", never raise -- the same contract
+    # core/strategy_fit.py holds on the live path (fix r1, finding 6).
+    raw_pooled = snap.get("pooled_rows")
+    if isinstance(raw_pooled, dict):
+        pooled = [r for r in raw_pooled.values() if isinstance(r, dict)]
+    else:
+        pooled = []
+        if raw_pooled:
+            logger.warning("report: ignoring malformed pooled_rows section (%s)", type(raw_pooled).__name__)
     computed_at = snap.get("computed_at") or time.strftime("%Y-%m-%dT%H:%M:%S")
     rp = write_report(a.root, rows, computed_at, pooled=pooled)
     print(f"report: {rp}")
@@ -307,8 +319,10 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--notional", type=float, default=6000.0)
         sp.add_argument("--no-coldstart", action="store_true")
         sp.add_argument("--no-baseline", action="store_true",
-                        help="`all` only: skip the shuffled baseline run, leaving every pooled row "
-                             "with no_baseline (WATCH at best)")
+                        help="`all` only: skip the shuffled baseline run. Whatever baseline is "
+                             "already in the root is reused; scoring flags it baseline_mismatch / "
+                             "baseline_stale if it is partial or old, and pooled rows fall back to "
+                             "no_baseline only when the root has none at all")
         sp.add_argument("--postgres", action="store_true")
 
     for name, fn in (("export", cmd_export), ("context", cmd_context),

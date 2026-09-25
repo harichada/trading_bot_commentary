@@ -365,3 +365,49 @@ def test_score_regime_root_without_trades_shuffle_reports_no_baseline(tmp_path):
     assert math.isnan(pool_rows[0]["excess_r"]) and pool_rows[0]["baseline_n"] == 0
     assert "no_baseline" in _json.loads(pool_rows[0]["failed_floors"])
     assert pool_rows[0]["verdict"] != "PASS"
+
+
+# ──────────────────────
+# v-playbook-desk-b1-5 task 10 fix r1 — baseline coverage / staleness guard in score_regime_root
+# ──────────────────────
+
+def test_score_regime_root_flags_a_partial_baseline(tmp_path, caplog):
+    """A leftover / half-finished `trades_shuffle/` is worse than none: it silently becomes the
+    yardstick for every pooled verdict. Scoring flags it instead of trusting it."""
+    import logging
+
+    from research.strategy_hunt.run import score_regime_root
+
+    real = [f"S{i:03d}" for i in range(20)]
+    for sym in real:
+        _write_trades(tmp_path, sym, _flat_trades(sym, 0.30))
+    for sym in real[:5]:                                   # 75% of the universe has no baseline
+        _write_trades(tmp_path, sym, _flat_trades(sym, 0.05), variant="shuffle")
+
+    with caplog.at_level(logging.WARNING, logger="strategy_hunt.run"):
+        _reg, pool, base = score_regime_root(tmp_path, ["toy"], "2025-09-25T00:00:00")
+
+    assert base and pool
+    failed = json.loads(pool[0]["failed_floors"])
+    assert "baseline_mismatch" in failed and pool[0]["verdict"] != "PASS"
+    warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any("baseline_mismatch" in m for m in warnings)
+    assert any("20" in m and "5" in m for m in warnings)    # the counts are in the warning
+
+
+def test_score_regime_root_does_not_flag_a_complete_fresh_baseline(tmp_path, caplog):
+    import logging
+
+    from research.strategy_hunt.run import score_regime_root
+
+    real = [f"S{i:03d}" for i in range(20)]
+    for sym in real:
+        _write_trades(tmp_path, sym, _flat_trades(sym, 0.30))
+        _write_trades(tmp_path, sym, _flat_trades(sym, 0.05), variant="shuffle")
+
+    with caplog.at_level(logging.WARNING, logger="strategy_hunt.run"):
+        _reg, pool, _base = score_regime_root(tmp_path, ["toy"], "2025-09-25T00:00:00")
+
+    failed = json.loads(pool[0]["failed_floors"])
+    assert "baseline_mismatch" not in failed and "baseline_stale" not in failed
+    assert [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING] == []

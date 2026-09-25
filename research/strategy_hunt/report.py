@@ -13,12 +13,17 @@ from research.strategy_hunt.paths import trades_dir
 from research.strategy_hunt.run import REPORTS_DIR
 from research.strategy_hunt.score.regime_rows import POOLED_SOURCE
 
-CONTROL_FILES = {"shuffle": "strategy_fit_shuffle.json", "cost_0.5": "strategy_fit_cost_0.5.json", "cost_2.0": "strategy_fit_cost_2.0.json"}
+# v-playbook-desk-b1-5 task 10 fix r1: only the cost controls live in separate roots now. The
+# shuffled control moved in-root (<root>/trades_shuffle/) and is reported as the per-pooled-row
+# `excess` in "Pooled rows vs shuffled baseline", which supersedes the old separate-root
+# strategy_fit_shuffle.json and the whole-run false-discovery ratio it fed.
+CONTROL_FILES = {"cost_0.5": "strategy_fit_cost_0.5.json", "cost_2.0": "strategy_fit_cost_2.0.json"}
 CAVEATS = (
     "- Universe is selected by today's data availability (survivorship); results are stated for symbols that exist now.\n"
     "- Spread and slippage are estimated from bars; see the cost controls for sensitivity.\n"
     "- Ten families times up to 27 parameter sets across hundreds of symbols will produce spurious PASS rows; "
-    "the shuffle control estimates how many.\n"
+    "the in-root shuffled baseline estimates how much of a pooled lane's expectancy is the regime's drift "
+    "(see \"Pooled rows vs shuffled baseline\").\n"
     "- Live indicators are computed on the in-progress bar; research uses closed bars. New lanes must use closed bars.\n"
 )
 
@@ -134,8 +139,7 @@ def _controls_section(rows: list[dict], controls: Optional[dict[str, list[dict]]
         pc = _pooled_counts(crows)
         lines.append(f"- **{name}**: PASS rows {p}, mean exp_r {_f(mean_exp)}, "
                      f"pooled PASS {pc['PASS']}, pooled WATCH {pc['WATCH']}")
-        if name == "shuffle":
-            lines.append(f"  - false-discovery estimate: {p} / {real_pass} shuffled-vs-real PASS rows")
+    lines.append(f"- real PASS rows: {real_pass}")
     return "\n".join(lines)
 
 
@@ -257,12 +261,14 @@ def _report_manifest(rows: list[dict], pooled: Optional[list[dict]], computed_at
     verdicts: dict[str, int] = {}
     for r in rows:
         if r.get("source") == "walkforward":
-            verdicts[r["verdict"]] = verdicts.get(r["verdict"], 0) + 1
+            v = r.get("verdict", "")
+            verdicts[v] = verdicts.get(v, 0) + 1
     pooled_verdicts: dict[str, int] = {}
     for r in pooled or []:
-        pooled_verdicts[r["verdict"]] = pooled_verdicts.get(r["verdict"], 0) + 1
+        v = r.get("verdict", "")
+        pooled_verdicts[v] = pooled_verdicts.get(v, 0) + 1
     return {"computed_at": computed_at, "report": report_name, "n_rows": len(rows),
-            "n_symbols": len({r["symbol"] for r in rows}), "verdicts": verdicts,
+            "n_symbols": len({r.get("symbol", "") for r in rows}), "verdicts": verdicts,
             "pooled_verdicts": pooled_verdicts,
             "pooled_with_baseline": sum(1 for r in pooled or [] if int(r.get("baseline_n") or 0) > 0)}
 
