@@ -175,8 +175,13 @@ class StrategyFit:
             try:
                 with open(self._path, "r") as fh:
                     raw = json.load(fh)
-            except (OSError, json.JSONDecodeError) as exc:
+            except json.JSONDecodeError as exc:
                 self._last_error = f"json load failed: {exc}"
+                return False
+            except Exception as exc:  # noqa: BLE001 - last-resort: OSError,
+                # UnicodeDecodeError (binary/undecodable file), etc. Never
+                # raise out of reload_if_changed.
+                self._last_error = f"load failed: {exc}"
                 return False
 
             try:
@@ -185,8 +190,9 @@ class StrategyFit:
                 self._last_error = f"parse failed: {exc}"
                 return False
 
+            computed_at_raw = raw.get("computed_at") if isinstance(raw, dict) else None
             self._rows = rows
-            self._computed_at = raw.get("computed_at") if isinstance(raw, dict) else None
+            self._computed_at = computed_at_raw if isinstance(computed_at_raw, str) else None
             self._mtime = mtime
             self._last_error = None
             return True
@@ -218,7 +224,7 @@ class StrategyFit:
             return None
         try:
             computed_dt = datetime.fromisoformat(computed_at)
-        except ValueError:
+        except (TypeError, ValueError):
             return None
         delta = self._clock() - computed_dt
         return delta.total_seconds() / 86400.0
@@ -249,6 +255,15 @@ class StrategyFit:
             lanes = list(self._rows.get(symbol, {}).values())
         passing = [r for r in lanes if r.verdict == _PASS_VERDICT]
         return sorted(passing, key=lambda r: (-r.score, r.strategy))
+
+    def rows_for(self, symbol: str) -> List[FitRow]:
+        """All rows for `symbol` across every strategy and side,
+        regardless of verdict. Empty when stale, missing, or unloaded."""
+        if self.is_stale():
+            return []
+        with self._lock:
+            lanes = list(self._rows.get(symbol, {}).values())
+        return sorted(lanes, key=lambda r: (r.strategy, r.side))
 
     def params_for(self, symbol: str, strategy: str, side: str = "long") -> Dict:
         """Chosen params for (symbol, strategy, side), or {} when
