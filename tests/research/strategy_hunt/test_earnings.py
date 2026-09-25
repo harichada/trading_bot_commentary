@@ -59,6 +59,8 @@ def test_load_earnings_table_missing_is_empty(tmp_path):
     table = load_earnings_table(tmp_path, "ZZZZ")
     assert list(table.columns) == ["eps_estimate", "reported_eps", "surprise_pct"]
     assert table.empty
+    for col in table.columns:
+        assert table[col].dtype == np.float64
 
 
 def test_update_and_load_earnings_table_with_surprise(tmp_path):
@@ -95,3 +97,33 @@ def test_update_earnings_dataframe_missing_columns_defaults_to_nan(tmp_path):
     assert n == 1
     table = load_earnings_table(tmp_path, "AAPL")
     assert table.loc[pd.Timestamp("2025-03-01")].isna().all()
+
+
+def test_yfinance_fetcher_filters_event_type_and_drops_tz(monkeypatch):
+    from research.strategy_hunt.data.earnings import yfinance_fetcher
+
+    class _FakeTicker:
+        def __init__(self, symbol):
+            self.symbol = symbol
+
+        @property
+        def earnings_dates(self):
+            idx = pd.DatetimeIndex(
+                ["2025-02-20 16:30", "2025-03-01 09:00"], tz="America/New_York"
+            )
+            return pd.DataFrame(
+                {
+                    "EPS Estimate": [1.10, 2.00],
+                    "Reported EPS": [1.15, 2.05],
+                    "Surprise(%)": [5.5, 2.5],
+                    "Event Type": ["Earnings", "Meeting"],
+                },
+                index=idx,
+            )
+
+    monkeypatch.setattr("yfinance.Ticker", _FakeTicker)
+
+    result = yfinance_fetcher("NVDA")
+    assert list(result.index) == [pd.Timestamp("2025-02-20 16:30")]
+    assert result.index.tz is None
+    assert result.loc[pd.Timestamp("2025-02-20 16:30"), "Surprise(%)"] == 5.5

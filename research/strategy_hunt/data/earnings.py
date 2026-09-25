@@ -92,9 +92,10 @@ def load_earnings_table(root: Path, symbol: str) -> pd.DataFrame:
     when the cache is missing."""
     p = earnings_path(root, symbol)
     if not p.exists():
-        empty = pd.DataFrame(columns=_TABLE_COLUMNS)
-        empty.index = pd.DatetimeIndex([], name="date")
-        return empty
+        return pd.DataFrame(
+            {col: pd.Series(dtype="float64") for col in _TABLE_COLUMNS},
+            index=pd.DatetimeIndex([], name="date"),
+        )
     df = pd.read_parquet(p)
     df = df.copy()
     df["date"] = [pd.Timestamp(d).normalize() for d in pd.to_datetime(df["date"])]
