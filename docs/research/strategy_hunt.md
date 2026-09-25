@@ -79,6 +79,7 @@ reading/writing under `--root` (default `data/strategy_hunt/`):
     cp data/strategy_hunt_shuffle/fit/strategy_fit.json data/strategy_hunt/fit/strategy_fit_shuffle.json
     $PY -m research.strategy_hunt report                        # rebuild the report from an existing fit snapshot
     $PY -m research.strategy_hunt scorecard --family orb        # Stage A shadow-resolver scorecard for one family
+    $PY -m research.strategy_hunt promote                       # promotion table + .env lines for every family
     $PY -m research.strategy_hunt all --workers 12              # export -> context -> news -> earnings -> calibrate -> run -> score
 
 Controls for cost sensitivity use `--cost-mult 0.5` / `2.0` with their own `--root`, then copy the
@@ -101,6 +102,7 @@ floors without re-simulating).
 | `research/reports/strategy_hunt/<date>.json` | Run manifest (symbol/family counts, elapsed, errors) |
 | `research/reports/strategy_hunt/<date>-equity-curve.csv` | Monthly equity curve from the portfolio replay |
 | `research/reports/strategy_hunt/scorecard-<family>-<date>.md` | Stage A shadow-resolver scorecard for one family |
+| `docs/research/strategy_hunt_promotion.md` | Promotion table (all families) + the `.env` lines to apply, rewritten each `promote` run |
 
 ## Verdicts
 
@@ -182,3 +184,35 @@ than CPU; the 12s/41s above are for three symbols against a local, low-latency P
 should not be extrapolated linearly to the full ~500-symbol universe over a 5-year window — the
 Task 21 plan budgets 10–30 minutes for that full export, which this smoke run does not contradict but
 also does not confirm at scale.
+
+## Operator flow
+
+End-to-end nightly-to-promotion loop, tying together "Scheduling", "Run", and "Engine gate" above:
+
+1. **Nightly `all`** (cron, see "Scheduling") walk-forwards every family/symbol and writes the fit
+   snapshot (`data/strategy_hunt/fit/strategy_fit.json`) plus the Markdown report.
+2. **`scorecard --family <name>`** resolves that family's live shadow ledger
+   (`data/shadow_fit_<family>.ndjson`, written by `strategies/fit_lane.py` when the family is
+   registered via `FIT_LANES_ENABLED`) into simulated trades and a Stage A GO/NO_GO verdict, saved to
+   `research/reports/strategy_hunt/scorecard-<family>-<date>.md`. Run this per family once its shadow
+   ledger has enough history to be worth scoring — it does not require `all` to have just run.
+3. **`promote`** combines the latest fit snapshot's PASS counts with each family's latest scorecard
+   (re-derived the same way `scorecard` does, over every family with a ledger) and the live-facing
+   flags (`Config().FIT_LANES_ENABLED`, `FIT_LANE_LIVE_ENTRIES_ENABLED`, `SWING_ALLOW_OVERNIGHT`) into
+   one table: `pass_symbols`/`watch_symbols` counts, `blocker` (why it isn't promotable yet), and
+   `recommendation` (`collect_shadow`, `register_shadow`, `promote_live`, or `hold`). It prints the
+   table and the exact `.env` lines to apply, and writes the same content to
+   `docs/research/strategy_hunt_promotion.md`. It never edits `.env` or `Config().yaml` itself.
+4. **Apply the printed `.env` lines** by hand — e.g. add `orb` to `FIT_LANES_ENABLED` to register its
+   shadow adapter, or to `FIT_LANE_LIVE_ENTRIES_ENABLED` once its scorecard is GO and it clears the
+   pass-symbol floor; add `SWING_ALLOW_OVERNIGHT=1` only when `promote` flags a multiday family
+   blocked by `swing_overnight_disabled`. These are comma-separated family-name lists (env-var
+   precedence over yaml over code default, per `core/config.py`, search `v-strategy-fit-2026-09-25`).
+5. **Restart** via `./deploy.sh` so the engine picks up the new `.env` values — flags are read once at
+   process start (`Config()` properties re-read `os.getenv` per call, but the fit-lane adapters
+   registered in `core/engine.py` are fixed at construction time).
+6. **Rollback**: remove the family from `FIT_LANE_LIVE_ENTRIES_ENABLED` (drops it back to shadow-only)
+   or from `FIT_LANES_ENABLED` (drops the adapter entirely) — or unset `SWING_ALLOW_OVERNIGHT` — in
+   `.env`, then restart via `./deploy.sh`. Nothing in this flow deletes shadow ledgers or fit snapshots,
+   so a rolled-back family keeps accumulating shadow evidence and can be re-promoted later without
+   losing history.

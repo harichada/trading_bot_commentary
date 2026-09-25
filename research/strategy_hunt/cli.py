@@ -169,6 +169,36 @@ def cmd_scorecard(a: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_promote(a: argparse.Namespace) -> int:
+    from core.config import Config
+    from research.strategy_hunt.fit.writer import load_snapshot
+    from research.strategy_hunt.promote import promotion_table, render_promotion
+    from research.strategy_hunt.shadow_resolver import default_ledger_path, read_ledger, resolve, stage_a_scorecard
+
+    cfg = Config()
+    snapshot = load_snapshot(a.root)
+    scorecards: dict[str, object] = {}
+    for name in family_names():
+        ledger = default_ledger_path(name)
+        if not ledger.exists():
+            scorecards[name] = "none"
+            continue
+        records = read_ledger(ledger)
+        trades = resolve(records, a.root, name)
+        scorecards[name] = stage_a_scorecard(trades, name)
+
+    rows = promotion_table(snapshot, scorecards, cfg.FIT_LANES_ENABLED, cfg.FIT_LANE_LIVE_ENTRIES_ENABLED,
+                           cfg.SWING_ALLOW_OVERNIGHT)
+    md = render_promotion(rows)
+    print(md)
+
+    out = Path("docs/research/strategy_hunt_promotion.md")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(md)
+    print(f"promote: {out}")
+    return 0
+
+
 def cmd_all(a: argparse.Namespace) -> int:
     for fn in (cmd_export, cmd_context, cmd_news, cmd_earnings, cmd_calibrate, cmd_run, cmd_score):
         rc = fn(a)
@@ -207,6 +237,10 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--ledger", type=Path, default=None, help="default: data/shadow_fit_<family>.ndjson")
     sp.add_argument("--cost-mult", type=float, default=1.0)
     sp.set_defaults(fn=cmd_scorecard)
+
+    sp = sub.add_parser("promote")
+    sp.add_argument("--root", type=Path, default=DEFAULT_ROOT)
+    sp.set_defaults(fn=cmd_promote)
     return p
 
 

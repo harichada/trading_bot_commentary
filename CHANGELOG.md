@@ -18,6 +18,17 @@
   `docs/BOT_OPERATIONS_MANUAL.md` § "Strategy fit gate". Plan:
   `docs/superpowers/plans/2026-09-25-strategy-hunt-full-system.md`; spec:
   `docs/superpowers/specs/2026-09-24-strategy-hunt-design.md`.
+- feat(strategy-hunt): Phase 3 — Stage A shadow scorecards (`research/strategy_hunt/shadow_resolver.py`,
+  `cli.py scorecard`) that resolve a family's live shadow ledger (`data/shadow_fit_<family>.ndjson`)
+  into simulated trades and a GO/NO_GO verdict; and a promotion command
+  (`research/strategy_hunt/promote.py`, `cli.py promote`) that combines the fit snapshot's per-family
+  PASS counts, each family's latest scorecard, and the live-facing flags into a promotion table with a
+  blocker/recommendation per family (`collect_shadow`/`register_shadow`/`promote_live`/`hold`), printing
+  the exact `.env` lines to apply and writing `docs/research/strategy_hunt_promotion.md` — never editing
+  `.env` or `Config().yaml` itself. Operator flow (nightly `all` → `scorecard` → `promote` → apply →
+  restart via `./deploy.sh` → rollback by unsetting the flag) documented in
+  `docs/research/strategy_hunt.md` § "Operator flow"; fit-lane row and the eight strategy-fit flags
+  added to `docs/BOT_OPERATIONS_MANUAL.md` §§ 2.4 and 6.4.
 
 ## 2026-09-21 — fix: Day-trade RSI missing from reasoning + breakout hard veto (v-rsi-breakout-veto-2026-09-21)
 

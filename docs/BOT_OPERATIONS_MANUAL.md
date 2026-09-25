@@ -198,6 +198,7 @@ Registration order is fixed in `engine.py:311-383`: Breakout, mean-reversion (le
 | `day_trade_momentum_short` (`builtin.py:2653`) | short | **SHADOW** (ledger only) | `ENABLE_DAY_TRADE_SHORT` True; `DAY_TRADE_SHORT_LIVE_ENTRIES_ENABLED` False; `ENABLE_DAY_TRADE_SHORT_SHADOW` True | see 2.4.4 | 1.5 x ATR above; 2R below |
 | `orb_contraction_rvol` (`builtin.py:3211`) | long & short | **OFF** (not registered) | `ENABLE_ORB_STRATEGY` False (`config.py:3478`); yaml `orb_live_entries_enabled: false` | 15-60 min after open, contraction >= 20%, RVOL >= 1.2, close beyond opening range, hard skip risk_off | 1.0 x ATR capped at range edge +/- 0.5 ATR; 2R; size 0.5x |
 | `NewsSignalStrategy` (`builtin.py:92`) | either | **Dead code** | never instantiated | |avg VADER| > 0.3 | 1.5 x ATR; 2R |
+| `fit:<family>` (`strategies/fit_lane.py`) | per family (`strategies/families/registry.py:FAMILIES`) | **SHADOW** unless family listed in `FIT_LANE_LIVE_ENTRIES_ENABLED` | `FIT_LANES_ENABLED` (registers the adapter); `FIT_LANE_LIVE_ENTRIES_ENABLED` (LIVE entries); `SWING_ALLOW_OVERNIGHT` (multiday families held across sessions) | family rules from `strategies/families` with per-symbol params from the fit table (`data/strategy_hunt/fit/strategy_fit.json`) | stop/target set by the family's own grid (see `research/strategy_hunt/promote.py`, `research/strategy_hunt/cli.py promote`) |
 
 Note the discrepancy: the engine comment at `engine.py:315` says v2 is "default True", but `config.py:2024` returns False (backtest 2026-05-19 showed v2 PF 1.04 vs legacy 1.72) and the yaml does not set it, so the legacy mean-reversion class is the one running.
 
@@ -726,6 +727,27 @@ Legacy `.env` keys `MAX_DAILY_LOSS`, `MAX_POSITION_SIZE`, `MAX_POSITIONS`, `MAX_
 | Pinned watchlist (8 mega-caps) + RS soften; broker-leg authority | LIVE | env `ENABLE_PINNED_WATCHLIST=1`, `PINNED_MIN_RS_VS_SPY=0.25`; `:1139` |
 | Ghost-flatten; ledger integrity; side classifier; thesis revalidation; news-thesis exit | OFF | env `=0` (`:1165`); `:1889`; `:715`; `:853`; `:674` |
 | Alpaca news bus, feature snapshots, Postgres `DbLogger` | LIVE (data plumbing) | `:3971`, `:3427`; `core/engine.py:290-294` |
+| Strategy-fit lanes (`fit:<family>`) | **OFF** (no family registered) | `ENABLE_STRATEGY_FIT_GATE` default False; `FIT_LANES_ENABLED` empty; see table below |
+
+The strategy-fit gate and its per-family fit lanes are governed by eight flags, all off/empty by
+default (same set documented in §3 "Strategy fit gate"; repeated here since this section is the
+current-live-profile snapshot):
+
+| Flag | Default | Effect |
+|---|---|---|
+| `ENABLE_STRATEGY_FIT_GATE` | `False` | Master switch for `core/strategy_fit_gate.py`; `False` means fully inert. |
+| `STRATEGY_FIT_SHADOW` | `True` | Gate logs but never blocks a live entry until this is explicitly `False`. |
+| `STRATEGY_FIT_PATH` | `data/strategy_hunt/fit/strategy_fit.json` | Snapshot file read by the gate and `GET /api/strategy-fit`. |
+| `STRATEGY_FIT_MAX_AGE_DAYS` | `7` | Snapshot age (days) beyond which it's treated as stale (fail-closed if the gate is enforcing). |
+| `FIT_LANES_ENABLED` | `""` | Family names to register live `fit:<family>` adapters for; `promote` prints the line to set. |
+| `FIT_LANE_LIVE_ENTRIES_ENABLED` | `""` | Family names allowed LIVE entries via their fit lane; absent families stay shadow-only even if registered. |
+| `SWING_ALLOW_OVERNIGHT` | `False` | Allow swing-lane (multiday) fit-lane positions to hold across sessions instead of forced flat by EOD. |
+| `SWING_MAX_HOLD_SESSIONS` | `10` | Max sessions a swing-lane position may be held before a forced exit. |
+
+`research/strategy_hunt promote` (see `docs/research/strategy_hunt.md` § "Operator flow") reads all
+eight off `Config()`, cross-references the fit snapshot and each family's Stage A scorecard, and prints
+the exact `FIT_LANES_ENABLED` / `FIT_LANE_LIVE_ENTRIES_ENABLED` / `SWING_ALLOW_OVERNIGHT` lines to add
+to `.env` — it never edits `.env` or `Config().yaml` itself.
 
 ### 6.5 Realized behavior from `trading_state.json`
 
