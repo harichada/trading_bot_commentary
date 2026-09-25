@@ -27,6 +27,14 @@ worker processes, appending stdout/stderr to
 step (`crontab -e`); it is not applied automatically by any code
 change.
 
+**Since Playbook Desk B2 (2026-09-25), `all` ends with `playbook`** (see
+"Run" below): the same crontab line above now also rewrites
+`data/desk/playbook.json` every night, with no change to the command
+itself — the new step lives inside `cmd_all`. Add `--postgres` to the
+line (needs `POSTGRES_DSN` in `.env`) to also fold the live `bot_trades`
+tape into that update; without it, the nightly playbook rebuild runs
+from the shadow ledgers alone. See "The `playbook` subcommand" below.
+
 `GET /api/strategy-fit` (read-only) and the "Strategy fit" section of
 `tools/bot_monitor.py`'s report both read the snapshot this job
 writes, so a missed or failed cron run shows up as a stale or
@@ -136,12 +144,53 @@ since B1: without `context/universe_daily.parquet` the three in-play families se
 columns and propose nothing).
 
 `all` is what the nightly cron job (see "Scheduling" above) runs, in the order
-`export → news → earnings → context → calibrate → run → run(shuffle) → score`: `context` must run
-*after* `news`/`earnings` so the universe context's `ctx_news_count_24h`, `ctx_news_sent_24h`,
-`ctx_earnings_prev` and `ctx_eps_surprise_pct` reflect tonight's caches by the time `run` reads
-them, and the shuffled baseline run must land before `score` reads both tapes (`--no-baseline`
-skips it). The other subcommands are for ad hoc reruns of one stage (e.g. re-running `score` after
-editing the verdict floors without re-simulating, or `universe-context` after a news backfill).
+`export → news → earnings → context → calibrate → run → run(shuffle) → score → playbook`: `context`
+must run *after* `news`/`earnings` so the universe context's `ctx_news_count_24h`,
+`ctx_news_sent_24h`, `ctx_earnings_prev` and `ctx_eps_surprise_pct` reflect tonight's caches by the
+time `run` reads them, the shuffled baseline run must land before `score` reads both tapes
+(`--no-baseline` skips it), and `playbook` runs **last** (Playbook Desk B2, 2026-09-25) because it
+reads the fit verdicts `score` just wrote (`core.desk.playbook.update_entry`'s `fit_verdict` input,
+via `best_verdict` in `research/strategy_hunt/playbook_update.py`). `all`'s own `--postgres` flag
+passes straight through to `playbook` (`cmd_all` calls `cmd_playbook(a)`), so `all --postgres` also
+folds the live `bot_trades` tape into that night's playbook rebuild. The other subcommands are for
+ad hoc reruns of one stage (e.g. re-running `score` after editing the verdict floors without
+re-simulating, or `universe-context` after a news backfill).
+
+### The `playbook` subcommand
+
+`python -m research.strategy_hunt playbook --root <root> [--families f1,f2,...]
+[--desk-dir data/desk] [--postgres]` (Playbook Desk B2, 2026-09-25) rewrites
+`<desk-dir>/playbook.json` (default `data/desk/playbook.json`, `core.desk.playbook.DEFAULT_DESK_DIR`)
+from every resolved trade it can find:
+
+- **Shadow tape** — always read: each family's shadow ledger
+  (`data/shadow_fit_<family>.ndjson`, `research/strategy_hunt/shadow_resolver.py::resolve`),
+  labelled with the entry-time regime (the same `RegimeLookup` the B1.6 fix introduced) because the
+  resolver itself leaves every trade `unknown`.
+- **Live tape** — only with `--postgres` (needs `POSTGRES_DSN` in the environment): `bot_trades`
+  rows with a non-null `pnl_r`, mapped to a family through a research-side copy of the live map
+  (`research/strategy_hunt/playbook_live.py::FAMILY_BY_STRATEGY`, pinned equal to
+  `core.strategy_fit_gate.LANE_MAP` by `tests/research/strategy_hunt/test_playbook_update.py`),
+  regime joined from the nearest preceding `bot_decisions` audit row (`strategy_fit`/`playbook`
+  components) within `REGIME_MATCH_WINDOW` (30 minutes), else `unknown`. Without `--postgres` the
+  update runs from the shadow ledgers alone — `all` (no flag) still rewrites the file every night,
+  just without the live trades folded in.
+
+Per `(family, side, regime)` key it takes the last `RECENT_WINDOW=60` resolved trades within the
+last `RECENT_DAYS=90`, applies `core.desk.playbook.update_entry` against that key's best fit
+verdict in tonight's snapshot (`best_verdict`: pooled row, then per-symbol regime rows, PASS >
+WATCH > FAIL), and runs the result through `carry_forward` so a `suspended` key with no resolved
+trade in `SUSPENSION_LAPSE_DAYS=30` days lapses back to `probation`. A key with no trades in the
+window simply keeps its previous entry (still subject to the lapse check). See `docs/desk.md` §
+"Playbook rules" for the transition table and `docs/BOT_OPERATIONS_MANUAL.md` § "Desk (shadow)" for
+how the live engine reads the file it writes.
+
+Console output is one line per key (worst status first) plus a summary, e.g.:
+
+```
+mean_rev_intraday   long  risk_on  probation x0.50 n=  7 exp_r=-0.080 t=-0.60 probation_small_sample
+playbook: 1 key(s) {'probation': 1} -> data/desk/playbook.json
+```
 
 ## Outputs
 
@@ -162,6 +211,7 @@ editing the verdict floors without re-simulating, or `universe-context` after a 
 | `research/reports/strategy_hunt/<date>T<HHMM>-equity-curve.csv` | Monthly equity curve from the portfolio replay |
 | `research/reports/strategy_hunt/scorecard-<family>-<date>.md` | Stage A shadow-resolver scorecard for one family |
 | `research/reports/strategy_hunt/strategy_hunt_promotion.md` | Promotion table (all families) + the `.env` lines to apply, rewritten each `promote` run. Written under `reports_dir(root)` (B1.6), so a control root writes `<root>/reports/` instead of overwriting the committed one |
+| `data/desk/playbook.json` (default; `--desk-dir` overrides) | Playbook Desk B2 (2026-09-25): the adaptive playbook, rewritten by `playbook` (and by `all`, which now ends with it). Read by the live engine's `playbook` router hook and `GET /api/desk/playbook`; see `docs/desk.md` § "Playbook rules" |
 
 ## Families
 
@@ -511,7 +561,9 @@ iid `min_t_stat`.
 End-to-end nightly-to-promotion loop, tying together "Scheduling", "Run", and "Engine gate" above:
 
 1. **Nightly `all`** (cron, see "Scheduling") walk-forwards every family/symbol and writes the fit
-   snapshot (`data/strategy_hunt/fit/strategy_fit.json`) plus the Markdown report.
+   snapshot (`data/strategy_hunt/fit/strategy_fit.json`) plus the Markdown report, then (Playbook
+   Desk B2) rewrites `data/desk/playbook.json` from that snapshot's fit verdicts — see "The
+   `playbook` subcommand" above and `docs/desk.md`.
 2. **`scorecard --family <name>`** resolves that family's live shadow ledger
    (`data/shadow_fit_<family>.ndjson`, written by `strategies/fit_lane.py` when the family is
    registered via `FIT_LANES_ENABLED`) into simulated trades and a Stage A GO/NO_GO verdict, saved to

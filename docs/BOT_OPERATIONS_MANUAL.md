@@ -319,6 +319,61 @@ The research side labels each historical trade with the regime that was **knowab
 
 Fail-closed behavior: a stale or missing snapshot blocks live entries — but, consistent with shadow mode generally, only when `ENABLE_STRATEGY_FIT_GATE` is `True` and `STRATEGY_FIT_SHADOW` is `False`; otherwise it only logs. The gate never flips any lane's own `*_LIVE_ENTRIES_ENABLED`/shadow flag (e.g. gate #17 `MEAN_REV_LIVE_ENTRIES_ENABLED`) — it is an additional check layered on top of, not a replacement for, each lane's existing pause flag.
 
+#### Desk (shadow)
+
+Playbook Desk B2 (2026-09-25; full writeup in `docs/desk.md`). Two more router
+hooks bracket the strategy fit gate above, both gated on `ENABLE_DESK`
+(`core/config.py` § `v-playbook-desk-b2-2026-09-25`, default `False` — with it
+off neither hook body runs and no `desk_loop` is registered):
+
+- **`desk_limit`**, immediately *before* the strategy-fit gate (which itself
+  sits between gate #1 regime gate and gate #2 conviction floor in the table
+  above — so the live order is now regime gate → `desk_limit` →
+  strategy-fit → `playbook` → conviction floor): checks the day's
+  `DailyPlan` (built pre-market by `core/loops/desk_loop.py`) for a sit-out
+  day, a `max_trades` breach, or a direction the plan disallows.
+  `ENABLE_DESK_LIMITS` (`False`) turns a match from `action=shadow`
+  (audited, not blocking) into `action=skip` (blocking).
+- **`playbook`**, immediately *after* the strategy-fit gate: checks the
+  adaptive playbook (`data/desk/playbook.json`, written nightly by
+  `research.strategy_hunt playbook` — see `docs/research/strategy_hunt.md`)
+  for the signal's `(family, side, regime)` key. `ENABLE_PLAYBOOK_GATE`
+  (`False`) turns a `suspended` key's match into `action=skip` and writes
+  its `size_mult` into `signal.reasoning["strategy_size_multiplier"]`,
+  which `risk/manager.py::playbook_size_multiplier` then applies (clamped
+  `[0.0, 1.5]`) right after the per-strategy multiplier in §3.3 below.
+
+Both hook bodies are wrapped in `try/except` with a once-a-minute warning
+(`_desk_hook_warn`) — a desk failure can never block or resize a signal by
+accident. Separately, a `DeskLoop` (registered under `ENABLE_DESK` in
+`_build_supervisor`) builds the day's plan at 09:00 ET, ranks an in-play
+list at 09:35, and writes a post-close journal at 16:05 — see `docs/desk.md`
+§ "Timeline". With `ENABLE_DESK_WATCHLIST` (`False`) also on, the 09:35
+in-play list drives `engine.dynamic_watchlist` instead of the screener's own
+output (`core/loops/screener_loop.py::_desk_owns_watchlist`).
+
+**Current status: none of the four flags are set** (absent from `.env`, so
+all read their code default of `False`) — the desk is not running at all
+yet. Enabling it in shadow (`ENABLE_DESK=1` only, all three sub-flags left
+unset) is Task 8 of the Playbook Desk B2 plan
+(`.superpowers/sdd/2026-09-25-playbook-desk-b2/`), to be done after the
+close. **Research verdict**: no family has a walk-forward PASS in any
+regime as of the latest full-universe run (see "What step two costs today"
+above) — so `ENABLE_DESK_LIMITS`/`ENABLE_PLAYBOOK_GATE` would today only
+enforce defensive risk rules (spend less / trade less in a worse regime),
+never a researched edge; `docs/desk.md` § "How a lane would be promoted
+from shadow" states this in full.
+
+**Launch fact (verified 2026-09-25 16:14 ET).** `deploy.sh`'s pre-flight
+currently aborts against the present `Config().yaml` layout (§7.5 already
+notes it "asserts launch dials that differ from the current yaml"), so on
+this host the bot is launched with plain `python
+trading_bot_commentary_updated.py`, then trading is started by hand via
+`POST /api/start` followed by `POST /api/toggle-mode {"mode":"live"}` —
+not `./deploy.sh`, notwithstanding §5.6/§5.7's description of it as "the
+sanctioned launcher". Any restart to pick up `ENABLE_DESK=1` (Task 8) uses
+this same plain-`python` path.
+
 ### 3.3 Sizing
 
 `RiskManagerWithCommentary.calculate_position_size_with_commentary` (`risk/manager.py:66`):
@@ -639,6 +694,9 @@ Selected flags (default = code default; current = yaml or `.env` if set):
 | Screener | `SCREENER_LOOP_SEC` :777, `WATCHLIST_SIZE` :786, `MIN_DOLLAR_VOLUME` :2666 | trading.* | 120, 20, 10M | default, default, 25M |
 | Loops | `ANALYSIS_LOOP_RTH_SEC` :1230, `POSITION_LOOP_SEC` :1096, `ORDER_MONITOR_INTERVAL_SEC` :1103 | trading.* | 30, 1.0, 5.0 | default |
 | Shadow | `ENABLE_REGIME_ALLOCATOR_SHADOW` :1502, `ENABLE_MEAN_REV_LONG_SHADOW` :1446, `ENABLE_ACTIVE_OPEN_DESK` :3658 / `ACTIVE_OPEN_DESK_SHADOW` :3684 | env/yaml | True | 1 / 1 |
+| Desk | `ENABLE_DESK` :4284, `ENABLE_DESK_WATCHLIST` :4300, `ENABLE_DESK_LIMITS` :4314, `ENABLE_PLAYBOOK_GATE` :4328 | trading.enable_desk* | False (all four) | default (unset in `.env`; see § "Desk (shadow)") |
+| Desk | `DESK_IN_PLAY_N` :4342, `DESK_SCAN_MAX_SYMBOLS` :4355, `DESK_DATA_DIR` :4369 | trading.desk_* | 20, 60, `data/desk` | default |
+| Desk | `DESK_PLAN_TIME_ET` :4382, `DESK_REFRESH_TIME_ET` :4395, `DESK_JOURNAL_TIME_ET` :4408, `DESK_CALENDAR_PATH` :4421 | trading.desk_* | `09:00`, `09:35`, `16:05`, `data/desk/calendar.json` | default |
 | UI | `UI_ACTIVITY_PAGE` :4007 | env/yaml | False | 1 |
 
 Shadow loops write NDJSON ledgers in the repo root (`regime_allocator_shadow.ndjson`, `conviction_sizer_shadow.ndjson`, `symbol_intel_log.ndjson`).

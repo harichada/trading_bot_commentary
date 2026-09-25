@@ -1,6 +1,46 @@
 # Changelog
 
 ## 2026-09-25
+- feat(desk): Playbook Desk B2 (shadow) — a human trader's daily routine, running shadow-only
+  behind four flags that all default off (`ENABLE_DESK`, `ENABLE_DESK_WATCHLIST`,
+  `ENABLE_DESK_LIMITS`, `ENABLE_PLAYBOOK_GATE`; `core/config.py` § `v-playbook-desk-b2-2026-09-25`).
+  Pure decision modules under `core/desk/`: `daily_plan.py` builds a pre-market `DailyPlan` (sit-out
+  day, risk budget, max trades, long/short bias, all keyed by regime) and its router rule
+  `evaluate_desk_gate`; `inplay_ranker.py`/`inplay_features.py` score a 09:35 in-play list from
+  opening relative volume, gap, catalyst and 20-day relative strength; `playbook.py` is the adaptive
+  playbook — `update_entry` transitions each `(family, side, regime)` key between `suspended`
+  (0.0x), `probation` (0.5x) and `enabled` (1.0x, or 1.25x once `exp_R >= 0.15` over `n >= 40` trades
+  *and* a PASS/WATCH fit verdict agree), `carry_forward` lapses a 30-day-silent suspension back to
+  probation, and `evaluate_playbook_gate` is its router rule; `journal.py`/`journal_data.py` render
+  a post-close markdown journal (plan, decisions, trades, expectancy by family x regime, playbook
+  changes, a derived "what to change" section) to `data/desk/journal/<date>.md`. `core/loops/desk_loop.py`
+  (+`desk_steps.py`, `desk_trade_stats.py`) drives the three ET crossings — 09:00 plan, 09:35
+  in-play refresh, 16:05 journal — as a supervised loop registered only under `ENABLE_DESK`, every
+  step wrapped so a failure logs once a day rather than killing the loop or retrying every 30s. Two
+  router hooks bracket the existing strategy-fit gate in `core/engine.py`: `desk_limit` (component
+  `desk_limit`) immediately before it, `playbook` (component `playbook`) immediately after, writing
+  `signal.reasoning["strategy_size_multiplier"]` only when `ENABLE_PLAYBOOK_GATE` is on
+  (`risk/manager.py::playbook_size_multiplier`, clamped `[0.0, 1.5]`); with their own flags off,
+  every blocking rule audits `action=shadow` and blocks nothing. `core/loops/screener_loop.py` stops
+  overwriting `engine.dynamic_watchlist` once `ENABLE_DESK_WATCHLIST` is on and today's plan has
+  in-play rows. A nightly `research.strategy_hunt playbook` subcommand (`research/strategy_hunt/playbook_update.py`,
+  `playbook_live.py`, `playbook_cli.py`) rewrites `data/desk/playbook.json` from resolved shadow
+  ledgers plus, with `--postgres`, the live `bot_trades` tape; `all` now ends with it
+  (`export -> news -> earnings -> context -> calibrate -> run -> run(shuffle) -> score -> playbook`).
+  Three read-only endpoints (`GET /api/desk/plan`, `/api/desk/playbook`, `/api/desk/journal`, never
+  500) and a "## Desk" `tools/bot_monitor.py` section (before "## Strategy fit"). Docs:
+  `docs/desk.md` (new), `docs/research/strategy_hunt.md` § "The `playbook` subcommand",
+  `docs/BOT_OPERATIONS_MANUAL.md` § "Desk (shadow)" and the flags table.
+
+  **Research posture: shadow-only, deliberately.** No family has a walk-forward PASS in any regime
+  as of the latest full-universe run (`research/reports/strategy_hunt/2026-09-25-strategy-hunt-b1-5.md`
+  § B1.6) — B1/B1.5's "regime split is real and large" finding was withdrawn once the regime label
+  was corrected to entry-time information (see the B1.6 entry below). The desk's regime-keyed
+  `risk_budget_pct`/`max_trades` rules are therefore defensive risk rules, not evidence of an edge;
+  the playbook learns per `(family, side, regime)` from shadow and live results precisely because no
+  research result yet favors one key over another. `ENABLE_DESK_LIMITS`/`ENABLE_PLAYBOOK_GATE`
+  remain off; Task 8 of the plan turns on `ENABLE_DESK` alone, after the close, so the desk starts
+  building plans and writing journals in shadow without governing any signal.
 - fix(strategy-hunt): Playbook Desk B1.6 — the research regime label is now the one the desk could
   have known at entry. `research/strategy_hunt/data/regime.py` built its label from the entry
   *day's* SPY and VIX **closes**, so a 10:00 entry was stamped with a regime decided six hours

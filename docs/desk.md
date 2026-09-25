@@ -1,0 +1,403 @@
+# The Desk (shadow)
+
+Playbook Desk B2 (2026-09-25). Gives the bot a human trader's daily routine —
+a pre-market plan, a 09:35 in-play stock ranking, an adaptive playbook keyed
+per `(family, side, regime)`, and a post-close journal — all running
+**shadow-only** today: audited, never blocking, never sizing a live order.
+See the plan header for the architecture summary:
+`docs/superpowers/plans/2026-09-25-playbook-desk-b2.md`. Research status and
+why the desk stays shadow-only are under "How a lane would be promoted from
+shadow" § "Today: NO-GO" below.
+
+## What it does, in human terms
+
+Once a day the desk behaves like a trader arriving before the open:
+
+1. **09:00 ET — build the plan.** It reads the SPY/VIX regime, market
+   breadth, today's economic calendar, the last few sessions' P&L (looking
+   for a losing streak), and whether the strategy-fit snapshot is stale
+   while its gate is enforcing. From that it decides: sit out today or not
+   (and why), how much of the daily loss budget it is willing to risk, how
+   many trades it will allow, and whether longs, shorts, or both are in
+   play. It writes this as the day's `DailyPlan`.
+2. **09:35 ET — rank what's in play.** Once the opening range has printed,
+   it scores a candidate list (pinned symbols, whatever the screener is
+   already watching, plus the prior session's most-active symbols from the
+   research universe) on opening relative volume, overnight gap, whether
+   there's a catalyst (earnings or a burst of news), and 20-day relative
+   strength. It keeps the top `DESK_IN_PLAY_N` and attaches them to the
+   plan.
+3. **16:05 ET — write the journal.** It renders a markdown report of the
+   day: the plan, every governed decision (grouped by component/action,
+   every skip and shadow-block spelled out), the day's closed trades,
+   expectancy by family × regime for today and the trailing 20 sessions,
+   any playbook status changes, and a "What to change" section derived from
+   that trailing data.
+
+Every desk decision is written to the log as an `engine_decision` line (see
+"Audit lines" below), so nothing it decides is invisible even while it
+changes nothing.
+
+Overnight, a separate step — the nightly research pipeline's `playbook`
+subcommand (see `docs/research/strategy_hunt.md`) — reads every resolved
+shadow and live trade and rewrites the adaptive playbook: which
+`(family, side, regime)` keys are trading well, which are cold, and which
+have gone bad enough to suspend.
+
+## The four flags
+
+All four live in `core/config.py`, section `v-playbook-desk-b2-2026-09-25`,
+and all default **off**. Set via env var or `Config().yaml`
+(`trading.<lower_snake_case>`), same precedence as the rest of the repo's
+feature flags (env wins over yaml wins over the code default).
+
+| Flag | Default | What it enables |
+|---|---|---|
+| `ENABLE_DESK` | `False` | Master switch. `False` → `desk_loop` is not registered in the supervisor and neither router hook runs at all — zero behavior change. `True` → the desk builds its plan, ranks in-play stocks and writes the journal; its own sub-gates below still only *audit* unless their own flags are also on. |
+| `ENABLE_DESK_WATCHLIST` | `False` | Lets the 09:35 in-play list drive `engine.dynamic_watchlist` instead of the screener's own output (the screener stops overwriting the watchlist once the plan has in-play rows; `core/loops/screener_loop.py::_desk_owns_watchlist`). Off by default: the screener keeps ownership. |
+| `ENABLE_DESK_LIMITS` | `False` | Turns the daily-plan's sit-out / max-trades / direction-bias checks from "audit only" (`action=shadow`) into "actually block" (`action=skip`) at the `desk_limit` router hook. |
+| `ENABLE_PLAYBOOK_GATE` | `False` | Turns a `suspended` `(family, side, regime)` key from "audit only" into "actually skip" at the `playbook` router hook, **and** writes the playbook's size multiplier into `signal.reasoning["strategy_size_multiplier"]` so `risk/manager.py` applies it. Off: the multiplier is never written (sizing is unaffected) and a suspended key is only logged. |
+
+Both `ENABLE_DESK_LIMITS` and `ENABLE_PLAYBOOK_GATE` require `ENABLE_DESK`
+to be on as well — the hook bodies are the first thing gated on `ENABLE_DESK`
+in `core/engine.py`'s signal router, so a sub-flag left on with the master
+switch off does nothing.
+
+**Other desk config** (same section, all with a working default — nothing
+below needs to be set to run the desk):
+
+| Property | Default | Purpose |
+|---|---|---|
+| `DESK_IN_PLAY_N` | `20` | How many ranked stocks the 09:35 refresh keeps. |
+| `DESK_SCAN_MAX_SYMBOLS` | `60` | Cap on the *universe* slice of the 09:35 scan (pinned symbols and the live watchlist are never capped — see "Known limitations"). |
+| `DESK_DATA_DIR` | `data/desk` | Root of every desk runtime artifact (git-ignored). |
+| `DESK_PLAN_TIME_ET` | `09:00` | ET wall-clock time of the plan-build step. |
+| `DESK_REFRESH_TIME_ET` | `09:35` | ET wall-clock time of the in-play refresh. |
+| `DESK_JOURNAL_TIME_ET` | `16:05` | ET wall-clock time of the journal write. |
+| `DESK_CALENDAR_PATH` | `data/desk/calendar.json` | Economic-calendar file the plan's sit-out rule reads. |
+
+### Shadow semantics, precisely
+
+- `ENABLE_DESK` off: nothing new runs, no new audit lines, byte-identical
+  behavior to before B2.
+- `ENABLE_DESK` on, both sub-flags off (today's actual posture once
+  enabled — Task 8): the plan is built, in-play is ranked, the journal is
+  written, and both router hooks emit `engine_decision` audit lines with
+  `action=shadow` wherever they would have blocked or resized — but every
+  signal proceeds exactly as it would have without the desk.
+- `ENABLE_DESK_LIMITS` on: a sit-out day, a `max_trades` breach, or a
+  direction the plan disallows now resolves to `action=skip` and the
+  signal is dropped, at the `desk_limit` hook (immediately **before** the
+  strategy-fit gate).
+- `ENABLE_PLAYBOOK_GATE` on: a `suspended` key resolves to `action=skip` at
+  the `playbook` hook (immediately **after** the strategy-fit gate), and
+  every governed signal's size is scaled by that key's `size_mult`
+  (`probation` 0.5×, `enabled` 1.0× or 1.25×, `suspended` 0.0× — moot, since
+  suspended is already skipped) via `risk/manager.py::playbook_size_multiplier`,
+  clamped to `[0.0, 1.5]`.
+
+No lane gets live entries from any of this today — see "Today: NO-GO" under
+"How a lane would be promoted from shadow" below.
+
+## Timeline
+
+Three ET wall-clock crossings, checked every 30 seconds by `DeskLoop.tick()`
+(`core/loops/desk_loop.py`), each fired at most once per calendar date:
+
+| Time (ET, default) | Step | What happens |
+|---|---|---|
+| 09:00 | plan | `PlanInputs` gathered (market context, breadth, calendar, losing-day streak, prior-day R, fit staleness) → `build_daily_plan` → `<DESK_DATA_DIR>/plans/<date>.json` written. A restart before this fires builds the plan on the next tick; a restart after it leaves the existing file alone. |
+| 09:35 | refresh | Candidates scanned (pinned ∪ live watchlist ∪ top `DESK_SCAN_MAX_SYMBOLS` of the prior session's most-active universe symbols), opening features computed from 5-minute bars, `rank_in_play` → `refresh_plan` → the same plan file rewritten with `in_play` populated. When `ENABLE_DESK_WATCHLIST` is on, `engine.dynamic_watchlist` is set from this list. |
+| 16:05 | journal | Today's decisions and trades, the trailing 20-session summary, and today's playbook changes → `render_journal` → `<DESK_DATA_DIR>/journal/<date>.md`. |
+
+Weekends are skipped (`core.loops.desk_steps.is_session_day`, a plain
+weekday check — see "Known limitations" for the holiday caveat). Every step
+is wrapped so a failure logs once (`desk_loop step failed step=… date=…
+err=…`) and is still marked fired for the date, rather than retrying every
+30 seconds.
+
+## Files under `data/desk/`
+
+All git-ignored runtime output, rooted at `Config().DESK_DATA_DIR` (default
+`data/desk`).
+
+- **`plans/<date>.json`** — one `DailyPlan` per session
+  (`core/desk/store.py::save_plan`/`load_plan`, atomic write — tmp file +
+  `os.replace`). Shape: `date, regime, spy_change_pct, vix, vix_change_pct,
+  breadth_score, calendar_flags[], long_ok, short_ok, risk_budget_pct,
+  max_trades, sit_out, sit_out_reason, in_play[], notes[], built_at,
+  refreshed_at`. Each `in_play` row: `symbol, score, rvol_open15, gap_pct,
+  catalyst, rs_20, reasons[]`.
+- **`playbook.json`** — the adaptive playbook, written nightly by
+  `research.strategy_hunt playbook` (never by the live bot — the live path
+  only reads it). Shape: `{"updated_at": ..., "entries": {"<family>|<side>|<regime>":
+  {family, side, regime, status, size_mult, exp_r_recent, t_stat_recent,
+  n_recent, updated_at, reason}}}`.
+- **`journal/<date>.md`** — the post-close report (`core/desk/journal.py::render_journal`
+  via `core/desk/journal_data.py::write_journal`, same atomic-write pattern).
+- **`calendar.json`** (path configurable, default `data/desk/calendar.json`)
+  — hand-maintained economic calendar the plan's sit-out rule reads. A JSON
+  list of rows:
+
+  ```json
+  [
+    {"date": "2026-09-25", "time_et": "08:30", "event": "CPI", "impact": "high"},
+    {"date": "2026-09-25", "time_et": "14:00", "event": "FOMC Minutes", "impact": "medium"}
+  ]
+  ```
+
+  Each row for today becomes a flag string `"<impact>:<HH:MM>:<event>"`
+  (impact lowercased); a `high:` flag scheduled before 10:30 ET triggers the
+  `calendar_high_impact_before_1030` sit-out rule. A missing file means "no
+  scheduled events" — not an error. Malformed rows are skipped and logged,
+  never raise.
+
+## Audit lines to grep
+
+Every desk decision emits one `engine_decision` line per governed signal (or
+per loop step). Components, in router order:
+
+- `desk_limit` — the daily-plan's sit-out/max-trades/direction check,
+  emitted **before** the `strategy_fit` gate. `reason` is one of
+  `desk_sit_out:<reason>`, `desk_max_trades`, `desk_direction_long_off`,
+  `desk_direction_short_off`, or `desk_ok` (an explicit allow is audited
+  too, so the journal's counts see the full trail).
+- `strategy_fit` — unchanged from Playbook Desk B1 (see
+  `docs/BOT_OPERATIONS_MANUAL.md` § "Strategy fit gate").
+- `playbook` — the adaptive playbook check, emitted **immediately after**
+  the strategy-fit gate. `reason` is `no_playbook_entry`, `playbook_suspended`,
+  `playbook_probation`, or `playbook_enabled`; carries `size_mult`, `status`,
+  and (when it fell back from an unmeasured exact regime)
+  `playbook_fallback=mixed|unknown`.
+- `desk_plan` — the 09:00 loop step. `action=build`, fields `date, regime,
+  sit_out, sit_out_reason, max_trades, risk_budget_pct, long_ok, short_ok,
+  breadth, calendar, losing_day_streak, prev_day_r, path`.
+- `desk_inplay` — the 09:35 loop step. `action=rank`, fields `date, n,
+  scanned, top` (top 5 symbols), `path`.
+- `desk_journal` — the 16:05 loop step. `action=write`, fields `date, path,
+  chars, trades, decisions, playbook_changes`.
+
+Example grep:
+
+```bash
+grep 'engine_decision component=desk_' trading_bot.log | jq -r .message
+grep 'engine_decision component=playbook' trading_bot.log | jq -r .message
+```
+
+`action` on the router-hook components (`desk_limit`, `playbook`) is one of
+`allow` / `shadow` / `skip` — `shadow` means "this would have blocked, but
+its flag is off, so the signal proceeded"; `skip` means it actually blocked.
+
+## Endpoints
+
+All three are read-only, file-backed (no engine-state dependency), and
+never return an HTTP 500 — any failure degrades to `{"ok": false, "error":
+...}` with a 200, the same contract as `GET /api/strategy-fit`
+(`api/routes.py`). `date` query params default to today (ET) and are
+rejected (`{"ok": false, "error": "invalid_date"}`) unless they match
+`YYYY-MM-DD` and parse as a real calendar date.
+
+**`GET /api/desk/plan?date=YYYY-MM-DD`** — today's (or `date`'s) plan.
+
+```json
+{
+  "ok": true,
+  "date": "2026-09-25",
+  "plan": {
+    "date": "2026-09-25", "regime": "risk_on", "spy_change_pct": 0.42,
+    "vix": 14.8, "vix_change_pct": -1.2, "breadth_score": 0.58,
+    "calendar_flags": ["high:08:30:CPI"],
+    "long_ok": true, "short_ok": false,
+    "risk_budget_pct": 5.0, "max_trades": 6,
+    "sit_out": false, "sit_out_reason": "",
+    "in_play": [
+      {"symbol": "NVDA", "score": 0.71, "rvol_open15": 2.4, "gap_pct": 1.9,
+       "catalyst": 1.0, "rs_20": 6.2, "reasons": []}
+    ],
+    "notes": ["regime risk_on: risk budget 1.00x of the 5.00% daily loss cap = 5.00%",
+              "max trades 6 for regime risk_on"],
+    "built_at": "2026-09-25T09:00:03-04:00", "refreshed_at": "2026-09-25T09:35:11-04:00"
+  }
+}
+```
+
+No plan for that date: `{"ok": false, "date": "2026-09-25", "error": "no_plan"}`.
+
+**`GET /api/desk/playbook`** — the current adaptive playbook.
+
+```json
+{
+  "ok": true,
+  "playbook": {
+    "updated_at": "2026-09-25T22:14:07",
+    "entries": {
+      "mean_rev_intraday|long|risk_on": {
+        "family": "mean_rev_intraday", "side": "long", "regime": "risk_on",
+        "status": "probation", "size_mult": 0.5,
+        "exp_r_recent": -0.08, "t_stat_recent": -0.6, "n_recent": 7,
+        "updated_at": "2026-09-25T22:14:07", "reason": "probation_small_sample"
+      }
+    }
+  }
+}
+```
+
+No file yet: `{"ok": false, "error": "no_playbook"}`.
+
+**`GET /api/desk/journal?date=YYYY-MM-DD`** — the rendered markdown journal.
+
+```json
+{"ok": true, "date": "2026-09-25", "markdown": "## Plan\n- regime: risk_on\n..."}
+```
+
+No journal for that date: `{"ok": false, "date": "2026-09-25", "error": "no_journal"}`.
+
+`tools/bot_monitor.py`'s report carries a "## Desk" section (positioned
+**before** "## Strategy fit") built from `/api/desk/plan` and
+`/api/desk/playbook`: date, regime, sit-out + reason, long/short ok, risk
+budget, max trades, top 5 in-play with score, and playbook status counts
+(enabled/probation/suspended). It prints `_desk not enabled / no plan_` when
+the plan endpoint reports `ok: false`.
+
+## Playbook rules
+
+`core/desk/playbook.py::update_entry(prev, recent, fit_verdict, now)` — the
+nightly transition for one `(family, side, regime)` key, applied to its last
+`RECENT_WINDOW=60` resolved trades (newest last). `recent_stats` computes
+`n`, `exp_r` (mean R) and a trade-level t-stat (`0.0` below 2 trades; ±inf
+when the sample has zero dispersion around a non-zero mean).
+
+| Rule (first match wins) | Condition | Status | `size_mult` | `reason` |
+|---|---|---|---|---|
+| 1 | `n ≥ 10` and `exp_r < 0` and `t_stat < -1.0` | `suspended` | `0.0` | `suspended_negative_expectancy` |
+| 2 | `exp_r < 0` (not rule 1) | `probation` | `0.5` | `probation_negative_expectancy` |
+| 3 | `n < 10` | `probation` | `0.5` | `probation_small_sample` |
+| 4 | `exp_r ≥ 0.15` and `n ≥ 40` and `fit_verdict ∈ {PASS, WATCH}` | `enabled` | `1.25` | `enabled_upsize_fit_confirmed` |
+| 5 | otherwise | `enabled` | `1.0` | `enabled_normal` |
+
+`size_mult` is always clamped to `[0.0, 1.5]`, including on read-back from
+disk — a hand-edited `playbook.json` cannot upsize a lane past 1.5×.
+
+**Lapse.** `carry_forward(prev, now, has_recent_trades)`: a `suspended` key
+with no resolved trade in `SUSPENSION_LAPSE_DAYS=30` days lapses back to
+`probation` (`reason=suspension_lapsed_no_recent_trades`) — a suspended key
+places no live orders, so 30 days of silence is the expected state, not
+continuing evidence against it. `enabled`/`probation` keys carry forward
+unchanged when there is nothing new to measure.
+
+**Fallback (live gate lookup, `evaluate_playbook_gate`).** Exact
+`(family, side, regime)` first; if the live regime is `unknown`, fall back
+to that family/side's `mixed` entry (`playbook_fallback=mixed`); otherwise
+fall back to the `unknown` entry (`playbook_fallback=unknown`). A measured
+regime is never governed by another measured regime's entry — only
+`unknown` falls back.
+
+## How to read a journal
+
+`data/desk/journal/<date>.md`, sections in order:
+
+1. **Plan** — regime, bias (`long+short` / `long only` / `short only` /
+   `neutral (no bias)`), risk budget, max trades, sit-out (yes/no + reason),
+   top 10 in-play with score/rvol/gap/reasons.
+2. **Decisions** — every governed decision for the day, grouped
+   `component/action: count`, then every `skip` line (actually blocked) and
+   every `shadow` line (would have blocked, flag was off) with its reason.
+3. **Trades** — symbol, side, family, R, exit reason, hold time for each
+   closed trade.
+4. **Expectancy by Setup x Regime** — `family/regime: n=… exp_R=… PF=…`,
+   both for today and trailing 20 sessions.
+5. **Playbook Changes** — every entry the nightly updater stamped today
+   (`old_status -> new_status (reason)`; `old_status` is left blank since
+   the playbook file only keeps current state, not history).
+6. **What to Change** — three derived rules over the trailing window: a
+   family/regime with trailing `n ≥ 20` and `exp_R < 0` → "suspend
+   candidate"; a sit-out day whose trades-that-would-have-happened R was
+   positive → "review sit-out rule"; a day that hit its `max_trades` cap →
+   "raise/lower max_trades".
+
+Every section degrades to a `none` line on missing or malformed input —
+`render_journal` never raises, so a partial upstream read (e.g. Postgres
+down at 16:05) still produces a readable file.
+
+## How a lane would be promoted from shadow
+
+The desk's own gates (`desk_limit`, `playbook`) are a separate governance
+layer from the strategy-fit gate and the fit-lane promotion flow described
+in `docs/research/strategy_hunt.md` § "Operator flow" — they do not
+themselves decide which strategies may trade live. The path from shadow to
+something that matters:
+
+1. **Research PASS.** A family/symbol/side needs a walk-forward `PASS`
+   verdict in the nightly strategy-fit snapshot before its fit lane can
+   fire live at all (`FIT_LANE_LIVE_ENTRIES_ENABLED` + a `PASS` row —
+   `docs/research/strategy_hunt.md` § "Operator flow", step 4).
+2. **Shadow scorecard.** Once a fit lane is registered
+   (`FIT_LANES_ENABLED`) it accumulates a shadow ledger; `scorecard
+   --family <name>` turns that into a Stage A GO/NO_GO verdict.
+3. **Playbook evidence.** In parallel, the desk's own playbook accumulates
+   `(family, side, regime)` evidence from both the shadow ledgers and any
+   live trades. A key only reaches `enabled 1.25×` once it has `n ≥ 40`
+   resolved trades, `exp_R ≥ 0.15`, *and* a `PASS`/`WATCH` fit verdict —
+   research and the tape have to agree.
+4. **Enable the desk's own gates.** Only once a lane clears both 1 and 2
+   above does turning on `ENABLE_DESK_LIMITS` / `ENABLE_PLAYBOOK_GATE` mean
+   anything beyond risk hygiene — until then they are defensive-only (see
+   "Today: NO-GO" just below).
+
+**Today: NO-GO.** No family has a walk-forward PASS in any regime as of the
+last full-universe run (`research/reports/strategy_hunt/2026-09-25-strategy-hunt-b1-5.md`
+§ B1.6: 0 of 9,227 unconditional rows, 0 of 1,625 symbol-regime rows, 0 of 67
+universe-pooled regime rows). The earlier "regime split is real and large"
+finding from the B1/B1.5 runs was **withdrawn** after B1.6 corrected the
+regime label to entry-time information — the split had been fitted to
+information the desk could not have known when the trade was taken. So the
+desk's regime-keyed `risk_budget_pct`/`max_trades` rules in `core/desk/daily_plan.py`
+are **defensive risk rules** (spend less, trade less, in a worse regime),
+not evidence of an edge — and the playbook learns per `(family, side,
+regime)` from shadow and live results precisely because no research result
+yet says any one of those keys is worth trading harder than another.
+
+## Known limitations
+
+Carried over from `.superpowers/sdd/2026-09-25-playbook-desk-b2/task-5-report.md`
+(Task 5's self-review) unless noted otherwise:
+
+- **`trades_today` counts symbols, not trades.** The desk's `max_trades`
+  counter comes from `DbLogger.get_todays_bot_entries()`, which is keyed by
+  symbol — two entries in the same symbol on the same day count once. This
+  is what the plan brief prescribed as the fallback (there is no
+  per-day-entry counter on the engine today).
+- **Weekday-only calendar.** `is_session_day` is a plain weekday check; the
+  repo has no holiday calendar (`engine.is_market_hours` is weekday-based
+  too). A market holiday still builds a plan and writes an (empty) journal.
+- **A failed step is not retried the same day.** Each step is marked fired
+  even on failure, so a broken dependency logs once instead of every 30
+  seconds — but a step that failed at 09:00 will not retry until the next
+  session.
+- **~60–80 provider calls at 09:35.** The in-play scan pulls a 10-day/5-minute
+  bar window per candidate (pinned + watchlist + up to `DESK_SCAN_MAX_SYMBOLS`
+  universe symbols), bounded to 4 concurrent requests. At the default cap of
+  60 that is roughly 60–80 REST calls in ~15–20 batches right after the
+  open — worth watching against provider rate limits on the first live
+  shadow day.
+- **Breadth mapping is heuristic.** Providers disagree on shape
+  (`advancing_percent`, `advances`/`declines`, a signed `advance_decline`,
+  `new_highs`/`new_lows`); each is mapped to a 0–1 scale by
+  `core/loops/desk_steps.py::breadth_score`, most-direct reading first. Only
+  the plan's `long_ok`/`short_ok` thresholds (0.40 / 0.60) consume it.
+- **No lane goes live from any of this today.** `ENABLE_DESK_LIMITS` and
+  `ENABLE_PLAYBOOK_GATE` govern signals that already exist; they do not
+  create new order paths, and neither has been turned on in the live
+  deployment (see Task 8 / `docs/BOT_OPERATIONS_MANUAL.md` § "Desk
+  (shadow)").
+- **The plan's `strategies/fit_lane.py::LANE_MAP` citation does not match
+  the code** (`docs/superpowers/plans/2026-09-25-playbook-desk-b2.md`,
+  Global Constraints: "Family naming: `strategies/fit_lane.py::LANE_MAP`
+  maps live strategy names to family names"). The live strategy → family
+  map actually lives at
+  `core/strategy_fit_gate.py::LANE_MAP` (read via `family_for()`); the
+  research-side copy the nightly updater uses is
+  `research/strategy_hunt/playbook_live.py::FAMILY_BY_STRATEGY`, pinned
+  equal to it by `tests/research/strategy_hunt/test_playbook_update.py`.
+  Both this file and the code comments in `core/desk/journal_data.py` and
+  `research/strategy_hunt/playbook_live.py` note the correction.
