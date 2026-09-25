@@ -43,10 +43,10 @@ everywhere it is currently wired — see
 `docs/BOT_OPERATIONS_MANUAL.md` § "Strategy fit gate" for the
 pipeline position, audit line format, and fail-closed behavior.
 
-**Snapshot caveat (2026-09-25, B1 run).** The current full-universe snapshot contains **0 PASS rows** — none
-of its 9,505 unconditional rows (539 symbols × 13 families), none of its 1,390 symbol-regime rows, none of its
+**Snapshot caveat (2026-09-25, B1.5 run).** The current full-universe snapshot contains **0 PASS rows** — none
+of its 9,231 unconditional rows (539 symbols × 13 families), none of its 1,390 symbol-regime rows, none of its
 69 universe-pooled regime rows (see "Timing" below and
-`research/reports/strategy_hunt/2026-09-25-strategy-hunt-b1.md`). Turning `STRATEGY_FIT_REGIME_ROWS` on or off
+`research/reports/strategy_hunt/2026-09-25-strategy-hunt-b1-5.md`). Turning `STRATEGY_FIT_REGIME_ROWS` on or off
 therefore changes nothing today: there is no regime row that would let a lane through. So with today's
 snapshot, setting
 `STRATEGY_FIT_SHADOW=False` while `ENABLE_STRATEGY_FIT_GATE=True` makes **every governed lane skip
@@ -377,7 +377,7 @@ individually-profitable-but-mutually-exclusive edges. The replay counts trades s
 (`max_positions` full), a symbol already having an open position, or a computed size of zero shares,
 alongside final equity, total return %, max drawdown %, and daily Sharpe. The "Portfolio replay of PASS
 lanes" section of the Markdown report renders this summary; the monthly equity curve is also written to
-`research/reports/strategy_hunt/<date>-equity-curve.csv`.
+`research/reports/strategy_hunt/<date>T<HHMM>-equity-curve.csv`.
 
 ## Timing
 
@@ -438,6 +438,36 @@ Two cautions carried forward from the report: pooled `max_dd_r` is not scale-inv
 fail it, and only 3 of the 39 rows above the pooled `min_n` clear it), and the shuffled control produced one
 pooled PASS on structure-destroyed bars where the real tape produced none — so a pooled PASS is not on its own
 evidence of an edge.
+
+**Playbook Desk B1.5 re-score (2026-09-25, hardened pooled floors, VADER news, measured)** — full report:
+`research/reports/strategy_hunt/2026-09-25-strategy-hunt-b1-5.md`; machine report
+`research/reports/strategy_hunt/2026-09-25T1433-strategy-hunt.md`:
+
+| Step | Wall-clock | Notes |
+|---|---|---|
+| `news --rescore` (`SENTIMENT_BACKEND=vader`) | ~5 min | `sentiment` back on VADER for live parity; `sentiment_finbert` kept, 0 errors |
+| `context` | 212s | universe context rebuilt so `ctx_news_*` reflect VADER |
+| `run --workers 12 --force` | 298s | 539 symbols, 0 errors, 13 families, 335,499 out-of-sample trades |
+| `run --shuffle-seed 7 --workers 12 --force` | 362s | in-root baseline → `trades_shuffle/`, 539 symbols, 479,354 trades |
+| control cost 2× (run + score) | 33s + 5s | 50-symbol sample in `data/strategy_hunt_cost2`; the 0.5× and separate-root shuffle controls were dropped |
+| `score --postgres` | 75s | 9,231 unconditional + 1,390 symbol-regime + 69 pooled + 69 baseline rows |
+| `report`, `promote` | 2s / 1s | |
+| **Total wall-clock** | **~19 min** | no FinBERT backfill this time |
+
+**Snapshot results (2026-09-25 B1.5 run).** Still 0 PASS rows anywhere: 0 of 9,231 unconditional rows
+(127 WATCH), 0 of 1,390 symbol-regime rows over 396 symbols (159 WATCH), 0 of 69 pooled regime rows
+(14 WATCH). The baseline guard passed — all 69 pooled rows carry a baseline covering all 539 symbols
+with the same last exit date, so none is marked `no_baseline` / `baseline_mismatch` / `baseline_stale`.
+The hardened floors resolved both B1 cautions. Dropping `max_dd_r` for `min_recovery` clears
+dt_momentum short/risk_off (recovery 3.60 — the 639 R drawdown was a scale artefact), but the row now
+fails `min_t_stat_session` (+0.56 against an iid t of +3.85) and `min_excess_r` (+0.030: the shuffled
+tape reproduces +0.142 of its +0.172 expectancy). Of B1's 15 pooled WATCH rows, 14 are still WATCH
+(`news_catalyst short/risk_off` fell below the WATCH `min_n` when the sentiment column went back to
+VADER), 10 keep positive excess and only 3 clear the +0.05 excess floor. The closest row in the run is
+`gap_play short/risk_off` — exp_R +0.181, excess +0.073, t_session +3.52, recovery 4.20 — failing
+`min_decay` alone, because its last four quarters average −0.336 R. Session clustering is the binding
+constraint now: 34 of the 36 pooled rows with n ≥ 500 fail `min_t_stat_session` against 29 failing the
+iid `min_t_stat`.
 
 ## Operator flow
 

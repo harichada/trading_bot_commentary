@@ -71,6 +71,36 @@
   `docs/research/strategy_hunt.md`; spec:
   `docs/superpowers/specs/2026-09-25-playbook-desk-design.md`; plan:
   `docs/superpowers/plans/2026-09-25-playbook-desk-b1.md`.
+- feat(strategy-hunt): Playbook Desk B1.5 — make a pooled regime PASS mean "edge beyond the regime's own
+  drift". `FitMetrics` gains **`t_stat_session`** (trades clustered by entry session, the independent unit,
+  instead of treating hundreds of same-session trades across symbols as iid) and **`recovery`**
+  (`net_R / max_dd_R`); `POOLED_FLOORS` drops the absolute `max_dd_r` cap — not scale-invariant, a 13k-trade
+  pooled row reaches a 639 R drawdown by arithmetic alone — for `min_recovery 3.0`, and adds
+  `min_t_stat_session 3.0`. The **shuffled control becomes an in-root baseline variant**: `run --shuffle-seed N`
+  writes `trades_shuffle/` / `choices_shuffle/` / `checkpoints_shuffle/` beside the real tape over the full
+  universe, `all` runs it with seed 7 right after `run` (`--no-baseline` skips it), and `score` pools both
+  tapes in one pass so every pooled row carries `baseline_exp_r`, `baseline_n` and
+  `excess_r = exp_r − baseline_exp_r`, with a new **`min_excess_r 0.05`** floor. A row with no baseline records
+  `no_baseline`, and a baseline that is present but covers < 95 % of the real symbols or ends more than 7 days
+  early is flagged `baseline_mismatch` / `baseline_stale`; all three permit WATCH and forbid PASS, so a stale
+  or missing control can never mint a pooled PASS. The report gains a "Pooled rows vs shuffled baseline"
+  section, counts pooled verdicts for each cost control, and machine reports are **run-stamped**
+  `<date>T<HHMM>-strategy-hunt.md` so two runs in a day no longer overwrite each other; the run manifest keys
+  the baseline run under `run_shuffle` / `errors_shuffle`. Research news scoring went **back to VADER** for
+  parity with the live news loop (`sentiment_finbert` is kept in the cache for a future FinBERT-specific
+  threshold grid).
+  **B1 run re-scored (2026-09-25):** 539 symbols, 13 families, 335,499 real + 479,354 shuffled out-of-sample
+  trades, ~19 min wall-clock, baseline guard clean (69 of 69 pooled rows benchmarked). **Still 0 PASS rows
+  anywhere** — 0 of 9,231 unconditional (127 WATCH), 0 of 1,390 symbol-regime (159 WATCH), 0 of 69 pooled
+  (14 WATCH) — so the B1 gate, now amended to "a pooled PASS counts only with positive excess over the
+  shuffled baseline", remains **not met and B2 live wiring stays shadow-only**. B1's closest row
+  (`dt_momentum short/risk_off`, which failed only `max_dd_r`) clears the new recovery floor at 3.60 but fails
+  both new tests: session-clustered t +0.56 against an iid t of +3.85, and excess +0.030 because the shuffled
+  tape reproduces +0.142 of its +0.172 expectancy. Of B1's 15 pooled WATCH rows 14 survive, 10 keep positive
+  excess, 3 clear the +0.05 floor. The best row in the run, `gap_play short/risk_off`, fails `min_decay` alone
+  — its last four quarters average −0.336 R against +0.181 R full-sample. Run report:
+  `research/reports/strategy_hunt/2026-09-25-strategy-hunt-b1-5.md`; docs: `docs/research/strategy_hunt.md`;
+  plan: `docs/superpowers/plans/2026-09-25-playbook-desk-b1-5.md`.
 
 ## 2026-09-21 — fix: Day-trade RSI missing from reasoning + breakout hard veto (v-rsi-breakout-veto-2026-09-21)
 

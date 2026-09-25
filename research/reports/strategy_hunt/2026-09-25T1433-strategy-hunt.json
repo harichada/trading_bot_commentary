@@ -1,0 +1,15 @@
+{
+ "computed_at": "2026-09-25T14:33:35",
+ "report": "2026-09-25T1433-strategy-hunt.md",
+ "n_rows": 9231,
+ "n_symbols": 539,
+ "verdicts": {
+  "FAIL": 9104,
+  "WATCH": 127
+ },
+ "pooled_verdicts": {
+  "FAIL": 55,
+  "WATCH": 14
+ },
+ "pooled_with_baseline": 69
+}
