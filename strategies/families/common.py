@@ -97,3 +97,10 @@ def col(ind: pd.DataFrame, name: str) -> np.ndarray:
     if name not in ind.columns:
         return np.full(len(ind), np.nan)
     return ind[name].to_numpy(dtype=float)
+
+
+def session_opens(ind: pd.DataFrame) -> list[int]:
+    """Index positions where a new session starts (bar_of_day == 0), excluding the very first
+    session in the frame (there is no prior bar to build a make_entry(..., j-1, ...) trade from).
+    Missing bar_of_day is treated as all-NaN (via col), so this returns [] rather than raising."""
+    return [int(i) for i in np.flatnonzero(col(ind, "bar_of_day") == 0) if i > 0]

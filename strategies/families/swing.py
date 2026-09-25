@@ -4,16 +4,12 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from strategies.families.common import Family, make_entry, spaced_by_sessions
+from strategies.families.common import Family, make_entry, session_opens, spaced_by_sessions
 from strategies.families.models import Entry
 
 PULLBACK_HOLD = 10
 VOLBO_HOLD = 15
 MR_ATR_STOP = 1.5
-
-
-def _session_opens(ind: pd.DataFrame) -> list[int]:
-    return [int(i) for i in np.flatnonzero(ind["bar_of_day"].to_numpy() == 0) if i > 0]
 
 
 def _vals(ind: pd.DataFrame, j: int, cols: tuple[str, ...]) -> dict[str, float]:
@@ -25,7 +21,7 @@ def pullback_trend_entries(bars5, ind, daily, news, params) -> list[Entry]:
     lo, hi = (float(x) for x in str(params["rsi_band"]).split("-"))
     atr_stop = params["atr_stop"]
     out: list[Entry] = []
-    for j in _session_opens(ind):
+    for j in session_opens(ind):
         v = _vals(ind, j, ("d_close", "d_low", "d_sma50", ema_col, "d_rsi14", "d_ret1", "d_atr14"))
         if any(np.isnan(x) for x in v.values()):
             continue
@@ -43,7 +39,7 @@ def mr_20d_entries(bars5, ind, daily, news, params) -> list[Entry]:
     sig = "20" if float(params["band_sigma"]) == 2.0 else "25"
     ext, hold = float(params["rsi3_extreme"]), int(params["time_stop_days"])
     out: list[Entry] = []
-    for j in _session_opens(ind):
+    for j in session_opens(ind):
         v = _vals(ind, j, ("d_close", "d_rsi3", "d_bb_mid", f"d_bb{sig}_upper", f"d_bb{sig}_lower", "d_atr14"))
         if any(np.isnan(x) for x in v.values()):
             continue
@@ -63,7 +59,7 @@ def mr_20d_entries(bars5, ind, daily, news, params) -> list[Entry]:
 def vol_breakout_entries(bars5, ind, daily, news, params) -> list[Entry]:
     n, comp, atr_stop = int(params["lookback"]), float(params["compression"]), params["atr_stop"]
     out: list[Entry] = []
-    for j in _session_opens(ind):
+    for j in session_opens(ind):
         v = _vals(ind, j, ("d_close", "d_atr20", "d_atr100", "d_atr14", f"d_high{n}", f"d_low{n}"))
         if any(np.isnan(x) for x in v.values()) or v["d_atr100"] <= 0 or v["d_atr20"] / v["d_atr100"] > comp:
             continue

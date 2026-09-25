@@ -10,17 +10,20 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from strategies.families.common import Family, candidate_positions, col, make_entry, one_per_session, spaced_by_sessions
+from strategies.families.common import Family, candidate_positions, col, make_entry, one_per_session, session_opens, spaced_by_sessions
 from strategies.families.context import ctx, in_play
 from strategies.families.models import Entry
 
-ORB_INPLAY_ENTRY_BAR = 1   # bar_of_day == 1: the second 5-min bar, evaluated once the first has closed
-ORB_INPLAY_LAST_BAR = 77   # 15:55 bar on a 5-min RTH grid (09:30 = bar 0, 78 bars/session)
-PEAD_ENTRY_BAR = 6         # bar_of_day == 6: the 10:00 bar has just closed
+ORB_INPLAY_ENTRY_BAR = 1        # bar_of_day == 1: the second 5-min bar, evaluated once the first has closed
+ORB_INPLAY_LAST_BAR = 77        # 15:55 bar-of-day on a 5-min RTH grid (09:30 = bar 0, 78 bars/session)
+ORB_INPLAY_MIN_PRICE = 5.0      # dollars; bar-0 close must clear this
+ORB_INPLAY_MIN_ATR14_PCT = 0.5  # percent; ctx_atr14_pct floor
+PEAD_ENTRY_BAR = 6              # bar_of_day == 6: the 10:00 bar has just closed
 PEAD_STOP_ATR = 1.5
 PEAD_TARGET_R = 3.0
 RS_LEADER_HOLD = 20
 RS_LEADER_TARGET_R = 3.0
+RS_LEADER_MIN_PCT_FROM_52W_HIGH = -15.0   # percent; ctx_pct_from_52w_high floor
 
 
 def _bar0_values(bars5: pd.DataFrame) -> dict[str, np.ndarray]:
@@ -38,7 +41,7 @@ def orb_inplay_entries(bars5: pd.DataFrame, ind: pd.DataFrame, daily: pd.DataFra
     o0, h0, l0, c0 = b0["open"], b0["high"], b0["low"], b0["close"]
     high, low = bars5["high"].to_numpy(dtype=float), bars5["low"].to_numpy(dtype=float)
     with np.errstate(invalid="ignore"):
-        base = (bod == ORB_INPLAY_ENTRY_BAR) & rank_ok & (c0 >= 5) & (atr_pct >= 0.5)
+        base = (bod == ORB_INPLAY_ENTRY_BAR) & rank_ok & (c0 >= ORB_INPLAY_MIN_PRICE) & (atr_pct >= ORB_INPLAY_MIN_ATR14_PCT)
         long_m = base & (c0 > o0) & (high > h0)
         short_m = base & (c0 < o0) & (low < l0)
     out: list[Entry] = []
@@ -49,7 +52,7 @@ def orb_inplay_entries(bars5: pd.DataFrame, ind: pd.DataFrame, daily: pd.DataFra
         risk = px - stop
         if risk <= 0:
             continue
-        time_stop = max(1, ORB_INPLAY_LAST_BAR - (i + 1))
+        time_stop = max(1, ORB_INPLAY_LAST_BAR - (int(bod[i]) + 1))
         target = px + trail_r * risk if trail_r > 0 else px + 20 * risk
         e = make_entry(bars5, int(i), "long", stop, target, time_stop, "intraday", "orb_inplay_long")
         if e:
@@ -61,7 +64,7 @@ def orb_inplay_entries(bars5: pd.DataFrame, ind: pd.DataFrame, daily: pd.DataFra
         risk = stop - px
         if risk <= 0:
             continue
-        time_stop = max(1, ORB_INPLAY_LAST_BAR - (i + 1))
+        time_stop = max(1, ORB_INPLAY_LAST_BAR - (int(bod[i]) + 1))
         target = px - trail_r * risk if trail_r > 0 else px - 20 * risk
         e = make_entry(bars5, int(i), "short", stop, target, time_stop, "intraday", "orb_inplay_short")
         if e:
@@ -107,17 +110,16 @@ def pead_smallcap_entries(bars5: pd.DataFrame, ind: pd.DataFrame, daily: pd.Data
     return spaced_by_sessions(out, hold_days)
 
 
-def _session_opens(ind: pd.DataFrame) -> list[int]:
-    return [int(i) for i in np.flatnonzero(col(ind, "bar_of_day") == 0) if i > 0]
-
-
 def rs_leader_entries(bars5: pd.DataFrame, ind: pd.DataFrame, daily: pd.DataFrame, news: pd.DataFrame, params: dict) -> list[Entry]:
     ema_col = f"d_ema{int(params['ema'])}"
     rs_floor, atr_stop = float(params["rs_floor"]), float(params["atr_stop"])
     rs_rank, pct_52w = ctx(ind, "rs_rank_60"), ctx(ind, "pct_from_52w_high")
     out: list[Entry] = []
-    for j in _session_opens(ind):
-        if np.isnan(rs_rank[j]) or np.isnan(pct_52w[j]) or not (rs_rank[j] >= rs_floor and pct_52w[j] >= -15):
+    for j in session_opens(ind):
+        # NaN comparisons are already False, so a missing/NaN rs_rank or pct_52w falls straight
+        # through to `continue` without an explicit isnan check (consistent with the mask-based
+        # filters in orb_inplay_entries/pead_smallcap_entries above).
+        if not (rs_rank[j] >= rs_floor and pct_52w[j] >= RS_LEADER_MIN_PCT_FROM_52W_HIGH):
             continue
         cols = ("d_low", "d_close", ema_col, "d_ret1", "d_atr14")
         v = {c: (float(ind[c].iloc[j]) if c in ind.columns else np.nan) for c in cols}
