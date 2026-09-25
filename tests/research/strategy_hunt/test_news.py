@@ -1,3 +1,4 @@
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -218,3 +219,123 @@ def test_load_news_legacy_file_without_extra_columns(tmp_path):
     df.to_parquet(p, index=False)
     loaded = N.load_news(tmp_path, "NVDA")
     assert list(loaded.columns) == ["created_at", "headline", "source", "sentiment"]
+
+
+# v-playbook-desk-b1-2026-09-25: Task 7b `rescore_news` coverage -- re-scoring the pre-Task-7
+# legacy cache (4 columns, no sentiment_vader/sentiment_finbert) with the configured backend.
+
+
+def _legacy_cache(tmp_path, symbol="NVDA", n=3):
+    from research.strategy_hunt.data import news as N
+    df = pd.DataFrame({
+        "created_at": [pd.Timestamp("2025-01-02 09:35") + pd.Timedelta(minutes=i) for i in range(n)],
+        "headline": [f"Excellent beats {i}" for i in range(n)],
+        "source": ["benzinga"] * n,
+        "sentiment": [0.1] * n,
+    })
+    p = N.news_path(tmp_path, symbol)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    df.to_parquet(p, index=False)
+    return p
+
+
+def test_rescore_news_missing_cache_returns_0(tmp_path):
+    from research.strategy_hunt.data.news import rescore_news
+    assert rescore_news(tmp_path, "ZZZZ") == 0
+    assert not (tmp_path / "news" / "ZZZZ.parquet").exists()
+
+
+def test_rescore_news_legacy_cache_gains_both_columns_and_sentiment_follows_finbert(monkeypatch, tmp_path):
+    import core.sentiment_backend as sb
+    from research.strategy_hunt.data import news as N
+
+    class _FakePipeline:
+        def __init__(self):
+            self.calls = 0
+
+        def __call__(self, texts, **kwargs):
+            self.calls += len(texts)
+            return [[{"label": "positive", "score": 0.9}, {"label": "negative", "score": 0.05},
+                     {"label": "neutral", "score": 0.05}] for _ in texts]
+
+    fake = _FakePipeline()
+    monkeypatch.setattr(sb, "_finbert_factory", lambda: fake)
+    monkeypatch.setenv("SENTIMENT_BACKEND", "finbert")
+
+    _legacy_cache(tmp_path, n=3)
+    n = N.rescore_news(tmp_path, "NVDA")
+    assert n == 3
+    assert fake.calls == 3
+
+    df = N.load_news(tmp_path, "NVDA")
+    assert list(df.columns) == ["created_at", "headline", "source", "sentiment", "sentiment_vader", "sentiment_finbert"]
+    assert np.allclose(df["sentiment_finbert"], 0.85)
+    assert not df["sentiment_vader"].isna().any()
+    assert (df["sentiment"] == df["sentiment_finbert"]).all()
+
+
+def test_rescore_news_vader_backend_leaves_finbert_nan_and_sentiment_equals_vader(tmp_path):
+    from research.strategy_hunt.data import news as N
+
+    _legacy_cache(tmp_path, n=2)
+    n = N.rescore_news(tmp_path, "NVDA", backend="vader")
+    assert n == 2
+
+    df = N.load_news(tmp_path, "NVDA")
+    assert df["sentiment_finbert"].isna().all()
+    assert (df["sentiment"] == df["sentiment_vader"]).all()
+
+
+def test_rescore_news_does_not_rescore_already_scored_rows(monkeypatch, tmp_path):
+    """Fully-scored cache (sentiment_vader + sentiment_finbert both non-NaN) -> the fake FinBERT
+    pipeline must never be called, and no rows are reported as re-scored."""
+    import core.sentiment_backend as sb
+    from research.strategy_hunt.data import news as N
+
+    class _CountingPipeline:
+        def __init__(self):
+            self.calls = 0
+
+        def __call__(self, texts, **kwargs):
+            self.calls += len(texts)
+            return [[{"label": "positive", "score": 0.5}, {"label": "negative", "score": 0.1},
+                     {"label": "neutral", "score": 0.4}] for _ in texts]
+
+    fake = _CountingPipeline()
+    monkeypatch.setattr(sb, "_finbert_factory", lambda: fake)
+    monkeypatch.setenv("SENTIMENT_BACKEND", "finbert")
+
+    df = pd.DataFrame({
+        "created_at": [pd.Timestamp("2025-01-02 09:35")],
+        "headline": ["Excellent beats"],
+        "source": ["benzinga"],
+        "sentiment": [0.4],
+        "sentiment_vader": [0.1],
+        "sentiment_finbert": [0.4],
+    })
+    p = N.news_path(tmp_path, "NVDA")
+    p.parent.mkdir(parents=True, exist_ok=True)
+    df.to_parquet(p, index=False)
+
+    n = N.rescore_news(tmp_path, "NVDA")
+    assert n == 0
+    assert fake.calls == 0
+
+
+def test_rescore_news_chunks_scoring_calls(monkeypatch, tmp_path):
+    """RESCORE_CHUNK_SIZE headlines per score() call, not one giant call for the whole file."""
+    from research.strategy_hunt.data import news as N
+
+    monkeypatch.setattr(N, "RESCORE_CHUNK_SIZE", 2)
+    calls = []
+
+    def fake_score(headlines, backend=None):
+        calls.append(len(headlines))
+        return [0.1 for _ in headlines]
+
+    monkeypatch.setattr(N, "score", fake_score)
+    _legacy_cache(tmp_path, n=5)
+
+    n = N.rescore_news(tmp_path, "NVDA", backend="vader")
+    assert n == 5
+    assert calls == [2, 2, 1]

@@ -18,6 +18,10 @@ COLUMNS = ["created_at", "headline", "source", "sentiment"]
 EXTRA_COLUMNS = ["sentiment_vader", "sentiment_finbert"]
 PAGE_LIMIT = 50
 ET = "America/New_York"
+# v-playbook-desk-b1-2026-09-25 (Task 7b): headlines per score() call when re-scoring a whole
+# cached symbol file, so a ~20k-row symbol doesn't build one giant results list in memory at
+# once -- the backend (VADER or FinBERT) still batches internally within each chunk.
+RESCORE_CHUNK_SIZE = 2048
 
 
 def score_headlines(headlines: list[str]) -> list[float]:
@@ -125,3 +129,69 @@ def update_news(root: Path, symbol: str, session: Any, key: str, secret: str,
     merged.to_parquet(tmp, index=False)
     tmp.replace(p)
     return len(new)
+
+
+def _score_chunked(headlines: list[str], backend: str) -> list[float]:
+    """Score `headlines` with `backend`, RESCORE_CHUNK_SIZE at a time."""
+    scores: list[float] = []
+    for i in range(0, len(headlines), RESCORE_CHUNK_SIZE):
+        chunk = headlines[i:i + RESCORE_CHUNK_SIZE]
+        scores.extend(score(chunk, backend=backend))
+    return scores
+
+
+def rescore_news(root: Path, symbol: str, backend: Optional[str] = None) -> int:
+    """Re-score a cached symbol's news with the configured (or given) sentiment backend.
+
+    v-playbook-desk-b1-2026-09-25 (Task 7b): the cache from before Task 7 (and any row VADER-
+    only scored since) only has `sentiment_vader`/`sentiment` -- `sentiment_finbert` is added
+    (all-NaN) if missing, `sentiment_vader` is scored for any NaN row, `sentiment_finbert` is
+    scored for any NaN row when the effective backend is "finbert" and FinBERT is actually
+    available, and `sentiment` is recomputed with the same finbert-else-vader rule as
+    `_score_columns`/`fetch_news`. Missing cache -> 0, no file created. Nothing is written
+    unless something actually changed (new columns, new scores, or a different `sentiment`).
+    Returns the number of rows that were re-scored (vader and/or finbert).
+    """
+    p = news_path(root, symbol)
+    if not p.exists():
+        return 0
+    df = pd.read_parquet(p)
+    df["created_at"] = pd.to_datetime(df["created_at"])
+    changed = False
+    for col in EXTRA_COLUMNS:
+        if col not in df.columns:
+            df[col] = float("nan")
+            changed = True
+
+    effective_backend = backend if backend is not None else _configured_backend()
+    finbert_enabled = effective_backend == "finbert" and "finbert" in available_backends()
+
+    vader_mask = df["sentiment_vader"].isna()
+    finbert_mask = df["sentiment_finbert"].isna() if finbert_enabled else pd.Series(False, index=df.index)
+    rescored = int((vader_mask | finbert_mask).sum())
+
+    if vader_mask.any():
+        idx = df.index[vader_mask]
+        df.loc[idx, "sentiment_vader"] = _score_chunked(df.loc[idx, "headline"].tolist(), "vader")
+        changed = True
+
+    if finbert_mask.any():
+        idx = df.index[finbert_mask]
+        df.loc[idx, "sentiment_finbert"] = _score_chunked(df.loc[idx, "headline"].tolist(), "finbert")
+        changed = True
+
+    sentiment_col = f"sentiment_{effective_backend}"
+    new_sentiment = df[sentiment_col].fillna(df["sentiment_vader"]) if sentiment_col in df.columns \
+        else df["sentiment_vader"]
+    if "sentiment" not in df.columns or not df["sentiment"].equals(new_sentiment):
+        df["sentiment"] = new_sentiment
+        changed = True
+
+    if not changed:
+        return 0
+
+    df = df[COLUMNS + EXTRA_COLUMNS]
+    tmp = p.with_suffix(".tmp.parquet")
+    df.to_parquet(tmp, index=False)
+    tmp.replace(p)
+    return rescored

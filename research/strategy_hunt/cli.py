@@ -90,8 +90,20 @@ def cmd_universe_context(a: argparse.Namespace) -> int:
 
 
 def cmd_news(a: argparse.Namespace) -> int:
+    from research.strategy_hunt.data.news import rescore_news, update_news
+
+    # v-playbook-desk-b1-2026-09-25 (Task 7b): --rescore re-scores the existing cache with the
+    # configured sentiment backend instead of fetching new rows, so it needs no Alpaca creds.
+    # `cmd_all`'s "all" subparser doesn't register --rescore, hence getattr with a False default.
+    if getattr(a, "rescore", False):
+        for s in _symbols_arg(a.symbols, a.root):
+            try:
+                print(f"news {s}: rescored {rescore_news(a.root, s)}")
+            except Exception as exc:
+                print(f"news {s}: ERROR {exc}")
+        return 0
+
     import requests
-    from research.strategy_hunt.data.news import update_news
 
     key, secret = os.environ.get("ALPACA_API_KEY"), os.environ.get("ALPACA_SECRET_KEY")
     if not key or not secret:
@@ -267,12 +279,21 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--no-coldstart", action="store_true")
         sp.add_argument("--postgres", action="store_true")
 
-    for name, fn in (("export", cmd_export), ("context", cmd_context), ("news", cmd_news),
+    for name, fn in (("export", cmd_export), ("context", cmd_context),
                      ("earnings", cmd_earnings), ("calibrate", cmd_calibrate), ("run", cmd_run),
                      ("score", cmd_score), ("report", cmd_report), ("all", cmd_all)):
         sp = sub.add_parser(name)
         common(sp)
         sp.set_defaults(fn=fn)
+
+    # v-playbook-desk-b1-2026-09-25 (Task 7b): `news` gets its own subparser (like
+    # universe-context below) so --rescore only exists there, not on every other subcommand.
+    sp = sub.add_parser("news")
+    common(sp)
+    sp.add_argument("--rescore", action="store_true",
+                    help="re-score the existing cache with the configured sentiment backend "
+                         "instead of fetching new rows (no Alpaca creds required)")
+    sp.set_defaults(fn=cmd_news)
 
     # v-playbook-desk-b1-2026-09-25 (fix round 1, finding 5): rebuild-only-the-context-file takes
     # no symbols/families/cost-mult/etc -- just --root, like `promote`.

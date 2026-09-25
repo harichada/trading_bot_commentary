@@ -188,6 +188,60 @@ def test_cmd_universe_context_returns_1_and_prints_clean_error_on_failure(monkey
     assert "Traceback" not in out
 
 
+# ──────────────────────
+# Task 7b — `news --rescore`
+# ──────────────────────
+
+
+def test_cmd_news_rescore_calls_rescore_news_per_symbol_and_never_update_news(monkeypatch, tmp_path):
+    """--rescore must re-score the existing cache via rescore_news for every requested symbol,
+    print its count, and never touch update_news (no fetch, no Alpaca creds needed)."""
+    from research.strategy_hunt import cli
+    from research.strategy_hunt.data import news as N
+
+    rescore_calls = []
+    monkeypatch.setattr(N, "rescore_news", lambda root, sym, backend=None: rescore_calls.append(sym) or 3)
+
+    update_calls = []
+    monkeypatch.setattr(N, "update_news", lambda *a, **kw: update_calls.append(a) or 0)
+
+    monkeypatch.delenv("ALPACA_API_KEY", raising=False)
+    monkeypatch.delenv("ALPACA_SECRET_KEY", raising=False)
+
+    rc = cli.main(["news", "--root", str(tmp_path), "--symbols", "AAA,BBB", "--rescore"])
+    assert rc == 0
+    assert rescore_calls == ["AAA", "BBB"]
+    assert update_calls == []
+
+
+def test_cmd_news_rescore_continues_past_per_symbol_errors(monkeypatch, tmp_path, capsys):
+    from research.strategy_hunt import cli
+    from research.strategy_hunt.data import news as N
+
+    def _rescore(root, sym, backend=None):
+        if sym == "AAA":
+            raise RuntimeError("boom")
+        return 1
+
+    monkeypatch.setattr(N, "rescore_news", _rescore)
+
+    rc = cli.main(["news", "--root", str(tmp_path), "--symbols", "AAA,BBB", "--rescore"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "news AAA: ERROR boom" in out
+    assert "news BBB: rescored 1" in out
+
+
+def test_news_rescore_flag_only_on_news_subparser():
+    from research.strategy_hunt.cli import build_parser
+
+    p = build_parser()
+    ns = p.parse_args(["news", "--rescore"])
+    assert ns.rescore is True
+    with pytest.raises(SystemExit):
+        p.parse_args(["export", "--rescore"])
+
+
 def test_universe_context_subcommand_has_only_root_flag():
     """Finding 5: `universe-context` doesn't need --symbols/--families/--workers/etc -- it takes
     no arguments beyond --root, like `promote`."""
