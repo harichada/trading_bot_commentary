@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import sys
 import signal
 import time
@@ -119,6 +120,31 @@ def _is_rth_now() -> bool:
         return False
     minutes = et.hour * 60 + et.minute
     return 9 * 60 + 30 <= minutes < 16 * 60
+
+
+# v-playbook-desk-b2-2026-09-25 (Task 6): desk date helpers, shared by the
+# read-only /api/desk/* endpoints below. A strict YYYY-MM-DD match is
+# required *before* the value is allowed to become part of a filename
+# (core.desk.store.plan_path / core.desk.journal_data.journal_path) — this
+# is the only thing standing between a query param and path traversal.
+_DESK_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _desk_today_et() -> str:
+    """Today's date (ET) as YYYY-MM-DD — the desk endpoints' default `date`."""
+    from zoneinfo import ZoneInfo
+    return datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+
+
+def _desk_is_valid_date(date_str: str) -> bool:
+    """True only for a real calendar date shaped exactly like YYYY-MM-DD."""
+    if not isinstance(date_str, str) or not _DESK_DATE_RE.match(date_str):
+        return False
+    try:
+        datetime.strptime(date_str, "%Y-%m-%d")
+        return True
+    except ValueError:
+        return False
 
 # Load dashboard HTML from template file
 import os as _os
@@ -973,6 +999,78 @@ async def get_strategy_fit(symbol: Optional[str] = None):
         return {"summary": fit.summary(), "rows": rows}
     except Exception as exc:  # noqa: BLE001 - never raise to caller
         return {"summary": {"last_error": str(exc)}, "rows": []}
+
+
+@app.get("/api/desk/plan")
+async def get_desk_plan(date: Optional[str] = None):
+    """v-playbook-desk-b2-2026-09-25: read-only daily-plan snapshot.
+
+    File-backed only — this never touches engine state (Task 5 wires the
+    desk loop into the running engine separately). Reads
+    `<DESK_DATA_DIR>/plans/<date>.json` via `core.desk.store.load_plan`.
+    `date` defaults to today (ET) and must match `YYYY-MM-DD` before it is
+    allowed to become part of a filename. Never 500: any failure degrades
+    to `{ok: false, error}` with HTTP 200, mirroring `/api/strategy-fit`.
+    """
+    try:
+        from core.desk.store import load_plan
+
+        query_date = date or _desk_today_et()
+        if not _desk_is_valid_date(query_date):
+            return {"ok": False, "error": "invalid_date"}
+
+        desk_dir = Config().DESK_DATA_DIR
+        plan = load_plan(desk_dir, query_date)
+        if plan is None:
+            return {"ok": False, "date": query_date, "error": "no_plan"}
+        return {"ok": True, "date": query_date, "plan": plan.to_dict()}
+    except Exception as exc:  # noqa: BLE001 - never raise to caller
+        return {"ok": False, "error": str(exc)}
+
+
+@app.get("/api/desk/playbook")
+async def get_desk_playbook():
+    """v-playbook-desk-b2-2026-09-25: read-only adaptive-playbook snapshot.
+
+    File-backed only. Reads `<DESK_DATA_DIR>/playbook.json` via
+    `core.desk.playbook.load_playbook`. Never 500: a missing or unreadable
+    file degrades to `{ok: false, error}` with HTTP 200.
+    """
+    try:
+        from core.desk.playbook import load_playbook, playbook_path
+
+        path = playbook_path(Config().DESK_DATA_DIR)
+        if not path.exists():
+            return {"ok": False, "error": "no_playbook"}
+        playbook = load_playbook(path)
+        return {"ok": True, "playbook": playbook.to_dict()}
+    except Exception as exc:  # noqa: BLE001 - never raise to caller
+        return {"ok": False, "error": str(exc)}
+
+
+@app.get("/api/desk/journal")
+async def get_desk_journal(date: Optional[str] = None):
+    """v-playbook-desk-b2-2026-09-25: read-only desk-journal markdown.
+
+    File-backed only. Reads `<DESK_DATA_DIR>/journal/<date>.md` via
+    `core.desk.journal_data.journal_path`. `date` defaults to today (ET)
+    and is validated the same way as `/api/desk/plan`. Never 500.
+    """
+    try:
+        from core.desk.journal_data import journal_path
+
+        query_date = date or _desk_today_et()
+        if not _desk_is_valid_date(query_date):
+            return {"ok": False, "error": "invalid_date"}
+
+        path = journal_path(Config().DESK_DATA_DIR, query_date)
+        if not os.path.exists(path):
+            return {"ok": False, "date": query_date, "error": "no_journal"}
+        with open(path, "r") as fh:
+            markdown = fh.read()
+        return {"ok": True, "date": query_date, "markdown": markdown}
+    except Exception as exc:  # noqa: BLE001 - never raise to caller
+        return {"ok": False, "error": str(exc)}
 
 
 @app.get("/api/status")

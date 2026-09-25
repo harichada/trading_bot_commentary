@@ -336,6 +336,8 @@ def build_report(window_seconds: int = 3600) -> str:
     positions = fetch_api("/api/positions/db")
     indices = fetch_api("/api/market-indices")
     strategy_fit = fetch_api("/api/strategy-fit")
+    desk_plan = fetch_api("/api/desk/plan")
+    desk_playbook = fetch_api("/api/desk/playbook")
 
     entries = tail_log(seconds_back=window_seconds)
     activity = parse_signal_activity(entries)
@@ -504,6 +506,60 @@ def build_report(window_seconds: int = 3600) -> str:
             lines.append(
                 f"- **{label}:** {rows_today} rows today (UTC) — "
                 f"last: {sym} at {ts} ({extra})")
+    lines.append("")
+
+    # ── Desk ─────────────────────────────────────────────────────────
+    # v-playbook-desk-b2-2026-09-25 (Task 6): surfaces the desk's daily
+    # plan and adaptive playbook via the read-only GET /api/desk/plan and
+    # GET /api/desk/playbook endpoints. Pure read — never mutates
+    # anything, and degrades to a one-line fallback whenever the desk
+    # isn't enabled or hasn't built a plan yet (`ok: false` or no
+    # response at all).
+    lines.append("## Desk")
+    lines.append("")
+    if not desk_plan or not desk_plan.get("ok"):
+        lines.append("_desk not enabled / no plan_")
+    else:
+        plan = desk_plan.get("plan", {}) or {}
+        lines.append(f"- **Date:** {plan.get('date') or desk_plan.get('date', 'unknown')}")
+        lines.append(f"- **Regime:** {plan.get('regime', 'unknown')}")
+        sit_out = plan.get("sit_out")
+        sit_out_reason = plan.get("sit_out_reason") or ""
+        sit_out_str = "yes" if sit_out else "no"
+        if sit_out and sit_out_reason:
+            sit_out_str += f" ({sit_out_reason})"
+        lines.append(f"- **Sit-out:** {sit_out_str}")
+        long_ok = "yes" if plan.get("long_ok") else "no"
+        short_ok = "yes" if plan.get("short_ok") else "no"
+        lines.append(f"- **Long/Short ok:** {long_ok} / {short_ok}")
+        budget = plan.get("risk_budget_pct")
+        budget_str = f"{budget:.2f}%" if isinstance(budget, (int, float)) else "unknown"
+        lines.append(f"- **Risk budget:** {budget_str}")
+        lines.append(f"- **Max trades:** {plan.get('max_trades', 'unknown')}")
+        in_play = plan.get("in_play") or []
+        if in_play:
+            lines.append("- **Top in-play:**")
+            for row in in_play[:5]:
+                sym = row.get("symbol", "?")
+                score = row.get("score")
+                score_str = f"{score:.2f}" if isinstance(score, (int, float)) else "?"
+                lines.append(f"  - {sym} (score {score_str})")
+        else:
+            lines.append("- **Top in-play:** none")
+
+    if desk_playbook and desk_playbook.get("ok"):
+        entries = (desk_playbook.get("playbook") or {}).get("entries") or {}
+        counts = {"enabled": 0, "probation": 0, "suspended": 0}
+        for entry in entries.values():
+            status = entry.get("status") if isinstance(entry, dict) else None
+            if status in counts:
+                counts[status] += 1
+        lines.append(
+            f"- **Playbook:** enabled {counts['enabled']} / "
+            f"probation {counts['probation']} / suspended {counts['suspended']}"
+        )
+    else:
+        lines.append("- **Playbook:** unavailable")
     lines.append("")
 
     # ── Strategy fit ─────────────────────────────────────────────────

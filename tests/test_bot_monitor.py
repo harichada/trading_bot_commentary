@@ -191,6 +191,126 @@ class TestFormatters:
 
 
 # ────────────────────────────────────────────────────────────────────
+# Desk section (v-playbook-desk-b2-2026-09-25, Task 6)
+# ────────────────────────────────────────────────────────────────────
+
+class TestDeskSection:
+    def _fake_fetch_api(self, plan=None, playbook=None):
+        def fake_fetch_api(path, port=9000, timeout=3.0):
+            if path == "/api/desk/plan":
+                return plan
+            if path == "/api/desk/playbook":
+                return playbook
+            return None
+        return fake_fetch_api
+
+    def test_renders_plan_summary_when_available(self, monkeypatch):
+        plan_response = {
+            "ok": True,
+            "date": "2026-09-24",
+            "plan": {
+                "date": "2026-09-24",
+                "regime": "risk_on",
+                "sit_out": False,
+                "sit_out_reason": "",
+                "long_ok": True,
+                "short_ok": False,
+                "risk_budget_pct": 1.5,
+                "max_trades": 6,
+                "in_play": [
+                    {"symbol": "NVDA", "score": 0.91},
+                    {"symbol": "AMD", "score": 0.7},
+                ],
+            },
+        }
+        monkeypatch.setattr(bm, "fetch_api", self._fake_fetch_api(plan=plan_response))
+
+        result = bm.build_report(window_seconds=60)
+
+        assert "## Desk" in result
+        section = result.split("## Desk", 1)[1].split("\n## ", 1)[0]
+        assert "2026-09-24" in section
+        assert "risk_on" in section
+        assert "NVDA" in section and "0.91" in section
+        assert "6" in section  # max trades
+        assert "_desk not enabled / no plan_" not in section
+
+    def test_renders_sit_out_reason_when_sitting_out(self, monkeypatch):
+        plan_response = {
+            "ok": True,
+            "date": "2026-09-24",
+            "plan": {
+                "date": "2026-09-24",
+                "regime": "risk_off",
+                "sit_out": True,
+                "sit_out_reason": "vix_spike",
+                "long_ok": False,
+                "short_ok": False,
+                "risk_budget_pct": 0.0,
+                "max_trades": 0,
+                "in_play": [],
+            },
+        }
+        monkeypatch.setattr(bm, "fetch_api", self._fake_fetch_api(plan=plan_response))
+
+        result = bm.build_report(window_seconds=60)
+
+        section = result.split("## Desk", 1)[1].split("\n## ", 1)[0]
+        assert "vix_spike" in section
+
+    def test_renders_fallback_when_plan_unavailable(self, monkeypatch):
+        monkeypatch.setattr(bm, "fetch_api", self._fake_fetch_api(plan=None))
+
+        result = bm.build_report(window_seconds=60)
+
+        assert "## Desk" in result
+        section = result.split("## Desk", 1)[1].split("\n## ", 1)[0]
+        assert "desk not enabled / no plan" in section
+
+    def test_renders_fallback_when_plan_ok_false(self, monkeypatch):
+        monkeypatch.setattr(
+            bm, "fetch_api",
+            self._fake_fetch_api(plan={"ok": False, "error": "no_plan"}),
+        )
+
+        result = bm.build_report(window_seconds=60)
+
+        section = result.split("## Desk", 1)[1].split("\n## ", 1)[0]
+        assert "desk not enabled / no plan" in section
+
+    def test_renders_playbook_status_counts(self, monkeypatch):
+        playbook_response = {
+            "ok": True,
+            "playbook": {
+                "updated_at": "2026-09-24T21:00:00+00:00",
+                "entries": {
+                    "orb|long|risk_on": {"status": "enabled"},
+                    "vwap_fade|short|mixed": {"status": "probation"},
+                    "orb|short|risk_off": {"status": "suspended"},
+                    "gap_fill|long|risk_on": {"status": "suspended"},
+                },
+            },
+        }
+        monkeypatch.setattr(
+            bm, "fetch_api", self._fake_fetch_api(playbook=playbook_response)
+        )
+
+        result = bm.build_report(window_seconds=60)
+
+        section = result.split("## Desk", 1)[1].split("\n## ", 1)[0]
+        assert "enabled 1" in section
+        assert "probation 1" in section
+        assert "suspended 2" in section
+
+    def test_desk_section_precedes_strategy_fit(self, monkeypatch):
+        monkeypatch.setattr(bm, "fetch_api", self._fake_fetch_api())
+
+        result = bm.build_report(window_seconds=60)
+
+        assert result.index("## Desk") < result.index("## Strategy fit")
+
+
+# ────────────────────────────────────────────────────────────────────
 # Strategy fit section (v-strategy-fit-2026-09-25)
 # ────────────────────────────────────────────────────────────────────
 
