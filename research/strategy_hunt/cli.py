@@ -1,5 +1,5 @@
 """Command line for the strategy-hunt pipeline: export, context, universe-context, news, earnings,
-calibrate, run, score, report, all."""
+calibrate, run, score, report, playbook, all."""
 from __future__ import annotations
 
 import argparse
@@ -9,6 +9,7 @@ import sys
 import time
 from pathlib import Path
 
+from core.desk.playbook import DEFAULT_DESK_DIR as PLAYBOOK_DESK_DIR
 from research.strategy_hunt.fit.writer import write_fit
 from research.strategy_hunt.paths import SHUFFLE_VARIANT
 from research.strategy_hunt.run import DEFAULT_ROOT, run_symbols, score_regime_root, score_root, write_manifest
@@ -200,6 +201,16 @@ def cmd_score(a: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_playbook(a: argparse.Namespace) -> int:
+    """v-playbook-desk-b2-2026-09-25 (Task 3): rewrite <desk-dir>/playbook.json from tonight's
+    resolved shadow ledgers plus the live `bot_trades` tape. The body lives next to the updater
+    (`playbook_update.run_playbook_command`) to keep this module inside its line budget, and is
+    imported lazily so `--help` on any other subcommand still costs nothing."""
+    from research.strategy_hunt.playbook_update import run_playbook_command
+
+    return run_playbook_command(a, _families_arg(getattr(a, "families", None)))
+
+
 def cmd_report(a: argparse.Namespace) -> int:
     from research.strategy_hunt.fit.writer import load_snapshot
     from research.strategy_hunt.report import write_report
@@ -300,7 +311,12 @@ def cmd_all(a: argparse.Namespace) -> int:
         rc = cmd_run(_baseline_namespace(a))
         if rc:
             return rc
-    return cmd_score(a)
+    rc = cmd_score(a)
+    if rc:
+        return rc
+    # v-playbook-desk-b2-2026-09-25 (Task 3): the playbook is updated last -- it reads the
+    # snapshot `score` just wrote for its fit verdicts.
+    return cmd_playbook(a)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -353,6 +369,17 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--ledger", type=Path, default=None, help="default: data/shadow_fit_<family>.ndjson")
     sp.add_argument("--cost-mult", type=float, default=1.0)
     sp.set_defaults(fn=cmd_scorecard)
+
+    # v-playbook-desk-b2-2026-09-25 (Task 3): --desk-dir lives only here (like `promote`'s
+    # --root), so no other subcommand grows a flag it ignores.
+    sp = sub.add_parser("playbook")
+    sp.add_argument("--root", type=Path, default=DEFAULT_ROOT)
+    sp.add_argument("--families", default=None, help="comma list; default all")
+    sp.add_argument("--desk-dir", type=Path, default=PLAYBOOK_DESK_DIR,
+                    help="where playbook.json is written (default data/desk)")
+    sp.add_argument("--postgres", action="store_true",
+                    help="also read the live bot_trades tape (needs POSTGRES_DSN)")
+    sp.set_defaults(fn=cmd_playbook)
 
     sp = sub.add_parser("promote")
     sp.add_argument("--root", type=Path, default=DEFAULT_ROOT)

@@ -110,7 +110,8 @@ def test_cmd_score_calls_score_regime_root_and_snapshot_has_regime_and_pooled_ke
 # Fix round 1 (task-5-findings-r1.md) — cmd_all order, fatal universe-context build failure
 # ──────────────────────
 
-_ALL_STEPS = ("cmd_export", "cmd_news", "cmd_earnings", "cmd_context", "cmd_calibrate", "cmd_run", "cmd_score")
+_ALL_STEPS = ("cmd_export", "cmd_news", "cmd_earnings", "cmd_context", "cmd_calibrate", "cmd_run",
+              "cmd_score", "cmd_playbook")
 
 
 def _record_all_steps(cli, monkeypatch):
@@ -140,7 +141,7 @@ def test_cmd_all_runs_context_after_news_and_earnings(monkeypatch, tmp_path):
     assert cli.cmd_all(cli.build_parser().parse_args(["all", "--root", str(tmp_path)])) == 0
     assert order == [("cmd_export", None), ("cmd_news", None), ("cmd_earnings", None), ("cmd_context", None),
                      ("cmd_calibrate", None), ("cmd_run", None), ("cmd_run", cli.BASELINE_SHUFFLE_SEED),
-                     ("cmd_score", None)]
+                     ("cmd_score", None), ("cmd_playbook", None)]
 
 
 def test_cmd_all_no_baseline_skips_the_shuffled_run(monkeypatch, tmp_path):
@@ -158,7 +159,8 @@ def test_cmd_all_baseline_run_is_forced_and_leaves_the_real_run_namespace_alone(
     from research.strategy_hunt import cli
 
     seen = []
-    for name in ("cmd_export", "cmd_news", "cmd_earnings", "cmd_context", "cmd_calibrate", "cmd_score"):
+    for name in ("cmd_export", "cmd_news", "cmd_earnings", "cmd_context", "cmd_calibrate", "cmd_score",
+                 "cmd_playbook"):
         monkeypatch.setattr(cli, name, lambda a: 0)
     monkeypatch.setattr(cli, "cmd_run", lambda a: seen.append((a.shuffle_seed, a.force)) or 0)
 
@@ -399,3 +401,77 @@ def test_cmd_report_tolerates_a_malformed_pooled_rows_section(monkeypatch, tmp_p
     assert "report:" in out
     md = (tmp_path / "reports" / "2025-09-25T0100-strategy-hunt.md").read_text()
     assert "_no pooled rows_" in md.split("## Pooled rows vs shuffled baseline")[1].split("## Controls")[0]
+
+
+# ──────────────────────
+# v-playbook-desk-b2-2026-09-25 (Task 3) — the `playbook` subcommand
+# ──────────────────────
+
+def test_playbook_subparser_takes_root_desk_dir_and_postgres():
+    from research.strategy_hunt.cli import build_parser
+
+    ns = build_parser().parse_args(["playbook", "--root", "/tmp/r", "--desk-dir", "/tmp/desk", "--postgres"])
+    assert str(ns.root) == "/tmp/r" and str(ns.desk_dir) == "/tmp/desk" and ns.postgres is True
+
+    default = build_parser().parse_args(["playbook"])
+    assert default.desk_dir.as_posix() == "data/desk" and default.postgres is False
+
+
+def test_cmd_playbook_calls_update_playbook_with_the_parsed_root_and_desk_dir(monkeypatch, tmp_path, capsys):
+    """No Postgres: without --postgres the updater must be handed engine=None, and the desk dir
+    from the command line (never the live Config default)."""
+    from core.desk.playbook import Playbook, PlaybookEntry
+    from research.strategy_hunt import cli
+    from research.strategy_hunt import playbook_update as PU
+
+    seen = {}
+    entry = PlaybookEntry(family="orb", side="long", regime="risk_on", status="suspended", size_mult=0.0,
+                          exp_r_recent=-0.4, t_stat_recent=-2.0, n_recent=20, updated_at="now",
+                          reason="suspended_negative_expectancy")
+
+    def _fake(root, snapshot, now, desk_dir=None, families=None, engine=None, **kw):
+        seen.update(root=root, snapshot=snapshot, now=now, desk_dir=desk_dir, families=families, engine=engine)
+        return Playbook(entries={}, updated_at=now).with_entry(entry)
+
+    monkeypatch.setattr(PU, "update_playbook", _fake)
+
+    rc = cli.main(["playbook", "--root", str(tmp_path), "--desk-dir", str(tmp_path / "desk")])
+    assert rc == 0
+    assert str(seen["root"]) == str(tmp_path) and str(seen["desk_dir"]) == str(tmp_path / "desk")
+    assert seen["engine"] is None and isinstance(seen["snapshot"], dict)
+    out = capsys.readouterr().out
+    assert "playbook" in out and "suspended" in out
+
+
+def test_cmd_playbook_from_cmd_all_namespace_uses_the_default_desk_dir(monkeypatch, tmp_path):
+    """`all` has no --desk-dir flag, so cmd_playbook must fall back to the default rather than
+    raising AttributeError halfway through the nightly pipeline."""
+    from core.desk.playbook import DEFAULT_DESK_DIR, Playbook
+    from research.strategy_hunt import cli
+    from research.strategy_hunt import playbook_update as PU
+
+    seen = {}
+
+    def _fake(root, snapshot, now, desk_dir=None, families=None, engine=None, **kw):
+        seen["desk_dir"] = desk_dir
+        return Playbook(entries={}, updated_at=now)
+
+    monkeypatch.setattr(PU, "update_playbook", _fake)
+
+    a = cli.build_parser().parse_args(["all", "--root", str(tmp_path)])
+    assert cli.cmd_playbook(a) == 0
+    assert str(seen["desk_dir"]) == str(DEFAULT_DESK_DIR)
+
+
+def test_cmd_playbook_returns_1_and_prints_a_clean_error_on_failure(monkeypatch, tmp_path, capsys):
+    from research.strategy_hunt import cli
+    from research.strategy_hunt import playbook_update as PU
+
+    def _boom(*a, **kw):
+        raise ValueError("desk dir is a file")
+
+    monkeypatch.setattr(PU, "update_playbook", _boom)
+
+    assert cli.main(["playbook", "--root", str(tmp_path)]) == 1
+    out = capsys.readouterr().out
+    assert "playbook ERROR" in out and "desk dir is a file" in out and "Traceback" not in out
