@@ -1,13 +1,22 @@
 """Pure decision function for the per-symbol strategy-fit gate. The engine audits and acts on the result."""
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Optional
 
+# v-strategy-fit-review2-2026-09-25 (Important 2): keys must be the exact
+# `reasoning["strategy"]` values live strategies actually emit, or the gate
+# silently governs nothing. Dropped "oversold_v2" and "news" (no strategy
+# writes either); added mean_reversion_short, oversold_bounce_v2, and
+# free_news_sentiment. tests/core/test_strategy_fit_gate.py greps
+# strategies/*.py to keep every key anchored to a real literal.
 LANE_MAP = {
-    "mean_reversion": "mean_rev_intraday", "oversold_v2": "mean_rev_intraday",
+    "mean_reversion": "mean_rev_intraday", "mean_reversion_short": "mean_rev_intraday",
+    "oversold_bounce_v2": "mean_rev_intraday",
     "day_trade_momentum": "dt_momentum", "day_trade_momentum_short": "dt_momentum",
-    "orb_contraction_rvol": "orb", "news": "news_catalyst", "news_sentiment": "news_catalyst",
+    "orb_contraction_rvol": "orb",
+    "news_sentiment": "news_catalyst", "free_news_sentiment": "news_catalyst",
 }
 FIT_PREFIX = "fit:"
 
@@ -47,6 +56,24 @@ def _blocked(shadow: bool, reason: str, **fields) -> GateDecision:
     return GateDecision("shadow" if shadow else "skip", reason, True, **fields)
 
 
+def _score(row) -> float:
+    """Row score as a comparable float; NaN and garbage sort to -inf.
+
+    v-strategy-fit-review2-2026-09-25 (Minor): `nan > x` is False in both
+    directions, so an unguarded comparison made a NaN-scored competitor
+    neither higher nor lower — harmless by luck here, but the priority rule
+    must state "NaN is never higher" rather than rely on that."""
+    try:
+        v = float(getattr(row, "score", float("nan")))
+    except (TypeError, ValueError):
+        return float("-inf")
+    return v if math.isfinite(v) else float("-inf")
+
+
+def _higher_score(other, row) -> bool:
+    return _score(other) > _score(row)
+
+
 def evaluate_fit_gate(fit, strategy_name: str, side: str, symbol: str, enabled: bool, shadow: bool,
                       competing_families: Optional[list[str]] = None) -> GateDecision:
     if not enabled:
@@ -66,7 +93,7 @@ def evaluate_fit_gate(fit, strategy_name: str, side: str, symbol: str, enabled: 
     if row.verdict == "PASS":
         for other in competing_families or []:
             o = fit.lookup(symbol, other, side)
-            if o is not None and o.verdict == "PASS" and o.score > row.score:
+            if o is not None and o.verdict == "PASS" and _higher_score(o, row):
                 return _blocked(shadow, "fit_lower_priority", **fields)
         return GateDecision("proceed", "fit_pass", True, **fields)
     if row.verdict == "WATCH":
