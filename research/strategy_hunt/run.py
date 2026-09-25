@@ -218,10 +218,11 @@ def score_regime_root(root: Path, family_names: list[str], computed_at: str) -> 
                 continue
             ch = choices.get(fam, [])
             latest = ch[-1]["params"] if ch else {}
-            window_end = str(sub["exit_ts"].max())[:10]
             for side in sorted(sub["side"].unique()):
                 trades = trades_from_frame(sub[sub["side"] == side])
-                per_symbol.extend(regime_rows(symbol, fam, side, trades, len(ch), computed_at, latest, window_end))
+                # window_end is left to regime_rows: each row ends where *that regime*
+                # last traded, which is the honest answer to "how current is this row?".
+                per_symbol.extend(regime_rows(symbol, fam, side, trades, len(ch), computed_at, latest))
     pooled = pooled_rows(pd.concat(frames, ignore_index=True), computed_at) if frames else []
     return per_symbol, pooled
 

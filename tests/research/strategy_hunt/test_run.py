@@ -169,6 +169,8 @@ def test_score_regime_root_builds_symbol_regime_and_pooled_rows(tmp_path):
     assert all(r["strategy"] == "toy" and r["side"] == "long" for r in reg_rows)
     assert all(r["source"] == "walkforward" and r["computed_at"] == "2025-09-25T00:00:00" for r in reg_rows)
     assert all(json.loads(r["params_json"]) == {"w": 1.0} for r in reg_rows)
+    # each regime row's window_end is that regime's own last exit date, not the family's
+    assert len({r["window_end"] for r in reg_rows if r["symbol"] == "AAA"}) == 2
 
     assert pool_rows and all(r["symbol"] == "*" and r["source"] == "pooled" for r in pool_rows)
     by_regime = {r["regime"]: r for r in pool_rows}
