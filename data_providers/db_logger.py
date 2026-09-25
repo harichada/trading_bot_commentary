@@ -46,7 +46,7 @@ import logging
 import os
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any, Optional
 
 from sqlalchemy import text
@@ -1348,8 +1348,11 @@ class DbLogger:
         `None` — shown as R "none" in the journal). Only `mode = 'live'` rows count.
 
         Never raises: [] on a disabled logger, unreachable Postgres, or a
-        malformed row. `start`/`end` are date-like (str "YYYY-MM-DD" or
-        date/datetime); both are cast to str for the parameterized query.
+        malformed row. `start`/`end` are date-like (str "YYYY-MM-DD",
+        date, or datetime); both are coerced to `datetime.date` and bound
+        as such (`data_providers.db_logger._ensure_date`) — asyncpg needs an
+        actual `date`/`datetime` object for a `DATE(...) BETWEEN` bind
+        parameter, not a string (fix round 1, 2026-09-25).
         """
         if not self._enabled:
             return []
@@ -1390,7 +1393,9 @@ class DbLogger:
                       AND mode = 'live'
                     ORDER BY exit_time ASC
                 """
-                result = await conn.execute(text(query), {"start": str(start), "end": str(end)})
+                result = await conn.execute(
+                    text(query), {"start": _ensure_date(start), "end": _ensure_date(end)}
+                )
                 rows = result.mappings().all()
                 trades = []
                 for row in rows:
@@ -1431,8 +1436,9 @@ class DbLogger:
         Returns a list of dicts: {"ts", "component", "symbol", "action",
         "reason", "mode", "details"}. Never raises: [] on a disabled logger,
         unreachable Postgres, or a malformed row. `start`/`end` are date-like
-        (str "YYYY-MM-DD" or date/datetime); both are cast to str for the
-        parameterized query — same `DATE(col) BETWEEN` convention as
+        (str "YYYY-MM-DD", date, or datetime); both are coerced to
+        `datetime.date` and bound as such (`_ensure_date`, fix round 1,
+        2026-09-25) — same `DATE(col) BETWEEN` convention as
         `get_bot_trades_between` (session-timezone dependent, not an
         explicit ET conversion; no other read in this file does one either).
         """
@@ -1464,7 +1470,9 @@ class DbLogger:
                     WHERE DATE(ts) BETWEEN :start AND :end
                     ORDER BY ts ASC
                 """
-                result = await conn.execute(text(query), {"start": str(start), "end": str(end)})
+                result = await conn.execute(
+                    text(query), {"start": _ensure_date(start), "end": _ensure_date(end)}
+                )
                 rows = result.mappings().all()
                 decisions = []
                 for row in rows:
@@ -2008,5 +2016,35 @@ def _ensure_datetime(value: Any) -> datetime | None:
             return dt
         except ValueError:
             logger.warning("_ensure_datetime: could not parse %r", value)
+            return None
+    return None
+
+
+def _ensure_date(value: Any) -> date | None:
+    """Coerce a value to `datetime.date` for asyncpg bind parameters against a
+    `DATE(...) BETWEEN :start AND :end` clause.
+
+    v-playbook-desk-b2-2026-09-25 (Task 3b, fix round 1): the same class of bug
+    `_ensure_datetime` fixes above — asyncpg requires an actual `date`/`datetime`
+    object, not a string; binding a plain ISO string raised `DataError: invalid input
+    for query argument $1: '2026-09-15' ('str' object has no attribute 'toordinal')`
+    in both `get_bot_trades_between` and `get_bot_decisions_between`, which — caught by
+    each method's broad `except Exception` — silently returned `[]` every time, so the
+    desk journal's Trades and Decisions sections were always empty. Normalizes:
+      - `date` objects (a `datetime` is a `date` subclass, truncated via `.date()`)
+      - ISO strings ("YYYY-MM-DD" or a full timestamp): parsed then truncated
+      - None, or an unparseable string: returned as None (logged)
+    """
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value).date()
+        except ValueError:
+            logger.warning("_ensure_date: could not parse %r", value)
             return None
     return None
