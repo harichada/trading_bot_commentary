@@ -31,7 +31,11 @@ from core.news_bus import (
     NewsImpactLevel,
     get_news_bus,
 )
-from core.sentiment_backend import score as score_sentiment
+from core.loops.news_scoring import (
+    score_alpaca_articles,
+    score_news_bus_items,
+    warmup_sentiment_backend,
+)
 from strategies.news_strategy import FreeNewsAggregator
 
 if TYPE_CHECKING:
@@ -64,6 +68,7 @@ class NewsLoop:
         self._last_run: Optional[datetime] = None
         self._symbols_refreshed: int = 0
         self._items_published: int = 0
+        self._warmed_up: bool = False
 
     def _get_cadence(self) -> float:
         """Get cadence from config or default to 20s."""
@@ -74,6 +79,10 @@ class NewsLoop:
 
     async def run(self) -> None:
         """Main loop: refresh news for watchlist symbols on cadence."""
+        if not self._warmed_up:
+            await warmup_sentiment_backend("news_loop")
+            self._warmed_up = True
+
         while getattr(self.engine, "is_running", False):
             try:
                 await self._tick()
@@ -83,7 +92,14 @@ class NewsLoop:
             await asyncio.sleep(self.cadence_sec)
 
     async def _tick(self) -> None:
-        """Single refresh cycle."""
+        """Single refresh cycle.
+
+        Fetching stays per-symbol and batched for concurrency, but
+        sentiment scoring is collected across the whole tick and scored
+        once, off the event loop (`score_news_bus_items` in
+        `news_scoring.py`), instead of one `score_sentiment()` call per
+        headline on the loop thread.
+        """
         watchlist = getattr(self.engine, "dynamic_watchlist", None) or []
         if not watchlist:
             logger.debug("news_loop: no watchlist, skipping")
@@ -93,22 +109,20 @@ class NewsLoop:
         total_new = 0
         symbols_processed = 0
 
+        fetch_results: List[tuple] = []
         batch_size = 5
         for i in range(0, len(watchlist), batch_size):
             batch = watchlist[i:i + batch_size]
-            tasks = [self._fetch_and_score(sym) for sym in batch]
+            tasks = [self._fetch_raw(sym) for sym in batch]
             results = await asyncio.gather(*tasks, return_exceptions=True)
+            fetch_results.extend(zip(batch, results))
 
-            for sym, result in zip(batch, results):
-                if isinstance(result, Exception):
-                    logger.debug("news_loop: fetch error for %s: %s", sym, result)
-                    self.bus.record_fetch_error()
-                    continue
-                
-                if result:
-                    new_count = await self.bus.publish(result)
-                    total_new += new_count
-                    symbols_processed += 1
+        scored_by_symbol = await score_news_bus_items(fetch_results, self.bus)
+
+        for sym, items in scored_by_symbol.items():
+            new_count = await self.bus.publish(items)
+            total_new += new_count
+            symbols_processed += 1
 
         self._last_run = datetime.now()
         self._symbols_refreshed = symbols_processed
@@ -122,45 +136,14 @@ class NewsLoop:
             symbols_processed, total_new, stats.total_items, stats.high_impact_items, elapsed_ms,
         )
 
-    async def _fetch_and_score(self, symbol: str) -> List[ScoredNewsItem]:
-        """Fetch news for a symbol and convert to ScoredNewsItem list."""
+    async def _fetch_raw(self, symbol: str) -> List:
+        """Fetch raw (unscored) news items for a symbol."""
         try:
             raw_items = await self.aggregator.fetch_news(symbol, hours=4)
         except Exception as e:
             logger.debug("news_loop: aggregator.fetch_news failed for %s: %s", symbol, e)
             return []
-
-        if not raw_items:
-            return []
-
-        scored = []
-        now = datetime.now(timezone.utc)
-
-        for item in raw_items:
-            text = f"{item.headline} {getattr(item, 'summary', '')}"
-            sentiment = score_sentiment([text])[0]
-            confidence = abs(sentiment)
-
-            impact = NewsBus.detect_impact(item.headline, getattr(item, "summary", ""))
-            source_tier = NewsBus.get_source_tier(getattr(item, "source", "Unknown"))
-
-            scored_item = ScoredNewsItem(
-                id=NewsBus.make_item_id(getattr(item, "url", "") or item.headline),
-                symbol=symbol.upper(),
-                headline=item.headline,
-                summary=getattr(item, "summary", "")[:500],
-                source=getattr(item, "source", "Unknown"),
-                source_tier=source_tier,
-                url=getattr(item, "url", ""),
-                published_time=getattr(item, "published_time", now),
-                fetched_at=now,
-                sentiment_score=sentiment,
-                sentiment_confidence=confidence,
-                impact=impact,
-            )
-            scored.append(scored_item)
-
-        return scored
+        return raw_items or []
 
     def get_status(self) -> dict:
         """Get loop status for observability."""
@@ -209,6 +192,7 @@ class AlpacaNewsBusPublisher:
         self._cadence_sec = cadence_sec or Config().ALPACA_NEWS_BUS_INTERVAL_SEC
         self._last_run: Optional[datetime] = None
         self._items_published: int = 0
+        self._warmed_up: bool = False
 
     def is_enabled(self) -> bool:
         """Check if Alpaca news bus is enabled and configured."""
@@ -228,6 +212,10 @@ class AlpacaNewsBusPublisher:
             "alpaca_news_bus: started (cadence=%.1fs)",
             self._cadence_sec,
         )
+
+        if not self._warmed_up:
+            await warmup_sentiment_backend("alpaca_news_bus")
+            self._warmed_up = True
 
         while getattr(self.engine, "is_running", False):
             try:
@@ -310,59 +298,20 @@ class AlpacaNewsBusPublisher:
             return []
 
         articles = data.get("news") or []
-        return self._convert_to_scored_items(articles)
+        return await self._convert_to_scored_items(articles)
 
-    def _convert_to_scored_items(
+    async def _convert_to_scored_items(
         self,
         articles: List[dict],
     ) -> List[ScoredNewsItem]:
-        """Convert Alpaca news articles to ScoredNewsItem list."""
-        now = datetime.now(timezone.utc)
-        scored = []
+        """Convert Alpaca news articles to ScoredNewsItem list.
 
-        for article in articles:
-            headline = article.get("headline", "")
-            summary = article.get("summary", "") or ""
-            symbols = article.get("symbols", [])
-
-            if not headline or not symbols:
-                continue
-
-            ts_str = article.get("created_at") or article.get("updated_at")
-            try:
-                # v-theme-shock-hotfix-2026-09-14: preserve UTC timezone info
-                # instead of stripping it. This fixes age_sec() negative values.
-                pub_time = datetime.fromisoformat(
-                    ts_str.replace("Z", "+00:00")
-                )
-            except (TypeError, ValueError):
-                pub_time = datetime.now(timezone.utc)
-
-            text = f"{headline} {summary}"
-            sentiment = score_sentiment([text])[0]
-            confidence = abs(sentiment)
-
-            impact = NewsBus.detect_impact(headline, summary)
-            url = article.get("url", "")
-            article_id = article.get("id") or NewsBus.make_item_id(url or headline)
-
-            for symbol in symbols:
-                scored.append(ScoredNewsItem(
-                    id=f"alpaca_{article_id}_{symbol}",
-                    symbol=symbol.upper(),
-                    headline=headline,
-                    summary=summary[:500],
-                    source=self.SOURCE_NAME,
-                    source_tier=self.SOURCE_TIER,
-                    url=url,
-                    published_time=pub_time,
-                    fetched_at=now,
-                    sentiment_score=sentiment,
-                    sentiment_confidence=confidence,
-                    impact=impact,
-                ))
-
-        return scored
+        Sentiment for every article in this batch is scored once, off
+        the event loop (`score_alpaca_articles` in `news_scoring.py`),
+        instead of one `score_sentiment()` call per article on the loop
+        thread.
+        """
+        return await score_alpaca_articles(articles, self.SOURCE_NAME, self.SOURCE_TIER)
 
     def get_status(self) -> dict:
         """Get Alpaca publisher status for observability."""

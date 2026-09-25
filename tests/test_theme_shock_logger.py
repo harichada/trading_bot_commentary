@@ -578,7 +578,7 @@ class TestAlpacaNewsBusPublisher:
             }
         ]
         
-        items = publisher._convert_to_scored_items(articles)
+        items = await publisher._convert_to_scored_items(articles)
         
         assert len(items) == 2
         assert items[0].symbol == "NVDA"
