@@ -32,6 +32,45 @@
   restart via `./deploy.sh` → rollback by unsetting the flag) documented in
   `docs/research/strategy_hunt.md` § "Operator flow"; fit-lane row and the eight strategy-fit flags
   added to `docs/BOT_OPERATIONS_MANUAL.md` §§ 2.4 and 6.4.
+- feat(strategy-hunt): Playbook Desk B1 — trade the tape the way a desk does, offline first.
+  A **universe context builder** (`research/strategy_hunt/context.py`, `context` /
+  `universe-context` subcommands) writes `data/strategy_hunt/context/universe_daily.parquet`: per
+  (symbol, session) RVOL, gap, relative strength, distance from the 52-week high, ADV bucket, ATR%,
+  earnings/EPS-surprise and 24-hour news features plus their same-date cross-sectional ranks, joined
+  onto each symbol's indicator frame as `ctx_*` columns. Everything but the opening-bar RVOL/gap
+  columns is lagged to the prior close, and those are only read from `bar_of_day >= 1`, so the whole
+  set is known at open. Three **in-play families** (`strategies/families/inplay.py`; 13 families
+  total): `orb_inplay` (opening-range breakout on the session's top-RVOL names, `trail_r`
+  approximated as a take-profit since the simulator has no trailing stop), `pead_smallcap`
+  (post-earnings drift for small/mid caps, gated on the new EPS surprise column) and `rs_leader`
+  (relative-strength leader pullback-resume). **Regime-conditioned fit rows** and
+  **universe-pooled (family, side, regime) rows** (`research/strategy_hunt/score/regime_rows.py`)
+  are written into the snapshot by `score` and read by `core/strategy_fit.py::lookup_regime` in the
+  precedence symbol-regime → pooled → unconditional; a regime needs ≥ 60 trades to get a row at all
+  (a thin sample could only manufacture a FAIL that outranks better evidence), pooled rows use
+  stricter floors (`POOLED_FLOORS`: n ≥ 500, PF ≥ 1.2, t_stat ≥ 3.0) and bucket stability/decay by
+  calendar quarter. The live gate consults them when `STRATEGY_FIT_REGIME_ROWS` (new, default True)
+  is on and the market-context regime is known, adding `regime=`/`pooled=` to its audit line; the
+  gate itself stays off and shadow-only by default. A **pluggable sentiment backend**
+  (`core/sentiment_backend.py`, `SENTIMENT_BACKEND=vader|finbert`, `SENTIMENT_FINBERT_PATH`,
+  `scripts/prepare_finbert.py`) scores research and live news through one code path, with
+  `news --rescore` to backfill `sentiment_vader`/`sentiment_finbert` on the cached corpus, and
+  earnings surprises (`eps_estimate`, `reported_eps`, `surprise_pct`) added to the earnings cache.
+  `all` now orders `export → news → earnings → context → calibrate → run → score` so the context
+  sees tonight's news and earnings.
+  **Full-universe B1 run (2026-09-25):** 539 symbols, 13 families, 340,211 out-of-sample trades over
+  2022-01 → 2026-09, news corpus 100% FinBERT-scored (725,793 rows), ~27 min wall-clock. **0 PASS rows
+  anywhere** — 0 of 9,505 unconditional rows (127 WATCH), 0 of 1,390 symbol-regime rows (159 WATCH),
+  0 of 69 pooled regime rows (15 WATCH) — so the spec's B1 gate ("at least one family reaches PASS or a
+  pooled regime row reaches PASS") is **not met and B2 live wiring stays shadow-only**. The regime split is
+  the run's real finding (dt_momentum short: +0.172 exp_R in `risk_off` vs −0.457 in `risk_on` on ~13k/31k
+  trades); two floor caveats are recorded in the report: pooled `max_dd_r` is not scale-invariant (40 of 69
+  pooled rows fail it) and the structure-destroying shuffle control produced one pooled PASS where the real
+  tape produced none. Run report:
+  `research/reports/strategy_hunt/2026-09-25-strategy-hunt-b1.md`; docs:
+  `docs/research/strategy_hunt.md`; spec:
+  `docs/superpowers/specs/2026-09-25-playbook-desk-design.md`; plan:
+  `docs/superpowers/plans/2026-09-25-playbook-desk-b1.md`.
 
 ## 2026-09-21 — fix: Day-trade RSI missing from reasoning + breakout hard veto (v-rsi-breakout-veto-2026-09-21)
 

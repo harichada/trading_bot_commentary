@@ -1,6 +1,6 @@
 # Strategy hunt report
 
-Computed: 2026-09-25T10:48:46. Rows: 7756. Symbols: 539.
+Computed: 2026-09-25T13:27:29. Rows: 9505. Symbols: 539.
 
 
 ## Verdicts by family
@@ -14,13 +14,18 @@ Computed: 2026-09-25T10:48:46. Rows: 7756. Symbols: 539.
 | mean_rev_intraday | long | 0 | 3 | 527 | 0 |
 | mr_20d | long | 0 | 0 | 497 | 0 |
 | mr_20d | short | 0 | 0 | 513 | 0 |
-| news_catalyst | long | 0 | 0 | 351 | 0 |
-| news_catalyst | short | 0 | 0 | 256 | 0 |
+| news_catalyst | long | 0 | 0 | 451 | 0 |
+| news_catalyst | short | 0 | 0 | 430 | 0 |
 | orb | long | 0 | 0 | 509 | 0 |
 | orb | short | 0 | 0 | 498 | 0 |
+| orb_inplay | long | 0 | 0 | 513 | 0 |
+| orb_inplay | short | 0 | 0 | 510 | 0 |
+| pead_smallcap | long | 0 | 0 | 176 | 0 |
+| pead_smallcap | short | 0 | 0 | 107 | 0 |
 | post_news_drift | long | 0 | 0 | 312 | 0 |
 | post_news_drift | short | 0 | 0 | 333 | 0 |
 | pullback_trend | long | 0 | 0 | 481 | 0 |
+| rs_leader | long | 0 | 0 | 169 | 0 |
 | vol_breakout | long | 0 | 0 | 131 | 0 |
 | vol_breakout | short | 0 | 0 | 164 | 0 |
 | vwap_reversion | long | 0 | 10 | 523 | 0 |
@@ -30,12 +35,17 @@ Computed: 2026-09-25T10:48:46. Rows: 7756. Symbols: 539.
 
 | symbol | family | side | verdict | n | exp_r | exp_r_lb | t_stat | pf | wr | max_dd_r | stability | decay | score |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| RIVN | orb_inplay | long | FAIL | 48 | 1.070 | 0.297 | 2.358 | 2.24 | 0.42 | 8.7 | 1.00 | 0.57 | 1.070 |
+| NBIS | orb_inplay | long | FAIL | 37 | 0.980 | -0.023 | 1.573 | 2.00 | 0.32 | 8.8 | 0.75 | 0.35 | 0.849 |
+| ZSL | orb_inplay | short | FAIL | 27 | 0.689 | -0.657 | 0.727 | 1.56 | 0.26 | 16.3 | 0.80 | 1.16 | 0.616 |
 | CZR | dt_momentum | long | WATCH | 110 | 0.569 | 0.275 | 3.260 | 1.99 | 0.50 | 8.3 | 1.00 | 1.22 | 0.569 |
 | IBN | gap_play | short | FAIL | 23 | 0.557 | 0.168 | 2.199 | 3.00 | 0.59 | 3.4 | 1.00 | 1.24 | 0.557 |
+| BIDU | orb_inplay | long | FAIL | 17 | 0.756 | -0.246 | 1.116 | 2.01 | 0.41 | 7.6 | 0.50 | 1.25 | 0.535 |
 | LCID | gap_play | short | FAIL | 35 | 0.473 | 0.048 | 1.858 | 1.91 | 0.54 | 5.4 | 1.00 | 1.57 | 0.473 |
 | SMH | gap_play | short | FAIL | 28 | 0.466 | 0.086 | 1.900 | 2.24 | 0.59 | 4.5 | 0.75 | 1.17 | 0.404 |
 | TSDD | gap_play | short | FAIL | 33 | 0.381 | 0.017 | 1.429 | 1.68 | 0.48 | 3.4 | 1.00 | 1.14 | 0.381 |
 | LIFE | gap_play | short | FAIL | 56 | 0.378 | 0.086 | 1.835 | 1.67 | 0.55 | 4.1 | 0.88 | 0.10 | 0.354 |
+| PLUG | news_catalyst | short | FAIL | 22 | 0.349 | -0.094 | 1.237 | 1.82 | 0.50 | 3.5 | 1.00 | 2.60 | 0.349 |
 | RGTI | gap_play | long | FAIL | 26 | 0.433 | -0.005 | 1.450 | 1.81 | 0.54 | 7.5 | 0.60 | 2.27 | 0.336 |
 | NBIS | vwap_reversion | long | FAIL | 37 | 0.385 | -0.017 | 1.615 | 1.90 | 0.58 | 4.8 | 0.75 | 1.15 | 0.334 |
 | CZR | dt_momentum | short | WATCH | 141 | 0.370 | 0.146 | 2.435 | 1.58 | 0.44 | 17.6 | 0.75 | 1.08 | 0.320 |
@@ -55,11 +65,6 @@ Computed: 2026-09-25T10:48:46. Rows: 7756. Symbols: 539.
 | NCLH | mean_rev_intraday | long | FAIL | 45 | 0.327 | -0.047 | 1.482 | 1.59 | 0.49 | 4.3 | 0.67 | 1.22 | 0.267 |
 | SMR | gap_play | long | FAIL | 39 | 0.264 | -0.082 | 1.138 | 1.48 | 0.46 | 4.9 | 1.00 | 1.23 | 0.264 |
 | KKR | gap_play | long | FAIL | 24 | 0.370 | -0.036 | 1.410 | 1.91 | 0.61 | 5.3 | 0.50 | 0.80 | 0.262 |
-| PENN | gap_play | short | FAIL | 41 | 0.320 | -0.046 | 1.488 | 1.66 | 0.49 | 3.5 | 0.67 | -0.06 | 0.261 |
-| CNQ | gap_play | short | FAIL | 30 | 0.300 | -0.075 | 1.140 | 1.57 | 0.50 | 7.8 | 0.75 | 1.41 | 0.260 |
-| NVTS | gap_play | long | FAIL | 47 | 0.286 | -0.095 | 1.267 | 1.47 | 0.47 | 4.9 | 0.80 | 0.74 | 0.256 |
-| ROKU | gap_play | short | WATCH | 111 | 0.281 | 0.051 | 2.020 | 1.50 | 0.47 | 10.8 | 0.82 | 0.02 | 0.254 |
-| WULF | vwap_reversion | short | FAIL | 22 | 0.293 | -0.190 | 1.031 | 1.65 | 0.57 | 3.0 | 0.75 | 0.52 | 0.254 |
 
 ## Pooled out-of-sample by family
 
@@ -70,17 +75,22 @@ Computed: 2026-09-25T10:48:46. Rows: 7756. Symbols: 539.
 | gap_play | long | 21246 | -0.066 | 0.90 | 0.39 |
 | gap_play | short | 21869 | -0.037 | 0.94 | 0.39 |
 | mean_rev_intraday | long | 10094 | -0.173 | 0.78 | 0.35 |
-| mr_20d | long | 1047 | 0.088 | 1.22 | 0.50 |
-| mr_20d | short | 1227 | -0.185 | 0.70 | 0.41 |
-| news_catalyst | long | 1326 | -0.064 | 0.88 | 0.41 |
-| news_catalyst | short | 601 | -0.006 | 0.99 | 0.44 |
+| mr_20d | long | 1047 | 0.091 | 1.23 | 0.51 |
+| mr_20d | short | 1227 | -0.184 | 0.70 | 0.41 |
+| news_catalyst | long | 3390 | -0.077 | 0.87 | 0.39 |
+| news_catalyst | short | 3249 | -0.073 | 0.87 | 0.41 |
 | orb | long | 2423 | -0.300 | 0.65 | 0.34 |
 | orb | short | 2331 | -0.260 | 0.69 | 0.37 |
+| orb_inplay | long | 5084 | -0.167 | 0.87 | 0.25 |
+| orb_inplay | short | 4991 | -0.226 | 0.83 | 0.25 |
+| pead_smallcap | long | 176 | -0.073 | 0.90 | 0.39 |
+| pead_smallcap | short | 107 | 0.052 | 1.09 | 0.46 |
 | post_news_drift | long | 479 | -0.031 | 0.93 | 0.46 |
-| post_news_drift | short | 490 | 0.039 | 1.12 | 0.52 |
+| post_news_drift | short | 490 | 0.030 | 1.09 | 0.52 |
 | pullback_trend | long | 876 | -0.021 | 0.95 | 0.46 |
+| rs_leader | long | 169 | -0.085 | 0.84 | 0.41 |
 | vol_breakout | long | 150 | -0.109 | 0.81 | 0.39 |
-| vol_breakout | short | 221 | -0.129 | 0.71 | 0.43 |
+| vol_breakout | short | 221 | -0.125 | 0.72 | 0.43 |
 | vwap_reversion | long | 53165 | -0.210 | 0.67 | 0.38 |
 | vwap_reversion | short | 51336 | -0.252 | 0.62 | 0.37 |
 
@@ -92,26 +102,31 @@ Computed: 2026-09-25T10:48:46. Rows: 7756. Symbols: 539.
 | dt_momentum | short | -0.136 (n=40690) | 0.172 (n=13370) | -0.457 (n=30551) |
 | gap_play | long | -0.120 (n=8614) | -0.233 (n=3861) | 0.060 (n=8771) |
 | gap_play | short | -0.060 (n=9017) | 0.181 (n=5292) | -0.160 (n=7560) |
-| mean_rev_intraday | long | -0.128 (n=5319) | -0.590 (n=2724) | 0.267 (n=2051) |
-| mr_20d | long | 0.105 (n=512) | -0.091 (n=210) | 0.178 (n=325) |
-| mr_20d | short | -0.150 (n=626) | -0.292 (n=186) | -0.189 (n=415) |
-| news_catalyst | long | -0.160 (n=595) | -0.317 (n=175) | 0.118 (n=556) |
-| news_catalyst | short | -0.013 (n=325) | 0.105 (n=135) | -0.096 (n=141) |
+| mean_rev_intraday | long | -0.129 (n=5319) | -0.590 (n=2724) | 0.267 (n=2051) |
+| mr_20d | long | 0.108 (n=512) | -0.090 (n=210) | 0.179 (n=325) |
+| mr_20d | short | -0.150 (n=626) | -0.292 (n=186) | -0.187 (n=415) |
+| news_catalyst | long | -0.163 (n=1598) | -0.294 (n=425) | 0.090 (n=1367) |
+| news_catalyst | short | -0.045 (n=1608) | 0.066 (n=688) | -0.220 (n=953) |
 | orb | long | -0.333 (n=1074) | -0.566 (n=368) | -0.165 (n=981) |
 | orb | short | -0.221 (n=1153) | -0.068 (n=520) | -0.478 (n=658) |
+| orb_inplay | long | -0.310 (n=2494) | -0.473 (n=678) | 0.128 (n=1912) |
+| orb_inplay | short | -0.172 (n=2488) | 0.200 (n=876) | -0.539 (n=1627) |
+| pead_smallcap | long | 0.025 (n=70) | -0.615 (n=26) | 0.018 (n=80) |
+| pead_smallcap | short | 0.234 (n=39) | 0.151 (n=25) | -0.170 (n=43) |
 | post_news_drift | long | -0.022 (n=219) | -0.353 (n=76) | 0.090 (n=184) |
-| post_news_drift | short | 0.024 (n=222) | 0.240 (n=79) | -0.027 (n=189) |
-| pullback_trend | long | -0.058 (n=407) | -0.222 (n=141) | 0.112 (n=328) |
+| post_news_drift | short | 0.022 (n=222) | 0.240 (n=79) | -0.048 (n=189) |
+| pullback_trend | long | -0.065 (n=407) | -0.222 (n=141) | 0.119 (n=328) |
+| rs_leader | long | -0.130 (n=86) | -0.047 (n=17) | -0.037 (n=66) |
 | vol_breakout | long | -0.305 (n=91) | 0.412 (n=26) | 0.022 (n=33) |
-| vol_breakout | short | -0.087 (n=103) | 0.031 (n=50) | -0.310 (n=68) |
+| vol_breakout | short | -0.087 (n=103) | 0.031 (n=50) | -0.297 (n=68) |
 | vwap_reversion | long | -0.196 (n=27896) | -0.440 (n=14675) | 0.073 (n=10594) |
 | vwap_reversion | short | -0.149 (n=21229) | 0.076 (n=3385) | -0.376 (n=26722) |
 
 ## Controls
 
-- **cost_0.5**: PASS rows 0, mean exp_r -0.122
-- **cost_2.0**: PASS rows 0, mean exp_r -0.276
-- **shuffle**: PASS rows 0, mean exp_r -0.183
+- **cost_0.5**: PASS rows 0, mean exp_r -0.080
+- **cost_2.0**: PASS rows 0, mean exp_r -0.245
+- **shuffle**: PASS rows 0, mean exp_r -0.298
   - false-discovery estimate: 0 / 0 shuffled-vs-real PASS rows
 
 ## Symbols with no passing lane

@@ -9,8 +9,11 @@
    "mr_20d",
    "news_catalyst",
    "orb",
+   "orb_inplay",
+   "pead_smallcap",
    "post_news_drift",
    "pullback_trend",
+   "rs_leader",
    "vol_breakout",
    "vwap_reversion"
   ],
@@ -20,7 +23,7 @@
   "cost_mult": 2.0,
   "shuffle_seed": null,
   "notional": 6000.0,
-  "elapsed_sec": 31
+  "elapsed_sec": 34
  },
  "errors": []
 }

@@ -2,11 +2,11 @@
 
 Research and operations notes for the offline strategy-fit pipeline
 (`research/strategy_hunt/`) and the engine-side gate that consults its
-output. This file is expected to grow as later tasks in the
-strategy-hunt-full-system project land (fit-lane adapters, swing
-lanes, promotion tooling); for now it covers the two things Task 29
-adds: the nightly scheduling of the offline hunt and the flags that
-control the live engine gate.
+output. It covers the nightly scheduling of the offline hunt, the
+flags that control the live engine gate, and — as of the Playbook Desk
+B1 phase (2026-09-25) — the universe context builder, the thirteen
+strategy families, the regime-conditioned and universe-pooled fit
+rows, and the pluggable sentiment backend.
 
 ## Scheduling
 
@@ -43,8 +43,12 @@ everywhere it is currently wired — see
 `docs/BOT_OPERATIONS_MANUAL.md` § "Strategy fit gate" for the
 pipeline position, audit line format, and fail-closed behavior.
 
-**Snapshot caveat (2026-09-25).** The current full-universe snapshot contains **0 PASS rows** (539
-symbols, all ten families; see "Timing" below). So with today's snapshot, setting
+**Snapshot caveat (2026-09-25, B1 run).** The current full-universe snapshot contains **0 PASS rows** — none
+of its 9,505 unconditional rows (539 symbols × 13 families), none of its 1,390 symbol-regime rows, none of its
+69 universe-pooled regime rows (see "Timing" below and
+`research/reports/strategy_hunt/2026-09-25-strategy-hunt-b1.md`). Turning `STRATEGY_FIT_REGIME_ROWS` on or off
+therefore changes nothing today: there is no regime row that would let a lane through. So with today's
+snapshot, setting
 `STRATEGY_FIT_SHADOW=False` while `ENABLE_STRATEGY_FIT_GATE=True` makes **every governed lane skip
 every signal** — `fit_fail` for the symbols that have a row, `fit_missing_row` for the rest. That is
 not a malfunction: enforcing mode is a deliberate *"governed lanes off until the evidence exists"*
@@ -59,16 +63,28 @@ intend exactly that, or once a nightly run has produced PASS rows for the symbol
 | `STRATEGY_FIT_SHADOW` | `True` | When the gate is enabled, run it in shadow (log the decision, never block a live entry). Must be explicitly set `False` to let the gate skip signals. |
 | `STRATEGY_FIT_PATH` | `data/strategy_hunt/fit/strategy_fit.json` | Path to the snapshot file the gate and `/api/strategy-fit` read. |
 | `STRATEGY_FIT_MAX_AGE_DAYS` | `7` | Snapshot age (days) beyond which it is treated as stale. |
+| `STRATEGY_FIT_REGIME_ROWS` | `True` | Let the gate consult the regime-conditioned rows (and the universe-pooled regime lanes) for the live market-context regime instead of the unconditional row. See "Regime and pooled rows" below. Set `0`/`false` to restore the pre-B1 unconditional-only lookup. |
+| `SENTIMENT_BACKEND` | `vader` | Sentiment scorer used by both the research news cache and live news scoring (`core/sentiment_backend.py`), so the two agree. `vader` or `finbert`. |
+| `SENTIMENT_FINBERT_PATH` | `models/finbert` | Directory holding the locally prepared FinBERT checkpoint (`python scripts/prepare_finbert.py`). Falls back to the hub id when incomplete, and to VADER when FinBERT cannot load at all. |
 | `FIT_LANES_ENABLED` | `""` (empty) | Comma-separated family names to register live strategy-fit lane adapters for. No lanes registered by default. |
 | `FIT_LANE_LIVE_ENTRIES_ENABLED` | `""` (empty) | Comma-separated family names allowed to place LIVE entries via their fit lane; a family absent here is shadow-only even if present in `FIT_LANES_ENABLED`. |
 | `SWING_ALLOW_OVERNIGHT` | `False` | Allow swing-lane positions to hold across sessions instead of forced flat by EOD. |
 | `SWING_MAX_HOLD_SESSIONS` | `10` | Maximum sessions a swing-lane position may be held before a forced exit. |
 | `STRATEGY_HUNT_DATA_ROOT` | `data/strategy_hunt` | Root of the nightly research data tree. The engine splices `<root>/bars5/<SYM>.parquet` and `<root>/daily/<SYM>.parquet` under the broker's short recent window so `rvol` (20 prior sessions) and `or*_range_avg20` (10) can resolve live; also the root for `<root>/earnings/<SYM>.parquet` in the swing exit checks. |
 
-All nine flags follow the config manager's env-var-then-yaml-then-default
+All twelve flags follow the config manager's env-var-then-yaml-then-default
 precedence (`env ENABLE_STRATEGY_FIT_GATE=1`, yaml
 `trading.enable_strategy_fit_gate: true`, etc. — see
-`core/config.py`, search `v-strategy-fit-2026-09-25`).
+`core/config.py`, search `v-strategy-fit-2026-09-25` for the first nine and
+`v-playbook-desk-b1-2026-09-25` for the last three).
+
+When `STRATEGY_FIT_REGIME_ROWS` is on, `core/engine.py` passes the live
+`market_context_regime` from the signal's reasoning into
+`core/strategy_fit_gate.py`, which uses `StrategyFit.lookup_regime` instead of
+`lookup` for the three real regime labels (`risk_on`, `risk_off`, `mixed`) and
+adds `regime=` and `pooled=` to the audit line. Any other value (including a
+missing regime) means "no regime evidence to use" and the unconditional row
+governs, exactly as before B1.
 
 ## Run
 
@@ -78,9 +94,11 @@ reading/writing under `--root` (default `data/strategy_hunt/`):
     set -a; . ./.env; set +a
     PY=/home/nvidia/anaconda3/envs/trading-bot/bin/python
     $PY -m research.strategy_hunt export --min-days 250        # Postgres minute_bars -> bars5/daily Parquet
-    $PY -m research.strategy_hunt context --symbols NVDA,TSLA   # SPY/VIX regime inputs + per-symbol splits
     $PY -m research.strategy_hunt news --symbols NVDA,TSLA      # Alpaca news, incremental
-    $PY -m research.strategy_hunt earnings --symbols NVDA,TSLA  # yfinance earnings dates
+    $PY -m research.strategy_hunt news --rescore                # re-score the cached news with SENTIMENT_BACKEND
+    $PY -m research.strategy_hunt earnings --symbols NVDA,TSLA  # yfinance earnings dates + EPS surprises
+    $PY -m research.strategy_hunt context --symbols NVDA,TSLA   # SPY/VIX regime inputs + splits + universe context
+    $PY -m research.strategy_hunt universe-context              # rebuild only context/universe_daily.parquet
     $PY -m research.strategy_hunt calibrate                     # realized fill slippage from Postgres fills
     $PY -m research.strategy_hunt run --workers 12              # walk-forward per symbol; incremental, safe to rerun
     $PY -m research.strategy_hunt run --force                   # recompute everything
@@ -91,29 +109,182 @@ reading/writing under `--root` (default `data/strategy_hunt/`):
     $PY -m research.strategy_hunt report                        # rebuild the report from an existing fit snapshot
     $PY -m research.strategy_hunt scorecard --family orb        # Stage A shadow-resolver scorecard for one family
     $PY -m research.strategy_hunt promote                       # promotion table + .env lines for every family
-    $PY -m research.strategy_hunt all --workers 12              # export -> context -> news -> earnings -> calibrate -> run -> score
+    $PY -m research.strategy_hunt all --workers 12              # export -> news -> earnings -> context -> calibrate -> run -> score
 
 Controls for cost sensitivity use `--cost-mult 0.5` / `2.0` with their own `--root`, then copy the
 JSON to `fit/strategy_fit_cost_0.5.json` / `fit/strategy_fit_cost_2.0.json` before `score` so the
-report picks them up. `all` is what the nightly cron job (see "Scheduling" above) runs; the other
-subcommands are for ad hoc reruns of one stage (e.g. re-running `score` after editing the verdict
-floors without re-simulating).
+report picks them up. A control root needs the same inputs as the main root — symlink or copy
+`bars5`, `daily`, `news`, `earnings`, `splits` **and `context`** into it (the last one is required
+since B1: without `context/universe_daily.parquet` the three in-play families see all-NaN `ctx_*`
+columns and propose nothing).
+
+`all` is what the nightly cron job (see "Scheduling" above) runs, in the order
+`export → news → earnings → context → calibrate → run → score`: `context` must run *after*
+`news`/`earnings` so the universe context's `ctx_news_count_24h`, `ctx_news_sent_24h`,
+`ctx_earnings_prev` and `ctx_eps_surprise_pct` reflect tonight's caches by the time `run` reads
+them. The other subcommands are for ad hoc reruns of one stage (e.g. re-running `score` after
+editing the verdict floors without re-simulating, or `universe-context` after a news backfill).
 
 ## Outputs
 
 | Path | Content |
 |---|---|
-| `data/strategy_hunt/bars5/<SYM>.parquet`, `daily/`, `news/`, `earnings/`, `splits/` | Inputs (git-ignored) |
+| `data/strategy_hunt/bars5/<SYM>.parquet`, `daily/`, `news/`, `earnings/`, `splits/` | Inputs (git-ignored). `news/<SYM>.parquet` carries `sentiment_vader`, `sentiment_finbert` and the effective `sentiment`; `earnings/<SYM>.parquet` carries `eps_estimate`, `reported_eps`, `surprise_pct` |
+| `data/strategy_hunt/context/universe_daily.parquet` | Universe context: one row per (symbol, date) with the `ctx_*` feature set and its cross-sectional ranks (see "Universe context") |
 | `data/strategy_hunt/trades/<SYM>.parquet` | All out-of-sample trades for the symbol |
 | `data/strategy_hunt/choices/<SYM>.json` | Chosen parameters per window and family |
 | `data/strategy_hunt/checkpoints/<SYM>.json` | Skip marker for incremental runs |
 | `data/strategy_hunt/calibration.json` | Realized slippage summary (`calibrate`); used as a fixed slippage override when usable |
-| `data/strategy_hunt/fit/strategy_fit.json` | Latest fit snapshot (what the engine gate and `/api/strategy-fit` read) |
+| `data/strategy_hunt/fit/strategy_fit.json` | Latest fit snapshot (what the engine gate and `/api/strategy-fit` read); since B1 it also carries the `regime_rows` and `pooled_rows` sections |
+| `data/strategy_hunt/fit/fit_<date>.parquet`, `fit_regime_<date>.parquet`, `fit_pooled_<date>.parquet` | Same rows as Parquet, one file per row family. Only `fit_<date>.parquet` goes to the Postgres `strategy_fit` table — its key is (symbol, strategy, side, computed_at), which pooled rows would collide on across regimes |
 | `research/reports/strategy_hunt/<date>-strategy-hunt.md` | Report (verdict table, pooled metrics, portfolio replay, cost calibration) |
 | `research/reports/strategy_hunt/<date>.json` | Run manifest (symbol/family counts, elapsed, errors) |
 | `research/reports/strategy_hunt/<date>-equity-curve.csv` | Monthly equity curve from the portfolio replay |
 | `research/reports/strategy_hunt/scorecard-<family>-<date>.md` | Stage A shadow-resolver scorecard for one family |
 | `docs/research/strategy_hunt_promotion.md` | Promotion table (all families) + the `.env` lines to apply, rewritten each `promote` run |
+
+## Families
+
+Thirteen families (`strategies/families/registry.py`, `family_names()`), each simulated long and
+short where the family defines both sides:
+
+| Family | Module | Horizon | Sides |
+|---|---|---|---|
+| `dt_momentum`, `orb`, `vwap_reversion`, `gap_play` | `intraday_momentum.py` | intraday | long, short |
+| `mean_rev_intraday` | `intraday_reversion.py` | intraday | long |
+| `news_catalyst`, `post_news_drift` | `news.py` | intraday | long, short |
+| `pullback_trend`, `mr_20d`, `vol_breakout` | `swing.py` | multiday | `pullback_trend` long; others long, short |
+| `orb_inplay` | `inplay.py` | intraday | long, short |
+| `pead_smallcap` | `inplay.py` | multiday | long, short |
+| `rs_leader` | `inplay.py` | multiday | long |
+
+The last three are the B1 additions, and they are the only families that need the universe context:
+
+- **`orb_inplay`** — opening-range breakout restricted to the day's in-play names. Evaluated once at
+  `bar_of_day == 1` (the 09:35 bar, i.e. after the first bar has closed) on symbols whose
+  `ctx_rvol_rank5` is in the top `top_n` (10/20/30) of the same session's cross-section, with a
+  bar-0 close ≥ $5 and `ctx_atr14_pct` ≥ 0.5. Long when bar 0 closed up and price takes out bar 0's
+  high, short on the mirror; stop is `stop_atr` ATRs beyond the entry but never further than bar 0's
+  opposite extreme, and the position is time-stopped at the 15:55 bar. **The simulator has no
+  trailing stop**, so the `trail_r` parameter is approximated as a take-profit at `trail_r` R
+  (`trail_r = 0` means "no target": a 20 R placeholder). A trailing-stop simulator option is a
+  follow-up, and the family's measured numbers should be read as a lower bound on a real trail.
+- **`pead_smallcap`** — post-earnings-announcement drift for small/mid caps. Fires at
+  `bar_of_day == 6` (the 10:00 bar has closed) on a session following an earnings date
+  (`ctx_earnings_prev`), with `ctx_adv_bucket` ≤ mid, `|ctx_gap_pct|` ≥ `min_gap`, an EPS surprise of
+  at least ±`s` percent in the trade's direction, and price on the right side of the session open.
+  1.5-ATR stop, 3 R target, `hold_days` (5/10/20) session time stop, one entry per `hold_days`.
+- **`rs_leader`** — relative-strength leader pullback-resume. At a session open, requires
+  `ctx_rs_rank_60` ≥ `rs_floor` (0.85/0.90/0.95), `ctx_pct_from_52w_high` ≥ −15%, the prior daily
+  bar straddling its EMA(10/20) (`d_low ≤ ema ≤ d_close`) and a positive prior-day return.
+  `atr_stop` daily ATRs of risk, 3 R target, 20-session time stop.
+
+All three read `ctx_*` through `strategies/families/context.py`, whose accessor returns all-NaN when
+a column is absent — so without a context file they simply propose nothing rather than failing.
+
+## Universe context
+
+`research/strategy_hunt/context.py` builds `context/universe_daily.parquet`: one row per (symbol,
+session) with the `CTX_COLUMNS` feature set, joined onto each symbol's indicator frame as `ctx_*`
+columns by `indicator_frame(context=...)`. `context` builds it as its last step (after splits);
+`universe-context` rebuilds only this file, taking just `--root`.
+
+| Column | Meaning |
+|---|---|
+| `rvol_open5`, `rvol_open15` | Session's first-bar / first-three-bar volume over the mean of the prior 14 sessions' same measure (NaN under 5 prior sessions) |
+| `gap_pct` | Open vs. prior close, percent |
+| `rs_20`, `rs_60`, `rs_120` | Symbol return minus SPY's over the prior n sessions, percent |
+| `rs_rank_60` | Same-date cross-sectional rank of `rs_60` |
+| `rvol_rank5` | Same-date cross-sectional rank of `rvol_open5` (1 = most in-play) |
+| `pct_from_52w_high` | Distance from the 252-session high, percent (needs ≥ 126 sessions) |
+| `adv_dollars_20`, `adv_bucket` | 20-session average dollar volume and its bucket (`mega` ≥ $1B, `large` ≥ $200M, `mid` ≥ $20M, else `small`) |
+| `atr14_pct` | ATR(14) as a percent of price |
+| `earnings_today`, `earnings_prev` | An earnings date on this session / in the prior session's window |
+| `eps_surprise_pct` | Surprise of the most recent earnings report in that window (from the earnings cache) |
+| `news_count_24h`, `news_sent_24h` | Count and mean sentiment of headlines in the 24 hours before the session open |
+
+**Known-at-open semantics.** Everything except `rvol_open5`, `rvol_open15` and `gap_pct` is computed
+through the *prior* close, so it is genuinely known before the session opens. Those three use the
+current session's opening bars and are therefore only consumed from `bar_of_day >= 1` onwards —
+`orb_inplay` reads `ctx_rvol_rank5` at bar 1, after the bar-0 volume that feeds it has closed.
+`rvol_rank5` inherits the same restriction because it ranks `rvol_open5`; `rs_rank_60` and
+`adv_bucket` rank already-lagged inputs and add no look-ahead of their own. Every input is loaded
+through `data.splits.load_adjusted`, so the context is split-adjusted like the rest of the pipeline.
+
+A missing or empty SPY frame aborts the whole build (every symbol's `rs_*` would silently be
+all-NaN otherwise); a single other symbol's failure is logged and skipped. `cmd_context` treats a
+failed context build as fatal rather than continuing into `run` with a stale file.
+
+## Regime and pooled rows
+
+`research/strategy_hunt/score/regime_rows.py` adds two row families to the snapshot on top of the
+unconditional per-(symbol, family, side) rows, both written by `score` and read by
+`core/strategy_fit.py::lookup_regime`:
+
+- **Regime rows** — one row per (symbol, family, side, regime) for each of `risk_on`, `risk_off`,
+  `mixed`, scored against the same floors as the unconditional row. A symbol that only works in
+  `risk_on` shows PASS there and FAIL elsewhere, which is what lets the gate stand a lane down when
+  the tape turns. A regime with fewer than `REGIME_ROW_MIN_N` (= 60, the WATCH floor) trades gets
+  **no row at all**: below that, `stability`/`decay` are structurally 0 and the row could only ever
+  come out FAIL, and that manufactured FAIL would outrank both the pooled and the unconditional
+  evidence. No evidence is not a FAIL. Those trades still count in the pooled and unconditional rows.
+- **Pooled rows** — one row per (family, side, regime) over the whole universe, with `symbol = "*"`
+  and `source = "pooled"`, scored against the stricter `POOLED_FLOORS`: n ≥ 500, sessions ≥ 60,
+  PF ≥ 1.2, WR ≥ 45%, exp_R ≥ +0.05, max DD ≤ 60 R, stability ≥ 0.6, decay ≥ 0.5, t_stat ≥ 3.0,
+  exp_r_lb ≥ 0. A pooled PASS is the family-level claim "this lane works in this regime", which lets
+  a lane trade a symbol with no history of its own. Pooled `window_id` is re-bucketed to the
+  **calendar quarter** of the entry before metrics are computed, since a per-symbol walk-forward
+  window index is not contemporaneous across symbols — so a pooled PASS needs at least four calendar
+  quarters with trades for `stability`/`decay` to clear their floors. `max_dd_r` is looser (60 R)
+  because the pooled curve concatenates every symbol's trades and its drawdown is not a
+  position-sizing constraint.
+
+Trades whose regime is `unknown` (SPY/VIX context missing for that session) are dropped from both
+row families — they would describe a data gap, not a regime — and still count in the unconditional
+row.
+
+**Lookup precedence** (`StrategyFit.lookup_regime`, used by the gate when
+`STRATEGY_FIT_REGIME_ROWS` is on and the live regime is one of the three labels):
+
+1. the symbol's own row for that regime,
+2. the universe-pooled row for that regime,
+3. the unconditional row for the lane,
+4. `None` (which the gate treats as `fit_missing_row`).
+
+A stale, missing or unloaded snapshot yields `None`, exactly as `lookup` does.
+
+**Reading `t_stat` honestly.** Pooled `t_stat` is a trade-level mean-R t-statistic that treats every
+trade as independent. Pooled trades include many same-session entries across correlated symbols, so
+the effective sample is smaller than n suggests and `min_t_stat 3.0` is a weaker filter than it
+reads. Treat a pooled PASS as a hypothesis worth shadow-trading, not a measured edge.
+
+## Sentiment backend
+
+`core/sentiment_backend.py` is the single scorer for both the research news cache and live news
+scoring, so research and live can never disagree about a headline:
+
+- `SENTIMENT_BACKEND=vader` (default) — CPU, always available.
+- `SENTIMENT_BACKEND=finbert` — ProsusAI/finbert on GPU when available. The hub copy ships only a
+  pickle checkpoint, which transformers ≥ 5 refuses to load on torch < 2.6, so run
+  `python scripts/prepare_finbert.py` once to write a safetensors checkpoint to
+  `SENTIMENT_FINBERT_PATH` (`models/finbert`). If transformers/torch/the model are missing the
+  backend falls back to VADER with a one-time warning rather than failing.
+
+The news cache keeps both scores side by side: `sentiment_vader` always, `sentiment_finbert` when
+the configured backend is finbert and it actually loaded, plus an effective `sentiment` column
+(finbert where present, VADER per-row where not) — that effective column is what
+`load_news`, the universe context's `news_sent_24h`, and the `news_catalyst`/`post_news_drift`
+families read, so nothing downstream re-scores anything.
+
+    SENTIMENT_BACKEND=finbert $PY -m research.strategy_hunt news             # fetch + score new rows
+    SENTIMENT_BACKEND=finbert $PY -m research.strategy_hunt news --rescore   # backfill the existing cache
+
+`news --rescore` needs no Alpaca credentials: it fills `sentiment_vader` for any unscored row, adds
+and fills `sentiment_finbert` when finbert is the effective backend, recomputes `sentiment`, and
+writes only when something actually changed. It scores in chunks of 2,048 headlines so a large
+symbol file does not build one giant result list. Switching the backend and re-scoring changes the
+inputs to two families and one context column, so it invalidates previous results for them —
+re-run `run --force` afterwards.
 
 ## Verdicts
 
@@ -207,6 +378,32 @@ also does not confirm at scale.
 | `run` control (50-symbol) | 31–38s | each control run for structure-destroying validation |
 | `score` | 30s | verdicts + fit snapshot + report generation |
 | **Total wall-clock** | **~25 min** | from `export` start to final score and report |
+
+**Playbook Desk B1 run (2026-09-25, 13 families, FinBERT news, measured)** — full report:
+`research/reports/strategy_hunt/2026-09-25-strategy-hunt-b1.md`:
+
+| Step | Wall-clock | Notes |
+|---|---|---|
+| `export --min-days 250` | 138s | incremental on a warm cache (539 symbols, ~1 new bar each) |
+| `earnings` | 51s | 539 symbols, now including EPS surprises |
+| `news` (incremental fetch) | 25s | ~309 new rows, FinBERT-scored at fetch time |
+| `news --rescore` | 761s (12m41s) | 725,484 rows re-scored with FinBERT on one GPU, 0 errors |
+| `context` | 215s | splits + universe context (458,182 rows × 539 symbols, 36 MB Parquet) |
+| `calibrate` | 29s | n=108 realized fills, median_frac 0.000127, usable |
+| `run --workers 12 --force` | 317s | 539 symbols, 0 errors, 13 families, 340,211 out-of-sample trades |
+| controls (shuffle, cost 0.5×, cost 2×) | 36–42s each + 5s score | 50-symbol sample; each control root needs `context` symlinked too |
+| `score --postgres` | 59s | 9,505 unconditional + 1,390 symbol-regime + 69 pooled rows, snapshot, report |
+| `report`, `promote` | 2s each | |
+| **Total wall-clock** | **~27 min** | ~13 min of it the one-off FinBERT backfill; a nightly `all` re-scores only new rows |
+
+**Snapshot results (2026-09-25 B1 run).** 0 PASS rows anywhere: 0 of 9,505 unconditional rows (127 WATCH),
+0 of 1,390 symbol-regime rows over 396 symbols (159 WATCH), 0 of 69 pooled regime rows (15 WATCH). The
+strongest pooled lanes are regime-conditioned shorts in `risk_off` and longs in `risk_on`
+(dt_momentum short/risk_off exp_R +0.172 on 13,370 trades, t +3.85 — WATCH, failing only `max_dd_r`).
+Two cautions carried forward from the report: pooled `max_dd_r` is not scale-invariant (40 of 69 pooled rows
+fail it, and only 3 of the 39 rows above the pooled `min_n` clear it), and the shuffled control produced one
+pooled PASS on structure-destroyed bars where the real tape produced none — so a pooled PASS is not on its own
+evidence of an edge.
 
 ## Operator flow
 

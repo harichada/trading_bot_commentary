@@ -83,7 +83,7 @@ All engine tasks run under `TaskSupervisor` (`core/task_supervisor.py`). A task 
 | `market_indices` | `engine.py:3785` | NORMAL | 10 s | Refreshes `MarketIndicesCache` for the dashboard regime strip | Per-iteration debug log |
 | `state_persistence` | `engine.py:3792` | NORMAL | 30 s (first save delayed 30 s) | `_save_state()` | Per-iteration warning |
 | `screener_loop` | `engine.py:3799` | NORMAL | `SCREENER_LOOP_SEC` (120 s) | Sole writer of `dynamic_watchlist`, `screener.top_movers`, PriceBook "watchlist"/"ticker_tape" scopes (`core/loops/screener_loop.py`) | Per-tick swallowed |
-| `news_loop` | `engine.py:3810` | NORMAL | `trading.news_loop_sec` (20 s) | Fetches Yahoo/Google/MarketWatch news for the watchlist in batches of 5, VADER-scores, publishes to `NewsBus`; high-impact items set the analysis wake event (`core/loops/news_loop.py:73`) | Per-tick swallowed |
+| `news_loop` | `engine.py:3810` | NORMAL | `trading.news_loop_sec` (20 s) | Fetches Yahoo/Google/MarketWatch news for the watchlist in batches of 5, scores each item through `core/sentiment_backend.score` (VADER by default, FinBERT when `SENTIMENT_BACKEND=finbert`), publishes to `NewsBus`; high-impact items set the analysis wake event (`core/loops/news_loop.py:73`) | Per-tick swallowed |
 | `alpaca_news_bus` | `engine.py:3830` (if Alpaca keys set) | NORMAL | `ALPACA_NEWS_BUS_INTERVAL_SEC` | Tier-1 Alpaca news into NewsBus | Per-tick swallowed |
 | `active_open_desk` | `engine.py:3889` (if `ENABLE_ACTIVE_OPEN_DESK`) | NORMAL | `ACTIVE_OPEN_DESK_INTERVAL_SEC` (5 s) | Continuous sentiment/regime/indicator review of managed open trades (shadow by default) | Supervisor restart |
 
@@ -283,7 +283,8 @@ Net effect today in LIVE: day-trade momentum, mean-reversion and ORB entries are
 
 The gate only governs strategies mapped to a fit family in `LANE_MAP` (`core/strategy_fit_gate.py`: `mean_reversion`/`mean_reversion_short`/`oversold_bounce_v2` → `mean_rev_intraday`, `day_trade_momentum`/`day_trade_momentum_short` → `dt_momentum`, `orb_contraction_rvol` → `orb`, `news_sentiment`/`free_news_sentiment` → `news_catalyst`, plus any `fit:<family>` lane strategy). A signal from an ungoverned strategy passes through untouched (`fit_not_governed`, not audited). Every key is the exact `reasoning['strategy']` value a live strategy writes — `strategies/builtin.py` (`mean_reversion`, `mean_reversion_short`, `day_trade_momentum`, `day_trade_momentum_short`, `orb_contraction_rvol`, `news_sentiment`), `strategies/oversold_bounce_v2.py` (`oversold_bounce_v2`), `strategies/news_strategy.py` (`free_news_sentiment`) — and `tests/core/test_strategy_fit_gate.py` greps `strategies/*.py` to keep it that way. Two earlier placeholder keys (`oversold_v2`, `news`) matched no strategy at all and governed nothing; they were removed 2026-09-25.
 
-Flags (`core/config.py`, search `v-strategy-fit-2026-09-25`):
+Flags (`core/config.py`, search `v-strategy-fit-2026-09-25`; `STRATEGY_FIT_REGIME_ROWS`
+and the two `SENTIMENT_*` flags are `v-playbook-desk-b1-2026-09-25`):
 
 | Flag | Default | Effect |
 |---|---|---|
@@ -291,6 +292,9 @@ Flags (`core/config.py`, search `v-strategy-fit-2026-09-25`):
 | `STRATEGY_FIT_SHADOW` | `True` | When the gate is enabled, blocked verdicts are logged but never skip the signal. Must be explicitly `False` to let the gate skip entries. |
 | `STRATEGY_FIT_PATH` | `data/strategy_hunt/fit/strategy_fit.json` | Snapshot file read by the gate and by `GET /api/strategy-fit`. |
 | `STRATEGY_FIT_MAX_AGE_DAYS` | `7` | Snapshot age (days) beyond which it's treated as stale. |
+| `STRATEGY_FIT_REGIME_ROWS` | `True` | Gate consults the regime-conditioned rows for the live market-context regime (symbol-regime row → universe-pooled regime row → unconditional row) instead of the unconditional row alone. `0`/`false` restores the pre-B1 lookup. |
+| `SENTIMENT_BACKEND` | `vader` | Sentiment scorer for both live news scoring and the research news cache (`core/sentiment_backend.py`). `finbert` uses ProsusAI/finbert on GPU, falling back to VADER with a warning if it can't load. |
+| `SENTIMENT_FINBERT_PATH` | `models/finbert` | Local FinBERT checkpoint directory, built once by `python scripts/prepare_finbert.py`. |
 | `FIT_LANES_ENABLED` | `""` | Family names to register live fit-lane adapters for; empty means none registered. |
 | `FIT_LANE_LIVE_ENTRIES_ENABLED` | `""` | Family names allowed LIVE entries via their fit lane; absent families stay shadow-only. |
 | `SWING_ALLOW_OVERNIGHT` | `False` | Allow swing-lane positions to hold across sessions instead of forced flat by EOD. |
@@ -299,7 +303,7 @@ Flags (`core/config.py`, search `v-strategy-fit-2026-09-25`):
 
 `ENABLE_STRATEGY_FIT_GATE` and `STRATEGY_FIT_SHADOW` are both effectively off in their protective sense today (gate disabled; and even if enabled, shadow defaults on) — the gate ships inert and must be turned on deliberately in two steps: enable, then disable shadow.
 
-**What step two costs today.** The current fit snapshot (full universe, 2026-09-25) has **0 PASS rows**. So turning shadow off right now makes **every governed lane skip every signal** — `fit_fail` where a row exists, `fit_missing_row` where it doesn't — i.e. it switches off `mean_reversion`, `mean_reversion_short`, `oversold_bounce_v2`, `day_trade_momentum`, `day_trade_momentum_short`, `orb_contraction_rvol`, `news_sentiment` and `free_news_sentiment` entirely. State that plainly to anyone asking for enforcing mode: it is a deliberate "governed lanes off until evidence exists" decision, not a tuning knob. Until a nightly run produces PASS rows for the symbols actually traded, shadow mode is the only setting in which those lanes keep trading. `research/strategy_hunt promote` reports the same posture from the other side via its `gate_not_enforcing` blocker (see `docs/research/strategy_hunt.md` § "Operator flow").
+**What step two costs today.** The current fit snapshot (full universe, 2026-09-25, Playbook Desk B1 run) has **0 PASS rows** — none of its 9,505 unconditional rows, none of its 1,390 symbol-regime rows, none of its 69 universe-pooled regime rows, so `STRATEGY_FIT_REGIME_ROWS` changes nothing about this either (`research/reports/strategy_hunt/2026-09-25-strategy-hunt-b1.md`). So turning shadow off right now makes **every governed lane skip every signal** — `fit_fail` where a row exists, `fit_missing_row` where it doesn't — i.e. it switches off `mean_reversion`, `mean_reversion_short`, `oversold_bounce_v2`, `day_trade_momentum`, `day_trade_momentum_short`, `orb_contraction_rvol`, `news_sentiment` and `free_news_sentiment` entirely. State that plainly to anyone asking for enforcing mode: it is a deliberate "governed lanes off until evidence exists" decision, not a tuning knob. Until a nightly run produces PASS rows for the symbols actually traded, shadow mode is the only setting in which those lanes keep trading. `research/strategy_hunt promote` reports the same posture from the other side via its `gate_not_enforcing` blocker (see `docs/research/strategy_hunt.md` § "Operator flow").
 
 Audit line (component `strategy_fit`, one per governed signal):
 
@@ -308,6 +312,8 @@ engine_decision component=strategy_fit symbol=SYM action=proceed|shadow|skip rea
 ```
 
 `action` is `proceed` (verdict PASS and no higher-scoring competing family also passing), `shadow` (every block reason — `fit_watch_shadow`, `fit_fail`, `fit_missing_row`, `fit_missing`, `fit_stale`, `fit_lower_priority` — logs as `shadow` when `STRATEGY_FIT_SHADOW` is on), or `skip` (the same block reasons log as `skip` and block the signal when the gate is enabled and `STRATEGY_FIT_SHADOW` is off). `reason` is one of `fit_pass`, `fit_watch_shadow` (WATCH verdict), `fit_fail` (FAIL verdict), `fit_missing_row` (snapshot loaded but no row for this symbol/family/side), `fit_missing` (snapshot never successfully computed), `fit_stale` (snapshot older than `STRATEGY_FIT_MAX_AGE_DAYS`), or `fit_lower_priority` (a competing governed family has a higher-scoring PASS on the same symbol/side this pass) — `fit_lower_priority` uses the same shadow/skip helper as every other block reason, with no carve-out.
+
+**Regime-aware lookup (2026-09-25, Playbook Desk B1).** When `STRATEGY_FIT_REGIME_ROWS` is `True` (the default) the engine passes the signal's `market_context_regime` into the gate, which then asks the snapshot for the row measured *in that regime* — the symbol's own regime row, else the universe-pooled row for that regime (`symbol="*"`, `source=pooled`), else the unconditional row, else `fit_missing_row`. The audit line gains `regime=<risk_on|risk_off|mixed>` and `pooled=True|False`; any other regime value (or none) means "no regime evidence", the `regime` field is omitted and the unconditional row governs exactly as before. Nothing about shadow/enforcing changes: a regime row can only decide *which* verdict the gate reads, never whether it blocks. Sample floors are in `docs/research/strategy_hunt.md` § "Regime and pooled rows" (a regime needs ≥ 60 trades for a symbol row; pooled rows use the stricter `POOLED_FLOORS`).
 
 Fail-closed behavior: a stale or missing snapshot blocks live entries — but, consistent with shadow mode generally, only when `ENABLE_STRATEGY_FIT_GATE` is `True` and `STRATEGY_FIT_SHADOW` is `False`; otherwise it only logs. The gate never flips any lane's own `*_LIVE_ENTRIES_ENABLED`/shadow flag (e.g. gate #17 `MEAN_REV_LIVE_ENTRIES_ENABLED`) — it is an additional check layered on top of, not a replacement for, each lane's existing pause flag.
 
@@ -742,6 +748,9 @@ current-live-profile snapshot):
 | `STRATEGY_FIT_SHADOW` | `True` | Gate logs but never blocks a live entry until this is explicitly `False`. |
 | `STRATEGY_FIT_PATH` | `data/strategy_hunt/fit/strategy_fit.json` | Snapshot file read by the gate and `GET /api/strategy-fit`. |
 | `STRATEGY_FIT_MAX_AGE_DAYS` | `7` | Snapshot age (days) beyond which it's treated as stale (fail-closed if the gate is enforcing). |
+| `STRATEGY_FIT_REGIME_ROWS` | `True` | Gate reads the regime-conditioned row for the live regime (symbol-regime → pooled → unconditional); `0` restores the unconditional-only lookup. |
+| `SENTIMENT_BACKEND` | `vader` | Sentiment scorer shared by live news scoring and the research news cache; `finbert` for ProsusAI/finbert on GPU. |
+| `SENTIMENT_FINBERT_PATH` | `models/finbert` | Local FinBERT checkpoint directory (`python scripts/prepare_finbert.py`). |
 | `FIT_LANES_ENABLED` | `""` | Family names to register live `fit:<family>` adapters for; `promote` prints the line to set. |
 | `FIT_LANE_LIVE_ENTRIES_ENABLED` | `""` | Family names allowed LIVE entries via their fit lane; absent families stay shadow-only even if registered. |
 | `SWING_ALLOW_OVERNIGHT` | `False` | Allow swing-lane (multiday) fit-lane positions to hold across sessions instead of forced flat by EOD. |
