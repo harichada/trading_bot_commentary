@@ -4121,6 +4121,27 @@ class Config:
         return str(self.manager.get('trading.strategy_fit_path', 'data/strategy_hunt/fit/strategy_fit.json'))
 
     @property
+    def STRATEGY_HUNT_DATA_ROOT(self) -> str:
+        """v-strategy-fit-2026-09-25: root directory of the nightly research
+        pipeline's data tree, read by the live engine.
+
+        The engine merges this tree's Parquet history into the provider's
+        short recent window (`<root>/bars5/<SYM>.parquet`,
+        `<root>/daily/<SYM>.parquet`) so indicators needing 20 prior
+        sessions (`rvol`, `or*_range_avg20`) can resolve live — Schwab's
+        price-history API caps minute data at 10 days, which is about 7
+        sessions. Also the root for `<root>/earnings/<SYM>.parquet` in the
+        swing exit checks.
+
+        Default "data/strategy_hunt". Override via env
+        STRATEGY_HUNT_DATA_ROOT or yaml trading.strategy_hunt_data_root.
+        """
+        env_val = os.getenv("STRATEGY_HUNT_DATA_ROOT")
+        if env_val is not None:
+            return env_val
+        return str(self.manager.get('trading.strategy_hunt_data_root', 'data/strategy_hunt'))
+
+    @property
     def STRATEGY_FIT_MAX_AGE_DAYS(self) -> int:
         """v-strategy-fit-2026-09-25: maximum age (days) of the
         strategy-fit file before it's treated as stale by the gate.
