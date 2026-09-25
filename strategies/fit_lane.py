@@ -10,20 +10,31 @@ None, ledger append only).
 v-strategy-fit-2026-09-25 (Task 31): live fit-lane adapter and engine
 registration. May import core and strategies; must never import research
 (core/research separation — see core/strategy_fit.py docstring).
+
+v-strategy-fit-review-2026-09-25 (Task 31 review fixes):
+  1. entries now carry the real symbol through to the emitted signal
+     (families/attrs don't reliably set it themselves).
+  2. the body after the fit_no_row check is exception-contained — a bad
+     family name fails fast at construction, everything else degrades to
+     a logged "error" skip rather than propagating.
+  3. a staleness guard rejects post-close / pre-open bar snapshots so the
+     shadow ledger doesn't get polluted with entries computed on stale data.
+  4. the bar-count floor is checked on *closed* bars, not raw bars.
 """
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
+from datetime import time as dt_time
 from pathlib import Path
-from typing import Any, Callable, Iterable, Optional
+from typing import Any, Callable, Iterable, Optional, Tuple
 
 import pandas as pd
 
 from core.models import MarketData, SignalType, TradingSignal
 from strategies.base import TradingStrategyWithCommentary
-from strategies.families.common import median_params
+from strategies.families.common import Family, median_params
 from strategies.families.indicators import closed_bars, indicator_frame
 from strategies.families.models import Entry
 from strategies.families.registry import get_family
@@ -33,6 +44,12 @@ logger = logging.getLogger("TradingBot")
 LEDGER_DIR = Path("data")
 
 _NEWS_FRAME_COLUMNS = ["created_at", "headline", "source", "sentiment"]
+
+# v-strategy-fit-review-2026-09-25: bar snapshot must be no older than this,
+# and the synthetic "now" bar must not extend past the RTH close, or the
+# adapter skips rather than computing entries on stale data.
+_FRESHNESS_LIMIT = pd.Timedelta(minutes=15)
+_RTH_CLOSE = dt_time(15, 55)
 
 
 def ledger_path(family: str, ledger_dir: Path = LEDGER_DIR) -> Path:
@@ -76,7 +93,12 @@ def with_synthetic_next_bar(bars5: pd.DataFrame, now_px: float) -> pd.DataFrame:
     """Append one synthetic bar at `bars5.index[-1] + 5min` representing
     "right now": open=high=low=close=now_px, volume=0. Families produce
     entries at bar i+1's open, so an entry landing on this synthetic
-    timestamp means "enter now at the current price"."""
+    timestamp means "enter now at the current price".
+
+    v-strategy-fit-review-2026-09-25: pd.concat drops DataFrame.attrs, so
+    attrs are copied through explicitly (the adapter relies on
+    bars.attrs["symbol"] surviving this call).
+    """
     if bars5.empty:
         return bars5
     next_ts = bars5.index[-1] + pd.Timedelta(minutes=5)
@@ -84,14 +106,20 @@ def with_synthetic_next_bar(bars5: pd.DataFrame, now_px: float) -> pd.DataFrame:
         {"open": [now_px], "high": [now_px], "low": [now_px], "close": [now_px], "volume": [0]},
         index=pd.Index([next_ts], name=bars5.index.name),
     )
-    return pd.concat([bars5, row])
+    out = pd.concat([bars5, row])
+    out.attrs = dict(bars5.attrs)
+    return out
 
 
 def _clamp(value: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, value))
 
 
-def entry_to_signal(entry: Entry, family: str, params: dict, verdict: str, score: float) -> TradingSignal:
+def entry_to_signal(entry: Entry, family: str, params: dict, verdict: str, score: float, symbol: str) -> TradingSignal:
+    """`entry.symbol` falls back to "" when the family's make_entry() call
+    didn't pass one explicitly (the common case) — `symbol` is the
+    market-data symbol the adapter is actually evaluating, and always wins
+    when entry.symbol is empty."""
     strength = _clamp(float(score) * 2.0, 0.2, 1.0)
     is_day_trade = entry.hold_kind == "intraday"
     reasoning = {
@@ -108,7 +136,7 @@ def entry_to_signal(entry: Entry, family: str, params: dict, verdict: str, score
         "strategy_size_multiplier": 1.0,
     }
     return TradingSignal(
-        symbol=entry.symbol,
+        symbol=entry.symbol or symbol,
         signal_type=SignalType.BUY if entry.side == "long" else SignalType.SELL,
         strength=strength,
         entry_price=entry.entry_px,
@@ -135,6 +163,11 @@ class FitLaneStrategy(TradingStrategyWithCommentary):
         clock: Optional[Callable[[], pd.Timestamp]] = None,
     ) -> None:
         super().__init__(commentary)
+        # v-strategy-fit-review-2026-09-25: resolved eagerly so a typo'd
+        # family name in FIT_LANES_ENABLED raises KeyError at registration
+        # time (caught by the engine's registration loop) instead of on
+        # every analysis tick.
+        self._fam: Family = get_family(family_name)
         self.name = f"fit:{family_name}"
         self._family_name = family_name
         self._fit = fit
@@ -157,19 +190,56 @@ class FitLaneStrategy(TradingStrategyWithCommentary):
             self._log_decision(market_data, "skip", "fit_no_row", skip_snapshot=True)
             return None
 
+        # v-strategy-fit-review-2026-09-25: everything past this point can
+        # raise (bad/missing bars, indicator math, a broken family fn) —
+        # contain it so one symbol's bad data can't take the strategy down.
+        try:
+            return await self._generate(market_data, symbol, row_long, row_short)
+        except Exception as exc:
+            logger.warning("fit_lane: %s errored for %s: %s", family, symbol, exc)
+            self._log_decision(market_data, "error", "fit_lane_error", skip_snapshot=True)
+            return None
+
+    async def _generate(self, market_data: MarketData, symbol: str, row_long, row_short) -> Optional[TradingSignal]:
+        family = self._family_name
+
         bars5, daily = await asyncio.to_thread(self._bars_source, symbol)
-        if bars5 is None or len(bars5) < 60:
+        if bars5 is None:
+            bars5 = pd.DataFrame()
+
+        now = self._clock()
+        closed = closed_bars(bars5, now)
+        if len(closed) < 60:
             self._log_decision(market_data, "skip", "insufficient_bars", skip_snapshot=True)
+            return None
+
+        # v-strategy-fit-review-2026-09-25: staleness guard. Post-close the
+        # synthetic bar would land after 15:55 ET; pre-open the last closed
+        # bar is from the prior session. Either way the snapshot no longer
+        # reflects "now" — skip instead of computing (and ledger-logging)
+        # entries against it. The market-hours gate downstream would block
+        # the order anyway; this just keeps the shadow ledger clean.
+        last_closed_ts = closed.index[-1]
+        now_ts_val = pd.Timestamp(now)
+        if (now_ts_val - last_closed_ts) > _FRESHNESS_LIMIT:
+            self._log_decision(market_data, "skip", "stale_bars", skip_snapshot=True)
+            return None
+        if (last_closed_ts + pd.Timedelta(minutes=5)).time() > _RTH_CLOSE:
+            self._log_decision(market_data, "skip", "stale_bars", skip_snapshot=True)
             return None
 
         params = (
             self._fit.params_for(symbol, family, "long")
             or self._fit.params_for(symbol, family, "short")
-            or median_params(get_family(family).grid)
+            or median_params(self._fam.grid)
         )
 
-        now = self._clock()
-        bars = with_synthetic_next_bar(closed_bars(bars5, now), market_data.close)
+        bars = with_synthetic_next_bar(closed, market_data.close)
+        # v-strategy-fit-review-2026-09-25: make_entry() falls back to
+        # bars5.attrs.get("symbol", "") when a family doesn't pass symbol
+        # explicitly (the common case) — set it so the emitted entry (and
+        # the resulting signal) carries the real symbol.
+        bars.attrs["symbol"] = symbol
 
         spy5 = None
         try:
@@ -185,9 +255,8 @@ class FitLaneStrategy(TradingStrategyWithCommentary):
             news_items = []
         news = news_frame_from_items(news_items)
 
-        fam = get_family(family)
         ind = indicator_frame(bars, daily, spy5)
-        entries = fam.fn(bars, ind, daily, news, params)
+        entries = self._fam.fn(bars, ind, daily, news, params)
 
         now_ts = bars.index[-1]
         rows_by_side = {"long": row_long, "short": row_short}
@@ -196,28 +265,7 @@ class FitLaneStrategy(TradingStrategyWithCommentary):
             self._log_decision(market_data, "skip", "no_entry_now", skip_snapshot=True)
             return None
 
-        best_entry: Optional[Entry] = None
-        best_row = None
-        self._ledger_dir.mkdir(parents=True, exist_ok=True)
-        with open(ledger_path(family, self._ledger_dir), "a") as fh:
-            for entry in kept:
-                row = rows_by_side[entry.side]
-                fh.write(json.dumps({
-                    "ts": now_ts.isoformat(),
-                    "symbol": symbol,
-                    "side": entry.side,
-                    "entry_px": entry.entry_px,
-                    "stop_px": entry.stop_px,
-                    "target_px": entry.target_px,
-                    "time_stop": entry.time_stop,
-                    "hold_kind": entry.hold_kind,
-                    "tag": entry.tag,
-                    "params": params,
-                    "verdict": row.verdict,
-                    "score": row.score,
-                }) + "\n")
-                if best_row is None or row.score > best_row.score:
-                    best_entry, best_row = entry, row
+        best_entry, best_row = self._append_ledger(now_ts, symbol, kept, rows_by_side, params)
 
         if family not in self._live_families():
             self._log_decision(
@@ -230,4 +278,40 @@ class FitLaneStrategy(TradingStrategyWithCommentary):
 
         action = "signal_buy" if best_entry.side == "long" else "signal_sell"
         self._log_decision(market_data, action, "fit_lane_live")
-        return entry_to_signal(best_entry, family, params, best_row.verdict, best_row.score)
+        return entry_to_signal(best_entry, family, params, best_row.verdict, best_row.score, symbol)
+
+    def _append_ledger(self, now_ts, symbol: str, kept: list, rows_by_side: dict, params: dict) -> Tuple[Entry, Any]:
+        """Picks the best-scoring kept entry and appends one ledger line per
+        kept entry. The ledger write is best-effort: a bad ledger_dir (e.g.
+        unwritable, or a file where a directory is expected) must not stop
+        a live/shadow decision from being made — it's just logged."""
+        best_entry: Optional[Entry] = None
+        best_row = None
+        for entry in kept:
+            row = rows_by_side[entry.side]
+            if best_row is None or row.score > best_row.score:
+                best_entry, best_row = entry, row
+
+        try:
+            self._ledger_dir.mkdir(parents=True, exist_ok=True)
+            with open(ledger_path(self._family_name, self._ledger_dir), "a") as fh:
+                for entry in kept:
+                    row = rows_by_side[entry.side]
+                    fh.write(json.dumps({
+                        "ts": now_ts.isoformat(),
+                        "symbol": symbol,
+                        "side": entry.side,
+                        "entry_px": entry.entry_px,
+                        "stop_px": entry.stop_px,
+                        "target_px": entry.target_px,
+                        "time_stop": entry.time_stop,
+                        "hold_kind": entry.hold_kind,
+                        "tag": entry.tag,
+                        "params": params,
+                        "verdict": row.verdict,
+                        "score": row.score,
+                    }) + "\n")
+        except Exception as exc:
+            logger.warning("fit_lane: ledger write failed for %s/%s: %s", self._family_name, symbol, exc)
+
+        return best_entry, best_row
