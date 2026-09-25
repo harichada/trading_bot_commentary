@@ -1,4 +1,6 @@
 import json
+import math
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -208,15 +210,14 @@ def _trade(symbol, family, side, day, w, regime, r):
                     regime, w, '{"w": 1.0}')
 
 
-def _write_trades(root, symbol, trades):
+def _write_trades(root, symbol, trades, variant=None):
     from research.strategy_hunt.models import TRADE_COLUMNS
     from research.strategy_hunt.run import choices_path, trades_path
-    trades_path(root, symbol).parent.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame([t.to_dict() for t in trades], columns=list(TRADE_COLUMNS)).to_parquet(
-        trades_path(root, symbol), index=False)
-    choices_path(root, symbol).parent.mkdir(parents=True, exist_ok=True)
-    choices_path(root, symbol).write_text(json.dumps(
-        {"toy": [{"window_id": w, "params": {"w": 1.0}} for w in range(3)]}))
+    tp, cp = trades_path(root, symbol, variant), choices_path(root, symbol, variant)
+    tp.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame([t.to_dict() for t in trades], columns=list(TRADE_COLUMNS)).to_parquet(tp, index=False)
+    cp.parent.mkdir(parents=True, exist_ok=True)
+    cp.write_text(json.dumps({"toy": [{"window_id": w, "params": {"w": 1.0}} for w in range(3)]}))
 
 
 def _regime_trades(symbol):
@@ -235,8 +236,9 @@ def test_score_regime_root_builds_symbol_regime_and_pooled_rows(tmp_path):
     for sym in ("AAA", "BBB"):
         _write_trades(tmp_path, sym, _regime_trades(sym))
 
-    reg_rows, pool_rows = score_regime_root(tmp_path, ["toy"], "2025-09-25T00:00:00")
+    reg_rows, pool_rows, base_rows = score_regime_root(tmp_path, ["toy"], "2025-09-25T00:00:00")
 
+    assert base_rows == []          # no trades_shuffle/ in this root
     assert {r["symbol"] for r in reg_rows} == {"AAA", "BBB"}
     assert {r["regime"] for r in reg_rows} <= set(REGIMES) and "unknown" not in {r["regime"] for r in reg_rows}
     assert all(r["strategy"] == "toy" and r["side"] == "long" for r in reg_rows)
@@ -255,7 +257,7 @@ def test_score_regime_root_builds_symbol_regime_and_pooled_rows(tmp_path):
 
 def test_score_regime_root_empty_root_and_score_root_unchanged(root):
     from research.strategy_hunt.run import run_symbols, score_regime_root, score_root
-    assert score_regime_root(root, ["toy"], "2025-09-25T00:00:00") == ([], [])   # no trades yet
+    assert score_regime_root(root, ["toy"], "2025-09-25T00:00:00") == ([], [], [])   # no trades yet
     # score_root keeps returning only the unconditional lane rows (the report and the
     # cold-start model consume that list).
     run_symbols(["AAA"], root, ["toy"], workers=1)
@@ -275,9 +277,91 @@ def test_scoring_contains_one_unreadable_trades_file(tmp_path, caplog):
 
     with caplog.at_level(logging.WARNING, logger="strategy_hunt.run"):
         rows = score_root(tmp_path, ["toy"], "2025-09-25T00:00:00", coldstart=False)
-        reg_rows, pool_rows = score_regime_root(tmp_path, ["toy"], "2025-09-25T00:00:00")
+        reg_rows, pool_rows, _base = score_regime_root(tmp_path, ["toy"], "2025-09-25T00:00:00")
 
     assert {r["symbol"] for r in rows} == {"AAA", "BBB"}
     assert {r["symbol"] for r in reg_rows} == {"AAA", "BBB"} and pool_rows
     warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
     assert len(warnings) == 2 and all("BAD" in m for m in warnings)      # both scorers, once each
+
+
+# ──────────────────────
+# v-playbook-desk-b1-5 task 10 — the shuffled baseline is a variant inside the same root
+# ──────────────────────
+
+def test_variant_paths_use_suffixed_directories(tmp_path):
+    from research.strategy_hunt.paths import SHUFFLE_VARIANT, VARIANTS
+    from research.strategy_hunt.run import checkpoint_path, choices_path, trades_path
+
+    assert trades_path(tmp_path, "AAA") == tmp_path / "trades" / "AAA.parquet"
+    assert trades_path(tmp_path, "aaa", "shuffle") == tmp_path / "trades_shuffle" / "AAA.parquet"
+    assert checkpoint_path(tmp_path, "AAA", "shuffle") == tmp_path / "checkpoints_shuffle" / "AAA.json"
+    assert choices_path(tmp_path, "AAA", "shuffle") == tmp_path / "choices_shuffle" / "AAA.json"
+    assert SHUFFLE_VARIANT == "shuffle" and VARIANTS == ("shuffle",)
+    with pytest.raises(ValueError):
+        trades_path(tmp_path, "AAA", "nonsense")
+
+
+def test_process_symbol_variant_writes_only_the_shuffle_dirs(root):
+    """The shuffle control no longer needs its own root: `variant="shuffle"` sends every
+    artefact to the `_shuffle` siblings so the real tape's trades/ stays untouched."""
+    from research.strategy_hunt.run import checkpoint_path, choices_path, process_symbol, trades_path
+
+    rec = process_symbol("AAA", root, ["toy"], shuffle_seed=7, variant="shuffle")
+    assert rec["status"] == "done" and rec["n_trades"] >= 0
+    assert trades_path(root, "AAA", "shuffle").exists()
+    assert checkpoint_path(root, "AAA", "shuffle").exists()
+    assert choices_path(root, "AAA", "shuffle").exists()
+    assert not (root / "trades").exists() and not (root / "checkpoints").exists()
+    # and the variant's checkpoint is its own: a second call skips without touching trades/
+    assert process_symbol("AAA", root, ["toy"], shuffle_seed=7, variant="shuffle")["status"] == "skipped"
+    assert not (root / "trades").exists()
+
+
+def test_run_symbols_threads_the_variant(root):
+    from research.strategy_hunt.run import run_symbols, trades_path
+
+    recs = run_symbols(["AAA"], root, ["toy"], workers=1, variant="shuffle", shuffle_seed=7)
+    assert [r["symbol"] for r in recs] == ["AAA"]
+    assert trades_path(root, "AAA", "shuffle").exists() and not (root / "trades").exists()
+
+
+def _flat_trades(symbol, r, sessions=60, per_day=10, regime="risk_on", start="2025-01-02", step=5):
+    """Constant-r trades spread over five calendar quarters (pooled rows bucket by quarter)."""
+    out = []
+    for di, d in enumerate(pd.bdate_range(start, periods=sessions * step)[::step]):
+        for _ in range(per_day):
+            out.append(_trade(symbol, "toy", "long", d.strftime("%Y-%m-%d"), di // 10, regime, r))
+    return out
+
+
+def test_score_regime_root_computes_a_baseline_from_trades_shuffle(tmp_path):
+    from research.strategy_hunt.run import score_regime_root
+    from research.strategy_hunt.score.regime_rows import BASELINE_SOURCE
+
+    _write_trades(tmp_path, "AAA", _flat_trades("AAA", 0.30))
+    _write_trades(tmp_path, "AAA", _flat_trades("AAA", 0.10), variant="shuffle")
+
+    reg_rows, pool_rows, base_rows = score_regime_root(tmp_path, ["toy"], "2025-09-25T00:00:00")
+
+    assert base_rows and all(r["source"] == BASELINE_SOURCE == "baseline" for r in base_rows)
+    assert all(r["symbol"] == "*" and r["regime"] == "risk_on" for r in base_rows)
+    assert base_rows[0]["exp_r"] == pytest.approx(0.10)
+    assert len(pool_rows) == 1
+    assert pool_rows[0]["baseline_exp_r"] == pytest.approx(0.10) and pool_rows[0]["baseline_n"] == 600
+    assert pool_rows[0]["excess_r"] == pytest.approx(0.20)
+    # per-symbol regime rows are untouched by the baseline
+    assert reg_rows and all("baseline_exp_r" in r for r in reg_rows)
+    assert all(math.isnan(r["baseline_exp_r"]) for r in reg_rows)
+
+
+def test_score_regime_root_without_trades_shuffle_reports_no_baseline(tmp_path):
+    import json as _json
+    from research.strategy_hunt.run import score_regime_root
+
+    _write_trades(tmp_path, "AAA", _flat_trades("AAA", 0.30))
+    reg_rows, pool_rows, base_rows = score_regime_root(tmp_path, ["toy"], "2025-09-25T00:00:00")
+    assert base_rows == [] and len(pool_rows) == 1
+    assert math.isnan(pool_rows[0]["excess_r"]) and pool_rows[0]["baseline_n"] == 0
+    assert "no_baseline" in _json.loads(pool_rows[0]["failed_floors"])
+    assert pool_rows[0]["verdict"] != "PASS"

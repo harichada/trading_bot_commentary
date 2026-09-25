@@ -94,15 +94,16 @@ def test_cmd_score_calls_score_regime_root_and_snapshot_has_regime_and_pooled_ke
     assert str(called_root) == str(root) and called_families == ["toy"]
 
     snap = _json.loads((fit_dir(root) / "strategy_fit.json").read_text())
-    assert "regime_rows" in snap and "pooled_rows" in snap
+    assert "regime_rows" in snap and "pooled_rows" in snap and "baseline_pooled_rows" in snap
     assert isinstance(snap["regime_rows"], dict) and isinstance(snap["pooled_rows"], dict)
 
     # finding 4: write_fit received exactly what score_regime_root returned -- not merely
     # something of the right shape.
     assert len(write_fit_calls) == 1 and len(regime_results) == 1
-    reg_rows, pool_rows = regime_results[0]
+    reg_rows, pool_rows, base_rows = regime_results[0]
     assert write_fit_calls[0]["regime_rows"] == reg_rows
     assert write_fit_calls[0]["pooled_rows"] == pool_rows
+    assert write_fit_calls[0]["baseline_pooled_rows"] == base_rows
 
 
 # ──────────────────────
@@ -112,17 +113,108 @@ def test_cmd_score_calls_score_regime_root_and_snapshot_has_regime_and_pooled_ke
 _ALL_STEPS = ("cmd_export", "cmd_news", "cmd_earnings", "cmd_context", "cmd_calibrate", "cmd_run", "cmd_score")
 
 
+def _record_all_steps(cli, monkeypatch):
+    """Replace every cmd_all step with a recorder of (name, shuffle_seed) and return the log."""
+    order = []
+
+    def _step(name):
+        def _fn(a):
+            order.append((name, getattr(a, "shuffle_seed", None)))
+            return 0
+        return _fn
+
+    for name in _ALL_STEPS:
+        monkeypatch.setattr(cli, name, _step(name))
+    return order
+
+
 def test_cmd_all_runs_context_after_news_and_earnings(monkeypatch, tmp_path):
     """Finding 1: the universe context must be built after news/earnings land, so its ctx_news_*/
-    ctx_earnings_* columns reflect tonight's data by the time `run` consumes them -- not before."""
+    ctx_earnings_* columns reflect tonight's data by the time `run` consumes them -- not before.
+
+    v-playbook-desk-b1-5 task 10: `run` now happens twice -- the real tape, then the shuffled
+    baseline (seed 7) into the same root's `_shuffle` dirs -- before `score` reads both."""
     from research.strategy_hunt import cli
 
-    order = []
-    for name in _ALL_STEPS:
-        monkeypatch.setattr(cli, name, (lambda n: (lambda a: order.append(n) or 0))(name))
-
+    order = _record_all_steps(cli, monkeypatch)
     assert cli.cmd_all(cli.build_parser().parse_args(["all", "--root", str(tmp_path)])) == 0
-    assert order == ["cmd_export", "cmd_news", "cmd_earnings", "cmd_context", "cmd_calibrate", "cmd_run", "cmd_score"]
+    assert order == [("cmd_export", None), ("cmd_news", None), ("cmd_earnings", None), ("cmd_context", None),
+                     ("cmd_calibrate", None), ("cmd_run", None), ("cmd_run", cli.BASELINE_SHUFFLE_SEED),
+                     ("cmd_score", None)]
+
+
+def test_cmd_all_no_baseline_skips_the_shuffled_run(monkeypatch, tmp_path):
+    from research.strategy_hunt import cli
+
+    order = _record_all_steps(cli, monkeypatch)
+    assert cli.cmd_all(cli.build_parser().parse_args(["all", "--root", str(tmp_path), "--no-baseline"])) == 0
+    assert [n for n, _ in order] == list(_ALL_STEPS)
+    assert [seed for _, seed in order] == [None] * len(_ALL_STEPS)
+
+
+def test_cmd_all_baseline_run_is_forced_and_leaves_the_real_run_namespace_alone(monkeypatch, tmp_path):
+    """The baseline must re-run even when the real run's checkpoints are warm (force=True), and
+    must not mutate the namespace the later steps see."""
+    from research.strategy_hunt import cli
+
+    seen = []
+    for name in ("cmd_export", "cmd_news", "cmd_earnings", "cmd_context", "cmd_calibrate", "cmd_score"):
+        monkeypatch.setattr(cli, name, lambda a: 0)
+    monkeypatch.setattr(cli, "cmd_run", lambda a: seen.append((a.shuffle_seed, a.force)) or 0)
+
+    a = cli.build_parser().parse_args(["all", "--root", str(tmp_path)])
+    assert cli.cmd_all(a) == 0
+    assert seen == [(None, False), (cli.BASELINE_SHUFFLE_SEED, True)]
+    assert a.shuffle_seed is None and a.force is False
+
+
+def test_cmd_all_stops_when_the_baseline_run_fails(monkeypatch, tmp_path):
+    from research.strategy_hunt import cli
+
+    calls = []
+    for name in ("cmd_export", "cmd_news", "cmd_earnings", "cmd_context", "cmd_calibrate"):
+        monkeypatch.setattr(cli, name, lambda a: 0)
+    monkeypatch.setattr(cli, "cmd_run", lambda a: 1 if a.shuffle_seed is not None else 0)
+    monkeypatch.setattr(cli, "cmd_score", lambda a: calls.append("cmd_score") or 0)
+
+    assert cli.cmd_all(cli.build_parser().parse_args(["all", "--root", str(tmp_path)])) == 1
+    assert calls == []
+
+
+def test_cmd_run_with_a_shuffle_seed_uses_the_shuffle_variant(monkeypatch, tmp_path):
+    from research.strategy_hunt import cli
+    from research.strategy_hunt import run as RUN
+
+    monkeypatch.setattr(RUN, "REPORTS_DIR", tmp_path / "reports")
+    seen = {}
+
+    def _fake_run_symbols(symbols, root, families, workers=1, **kw):
+        seen.update(kw)
+        return []
+
+    monkeypatch.setattr(cli, "run_symbols", _fake_run_symbols)
+    assert cli.main(["run", "--root", str(tmp_path), "--symbols", "AAA", "--families", "toy"]) == 0
+    assert seen["variant"] is None
+    assert cli.main(["run", "--root", str(tmp_path), "--symbols", "AAA", "--families", "toy",
+                     "--shuffle-seed", "7"]) == 0
+    assert seen["variant"] == "shuffle" and seen["shuffle_seed"] == 7
+
+
+def test_cmd_run_manifest_keeps_the_baseline_run_separate(monkeypatch, tmp_path):
+    """Both runs write a manifest for the same date; keying the shuffled one separately stops it
+    from overwriting the real run's record."""
+    import json as _json
+    from research.strategy_hunt import cli
+    from research.strategy_hunt import run as RUN
+
+    reports = tmp_path / "reports"
+    monkeypatch.setattr(RUN, "REPORTS_DIR", reports)
+    monkeypatch.setattr(cli, "run_symbols", lambda symbols, root, families, workers=1, **kw: [])
+    assert cli.main(["run", "--root", str(tmp_path), "--symbols", "AAA", "--families", "toy"]) == 0
+    assert cli.main(["run", "--root", str(tmp_path), "--symbols", "AAA", "--families", "toy",
+                     "--shuffle-seed", "7"]) == 0
+    rec = _json.loads(next(reports.glob("*.json")).read_text())
+    assert rec["run"]["shuffle_seed"] is None and rec["run_shuffle"]["shuffle_seed"] == 7
 
 
 def test_cmd_context_returns_1_and_prints_clean_error_when_universe_context_build_fails(monkeypatch, tmp_path, capsys):

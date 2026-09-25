@@ -230,3 +230,21 @@ def test_malformed_regime_and_pooled_sections_never_raise(tmp_path):
     assert fit.lookup("NVDA", "orb", "long").verdict == "PASS"
     assert fit.lookup_regime("NVDA", "orb", "long", "risk_on").verdict == "PASS"   # falls back
     assert fit.summary()["n_regime_rows"] == 0 and fit.summary()["last_error"] is None
+
+
+def test_snapshot_with_a_baseline_pooled_rows_section_loads_and_is_ignored(tmp_path):
+    """v-playbook-desk-b1-5 task 10: the research writer adds a `baseline_pooled_rows` section
+    (the shuffled control's pooled rows). The live reader must load such a snapshot without
+    error and must never treat a baseline row as a pooled lane -- it only reads `pooled_rows`."""
+    p = tmp_path / "with_baseline.json"
+    baseline = _row("*", "orb", "long", "PASS", 0.9)
+    baseline.update({"source": "baseline", "regime": "risk_on", "excess_r": None, "recovery": None})
+    p.write_text(json.dumps({"computed_at": "2025-09-25T01:00:00", "floors": {},
+                             "rows": {"NVDA": {"orb:long": _row("NVDA", "orb", "long", "PASS", 0.3)}},
+                             "regime_rows": {}, "pooled_rows": {},
+                             "baseline_pooled_rows": {"orb:long:risk_on": baseline}}))
+    fit = _fit(p)
+    assert fit.summary()["last_error"] is None
+    assert fit.lookup("NVDA", "orb", "long").verdict == "PASS"
+    assert fit.summary()["n_pooled_pass"] == 0 and fit.summary()["n_regime_rows"] == 0
+    assert fit.lookup_regime("NVDA", "orb", "long", "risk_on").symbol == "NVDA"

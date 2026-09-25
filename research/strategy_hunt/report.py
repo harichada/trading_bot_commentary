@@ -9,7 +9,9 @@ from typing import Optional
 
 import pandas as pd
 
+from research.strategy_hunt.paths import trades_dir
 from research.strategy_hunt.run import REPORTS_DIR
+from research.strategy_hunt.score.regime_rows import POOLED_SOURCE
 
 CONTROL_FILES = {"shuffle": "strategy_fit_shuffle.json", "cost_0.5": "strategy_fit_cost_0.5.json", "cost_2.0": "strategy_fit_cost_2.0.json"}
 CAVEATS = (
@@ -82,6 +84,44 @@ def _regime_table(rows: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _excess_key(row: dict) -> float:
+    """Sort key for the baseline table: a NaN excess ("no baseline measured") sorts last."""
+    v = row.get("excess_r")
+    if v is None or (isinstance(v, float) and math.isnan(v)):
+        return float("-inf")
+    return float(v)
+
+
+def _pooled_baseline_table(pooled: Optional[list[dict]]) -> str:
+    """Every pooled row against its same-regime shuffled baseline, biggest excess first.
+
+    This is the table the B1 run needed: a pooled `exp_R` alone cannot say whether a lane
+    beats the regime's drift, and `excess` is exactly that difference."""
+    if not pooled:
+        return "_no pooled rows_"
+    lines = ["| family | side | regime | n | exp_R | baseline exp_R | excess | t_session | recovery | "
+             "verdict | failed floors |",
+             "|---|---|---|---|---|---|---|---|---|---|---|"]
+    for r in sorted(pooled, key=_excess_key, reverse=True):
+        try:
+            failed = ", ".join(json.loads(r.get("failed_floors") or "[]"))
+        except (TypeError, ValueError):       # a hand-edited snapshot must not break the report
+            failed = str(r.get("failed_floors"))
+        lines.append(f"| {r.get('strategy', '')} | {r.get('side', '')} | {r.get('regime', '')} | "
+                     f"{r.get('n', 0)} | {_f(r.get('exp_r'))} | {_f(r.get('baseline_exp_r'))} | "
+                     f"{_f(r.get('excess_r'))} | {_f(r.get('t_stat_session'), 2)} | "
+                     f"{_f(r.get('recovery'), 2)} | {r.get('verdict', '')} | {failed} |")
+    return "\n".join(lines)
+
+
+def _pooled_counts(rows: list[dict]) -> dict[str, int]:
+    out = {"PASS": 0, "WATCH": 0}
+    for r in rows:
+        if r.get("source") == POOLED_SOURCE and r.get("verdict") in out:
+            out[r["verdict"]] += 1
+    return out
+
+
 def _controls_section(rows: list[dict], controls: Optional[dict[str, list[dict]]]) -> str:
     real_pass = sum(1 for r in rows if r["source"] == "walkforward" and r["verdict"] == "PASS")
     if not controls:
@@ -91,7 +131,9 @@ def _controls_section(rows: list[dict], controls: Optional[dict[str, list[dict]]
         p = sum(1 for r in crows if r.get("source", "walkforward") == "walkforward" and r["verdict"] == "PASS")
         exp = [r["exp_r"] for r in crows if r.get("source", "walkforward") == "walkforward" and not (isinstance(r["exp_r"], float) and math.isnan(r["exp_r"]))]
         mean_exp = sum(exp) / len(exp) if exp else float("nan")
-        lines.append(f"- **{name}**: PASS rows {p}, mean exp_r {_f(mean_exp)}")
+        pc = _pooled_counts(crows)
+        lines.append(f"- **{name}**: PASS rows {p}, mean exp_r {_f(mean_exp)}, "
+                     f"pooled PASS {pc['PASS']}, pooled WATCH {pc['WATCH']}")
         if name == "shuffle":
             lines.append(f"  - false-discovery estimate: {p} / {real_pass} shuffled-vs-real PASS rows")
     return "\n".join(lines)
@@ -156,13 +198,14 @@ def _calibration_section(calibration: Optional[dict]) -> str:
 
 def render_report(rows: list[dict], computed_at: str, trades: Optional[pd.DataFrame] = None,
                   controls: Optional[dict[str, list[dict]]] = None, portfolio: Optional[dict] = None,
-                  calibration: Optional[dict] = None) -> str:
+                  calibration: Optional[dict] = None, pooled: Optional[list[dict]] = None) -> str:
     syms = {r["symbol"] for r in rows}
     parts = [f"# Strategy hunt report\n\nComputed: {computed_at}. Rows: {len(rows)}. Symbols: {len(syms)}.\n",
              "## Verdicts by family\n\n" + _verdict_table(rows),
              "## Top lanes by score\n\n" + _top_table(rows),
              "## Pooled out-of-sample by family\n\n" + _pooled_table(trades),
              "## Per-regime expectancy by family\n\n" + _regime_table(rows),
+             "## Pooled rows vs shuffled baseline\n\n" + _pooled_baseline_table(pooled),
              "## Controls\n\n" + _controls_section(rows, controls),
              "## Symbols with no passing lane\n\n" + _no_pass_section(rows),
              "## Portfolio replay of PASS lanes\n\n" + _portfolio_section(portfolio),
@@ -172,12 +215,19 @@ def render_report(rows: list[dict], computed_at: str, trades: Optional[pd.DataFr
 
 
 def _load_controls(root: Path) -> dict[str, list[dict]]:
+    """Each control snapshot's rows: the unconditional lanes plus its pooled rows.
+
+    Pooled rows are kept in the same list and told apart by `source`, so
+    `_controls_section` can report both counts without a second container shape.
+    Baseline rows are never loaded — a control's shuffled baseline is its own business."""
     out = {}
     for name, fname in CONTROL_FILES.items():
         p = Path(root) / "fit" / fname
         if p.exists():
             snap = json.loads(p.read_text())
-            out[name] = [r for lanes in snap.get("rows", {}).values() for r in lanes.values()]
+            lanes = [r for lanes in snap.get("rows", {}).values() for r in lanes.values()]
+            pooled = list(snap.get("pooled_rows", {}).values())
+            out[name] = lanes + pooled
     return out
 
 
@@ -188,19 +238,51 @@ def _write_equity_curve_csv(curve: pd.Series, path: Path) -> None:
     path.write_text("\n".join(lines) + "\n")
 
 
-def write_report(root: Path, rows: list[dict], computed_at: str) -> Path:
+def report_stem(computed_at: str) -> str:
+    """`<date>T<HHMM>` from an ISO `computed_at`.
+
+    v-playbook-desk-b1-5 task 10: the report used to be named by date alone, so a second
+    run on the same day silently overwrote the first one's evidence. A `computed_at` with
+    no time part stamps `T0000`."""
+    ts = str(computed_at)
+    if len(ts) < 10 or ts[4] != "-" or ts[7] != "-":
+        raise ValueError(f"computed_at must start with an ISO date (YYYY-MM-DD), got {computed_at!r}")
+    hhmm = ts[11:16].replace(":", "") if len(ts) >= 16 and ts[10] in "T " else ""
+    return f"{ts[:10]}T{hhmm or '0000'}"
+
+
+def _report_manifest(rows: list[dict], pooled: Optional[list[dict]], computed_at: str, report_name: str) -> dict:
+    """The machine-readable companion to the markdown report, same stem so the pair stays
+    together and neither is overwritten by the next run."""
+    verdicts: dict[str, int] = {}
+    for r in rows:
+        if r.get("source") == "walkforward":
+            verdicts[r["verdict"]] = verdicts.get(r["verdict"], 0) + 1
+    pooled_verdicts: dict[str, int] = {}
+    for r in pooled or []:
+        pooled_verdicts[r["verdict"]] = pooled_verdicts.get(r["verdict"], 0) + 1
+    return {"computed_at": computed_at, "report": report_name, "n_rows": len(rows),
+            "n_symbols": len({r["symbol"] for r in rows}), "verdicts": verdicts,
+            "pooled_verdicts": pooled_verdicts,
+            "pooled_with_baseline": sum(1 for r in pooled or [] if int(r.get("baseline_n") or 0) > 0)}
+
+
+def write_report(root: Path, rows: list[dict], computed_at: str, pooled: Optional[list[dict]] = None) -> Path:
     from research.strategy_hunt.portfolio import pass_lane_trades, replay
     from research.strategy_hunt.sim.calibrate import load_calibration
 
-    files = sorted((Path(root) / "trades").glob("*.parquet"))
+    files = sorted(trades_dir(root).glob("*.parquet"))
     trades = pd.concat([pd.read_parquet(f) for f in files], ignore_index=True) if files else None
     controls = _load_controls(root)
     calibration = load_calibration(root)
     portfolio = replay(pass_lane_trades(trades, rows)) if trades is not None else None
-    md = render_report(rows, computed_at, trades, controls, portfolio, calibration)
+    md = render_report(rows, computed_at, trades, controls, portfolio, calibration, pooled=pooled)
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
-    p = REPORTS_DIR / f"{computed_at[:10]}-strategy-hunt.md"
+    stem = report_stem(computed_at)
+    p = REPORTS_DIR / f"{stem}-strategy-hunt.md"
     p.write_text(md)
+    p.with_suffix(".json").write_text(
+        json.dumps(_report_manifest(rows, pooled, computed_at, p.name), indent=1, allow_nan=False))
     if portfolio is not None:
-        _write_equity_curve_csv(portfolio["equity_curve"], REPORTS_DIR / f"{computed_at[:10]}-equity-curve.csv")
+        _write_equity_curve_csv(portfolio["equity_curve"], REPORTS_DIR / f"{stem}-equity-curve.csv")
     return p

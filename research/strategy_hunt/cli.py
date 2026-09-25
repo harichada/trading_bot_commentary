@@ -10,11 +10,15 @@ import time
 from pathlib import Path
 
 from research.strategy_hunt.fit.writer import write_fit
+from research.strategy_hunt.paths import SHUFFLE_VARIANT
 from research.strategy_hunt.run import DEFAULT_ROOT, run_symbols, score_regime_root, score_root, write_manifest
 from strategies.families import family_names
 
 logger = logging.getLogger("strategy_hunt.cli")
 CONTEXT_SYMBOLS = ("SPY", "VIX")
+# v-playbook-desk-b1-5 task 10: `all` runs the shuffled baseline with this fixed seed, so the
+# control is reproducible and the same across nightly runs.
+BASELINE_SHUFFLE_SEED = 7
 
 
 def _symbols_arg(value: str | None, root: Path) -> list[str]:
@@ -142,17 +146,23 @@ def cmd_calibrate(a: argparse.Namespace) -> int:
 
 def cmd_run(a: argparse.Namespace) -> int:
     symbols, fams = _symbols_arg(a.symbols, a.root), _families_arg(a.families)
+    # v-playbook-desk-b1-5 task 10: a shuffled run is a *variant* of this root, not a root of
+    # its own -- it writes trades_shuffle/, checkpoints_shuffle/, choices_shuffle/ and shares
+    # the root's bars/news/context, so `score` can read both tapes in one pass.
+    variant = SHUFFLE_VARIANT if a.shuffle_seed is not None else None
     t0 = time.time()
-    recs = run_symbols(symbols, a.root, fams, workers=a.workers, force=a.force, cost_mult=a.cost_mult,
-                       shuffle_seed=a.shuffle_seed, notional=a.notional)
+    recs = run_symbols(symbols, a.root, fams, workers=a.workers, variant=variant, force=a.force,
+                       cost_mult=a.cost_mult, shuffle_seed=a.shuffle_seed, notional=a.notional)
     counts = {}
     for r in recs:
         counts[r["status"]] = counts.get(r["status"], 0) + 1
         print(f"run {r['symbol']}: {r['status']} trades={r['n_trades']} {r.get('error', '')}")
-    print(f"run summary: {counts} elapsed={time.time() - t0:.0f}s")
-    write_manifest(a.root, {"date": time.strftime("%Y-%m-%d"), "run": {"symbols": len(symbols), "families": fams,
+    print(f"run{'' if variant is None else ' (' + variant + ')'} summary: {counts} elapsed={time.time() - t0:.0f}s")
+    # Keyed by variant so the baseline run does not overwrite the real run's manifest entry.
+    key = "run" if variant is None else f"run_{variant}"
+    write_manifest(a.root, {"date": time.strftime("%Y-%m-%d"), key: {"symbols": len(symbols), "families": fams,
                             "counts": counts, "cost_mult": a.cost_mult, "shuffle_seed": a.shuffle_seed,
-                            "notional": a.notional, "elapsed_sec": round(time.time() - t0)},
+                            "variant": variant, "notional": a.notional, "elapsed_sec": round(time.time() - t0)},
                             "errors": [r for r in recs if r["status"] == "error"]})
     return 0 if counts.get("error", 0) <= 0.1 * max(1, len(recs)) else 1
 
@@ -165,19 +175,23 @@ def cmd_score(a: argparse.Namespace) -> int:
     # v-playbook-desk-b1-2026-09-25: regime-conditioned per-symbol rows and the universe-pooled
     # (family, side, regime) rows -- without this the gate's lookup_regime always falls back to
     # the unconditional lookup(), since write_fit never sees any regime/pooled rows to persist.
-    reg_rows, pool_rows = score_regime_root(a.root, _families_arg(a.families), computed_at)
+    # v-playbook-desk-b1-5 task 10: the third list is the shuffled baseline pooled from
+    # <root>/trades_shuffle/; pooled verdicts are already scored against the excess over it.
+    reg_rows, pool_rows, base_rows = score_regime_root(a.root, _families_arg(a.families), computed_at)
     engine = None
     if a.postgres:
         from sqlalchemy import create_engine
         engine = create_engine(os.environ["POSTGRES_DSN"])
-    out = write_fit(rows, a.root, computed_at, engine=engine, regime_rows=reg_rows, pooled_rows=pool_rows)
+    out = write_fit(rows, a.root, computed_at, engine=engine, regime_rows=reg_rows, pooled_rows=pool_rows,
+                    baseline_pooled_rows=base_rows)
     counts = {}
     for r in rows:
         counts[r["verdict"]] = counts.get(r["verdict"], 0) + 1
     for r in sorted(rows, key=lambda r: -r["score"])[:20]:
         print(f"{r['symbol']:6} {r['strategy']:18} {r['side']:5} {r['verdict']:5} n={r['n']:4} exp_r={r['exp_r']:+.3f} score={r['score']:.3f}")
     print(f"score summary: {counts} -> {out['json']}")
-    rp = write_report(a.root, rows, computed_at)
+    print(f"pooled rows: {len(pool_rows)} (baseline rows: {len(base_rows)})")
+    rp = write_report(a.root, rows, computed_at, pooled=pool_rows)
     print(f"report: {rp}")
     return 0
 
@@ -188,8 +202,9 @@ def cmd_report(a: argparse.Namespace) -> int:
 
     snap = load_snapshot(a.root)
     rows = [row for sym_rows in snap["rows"].values() for row in sym_rows.values()]
+    pooled = list(snap.get("pooled_rows", {}).values())
     computed_at = snap.get("computed_at") or time.strftime("%Y-%m-%dT%H:%M:%S")
-    rp = write_report(a.root, rows, computed_at)
+    rp = write_report(a.root, rows, computed_at, pooled=pooled)
     print(f"report: {rp}")
     return 0
 
@@ -251,15 +266,29 @@ def cmd_promote(a: argparse.Namespace) -> int:
     return 0
 
 
+def _baseline_namespace(a: argparse.Namespace) -> argparse.Namespace:
+    """A copy of `a` configured for the shuffled baseline run. A copy, not a mutation: the
+    later steps must still see the real run's `shuffle_seed=None` and the user's `--force`."""
+    return argparse.Namespace(**{**vars(a), "shuffle_seed": BASELINE_SHUFFLE_SEED, "force": True})
+
+
 def cmd_all(a: argparse.Namespace) -> int:
     # v-playbook-desk-b1-2026-09-25 (fix round 1, finding 1): context must build the universe
     # context AFTER news/earnings land, so ctx_news_count_24h/ctx_earnings_prev/ctx_eps_surprise_pct
     # reflect tonight's caches by the time `run` consumes them via process_symbol -> ctx_* columns.
-    for fn in (cmd_export, cmd_news, cmd_earnings, cmd_context, cmd_calibrate, cmd_run, cmd_score):
+    for fn in (cmd_export, cmd_news, cmd_earnings, cmd_context, cmd_calibrate, cmd_run):
         rc = fn(a)
         if rc:
             return rc
-    return 0
+    # v-playbook-desk-b1-5 task 10: the shuffled baseline is part of the nightly pipeline, not a
+    # separate manual run -- without it every pooled row scores `no_baseline` and can only WATCH.
+    # force=True because its checkpoints are only valid for one tape+seed and must not be reused
+    # from a night whose real trades have since changed.
+    if not getattr(a, "no_baseline", False):
+        rc = cmd_run(_baseline_namespace(a))
+        if rc:
+            return rc
+    return cmd_score(a)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -277,6 +306,9 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--shuffle-seed", type=int, default=None)
         sp.add_argument("--notional", type=float, default=6000.0)
         sp.add_argument("--no-coldstart", action="store_true")
+        sp.add_argument("--no-baseline", action="store_true",
+                        help="`all` only: skip the shuffled baseline run, leaving every pooled row "
+                             "with no_baseline (WATCH at best)")
         sp.add_argument("--postgres", action="store_true")
 
     for name, fn in (("export", cmd_export), ("context", cmd_context),

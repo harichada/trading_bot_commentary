@@ -118,6 +118,8 @@ def predict_coldstart(models: dict[str, dict], features: pd.DataFrame, computed_
             row.update({"symbol": str(sym), "strategy": strategy, "side": side, "computed_at": computed_at, "window_end": "",
                         "n": 0, "sessions": 0, "score": 0.0, "verdict": "WATCH" if p >= threshold else "FAIL",
                         "failed_floors": json.dumps(["coldstart"]), "params_json": "{}", "regime_exp_json": "{}",
-                        "source": "coldstart"})
+                        # v-playbook-desk-b1-5 task 10: a cold-start row has no baseline group, and
+                        # `baseline_n` is a count -- 0, not the NaN the comprehension above defaults to.
+                        "source": "coldstart", "baseline_n": 0})
             rows.append({k: row[k] for k in ROW_KEYS})
     return rows

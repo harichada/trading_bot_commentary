@@ -102,14 +102,20 @@ reading/writing under `--root` (default `data/strategy_hunt/`):
     $PY -m research.strategy_hunt calibrate                     # realized fill slippage from Postgres fills
     $PY -m research.strategy_hunt run --workers 12              # walk-forward per symbol; incremental, safe to rerun
     $PY -m research.strategy_hunt run --force                   # recompute everything
-    $PY -m research.strategy_hunt run --shuffle-seed 7 --root data/strategy_hunt_shuffle   # structure-destroying control
+    $PY -m research.strategy_hunt run --shuffle-seed 7          # shuffled baseline, in-root (trades_shuffle/)
     $PY -m research.strategy_hunt score --no-coldstart          # verdicts + fit snapshot + report
-    $PY -m research.strategy_hunt score --root data/strategy_hunt_shuffle --no-coldstart
-    cp data/strategy_hunt_shuffle/fit/strategy_fit.json data/strategy_hunt/fit/strategy_fit_shuffle.json
     $PY -m research.strategy_hunt report                        # rebuild the report from an existing fit snapshot
     $PY -m research.strategy_hunt scorecard --family orb        # Stage A shadow-resolver scorecard for one family
     $PY -m research.strategy_hunt promote                       # promotion table + .env lines for every family
-    $PY -m research.strategy_hunt all --workers 12              # export -> news -> earnings -> context -> calibrate -> run -> score
+    $PY -m research.strategy_hunt all --workers 12              # export -> news -> earnings -> context -> calibrate -> run -> run(shuffle) -> score
+    $PY -m research.strategy_hunt all --workers 12 --no-baseline   # ...without the shuffled baseline run
+
+Since v-playbook-desk-b1-5 the **shuffled baseline lives inside the main root**: `run --shuffle-seed N`
+writes `trades_shuffle/`, `checkpoints_shuffle/` and `choices_shuffle/` next to the real tape's
+directories and shares the root's bars, news, earnings and context, so no second root and no
+symlinking are needed. `score` picks it up automatically whenever `trades_shuffle/` exists and pools
+it into baseline rows the real pooled rows must beat (see "Regime and pooled rows"). `all` runs it
+for you with seed 7 right after the real `run`; `--no-baseline` skips it.
 
 Controls for cost sensitivity use `--cost-mult 0.5` / `2.0` with their own `--root`, then copy the
 JSON to `fit/strategy_fit_cost_0.5.json` / `fit/strategy_fit_cost_2.0.json` before `score` so the
@@ -134,12 +140,14 @@ editing the verdict floors without re-simulating, or `universe-context` after a 
 | `data/strategy_hunt/trades/<SYM>.parquet` | All out-of-sample trades for the symbol |
 | `data/strategy_hunt/choices/<SYM>.json` | Chosen parameters per window and family |
 | `data/strategy_hunt/checkpoints/<SYM>.json` | Skip marker for incremental runs |
+| `data/strategy_hunt/trades_shuffle/`, `choices_shuffle/`, `checkpoints_shuffle/` | Same three, for the shuffled baseline variant (`run --shuffle-seed N`). `score` pools `trades_shuffle/` into the baseline rows pooled verdicts are measured against |
 | `data/strategy_hunt/calibration.json` | Realized slippage summary (`calibrate`); used as a fixed slippage override when usable |
-| `data/strategy_hunt/fit/strategy_fit.json` | Latest fit snapshot (what the engine gate and `/api/strategy-fit` read); since B1 it also carries the `regime_rows` and `pooled_rows` sections |
-| `data/strategy_hunt/fit/fit_<date>.parquet`, `fit_regime_<date>.parquet`, `fit_pooled_<date>.parquet` | Same rows as Parquet, one file per row family. Only `fit_<date>.parquet` goes to the Postgres `strategy_fit` table — its key is (symbol, strategy, side, computed_at), which pooled rows would collide on across regimes |
-| `research/reports/strategy_hunt/<date>-strategy-hunt.md` | Report (verdict table, pooled metrics, portfolio replay, cost calibration) |
-| `research/reports/strategy_hunt/<date>.json` | Run manifest (symbol/family counts, elapsed, errors) |
-| `research/reports/strategy_hunt/<date>-equity-curve.csv` | Monthly equity curve from the portfolio replay |
+| `data/strategy_hunt/fit/strategy_fit.json` | Latest fit snapshot (what the engine gate and `/api/strategy-fit` read); since B1 it also carries the `regime_rows` and `pooled_rows` sections, and since B1.5 `baseline_pooled_rows` (the shuffled control's pooled rows, which the live reader ignores). Non-finite floats (`recovery` +inf, `excess_r` NaN) are written as `null` so the file is valid JSON |
+| `data/strategy_hunt/fit/fit_<date>.parquet`, `fit_regime_<date>.parquet`, `fit_pooled_<date>.parquet`, `fit_baseline_<date>.parquet` | Same rows as Parquet, one file per row family. Only `fit_<date>.parquet` goes to the Postgres `strategy_fit` table — its key is (symbol, strategy, side, computed_at), which pooled rows would collide on across regimes |
+| `research/reports/strategy_hunt/<date>T<HHMM>-strategy-hunt.md` | Report (verdict table, pooled-vs-baseline table, pooled metrics, portfolio replay, cost calibration). Stamped with `computed_at` since B1.5, so two runs in one day no longer overwrite each other |
+| `research/reports/strategy_hunt/<date>T<HHMM>-strategy-hunt.json` | Report manifest (row/symbol counts, verdict counts, pooled verdict counts), same stem as the report |
+| `research/reports/strategy_hunt/<date>.json` | Run manifest (symbol/family counts, elapsed, errors), written by `run`; the shuffled baseline run records itself under `run_shuffle` so it cannot overwrite the real run's entry |
+| `research/reports/strategy_hunt/<date>T<HHMM>-equity-curve.csv` | Monthly equity curve from the portfolio replay |
 | `research/reports/strategy_hunt/scorecard-<family>-<date>.md` | Stage A shadow-resolver scorecard for one family |
 | `docs/research/strategy_hunt_promotion.md` | Promotion table (all families) + the `.env` lines to apply, rewritten each `promote` run |
 
@@ -230,14 +238,24 @@ unconditional per-(symbol, family, side) rows, both written by `score` and read 
   evidence. No evidence is not a FAIL. Those trades still count in the pooled and unconditional rows.
 - **Pooled rows** — one row per (family, side, regime) over the whole universe, with `symbol = "*"`
   and `source = "pooled"`, scored against the stricter `POOLED_FLOORS`: n ≥ 500, sessions ≥ 60,
-  PF ≥ 1.2, WR ≥ 45%, exp_R ≥ +0.05, max DD ≤ 60 R, stability ≥ 0.6, decay ≥ 0.5, t_stat ≥ 3.0,
-  exp_r_lb ≥ 0. A pooled PASS is the family-level claim "this lane works in this regime", which lets
-  a lane trade a symbol with no history of its own. Pooled `window_id` is re-bucketed to the
-  **calendar quarter** of the entry before metrics are computed, since a per-symbol walk-forward
-  window index is not contemporaneous across symbols — so a pooled PASS needs at least four calendar
-  quarters with trades for `stability`/`decay` to clear their floors. `max_dd_r` is looser (60 R)
-  because the pooled curve concatenates every symbol's trades and its drawdown is not a
-  position-sizing constraint.
+  PF ≥ 1.2, WR ≥ 45%, exp_R ≥ +0.05, recovery ≥ 3.0, stability ≥ 0.6, decay ≥ 0.5, t_stat ≥ 3.0,
+  t_stat_session ≥ 3.0, exp_r_lb ≥ 0 and **excess over the shuffled baseline ≥ +0.05 R**. A pooled
+  PASS is the family-level claim "this lane works in this regime", which lets a lane trade a symbol
+  with no history of its own. Pooled `window_id` is re-bucketed to the **calendar quarter** of the
+  entry before metrics are computed, since a per-symbol walk-forward window index is not
+  contemporaneous across symbols — so a pooled PASS needs at least four calendar quarters with
+  trades for `stability`/`decay` to clear their floors. There is no `max_dd_r` cap: a flat R
+  drawdown ceiling is not scale-invariant across pooled trade counts (B1 saw a 13k-trade row with a
+  639 R drawdown by arithmetic alone), so `min_recovery` (net R / max DD R) asks the scale-invariant
+  question instead.
+- **Baseline rows** (v-playbook-desk-b1-5) — the same pooled rows computed over the *shuffled*
+  tape in `<root>/trades_shuffle/`, stamped `source = "baseline"` and stored under the snapshot's
+  own `baseline_pooled_rows` key. Every real pooled row carries `baseline_exp_r`, `baseline_n` and
+  `excess_r = exp_r − baseline_exp_r`, and the `min_excess_r` floor is what stops a pooled row from
+  passing on the regime's drift: the B1 run's shuffle control reached a pooled PASS while the real
+  tape did not. With no matching baseline group the excess is NaN, the row records the
+  `no_baseline` failure, and it can be WATCH but **never** PASS. Baseline rows never appear in
+  `pooled_rows`/`regime_rows` and the live gate never reads them.
 
 Trades whose regime is `unknown` (SPY/VIX context missing for that session) are dropped from both
 row families — they would describe a data gap, not a regime — and still count in the unconditional
@@ -256,7 +274,9 @@ A stale, missing or unloaded snapshot yields `None`, exactly as `lookup` does.
 **Reading `t_stat` honestly.** Pooled `t_stat` is a trade-level mean-R t-statistic that treats every
 trade as independent. Pooled trades include many same-session entries across correlated symbols, so
 the effective sample is smaller than n suggests and `min_t_stat 3.0` is a weaker filter than it
-reads. Treat a pooled PASS as a hypothesis worth shadow-trading, not a measured edge.
+reads — which is why `min_t_stat_session` now clusters by session (the true independent unit) on top
+of it, and `min_excess_r` requires the row to beat its own shuffled control. Treat a pooled PASS as a
+hypothesis worth shadow-trading, not a measured edge.
 
 ## Sentiment backend
 

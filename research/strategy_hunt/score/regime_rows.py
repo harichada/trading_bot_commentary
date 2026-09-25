@@ -1,6 +1,6 @@
-"""Regime-conditioned fit rows and universe-pooled regime lanes (spec §6).
+"""Regime-conditioned fit rows, universe-pooled regime lanes, and their shuffled baseline (spec §6).
 
-Two extra row families on top of the unconditional per-(symbol, family, side)
+Three extra row families on top of the unconditional per-(symbol, family, side)
 rows `fit/writer.build_row` produces:
 
 * `regime_rows(...)` — one row per market regime the symbol traded in *often enough
@@ -11,8 +11,12 @@ rows `fit/writer.build_row` produces:
   universe, symbol `"*"`, source `"pooled"`, scored against `POOLED_FLOORS`.
   A pooled PASS is the family-level statement "this lane works in this regime",
   which lets a lane trade a symbol that has no history of its own yet.
+* `baseline_pooled_rows(...)` — the same pooled rows computed over the *shuffled*
+  tape (`<root>/trades_shuffle/`), stamped `source="baseline"`. They exist so
+  `pooled_rows(..., baseline=...)` can require positive excess over them, and they
+  live only under the snapshot's own `baseline_pooled_rows` key.
 
-Two sample rules matter, because a row here is read by the live gate:
+Three sample rules matter, because a row here is read by the live gate:
 
 * **No evidence is not a FAIL** (v-playbook-desk-b1-2026-09-25, review r1). Under
   `REGIME_ROW_MIN_N` trades a row could only ever come out FAIL — `stability` and
@@ -26,6 +30,12 @@ Two sample rules matter, because a row here is read by the live gate:
   non-contemporaneous windows together. Pooled rows are re-bucketed by the
   calendar quarter of `entry_ts` before the metrics are computed; per-symbol
   regime rows keep `window_id`, which is contemporaneous within one symbol.
+* **A pooled row must beat its own shuffled control** (v-playbook-desk-b1-5 task 10).
+  The B1 run's shuffle control — 5-minute returns permuted within each session, every
+  session's open-to-close return preserved — reached a pooled PASS while the real tape
+  did not, because a pooled row over a drifting regime measures the drift. `excess_r`
+  is `exp_r` minus the matching baseline group's `exp_r`, `min_excess_r` is the floor,
+  and a row with no baseline records `no_baseline` and can never PASS.
 
 Only the three real regime labels are scored (`REGIMES`). `regime_at` returns
 "unknown" whenever the SPY/VIX context is missing for a session; a row built from
@@ -36,6 +46,7 @@ unconditional row, which is computed over every trade).
 from __future__ import annotations
 
 import dataclasses
+import math
 from typing import Any, Optional
 
 import pandas as pd
@@ -61,17 +72,34 @@ REGIME_ROW_MIN_N = WATCH_FLOORS["min_n"]
 # question instead. Likewise min_t_stat alone treats same-session trades across
 # symbols as independent observations, inflating significance; min_t_stat_session
 # clusters by session (the true independent unit) on top of it.
+# min_excess_r (v-playbook-desk-b1-5 task 10) is the floor the B1 run showed was missing: the
+# shuffle control -- 5-minute returns permuted inside each session, each session's open-to-close
+# return preserved -- reached a pooled PASS while the real tape did not, because a pooled row
+# over a drifting regime measures the drift and not the rule. A pooled lane now has to beat the
+# same (family, side, regime) shuffled baseline by this much expectancy before it can PASS.
 POOLED_FLOORS = {"min_n": 500, "min_sessions": 60, "min_pf": 1.2, "min_wr": 0.45, "min_exp_r": 0.05,
                  "min_recovery": 3.0, "min_stability": 0.6, "min_decay": 0.5, "min_t_stat": 3.0,
-                 "min_t_stat_session": 3.0, "min_exp_r_lb": 0.0}
+                 "min_t_stat_session": 3.0, "min_exp_r_lb": 0.0, "min_excess_r": 0.05}
 POOLED_WATCH_FLOORS = {"min_n": 200, "min_pf": 1.05}
 POOLED_SYMBOL = "*"
 # String contract with core/strategy_fit_rows.py: FitRow.from_dict flags a row pooled when
 # its "source" is this value. Change one side and the live gate stops seeing pooled lanes.
 POOLED_SOURCE = "pooled"
+# Baseline rows are shuffled-control pooled rows. Deliberately *not* POOLED_SOURCE: they are
+# written under their own snapshot section and the live gate must never read one as a lane.
+BASELINE_SOURCE = "baseline"
+# `excess_r` when no baseline group matched. NaN, not 0.0: "not measured" and "exactly matched
+# the shuffled control" are different claims and only the second one is evidence.
+NO_BASELINE = float("nan")
 
 
-def _pooled_failures(m: FitMetrics) -> list[str]:
+def _pooled_failures(m: FitMetrics, excess_r: float = NO_BASELINE) -> list[str]:
+    # A missing baseline is its own failure key: without one there is nothing to show the
+    # row is more than the regime's drift, so it can WATCH but never PASS.
+    if math.isnan(excess_r):
+        baseline_checks = {"no_baseline": False}
+    else:
+        baseline_checks = {"min_excess_r": excess_r >= POOLED_FLOORS["min_excess_r"]}
     checks = {
         "min_n": m.n >= POOLED_FLOORS["min_n"], "min_sessions": m.sessions >= POOLED_FLOORS["min_sessions"],
         "min_pf": m.pf >= POOLED_FLOORS["min_pf"], "min_wr": m.wr >= POOLED_FLOORS["min_wr"],
@@ -82,13 +110,18 @@ def _pooled_failures(m: FitMetrics) -> list[str]:
         "min_t_stat": m.t_stat >= POOLED_FLOORS["min_t_stat"],
         "min_t_stat_session": m.t_stat_session >= POOLED_FLOORS["min_t_stat_session"],
         "min_exp_r_lb": m.exp_r_lb >= POOLED_FLOORS["min_exp_r_lb"],
+        **baseline_checks,
     }
     return [k for k, ok in checks.items() if not ok]
 
 
-def verdict_pooled(m: FitMetrics) -> tuple[str, list[str]]:
-    """PASS / WATCH / FAIL against `POOLED_FLOORS` (mirrors `score.verdict.verdict`)."""
-    failed = _pooled_failures(m)
+def verdict_pooled(m: FitMetrics, excess_r: float = NO_BASELINE) -> tuple[str, list[str]]:
+    """PASS / WATCH / FAIL against `POOLED_FLOORS` (mirrors `score.verdict.verdict`).
+
+    `excess_r` is `exp_r` minus the same-regime shuffled baseline's `exp_r`, or NaN when no
+    baseline was measured. The default is that NaN rather than a pass-through value, so a
+    caller that forgets the baseline gets "no_baseline" instead of a free PASS."""
+    failed = _pooled_failures(m, excess_r)
     if not failed:
         return "PASS", []
     if m.n >= POOLED_WATCH_FLOORS["min_n"] and m.exp_r > 0 and m.pf >= POOLED_WATCH_FLOORS["min_pf"]:
@@ -142,12 +175,24 @@ def regime_rows(symbol: str, family: str, side: str, trades: list[SimTrade], n_w
     return out
 
 
-def pooled_rows(all_trades: Optional[pd.DataFrame], computed_at: str) -> list[dict[str, Any]]:
+def _baseline_index(baseline: Optional[list[dict[str, Any]]]) -> dict[tuple[str, str, str], dict]:
+    """(family, side, regime) -> baseline row, for the lookup `pooled_rows` does per group."""
+    return {(r["strategy"], r["side"], r.get("regime", "")): r for r in baseline or []}
+
+
+def pooled_rows(all_trades: Optional[pd.DataFrame], computed_at: str,
+                baseline: Optional[list[dict[str, Any]]] = None) -> list[dict[str, Any]]:
     """One pooled row per (family, side, regime) over the whole universe's trades.
 
     Windows are calendar quarters here, not per-symbol `window_id`s (see the module
-    docstring), so `stability`/`decay` compare the same stretch of tape across symbols."""
+    docstring), so `stability`/`decay` compare the same stretch of tape across symbols.
+
+    `baseline` is the shuffled control's pooled rows (`baseline_pooled_rows` over
+    `<root>/trades_shuffle/`). Each row gains `baseline_exp_r`, `baseline_n` and
+    `excess_r = exp_r - baseline_exp_r`, and its verdict is scored against that excess:
+    with no matching baseline group the excess is NaN and the row can never PASS."""
     trades = trades_from_frame(all_trades)
+    index = _baseline_index(baseline)
     groups: dict[tuple[str, str, str], list[SimTrade]] = {}
     for t in trades:
         if t.regime in REGIMES:
@@ -156,7 +201,24 @@ def pooled_rows(all_trades: Optional[pd.DataFrame], computed_at: str) -> list[di
     for (family, side, regime), sub in sorted(groups.items()):
         bucketed = bucket_by_quarter(sub)
         n_windows = len({t.window_id for t in bucketed})
+        base = index.get((family, side, regime))
+        base_exp = float(base["exp_r"]) if base is not None else NO_BASELINE
+        base_n = int(base["n"]) if base is not None else 0
+        # The verdict needs the excess, which needs this row's own exp_r -- so it is derived
+        # from the metrics the builder just computed rather than by scoring the group twice.
         row = build_row(POOLED_SYMBOL, family, side, bucketed, n_windows, {}, computed_at, _window_end(sub),
-                        source=POOLED_SOURCE, verdict_fn=verdict_pooled)
-        out.append({**row, "regime": regime})
+                        source=POOLED_SOURCE,
+                        verdict_fn=lambda m, b=base_exp: verdict_pooled(m, m.exp_r - b))
+        out.append({**row, "regime": regime, "baseline_exp_r": base_exp, "baseline_n": base_n,
+                    "excess_r": row["exp_r"] - base_exp})
     return out
+
+
+def baseline_pooled_rows(all_trades: Optional[pd.DataFrame], computed_at: str) -> list[dict[str, Any]]:
+    """`pooled_rows` over the shuffled control's trades, stamped `source="baseline"`.
+
+    Identical grouping, quarter bucketing and floors as the real pooled rows, so the two are
+    comparable line for line. A baseline row has no baseline of its own, so it carries
+    `excess_r` NaN and the `no_baseline` failure — it is read for its `exp_r` and `n`, never
+    as a verdict, and never by the live gate."""
+    return [{**r, "source": BASELINE_SOURCE} for r in pooled_rows(all_trades, computed_at)]
