@@ -1331,6 +1331,69 @@ class DbLogger:
             logger.warning("db_logger_get_todays_bot_decision_entries_error err=%s", exc)
             return {}
 
+    async def get_bot_trades_between(self, start: Any, end: Any) -> list[dict]:
+        """v-playbook-desk-b2-2026-09-25 (Task 4): closed bot_trades between two
+        dates (inclusive, by entry_time), for the desk journal.
+
+        Returns a list of dicts, one per closed trade:
+            {"symbol", "side", "strategy", "entry_time", "exit_time",
+             "pnl", "pnl_r", "exit_reason", "setup_type"}
+
+        Never raises: [] on a disabled logger, unreachable Postgres, or a
+        malformed row. `start`/`end` are date-like (str "YYYY-MM-DD" or
+        date/datetime); both are cast to str for the parameterized query.
+        """
+        if not self._enabled:
+            return []
+
+        if not self._is_on_owner_loop():
+            if self._owner_loop is None or not self._owner_loop.is_running():
+                return []
+            try:
+                fut = asyncio.run_coroutine_threadsafe(
+                    self._get_bot_trades_between_impl(start, end),
+                    self._owner_loop,
+                )
+                return await asyncio.wrap_future(fut)
+            except Exception as exc:
+                logger.warning("db_logger_get_bot_trades_between_route_error err=%s", exc)
+                return []
+
+        return await self._get_bot_trades_between_impl(start, end)
+
+    async def _get_bot_trades_between_impl(self, start: Any, end: Any) -> list[dict]:
+        """Internal impl: query bot_trades for a closed, date-bounded range."""
+        try:
+            async with self._engine.begin() as conn:
+                query = """
+                    SELECT symbol, side, strategy, entry_time, exit_time,
+                           pnl, pnl_r, exit_reason, setup_type
+                    FROM bot_trades
+                    WHERE DATE(entry_time) BETWEEN :start AND :end
+                      AND exit_time IS NOT NULL
+                    ORDER BY exit_time ASC
+                """
+                result = await conn.execute(text(query), {"start": str(start), "end": str(end)})
+                rows = result.mappings().all()
+                trades = []
+                for row in rows:
+                    symbol = row["symbol"]
+                    trades.append({
+                        "symbol": symbol.upper() if isinstance(symbol, str) else symbol,
+                        "side": row["side"],
+                        "strategy": row["strategy"],
+                        "entry_time": row["entry_time"],
+                        "exit_time": row["exit_time"],
+                        "pnl": float(row["pnl"]) if row["pnl"] is not None else None,
+                        "pnl_r": float(row["pnl_r"]) if row["pnl_r"] is not None else None,
+                        "exit_reason": row["exit_reason"],
+                        "setup_type": row["setup_type"],
+                    })
+                return trades
+        except Exception as exc:
+            logger.warning("db_logger_get_bot_trades_between_error err=%s", exc)
+            return []
+
     async def get_managed_bot_position(
         self, symbol: str
     ) -> dict | None:
