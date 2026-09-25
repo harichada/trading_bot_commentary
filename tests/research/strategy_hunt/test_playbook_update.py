@@ -12,8 +12,10 @@ import pytest
 
 from research.strategy_hunt.playbook_update import (
     FAMILY_BY_STRATEGY,
+    LIVE_LOOKBACK_DAYS,
     LIVE_REGIME_SQL,
     LIVE_TRADES_SQL,
+    RECENT_DAYS,
     best_verdict,
     group_by_key,
     live_resolved_trades,
@@ -28,7 +30,7 @@ NOW = "2026-09-25T20:00:00"
 
 # ────────────────────────── fixtures ──────────────────────────
 
-def _bars(start="2024-01-02", sessions=30, seed=0):
+def _bars(start="2026-07-01", sessions=30, seed=0):
     rng = np.random.default_rng(seed)
     frames, px = [], 100.0
     for d in pd.bdate_range(start, periods=sessions):
@@ -50,7 +52,7 @@ def root(tmp_path):
     return tmp_path
 
 
-def _ledger(ledger_dir, family="toy", timestamps=("2024-01-05T10:00:00", "2024-01-08T10:00:00")):
+def _ledger(ledger_dir, family="toy", timestamps=("2026-07-06T10:00:00", "2026-07-09T10:00:00")):
     from research.strategy_hunt.shadow_resolver import default_ledger_path
 
     p = default_ledger_path(family, ledger_dir)
@@ -81,8 +83,11 @@ def _live_frames(rows, decisions=()):
     return {LIVE_TRADES_SQL: trades, LIVE_REGIME_SQL: dec}
 
 
-def _reader(frames):
-    def _read(query):
+def _reader(frames, seen=None):
+    """A `reader(query, params)` over pre-built frames (the injected SQL reader contract)."""
+    def _read(query, params=None):
+        if seen is not None:
+            seen.append((query, params))
         return frames[query]
     return _read
 
@@ -178,6 +183,27 @@ def test_resolved_from_live_normalises_the_side(raw, expected):
     assert [t.side for t in out] == [expected]
 
 
+def test_resolved_from_live_skips_a_row_with_an_unreadable_exit_time(caplog):
+    """r1 finding 11: an unsortable exit_time must be dropped with a warning, never kept as an
+    empty string that sorts as the oldest trade in the window."""
+    frames = _live_frames([
+        ("AAA", "long", "orb_contraction_rvol", "2026-09-01T10:00:00", "not a timestamp", 1.0),
+        ("AAA", "long", "orb_contraction_rvol", "2026-09-02T10:00:00", "2026-09-02T11:00:00", 0.5),
+    ])
+    with caplog.at_level("WARNING"):
+        out = resolved_from_live(frames[LIVE_TRADES_SQL], frames[LIVE_REGIME_SQL])
+
+    assert [t.r for t in out] == [0.5]
+    assert any("exit_time" in r.message for r in caplog.records)
+
+
+def test_resolved_from_sim_skips_a_trade_with_an_unreadable_exit_ts(caplog):
+    with caplog.at_level("WARNING"):
+        out = resolved_from_sim([_sim_trade(exit_ts="nonsense"), _sim_trade()], "orb")
+
+    assert len(out) == 1 and out[0].exit_ts == "2026-09-01T11:00:00"
+
+
 def test_resolved_from_live_drops_an_unreadable_side():
     frames = _live_frames([("AAA", "sideways", "orb_contraction_rvol", "2026-09-01T10:00:00",
                            "2026-09-01T11:00:00", 1.0)])
@@ -189,18 +215,29 @@ def test_live_resolved_trades_uses_the_injected_reader():
     frames = _live_frames([("AAA", "long", "orb_contraction_rvol", "2026-09-01T10:00:00",
                            "2026-09-01T11:00:00", 1.0)])
 
-    def _read(query):
-        seen.append(query)
-        return frames[query]
+    out = live_resolved_trades(_reader(frames, seen), now=NOW)
 
-    out = live_resolved_trades(_read)
-
-    assert seen == [LIVE_TRADES_SQL, LIVE_REGIME_SQL]
+    assert [q for q, _ in seen] == [LIVE_TRADES_SQL, LIVE_REGIME_SQL]
     assert [t.family for t in out] == ["orb"]
 
 
+def test_live_reads_are_bounded_to_the_lookback_window():
+    """r1 finding 7: both reads are bounded (and parameterized), so a multi-year bot_trades
+    table is never dragged through pandas in full."""
+    seen = []
+    frames = _live_frames([])
+    live_resolved_trades(_reader(frames, seen), now=NOW)
+
+    assert LIVE_LOOKBACK_DAYS == 120
+    since = pd.Timestamp(NOW) - pd.Timedelta(days=LIVE_LOOKBACK_DAYS)
+    for query, params in seen:
+        assert ":since" in query
+        assert pd.Timestamp(params["since"]) == since
+    assert "exit_time >= :since" in LIVE_TRADES_SQL and "ts >= :since" in LIVE_REGIME_SQL
+
+
 def test_live_resolved_trades_never_raises_on_a_failing_reader(caplog):
-    def _boom(query):
+    def _boom(query, params=None):
         raise RuntimeError("no database here")
 
     with caplog.at_level("WARNING"):
@@ -235,7 +272,8 @@ def test_resolved_trades_by_key_merges_the_shadow_ledger_and_live_trades(root, t
                             "2026-09-01T11:00:00", 1.25)],
                           decisions=[("AAA", "2026-09-01T09:55:00", json.dumps({"regime": "risk_on"}))])
 
-    grouped = resolved_trades_by_key(root, ["toy"], reader=_reader(frames), ledger_dir=ledger_dir)
+    grouped = resolved_trades_by_key(root, ["toy"], reader=_reader(frames), ledger_dir=ledger_dir,
+                                     now=NOW)
 
     shadow_key = ("toy", "long", "unknown")
     assert shadow_key in grouped and len(grouped[shadow_key]) == 2
@@ -317,44 +355,136 @@ def test_update_playbook_writes_the_file_and_applies_the_rules(root, tmp_path):
     assert on_disk.entries == pb.entries
 
 
-def test_update_playbook_slices_the_last_recent_window_trades(root, tmp_path):
-    """The updater owns the window: 40 resolved trades become a 30-trade measurement."""
+def _live_row(day_offset, r, strategy="orb_contraction_rvol", hour=10, symbol="AAA", side="long"):
+    """One bot_trades row `day_offset` days before NOW (entry and exit on the same day)."""
+    day = (pd.Timestamp(NOW) - pd.Timedelta(days=day_offset)).normalize()
+    return (symbol, side, strategy, (day + pd.Timedelta(hours=hour - 1)).isoformat(),
+            (day + pd.Timedelta(hours=hour)).isoformat(), r)
+
+
+def test_update_playbook_slices_the_last_recent_window_trades_and_can_upsize(root, tmp_path):
+    """r1 finding 2: the window is the last 60 trades, and 60 >= the 40-trade upsize floor, so
+    a full window of winners with a PASS row reaches 1.25."""
     from core.desk.playbook import RECENT_WINDOW
 
     desk = tmp_path / "desk"
-    # Oldest ten are heavy losers, newest thirty are winners: the slice must drop the losers.
-    rows = [("AAA", "long", "orb_contraction_rvol",
-             f"2026-09-{(i // 3) + 1:02d}T09:00:00", f"2026-09-{(i // 3) + 1:02d}T1{i % 3}:00:00",
-             -5.0 if i < 10 else 0.3) for i in range(40)]
-    frames = _live_frames(rows)
+    # 80 trades inside the 90-day bound: the oldest 20 are heavy losers the slice must drop.
+    rows = [_live_row(88 - i, -5.0 if i < 20 else 0.3, hour=10 + (i % 5)) for i in range(80)]
     snap = _snapshot(pooled={"orb:long:unknown": {"verdict": "PASS"}})
 
-    pb = update_playbook(root, snap, NOW, desk_dir=desk, families=[], reader=_reader(frames))
+    pb = update_playbook(root, snap, NOW, desk_dir=desk, families=[],
+                         reader=_reader(_live_frames(rows)))
 
     entry = pb.get("orb", "long", "unknown")
-    assert entry.n_recent == RECENT_WINDOW == 30
+    assert entry.n_recent == RECENT_WINDOW == 60
     assert entry.exp_r_recent == pytest.approx(0.3)
-    assert entry.status == "enabled"
-    # 30 is below the 40-trade upsize floor, so a PASS verdict still sizes at 1.0 —
-    # see RECENT_WINDOW's note in core/desk/playbook.py.
-    assert entry.size_mult == 1.0
+    assert entry.status == "enabled" and entry.size_mult == 1.25
+    assert entry.reason == "enabled_upsize_fit_confirmed"
 
 
-def test_update_playbook_carries_forward_keys_with_no_new_trades(root, tmp_path):
-    from core.desk.playbook import Playbook, PlaybookEntry, playbook_path, save_playbook
-
+def test_update_playbook_window_is_time_bounded(root, tmp_path):
+    """r1 finding 3: trades older than RECENT_DAYS are out of the sample, so a stale losing
+    streak cannot re-suspend a key every night forever."""
     desk = tmp_path / "desk"
-    stale = PlaybookEntry(family="news_catalyst", side="short", regime="mixed", status="suspended",
-                          size_mult=0.0, exp_r_recent=-0.4, t_stat_recent=-2.5, n_recent=20,
-                          updated_at="2026-09-01T00:00:00", reason="suspended_negative_expectancy")
-    save_playbook(Playbook(entries={}, updated_at="2026-09-01T00:00:00").with_entry(stale),
-                  playbook_path(desk))
+    rows = [_live_row(RECENT_DAYS + 5 + i, -3.0) for i in range(20)]        # too old to count
+    rows += [_live_row(3 + i, 0.4, hour=11) for i in range(12)]             # this is the sample
+
+    pb = update_playbook(root, _snapshot(), NOW, desk_dir=desk, families=[],
+                         reader=_reader(_live_frames(rows)))
+
+    entry = pb.get("orb", "long", "unknown")
+    assert RECENT_DAYS == 90
+    assert entry.n_recent == 12 and entry.exp_r_recent == pytest.approx(0.4)
+    assert entry.status == "enabled"
+
+
+def test_update_playbook_lapses_a_suspension_when_the_sample_is_all_stale(root, tmp_path):
+    """A key whose only trades are 31-90 days old still gets measured, but it may not stay
+    suspended: no resolved trade in 30 days means the suspension lapses to probation."""
+    desk = tmp_path / "desk"
+    rows = [_live_row(40 + i, -1.0 if i % 2 else -0.8, hour=10 + (i % 4)) for i in range(12)]
+
+    pb = update_playbook(root, _snapshot(), NOW, desk_dir=desk, families=[],
+                         reader=_reader(_live_frames(rows)))
+
+    entry = pb.get("orb", "long", "unknown")
+    assert entry.n_recent == 12 and entry.exp_r_recent < 0
+    assert entry.status == "probation" and entry.size_mult == 0.5
+    assert entry.reason == "suspension_lapsed_no_recent_trades"
+
+
+def test_update_playbook_keeps_a_suspension_backed_by_fresh_trades(root, tmp_path):
+    desk = tmp_path / "desk"
+    rows = [_live_row(2 + i, -1.0 if i % 2 else -0.8, hour=10 + (i % 4)) for i in range(12)]
+
+    pb = update_playbook(root, _snapshot(), NOW, desk_dir=desk, families=[],
+                         reader=_reader(_live_frames(rows)))
+
+    entry = pb.get("orb", "long", "unknown")
+    assert entry.status == "suspended" and entry.reason == "suspended_negative_expectancy"
+
+
+def _seed(desk, *entries):
+    from core.desk.playbook import Playbook, playbook_path, save_playbook
+
+    pb = Playbook(entries={}, updated_at="2026-06-01T00:00:00")
+    for e in entries:
+        pb = pb.with_entry(e)
+    save_playbook(pb, playbook_path(desk))
+
+
+def _prev_entry(**kw):
+    from core.desk.playbook import PlaybookEntry
+
+    base = dict(family="news_catalyst", side="short", regime="mixed", status="suspended",
+                size_mult=0.0, exp_r_recent=-0.4, t_stat_recent=-2.5, n_recent=20,
+                updated_at="2026-06-01T00:00:00", reason="suspended_negative_expectancy")
+    base.update(kw)
+    return PlaybookEntry(**base)
+
+
+def test_update_playbook_lapses_a_carried_forward_suspension(root, tmp_path):
+    """r1 finding 3: a suspended key places no live orders, so silence is not evidence — after
+    30 days with no resolved trade the suspension lapses to probation."""
+    desk = tmp_path / "desk"
+    _seed(desk, _prev_entry())
 
     pb = update_playbook(root, _snapshot(), NOW, desk_dir=desk, families=[], reader=None)
 
     kept = pb.get("news_catalyst", "short", "mixed")
-    assert kept == stale                      # untouched, still suspended
+    assert kept.status == "probation" and kept.size_mult == 0.5
+    assert kept.reason == "suspension_lapsed_no_recent_trades" and kept.updated_at == NOW
+    assert (kept.exp_r_recent, kept.n_recent) == (-0.4, 20)     # the evidence is kept
     assert pb.updated_at == NOW
+
+
+def test_update_playbook_carries_a_non_suspended_key_forward_verbatim(root, tmp_path):
+    desk = tmp_path / "desk"
+    prev = _prev_entry(status="enabled", size_mult=1.0, exp_r_recent=0.2, t_stat_recent=2.0,
+                       reason="enabled_normal")
+    _seed(desk, prev)
+
+    pb = update_playbook(root, _snapshot(), NOW, desk_dir=desk, families=[], reader=None)
+
+    assert pb.get("news_catalyst", "short", "mixed") == prev
+
+
+def test_shadow_and_live_trades_land_in_one_key_and_both_count(root, tmp_path):
+    """r1 finding 10: a resolved ledger trade and a live `fit:toy` bot_trades row describe the
+    same setup, so they must share a (family, side, regime) key and one sample."""
+    desk = tmp_path / "desk"
+    ledger_dir = tmp_path / "ledgers"
+    _ledger(ledger_dir)                                      # two shadow trades, family "toy"
+    rows = [_live_row(4, 0.9, strategy="fit:toy")]            # one live trade, same family/side
+
+    pb = update_playbook(root, _snapshot(), NOW, desk_dir=desk, families=["toy"],
+                         reader=_reader(_live_frames(rows)), ledger_dir=ledger_dir)
+
+    grouped = resolved_trades_by_key(root, ["toy"], reader=_reader(_live_frames(rows)),
+                                     ledger_dir=ledger_dir, now=NOW)
+    key = ("toy", "long", "unknown")
+    assert sorted(t.source for t in grouped[key]) == ["live", "shadow", "shadow"]
+    assert pb.get(*key).n_recent == 3
 
 
 def test_update_playbook_never_writes_outside_the_desk_dir(root, tmp_path):

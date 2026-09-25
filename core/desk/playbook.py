@@ -23,25 +23,25 @@ import logging
 import math
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
 from core.strategy_fit_gate import GateDecision
 
 logger = logging.getLogger("TradingBot")
 
 __all__ = ["ResolvedTrade", "PlaybookEntry", "Playbook", "PlaybookDecision", "PlaybookKey",
-           "clamp_size_mult", "evaluate_playbook_gate", "load_playbook", "playbook_path",
-           "recent_stats", "save_playbook", "update_entry"]
+           "carry_forward", "clamp_size_mult", "evaluate_playbook_gate", "load_playbook",
+           "playbook_path", "recent_stats", "save_playbook", "update_entry"]
 
 PlaybookKey = Tuple[str, str, str]
 
 # The window the *updater* slices per key before calling `update_entry` (newest last).
-# NOTE (spec conflict, flagged to the controller): the B2 plan sets this window to 30 and
-# the upsize floor `UPSIZE_MIN_N` to 40, so the 1.25 multiplier is unreachable from the
-# nightly path. Both numbers are implemented exactly as specified rather than silently
-# "fixed"; `update_entry` itself measures whatever list it is handed, so raising this
-# window to 40 (or lowering the floor to 30) is a one-constant change.
-RECENT_WINDOW = 30
+# 60 (fix r1, finding 2) so the 40-trade upsize floor is actually reachable; the updater
+# also time-bounds the window (`RECENT_DAYS`) before taking the last 60.
+RECENT_WINDOW = 60
+# A suspended key stops trading, so it can only stay suspended on evidence: after this many
+# days with no resolved trade for the key, `carry_forward` puts it back on probation.
+SUSPENSION_LAPSE_DAYS = 30
 SUSPEND_MIN_N = 10
 SUSPEND_MAX_T = -1.0
 UPSIZE_MIN_N = 40
@@ -62,6 +62,9 @@ STATUS_SUSPENDED = "suspended"
 UNKNOWN_REGIME = "unknown"
 FALLBACK_REGIME = "mixed"
 KEY_SEP = "|"
+# Fallback only, for the research CLI and tests. The live path (Task 5) must pass
+# `Config().DESK_DATA_DIR` explicitly — this module never reads Config, so a deployment that
+# moves the desk dir would otherwise silently read a playbook nobody writes.
 DEFAULT_DESK_DIR = Path("data/desk")
 PLAYBOOK_FILENAME = "playbook.json"
 
@@ -75,12 +78,23 @@ def _as_str(value: Any, default: str = "") -> str:
 
 
 def _as_float(value: Any, default: float = 0.0) -> float:
-    """A finite float or `default`: NaN/±inf are "not measured", never written to JSON."""
+    """A finite float or `default`: NaN/±inf coerce, so nothing unreadable reaches the rules."""
     try:
         out = float(value)
     except (TypeError, ValueError):
         return default
     return out if math.isfinite(out) else default
+
+
+def _json_float(value: Any) -> Optional[float]:
+    """A finite float, or None for anything unreadable or non-finite: a t-stat is ±inf when a
+    sample has no dispersion (fix r1, finding 4) and JSON has no Infinity literal, so `null` is
+    the honest wire value (the nightly recompute restores the real number)."""
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return None
+    return out if math.isfinite(out) else None
 
 
 def _as_int(value: Any, default: int = 0) -> int:
@@ -98,9 +112,7 @@ def clamp_size_mult(value: Any) -> float:
     return min(SIZE_MULT_MAX, max(SIZE_MULT_MIN, _as_float(value, SIZE_MULT_MIN)))
 
 
-# ────────────────────────────────────────────────────────────────────
-# Value types
-# ────────────────────────────────────────────────────────────────────
+# ── Value types ──
 
 @dataclass(frozen=True)
 class ResolvedTrade:
@@ -140,8 +152,8 @@ class PlaybookEntry:
 
     def to_dict(self) -> Dict[str, Any]:
         return {"family": self.family, "side": self.side, "regime": self.regime, "status": self.status,
-                "size_mult": clamp_size_mult(self.size_mult), "exp_r_recent": _as_float(self.exp_r_recent),
-                "t_stat_recent": _as_float(self.t_stat_recent), "n_recent": _as_int(self.n_recent),
+                "size_mult": clamp_size_mult(self.size_mult), "exp_r_recent": _json_float(self.exp_r_recent),
+                "t_stat_recent": _json_float(self.t_stat_recent), "n_recent": _as_int(self.n_recent),
                 "updated_at": self.updated_at, "reason": self.reason}
 
     @classmethod
@@ -180,9 +192,6 @@ class Playbook:
     def with_updated_at(self, updated_at: str) -> "Playbook":
         return Playbook(entries=dict(self.entries), updated_at=updated_at)
 
-    def by_status(self, status: str) -> List[PlaybookEntry]:
-        return [e for e in self.entries.values() if e.status == status]
-
     def to_dict(self) -> Dict[str, Any]:
         return {"updated_at": self.updated_at,
                 "entries": {KEY_SEP.join(k): e.to_dict() for k, e in sorted(self.entries.items())}}
@@ -209,9 +218,7 @@ class Playbook:
         return cls(entries=entries, updated_at=_as_str(data.get("updated_at")))
 
 
-# ────────────────────────────────────────────────────────────────────
-# Store
-# ────────────────────────────────────────────────────────────────────
+# ── Store ──
 
 def playbook_path(desk_dir: Any = DEFAULT_DESK_DIR) -> Path:
     return Path(desk_dir) / PLAYBOOK_FILENAME
@@ -244,17 +251,15 @@ def save_playbook(playbook: Playbook, path: Any) -> Path:
     return p
 
 
-# ────────────────────────────────────────────────────────────────────
-# Rules
-# ────────────────────────────────────────────────────────────────────
+# ── Rules ──
 
 def recent_stats(recent: Sequence[ResolvedTrade]) -> Tuple[int, float, float]:
-    """`(n, exp_r, t_stat)` for `recent`, all finite.
+    """`(n, exp_r, t_stat)` for `recent`; `exp_r` is always finite, `t_stat` may be ±inf.
 
-    The t-stat is trade-level (mean / (sample stdev / √n)). It is 0.0 below two
-    trades and 0.0 when the sample has no dispersion: identical R values are an
-    arithmetic artefact, not a significant result, and must not be able to
-    suspend a key on their own."""
+    The t-stat is trade-level (mean / (sample stdev / √n)). It is 0.0 below two trades, and
+    with no dispersion (fix r1, finding 4) it is ±inf for a non-zero mean — twelve identical
+    -1R stop-outs are the *most* certain losing sample there is and must suspend — and 0.0
+    for a zero mean, where there is nothing to be certain about."""
     rs = [_as_float(t.r, default=float("nan")) for t in recent]
     rs = [r for r in rs if math.isfinite(r)]
     n = len(rs)
@@ -266,7 +271,7 @@ def recent_stats(recent: Sequence[ResolvedTrade]) -> Tuple[int, float, float]:
     var = sum((r - mean) ** 2 for r in rs) / (n - 1)
     sd = math.sqrt(var)
     if sd <= 0:
-        return n, mean, 0.0
+        return n, mean, 0.0 if mean == 0 else math.copysign(float("inf"), mean)
     return n, mean, mean / (sd / math.sqrt(n))
 
 
@@ -310,12 +315,26 @@ def update_entry(prev: Optional[PlaybookEntry], recent: Sequence[ResolvedTrade],
 
     return PlaybookEntry(family=family, side=side, regime=regime, status=status,
                          size_mult=clamp_size_mult(size), exp_r_recent=round(exp_r, 4),
+                         # round(±inf, 4) is ±inf — kept as-is in memory, `null` on disk.
                          t_stat_recent=round(t_stat, 4), n_recent=n, updated_at=str(now), reason=reason)
 
 
-# ────────────────────────────────────────────────────────────────────
-# Gate
-# ────────────────────────────────────────────────────────────────────
+def carry_forward(prev: PlaybookEntry, now: Any, has_recent_trades: bool) -> PlaybookEntry:
+    """`prev` as tonight's entry for a key with no new measurement — unchanged, except that a
+    suspension lapses to probation once the key has gone `SUSPENSION_LAPSE_DAYS` without a
+    resolved trade (fix r1, finding 3): a suspended key places no live orders, so "no trades"
+    is the expected state, not continuing evidence against it. The numbers that suspended it
+    are carried over so the journal can still explain the lapse."""
+    if prev.status != STATUS_SUSPENDED or has_recent_trades:
+        return prev
+    return PlaybookEntry(family=prev.family, side=prev.side, regime=prev.regime,
+                         status=STATUS_PROBATION, size_mult=PROBATION_SIZE_MULT,
+                         exp_r_recent=prev.exp_r_recent, t_stat_recent=prev.t_stat_recent,
+                         n_recent=prev.n_recent, updated_at=str(now),
+                         reason="suspension_lapsed_no_recent_trades")
+
+
+# ── Gate ──
 
 @dataclass(frozen=True)
 class PlaybookDecision(GateDecision):
@@ -323,6 +342,7 @@ class PlaybookDecision(GateDecision):
     playbook-specific audit fields the risk sizer reads."""
     size_mult: Optional[float] = None
     status: Optional[str] = None
+    playbook_fallback: Optional[str] = None
 
     def audit_fields(self) -> dict:
         out = super().audit_fields()
@@ -330,18 +350,28 @@ class PlaybookDecision(GateDecision):
             out["size_mult"] = round(float(self.size_mult), 3)
         if self.status is not None:
             out["status"] = self.status
+        if self.playbook_fallback is not None:
+            out["playbook_fallback"] = self.playbook_fallback
         return out
 
 
-def _entry_for(playbook: Playbook, family: str, side: str, regime: Optional[str]) -> Optional[PlaybookEntry]:
-    """The governing entry: the key's own, or — when there is no regime evidence
-    ("unknown"/missing) — the `mixed` entry, which is the closest thing to a
-    regime-agnostic measurement the scorer produces."""
+def _entry_for(playbook: Playbook, family: str, side: str,
+               regime: Optional[str]) -> Tuple[Optional[PlaybookEntry], Optional[str]]:
+    """`(entry, fallback_label)` — the governing entry and which fallback found it.
+
+    Lookup order (fix r1, finding 1b): the exact regime; then, only when the live regime is
+    unknown, the `mixed` entry (a measured regime may never be governed by another one); then
+    the `unknown` entry as an all-regimes fallback, which is the only measurement most keys
+    have while the shadow tape carries no regime."""
     label = _as_str(regime, UNKNOWN_REGIME) or UNKNOWN_REGIME
-    entry = playbook.get(family, side, label)
-    if entry is None and label == UNKNOWN_REGIME:
-        return playbook.get(family, side, FALLBACK_REGIME)
-    return entry
+    exact = playbook.get(family, side, label)
+    if exact is not None:
+        return exact, None
+    if label == UNKNOWN_REGIME:
+        mixed = playbook.get(family, side, FALLBACK_REGIME)
+        return (mixed, FALLBACK_REGIME) if mixed is not None else (None, None)
+    unknown = playbook.get(family, side, UNKNOWN_REGIME)
+    return (unknown, UNKNOWN_REGIME) if unknown is not None else (None, None)
 
 
 def evaluate_playbook_gate(playbook: Playbook, family: str, side: str, regime: Optional[str],
@@ -352,12 +382,13 @@ def evaluate_playbook_gate(playbook: Playbook, family: str, side: str, regime: O
     audited ("shadow"), never blocked. An unknown family or a key the playbook
     has never measured is explicitly *not* governed — the playbook only ever
     speaks about evidence it has."""
-    entry = _entry_for(playbook, family, side, regime) if family and side else None
+    entry, fallback = _entry_for(playbook, family, side, regime) if family and side else (None, None)
     if entry is None:
         return PlaybookDecision("allow", "no_playbook_entry", False, family=family or None)
 
     size = clamp_size_mult(entry.size_mult)
-    fields = dict(family=entry.family, regime=entry.regime, status=entry.status, size_mult=size)
+    fields = dict(family=entry.family, regime=entry.regime, status=entry.status, size_mult=size,
+                  playbook_fallback=fallback)
     if entry.status == STATUS_SUSPENDED:
         return PlaybookDecision("skip" if enabled else "shadow", "playbook_suspended", True, **fields)
     return PlaybookDecision("allow", f"playbook_{entry.status}", True, **fields)

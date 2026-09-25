@@ -1,4 +1,6 @@
 """CLI-level tests: universe-context wiring and cmd_score -> score_regime_root -> write_fit."""
+import argparse
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -475,3 +477,57 @@ def test_cmd_playbook_returns_1_and_prints_a_clean_error_on_failure(monkeypatch,
     assert cli.main(["playbook", "--root", str(tmp_path)]) == 1
     out = capsys.readouterr().out
     assert "playbook ERROR" in out and "desk dir is a file" in out and "Traceback" not in out
+
+
+# ──────────────────────
+# v-playbook-desk-b2 fix r1 — DSN handling and `all --postgres` passthrough
+# ──────────────────────
+
+def test_cmd_playbook_with_postgres_and_no_dsn_is_one_clean_line(monkeypatch, tmp_path, capsys):
+    """Fix r1 finding 5: the engine is built inside the try, so a missing POSTGRES_DSN is rc=1
+    and a single line — not a KeyError traceback in the nightly log."""
+    from research.strategy_hunt import cli
+
+    monkeypatch.delenv("POSTGRES_DSN", raising=False)
+
+    rc = cli.main(["playbook", "--root", str(tmp_path), "--desk-dir", str(tmp_path / "desk"),
+                   "--postgres"])
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "playbook ERROR" in out and "POSTGRES_DSN" in out and "Traceback" not in out
+    assert not (tmp_path / "desk" / "playbook.json").exists()
+
+
+def test_cmd_playbook_builds_and_disposes_the_engine_when_a_dsn_is_set(monkeypatch, tmp_path):
+    from core.desk.playbook import Playbook
+    from research.strategy_hunt import playbook_cli as PC
+    from research.strategy_hunt import playbook_update as PU
+
+    monkeypatch.setenv("POSTGRES_DSN", "sqlite://")
+    seen = {}
+
+    def _fake(root, snapshot, now, **kw):
+        seen["engine"] = kw["engine"]
+        return Playbook(entries={}, updated_at=now)
+
+    monkeypatch.setattr(PU, "update_playbook", _fake)
+
+    args = argparse.Namespace(root=tmp_path, desk_dir=tmp_path / "desk", postgres=True, families=None)
+    assert PC.run_playbook_command(args, ["toy"]) == 0
+    assert seen["engine"] is not None
+
+
+def test_cmd_all_passes_postgres_through_to_the_playbook_step(monkeypatch, tmp_path):
+    """Fix r1 finding 6: `all --postgres` must reach the playbook step, or the nightly run
+    silently updates the playbook from the shadow ledgers only."""
+    from research.strategy_hunt import cli
+
+    for name in ("cmd_export", "cmd_news", "cmd_earnings", "cmd_context", "cmd_calibrate",
+                 "cmd_run", "cmd_score"):
+        monkeypatch.setattr(cli, name, lambda a: 0)
+    seen = []
+    monkeypatch.setattr(cli, "cmd_playbook", lambda a: seen.append(a.postgres) or 0)
+
+    assert cli.cmd_all(cli.build_parser().parse_args(["all", "--root", str(tmp_path),
+                                                     "--postgres"])) == 0
+    assert seen == [True]

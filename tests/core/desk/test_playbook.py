@@ -11,12 +11,15 @@ import pytest
 from core.desk.playbook import (
     DEFAULT_SIZE_MULT,
     PROBATION_SIZE_MULT,
+    RECENT_WINDOW,
+    SUSPENSION_LAPSE_DAYS,
     SIZE_MULT_MAX,
     SIZE_MULT_MIN,
     UPSIZE_SIZE_MULT,
     Playbook,
     PlaybookEntry,
     ResolvedTrade,
+    carry_forward,
     clamp_size_mult,
     evaluate_playbook_gate,
     load_playbook,
@@ -127,13 +130,21 @@ def test_enabled_normal_on_a_flat_ten_trade_sample():
 def test_update_entry_measures_exactly_what_it_is_handed():
     """`update_entry` is pure: the caller (the nightly updater) owns the
     `RECENT_WINDOW` slice, so the rules must measure the whole list given —
-    no second, hidden truncation. See RECENT_WINDOW's note about the
-    30-trade window vs the 40-trade upsize floor."""
-    from core.desk.playbook import RECENT_WINDOW, UPSIZE_MIN_N
+    no second, hidden truncation."""
+    from core.desk.playbook import UPSIZE_MIN_N
 
-    assert RECENT_WINDOW == 30 and UPSIZE_MIN_N == 40
+    # r1 finding 2: the window is 60, so the 40-trade upsize floor is reachable.
+    assert RECENT_WINDOW == 60 and UPSIZE_MIN_N == 40 and UPSIZE_MIN_N < RECENT_WINDOW
     e = update_entry(None, _trades([0.2] * 45), "PASS", NOW)
     assert e.n_recent == 45
+
+
+def test_a_full_window_of_winners_with_a_pass_verdict_upsizes():
+    """r1 finding 2: a 60-trade window at exp_R 0.2 and a PASS row reaches 1.25."""
+    e = update_entry(None, _trades([0.2] * RECENT_WINDOW), "PASS", NOW)
+
+    assert e.n_recent == 60 and e.status == "enabled"
+    assert e.size_mult == UPSIZE_SIZE_MULT == 1.25 and e.reason == "enabled_upsize_fit_confirmed"
 
 
 def test_newest_last_ordering_does_not_change_the_measurement():
@@ -146,15 +157,38 @@ def test_newest_last_ordering_does_not_change_the_measurement():
     assert a.status == b.status == "suspended"
 
 
-def test_t_stat_is_zero_below_two_trades_and_without_dispersion():
+def test_t_stat_is_zero_below_two_trades():
     assert update_entry(None, _trades([-1.0]), None, NOW).t_stat_recent == 0.0
-    assert update_entry(None, _trades([-1.0] * 12), None, NOW).t_stat_recent == 0.0
 
 
-def test_a_zero_dispersion_loser_is_probation_not_suspended():
-    """t_stat 0 means "no measurement", so the suspension rule can't fire on it."""
+def test_twelve_exact_stop_outs_suspend_on_an_infinite_t_stat():
+    """r1 finding 4: sd == 0 with a non-zero mean is the *most* certain result there is
+    (every trade the same loss), so t is -inf and the key suspends."""
     e = update_entry(None, _trades([-1.0] * 12), None, NOW)
-    assert e.status == "probation"
+
+    assert e.t_stat_recent == float("-inf")
+    assert e.status == "suspended" and e.size_mult == 0.0
+
+
+def test_twelve_exact_winners_have_a_positive_infinite_t_stat():
+    e = update_entry(None, _trades([1.0] * 12), None, NOW)
+    assert e.t_stat_recent == float("inf") and e.status == "enabled"
+
+
+def test_a_zero_mean_zero_dispersion_sample_has_a_zero_t_stat():
+    e = update_entry(None, _trades([0.0] * 12), None, NOW)
+    assert e.t_stat_recent == 0.0 and e.status == "enabled"
+
+
+def test_a_non_finite_t_stat_serializes_as_null_and_reads_back_as_zero():
+    """JSON has no Infinity: `null` is the honest wire value, and the nightly recompute
+    restores the real number."""
+    e = update_entry(None, _trades([-1.0] * 12), None, NOW)
+    d = e.to_dict()
+
+    assert d["t_stat_recent"] is None
+    assert json.loads(json.dumps(d)) == d
+    assert PlaybookEntry.from_dict(d).t_stat_recent == 0.0
 
 
 def test_previous_entry_is_never_mutated():
@@ -239,6 +273,36 @@ def test_playbook_path_default_is_the_desk_dir():
     assert playbook_path().as_posix() == "data/desk/playbook.json"
 
 
+# ────────────────────────── carry_forward (suspensions lapse) ──────────────────────────
+
+def test_a_suspension_lapses_to_probation_without_recent_trades():
+    """r1 finding 3: a suspended key stops trading, so it can only stay suspended on
+    evidence. With no resolved trade in 30 days it goes back on probation."""
+    assert SUSPENSION_LAPSE_DAYS == 30
+    prev = _entry(status="suspended", size_mult=0.0, reason="suspended_negative_expectancy")
+
+    e = carry_forward(prev, "2026-10-30T20:00:00", has_recent_trades=False)
+
+    assert e.status == "probation" and e.size_mult == PROBATION_SIZE_MULT
+    assert e.reason == "suspension_lapsed_no_recent_trades"
+    assert e.updated_at == "2026-10-30T20:00:00"
+    # The measurement that suspended it is kept, so the journal can still explain why.
+    assert (e.exp_r_recent, e.t_stat_recent, e.n_recent) == (prev.exp_r_recent, prev.t_stat_recent,
+                                                            prev.n_recent)
+    assert prev.status == "suspended"          # never mutated
+
+
+def test_a_suspension_with_recent_trades_is_untouched():
+    prev = _entry(status="suspended", size_mult=0.0, reason="suspended_negative_expectancy")
+    assert carry_forward(prev, NOW, has_recent_trades=True) == prev
+
+
+@pytest.mark.parametrize("status", ["enabled", "probation"])
+def test_carry_forward_only_touches_suspensions(status):
+    prev = _entry(status=status, size_mult=1.0 if status == "enabled" else 0.5)
+    assert carry_forward(prev, NOW, has_recent_trades=False) == prev
+
+
 # ────────────────────────── gate ──────────────────────────
 
 def _pb(*entries):
@@ -299,6 +363,7 @@ def test_gate_unknown_regime_falls_back_to_the_mixed_entry():
     d = evaluate_playbook_gate(pb, "orb", "long", "unknown", True)
     assert (d.action, d.reason) == ("skip", "playbook_suspended")
     assert d.audit_fields()["regime"] == "mixed"
+    assert d.audit_fields()["playbook_fallback"] == "mixed"
 
     assert evaluate_playbook_gate(pb, "orb", "long", None, True).action == "skip"
 
@@ -311,11 +376,47 @@ def test_gate_unknown_regime_prefers_its_own_entry_over_mixed():
     assert d.action == "allow" and d.audit_fields()["regime"] == "unknown"
 
 
-def test_gate_does_not_fall_back_for_a_known_regime():
+def test_gate_falls_back_to_the_unknown_entry_for_a_known_regime():
+    """r1 finding 1b: the `unknown` entry is the all-regimes fallback — until the shadow
+    tape carries a regime, it is the only measurement most keys have."""
+    pb = _pb(_entry(regime="unknown", status="suspended", size_mult=0.0))
+    d = evaluate_playbook_gate(pb, "orb", "long", "risk_off", True)
+
+    assert (d.action, d.reason, d.governed) == ("skip", "playbook_suspended", True)
+    fields = d.audit_fields()
+    assert fields["regime"] == "unknown" and fields["playbook_fallback"] == "unknown"
+
+
+def test_gate_never_uses_the_mixed_entry_for_a_known_regime():
+    """`mixed` is a *measured* regime, so it may only stand in where there is no regime
+    evidence at all; risk_off must not be governed by the mixed row."""
     pb = _pb(_entry(regime="mixed", status="suspended", size_mult=0.0))
     d = evaluate_playbook_gate(pb, "orb", "long", "risk_off", True)
 
     assert (d.action, d.reason, d.governed) == ("allow", "no_playbook_entry", False)
+
+
+def test_gate_prefers_the_exact_regime_over_every_fallback():
+    pb = _pb(_entry(regime="risk_off", status="enabled", size_mult=1.0),
+             _entry(regime="unknown", status="suspended", size_mult=0.0))
+    d = evaluate_playbook_gate(pb, "orb", "long", "risk_off", True)
+
+    assert d.action == "allow"
+    assert d.audit_fields()["regime"] == "risk_off" and "playbook_fallback" not in d.audit_fields()
+
+
+def test_gate_fallback_order_is_exact_then_mixed_then_unknown():
+    """For an unknown live regime: its own entry, then `mixed`, then — nothing else,
+    because `unknown` *was* the exact lookup."""
+    exact = _pb(_entry(regime="unknown", status="enabled", size_mult=1.0),
+                _entry(regime="mixed", status="suspended", size_mult=0.0))
+    d = evaluate_playbook_gate(exact, "orb", "long", "unknown", True)
+    assert d.action == "allow" and "playbook_fallback" not in d.audit_fields()
+
+    only_mixed = _pb(_entry(regime="mixed", status="probation", size_mult=0.5))
+    d2 = evaluate_playbook_gate(only_mixed, "orb", "long", "unknown", True)
+    assert d2.reason == "playbook_probation"
+    assert d2.audit_fields()["playbook_fallback"] == "mixed"
 
 
 def test_gate_decision_is_a_strategy_fit_gate_decision():

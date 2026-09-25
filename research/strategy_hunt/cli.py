@@ -201,10 +201,10 @@ def cmd_score(a: argparse.Namespace) -> int:
 
 def cmd_playbook(a: argparse.Namespace) -> int:
     """v-playbook-desk-b2-2026-09-25 (Task 3): rewrite <desk-dir>/playbook.json from tonight's
-    resolved shadow ledgers plus the live `bot_trades` tape. The body lives next to the updater
-    (`playbook_update.run_playbook_command`) to keep this module inside its line budget, and is
-    imported lazily so `--help` on any other subcommand still costs nothing."""
-    from research.strategy_hunt.playbook_update import run_playbook_command
+    resolved shadow ledgers plus, when `--postgres` is set (including via `all`), the live
+    `bot_trades` tape. Presentation lives in `playbook_cli` (fix r1, finding 9) to keep both
+    modules inside the line budget, imported lazily so other subcommands pay nothing for it."""
+    from research.strategy_hunt.playbook_cli import run_playbook_command
 
     return run_playbook_command(a, _families_arg(getattr(a, "families", None)))
 
@@ -318,7 +318,9 @@ def cmd_all(a: argparse.Namespace) -> int:
     if rc:
         return rc
     # v-playbook-desk-b2-2026-09-25 (Task 3): the playbook is updated last -- it reads the
-    # snapshot `score` just wrote for its fit verdicts.
+    # snapshot `score` just wrote for its fit verdicts. `a` carries the pipeline's own
+    # --postgres through (fix r1, finding 6), so a nightly `all --postgres` also folds in the
+    # live bot_trades tape; without it only the shadow ledgers count.
     return cmd_playbook(a)
 
 
@@ -366,7 +368,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--desk-dir", type=Path, default=PLAYBOOK_DESK_DIR,
                     help="where playbook.json is written (default data/desk)")
     sp.add_argument("--postgres", action="store_true",
-                    help="also read the live bot_trades tape (needs POSTGRES_DSN)")
+                    help="also read the live bot_trades tape, bounded to the last 120 days "
+                         "(needs POSTGRES_DSN; `all --postgres` passes this through)")
     sp.set_defaults(fn=cmd_playbook)
 
     sp = sub.add_parser("promote")

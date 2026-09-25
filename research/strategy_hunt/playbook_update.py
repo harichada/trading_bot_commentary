@@ -29,9 +29,11 @@ import pandas as pd
 
 from core.desk.playbook import (
     RECENT_WINDOW,
+    SUSPENSION_LAPSE_DAYS,
     Playbook,
     PlaybookKey,
     ResolvedTrade,
+    carry_forward,
     load_playbook,
     playbook_path,
     save_playbook,
@@ -43,9 +45,9 @@ from strategies.families import family_names
 
 logger = logging.getLogger("strategy_hunt.playbook_update")
 
-__all__ = ["FAMILY_BY_STRATEGY", "LIVE_REGIME_SQL", "LIVE_TRADES_SQL", "best_verdict", "group_by_key",
-           "live_resolved_trades", "resolved_from_live", "resolved_from_sim", "resolved_trades_by_key",
-           "render_playbook", "run_playbook_command", "sql_reader", "status_counts", "update_playbook"]
+__all__ = ["FAMILY_BY_STRATEGY", "LIVE_LOOKBACK_DAYS", "LIVE_REGIME_SQL", "LIVE_TRADES_SQL",
+           "RECENT_DAYS", "best_verdict", "group_by_key", "live_resolved_trades", "resolved_from_live",
+           "resolved_from_sim", "resolved_trades_by_key", "sql_reader", "update_playbook"]
 
 # Research-side copy of the live strategy→family map (`core/strategy_fit_gate.LANE_MAP`;
 # the B2 plan cites it as `strategies.fit_lane.LANE_MAP`, which re-exports nothing of the
@@ -66,19 +68,24 @@ UNKNOWN_REGIME = "unknown"
 REGIME_VALUES = ("risk_on", "risk_off", "mixed")
 VERDICT_RANK = {"FAIL": 0, "WATCH": 1, "PASS": 2}
 
+# Both reads are bounded and parameterized (fix r1, finding 7): the rules only ever look back
+# RECENT_DAYS, so dragging years of bot_trades through pandas every night buys nothing.
+LIVE_LOOKBACK_DAYS = 120
 LIVE_TRADES_SQL = ("SELECT symbol, side, strategy, entry_time, exit_time, pnl_r "
-                   "FROM bot_trades WHERE pnl_r IS NOT NULL")
+                   "FROM bot_trades WHERE pnl_r IS NOT NULL AND exit_time >= :since")
 LIVE_REGIME_SQL = ("SELECT symbol, ts, details_json FROM bot_decisions "
-                   "WHERE component IN ('strategy_fit', 'playbook') AND details_json IS NOT NULL")
+                   "WHERE component IN ('strategy_fit', 'playbook') AND details_json IS NOT NULL "
+                   "AND ts >= :since")
 # How far before an entry an audit row may sit and still describe that entry's regime.
 REGIME_MATCH_WINDOW = pd.Timedelta(minutes=30)
+# The rules' sample is time-bounded before the last-RECENT_WINDOW slice (fix r1, finding 3), so a
+# stale losing streak cannot re-suspend a key every night for ever.
+RECENT_DAYS = 90
 
 _SIDE_ALIASES = {"long": "long", "buy": "long", "short": "short", "sell": "short"}
 
 
-# ────────────────────────────────────────────────────────────────────
-# Shadow tape
-# ────────────────────────────────────────────────────────────────────
+# ── Shadow tape ──
 
 def resolved_from_sim(sim_trades: Iterable[Any], family: str) -> List[ResolvedTrade]:
     """`SimTrade`s → `ResolvedTrade`s. A non-finite R is dropped (not a measurement)."""
@@ -93,23 +100,25 @@ def resolved_from_sim(sim_trades: Iterable[Any], family: str) -> List[ResolvedTr
         side = _norm_side(getattr(t, "side", ""))
         if side is None:
             continue
+        exit_ts = _iso(getattr(t, "exit_ts", None))
+        if not exit_ts:
+            logger.warning("playbook: skipping a %s shadow trade with an unreadable exit_ts", family)
+            continue
         out.append(ResolvedTrade(family=getattr(t, "family", "") or family, side=side,
                                  regime=_norm_regime(getattr(t, "regime", "")),
-                                 r=r, exit_ts=_iso(getattr(t, "exit_ts", None)), source="shadow"))
+                                 r=r, exit_ts=exit_ts, source="shadow"))
     return out
 
 
-# ────────────────────────────────────────────────────────────────────
-# Live tape
-# ────────────────────────────────────────────────────────────────────
+# ── Live tape ──
 
-def sql_reader(engine: Any) -> Callable[[str], pd.DataFrame]:
-    """A `reader(query) -> DataFrame` over `engine` (the only Postgres touch point)."""
-    def _read(query: str) -> pd.DataFrame:
+def sql_reader(engine: Any) -> Callable[..., pd.DataFrame]:
+    """A `reader(query, params) -> DataFrame` over `engine` (the only Postgres touch point)."""
+    def _read(query: str, params: Optional[dict] = None) -> pd.DataFrame:
         from sqlalchemy import text
 
         with engine.connect() as conn:
-            return pd.read_sql(text(query), conn)
+            return pd.read_sql(text(query), conn, params=params or {})
 
     return _read
 
@@ -165,20 +174,31 @@ def resolved_from_live(trades: Optional[pd.DataFrame],
             continue
         if not pd.notna(r):
             continue
+        exit_ts = _iso(rec.get("exit_time"))
+        if not exit_ts:
+            logger.warning("playbook: skipping a %s live trade with an unreadable exit_time (%r)",
+                           family, rec.get("exit_time"))
+            continue
         out.append(ResolvedTrade(family=family, side=side,
                                  regime=_regime_at(index, rec.get("symbol"), rec.get("entry_time")),
-                                 r=r, exit_ts=_iso(rec.get("exit_time")), source="live"))
+                                 r=r, exit_ts=exit_ts, source="live"))
     return out
 
 
-def live_resolved_trades(reader: Optional[Callable[[str], pd.DataFrame]]) -> List[ResolvedTrade]:
-    """The live tape through `reader`. Never raises: the nightly run must still
-    rewrite the playbook from the shadow tape when Postgres is unreachable."""
+def live_resolved_trades(reader: Optional[Callable[..., pd.DataFrame]],
+                         now: Any = None) -> List[ResolvedTrade]:
+    """The live tape through `reader(query, params)`, bounded to the last
+    `LIVE_LOOKBACK_DAYS`. Never raises: the nightly run must still rewrite the playbook
+    from the shadow tape when Postgres is unreachable."""
     if reader is None:
         return []
+    since = _ts(now if now is not None else pd.Timestamp.utcnow())
+    if pd.isna(since):
+        since = pd.Timestamp.utcnow().tz_localize(None)
+    params = {"since": (since - pd.Timedelta(days=LIVE_LOOKBACK_DAYS)).to_pydatetime()}
     try:
-        trades = reader(LIVE_TRADES_SQL)
-        decisions = reader(LIVE_REGIME_SQL)
+        trades = reader(LIVE_TRADES_SQL, params)
+        decisions = reader(LIVE_REGIME_SQL, params)
     except Exception as exc:
         logger.warning("playbook: live bot_trades read failed (%s); shadow tape only", exc)
         return []
@@ -189,9 +209,7 @@ def live_resolved_trades(reader: Optional[Callable[[str], pd.DataFrame]]) -> Lis
         return []
 
 
-# ────────────────────────────────────────────────────────────────────
-# Merge
-# ────────────────────────────────────────────────────────────────────
+# ── Merge ──
 
 def group_by_key(trades: Iterable[ResolvedTrade]) -> Dict[PlaybookKey, List[ResolvedTrade]]:
     """(family, side, regime) → trades, each list oldest first (newest last), which is
@@ -203,8 +221,9 @@ def group_by_key(trades: Iterable[ResolvedTrade]) -> Dict[PlaybookKey, List[Reso
 
 
 def resolved_trades_by_key(root: Any, families: Sequence[str], engine: Any = None,
-                           reader: Optional[Callable[[str], pd.DataFrame]] = None,
-                           ledger_dir: Any = DEFAULT_LEDGER_DIR) -> Dict[PlaybookKey, List[ResolvedTrade]]:
+                           reader: Optional[Callable[..., pd.DataFrame]] = None,
+                           ledger_dir: Any = DEFAULT_LEDGER_DIR,
+                           now: Any = None) -> Dict[PlaybookKey, List[ResolvedTrade]]:
     """Every resolved trade this root knows about, keyed by (family, side, regime).
 
     One family failing to resolve (a truncated or hand-edited ledger) is logged and
@@ -221,13 +240,11 @@ def resolved_trades_by_key(root: Any, families: Sequence[str], engine: Any = Non
             logger.warning("playbook: could not resolve the shadow ledger for %s (%s); skipping",
                            family, exc)
     trades.extend(live_resolved_trades(reader if reader is not None else
-                                       (sql_reader(engine) if engine is not None else None)))
+                                       (sql_reader(engine) if engine is not None else None), now=now))
     return group_by_key(trades)
 
 
-# ────────────────────────────────────────────────────────────────────
-# Fit verdicts from the snapshot
-# ────────────────────────────────────────────────────────────────────
+# ── Fit verdicts from the snapshot ──
 
 def best_verdict(snapshot: Any, family: str, side: str, regime: str) -> Optional[str]:
     """The best fit verdict for this key (PASS > WATCH > FAIL), or None if research has
@@ -240,7 +257,7 @@ def best_verdict(snapshot: Any, family: str, side: str, regime: str) -> Optional
     if not isinstance(snapshot, dict):
         return None
     regime_key = f"{family}:{side}:{regime}"
-    verdicts: List[str] = []
+    verdicts: List[Optional[str]] = []
 
     pooled = snapshot.get("pooled_rows")
     if isinstance(pooled, dict):
@@ -263,82 +280,57 @@ def best_verdict(snapshot: Any, family: str, side: str, regime: str) -> Optional
     return max(known, key=lambda v: VERDICT_RANK[v]) if known else None
 
 
-# ────────────────────────────────────────────────────────────────────
-# The nightly entry point
-# ────────────────────────────────────────────────────────────────────
+# ── The nightly entry point ──
+
+def _cutoffs(now: Any) -> Tuple[str, str]:
+    """`(window_cutoff, fresh_cutoff)` as ISO strings comparable against `ResolvedTrade.exit_ts`.
+
+    Both are "" on an unreadable clock: the window then stays unbounded and nothing lapses,
+    which is the safe direction — a broken clock must not silently un-suspend a losing key."""
+    ts = _ts(now)
+    if pd.isna(ts):
+        logger.warning("playbook: unreadable now=%r; leaving the window unbounded", now)
+        return "", ""
+    return (_iso(ts - pd.Timedelta(days=RECENT_DAYS)), _iso(ts - pd.Timedelta(days=SUSPENSION_LAPSE_DAYS)))
+
 
 def update_playbook(root: Any, snapshot: Any, now: Any, desk_dir: Any = DEFAULT_DESK_DIR,
                     families: Optional[Sequence[str]] = None, engine: Any = None,
-                    reader: Optional[Callable[[str], pd.DataFrame]] = None,
+                    reader: Optional[Callable[..., pd.DataFrame]] = None,
                     ledger_dir: Any = DEFAULT_LEDGER_DIR) -> Playbook:
     """Rewrite `<desk_dir>/playbook.json` from tonight's resolved trades and return it.
 
-    A key with no resolved trades keeps its previous entry verbatim — a suspension
-    must not lapse just because the key produced nothing today; it lifts when new
-    resolved trades (shadow ledgers keep accruing even for a suspended key) say so."""
+    Per key: the sample is every resolved trade newer than `RECENT_DAYS`, then the last
+    `RECENT_WINDOW` of those. A key with no sample keeps its previous entry. Either way the
+    result goes through `carry_forward`, so a suspension that has gone `SUSPENSION_LAPSE_DAYS`
+    without any resolved trade lapses back to probation (fix r1, finding 3) — a suspended key
+    places no live orders, so silence is not evidence against it."""
     fams = list(families) if families is not None else family_names()
-    grouped = resolved_trades_by_key(root, fams, engine=engine, reader=reader, ledger_dir=ledger_dir)
+    grouped = resolved_trades_by_key(root, fams, engine=engine, reader=reader,
+                                     ledger_dir=ledger_dir, now=now)
     previous = load_playbook(playbook_path(desk_dir))
+    window_cutoff, fresh_cutoff = _cutoffs(now)
 
-    entries = dict(previous.entries)
-    for key in sorted(grouped):
-        recent = grouped[key][-RECENT_WINDOW:]
-        entries[key] = update_entry(previous.entries.get(key), recent, best_verdict(snapshot, *key), now)
+    entries: Dict[PlaybookKey, Any] = {}
+    for key in sorted(set(grouped) | set(previous.entries)):
+        trades = grouped.get(key, ())
+        window = [t for t in trades if t.exit_ts >= window_cutoff][-RECENT_WINDOW:]
+        has_recent = (not fresh_cutoff) or any(t.exit_ts >= fresh_cutoff for t in trades)
+        prev = previous.entries.get(key)
+        if window:
+            entry = update_entry(prev, window, best_verdict(snapshot, *key), now)
+        elif prev is not None:
+            entry = prev
+        else:
+            continue
+        entries[key] = carry_forward(entry, now, has_recent)
 
     playbook = Playbook(entries=entries, updated_at=str(now))
     save_playbook(playbook, playbook_path(desk_dir))
     return playbook
 
 
-def run_playbook_command(args: Any, families: Optional[Sequence[str]] = None) -> int:
-    """The `python -m research.strategy_hunt playbook` body (see `cli.cmd_playbook`).
-
-    `--desk-dir` exists only on that subparser, so an `all` namespace falls back to the
-    default instead of raising AttributeError mid-pipeline. Without `--postgres` there is
-    no live tape (engine=None) and the shadow ledgers alone drive the update. Any failure
-    is one clean line and rc=1 — never a traceback into a nightly log."""
-    import os
-    import time
-
-    from research.strategy_hunt.fit.writer import load_snapshot
-
-    engine = None
-    if getattr(args, "postgres", False):
-        from sqlalchemy import create_engine
-
-        engine = create_engine(os.environ["POSTGRES_DSN"])
-    desk_dir = getattr(args, "desk_dir", None) or DEFAULT_DESK_DIR
-    now = time.strftime("%Y-%m-%dT%H:%M:%S")
-    try:
-        playbook = update_playbook(args.root, load_snapshot(args.root), now, desk_dir=desk_dir,
-                                   families=families, engine=engine)
-    except Exception as exc:
-        print(f"playbook ERROR {exc}")
-        return 1
-    print(render_playbook(playbook, playbook_path(desk_dir)))
-    return 0
-
-
-def render_playbook(playbook: Playbook, path: Any) -> str:
-    """One line per key (worst status first) plus a summary line."""
-    lines = [f"{e.family:18} {e.side:5} {e.regime:8} {e.status:9} x{e.size_mult:.2f} "
-             f"n={e.n_recent:3} exp_r={e.exp_r_recent:+.3f} t={e.t_stat_recent:+.2f} {e.reason}"
-             for e in sorted(playbook.entries.values(),
-                             key=lambda e: (e.status, e.family, e.side, e.regime))]
-    lines.append(f"playbook: {len(playbook.entries)} key(s) {status_counts(playbook)} -> {path}")
-    return "\n".join(lines)
-
-
-def status_counts(playbook: Playbook) -> Dict[str, int]:
-    counts: Dict[str, int] = {}
-    for entry in playbook.entries.values():
-        counts[entry.status] = counts.get(entry.status, 0) + 1
-    return counts
-
-
-# ────────────────────────────────────────────────────────────────────
-# Small helpers
-# ────────────────────────────────────────────────────────────────────
+# ── Small helpers ──
 
 def family_for(strategy: Any) -> Optional[str]:
     """Family for a live `bot_trades.strategy` value: the research copy of the lane map,
