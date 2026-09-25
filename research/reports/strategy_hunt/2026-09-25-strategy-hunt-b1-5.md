@@ -392,7 +392,7 @@ that worked on days that *closed* risk-off, which is not a fact available at 10:
 
 B1.5's item 1 ("the regime split is real and large, and it is the only robust finding") claimed a
 **+0.63 R** spread for `dt_momentum short` between `risk_off` and `risk_on`, and **+0.53 R** for
-`dt_momentum long`. Under entry-time labels those spreads are **+0.000 R** and **−0.010 R** — the
+`dt_momentum long`. Under entry-time labels those spreads are **+0.000 R** and **+0.010 R** — the
 two regimes are indistinguishable. The same collapse happens to `orb_inplay short` (+0.200 /
 −0.539 → +0.003 / −0.176) and `mean_rev_intraday long` (+0.267 in `risk_on` → −0.159). **That
 finding must be withdrawn.**
