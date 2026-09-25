@@ -31,6 +31,9 @@ from core.schwab_stream import SchwabQuoteStream, STREAMING_AVAILABLE
 from core.order_monitor import OrderMonitor
 from core.price_book import PriceBook, PriceObject
 from core.calculations import CalculationEngine, PnLResult
+# v-strategy-fit-2026-09-25: per-symbol strategy fit snapshot (Phase 2 gate)
+from core.strategy_fit import StrategyFit
+from core.strategy_fit_gate import evaluate_fit_gate, family_for
 from analysis.anomaly import AnomalyDetector, DataValidator
 from analysis.behavioral import BehavioralAnalyzer
 from analysis.exit_managers import AdvancedExitManager, DynamicExitManager
@@ -118,6 +121,9 @@ class TradingEngineWithCommentary:
         # disconnect we missed).
         self.price_book: PriceBook = PriceBook(stale_threshold_sec=600.0)
         PriceBook.install(self.price_book)
+        # v-strategy-fit-2026-09-25: per-symbol strategy fit snapshot (Phase 2 gate)
+        self._strategy_fit = StrategyFit(Config().STRATEGY_FIT_PATH, Config().STRATEGY_FIT_MAX_AGE_DAYS)
+        self._fit_signals_this_pass: dict[tuple[str, str], list[str]] = {}
         self._supervisor: Optional[TaskSupervisor] = None
         self._quote_fetch_sem: Optional[asyncio.Semaphore] = None
         # v-phase-b-order-monitor-2026-09-14: OrderMonitor instance (composed)
@@ -5574,6 +5580,14 @@ class TradingEngineWithCommentary:
         incident) can no longer freeze the watchlist refresh. We now just
         consume `self.dynamic_watchlist` populated by that loop.
         """
+        # v-strategy-fit-2026-09-25: per-symbol strategy fit gate (after regime gate)
+        self._fit_signals_this_pass = {}
+        if Config().ENABLE_STRATEGY_FIT_GATE:
+            try:
+                await asyncio.to_thread(self._strategy_fit.reload_if_changed)
+            except Exception as _fit_exc:
+                logger.warning("strategy_fit reload failed: %s", _fit_exc)
+
         # Use dynamic watchlist
         watchlist = self.dynamic_watchlist
 
@@ -6045,6 +6059,23 @@ class TradingEngineWithCommentary:
                 extra={"tape": _alloc.tape, "er": _alloc.er, "threshold": _alloc.threshold},
             )
             return  # abort the signal — no order placed
+
+        # v-strategy-fit-2026-09-25: per-symbol strategy fit gate (after regime gate)
+        if Config().ENABLE_STRATEGY_FIT_GATE:
+            _fit_side = "long" if signal.signal_type == SignalType.BUY else "short"
+            _fit_strategy = signal.reasoning.get("strategy", "unknown") if signal.reasoning else "unknown"
+            _fit_key = (signal.symbol, _fit_side)
+            _fit_fam = family_for(_fit_strategy)
+            _competing = [f for f in self._fit_signals_this_pass.get(_fit_key, []) if f != _fit_fam]
+            if _fit_fam:
+                self._fit_signals_this_pass.setdefault(_fit_key, []).append(_fit_fam)
+            _fd = evaluate_fit_gate(self._strategy_fit, _fit_strategy, _fit_side, signal.symbol, True,
+                                    Config().STRATEGY_FIT_SHADOW, _competing)
+            if _fd.governed:
+                self._audit("strategy_fit", signal.symbol, _fd.action, _fd.reason,
+                            strategy=_fit_strategy, side=_fit_side, **_fd.audit_fields())
+                if _fd.action == "skip":
+                    return
 
         # v-conviction-floor-meanrev-2026-06-17: skip mean-rev signals
         # below the meta-model conviction floor. The meta<0.60 bucket
