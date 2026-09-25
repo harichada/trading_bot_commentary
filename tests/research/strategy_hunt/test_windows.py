@@ -19,3 +19,12 @@ def test_build_windows_respects_short_history():
     assert w[0].oos_start == pd.Timestamp("2025-04-01")    # first month >= first_bar + 12 months
     assert len(w) == 2 and w[-1].oos_start == pd.Timestamp("2025-07-01")
     assert build_windows(pd.Timestamp("2025-01-02"), pd.Timestamp("2025-06-01")) == []
+
+
+def test_build_windows_grace_days_boundary():
+    from research.strategy_hunt.walkforward.windows import build_windows
+    last_bar = pd.Timestamp("2023-06-15 15:55")
+    w_in_grace = build_windows(pd.Timestamp("2021-01-08"), last_bar)
+    assert w_in_grace[0].oos_start == pd.Timestamp("2022-01-01")
+    w_past_grace = build_windows(pd.Timestamp("2021-01-09"), last_bar)
+    assert w_past_grace[0].oos_start == pd.Timestamp("2022-02-01")
