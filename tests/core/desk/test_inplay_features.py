@@ -269,3 +269,54 @@ def test_load_prior_context_corrupt_file_is_none(tmp_path):
 def test_load_prior_context_bad_root_or_symbol_is_none(tmp_path):
     assert load_prior_context(None, "AAPL") is None            # type: ignore[arg-type]
     assert load_prior_context(tmp_path, "") is None
+
+
+# ────────────────────────────────────────────────────────────────────
+# fix round 1: a broken clock must not rank a stale session, and the
+# computation must never raise whatever the frame looks like
+# ────────────────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("clock", [None, pd.NaT, "garbage", object()])
+def test_unusable_clock_never_ranks_a_stale_session(clock):
+    """Without a usable clock there is no "today", so no intraday feature is
+    reported — ranking yesterday's session with empty reasons would be worse
+    than ranking nothing."""
+    row = opening_features("AAPL", _today(), _history(), _ctx(earnings_today=True), clock)
+    assert math.isnan(row.rvol_open15) and math.isnan(row.gap_pct)
+    assert "missing:today_bars" in row.reasons
+    assert row.catalyst == 1.0                    # context features still stand
+    assert row.rs_20 == pytest.approx(4.0)
+
+
+def test_duplicated_volume_column_never_raises():
+    """A frame whose `volume` label appears twice makes column access return a
+    DataFrame; the row degrades instead of the 09:35 scan dying."""
+    today = _today()
+    broken = pd.concat([today, today[["volume"]]], axis=1)
+    assert list(broken.columns).count("volume") == 2
+    row = opening_features("AAPL", broken, _history(), _ctx(), NOW)
+    assert row.symbol == "AAPL"
+    assert math.isnan(row.rvol_open15) and math.isnan(row.gap_pct)
+    assert "missing:today_bars" in row.reasons
+
+
+def test_load_prior_context_ties_on_date_keep_the_last_row(tmp_path):
+    """Rows repeating the newest date (a rebuild appending) resolve to the last
+    one written, not to whichever the sort happened to land on: the date sort
+    has to be stable, which an unstable one is not once the tie group is
+    scattered through the file."""
+    rows = [{"date": pd.Timestamp("2026-09-24" if i % 3 == 0
+                                  else f"2026-09-{1 + (i % 20):02d}"),
+             "symbol": "AAPL", "rs_20": float(i)} for i in range(20)]
+    _write_context(tmp_path, rows)
+    out = load_prior_context(tmp_path, "AAPL")
+    assert out is not None
+    assert out["date"] == "2026-09-24"
+    assert out["rs_20"] == pytest.approx(18.0)      # the last 2026-09-24 row
+
+
+def test_module_docstring_warns_about_the_median_baseline_and_rth_bars():
+    import core.desk.inplay_features as mod
+    doc = (mod.__doc__ or "").lower()
+    assert "median" in doc and "mean" in doc     # live baseline vs the context column
+    assert "regular" in doc                      # regular-hours bars only

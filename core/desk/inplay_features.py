@@ -11,11 +11,24 @@ bars with a naive-ET `DatetimeIndex`, sessions grouped by `index.normalize()`,
 `bar_of_day` 0 at 09:30 — so the opening 15 minutes is a session's first three
 bars.
 
-Nothing here raises. A missing frame, a short history, a column that is not
-there, a garbage context value: each degrades to a NaN field plus a
-`missing:<cause>` reason, because a feature failure for one symbol must never
-take down the 09:35 scan. And nothing here imports `research`: the nightly
-context Parquet is read as a *data* file, the same one-way arrangement
+Pass **regular-hours bars only** (09:30-16:00 ET). A frame carrying pre-market
+or after-hours bars shifts `bar_of_day`, so the "first three bars" would not be
+the opening 15 minutes and both `rvol_open15` and `gap_pct` would be wrong
+rather than missing.
+
+`rvol_open15` here is today's opening volume over the **median** of the prior 14
+sessions (the brief's definition: a median ignores the one earnings day that
+would otherwise lift the baseline for a fortnight). The research context column
+of the same name uses a **mean** over its own window, so the two are not
+interchangeable: never compare a live reading against a `ctx_rvol_open15`
+threshold, or backfill one from the other.
+
+Nothing here raises, unconditionally: the whole computation sits behind one
+guard, so a missing frame, a short history, an absent column, a duplicated
+column label or a garbage context value each degrade to a NaN field plus a
+`missing:<cause>` reason. A feature failure for one symbol must never take down
+the 09:35 scan. And nothing here imports `research`: the nightly context
+Parquet is read as a *data* file, the same one-way arrangement
 `core/strategy_fit_bars.py` has with the research tree.
 """
 from __future__ import annotations
@@ -101,20 +114,22 @@ def _naive_et_frame(frame: Any) -> Optional[pd.DataFrame]:
     return out.sort_index()
 
 
-def _session_date(now_et: Any, today_bars: Optional[pd.DataFrame]) -> Optional[pd.Timestamp]:
-    """Today's session date from the clock, falling back to the newest date in
-    the frame the caller handed us."""
+def _session_date(now_et: Any) -> Optional[pd.Timestamp]:
+    """Today's session date from the clock, or None when the clock is unusable.
+
+    There is deliberately no "newest date in the frame" fallback: a stopped or
+    garbage clock would then silently rank yesterday's session as today, with
+    nothing in `reasons` to say so. No clock means no "today", which means no
+    intraday feature — `missing:today_bars` — and the desk can see that.
+    """
     try:
         stamp = pd.Timestamp(now_et)
-        if stamp.tzinfo is not None:
-            stamp = stamp.tz_convert(ET).tz_localize(None)
-        if not pd.isna(stamp):
-            return stamp.normalize()
     except (TypeError, ValueError):
         logger.debug("inplay_features: unusable now_et %r", now_et, exc_info=True)
-    if today_bars is not None:
-        return pd.Timestamp(today_bars.index.max()).normalize()
-    return None
+        return None
+    if stamp.tzinfo is not None:
+        stamp = stamp.tz_convert(ET).tz_localize(None)
+    return None if pd.isna(stamp) else stamp.normalize()
 
 
 def _sessions(frame: pd.DataFrame) -> List[Tuple[pd.Timestamp, pd.DataFrame]]:
@@ -172,29 +187,46 @@ def opening_features(symbol: str, today_bars5: Any, history_bars5: Any,
                      prior_ctx: Optional[Dict[str, Any]], now_et: datetime) -> InPlayRow:
     """One candidate's opening features, unscored (`score` stays NaN).
 
-    `today_bars5` is today's 5-minute session, `history_bars5` the prior
-    sessions (extra sessions are fine — only those before today are used), and
-    `prior_ctx` the symbol's last row from the nightly universe context.
+    `today_bars5` is today's 5-minute regular-hours session, `history_bars5` the
+    prior sessions (extra sessions are fine — only those before today are used),
+    and `prior_ctx` the symbol's last row from the nightly universe context.
+
+    Never raises. Anything the frames can do that `_compute` does not anticipate
+    — a duplicated column label, an index of the wrong dtype — comes back as the
+    all-missing row rather than as an exception in the 09:35 scan.
     """
+    try:
+        return _compute(symbol, today_bars5, history_bars5, prior_ctx, now_et)
+    except Exception:
+        logger.debug("opening_features: failed for %r", symbol, exc_info=True)
+        return InPlayRow(symbol=_symbol(symbol),
+                         reasons=("missing:today_bars", "error:features"))
+
+
+def _compute(symbol: str, today_bars5: Any, history_bars5: Any,
+             prior_ctx: Optional[Dict[str, Any]], now_et: datetime) -> InPlayRow:
+    """`opening_features` without the guard — see it for the contract."""
     reasons: List[str] = []
     rvol = gap = rs_20 = NAN
     catalyst = 0.0
 
-    today = _naive_et_frame(today_bars5)
+    session_date = _session_date(now_et)
+    today = _naive_et_frame(today_bars5) if session_date is not None else None
     history = _naive_et_frame(history_bars5)
-    session_date = _session_date(now_et, today)
 
-    if today is not None and session_date is not None:
+    if today is not None:
         today = today[today.index.normalize() == session_date]
         if today.empty:
             today = None
     if today is None:
         _add(reasons, "missing:today_bars")
 
+    # "Prior" only means anything relative to today, so an unusable clock
+    # leaves no prior session either (and no gap).
     prior: List[Tuple[pd.Timestamp, pd.DataFrame]] = []
-    if history is not None:
+    if history is not None and session_date is not None:
         prior = [(day, group) for day, group in _sessions(history)
-                 if session_date is None or day < session_date]
+                 if day < session_date]
 
     prev_close = _last_close(prior[-1][1]) if prior else None
     if prev_close is None or prev_close <= 0:
@@ -274,7 +306,10 @@ def load_prior_context(root: Any, symbol: str) -> Optional[Dict[str, Any]]:
             return None
         if "date" in frame.columns:
             frame = frame.assign(date=pd.to_datetime(frame["date"], errors="coerce"))
-            frame = frame.sort_values("date")
+            # A stable sort, so rows repeating the newest date (a rebuild that
+            # appended rather than replaced) resolve to the last one written
+            # instead of to whichever an unstable sort happened to land on.
+            frame = frame.sort_values("date", kind="stable")
         row = {str(k): _plain(v) for k, v in frame.iloc[-1].to_dict().items()}
         if "date" in row:
             row["date"] = _date_str(row["date"])
