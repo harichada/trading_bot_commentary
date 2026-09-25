@@ -33,6 +33,13 @@ from core.price_book import PriceBook, PriceObject
 from core.calculations import CalculationEngine, PnLResult
 # v-strategy-fit-2026-09-25: per-symbol strategy fit snapshot (Phase 2 gate)
 from core.strategy_fit import StrategyFit
+# v-strategy-fit-review2-2026-09-25 (Important 3): nightly research Parquet
+# history spliced under the provider's 10-day minute window.
+from core.strategy_fit_bars import (
+    load_history as load_fit_history,
+    merge_daily as merge_fit_daily,
+    merge_history as merge_fit_history,
+)
 from core.strategy_fit_gate import evaluate_fit_gate, family_for
 from core.swing_exits import (
     is_multiday, should_time_stop, should_earnings_eve_flatten,
@@ -490,6 +497,13 @@ class TradingEngineWithCommentary:
     # cached per analysis pass in self._fit_bars_cache (reset each pass by
     # _analyze_markets_with_commentary). Never raises — a fetch failure
     # degrades to two empty frames so the fit-lane skips cleanly.
+    #
+    # v-strategy-fit-review2-2026-09-25 (Important 3): Schwab caps minute
+    # price history at 10 days (~7 sessions), but indicators.py needs 20 prior
+    # sessions for `rvol` and 10 for `or*_range_avg20` — so `orb` and
+    # `news_catalyst` could never fire live. The nightly research export is
+    # spliced in underneath the provider's recent window to supply that depth
+    # (core/strategy_fit_bars.py; missing files degrade to recent-only).
     def _fit_bars_source(self, symbol: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
         if symbol in self._fit_bars_cache:
             return self._fit_bars_cache[symbol]
@@ -518,7 +532,8 @@ class TradingEngineWithCommentary:
             daily.index = didx.normalize()
             daily.index.name = "date"
 
-            result = (bars5, daily)
+            _hist5, _hist_daily = load_fit_history(Config().STRATEGY_HUNT_DATA_ROOT, symbol)
+            result = (merge_fit_history(_hist5, bars5), merge_fit_daily(_hist_daily, daily))
         except Exception as _fit_bars_exc:
             logger.debug("fit_bars_source: failed for %s: %s", symbol, _fit_bars_exc)
             result = (pd.DataFrame(), pd.DataFrame())
@@ -8901,15 +8916,33 @@ class TradingEngineWithCommentary:
                 )
 
         # v-strategy-fit-2026-09-25: multi-day (swing) exits
+        # v-strategy-fit-review2-2026-09-25 (Important 6): the whole block is
+        # contained. It sits *above* the hard stop-loss / take-profit checks
+        # below, so anything raising here (a bad entry_time, a garbage
+        # max_hold_sessions, a parquet read blowing up in a new way) would
+        # skip those checks entirely for this position. Log and fall through
+        # instead — a missed swing time-stop is recoverable, a missed stop
+        # loss is not. load_earnings_dates() does blocking Parquet I/O, so it
+        # runs off the event loop.
         if is_multiday(_reasoning):
-            from zoneinfo import ZoneInfo
-            _now_et = datetime.now(ZoneInfo("America/New_York")).replace(tzinfo=None)
-            hit, why = should_time_stop(_reasoning, position.entry_time, _now_et, Config().SWING_MAX_HOLD_SESSIONS)
-            if not hit:
-                hit, why = should_earnings_eve_flatten(position.symbol, _now_et, load_earnings_dates("data/strategy_hunt", position.symbol))
-            if hit:
-                self._audit("swing_exit", position.symbol, "exit", why, sessions_held=sessions_held(position.entry_time, _now_et))
-                return True, why
+            try:
+                from zoneinfo import ZoneInfo
+                _now_et = datetime.now(ZoneInfo("America/New_York")).replace(tzinfo=None)
+                hit, why = should_time_stop(_reasoning, position.entry_time, _now_et, Config().SWING_MAX_HOLD_SESSIONS)
+                if not hit:
+                    _earnings = await asyncio.to_thread(
+                        load_earnings_dates, Config().STRATEGY_HUNT_DATA_ROOT, position.symbol
+                    )
+                    hit, why = should_earnings_eve_flatten(position.symbol, _now_et, _earnings)
+                if hit:
+                    self._audit("swing_exit", position.symbol, "exit", why,
+                                sessions_held=sessions_held(position.entry_time, _now_et))
+                    return True, why
+            except Exception as _swing_exc:
+                logger.warning(
+                    "swing_exit check failed for %s: %s — falling through to hard SL/TP",
+                    position.symbol, _swing_exc,
+                )
 
         # Check if stop loss / take profit are hit based on position side.
         # Both use the same simple price comparison — no indicator logic.

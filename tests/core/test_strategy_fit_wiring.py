@@ -27,6 +27,31 @@ def test_engine_registers_fit_lanes_and_bars_source():
     assert "self._fit_bars_cache = {}" in src
 
 
+def test_engine_merges_research_history_into_fit_bars():
+    """v-strategy-fit-review2-2026-09-25 (Important 3): the provider's 10-day
+    minute window is too short for rvol (20 sessions) and or*_range_avg20
+    (10), so the nightly research Parquet history is spliced in underneath,
+    under the configured root."""
+    src = Path("core/engine.py").read_text()
+    assert "from core.strategy_fit_bars import (" in src
+    assert "load_fit_history(Config().STRATEGY_HUNT_DATA_ROOT, symbol)" in src
+    assert "merge_fit_history(_hist5, bars5)" in src and "merge_fit_daily(_hist_daily, daily)" in src
+    # The hardcoded research root is gone from the swing-exit call site too.
+    assert '"data/strategy_hunt"' not in src
+
+
+def test_engine_contains_swing_exit_block_and_threads_earnings_io():
+    """v-strategy-fit-review2-2026-09-25 (Important 6): the swing block sits
+    above the hard SL/TP checks, so it must never raise past itself; and the
+    blocking Parquet read runs off the event loop."""
+    src = Path("core/engine.py").read_text()
+    swing = src.index('self._audit("swing_exit", position.symbol, "exit", why')
+    guard = src.index("swing_exit check failed for %s")
+    stop_hit = src.index("stop_loss_hit = current_price >= position.stop_loss")
+    assert swing < guard < stop_hit, "the except/fall-through must sit between the block and the SL/TP checks"
+    assert "await asyncio.to_thread(\n                        load_earnings_dates, Config().STRATEGY_HUNT_DATA_ROOT" in src
+
+
 def test_engine_wires_swing_exits_and_overnight_gate():
     src = Path("core/engine.py").read_text()
     assert 'self._audit("swing_exit", position.symbol, "exit", why' in src

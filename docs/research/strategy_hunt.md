@@ -43,6 +43,16 @@ everywhere it is currently wired — see
 `docs/BOT_OPERATIONS_MANUAL.md` § "Strategy fit gate" for the
 pipeline position, audit line format, and fail-closed behavior.
 
+**Snapshot caveat (2026-09-25).** The current full-universe snapshot contains **0 PASS rows** (539
+symbols, all ten families; see "Timing" below). So with today's snapshot, setting
+`STRATEGY_FIT_SHADOW=False` while `ENABLE_STRATEGY_FIT_GATE=True` makes **every governed lane skip
+every signal** — `fit_fail` for the symbols that have a row, `fit_missing_row` for the rest. That is
+not a malfunction: enforcing mode is a deliberate *"governed lanes off until the evidence exists"*
+decision, and the governed lanes are `mean_reversion`, `mean_reversion_short`,
+`oversold_bounce_v2`, `day_trade_momentum`, `day_trade_momentum_short`, `orb_contraction_rvol`,
+`news_sentiment`, `free_news_sentiment`, plus any `fit:<family>` lane. Turn shadow off only when you
+intend exactly that, or once a nightly run has produced PASS rows for the symbols you trade.
+
 | Flag | Default | Purpose |
 |---|---|---|
 | `ENABLE_STRATEGY_FIT_GATE` | `False` | Master switch. Gate is fully inert (no audit lines, no blocking) until this is `True`. |
@@ -53,8 +63,9 @@ pipeline position, audit line format, and fail-closed behavior.
 | `FIT_LANE_LIVE_ENTRIES_ENABLED` | `""` (empty) | Comma-separated family names allowed to place LIVE entries via their fit lane; a family absent here is shadow-only even if present in `FIT_LANES_ENABLED`. |
 | `SWING_ALLOW_OVERNIGHT` | `False` | Allow swing-lane positions to hold across sessions instead of forced flat by EOD. |
 | `SWING_MAX_HOLD_SESSIONS` | `10` | Maximum sessions a swing-lane position may be held before a forced exit. |
+| `STRATEGY_HUNT_DATA_ROOT` | `data/strategy_hunt` | Root of the nightly research data tree. The engine splices `<root>/bars5/<SYM>.parquet` and `<root>/daily/<SYM>.parquet` under the broker's short recent window so `rvol` (20 prior sessions) and `or*_range_avg20` (10) can resolve live; also the root for `<root>/earnings/<SYM>.parquet` in the swing exit checks. |
 
-All eight flags follow the config manager's env-var-then-yaml-then-default
+All nine flags follow the config manager's env-var-then-yaml-then-default
 precedence (`env ENABLE_STRATEGY_FIT_GATE=1`, yaml
 `trading.enable_strategy_fit_gate: true`, etc. — see
 `core/config.py`, search `v-strategy-fit-2026-09-25`).

@@ -44,10 +44,25 @@ def should_time_stop(
 
     Fires once the position has been held for `max_hold` sessions or more
     and it's at/after the 15:50 cutoff.
+
+    v-strategy-fit-review2-2026-09-25 (Important 6): `max_hold_sessions`
+    comes from a signal's `reasoning` dict, which is persisted to
+    trading_state.json and reloaded across restarts — so it can be a
+    string, None, or anything else a past writer left there. A non-numeric
+    value falls back to `default_max` rather than raising into the exit
+    check, where a ValueError would have skipped the hard SL/TP checks
+    that run after this one.
     """
     if not is_multiday(reasoning or {}):
         return False, ""
-    max_hold = int(reasoning.get("max_hold_sessions") or default_max)
+    try:
+        max_hold = int(reasoning.get("max_hold_sessions") or default_max)
+    except (TypeError, ValueError):
+        logger.debug(
+            "should_time_stop: non-numeric max_hold_sessions %r; using default %s",
+            reasoning.get("max_hold_sessions"), default_max,
+        )
+        max_hold = int(default_max)
     held = sessions_held(entry_time, now)
     cutoff = now.replace(
         hour=_TIME_STOP_CUTOFF[0], minute=_TIME_STOP_CUTOFF[1], second=0, microsecond=0

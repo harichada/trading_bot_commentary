@@ -295,8 +295,11 @@ Flags (`core/config.py`, search `v-strategy-fit-2026-09-25`):
 | `FIT_LANE_LIVE_ENTRIES_ENABLED` | `""` | Family names allowed LIVE entries via their fit lane; absent families stay shadow-only. |
 | `SWING_ALLOW_OVERNIGHT` | `False` | Allow swing-lane positions to hold across sessions instead of forced flat by EOD. |
 | `SWING_MAX_HOLD_SESSIONS` | `10` | Max sessions a swing-lane position may be held before a forced exit. |
+| `STRATEGY_HUNT_DATA_ROOT` | `data/strategy_hunt` | Root of the nightly research data tree; the engine splices its `bars5/`/`daily/` Parquet under the broker's 10-day minute window (so `rvol`/`or*_range_avg20` resolve live) and reads `earnings/` for swing exits. |
 
 `ENABLE_STRATEGY_FIT_GATE` and `STRATEGY_FIT_SHADOW` are both effectively off in their protective sense today (gate disabled; and even if enabled, shadow defaults on) — the gate ships inert and must be turned on deliberately in two steps: enable, then disable shadow.
+
+**What step two costs today.** The current fit snapshot (full universe, 2026-09-25) has **0 PASS rows**. So turning shadow off right now makes **every governed lane skip every signal** — `fit_fail` where a row exists, `fit_missing_row` where it doesn't — i.e. it switches off `mean_reversion`, `mean_reversion_short`, `oversold_bounce_v2`, `day_trade_momentum`, `day_trade_momentum_short`, `orb_contraction_rvol`, `news_sentiment` and `free_news_sentiment` entirely. State that plainly to anyone asking for enforcing mode: it is a deliberate "governed lanes off until evidence exists" decision, not a tuning knob. Until a nightly run produces PASS rows for the symbols actually traded, shadow mode is the only setting in which those lanes keep trading. `research/strategy_hunt promote` reports the same posture from the other side via its `gate_not_enforcing` blocker (see `docs/research/strategy_hunt.md` § "Operator flow").
 
 Audit line (component `strategy_fit`, one per governed signal):
 
@@ -729,7 +732,7 @@ Legacy `.env` keys `MAX_DAILY_LOSS`, `MAX_POSITION_SIZE`, `MAX_POSITIONS`, `MAX_
 | Alpaca news bus, feature snapshots, Postgres `DbLogger` | LIVE (data plumbing) | `:3971`, `:3427`; `core/engine.py:290-294` |
 | Strategy-fit lanes (`fit:<family>`) | **OFF** (no family registered) | `ENABLE_STRATEGY_FIT_GATE` default False; `FIT_LANES_ENABLED` empty; see table below |
 
-The strategy-fit gate and its per-family fit lanes are governed by eight flags, all off/empty by
+The strategy-fit gate and its per-family fit lanes are governed by nine flags, all off/empty by
 default (same set documented in §3 "Strategy fit gate"; repeated here since this section is the
 current-live-profile snapshot):
 
@@ -743,11 +746,14 @@ current-live-profile snapshot):
 | `FIT_LANE_LIVE_ENTRIES_ENABLED` | `""` | Family names allowed LIVE entries via their fit lane; absent families stay shadow-only even if registered. |
 | `SWING_ALLOW_OVERNIGHT` | `False` | Allow swing-lane (multiday) fit-lane positions to hold across sessions instead of forced flat by EOD. |
 | `SWING_MAX_HOLD_SESSIONS` | `10` | Max sessions a swing-lane position may be held before a forced exit. |
+| `STRATEGY_HUNT_DATA_ROOT` | `data/strategy_hunt` | Root of the nightly research data tree the engine reads (`bars5/`, `daily/`, `earnings/`). |
 
-`research/strategy_hunt promote` (see `docs/research/strategy_hunt.md` § "Operator flow") reads all
-eight off `Config()`, cross-references the fit snapshot and each family's Stage A scorecard, and prints
+`research/strategy_hunt promote` (see `docs/research/strategy_hunt.md` § "Operator flow") reads them
+off `Config()`, cross-references the fit snapshot and each family's Stage A scorecard, and prints
 the exact `FIT_LANES_ENABLED` / `FIT_LANE_LIVE_ENTRIES_ENABLED` / `SWING_ALLOW_OVERNIGHT` lines to add
-to `.env` — it never edits `.env` or `Config().yaml` itself.
+to `.env` — it never edits `.env` or `Config().yaml` itself. It also reports a `gate_not_enforcing`
+blocker for every otherwise-promotable family while `ENABLE_STRATEGY_FIT_GATE` is `False` or
+`STRATEGY_FIT_SHADOW` is `True`: no lane goes live while the gate itself is inert.
 
 ### 6.5 Realized behavior from `trading_state.json`
 

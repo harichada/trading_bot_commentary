@@ -35,3 +35,26 @@ def test_load_earnings_dates_malformed_column_returns_empty_set(tmp_path):
     (tmp_path / "earnings").mkdir()
     pd.DataFrame({"date": ["not-a-date", "??"]}).to_parquet(tmp_path / "earnings" / "Z.parquet", index=False)
     assert load_earnings_dates(str(tmp_path), "Z") == set()
+
+
+def test_time_stop_coerces_non_numeric_max_hold_sessions():
+    """v-strategy-fit-review2-2026-09-25 (Important 6): `max_hold_sessions`
+    comes out of a persisted `reasoning` dict, so it can be a string or any
+    other junk a past writer left in trading_state.json. It must fall back to
+    the default rather than raising into _evaluate_exit_conditions, where a
+    ValueError would have skipped the hard SL/TP checks below it."""
+    from core.swing_exits import should_time_stop
+
+    entry, now = datetime(2025, 9, 22, 10), datetime(2025, 9, 24, 15, 55)   # 3 sessions held
+
+    # Non-numeric values fall back to default_max.
+    for junk in ("many", "3.5.1", [], {}, object()):
+        r = {"hold_kind": "multiday", "max_hold_sessions": junk}
+        assert should_time_stop(r, entry, now, 2) == (True, "swing_time_stop")     # default 2 <= 3 held
+        assert should_time_stop(r, entry, now, 10) == (False, "")                  # default 10 > 3 held
+
+    # A numeric string still works (int("3") == 3), and so does a float.
+    assert should_time_stop({"hold_kind": "multiday", "max_hold_sessions": "3"}, entry, now, 10) == (True, "swing_time_stop")
+    assert should_time_stop({"hold_kind": "multiday", "max_hold_sessions": 3.0}, entry, now, 10) == (True, "swing_time_stop")
+    # None/0 already fell back to the default before this fix; keep it that way.
+    assert should_time_stop({"hold_kind": "multiday", "max_hold_sessions": None}, entry, now, 2) == (True, "swing_time_stop")
