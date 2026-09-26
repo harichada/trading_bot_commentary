@@ -26,6 +26,15 @@ def _record_all_steps(cli, monkeypatch) -> list[tuple]:
     return order
 
 
+def _summary(seed, peers_total, n_errors):
+    return {"symbols": peers_total, "peers": peers_total - n_errors, "peers_total": peers_total,
+            "trades": 10 * peers_total, "replayed": 10 * (peers_total - n_errors),
+            "selection_dropped": 10 * n_errors, "dropped": {}, "selection_groups": {},
+            "underreplayed_groups": [],
+            "errors": [{"symbol": f"E{i}", "error": "ValueError: boom"} for i in range(n_errors)],
+            "seed": seed}
+
+
 def test_shuffle_mode_defaults_to_path_and_accepts_selection():
     from research.strategy_hunt.cli import build_parser
     from research.strategy_hunt.cli_args import SHUFFLE_MODES, SHUFFLE_MODE_PATH, SHUFFLE_MODE_SELECTION
@@ -60,8 +69,8 @@ def test_cmd_run_selection_replays_instead_of_simulating_the_families(monkeypatc
 
     def _fake_replay(root, seed, workers=1, **kw):
         seen.update({"root": root, "seed": seed, "workers": workers, **kw})
-        return {"symbols": 3, "peers": 2, "trades": 4, "replayed": 3, "selection_dropped": 1,
-                "dropped": {"no_peer_bar": 1}, "errors": [], "seed": seed}
+        return {**_summary(seed, 3, 0), "replayed": 3, "selection_dropped": 1,
+                "dropped": {"no_peer_bar": 1}}
 
     monkeypatch.setattr(SB, "replay_selection", _fake_replay)
 
@@ -78,8 +87,11 @@ def test_cmd_run_selection_records_the_dropped_count_in_the_manifest(monkeypatch
     from research.strategy_hunt.paths import reports_dir
 
     monkeypatch.setattr(SB, "replay_selection", lambda root, seed, workers=1, **kw: {
-        "symbols": 3, "peers": 2, "trades": 4, "replayed": 3, "selection_dropped": 1,
-        "dropped": {"no_peer_bar": 1}, "errors": [], "seed": seed})
+        **_summary(seed, 3, 0), "trades": 4, "replayed": 3, "selection_dropped": 1,
+        "dropped": {"no_peer_bar": 1},
+        "selection_groups": {"toy|long|mixed": {"real": 4, "replayed": 3, "dropped": 1,
+                                               "replayed_frac": 0.75}},
+        "underreplayed_groups": ["toy|long|mixed"]})
 
     assert cli.main(["run", "--root", str(tmp_path), "--shuffle-seed", "7",
                      "--shuffle-mode", "selection"]) == 0
@@ -98,13 +110,28 @@ def test_cmd_run_selection_without_a_seed_fails_cleanly(tmp_path, capsys):
     assert "--shuffle-seed" in capsys.readouterr().out
 
 
-def test_cmd_run_selection_returns_1_when_a_peer_failed(monkeypatch, tmp_path):
+def test_cmd_run_selection_tolerates_a_few_failed_peers(monkeypatch, tmp_path):
+    """Fix round 1, Important 1: the same tolerance as the real leg -- a handful of bad symbols must
+    not stop `all` before score/playbook, and the failures are still on the manifest."""
+    from research.strategy_hunt import cli
+    from research.strategy_hunt import selection_baseline as SB
+    from research.strategy_hunt.paths import reports_dir
+
+    monkeypatch.setattr(SB, "replay_selection",
+                        lambda root, seed, workers=1, **kw: _summary(seed, 20, 1))
+
+    assert cli.main(["run", "--root", str(tmp_path), "--shuffle-seed", "7",
+                     "--shuffle-mode", "selection"]) == 0
+    rec = json.loads(next(reports_dir(tmp_path).glob("*.json")).read_text())
+    assert [e["symbol"] for e in rec["errors_selection"]] == ["E0"]
+
+
+def test_cmd_run_selection_returns_1_when_more_than_a_tenth_of_peers_failed(monkeypatch, tmp_path):
     from research.strategy_hunt import cli
     from research.strategy_hunt import selection_baseline as SB
 
-    monkeypatch.setattr(SB, "replay_selection", lambda root, seed, workers=1, **kw: {
-        "symbols": 1, "peers": 0, "trades": 1, "replayed": 0, "selection_dropped": 0,
-        "dropped": {}, "errors": [{"symbol": "BBB", "error": "ValueError: boom"}], "seed": seed})
+    monkeypatch.setattr(SB, "replay_selection",
+                        lambda root, seed, workers=1, **kw: _summary(seed, 20, 3))
 
     assert cli.main(["run", "--root", str(tmp_path), "--shuffle-seed", "7",
                      "--shuffle-mode", "selection"]) == 1

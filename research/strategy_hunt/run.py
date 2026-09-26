@@ -351,7 +351,7 @@ def _pooled_with_baselines(root: Path, real_frame: Optional[pd.DataFrame], famil
         base_frames = _variant_frames(root, fams, variant, f"score_baseline_{kind}")
         base_frame = pd.concat(base_frames, ignore_index=True) if base_frames else None
         rows = baseline_pooled_rows(base_frame, computed_at, baseline_kind=kind) if base_frame is not None else []
-        guard = _baseline_guard_logged(real_sub, base_frame)
+        guard = _baseline_guard_logged(real_sub, base_frame, kind)
         baseline.extend(rows)
         if real_sub is not None:
             pooled.extend(pooled_rows(real_sub, computed_at, baseline=rows, guard=guard))
@@ -359,22 +359,24 @@ def _pooled_with_baselines(root: Path, real_frame: Optional[pd.DataFrame], famil
             sorted(baseline, key=lambda r: (r["strategy"], r["side"], r.get("regime", ""))))
 
 
-def _baseline_guard_logged(real_frame: Optional[pd.DataFrame],
-                           base_frame: Optional[pd.DataFrame]) -> tuple[str, ...]:
+def _baseline_guard_logged(real_frame: Optional[pd.DataFrame], base_frame: Optional[pd.DataFrame],
+                           baseline_kind: str = BASELINE_KIND_PATH) -> tuple[str, ...]:
     """`baseline_guard` plus the one warning that says, in counts and dates, what it saw.
 
     A pooled row only carries the failure key; the operator needs the numbers to decide
-    whether to re-run the baseline or ignore the flag."""
-    guard = baseline_guard(real_frame, base_frame)
+    whether to re-run the baseline or ignore the flag. `baseline_kind` reaches the guard because the
+    selection control is not judged on symbol coverage, and names the mode that rebuilds it."""
+    guard = baseline_guard(real_frame, base_frame, baseline_kind)
     if guard:
         cov = baseline_coverage(real_frame, base_frame)
+        mode = "" if baseline_kind == BASELINE_KIND_PATH else f" --shuffle-mode {baseline_kind}"
         logger.warning(
-            "score_regime: %s -- real symbols %d, baseline symbols %d (missing %d = %.1f%%, e.g. %s); "
-            "real last exit %s, baseline last exit %s (%d days behind). Re-run "
-            "`run --shuffle-seed 7 --force` to refresh the baseline.",
-            ", ".join(guard), cov["n_real_symbols"], cov["n_baseline_symbols"], cov["n_missing"],
+            "score_regime: %s (%s control) -- real symbols %d, baseline symbols %d (missing %d = %.1f%%, "
+            "e.g. %s); real last exit %s, baseline last exit %s (%d days behind). Re-run "
+            "`run --shuffle-seed N%s --force` to refresh the baseline.",
+            ", ".join(guard), baseline_kind, cov["n_real_symbols"], cov["n_baseline_symbols"], cov["n_missing"],
             100.0 * cov["missing_frac"], ", ".join(cov["missing"][:5]) or "-",
-            cov["real_last_exit"] or "-", cov["baseline_last_exit"] or "-", cov["stale_days"])
+            cov["real_last_exit"] or "-", cov["baseline_last_exit"] or "-", cov["stale_days"], mode)
     return tuple(guard)
 
 

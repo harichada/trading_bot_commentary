@@ -144,3 +144,91 @@ def test_pooled_rows_are_emitted_for_every_family_and_sorted(root, families):
     keys = [(r["strategy"], r["side"], r["regime"]) for r in pooled]
     assert keys == sorted(keys)
     assert {k[0] for k in keys} == set(families)
+
+
+# ──────────────────────────────  fix round 1  ──────────────────────────────
+
+
+def test_a_selection_control_that_replayed_too_few_trades_cannot_pass(root, families):
+    """Fix round 1, Important 2: the selection control is *paired* with the real tape, so a control
+    group materially smaller than its real group means trades were dropped, not that the lane has an
+    edge over it. `baseline_population_mismatch` (a 2x band) is far too loose to catch that."""
+    from research.strategy_hunt.paths import trades_path
+    from research.strategy_hunt.run import score_regime_root
+    from research.strategy_hunt.score.regime_rows import BASELINE_UNDERREPLAYED
+
+    _write(root, "AAA", _rows("AAA", MULTI_FAM, 0.20, n=10), variant="selection")   # 10 of 12 replayed
+
+    _per_symbol, pooled, _baseline = score_regime_root(root, list(families), COMPUTED_AT)
+
+    row = _pooled_by_family(pooled)[MULTI_FAM]
+    assert row["baseline_n"] == 10 and row["n"] == 12
+    assert BASELINE_UNDERREPLAYED in json.loads(row["failed_floors"])
+    assert row["verdict"] != "PASS"
+    # the fully paired intraday row against its path control carries no such key
+    assert BASELINE_UNDERREPLAYED not in json.loads(_pooled_by_family(pooled)[INTRADAY_FAM]["failed_floors"])
+
+
+def test_a_fully_replayed_selection_control_carries_no_underreplayed_key(root, families):
+    from research.strategy_hunt.run import score_regime_root
+    from research.strategy_hunt.score.regime_rows import BASELINE_UNDERREPLAYED
+
+    _per_symbol, pooled, _baseline = score_regime_root(root, list(families), COMPUTED_AT)
+
+    row = _pooled_by_family(pooled)[MULTI_FAM]
+    assert row["baseline_n"] == row["n"] == 12
+    assert BASELINE_UNDERREPLAYED not in json.loads(row["failed_floors"])
+
+
+def test_a_thin_path_control_is_not_judged_by_the_pairing_floor(root, families):
+    """The shuffled tape re-runs the families on a different tape, so its group sizes legitimately
+    differ; only the 2x population band applies to it."""
+    from research.strategy_hunt.run import score_regime_root
+    from research.strategy_hunt.score.regime_rows import BASELINE_UNDERREPLAYED
+
+    _write(root, "AAA", _rows("AAA", INTRADAY_FAM, 0.10, n=10) + _rows("AAA", MULTI_FAM, 0.10, n=10),
+           variant="shuffle")
+
+    _per_symbol, pooled, _baseline = score_regime_root(root, list(families), COMPUTED_AT)
+
+    assert BASELINE_UNDERREPLAYED not in json.loads(_pooled_by_family(pooled)[INTRADAY_FAM]["failed_floors"])
+
+
+def test_baseline_guard_skips_the_coverage_test_for_the_selection_control(root, families):
+    """Fix round 1, Important 3: peers are a random sample of the universe, so "this control has no
+    row for symbol X" is the design, not a gap. Staleness still applies."""
+    import pandas as pd
+
+    from research.strategy_hunt.score.regime_rows import (BASELINE_KIND_PATH, BASELINE_KIND_SELECTION,
+                                                          BASELINE_MISMATCH, BASELINE_STALE, baseline_guard)
+
+    real = pd.concat([pd.DataFrame(_rows(f"S{i:02d}", MULTI_FAM, 0.3)) for i in range(20)],
+                     ignore_index=True)
+    thin = pd.concat([pd.DataFrame(_rows(f"S{i:02d}", MULTI_FAM, 0.2)) for i in range(5)],
+                     ignore_index=True)
+
+    assert baseline_guard(real, thin) == [BASELINE_MISMATCH]
+    assert baseline_guard(real, thin, baseline_kind=BASELINE_KIND_PATH) == [BASELINE_MISMATCH]
+    assert baseline_guard(real, thin, baseline_kind=BASELINE_KIND_SELECTION) == []
+
+    stale = thin.copy()
+    stale["exit_ts"] = pd.to_datetime(stale["exit_ts"]) - pd.Timedelta(days=30)
+    assert baseline_guard(real, stale, baseline_kind=BASELINE_KIND_SELECTION) == [BASELINE_STALE]
+
+
+def test_a_selection_control_covering_few_symbols_is_not_flagged_on_the_pooled_row(root, families):
+    from research.strategy_hunt.paths import trades_path
+    from research.strategy_hunt.run import score_regime_root
+    from research.strategy_hunt.score.regime_rows import BASELINE_MISMATCH
+
+    # the real multiday tape spans 20 symbols; the control lands on 2 peers, as a random draw does
+    for i in range(20):
+        _write(root, f"S{i:02d}", _rows(f"S{i:02d}", MULTI_FAM, 0.30))
+    trades_path(root, "AAA", "selection").unlink()
+    for peer in ("P1", "P2"):
+        _write(root, peer, _rows(peer, MULTI_FAM, 0.20, n=120), variant="selection")
+
+    _per_symbol, pooled, _baseline = score_regime_root(root, list(families), COMPUTED_AT)
+
+    failed = json.loads(_pooled_by_family(pooled)[MULTI_FAM]["failed_floors"])
+    assert BASELINE_MISMATCH not in failed

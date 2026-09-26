@@ -3,34 +3,31 @@
 Batch-2 Task A. The path-shuffle control (`run.shuffle_bars`, `trades_shuffle/`) permutes 5-minute
 returns *inside* each session, so every session's open-to-close return survives it. For an intraday
 hold that is a real control -- it destroys the path the entry was timed on. For a multi-day or
-overnight hold it destroys almost nothing: the claim under test is which symbol was held across
-those sessions, and the shuffled tape holds the same symbol across the same sessions.
+overnight hold it destroys almost nothing: the claim under test is which symbol was held across those
+sessions, and the shuffled tape holds the same symbol across the same sessions. This control asks
+that question instead -- keep the real *schedule* and reassign each trade to a random peer symbol
+that traded at the same timestamp -- so a family with selection skill beats it while one harvesting
+the average stock's drift over those sessions does not.
 
-This control asks that question instead: keep the real *schedule* and reassign each trade to a
-random peer symbol that traded at the same timestamp. A family with selection skill beats it; one
-that is harvesting the average stock's drift over those sessions does not.
+Preserved: the entry timestamp (the peer is entered on *its* bar at that stamp, so the control trades
+the same calendar), the side, the stop/target as the same *fractions* of the entry price (an absolute
+distance is meaningless across price levels; the fraction is what the family chose), the `hold_kind`
+and time stop, and the peer's own cost model, earnings dates and the run's real regime labels.
+Redrawn: selection alone -- uniformly over the symbols with a bar at that stamp, seeded by
+`(seed, source symbol, entry_ts)` so a rerun reproduces the tape trade-for-trade regardless of worker
+count or file order. `selection_manifest` records how much of each pooled group was paired.
 
-Preserved: the entry timestamp (the peer is entered on *its* bar at that stamp, so the control
-trades the same calendar), the side, the stop/target as the same *fractions* of the entry price
-(an absolute distance is meaningless across price levels; the fraction is what the family chose),
-the `hold_kind` and time stop, and the peer's own cost model, earnings dates and the run's real
-regime labels. Redrawn: selection alone -- uniformly over the symbols with a bar at that stamp,
-seeded by `(seed, source symbol, entry_ts)` so a rerun reproduces the tape trade-for-trade
-regardless of worker count or file order.
-
-Two honest limitations, stated because they bound what the control proves. (1) The horizon is the
-trade's own `time_stop` column (Batch-2 Task F); a tape written before that column falls back to
-`params_json` (`TIME_STOP_PARAM_KEYS`) and then to the *realized* hold, which can only shorten such a
-control's horizon, never lengthen it. (2) Peers are drawn from `<root>/bars5/`, the universe as it
-exists now, so the control inherits the real tape's survivorship bias: the two tapes must be drawn
-from the same population for their difference to mean anything.
+Two honest limitations, because they bound what the control proves. (1) The horizon is the trade's
+own `time_stop` column (Batch-2 Task F); a tape written before it falls back to `params_json`
+(`TIME_STOP_PARAM_KEYS`) and then to the *realized* hold, which can only shorten such a control's
+horizon. (2) Peers come from `<root>/bars5/`, the universe as it exists now, so the control inherits
+the real tape's survivorship bias: both tapes must be drawn from the same population to be compared.
 """
 from __future__ import annotations
 
 import hashlib
 import json
 import logging
-import time
 from collections import Counter
 from dataclasses import dataclass
 from multiprocessing import Pool
@@ -45,7 +42,12 @@ from research.strategy_hunt.data.earnings import earnings_days
 from research.strategy_hunt.data.splits import load_adjusted
 from research.strategy_hunt.models import TRADE_COLUMNS
 from research.strategy_hunt.paths import SELECTION_VARIANT, trades_dir, trades_path
-from research.strategy_hunt.run import load_context, write_manifest
+from research.strategy_hunt.run import load_context
+from research.strategy_hunt.selection_manifest import (group_key, pairing_counts, real_group_counts,
+                                                       replayed_group_counts, underreplayed_groups)
+# `run --shuffle-mode selection`'s command lives with the manifest record it writes; re-exported
+# because `cli.cmd_run` imports it from here (and it reads as this module's entry point).
+from research.strategy_hunt.selection_manifest import run_selection_command  # noqa: F401
 from research.strategy_hunt.sim.calibrate import slippage_override_from
 from research.strategy_hunt.sim.costs import CostModel
 from research.strategy_hunt.sim.simulator import build_session_table, simulate
@@ -70,6 +72,7 @@ OVERNIGHT_TIME_STOP = 1   # unused by the overnight exit rule; `Entry` only requ
 
 DROP_NO_PEER, DROP_NO_ENTRY = "no_peer_bar", "no_entry"
 DROP_UNKNOWN_FAMILY, DROP_BAD_GEOMETRY, DROP_BAD_RECORD = "unknown_family", "bad_geometry", "bad_record"
+DROP_TZ_AWARE = "tz_aware_trades"
 
 DEFAULT_ENTRY_STYLE = "market"   # a tape written before Task B's `entry_style` column
 
@@ -94,6 +97,8 @@ class ReplayPlan:
     entry_style: str
     window_id: int
     params_json: str
+    # The source trade's regime label: the pooled group this replay is paired into (`selection_manifest`).
+    regime: str = "unknown"
 
 
 def selection_universe(root: Path) -> tuple[str, ...]:
@@ -216,7 +221,13 @@ def build_plans(trades: pd.DataFrame, root: Path, universe: tuple[str, ...], see
     """One `ReplayPlan` per replayable real trade, plus the counts of what could not be replayed."""
     if trades is None or trades.empty:
         return [], {}
-    stamps = np.unique(pd.to_datetime(trades["entry_ts"]).to_numpy())
+    entry_stamps = pd.to_datetime(trades["entry_ts"])
+    if getattr(entry_stamps.dt, "tz", None) is not None:
+        logger.warning("selection: trades/ has a tz-aware entry_ts column (%s) but bars5 is tz-naive; "
+                       "no trade can be matched to a bar. Rewrite the tape tz-naive and re-run.",
+                       entry_stamps.dt.tz)
+        return [], {DROP_TZ_AWARE: int(len(trades))}
+    stamps = np.unique(entry_stamps.to_numpy())
     presence = presence if presence is not None else bar_presence(root, universe, stamps)
     column_of = {pd.Timestamp(ts): i for i, ts in enumerate(stamps)}
     peers_of = {sym: tuple(p for p in universe if p != sym)
@@ -248,7 +259,7 @@ def build_plans(trades: pd.DataFrame, root: Path, universe: tuple[str, ...], see
                 time_stop=time_stop_for(kind, params, record.get("hold_bars", 1), record.get("hold_sessions", 1),
                                         record.get("time_stop", 0)),
                 hold_kind=kind, entry_style=_entry_style(record), window_id=int(record.get("window_id", -1)),
-                params_json=str(record.get("params_json") or "{}")))
+                params_json=str(record.get("params_json") or "{}"), regime=str(record.get("regime", "unknown"))))
         except Exception:
             logger.warning("selection: skipping unusable trade record %s", record.get("symbol"), exc_info=True)
             dropped[DROP_BAD_RECORD] += 1
@@ -278,29 +289,36 @@ def plan_entry(plan: ReplayPlan, bars5: pd.DataFrame):
 def replay_peer(peer: str, plans: list[ReplayPlan], root: Path, context: dict, notional: float,
                 cost_mult: float, override: Optional[float]) -> dict[str, Any]:
     """Simulate one peer's replayed entries and write `trades_selection/<peer>.parquet`. One
-    `simulate` call per (family, window_id, params_json) group, because `simulate` stamps one
-    family/window/params on every trade and those three are the source trade's own provenance."""
+    `simulate` call per group, because `simulate` stamps one family/window/params on every trade and
+    those are the source trade's own provenance."""
     bars5, daily = load_adjusted(root, peer)
     if bars5.empty:
-        return {"symbol": peer, "status": "empty", "replayed": 0, "dropped": len(plans)}
+        return {"symbol": peer, "status": "empty", "replayed": 0, "dropped": len(plans), "groups": {}}
     cost_model = CostModel.from_bars(bars5, notional, slippage_override=override).scaled(cost_mult)
     earnings = earnings_days(root, peer, daily)
     table = build_session_table(bars5)
-    groups: dict[tuple[str, int, str], list] = {}
+    # The group key carries the plan's pooled group (family, side, regime) as well as the provenance
+    # `simulate` stamps, so each call's output size *is* that pooled group's replayed count (fix r1).
+    groups: dict[tuple[str, str, str, int, str], list] = {}
     for plan in plans:
         entry = plan_entry(plan, bars5)
         if entry is not None:
-            groups.setdefault((plan.family, plan.window_id, plan.params_json), []).append(entry)
-    trades = []
-    for (family, window_id, params_json), entries in sorted(groups.items()):
-        trades.extend(simulate(entries, bars5, cost_model, earnings, family, window_id=window_id,
-                               params_json=params_json, regime_lookup=context.get("regime_lookup") or None,
-                               table=table))
-    tp = trades_path(root, peer, SELECTION_VARIANT)
-    tp.parent.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame([t.to_dict() for t in trades], columns=list(TRADE_COLUMNS)).to_parquet(tp, index=False)
+            groups.setdefault((plan.family, plan.side, plan.regime, plan.window_id, plan.params_json),
+                              []).append(entry)
+    trades, replayed_groups = [], Counter()
+    for (family, side, regime, window_id, params_json), entries in sorted(groups.items()):
+        out = simulate(entries, bars5, cost_model, earnings, family, window_id=window_id,
+                       params_json=params_json, regime_lookup=context.get("regime_lookup") or None,
+                       table=table)
+        replayed_groups[group_key(family, side, regime)] += len(out)
+        trades.extend(out)
+    # No zero-row file: an empty Parquet is not a control tape, only flattering coverage (fix r1).
+    if trades:
+        tp = trades_path(root, peer, SELECTION_VARIANT)
+        tp.parent.mkdir(parents=True, exist_ok=True)
+        pd.DataFrame([t.to_dict() for t in trades], columns=list(TRADE_COLUMNS)).to_parquet(tp, index=False)
     return {"symbol": peer, "status": "done", "replayed": len(trades),
-            "dropped": len(plans) - len(trades)}
+            "dropped": len(plans) - len(trades), "groups": dict(replayed_groups)}
 
 
 def _safe_replay_peer(peer: str, plans: list[ReplayPlan], root: Path, context: dict, notional: float,
@@ -310,7 +328,7 @@ def _safe_replay_peer(peer: str, plans: list[ReplayPlan], root: Path, context: d
         return replay_peer(peer, plans, root, context, notional, cost_mult, override)
     except Exception as exc:
         logger.exception("selection: replay failed for peer %s", peer)
-        return {"symbol": peer, "status": "error", "replayed": 0, "dropped": len(plans),
+        return {"symbol": peer, "status": "error", "replayed": 0, "dropped": len(plans), "groups": {},
                 "error": f"{type(exc).__name__}: {exc}"}
 
 
@@ -368,33 +386,14 @@ def replay_selection(root: Path, seed: int, workers: int = 1, notional: float = 
     replayed = sum(int(r["replayed"]) for r in records)
     no_entry = sum(int(r["dropped"]) for r in records)
     counts = dict(Counter(dropped) + Counter({DROP_NO_ENTRY: no_entry} if no_entry else {}))
+    pairing = pairing_counts(real_group_counts(trades), replayed_group_counts(records))
     summary = {"seed": int(seed), "symbols": len(universe),
-               "peers": sum(1 for r in records if r["status"] == "done"),
+               "peers": sum(1 for r in records if r["replayed"]), "peers_total": len(records),
                "trades": int(len(trades)), "replayed": replayed,
                "selection_dropped": int(len(trades)) - replayed, "dropped": counts,
+               "selection_groups": pairing, "underreplayed_groups": underreplayed_groups(pairing),
                "errors": [r for r in records if r["status"] == "error"]}
-    logger.info("selection: %d/%d trades replayed onto %d peers (dropped %s)", replayed,
-                len(trades), summary["peers"], counts or "none")
+    logger.info("selection: %d/%d trades replayed onto %d peers (dropped %s; under-replayed groups %s)",
+                replayed, len(trades), summary["peers"], counts or "none",
+                ", ".join(summary["underreplayed_groups"]) or "none")
     return summary
-
-
-def run_selection_command(a) -> int:
-    """`run --shuffle-mode selection`: the replay plus its own manifest record. Presentation lives
-    here, not in `cli.py` (the precedent is `playbook_cli.py`), so the CLI stays inside its line
-    budget and this control's manifest shape sits next to the code producing it. Keyed
-    `run_selection` because `write_manifest` merges by `dict.update`: a shared key would erase the
-    real run's record for that date."""
-    if a.shuffle_seed is None:
-        print("run: --shuffle-mode selection needs --shuffle-seed N (the peer draw must be reproducible)")
-        return 1
-    t0 = time.time()
-    s = replay_selection(a.root, seed=a.shuffle_seed, workers=a.workers, notional=a.notional,
-                         cost_mult=a.cost_mult)
-    print(f"run (selection): {s['replayed']}/{s['trades']} trades replayed onto {s['peers']} peers, "
-          f"dropped {s['selection_dropped']} {s['dropped'] or ''} elapsed={time.time() - t0:.0f}s")
-    write_manifest(a.root, {"date": time.strftime("%Y-%m-%d"),
-                            "run_selection": {**s, "variant": SELECTION_VARIANT, "shuffle_seed": a.shuffle_seed,
-                                              "cost_mult": a.cost_mult, "notional": a.notional,
-                                              "elapsed_sec": round(time.time() - t0)},
-                            "errors_selection": s["errors"]})
-    return 0 if not s["errors"] else 1

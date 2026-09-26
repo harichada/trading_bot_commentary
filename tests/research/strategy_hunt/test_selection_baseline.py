@@ -365,3 +365,129 @@ def test_time_stop_for_prefers_the_trades_own_horizon_over_every_recovery():
     # 0 / NaN / a nonsense value means "the record does not know", not "zero bars"
     assert time_stop_for("multiday", {"time_stop_days": 2}, 20, 1, trade_time_stop=0) == 2
     assert time_stop_for("multiday", {}, 20, 3, trade_time_stop=float("nan")) == 3
+
+
+# ──────────────────────────────  fix round 1  ──────────────────────────────
+
+
+def test_the_replayed_entry_keeps_a_limit_open_style(root, days):
+    """Task B's `entry_style` reaches the peer's `Entry`, not just the plan."""
+    from research.strategy_hunt.data.splits import load_adjusted
+    from research.strategy_hunt.selection_baseline import plan_entry
+
+    _write_trades(root, "AAA", [_trade("AAA", pd.Timestamp(f"{days[2].date()} 09:45"),
+                                       entry_style="limit_open")])
+    plans, _ = _plans(root)
+    styled = [p for p in plans if p.source_symbol == "AAA"]
+    assert styled
+    for p in styled:
+        entry = plan_entry(p, load_adjusted(root, p.peer)[0])
+        assert entry is not None and entry.entry_style == "limit_open"
+    for p in (p for p in plans if p.source_symbol != "AAA"):
+        assert plan_entry(p, load_adjusted(root, p.peer)[0]).entry_style == "market"
+
+
+def test_plan_entry_is_none_on_the_peers_first_bar(root, days):
+    """There is no signal bar before the frame's first bar, so the fill cannot be built."""
+    import dataclasses
+
+    from research.strategy_hunt.data.splits import load_adjusted
+    from research.strategy_hunt.selection_baseline import plan_entry
+
+    plans, _ = _plans(root)
+    bars5, _daily = load_adjusted(root, plans[0].peer)
+    assert plan_entry(dataclasses.replace(plans[0], entry_ts=bars5.index[0]), bars5) is None
+    # ... and a timestamp the peer never traded is None too
+    assert plan_entry(dataclasses.replace(plans[0], entry_ts=pd.Timestamp("1999-01-04 09:35")), bars5) is None
+
+
+def test_plan_entry_is_none_for_an_intraday_plan_on_a_session_open(root, days):
+    """`make_entry` refuses an intraday entry whose signal bar is in the previous session."""
+    import dataclasses
+
+    from research.strategy_hunt.data.splits import load_adjusted
+    from research.strategy_hunt.selection_baseline import plan_entry
+
+    plans, _ = _plans(root)
+    bars5, _daily = load_adjusted(root, plans[0].peer)
+    session_open = pd.Timestamp(f"{days[3].date()} 09:30")
+    assert session_open in bars5.index
+    intraday = dataclasses.replace(plans[0], entry_ts=session_open, hold_kind="intraday", time_stop=6)
+    assert plan_entry(intraday, bars5) is None
+    # the same plan one bar later is fine: its signal bar is in the same session
+    assert plan_entry(dataclasses.replace(intraday, entry_ts=bars5.index[bars5.index.get_loc(session_open) + 1]),
+                      bars5) is not None
+
+
+def test_a_tz_aware_entry_ts_column_is_refused_loudly_and_counted(root, days, caplog):
+    """Bars are tz-naive; a tz-aware schedule can match no bar, so say so once instead of
+    dropping every trade as an unusable record."""
+    import logging
+
+    from research.strategy_hunt.selection_baseline import DROP_TZ_AWARE, replay_selection
+
+    for sym in ("AAA", "BBB", "CCC"):
+        tp = root / "trades" / f"{sym}.parquet"
+        df = pd.read_parquet(tp)
+        df["entry_ts"] = pd.to_datetime(df["entry_ts"]).dt.tz_localize("America/New_York")
+        df.to_parquet(tp, index=False)
+
+    with caplog.at_level(logging.WARNING, logger="strategy_hunt.selection_baseline"):
+        summary = replay_selection(root, seed=7)
+
+    assert summary["replayed"] == 0
+    assert summary["dropped"][DROP_TZ_AWARE] == summary["trades"] == 4
+    assert any("tz-aware" in m for m in caplog.messages)
+
+
+def test_a_peer_with_no_replayable_entry_writes_no_file(root, days):
+    """A zero-row Parquet is not a control tape: it would only make the scorer's coverage
+    numbers look better than the run was."""
+    from research.strategy_hunt.data.splits import load_adjusted
+    from research.strategy_hunt.paths import trades_path
+    from research.strategy_hunt.run import load_context
+    from research.strategy_hunt.selection_baseline import replay_peer
+    import dataclasses
+
+    plans, _ = _plans(root)
+    peer = plans[0].peer
+    bars5, _daily = load_adjusted(root, peer)
+    doomed = [dataclasses.replace(plans[0], peer=peer, entry_ts=bars5.index[0])]
+
+    rec = replay_peer(peer, doomed, root, load_context(root), 6000.0, 1.0, None)
+
+    assert rec["replayed"] == 0 and rec["dropped"] == 1
+    assert not trades_path(root, peer, "selection").exists()
+
+
+def test_replay_reports_per_group_pairing_counts(root):
+    """`selection_groups` is what makes a drop visible: the control's n per pooled group next to
+    the real tape's, keyed (family, side, regime) exactly as `pooled_rows` groups."""
+    from research.strategy_hunt.selection_baseline import replay_selection
+
+    summary = replay_selection(root, seed=7)
+
+    groups = summary["selection_groups"]
+    assert set(groups) == {"toy_multi|long|mixed", "toy_multi|short|mixed"}
+    assert groups["toy_multi|long|mixed"] == {"real": 3, "replayed": 3, "dropped": 0, "replayed_frac": 1.0}
+    assert groups["toy_multi|short|mixed"]["real"] == 1
+    assert summary["underreplayed_groups"] == []
+
+
+def test_a_dropped_trade_shows_up_as_an_underreplayed_group(root, days):
+    from research.strategy_hunt.data.bars import _write, bars5_path, load_bars5
+    from research.strategy_hunt.selection_baseline import replay_selection
+
+    extra_day = pd.Timestamp("2024-01-15")
+    b = pd.concat([load_bars5(root, "AAA"), _bars(BASE_PX["AAA"], pd.DatetimeIndex([extra_day]))])
+    _write(bars5_path(root, "AAA"), b, "ts")
+    # five of the six long trades can be replayed; the sixth has no peer with that bar
+    _write_trades(root, "AAA", [_trade("AAA", pd.Timestamp(f"{days[k].date()} 09:45")) for k in (1, 2, 3, 4)]
+                  + [_trade("AAA", pd.Timestamp(f"{extra_day.date()} 09:45"))])
+
+    summary = replay_selection(root, seed=7)
+
+    long_group = summary["selection_groups"]["toy_multi|long|mixed"]
+    assert long_group["real"] == 6 and long_group["replayed"] == 5
+    assert long_group["replayed_frac"] == pytest.approx(5 / 6)
+    assert summary["underreplayed_groups"] == ["toy_multi|long|mixed"]

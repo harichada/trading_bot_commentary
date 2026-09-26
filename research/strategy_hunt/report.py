@@ -26,6 +26,9 @@ CAVEATS = (
     "- Ten families times up to 27 parameter sets across hundreds of symbols will produce spurious PASS rows; "
     "the in-root controls estimate how much of a pooled lane's expectancy is the regime's drift -- the path "
     "shuffle for intraday timing, the random-peer replay for selection (see \"Pooled rows vs baseline\").\n"
+    "- The selection control's symbol coverage is a random draw, not a completeness measure, so it is "
+    "deliberately exempt from the baseline coverage guard; what a dropped trade does to it is measured "
+    "per group by the `replayed` column and `baseline_underreplayed` instead.\n"
     "- Live indicators are computed on the in-progress bar; research uses closed bars. New lanes must use closed bars.\n"
 )
 
@@ -99,6 +102,12 @@ def _excess_key(row: dict) -> float:
     return float(v)
 
 
+def _replayed_frac(row: dict) -> Optional[float]:
+    """The control group's size as a fraction of the real group's, or None when there is no real n."""
+    n = int(row.get("n") or 0)
+    return (int(row.get("baseline_n") or 0) / n) if n else None
+
+
 def _pooled_baseline_table(pooled: Optional[list[dict]]) -> str:
     """Every pooled row against its same-regime control, biggest excess first.
 
@@ -112,12 +121,18 @@ def _pooled_baseline_table(pooled: Optional[list[dict]]) -> str:
     replay of the row's own trade schedule, which tests selection. Two rows with the same excess
     are different claims depending on which control produced it, so the column is not optional. It is
     blank for a snapshot written before the column existed, where every baseline was a path shuffle
-    -- blank rather than `none`, which would contradict the baseline numbers beside it."""
+    -- blank rather than `none`, which would contradict the baseline numbers beside it.
+
+    `replayed` is the control group's n over the real group's n (fix r1, Important 2). For the
+    selection control that is the *pairing rate*: it is 1.0 when every real trade found a peer, and
+    anything below `baseline_underreplayed`'s floor means trades were dropped, which is the one way
+    this control can flatter a lane without the expectancies looking odd. For the path control it is
+    only a population ratio -- the shuffled tape proposes its own trades."""
     if not pooled:
         return "_no pooled rows_"
-    lines = ["| family | side | regime | baseline | n | exp_R | baseline exp_R | baseline n | excess | "
-             "t_session | recovery | verdict | failed floors |",
-             "|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
+    lines = ["| family | side | regime | baseline | n | exp_R | baseline exp_R | baseline n | replayed | "
+             "excess | t_session | recovery | verdict | failed floors |",
+             "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for r in sorted(pooled, key=_excess_key, reverse=True):
         try:
             failed = ", ".join(json.loads(r.get("failed_floors") or "[]"))
@@ -126,7 +141,7 @@ def _pooled_baseline_table(pooled: Optional[list[dict]]) -> str:
         lines.append(f"| {r.get('strategy', '')} | {r.get('side', '')} | {r.get('regime', '')} | "
                      f"{r.get('baseline_kind', '')} | "
                      f"{r.get('n', 0)} | {_f(r.get('exp_r'))} | {_f(r.get('baseline_exp_r'))} | "
-                     f"{int(r.get('baseline_n') or 0)} | "
+                     f"{int(r.get('baseline_n') or 0)} | {_f(_replayed_frac(r))} | "
                      f"{_f(r.get('excess_r'))} | {_f(r.get('t_stat_session'), 2)} | "
                      f"{_f(r.get('recovery'), 2)} | {r.get('verdict', '')} | {failed} |")
     return "\n".join(lines)

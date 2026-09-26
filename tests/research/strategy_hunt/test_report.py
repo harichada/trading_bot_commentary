@@ -164,6 +164,34 @@ def test_pooled_vs_baseline_section_names_the_control_each_row_was_scored_agains
     assert "| none |" in body[2]
 
 
+def test_pooled_vs_baseline_section_shows_the_replayed_fraction_of_the_control():
+    """Fix round 1, Important 2: `replayed` is the control's n over the real group's n. For the
+    selection control it is the pairing rate -- the one number that makes dropped trades visible --
+    and a group under `BASELINE_MIN_REPLAYED_FRAC` carries `baseline_underreplayed`."""
+    from research.strategy_hunt.report import render_report
+
+    paired = {**_pooled_row("mr_20d", "long", "mixed", 0.20, 0.05, n=1000), "baseline_kind": "selection",
+              "baseline_n": 1000}
+    thin = {**_pooled_row("rs_rotation", "long", "mixed", 0.20, 0.05, n=1000,
+                          failed=("baseline_underreplayed",)), "baseline_kind": "selection",
+            "baseline_n": 600}
+    md = render_report([_row("NVDA", "orb", "long", "PASS", 0.2)], "2025-09-25T00:00:00",
+                       pooled=[paired, thin])
+    section = md.split("## Pooled rows vs baseline")[1].split("## Controls")[0]
+    assert "replayed" in section.strip().splitlines()[0]
+    body = [ln for ln in section.strip().splitlines()[2:] if ln.startswith("|")]
+    assert "| 1.000 |" in body[0]
+    assert "| 0.600 |" in body[1] and "baseline_underreplayed" in body[1]
+
+
+def test_caveats_say_the_selection_control_is_not_judged_on_symbol_coverage():
+    from research.strategy_hunt.report import render_report
+
+    md = render_report([_row("NVDA", "orb", "long", "PASS", 0.2)], "2025-09-25T00:00:00")
+    caveats = md.split("## Caveats")[1]
+    assert "coverage" in caveats and "selection" in caveats
+
+
 def test_pooled_vs_baseline_section_without_pooled_rows():
     from research.strategy_hunt.report import render_report
     md = render_report([_row("NVDA", "orb", "long", "PASS", 0.2)], "2025-09-25T00:00:00")

@@ -128,6 +128,13 @@ BASELINE_POPULATION_MISMATCH = "baseline_population_mismatch"
 BASELINE_POPULATION_MIN_RATIO = 0.5         # baseline_n below this multiple of n is a mismatch
 BASELINE_POPULATION_MAX_RATIO = 2.0         # ...and so is above this multiple
 
+# Batch-2 Task A fix r1 (Important 2). The selection control is *paired* -- one replayed trade per
+# real trade -- so a group smaller than its real group means trades were dropped, not that the lane
+# beat the control, and the 2x population band is far too loose to catch it. Only `"selection"` is
+# judged by this: the shuffled tape re-runs the families, where a different n is the expected outcome.
+BASELINE_UNDERREPLAYED = "baseline_underreplayed"
+BASELINE_MIN_REPLAYED_FRAC = 0.9
+
 
 def _symbols(trades: Optional[pd.DataFrame]) -> set[str]:
     if trades is None or trades.empty or "symbol" not in trades.columns:
@@ -161,19 +168,25 @@ def baseline_coverage(real_trades: Optional[pd.DataFrame],
 
 
 def baseline_guard(real_trades: Optional[pd.DataFrame],
-                   baseline_trades: Optional[pd.DataFrame]) -> list[str]:
+                   baseline_trades: Optional[pd.DataFrame],
+                   baseline_kind: str = BASELINE_KIND_PATH) -> list[str]:
     """Failure keys for a baseline that is present but not trustworthy.
 
     `BASELINE_MISMATCH` when the control skipped more than `BASELINE_MAX_MISSING_FRAC` of the
     real universe's symbols, `BASELINE_STALE` when its last exit is more than
     `BASELINE_MAX_STALE_DAYS` calendar days behind the real tape's. A baseline that is *newer*
     than the real tape is not stale. An absent baseline returns `[]` — that case is already
-    `no_baseline`, and saying it twice would only obscure which one happened."""
+    `no_baseline`, and saying it twice would only obscure which one happened.
+
+    The coverage test is skipped for `baseline_kind == "selection"` (fix r1, Important 3): that
+    control replays each trade on a *random peer*, so which symbols it lands on is a draw, not a
+    measure of completeness -- the flag would fire on every correct run. A dropped trade is measured
+    per group instead, by `BASELINE_UNDERREPLAYED`. Staleness still applies to both kinds."""
     cov = baseline_coverage(real_trades, baseline_trades)
     if not cov["n_real_symbols"] or not cov["n_baseline_symbols"]:
         return []
     flags = []
-    if cov["missing_frac"] > BASELINE_MAX_MISSING_FRAC:
+    if baseline_kind != BASELINE_KIND_SELECTION and cov["missing_frac"] > BASELINE_MAX_MISSING_FRAC:
         flags.append(BASELINE_MISMATCH)
     if cov["stale_days"] > BASELINE_MAX_STALE_DAYS:
         flags.append(BASELINE_STALE)
@@ -193,9 +206,19 @@ def _population_ok(n: int, baseline_n: Optional[int]) -> bool:
     return lo <= float(baseline_n) <= hi
 
 
+def _replayed_ok(n: int, baseline_n: Optional[int], baseline_kind: str) -> bool:
+    """Whether a *paired* control replayed enough of the real group to be its yardstick.
+
+    Only the selection control is paired; for any other kind this is vacuously true."""
+    if baseline_kind != BASELINE_KIND_SELECTION or baseline_n is None or n <= 0:
+        return True
+    return float(baseline_n) / float(n) >= BASELINE_MIN_REPLAYED_FRAC
+
+
 def _pooled_failures(m: FitMetrics, excess_r: float = NO_BASELINE,
                      guard: tuple[str, ...] = (),
-                     baseline_n: Optional[int] = None) -> list[str]:
+                     baseline_n: Optional[int] = None,
+                     baseline_kind: str = BASELINE_KIND_NONE) -> list[str]:
     # A missing baseline is its own failure key: without one there is nothing to show the
     # row is more than the regime's drift, so it can WATCH but never PASS. The population
     # check only applies when a baseline *was* measured -- with none, "no_baseline" is the
@@ -204,7 +227,8 @@ def _pooled_failures(m: FitMetrics, excess_r: float = NO_BASELINE,
         baseline_checks = {"no_baseline": False}
     else:
         baseline_checks = {"min_excess_r": excess_r >= POOLED_FLOORS["min_excess_r"],
-                           BASELINE_POPULATION_MISMATCH: _population_ok(m.n, baseline_n)}
+                           BASELINE_POPULATION_MISMATCH: _population_ok(m.n, baseline_n),
+                           BASELINE_UNDERREPLAYED: _replayed_ok(m.n, baseline_n, baseline_kind)}
     checks = {
         "min_n": m.n >= POOLED_FLOORS["min_n"], "min_sessions": m.sessions >= POOLED_FLOORS["min_sessions"],
         "min_pf": m.pf >= POOLED_FLOORS["min_pf"], "min_wr": m.wr >= POOLED_FLOORS["min_wr"],
@@ -224,7 +248,8 @@ def _pooled_failures(m: FitMetrics, excess_r: float = NO_BASELINE,
 
 def verdict_pooled(m: FitMetrics, excess_r: float = NO_BASELINE,
                    guard: tuple[str, ...] = (),
-                   baseline_n: Optional[int] = None) -> tuple[str, list[str]]:
+                   baseline_n: Optional[int] = None,
+                   baseline_kind: str = BASELINE_KIND_NONE) -> tuple[str, list[str]]:
     """PASS / WATCH / FAIL against `POOLED_FLOORS` (mirrors `score.verdict.verdict`).
 
     `excess_r` is `exp_r` minus the same-regime shuffled baseline's `exp_r`, or NaN when no
@@ -237,8 +262,13 @@ def verdict_pooled(m: FitMetrics, excess_r: float = NO_BASELINE,
     `baseline_n` is the matching baseline group's trade count; when it is outside
     [`BASELINE_POPULATION_MIN_RATIO`, `BASELINE_POPULATION_MAX_RATIO`] x `m.n` the row carries
     `baseline_population_mismatch` and cannot PASS (v-playbook-desk-b1-6, Important 2). `None`
-    -- the default -- means the caller measured no population and the check is skipped."""
-    failed = _pooled_failures(m, excess_r, guard, baseline_n)
+    -- the default -- means the caller measured no population and the check is skipped.
+
+    `baseline_kind` selects the pairing floor: a `"selection"` control must have replayed at least
+    `BASELINE_MIN_REPLAYED_FRAC` of the real group or the row carries `baseline_underreplayed` and
+    cannot PASS (Batch-2 Task A fix r1). The default skips that check, since only a paired control
+    can be judged by it."""
+    failed = _pooled_failures(m, excess_r, guard, baseline_n, baseline_kind)
     if not failed:
         return "PASS", []
     if m.n >= POOLED_WATCH_FLOORS["min_n"] and m.exp_r > 0 and m.pf >= POOLED_WATCH_FLOORS["min_pf"]:
@@ -344,8 +374,8 @@ def pooled_rows(all_trades: Optional[pd.DataFrame], computed_at: str,
         # from the metrics the builder just computed rather than by scoring the group twice.
         row = build_row(POOLED_SYMBOL, family, side, bucketed, n_windows, {}, computed_at, _window_end(sub),
                         source=POOLED_SOURCE,
-                        verdict_fn=lambda m, b=base_exp, bn=base_n: verdict_pooled(
-                            m, m.exp_r - b, guard, baseline_n=bn))
+                        verdict_fn=lambda m, b=base_exp, bn=base_n, bk=base_kind: verdict_pooled(
+                            m, m.exp_r - b, guard, baseline_n=bn, baseline_kind=bk))
         out.append({**row, "regime": regime, "baseline_exp_r": base_exp, "baseline_n": base_n,
                     "excess_r": row["exp_r"] - base_exp, "baseline_kind": base_kind})
     return out
