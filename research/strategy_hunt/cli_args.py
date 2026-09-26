@@ -87,11 +87,15 @@ def unknown_grid_pin_keys(pins: Mapping[str, str], family_names: Sequence[str]) 
     from strategies.families.registry import get_family
 
     known: set[str] = set()
+    registered = 0
     for name in family_names:
         try:
             known.update(get_family(name).grid)
-        except KeyError:           # an unregistered name has no grid to pin (tests use toy families)
+            registered += 1
+        except KeyError:           # an unregistered name has no grid to check (tests use toy families)
             continue
+    if not registered:             # nothing to validate against; the pin is a no-op either way
+        return []
     return sorted(k for k in pins if k not in known)
 
 
