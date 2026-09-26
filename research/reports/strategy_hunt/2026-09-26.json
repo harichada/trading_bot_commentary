@@ -1,0 +1,92 @@
+{
+ "date": "2026-09-26",
+ "run": {
+  "symbols": 539,
+  "families": [
+   "dt_momentum",
+   "gap_play",
+   "low_vol_trend",
+   "mean_rev_intraday",
+   "mom_12_1",
+   "mr_20d",
+   "mr_short_term",
+   "multi_day_drop",
+   "news_catalyst",
+   "orb",
+   "orb_inplay",
+   "overnight_hold",
+   "pead_smallcap",
+   "pead_wide",
+   "post_news_drift",
+   "pullback_trend",
+   "rs_leader",
+   "rs_rotation",
+   "vol_breakout",
+   "vwap_reversion"
+  ],
+  "counts": {
+   "done": 539
+  },
+  "cost_mult": 1.0,
+  "shuffle_seed": null,
+  "variant": null,
+  "notional": 6000.0,
+  "holdout_months": 0,
+  "elapsed_sec": 310
+ },
+ "errors": [],
+ "run_shuffle": {
+  "symbols": 539,
+  "families": [
+   "dt_momentum",
+   "gap_play",
+   "low_vol_trend",
+   "mean_rev_intraday",
+   "mom_12_1",
+   "mr_20d",
+   "mr_short_term",
+   "multi_day_drop",
+   "news_catalyst",
+   "orb",
+   "orb_inplay",
+   "overnight_hold",
+   "pead_smallcap",
+   "pead_wide",
+   "post_news_drift",
+   "pullback_trend",
+   "rs_leader",
+   "rs_rotation",
+   "vol_breakout",
+   "vwap_reversion"
+  ],
+  "counts": {
+   "done": 539
+  },
+  "cost_mult": 1.0,
+  "shuffle_seed": 7,
+  "variant": "shuffle",
+  "notional": 6000.0,
+  "holdout_months": 0,
+  "elapsed_sec": 371
+ },
+ "errors_shuffle": [],
+ "run_selection": {
+  "seed": 7,
+  "symbols": 539,
+  "peers": 539,
+  "trades": 408567,
+  "replayed": 373281,
+  "selection_dropped": 35286,
+  "dropped": {
+   "no_peer_bar": 27490,
+   "no_entry": 7796
+  },
+  "errors": [],
+  "variant": "selection",
+  "shuffle_seed": 7,
+  "cost_mult": 1.0,
+  "notional": 6000.0,
+  "elapsed_sec": 31
+ },
+ "errors_selection": []
+}

@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-09-26
+
+### Strategy search batch 2 — selection control, limit execution, factor sleeve (2026-09-26)
+- Selection baseline (random-peer replay of the real trade schedule; tests stock selection rather than timing) with per-group pairing counts and `baseline_underreplayed`; limit-at-open execution style (maker fills, upper bound); grid pins for pinned A/B arms (unknown keys rejected); factor context columns (`mom_12_1`, `mom_rank_12_1`, `vol_rank_60`) and monthly factor families (`mom_12_1`, `low_vol_trend`; registry 20); `time_stop` on trade records; `promote` blocks non-market entry styles; `splits-audit` subcommand.
+- Data fix: split adjustment now trusts the yfinance cache and requires persistence before applying a detected split — false detections had compounded (LCID ÷1e8, LRCX 10× off) and inflated rank-based families (`rs_rotation` +0.107 → +0.03 R). Contexts and all roots re-run.
+- Result: 0 PASS in both arms. Limit entries add +0.00–0.02 R while filling 60–75 % of signals (execution is not the gap). Against random-peer selection the best rows are `mr_20d long/risk_off` (+0.129 R excess, n 302) and `mom_12_1 long` (+0.043, n 1,302), neither significant; momentum/mean-reversion shorts are worse than random. Report: `research/reports/strategy_hunt/2026-09-26-strategy-search-batch2.md`.
+
 ## 2026-09-25
 
 ### Strategy search batch 1 — slower families (2026-09-25)
