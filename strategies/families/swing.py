@@ -1,11 +1,16 @@
-"""Multi-day swing families evaluated at each session open from lagged daily features."""
+"""Multi-day swing families evaluated at each session open from lagged daily features.
+
+`mr_20d` carries the Batch-2 Task B `entry_style` axis (2 band_sigma x 3 rsi3_extreme x
+2 time_stop_days x 2 entry_style = 24 combos, exactly the cap, so no axis is dropped or merged).
+`pullback_trend` and `vol_breakout` are not in the Batch-2 family list and keep their Batch-1 grids.
+"""
 from __future__ import annotations
 
 import numpy as np
 import pandas as pd
 
 from strategies.families.common import Family, make_entry, session_opens, spaced_by_sessions
-from strategies.families.models import Entry
+from strategies.families.models import ENTRY_STYLES, Entry
 
 PULLBACK_HOLD = 10
 VOLBO_HOLD = 15
@@ -38,6 +43,8 @@ def pullback_trend_entries(bars5, ind, daily, news, params) -> list[Entry]:
 def mr_20d_entries(bars5, ind, daily, news, params) -> list[Entry]:
     sig = "20" if float(params["band_sigma"]) == 2.0 else "25"
     ext, hold = float(params["rsi3_extreme"]), int(params["time_stop_days"])
+    # Defaulted, so a params dict predating the Batch-2 axis still asks for the market fill.
+    style = str(params.get("entry_style", "market"))
     out: list[Entry] = []
     for j in session_opens(ind):
         v = _vals(ind, j, ("d_close", "d_rsi3", "d_bb_mid", f"d_bb{sig}_upper", f"d_bb{sig}_lower", "d_atr14"))
@@ -46,9 +53,11 @@ def mr_20d_entries(bars5, ind, daily, news, params) -> list[Entry]:
         px = float(bars5["open"].iloc[j])
         dist = MR_ATR_STOP * v["d_atr14"]
         if v["d_close"] < v[f"d_bb{sig}_lower"] and v["d_rsi3"] <= ext and v["d_bb_mid"] - px >= dist:
-            e = make_entry(bars5, j - 1, "long", px - dist, v["d_bb_mid"], hold, "multiday", "mr20_long")
+            e = make_entry(bars5, j - 1, "long", px - dist, v["d_bb_mid"], hold, "multiday", "mr20_long",
+                           entry_style=style)
         elif v["d_close"] > v[f"d_bb{sig}_upper"] and v["d_rsi3"] >= 100 - ext and px - v["d_bb_mid"] >= dist:
-            e = make_entry(bars5, j - 1, "short", px + dist, v["d_bb_mid"], hold, "multiday", "mr20_short")
+            e = make_entry(bars5, j - 1, "short", px + dist, v["d_bb_mid"], hold, "multiday", "mr20_short",
+                           entry_style=style)
         else:
             e = None
         if e:
@@ -81,7 +90,8 @@ FAMILIES_SWING: tuple[Family, ...] = (
            {"pullback_to": ["ema20", "ema10"], "rsi_band": ["35-50", "40-55"], "atr_stop": [1.5, 2.0, 2.5]},
            "multiday", ("long",)),
     Family("mr_20d", mr_20d_entries,
-           {"band_sigma": [2.0, 2.5], "rsi3_extreme": [10, 15, 20], "time_stop_days": [5, 7]},
+           {"band_sigma": [2.0, 2.5], "rsi3_extreme": [10, 15, 20], "time_stop_days": [5, 7],
+            "entry_style": list(ENTRY_STYLES)},
            "multiday", ("long", "short")),
     Family("vol_breakout", vol_breakout_entries,
            {"lookback": [20, 55], "compression": [0.6, 0.75, 0.9], "atr_stop": [1.5, 2.0]},

@@ -396,3 +396,25 @@ def test_verdict_pooled_guard_flags_block_pass_but_allow_watch():
     v, failed = verdict_pooled(_metrics(), GOOD_EXCESS, guard=("baseline_stale",))
     assert v == "WATCH" and failed == ["baseline_stale"]
     assert verdict_pooled(_metrics(), GOOD_EXCESS)[0] == "PASS"
+
+
+def test_trades_from_frame_round_trips_entry_style_and_tolerates_older_frames(tmp_path):
+    """Batch-2 Task B. Two contracts in one place because they are the same contract from both
+    sides: a frame written today carries `entry_style` through Parquet, and a frame written before
+    the column existed still loads -- those trades were market fills by definition."""
+    from research.strategy_hunt.models import TRADE_COLUMNS
+    from research.strategy_hunt.score.regime_rows import trades_from_frame
+
+    ts = pd.Timestamp("2025-01-02 10:00")
+    t = SimTrade("NVDA", "mr_20d", "long", ts, ts + pd.Timedelta(minutes=30), 100.0, 99.0, 102.0, 101.0,
+                 99.9, 100.9, 1.0, 1.0, 0.0, "target", 6, 1, "mr20_long", "risk_on", 0, '{"k": 1}',
+                 "limit_open")
+    p = tmp_path / "NVDA.parquet"
+    pd.DataFrame([t.to_dict()], columns=list(TRADE_COLUMNS)).to_parquet(p, index=False)
+    back = trades_from_frame(pd.read_parquet(p))
+    assert len(back) == 1 and back[0].entry_style == "limit_open"
+    assert back[0].to_dict() == t.to_dict()
+
+    legacy = pd.read_parquet(p).drop(columns=["entry_style"])
+    older = trades_from_frame(legacy)
+    assert len(older) == 1 and older[0].entry_style == "market"

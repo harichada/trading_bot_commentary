@@ -27,3 +27,17 @@ def test_overnight_is_a_valid_hold_kind():
     assert HOLD_KINDS == ("intraday", "multiday", "overnight")
     e = Entry("NVDA", "long", pd.Timestamp("2025-01-02 15:55"), 100.0, 97.0, 160.0, 1, "overnight")
     assert e.hold_kind == "overnight" and e.risk_per_share == pytest.approx(3.0)
+
+
+def test_entry_style_defaults_to_market_and_is_validated():
+    """Batch-2 Task B: an `Entry` carries the execution style the simulator must fill it with.
+    The default is the market fill every family used before, so no existing construction changes."""
+    from strategies.families.models import ENTRY_STYLES, Entry
+    assert ENTRY_STYLES == ("market", "limit_open")
+    e = Entry("NVDA", "long", pd.Timestamp("2025-01-02 09:35"), 100.0, 98.0, 104.0, 12, "intraday")
+    assert e.entry_style == "market"
+    lim = Entry("NVDA", "short", pd.Timestamp("2025-01-02 09:35"), 100.0, 102.0, 96.0, 12, "intraday",
+                "t", "limit_open")
+    assert lim.entry_style == "limit_open" and lim.tag == "t"
+    with pytest.raises(ValueError):
+        Entry("NVDA", "long", pd.Timestamp("2025-01-02"), 100.0, 98.0, 104.0, 1, "intraday", "", "vwap")

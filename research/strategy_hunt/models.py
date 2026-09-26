@@ -9,7 +9,13 @@ import pandas as pd
 VERDICTS = ("PASS", "WATCH", "FAIL")
 TRADE_COLUMNS = ("symbol", "family", "side", "entry_ts", "exit_ts", "entry_px", "stop_px", "target_px", "exit_px",
                  "entry_fill", "exit_fill", "r_multiple", "pnl_pct", "cost_pct", "exit_reason", "hold_bars",
-                 "hold_sessions", "tag", "regime", "window_id", "params_json")
+                 "hold_sessions", "tag", "regime", "window_id", "params_json",
+                 # Batch-2 Task B: appended, never interleaved, so a trades Parquet written before
+                 # this column existed still lines up positionally. Absent means "market" -- see
+                 # `score.regime_rows.trades_from_frame`.
+                 "entry_style")
+# Trade columns with a `SimTrade` default, which an older trades Parquet is allowed to be missing.
+OPTIONAL_TRADE_COLUMNS = ("entry_style",)
 
 
 @dataclass(frozen=True)
@@ -35,6 +41,7 @@ class SimTrade:
     regime: str
     window_id: int
     params_json: str
+    entry_style: str = "market"
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)

@@ -70,3 +70,15 @@ def test_make_entry_accepts_overnight_and_rejects_unknown_hold_kinds():
     assert make_entry(b, 77, "long", 99.0, 102.0, 1, "overnight", "on") is not None    # may cross sessions
     with pytest.raises(ValueError):
         make_entry(b, 10, "long", 99.0, 102.0, 1, "weekly", "t")
+
+
+def test_make_entry_carries_entry_style_and_rejects_unknown_ones():
+    """Batch-2 Task B: `entry_style` is keyword-only-by-convention with a "market" default, so
+    every existing call site keeps producing exactly the entry it produced before."""
+    from strategies.families.common import make_entry
+    b = _bars()
+    assert make_entry(b, 10, "long", 99.0, 102.0, 5, "intraday", "t").entry_style == "market"
+    e = make_entry(b, 10, "long", 99.0, 102.0, 5, "intraday", "t", entry_style="limit_open")
+    assert e.entry_style == "limit_open" and e.entry_ts == b.index[11]
+    with pytest.raises(ValueError):
+        make_entry(b, 10, "long", 99.0, 102.0, 5, "intraday", "t", entry_style="vwap")

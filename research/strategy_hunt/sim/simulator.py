@@ -1,5 +1,19 @@
 # research/strategy_hunt/sim/simulator.py
-"""Array-based execution of Entry objects: stops (gap-through), targets, time stops, eod, earnings-eve, borrow."""
+"""Array-based execution of Entry objects: stops (gap-through), targets, time stops, eod, earnings-eve, borrow.
+
+Entry styles (Batch-2 Task B). `Entry.entry_style == "market"` is the Batch-1 lane: the entry is
+taken at the fill bar's open and pays the full taker friction. `"limit_open"` instead rests a limit
+`LIMIT_OFFSET_BPS` inside that open -- below it for a long, above it for a short -- and is filled at
+the limit price only if the fill bar trades through it; if the bar never reaches the limit there is
+no trade at all. Everything after the fill (the stop/target scan window, the exit vocabulary, the
+hold accounting, the exit fill) is identical for both styles.
+
+The `limit_open` assumption, stated plainly because it flatters the style: a resting limit at the
+open is treated as a *maker* order that pays no spread and no slippage (`CostModel.entry_fill`), and
+there is no queue-position model -- a bar whose low merely touches the limit is assumed to have
+filled the whole order. Real queue priority at the open is the worst case for that assumption, so
+a `limit_open` result is an upper bound on what the style could earn, not an estimate of it.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -16,6 +30,11 @@ from strategies.families.models import Entry
 # than its close. Pricing it at the 09:30 bar's close would credit an overnight family with five
 # minutes of intraday drift it never held.
 NEXT_OPEN = "next_open"
+
+# How far inside the fill bar's open a `limit_open` order rests, in basis points. Fixed rather than
+# volatility-scaled so the limit-vs-market delta is one number per family and not a second grid axis.
+LIMIT_OFFSET_BPS = 10
+LIMIT_OPEN = "limit_open"
 
 
 @dataclass(frozen=True)
@@ -87,6 +106,20 @@ def _skip_earnings_eve_overnight(entry: Entry, start: int, tb: SessionTable, ear
     return bool(earn_next[s0]) and start >= int(tb.last_pos[s0])
 
 
+def _limit_open_fill(side: str, bar_open: float, bar_low: float, bar_high: float) -> Optional[float]:
+    """The `limit_open` fill price for a fill bar, or None if the bar never reached the limit.
+
+    The limit is drawn from the *bar's* open rather than from `Entry.entry_px` (which is the same
+    number for any entry `make_entry` built) so the rule reads off the data the fill happened in.
+    A touch counts: `low == limit` means the bar printed the price."""
+    offset = LIMIT_OFFSET_BPS / 10_000.0
+    if side == "long":
+        limit = bar_open * (1.0 - offset)
+        return limit if bar_low <= limit else None
+    limit = bar_open * (1.0 + offset)
+    return limit if bar_high >= limit else None
+
+
 def _limit_exit_px(reason: str, limit_pos: int, o: np.ndarray, c: np.ndarray) -> float:
     """Fill for a limit-driven exit: the bar's open for a next-open exit, its close otherwise."""
     return float(o[limit_pos] if reason == NEXT_OPEN else c[limit_pos])
@@ -127,6 +160,15 @@ def simulate(entries: list[Entry], bars5: pd.DataFrame, cost_model: CostModel, e
         start = int(pos_of[ts])
         if _skip_earnings_eve_overnight(e, start, tb, earn_next):
             continue
+        # The entry gate: a market order always fills, a limit order only if the bar traded through
+        # it. `entry_ref` is the price the fill happened at; `e.entry_px` stays the candidate's
+        # reference open, which the brackets and `risk_per_share` are drawn from.
+        entry_ref = float(e.entry_px)
+        if e.entry_style == LIMIT_OPEN:
+            fill = _limit_open_fill(e.side, float(o[start]), float(l[start]), float(h[start]))
+            if fill is None:
+                continue
+            entry_ref = fill
         if start + 1 >= n:
             exit_pos, exit_px, reason = start, float(c[start]), "data_end"
         else:
@@ -146,7 +188,7 @@ def simulate(entries: list[Entry], bars5: pd.DataFrame, cost_model: CostModel, e
                 exit_pos, exit_px, reason = start + 1 + i, float(px), why
         hold_sessions = int(tb.session_id[exit_pos] - tb.session_id[start]) + 1
         sign = 1.0 if e.side == "long" else -1.0
-        entry_fill = cost_model.entry_fill(e.side, e.entry_px, ts, float(v[start]))
+        entry_fill = cost_model.entry_fill(e.side, entry_ref, ts, float(v[start]), style=e.entry_style)
         exit_ts = idx[exit_pos]
         exit_fill = cost_model.exit_fill(e.side, exit_px, exit_ts, float(v[exit_pos]), hold_sessions)
         r = sign * (exit_fill - entry_fill) / e.risk_per_share
@@ -155,5 +197,6 @@ def simulate(entries: list[Entry], bars5: pd.DataFrame, cost_model: CostModel, e
         out.append(SimTrade(e.symbol, family, e.side, ts, exit_ts, float(e.entry_px), float(e.stop_px), float(e.target_px),
                             exit_px, float(entry_fill), float(exit_fill), float(r), float(pnl_pct), float(cost_pct), reason,
                             int(exit_pos - start), hold_sessions, e.tag,
-                            regime_lookup(ts) if regime_lookup else "unknown", window_id, params_json))
+                            regime_lookup(ts) if regime_lookup else "unknown", window_id, params_json,
+                            e.entry_style))
     return out

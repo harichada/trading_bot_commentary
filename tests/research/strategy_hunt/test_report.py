@@ -21,7 +21,9 @@ def _trade_row(sym, fam, side, entry_ts="2025-09-02 10:00", exit_ts="2025-09-02 
          "stop_px": 98.0, "target_px": 104.0, "exit_px": 102.0, "entry_fill": 100.0, "exit_fill": 102.0,
          "r_multiple": 1.0, "pnl_pct": 2.0, "cost_pct": 0.0, "exit_reason": "target", "hold_bars": 5,
          "hold_sessions": 1, "tag": "", "regime": "mixed", "window_id": 0, "params_json": "{}"}
-    return {k: d[k] for k in TRADE_COLUMNS}
+    # Batch-2 Task B: `entry_style` is left out on purpose, so this fixture also covers a trades
+    # frame written before that column existed.
+    return {k: d[k] for k in TRADE_COLUMNS if k in d}
 
 
 def test_render_report_sections():
@@ -236,7 +238,9 @@ def test_report_manifest_tolerates_rows_missing_keys():
 def test_search_accounting_section_reports_grid_points_and_totals():
     """`orb` and `mr_20d` are real registered families (strategies/families/registry.py):
     orb = range_minutes(2) x rvol_min(3) x atr_stop(2) = 12 combos x 2 sides = 24 grid points;
-    mr_20d = band_sigma(2) x rsi3_extreme(3) x time_stop_days(2) = 12 combos x 2 sides = 24."""
+    mr_20d = band_sigma(2) x rsi3_extreme(3) x time_stop_days(2) x entry_style(2) = 24 combos
+    x 2 sides = 48 (the `entry_style` axis is Batch-2 Task B -- and the point of this section is
+    that adding a grid axis shows up in the multiple-testing count, so the number must move)."""
     from research.strategy_hunt.report import render_report
     rows = [_row("NVDA", "orb", "long", "PASS", 0.2), _row("TSLA", "orb", "long", "FAIL", -0.1),
             _row("AMD", "mr_20d", "short", "WATCH", 0.05)]
@@ -244,9 +248,9 @@ def test_search_accounting_section_reports_grid_points_and_totals():
     md = render_report(rows, "2025-09-25T00:00:00", run_manifest=run_manifest)
     section = md.split("## Search accounting")[1].split("## Controls")[0]
     assert "| orb | 12 × 2 = 24 | 2 | 1 | 0 |" in section
-    assert "| mr_20d | 12 × 2 = 24 | 1 | 0 | 1 |" in section
-    assert "| **total** | 48 | 3 | 1 | 1 |" in section
-    assert "2 families, 48 grid points × sides evaluated, 1 PASS" in section
+    assert "| mr_20d | 24 × 2 = 48 | 1 | 0 | 1 |" in section
+    assert "| **total** | 72 | 3 | 1 | 1 |" in section
+    assert "2 families, 72 grid points × sides evaluated, 1 PASS" in section
 
 
 def test_search_accounting_without_manifest_falls_back_to_rows_families():

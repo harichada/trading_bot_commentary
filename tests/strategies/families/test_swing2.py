@@ -123,8 +123,8 @@ def test_mr_short_term_grid_is_one_mirrored_rsi_axis():
     from strategies.families.common import grid_combos
     from strategies.families.swing2 import FAMILIES_SWING2, mr_short_term_entries
     grid = {f.name: f.grid for f in FAMILIES_SWING2}["mr_short_term"]
-    assert set(grid) == {"rsi_extreme", "time_stop_days"}
-    assert grid["rsi_extreme"] == [5, 10] and len(grid_combos(grid)) == 6
+    assert set(grid) == {"rsi_extreme", "time_stop_days", "entry_style"}
+    assert grid["rsi_extreme"] == [5, 10] and len(grid_combos(grid)) == 12
 
     bars, params = _bars(DAYS), {"rsi_extreme": 10.0, "time_stop_days": 2}
     assert _run(mr_short_term_entries, bars, _ind(bars, with_ctx=False, d_rsi2=10.0), params)          # lo = 10
@@ -282,3 +282,40 @@ def test_families_run_against_a_real_indicator_frame_with_context():
     # Every family proposes on its own median grid point -- a column name or dtype that did not
     # line up would show up here as an empty list.
     assert all(proposed[name] for name in proposed), {k: len(v) for k, v in proposed.items()}
+
+
+def test_batch2_entry_style_axis_on_the_slow_families():
+    """Batch-2 Task B: the four slow families get an `entry_style` axis so the run can compare a
+    market fill against a maker limit at the same signal. `multi_day_drop` and `pead_wide` are not
+    in the Batch-2 family list, so they keep their Batch-1 grids untouched."""
+    from strategies.families.common import grid_combos, median_params
+    from strategies.families.models import ENTRY_STYLES
+    from strategies.families.swing2 import FAMILIES_SWING2
+    by_name = {f.name: f for f in FAMILIES_SWING2}
+    for name in ("overnight_hold", "mr_short_term", "rs_rotation"):
+        assert by_name[name].grid["entry_style"] == list(ENTRY_STYLES)
+        assert len(grid_combos(by_name[name].grid)) <= 24
+        # The median grid point stays the market fill, so every median-params fixture keeps
+        # measuring the lane Batch 1 measured.
+        assert median_params(by_name[name].grid)["entry_style"] == "market"
+    for name in ("multi_day_drop", "pead_wide"):
+        assert "entry_style" not in by_name[name].grid
+
+
+def test_slow_families_propose_limit_open_entries_when_the_grid_asks_for_them():
+    from strategies.families.swing2 import (mr_short_term_entries, overnight_hold_entries,
+                                            rs_rotation_entries)
+    bars, ind = _bars(DAYS), _ind(_bars(DAYS))
+    cases = ((overnight_hold_entries, {"move_pct": 1.0, "rs_min": 0.0, "stop_atr": 1.5}),
+             (mr_short_term_entries, {"rsi_extreme": 5.0, "time_stop_days": 2}),
+             (rs_rotation_entries, {"rank_min": 0.9, "time_stop_days": 5}))
+    for fn, params in cases:
+        lim = _run(fn, bars, ind, {**params, "entry_style": "limit_open"})
+        mkt = _run(fn, bars, ind, {**params, "entry_style": "market"})
+        assert lim and all(e.entry_style == "limit_open" for e in lim)
+        assert mkt and all(e.entry_style == "market" for e in mkt)
+        # Only the style differs: the same signals, fill bars and brackets as before.
+        assert [(e.entry_ts, e.side, e.stop_px, e.target_px) for e in lim] == \
+               [(e.entry_ts, e.side, e.stop_px, e.target_px) for e in mkt]
+        # A params dict with no `entry_style` at all is still the market lane.
+        assert all(e.entry_style == "market" for e in _run(fn, bars, ind, params))

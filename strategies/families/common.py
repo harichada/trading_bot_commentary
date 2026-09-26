@@ -8,7 +8,7 @@ from typing import Any, Callable, Optional
 import numpy as np
 import pandas as pd
 
-from strategies.families.models import HOLD_KINDS, Entry
+from strategies.families.models import ENTRY_STYLES, HOLD_KINDS, Entry
 
 EntryFn = Callable[[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, dict], list[Entry]]
 FLATTEN_BAR = 66  # 15:00 ET on a 5-min RTH grid (09:30 = bar 0)
@@ -38,15 +38,25 @@ def median_params(grid: dict[str, list]) -> dict[str, Any]:
 
 
 def make_entry(bars5: pd.DataFrame, i: int, side: str, stop_px: float, target_px: float,
-               time_stop: int, hold_kind: str, tag: str, symbol: Optional[str] = None) -> Optional[Entry]:
+               time_stop: int, hold_kind: str, tag: str, symbol: Optional[str] = None,
+               entry_style: str = "market") -> Optional[Entry]:
     """Entry at the open of bar i+1. None if there is no next bar, or (intraday) it belongs to another session.
 
     `hold_kind` must be one of HOLD_KINDS ("intraday", "multiday", "overnight"); an unknown kind
     raises here rather than producing an Entry the simulator would have to guess how to exit.
     Only "intraday" is confined to a single session: an "overnight" entry is allowed to be a
-    session's last bar (its whole point is being held past the close)."""
+    session's last bar (its whole point is being held past the close).
+
+    `entry_style` (Batch-2 Task B) is one of ENTRY_STYLES and defaults to the market fill every
+    family used before, so an existing call site produces exactly the Entry it produced before.
+    It is validated here as well as in `Entry` so a typo in a grid fails at the family boundary.
+    Note that the returned `entry_px` is the bar's open for *both* styles: it is the candidate's
+    reference price (what the brackets are drawn from), and only the simulator knows whether the
+    limit was reached and at what price the fill therefore happened."""
     if hold_kind not in HOLD_KINDS:
         raise ValueError(f"hold_kind must be one of {HOLD_KINDS}, got {hold_kind!r}")
+    if entry_style not in ENTRY_STYLES:
+        raise ValueError(f"entry_style must be one of {ENTRY_STYLES}, got {entry_style!r}")
     j = i + 1
     if j >= len(bars5):
         return None
@@ -59,7 +69,7 @@ def make_entry(bars5: pd.DataFrame, i: int, side: str, stop_px: float, target_px
     if (side == "long" and not (stop_px < px < target_px)) or (side == "short" and not (target_px < px < stop_px)):
         return None
     return Entry(symbol or str(bars5.attrs.get("symbol", "")), side, ts_j, px, float(stop_px), float(target_px),
-                 int(time_stop), hold_kind, tag)
+                 int(time_stop), hold_kind, tag, entry_style)
 
 
 def one_per_session(entries: list[Entry]) -> list[Entry]:

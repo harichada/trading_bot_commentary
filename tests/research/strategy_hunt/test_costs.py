@@ -52,3 +52,21 @@ def test_from_bars_builds_monthly_series():
     df = pd.DataFrame({"open": 100.0, "high": 100.3, "low": 99.7, "close": 100.0, "volume": 5000}, index=idx)
     cm = CostModel.from_bars(df)
     assert isinstance(cm.half_spread_by_month.index, pd.PeriodIndex) and 0.0002 <= cm.half_spread(idx[0]) <= 0.005
+
+
+def test_limit_open_entry_fill_pays_commission_only():
+    """Batch-2 Task B: a resting limit that gets filled is a maker order -- it crosses no spread and
+    moves no book, so the only charge left on the entry is the regulatory sell fee (shorts only).
+    The calibrated slippage override must not leak in either: it calibrates *market* fills."""
+    from research.strategy_hunt.sim.costs import CostModel, SELL_FEE_PCT
+    hs = pd.Series([0.001], index=pd.PeriodIndex(["2025-01"], freq="M"))
+    ts = pd.Timestamp("2025-01-15 10:00")
+    cm = CostModel(half_spread_by_month=hs, notional=6000.0, slippage_override=0.01)
+    assert cm.entry_fill("long", 100.0, ts, 600, style="limit_open") == pytest.approx(100.0)
+    assert cm.entry_fill("short", 100.0, ts, 600, style="limit_open") == pytest.approx(100.0 * (1 - SELL_FEE_PCT))
+    # The default style, and the exit, are untouched: a limit entry is still exited at market.
+    assert cm.entry_fill("long", 100.0, ts, 600) == cm.entry_fill("long", 100.0, ts, 600, style="market")
+    assert cm.entry_fill("long", 100.0, ts, 600, style="market") == pytest.approx(100.0 * (1 + 0.001 + 0.01))
+    assert cm.exit_fill("long", 100.0, ts, 600) == pytest.approx(100.0 * (1 - 0.001 - 0.01 - SELL_FEE_PCT))
+    with pytest.raises(ValueError):
+        cm.entry_fill("long", 100.0, ts, 600, style="vwap")

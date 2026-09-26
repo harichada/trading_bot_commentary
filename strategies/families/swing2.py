@@ -39,6 +39,13 @@ Choices this module makes where the Batch-1 plan is not literal, so a reviewer c
    reads only the low threshold and the short side only the high one, so two axes spend 12 grid
    points on 6 distinct per-side configurations — the same duplication `overnight_hold`'s
    `move_pct` avoids (choice 1), and the same mirroring `mr_20d`'s `rsi3_extreme` already uses.
+
+6. Batch-2 Task B adds an `entry_style` axis to `overnight_hold`, `mr_short_term` and `rs_rotation`
+   (the three Batch-2 families in this module). Nothing else in their grids is dropped or merged:
+   8 x 2 = 16, 6 x 2 = 12 and 4 x 2 = 8 combos, all inside the 24 cap. `multi_day_drop` and
+   `pead_wide` are not in the Batch-2 family list, so they keep their Batch-1 grids untouched.
+   The style only changes *how* the fill is taken, so it is read with a "market" default and
+   threaded to `make_entry`: a params dict from a Batch-1 grid still produces Batch-1 entries.
 """
 from __future__ import annotations
 
@@ -47,7 +54,7 @@ import pandas as pd
 
 from strategies.families.common import Family, candidate_positions, col, make_entry, spaced_by_sessions
 from strategies.families.context import ctx
-from strategies.families.models import Entry
+from strategies.families.models import ENTRY_STYLES, Entry
 
 SESSION_SIGNAL_BAR = 0          # bar_of_day 0 (09:30-09:35); the d_* values on it are prior-session
 OVERNIGHT_SIGNAL_BAR = 76       # 15:50 bar; make_entry fills at the 15:55 bar's open
@@ -66,14 +73,23 @@ PEAD_WIDE_TARGET_R = 3.0
 RS_ROTATION_STOP_ATR = 2.5
 
 
+def _entry_style(params: dict) -> str:
+    """The Batch-2 execution style from a params dict, defaulting to the Batch-1 market fill so a
+    grid without the axis (or a caller that predates it) behaves exactly as it did."""
+    return str(params.get("entry_style", "market"))
+
+
 def _atr_entries(bars5: pd.DataFrame, mask: np.ndarray, side: str, atr14: np.ndarray, stop_atr: float,
                  time_stop: int, hold_kind: str, tag: str, *, target_r: float = 0.0,
-                 target_atr: float = 0.0) -> list[Entry]:
+                 target_atr: float = 0.0, entry_style: str = "market") -> list[Entry]:
     """One entry per True in `mask`, filled at the next bar's open, risking `stop_atr × d_atr14`.
 
     The target is `target_r` risk-multiples away, or `target_atr × d_atr14` when that is given
     instead. A NaN/non-positive ATR or reward yields no entry (NaN comparisons are False), so a
-    frame missing `d_atr14` proposes nothing rather than raising."""
+    frame missing `d_atr14` proposes nothing rather than raising.
+
+    `entry_style` is the Batch-2 execution style (see docstring choice 6); the brackets and the
+    reference `px` are the same for both styles, so only the fill differs."""
     sign = 1.0 if side == "long" else -1.0
     out: list[Entry] = []
     for i in candidate_positions(mask):
@@ -86,7 +102,8 @@ def _atr_entries(bars5: pd.DataFrame, mask: np.ndarray, side: str, atr14: np.nda
             reward = min(reward, px * MAX_SHORT_REWARD_FRAC)
         if not reward > 0:
             continue
-        e = make_entry(bars5, int(i), side, px - sign * risk, px + sign * reward, time_stop, hold_kind, tag)
+        e = make_entry(bars5, int(i), side, px - sign * risk, px + sign * reward, time_stop, hold_kind, tag,
+                       entry_style=entry_style)
         if e:
             out.append(e)
     return out
@@ -96,6 +113,7 @@ def overnight_hold_entries(bars5: pd.DataFrame, ind: pd.DataFrame, daily: pd.Dat
                            news: pd.DataFrame, params: dict) -> list[Entry]:
     """Long a down day in a relatively strong name (short the mirror), held 15:55 → next open."""
     move, rs_min, stop_atr = float(params["move_pct"]), float(params["rs_min"]), float(params["stop_atr"])
+    style = _entry_style(params)
     bod, ret1, atr14 = col(ind, "bar_of_day"), col(ind, "d_ret1"), col(ind, "d_atr14")
     rs20 = ctx(ind, "rs_20")
     with np.errstate(invalid="ignore"):
@@ -103,9 +121,9 @@ def overnight_hold_entries(bars5: pd.DataFrame, ind: pd.DataFrame, daily: pd.Dat
         long_m = base & (ret1 <= -move) & (rs20 >= rs_min)
         short_m = base & (ret1 >= move) & (rs20 <= -rs_min)
     out = _atr_entries(bars5, long_m, "long", atr14, stop_atr, OVERNIGHT_TIME_STOP, "overnight",
-                       "overnight_long", target_r=WIDE_TARGET_R)
+                       "overnight_long", target_r=WIDE_TARGET_R, entry_style=style)
     out += _atr_entries(bars5, short_m, "short", atr14, stop_atr, OVERNIGHT_TIME_STOP, "overnight",
-                        "overnight_short", target_r=WIDE_TARGET_R)
+                        "overnight_short", target_r=WIDE_TARGET_R, entry_style=style)
     return spaced_by_sessions(out, 1)
 
 
@@ -114,7 +132,7 @@ def mr_short_term_entries(bars5: pd.DataFrame, ind: pd.DataFrame, daily: pd.Data
     """2-period-RSI extreme with a 200-day trend filter; time-stop exit (see docstring choice 2)."""
     rsi_lo = float(params["rsi_extreme"])           # mirrored to the short side; see choice 5
     rsi_hi = 100.0 - rsi_lo
-    hold = int(params["time_stop_days"])
+    hold, style = int(params["time_stop_days"]), _entry_style(params)
     bod, atr14 = col(ind, "bar_of_day"), col(ind, "d_atr14")
     close_d, sma200, rsi2 = col(ind, "d_close"), col(ind, "d_sma200"), col(ind, "d_rsi2")
     with np.errstate(invalid="ignore"):
@@ -122,9 +140,9 @@ def mr_short_term_entries(bars5: pd.DataFrame, ind: pd.DataFrame, daily: pd.Data
         long_m = base & (rsi2 <= rsi_lo) & (close_d > sma200)
         short_m = base & (rsi2 >= rsi_hi) & (close_d < sma200)
     out = _atr_entries(bars5, long_m, "long", atr14, MR_STOP_ATR, hold, "multiday", "mr_st_long",
-                       target_r=WIDE_TARGET_R)
+                       target_r=WIDE_TARGET_R, entry_style=style)
     out += _atr_entries(bars5, short_m, "short", atr14, MR_STOP_ATR, hold, "multiday", "mr_st_short",
-                        target_r=WIDE_TARGET_R)
+                        target_r=WIDE_TARGET_R, entry_style=style)
     return spaced_by_sessions(out, hold)
 
 
@@ -162,6 +180,7 @@ def rs_rotation_entries(bars5: pd.DataFrame, ind: pd.DataFrame, daily: pd.DataFr
                         news: pd.DataFrame, params: dict) -> list[Entry]:
     """Buy the strongest 60-day relative-strength names on the first session of each week."""
     rank_min, hold = float(params["rank_min"]), int(params["time_stop_days"])
+    style = _entry_style(params)
     bod, atr14 = col(ind, "bar_of_day"), col(ind, "d_atr14")
     close_d, sma50, week_start = col(ind, "d_close"), col(ind, "d_sma50"), col(ind, "d_week_start")
     rs_rank = ctx(ind, "rs_rank_60")
@@ -169,16 +188,17 @@ def rs_rotation_entries(bars5: pd.DataFrame, ind: pd.DataFrame, daily: pd.DataFr
         mask = ((bod == SESSION_SIGNAL_BAR) & (week_start == 1) & (rs_rank >= rank_min)
                 & (close_d > sma50))
     out = _atr_entries(bars5, mask, "long", atr14, RS_ROTATION_STOP_ATR, hold, "multiday",
-                       "rs_rotation", target_r=WIDE_TARGET_R)
+                       "rs_rotation", target_r=WIDE_TARGET_R, entry_style=style)
     return spaced_by_sessions(out, max(1, hold // WEEK_SESSIONS))
 
 
 FAMILIES_SWING2: tuple[Family, ...] = (
     Family("overnight_hold", overnight_hold_entries,
-           {"move_pct": [1.0, 2.0], "rs_min": [0, 5], "stop_atr": [1.5, 3.0]},
+           {"move_pct": [1.0, 2.0], "rs_min": [0, 5], "stop_atr": [1.5, 3.0],
+            "entry_style": list(ENTRY_STYLES)},
            "overnight", ("long", "short")),
     Family("mr_short_term", mr_short_term_entries,
-           {"rsi_extreme": [5, 10], "time_stop_days": [2, 3, 5]},
+           {"rsi_extreme": [5, 10], "time_stop_days": [2, 3, 5], "entry_style": list(ENTRY_STYLES)},
            "multiday", ("long", "short")),
     Family("multi_day_drop", multi_day_drop_entries,
            {"time_stop_days": [3, 5], "target_atr": [1.0, 2.0]},
@@ -187,6 +207,6 @@ FAMILIES_SWING2: tuple[Family, ...] = (
            {"surprise_min": [2, 5, 10], "time_stop_days": [3, 5, 10]},
            "multiday", ("long", "short")),
     Family("rs_rotation", rs_rotation_entries,
-           {"rank_min": [0.9, 0.95], "time_stop_days": [5, 10]},
+           {"rank_min": [0.9, 0.95], "time_stop_days": [5, 10], "entry_style": list(ENTRY_STYLES)},
            "multiday", ("long",)),
 )

@@ -80,3 +80,27 @@ def test_family_descriptors():
     from strategies.families.common import grid_combos
     assert {f.name for f in FAMILIES_SWING} == {"pullback_trend", "mr_20d", "vol_breakout"}
     assert all(len(grid_combos(f.grid)) <= 27 and f.hold_kind == "multiday" for f in FAMILIES_SWING)
+
+
+def test_mr_20d_carries_the_batch2_entry_style_axis():
+    """Batch-2 Task B. `mr_20d` is the only `swing.py` family in the Batch-2 list; 2 band_sigma x
+    3 rsi3_extreme x 2 time_stop_days x 2 entry_style = 24, exactly the cap, so no axis is dropped.
+    `pullback_trend` and `vol_breakout` are not in the run and keep their Batch-1 grids."""
+    from strategies.families.common import grid_combos, median_params
+    from strategies.families.models import ENTRY_STYLES
+    from strategies.families.swing import FAMILIES_SWING, mr_20d_entries
+    by_name = {f.name: f for f in FAMILIES_SWING}
+    assert by_name["mr_20d"].grid["entry_style"] == list(ENTRY_STYLES)
+    assert len(grid_combos(by_name["mr_20d"].grid)) == 24
+    assert median_params(by_name["mr_20d"].grid)["entry_style"] == "market"
+    assert all("entry_style" not in by_name[n].grid for n in ("pullback_trend", "vol_breakout"))
+
+    bars = _bars(DAYS[:5])
+    ind = _ind(bars)
+    ind["d_close"] = 95.5; ind["d_rsi3"] = 8.0; ind["d_bb_mid"] = 105.0
+    p = {"band_sigma": 2.0, "rsi3_extreme": 10, "time_stop_days": 5}
+    mkt = mr_20d_entries(bars, ind, pd.DataFrame(), pd.DataFrame(), p)
+    lim = mr_20d_entries(bars, ind, pd.DataFrame(), pd.DataFrame(), {**p, "entry_style": "limit_open"})
+    assert mkt and all(e.entry_style == "market" for e in mkt)
+    assert lim and all(e.entry_style == "limit_open" for e in lim)
+    assert [e.entry_ts for e in lim] == [e.entry_ts for e in mkt]

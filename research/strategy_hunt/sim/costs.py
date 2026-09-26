@@ -1,4 +1,15 @@
-"""Transaction costs: Corwin-Schultz spread, volume-scaled slippage (or calibrated override), sell fees, borrow."""
+"""Transaction costs: Corwin-Schultz spread, volume-scaled slippage (or calibrated override), sell fees, borrow.
+
+Two entry styles (Batch-2 Task B, `ENTRY_STYLES`). A `"market"` entry crosses the spread and moves
+the book, so it pays the half-spread plus volume-scaled slippage (or the calibrated override that
+replaces both when `calibration.json` is present). A `"limit_open"` entry is a *maker* order that
+was standing in the book and got hit: it crosses nothing, so the only charge left is the regulatory
+sell fee, and shorts alone pay that. The calibrated override deliberately does not apply either --
+it is fitted against the live bot's market fills and would quietly re-impose taker cost here.
+
+Exits are unaffected: a limit entry is still exited at market (stop, target, time stop), because the
+exit is a decision the position is forced into rather than a price it can wait for.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
@@ -6,6 +17,8 @@ from typing import Optional
 
 import numpy as np
 import pandas as pd
+
+from strategies.families.models import ENTRY_STYLES
 
 SELL_FEE_PCT = 2.946e-5
 SPREAD_FLOOR = 0.0002
@@ -74,8 +87,16 @@ class CostModel:
     def _friction(self, ts: pd.Timestamp, bar_volume: float, price: float) -> float:
         return self.half_spread(ts) + self.slippage(bar_volume, price)
 
-    def entry_fill(self, side: str, px: float, ts: pd.Timestamp, bar_volume: float) -> float:
-        f = self._friction(ts, bar_volume, px)
+    def entry_fill(self, side: str, px: float, ts: pd.Timestamp, bar_volume: float,
+                   style: str = "market") -> float:
+        """Fill price for an entry at reference price `px`.
+
+        `style="limit_open"` (Batch-2 Task B) is a maker fill: no half-spread, no slippage, no
+        calibrated override -- just the sell fee a short pays on the proceeds. See the module
+        docstring for why. The default is the market fill, so every existing call is unchanged."""
+        if style not in ENTRY_STYLES:
+            raise ValueError(f"style must be one of {ENTRY_STYLES}, got {style!r}")
+        f = 0.0 if style == "limit_open" else self._friction(ts, bar_volume, px)
         return px * (1 + f) if side == "long" else px * (1 - f - self.sell_fee_pct)
 
     def exit_fill(self, side: str, px: float, ts: pd.Timestamp, bar_volume: float, hold_sessions: int = 0) -> float:

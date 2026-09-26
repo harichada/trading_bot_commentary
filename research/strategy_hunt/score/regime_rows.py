@@ -52,7 +52,7 @@ from typing import Any, Optional
 import pandas as pd
 
 from research.strategy_hunt.fit.writer import ROW_KEYS, build_row
-from research.strategy_hunt.models import TRADE_COLUMNS, FitMetrics, SimTrade
+from research.strategy_hunt.models import OPTIONAL_TRADE_COLUMNS, TRADE_COLUMNS, FitMetrics, SimTrade
 from research.strategy_hunt.score.verdict import WATCH_FLOORS
 
 REGIMES = ("risk_on", "risk_off", "mixed")
@@ -228,11 +228,17 @@ def verdict_pooled(m: FitMetrics, excess_r: float = NO_BASELINE,
 
 
 def trades_from_frame(df: pd.DataFrame) -> list[SimTrade]:
-    """Rebuild `SimTrade`s from a trades Parquet frame (extra columns ignored)."""
+    """Rebuild `SimTrade`s from a trades Parquet frame (extra columns ignored).
+
+    A column in `OPTIONAL_TRADE_COLUMNS` may be absent: `entry_style` was added in Batch-2 Task B,
+    and a trades file written before it existed is a market-fill run by definition, so the
+    dataclass default is the right value and the frame is read on the columns it actually has.
+    A *required* column that is missing still fails loudly, as a missing `SimTrade` argument."""
     if df is None or df.empty:
         return []
+    cols = [c for c in TRADE_COLUMNS if c in df.columns or c not in OPTIONAL_TRADE_COLUMNS]
     return [SimTrade(**{**r, "entry_ts": pd.Timestamp(r["entry_ts"]), "exit_ts": pd.Timestamp(r["exit_ts"])})
-            for r in df[list(TRADE_COLUMNS)].to_dict("records")]
+            for r in df[cols].to_dict("records")]
 
 
 def _window_end(trades: list[SimTrade]) -> str:

@@ -66,7 +66,9 @@ def test_write_report_for_a_tmp_root_writes_md_json_csv_under_root_reports(tmp_p
               "entry_fill": 100.0, "exit_fill": 102.0, "r_multiple": 1.0, "pnl_pct": 2.0,
               "cost_pct": 0.0, "exit_reason": "target", "hold_bars": 5, "hold_sessions": 1,
               "tag": "", "regime": "mixed", "window_id": 0, "params_json": "{}"}
-    trade = {k: trade[k] for k in TRADE_COLUMNS}
+    # Batch-2 Task B: `entry_style` is absent on purpose -- this fixture doubles as the "a trades
+    # Parquet written before the column existed still loads" case the report path has to tolerate.
+    trade = {k: trade[k] for k in TRADE_COLUMNS if k in trade}
     pd.DataFrame([trade]).to_parquet(control_root / "trades" / "NVDA.parquet")
     rows = [{"symbol": "NVDA", "strategy": "orb", "side": "long", "computed_at": "2025-09-25T00:00:00",
              "window_end": "2025-09-24", "n": 200, "sessions": 40, "exp_r": 0.2, "exp_r_lb": 0.02,
