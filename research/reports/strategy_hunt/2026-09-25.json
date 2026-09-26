@@ -7,13 +7,18 @@
    "gap_play",
    "mean_rev_intraday",
    "mr_20d",
+   "mr_short_term",
+   "multi_day_drop",
    "news_catalyst",
    "orb",
    "orb_inplay",
+   "overnight_hold",
    "pead_smallcap",
+   "pead_wide",
    "post_news_drift",
    "pullback_trend",
    "rs_leader",
+   "rs_rotation",
    "vol_breakout",
    "vwap_reversion"
   ],
@@ -24,7 +29,8 @@
   "shuffle_seed": null,
   "variant": null,
   "notional": 6000.0,
-  "elapsed_sec": 303
+  "holdout_months": 0,
+  "elapsed_sec": 294
  },
  "errors": [],
  "run_shuffle": {
@@ -34,13 +40,18 @@
    "gap_play",
    "mean_rev_intraday",
    "mr_20d",
+   "mr_short_term",
+   "multi_day_drop",
    "news_catalyst",
    "orb",
    "orb_inplay",
+   "overnight_hold",
    "pead_smallcap",
+   "pead_wide",
    "post_news_drift",
    "pullback_trend",
    "rs_leader",
+   "rs_rotation",
    "vol_breakout",
    "vwap_reversion"
   ],
@@ -51,7 +62,8 @@
   "shuffle_seed": 7,
   "variant": "shuffle",
   "notional": 6000.0,
-  "elapsed_sec": 366
+  "holdout_months": 0,
+  "elapsed_sec": 355
  },
  "errors_shuffle": []
 }

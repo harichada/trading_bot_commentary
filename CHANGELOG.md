@@ -1,6 +1,12 @@
 # Changelog
 
 ## 2026-09-25
+
+### Strategy search batch 1 — slower families (2026-09-25)
+- Five new pure families (`strategies/families/swing2.py`: overnight_hold, mr_short_term, multi_day_drop, pead_wide, rs_rotation), a simulator `overnight` hold kind (exit at the next session's open; earnings-eve overnight entries skipped), `--holdout-months` (OOS windows end early; the withheld period is opened only for confirmation) and a "Search accounting" report section (families × grid points × sides vs PASS).
+- Result: 0 PASS (3,467 rows, 58 WATCH; pooled 0/4/20). The slower families are flat, not negative, but indistinguishable from their shuffled baselines; `rs_rotation` (+0.107 R) matches its baseline (+0.086 R) — stock drift, not timing. Report: `research/reports/strategy_hunt/2026-09-25-strategy-search-batch1.md`. Registry now 18 families; the main-root snapshot (all 18, holdout 0) was re-scored at 22:58 ET (0 PASS / 195 WATCH).
+- Guards: `promote`, `core/swing_exits` and the fit-lane adapter treat `overnight` like `multiday` for `SWING_ALLOW_OVERNIGHT`; no new lane is live.
+
 - feat(desk): Playbook Desk B2 (shadow) — a human trader's daily routine, running shadow-only
   behind four flags that all default off (`ENABLE_DESK`, `ENABLE_DESK_WATCHLIST`,
   `ENABLE_DESK_LIMITS`, `ENABLE_PLAYBOOK_GATE`; `core/config.py` § `v-playbook-desk-b2-2026-09-25`).
