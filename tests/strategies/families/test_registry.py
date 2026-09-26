@@ -1,17 +1,21 @@
-"""Registry test: ensure all thirteen families are available and well-formed."""
+"""Registry test: ensure all eighteen families are available and well-formed."""
 import pytest
 
 
-def test_registry_has_thirteen_unique_families_with_bounded_grids():
+def test_registry_has_eighteen_unique_families_with_bounded_grids():
     from strategies.families import FAMILIES, family_names, get_family
-    from strategies.families.common import grid_combos
+    from strategies.families.common import HOLD_KINDS, grid_combos
     assert family_names() == sorted(FAMILIES)
     assert set(FAMILIES) == {"dt_momentum", "orb", "vwap_reversion", "gap_play", "mean_rev_intraday",
                              "news_catalyst", "post_news_drift", "pullback_trend", "mr_20d", "vol_breakout",
-                             "orb_inplay", "pead_smallcap", "rs_leader"}
+                             "orb_inplay", "pead_smallcap", "rs_leader",
+                             # Batch-1 slower families (swing2)
+                             "overnight_hold", "mr_short_term", "multi_day_drop", "pead_wide", "rs_rotation"}
+    assert len(FAMILIES) == 18
     for name, fam in FAMILIES.items():
         assert fam.name == name and callable(fam.fn) and 1 <= len(grid_combos(fam.grid)) <= 27
-        assert fam.hold_kind in ("intraday", "multiday") and set(fam.sides) <= {"long", "short"}
+        assert fam.hold_kind in HOLD_KINDS and set(fam.sides) <= {"long", "short"}
+    assert FAMILIES["overnight_hold"].hold_kind == "overnight"
     assert get_family("orb").name == "orb"
     with pytest.raises(KeyError):
         get_family("nope")

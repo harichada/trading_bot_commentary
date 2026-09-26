@@ -12,6 +12,11 @@ from research.strategy_hunt.models import SimTrade
 from research.strategy_hunt.sim.costs import CostModel
 from strategies.families.models import Entry
 
+# Exit reason for an "overnight" hold: the only reason whose fill is the limit bar's OPEN rather
+# than its close. Pricing it at the 09:30 bar's close would credit an overnight family with five
+# minutes of intraday drift it never held.
+NEXT_OPEN = "next_open"
+
 
 @dataclass(frozen=True)
 class SessionTable:
@@ -34,11 +39,22 @@ def build_session_table(bars5: pd.DataFrame) -> SessionTable:
 
 
 def _limit(entry: Entry, start: int, tb: SessionTable, earn_next: np.ndarray, n: int) -> tuple[int, str]:
+    """The bar the position is closed on at the latest, and why. `NEXT_OPEN` exits at that bar's
+    open; every other reason exits at its close (see `_limit_exit_px`)."""
     s0 = int(tb.session_id[start])
     if entry.hold_kind == "intraday":
         eod = int(tb.last_pos[s0])
         ts_pos = start + int(entry.time_stop)
         return (ts_pos, "time_stop") if ts_pos <= eod else (eod, "eod")
+    if entry.hold_kind == "overnight":
+        # Held past the close and closed at the next session's open. The earnings-eve rule still
+        # applies: if that next session is an earnings date, flatten into this session's close
+        # instead of carrying the report.
+        if earn_next[s0]:
+            return int(tb.last_pos[s0]), "earnings_eve"
+        if s0 + 1 <= len(tb.first_pos) - 1:
+            return int(tb.first_pos[s0 + 1]), NEXT_OPEN
+        return n - 1, "data_end"
     last_session = s0 + int(entry.time_stop) - 1
     for s in range(s0, min(last_session, len(tb.last_pos) - 1) + 1):
         if earn_next[s]:
@@ -46,6 +62,11 @@ def _limit(entry: Entry, start: int, tb: SessionTable, earn_next: np.ndarray, n:
     if last_session <= len(tb.last_pos) - 1:
         return int(tb.last_pos[last_session]), "time_stop"
     return n - 1, "data_end"
+
+
+def _limit_exit_px(reason: str, limit_pos: int, o: np.ndarray, c: np.ndarray) -> float:
+    """Fill for a limit-driven exit: the bar's open for a next-open exit, its close otherwise."""
+    return float(o[limit_pos] if reason == NEXT_OPEN else c[limit_pos])
 
 
 def _first_hit(side: str, o, h, l, stop: float, target: float) -> tuple[Optional[int], Optional[float], Optional[str]]:
@@ -86,10 +107,16 @@ def simulate(entries: list[Entry], bars5: pd.DataFrame, cost_model: CostModel, e
         else:
             limit_pos, limit_reason = _limit(e, start, tb, earn_next, n)
             limit_pos = min(limit_pos, n - 1)
-            sl = slice(start + 1, limit_pos + 1)
+            # A next-open exit happens at the limit bar's open, so that bar's intrabar range is
+            # never available to the position: the stop/target scan stops one bar earlier. For the
+            # canonical 15:50 signal / 15:55 fill there are no bars in between at all, which is
+            # what makes the overnight stop protective-only -- an overnight gap through it is
+            # realized at the open, the same fill a gap-through-stop would have produced.
+            scan_end = limit_pos - 1 if limit_reason == NEXT_OPEN else limit_pos
+            sl = slice(start + 1, max(scan_end, start) + 1)
             i, px, why = _first_hit(e.side, o[sl], h[sl], l[sl], e.stop_px, e.target_px)
             if i is None:
-                exit_pos, exit_px, reason = limit_pos, float(c[limit_pos]), limit_reason
+                exit_pos, exit_px, reason = limit_pos, _limit_exit_px(limit_reason, limit_pos, o, c), limit_reason
             else:
                 exit_pos, exit_px, reason = start + 1 + i, float(px), why
         hold_sessions = int(tb.session_id[exit_pos] - tb.session_id[start]) + 1

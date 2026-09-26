@@ -444,3 +444,16 @@ def test_fit_lane_frames_module_is_pure_and_reexported():
     # Both halves stay inside the project's 400-line file budget.
     for path in ("strategies/fit_lane.py", "strategies/fit_lane_frames.py"):
         assert len(pathlib.Path(path).read_text().splitlines()) < 400, path
+
+
+def test_entry_to_signal_accepts_an_overnight_hold_kind():
+    """Batch-1 Task 1: nothing downstream may reject `hold_kind="overnight"`. The live adapter
+    treats it as a non-day-trade (it is held past the close), so it carries the swing sizing and
+    a max_hold_sessions, and no flatten_hour."""
+    from strategies.families.models import Entry
+    from strategies.fit_lane import entry_to_signal
+    e = Entry("", "long", pd.Timestamp("2025-01-02 15:55"), 100.0, 97.0, 160.0, 1, "overnight", "overnight_long")
+    sig = entry_to_signal(e, "overnight_hold", {"move_pct": 1.0}, "PASS", 0.4, "NVDA")
+    assert sig.symbol == "NVDA" and sig.reasoning["hold_kind"] == "overnight"
+    assert sig.reasoning["is_day_trade"] is False and sig.reasoning["max_hold_sessions"] == 1
+    assert sig.reasoning["flatten_hour"] is None and sig.reasoning["strategy"] == "fit:overnight_hold"

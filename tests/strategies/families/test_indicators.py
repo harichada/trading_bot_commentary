@@ -171,3 +171,50 @@ def test_ctx_guard_is_a_no_op_when_those_columns_are_absent():
                                                                 name="date"))
     ind = indicator_frame(b, _daily(b), context=ctx)
     assert (ind["ctx_gap_pct"] == 1.0).all() and "ctx_rvol_open5" not in ind.columns
+
+
+# ---- Batch-1 Task 1: slower-family daily features ---------------------------------------------
+
+def _mk_daily(closes, start="2025-01-06"):
+    idx = pd.bdate_range(start, periods=len(closes), name="date")
+    c = pd.Series(closes, index=idx, dtype=float)
+    return pd.DataFrame({"open": c, "high": c + 0.5, "low": c - 0.5, "close": c, "volume": 1000.0}, index=idx)
+
+
+def test_new_daily_features_inherit_the_one_session_lag():
+    import ta
+    from strategies.families.indicators import daily_features
+    daily = _mk_daily([100.0 + 0.7 * i - (3.0 if i % 5 == 0 else 0.0) for i in range(210)])
+    c = daily["close"]
+    df = daily_features(daily)
+    assert df["d_sma200"].iloc[-1] == pytest.approx(c.rolling(200).mean().iloc[-2])
+    assert df["d_sma5"].iloc[-1] == pytest.approx(c.rolling(5).mean().iloc[-2])
+    assert df["d_rsi2"].iloc[-1] == pytest.approx(ta.momentum.rsi(c, window=2).iloc[-2])
+    assert np.isnan(df["d_sma200"].iloc[0]) and np.isnan(df["d_rsi2"].iloc[0])
+
+
+def test_down_streak_counts_consecutive_down_closes_through_the_prior_session():
+    from strategies.families.indicators import daily_features
+    df = daily_features(_mk_daily([100.0, 99.0, 98.0, 97.0, 98.0, 97.0]))
+    assert np.isnan(df["d_down_streak"].iloc[0])
+    assert list(df["d_down_streak"].iloc[1:]) == [0.0, 1.0, 2.0, 3.0, 0.0]
+
+
+def test_week_start_is_the_current_sessions_own_property_not_lagged():
+    from strategies.families.indicators import daily_features
+    daily = _mk_daily([100.0 + i for i in range(10)])          # Mon 2025-01-06 .. Fri 2025-01-17
+    df = daily_features(daily)
+    assert list(df["d_week_start"]) == [0.0] * 5 + [1.0] + [0.0] * 4
+    assert df["d_close"].iloc[5] == pytest.approx(daily["close"].iloc[4])   # the d_* lag still holds
+    # a Tuesday after a Monday holiday still starts the week (weekday 1 <= previous weekday 4)
+    holiday = daily.drop(index=[pd.Timestamp("2025-01-13")])
+    assert list(daily_features(holiday)["d_week_start"])[5] == 1.0
+
+
+def test_new_daily_features_reach_the_indicator_frame():
+    from strategies.families.indicators import indicator_frame
+    b = _bars(DAYS[:3])
+    ind = indicator_frame(b, _daily(b))
+    for name in ("d_rsi2", "d_sma200", "d_sma5", "d_down_streak", "d_week_start"):
+        assert name in ind.columns
+    assert ind["d_week_start"].notna().all()

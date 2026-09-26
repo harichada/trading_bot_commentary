@@ -56,3 +56,17 @@ def test_candidate_positions_and_col():
     assert list(candidate_positions(np.array([True, False, True, True]))) == [0, 2]
     ind = pd.DataFrame({"a": [1.0, 2.0]})
     assert list(col(ind, "a")) == [1.0, 2.0] and np.isnan(col(ind, "zzz")).all()
+
+
+def test_make_entry_accepts_overnight_and_rejects_unknown_hold_kinds():
+    """Batch-1 Task 1: `overnight` is a first-class hold kind (fills like `multiday`, i.e. the
+    entry may be the last bar of a session), and an unknown kind fails loudly at the family
+    boundary instead of reaching the simulator."""
+    from strategies.families.common import HOLD_KINDS, make_entry
+    assert HOLD_KINDS == ("intraday", "multiday", "overnight")
+    b = _bars()
+    e = make_entry(b, 76, "long", 99.0, 102.0, 1, "overnight", "on")
+    assert e is not None and e.hold_kind == "overnight" and e.entry_ts == b.index[77]
+    assert make_entry(b, 77, "long", 99.0, 102.0, 1, "overnight", "on") is not None    # may cross sessions
+    with pytest.raises(ValueError):
+        make_entry(b, 10, "long", 99.0, 102.0, 1, "weekly", "t")

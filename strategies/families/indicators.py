@@ -81,6 +81,25 @@ def _session_columns(bars5: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def _down_streak(ret1: pd.Series) -> pd.Series:
+    """Number of consecutive sessions with a negative close-to-close return, ending at each row.
+    A NaN return (the first session) counts as "not down" and resets the streak to 0."""
+    down = (ret1 < 0).astype(int)
+    return down.groupby((down == 0).cumsum()).cumsum().astype(float)
+
+
+def _week_start(dates) -> pd.Series:
+    """1.0 on the first session of each week -- the session whose weekday is <= the previous
+    session's (Monday after Friday, or a Tuesday after a Monday holiday) -- else 0.0.
+
+    Unlike every d_* feature this is NOT lagged: a session's own date is known at its open, so
+    lagging it would move the flag to the wrong session. The first row in the frame has no
+    predecessor and is 0.0 (a week start cannot be established from one session)."""
+    idx = pd.DatetimeIndex(dates)
+    wd = pd.Series(idx.weekday.astype(float), index=dates)
+    return (wd <= wd.shift(1)).astype(float)
+
+
 def daily_features(daily: pd.DataFrame) -> pd.DataFrame:
     """Row D holds values known at D's open: everything computed through D-1 and then shifted."""
     c, h, l, o, v = daily["close"], daily["high"], daily["low"], daily["open"], daily["volume"].astype(float)
@@ -88,11 +107,15 @@ def daily_features(daily: pd.DataFrame) -> pd.DataFrame:
     f["d_close"], f["d_open"], f["d_high"], f["d_low"], f["d_vol"] = c, o, h, l, v
     f["d_ret1"] = c.pct_change() * 100
     f["d_vol_avg20"] = v.rolling(20).mean()
+    f["d_sma5"] = c.rolling(5).mean()
     f["d_sma50"] = c.rolling(50).mean()
+    f["d_sma200"] = c.rolling(200).mean()
     f["d_ema20"] = ta.trend.ema_indicator(c, window=20)
     f["d_ema10"] = ta.trend.ema_indicator(c, window=10)
     f["d_rsi14"] = ta.momentum.rsi(c, window=14)
     f["d_rsi3"] = ta.momentum.rsi(c, window=3)
+    f["d_rsi2"] = ta.momentum.rsi(c, window=2)
+    f["d_down_streak"] = _down_streak(f["d_ret1"])
     bb20 = ta.volatility.BollingerBands(c, window=20, window_dev=2)
     bb25 = ta.volatility.BollingerBands(c, window=20, window_dev=2.5)
     f["d_bb_mid"], f["d_bb20_upper"], f["d_bb20_lower"] = bb20.bollinger_mavg(), bb20.bollinger_hband(), bb20.bollinger_lband()
@@ -103,7 +126,9 @@ def daily_features(daily: pd.DataFrame) -> pd.DataFrame:
     for n in (20, 55):
         f[f"d_high{n}"] = h.rolling(n).max().shift(1)   # excludes the row's own day
         f[f"d_low{n}"] = l.rolling(n).min().shift(1)
-    return f.shift(1)
+    lagged = f.shift(1)
+    lagged["d_week_start"] = _week_start(daily.index)     # current session's own date: not lagged
+    return lagged
 
 
 def indicator_frame(bars5: pd.DataFrame, daily: pd.DataFrame, spy5: Optional[pd.DataFrame] = None,

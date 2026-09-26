@@ -8,7 +8,7 @@ from typing import Any, Callable, Optional
 import numpy as np
 import pandas as pd
 
-from strategies.families.models import Entry
+from strategies.families.models import HOLD_KINDS, Entry
 
 EntryFn = Callable[[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, dict], list[Entry]]
 FLATTEN_BAR = 66  # 15:00 ET on a 5-min RTH grid (09:30 = bar 0)
@@ -39,7 +39,14 @@ def median_params(grid: dict[str, list]) -> dict[str, Any]:
 
 def make_entry(bars5: pd.DataFrame, i: int, side: str, stop_px: float, target_px: float,
                time_stop: int, hold_kind: str, tag: str, symbol: Optional[str] = None) -> Optional[Entry]:
-    """Entry at the open of bar i+1. None if there is no next bar, or (intraday) it belongs to another session."""
+    """Entry at the open of bar i+1. None if there is no next bar, or (intraday) it belongs to another session.
+
+    `hold_kind` must be one of HOLD_KINDS ("intraday", "multiday", "overnight"); an unknown kind
+    raises here rather than producing an Entry the simulator would have to guess how to exit.
+    Only "intraday" is confined to a single session: an "overnight" entry is allowed to be a
+    session's last bar (its whole point is being held past the close)."""
+    if hold_kind not in HOLD_KINDS:
+        raise ValueError(f"hold_kind must be one of {HOLD_KINDS}, got {hold_kind!r}")
     j = i + 1
     if j >= len(bars5):
         return None

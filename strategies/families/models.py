@@ -6,7 +6,10 @@ from dataclasses import dataclass
 import pandas as pd
 
 SIDES = ("long", "short")
-HOLD_KINDS = ("intraday", "multiday")
+# "overnight" (Batch-1 Task 1): entered at 15:55 and closed at the next session's open. It is a
+# distinct kind because the simulator exits it at that open, not at a session close like
+# "multiday" -- and because the live side must not treat it as a day trade.
+HOLD_KINDS = ("intraday", "multiday", "overnight")
 
 
 @dataclass(frozen=True)
