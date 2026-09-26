@@ -22,9 +22,10 @@ from research.strategy_hunt.data.splits import load_adjusted
 from research.strategy_hunt.fit.coldstart import FEATURES, predict_coldstart, symbol_characteristics, train_coldstart
 from research.strategy_hunt.fit.writer import build_row
 from research.strategy_hunt.models import TRADE_COLUMNS
-from research.strategy_hunt.paths import (SHUFFLE_VARIANT, checkpoint_path, choices_path, reports_dir,
-                                          trades_dir, trades_path)
-from research.strategy_hunt.score.regime_rows import (baseline_coverage, baseline_guard, baseline_pooled_rows,
+from research.strategy_hunt.paths import (SELECTION_VARIANT, SHUFFLE_VARIANT, checkpoint_path, choices_path,
+                                          reports_dir, trades_dir, trades_path)
+from research.strategy_hunt.score.regime_rows import (BASELINE_KIND_PATH, BASELINE_KIND_SELECTION,
+                                                      baseline_coverage, baseline_guard, baseline_pooled_rows,
                                                       pooled_rows, regime_rows, trades_from_frame)
 from research.strategy_hunt.sim.calibrate import slippage_override_from
 from research.strategy_hunt.sim.costs import CostModel
@@ -38,6 +39,17 @@ logger = logging.getLogger("strategy_hunt.run")
 DEFAULT_ROOT = Path("data/strategy_hunt")
 REPORTS_DIR = Path("research/reports/strategy_hunt")
 COLDSTART_MAX_N = 60
+# Batch-2 Task A: which control tape scores which families, by the family's hold kind. The path
+# shuffle keeps every session's open-to-close return, so it is a control for intraday *timing* and
+# nothing else; a multi-day or overnight lane has to beat the random-peer replay of its own schedule
+# instead. There is deliberately no fallback between them: a multi-day row with no selection tape
+# records `no_baseline` (a WATCH ceiling) rather than borrowing a yardstick that cannot test it.
+BASELINE_SOURCES = ((SHUFFLE_VARIANT, BASELINE_KIND_PATH, ("intraday",)),
+                    (SELECTION_VARIANT, BASELINE_KIND_SELECTION, ("multiday", "overnight")))
+# A trades file may name a family this registry no longer has (a renamed or removed family). It is
+# still scored -- dropping its pooled row would silently shrink the run -- against the control the
+# families it was written beside used.
+UNKNOWN_FAMILY_HOLD_KIND = "intraday"
 
 
 # trades_path / checkpoint_path / choices_path / trades_dir are imported above and re-exported:
@@ -255,18 +267,19 @@ def score_regime_root(root: Path, family_names: list[str],
     the markdown report, both of which count one row per (symbol, family, side) lane and
     would double-count a regime row.
 
-    v-playbook-desk-b1-5 task 10 adds the third return value: when `<root>/trades_shuffle/`
-    exists, the shuffled control's trades are pooled the same way into baseline rows, and
-    the real pooled rows are scored against the excess over their matching baseline group.
-    With no `trades_shuffle/` the baseline list is empty and every pooled row reports
-    `no_baseline` — which is a WATCH ceiling, not a PASS. A baseline that *is* present but
-    covers too little of the universe or stopped too long ago is flagged by `baseline_guard`
-    (fix r1) and stamped on every pooled row, since trusting a leftover control silently is
-    worse than having none.
+    v-playbook-desk-b1-5 task 10 adds the third return value: when a control tape exists,
+    its trades are pooled the same way into baseline rows, and the real pooled rows are
+    scored against the excess over their matching baseline group. With no control tape the
+    baseline list is empty and every pooled row reports `no_baseline` — which is a WATCH
+    ceiling, not a PASS. A baseline that *is* present but covers too little of the universe
+    or stopped too long ago is flagged by `baseline_guard` (fix r1) and stamped on every
+    pooled row, since trusting a leftover control silently is worse than having none.
+
+    Batch-2 Task A: there are now two control tapes and a family is scored against the one
+    that can actually test it — see `BASELINE_SOURCES` and `_pooled_with_baselines`.
     """
     per_symbol: list[dict] = []
     frames: list[pd.DataFrame] = []
-    base_frames = _variant_frames(Path(root), family_names, SHUFFLE_VARIANT, "score_baseline")
     for tp in sorted(trades_dir(root).glob("*.parquet")):
         try:
             symbol, df, choices = _load_symbol_trades(tp, root)
@@ -288,11 +301,50 @@ def score_regime_root(root: Path, family_names: list[str],
                 # last traded, which is the honest answer to "how current is this row?".
                 per_symbol.extend(regime_rows(symbol, fam, side, trades, len(ch), computed_at, latest))
     real_frame = pd.concat(frames, ignore_index=True) if frames else None
-    base_frame = pd.concat(base_frames, ignore_index=True) if base_frames else None
-    baseline = baseline_pooled_rows(base_frame, computed_at) if base_frame is not None else []
-    guard = _baseline_guard_logged(real_frame, base_frame)
-    pooled = pooled_rows(real_frame, computed_at, baseline=baseline, guard=guard) if real_frame is not None else []
+    pooled, baseline = _pooled_with_baselines(Path(root), real_frame, family_names, computed_at)
     return per_symbol, pooled, baseline
+
+
+def _hold_kinds(family_names: list[str]) -> dict[str, list[str]]:
+    """hold kind -> the named families that have it (unknown families: see `UNKNOWN_FAMILY_HOLD_KIND`)."""
+    out: dict[str, list[str]] = {}
+    for name in family_names:
+        try:
+            kind = get_family(name).hold_kind
+        except KeyError:
+            logger.warning("score_regime: family %s is not in the registry; scoring it against the %s "
+                           "control", name, UNKNOWN_FAMILY_HOLD_KIND)
+            kind = UNKNOWN_FAMILY_HOLD_KIND
+        out.setdefault(kind, []).append(name)
+    return out
+
+
+def _pooled_with_baselines(root: Path, real_frame: Optional[pd.DataFrame], family_names: list[str],
+                           computed_at: str) -> tuple[list[dict], list[dict]]:
+    """The pooled rows and the baseline rows, one control tape at a time (Batch-2 Task A).
+
+    `pooled_rows` is called once per control so each group of families is scored — and guarded —
+    against its own tape: a coverage/staleness flag on the selection replay has nothing to say about
+    an intraday family's shuffled control, and stamping it on both would make one control's gap read
+    as the other's. Families whose control tape is absent still get their rows, carrying
+    `no_baseline` and `baseline_kind="none"`."""
+    by_kind = _hold_kinds(family_names)
+    pooled: list[dict] = []
+    baseline: list[dict] = []
+    for variant, kind, hold_kinds in BASELINE_SOURCES:
+        fams = sorted(f for hk in hold_kinds for f in by_kind.get(hk, []))
+        if not fams:
+            continue
+        real_sub = real_frame[real_frame["family"].isin(fams)] if real_frame is not None else None
+        base_frames = _variant_frames(root, fams, variant, f"score_baseline_{kind}")
+        base_frame = pd.concat(base_frames, ignore_index=True) if base_frames else None
+        rows = baseline_pooled_rows(base_frame, computed_at, baseline_kind=kind) if base_frame is not None else []
+        guard = _baseline_guard_logged(real_sub, base_frame)
+        baseline.extend(rows)
+        if real_sub is not None:
+            pooled.extend(pooled_rows(real_sub, computed_at, baseline=rows, guard=guard))
+    return (sorted(pooled, key=lambda r: (r["strategy"], r["side"], r.get("regime", ""))),
+            sorted(baseline, key=lambda r: (r["strategy"], r["side"], r.get("regime", ""))))
 
 
 def _baseline_guard_logged(real_frame: Optional[pd.DataFrame],

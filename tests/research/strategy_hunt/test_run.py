@@ -36,6 +36,17 @@ TOY = Family("toy", _toy, {"w": [0.5, 1.0]}, "intraday", ("long",))
 
 
 @pytest.fixture
+def toy_in_registry(monkeypatch):
+    """Register `toy` so the scorer can read its hold kind. Batch-2 Task A: `score_regime_root`
+    picks a pooled row's control by the family's `hold_kind`, and warns when a trades file names a
+    family the registry does not have -- which these tapes otherwise would."""
+    from strategies.families import registry
+
+    monkeypatch.setitem(registry.FAMILIES, "toy", TOY)
+    return TOY
+
+
+@pytest.fixture
 def root(tmp_path, monkeypatch):
     from research.strategy_hunt.data.bars import _write, bars5_path, daily_path, to_daily
     from strategies.families import registry
@@ -266,7 +277,7 @@ def test_score_regime_root_empty_root_and_score_root_unchanged(root):
     assert len(rows) == 1 and "regime" not in rows[0]
 
 
-def test_scoring_contains_one_unreadable_trades_file(tmp_path, caplog):
+def test_scoring_contains_one_unreadable_trades_file(tmp_path, caplog, toy_in_registry):
     """v-playbook-desk-b1-2026-09-25 (review r1, Minor 5): one corrupt Parquet must not
     abort the whole scoring pass -- the symbol is logged and skipped."""
     import logging
@@ -298,7 +309,7 @@ def test_variant_paths_use_suffixed_directories(tmp_path):
     assert trades_path(tmp_path, "aaa", "shuffle") == tmp_path / "trades_shuffle" / "AAA.parquet"
     assert checkpoint_path(tmp_path, "AAA", "shuffle") == tmp_path / "checkpoints_shuffle" / "AAA.json"
     assert choices_path(tmp_path, "AAA", "shuffle") == tmp_path / "choices_shuffle" / "AAA.json"
-    assert SHUFFLE_VARIANT == "shuffle" and VARIANTS == ("shuffle",)
+    assert SHUFFLE_VARIANT == "shuffle" and "shuffle" in VARIANTS
     with pytest.raises(ValueError):
         trades_path(tmp_path, "AAA", "nonsense")
 
@@ -396,7 +407,7 @@ def test_score_regime_root_flags_a_partial_baseline(tmp_path, caplog):
     assert any("20" in m and "5" in m for m in warnings)    # the counts are in the warning
 
 
-def test_score_regime_root_does_not_flag_a_complete_fresh_baseline(tmp_path, caplog):
+def test_score_regime_root_does_not_flag_a_complete_fresh_baseline(tmp_path, caplog, toy_in_registry):
     import logging
 
     from research.strategy_hunt.run import score_regime_root

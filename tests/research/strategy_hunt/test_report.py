@@ -36,7 +36,7 @@ def test_render_report_sections():
                 "cost_2.0": [_row("NVDA", "orb", "long", "WATCH", 0.05)]}
     md = render_report(rows, "2025-09-25T00:00:00", trades, controls)
     for section in ("## Verdicts by family", "## Top lanes by score", "## Pooled out-of-sample by family",
-                    "## Per-regime expectancy by family", "## Pooled rows vs shuffled baseline",
+                    "## Per-regime expectancy by family", "## Pooled rows vs baseline",
                     "## Search accounting", "## Controls", "## Symbols with no passing lane", "## Caveats",
                     "## Portfolio replay of PASS lanes", "## Cost calibration"):
         assert section in md
@@ -133,8 +133,8 @@ def test_pooled_vs_baseline_section_renders_the_excess_column_sorted_by_excess()
               _pooled_row("orb", "long", "mixed", 0.30, 0.10, verdict="PASS", failed=()),
               _pooled_row("mr_20d", "short", "risk_off", 0.20, float("nan"), failed=("no_baseline",))]
     md = render_report([_row("NVDA", "orb", "long", "PASS", 0.2)], "2025-09-25T00:00:00", pooled=pooled)
-    assert "## Pooled rows vs shuffled baseline" in md
-    section = md.split("## Pooled rows vs shuffled baseline")[1].split("## Controls")[0]
+    assert "## Pooled rows vs baseline" in md
+    section = md.split("## Pooled rows vs baseline")[1].split("## Controls")[0]
     header = section.strip().splitlines()[0]
     for col in ("family", "side", "regime", "exp_R", "baseline exp_R", "excess", "t_session", "recovery",
                 "verdict", "failed floors"):
@@ -145,10 +145,29 @@ def test_pooled_vs_baseline_section_renders_the_excess_column_sorted_by_excess()
     assert "no_baseline" in body[2]                            # NaN excess sorts last
 
 
+def test_pooled_vs_baseline_section_names_the_control_each_row_was_scored_against():
+    """Batch-2 Task A: an intraday row is measured against the path shuffle and a multi-day row
+    against the selection replay, so the table has to say which control produced each excess --
+    otherwise two very different claims read identically."""
+    from research.strategy_hunt.report import render_report
+
+    pooled = [{**_pooled_row("orb", "long", "mixed", 0.30, 0.10), "baseline_kind": "path"},
+              {**_pooled_row("mr_20d", "long", "mixed", 0.20, 0.05), "baseline_kind": "selection"},
+              {**_pooled_row("rs_rotation", "long", "mixed", 0.20, float("nan"),
+                             failed=("no_baseline",)), "baseline_kind": "none"}]
+    md = render_report([_row("NVDA", "orb", "long", "PASS", 0.2)], "2025-09-25T00:00:00", pooled=pooled)
+    section = md.split("## Pooled rows vs baseline")[1].split("## Controls")[0]
+    assert "baseline" in section.strip().splitlines()[0]
+    body = [ln for ln in section.strip().splitlines()[2:] if ln.startswith("|")]
+    assert "| path |" in body[0] and "orb" in body[0]
+    assert "| selection |" in body[1] and "mr_20d" in body[1]
+    assert "| none |" in body[2]
+
+
 def test_pooled_vs_baseline_section_without_pooled_rows():
     from research.strategy_hunt.report import render_report
     md = render_report([_row("NVDA", "orb", "long", "PASS", 0.2)], "2025-09-25T00:00:00")
-    section = md.split("## Pooled rows vs shuffled baseline")[1].split("## Controls")[0]
+    section = md.split("## Pooled rows vs baseline")[1].split("## Controls")[0]
     assert "_no pooled rows_" in section
 
 

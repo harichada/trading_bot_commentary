@@ -17,15 +17,16 @@ from strategies.families.common import grid_combos
 
 # v-playbook-desk-b1-5 task 10 fix r1: only the cost controls live in separate roots now. The
 # shuffled control moved in-root (<root>/trades_shuffle/) and is reported as the per-pooled-row
-# `excess` in "Pooled rows vs shuffled baseline", which supersedes the old separate-root
-# strategy_fit_shuffle.json and the whole-run false-discovery ratio it fed.
+# `excess` in "Pooled rows vs baseline", which supersedes the old separate-root
+# strategy_fit_shuffle.json and the whole-run false-discovery ratio it fed. Batch-2 Task A adds the
+# second in-root control there: the random-peer selection replay (<root>/trades_selection/).
 CONTROL_FILES = {"cost_0.5": "strategy_fit_cost_0.5.json", "cost_2.0": "strategy_fit_cost_2.0.json"}
 CAVEATS = (
     "- Universe is selected by today's data availability (survivorship); results are stated for symbols that exist now.\n"
     "- Spread and slippage are estimated from bars; see the cost controls for sensitivity.\n"
     "- Ten families times up to 27 parameter sets across hundreds of symbols will produce spurious PASS rows; "
-    "the in-root shuffled baseline estimates how much of a pooled lane's expectancy is the regime's drift "
-    "(see \"Pooled rows vs shuffled baseline\").\n"
+    "the in-root controls estimate how much of a pooled lane's expectancy is the regime's drift -- the path "
+    "shuffle for intraday timing, the random-peer replay for selection (see \"Pooled rows vs baseline\").\n"
     "- Live indicators are computed on the in-progress bar; research uses closed bars. New lanes must use closed bars.\n"
 )
 
@@ -100,23 +101,31 @@ def _excess_key(row: dict) -> float:
 
 
 def _pooled_baseline_table(pooled: Optional[list[dict]]) -> str:
-    """Every pooled row against its same-regime shuffled baseline, biggest excess first.
+    """Every pooled row against its same-regime control, biggest excess first.
 
     This is the table the B1 run needed: a pooled `exp_R` alone cannot say whether a lane
     beats the regime's drift, and `excess` is exactly that difference. `baseline n` is next to
     it (v-playbook-desk-b1-6, Important 2) because an excess is only meaningful when the two
-    groups are comparable in size -- a far-off count raises `baseline_population_mismatch`."""
+    groups are comparable in size -- a far-off count raises `baseline_population_mismatch`.
+
+    `baseline` names the control (Batch-2 Task A): `path` is the shuffled tape, which for a
+    multi-day hold would only have tested intraday timing, and `selection` is the random-peer
+    replay of the row's own trade schedule, which tests selection. Two rows with the same excess
+    are different claims depending on which control produced it, so the column is not optional. It is
+    blank for a snapshot written before the column existed, where every baseline was a path shuffle
+    -- blank rather than `none`, which would contradict the baseline numbers beside it."""
     if not pooled:
         return "_no pooled rows_"
-    lines = ["| family | side | regime | n | exp_R | baseline exp_R | baseline n | excess | t_session | "
-             "recovery | verdict | failed floors |",
-             "|---|---|---|---|---|---|---|---|---|---|---|---|"]
+    lines = ["| family | side | regime | baseline | n | exp_R | baseline exp_R | baseline n | excess | "
+             "t_session | recovery | verdict | failed floors |",
+             "|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for r in sorted(pooled, key=_excess_key, reverse=True):
         try:
             failed = ", ".join(json.loads(r.get("failed_floors") or "[]"))
         except (TypeError, ValueError):       # a hand-edited snapshot must not break the report
             failed = str(r.get("failed_floors"))
         lines.append(f"| {r.get('strategy', '')} | {r.get('side', '')} | {r.get('regime', '')} | "
+                     f"{r.get('baseline_kind', '')} | "
                      f"{r.get('n', 0)} | {_f(r.get('exp_r'))} | {_f(r.get('baseline_exp_r'))} | "
                      f"{int(r.get('baseline_n') or 0)} | "
                      f"{_f(r.get('excess_r'))} | {_f(r.get('t_stat_session'), 2)} | "
@@ -268,7 +277,7 @@ def render_report(rows: list[dict], computed_at: str, trades: Optional[pd.DataFr
              "## Top lanes by score\n\n" + _top_table(rows),
              "## Pooled out-of-sample by family\n\n" + _pooled_table(trades),
              "## Per-regime expectancy by family\n\n" + _regime_table(rows),
-             "## Pooled rows vs shuffled baseline\n\n" + _pooled_baseline_table(pooled),
+             "## Pooled rows vs baseline\n\n" + _pooled_baseline_table(pooled),
              "## Search accounting\n\n" + _search_accounting_section(rows, run_manifest),
              "## Controls\n\n" + _controls_section(rows, controls),
              "## Symbols with no passing lane\n\n" + _no_pass_section(rows),

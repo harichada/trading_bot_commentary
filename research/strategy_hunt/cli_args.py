@@ -14,6 +14,15 @@ from pathlib import Path
 # control is reproducible and the same across nightly runs.
 BASELINE_SHUFFLE_SEED = 7
 
+# Batch-2 Task A: which control `run --shuffle-seed N` produces.
+#   "path"      -- permute 5-minute returns inside each session (`run.shuffle_bars`) and re-run the
+#                  families on the permuted tape -> `trades_shuffle/`. Tests intraday timing.
+#   "selection" -- keep the real trade schedule and replay each trade on a random peer symbol
+#                  (`selection_baseline.replay_selection`) -> `trades_selection/`. Tests selection.
+SHUFFLE_MODE_PATH = "path"
+SHUFFLE_MODE_SELECTION = "selection"
+SHUFFLE_MODES = (SHUFFLE_MODE_PATH, SHUFFLE_MODE_SELECTION)
+
 
 class RejectShuffleSeed(argparse.Action):
     """`--shuffle-seed` on `all`: a parser error, not a silently honoured flag.
@@ -32,6 +41,34 @@ class RejectShuffleSeed(argparse.Action):
                      f"Use `run --shuffle-seed N` for a one-off control.")
 
 
+class RejectShuffleMode(argparse.Action):
+    """`--shuffle-mode` on `all`: a parser error, for the same reason `--shuffle-seed` is.
+
+    `all` runs both controls itself (path shuffle, then selection). A user-supplied mode would apply
+    to the *real* leg as well -- `all --shuffle-mode selection` would replay a `trades/` tape that
+    this very invocation has not written yet. The flag stays registered so `cmd_all`'s namespace
+    keeps its `shuffle_mode` default for `_baseline_namespace`/`_selection_namespace`.
+    """
+
+    def __call__(self, parser, namespace, values, option_string=None):  # noqa: D102
+        parser.error(f"{option_string} is not accepted by `all`: it runs the real tape plus both "
+                     f"controls ({', '.join(SHUFFLE_MODES)}) itself. Use "
+                     f"`run --shuffle-seed N --shuffle-mode MODE` for a one-off control.")
+
+
+def baseline_namespace(a: argparse.Namespace) -> argparse.Namespace:
+    """A copy of `a` configured for the path-shuffle baseline run. A copy, not a mutation: the
+    later steps must still see the real run's `shuffle_seed=None` and the user's `--force`."""
+    return argparse.Namespace(**{**vars(a), "shuffle_seed": BASELINE_SHUFFLE_SEED, "force": True,
+                                 "shuffle_mode": SHUFFLE_MODE_PATH})
+
+
+def selection_namespace(a: argparse.Namespace) -> argparse.Namespace:
+    """A copy of `a` configured for the selection baseline replay (Batch-2 Task A)."""
+    return argparse.Namespace(**{**vars(a), "shuffle_seed": BASELINE_SHUFFLE_SEED, "force": True,
+                                 "shuffle_mode": SHUFFLE_MODE_SELECTION})
+
+
 def add_common_args(sp: argparse.ArgumentParser, default_root: Path,
                     user_shuffle_seed: bool = True) -> None:
     """The flags shared by export/context/news/earnings/calibrate/run/score/report/all.
@@ -48,8 +85,15 @@ def add_common_args(sp: argparse.ArgumentParser, default_root: Path,
     sp.add_argument("--cost-mult", type=float, default=1.0)
     if user_shuffle_seed:
         sp.add_argument("--shuffle-seed", type=int, default=None)
+        sp.add_argument("--shuffle-mode", choices=SHUFFLE_MODES, default=SHUFFLE_MODE_PATH,
+                        help="which control `--shuffle-seed` produces: `path` (default) permutes "
+                             "5-minute returns inside each session and re-runs the families; "
+                             "`selection` keeps the real trade schedule and replays every trade on "
+                             "a seeded random peer symbol (Batch-2 Task A)")
     else:
         sp.add_argument("--shuffle-seed", action=RejectShuffleSeed, type=int, default=None,
+                        help=argparse.SUPPRESS)
+        sp.add_argument("--shuffle-mode", action=RejectShuffleMode, default=SHUFFLE_MODE_PATH,
                         help=argparse.SUPPRESS)
     sp.add_argument("--notional", type=float, default=6000.0)
     sp.add_argument("--holdout-months", type=int, default=0,

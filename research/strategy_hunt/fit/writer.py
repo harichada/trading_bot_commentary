@@ -121,20 +121,23 @@ def write_fit(rows: list[dict], root: Path, computed_at: str, engine: Any = None
     # v-playbook-desk-b1-2026-09-25: the regime/pooled row shape is defined next to the code
     # that builds it. Imported here rather than at module scope because score/regime_rows.py
     # imports build_row from this module — a top-level import either way would be a cycle.
-    from research.strategy_hunt.score.regime_rows import REGIME_ROW_KEYS
+    from research.strategy_hunt.score.regime_rows import POOLED_ROW_KEYS, REGIME_ROW_KEYS
 
     out = {"parquet": str(pq), "json": ""}
     if regime_rows:
         rpq = d / f"fit_regime_{date}.parquet"
         pd.DataFrame(regime_rows, columns=list(REGIME_ROW_KEYS)).to_parquet(rpq, index=False)
         out["regime_parquet"] = str(rpq)
+    # Pooled and baseline rows use POOLED_ROW_KEYS: the same shape plus `baseline_kind`, which says
+    # which control tape the row was measured against (Batch-2 Task A). Not added to ROW_KEYS, which
+    # is also the `strategy_fit` SQL column list the live gate reads and where the key is meaningless.
     if pooled_rows:
         ppq = d / f"fit_pooled_{date}.parquet"
-        pd.DataFrame(pooled_rows, columns=list(REGIME_ROW_KEYS)).to_parquet(ppq, index=False)
+        pd.DataFrame(pooled_rows, columns=list(POOLED_ROW_KEYS)).to_parquet(ppq, index=False)
         out["pooled_parquet"] = str(ppq)
     if baseline_pooled_rows:
         bpq = d / f"fit_baseline_{date}.parquet"
-        pd.DataFrame(baseline_pooled_rows, columns=list(REGIME_ROW_KEYS)).to_parquet(bpq, index=False)
+        pd.DataFrame(baseline_pooled_rows, columns=list(POOLED_ROW_KEYS)).to_parquet(bpq, index=False)
         out["baseline_parquet"] = str(bpq)
 
     js = d / "strategy_fit.json"

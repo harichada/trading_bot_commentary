@@ -84,3 +84,30 @@ def test_write_report_for_a_tmp_root_writes_md_json_csv_under_root_reports(tmp_p
     assert p.with_suffix(".json").exists()
     assert (reports / "2025-09-25T0000-equity-curve.csv").exists()
     assert _committed_dir_snapshot() == before
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Batch-2 Task A: the `selection` variant (the random-peer replay's own artefacts)
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def test_selection_is_a_known_variant_with_its_own_directories(tmp_path):
+    from research.strategy_hunt.paths import (SELECTION_VARIANT, SHUFFLE_VARIANT, VARIANTS, checkpoint_path,
+                                              choices_path, trades_dir, trades_path, variant_dir_name)
+
+    assert SELECTION_VARIANT == "selection"
+    assert set(VARIANTS) == {SHUFFLE_VARIANT, SELECTION_VARIANT}
+    assert variant_dir_name("trades", SELECTION_VARIANT) == "trades_selection"
+    assert trades_dir(tmp_path, SELECTION_VARIANT) == tmp_path / "trades_selection"
+    assert trades_path(tmp_path, "aaa", SELECTION_VARIANT) == tmp_path / "trades_selection" / "AAA.parquet"
+    assert checkpoint_path(tmp_path, "aaa", SELECTION_VARIANT) == tmp_path / "checkpoints_selection" / "AAA.json"
+    assert choices_path(tmp_path, "aaa", SELECTION_VARIANT) == tmp_path / "choices_selection" / "AAA.json"
+
+
+def test_an_unknown_variant_still_raises(tmp_path):
+    import pytest
+
+    from research.strategy_hunt.paths import variant_dir_name
+
+    with pytest.raises(ValueError):
+        variant_dir_name("trades", "selektion")

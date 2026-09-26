@@ -292,10 +292,12 @@ def test_pooled_rows_without_a_matching_baseline_group_report_no_baseline():
 
 
 def test_pooled_rows_keep_the_regime_row_shape():
-    from research.strategy_hunt.score.regime_rows import REGIME_ROW_KEYS, pooled_rows
+    from research.strategy_hunt.score.regime_rows import POOLED_ROW_KEYS, REGIME_ROW_KEYS, pooled_rows
 
     row = pooled_rows(_frame(_flat(0.20)), "2025-09-25T00:00:00", baseline=[_baseline_row(0.10)])[0]
-    assert tuple(row) == REGIME_ROW_KEYS
+    # Batch-2 Task A: a pooled row is a regime row plus `baseline_kind` (which control it was
+    # scored against), which is why the pooled/baseline Parquet uses POOLED_ROW_KEYS.
+    assert tuple(row) == POOLED_ROW_KEYS == REGIME_ROW_KEYS + ("baseline_kind",)
 
 
 def test_baseline_pooled_rows_are_pooled_rows_stamped_baseline():

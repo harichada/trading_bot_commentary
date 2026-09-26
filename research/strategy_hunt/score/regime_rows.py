@@ -11,10 +11,14 @@ rows `fit/writer.build_row` produces:
   universe, symbol `"*"`, source `"pooled"`, scored against `POOLED_FLOORS`.
   A pooled PASS is the family-level statement "this lane works in this regime",
   which lets a lane trade a symbol that has no history of its own yet.
-* `baseline_pooled_rows(...)` — the same pooled rows computed over the *shuffled*
-  tape (`<root>/trades_shuffle/`), stamped `source="baseline"`. They exist so
+* `baseline_pooled_rows(...)` — the same pooled rows computed over a *control*
+  tape, stamped `source="baseline"` and `baseline_kind`. They exist so
   `pooled_rows(..., baseline=...)` can require positive excess over them, and they
-  live only under the snapshot's own `baseline_pooled_rows` key.
+  live only under the snapshot's own `baseline_pooled_rows` key. Since Batch-2 Task A
+  there are two control tapes -- the path shuffle (`trades_shuffle/`) for intraday
+  holds and the random-peer selection replay (`trades_selection/`) for multi-day and
+  overnight ones -- and `run.score_regime_root` decides which one a family's rows are
+  scored against.
 
 Three sample rules matter, because a row here is read by the live gate:
 
@@ -59,6 +63,10 @@ REGIMES = ("risk_on", "risk_off", "mixed")
 # The row shape of both new families. fit/writer.py imports this (lazily, to avoid the
 # import cycle: this module imports build_row from there) to lay out their Parquet files.
 REGIME_ROW_KEYS = ROW_KEYS + ("regime",)
+# Pooled and baseline rows additionally record which control they relate to (Batch-2 Task A). Their
+# own key list, not `ROW_KEYS`: `baseline_kind` is meaningless for an unconditional or per-symbol
+# regime row, and `ROW_KEYS` is also the `strategy_fit` SQL column list the live gate reads.
+POOLED_ROW_KEYS = REGIME_ROW_KEYS + ("baseline_kind",)
 # Fewer trades than the WATCH floor is not a measurement: emit no row (see the docstring).
 REGIME_ROW_MIN_N = WATCH_FLOORS["min_n"]
 
@@ -88,6 +96,17 @@ POOLED_SOURCE = "pooled"
 # Baseline rows are shuffled-control pooled rows. Deliberately *not* POOLED_SOURCE: they are
 # written under their own snapshot section and the live gate must never read one as a lane.
 BASELINE_SOURCE = "baseline"
+# Batch-2 Task A: *which* control a pooled row was measured against, recorded on the row because the
+# two controls answer different questions and an excess over one is not an excess over the other.
+#   "path"      -- the shuffled tape (`trades_shuffle/`): destroys the intraday path, keeps each
+#                  session's return. The honest control for an `intraday` hold.
+#   "selection" -- the random-peer replay (`trades_selection/`): keeps the schedule, redraws the
+#                  symbol. The only one of the two that tests a `multiday`/`overnight` hold.
+#   "none"      -- no matching control group; the row also carries the `no_baseline` failure.
+BASELINE_KIND_PATH = "path"
+BASELINE_KIND_SELECTION = "selection"
+BASELINE_KIND_NONE = "none"
+BASELINE_KINDS = (BASELINE_KIND_PATH, BASELINE_KIND_SELECTION, BASELINE_KIND_NONE)
 # `excess_r` when no baseline group matched. NaN, not 0.0: "not measured" and "exactly matched
 # the shuffled control" are different claims and only the second one is evidence.
 NO_BASELINE = float("nan")
@@ -300,7 +319,13 @@ def pooled_rows(all_trades: Optional[pd.DataFrame], computed_at: str,
     `baseline_population_mismatch` and cannot PASS either.
 
     `guard` is `baseline_guard(real_trades, baseline_trades)`: keys stamped on *every* row
-    because a partial or stale control is a property of the run, not of one lane."""
+    because a partial or stale control is a property of the run, not of one lane.
+
+    `baseline_kind` (Batch-2 Task A) is copied from the matching baseline row, so a row says which
+    control produced its excess; with no match it is `BASELINE_KIND_NONE`. The caller decides which
+    control a family *should* be measured against (`run.score_regime_root` picks by hold kind) --
+    this function only records what it was handed, which is why passing the wrong control cannot be
+    hidden by the row."""
     trades = trades_from_frame(all_trades)
     index = _baseline_index(baseline)
     groups: dict[tuple[str, str, str], list[SimTrade]] = {}
@@ -314,6 +339,7 @@ def pooled_rows(all_trades: Optional[pd.DataFrame], computed_at: str,
         base = index.get((family, side, regime))
         base_exp = float(base["exp_r"]) if base is not None else NO_BASELINE
         base_n = int(base["n"]) if base is not None else 0
+        base_kind = str(base.get("baseline_kind") or BASELINE_KIND_NONE) if base is not None else BASELINE_KIND_NONE
         # The verdict needs the excess, which needs this row's own exp_r -- so it is derived
         # from the metrics the builder just computed rather than by scoring the group twice.
         row = build_row(POOLED_SYMBOL, family, side, bucketed, n_windows, {}, computed_at, _window_end(sub),
@@ -321,15 +347,23 @@ def pooled_rows(all_trades: Optional[pd.DataFrame], computed_at: str,
                         verdict_fn=lambda m, b=base_exp, bn=base_n: verdict_pooled(
                             m, m.exp_r - b, guard, baseline_n=bn))
         out.append({**row, "regime": regime, "baseline_exp_r": base_exp, "baseline_n": base_n,
-                    "excess_r": row["exp_r"] - base_exp})
+                    "excess_r": row["exp_r"] - base_exp, "baseline_kind": base_kind})
     return out
 
 
-def baseline_pooled_rows(all_trades: Optional[pd.DataFrame], computed_at: str) -> list[dict[str, Any]]:
-    """`pooled_rows` over the shuffled control's trades, stamped `source="baseline"`.
+def baseline_pooled_rows(all_trades: Optional[pd.DataFrame], computed_at: str,
+                         baseline_kind: str = BASELINE_KIND_PATH) -> list[dict[str, Any]]:
+    """`pooled_rows` over a control tape's trades, stamped `source="baseline"`.
 
     Identical grouping, quarter bucketing and floors as the real pooled rows, so the two are
     comparable line for line. A baseline row has no baseline of its own, so it carries
     `excess_r` NaN and the `no_baseline` failure — it is read for its `exp_r` and `n`, never
-    as a verdict, and never by the live gate."""
-    return [{**r, "source": BASELINE_SOURCE} for r in pooled_rows(all_trades, computed_at)]
+    as a verdict, and never by the live gate.
+
+    `baseline_kind` says which control these rows *are* (Batch-2 Task A); `pooled_rows` copies it
+    onto every real row it scores against them. It defaults to the path shuffle, the only control
+    that existed before, so an older caller keeps describing its rows correctly."""
+    if baseline_kind not in BASELINE_KINDS:
+        raise ValueError(f"baseline_kind must be one of {BASELINE_KINDS}, got {baseline_kind!r}")
+    return [{**r, "source": BASELINE_SOURCE, "baseline_kind": baseline_kind}
+            for r in pooled_rows(all_trades, computed_at)]

@@ -10,7 +10,13 @@ import time
 from pathlib import Path
 
 from core.desk.playbook import DEFAULT_DESK_DIR as PLAYBOOK_DESK_DIR
-from research.strategy_hunt.cli_args import BASELINE_SHUFFLE_SEED, add_common_args
+# `BASELINE_SHUFFLE_SEED` is re-exported (callers and tests read `cli.BASELINE_SHUFFLE_SEED`), and the
+# two namespace factories live in `cli_args` with the flags they set -- Batch-2 Task A added the
+# second one and this module is at its line budget.
+from research.strategy_hunt.cli_args import BASELINE_SHUFFLE_SEED  # noqa: F401
+from research.strategy_hunt.cli_args import SHUFFLE_MODE_SELECTION, add_common_args
+from research.strategy_hunt.cli_args import baseline_namespace as _baseline_namespace
+from research.strategy_hunt.cli_args import selection_namespace as _selection_namespace
 from research.strategy_hunt.fit.writer import write_fit
 from research.strategy_hunt.paths import SHUFFLE_VARIANT, reports_dir
 from research.strategy_hunt.run import DEFAULT_ROOT, run_symbols, score_regime_root, score_root, write_manifest
@@ -144,6 +150,12 @@ def cmd_calibrate(a: argparse.Namespace) -> int:
 
 
 def cmd_run(a: argparse.Namespace) -> int:
+    # Batch-2 Task A: `--shuffle-mode selection` is a *replay* of the real tape's schedule, not a
+    # second family simulation, so it short-circuits the whole per-symbol run below.
+    if getattr(a, "shuffle_mode", None) == SHUFFLE_MODE_SELECTION:
+        from research.strategy_hunt.selection_baseline import run_selection_command
+
+        return run_selection_command(a)
     symbols, fams = _symbols_arg(a.symbols, a.root), _families_arg(a.families)
     # v-playbook-desk-b1-5 task 10: a shuffled run is a *variant* of this root, not a root of
     # its own -- it writes trades_shuffle/, checkpoints_shuffle/, choices_shuffle/ and shares
@@ -294,12 +306,6 @@ def cmd_promote(a: argparse.Namespace) -> int:
     return 0
 
 
-def _baseline_namespace(a: argparse.Namespace) -> argparse.Namespace:
-    """A copy of `a` configured for the shuffled baseline run. A copy, not a mutation: the
-    later steps must still see the real run's `shuffle_seed=None` and the user's `--force`."""
-    return argparse.Namespace(**{**vars(a), "shuffle_seed": BASELINE_SHUFFLE_SEED, "force": True})
-
-
 def cmd_all(a: argparse.Namespace) -> int:
     # v-playbook-desk-b1-2026-09-25 (fix round 1, finding 1): context must build the universe
     # context AFTER news/earnings land, so ctx_news_count_24h/ctx_earnings_prev/ctx_eps_surprise_pct
@@ -308,14 +314,17 @@ def cmd_all(a: argparse.Namespace) -> int:
         rc = fn(a)
         if rc:
             return rc
-    # v-playbook-desk-b1-5 task 10: the shuffled baseline is part of the nightly pipeline, not a
-    # separate manual run -- without it every pooled row scores `no_baseline` and can only WATCH.
-    # force=True because its checkpoints are only valid for one tape+seed and must not be reused
-    # from a night whose real trades have since changed.
+    # v-playbook-desk-b1-5 task 10: the baselines are part of the nightly pipeline, not separate
+    # manual runs -- without one every pooled row scores `no_baseline` and can only WATCH. force=True
+    # because a control's checkpoints are only valid for one tape+seed and must not be reused from a
+    # night whose real trades have since changed. Batch-2 Task A adds the second control: the path
+    # shuffle is the yardstick for intraday families, the selection replay for the slower ones, and
+    # `score_regime_root` picks per family -- so a nightly run has to produce both.
     if not getattr(a, "no_baseline", False):
-        rc = cmd_run(_baseline_namespace(a))
-        if rc:
-            return rc
+        for control in (_baseline_namespace(a), _selection_namespace(a)):
+            rc = cmd_run(control)
+            if rc:
+                return rc
     rc = cmd_score(a)
     if rc:
         return rc

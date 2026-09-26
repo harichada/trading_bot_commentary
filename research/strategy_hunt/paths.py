@@ -21,13 +21,18 @@ from pathlib import Path
 from typing import Optional
 
 SHUFFLE_VARIANT = "shuffle"
+# Batch-2 Task A: the *selection* control -- every real trade replayed on a seeded random peer
+# symbol at the same entry time (`selection_baseline.replay_selection`). A second variant rather
+# than a second root for the same reason the shuffle is one: it shares the root's bars and context,
+# so `score_regime_root` can read the real tape and both controls in one pass.
+SELECTION_VARIANT = "selection"
 # Every variant the pipeline knows. An unknown variant is a caller bug, not a new
 # directory to silently create: a typo would write a control run nothing ever reads.
-VARIANTS = (SHUFFLE_VARIANT,)
+VARIANTS = (SHUFFLE_VARIANT, SELECTION_VARIANT)
 
 
 def variant_dir_name(kind: str, variant: Optional[str] = None) -> str:
-    """`"trades"` for the real tape, `"trades_shuffle"` for the shuffle variant."""
+    """`"trades"` for the real tape, `"trades_shuffle"`/`"trades_selection"` for the controls."""
     if variant is None:
         return kind
     if variant not in VARIANTS:

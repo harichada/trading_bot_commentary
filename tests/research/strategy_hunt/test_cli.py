@@ -136,13 +136,16 @@ def test_cmd_all_runs_context_after_news_and_earnings(monkeypatch, tmp_path):
     ctx_earnings_* columns reflect tonight's data by the time `run` consumes them -- not before.
 
     v-playbook-desk-b1-5 task 10: `run` now happens twice -- the real tape, then the shuffled
-    baseline (seed 7) into the same root's `_shuffle` dirs -- before `score` reads both."""
+    baseline (seed 7) into the same root's `_shuffle` dirs -- before `score` reads both.
+    Batch-2 Task A adds a third `run`: the selection control (same seed, `_selection` dirs). Which
+    leg is which is asserted by mode in test_cli_selection.py."""
     from research.strategy_hunt import cli
 
     order = _record_all_steps(cli, monkeypatch)
     assert cli.cmd_all(cli.build_parser().parse_args(["all", "--root", str(tmp_path)])) == 0
     assert order == [("cmd_export", None), ("cmd_news", None), ("cmd_earnings", None), ("cmd_context", None),
                      ("cmd_calibrate", None), ("cmd_run", None), ("cmd_run", cli.BASELINE_SHUFFLE_SEED),
+                     ("cmd_run", cli.BASELINE_SHUFFLE_SEED),
                      ("cmd_score", None), ("cmd_playbook", None)]
 
 
@@ -168,7 +171,7 @@ def test_cmd_all_baseline_run_is_forced_and_leaves_the_real_run_namespace_alone(
 
     a = cli.build_parser().parse_args(["all", "--root", str(tmp_path)])
     assert cli.cmd_all(a) == 0
-    assert seen == [(None, False), (cli.BASELINE_SHUFFLE_SEED, True)]
+    assert seen == [(None, False), (cli.BASELINE_SHUFFLE_SEED, True), (cli.BASELINE_SHUFFLE_SEED, True)]
     assert a.shuffle_seed is None and a.force is False
 
 
@@ -402,7 +405,7 @@ def test_cmd_report_tolerates_a_malformed_pooled_rows_section(monkeypatch, tmp_p
     out = capsys.readouterr().out
     assert "report:" in out
     md = (tmp_path / "reports" / "2025-09-25T0100-strategy-hunt.md").read_text()
-    assert "_no pooled rows_" in md.split("## Pooled rows vs shuffled baseline")[1].split("## Controls")[0]
+    assert "_no pooled rows_" in md.split("## Pooled rows vs baseline")[1].split("## Controls")[0]
 
 
 # ──────────────────────
