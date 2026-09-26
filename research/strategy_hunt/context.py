@@ -7,8 +7,15 @@ it is genuinely known before today's open; the RVOL/gap columns use today's open
 only consumed by families from bar_of_day >= 1 (see strategies/families/context.py).
 `rank_cross_section` adds the per-date cross-sectional columns once every symbol's frame is
 concatenated: `rvol_rank5` is a same-date rank of `rvol_open5` and so inherits that same
-bar_of_day >= 1 restriction; `rs_rank_60` and `adv_bucket` rank/bucket same-date peers of already-
-lagged inputs (`rs_60`, `adv_dollars_20`) and so carry no additional look-ahead of their own.
+bar_of_day >= 1 restriction; `rs_rank_60`, `adv_bucket`, `mom_rank_12_1` and `vol_rank_60` rank/
+bucket same-date peers of already-lagged inputs (`rs_60`, `adv_dollars_20`, `mom_12_1` and the
+internal-only `vol_60`) and so carry no additional look-ahead of their own.
+`mom_12_1` (12-1 momentum, symbol minus SPY) mirrors `_relative_strength`'s shift(1+n) lag with
+two windows (skip ~1 month, look back ~12 months) so the value on date D never reads a close
+newer than D-21; `vol_60` (60-session std of daily log returns, internal-only -- it is not part
+of `strategies.families.context.CTX_COLUMNS` and is dropped from the final on-disk frame, kept
+only long enough to rank into `vol_rank_60`) is lagged the same way every other rolling `d_*`-style
+column is: `.shift(1)` after the rolling window, so it is computed through the prior close.
 `build_universe_context`/`load_context_slice` are the on-disk read/write side.
 """
 from __future__ import annotations
@@ -34,9 +41,16 @@ ADV_MIN_PERIODS = ADV_WINDOW // 2  # 10: half the lookback before trusting the 2
 ATR_WINDOW = 14
 SESSION_OPEN = pd.Timedelta(hours=9, minutes=30)
 ADV_BUCKETS = (("mega", 1e9), ("large", 2e8), ("mid", 2e7))
+MOM_SKIP_SESSIONS = 20    # ~1 month, skipped to avoid the short-term reversal effect
+MOM_LOOKBACK_SESSIONS = 250  # ~12 months
+VOL_WINDOW = 60
 
-_RANK_COLUMNS = ("rvol_rank5", "rs_rank_60", "adv_bucket")
+_RANK_COLUMNS = ("rvol_rank5", "rs_rank_60", "adv_bucket", "mom_rank_12_1", "vol_rank_60")
 _PER_SYMBOL_COLUMNS = tuple(c for c in CTX_COLUMNS if c not in _RANK_COLUMNS)
+# vol_60 (the raw 60-session realized vol that vol_rank_60 ranks) is not a CTX_COLUMNS member --
+# it is only ever consumed as a rank input -- so it is carried on the per-symbol frame alongside
+# _PER_SYMBOL_COLUMNS and then dropped by rank_cross_section's final CTX_COLUMNS selection.
+_INTERNAL_COLUMNS = ("vol_60",)
 
 
 def _safe_atr(high: pd.Series, low: pd.Series, close: pd.Series, window: int) -> pd.Series:
@@ -77,6 +91,25 @@ def _relative_strength(close: pd.Series, spy_close: pd.Series, n: int) -> pd.Ser
     sym_ret = close.shift(1) / close.shift(1 + n) - 1
     spy_ret = (spy_close.shift(1) / spy_close.shift(1 + n) - 1).reindex(sym_ret.index)
     return (sym_ret - spy_ret) * 100
+
+
+def _momentum_12_1(close: pd.Series, spy_close: pd.Series) -> pd.Series:
+    """12-1 momentum: symbol's return from ~12 months ago to ~1 month ago (the most recent month
+    is skipped, the classic academic construction that avoids short-term reversal) minus SPY's
+    same quantity, in %. Offsets mirror `_relative_strength`'s shift(1+n) pattern with two windows
+    (MOM_SKIP_SESSIONS, MOM_LOOKBACK_SESSIONS) instead of one, so the value on date D never reads
+    a close newer than D-1-MOM_SKIP_SESSIONS."""
+    sym_mom = close.shift(1 + MOM_SKIP_SESSIONS) / close.shift(1 + MOM_LOOKBACK_SESSIONS) - 1
+    spy_mom = (spy_close.shift(1 + MOM_SKIP_SESSIONS) / spy_close.shift(1 + MOM_LOOKBACK_SESSIONS) - 1)
+    return (sym_mom - spy_mom.reindex(sym_mom.index)) * 100
+
+
+def _vol_60(close: pd.Series) -> pd.Series:
+    """60-session std of daily log returns, computed through the prior close: rolling std of the
+    log-return series, then `.shift(1)` -- the same after-the-rolling-window lag every other
+    rolling `d_*`-style feature uses, so the value on date D reflects only closes through D-1."""
+    log_ret = np.log(close / close.shift(1))
+    return log_ret.rolling(VOL_WINDOW).std().shift(1)
 
 
 def _earnings_features(idx: pd.DatetimeIndex, earnings_table: pd.DataFrame) -> tuple[pd.Series, pd.Series, pd.Series]:
@@ -156,6 +189,7 @@ def symbol_daily_features(
 
     for n in RS_WINDOWS:
         out[f"rs_{n}"] = _relative_strength(close, spy_daily["close"], n)
+    out["mom_12_1"] = _momentum_12_1(close, spy_daily["close"])
 
     rolling_high = prior_close.rolling(HIGH_WINDOW, min_periods=HIGH_MIN_PERIODS).max()
     out["pct_from_52w_high"] = (prior_close / rolling_high - 1) * 100
@@ -166,14 +200,17 @@ def symbol_daily_features(
 
     out["earnings_today"], out["earnings_prev"], out["eps_surprise_pct"] = _earnings_features(idx, earnings_table)
     out["news_count_24h"], out["news_sent_24h"] = _news_features(idx, news)
+    out["vol_60"] = _vol_60(close)  # internal-only: ranked into vol_rank_60 by rank_cross_section
 
-    return out[list(_PER_SYMBOL_COLUMNS)]
+    return out[list(_PER_SYMBOL_COLUMNS) + list(_INTERNAL_COLUMNS)]
 
 
 def rank_cross_section(frames: dict[str, pd.DataFrame]) -> pd.DataFrame:
     """Concatenate per-symbol frames (as from symbol_daily_features) with a symbol column and add
     the cross-sectional columns: rvol_rank5 (1 = highest rvol_open5 that date, NaN unranked),
-    rs_rank_60 (percentile 0-1 of rs_60 that date), adv_bucket (from adv_dollars_20)."""
+    rs_rank_60 (percentile 0-1 of rs_60 that date), adv_bucket (from adv_dollars_20),
+    mom_rank_12_1 (percentile 0-1 of mom_12_1 that date), vol_rank_60 (percentile 0-1 of the
+    internal-only vol_60 that date -- vol_60 itself is dropped by the final CTX_COLUMNS select)."""
     parts = []
     for symbol, frame in frames.items():
         if frame is None or frame.empty:
@@ -188,6 +225,8 @@ def rank_cross_section(frames: dict[str, pd.DataFrame]) -> pd.DataFrame:
     combined["rvol_rank5"] = combined.groupby("date")["rvol_open5"].rank(ascending=False, method="min")
     combined["rs_rank_60"] = combined.groupby("date")["rs_60"].rank(pct=True)
     combined["adv_bucket"] = combined["adv_dollars_20"].map(_adv_bucket)
+    combined["mom_rank_12_1"] = combined.groupby("date")["mom_12_1"].rank(pct=True)
+    combined["vol_rank_60"] = combined.groupby("date")["vol_60"].rank(pct=True)
     return combined[["date", "symbol", *CTX_COLUMNS]]
 
 

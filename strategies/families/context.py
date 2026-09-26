@@ -9,6 +9,9 @@ CTX_COLUMNS = (
     "rs_rank_60", "rvol_rank5", "pct_from_52w_high", "adv_dollars_20",
     "adv_bucket", "atr14_pct", "earnings_today", "earnings_prev",
     "eps_surprise_pct", "news_count_24h", "news_sent_24h",
+    # Batch-2 Task C: 12-1 momentum (symbol minus SPY, same-date percentile) and a same-date
+    # percentile of trailing realized volatility -- see research/strategy_hunt/context.py.
+    "mom_12_1", "mom_rank_12_1", "vol_rank_60",
 )
 
 _ADV_BUCKET_RANK = {"mega": 3.0, "large": 2.0, "mid": 1.0, "small": 0.0}

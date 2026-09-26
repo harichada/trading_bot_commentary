@@ -100,6 +100,21 @@ def _week_start(dates) -> pd.Series:
     return (wd <= wd.shift(1)).astype(float)
 
 
+def _month_start(dates) -> pd.Series:
+    """1.0 on the first session of each calendar month -- the session whose day-of-month is <=
+    the previous session's (a business-day calendar makes day-of-month strictly increase within a
+    month, so this can only trip at a month boundary; mirrors `_week_start`'s weekday comparison,
+    generalized from weeks to months) -- else 0.0.
+
+    Unlike every d_* feature this is NOT lagged: a session's own date is known at its open, so
+    lagging it would move the flag to the wrong session (same rationale as `_week_start`). The
+    first row in the frame has no predecessor and is 0.0 (a month start cannot be established
+    from one session)."""
+    idx = pd.DatetimeIndex(dates)
+    dom = pd.Series(idx.day.astype(float), index=dates)
+    return (dom <= dom.shift(1)).astype(float)
+
+
 def daily_features(daily: pd.DataFrame) -> pd.DataFrame:
     """Row D holds values known at D's open: everything computed through D-1 and then shifted."""
     c, h, l, o, v = daily["close"], daily["high"], daily["low"], daily["open"], daily["volume"].astype(float)
@@ -128,6 +143,7 @@ def daily_features(daily: pd.DataFrame) -> pd.DataFrame:
         f[f"d_low{n}"] = l.rolling(n).min().shift(1)
     lagged = f.shift(1)
     lagged["d_week_start"] = _week_start(daily.index)     # current session's own date: not lagged
+    lagged["d_month_start"] = _month_start(daily.index)   # current session's own date: not lagged
     return lagged
 
 

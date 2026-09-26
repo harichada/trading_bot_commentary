@@ -17,6 +17,8 @@ def test_ctx_columns_tuple():
         "rs_rank_60", "rvol_rank5", "pct_from_52w_high", "adv_dollars_20",
         "adv_bucket", "atr14_pct", "earnings_today", "earnings_prev",
         "eps_surprise_pct", "news_count_24h", "news_sent_24h",
+        # Batch-2 Task C: monthly factor context (research/strategy_hunt/context.py)
+        "mom_12_1", "mom_rank_12_1", "vol_rank_60",
     )
 
 

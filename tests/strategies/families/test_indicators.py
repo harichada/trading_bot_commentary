@@ -218,3 +218,37 @@ def test_new_daily_features_reach_the_indicator_frame():
     for name in ("d_rsi2", "d_sma200", "d_sma5", "d_down_streak", "d_week_start"):
         assert name in ind.columns
     assert ind["d_week_start"].notna().all()
+
+
+# ---- Batch-2 Task C: d_month_start --------------------------------------------------------------
+
+def test_month_start_flags_exactly_the_first_session_of_each_month():
+    from strategies.families.indicators import daily_features
+    daily = _mk_daily([100.0 + i for i in range(65)], start="2025-01-06")   # Mon 2025-01-06 ..
+    df = daily_features(daily)
+    months = df.index.to_series().dt.to_period("M")
+    first_of_month = ~months.duplicated()
+    # Mirrors _week_start's own documented edge case: the very first row in the frame has no
+    # predecessor, so it can't be flagged even though it is trivially the first session of its
+    # month.
+    expected = first_of_month.copy()
+    expected.iloc[0] = False
+    assert list(df["d_month_start"]) == list(expected.astype(float))
+    assert df["d_close"].iloc[22] == pytest.approx(daily["close"].iloc[21])   # the d_* lag still holds
+
+
+def test_month_start_is_the_current_sessions_own_property_not_lagged():
+    from strategies.families.indicators import daily_features
+    daily = _mk_daily([100.0 + i for i in range(45)], start="2025-01-06")
+    df = daily_features(daily)
+    # 2025-02-03 is the first trading session of February -> flagged; the day before is not.
+    assert df.loc["2025-02-03", "d_month_start"] == 1.0
+    assert df.loc["2025-01-31", "d_month_start"] == 0.0
+
+
+def test_new_daily_features_reach_the_indicator_frame_including_month_start():
+    from strategies.families.indicators import indicator_frame
+    b = _bars(DAYS[:3])
+    ind = indicator_frame(b, _daily(b))
+    assert "d_month_start" in ind.columns
+    assert ind["d_month_start"].notna().all()

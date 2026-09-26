@@ -396,3 +396,142 @@ def test_adv_bucket_nan_is_small():
     assert _adv_bucket(2e7) == "mid"
     assert _adv_bucket(1.0) == "small"
 
+
+# --- mom_12_1 / mom_rank_12_1 (Batch-2 Task C) -------------------------------------------------
+
+
+def test_mom_12_1_hand_computed_with_flat_spy():
+    """close[t] = 100+t; flat SPY -> the SPY leg is 0 for any window, so mom_12_1 is exactly the
+    symbol's own (close.shift(21)/close.shift(251) - 1) * 100."""
+    from research.strategy_hunt.context import symbol_daily_features
+
+    dates, daily, spy, bars5 = _long_rising_frame(280)
+    feat = symbol_daily_features("A", bars5, daily, spy, _empty_earnings(), _empty_news())
+    close = daily["close"]
+    i = 260
+    expected = (close.iloc[i - 21] / close.iloc[i - 251] - 1) * 100
+    assert feat.loc[dates[i], "mom_12_1"] == pytest.approx(expected)
+    # fewer than 1+251 prior sessions -> NaN (the shift(251) leg is undefined)
+    assert feat["mom_12_1"].iloc[:251].isna().all()
+    assert pd.notna(feat["mom_12_1"].iloc[251])
+
+
+def test_mom_12_1_hand_computed_with_non_flat_spy():
+    """A flat SPY can't detect a bug that drops the SPY leg entirely (mirrors
+    test_rs_20_hand_computed_with_non_flat_spy). Use a declining SPY so the two legs differ."""
+    from research.strategy_hunt.context import symbol_daily_features
+
+    dates, daily, spy, bars5 = _long_rising_frame(280)  # close[t] = 100+t
+    spy_close = 300.0 - 0.5 * np.arange(280)
+    spy = pd.DataFrame(
+        {"open": spy_close, "high": spy_close + 1, "low": spy_close - 1, "close": spy_close,
+         "volume": np.full(280, 1_000_000.0)}, index=dates,
+    )
+    feat = symbol_daily_features("A", bars5, daily, spy, _empty_earnings(), _empty_news())
+
+    close = daily["close"]
+    i = 260
+    sym_leg = close.iloc[i - 21] / close.iloc[i - 251] - 1
+    spy_leg = spy_close[i - 21] / spy_close[i - 251] - 1
+    expected = (sym_leg - spy_leg) * 100
+    assert feat.loc[dates[i], "mom_12_1"] == pytest.approx(expected)
+    flat_expected = sym_leg * 100
+    assert feat.loc[dates[i], "mom_12_1"] != pytest.approx(flat_expected)
+
+
+def test_mom_12_1_lag_mirrors_relative_strengths_shift_pattern():
+    """One-session lag, pinned by hand: perturbing a single day's close must not move that same
+    day's own mom_12_1, but must show up exactly MOM_SKIP_SESSIONS and MOM_LOOKBACK_SESSIONS
+    sessions later (the two legs the value is built from)."""
+    from research.strategy_hunt.context import symbol_daily_features
+
+    dates, daily, spy, bars5 = _long_rising_frame(560)
+    perturbed = daily.copy()
+    perturbed.loc[dates[300], "close"] *= 1.5  # huge one-day perturbation, day 300 only (>= 251
+    # so that day's own mom_12_1 -- which needs close.shift(251) -- is already finite)
+
+    base = symbol_daily_features("A", bars5, daily, spy, _empty_earnings(), _empty_news())
+    pert = symbol_daily_features("A", bars5, perturbed, spy, _empty_earnings(), _empty_news())
+
+    assert pd.notna(base.loc[dates[300], "mom_12_1"])
+    assert base.loc[dates[300], "mom_12_1"] == pytest.approx(pert.loc[dates[300], "mom_12_1"])
+    # 21 sessions later: shift(21) now reads the perturbed close at day 300
+    assert base.loc[dates[321], "mom_12_1"] != pytest.approx(pert.loc[dates[321], "mom_12_1"])
+    # 251 sessions later: shift(251) now reads the perturbed close at day 300
+    assert base.loc[dates[551], "mom_12_1"] != pytest.approx(pert.loc[dates[551], "mom_12_1"])
+
+
+def test_mom_rank_12_1_orders_symbols_by_momentum():
+    from research.strategy_hunt.context import rank_cross_section, symbol_daily_features
+
+    n = 280
+    dates = pd.bdate_range("2020-01-02", periods=n, name="date")
+    spy_close = np.full(n, 200.0)
+    spy = pd.DataFrame({"open": spy_close, "high": spy_close + 1, "low": spy_close - 1,
+                        "close": spy_close, "volume": np.full(n, 1_000_000.0)}, index=dates)
+    empty_bars5 = pd.DataFrame(columns=["open", "high", "low", "close", "volume"],
+                               index=pd.DatetimeIndex([], name="ts"))
+    frames = {}
+    for sym, slope in {"SLOW": 0.5, "MED": 1.0, "FAST": 2.0}.items():
+        close = 100.0 + slope * np.arange(n)
+        open_ = close.copy()
+        open_[1:] = close[:-1]
+        open_[0] = 100.0
+        daily = pd.DataFrame({"open": open_, "high": close + 1, "low": close - 1, "close": close,
+                             "volume": np.full(n, 1_000_000.0)}, index=dates)
+        frames[sym] = symbol_daily_features(sym, empty_bars5, daily, spy, _empty_earnings(), _empty_news())
+
+    combined = rank_cross_section(frames)
+    on_day = combined[combined["date"] == dates[260]].set_index("symbol")
+    assert on_day.loc["SLOW", "mom_rank_12_1"] < on_day.loc["MED", "mom_rank_12_1"] < on_day.loc["FAST", "mom_rank_12_1"]
+
+
+# --- vol_rank_60 (Batch-2 Task C) --------------------------------------------------------------
+
+
+def test_vol_60_uses_only_log_returns_through_the_prior_session():
+    """One-session lag, pinned by hand: today's own return must not leak into today's own vol_60,
+    but it must show up in tomorrow's (mirrors test_atr14_pct_uses_only_prior_sessions)."""
+    from research.strategy_hunt.context import symbol_daily_features
+
+    dates, daily, spy, bars5 = _long_rising_frame(90)
+    perturbed = daily.copy()
+    perturbed.loc[dates[70], "close"] *= 1.5  # one huge jump, day 70 only
+
+    base = symbol_daily_features("A", bars5, daily, spy, _empty_earnings(), _empty_news())
+    pert = symbol_daily_features("A", bars5, perturbed, spy, _empty_earnings(), _empty_news())
+
+    assert pd.notna(base.loc[dates[70], "vol_60"])
+    assert base.loc[dates[70], "vol_60"] == pytest.approx(pert.loc[dates[70], "vol_60"])
+    # tomorrow's window includes today's now-perturbed log return -> must differ
+    assert base.loc[dates[71], "vol_60"] != pytest.approx(pert.loc[dates[71], "vol_60"])
+
+
+def test_vol_60_is_internal_only_not_a_ctx_column():
+    from strategies.families.context import CTX_COLUMNS
+
+    assert "vol_60" not in CTX_COLUMNS
+
+
+def test_vol_rank_60_orders_symbols_by_realized_volatility():
+    from research.strategy_hunt.context import rank_cross_section, symbol_daily_features
+
+    n = 100
+    dates = pd.bdate_range("2020-01-02", periods=n, name="date")
+    spy_close = np.full(n, 200.0)
+    spy = pd.DataFrame({"open": spy_close, "high": spy_close + 1, "low": spy_close - 1,
+                        "close": spy_close, "volume": np.full(n, 1_000_000.0)}, index=dates)
+    empty_bars5 = pd.DataFrame(columns=["open", "high", "low", "close", "volume"],
+                               index=pd.DatetimeIndex([], name="ts"))
+    sign = np.where(np.arange(n) % 2 == 0, 1.0, -1.0)
+    frames = {}
+    for sym, amp in {"FLAT": 0.0, "MED": 0.01, "HIGH": 0.05}.items():
+        close = 100.0 * (1 + amp * sign)
+        daily = pd.DataFrame({"open": close, "high": close + 1, "low": close - 1, "close": close,
+                             "volume": np.full(n, 1_000_000.0)}, index=dates)
+        frames[sym] = symbol_daily_features(sym, empty_bars5, daily, spy, _empty_earnings(), _empty_news())
+
+    combined = rank_cross_section(frames)
+    on_day = combined[combined["date"] == dates[80]].set_index("symbol")
+    assert on_day.loc["FLAT", "vol_rank_60"] < on_day.loc["MED", "vol_rank_60"] < on_day.loc["HIGH", "vol_rank_60"]
+

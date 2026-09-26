@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from strategies.families.common import Family
+from strategies.families.factor import FAMILIES_FACTOR
 from strategies.families.inplay import FAMILIES_INPLAY
 from strategies.families.intraday_momentum import FAMILIES_INTRADAY_MOMENTUM
 from strategies.families.intraday_reversion import FAMILIES_INTRADAY_REVERSION
@@ -11,7 +12,7 @@ from strategies.families.swing2 import FAMILIES_SWING2
 
 FAMILIES: dict[str, Family] = {
     f.name: f for f in (*FAMILIES_INTRADAY_MOMENTUM, *FAMILIES_INTRADAY_REVERSION, *FAMILIES_NEWS,
-                        *FAMILIES_SWING, *FAMILIES_INPLAY, *FAMILIES_SWING2)
+                        *FAMILIES_SWING, *FAMILIES_INPLAY, *FAMILIES_SWING2, *FAMILIES_FACTOR)
 }
 
 
