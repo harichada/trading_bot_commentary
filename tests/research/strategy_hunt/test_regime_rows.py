@@ -378,6 +378,54 @@ def test_baseline_coverage_reports_the_counts_and_dates_the_warning_needs():
     assert cov["stale_days"] == 28
 
 
+def _entries_exits(symbols, entry_day, exit_day):
+    """One trade per symbol with independently chosen entry/exit days, as a minimal trades frame.
+
+    `baseline_coverage`/`baseline_guard` only read `symbol`, `entry_ts` and `exit_ts`, so this
+    skips the full `SimTrade` shape `_tape` above needs -- it exists to pull entry and exit apart,
+    which a selection control's pairing does for real (same entry schedule, an independently
+    drawn peer's own hold length)."""
+    return pd.DataFrame({"symbol": list(symbols),
+                         "entry_ts": [pd.Timestamp(entry_day)] * len(symbols),
+                         "exit_ts": [pd.Timestamp(exit_day)] * len(symbols)})
+
+
+def test_selection_staleness_compares_last_entries_not_last_exits():
+    """Fix r2. Batch 2 finding: a selection control shares the real tape's entry schedule by
+    construction, so one real trade that exits later than any replayed trade must not flag every
+    pooled row `baseline_stale` (observed: real last exit 2026-04-09 vs control 2026-03-27 with
+    every trade paired same-day -> every market-arm row flagged)."""
+    from research.strategy_hunt.score.regime_rows import (BASELINE_KIND_PATH, BASELINE_KIND_SELECTION,
+                                                          BASELINE_STALE, baseline_guard)
+
+    real = _entries_exits(["AAA"], "2026-04-09", "2026-04-09")
+    control = _entries_exits(["AAA"], "2026-04-09", "2026-03-27")  # same last entry, exit 13d earlier
+
+    assert baseline_guard(real, control, baseline_kind=BASELINE_KIND_SELECTION) == []
+    # the same tapes under the path kind, which is still judged on exits, ARE stale
+    assert baseline_guard(real, control, baseline_kind=BASELINE_KIND_PATH) == [BASELINE_STALE]
+
+
+def test_selection_staleness_flags_a_control_missing_recent_entries():
+    from research.strategy_hunt.score.regime_rows import BASELINE_KIND_SELECTION, BASELINE_STALE, baseline_guard
+
+    real = _entries_exits(["AAA"], "2026-04-09", "2026-04-09")
+    control = _entries_exits(["AAA"], "2026-03-30", "2026-03-30")  # missing the last 10 days of entries
+
+    assert baseline_guard(real, control, baseline_kind=BASELINE_KIND_SELECTION) == [BASELINE_STALE]
+
+
+def test_baseline_coverage_exposes_last_entry_dates():
+    from research.strategy_hunt.score.regime_rows import baseline_coverage
+
+    real = _entries_exits(["AAA"], "2026-04-09", "2026-04-09")
+    control = _entries_exits(["AAA"], "2026-03-27", "2026-03-14")
+
+    cov = baseline_coverage(real, control)
+    assert cov["real_last_entry"] == "2026-04-09" and cov["baseline_last_entry"] == "2026-03-27"
+    assert cov["real_last_exit"] == "2026-04-09" and cov["baseline_last_exit"] == "2026-03-14"
+
+
 def test_pooled_rows_carry_the_guard_flags_and_cannot_pass():
     from research.strategy_hunt.score.regime_rows import pooled_rows
 

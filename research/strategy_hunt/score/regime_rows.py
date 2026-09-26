@@ -57,6 +57,14 @@ import pandas as pd
 
 from research.strategy_hunt.fit.writer import ROW_KEYS, build_row
 from research.strategy_hunt.models import OPTIONAL_TRADE_COLUMNS, TRADE_COLUMNS, FitMetrics, SimTrade
+# `baseline_kind` enum and the coverage/staleness guard live in their own module (Batch-2
+# follow-up: this file was at its 400-line ceiling); re-exported here so callers and tests keep
+# importing them from `regime_rows`.
+from research.strategy_hunt.score.baseline_guard import (BASELINE_KIND_NONE, BASELINE_KIND_PATH,
+                                                          BASELINE_KIND_SELECTION, BASELINE_KINDS,
+                                                          BASELINE_MAX_MISSING_FRAC, BASELINE_MAX_STALE_DAYS,
+                                                          BASELINE_MISMATCH, BASELINE_STALE,
+                                                          baseline_coverage, baseline_guard)
 from research.strategy_hunt.score.verdict import WATCH_FLOORS
 
 REGIMES = ("risk_on", "risk_off", "mixed")
@@ -96,30 +104,11 @@ POOLED_SOURCE = "pooled"
 # Baseline rows are shuffled-control pooled rows. Deliberately *not* POOLED_SOURCE: they are
 # written under their own snapshot section and the live gate must never read one as a lane.
 BASELINE_SOURCE = "baseline"
-# Batch-2 Task A: *which* control a pooled row was measured against, recorded on the row because the
-# two controls answer different questions and an excess over one is not an excess over the other.
-#   "path"      -- the shuffled tape (`trades_shuffle/`): destroys the intraday path, keeps each
-#                  session's return. The honest control for an `intraday` hold.
-#   "selection" -- the random-peer replay (`trades_selection/`): keeps the schedule, redraws the
-#                  symbol. The only one of the two that tests a `multiday`/`overnight` hold.
-#   "none"      -- no matching control group; the row also carries the `no_baseline` failure.
-BASELINE_KIND_PATH = "path"
-BASELINE_KIND_SELECTION = "selection"
-BASELINE_KIND_NONE = "none"
-BASELINE_KINDS = (BASELINE_KIND_PATH, BASELINE_KIND_SELECTION, BASELINE_KIND_NONE)
 # `excess_r` when no baseline group matched. NaN, not 0.0: "not measured" and "exactly matched
 # the shuffled control" are different claims and only the second one is evidence.
 NO_BASELINE = float("nan")
 
-# v-playbook-desk-b1-5 task 10 fix r1. A *leftover* baseline is worse than none: it silently
-# becomes the yardstick for every pooled verdict while looking exactly like a fresh one. These
-# two failure keys say so on the row itself, so a stale/partial control can never mint a PASS.
-BASELINE_MISMATCH = "baseline_mismatch"      # the baseline skipped too much of the universe
-BASELINE_STALE = "baseline_stale"            # the baseline stopped too long before the real tape
-BASELINE_MAX_MISSING_FRAC = 0.05             # strictly more than 5% of real symbols missing
-BASELINE_MAX_STALE_DAYS = 7                  # strictly more than 7 calendar days behind
-
-# v-playbook-desk-b1-6 (final review, Important 2). `baseline_guard` above compares the two
+# v-playbook-desk-b1-6 (final review, Important 2). `baseline_guard` (`score/baseline_guard.py`) compares the two
 # *tapes*; this compares the two *groups*. A control group with a fifth of the real group's
 # trades is measuring a different population, so the difference of their expectancies is not
 # the "excess over the regime's drift" the verdict claims it is -- most often it means the
@@ -134,63 +123,6 @@ BASELINE_POPULATION_MAX_RATIO = 2.0         # ...and so is above this multiple
 # judged by this: the shuffled tape re-runs the families, where a different n is the expected outcome.
 BASELINE_UNDERREPLAYED = "baseline_underreplayed"
 BASELINE_MIN_REPLAYED_FRAC = 0.9
-
-
-def _symbols(trades: Optional[pd.DataFrame]) -> set[str]:
-    if trades is None or trades.empty or "symbol" not in trades.columns:
-        return set()
-    return {str(s) for s in trades["symbol"].unique()}
-
-
-def _last_exit(trades: Optional[pd.DataFrame]) -> Optional[pd.Timestamp]:
-    if trades is None or trades.empty or "exit_ts" not in trades.columns:
-        return None
-    last = pd.to_datetime(trades["exit_ts"]).max()
-    return None if pd.isna(last) else pd.Timestamp(last)
-
-
-def baseline_coverage(real_trades: Optional[pd.DataFrame],
-                      baseline_trades: Optional[pd.DataFrame]) -> dict[str, Any]:
-    """How much of the real tape the shuffled baseline actually covers, and how far behind it is.
-
-    Pure: the counts and dates `baseline_guard` decides on and `score_regime_root` logs, so the
-    warning and the verdict can never disagree about what they saw."""
-    real_syms, base_syms = _symbols(real_trades), _symbols(baseline_trades)
-    missing = sorted(real_syms - base_syms)
-    real_last, base_last = _last_exit(real_trades), _last_exit(baseline_trades)
-    stale_days = (real_last.date() - base_last.date()).days if real_last is not None and base_last is not None else 0
-    return {"n_real_symbols": len(real_syms), "n_baseline_symbols": len(base_syms),
-            "n_missing": len(missing), "missing": missing[:20],
-            "missing_frac": len(missing) / len(real_syms) if real_syms else 0.0,
-            "real_last_exit": str(real_last)[:10] if real_last is not None else "",
-            "baseline_last_exit": str(base_last)[:10] if base_last is not None else "",
-            "stale_days": stale_days}
-
-
-def baseline_guard(real_trades: Optional[pd.DataFrame],
-                   baseline_trades: Optional[pd.DataFrame],
-                   baseline_kind: str = BASELINE_KIND_PATH) -> list[str]:
-    """Failure keys for a baseline that is present but not trustworthy.
-
-    `BASELINE_MISMATCH` when the control skipped more than `BASELINE_MAX_MISSING_FRAC` of the
-    real universe's symbols, `BASELINE_STALE` when its last exit is more than
-    `BASELINE_MAX_STALE_DAYS` calendar days behind the real tape's. A baseline that is *newer*
-    than the real tape is not stale. An absent baseline returns `[]` — that case is already
-    `no_baseline`, and saying it twice would only obscure which one happened.
-
-    The coverage test is skipped for `baseline_kind == "selection"` (fix r1, Important 3): that
-    control replays each trade on a *random peer*, so which symbols it lands on is a draw, not a
-    measure of completeness -- the flag would fire on every correct run. A dropped trade is measured
-    per group instead, by `BASELINE_UNDERREPLAYED`. Staleness still applies to both kinds."""
-    cov = baseline_coverage(real_trades, baseline_trades)
-    if not cov["n_real_symbols"] or not cov["n_baseline_symbols"]:
-        return []
-    flags = []
-    if baseline_kind != BASELINE_KIND_SELECTION and cov["missing_frac"] > BASELINE_MAX_MISSING_FRAC:
-        flags.append(BASELINE_MISMATCH)
-    if cov["stale_days"] > BASELINE_MAX_STALE_DAYS:
-        flags.append(BASELINE_STALE)
-    return flags
 
 
 def _population_ok(n: int, baseline_n: Optional[int]) -> bool:

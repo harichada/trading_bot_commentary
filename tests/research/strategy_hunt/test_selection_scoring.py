@@ -211,7 +211,10 @@ def test_baseline_guard_skips_the_coverage_test_for_the_selection_control(root, 
     assert baseline_guard(real, thin, baseline_kind=BASELINE_KIND_PATH) == [BASELINE_MISMATCH]
     assert baseline_guard(real, thin, baseline_kind=BASELINE_KIND_SELECTION) == []
 
+    # entry_ts shifted too: a selection control's staleness is judged on its last *entry*
+    # (fix r2), since it shares the real tape's entry schedule by construction.
     stale = thin.copy()
+    stale["entry_ts"] = pd.to_datetime(stale["entry_ts"]) - pd.Timedelta(days=30)
     stale["exit_ts"] = pd.to_datetime(stale["exit_ts"]) - pd.Timedelta(days=30)
     assert baseline_guard(real, stale, baseline_kind=BASELINE_KIND_SELECTION) == [BASELINE_STALE]
 
