@@ -18,12 +18,12 @@ regime labels. Redrawn: selection alone -- uniformly over the symbols with a bar
 seeded by `(seed, source symbol, entry_ts)` so a rerun reproduces the tape trade-for-trade
 regardless of worker count or file order.
 
-Two honest limitations, stated because they bound what the control proves. (1) `time_stop` is not
-stored on a trade, so it is recovered from `params_json` (`TIME_STOP_PARAM_KEYS`) and falls back to
-the trade's *realized* hold when the family hard-codes its horizon -- which can only make the
-control's horizon shorter than the family's, never longer. (2) Peers are drawn from `<root>/bars5/`,
-the universe as it exists now, so the control inherits the real tape's survivorship bias: the two
-tapes must be drawn from the same population for their difference to mean anything.
+Two honest limitations, stated because they bound what the control proves. (1) The horizon is the
+trade's own `time_stop` column (Batch-2 Task F); a tape written before that column falls back to
+`params_json` (`TIME_STOP_PARAM_KEYS`) and then to the *realized* hold, which can only shorten such a
+control's horizon, never lengthen it. (2) Peers are drawn from `<root>/bars5/`, the universe as it
+exists now, so the control inherits the real tape's survivorship bias: the two tapes must be drawn
+from the same population for their difference to mean anything.
 """
 from __future__ import annotations
 
@@ -33,7 +33,6 @@ import logging
 import time
 from collections import Counter
 from dataclasses import dataclass
-from inspect import signature
 from multiprocessing import Pool
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -72,10 +71,7 @@ OVERNIGHT_TIME_STOP = 1   # unused by the overnight exit rule; `Entry` only requ
 DROP_NO_PEER, DROP_NO_ENTRY = "no_peer_bar", "no_entry"
 DROP_UNKNOWN_FAMILY, DROP_BAD_GEOMETRY, DROP_BAD_RECORD = "unknown_family", "bad_geometry", "bad_record"
 
-# Task B added `make_entry(..., entry_style=...)`: introspected once, so this module works whether or
-# not that change has landed and never edits `common.py` to find out.
-_MAKE_ENTRY_TAKES_ENTRY_STYLE = "entry_style" in signature(make_entry).parameters
-DEFAULT_ENTRY_STYLE = "market"
+DEFAULT_ENTRY_STYLE = "market"   # a tape written before Task B's `entry_style` column
 
 # Set once per pool worker by `_init_worker`: the context and cost settings are the same for every
 # peer, and pickling them per job would copy the SPY tape hundreds of times.
@@ -168,8 +164,16 @@ def replay_brackets(side: str, fill_open: float, rel_stop: float, rel_target: fl
     return fill_open * (1.0 - sgn * rel_stop), fill_open * (1.0 + sgn * rel_target)
 
 
-def time_stop_for(hold_kind: str, params: dict, hold_bars: int, hold_sessions: int) -> int:
-    """The horizon to give the replayed entry (see limitation 1 in the module docstring)."""
+def time_stop_for(hold_kind: str, params: dict, hold_bars: int, hold_sessions: int,
+                  trade_time_stop: Any = 0) -> int:
+    """The horizon for the replayed entry. The trade's own `time_stop` column (Batch-2 Task F) wins
+    outright -- it *is* `Entry.time_stop`, in the unit `hold_kind` implies; 0 or NaN means a tape
+    written before that column and falls through to the recovery (docstring limitation 1)."""
+    try:
+        if not isinstance(trade_time_stop, bool) and int(trade_time_stop) > 0:
+            return int(trade_time_stop)
+    except (TypeError, ValueError):               # NaN, None, or a non-numeric record
+        pass
     if hold_kind == "overnight":
         return OVERNIGHT_TIME_STOP
     for key in TIME_STOP_PARAM_KEYS.get(hold_kind, ()):
@@ -241,7 +245,8 @@ def build_plans(trades: pd.DataFrame, root: Path, universe: tuple[str, ...], see
             plans.append(ReplayPlan(
                 peer=peer, source_symbol=symbol, family=family, side=str(record["side"]), entry_ts=entry_ts,
                 rel_stop=rel_stop, rel_target=rel_target,
-                time_stop=time_stop_for(kind, params, record.get("hold_bars", 1), record.get("hold_sessions", 1)),
+                time_stop=time_stop_for(kind, params, record.get("hold_bars", 1), record.get("hold_sessions", 1),
+                                        record.get("time_stop", 0)),
                 hold_kind=kind, entry_style=_entry_style(record), window_id=int(record.get("window_id", -1)),
                 params_json=str(record.get("params_json") or "{}")))
         except Exception:
@@ -266,9 +271,8 @@ def plan_entry(plan: ReplayPlan, bars5: pd.DataFrame):
     if not fill_open > 0:
         return None
     stop_px, target_px = replay_brackets(plan.side, fill_open, plan.rel_stop, plan.rel_target)
-    style = {"entry_style": plan.entry_style} if _MAKE_ENTRY_TAKES_ENTRY_STYLE else {}
     return make_entry(bars5, pos - 1, plan.side, stop_px, target_px, plan.time_stop, plan.hold_kind,
-                      f"{TAG_PREFIX}{plan.family}", plan.peer, **style)
+                      f"{TAG_PREFIX}{plan.family}", plan.peer, entry_style=plan.entry_style)
 
 
 def replay_peer(peer: str, plans: list[ReplayPlan], root: Path, context: dict, notional: float,

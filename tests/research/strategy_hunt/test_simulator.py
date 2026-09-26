@@ -147,3 +147,14 @@ def test_session_table():
     assert list(tb.first_pos) == [0, 78] and list(tb.last_pos) == [77, 155]
     assert (tb.session_id[:78] == 0).all() and (tb.session_id[78:] == 1).all()
     assert list(tb.next_is_earnings({pd.Timestamp("2025-01-03")})) == [True, False]
+
+
+def test_trade_records_the_entrys_time_stop():
+    """Batch-2 Task F item 4: exactly `Entry.time_stop`, whatever the trade's realized hold was --
+    the selection replay needs the horizon the family *chose*, not the one it happened to use."""
+    from research.strategy_hunt.sim.simulator import simulate
+    bars = _day("2025-01-02", [100, 100, 101], [100.5, 100.5, 104.5], [99.5, 99.5, 100.5], [100, 100, 104])
+    e = Entry("X", "long", bars.index[0], 100.0, 98.0, 104.0, 20, "intraday")
+    t = simulate([e], bars, ZERO_COSTS, set(), "fam")[0]
+    assert t.time_stop == 20 and isinstance(t.time_stop, int)
+    assert t.hold_bars < t.time_stop      # it exited on target well before the horizon

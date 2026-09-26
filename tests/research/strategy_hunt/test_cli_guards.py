@@ -80,3 +80,30 @@ def test_holdout_months_flag_default_and_settable():
     # shared via add_common_args -- also present on `all` and `score`, not just `run`
     assert cli.build_parser().parse_args(["all"]).holdout_months == 0
     assert cli.build_parser().parse_args(["score", "--holdout-months", "3"]).holdout_months == 3
+
+
+# ──────────────────────
+# Batch-2 Task F item 5 — the splits-audit subcommand is reachable from the CLI
+# ──────────────────────
+
+def test_splits_audit_subcommand_is_registered_and_dispatches(monkeypatch, tmp_path, capsys):
+    """Task E wrote the audit body but left it unreachable, so the one-off diagnostic could only be
+    run through a hand-written `python -c`. It takes --root and --symbols and nothing else."""
+    from research.strategy_hunt import splits_audit as SA
+
+    seen = {}
+    monkeypatch.setattr(SA, "audit_splits",
+                        lambda root, symbols=None: seen.update(root=root, symbols=symbols) or
+                        [{"symbol": "LCID", "reasons": ["minmax_ratio=1e+08"]}])
+
+    assert cli.main(["splits-audit", "--root", str(tmp_path), "--symbols", "LCID,AAA"]) == 0
+    assert str(seen["root"]) == str(tmp_path) and seen["symbols"] == "LCID,AAA"
+    out = capsys.readouterr().out
+    assert "LCID" in out and "1 symbol(s) flagged" in out
+
+
+def test_splits_audit_defaults_root_and_symbols():
+    from research.strategy_hunt.run import DEFAULT_ROOT
+
+    a = cli.build_parser().parse_args(["splits-audit"])
+    assert a.root == DEFAULT_ROOT and a.symbols is None

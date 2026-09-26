@@ -9,17 +9,18 @@ import sys
 import time
 from pathlib import Path
 
-from core.desk.playbook import DEFAULT_DESK_DIR as PLAYBOOK_DESK_DIR
 # `BASELINE_SHUFFLE_SEED` is re-exported (callers and tests read `cli.BASELINE_SHUFFLE_SEED`), and the
 # two namespace factories live in `cli_args` with the flags they set -- Batch-2 Task A added the
 # second one and this module is at its line budget.
 from research.strategy_hunt.cli_args import BASELINE_SHUFFLE_SEED  # noqa: F401
-from research.strategy_hunt.cli_args import SHUFFLE_MODE_SELECTION, add_common_args
+from research.strategy_hunt.cli_args import SHUFFLE_MODE_SELECTION, parse_grid_pins
 from research.strategy_hunt.cli_args import baseline_namespace as _baseline_namespace
 from research.strategy_hunt.cli_args import selection_namespace as _selection_namespace
+from research.strategy_hunt.cli_parsers import build_parser as build_subparsers
 from research.strategy_hunt.fit.writer import write_fit
 from research.strategy_hunt.paths import SHUFFLE_VARIANT, reports_dir
-from research.strategy_hunt.run import DEFAULT_ROOT, run_symbols, score_regime_root, score_root, write_manifest
+from research.strategy_hunt.run import run_symbols, score_regime_root, score_root, write_manifest
+from research.strategy_hunt.splits_audit import run_splits_audit
 from strategies.families import family_names
 
 logger = logging.getLogger("strategy_hunt.cli")
@@ -156,6 +157,11 @@ def cmd_run(a: argparse.Namespace) -> int:
         from research.strategy_hunt.selection_baseline import run_selection_command
 
         return run_selection_command(a)
+    try:
+        pins = parse_grid_pins(getattr(a, "grid_pin", None))
+    except ValueError as exc:      # a pin the run ignored would make both A/B arms the same run
+        print(f"run: {exc}")
+        return 1
     symbols, fams = _symbols_arg(a.symbols, a.root), _families_arg(a.families)
     # v-playbook-desk-b1-5 task 10: a shuffled run is a *variant* of this root, not a root of
     # its own -- it writes trades_shuffle/, checkpoints_shuffle/, choices_shuffle/ and shares
@@ -164,7 +170,7 @@ def cmd_run(a: argparse.Namespace) -> int:
     t0 = time.time()
     recs = run_symbols(symbols, a.root, fams, workers=a.workers, variant=variant, force=a.force,
                        cost_mult=a.cost_mult, shuffle_seed=a.shuffle_seed, notional=a.notional,
-                       holdout_months=a.holdout_months)
+                       holdout_months=a.holdout_months, grid_pins=pins)
     counts = {}
     for r in recs:
         counts[r["status"]] = counts.get(r["status"], 0) + 1
@@ -179,7 +185,7 @@ def cmd_run(a: argparse.Namespace) -> int:
                                              "counts": counts, "cost_mult": a.cost_mult,
                                              "shuffle_seed": a.shuffle_seed, "variant": variant,
                                              "notional": a.notional, "holdout_months": a.holdout_months,
-                                             "elapsed_sec": round(time.time() - t0)},
+                                             "grid_pins": pins, "elapsed_sec": round(time.time() - t0)},
                             f"errors{suffix}": [r for r in recs if r["status"] == "error"]})
     return 0 if counts.get("error", 0) <= 0.1 * max(1, len(recs)) else 1
 
@@ -336,57 +342,14 @@ def cmd_all(a: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="python -m research.strategy_hunt")
-    sub = p.add_subparsers(dest="cmd", required=True)
-
-    def common(sp, user_shuffle_seed: bool = True):
-        add_common_args(sp, DEFAULT_ROOT, user_shuffle_seed=user_shuffle_seed)
-
-    for name, fn in (("export", cmd_export), ("context", cmd_context),
-                     ("earnings", cmd_earnings), ("calibrate", cmd_calibrate), ("run", cmd_run),
-                     ("score", cmd_score), ("report", cmd_report), ("all", cmd_all)):
-        sp = sub.add_parser(name)
-        common(sp, user_shuffle_seed=(name != "all"))
-        sp.set_defaults(fn=fn)
-
-    # v-playbook-desk-b1-2026-09-25 (Task 7b): `news` gets its own subparser (like
-    # universe-context below) so --rescore only exists there, not on every other subcommand.
-    sp = sub.add_parser("news")
-    common(sp)
-    sp.add_argument("--rescore", action="store_true",
-                    help="re-score the existing cache with the configured sentiment backend "
-                         "instead of fetching new rows (no Alpaca creds required)")
-    sp.set_defaults(fn=cmd_news)
-
-    # v-playbook-desk-b1-2026-09-25 (fix round 1, finding 5): rebuild-only-the-context-file takes
-    # no symbols/families/cost-mult/etc -- just --root, like `promote`.
-    sp = sub.add_parser("universe-context")
-    sp.add_argument("--root", type=Path, default=DEFAULT_ROOT)
-    sp.set_defaults(fn=cmd_universe_context)
-
-    sp = sub.add_parser("scorecard")
-    sp.add_argument("--root", type=Path, default=DEFAULT_ROOT)
-    sp.add_argument("--family", required=True)
-    sp.add_argument("--ledger", type=Path, default=None, help="default: data/shadow_fit_<family>.ndjson")
-    sp.add_argument("--cost-mult", type=float, default=1.0)
-    sp.set_defaults(fn=cmd_scorecard)
-
-    # v-playbook-desk-b2-2026-09-25 (Task 3): --desk-dir lives only here (like `promote`'s
-    # --root), so no other subcommand grows a flag it ignores.
-    sp = sub.add_parser("playbook")
-    sp.add_argument("--root", type=Path, default=DEFAULT_ROOT)
-    sp.add_argument("--families", default=None, help="comma list; default all")
-    sp.add_argument("--desk-dir", type=Path, default=PLAYBOOK_DESK_DIR,
-                    help="where playbook.json is written (default data/desk)")
-    sp.add_argument("--postgres", action="store_true",
-                    help="also read the live bot_trades tape, bounded to the last 120 days "
-                         "(needs POSTGRES_DSN; `all --postgres` passes this through)")
-    sp.set_defaults(fn=cmd_playbook)
-
-    sp = sub.add_parser("promote")
-    sp.add_argument("--root", type=Path, default=DEFAULT_ROOT)
-    sp.set_defaults(fn=cmd_promote)
-    return p
+    """The parser tree lives in `cli_parsers` (Batch-2 Task F) so this module keeps only the command
+    bodies and stays inside its line budget; the handlers are passed in, which keeps that a one-way
+    import. `splits-audit`'s body is in `splits_audit.py` for the same reason."""
+    return build_subparsers({"export": cmd_export, "context": cmd_context, "news": cmd_news,
+                             "earnings": cmd_earnings, "calibrate": cmd_calibrate, "run": cmd_run,
+                             "score": cmd_score, "report": cmd_report, "all": cmd_all,
+                             "universe-context": cmd_universe_context, "splits-audit": run_splits_audit,
+                             "scorecard": cmd_scorecard, "playbook": cmd_playbook, "promote": cmd_promote})
 
 
 def main(argv: list[str] | None = None) -> int:

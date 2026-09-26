@@ -15,6 +15,7 @@ separation).
 """
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 from pathlib import Path
@@ -84,27 +85,22 @@ def ledger_entries(records: list[dict]) -> list[Entry]:
 def _snap_entry(entry: Entry, bars5: pd.DataFrame) -> Optional[Entry]:
     """Snap `entry.entry_ts` forward to the next 5-min bar and re-price at
     that bar's open, shifting stop/target by the same delta so R stays
-    meaningful. Returns None (dropped) if no bar exists at or after `ts`."""
+    meaningful. Returns None (dropped) if no bar exists at or after `ts`.
+
+    `dataclasses.replace` names only the four fields the snap moves (Batch-2 Task F): rebuilding
+    the `Entry` field-by-field silently reset every field added since -- Task B's `entry_style`,
+    so a `limit_open` shadow record resolved as a market fill -- and would do it again for the
+    next one."""
     idx = bars5.index
     if entry.entry_ts in idx:
         return entry
     pos = int(idx.searchsorted(entry.entry_ts))
     if pos >= len(idx):
         return None
-    new_ts = idx[pos]
     new_entry_px = float(bars5["open"].iloc[pos])
     delta = new_entry_px - entry.entry_px
-    return Entry(
-        symbol=entry.symbol,
-        side=entry.side,
-        entry_ts=new_ts,
-        entry_px=new_entry_px,
-        stop_px=entry.stop_px + delta,
-        target_px=entry.target_px + delta,
-        time_stop=entry.time_stop,
-        hold_kind=entry.hold_kind,
-        tag=entry.tag,
-    )
+    return dataclasses.replace(entry, entry_ts=idx[pos], entry_px=new_entry_px,
+                               stop_px=entry.stop_px + delta, target_px=entry.target_px + delta)
 
 
 def resolve(records: list[dict], root: Path, family: str, cost_mult: float = 1.0) -> list[SimTrade]:

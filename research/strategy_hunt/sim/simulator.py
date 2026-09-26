@@ -198,5 +198,5 @@ def simulate(entries: list[Entry], bars5: pd.DataFrame, cost_model: CostModel, e
                             exit_px, float(entry_fill), float(exit_fill), float(r), float(pnl_pct), float(cost_pct), reason,
                             int(exit_pos - start), hold_sessions, e.tag,
                             regime_lookup(ts) if regime_lookup else "unknown", window_id, params_json,
-                            e.entry_style))
+                            e.entry_style, int(e.time_stop)))
     return out

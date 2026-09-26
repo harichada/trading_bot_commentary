@@ -325,3 +325,43 @@ def test_a_trade_with_no_stop_distance_is_counted_as_bad_geometry(root, days):
     summary = replay_selection(root, seed=7)
 
     assert summary["dropped"][DROP_BAD_GEOMETRY] == 1
+
+
+# ─────────────────────────  Task F item 4: the horizon comes off the record  ─────────────────────────
+
+
+def test_the_time_stop_is_read_from_the_trade_when_the_record_carries_it(root, days):
+    """Batch-2 Task F item 4. Recovering the horizon from `params_json` could only ever get it
+    right when the family exposed it as a grid axis, and the realized-hold fallback shortened the
+    control's horizon for every trade that exited early -- which is most of them. The trade now
+    records `Entry.time_stop` itself, so the replay reproduces the schedule it is controlling for
+    even when the source trade stopped out on its second bar."""
+    from research.strategy_hunt.selection_baseline import build_plans, real_trades, selection_universe
+
+    early = _trade("AAA", pd.Timestamp(f"{days[2].date()} 09:45"), params={"time_stop_days": 2})
+    early.update({"time_stop": 9, "hold_sessions": 1, "hold_bars": 2, "exit_reason": "stop"})
+    _write_trades(root, "AAA", [early])
+    plans, _ = build_plans(real_trades(root), root, selection_universe(root), seed=7)
+    assert {p.time_stop for p in plans if p.source_symbol == "AAA"} == {9}
+
+
+def test_the_time_stop_still_falls_back_for_a_tape_without_the_column(root, days):
+    """An older `trades/` tape has no `time_stop` column at all (NaN after the reindex), so the
+    params/realized-hold recovery has to stay as the fallback -- a pre-Task-F root must remain
+    replayable."""
+    from research.strategy_hunt.selection_baseline import build_plans, real_trades, selection_universe
+
+    _write_trades(root, "AAA", [_trade("AAA", pd.Timestamp(f"{days[2].date()} 09:45"),
+                                       params={"time_stop_days": 5})])
+    plans, _ = build_plans(real_trades(root), root, selection_universe(root), seed=7)
+    assert {p.time_stop for p in plans if p.source_symbol == "AAA"} == {5}
+
+
+def test_time_stop_for_prefers_the_trades_own_horizon_over_every_recovery():
+    from research.strategy_hunt.selection_baseline import time_stop_for
+
+    assert time_stop_for("multiday", {"time_stop_days": 2}, 20, 1, trade_time_stop=9) == 9
+    assert time_stop_for("intraday", {"time_stop_bars": 30}, 4, 1, trade_time_stop=66) == 66
+    # 0 / NaN / a nonsense value means "the record does not know", not "zero bars"
+    assert time_stop_for("multiday", {"time_stop_days": 2}, 20, 1, trade_time_stop=0) == 2
+    assert time_stop_for("multiday", {}, 20, 3, trade_time_stop=float("nan")) == 3

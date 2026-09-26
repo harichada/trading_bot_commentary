@@ -13,9 +13,13 @@ TRADE_COLUMNS = ("symbol", "family", "side", "entry_ts", "exit_ts", "entry_px", 
                  # Batch-2 Task B: appended, never interleaved, so a trades Parquet written before
                  # this column existed still lines up positionally. Absent means "market" -- see
                  # `score.regime_rows.trades_from_frame`.
-                 "entry_style")
+                 "entry_style",
+                 # Batch-2 Task F: the entry's own horizon (`Entry.time_stop`: bars for an intraday
+                 # hold, sessions otherwise), appended for the same reason. 0 means "this record
+                 # does not say" -- a tape written before the column -- not "no horizon".
+                 "time_stop")
 # Trade columns with a `SimTrade` default, which an older trades Parquet is allowed to be missing.
-OPTIONAL_TRADE_COLUMNS = ("entry_style",)
+OPTIONAL_TRADE_COLUMNS = ("entry_style", "time_stop")
 
 
 @dataclass(frozen=True)
@@ -42,6 +46,7 @@ class SimTrade:
     window_id: int
     params_json: str
     entry_style: str = "market"
+    time_stop: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)

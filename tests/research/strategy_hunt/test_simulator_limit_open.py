@@ -51,8 +51,11 @@ def test_market_style_trade_is_byte_identical_to_the_pre_batch2_simulator():
     t = simulate([e], bars, cm, set(), "fam", window_id=7, params_json='{"a":1}',
                  regime_lookup=lambda ts: "risk_on")[0]
     d = t.to_dict()
-    assert d["entry_style"] == "market"
-    assert {k: v for k, v in d.items() if k != "entry_style"} == MARKET_PIN
+    # the two Batch-2 provenance columns are new *records*, not new numbers: they say what was
+    # asked for (Task B's style, Task F's horizon), and are asserted separately from the pin so
+    # this test keeps meaning "no computed value moved".
+    assert d["entry_style"] == "market" and d["time_stop"] == 20
+    assert {k: v for k, v in d.items() if k not in ("entry_style", "time_stop")} == MARKET_PIN
 
 
 # ---- limit_open fills ------------------------------------------------------------------------

@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import replace
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Mapping, Optional
 
 import numpy as np
 import pandas as pd
@@ -15,7 +16,61 @@ from strategies.families.common import Family, grid_combos, median_params
 from strategies.families.indicators import indicator_frame
 from strategies.families.models import Entry
 
+logger = logging.getLogger("strategy_hunt.walkforward.runner")
 LOOKBACK_DAYS = 120
+
+
+def coerce_pin(raw: str, values: list) -> Any:
+    """`raw` typed like the grid axis it replaces (Batch-2 Task F).
+
+    The types come from the axis itself rather than from the string's shape: `"3"` on a float axis
+    must be `3.0`, not `3`, or `grid_combos`/`median_params` would sort a mixed-type axis and the
+    family would receive an `int` where every other combo carries a `float`. A mixed int/float axis
+    widens to float -- truncating would silently pin a value the operator did not ask for. A value
+    that cannot be typed raises, because a pin the run ignored is worse than a run that never
+    started."""
+    types = {type(v) for v in values}
+    try:
+        if bool in types:
+            return raw.strip().lower() in ("1", "true", "yes", "on")
+        if str in types or not types:
+            return raw
+        if float in types:
+            return float(raw)
+        if int in types:
+            return int(raw)
+    except ValueError as exc:
+        raise ValueError(f"grid pin value {raw!r} is not a valid {sorted(t.__name__ for t in types)}: {exc}") from exc
+    return raw
+
+
+def pin_grid(grid: dict[str, list], pins: Mapping[str, str]) -> dict[str, list]:
+    """A new grid with every axis named in `pins` collapsed to that single typed value.
+
+    Axes the pin does not name are copied through untouched, and a pin naming an axis this grid
+    does not have is ignored -- pinning `entry_style` across a run means "in every family that has
+    the choice", not "only families that have it may run"."""
+    if not pins:
+        return dict(grid)
+    out: dict[str, list] = {}
+    for key, values in grid.items():
+        if key in pins:
+            value = coerce_pin(str(pins[key]), list(values))
+            if value not in list(values):
+                logger.warning("grid pin %s=%r is not one of that axis's values %r; pinning it anyway",
+                               key, value, list(values))
+            out[key] = [value]
+        else:
+            out[key] = list(values)
+    return out
+
+
+def pinned_family(family: Family, pins: Optional[Mapping[str, str]]) -> Family:
+    """`family` with its grid pinned. The same object when nothing changes, so an unpinned run is
+    byte-for-byte the run it was before this flag existed."""
+    if not pins or not any(k in family.grid for k in pins):
+        return family
+    return replace(family, grid=pin_grid(family.grid, pins))
 
 
 def entries_in(entries: list[Entry], start: pd.Timestamp, end: pd.Timestamp) -> list[Entry]:

@@ -9,6 +9,9 @@ from __future__ import annotations
 import argparse
 import os
 from pathlib import Path
+from typing import Optional, Sequence
+
+GRID_PIN_SEP = "="
 
 # v-playbook-desk-b1-5 task 10: `all` runs the shuffled baseline with this fixed seed, so the
 # control is reproducible and the same across nightly runs.
@@ -56,6 +59,24 @@ class RejectShuffleMode(argparse.Action):
                      f"`run --shuffle-seed N --shuffle-mode MODE` for a one-off control.")
 
 
+def parse_grid_pins(values: Optional[Sequence[str]]) -> dict[str, str]:
+    """`["entry_style=limit_open", ...]` -> `{"entry_style": "limit_open"}` (Batch-2 Task F).
+
+    Values stay strings here: only the family's own grid knows whether an axis is int, float or str,
+    so the typing happens in `walkforward.runner.coerce_pin` at the point of use -- which also keeps
+    the pins picklable for the worker pool and JSON-serialisable for the manifest. A malformed token
+    raises `ValueError`; `cmd_run` turns that into a message and a non-zero exit, because a pin the
+    run quietly ignored would produce an A/B whose arms are the same run."""
+    pins: dict[str, str] = {}
+    for token in values or ():
+        key, _, value = str(token).partition(GRID_PIN_SEP)
+        key = key.strip()
+        if not key or not _:
+            raise ValueError(f"--grid-pin expects KEY{GRID_PIN_SEP}VALUE, got {token!r}")
+        pins[key] = value
+    return pins
+
+
 def baseline_namespace(a: argparse.Namespace) -> argparse.Namespace:
     """A copy of `a` configured for the path-shuffle baseline run. A copy, not a mutation: the
     later steps must still see the real run's `shuffle_seed=None` and the user's `--force`."""
@@ -95,6 +116,13 @@ def add_common_args(sp: argparse.ArgumentParser, default_root: Path,
                         help=argparse.SUPPRESS)
         sp.add_argument("--shuffle-mode", action=RejectShuffleMode, default=SHUFFLE_MODE_PATH,
                         help=argparse.SUPPRESS)
+    # Batch-2 Task F: repeatable, and shared with `all` (unlike --shuffle-seed, a pin applies to the
+    # real leg *and* both controls -- a control has to search the same collapsed grid as its arm).
+    sp.add_argument("--grid-pin", action="append", default=None, metavar="KEY=VALUE",
+                    help="pin one grid axis to a single value in every family that has it, e.g. "
+                         "--grid-pin entry_style=limit_open. Repeatable. Part of the checkpoint "
+                         "config key, the run manifest and the report's search accounting, so the "
+                         "two arms of an A/B never share checkpoints or a grid-point count")
     sp.add_argument("--notional", type=float, default=6000.0)
     sp.add_argument("--holdout-months", type=int, default=0,
                     help="withhold this many months of the most recent out-of-sample data from "

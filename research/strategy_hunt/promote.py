@@ -15,7 +15,16 @@ Blocker precedence (first that applies wins):
   5. "gate_not_enforcing"     -- ENABLE_STRATEGY_FIT_GATE off, or STRATEGY_FIT_SHADOW on
   6. "swing_overnight_disabled" -- family holds past the close (multiday or overnight) but
                                  SWING_ALLOW_OVERNIGHT is off
+  7. "entry_style_unsupported_live" -- the lane's latest winning params use a non-market entry
+                                 style (Batch-2 Task B's `limit_open`), which the live adapter
+                                 cannot place
   else ""                     -- clear to promote
+
+`entry_style_unsupported_live` (Batch-2 Task F): the research simulator can fill a resting limit at
+maker cost, the live adapter places market entries only. A lane whose walk-forward winner is a limit
+entry therefore earned its expectancy on fills the bot cannot get -- it is not the lane that would go
+live. It sits last in the precedence because it is the narrowest diagnosis: while a lane has no
+evidence, is unregistered, or the gate is off, the entry style is not the operator's next action.
 
 `gate_not_enforcing` (v-strategy-fit-review2-2026-09-25, Critical 1): promoting a lane to live
 entries while the strategy-fit gate is disabled or still in shadow mode means the engine-side
@@ -30,12 +39,18 @@ never recommended for (re-)promotion.
 """
 from __future__ import annotations
 
+import json
+import logging
 from typing import Any
 
 from strategies.families import family_names, get_family
 
+logger = logging.getLogger("strategy_hunt.promote")
 MIN_PASS_SYMBOLS = 10
 MIN_POOLED_PASS_REGIMES = 1
+# The only entry style the live adapter can place (strategies/fit_lane.py -> core order placement).
+# Anything else in a lane's winning params is a promotion blocker, not a detail.
+LIVE_ENTRY_STYLE = "market"
 
 # v-batch1-task1-r1 (Important 1): every hold kind that survives the close. "overnight" is held
 # from 15:55 to the next session's open, so SWING_ALLOW_OVERNIGHT governs it exactly as it governs
@@ -53,7 +68,8 @@ def _scorecard_verdict(scorecards: dict[str, Any], family: str) -> str:
 
 
 def _blocker(pass_symbols: int, registered: bool, scorecard_verdict: str, hold_kind: str, swing_allowed: bool,
-             gate_enabled: bool, gate_shadow: bool, pooled_pass_regimes: int = 0) -> str:
+             gate_enabled: bool, gate_shadow: bool, pooled_pass_regimes: int = 0,
+             entry_style: str = LIVE_ENTRY_STYLE) -> str:
     # v-playbook-desk-b1-2026-09-25: a pooled regime PASS is family-level evidence measured
     # over the whole universe against stricter floors (score/regime_rows.POOLED_FLOORS), so
     # it answers the same question `pass_symbols` does -- "is there an edge here at all?" --
@@ -70,6 +86,8 @@ def _blocker(pass_symbols: int, registered: bool, scorecard_verdict: str, hold_k
         return "gate_not_enforcing"
     if hold_kind in OVERNIGHT_HOLD_KINDS and not swing_allowed:
         return "swing_overnight_disabled"
+    if entry_style != LIVE_ENTRY_STYLE:
+        return "entry_style_unsupported_live"
     return ""
 
 
@@ -80,8 +98,43 @@ _RECOMMENDATION_BY_BLOCKER = {
     "scorecard_no_go": "hold",
     "gate_not_enforcing": "hold",
     "swing_overnight_disabled": "hold",
+    "entry_style_unsupported_live": "hold",
     "": "promote_live",
 }
+
+
+def _row_entry_style(row: dict) -> str:
+    """One row's winning entry style, from its `params_json`. `market` for a row with no params, no
+    `entry_style` key (every snapshot written before Batch-2 Task B is a market-fill search) or an
+    unparsable one -- a malformed snapshot must degrade, and defaulting the other way would block
+    every existing lane on a technicality."""
+    raw = row.get("params_json")
+    if not isinstance(raw, str) or not raw:
+        return LIVE_ENTRY_STYLE
+    try:
+        params = json.loads(raw)
+    except ValueError:
+        logger.warning("promote: unparsable params_json on %s/%s; assuming a market entry",
+                       row.get("symbol"), row.get("strategy"))
+        return LIVE_ENTRY_STYLE
+    style = params.get("entry_style") if isinstance(params, dict) else None
+    return str(style) if isinstance(style, str) and style else LIVE_ENTRY_STYLE
+
+
+def _family_entry_style(frows: list[dict]) -> str:
+    """The entry style a family would be promoted *with*: the style of its latest generation of
+    walk-forward rows, where "latest" is the newest `window_end` any of them reached.
+
+    Earlier generations are history -- a limit-entry winner from six months ago says nothing about
+    the lane as it now stands. Within that newest generation a single non-market row is enough,
+    because promotion is family-wide: the lane cannot be run live as it was searched."""
+    wf = [r for r in frows if r.get("source", "walkforward") == "walkforward"]
+    if not wf:
+        return LIVE_ENTRY_STYLE
+    latest = max(str(r.get("window_end") or "") for r in wf)
+    styles = {_row_entry_style(r) for r in wf if str(r.get("window_end") or "") == latest}
+    other = sorted(s for s in styles if s != LIVE_ENTRY_STYLE)
+    return other[0] if other else LIVE_ENTRY_STYLE
 
 
 def _pooled_pass_regimes(snapshot: dict) -> dict[str, set[str]]:
@@ -126,8 +179,9 @@ def promotion_table(snapshot: dict, scorecards: dict[str, dict], lanes_enabled: 
         scorecard_verdict = _scorecard_verdict(scorecards, name)
 
         pooled_pass_regimes = len(pooled_pass.get(name, set()))
+        entry_style = _family_entry_style(frows)
         blocker = _blocker(pass_symbols, registered, scorecard_verdict, family.hold_kind, swing_allowed,
-                           gate_enabled, gate_shadow, pooled_pass_regimes)
+                           gate_enabled, gate_shadow, pooled_pass_regimes, entry_style)
         if live and blocker == "":
             recommendation = "hold"  # already promoted; nothing to do
         else:
@@ -135,7 +189,7 @@ def promotion_table(snapshot: dict, scorecards: dict[str, dict], lanes_enabled: 
 
         out.append({
             "family": name, "pass_symbols": pass_symbols, "watch_symbols": watch_symbols,
-            "pooled_pass_regimes": pooled_pass_regimes,
+            "pooled_pass_regimes": pooled_pass_regimes, "entry_style": entry_style,
             "hold_kind": family.hold_kind, "registered": registered, "live": live,
             "scorecard_verdict": scorecard_verdict, "blocker": blocker, "recommendation": recommendation,
         })
@@ -148,13 +202,14 @@ def render_promotion(rows: list[dict]) -> str:
     lines = [
         "# Strategy-hunt promotion",
         "",
-        "| family | pass_symbols | watch_symbols | pooled_pass_regimes | hold_kind | registered | live | "
-        "scorecard_verdict | blocker | recommendation |",
-        "|---|---|---|---|---|---|---|---|---|---|",
+        "| family | pass_symbols | watch_symbols | pooled_pass_regimes | hold_kind | entry_style | "
+        "registered | live | scorecard_verdict | blocker | recommendation |",
+        "|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for r in rows:
         lines.append(f"| {r['family']} | {r['pass_symbols']} | {r['watch_symbols']} | "
                      f"{r.get('pooled_pass_regimes', 0)} | {r['hold_kind']} | "
+                     f"{r.get('entry_style', LIVE_ENTRY_STYLE)} | "
                      f"{r['registered']} | {r['live']} | {r['scorecard_verdict']} | {r['blocker'] or '-'} | "
                      f"{r['recommendation']} |")
 

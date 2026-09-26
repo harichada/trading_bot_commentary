@@ -123,3 +123,49 @@ def test_write_scorecard_creates_file(tmp_path, monkeypatch):
     p = SR.write_scorecard(tmp_path, "toy", card, "2026-09-25T00:00:00")
     assert p.exists() and p.name == "scorecard-toy-2026-09-25.md"
     assert "NO_GO" in p.read_text()
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Batch-2 Task F item 3 — snapping must not silently drop new `Entry` fields
+# ──────────────────────────────────────────────────────────────────────────────
+
+def test_snap_entry_preserves_every_entry_field_it_does_not_reprice(root):
+    """`_snap_entry` rebuilds the `Entry` to move it onto the 5-min grid. Listing the fields by
+    hand meant each new field (Batch-2 Task B's `entry_style`) was silently reset to its default,
+    so a limit-entry shadow record resolved as a market fill. `dataclasses.replace` copies
+    everything and names only what actually changes."""
+    import dataclasses
+
+    from research.strategy_hunt.shadow_resolver import _snap_entry
+    from strategies.families.models import Entry
+
+    _tmp, bars = root
+    on_grid = bars.index[10]
+    off_grid = on_grid - pd.Timedelta(minutes=2)
+    e = Entry("AAA", "long", off_grid, 100.0, 99.0, 102.0, 20, "intraday", "test", "limit_open")
+
+    snapped = _snap_entry(e, bars)
+    assert snapped is not None
+    assert snapped.entry_ts == on_grid
+    assert snapped.entry_px == float(bars["open"].iloc[10])
+    delta = snapped.entry_px - e.entry_px
+    assert snapped.stop_px == pytest.approx(e.stop_px + delta)
+    assert snapped.target_px == pytest.approx(e.target_px + delta)
+    # every field other than the three the snap is allowed to move is carried over verbatim
+    moved = {"entry_ts", "entry_px", "stop_px", "target_px"}
+    for f in dataclasses.fields(Entry):
+        if f.name not in moved:
+            assert getattr(snapped, f.name) == getattr(e, f.name), f.name
+    assert snapped.entry_style == "limit_open"
+
+
+def test_snap_entry_returns_an_on_grid_entry_unchanged_and_drops_one_past_the_tape(root):
+    from research.strategy_hunt.shadow_resolver import _snap_entry
+    from strategies.families.models import Entry
+
+    _tmp, bars = root
+    e = Entry("AAA", "long", bars.index[5], 100.0, 99.0, 102.0, 20, "intraday", "test", "limit_open")
+    assert _snap_entry(e, bars) is e
+    late = Entry("AAA", "long", bars.index[-1] + pd.Timedelta(days=5), 100.0, 99.0, 102.0, 20,
+                 "intraday", "test")
+    assert _snap_entry(late, bars) is None

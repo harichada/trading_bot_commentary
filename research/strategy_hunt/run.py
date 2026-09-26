@@ -30,7 +30,7 @@ from research.strategy_hunt.score.regime_rows import (BASELINE_KIND_PATH, BASELI
 from research.strategy_hunt.sim.calibrate import slippage_override_from
 from research.strategy_hunt.sim.costs import CostModel
 from research.strategy_hunt.sim.simulator import build_session_table
-from research.strategy_hunt.walkforward.runner import run_symbol_family
+from research.strategy_hunt.walkforward.runner import pinned_family, run_symbol_family
 from research.strategy_hunt.walkforward.windows import build_windows
 from strategies.families import get_family
 from strategies.families.indicators import indicator_frame
@@ -98,15 +98,23 @@ def _git_commit() -> str:
 
 
 def _config_key(family_names: list[str], cost_mult: float, shuffle_seed: Optional[int], notional: float,
-                override: Optional[float], holdout_months: int = 0) -> dict[str, Any]:
-    return {"families": sorted(family_names), "cost_mult": float(cost_mult), "shuffle_seed": shuffle_seed,
-            "notional": float(notional), "slippage_override": override, "holdout_months": int(holdout_months),
-            "version": __version__}
+                override: Optional[float], holdout_months: int = 0,
+                grid_pins: Optional[dict[str, str]] = None) -> dict[str, Any]:
+    """The checkpoint's identity: two runs with the same key searched the same thing.
+
+    `grid_pins` (Batch-2 Task F) is only added when there *are* pins, so an unpinned run's key stays
+    byte-identical to the one earlier runs wrote and their checkpoints remain valid -- while the two
+    arms of a pinned A/B can never reuse each other's."""
+    key = {"families": sorted(family_names), "cost_mult": float(cost_mult), "shuffle_seed": shuffle_seed,
+           "notional": float(notional), "slippage_override": override, "holdout_months": int(holdout_months),
+           "version": __version__}
+    return {**key, "grid_pins": {k: str(v) for k, v in sorted(grid_pins.items())}} if grid_pins else key
 
 
 def process_symbol(symbol: str, root: Path, family_names: list[str], notional: float = 6000.0, cost_mult: float = 1.0,
                    shuffle_seed: Optional[int] = None, force: bool = False, context: Optional[dict] = None,
-                   variant: Optional[str] = None, holdout_months: int = 0) -> dict[str, Any]:
+                   variant: Optional[str] = None, holdout_months: int = 0,
+                   grid_pins: Optional[dict[str, str]] = None) -> dict[str, Any]:
     """One symbol's out-of-sample trades, written under `root` (see `paths.py` for `variant`).
 
     `variant="shuffle"` sends trades/choices/checkpoint to the `_shuffle` siblings so the
@@ -116,7 +124,11 @@ def process_symbol(symbol: str, root: Path, family_names: list[str], notional: f
     out-of-sample data from `build_windows` -- see `walkforward/windows.py`. It is part of
     `_config_key`, so a checkpoint from one holdout setting is never silently reused for
     another (the search run and the later no-holdout confirmation run must each score
-    their own windows)."""
+    their own windows).
+
+    `grid_pins` (Batch-2 Task F) collapses one grid axis to a single value in every family that has
+    it -- `{"entry_style": "limit_open"}` makes this run one arm of an A/B rather than a search that
+    is free to pick the arm per window. It is part of `_config_key` for that reason."""
     root = Path(root)
     t0 = time.time()
     raw = load_bars5(root, symbol)
@@ -124,7 +136,7 @@ def process_symbol(symbol: str, root: Path, family_names: list[str], notional: f
         return {"symbol": symbol, "status": "empty", "families": family_names, "n_trades": 0, "last_bar": None, "elapsed_sec": 0.0}
     last_bar = raw.index[-1].isoformat()
     override = slippage_override_from(root)
-    cfg = _config_key(family_names, cost_mult, shuffle_seed, notional, override, holdout_months)
+    cfg = _config_key(family_names, cost_mult, shuffle_seed, notional, override, holdout_months, grid_pins)
     cp = checkpoint_path(root, symbol, variant)
     if cp.exists() and not force:
         prev = json.loads(cp.read_text())
@@ -154,7 +166,7 @@ def process_symbol(symbol: str, root: Path, family_names: list[str], notional: f
         windows = build_windows(bars5.index[0], bars5.index[-1], holdout_months=holdout_months)
         all_trades, choices = [], {}
         for name in family_names:
-            fam = get_family(name)
+            fam = pinned_family(get_family(name), grid_pins)
             trades, ch = run_symbol_family(fam, symbol, bars5, daily, news, cost_model, earnings, windows,
                                            regime_lookup=lookup, spy5=ctx["spy5"], ind=ind, table=table)
             all_trades.extend(t.to_dict() for t in trades)
