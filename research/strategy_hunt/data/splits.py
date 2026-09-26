@@ -10,7 +10,9 @@ import pandas as pd
 
 logger = logging.getLogger("strategy_hunt.splits")
 SPLIT_RATIOS = (2, 3, 4, 5, 6, 7, 8, 10, 15, 20, 25, 30, 40, 50, 100)
-MERGE_SESSIONS = 3
+PERSIST_SESSIONS = 5     # window (sessions) on each side of the candidate date used to confirm
+                          # the price move actually held, rather than a gap that reverted.
+PERSIST_TOL = 0.05
 
 
 def _match(ratio: float, tol: float) -> float | None:
@@ -22,19 +24,41 @@ def _match(ratio: float, tol: float) -> float | None:
     return None
 
 
+def _persists(closes: np.ndarray, i: int, m: float, tol: float) -> bool:
+    """Ruling 2: a candidate at position `i` is only genuine if the price level actually held --
+    median(close[i : i+PERSIST_SESSIONS]) / median(close[i-PERSIST_SESSIONS : i]) must match the
+    candidate multiplier `m` within `tol`. A gap that reverts within a few sessions (a bad print,
+    a one-day crash) fails this and is dropped."""
+    before = closes[max(0, i - PERSIST_SESSIONS):i]
+    after = closes[i:i + PERSIST_SESSIONS]
+    if len(before) == 0 or len(after) == 0:
+        return False
+    med_before, med_after = np.median(before), np.median(after)
+    if not np.isfinite(med_before) or med_before <= 0 or not np.isfinite(med_after):
+        return False
+    return abs((med_after / med_before) / m - 1) <= tol
+
+
 def detect_splits(daily: pd.DataFrame, tol: float = 0.03) -> list[tuple[pd.Timestamp, float]]:
+    """Candidate split dates from prev_close/open ratio matching a known split ratio within `tol`,
+    with the intraday move < 25% filter (Finding), an explicit reject of a non-positive/NaN open
+    (Ruling 2), and a persistence check (Ruling 2, `_persists`) so a gap that reverts is not
+    mistaken for a split."""
     if daily.empty or len(daily) < 2:
         return []
     prev_close = daily["close"].shift(1)
-    ratio = prev_close / daily["open"]
-    intraday = (daily["close"] / daily["open"] - 1).abs()
+    open_ = daily["open"]
+    ratio = prev_close / open_
+    intraday = (daily["close"] / open_ - 1).abs()
+    closes = daily["close"].to_numpy(dtype=float)
     out = []
-    for d, r, im in zip(daily.index, ratio, intraday):
-        if np.isnan(r) or r <= 0 or im >= 0.25:
+    for i, (d, r, im, o) in enumerate(zip(daily.index, ratio, intraday, open_)):
+        if pd.isna(o) or o <= 0 or np.isnan(r) or r <= 0 or im >= 0.25:
             continue
         m = _match(float(r), tol)
-        if m is not None:
-            out.append((pd.Timestamp(d), m))
+        if m is None or not _persists(closes, i, m, PERSIST_TOL):
+            continue
+        out.append((pd.Timestamp(d), m))
     return out
 
 
@@ -63,14 +87,18 @@ def load_splits(root: Path, symbol: str) -> list[tuple[pd.Timestamp, float]]:
 
 
 def all_splits(root: Path, symbol: str, daily: pd.DataFrame) -> list[tuple[pd.Timestamp, float]]:
-    cached = load_splits(root, symbol)
-    detected = detect_splits(daily)
-    out = list(cached)
+    """Ruling 1: a splits cache file (`splits/<SYM>.parquet`) is authoritative, even when it is
+    empty -- an empty cache means yfinance was checked and found no splits, not "unknown". The
+    detector (`detect_splits`) only ever runs for a symbol that has no cache file at all, and any
+    split it finds is logged at WARNING (Ruling 3) so the nightly log shows what got applied
+    without a cached record backing it."""
+    if splits_path(root, symbol).exists():
+        return sorted(load_splits(root, symbol))
+    detected = sorted(detect_splits(daily))
     for d, m in detected:
-        near = [c for c in cached if abs((c[0] - d).days) <= MERGE_SESSIONS * 2]
-        if not near:
-            out.append((d, m))
-    return sorted(out)
+        logger.warning("detected split applied for %s: date=%s multiplier=%s (no cache file)",
+                       symbol, d.date(), m)
+    return detected
 
 
 def adjust_for_splits(bars: pd.DataFrame, splits: list[tuple[pd.Timestamp, float]]) -> pd.DataFrame:
