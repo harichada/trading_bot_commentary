@@ -12,6 +12,8 @@ import pandas as pd
 from research.strategy_hunt.paths import reports_dir, trades_dir
 from research.strategy_hunt.run import REPORTS_DIR  # noqa: F401 -- back-compat monkeypatch target only
 from research.strategy_hunt.score.regime_rows import BASELINE_POPULATION_MISMATCH, POOLED_SOURCE
+from strategies.families import get_family
+from strategies.families.common import grid_combos
 
 # v-playbook-desk-b1-5 task 10 fix r1: only the cost controls live in separate roots now. The
 # shuffled control moved in-root (<root>/trades_shuffle/) and is reported as the per-pooled-row
@@ -130,6 +132,55 @@ def _pooled_counts(rows: list[dict]) -> dict[str, int]:
     return out
 
 
+def _family_grid_points(name: str) -> tuple[int, int, int]:
+    """(grid combos, sides, combos x sides) for one registered family. `(0, 0, 0)` for a name
+    the registry does not know -- a manifest written before that family was registered, or a
+    hand-edited one -- so the table degrades instead of raising (strategy-search-batch1 task 2)."""
+    try:
+        fam = get_family(name)
+    except KeyError:
+        return 0, 0, 0
+    combos = len(grid_combos(fam.grid))
+    sides = len(fam.sides)
+    return combos, sides, combos * sides
+
+
+def _search_accounting_families(rows: list[dict], run_manifest: Optional[dict]) -> list[str]:
+    """The families this search ran: the run manifest's `families` list when one is available
+    (the authoritative record of what was actually searched, including families with zero PASS
+    rows), else the families that appear in the unconditional (walkforward) rows themselves."""
+    manifest_families = (run_manifest or {}).get("families")
+    if manifest_families:
+        return sorted(manifest_families)
+    return sorted({r["strategy"] for r in rows if r.get("source") == "walkforward"})
+
+
+def _search_accounting_section(rows: list[dict], run_manifest: Optional[dict]) -> str:
+    """Families x grid points x sides evaluated vs PASS/WATCH, so the multiple-testing burden
+    of a search is visible next to its results -- not just the surviving PASS rows."""
+    families = _search_accounting_families(rows, run_manifest)
+    if not families:
+        return "_no families run_"
+    wf = [r for r in rows if r.get("source") == "walkforward"]
+    lines = ["| family | grid combos × sides | unconditional rows scored | PASS | WATCH |",
+             "|---|---|---|---|---|"]
+    total_points = total_rows = total_pass = total_watch = 0
+    for fam in families:
+        combos, sides, points = _family_grid_points(fam)
+        fam_rows = [r for r in wf if r["strategy"] == fam]
+        n_pass = sum(1 for r in fam_rows if r["verdict"] == "PASS")
+        n_watch = sum(1 for r in fam_rows if r["verdict"] == "WATCH")
+        lines.append(f"| {fam} | {combos} × {sides} = {points} | {len(fam_rows)} | {n_pass} | {n_watch} |")
+        total_points += points
+        total_rows += len(fam_rows)
+        total_pass += n_pass
+        total_watch += n_watch
+    lines.append(f"| **total** | {total_points} | {total_rows} | {total_pass} | {total_watch} |")
+    lines.append("")
+    lines.append(f"{len(families)} families, {total_points} grid points × sides evaluated, {total_pass} PASS")
+    return "\n".join(lines)
+
+
 def _controls_section(rows: list[dict], controls: Optional[dict[str, list[dict]]]) -> str:
     real_pass = sum(1 for r in rows if r["source"] == "walkforward" and r["verdict"] == "PASS")
     if not controls:
@@ -205,14 +256,20 @@ def _calibration_section(calibration: Optional[dict]) -> str:
 
 def render_report(rows: list[dict], computed_at: str, trades: Optional[pd.DataFrame] = None,
                   controls: Optional[dict[str, list[dict]]] = None, portfolio: Optional[dict] = None,
-                  calibration: Optional[dict] = None, pooled: Optional[list[dict]] = None) -> str:
+                  calibration: Optional[dict] = None, pooled: Optional[list[dict]] = None,
+                  run_manifest: Optional[dict] = None) -> str:
     syms = {r["symbol"] for r in rows}
-    parts = [f"# Strategy hunt report\n\nComputed: {computed_at}. Rows: {len(rows)}. Symbols: {len(syms)}.\n",
+    holdout_months = (run_manifest or {}).get("holdout_months") or 0
+    holdout_note = (f" Holdout: the final {holdout_months} months were withheld from this search "
+                    f"(re-run with --holdout-months 0 for the confirmation test)." if holdout_months else "")
+    parts = [f"# Strategy hunt report\n\nComputed: {computed_at}. Rows: {len(rows)}. Symbols: {len(syms)}."
+             f"{holdout_note}\n",
              "## Verdicts by family\n\n" + _verdict_table(rows),
              "## Top lanes by score\n\n" + _top_table(rows),
              "## Pooled out-of-sample by family\n\n" + _pooled_table(trades),
              "## Per-regime expectancy by family\n\n" + _regime_table(rows),
              "## Pooled rows vs shuffled baseline\n\n" + _pooled_baseline_table(pooled),
+             "## Search accounting\n\n" + _search_accounting_section(rows, run_manifest),
              "## Controls\n\n" + _controls_section(rows, controls),
              "## Symbols with no passing lane\n\n" + _no_pass_section(rows),
              "## Portfolio replay of PASS lanes\n\n" + _portfolio_section(portfolio),
@@ -291,6 +348,23 @@ def _report_manifest(rows: list[dict], pooled: Optional[list[dict]], computed_at
                 1 for r in pooled or [] if BASELINE_POPULATION_MISMATCH in _failed_floors(r))}
 
 
+def _load_run_manifest(root: Path, computed_at: str) -> dict:
+    """The `run` section of `<reports_dir>/<date>.json` for this report's date (see
+    `run.py::write_manifest`), if present. Best-effort like every other optional section this
+    module loads from disk: a missing or malformed manifest degrades to `{}` (families and
+    holdout unknown) rather than failing the report."""
+    date = str(computed_at)[:10]
+    p = reports_dir(root) / f"{date}.json"
+    if not p.exists():
+        return {}
+    try:
+        data = json.loads(p.read_text())
+    except (json.JSONDecodeError, OSError):
+        return {}
+    run = data.get("run") if isinstance(data, dict) else None
+    return run if isinstance(run, dict) else {}
+
+
 def write_report(root: Path, rows: list[dict], computed_at: str, pooled: Optional[list[dict]] = None) -> Path:
     from research.strategy_hunt.portfolio import pass_lane_trades, replay
     from research.strategy_hunt.sim.calibrate import load_calibration
@@ -300,7 +374,9 @@ def write_report(root: Path, rows: list[dict], computed_at: str, pooled: Optiona
     controls = _load_controls(root)
     calibration = load_calibration(root)
     portfolio = replay(pass_lane_trades(trades, rows)) if trades is not None else None
-    md = render_report(rows, computed_at, trades, controls, portfolio, calibration, pooled=pooled)
+    run_manifest = _load_run_manifest(root, computed_at)
+    md = render_report(rows, computed_at, trades, controls, portfolio, calibration, pooled=pooled,
+                       run_manifest=run_manifest)
     d = reports_dir(root)
     d.mkdir(parents=True, exist_ok=True)
     stem = report_stem(computed_at)

@@ -86,18 +86,25 @@ def _git_commit() -> str:
 
 
 def _config_key(family_names: list[str], cost_mult: float, shuffle_seed: Optional[int], notional: float,
-                override: Optional[float]) -> dict[str, Any]:
+                override: Optional[float], holdout_months: int = 0) -> dict[str, Any]:
     return {"families": sorted(family_names), "cost_mult": float(cost_mult), "shuffle_seed": shuffle_seed,
-            "notional": float(notional), "slippage_override": override, "version": __version__}
+            "notional": float(notional), "slippage_override": override, "holdout_months": int(holdout_months),
+            "version": __version__}
 
 
 def process_symbol(symbol: str, root: Path, family_names: list[str], notional: float = 6000.0, cost_mult: float = 1.0,
                    shuffle_seed: Optional[int] = None, force: bool = False, context: Optional[dict] = None,
-                   variant: Optional[str] = None) -> dict[str, Any]:
+                   variant: Optional[str] = None, holdout_months: int = 0) -> dict[str, Any]:
     """One symbol's out-of-sample trades, written under `root` (see `paths.py` for `variant`).
 
     `variant="shuffle"` sends trades/choices/checkpoint to the `_shuffle` siblings so the
-    shuffled baseline shares the root's inputs without overwriting the real tape's outputs."""
+    shuffled baseline shares the root's inputs without overwriting the real tape's outputs.
+
+    `holdout_months` (strategy-search-batch1 task 2) withholds the most recent months of
+    out-of-sample data from `build_windows` -- see `walkforward/windows.py`. It is part of
+    `_config_key`, so a checkpoint from one holdout setting is never silently reused for
+    another (the search run and the later no-holdout confirmation run must each score
+    their own windows)."""
     root = Path(root)
     t0 = time.time()
     raw = load_bars5(root, symbol)
@@ -105,7 +112,7 @@ def process_symbol(symbol: str, root: Path, family_names: list[str], notional: f
         return {"symbol": symbol, "status": "empty", "families": family_names, "n_trades": 0, "last_bar": None, "elapsed_sec": 0.0}
     last_bar = raw.index[-1].isoformat()
     override = slippage_override_from(root)
-    cfg = _config_key(family_names, cost_mult, shuffle_seed, notional, override)
+    cfg = _config_key(family_names, cost_mult, shuffle_seed, notional, override, holdout_months)
     cp = checkpoint_path(root, symbol, variant)
     if cp.exists() and not force:
         prev = json.loads(cp.read_text())
@@ -132,7 +139,7 @@ def process_symbol(symbol: str, root: Path, family_names: list[str], notional: f
         universe_ctx = load_context_slice(root, symbol)
         ind = indicator_frame(bars5, daily, ctx["spy5"], context=universe_ctx)
         table = build_session_table(bars5)
-        windows = build_windows(bars5.index[0], bars5.index[-1])
+        windows = build_windows(bars5.index[0], bars5.index[-1], holdout_months=holdout_months)
         all_trades, choices = [], {}
         for name in family_names:
             fam = get_family(name)

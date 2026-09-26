@@ -151,7 +151,8 @@ def cmd_run(a: argparse.Namespace) -> int:
     variant = SHUFFLE_VARIANT if a.shuffle_seed is not None else None
     t0 = time.time()
     recs = run_symbols(symbols, a.root, fams, workers=a.workers, variant=variant, force=a.force,
-                       cost_mult=a.cost_mult, shuffle_seed=a.shuffle_seed, notional=a.notional)
+                       cost_mult=a.cost_mult, shuffle_seed=a.shuffle_seed, notional=a.notional,
+                       holdout_months=a.holdout_months)
     counts = {}
     for r in recs:
         counts[r["status"]] = counts.get(r["status"], 0) + 1
@@ -165,7 +166,8 @@ def cmd_run(a: argparse.Namespace) -> int:
                             f"run{suffix}": {"symbols": len(symbols), "families": fams,
                                              "counts": counts, "cost_mult": a.cost_mult,
                                              "shuffle_seed": a.shuffle_seed, "variant": variant,
-                                             "notional": a.notional, "elapsed_sec": round(time.time() - t0)},
+                                             "notional": a.notional, "holdout_months": a.holdout_months,
+                                             "elapsed_sec": round(time.time() - t0)},
                             f"errors{suffix}": [r for r in recs if r["status"] == "error"]})
     return 0 if counts.get("error", 0) <= 0.1 * max(1, len(recs)) else 1
 

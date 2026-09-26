@@ -52,6 +52,11 @@ def add_common_args(sp: argparse.ArgumentParser, default_root: Path,
         sp.add_argument("--shuffle-seed", action=RejectShuffleSeed, type=int, default=None,
                         help=argparse.SUPPRESS)
     sp.add_argument("--notional", type=float, default=6000.0)
+    sp.add_argument("--holdout-months", type=int, default=0,
+                    help="withhold this many months of the most recent out-of-sample data from "
+                         "build_windows (strategy-search-batch1 task 2); 0 (default) uses the "
+                         "full history. A search run sets this > 0, then a confirmation run "
+                         "with --holdout-months 0 re-scores only the withheld months")
     sp.add_argument("--no-coldstart", action="store_true")
     sp.add_argument("--no-baseline", action="store_true",
                     help="`all` only: skip the shuffled baseline run. Whatever baseline is "

@@ -66,3 +66,17 @@ def test_promote_uses_the_committed_reports_dir_for_the_default_root(monkeypatch
 
     assert cli.cmd_promote(argparse.Namespace(root=DEFAULT_ROOT)) == 0
     assert (tmp_path / "research" / "reports" / "strategy_hunt" / "strategy_hunt_promotion.md").exists()
+
+
+# ──────────────────────
+# strategy-search-batch1 task 2 — --holdout-months is a shared flag, default 0
+# ──────────────────────
+
+def test_holdout_months_flag_default_and_settable():
+    a = cli.build_parser().parse_args(["run"])
+    assert a.holdout_months == 0
+    a2 = cli.build_parser().parse_args(["run", "--holdout-months", "6"])
+    assert a2.holdout_months == 6
+    # shared via add_common_args -- also present on `all` and `score`, not just `run`
+    assert cli.build_parser().parse_args(["all"]).holdout_months == 0
+    assert cli.build_parser().parse_args(["score", "--holdout-months", "3"]).holdout_months == 3

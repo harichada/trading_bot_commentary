@@ -35,7 +35,7 @@ def test_render_report_sections():
     md = render_report(rows, "2025-09-25T00:00:00", trades, controls)
     for section in ("## Verdicts by family", "## Top lanes by score", "## Pooled out-of-sample by family",
                     "## Per-regime expectancy by family", "## Pooled rows vs shuffled baseline",
-                    "## Controls", "## Symbols with no passing lane", "## Caveats",
+                    "## Search accounting", "## Controls", "## Symbols with no passing lane", "## Caveats",
                     "## Portfolio replay of PASS lanes", "## Cost calibration"):
         assert section in md
     assert "| orb | long | 1 | 0 | 1 | 1 |" in md            # PASS, WATCH(walkforward), FAIL, coldstart WATCH
@@ -226,3 +226,92 @@ def test_report_manifest_tolerates_rows_missing_keys():
     assert rec["verdicts"] == {"": 1, "PASS": 1} and rec["pooled_verdicts"] == {"": 1, "WATCH": 1}
     assert rec["n_rows"] == 2 and rec["n_symbols"] == 2 and rec["pooled_with_baseline"] == 1
     assert rec["computed_at"] == "2025-09-25T01:05:00" and rec["report"] == "r.md"
+
+
+# ──────────────────────
+# strategy-search-batch1 task 2 — "Search accounting": grid combos x sides vs PASS/WATCH,
+# from the registry and the run manifest, so multiple testing is visible
+# ──────────────────────
+
+def test_search_accounting_section_reports_grid_points_and_totals():
+    """`orb` and `mr_20d` are real registered families (strategies/families/registry.py):
+    orb = range_minutes(2) x rvol_min(3) x atr_stop(2) = 12 combos x 2 sides = 24 grid points;
+    mr_20d = band_sigma(2) x rsi3_extreme(3) x time_stop_days(2) = 12 combos x 2 sides = 24."""
+    from research.strategy_hunt.report import render_report
+    rows = [_row("NVDA", "orb", "long", "PASS", 0.2), _row("TSLA", "orb", "long", "FAIL", -0.1),
+            _row("AMD", "mr_20d", "short", "WATCH", 0.05)]
+    run_manifest = {"families": ["orb", "mr_20d"], "holdout_months": 0}
+    md = render_report(rows, "2025-09-25T00:00:00", run_manifest=run_manifest)
+    section = md.split("## Search accounting")[1].split("## Controls")[0]
+    assert "| orb | 12 × 2 = 24 | 2 | 1 | 0 |" in section
+    assert "| mr_20d | 12 × 2 = 24 | 1 | 0 | 1 |" in section
+    assert "| **total** | 48 | 3 | 1 | 1 |" in section
+    assert "2 families, 48 grid points × sides evaluated, 1 PASS" in section
+
+
+def test_search_accounting_without_manifest_falls_back_to_rows_families():
+    from research.strategy_hunt.report import render_report
+    rows = [_row("NVDA", "orb", "long", "PASS", 0.2),
+            _row("NEW", "orb", "long", "WATCH", float("nan"), n=0, source="coldstart")]
+    md = render_report(rows, "2025-09-25T00:00:00")
+    section = md.split("## Search accounting")[1].split("## Controls")[0]
+    # the coldstart row must not count toward the unconditional rows scored (source != walkforward)
+    assert "| orb | 12 × 2 = 24 | 1 | 1 | 0 |" in section
+    assert "1 families, 24 grid points × sides evaluated, 1 PASS" in section
+
+
+def test_search_accounting_handles_an_unregistered_family_name():
+    """A family name in the run manifest that the registry does not know (e.g. a manifest
+    written before that family was registered, or a hand-edited one) degrades to zero grid
+    points instead of raising -- the same contract every other optional section holds."""
+    from research.strategy_hunt.report import render_report
+    rows = [_row("NVDA", "made_up_family", "long", "PASS", 0.2)]
+    md = render_report(rows, "2025-09-25T00:00:00", run_manifest={"families": ["made_up_family"]})
+    section = md.split("## Search accounting")[1].split("## Controls")[0]
+    assert "| made_up_family | 0 × 0 = 0 | 1 | 1 | 0 |" in section
+
+
+def test_search_accounting_with_no_families_at_all():
+    from research.strategy_hunt.report import render_report
+    md = render_report([], "2025-09-25T00:00:00")
+    section = md.split("## Search accounting")[1].split("## Controls")[0]
+    assert "_no families run_" in section
+
+
+def test_report_header_states_the_holdout_period_when_set():
+    from research.strategy_hunt.report import render_report
+    rows = [_row("NVDA", "orb", "long", "PASS", 0.2)]
+    md_held = render_report(rows, "2025-09-25T00:00:00", run_manifest={"families": ["orb"], "holdout_months": 6})
+    assert "Holdout" in md_held and "6 months" in md_held
+    md_unheld = render_report(rows, "2025-09-25T00:00:00", run_manifest={"families": ["orb"], "holdout_months": 0})
+    assert "Holdout" not in md_unheld
+    md_no_manifest = render_report(rows, "2025-09-25T00:00:00")
+    assert "Holdout" not in md_no_manifest
+
+
+def test_write_report_reads_the_run_manifest_for_search_accounting_and_holdout_header(tmp_path, monkeypatch):
+    from research.strategy_hunt import report as R
+    from research.strategy_hunt.run import write_manifest
+
+    monkeypatch.setattr(R, "REPORTS_DIR", tmp_path / "reports")
+    write_manifest(tmp_path, {"date": "2025-09-25", "run": {"families": ["orb"], "holdout_months": 6}})
+    rows = [_row("NVDA", "orb", "long", "PASS", 0.2)]
+    p = R.write_report(tmp_path, rows, "2025-09-25T01:05:00")
+    md = p.read_text()
+    assert "Holdout" in md and "6 months" in md
+    section = md.split("## Search accounting")[1].split("## Controls")[0]
+    assert "orb" in section and "24" in section
+
+
+def test_write_report_with_no_run_manifest_on_disk_degrades_gracefully(tmp_path, monkeypatch):
+    """No `<date>.json` on disk (report generated standalone, or from a snapshot with no
+    matching run manifest) must not raise -- families fall back to the rows themselves."""
+    from research.strategy_hunt import report as R
+
+    monkeypatch.setattr(R, "REPORTS_DIR", tmp_path / "reports")
+    rows = [_row("NVDA", "orb", "long", "PASS", 0.2)]
+    p = R.write_report(tmp_path, rows, "2025-09-25T01:05:00")
+    md = p.read_text()
+    assert "Holdout" not in md
+    section = md.split("## Search accounting")[1].split("## Controls")[0]
+    assert "orb" in section

@@ -1,5 +1,6 @@
 import json
 import math
+import time
 
 import numpy as np
 import pandas as pd
@@ -411,3 +412,51 @@ def test_score_regime_root_does_not_flag_a_complete_fresh_baseline(tmp_path, cap
     failed = json.loads(pool[0]["failed_floors"])
     assert "baseline_mismatch" not in failed and "baseline_stale" not in failed
     assert [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING] == []
+
+
+# ──────────────────────
+# strategy-search-batch1 task 2 — holdout_months threads through process_symbol/run_symbols,
+# invalidates the checkpoint, and is recorded in the run manifest
+# ──────────────────────
+
+def test_config_key_includes_holdout_months():
+    from research.strategy_hunt.run import _config_key
+    k0 = _config_key(["toy"], 1.0, None, 6000.0, None, holdout_months=0)
+    k6 = _config_key(["toy"], 1.0, None, 6000.0, None, holdout_months=6)
+    assert k0["holdout_months"] == 0 and k6["holdout_months"] == 6 and k0 != k6
+    # default stays 0 so every existing call site (no holdout_months kwarg) is unaffected
+    assert _config_key(["toy"], 1.0, None, 6000.0, None) == k0
+
+
+def test_process_symbol_holdout_months_reduces_windows_and_invalidates_checkpoint(root):
+    from research.strategy_hunt.run import process_symbol
+    base = process_symbol("AAA", root, ["toy"], force=True)
+    assert base["status"] == "done"
+    held = process_symbol("AAA", root, ["toy"], holdout_months=6, force=True)
+    assert held["status"] == "done" and held["n_windows"] < base["n_windows"]
+    # same holdout_months, no --force: checkpoint from the held-out run is reused
+    assert process_symbol("AAA", root, ["toy"], holdout_months=6)["status"] == "skipped"
+    # holdout_months is part of _config_key, so going back to 0 re-runs rather than skipping
+    assert process_symbol("AAA", root, ["toy"], holdout_months=0)["status"] == "done"
+
+
+def test_run_symbols_threads_holdout_months(root):
+    from research.strategy_hunt.run import run_symbols
+    base = run_symbols(["AAA"], root, ["toy"], workers=1, force=True)[0]
+    held = run_symbols(["AAA"], root, ["toy"], workers=1, force=True, holdout_months=6)[0]
+    assert held["status"] == "done" and held["n_windows"] < base["n_windows"]
+
+
+def test_cli_run_records_holdout_months_and_families_in_manifest(root, monkeypatch, tmp_path):
+    from research.strategy_hunt import cli
+    from research.strategy_hunt import report as R
+    from research.strategy_hunt import run as RUN
+
+    reports = tmp_path / "reports"
+    monkeypatch.setattr(RUN, "REPORTS_DIR", reports)
+    monkeypatch.setattr(R, "REPORTS_DIR", reports)
+    assert cli.main(["run", "--root", str(root), "--symbols", "AAA", "--families", "toy",
+                     "--workers", "1", "--holdout-months", "6"]) == 0
+    manifest = json.loads((RUN.reports_dir(root) / f"{time.strftime('%Y-%m-%d')}.json").read_text())
+    assert manifest["run"]["holdout_months"] == 6
+    assert manifest["run"]["families"] == ["toy"]
