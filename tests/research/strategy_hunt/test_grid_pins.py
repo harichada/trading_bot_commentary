@@ -281,3 +281,28 @@ def test_search_accounting_ignores_a_malformed_grid_pins_section():
                        run_manifest={"families": ["mr_20d"], "grid_pins": ["entry_style=limit_open"]})
     section = md.split("## Search accounting")[1].split("## Controls")[0]
     assert "| mr_20d | 24 × 2 = 48 | 1 | 0 | 1 |" in section
+
+
+# Task F review, Important 1: a pin key that no family has must not become a silent no-op.
+def test_unknown_grid_pin_keys_are_reported_and_known_ones_are_not():
+    from research.strategy_hunt.cli_args import unknown_grid_pin_keys
+
+    assert unknown_grid_pin_keys({"entry_stlye": "limit_open"}, ["mr_20d", "overnight_hold"]) == ["entry_stlye"]
+    assert unknown_grid_pin_keys({"entry_style": "limit_open"}, ["mr_20d", "overnight_hold"]) == []
+    # known on one family, absent on the other: still fine (pins apply where the axis exists)
+    assert unknown_grid_pin_keys({"band_sigma": "2.0"}, ["mr_20d", "overnight_hold"]) == []
+
+
+def test_cmd_run_rejects_a_pin_key_that_no_run_family_has(tmp_path, monkeypatch, capsys):
+    import argparse
+    from research.strategy_hunt import cli
+
+    called = {}
+    monkeypatch.setattr(cli, "run_symbols", lambda *a, **k: called.setdefault("ran", True) or [])
+    monkeypatch.setattr(cli, "_symbols_arg", lambda s, r: ["AAA"])
+    a = argparse.Namespace(root=tmp_path, symbols=None, families="mr_20d", min_days=250, workers=1, force=True,
+                           cost_mult=1.0, shuffle_seed=None, notional=6000.0, no_coldstart=False, postgres=False,
+                           holdout_months=0, grid_pin=["entry_stlye=limit_open"], shuffle_mode="path")
+    rc = cli.cmd_run(a)
+    out = capsys.readouterr().out
+    assert rc == 1 and "entry_stlye" in out and "ran" not in called

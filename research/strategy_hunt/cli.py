@@ -13,7 +13,7 @@ from pathlib import Path
 # two namespace factories live in `cli_args` with the flags they set -- Batch-2 Task A added the
 # second one and this module is at its line budget.
 from research.strategy_hunt.cli_args import BASELINE_SHUFFLE_SEED  # noqa: F401
-from research.strategy_hunt.cli_args import SHUFFLE_MODE_SELECTION, parse_grid_pins
+from research.strategy_hunt.cli_args import SHUFFLE_MODE_SELECTION, parse_grid_pins, unknown_grid_pin_keys
 from research.strategy_hunt.cli_args import baseline_namespace as _baseline_namespace
 from research.strategy_hunt.cli_args import selection_namespace as _selection_namespace
 from research.strategy_hunt.cli_parsers import build_parser as build_subparsers
@@ -163,6 +163,10 @@ def cmd_run(a: argparse.Namespace) -> int:
         print(f"run: {exc}")
         return 1
     symbols, fams = _symbols_arg(a.symbols, a.root), _families_arg(a.families)
+    unknown = unknown_grid_pin_keys(pins, fams)
+    if unknown:                    # a misspelled key would silently make both A/B arms the same run
+        print(f"run: --grid-pin key(s) {unknown} are on no family's grid among {fams}")
+        return 1
     # v-playbook-desk-b1-5 task 10: a shuffled run is a *variant* of this root, not a root of
     # its own -- it writes trades_shuffle/, checkpoints_shuffle/, choices_shuffle/ and shares
     # the root's bars/news/context, so `score` can read both tapes in one pass.

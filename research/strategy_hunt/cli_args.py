@@ -9,7 +9,7 @@ from __future__ import annotations
 import argparse
 import os
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Mapping, Optional, Sequence
 
 GRID_PIN_SEP = "="
 
@@ -75,6 +75,24 @@ def parse_grid_pins(values: Optional[Sequence[str]]) -> dict[str, str]:
             raise ValueError(f"--grid-pin expects KEY{GRID_PIN_SEP}VALUE, got {token!r}")
         pins[key] = value
     return pins
+
+
+def unknown_grid_pin_keys(pins: Mapping[str, str], family_names: Sequence[str]) -> list[str]:
+    """Pin keys that no family in `family_names` has on its grid (Task F review, Important 1).
+
+    A key nobody has would make `pinned_family` a silent no-op on every family while the manifest
+    and report header still advertised an A/B arm -- so `cmd_run` rejects the run instead."""
+    if not pins:
+        return []
+    from strategies.families.registry import get_family
+
+    known: set[str] = set()
+    for name in family_names:
+        try:
+            known.update(get_family(name).grid)
+        except KeyError:           # an unregistered name has no grid to pin (tests use toy families)
+            continue
+    return sorted(k for k in pins if k not in known)
 
 
 def baseline_namespace(a: argparse.Namespace) -> argparse.Namespace:
