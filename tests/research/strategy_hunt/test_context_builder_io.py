@@ -55,6 +55,35 @@ def test_build_universe_context_writes_file_and_load_context_slice_reads_it(tmp_
     assert empty.empty and list(empty.columns) == list(CTX_COLUMNS)
 
 
+def test_load_context_slice_tolerates_an_old_schema_parquet_missing_the_new_columns(tmp_path):
+    """A context parquet written before Batch-2 Task C's three new columns (mom_12_1,
+    mom_rank_12_1, vol_rank_60) must not raise KeyError: `run.py` swallows any
+    `load_context_slice` exception per symbol into `status: "error"` with zero trades, so a raise
+    here would silently blank out every family for every symbol until the root's context/ is
+    rebuilt. Missing columns must come back all-NaN, readable through `ctx()` like any other gap."""
+    from research.strategy_hunt.context import load_context_slice
+    from strategies.families.context import CTX_COLUMNS, ctx
+
+    old_columns = [c for c in CTX_COLUMNS if c not in ("mom_12_1", "mom_rank_12_1", "vol_rank_60")]
+    dates = pd.bdate_range("2025-02-03", periods=5, name="date")
+    old = pd.DataFrame({c: 1.0 for c in old_columns}, index=dates)
+    old.insert(0, "symbol", "TEST1")
+    old = old.reset_index()
+    out_path = tmp_path / "context" / "universe_daily.parquet"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    old.to_parquet(out_path, index=False)
+
+    sl = load_context_slice(tmp_path, "TEST1")
+    assert list(sl.columns) == list(CTX_COLUMNS)
+    assert sl["mom_12_1"].isna().all() and sl["mom_rank_12_1"].isna().all() and sl["vol_rank_60"].isna().all()
+    for c in old_columns:
+        assert (sl[c] == 1.0).all()
+
+    ind = sl.add_prefix("ctx_")
+    assert np.isnan(ctx(ind, "mom_12_1")).all()
+    assert np.isnan(ctx(ind, "vol_rank_60")).all()
+
+
 def test_load_context_slice_missing_root_is_empty(tmp_path):
     from research.strategy_hunt.context import load_context_slice
     from strategies.families.context import CTX_COLUMNS

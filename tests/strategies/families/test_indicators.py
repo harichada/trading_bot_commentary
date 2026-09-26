@@ -246,6 +246,20 @@ def test_month_start_is_the_current_sessions_own_property_not_lagged():
     assert df.loc["2025-01-31", "d_month_start"] == 0.0
 
 
+def test_month_start_still_flags_correctly_when_the_first_weekday_is_a_holiday():
+    """2025-02-03 (a Monday) would ordinarily be the first trading session of February; drop it
+    to simulate a market holiday landing exactly on a month's first weekday (mirrors
+    test_week_start_is_the_current_sessions_own_property_not_lagged's Monday-holiday case). The
+    next available session must pick up the flag instead -- this is an ordinary single-session
+    gap, well under the multi-week hole the `_month_start` docstring warns can miss a boundary."""
+    from strategies.families.indicators import daily_features
+    daily = _mk_daily([100.0 + i for i in range(45)], start="2025-01-06")
+    holiday = daily.drop(index=[pd.Timestamp("2025-02-03")])
+    df = daily_features(holiday)
+    assert df.loc["2025-02-04", "d_month_start"] == 1.0
+    assert df.loc["2025-01-31", "d_month_start"] == 0.0
+
+
 def test_new_daily_features_reach_the_indicator_frame_including_month_start():
     from strategies.families.indicators import indicator_frame
     b = _bars(DAYS[:3])

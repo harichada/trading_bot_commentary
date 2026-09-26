@@ -92,7 +92,7 @@ def mom_12_1_entries(bars5: pd.DataFrame, ind: pd.DataFrame, daily: pd.DataFrame
                        target_r=MOM_TARGET_R, entry_style=style)
     out += _atr_entries(bars5, short_m, "short", atr14, MOM_STOP_ATR, MOM_TIME_STOP, "mom_12_1_short",
                         target_r=MOM_TARGET_R, entry_style=style)
-    return spaced_by_sessions(out, 1)
+    return spaced_by_sessions(out, 1)  # defensive no-op: month_start already yields <=1 signal/side/month
 
 
 def low_vol_trend_entries(bars5: pd.DataFrame, ind: pd.DataFrame, daily: pd.DataFrame,
@@ -108,7 +108,7 @@ def low_vol_trend_entries(bars5: pd.DataFrame, ind: pd.DataFrame, daily: pd.Data
                 & (rs120 > 0) & (close_d > sma200))
     out = _atr_entries(bars5, mask, "long", atr14, LOW_VOL_STOP_ATR, LOW_VOL_TIME_STOP,
                        "low_vol_trend", target_r=LOW_VOL_TARGET_R)
-    return spaced_by_sessions(out, 1)
+    return spaced_by_sessions(out, 1)  # defensive no-op, same reasoning as mom_12_1_entries above
 
 
 FAMILIES_FACTOR: tuple[Family, ...] = (

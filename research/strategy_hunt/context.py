@@ -168,7 +168,10 @@ def symbol_daily_features(
     news: pd.DataFrame,
 ) -> pd.DataFrame:
     """Per-session features for one symbol, indexed by session date. Columns are CTX_COLUMNS minus
-    the cross-sectional ones (rvol_rank5, rs_rank_60, adv_bucket), which rank_cross_section adds.
+    the five cross-sectional ones (rvol_rank5, rs_rank_60, adv_bucket, mom_rank_12_1,
+    vol_rank_60), which rank_cross_section adds, plus the internal-only vol_60 (not a
+    CTX_COLUMNS member; kept here only so rank_cross_section can rank it into vol_rank_60, then
+    dropped from the final on-disk frame).
 
     `symbol` isn't read by the computation itself (every column derives from `bars5`/`daily`/
     `spy_daily`/`earnings_table`/`news`); it's kept in the signature as part of the public
@@ -287,7 +290,11 @@ def build_universe_context(root: Path, spy_symbol: str = "SPY") -> Path:
 
 def load_context_slice(root: Path, symbol: str) -> pd.DataFrame:
     """One symbol's context, indexed by date. Empty (but columned) frame when the file or the
-    symbol is missing."""
+    symbol is missing. A context parquet written before a `CTX_COLUMNS` addition (e.g. an older
+    root's file, predating Batch-2 Task C's mom_12_1/mom_rank_12_1/vol_rank_60) is not an error:
+    `.reindex` fills the columns it doesn't have with NaN instead of raising KeyError, so a stale
+    root degrades to "no signal on the new columns" rather than "every family errors on every
+    symbol" (`build_universe_context` must still be re-run to backfill them for real)."""
     path = Path(root) / "context" / "universe_daily.parquet"
     if not path.exists():
         empty = pd.DataFrame(columns=list(CTX_COLUMNS))
@@ -296,4 +303,4 @@ def load_context_slice(root: Path, symbol: str) -> pd.DataFrame:
     df = pd.read_parquet(path, engine="pyarrow", filters=[("symbol", "==", symbol.upper())])
     df["date"] = pd.to_datetime(df["date"])
     df = df.sort_values("date").set_index("date")
-    return df[list(CTX_COLUMNS)]
+    return df.reindex(columns=list(CTX_COLUMNS))

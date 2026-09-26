@@ -109,7 +109,14 @@ def _month_start(dates) -> pd.Series:
     Unlike every d_* feature this is NOT lagged: a session's own date is known at its open, so
     lagging it would move the flag to the wrong session (same rationale as `_week_start`). The
     first row in the frame has no predecessor and is 0.0 (a month start cannot be established
-    from one session)."""
+    from one session).
+
+    Known limitation: a single missing session (an ordinary market holiday) is always safe -- the
+    next available session's day-of-month is still compared against the last real one, wherever
+    it fell. But a large data hole (roughly a 3+ week gap, e.g. a symbol with an extended trading
+    halt) can miss a boundary: if the session after the hole lands on a day-of-month that is still
+    numerically greater than the last session's before the hole, the comparison reads as "still the
+    same month" even though one or more calendar months were skipped entirely."""
     idx = pd.DatetimeIndex(dates)
     dom = pd.Series(idx.day.astype(float), index=dates)
     return (dom <= dom.shift(1)).astype(float)
