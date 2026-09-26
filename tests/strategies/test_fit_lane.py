@@ -457,3 +457,21 @@ def test_entry_to_signal_accepts_an_overnight_hold_kind():
     assert sig.symbol == "NVDA" and sig.reasoning["hold_kind"] == "overnight"
     assert sig.reasoning["is_day_trade"] is False and sig.reasoning["max_hold_sessions"] == 1
     assert sig.reasoning["flatten_hour"] is None and sig.reasoning["strategy"] == "fit:overnight_hold"
+
+
+def test_overnight_signal_reasoning_is_seen_by_the_engine_swing_gate():
+    """v-batch1-task1-r1 (Important 1): the engine reads the emitted `reasoning` through
+    core.swing_exits.is_multiday -- once for the SWING_ALLOW_OVERNIGHT entry gate and once for the
+    swing time-stop / earnings-eve exit check. An overnight entry is not a day trade (no
+    flatten_hour, full size), so the only thing that can put it on either side of those checks is
+    the `hold_kind` the adapter writes; this pins that the pairing actually resolves."""
+    from core.swing_exits import is_multiday
+    from strategies.families.models import Entry
+    from strategies.fit_lane import entry_to_signal
+    e = Entry("", "short", pd.Timestamp("2025-01-02 15:55"), 100.0, 103.0, 60.0, 1, "overnight", "overnight_short")
+    sig = entry_to_signal(e, "overnight_hold", {"move_pct": 1.0}, "PASS", 0.4, "NVDA")
+    assert is_multiday(sig.reasoning) is True
+    assert sig.reasoning["is_day_trade"] is False and sig.reasoning["day_trade_size_multiplier"] == 1.0
+    # An intraday entry from the same code path must stay out of the swing checks.
+    day = Entry("", "long", pd.Timestamp("2025-01-02 10:00"), 100.0, 99.0, 102.0, 10, "intraday", "orb")
+    assert is_multiday(entry_to_signal(day, "orb", {}, "PASS", 0.4, "NVDA").reasoning) is False

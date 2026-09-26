@@ -78,6 +78,28 @@ def test_promotion_table_swing_allowed_lets_multiday_family_through():
     assert mr["recommendation"] == "promote_live"
 
 
+def test_promotion_table_swing_overnight_blocker_also_covers_an_overnight_family():
+    """v-batch1-task1-r1 (Important 1): an "overnight" hold is carried past the close exactly as a
+    "multiday" one is, so SWING_ALLOW_OVERNIGHT gates it too. Without this, an overnight family
+    could be recommended for live entries while the engine's own overnight gate
+    (core/engine.py's swing_overnight_gate) would silently drop every signal it emitted."""
+    from research.strategy_hunt.promote import promotion_table
+
+    snap = _snapshot(_pass_rows("overnight_hold", 12))
+    scorecards = {"overnight_hold": {"verdict": "GO"}}
+
+    blocked = promotion_table(snap, scorecards, lanes_enabled=("overnight_hold",), live_enabled=(),
+                              swing_allowed=False, **ENFORCING)
+    row = next(r for r in blocked if r["family"] == "overnight_hold")
+    assert row["hold_kind"] == "overnight"
+    assert row["blocker"] == "swing_overnight_disabled"
+    assert row["recommendation"] == "hold"
+
+    allowed = promotion_table(snap, scorecards, lanes_enabled=("overnight_hold",), live_enabled=(),
+                              swing_allowed=True, **ENFORCING)
+    assert next(r for r in allowed if r["family"] == "overnight_hold")["blocker"] == ""
+
+
 def test_promotion_table_not_registered_blocks_before_scorecard_checks():
     from research.strategy_hunt.promote import promotion_table
 

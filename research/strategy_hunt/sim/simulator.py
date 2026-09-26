@@ -49,7 +49,13 @@ def _limit(entry: Entry, start: int, tb: SessionTable, earn_next: np.ndarray, n:
     if entry.hold_kind == "overnight":
         # Held past the close and closed at the next session's open. The earnings-eve rule still
         # applies: if that next session is an earnings date, flatten into this session's close
-        # instead of carrying the report.
+        # instead of carrying the report. (An entry filled on the session's *last* bar has nowhere
+        # to flatten to and is skipped before it gets here -- see `_skip_earnings_eve_overnight`.)
+        #
+        # One night still spans two session ids (the fill session and the next), so `hold_sessions`
+        # is 2 and a short pays two sessions of borrow -- 2/252 of the annual rate, per
+        # `CostModel.borrow_cost`. That is deliberate: the position is on the books across one
+        # settlement date, and charging a single session would under-count the short's carry.
         if earn_next[s0]:
             return int(tb.last_pos[s0]), "earnings_eve"
         if s0 + 1 <= len(tb.first_pos) - 1:
@@ -62,6 +68,23 @@ def _limit(entry: Entry, start: int, tb: SessionTable, earn_next: np.ndarray, n:
     if last_session <= len(tb.last_pos) - 1:
         return int(tb.last_pos[last_session]), "time_stop"
     return n - 1, "data_end"
+
+
+def _skip_earnings_eve_overnight(entry: Entry, start: int, tb: SessionTable, earn_next: np.ndarray) -> bool:
+    """v-batch1-task1-r1 (Important 2): True for an overnight entry filled on the last bar of a
+    session whose next session is an earnings date.
+
+    The canonical overnight fill *is* the session's last bar (15:50 signal, 15:55 fill), so the
+    earnings-eve rule would flatten such a position on the very bar it was opened on: `hold_bars` 0,
+    R ~ 0, and both legs' costs paid. That is a phantom trade rather than one the family could have
+    taken — live, the same earnings-eve check that would flatten it runs before the entry — so the
+    entry is dropped and no trade is emitted. An overnight entry earlier in the session is a real
+    hold and still exits `earnings_eve` at the close.
+    """
+    if entry.hold_kind != "overnight":
+        return False
+    s0 = int(tb.session_id[start])
+    return bool(earn_next[s0]) and start >= int(tb.last_pos[s0])
 
 
 def _limit_exit_px(reason: str, limit_pos: int, o: np.ndarray, c: np.ndarray) -> float:
@@ -102,6 +125,8 @@ def simulate(entries: list[Entry], bars5: pd.DataFrame, cost_model: CostModel, e
         if ts not in pos_of.index:
             continue
         start = int(pos_of[ts])
+        if _skip_earnings_eve_overnight(e, start, tb, earn_next):
+            continue
         if start + 1 >= n:
             exit_pos, exit_px, reason = start, float(c[start]), "data_end"
         else:

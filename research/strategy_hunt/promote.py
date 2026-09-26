@@ -13,7 +13,8 @@ Blocker precedence (first that applies wins):
   3. "scorecard_missing"      -- no Stage A scorecard yet (no shadow ledger / never resolved)
   4. "scorecard_no_go"        -- latest scorecard verdict is NO_GO
   5. "gate_not_enforcing"     -- ENABLE_STRATEGY_FIT_GATE off, or STRATEGY_FIT_SHADOW on
-  6. "swing_overnight_disabled" -- multiday family but SWING_ALLOW_OVERNIGHT is off
+  6. "swing_overnight_disabled" -- family holds past the close (multiday or overnight) but
+                                 SWING_ALLOW_OVERNIGHT is off
   else ""                     -- clear to promote
 
 `gate_not_enforcing` (v-strategy-fit-review2-2026-09-25, Critical 1): promoting a lane to live
@@ -35,6 +36,13 @@ from strategies.families import family_names, get_family
 
 MIN_PASS_SYMBOLS = 10
 MIN_POOLED_PASS_REGIMES = 1
+
+# v-batch1-task1-r1 (Important 1): every hold kind that survives the close. "overnight" is held
+# from 15:55 to the next session's open, so SWING_ALLOW_OVERNIGHT governs it exactly as it governs
+# "multiday" -- and the engine's own gate (core/engine.py's swing_overnight_gate, which reads
+# core.swing_exits.is_multiday) already drops those signals when the flag is off, so promoting such
+# a family while it is off would promote a lane that cannot trade.
+OVERNIGHT_HOLD_KINDS = ("multiday", "overnight")
 
 
 def _scorecard_verdict(scorecards: dict[str, Any], family: str) -> str:
@@ -60,7 +68,7 @@ def _blocker(pass_symbols: int, registered: bool, scorecard_verdict: str, hold_k
         return "scorecard_no_go"
     if not gate_enabled or gate_shadow:
         return "gate_not_enforcing"
-    if hold_kind == "multiday" and not swing_allowed:
+    if hold_kind in OVERNIGHT_HOLD_KINDS and not swing_allowed:
         return "swing_overnight_disabled"
     return ""
 

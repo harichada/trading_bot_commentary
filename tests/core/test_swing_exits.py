@@ -58,3 +58,34 @@ def test_time_stop_coerces_non_numeric_max_hold_sessions():
     assert should_time_stop({"hold_kind": "multiday", "max_hold_sessions": 3.0}, entry, now, 10) == (True, "swing_time_stop")
     # None/0 already fell back to the default before this fix; keep it that way.
     assert should_time_stop({"hold_kind": "multiday", "max_hold_sessions": None}, entry, now, 2) == (True, "swing_time_stop")
+
+
+def test_overnight_hold_kind_counts_as_multiday():
+    """v-batch1-task1-r1 (Important 1): an "overnight" position (entered at 15:55, carried into the
+    next session) is held past the close, so both engine call sites that key off `is_multiday` must
+    see it -- the SWING_ALLOW_OVERNIGHT entry gate and the swing time-stop / earnings-eve exit
+    check. Leaving it out meant an overnight lane could enter while overnight holding was disabled
+    and would then never be time-stopped or flattened before a print."""
+    from core.swing_exits import is_multiday
+    assert is_multiday({"hold_kind": "overnight"}) is True
+    assert is_multiday({"hold_kind": "multiday"}) is True
+    assert is_multiday({"hold_kind": "intraday"}) is False
+    assert is_multiday({}) is False and is_multiday(None) is False
+
+
+def test_overnight_time_stop_waits_for_the_session_it_is_carried_into():
+    """An overnight family's Entry carries time_stop=1 (the simulator exits it at the next session's
+    open, so the number is unused there), and that reaches live as max_hold_sessions=1. Taken
+    literally, the time stop would fire at 15:5x on the entry session itself -- flattening the
+    position minutes after it was opened, a zero-hold round trip that pays both legs' costs. An
+    overnight hold is therefore floored at OVERNIGHT_MIN_SESSIONS (2): the entry session plus the
+    one it is carried into."""
+    from core.swing_exits import OVERNIGHT_MIN_SESSIONS, should_time_stop
+    assert OVERNIGHT_MIN_SESSIONS == 2
+    r = {"hold_kind": "overnight", "max_hold_sessions": 1}
+    entry = datetime(2025, 9, 25, 15, 55)                                    # Thu 15:55
+    assert should_time_stop(r, entry, datetime(2025, 9, 25, 15, 56), 10) == (False, "")
+    assert should_time_stop(r, entry, datetime(2025, 9, 26, 15, 50), 10) == (True, "swing_time_stop")
+    # The floor only raises a too-short hold; a longer explicit one is still honoured.
+    assert should_time_stop({"hold_kind": "overnight", "max_hold_sessions": 5},
+                            datetime(2025, 9, 22, 10), datetime(2025, 9, 24, 15, 55), 10) == (False, "")

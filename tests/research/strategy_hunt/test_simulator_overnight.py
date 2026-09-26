@@ -70,6 +70,28 @@ def test_overnight_earnings_eve_still_flattens_at_the_session_close():
     assert t.exit_reason == "earnings_eve" and t.exit_ts == pd.Timestamp("2025-01-02 15:55")
 
 
+def test_overnight_entry_on_the_last_bar_of_an_earnings_eve_is_skipped_entirely():
+    """v-batch1-task1-r1 (Important 2): the canonical overnight fill IS the session's last bar, so
+    when the next session is an earnings date the earnings-eve rule would flatten the position on
+    the very bar it was opened on -- bars_held 0, R ~ 0, both legs' costs paid. That is a phantom
+    trade, not a trade the family could have taken (live, the 15:50 earnings-eve flatten check and
+    this entry contradict each other), so the entry is skipped and no trade is emitted. An entry
+    earlier in the same session is a real hold and still exits `earnings_eve`."""
+    from research.strategy_hunt.sim.simulator import simulate
+    bars = pd.concat([_flat_session("2025-01-02"), _flat_session("2025-01-03", px=105.0, open_px=102.0)])
+    earnings = {pd.Timestamp("2025-01-03")}
+    last_bar = Entry("X", "long", bars.index[77], 100.0, 97.0, 160.0, 1, "overnight")     # 15:55 fill
+    assert simulate([last_bar], bars, ZERO_COSTS, earnings, "fam") == []
+
+    mid = Entry("X", "long", bars.index[5], 100.0, 90.0, 120.0, 3, "multiday")
+    t = simulate([mid], bars, ZERO_COSTS, earnings, "fam")[0]
+    assert t.exit_reason == "earnings_eve" and t.exit_ts == pd.Timestamp("2025-01-02 15:55")
+    assert t.hold_bars > 0
+
+    # Nothing is skipped when the next session is not an earnings date.
+    assert len(simulate([last_bar], bars, ZERO_COSTS, set(), "fam")) == 1
+
+
 def test_overnight_stop_on_an_intervening_bar_wins_over_next_open():
     from research.strategy_hunt.sim.simulator import simulate
     day1 = _day("2025-01-02", [100.0] * 4, [100.5] * 4, [99.5, 99.5, 96.0, 99.5], [100.0] * 4)

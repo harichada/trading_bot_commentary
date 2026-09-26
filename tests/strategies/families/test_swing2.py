@@ -91,7 +91,7 @@ def test_overnight_hold_needs_context():
 def test_mr_short_term_long_fills_at_bar_one_and_spaces_by_the_time_stop():
     from strategies.families.swing2 import mr_short_term_entries
     bars = _bars(DAYS)
-    params = {"rsi_lo": 5.0, "rsi_hi": 95.0, "time_stop_days": 2}
+    params = {"rsi_extreme": 5.0, "time_stop_days": 2}
     es = _run(mr_short_term_entries, bars, _ind(bars, with_ctx=False), params)   # needs no context
     assert [e.entry_ts for e in es] == [pd.Timestamp(DAYS[i] + " 09:35") for i in (0, 2, 4, 6, 8)]
     e = es[0]
@@ -101,7 +101,7 @@ def test_mr_short_term_long_fills_at_bar_one_and_spaces_by_the_time_stop():
 
 def test_mr_short_term_needs_the_trend_filter_and_the_rsi_extreme():
     from strategies.families.swing2 import mr_short_term_entries
-    bars, params = _bars(DAYS), {"rsi_lo": 5.0, "rsi_hi": 95.0, "time_stop_days": 3}
+    bars, params = _bars(DAYS), {"rsi_extreme": 5.0, "time_stop_days": 3}
     assert _run(mr_short_term_entries, bars, _ind(bars, d_sma200=110.0), params) == []   # close below sma200
     assert _run(mr_short_term_entries, bars, _ind(bars, d_rsi2=30.0), params) == []      # not oversold
 
@@ -110,9 +110,28 @@ def test_mr_short_term_short_side():
     from strategies.families.swing2 import mr_short_term_entries
     bars = _bars(DAYS)
     ind = _ind(bars, d_rsi2=97.0, d_sma200=110.0)
-    es = _run(mr_short_term_entries, bars, ind, {"rsi_lo": 5.0, "rsi_hi": 95.0, "time_stop_days": 5})
+    es = _run(mr_short_term_entries, bars, ind, {"rsi_extreme": 5.0, "time_stop_days": 5})
     assert es and es[0].side == "short" and es[0].tag == "mr_st_short"
     assert es[0].stop_px == pytest.approx(105.0) and es[0].target_px == pytest.approx(10.0)   # capped 20R
+
+
+def test_mr_short_term_grid_is_one_mirrored_rsi_axis():
+    """v-batch1-task1-r1 (Minor 3): the long side reads only the low threshold and the short side
+    only the high one, so two independent axes spent 12 grid points on 6 distinct per-side
+    configurations. One `rsi_extreme` axis, mirrored as (v, 100 - v) the way `mr_20d`'s
+    `rsi3_extreme` already is, searches the same thing without inflating the search accounting."""
+    from strategies.families.common import grid_combos
+    from strategies.families.swing2 import FAMILIES_SWING2, mr_short_term_entries
+    grid = {f.name: f.grid for f in FAMILIES_SWING2}["mr_short_term"]
+    assert set(grid) == {"rsi_extreme", "time_stop_days"}
+    assert grid["rsi_extreme"] == [5, 10] and len(grid_combos(grid)) == 6
+
+    bars, params = _bars(DAYS), {"rsi_extreme": 10.0, "time_stop_days": 2}
+    assert _run(mr_short_term_entries, bars, _ind(bars, with_ctx=False, d_rsi2=10.0), params)          # lo = 10
+    assert _run(mr_short_term_entries, bars, _ind(bars, with_ctx=False, d_rsi2=10.5), params) == []
+    hi = _run(mr_short_term_entries, bars, _ind(bars, with_ctx=False, d_rsi2=90.0, d_sma200=110.0), params)
+    assert hi and hi[0].side == "short"                                                                # hi = 90
+    assert _run(mr_short_term_entries, bars, _ind(bars, with_ctx=False, d_rsi2=89.5, d_sma200=110.0), params) == []
 
 
 # ---- multi_day_drop --------------------------------------------------------------------------
@@ -221,19 +240,25 @@ def test_every_family_tolerates_an_indicator_frame_with_no_columns():
 def test_families_run_against_a_real_indicator_frame_with_context():
     """Integration smoke: the pinned fixtures above hand each family a hand-built `ind`, so this
     runs them over a real `indicator_frame` (lagged d_* columns, the per-session ctx_* join and its
-    dtypes) to prove the column names and dtypes line up end to end."""
+    dtypes) to prove the column names and dtypes line up end to end.
+
+    v-batch1-task1-r1 (Minor 5): 210 sessions, not 60. `d_sma200` needs 200 daily closes before it
+    forms, so a shorter fixture could only ever prove that `mr_short_term` and `multi_day_drop`
+    propose *nothing* -- which is also what a misspelled column name would produce. The path is a
+    repeating 4-up (+2.5%) / 4-down (-2.2%) cycle: net rising (so `d_close` clears `d_sma200` and
+    `d_sma50`), |d_ret1| over 2% on every session (both `overnight_hold` grid points fire), a
+    3+-session down streak every cycle (`multi_day_drop`) and a `d_rsi2` under 10 at the end of each
+    down leg (`mr_short_term`)."""
     from strategies.families.common import median_params
     from strategies.families.indicators import indicator_frame
     from strategies.families.swing2 import FAMILIES_SWING2
-    days = [d.strftime("%Y-%m-%d") for d in pd.bdate_range("2025-01-06", periods=60)]
-    frames = []
+    days = [d.strftime("%Y-%m-%d") for d in pd.bdate_range("2024-01-02", periods=210)]
+    frames, base = [], 100.0
     for k, d in enumerate(days):
-        # A rising trend with an alternating +-1.2% wobble, so d_ret1 clears +-1% on every session
-        # (both overnight sides fire) while d_close stays above d_sma50 (rs_rotation fires).
-        base = 100.0 * (1.006 ** k) * (1.0 + (0.012 if k % 2 else -0.012))
+        base *= 1.025 if k % 8 < 4 else 0.978
         idx = pd.date_range(f"{d} 09:30", periods=78, freq="5min", name="ts")
-        frames.append(pd.DataFrame({"open": base, "high": base + 0.6, "low": base - 0.6,
-                                    "close": base + 0.2, "volume": 2000}, index=idx))
+        frames.append(pd.DataFrame({"open": base, "high": base * 1.006, "low": base * 0.994,
+                                    "close": base * 1.002, "volume": 2000}, index=idx))
     bars = pd.concat(frames)
     daily = bars.groupby(bars.index.normalize()).agg(
         {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"})
@@ -244,16 +269,16 @@ def test_families_run_against_a_real_indicator_frame_with_context():
     ind = indicator_frame(bars, daily, context=context)
     mondays = [d for d in dates if d.weekday() == 0]
     assert (ind.loc[mondays[1].strftime("%Y-%m-%d"), "d_week_start"] == 1.0).all()
+    # The 200-session trend filter is reachable in this fixture, which is what lets the two
+    # d_sma200 families below actually propose.
+    session_opens = ind[ind["bar_of_day"] == 0]
+    assert session_opens["d_sma200"].notna().any() and (session_opens["d_down_streak"] >= 3).any()
+    proposed = {}
     for f in FAMILIES_SWING2:
         es = f.fn(bars, ind, pd.DataFrame(), pd.DataFrame(), median_params(f.grid))
         assert isinstance(es, list)
         assert all(e.hold_kind == f.hold_kind and e.side in f.sides for e in es)
-    names = {f.name: f for f in FAMILIES_SWING2}
-    # d_atr14 needs 14 daily bars and d_sma200 never forms in 60 sessions, so the families with a
-    # 200-day trend filter propose nothing here; the ones without it do fire.
-    assert names["overnight_hold"].fn(bars, ind, pd.DataFrame(), pd.DataFrame(),
-                                      {"move_pct": 1.0, "rs_min": 0, "stop_atr": 1.5})
-    assert names["rs_rotation"].fn(bars, ind, pd.DataFrame(), pd.DataFrame(),
-                                   {"rank_min": 0.9, "time_stop_days": 5})
-    assert names["pead_wide"].fn(bars, ind, pd.DataFrame(), pd.DataFrame(),
-                                 {"surprise_min": 5, "time_stop_days": 5})
+        proposed[f.name] = es
+    # Every family proposes on its own median grid point -- a column name or dtype that did not
+    # line up would show up here as an empty list.
+    assert all(proposed[name] for name in proposed), {k: len(v) for k, v in proposed.items()}

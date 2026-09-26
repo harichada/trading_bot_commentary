@@ -17,6 +17,19 @@ logger = logging.getLogger(__name__)
 
 _TIME_STOP_CUTOFF = (15, 50)  # 15:50 local (ET) — same cutoff as flatten checks
 
+# v-batch1-task1-r1 (Important 1): hold kinds that survive the close, and so are subject to the
+# SWING_ALLOW_OVERNIGHT gate, the time stop and the earnings-eve flatten. Kept as a literal tuple
+# rather than imported from strategies.families.models: this module is `core` and stays free of
+# strategy/research imports (see the module docstring).
+MULTIDAY_HOLD_KINDS = ("multiday", "overnight")
+
+# An "overnight" entry is filled at 15:55 and is meant to be carried into the *next* session, so it
+# spans two sessions by construction. Its Entry carries time_stop=1 (the simulator exits it at the
+# next session's open and never reads the number), which reaches live as max_hold_sessions=1 — and
+# a one-session max would fire the time stop at 15:5x on the entry session itself, flattening the
+# position minutes after it opened for a zero-hold round trip that still pays both legs' costs.
+OVERNIGHT_MIN_SESSIONS = 2
+
 
 def sessions_held(entry_time: datetime, now: datetime) -> int:
     """Number of weekdays from entry_time.date() to now.date(), inclusive (min 1)."""
@@ -34,16 +47,21 @@ def sessions_held(entry_time: datetime, now: datetime) -> int:
 
 
 def is_multiday(reasoning: dict) -> bool:
-    return bool(reasoning) and reasoning.get("hold_kind") == "multiday"
+    """True for a position held past the close — `hold_kind` "multiday" or "overnight"."""
+    return bool(reasoning) and reasoning.get("hold_kind") in MULTIDAY_HOLD_KINDS
 
 
 def should_time_stop(
     reasoning: dict, entry_time: datetime, now: datetime, default_max: int
 ) -> Tuple[bool, str]:
-    """Time-stop for multi-day (swing) positions.
+    """Time-stop for positions held past the close (multiday and overnight).
 
     Fires once the position has been held for `max_hold` sessions or more
     and it's at/after the 15:50 cutoff.
+
+    v-batch1-task1-r1 (Important 1): an "overnight" hold's `max_hold` is
+    floored at OVERNIGHT_MIN_SESSIONS so the entry session alone can never
+    trip it — see that constant.
 
     v-strategy-fit-review2-2026-09-25 (Important 6): `max_hold_sessions`
     comes from a signal's `reasoning` dict, which is persisted to
@@ -63,6 +81,8 @@ def should_time_stop(
             reasoning.get("max_hold_sessions"), default_max,
         )
         max_hold = int(default_max)
+    if (reasoning or {}).get("hold_kind") == "overnight":
+        max_hold = max(max_hold, OVERNIGHT_MIN_SESSIONS)
     held = sessions_held(entry_time, now)
     cutoff = now.replace(
         hour=_TIME_STOP_CUTOFF[0], minute=_TIME_STOP_CUTOFF[1], second=0, microsecond=0

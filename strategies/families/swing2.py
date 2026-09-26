@@ -34,6 +34,11 @@ Choices this module makes where the Batch-1 plan is not literal, so a reviewer c
    `spaced_by_sessions` counts distinct entry dates, and this family's signals are already one
    week apart, so spacing by 5 or 10 would keep one entry every 5-10 weeks instead of "one
    position at a time". 5-session holds therefore take every week, 10-session holds every other.
+5. `mr_short_term` has one `rsi_extreme` axis {5, 10} mirrored as (lo, hi) = (v, 100 - v), where
+   the plan writes two independent axes `rsi_lo ∈ {5, 10}` and `rsi_hi ∈ {90, 95}`. The long side
+   reads only the low threshold and the short side only the high one, so two axes spend 12 grid
+   points on 6 distinct per-side configurations — the same duplication `overnight_hold`'s
+   `move_pct` avoids (choice 1), and the same mirroring `mr_20d`'s `rsi3_extreme` already uses.
 """
 from __future__ import annotations
 
@@ -107,7 +112,8 @@ def overnight_hold_entries(bars5: pd.DataFrame, ind: pd.DataFrame, daily: pd.Dat
 def mr_short_term_entries(bars5: pd.DataFrame, ind: pd.DataFrame, daily: pd.DataFrame,
                           news: pd.DataFrame, params: dict) -> list[Entry]:
     """2-period-RSI extreme with a 200-day trend filter; time-stop exit (see docstring choice 2)."""
-    rsi_lo, rsi_hi = float(params["rsi_lo"]), float(params["rsi_hi"])
+    rsi_lo = float(params["rsi_extreme"])           # mirrored to the short side; see choice 5
+    rsi_hi = 100.0 - rsi_lo
     hold = int(params["time_stop_days"])
     bod, atr14 = col(ind, "bar_of_day"), col(ind, "d_atr14")
     close_d, sma200, rsi2 = col(ind, "d_close"), col(ind, "d_sma200"), col(ind, "d_rsi2")
@@ -172,7 +178,7 @@ FAMILIES_SWING2: tuple[Family, ...] = (
            {"move_pct": [1.0, 2.0], "rs_min": [0, 5], "stop_atr": [1.5, 3.0]},
            "overnight", ("long", "short")),
     Family("mr_short_term", mr_short_term_entries,
-           {"rsi_lo": [5, 10], "rsi_hi": [90, 95], "time_stop_days": [2, 3, 5]},
+           {"rsi_extreme": [5, 10], "time_stop_days": [2, 3, 5]},
            "multiday", ("long", "short")),
     Family("multi_day_drop", multi_day_drop_entries,
            {"time_stop_days": [3, 5], "target_atr": [1.0, 2.0]},
