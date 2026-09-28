@@ -32,6 +32,11 @@ from typing import Optional
 
 import aiohttp
 
+# v-wedge-fix-2026-09-28 (Task 4, ruling 2): the yfinance fallback runs in a
+# killable child process, not a thread.
+from core.isolated_calls import run_isolated
+from yf_isolated import yf_ticker_news
+
 logger = logging.getLogger("TradingBot")
 
 ALPACA_NEWS_URL = "https://data.alpaca.markets/v1beta1/news"
@@ -144,32 +149,23 @@ class NewsVerifier:
     ) -> Optional[VerifyResult]:
         """Fallback: yfinance ticker.news has providerPublishTime epochs.
 
-        v-async-safe-news-2026-04-29: yfinance is synchronous; wrap in
-        a thread executor with timeout to avoid blocking the event loop
-        when Yahoo hangs.
-        """
-        try:
-            import yfinance as yf
-        except Exception:
-            return None
+        v-async-safe-news-2026-04-29: yfinance is synchronous; the first fix
+        wrapped it in a thread executor with a timeout.
 
+        v-wedge-fix-2026-09-28 (Task 4, ruling 2): a thread timeout cannot
+        recover from a curl_cffi stall that holds the GIL — the mechanism
+        behind the 2026-09-28 engine wedge. The fetch now runs in the
+        spawn-context child pool, which can be killed. None (no verification
+        from this source) on timeout, exactly as before.
+        """
         now_utc = datetime.now(timezone.utc)
         cutoff = now_utc - timedelta(minutes=self.freshness_minutes)
 
-        import asyncio as _aio
-        def _yf_call():
-            try:
-                return list(yf.Ticker(symbol).news or [])
-            except Exception:
-                return []
-        try:
-            loop = _aio.get_event_loop()
-            raw = await _aio.wait_for(
-                loop.run_in_executor(None, _yf_call),
-                timeout=6.0,
-            )
-        except _aio.TimeoutError:
-            logger.warning(f"news_verifier yfinance timeout for {symbol}")
+        raw = await run_isolated(
+            yf_ticker_news, symbol, timeout=6.0, site="news_verifier_yahoo",
+        )
+        if raw is None:
+            logger.warning(f"news_verifier yfinance unavailable for {symbol}")
             return None
         norm = []
         for a in raw:

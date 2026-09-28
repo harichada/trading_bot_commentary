@@ -31,6 +31,15 @@ from core.schwab_stream import SchwabQuoteStream, STREAMING_AVAILABLE
 from core.order_monitor import OrderMonitor
 from core.price_book import PriceBook, PriceObject
 from core.calculations import CalculationEngine, PnLResult
+# v-wedge-fix-2026-09-28 (Task 4): no synchronous provider call may run
+# inline on the event loop — every one goes through the bounded helper.
+# The heartbeat makes a stalled loop visible in the log.
+from core.provider_calls import (
+    history_timeout as provider_history_timeout,
+    provider_call,
+    provider_call_sync,
+)
+from core.loop_heartbeat import get_heartbeat
 # v-strategy-fit-2026-09-25: per-symbol strategy fit snapshot (Phase 2 gate)
 from core.strategy_fit import StrategyFit
 # v-strategy-fit-review2-2026-09-25 (Important 3): nightly research Parquet
@@ -221,10 +230,18 @@ class TradingEngineWithCommentary:
                 from allocators.regime_allocator import RegimeAllocatorShadow
 
                 def _spy_daily_closes():
-                    df = self.data_provider.get_market_data(
+                    # v-wedge-fix-2026-09-28: bounded; a Schwab stall now
+                    # degrades the allocator to "no closes" instead of
+                    # blocking whichever loop asked for them.
+                    df = self._provider_call_sync(
+                        self.data_provider.get_market_data,
                         "SPY", period_type="month", period=2,
                         frequency_type="daily", frequency=1,
+                        timeout=provider_history_timeout(),
+                        site="spy_daily_closes",
                     )
+                    if df is None or df.empty:
+                        return []
                     col = "Close" if "Close" in df.columns else "close"
                     return df[col].dropna().tolist()
 
@@ -522,9 +539,16 @@ class TradingEngineWithCommentary:
         if symbol in self._fit_bars_cache:
             return self._fit_bars_cache[symbol]
         try:
-            bars5 = self.data_provider.get_market_data(
+            # v-wedge-fix-2026-09-28: bounded provider calls. A timeout
+            # raises into the except below, which degrades to empty frames
+            # exactly as a provider error already did.
+            bars5 = self._provider_call_sync(
+                self.data_provider.get_market_data,
                 symbol, period_type="day", period=10, frequency_type="minute", frequency=5,
+                timeout=provider_history_timeout(), site="fit_bars_5m",
             )
+            if bars5 is None:
+                raise TimeoutError(f"fit_bars_source: 5m history timed out for {symbol}")
             bars5 = bars5.rename(columns={c: c.lower() for c in bars5.columns})
             idx = bars5.index
             if getattr(idx, "tz", None) is not None:
@@ -534,9 +558,13 @@ class TradingEngineWithCommentary:
             bars5.index = idx
             bars5 = bars5.between_time("09:30", "15:55")
 
-            daily = self.data_provider.get_market_data(
+            daily = self._provider_call_sync(
+                self.data_provider.get_market_data,
                 symbol, period_type="year", period=1, frequency_type="daily", frequency=1,
+                timeout=provider_history_timeout(), site="fit_bars_daily",
             )
+            if daily is None:
+                raise TimeoutError(f"fit_bars_source: daily history timed out for {symbol}")
             daily = daily.rename(columns={c: c.lower() for c in daily.columns})
             didx = daily.index
             if getattr(didx, "tz", None) is not None:
@@ -941,6 +969,67 @@ class TradingEngineWithCommentary:
             logger.debug(f"news_thesis_flip check error for {symbol}: {exc}")
             return False
 
+    # ──────────────────────────────────────────────────────────────────
+    # v-wedge-fix-2026-09-28 (Task 4, ruling 1): bounded provider calls.
+    #
+    # 2026-09-28: the engine sat wedged for a whole session because
+    # `self.data_provider.get_quote(...)` ran inline on the loop and the
+    # socket never came back. Every provider call now goes through these
+    # two helpers — dedicated bounded executor + hard timeout — and every
+    # caller keeps the fallback it already had (None means "no data").
+    # See core/provider_calls.py for the mechanism and its honest limits.
+    # ──────────────────────────────────────────────────────────────────
+
+    async def _provider_call(
+        self, fn, *args, timeout: Optional[float] = None,
+        site: str = "provider", **kwargs,
+    ):
+        """Await a synchronous provider call off the loop. None on timeout.
+
+        Non-timeout exceptions propagate, so the try/except already wrapping
+        each call site keeps behaving exactly as it does today.
+        """
+        return await provider_call(fn, *args, timeout=timeout, site=site, **kwargs)
+
+    def _provider_call_sync(
+        self, fn, *args, timeout: Optional[float] = None,
+        site: str = "provider", **kwargs,
+    ):
+        """Blocking twin of `_provider_call` for synchronous call sites."""
+        return provider_call_sync(fn, *args, timeout=timeout, site=site, **kwargs)
+
+    async def _last_known_price(self, symbol: str) -> Optional[float]:
+        """Last price we actually observed for `symbol`, or None.
+
+        PriceBook first — the stream and the REST streamer both write
+        there, and a stale-but-real mark beats no mark at all — then the
+        legacy QuoteCache. Deliberately does NOT fall back to
+        `position.entry_price`: that reads as "flat P&L" and would
+        silently disable every price-based exit rule.
+        """
+        try:
+            price_obj = self.price_book.get_mark(symbol)
+            if price_obj is not None and price_obj.has_price:
+                return float(price_obj.price)
+        except Exception as exc:
+            logger.debug("last_known_price: price_book read failed for %s: %s",
+                         symbol, exc)
+        try:
+            cached = await self.quote_cache.get(symbol)
+            if cached is not None and cached.last and cached.last > 0:
+                return float(cached.last)
+        except Exception as exc:
+            logger.debug("last_known_price: quote_cache read failed for %s: %s",
+                         symbol, exc)
+        return None
+
+    async def _loop_heartbeat_loop(self) -> None:
+        """v-wedge-fix-2026-09-28 (ruling 3): pulse the engine loop once a
+        second so the watchdog thread can log `loop_lag` when it stalls."""
+        await get_heartbeat().run(
+            "engine", interval=1.0, is_running=lambda: self.is_running,
+        )
+
     def _is_auto_managed(self, position) -> bool:
         """v-managed-by-bot-2026-04-28: per-position auto-management gate.
 
@@ -1250,7 +1339,12 @@ class TradingEngineWithCommentary:
                 return False
             
             # Check buying power
-            quote = self.data_provider.get_quote(signal.symbol)
+            # v-wedge-fix-2026-09-28: bounded; a timeout is treated as stale
+            # data, which already blocks the order.
+            quote = await self._provider_call(
+                self.data_provider.get_quote, signal.symbol,
+                site="execute_real_trade",
+            )
             if not quote:
                 raise StaleDataException(60, 60)
                 
@@ -1942,7 +2036,11 @@ class TradingEngineWithCommentary:
         """Validate OCO order prices before submission for both long and short positions"""
         try:
             # Get current quote
-            quote = self.data_provider.get_quote(symbol)
+            # v-wedge-fix-2026-09-28: bounded; a timeout keeps today's
+            # "no quote -> skip validation" behaviour.
+            quote = self._provider_call_sync(
+                self.data_provider.get_quote, symbol, site="validate_oco_prices",
+            )
             if not quote:
                 return True  # Skip validation if no quote
             
@@ -2122,7 +2220,11 @@ class TradingEngineWithCommentary:
         """Validate OCO order prices before submission for both long and short positions"""
         try:
             # Get current quote
-            quote = self.data_provider.get_quote(symbol)
+            # v-wedge-fix-2026-09-28: bounded; a timeout keeps today's
+            # "no quote -> skip validation" behaviour.
+            quote = self._provider_call_sync(
+                self.data_provider.get_quote, symbol, site="validate_oco_prices",
+            )
             if not quote:
                 return True  # Skip validation if no quote
             
@@ -2735,7 +2837,12 @@ class TradingEngineWithCommentary:
                 exit_price = position.current_price
                 try:
                     if self.data_provider:
-                        quote = self.data_provider.get_quote(symbol)
+                        # v-wedge-fix-2026-09-28: bounded; on timeout the
+                        # sweep keeps the position's last mark as exit price.
+                        quote = await self._provider_call(
+                            self.data_provider.get_quote, symbol,
+                            site="position_sweep_exit_price",
+                        )
                         if quote and 'last' in quote:
                             exit_price = quote['last']
                 except Exception as e:
@@ -3979,6 +4086,11 @@ class TradingEngineWithCommentary:
                         self.schwab_client is not None,
                         bool(self.account_hash))
 
+        # v-wedge-fix-2026-09-28 (ruling 3): one-second pulse for this loop
+        # plus the daemon watchdog that logs `loop_lag` when it stops. Cheap
+        # and NORMAL priority — it observes, it never trades.
+        get_heartbeat().start_watchdog()
+        sup.register("loop_heartbeat", self._loop_heartbeat_loop, TaskPriority.NORMAL)
         sup.register("quote_streamer", self._quote_streamer_loop, TaskPriority.NORMAL)
         sup.register("position_loop",  self._position_loop,        TaskPriority.CRITICAL)
         # v-order-monitor-2026-09-10: realtime WORKING bracket/OCO monitor.
@@ -5430,7 +5542,13 @@ class TradingEngineWithCommentary:
                     if self.db_logger is not None and self.data_provider is not None:
                         def _quote_lookup(_sym):
                             try:
-                                q = self.data_provider.get_quote(_sym)
+                                # v-wedge-fix-2026-09-28: bounded. This runs
+                                # on the caller's loop, so an unbounded fetch
+                                # here froze veto evaluation with it.
+                                q = self._provider_call_sync(
+                                    self.data_provider.get_quote, _sym,
+                                    site="news_veto_price",
+                                )
                                 if q:
                                     return q.get('last') or q.get('bid') or q.get('ask')
                             except Exception:
@@ -5689,7 +5807,11 @@ class TradingEngineWithCommentary:
         
         for symbol in self.dynamic_watchlist:
             try:
-                quote = self.data_provider.get_quote(symbol)
+                # v-wedge-fix-2026-09-28: bounded; a timeout skips the
+                # symbol's gap check for this pass.
+                quote = await self._provider_call(
+                    self.data_provider.get_quote, symbol, site="premarket_gaps",
+                )
                 if not quote:
                     continue
                     
@@ -5903,21 +6025,25 @@ class TradingEngineWithCommentary:
                 # Fix: run both calls in a thread executor with timeouts so
                 # the event loop stays responsive throughout.
                 if self.data_provider:
+                    # _loop is still used below for the technical-analyzer
+                    # thread hop (not a provider call).
                     _loop = asyncio.get_event_loop()
+                    # v-wedge-fix-2026-09-28: same 8s budget, but on the
+                    # dedicated provider pool instead of asyncio's default
+                    # one, so an abandoned fetch cannot starve to_thread
+                    # callers elsewhere in the process.
                     try:
-                        data = await asyncio.wait_for(
-                            _loop.run_in_executor(
-                                None, self.data_provider.get_market_data, symbol
-                            ),
-                            timeout=8.0,
+                        data = await self._provider_call(
+                            self.data_provider.get_market_data, symbol,
+                            timeout=8.0, site="analysis_market_data",
                         )
-                    except asyncio.TimeoutError:
-                        logger.warning(f"market_data timeout for {symbol} — skipping this cycle")
-                        continue
                     except Exception as exc:
                         logger.debug(f"market_data error for {symbol}: {exc}")
                         continue
-                    if data is None or data.empty:
+                    if data is None:
+                        logger.warning(f"market_data timeout for {symbol} — skipping this cycle")
+                        continue
+                    if data.empty:
                         self.commentary.add_commentary(TradingCommentary(
                             timestamp=datetime.now(),
                             type=CommentaryType.WARNING,
@@ -5933,13 +6059,11 @@ class TradingEngineWithCommentary:
                     await asyncio.sleep(0)
 
                     try:
-                        quote = await asyncio.wait_for(
-                            _loop.run_in_executor(
-                                None, self.data_provider.get_quote, symbol
-                            ),
-                            timeout=4.0,
+                        quote = await self._provider_call(
+                            self.data_provider.get_quote, symbol,
+                            timeout=4.0, site="analysis_quote",
                         )
-                    except (asyncio.TimeoutError, Exception):
+                    except Exception:
                         quote = None
                     if not quote:
                         quote = {'last': data['Close'].iloc[-1]}
@@ -6091,8 +6215,10 @@ class TradingEngineWithCommentary:
         if not strategy.startswith(self.meta_inference.primary_strategy):
             return None
         try:
-            df = self.data_provider.get_market_data(
+            df = self._provider_call_sync(
+                self.data_provider.get_market_data,
                 signal.symbol, frequency_type="minute", frequency=5,
+                timeout=provider_history_timeout(), site="shadow_meta_bars",
             )
             if df is None or df.empty or len(df) < 50:
                 return None
@@ -8067,8 +8193,12 @@ class TradingEngineWithCommentary:
                         strategy_conf_after=round(signal.confidence, 3))
         # Multi-timeframe confirmation
         try:
-            daily_data = self.data_provider.get_market_data(signal.symbol, frequency_type='daily', frequency=1)
-            if not daily_data.empty and len(daily_data) > 20:
+            daily_data = await self._provider_call(
+                self.data_provider.get_market_data, signal.symbol,
+                frequency_type='daily', frequency=1,
+                timeout=provider_history_timeout(), site="multi_timeframe_daily",
+            )
+            if daily_data is not None and not daily_data.empty and len(daily_data) > 20:
                 daily_trend = 'up' if daily_data['Close'].iloc[-1] > daily_data['Close'].iloc[-20] else 'down'
                 
                 if (signal.signal_type == SignalType.BUY and daily_trend == 'down') or \
@@ -8094,8 +8224,11 @@ class TradingEngineWithCommentary:
                 # Get market data for regime/context analysis
                 market_df = None
                 if self.data_provider:
-                    raw_data = self.data_provider.get_market_data(signal.symbol)
-                    if not raw_data.empty:
+                    raw_data = await self._provider_call(
+                        self.data_provider.get_market_data, signal.symbol,
+                        timeout=provider_history_timeout(), site="pro_filter_bars",
+                    )
+                    if raw_data is not None and not raw_data.empty:
                         # Rename columns to lowercase for pro modules
                         market_df = raw_data.rename(columns={
                             'Open': 'open', 'High': 'high', 'Low': 'low',
@@ -8357,8 +8490,11 @@ class TradingEngineWithCommentary:
                 # Get ATR for the symbol
                 atr = None
                 if self.data_provider:
-                    raw_data = self.data_provider.get_market_data(signal.symbol)
-                    if not raw_data.empty and len(raw_data) >= 14:
+                    raw_data = await self._provider_call(
+                        self.data_provider.get_market_data, signal.symbol,
+                        timeout=provider_history_timeout(), site="pro_exit_atr",
+                    )
+                    if raw_data is not None and not raw_data.empty and len(raw_data) >= 14:
                         high = raw_data['High'].values
                         low = raw_data['Low'].values
                         close = raw_data['Close'].values
@@ -8432,7 +8568,13 @@ class TradingEngineWithCommentary:
                                 manual_close_only=self.manual_close_only)
                     # Only update the price for display purposes, but don't take any action
                     if self.data_provider:
-                        quote = self.data_provider.get_quote(symbol)
+                        # v-wedge-fix-2026-09-28: bounded. This is a
+                        # display-only refresh — on timeout we simply leave
+                        # the last mark in place.
+                        quote = await self._provider_call(
+                            self.data_provider.get_quote, symbol,
+                            site="position_display_price",
+                        )
                         if quote:
                             position.current_price = quote.get('last', position.current_price)
                             if position.side == 'short':
@@ -8443,13 +8585,29 @@ class TradingEngineWithCommentary:
 
                 # Get current price - always use real data when available
                 if self.data_provider:
-                    quote = self.data_provider.get_quote(symbol)
+                    # v-wedge-fix-2026-09-28 (ruling 1): the position loop
+                    # must never block on a quote. Bounded fetch; on timeout
+                    # use the last price we actually observed, and if there
+                    # is none, skip this position for the cycle rather than
+                    # manage it against a price we do not have.
+                    quote = await self._provider_call(
+                        self.data_provider.get_quote, symbol,
+                        site="position_manager_quote",
+                    )
                     if quote and quote.get('last'):
                         current_price = quote.get('last')
                     else:
-                        # Fallback: keep current price if real data unavailable
-                        logger.warning(f"Could not get real price for {symbol}, using last known price")
-                        current_price = position.current_price
+                        _last_known = await self._last_known_price(symbol)
+                        if _last_known is None:
+                            self._audit("position_manager", symbol, "skip",
+                                        "quote_timeout",
+                                        timeout_sec=Config().QUOTE_FETCH_TIMEOUT_SEC)
+                            continue
+                        logger.warning(
+                            f"Could not get real price for {symbol}, "
+                            f"using last known price ${_last_known:.2f}"
+                        )
+                        current_price = _last_known
                     
                     # Update position
                     old_price = position.current_price
@@ -8559,8 +8717,12 @@ class TradingEngineWithCommentary:
                     proactive_indicators: dict = {}
                     if self.data_provider and not getattr(position, 'is_long_term', False):
                         try:
-                            raw_data = self.data_provider.get_market_data(symbol)
-                            if not raw_data.empty and len(raw_data) >= 14:
+                            raw_data = await self._provider_call(
+                                self.data_provider.get_market_data, symbol,
+                                timeout=provider_history_timeout(),
+                                site="position_atr_bars",
+                            )
+                            if raw_data is not None and not raw_data.empty and len(raw_data) >= 14:
                                 high = raw_data['High'].values
                                 low = raw_data['Low'].values
                                 close = raw_data['Close'].values
@@ -9245,8 +9407,11 @@ class TradingEngineWithCommentary:
         
         # Get current indicators for dynamic exit
         if self.data_provider:
-            data = self.data_provider.get_market_data(position.symbol)
-            if not data.empty:
+            data = await self._provider_call(
+                self.data_provider.get_market_data, position.symbol,
+                timeout=provider_history_timeout(), site="exit_conditions_bars",
+            )
+            if data is not None and not data.empty:
                 indicators = await self.technical_analyzer.analyze_with_commentary(data, position.symbol)
                 
                 # Use dynamic exit manager
@@ -9483,20 +9648,19 @@ class TradingEngineWithCommentary:
         exit_price = position.current_price
         if self.data_provider:
             try:
-                loop = asyncio.get_event_loop()
-                quote = await asyncio.wait_for(
-                    loop.run_in_executor(
-                        None, self.data_provider.get_quote, position.symbol
-                    ),
-                    timeout=3.0,
+                # v-wedge-fix-2026-09-28: dedicated pool, same 3s budget and
+                # the same "keep the last known price" fallback.
+                quote = await self._provider_call(
+                    self.data_provider.get_quote, position.symbol,
+                    timeout=3.0, site="close_position_quote",
                 )
                 if quote and 'last' in quote:
                     exit_price = quote['last']
-            except asyncio.TimeoutError:
-                logger.warning(
-                    f"close_position: quote timeout for {position.symbol} — "
-                    f"using last known price ${exit_price:.2f}"
-                )
+                elif quote is None:
+                    logger.warning(
+                        f"close_position: quote timeout for {position.symbol} — "
+                        f"using last known price ${exit_price:.2f}"
+                    )
             except Exception as e:
                 logger.debug(f"Could not get current quote for {position.symbol}: {e}")
         

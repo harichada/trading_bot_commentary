@@ -28,6 +28,10 @@ from core.models import TradingMode, CommentaryType, SignalType
 from core.config import Config, config, logger
 from core.commentary import TradingCommentary, CommentarySystem
 from core.websocket_manager import ConnectionManager
+# v-wedge-fix-2026-09-28 (Task 4, ruling 3): the API loop gets its own
+# heartbeat, so a wedged uvicorn loop shows up as `loop_lag loop=api`
+# instead of as /api/status simply never answering (2026-09-28).
+from core.loop_heartbeat import get_heartbeat
 from api.auth import verify_api_key, verify_ws_token
 
 logger = logging.getLogger('TradingBot')
@@ -648,6 +652,16 @@ async def start_trading():
 
         # Start the broadcaster task
         asyncio.create_task(commentary_broadcaster())
+
+        # v-wedge-fix-2026-09-28 (ruling 3): pulse this (FastAPI) loop once a
+        # second and start the watchdog thread that logs `loop_lag`. Both are
+        # idempotent — the engine asks for the watchdog too.
+        try:
+            _heartbeat = get_heartbeat()
+            _heartbeat.start_watchdog()
+            asyncio.create_task(_heartbeat.run("api", interval=1.0))
+        except Exception as _hb_exc:
+            logger.warning(f"loop_heartbeat: api pulse not started: {_hb_exc}")
 
         def queue_commentary(commentary):
             try:

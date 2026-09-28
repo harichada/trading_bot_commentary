@@ -1,15 +1,43 @@
 import logging
 from datetime import datetime
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 
 import numpy as np
 import pandas as pd
+
+from core.config import Config
+from core.isolated_calls import run_isolated_sync
+from yf_isolated import (
+    yf_fast_quote,
+    yf_history,
+    yf_market_breadth,
+    yf_multi_quotes,
+)
 
 logger = logging.getLogger('TradingBot')
 
 
 class RealTimeDataProvider:
-    """Provides real-time market data using yfinance - works in both simulation and live modes"""
+    """Provides real-time market data using yfinance - works in both simulation and live modes
+
+    v-wedge-fix-2026-09-28 (Task 4, ruling 2): every method here used to call
+    yfinance in-process and synchronously, with no timeout at all. This is the
+    fallback provider the engine uses when Schwab is absent, and its calls sit
+    on whatever loop or thread asked for them. yfinance rides curl_cffi, which
+    can stall in a TLS write while holding the GIL and freeze the entire
+    process (2026-09-28). Each public method now delegates to a module-level
+    entry point in `yf_isolated` via the spawn-context pool, which can be
+    killed. Failures degrade exactly as they did before: empty frame, None
+    quote, empty dict, neutral breadth.
+    """
+
+    def _isolated(self, fn, *args, site: str) -> Optional[Any]:
+        """One bounded, killable yfinance call. None when it does not answer."""
+        return run_isolated_sync(
+            fn, *args,
+            timeout=Config().PROVIDER_HISTORY_TIMEOUT_SEC,
+            site=f"realtime_{site}",
+        )
 
     def __init__(self, commentary_system, schwab_client=None):
         self.commentary = commentary_system
@@ -19,10 +47,8 @@ class RealTimeDataProvider:
         self._cache_ttl = 30  # Cache for 30 seconds to avoid rate limiting
 
     def get_market_data(self, symbol: str, period: str = "1d", interval: str = "5m", **kwargs) -> pd.DataFrame:
-        """Get real market data from yfinance"""
+        """Get real market data from yfinance (isolated subprocess)"""
         try:
-            import yfinance as yf
-
             # Check cache first
             cache_key = f"{symbol}_{period}_{interval}"
             if cache_key in self._price_cache:
@@ -30,16 +56,12 @@ class RealTimeDataProvider:
                 if cache_age < self._cache_ttl:
                     return self._price_cache[cache_key]
 
-            # Fetch real data
-            ticker = yf.Ticker(symbol)
-            data = ticker.history(period=period, interval=interval)
+            # Fetch real data — column titling and Adj Close removal happen in
+            # the child (yf_isolated.yf_history) so only a DataFrame crosses.
+            data = self._isolated(yf_history, symbol, period, interval,
+                                  site="market_data")
 
-            if not data.empty:
-                # Ensure proper column names
-                data.columns = [col.title() for col in data.columns]
-                if 'Adj Close' in data.columns:
-                    data = data.drop('Adj Close', axis=1, errors='ignore')
-
+            if data is not None and not data.empty:
                 # Cache the data
                 self._price_cache[cache_key] = data
                 self._cache_time[cache_key] = datetime.now()
@@ -53,10 +75,8 @@ class RealTimeDataProvider:
         return pd.DataFrame()
 
     def get_quote(self, symbol: str) -> Dict[str, float]:
-        """Get real-time quote from yfinance"""
+        """Get real-time quote from yfinance (isolated subprocess)"""
         try:
-            import yfinance as yf
-
             # Check cache
             cache_key = f"quote_{symbol}"
             if cache_key in self._price_cache:
@@ -64,20 +84,11 @@ class RealTimeDataProvider:
                 if cache_age < 15:  # Quote cache for 15 seconds
                     return self._price_cache[cache_key]
 
-            ticker = yf.Ticker(symbol)
-            info = ticker.fast_info
-
-            quote = {
-                'bid': getattr(info, 'bid', 0) or info.last_price * 0.9999,
-                'ask': getattr(info, 'ask', 0) or info.last_price * 1.0001,
-                'last': info.last_price,
-                'volume': info.last_volume or 0,
-                'high': info.day_high or info.last_price,
-                'low': info.day_low or info.last_price,
-                'open': info.open or info.last_price,
-                'close': info.previous_close or info.last_price,
-                'market_cap': getattr(info, 'market_cap', 0) or 0
-            }
+            # The whole dict is assembled in the child: fast_info objects are
+            # not picklable, and callers must never see a half-built quote.
+            quote = self._isolated(yf_fast_quote, symbol, site="quote")
+            if quote is None:
+                return None
 
             # Cache the quote
             self._price_cache[cache_key] = quote
@@ -90,40 +101,19 @@ class RealTimeDataProvider:
             return None
 
     def get_multiple_quotes(self, symbols: List[str]) -> Dict[str, Dict[str, float]]:
-        """Get quotes for multiple symbols efficiently"""
-        quotes = {}
+        """Get quotes for multiple symbols efficiently (isolated subprocess)"""
         try:
-            import yfinance as yf
-
-            # Batch download for efficiency
-            tickers = yf.Tickers(' '.join(symbols))
-
-            for symbol in symbols:
-                try:
-                    ticker = tickers.tickers.get(symbol)
-                    if ticker:
-                        info = ticker.fast_info
-                        quotes[symbol] = {
-                            'last': info.last_price,
-                            'volume': info.last_volume or 0,
-                            'high': info.day_high or info.last_price,
-                            'low': info.day_low or info.last_price,
-                            'open': info.open or info.last_price,
-                            'change_pct': ((info.last_price - info.previous_close) / info.previous_close * 100) if info.previous_close else 0
-                        }
-                except Exception as e:
-                    logger.debug(f"Failed to get quote for {symbol}: {e}")
-
+            quotes = self._isolated(
+                yf_multi_quotes, list(symbols), site="multi_quotes",
+            )
+            return quotes or {}
         except Exception as e:
             logger.warning(f"Failed to get multiple quotes: {e}")
-
-        return quotes
+            return {}
 
     def calculate_market_breadth(self) -> Dict[str, float]:
         """Calculate real market breadth from major indices and sectors"""
         try:
-            import yfinance as yf
-
             # Check cache
             if 'market_breadth' in self._price_cache:
                 cache_age = (datetime.now() - self._cache_time.get('market_breadth', datetime.min)).total_seconds()
@@ -132,30 +122,11 @@ class RealTimeDataProvider:
 
             # Major market ETFs
             symbols = ['SPY', 'QQQ', 'IWM', 'DIA', 'XLF', 'XLK', 'XLE', 'XLV', 'XLI', 'XLP']
-            advances = 0
-            declines = 0
-
-            tickers = yf.Tickers(' '.join(symbols))
-            for symbol in symbols:
-                try:
-                    ticker = tickers.tickers.get(symbol)
-                    if ticker:
-                        info = ticker.fast_info
-                        if info.last_price > info.previous_close:
-                            advances += 1
-                        else:
-                            declines += 1
-                except Exception as e:
-                    logger.debug(f"Failed to get ticker data for {symbol}: {e}")
-
-            total = advances + declines
-            breadth = {
-                'advance_decline_ratio': advances / max(declines, 1),
-                'advancing_percent': (advances / total * 100) if total > 0 else 50,
-                'declining_percent': (declines / total * 100) if total > 0 else 50,
-                'advances': advances,
-                'declines': declines
-            }
+            breadth = self._isolated(
+                yf_market_breadth, symbols, site="market_breadth",
+            )
+            if breadth is None:
+                raise ValueError("isolated breadth fetch returned nothing")
 
             self._price_cache['market_breadth'] = breadth
             self._cache_time['market_breadth'] = datetime.now()

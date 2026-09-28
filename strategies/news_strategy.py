@@ -14,6 +14,10 @@ from nltk.sentiment import SentimentIntensityAnalyzer
 from core.models import CommentaryType, SignalType, NewsImpact, TradingSignal, NewsItem, MarketData
 from core.commentary import TradingCommentary
 from core.news_bus import NewsGateAction, NewsGateResult, ensure_utc_aware
+# v-wedge-fix-2026-09-28 (Task 4, ruling 2): Yahoo news now runs in a
+# killable child process, not a thread — see the note below.
+from core.isolated_calls import run_isolated
+from yf_isolated import yf_ticker_news
 from strategies.base import TradingStrategyWithCommentary
 from strategies.builtin import _floored_atr
 
@@ -129,14 +133,19 @@ class FreeNewsAggregator:
     async def _fetch_yahoo_news(self, symbol: str, hours: int) -> List[NewsItem]:
         """Fetch from Yahoo Finance"""
         try:
-            import yfinance as yf
-
-            # v-async-safe-news-2026-04-29: yfinance is sync; wrap in
-            # executor with hard timeout to prevent event-loop blocking
-            # if Yahoo's API hangs (root cause of 11:13 MRVL freeze).
-            def _yahoo_fetch():
-                return yf.Ticker(symbol).news or []
-            news_data = await _run_sync_with_timeout(_yahoo_fetch, timeout=6.0, default=[])
+            # v-async-safe-news-2026-04-29: yfinance is sync; the original
+            # fix wrapped it in a thread with a hard timeout (the 11:13 MRVL
+            # freeze).
+            # v-wedge-fix-2026-09-28 (Task 4, ruling 2): a thread timeout was
+            # not enough. yfinance rides curl_cffi, which can stall inside a
+            # TLS write while HOLDING THE GIL — every thread in the process
+            # freezes, including the one we abandoned (2026-09-28: 247 of 251
+            # threads in futex_wait, one Yahoo socket with 1.5 KB stuck in its
+            # send queue). Only another process can be killed, so this runs in
+            # the spawn-context pool. Same 6 s budget, same [] fallback.
+            news_data = await run_isolated(
+                yf_ticker_news, symbol, timeout=6.0, site="news_yahoo",
+            ) or []
 
             news_items = []
             for article in news_data:

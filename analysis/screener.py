@@ -6,8 +6,11 @@ from typing import Dict, List, Any, Optional
 import numpy as np
 import pandas as pd
 
+from core.config import Config
+from core.isolated_calls import run_isolated
 from core.models import CommentaryType
 from core.commentary import TradingCommentary
+from yf_isolated import yf_download_daily
 
 logger = logging.getLogger('TradingBot')
 
@@ -737,32 +740,24 @@ class StockScreener:
         if not missing:
             return
 
-        import asyncio as _asyncio
-
-        def _fetch():
-            try:
-                import yfinance as yf
-            except Exception as exc:
-                logger.warning("screener: yfinance import failed: %s", exc)
-                return {}
-            try:
-                # 60 trading days ≈ 90 calendar days. Daily bars only.
-                # auto_adjust=True → splits/dividends handled.
-                df = yf.download(
-                    tickers=missing,
-                    period='90d',
-                    interval='1d',
-                    group_by='ticker',
-                    auto_adjust=True,
-                    progress=False,
-                    threads=True,
-                )
-                return df
-            except Exception as exc:
-                logger.warning("screener: yfinance batch fetch failed: %s", exc)
-                return {}
-
-        result = await _asyncio.to_thread(_fetch)
+        # v-wedge-fix-2026-09-28 (Task 4, ruling 2): this used to be an
+        # unbounded `asyncio.to_thread(yf.download)`. yfinance rides
+        # curl_cffi, which can stall inside a TLS write while HOLDING THE
+        # GIL — that freezes every thread in the process, which is exactly
+        # how the engine wedged on 2026-09-28. The download now runs in a
+        # spawn-context child that can be killed. None degrades to "no
+        # quality data → all symbols pass the filter", as before.
+        result = await run_isolated(
+            yf_download_daily, list(missing), "90d", "1d",
+            timeout=Config().PROVIDER_HISTORY_TIMEOUT_SEC,
+            site="screener_quality_data",
+        )
+        if result is None:
+            logger.warning(
+                "screener: quality data unavailable for %d symbols "
+                "(isolated fetch returned nothing)", len(missing),
+            )
+            return
         # Result shape: MultiIndex columns when multiple tickers,
         # flat DataFrame when single. Normalize to {sym: DataFrame}.
         try:
