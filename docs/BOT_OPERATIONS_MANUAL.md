@@ -1038,3 +1038,314 @@ Common `component` values: `signal_router`, `regime_gate`, `conviction_floor`, `
 | PriceBook | Single in-process price source built from the quote stream |
 | NewsBus | In-process store of scored news items with a 4-hour TTL |
 | Efficiency ratio | Kaufman ratio of SPY net move to path length over 20 days; ≥ 0.30 is "trending" |
+
+## 9. Live allocation and the sleeve lanes (2026-09-28)
+
+On 2026-09-28 the operator directed the bot to trade a hard $5,000 slice of the
+~$46.5k margin account, funded by margin (no positions sold), running the slow
+long-only sleeve (`mr_20d` long, `mom_12_1` long) live while every other lane
+stays shadow. This section documents that configuration as built in
+`core/config.py` § `v-go-live-5k-2026-09-28`, `risk/allocation.py`,
+`risk/manager.py`, and `strategies/fit_lane_admission.py`. Implementation
+detail and the arithmetic behind every number here is in
+`.superpowers/sdd/2026-09-28-go-live-5k/task-1-report.md` and
+`task-2-report.md`.
+
+### 9.1 What the $5,000 allocation means
+
+`Config().BOT_CAPITAL_ALLOCATION` (`core/config.py:4501`, env `BOT_CAPITAL_ALLOCATION`
+wins over yaml `trading.bot_capital_allocation`, default `0.0` = off) is a hard
+dollar ceiling the risk manager applies on top of the real Schwab account:
+
+- **Off (default)** — `account_balance` and `buying_power` are the real Schwab
+  numbers, exactly as before this feature existed.
+- **On (go-live value `5000`)** — every risk decision reads
+  `RiskManagerWithCommentary.effective_balance()` / `.effective_buying_power()`
+  (`risk/manager.py:185-190`), which clamp the raw Schwab value at the
+  allocation via `risk/allocation.py::effective_value` (`risk/allocation.py:92`).
+  The raw Schwab numbers are preserved on `schwab_equity` / `schwab_buying_power`
+  for logging. The clamp is applied **at read time**, not just at sync time, so
+  none of the three live write sites that periodically overwrite
+  `account_balance`/`buying_power` with whole-account Schwab numbers (the
+  signal router, `_check_buying_power`, and the `/ws` position-cache refresh)
+  can defeat it.
+- **Position sizing**: the risk budget (`max_risk_amount = effective_balance()
+  × RISK_PER_TRADE_PCT`), the buying-power cap, and — new — the **allocation
+  headroom**: `risk/allocation.py::allocation_headroom(allocation,
+  bot_open_notional)` returns `max(0, allocation − bot_open_notional)`, and no
+  new position's notional may exceed it (`apply_allocation_cap`,
+  `risk/allocation.py:253`, called from `risk/manager.py:577-579`). If the
+  headroom is below the price of one share, size is trimmed to **0** — no
+  trade — and the commentary carries `data['reason'] ==
+  'allocation_exhausted'` (`risk/allocation.py:49`); a partial trim carries
+  `'allocation_cap'` (`risk/allocation.py:53`). `bot_open_notional` is a sum
+  over the bot's own managed positions' market value, refreshed roughly every
+  5 analysis cycles alongside `bot_daily_pnl` (`core/engine.py`,
+  `_compute_bot_open_notional`) — between refreshes the real ceiling on total
+  exposure is `MAX_POSITIONS × min(MAX_POSITION_VALUE, allocation ×
+  MAX_POSITION_VALUE_BP_PCT)`, which at the go-live settings (5 positions,
+  $1,000 cap each) works out to ≈ the allocation itself.
+- **Per-position cap tightens.** With the allocation on, `MAX_POSITION_VALUE_BP_PCT`
+  (yaml default `0.20`) binds against the *capped* buying power, not the whole
+  account: `min(MAX_POSITION_VALUE $10,000, 0.20 × $5,000)` = **$1,000 per
+  position** (was `min($10,000, 0.20 × ~$93,000)` = $10,000 before the
+  allocation). The bot can hold roughly 5 such positions before the headroom
+  check exhausts the allocation — in line with `MAX_POSITIONS`.
+- **Daily-loss stop is computed on the allocation, not the account.**
+  `Config().MAX_DAILY_LOSS` (`core/config.py:308`) now accepts an env override
+  in `(0, 1]` (`_env_fraction`, `core/config.py:164`) specifically so it can be
+  tightened without touching `Config().yaml`; the circuit trips at
+  `-MAX_DAILY_LOSS × effective_balance()` (`risk/manager.py:646`). At the
+  go-live value `MAX_DAILY_LOSS=0.03` against the $5,000 allocation, that is a
+  **$150 daily stop** (previously 3% of the whole account, ≈$1,395). The
+  `.env` file on this host carried a legacy line `MAX_DAILY_LOSS="500"`
+  (dollars, not a fraction) from an earlier configuration; `_env_fraction`
+  refuses any value outside `(0, 1]` and falls back to the yaml default, so
+  that line could not silently switch the circuit off. It was removed at the
+  go-live restart.
+- **The ledger stores the capped values; the dashboard tiles show the raw
+  account.** `risk/manager.py`'s consumers (sizing, the "Risk Calculation"
+  commentary, `log_trade`/`log_performance` records) all read
+  `effective_balance()`/`effective_buying_power()`, so trades are recorded
+  against the $5,000 sleeve. `api/routes.py`'s two account-display reads
+  (`:1248-1249`, the `/api/account-stats` fallback path, and `:1953-1954`,
+  the `/ws` `dashboard_update` payload) were deliberately left reading the raw
+  `risk_manager.account_balance`/`.buying_power` — they are *display*, not a
+  risk decision — so the dashboard will show the account's real ~$46.5k
+  balance and ~$93k buying power even while every order the bot places is
+  sized against $5,000. This is expected, not a bug: cross-check position
+  sizes against this section's table, not the dashboard header.
+
+### 9.2 Sleeve admission rule, in words
+
+`Config().FIT_LANE_LIVE_ALLOWLIST` (`core/config.py:4528`, env
+`FIT_LANE_LIVE_ALLOWLIST`, default `""` = off) names `(family, side[, regimes])`
+combinations authorised to trade live **even without a walk-forward PASS
+row**. Grammar: `family:side[:regime1|regime2]`, e.g.
+`mr_20d:long,mom_12_1:long:risk_on|mixed` — `mr_20d` long is allowed in any
+regime; `mom_12_1` long only when the live market-context regime reads
+`risk_on` or `mixed` (a `mom_12_1` long in a `risk_off` regime is unmeasured
+territory and stays shadow). The grammar, matching and the whole admission
+rule live in `strategies/fit_lane_admission.py`.
+
+For a given `(family, side)` still gated by `FIT_LANE_LIVE_ENTRIES_ENABLED`,
+`admit()` (`strategies/fit_lane_admission.py:202`) returns:
+
+1. **`pass`** — the entry's own symbol/side row is a walk-forward PASS (the
+   pre-existing rule; unconditional on the allowlist).
+2. **`allowlist`** — the `(family, side)` is allowlisted, the live
+   `market_context_regime` (`unknown` normalizes to `mixed`) is permitted by
+   the entry, **and** the symbol's own unconditional fit row is not a
+   *measured loser*.
+3. Otherwise the signal stays shadow (`fit_lane_shadow` if the family isn't
+   live at all, `fit_lane_shadow_verdict` if it fails admission).
+
+**Measured-loser exclusion, precisely** (`symbol_check`,
+`strategies/fit_lane_admission.py:180`): a row blocks the allowlist path only
+when it has `n ≥ SYMBOL_MIN_N` (60) trades **and** `exp_r < 0`. A row that is
+**absent** (never measured for that family/side) or **thin** (fewer than 60
+trades, or no finite `exp_r`) does **not** block — most of the universe today
+falls in this bucket (in the 2026-09-28 snapshot, `mr_20d:long` had 0 measured
+rows out of 539, `mom_12_1:long` 0 of 539; everything was `absent` or `thin`),
+which is exactly the population the allowlist exists to admit. The label
+(`absent`/`thin`/`positive`/`blocked_negative`) is written to
+`reasoning["fit_lane_symbol_check"]` on every fit-lane decision line.
+
+**Neutral sizing.** An allowlist-admitted entry has no walk-forward score
+behind it, so it is deliberately **not** sized on the score-derived Kelly
+haircut (which would collapse it to the weakest 0.2-strength tier). Instead
+`entry_to_signal` gives it `strength = confidence =
+Config().FIT_LANE_ALLOWLIST_STRENGTH` (`core/config.py:4559`, env/yaml,
+default `0.6`, go-live value `0.8`) and
+`reasoning["sizing_basis"] = "risk_per_trade"`, putting it on the plain
+`RISK_PER_TRADE_PCT`-of-allocation sizing path instead of the fit-score path
+(`sizing_basis = "fit_score"` for a `pass`-admitted entry).
+
+**Every downstream gate still applies.** Allowlist admission changes nothing
+about desk limits, the playbook gate, the swing overnight-hold gate, risk
+sizing, or the allocation cap — it only changes whether the fit lane emits a
+live signal in the first place. Desk limits and `MAX_POSITIONS` are the
+remaining breadth control, since the per-symbol fit evidence no longer
+narrows the sleeve's universe at all once neither row type blocks.
+
+**`STRATEGY_FIT_SHADOW` stays `1` (on) at go-live**, and must. `ENABLE_STRATEGY_FIT_GATE`
++ `STRATEGY_FIT_SHADOW=False` would make the engine-side strategy-fit gate
+(`core/config.py:4157`) **enforce** a walk-forward PASS on every entry,
+including the allowlisted sleeve's — since no PASS rows exist, that would
+block the sleeve entirely. The allowlist in `strategies/fit_lane_admission.py`
+*is* the sleeve's gate; the engine-side fit gate stays in shadow (audit-only)
+so it does not double-govern the same entries with a stricter, PASS-only rule.
+
+### 9.3 The go-live `.env` block
+
+Applied at the post-close restart on 2026-09-28 (after removing the legacy
+`MAX_DAILY_LOSS="500"` line):
+
+```
+BOT_CAPITAL_ALLOCATION=5000
+RISK_PER_TRADE_PCT=0.01
+MAX_DAILY_LOSS=0.03
+FIT_LANES_ENABLED=<existing>,mr_20d,mom_12_1
+FIT_LANE_LIVE_ENTRIES_ENABLED=mr_20d,mom_12_1
+FIT_LANE_LIVE_ALLOWLIST=mr_20d:long,mom_12_1:long:risk_on|mixed
+FIT_LANE_ALLOWLIST_STRENGTH=0.8
+SWING_ALLOW_OVERNIGHT=1
+SWING_MAX_HOLD_SESSIONS=20
+ENABLE_DESK_LIMITS=1
+ENABLE_PLAYBOOK_GATE=1
+LEDGER_INTEGRITY=1
+```
+
+`STRATEGY_FIT_SHADOW` is **not** set (stays at its default `True`) — see 9.2.
+`<existing>` means whatever families were already registered in
+`FIT_LANES_ENABLED` before go-live; `mr_20d` and `mom_12_1` are appended, not
+replacing them. `SWING_ALLOW_OVERNIGHT=1` / `SWING_MAX_HOLD_SESSIONS=20`
+(`core/config.py:4278`, `:4291`) let the sleeve's multi-day holds carry past a
+single session, capped at 20 sessions.
+
+### 9.4 Sizing table
+
+Arithmetic for a $100 stock with a 3% stop, allocation `$5,000`,
+`RISK_PER_TRADE_PCT=0.01` (→ `max_risk_amount = $50`, `risk_per_share = $3`,
+16 base shares), `MAX_POSITION_VALUE_BP_PCT` default `0.20` (→ `$1,000`
+per-position cap), nothing else open (verified against the live sizing chain
+in `.superpowers/sdd/2026-09-28-go-live-5k/task-2-report.md` fix round 1):
+
+| Signal strength | Kelly fraction | Shares | Notional | Dollar risk |
+|---|---|---|---|---|
+| NaN (unmeasured, old behaviour) | 0.20 | 3 | $300 | $9 |
+| 0.6 (`FIT_LANE_ALLOWLIST_STRENGTH` code default) | 0.50 | 8 | $800 | $24 (0.48% of allocation) |
+| 0.7 | 0.55 | 8 | $800 | $24 |
+| **0.8 (go-live value)** | 0.70 | **10** (BP-capped) | **$1,000** | **$30 (0.6% of allocation)** |
+| 1.0 (a genuine walk-forward PASS, `sizing_basis=fit_score`) | 1.00 | 10 (BP-capped) | $1,000 | $30 |
+
+At `FIT_LANE_ALLOWLIST_STRENGTH=0.8`, an allowlist-admitted entry sizes
+identically to a maximal-conviction PASS entry (both hit the $1,000
+buying-power cap) — that cap, not the Kelly curve, is what binds at go-live.
+Allocation exhaustion: once $4,950 of the $5,000 is already open, headroom is
+$50 — a $100 stock cannot fit one share, so the next signal sizes to 0 with
+`allocation_exhausted`.
+
+### 9.5 What to watch on the first live day
+
+Grep `trading_bot.log` (JSON-lines) for:
+
+- `fit_lane_admission=allowlist` — a sleeve entry admitted without a PASS row
+  (component `fit_lane_live` in the `strategy_decision` line;
+  `market_context_regime=` and `fit_lane_symbol_check=` ride along on the same
+  line, `strategies/fit_lane.py:327-330`).
+- `allocation_exhausted` / `allocation_cap` — the allocation headroom blocked
+  or trimmed a position (`risk/allocation.py:49,53`).
+- `component=desk_limit` — a sit-out day, `max_trades` breach, or disallowed
+  direction now actually skips the entry (`ENABLE_DESK_LIMITS=1` is enforcing,
+  not shadow, at go-live).
+- `component=playbook` — a suspended `(family, side, regime)` key skips the
+  entry, or a probation/enabled key's size multiplier is applied
+  (`ENABLE_PLAYBOOK_GATE=1` is enforcing at go-live; see `docs/desk.md`).
+
+Read-only endpoints: `GET /api/desk/plan`, `/api/desk/playbook`,
+`/api/desk/journal` (`api/routes.py:1018,1045,1065`) for the day's plan,
+current playbook state, and (after 16:05 ET) the rendered journal
+`data/desk/journal/<date>.md`. `GET /api/account-stats` and the dashboard's
+`account` block still show the **raw** Schwab account (see 9.1) — do not use
+them to check whether the allocation is exhausted; use the `allocation_*`
+audit lines or a manual sum of open bot-managed notional instead.
+
+### 9.6 How to stop trading, in one step
+
+- **Fastest, no restart:** `POST /api/stop` (`api/routes.py:716-721`) sets
+  `trading_engine.is_running = False`. This halts the trading loops
+  immediately; the FastAPI server and dashboard stay up, and open positions'
+  brackets remain live at the broker (this does not flatten anything).
+- **Persistent, requires a restart:** set `FIT_LANE_LIVE_ENTRIES_ENABLED=`
+  (empty) in `.env` and restart via `./deploy.sh`. This drops `mr_20d` and
+  `mom_12_1` back to shadow-only — they keep evaluating and logging but never
+  place a live order — while leaving `BOT_CAPITAL_ALLOCATION` and everything
+  else in place, so a later restart with the flag restored resumes exactly
+  where the sleeve left off (shadow ledgers are never deleted by this).
+
+### 9.7 Nightly cron
+
+`crontab -l` on this host runs, Monday–Friday at 22:30 ET:
+
+```
+30 22 * * 1-5 /home/nvidia/claude/grok/trading_bot_commentary/scripts/nightly_strategy_hunt.sh >> /home/nvidia/claude/grok/trading_bot_commentary/data/strategy_hunt/nightly/cron.log 2>&1
+```
+
+`scripts/nightly_strategy_hunt.sh` sources `.env`, resolves `POSTGRES_DSN`,
+and runs `python -m research.strategy_hunt all --workers 12 --postgres`,
+appending to `data/strategy_hunt/nightly/<date>.log` (its own start/end
+banner lines plus the pipeline's own output); `cron.log` above only captures
+anything cron itself couldn't route into that per-date log. `all --postgres`
+runs `export → news → earnings → context → calibrate → run → run(shuffle) →
+score → playbook`, so it also rewrites `data/desk/playbook.json` and
+`context/universe_daily.parquet` (see `docs/research/strategy_hunt.md` §
+"Scheduling" and § "Universe context" for the `mom_12_1` context-freshness
+requirement this run maintains). A test run on 2026-09-28 completed in 17
+minutes (rc 0). If `fit:mom_12_1` stops signalling entirely, check the mtime
+of `context/universe_daily.parquet` and this job's log first (see 9.8's carry
+window).
+
+### 9.8 Watchdog and the wedge fix (landing 2026-09-28)
+
+As of this writing, `scripts/bot_watchdog.sh`, `core/provider_calls.py`,
+`core/isolated_calls.py`, and `core/loop_heartbeat.py` exist on disk but are
+**not yet committed** (Task 4 of the go-live plan, dispatched separately);
+this subsection describes the design from
+`.superpowers/sdd/2026-09-28-go-live-5k/task-4-brief.md` and must be
+confirmed against the code once it lands.
+
+The trigger: on 2026-09-28 the live process wedged (247 of 251 threads parked
+in `futex_wait`, `/api/status` unresponsive for 60+ seconds, no desk plan
+built) after a synchronous yfinance/curl_cffi call held the GIL. The fix has
+three layers:
+
+1. **Bounded provider calls.** Every synchronous `self.data_provider.get_quote(...)`
+   / `get_market_data(...)` call reachable from the engine's event loop routes
+   through one helper backed by a dedicated `ThreadPoolExecutor`
+   (`Config().PROVIDER_EXECUTOR_WORKERS`, default 8, `core/config.py:4593`)
+   plus `asyncio.wait_for` (`Config().PROVIDER_HISTORY_TIMEOUT_SEC` for
+   history calls, `core/config.py:4617`). A timeout returns `None`, logs at
+   most once a minute per call site, and the caller keeps its existing
+   fallback; the position-management loop falls back to the last known quote
+   rather than blocking.
+2. **Isolated yfinance subprocess pool** (`core/isolated_calls.py`) — all
+   yfinance usage (screener refresh, news lookups, the fallback realtime
+   provider) runs in a `ProcessPoolExecutor` that is torn down and recreated
+   on a timeout, so a GIL-holding hang in a child process cannot touch the
+   engine's own loop.
+3. **Loop heartbeat + external watchdog.** `core/loop_heartbeat.py`
+   (`Config().LOOP_LAG_WARN_SEC`, `core/config.py:4634`) updates a timestamp
+   every second on each loop and logs `loop_lag loop=<name> lag=<s>
+   threads=<n>` when it falls behind — with the caveat that a true GIL-holding
+   hang freezes this thread too, which is why an **external** restarter
+   exists: `scripts/bot_watchdog.sh`, cron-installed for every 5 minutes,
+   06:00–20:00 ET Monday–Friday, `curl -m 30 /api/status`; on two consecutive
+   failures, **if fewer than 2 restarts have happened that day**, it kills the
+   bot process (TERM, 20 s grace, then KILL) and relaunches it (`nohup python
+   trading_bot_commentary_updated.py`, then `POST /api/start`, then
+   `POST /api/toggle-mode {"mode":"live"}`), logging to `bot_watchdog.log`
+   without ever printing the API key. It has a `--dry-run` mode that only
+   reports. The 2-restarts-per-day limit exists so a persistent problem pages
+   the operator instead of restart-looping all day.
+
+Confirm this section against the committed code (`git log --oneline -- scripts/bot_watchdog.sh core/provider_calls.py`) before relying on the specifics above.
+
+### 9.9 Ledger-integrity migration
+
+Applied 2026-09-28, 09:30 ET, during a quiet window, via
+`scripts/migrate_ledger_integrity.py` (idempotent `ADD COLUMN IF NOT EXISTS`
+with per-column savepoints and lock/statement timeouts) — adds
+`initial_stop`, `initial_tp`, `initial_risk_per_share`, `pnl_r`, `setup_type`,
+`hold_time_seconds`, `source`, `is_hands_off`, `is_external`,
+`exit_reason_raw` to Postgres `bot_trades`. `Config().LEDGER_INTEGRITY`
+(`core/config.py:1947`, env/yaml, default `False`) is set to `1` at the
+go-live restart, which switches on: broker-orphan reconciliation (fills that
+happened at the broker but weren't recorded by the bot), TRUE
+initial-stop/TP tracking (immutable, separate from the dynamic trailing
+stop), and R computed from `pnl_r` directly rather than derived from a
+closing stop that may have moved (see `docs/desk.md` § "Known limitations"
+for what that derivation got wrong before the migration). The migration
+script's `--dry-run` flag is currently broken (it autocommits inside a
+transaction) — noted here so it isn't relied on; the real run was validated
+by checking column presence afterward instead.

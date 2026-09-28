@@ -17,23 +17,29 @@ trading engine process, and writes its snapshot to
 via crontab, on this host:
 
 ```
-0 22 * * 1-5 cd /home/nvidia/claude/grok/trading_bot_commentary && set -a && . ./.env && set +a && /home/nvidia/anaconda3/envs/trading-bot/bin/python -m research.strategy_hunt all --workers 12 >> data/strategy_hunt/cron.log 2>&1
+30 22 * * 1-5 /home/nvidia/claude/grok/trading_bot_commentary/scripts/nightly_strategy_hunt.sh >> /home/nvidia/claude/grok/trading_bot_commentary/data/strategy_hunt/nightly/cron.log 2>&1
 ```
 
-Runs 22:00 local, Monday–Friday. It sources `.env` for API
-credentials, then invokes the hunt's `all` subcommand across 12
-worker processes, appending stdout/stderr to
-`data/strategy_hunt/cron.log`. Installing this line is an operator
-step (`crontab -e`); it is not applied automatically by any code
-change.
+Runs 22:30 local, Monday–Friday, via `scripts/nightly_strategy_hunt.sh`
+(added 2026-09-28 for the go-live restart; supersedes an earlier crontab
+line that invoked `research.strategy_hunt all` directly at 22:00). The
+script `cd`s into the repo, sources `.env` for API credentials and
+`POSTGRES_DSN` (falling back to `backtest.engine.DEFAULT_DSN` if unset),
+then runs `python -m research.strategy_hunt all --workers 12 --postgres`,
+appending its own start/end banner lines plus the pipeline's stdout/stderr
+to `data/strategy_hunt/nightly/<date>.log`; the crontab redirect above
+(`nightly/cron.log`) only catches anything that escapes that per-date log
+(e.g. a failure before the script's own logging starts). Installing the
+crontab line is an operator step (`crontab -e`); it is not applied
+automatically by any code change. A test run on 2026-09-28 completed in 17
+minutes (`rc 0`).
 
 **Since Playbook Desk B2 (2026-09-25), `all` ends with `playbook`** (see
-"Run" below): the same crontab line above now also rewrites
-`data/desk/playbook.json` every night, with no change to the command
-itself — the new step lives inside `cmd_all`. Add `--postgres` to the
-line (needs `POSTGRES_DSN` in `.env`) to also fold the live `bot_trades`
-tape into that update; without it, the nightly playbook rebuild runs
-from the shadow ledgers alone. See "The `playbook` subcommand" below.
+"Run" below): the nightly script's `--postgres` run therefore rewrites
+`data/desk/playbook.json` every night from the shadow ledgers **and** the
+live `bot_trades` tape — with no `--postgres` the nightly playbook rebuild
+would run from the shadow ledgers alone. See "The `playbook` subcommand"
+below.
 
 `GET /api/strategy-fit` (read-only) and the "Strategy fit" section of
 `tools/bot_monitor.py`'s report both read the snapshot this job
@@ -284,6 +290,27 @@ through `data.splits.load_adjusted`, so the context is split-adjusted like the r
 A missing or empty SPY frame aborts the whole build (every symbol's `rs_*` would silently be
 all-NaN otherwise); a single other symbol's failure is logged and skipped. `cmd_context` treats a
 failed context build as fatal rather than continuing into `run` with a stale file.
+
+**Live freshness requirement (go-live, 2026-09-28).** The live fit lane for
+context-consuming families (`mom_12_1`, `low_vol_trend`, the in-play
+families) loads this file at signal time via
+`core/strategy_fit_bars.py::load_context_slice` and maps each session onto
+its own row via `strategies/fit_lane_frames.py::align_context`. A session
+with no row of its own (e.g. today, before the next nightly build runs)
+carries forward the most recent earlier row for at most
+`CTX_MAX_CARRY_SESSIONS = 3` business days — beyond that the whole row goes
+NaN and the family stops proposing entries (fails safe rather than trading a
+stale cross-section). On a carried row, only the slow prior-close factors
+carry (`mom_12_1`, `mom_rank_12_1`, `vol_rank_60`, `rs_*`, `adv_*`,
+`atr14_pct`, `pct_from_52w_high`); the session-local columns
+(`rvol_open5`, `rvol_open15`, `rvol_rank5`, `gap_pct`, `earnings_today`,
+`earnings_prev`, `eps_surprise_pct`, `news_count_24h`, `news_sent_24h`) are
+NaN'd because they describe a session that has not happened yet. In
+practice: **if `fit:mom_12_1` stops signalling entirely, check
+`data/strategy_hunt/nightly/<date>.log` and the mtime of
+`context/universe_daily.parquet` first** — a nightly-cron outage longer than
+3 sessions (a long weekend plus a missed Monday run, for instance) silences
+the family until a fresh build lands.
 
 ## Regime and pooled rows
 

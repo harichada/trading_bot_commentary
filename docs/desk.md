@@ -55,13 +55,26 @@ feature flags (env wins over yaml wins over the code default).
 |---|---|---|
 | `ENABLE_DESK` | `False` | Master switch. `False` → `desk_loop` is not registered in the supervisor and neither router hook runs at all — zero behavior change. `True` → the desk builds its plan, ranks in-play stocks and writes the journal; its own sub-gates below still only *audit* unless their own flags are also on. |
 | `ENABLE_DESK_WATCHLIST` | `False` | Lets the 09:35 in-play list drive `engine.dynamic_watchlist` instead of the screener's own output (the screener stops overwriting the watchlist once the plan has in-play rows; `core/loops/screener_loop.py::_desk_owns_watchlist`). Off by default: the screener keeps ownership. |
-| `ENABLE_DESK_LIMITS` | `False` | Turns the daily-plan's sit-out / max-trades / direction-bias checks from "audit only" (`action=shadow`) into "actually block" (`action=skip`) at the `desk_limit` router hook. |
-| `ENABLE_PLAYBOOK_GATE` | `False` | Turns a `suspended` `(family, side, regime)` key from "audit only" into "actually skip" at the `playbook` router hook, **and** writes the playbook's size multiplier into `signal.reasoning["strategy_size_multiplier"]` so `risk/manager.py` applies it. Off: the multiplier is never written (sizing is unaffected) and a suspended key is only logged. |
+| `ENABLE_DESK_LIMITS` | `False` (**`1` in `.env` since the 2026-09-28 go-live restart — enforcing**) | Turns the daily-plan's sit-out / max-trades / direction-bias checks from "audit only" (`action=shadow`) into "actually block" (`action=skip`) at the `desk_limit` router hook. |
+| `ENABLE_PLAYBOOK_GATE` | `False` (**`1` in `.env` since the 2026-09-28 go-live restart — enforcing**) | Turns a `suspended` `(family, side, regime)` key from "audit only" into "actually skip" at the `playbook` router hook, **and** writes the playbook's size multiplier into `signal.reasoning["strategy_size_multiplier"]` so `risk/manager.py` applies it. Off: the multiplier is never written (sizing is unaffected) and a suspended key is only logged. |
 
 Both `ENABLE_DESK_LIMITS` and `ENABLE_PLAYBOOK_GATE` require `ENABLE_DESK`
 to be on as well — the hook bodies are the first thing gated on `ENABLE_DESK`
 in `core/engine.py`'s signal router, so a sub-flag left on with the master
-switch off does nothing.
+switch off does nothing. (`ENABLE_DESK` itself must also be on for the go-live
+restart's `ENABLE_DESK_LIMITS`/`ENABLE_PLAYBOOK_GATE` to mean anything — see
+"Day-one checklist" below.)
+
+**Go-live note (2026-09-28).** The $5,000-allocation go-live restart
+(`docs/BOT_OPERATIONS_MANUAL.md` § "Live allocation and the sleeve lanes")
+sets both `ENABLE_DESK_LIMITS=1` and `ENABLE_PLAYBOOK_GATE=1` — these two
+gates now actually block and resize, on every lane the desk governs, not
+just the new `mr_20d`/`mom_12_1` sleeve. This does **not** by itself put any
+lane live: which strategies may place live orders is decided by
+`FIT_LANE_LIVE_ENTRIES_ENABLED` / `FIT_LANE_LIVE_ALLOWLIST`
+(`core/config.py` § `v-go-live-5k-2026-09-28`), a separate mechanism from the
+desk's own governance layer (see "How a lane would be promoted from shadow"
+below, which is otherwise unchanged by this restart).
 
 **Other desk config** (same section, all with a working default — nothing
 below needs to be set to run the desk):
@@ -453,3 +466,45 @@ Carried over from `.superpowers/sdd/2026-09-25-playbook-desk-b2/task-5-report.md
   equal to it by `tests/research/strategy_hunt/test_playbook_update.py`.
   Both this file and the code comments in `core/desk/journal_data.py` and
   `research/strategy_hunt/playbook_live.py` note the correction.
+
+## Day-one checklist (go-live, 2026-09-28)
+
+Before the first live session with `ENABLE_DESK_LIMITS=1` /
+`ENABLE_PLAYBOOK_GATE=1` enforcing:
+
+1. **`ENABLE_DESK=1` is set.** Both enforcing sub-flags are inert without it
+   (see "The four flags" above). Confirm with `GET /api/desk/plan` returning a
+   populated plan rather than an empty/absent one.
+2. **`DESK_SCAN_MAX_SYMBOLS`.** The default `60` drives roughly 60-80 provider
+   calls in the two minutes after the 09:35 refresh, on the same Schwab
+   credentials the live sleeve now trades on. Leave it at the recommended `20`
+   for the first session (see "The four flags" above) unless the rate-limit
+   behaviour is already known good.
+3. **09:00 ET — read the plan.** `GET /api/desk/plan` or
+   `grep 'engine_decision component=desk_limit' trading_bot.log`. Confirm it
+   is not a sit-out day for a reason that surprises you (losing streak,
+   stale strategy-fit snapshot, economic-calendar blackout).
+4. **09:35 ET — confirm the in-play refresh ran.** The plan file's `in_play`
+   list should be populated; `scanned=` in the `desk_inplay` audit line
+   should roughly match `DESK_SCAN_MAX_SYMBOLS`.
+5. **Watch `component=desk_limit` and `component=playbook` for `action=skip`.**
+   This is the enforcing behaviour working as intended, not an error — but a
+   sit-out day or a suspended key that skips *every* signal on day one is
+   worth a manual look before assuming it is correct.
+6. **Confirm the sleeve is sized on the allocation, not the account.**
+   Cross-check a filled order's notional against
+   `docs/BOT_OPERATIONS_MANUAL.md` § "Live allocation and the sleeve lanes" §
+   "Sizing table" ($800-$1,000 per position at go-live settings) — the
+   dashboard's account tiles show the raw ~$46.5k/~$93k account and will not
+   reflect this.
+7. **16:05 ET — read the journal.** `GET /api/desk/journal` or
+   `data/desk/journal/<date>.md`: every skip/shadow-block by component, the
+   day's closed trades, and any playbook status changes. This is the primary
+   end-of-day review artifact — read it before the next session's plan
+   builds.
+8. **If a lane should be paused immediately**, see
+   `docs/BOT_OPERATIONS_MANUAL.md` § "How to stop trading, in one step"
+   (`POST /api/stop`, or clear `FIT_LANE_LIVE_ENTRIES_ENABLED` and restart) —
+   turning `ENABLE_DESK_LIMITS`/`ENABLE_PLAYBOOK_GATE` back off only changes
+   whether the desk's own checks block; it does not stop new entries from
+   other gates.

@@ -1,5 +1,62 @@
 # Changelog
 
+## 2026-09-28
+
+### Go-live with a $5,000 allocation
+- feat(risk): `BOT_CAPITAL_ALLOCATION` (`core/config.py` § `v-go-live-5k-2026-09-28`, default `0.0` = off)
+  caps `RiskManagerWithCommentary.effective_balance()`/`.effective_buying_power()`
+  (`risk/manager.py:185-190`, `risk/allocation.py`) at a hard dollar slice of the
+  brokerage account, applied at read time so no live write site (signal router,
+  buying-power check, `/ws` refresh) can restore the whole-account numbers.
+  Sizing, the buying-power cap, and the daily-loss circuit all read the capped
+  value; a new allocation-headroom check trims or zeroes a position's notional
+  (`allocation_cap` / `allocation_exhausted`) rather than letting bot-managed
+  open notional exceed the allocation. `MAX_DAILY_LOSS` and `RISK_PER_TRADE_PCT`
+  gained env overrides restricted to `(0, 1]` (`_env_fraction`) specifically so
+  a legacy dollar-valued `.env` line (`MAX_DAILY_LOSS="500"`) could not silently
+  disable the circuit. Commits `c3ee3c2`, `658a0b0`.
+- feat(fit_lane): `FIT_LANE_LIVE_ALLOWLIST` (`core/config.py`, same section) lets
+  named `(family, side[:regimes])` lanes trade live without a walk-forward PASS
+  row (`strategies/fit_lane_admission.py`, new). A row blocks the allowlist path
+  only when it is *measured and losing* (`n ≥ 60`, `exp_r < 0`); absent or thin
+  rows — most of the universe today — are admitted, sized on
+  `FIT_LANE_ALLOWLIST_STRENGTH` (default `0.6`) against `RISK_PER_TRADE_PCT`
+  rather than a score-derived Kelly haircut. `core/strategy_fit_bars.py::load_context_slice`
+  + `strategies/fit_lane_frames.py::align_context` (`CTX_MAX_CARRY_SESSIONS=3`)
+  give factor families (`mom_12_1`) their first live context feed, carrying a
+  session forward at most 3 business days before standing down. Every
+  downstream gate (desk limits, playbook, swing overnight, risk sizing, the
+  allocation cap) still applies. Commits `b41c5e9`, `758c28f`, `81a9e60`,
+  `af8043c`, `60235f4`.
+- chore(strategy-hunt): `scripts/nightly_strategy_hunt.sh` (commit `e609a52`)
+  runs the full `export → news → earnings → context → calibrate → run →
+  run(shuffle) → score --postgres → playbook` pipeline after the close;
+  installed via crontab at 22:30 ET Monday–Friday, superseding the earlier
+  22:00 line that invoked `research.strategy_hunt all` directly.
+- ops: ledger-integrity migration (`scripts/migrate_ledger_integrity.py`)
+  applied to Postgres `bot_trades` 2026-09-28 09:30 ET during a quiet window;
+  `LEDGER_INTEGRITY=1` set at the go-live restart, switching on broker-orphan
+  reconciliation, immutable initial-stop/TP tracking, and `pnl_r`-derived R
+  instead of the closing-stop approximation.
+- go-live `.env`: `BOT_CAPITAL_ALLOCATION=5000`, `RISK_PER_TRADE_PCT=0.01`,
+  `MAX_DAILY_LOSS=0.03`, `FIT_LANES_ENABLED=<existing>,mr_20d,mom_12_1`,
+  `FIT_LANE_LIVE_ENTRIES_ENABLED=mr_20d,mom_12_1`,
+  `FIT_LANE_LIVE_ALLOWLIST=mr_20d:long,mom_12_1:long:risk_on|mixed`,
+  `FIT_LANE_ALLOWLIST_STRENGTH=0.8`, `SWING_ALLOW_OVERNIGHT=1`,
+  `SWING_MAX_HOLD_SESSIONS=20`, `ENABLE_DESK_LIMITS=1`, `ENABLE_PLAYBOOK_GATE=1`,
+  `LEDGER_INTEGRITY=1`; `STRATEGY_FIT_SHADOW` stays on (the allowlist is the
+  sleeve's gate, not the enforcing walk-forward gate). Docs:
+  `docs/BOT_OPERATIONS_MANUAL.md` § "Live allocation and the sleeve lanes",
+  `docs/desk.md` (flags table + day-one checklist),
+  `docs/research/strategy_hunt.md` § "Scheduling" and § "Universe context".
+- **Pending at time of writing, not yet committed:** the engine-wedge fix
+  (bounded provider calls, an isolated yfinance subprocess pool, a loop
+  heartbeat, and an external `scripts/bot_watchdog.sh` restarter) diagnosed
+  after the live process wedged on 2026-09-28 — see
+  `.superpowers/sdd/2026-09-28-go-live-5k/task-4-brief.md` and
+  `docs/BOT_OPERATIONS_MANUAL.md` § 9.8 for the design; confirm against
+  `git log` before relying on it.
+
 ## 2026-09-26
 
 ### Strategy search batch 2 — selection control, limit execution, factor sleeve (2026-09-26)
